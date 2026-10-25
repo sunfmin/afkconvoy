@@ -553,6 +553,21 @@ impl Worktree {
         Ok(worker_state(terminals, seconds(&row["lastOutputAt"]), lead(&agents), now))
     }
 
+    /// Actual structured runtime observations for diagnosis. A transport
+    /// failure is an error, never evidence that an agent has stopped.
+    pub fn health_report(&self) -> Result<Value> {
+        let ps = orca(&["worktree", "ps", "--limit", PS_LIMIT])?;
+        if ps["truncated"] == true {
+            bail!("cannot diagnose from truncated worktree ps");
+        }
+        let rows = ps["worktrees"].as_array().context("orca worktree ps returned no rows")?;
+        Ok(rows
+            .iter()
+            .find(|row| row["path"].as_str().is_some_and(|p| same_dir(Path::new(p), &self.path)))
+            .cloned()
+            .unwrap_or(Value::Null))
+    }
+
     /// The terminal a worker here would be in: the one that wrote last.
     pub fn terminal(&self) -> Result<Option<String>> {
         let listed = orca(&["terminal", "list", "--worktree", &self.selector()])?;
@@ -564,7 +579,7 @@ impl Worktree {
     /// A note about the worker here, kept in the worktree's own git dir: this
     /// machine's, like the worker itself, and gone when the worktree is. git
     /// is asked where that is once.
-    fn note(&self, name: &str) -> Result<PathBuf> {
+    pub(crate) fn note(&self, name: &str) -> Result<PathBuf> {
         if self.git_dir.get().is_none() {
             let dir = Repo::new(self.path.clone()).git(&["rev-parse", "--absolute-git-dir"])?;
             let _ = self.git_dir.set(PathBuf::from(dir));
@@ -625,6 +640,37 @@ impl Worktree {
         }
         orca(&["terminal", "close", "--worktree", &self.selector(), "--all"])?;
         Ok(())
+    }
+
+    /// End the old agent before a continuation can rewrite its brief or
+    /// start another writer. Include descendants that escaped the terminal.
+    pub(crate) fn stop_for_continuation(&self) -> Result<()> {
+        let before = crate::hot::listed_checked()?;
+        let pids: Vec<_> = crate::hot::tree(&before, &self.path).iter().map(|p| p.pid).collect();
+        self.close_terminals()?;
+        let until = Instant::now() + Duration::from_secs(5);
+        loop {
+            let processes = crate::hot::listed_checked()?;
+            let writers = crate::hot::tree(&processes, &self.path);
+            let old_alive = processes.iter().any(|p| pids.contains(&p.pid));
+            let report = self.health_report()?;
+            let agents = report["agents"].as_array();
+            let agent_alive = agents.is_some_and(|agents| {
+                agents.iter().any(|a| {
+                    !matches!(a["state"].as_str(), Some("exited" | "stopped" | "closed" | "gone"))
+                })
+            });
+            if self.terminal()?.is_none() && writers.is_empty() && !old_alive && !agent_alive {
+                return Ok(());
+            }
+            if Instant::now() >= until {
+                bail!(
+                    "old worker termination is unconfirmed in {}; no replacement was started",
+                    self.path.display()
+                );
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
     }
 
     /// Clears the worktree and keeps it: its terminals closed, what it held
@@ -877,10 +923,24 @@ impl Worktree {
     /// it cuts. A new worker was never nudged, and waits on no background
     /// work, whatever the one before it did, and was started `now`.
     pub fn start(&self, command: &str, now: u64) -> Result<String> {
+        // A failed close must not turn a continuation into a second writer.
+        // Check again even after an acknowledged close: Orca may still be
+        // ending the previous terminal. Leave the worker's progress markers
+        // intact until its replacement can actually be started.
+        if self.harness()?.is_some() {
+            self.stop_for_continuation()?;
+        } else {
+            self.close_terminals()?;
+        }
+        if self.terminal()?.is_some() {
+            bail!(
+                "the previous worker in {} still has a terminal after close; \
+                 no replacement was started",
+                self.path.display()
+            );
+        }
         self.forget(NUDGE_FILE)?;
         self.forget(BACKGROUND_FILE)?;
-        // One with no terminal is as wanted.
-        let _ = orca(&["terminal", "close", "--worktree", &self.selector(), "--all"]);
         let command = niced(&worker_tmp::make(&self.path)?.display().to_string(), command);
         let made =
             orca(&["terminal", "create", "--worktree", &self.selector(), "--command", &command])?;

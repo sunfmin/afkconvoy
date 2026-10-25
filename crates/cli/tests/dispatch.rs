@@ -113,7 +113,10 @@ fn the_steps_run_in_order() {
             "worktree list",
             "repo list",
             "worktree create",
+            "terminal list",
             "terminal close",
+            // A close is verified before a replacement can write here.
+            "terminal list",
             "terminal create",
             "terminal wait",
             "terminal send"

@@ -287,6 +287,7 @@ pub struct Host {
     pub sleep_hours: Option<Hours>,
     /// Its host kit, every harness in it; why it cannot be read.
     pub kit: Result<Kit, String>,
+    pub worker_health: serde_json::Value,
     /// The harnesses paused on this host, since when and why: no worker is
     /// started on one until a probe finds it working.
     pub paused: Vec<afkconvoy_core::casting::Paused>,
@@ -306,6 +307,7 @@ impl Host {
             exclusive: shared.exclusive,
             sleep_hours: host_settings::host_sleep(),
             kit: crate::kit::load().map_err(|error| format!("{error:#}")),
+            worker_health: crate::health::show(),
             paused: crate::paused::read(),
         }
     }
@@ -1123,6 +1125,46 @@ fn admission(out: &mut String, host: &Host) {
 /// The host kit: every harness in it, in order, with its models in order,
 /// and what the stock consult runs; each harness paused, since when and why.
 fn kit(out: &mut String, host: &Host) {
+    if let Some(faults) = host.worker_health["faults"].as_array().filter(|v| !v.is_empty()) {
+        out.push_str("<section data-health-faults><h2>Unavailable candidates</h2><ul>");
+        for fault in faults {
+            let _ = write!(
+                out,
+                "<li>{}: scope {}; model {}; next probe {}; evidence {}</li>",
+                esc(fault["harness"].as_str().unwrap_or("")),
+                esc(fault["scope"].as_str().unwrap_or("")),
+                esc(fault["model"].as_str().unwrap_or("all")),
+                fault["next_check"],
+                esc(&fault["evidence"].to_string())
+            );
+        }
+        out.push_str("</ul></section>");
+    }
+    if let Some(failed) =
+        host.worker_health["observations_failed"].as_array().filter(|v| !v.is_empty())
+    {
+        let _ = write!(
+            out,
+            "<section data-health-observation-errors><h2>Waiting for observations</h2><pre>{}</pre></section>",
+            esc(&serde_json::to_string_pretty(failed).unwrap_or_default())
+        );
+    }
+    if let Some(workers) = host.worker_health["workers"].as_array().filter(|w| !w.is_empty()) {
+        out.push_str("<section data-worker-health><h2>Worker recovery</h2><table><tr><th>Worker</th><th>Action / successor</th><th>Evidence source</th><th>Next check</th><th>Evidence / failure</th></tr>");
+        for worker in workers {
+            let _ = write!(
+                out,
+                "<tr><td>{}</td><td>{} {}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+                esc(worker["path"].as_str().unwrap_or("")),
+                esc(worker["action"].as_str().unwrap_or("")),
+                esc(worker["successor"].as_str().unwrap_or("")),
+                esc(worker["source"].as_str().unwrap_or("")),
+                worker["next_check"],
+                esc(&format!("{} {}", worker["diagnosis"], worker["error"]))
+            );
+        }
+        out.push_str("</table></section>");
+    }
     for pause in &host.paused {
         let _ = writeln!(
             out,
@@ -1545,6 +1587,7 @@ mod tests {
             exclusive: vec![],
             sleep_hours: Some(SLEEP_HOURS),
             kit: Ok(Kit::default()),
+            worker_health: serde_json::json!({}),
             paused: vec![],
         }
     }

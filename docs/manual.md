@@ -374,7 +374,7 @@ With `--all` it reads the checkout list (checkouts.json in the cache directory) 
 - `host`: what this host has of what the fleet needs:
 
   - `tools`: each command needed — a harness only where a worker launch command the fleet could be asked for runs it by name: {name, state} — state is ready, missing or logged_out; of orca also not_running, knows_no_checkout (the checkout worktrees are cut from was never added to it) or unasked
-  - `worker_commands`: one for each harness the fleet could be asked for: {harness, called_for_by, command, from, starts_a_worker, takes_role_flags} — called_for_by is the host kit's first, each role whose range holds the harness, and the stock consult — or, where this host's `afkconvoy switch` chose a harness, that alone; from is `host_kit`. Commands come from this host's kit, never a run log. In an unbound repo there is one, with `harness` null and `called_for_by` []: an unbound repo has no roles, so nothing of it calls for a harness by name, and this is the command of the host kit's first — the first of `host_kit.harnesses` — which its workers run but where an issue's casting or the stock consult names another harness the host kit holds: that one's command, as `host_kit.harnesses` has it. Neither is a fault, and a bound repo shows neither.
+  - `worker_commands`: the host kit commands and their callers. The first eligible kit harness is selected for each role; stock consults follow the same order.
   - `host_kit`: {path, refreshed, harnesses, stock_consult}: where the kit is kept; when it was last written, in epoch seconds — by `kit`, by `run`, or by a tick's daily refresh (`afkconvoy kit --help`); each harness in order, first first, with its full worker launch command and its models in order, each with when it last answered a probe (`probed.at`, epoch seconds; null: a model a kit written before DSH was probed holds as named); and the harness and model the stock consult runs (`named` false: the host kit's first; `unmatched`: what is named for it matches nothing held, and it runs the host kit's first). {path, error} when unreadable. `afkconvoy kit` writes it again.
 
     A harness with `models` [] is held with no model: a host kit `afkconvoy kit` did not write — by automatic command discovery, by hand, or by an older afkconvoy — since `kit` leaves out a harness none of whose models answered. A worker of that harness is then started on its command as written, with no model flag: on whatever model its own login defaults to, which the fleet cannot name, so a roster entry or a `model:` label naming one of its models matches nothing. `stock_consult.model` null is the same of the stock consult: the harness it runs holds no model, or was named for it with none, and it is started on that harness's command as written. Neither is a fault, and `doctor` finds nothing of it: work goes on, and the tick's daily refresh probes each model the harness lists and holds those that answer — a harness left with none is left out. `afkconvoy kit` does it now.
@@ -484,7 +484,7 @@ The rebuild asks GitHub twice, side by side with one listing of the remote, howe
 {"frontier", "excluded", "waiting_on_human", "mine", "peer_live", "stale", "stale_closed", "free_slots", "now", "locks", "concurrency", "tracker", "admission", "host_kit", "worker_no_proxy"} — "held_back" while admission holds; and in a bound repo "intake", "left_out", "unmatched" and "nothing_safe" where they name some, "patrols" where it names some, and "proposals" while a ruling is proposed as a precedent or waits to be; and "slow_gate" while the gate is slow; and "caster" while one runs or is due; and "cut" in a repo that turns cutting on, or while a cut is going or on the landing train
 
 - `host_kit`: {path, refreshed, harnesses, stock_consult}: this host's kit file; when it was last written, in epoch seconds — by `kit`, by `run`, or by a tick's daily refresh, which writes it again once a day (`afkconvoy kit --help`); each harness in order of preference, first first, as {harness, command, models}, each model {model, names, probed: {at, seconds}, good_at, sources, researched_at} — good_at, from sourced research or `not researched`, what a caster is told the model is good at; sources the dated URLs and researched_at the epoch seconds of the research, absent where none succeeded — in order — `at` when it last answered a probe, in epoch seconds, and `probed` null for one a kit written before DSH was probed holds as named; and {harness, model, named, unmatched} that the stock consult runs, named false when it is the host kit's first, and unmatched, where what the host kit names for it matches nothing held, saying so — it then runs the host kit's first. With an unreadable kit, {path, error}. `afkconvoy kit` writes it again.
-- `frontier`: the issues a tick would dispatch, lowest number first: {number, title} — in a bound repo with the stage each is at: {number, title, stage}, those a stage has already declared on ahead of those never started; an issue whose stage's `escalate` waits for its consult is here too, at that stage; the stage is `land` once the last one passed to the landing train and the issue's PR waits for a worker to join it. Each but the stock consult's has cast: {harness, model, why}: what its worker would run, model null for its command as written, and why — `casting` (its `harness:` and `model:` labels, which the range holds), `switch` (this host's switch, over any casting), `unmatched` (a name it was given matches nothing held — a label, or a switch to a harness the host kit does not hold — and cast has `unmatched` too, naming it: the range's first, and the issue is told so once, in a comment, as its worker starts), `uncast` (a caster had it and did not cast it in ten minutes: the range's first); in an unbound repo `first` (no casting: the host kit's first); in a bound repo, of its stage's role's range (`afkconvoy help roster`), `range_first` (no casting: its first), `outside` (it does not hold the casting, and another stage's range does: its first) or `only` (it holds one harness and model, whatever the casting)
+- `frontier`: issues due to dispatch, with their stage and cast {harness, model, why}. Harness priority is kit order within role eligibility; model labels only match within the selected harness. `selection` lists kit order, eligible candidates, skipped candidates and health evidence.
 - `excluded`: every other open issue, with why: {number, title, reason}. An escalated issue says so — "escalated: waits for a ruling" — and not that it lacks the label its escalation took off. A name that matches nothing never excludes an issue: it runs the default, `unmatched` on the frontier. A bound repo's issue at a stage whose role has no harness on this host it holds limits for waits, "<role> has no harness on this host it holds limits for: ", naming what the role holds limits for and what the host kit holds, and is dispatched once the host kit holds one; one that waits for the caster is "held for the caster: "
 - `left_out`: in a bound repo whose team and host kit can be read: each role, in the team's order, with what its range on this host leaves out: {role, left_out: [{harness, why}]} — a harness its roster entry and the host kit allow it and it holds no limits for, while it holds limits for another, why `no limits for pi` (`afkconvoy help roster`)
 - `unmatched`: in a bound repo, where some role's roster entry matches nothing in the host kit: {role, why} — the role ranges over the host kit whole, less what it holds no limits for
@@ -755,7 +755,7 @@ Errors, before the first tick, as {"error": …} with a non-zero exit: the host 
 - Without `--instance` each start mints a new instance id, named for this host: the answer says it as `instance`, and `afkconvoy doctor` as `fleet.instance`, for `plan --instance` and the commands that make one transition by hand.
 - A host setting is the host's, not a `run`'s or a repo's: `--hot-cores 4` named in one checkout holds for every fleet instance on the host until a `run` names it again, and `--hot-cores default` changes it back. The variables that stand for the flags are read from the environment of a `run` and of nothing else — not of the host runner, nor of `tick`, `plan` or `doctor` — so one exported in your shell's rc files is named again by every `run` started from that shell.
 - The panel is served to this host only, and shows a tick, not this second: between two ticks it changes nothing but its countdown. It costs GitHub no read of its own.
-- Every worker launch command comes from the host kit: run `afkconvoy kit` to write it again. It is $XDG_CONFIG_HOME/afkconvoy/kit.json, or $HOME/.config/afkconvoy/kit.json, kept on this host and never pushed. `--worker-command` is gone. On a host with no host kit, `run` writes one as `afkconvoy kit` does, at a terminal or not, asking nothing: it says on stderr where the file is, what it holds and what was left out, and goes on to its first tick. At each worker launch the latest kit is read; a known harness with no entry or command is discovered in the login shell and its checked stock command merged into the kit without model probes. Explicit commands are respected, including errors. Harness selection follows the switch and the issue casting within its role's range.
+- Every worker launch command comes from the host kit: run `afkconvoy kit` to write it again. It is $XDG_CONFIG_HOME/afkconvoy/kit.json, or $HOME/.config/afkconvoy/kit.json, kept on this host and never pushed. `--worker-command` is gone. On a host with no host kit, `run` writes one as `afkconvoy kit` does, at a terminal or not, asking nothing: it says on stderr where the file is, what it holds and what was left out, and goes on to its first tick. At each worker launch the latest kit is read; a known harness with no entry or command is discovered in the login shell and its checked stock command merged into the kit without model probes. Explicit commands are respected, including errors. Harness selection follows host kit order within role eligibility.
 - The fleet starts every worker launch command under `nice`, with a `TMPDIR` of the worktree's own, adding its harness's model flag where the worker runs a model — and, in a bound repo, what puts the worker in its role, under the guard: [`afkconvoy help worker-launch`](help:worker-launch) says, harness by harness, the line each worker is started with, what each part is for and what loads from where.
 - In a bound repo, before any worker is started, the command of every harness the fleet could be asked for is checked: the host kit's first, each harness of each role's range (`afkconvoy help roster`), and the stock consult's. One that cannot be started refuses the start, named with its harness and the range that calls for it, and no worker at all is started: no harness is ever started in another's place. So does a role whose range on this host is empty: the refusal names the role, what the roster allows it, what the host kit holds and what the range leaves out. A range leaves out each harness the role holds no limits for while it holds limits for another, so no worker runs a harness it holds no limits for; `plan` and `check` name each harness left out.
 
@@ -998,7 +998,7 @@ A casting a human put on is never changed: an issue with a `harness:` or a `mode
 
 ##### What trips you up
 
-A tick holds an issue that waits for a caster back while one runs, for ten minutes at most from its start, and starts no second one meanwhile; `plan` shows it as `caster` and the issue as "held for the caster". An issue the caster had and did not cast is dispatched uncast, on its range's first, and `plan` and the panel say so. A switch chooses whatever the casting: while one stands, nothing is held for a caster.
+A tick holds an issue that waits for a caster back while one runs, for ten minutes at most from its start, and starts no second one meanwhile; `plan` shows it as `caster` and the issue as "held for the caster". An issue the caster had and did not cast is dispatched uncast, on its range's first, and `plan` and the panel say so. A casting only chooses a model within the first eligible kit harness.
 
 Casting sends the host kit's first a real prompt: it spends some of its login.
 
@@ -1022,57 +1022,29 @@ afkconvoy cast [CHECKOUT]
 
 #### `afkconvoy switch`
 
-Move this host's workers of the repo onto another harness: from now on, and those of my claims now
+Put a harness first in this machine's kit; optionally continue existing workers
 
 ##### When to run it
 
-To move work onto another harness: a harness's login expired, its provider turned access off, or another agent should take the work over. One line does it all:
-
-```
-afkconvoy switch --instance <id> --harness codex --all
-```
-
-It works on a worker that is busy, idle at its prompt, blocked from receiving input, or already gone. It needs no nudge first, no grace period and no PR.
+`afkconvoy switch --harness codex` moves Codex to the front of the host kit. Run it anywhere, with no repo or instance required. Every checkout uses this order. To change priority again, switch again. There is no separate choice to clear.
 
 ##### Who runs it
 
-The operator, in a checkout of the repo, on the host the workers run on.
+The operator, on the host whose kit and workers are being changed.
 
 ##### What it reads and writes
 
-The harness is this host's choice for the repo, kept in the repo's git dir on this host and never pushed: whoever else works the repo runs the harness they have, under their own accounts. From then on every worker this host starts for the repo — new issues, later stages, consults, patrols, the train worker, inspections — is of that harness, whatever the config's `harness` key, a stage, a patrol or an issue's casting names.
+Only this machine's kit order changes. Commands, models, probe evidence and the relative order of the other harnesses stay intact. Unknown, logged-out or unstartable harnesses are refused. Ticket labels and team rosters are untouched. Role limits still constrain candidates. Paused candidates are skipped without reordering the kit, and become eligible again after a successful recovery probe. A switch with no target leaves running workers alone.
 
-A choice the host kit stops holding — the harness taken out with `afkconvoy kit`, or paused — is not followed while it does: each worker runs its range's first, the host kit's first in an unbound repo, and `plan` says `unmatched`, naming the switch. It is followed again once the host kit holds it.
-
-`--clear`, in place of `--harness`, forgets the choice: every worker started afterwards runs what its range and casting say again — in an unbound repo, the issue's `harness:` and `model:` labels within the host kit. The ISSUE, `--patrol` and `--all` it names are moved onto that, each worker onto its own, as a switch moves one. `--harness config` is gone: it is refused, naming `--clear`.
-
-With no ISSUE, `--patrol` or `--all`, only the choice is made or cleared: running workers are left on the harness they run.
-
-Then it moves the workers named:
-
-- `ISSUE`: the worker of the instance's claim on that issue
-- `--patrol`: the worker of the instance's run of that patrol, in the run's checkout
-- `--all`: every claim of the instance on this host — on an issue, on a patrol's run — one after another; a failure on one is reported and the rest go on
-
-For each, it ends the worker — its agent and its terminal — and starts one of the harness (cleared: the one its range and casting say) in the same worktree, on the same branch, at the same stage: a consult as a consult, a landing worker as a landing worker. The claim, the branch, the worktree and the PR are untouched. The new worker's brief says it continues earlier work, and names what is there: the commits on the branch ahead of the base branch, the open PR, and the last lines the old worker's terminal showed.
-
-The switch is recorded on the PR, in the fleet's comment that records its join: from which harness to which, by which instance, and when. It is no restart, no rework and no nudge: no breaker count moves, and a joining worker keeps its one restart.
+--all continues workers across every checkout on this host's checkout list. ISSUE or --patrol addresses a claim in the current checkout; --instance may identify its owner. Each continuation keeps its claim, stage, worktree, branch, uncommitted work, PR and breaker counts. Its brief includes the previous output. A failure is reported and other workers continue. An old worker that cannot be confirmed stopped is never given a second writer.
 
 ##### What it answers
 
-For ISSUE: {"issue", "from", "to", "worktree", "branch", "terminal", "pr", "stage", "chosen"} — from and to are the old and new harness; chosen is {"was", "now"}, this host's choice before and after (null: none, cleared).
-
-For --patrol: {"patrol", "from", "to", "worktree", "terminal", "chosen"}.
-
-For --all, and with nothing named: {"harness" (null when cleared), "chosen", "switched": [each as above], "failed": [{"issue" or "patrol", "error"}]}.
-
-Errors, each with nothing chosen and no worker ended: the harness chosen cannot be started here — missing, logged out, or its command not taking the flags its role needs ([`afkconvoy help worker-launch`](help:worker-launch) names them) — named with what is wrong; the instance holds no claim on the issue, or no run of the patrol; the claim is another instance's.
+{harness, path, order_before, order, changed, switched, failed}. Each failure names its checkout and worker. A successful fallback reports the actual harness.
 
 ##### What trips you up
 
-- `--instance` is required, and must be the instance that holds the claims.
-- The choice holds on this host until a switch chooses again or `--clear` forgets it: a change of the config's `harness` key or of an issue's casting labels moves nothing here while it stands.
-- A claim whose stage has a verdict declared and not yet acted on is refused: the next tick acts on that verdict, and the worker it starts is of the chosen harness.
+--all is machine-wide, even when --instance is supplied. --clear is removed: switch to the harness you want first instead. Old repository choice files are ignored.
 
 ##### Which checkout it is about
 
@@ -1085,18 +1057,17 @@ As it acts it appends one line to the tick log of this host for this repo, then 
 ##### Usage
 
 ```
-afkconvoy switch [OPTIONS] --instance <INSTANCE> [ISSUE]
+afkconvoy switch [OPTIONS] --harness <HARNESS> [ISSUE]
 ```
 
 ##### Arguments
 
-- `[ISSUE]`: The issue whose worker to move
-- `--harness <HARNESS>`: The harness to move onto: claude-code, pi, codex or dsh
-- `--clear`: Forget this host's choice: each worker runs what its range and casting say again
-- `--patrol <PATROL>`: The patrol whose running worker to move
-- `--all`: Move the worker of every claim of the instance on this host, one after another
-- `--instance <INSTANCE>`
-- `--host <HOST>`: The host the instance runs on [default: this machine's name]
+- `[ISSUE]`: The issue whose worker to continue in this checkout
+- `--harness <HARNESS>`: The existing kit harness to put first
+- `--patrol <PATROL>`: The patrol whose worker to continue in this checkout
+- `--all`: Continue workers in every checkout on this machine
+- `--instance <INSTANCE>`: Optional owner of a targeted claim; not a machine preference
+- `--host <HOST>`
 - `--worker-no-proxy <[HARNESS=]HOSTS>`: Hosts reached directly, comma-separated, for the default harness or HARNESS; repeat for each harness. DSH defaults to api.deepseek.com. An empty list disables the stock addition. Extends no_proxy and NO_PROXY
 - `-C <CHECKOUT>`: The checkout it is about, or a directory in it [default: the one it is run in]
 
@@ -1954,7 +1925,7 @@ It runs the command once no other `exclusive` command runs on this host — what
 
 It writes a line to the tick log of this host for this repo as it starts to wait, when another command is ahead of it; as its command runs — in its turn, or at once in no queue, with why; as it waits again, in the next host runner's queue; and as it ends, with its exit status. `doctor` and the panel show what runs alone and what waits.
 
-While it waits or runs, the fleet counts the worker busy, not silent: it is not nudged for that. The wait and the run together count toward the gate limit (`gate_seconds`), as any background work of a worker's does: one that has been in the queue longer than that is silent, and its issue is escalated.
+While it waits or runs, the fleet counts the worker busy, not silent: it is not nudged for that. The wait and run count toward the command's gate limit (`gate_seconds`). A worker with confirmed live background work remains waiting even past the observation interval; silence alone does not authorize escalation or continuation.
 
 ##### What it answers
 
@@ -2678,7 +2649,7 @@ It claims the issue for `--instance` unless that instance holds it already, look
 
 In a bound repo the issue's flow label names its workflow, and the worker performs the stage the issue's stage records put it at — the workflow's first while there are none — in the stage's role, with the verdicts declared so far, and the reason of a rejection, in its brief. The team's repo and each role's are asked for the commit at their head; one the fleet has no copy of yet is cloned and kept, read-only, under the cache directory (copies/<owner>/<repo>/<commit>; `afkconvoy help cache` says where that directory is and what moves it), once however many roles it holds. A role that is a subdirectory of its repo is copied out of that on its own (<commit>-role-<path>; <commit>-role+codex-<path>, with a link to the role's skills where Codex finds them, for a Codex worker), and so is the team's directory, without the directories of its roles and without a `.claude/` at its top (<commit>-team+rules-<path>): a worker is given its role's directory and, of the team's, the team rules (its `CLAUDE.md`) — nothing else above its role, and no neighbour's.
 
-The terminal is opened on the worktree as ever, and the line it runs changes to the role's copy, puts the stage's facts in the environment, and starts the worker launch command with what puts the worker in its role: [`afkconvoy help worker-launch`](help:worker-launch) says what, for each harness. The worker's harness and model are its role's range's answer to the issue's casting (`afkconvoy help roster`), or this host's switch's.
+The terminal is opened on the worktree as ever, and the line it runs changes to the role's copy, puts the stage's facts in the environment, and starts the worker launch command with what puts the worker in its role: [`afkconvoy help worker-launch`](help:worker-launch) says what, for each harness. The worker's harness and model are its role's range's answer to the issue's casting (`afkconvoy help roster`), with harness priority from this host's kit order.
 
 Where the stage declared `escalate` and names a consult, the worker is started as that consult instead: in the consult's role, on a brief that names the skill, the stage that asked and its reason, and the two lines it ends with — `afkconvoy rule`, or `afkconvoy verdict escalate` to let it through to a human. AFKCONVOY_CONSULT is `true` in its environment, the guard refuses its commits, and it runs its own role's range, not the stage's.
 
@@ -2897,13 +2868,13 @@ Tell the worker of one of my claims, stopped with no PR and no verdict, to carry
 
 ##### When to run it
 
-To send a worker its nudge by hand. A tick does this on its own, once, for a worker that stopped with no PR and no verdict and stayed quiet for the grace period. Do it yourself when a tick is not running and such a worker sits idle.
+To send a worker its nudge by hand. A tick does this on its own only when a checked diagnosis asks the worker to carry on; silence alone starts observation and diagnosis. Do it yourself when you have checked the worker’s scene and want it to carry on.
 
 ##### What counts as silent
 
-A worker is silent when it stopped, declared nothing, showed no sign of life — its terminal's output, a commit, a file touched, being started or nudged — for the grace period (300s), and waits on no background work of its own. Silent, it is nudged once; silent a grace period past that nudge, it is escalated (a joining worker is restarted first, a train worker's train abandoned).
+A stopped worker with no verdict or progress is observed over at least 300 seconds. Actual terminal output, git progress, runtime reports and process activity are evidence for diagnosis, never proof of quota exhaustion by themselves. A diagnostic harness has 30 seconds per candidate, at most three attempts per unchanged episode and 300 seconds between attempts. Unknown or invalid judgments preserve the scene.
 
-A worker whose turn ended while a shell or a monitor it started in the background still runs — its gate, say — is waiting, not silent: its harness shows that work in the footer under its prompt (Claude Code's `1 shell, 1 monitor`), which the tick reads off its screen, and the tick's line says `waiting on its own background work #7 (since …)`. It is neither nudged nor escalated while it waits. Once that work ends, its silence is counted as ever: a nudge, then escalated past it. Waiting longer than the gate limit (`gate_seconds`) is a silence at once, nudged or not, and the escalation says it waited on its own background work past the limit.
+Confirmed background work, waiting for a human or dependency and completed idle sessions are left alone. A worker's gate waiting in the exclusive queue is background work too. The tick does not turn a long wait into permission for another writer. Structured transient rate limits respect Retry-After and get two retries before session fallback. Account and model recovery probes run hourly; successful recovery affects new starts without moving healthy successors back.
 
 ##### Who runs it
 
@@ -3647,25 +3618,15 @@ A roster is drafted rather than written from nothing: `afkconvoy draft`, in a ch
 
 #### A role's range
 
-On a host, a role's range is its entry cut to the host kit (`afkconvoy kit --help`), in the roster's order: a harness, or a model, the host kit does not hold is left out. An entry the host kit holds nothing of is not followed: the role ranges over the host kit whole, as if the roster named none for it, and `check`, `plan` and `doctor` name the entry. So is a harness the role holds no limits for while it holds limits for another: no worker of the role runs a harness it holds no limits for, and a host kit may hold every harness its host can start. `afkconvoy check` and `afkconvoy plan` name each harness a range leaves out, and why (`no limits for pi`). `afkconvoy check` answers each role's entry and its range on the host it runs on; `afkconvoy show` draws the roster under the workflows.
+On a host, a role's range is its entry cut to the host kit (`afkconvoy kit --help`), in the host kit's order: a harness, or a model, the host kit does not hold is left out. An entry the host kit holds nothing of is not followed: the role ranges over the host kit whole, as if the roster named none for it, and `check`, `plan` and `doctor` name the entry. So is a harness the role holds no limits for while it holds limits for another: no worker of the role runs a harness it holds no limits for, and a host kit may hold every harness its host can start. `afkconvoy check` and `afkconvoy plan` name each harness a range leaves out, and why (`no limits for pi`). `afkconvoy check` answers each role's entry and its range on the host it runs on; `afkconvoy show` draws the roster under the workflows.
 
 #### An issue's casting
 
-An issue's casting is its `harness:` and `model:` labels, which the caster (`afkconvoy cast --help`) or a human puts on — the model by any of its names, a caster’s by its id; the caster is given each stage's range, and casts only an issue some range leaves a choice in. A worker for an issue — its stage's, its consult's, its landing's — runs the casting when its role's range holds it, the range's first when it does not or the issue has none, and the range's one where it holds one harness and one model, whatever the casting. `afkconvoy plan` says which, and why. A name that matches nothing never stops work: a casting no range of the issue's workflow's stages holds runs each stage's range's first, `plan` says `unmatched` and names the label, and the issue is told once, in a comment, what ran instead and what the host kit holds. The label stays, and is followed again once the host kit holds it. A patrol's worker, which has no issue, runs its role's range's first. A harness `afkconvoy switch` chose on a host runs every worker there, whatever the roster and the casting say; one the host kit does not hold is not followed, and each worker runs its range's first, `unmatched`.
+An issue's casting is its `harness:` and `model:` labels, put on by a caster or a human. Every worker chooses the first eligible harness in this machine's host kit order; its role's range and limits remain eligibility constraints. Roster order and ticket labels cannot outrank that order. A matching casting may choose a model within the selected harness, and never carries a model across harnesses. Stock consults, patrols, landing workers, casters and inspections follow the same kit priority.
 
-#### What is refused, and what only waits
+`afkconvoy switch --harness codex` moves the existing Codex entry first in this host's kit. Every checkout follows it; no instance or checkout is required. With no target it leaves existing workers alone. `--all` continues workers across the host's checkout list, preserving their scene and reporting failures separately. Change priority by switching again; `--clear` is removed. Old repository choice files are ignored.
 
-- A stage, a patrol and a config name no harness and no model: `check` refuses one that does, with the line to delete and the roster entry to write in its place.
-- In the roster, `check` refuses an entry for a name that is no role, a `run` that is missing or empty, a harness that is none, an allowance written twice, and a harness the role holds no limits for while it holds limits for another.
-- Nothing about a range refuses a start. A role whose range on a host is empty — it holds limits for no harness the host kit holds, paused harnesses left out — has no worker started without its limits: its stages wait, `plan` says why on each issue at one, and `doctor` and the panel name the role, while every other stage goes on. They go on by themselves once the host kit holds a harness it holds limits for: add one with `afkconvoy kit`, or write the role's limits for one the host kit holds.
-
-#### Where to read on
-
-- [`afkconvoy help team`](help:team): the team file the roster is a key of
-- `afkconvoy draft --help`: a roster drafted from the host kit
-- `afkconvoy kit --help`: what this host can start, and on which models
-- `afkconvoy cast --help`: the caster, and the labels it puts on
-- [`afkconvoy help glossary`](help:glossary): each term used here, with its one definition
+An unavailable or paused candidate is skipped without reordering the kit. A successful recovery probe makes it eligible again for future starts. Fault recovery keeps claims and work, reads real output and uses another available harness for bounded diagnosis when structured signals do not decide the action. `plan` and `doctor` show kit order, eligible candidates and health evidence; the panel shows recovery actions and actual successors.
 
 ### `afkconvoy help skill-file`
 
@@ -4529,19 +4490,19 @@ _Avoid_: freeze, pause (a harness paused on a host, as under Host kit), kill swi
 ##### Workers
 
 **Harness**:
-The program a worker is a session of: it runs a model, with tools, on the work it is handed. Claude Code is one, pi another, Codex the third, and DeepSeek Harness (DSH) the fourth. An issue's casting names the one its workers run, within their role's range; the host kit names the stock consult's. A host where a switch chose one starts every worker of the repo on that one.
+The program a worker is a session of: it runs a model, with tools, on the work it is handed. Claude Code, pi, Codex and DeepSeek Harness (DSH) are harnesses. The host kit's order chooses the first eligible one; a role's limits and range constrain eligibility.
 _Avoid_: agent (as under Worker), coding agent (as under Worker), CLI, provider (whose models a harness runs)
 
 **Roster**:
-A team's list, for each of its roles, of the harnesses and models that role's workers may run, in order of preference, with what each model is good at and how an issue is to be cast among them. It is committed with the team, written under the team file's `roster`: for each role it names, a `run` listing `{ harness, model, good_at }` in that order of preference — a harness named with no model allows any model the host kit holds for it — and a `cast` saying how to cast among them. A role's **range** on a host is its entry cut to the host kit, in the roster's order, less each harness the role holds no limits for while it holds limits for another; a role it names no entry for ranges over the host kit, less the same — and so does one whose entry matches nothing in the host kit, which `check`, `plan` and `doctor` name — and an unbound repo, having no team, over the host kit whole. A role whose range is empty, holding limits for no harness the host kit holds, refuses no start: no worker of it is started, its stages wait while it lasts, and every other stage goes on. A stage, a patrol and a config name no harness and no model: what a worker runs is its role's range's to say. A roster is drafted by `afkconvoy draft` from a host kit into the team's working tree — every role, every harness and model in the host kit's order, what the host kit's first model says each is good at and how to cast — and committed by a human; the fleet never changes it. An entry that names a model the host kit holds by no name is named with the nearest names and given one issue in the team’s repo for its own fleet to correct.
+A team's list, for each of its roles, of the harnesses and models that role's workers may run, in order of preference, with what each model is good at and how an issue is to be cast among them. It is committed with the team, written under the team file's `roster`: for each role it names, a `run` listing `{ harness, model, good_at }` in that order of preference — a harness named with no model allows any model the host kit holds for it — and a `cast` saying how to cast among them. A role's **range** on a host is its entry cut to the host kit, in the host kit's order, less each harness the role holds no limits for while it holds limits for another; a role it names no entry for ranges over the host kit, less the same — and so does one whose entry matches nothing in the host kit, which `check`, `plan` and `doctor` name — and an unbound repo, having no team, over the host kit whole. A role whose range is empty, holding limits for no harness the host kit holds, refuses no start: no worker of it is started, its stages wait while it lasts, and every other stage goes on. A stage, a patrol and a config name no harness and no model: what a worker runs is its role's range's to say. A roster is drafted by `afkconvoy draft` from a host kit into the team's working tree — every role, every harness and model in the host kit's order, what the host kit's first model says each is good at and how to cast — and committed by a human; the fleet never changes it. An entry that names a model the host kit holds by no name is named with the nearest names and given one issue in the team’s repo for its own fleet to correct.
 _Avoid_: harness config, model table, routing rules
 
 **Host kit**:
-The harnesses and models one host can start now — each harness's worker launch command, each model it was seen to answer with, in order of preference, and the harness and model of its stock consult. A model is held once per harness, by its **id** — the model its probe answered as, which a worker is started on — with its other **names**: each name its harness lists that answered as it, and the name its harness shows it by. Claude Code's `opus`, `default` and `Opus 5.5` are `claude-opus-5-5`; pi's `openai-codex/gpt-6-sol` and Codex's `gpt-6-sol` are one model on two harnesses, with one `good_at`, its dated source URLs in **sources** and the time it was researched in **researched_at**. After probing, a headless research session on the host kit's first searches primary and high-trust sources for new answered identities alone, and its checked answer gives their strengths and weaknesses and preference order. Missing or unsourced findings are `not researched` and stay in their fixed place; an invalid answer or fifteen-minute timeout keeps the fixed order and held research. A held identity keeps its research indefinitely, and with no new identity no session starts. A model named anywhere — a roster entry, a `model:` label, the stock consult — matches the model of its harness whose id or name it is, whatever the case, or with the provider prefix left off where that leaves one match; a name with two matches matches neither. The fleet writes ids. `afkconvoy kit` — or `run`, on a host with none — writes it with no human: it finds each harness installed in the shell a worker gets, asks it for its models, sends each a one-line prompt, and keeps those that answered, with how long they took and when; the harnesses it held keep their order, new ones follow in a fixed order of harnesses, and each one's models are in the order it lists them. Its **first** is its first harness on that harness's first model, which the stock consult runs where the host kit names none for it. It stays current with no human: once a day a tick of one fleet of the host writes it again, adding a model a harness now lists once it answers its probe and dropping one it no longer lists, and the others read what it wrote; a harness that stops answering is kept, and paused. Kept on that host and never pushed; a harness paused on the host is left out of it until it works again.
+The harnesses this host can start, in order of preference, each with its worker launch command and the models it was seen to answer with. Its order is the machine's sole harness priority for every checkout and every worker kind. A switch moves one existing entry first, retaining the other entries' relative order and contents. Casting and roster order cannot outrank it. Capability refresh and model research retain established harness order. A paused or unavailable candidate is skipped without changing that order, and becomes eligible after a successful recovery probe. It belongs to the host, is never pushed, and names no preference of another host.
 _Avoid_: roster (the team's), host config, inventory
 
 **Casting**:
-The harness and model an issue's workers run, named by the issue's `harness:` and `model:` labels — and the act of choosing them, by a human or by a caster. A stage whose range holds the casting runs it, one whose range does not runs its range's first, and one whose range holds one harness and one model runs that, whatever the casting; a name that matches nothing never stops work: a casting none of an issue's stages' ranges holds runs each stage's range's first, `unmatched`, and the issue is told once which label matched nothing, what ran instead and what the host kit holds; an issue none of whose stages has a choice to make is not cast. In an unbound repo the host kit is the range: its worker runs the casting where the host kit holds it, and the host kit's first where the issue has none or one it does not hold. A harness named with no model starts its command as written. A label a human put on is never recast or taken off: while it matches nothing it is not followed, and once the host kit holds it, it is again. A caster’s label whose model the host kit holds by no name is cast again.
+An issue's harness and model labels, put on by its caster or a human. They may select a matching model within the harness chosen by kit order and role eligibility. They never choose a later harness ahead of an eligible earlier one, nor carry a model across harnesses. The fleet leaves these labels intact when priority changes or a fault requires continuation.
 _Avoid_: assignment (a GitHub assignee), routing, dispatch (starting a worker)
 
 **Caster**:
@@ -4553,7 +4514,7 @@ A session of one harness, started in one role to perform one stage of one issue 
 _Avoid_: agent (whoever reads the help; and a worker, to whoever has not met the term), subagent, child (an issue a split opened)
 
 **Switch**:
-Moving running work onto another harness in one command: the host's choice of harness for a repo, kept on that host and never pushed — whoever else works the repo runs the harness they have — and each worker named ended and one of that harness started in its place, in the same worktree, on the same branch, at the same stage, briefed to continue what is there. Every worker the host starts for the repo afterwards is of the chosen harness, whatever an issue's casting names, until a switch chooses again or the choice is cleared — `switch --clear` forgets it — and the casting stands again: every worker started afterwards, and each the clear names, runs what its range and casting say. The claim, the branch and the PR are untouched, the switch is recorded on the PR, and it is no restart, rework or nudge.
+Moving an existing harness to the first position in this machine's host kit, retaining every entry's contents and the other entries' relative order. Every checkout follows that one order. With no worker named it ends none; `--all` continues existing workers across the host's checkouts, and a named issue or patrol continues that worker in its checkout. Each continuation preserves the claim, stage, worktree, branch, uncommitted work, PR and breaker counts, and starts no replacement until the old writer is confirmed ended. There is no independent choice to clear: switch again to change priority. Old choices kept in a repository do not apply. Health and cooldown evidence are separate from priority, and fault continuation never reorders the kit.
 _Avoid_: harness change (what a new casting makes)
 
 **Worker launch command**:
@@ -4578,7 +4539,7 @@ _Avoid_: hog
 
 **Inspection**:
 The operator on its host, started so that the fleet's work goes on: a worker in the role of the consult of a hot worker's stage — the stock consult where the stage names none, at no stage, and in an unbound repo — started in a checkout of its own once per episode, and given what was taken down as that worker turned hot (its process tree, a `sample` of its hottest process, its resident memory over the last minutes, what its processes wrote, the largest directories of its worktree), the issue, the worktree and the hot worker's terminal. An inspection of the **host** is started by admission instead, on no worker: the stock consult, given what was taken down as it started — admission's reading and shares; for disk, each of the host's worktrees of every fleet with its issue, its stage, whether a worker holds it and what it holds, the landing train's, the fleet's caches and the largest directories of the whole volume under the home folder outside them, found within five minutes; for load or memory, the process trees of each worker and of the train and the hottest processes outside them. Either finds what holds the work back and fixes it — whatever the operator at this host's keyboard would do: end a runaway or orphaned process, restart, nudge or switch a worker, have a stopped gate run again, change a host setting, free disk, send heavy work through `afkconvoy exclusive`, change the repo itself through a branch of its checkout, the gate and the landing train, on no issue (`afkconvoy land --inspection`) — checks that the work goes on, and says with `afkconvoy inspected` what held it back, what it could not fix, and what it did. Its role chooses who inspects, not what it may do: it is no consult, and commits, pushes and changes the host. The guard holds it to the bounds of any unattended worker: only what the fleets of this host started or own, never the host runner nor the user's own; never deleting what cannot be rebuilt — model weights, downloads, media, Docker's images, a user's files, a change no commit holds; no force push, no push to the base branch, no merge outside the landing train. It opens no issue — of what it found, nor of a change — and hands nothing to a human: each thing it did, and each PR it put on the landing train, is a line of the log, which `doctor` lists among its events; the panel and `doctor` show a host's beside admission's reading, and a hot worker's is left as a comment on its issue that is no stage record. What it could not fix, the next episode inspects again. Of either kind, one runs on a host at a time, across its fleets, takes no slot of the concurrency, and has an hour; none where another fleet of the host inspected the host in the episode, and nobody inspects where the stage or the repo says `human`. A worker hot again after its inspection is never escalated for it.
-_Avoid_: investigation, diagnosis
+_Avoid_: investigation, diagnosis (a worker health assessment)
 
 **Exclusive queue**:
 The queue of the commands run through `afkconvoy exclusive` on one host, held by its host runner for every fleet on it whatever its repo: one runs at a time, in the order they asked, and the rest wait. A command whose process dies leaves it; one waiting as its host runner is replaced waits in the next one's, from when it asked. A worker with a command in it is busy, not silent, for no longer than the gate limit.
@@ -4646,7 +4607,7 @@ _Avoid_: state file, journal, history
 
 **Finding**:
 One thing `doctor` says is wrong with the fleet on this host, with how bad it is, what shows it, its fix — a line to run, or a file and the key in it to edit — and the help topic that explains it. `doctor` fixes none itself.
-_Avoid_: diagnosis, alert, warning (one of its severities), error (what a command that failed answers with)
+_Avoid_: diagnosis (a worker health assessment), alert, warning (one of its severities), error (what a command that failed answers with)
 
 ##### Landing
 

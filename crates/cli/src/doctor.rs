@@ -1545,11 +1545,16 @@ fn fleet_json(run: &Run) -> Value {
 }
 
 fn held_json(held: &Held) -> Value {
-    let worker = held.worker.map(|worker| match worker {
+    let mut worker = held.worker.map(|worker| match worker {
         WorkerState::Gone => json!({"state": "gone"}),
         WorkerState::Busy => json!({"state": "busy"}),
         WorkerState::Idle { quiet } => json!({"state": "stopped", "quiet": quiet}),
     });
+    if let (Some(worker), Some(path)) = (&mut worker, &held.worktree)
+        && let Ok(Some(harness)) = Worktree::at(path.clone(), String::new()).harness()
+    {
+        worker["harness"] = json!(harness);
+    }
     json!({
         "issue": held.issue, "title": held.title, "status": held.status, "pr": held.pr,
         "stage": held.stage, "role": held.role, "held_for": held.held_for,
@@ -1657,7 +1662,6 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String]) -> Result<Exami
     };
     let mut found = findings(&seen);
     found.extend(crate::tracker::findings(repo));
-    found.extend(crate::harness_down::findings(repo, run.instance.as_deref())?);
     found.extend(crate::paused::findings(now));
     found.extend(host_runner::findings());
     found.sort_by_key(|finding| finding.severity);

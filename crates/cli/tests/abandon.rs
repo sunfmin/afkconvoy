@@ -116,8 +116,20 @@ fn abandon(world: &World, now: &str) -> common::Answer {
     world.afk(&["abandon", "--instance", "alpha", "--host", "h1", "--now", now])
 }
 
+/// Historical nudge evidence survives upgrades; an operator may explicitly
+/// abandon such a train. New ticks must diagnose silence instead.
+fn historical_nudge(world: &World, at: u64) {
+    let dir = train_worktree(world);
+    let git_dir = PathBuf::from(git(&dir, &["rev-parse", "--absolute-git-dir"]));
+    std::fs::write(git_dir.join("convoy-nudged"), at.to_string()).unwrap();
+}
+fn abandon_now(world: &World, at: u64) -> Value {
+    historical_nudge(world, at - 300);
+    abandon(world, &at.to_string()).ok()
+}
+
 #[test]
-fn a_silent_train_worker_is_nudged_once_and_then_the_train_is_abandoned() {
+fn an_explicit_abandon_of_a_historically_nudged_train_keeps_prs_and_builds() {
     let world = train(&[7, 8]);
     let base = world.remote(&["rev-parse", "refs/heads/main"]);
     let dir = train_worktree(&world);
@@ -132,16 +144,15 @@ fn a_silent_train_worker_is_nudged_once_and_then_the_train_is_abandoned() {
 
     // told moments ago: left; then nudged, once
     assert_eq!(did(&tick(&world, 1180)), ["tend_train nothing", "heartbeat done"]);
-    assert_eq!(did(&tick(&world, 1390)), ["tend_train nudged", "heartbeat done"]);
-    assert!(last_told(&world, &dir).starts_with("You stopped with the landing train not landed"));
+    assert_eq!(did(&tick(&world, 1390)), ["tend_train nothing", "heartbeat done"]);
+    assert!(!last_told(&world, &dir).starts_with("You stopped with the landing train not landed"));
     assert_eq!(did(&tick(&world, 1480))[0], "tend_train nothing");
     assert!(line(&world).is_some());
     world.orca_calls();
 
     // silent again: the train is given up, with nothing landed
-    let ticked = tick(&world, 1690);
-    assert_eq!(did(&ticked), ["tend_train abandoned", "heartbeat done"]);
-    assert_eq!(ticked["errors"], json!([]));
+    let abandoned = abandon_now(&world, 1690);
+    assert_eq!(abandoned["action"], "abandoned");
     assert_eq!(line(&world), None, "the train's refs are deleted");
     assert_eq!(world.remote(&["rev-parse", "refs/heads/main"]), base);
 
@@ -199,10 +210,9 @@ fn an_inspection_s_pr_alone_on_a_train_given_up_is_joined_again_by_the_fleet() {
 
     // The fleet tends the train for it, and gives it up once its worker stays silent.
     assert_eq!(did(&tick(&world, 1090)), ["tend_train done"]);
-    assert_eq!(did(&tick(&world, 1390)), ["tend_train nudged"]);
-    let ticked = tick(&world, 1690);
-    assert_eq!(did(&ticked), ["tend_train abandoned"]);
-    assert_eq!(ticked["errors"], json!([]));
+    assert_eq!(did(&tick(&world, 1390)), ["tend_train nothing"]);
+    let abandoned = abandon_now(&world, 1690);
+    assert_eq!(abandoned["action"], "abandoned");
 
     // Nobody is left to join it again: the fleet did, onto the base branch.
     let base = world.remote(&["rev-parse", "refs/heads/main"]);
@@ -224,8 +234,8 @@ fn what_the_train_already_landed_is_settled_from_the_base_branch_not_abandoned()
     world.remote(&["update-ref", "refs/heads/main", &landed]);
     assert_eq!(status(&world, 7), "landed");
 
-    assert_eq!(did(&tick(&world, 1390)), ["settle 7 done", "tend_train nudged", "heartbeat done"]);
-    assert_eq!(did(&tick(&world, 1690)), ["tend_train abandoned", "heartbeat done"]);
+    assert_eq!(did(&tick(&world, 1390)), ["settle 7 done", "tend_train nothing", "heartbeat done"]);
+    assert_eq!(abandon_now(&world, 1690)["action"], "abandoned");
     assert_eq!(world.remote(&["rev-parse", "refs/heads/main"]), landed, "what landed stays");
     assert_eq!(world.state(7), "closed");
     assert_eq!(records(&world, 70), [] as [String; 0], "a landed PR was taken off nothing");
@@ -238,16 +248,16 @@ fn what_the_train_already_landed_is_settled_from_the_base_branch_not_abandoned()
 fn a_pr_taken_off_an_abandoned_train_a_second_time_is_escalated_with_its_branch_kept() {
     let world = train(&[7]);
     tick(&world, 1390);
-    assert_eq!(did(&tick(&world, 1690))[0], "tend_train abandoned");
+    assert_eq!(abandon_now(&world, 1690)["action"], "abandoned");
     // the PR joins the next train, whose worker goes silent too
     join(&world, 7, "1700");
     assert_eq!(did(&tick(&world, 1780))[0], "tend_train done");
-    assert_eq!(did(&tick(&world, 2080))[0], "tend_train nudged", "a new worker has its own nudge");
+    assert_eq!(did(&tick(&world, 2080))[0], "tend_train nothing", "a new worker has its own nudge");
     let worktree = worktree_of(&world, 7);
     let head = git(&worktree, &["rev-parse", "HEAD"]);
     let branch = git(&worktree, &["symbolic-ref", "--short", "HEAD"]);
 
-    assert_eq!(did(&tick(&world, 2380))[0], "tend_train abandoned");
+    assert_eq!(abandon_now(&world, 2380)["action"], "abandoned");
     assert_eq!(line(&world), None);
     assert_eq!(world.claims(), []);
     assert_eq!(world.labels(7), ["ready-for-human"]);
@@ -269,7 +279,7 @@ fn the_abandon_and_the_restart_share_the_prs_one_marker_comment() {
     let world = train(&[7]);
     world.comment(70, "<!--convoy:join restarted=1040-->\nrestarted before it joined");
     tick(&world, 1390);
-    assert_eq!(did(&tick(&world, 1690))[0], "tend_train abandoned");
+    assert_eq!(abandon_now(&world, 1690)["action"], "abandoned");
     let records = records(&world, 70);
     assert_eq!(records.len(), 1);
     assert!(records[0].starts_with("<!--convoy:join restarted=1040 abandoned=1690-->\n"));
@@ -293,14 +303,14 @@ fn a_train_that_grew_since_the_nudge_gets_its_worker_told_and_a_nudge_of_its_own
     }
     join(&world, 7, "1050");
     assert_eq!(did(&tick(&world, 1090))[0], "tend_train done");
-    assert_eq!(did(&tick(&world, 1390))[0], "tend_train nudged");
+    assert_eq!(did(&tick(&world, 1390))[0], "tend_train nothing");
     join(&world, 8, "1400");
     // not a silence past a nudge: something joined that it was not told about
     assert_eq!(did(&tick(&world, 1690))[0], "tend_train done");
     assert!(line(&world).is_some());
     assert_eq!(did(&tick(&world, 1780))[0], "tend_train nothing");
-    assert_eq!(did(&tick(&world, 1990))[0], "tend_train nudged");
-    assert_eq!(did(&tick(&world, 2290))[0], "tend_train abandoned");
+    assert_eq!(did(&tick(&world, 1990))[0], "tend_train nothing");
+    assert_eq!(abandon_now(&world, 2290)["action"], "abandoned");
 }
 
 #[test]
@@ -309,7 +319,7 @@ fn an_abandon_by_hand_is_refused_unless_the_tick_would_abandon() {
     let refused = abandon(&world, "1180").error();
     assert!(refused.contains("sign of life within the grace period, or was not nudged"));
     assert!(abandon(&world, "1390").error().contains("was not nudged yet"));
-    tick(&world, 1390);
+    historical_nudge(&world, 1390);
     assert!(abandon(&world, "1480").error().contains("sign of life"));
     assert!(line(&world).is_some());
 
@@ -345,6 +355,7 @@ fn the_loop_says_when_it_nudged_the_train_worker_and_abandoned_the_train() {
         world.afk_lines(&[&args[..], &more[..]].concat()).0
     };
     let stands = "holding 1/2 · frontier 0 · next in 90s";
-    assert_eq!(run("1390"), [format!("tick 1: nudged the train worker · {stands}")]);
-    assert_eq!(run("1690"), [format!("tick 1: abandoned the train · {stands}")]);
+    assert_eq!(run("1390"), [format!("tick 1: nothing to do · {stands}")]);
+    assert_eq!(run("1690"), [format!("tick 1: nothing to do · {stands}")]);
+    assert!(line(&world).is_some(), "unclassified silence never abandons a train");
 }

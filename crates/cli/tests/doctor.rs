@@ -456,7 +456,10 @@ fn a_live_run_is_seen_alive_and_a_claim_whose_worker_is_gone_is_a_finding() {
     assert_eq!(answer["claims"][0]["worker"]["state"], "busy");
     world.with_orca(|orca| orca["terminals"][0]["lastOutputAt"] = json!((at - 400) * 1000));
     let answer = doctor(&world, &now).ok();
-    assert_eq!(answer["claims"][0]["worker"], json!({"state": "stopped", "quiet": 400}));
+    assert_eq!(
+        answer["claims"][0]["worker"],
+        json!({"state": "stopped", "quiet": 400, "harness": "claude-code"})
+    );
 
     // its worker's terminal is closed under it
     world.with_orca(|orca| orca["terminals"] = json!([]));

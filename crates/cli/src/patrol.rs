@@ -221,7 +221,6 @@ pub fn run(fleet: &mut Fleet, me: &Me, agent: &Agent, read: &Flows, row: &Row) -
     };
     let brief = checkout.write_brief(&patrol_prompt(&fields).map_err(|e| anyhow!(e))?)?;
     let line = in_role(fleet, kept, name, &cast, launch.as_str(), &checkout)?;
-    checkout.keep_harness(harness)?;
     let terminal = agent.start(&checkout, harness, &line, me.now)?;
     checkout.await_ready(&terminal, agent.ready_timeout)?;
     checkout.deliver(&terminal, &brief)?;
@@ -318,8 +317,8 @@ pub(crate) fn switch(
     let launch = agent.command(harness)?;
     let line = in_role(fleet, &kept, name, &cast, launch.as_str(), &checkout)?;
     let continuing = said(&checkout);
+    checkout.stop_for_continuation()?;
     crate::dispatch::continue_brief(fleet, &checkout, None, &continuing)?;
-    checkout.keep_harness(harness)?;
     let terminal = agent.start(&checkout, harness, &line, me.now)?;
     checkout.await_ready(&terminal, agent.ready_timeout)?;
     checkout.deliver(&terminal, &checkout.brief()?)?;
@@ -344,6 +343,9 @@ pub fn end(fleet: &mut Fleet, me: &Me, read: &Flows, row: &Row) -> Result<Outcom
         _ => return Ok(Outcome::Nothing),
     };
     if let Some(checkout) = checkout {
+        if !claim.over && crate::health::holding(&checkout) {
+            return Ok(Outcome::Nothing);
+        }
         if !run_over(claim, checkout.state(me.now)?, me.now) {
             return Ok(Outcome::Nothing);
         }

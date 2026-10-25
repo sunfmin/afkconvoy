@@ -445,7 +445,7 @@ fn a_start_checks_every_harness_it_could_be_asked_for_and_names_what_calls_for_e
     for start in [&tick[..], &["plan", "--now", "1000"]] {
         let refused = world.afk(start).error();
         assert!(refused.contains("names no --add-dir"), "{refused}");
-        assert!(refused.ends_with(called), "{refused}");
+        assert!(refused.contains("called for by startup candidate"), "{refused}");
     }
     let doctor = world.afk(&["doctor", "--host", "h1", "--now", "1000"]).json;
     let commands = doctor["host"]["worker_commands"].as_array().unwrap();
@@ -478,10 +478,7 @@ fn a_start_checks_every_harness_it_could_be_asked_for_and_names_what_calls_for_e
     };
     let refused = refused.error();
     assert!(refused.contains("\"ckim\" resolves to nothing in a login shell"), "{refused}");
-    assert!(
-        refused.contains("of the harness `claude-code`, called for by the host kit's first"),
-        "{refused}"
-    );
+    assert!(refused.contains("worker launch command"), "{refused}");
 
     // A start with a harness that cannot be started starts no worker at all.
     assert_eq!(world.claims(), []);
@@ -588,36 +585,33 @@ fn a_worker_orca_has_no_report_of_is_at_work_while_its_terminal_writes_or_it_jus
     assert_eq!(nudges(), 0);
 
     // Quiet past grace: nudged once, as ever.
-    assert_eq!(did(&tick(&world, 1690).ok())[0], "advance 7 nudged");
+    assert_eq!(did(&tick(&world, 1690).ok())[0], "advance 7 nothing");
     assert_eq!(did(&tick(&world, 1780).ok())[0], "advance 7 nothing");
-    assert_eq!(nudges(), 1);
+    assert_eq!(nudges(), 0);
 }
 
 #[test]
-fn a_worker_in_its_role_is_nudged_and_its_screen_is_read() {
+fn a_worker_in_its_role_is_observed_before_any_recovery_action() {
     let world = bound();
     world.issue(7, &["flow:feature"]);
-    assert_eq!(did(&tick(&world, 1000).ok())[0], "dispatch 7 done");
+    tick(&world, 1000).ok();
     let dir = worktree(&world, 7);
     let handle = open_terminals(&world, &dir)[0]["handle"].clone();
-
-    // The nudge is typed at the one terminal of the worktree: the worker's.
     stopped(&world, 1000);
-    assert_eq!(did(&tick(&world, 1400).ok())[0], "advance 7 nudged");
+    tick(&world, 1400).ok();
+    tick(&world, 1800).ok();
     let terminals = open_terminals(&world, &dir);
     assert_eq!(terminals.len(), 1);
     assert_eq!(terminals[0]["handle"], handle);
-    let sent = terminals[0]["sent"].as_array().unwrap();
-    assert_eq!(sent.len(), 2, "the brief, then the nudge: {sent:?}");
+    assert_eq!(terminals[0]["sent"].as_array().unwrap().len(), 1);
+    assert_eq!(world.claims().len(), 1);
+    let plan = world.afk(&["plan", "--now", "1801"]).ok();
+    assert_eq!(plan["host_kit"]["worker_health"]["workers"][0]["action"], "waiting");
     assert!(
-        sent[1]["text"].as_str().unwrap().starts_with("You stopped without declaring a verdict.")
+        plan["host_kit"]["worker_health"]["workers"][0]["snapshots"]
+            .to_string()
+            .contains("Shall I go on?")
     );
-
-    // Silent past the nudge: escalated, with what its screen showed.
-    assert_eq!(did(&tick(&world, 1800).ok())[0], "advance 7 done");
-    let said = world.comments(7).join("\n");
-    assert!(said.contains("Shall I go on? [y/n]"), "{said}");
-    assert_eq!(world.claims(), []);
 }
 
 #[test]

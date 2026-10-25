@@ -219,9 +219,20 @@ pub(crate) fn processes() -> Vec<Proc> {
 
 /// Every process of this host, as `ps` says them, and nothing more.
 pub(crate) fn listed() -> Vec<Proc> {
-    let out = Command::new("ps").args(["axeww", "-o", "pid=,ppid=,rss=,time=,command="]).output();
-    out.map(|out| String::from_utf8_lossy(&out.stdout).lines().filter_map(parse).collect())
-        .unwrap_or_default()
+    listed_checked().unwrap_or_default()
+}
+
+/// A failed observation must never certify that an old writer is gone.
+pub(crate) fn listed_checked() -> anyhow::Result<Vec<Proc>> {
+    let out =
+        Command::new("ps").args(["axeww", "-o", "pid=,ppid=,rss=,time=,command="]).output()?;
+    anyhow::ensure!(out.status.success(), "cannot confirm worker termination: ps failed");
+    let rows: Vec<_> = String::from_utf8_lossy(&out.stdout).lines().filter_map(parse).collect();
+    anyhow::ensure!(
+        !rows.is_empty(),
+        "cannot confirm worker termination: ps returned no processes"
+    );
+    Ok(rows)
 }
 
 /// One row of `ps`: pid, ppid, resident KiB, CPU time, then the rest.
