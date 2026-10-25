@@ -2336,8 +2336,10 @@ mod tests {
         assert!(!staged.contains("--label"), "{staged}");
         // The lock is raised before parking, for existing and new defects alike.
         for brief in [&fresh, &continuing, &taker, &staged] {
-            assert!(brief.find("**Raise the fleet lock").unwrap()
-                < brief.find("**Then park your issue").unwrap());
+            assert!(
+                brief.find("**Raise the fleet lock").unwrap()
+                    < brief.find("**Then park your issue").unwrap()
+            );
         }
         // Each parks its issue on it; the train worker has none and stops for the fix.
         for brief in [&fresh, &continuing] {
