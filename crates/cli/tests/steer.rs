@@ -160,8 +160,9 @@ fn has(world: &World, issue: u64, label: &str) -> bool {
     world.labels(issue).contains(&label.to_string())
 }
 
-#[test]
-fn an_escalation_with_no_position_names_the_only_flow_label_in_its_answer() {
+/// An escalation transferred to a tracker before the repo was bound. Its
+/// old comment has neither a workflow nor a current command to answer it.
+fn escalation_with_no_position() -> World {
     let feature = FEATURE.replace("max_rework: 1", "label: ready-for-agent\nmax_rework: 1");
     let world = bound_to(&feature, 2);
     world.name_origin(&world.clone, "acme/dev");
@@ -172,10 +173,79 @@ fn an_escalation_with_no_position_names_the_only_flow_label_in_its_answer() {
         gh["comments"]["11"] = json!([{"id": 1, "at": 1000, "html_url": "https://gh/c/1",
             "body": "<!--convoy:escalation claim=old-->\nFix the failure."}]);
     });
+    world
+}
+
+/// Every view gives the same recovery, including the refused commands:
+/// nobody can rule on a stage or send to one before choosing a workflow.
+fn recovery_with_no_position(world: &World, answer: &str, choices: &[&str]) {
+    let before = world.tracker();
+    let show = world.afk(&["show", "--issue", "11"]).error();
+    assert!(show.contains("issue #11 has no position"), "{show}");
+    let plan = world.afk(&["plan", "--now", "5000"]).ok();
+    let waiting = &plan["waiting_on_human"][0];
+    assert_eq!(waiting["answer"], answer, "{plan}");
+    let why = waiting["why"].as_str().unwrap();
+    for label in choices {
+        assert!(why.contains(label), "the choice {label} is beside the answer: {waiting}");
+    }
+    let doctor = world.afk(&["doctor", "--now", "5000"]).json;
+    assert_eq!(doctor["waiting_on_human"], plan["waiting_on_human"]);
+    let findings = doctor["findings"].as_array().unwrap();
+    let waited = findings.iter().find(|f| f["what"].as_str().unwrap().contains("has waited"));
+    let waited = waited.expect("waiting more than an hour is a finding");
+    assert_eq!(waited["fix"], answer);
+    for label in choices {
+        assert!(waited["what"].as_str().unwrap().contains(label), "{waited}");
+    }
+
+    let panel = world
+        .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
+        .args(["panel", "--now", "5000"])
+        .output()
+        .unwrap();
+    assert!(panel.status.success(), "{}", String::from_utf8_lossy(&panel.stderr));
+    let page = String::from_utf8(panel.stdout).unwrap();
+    let escaped = answer.replace('<', "&lt;").replace('>', "&gt;");
+    assert!(page.contains(&escaped), "{page}");
+    for label in choices {
+        assert!(page.contains(label), "{page}");
+    }
+    for command in [vec!["rule"], vec!["send", "--stage", "build"]] {
+        let error =
+            world.afk(&[&command[..], &["--issue", "11", "--text", "Continue."]].concat()).error();
+        assert!(error.contains(answer), "{error}");
+        for label in choices {
+            assert!(error.contains(label), "{error}");
+        }
+    }
+    let after = world.tracker();
+    for key in ["issues", "comments"] {
+        assert_eq!(before[key], after[key], "no refused command or view writes {key}");
+    }
+}
+
+#[test]
+fn an_escalation_with_no_position_names_the_only_flow_label_in_its_answer() {
+    let world = escalation_with_no_position();
     let answer =
         "gh issue edit 11 --repo acme/tracker --add-label ready-for-agent --remove-label stuck";
-    let plan = world.afk(&["plan", "--now", "5000"]).ok();
-    assert_eq!(plan["waiting_on_human"][0]["answer"], answer, "{plan}");
+    assert!(!answer.contains('<'));
+    recovery_with_no_position(&world, answer, &[]);
+}
+
+#[test]
+fn an_escalation_with_no_position_lists_each_flow_label_to_choose_from() {
+    let world = escalation_with_no_position();
+    let team = world.root.join("github/acme/team");
+    let chore = FEATURE.replace("max_rework: 1", "label: needs triage\nmax_rework: 1");
+    write(&team, "workflows/chore.md", &chore);
+    write(&team, "workflows/fix.md", FEATURE);
+    git(&team, &["add", "."]);
+    git(&team, &["commit", "-q", "-m", "add workflows"]);
+    let answer =
+        "gh issue edit 11 --repo acme/tracker --add-label '<flow label>' --remove-label stuck";
+    recovery_with_no_position(&world, answer, &["ready-for-agent", "needs triage", "flow:fix"]);
 }
 
 #[test]
