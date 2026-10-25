@@ -643,13 +643,23 @@ fn a_resident_launches_reads_added_and_changed_commands() {
 fn every_known_harness_discovers_its_existing_stock_command() {
     for harness in afkconvoy_core::harness::Harness::ALL {
         let world = World::new();
-        world.with_kit(|kit| kit["harnesses"] = json!([{"harness": harness.key()}]));
+        world.with_kit(|kit| {
+            kit["harnesses"] = json!([{"harness": harness.key()}]);
+            if harness == afkconvoy_core::harness::Harness::Codex {
+                kit["harnesses"][0]["models"] = json!([{"model":"gpt-x"}]);
+            }
+        });
         world.issue(7, &["ready-for-agent"]);
         let ran = world.afk(&TICK);
         assert_eq!(ran.json["errors"], json!([]), "{}: {} {}", harness.key(), ran.json, ran.stderr);
         let commands = started(&world);
         assert_eq!(commands.len(), 1, "{}", harness.key());
-        assert!(commands[0].ends_with(harness.stock()), "{}: {commands:?}", harness.key());
+        let expected = if harness == afkconvoy_core::harness::Harness::Codex {
+            harness.with_model(harness.stock(), "gpt-x")
+        } else {
+            harness.stock().to_string()
+        };
+        assert!(commands[0].ends_with(&expected), "{}: {commands:?}", harness.key());
         let kit: Value = serde_json::from_slice(&std::fs::read(world.kit_path()).unwrap()).unwrap();
         assert_eq!(kit["harnesses"][0]["command"], harness.stock());
     }

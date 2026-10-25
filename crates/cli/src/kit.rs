@@ -537,6 +537,32 @@ fn refresh_at<'a>(
         .with_context(|| format!("cannot write {}", lock.display()))?;
     let current = load_at(file)?;
     let host = host()?;
+    if !due(written(file), None, now) {
+        // An early repair is only about Codex. In particular it must not
+        // normalize, drop or reorder any other command-only kit entry.
+        let found = |harness| match harness {
+            Harness::Codex => (host.found)(harness),
+            _ => Err("not part of the Codex repair".into()),
+        };
+        let only = Host { found: &found, ..host };
+        let before = Kit {
+            harnesses: current.held(Harness::Codex).cloned().into_iter().collect(),
+            stock_consult: None,
+        };
+        let (mut repaired, _) = compose(&before, &only, Writing::Refresh);
+        if repaired.held(Harness::Codex).is_none_or(|held| held.models.is_empty()) {
+            return Ok(Some((current.clone(), current)));
+        }
+        crate::kit_research::research(&current, &mut repaired, now, host.research);
+        let mut kit = current.clone();
+        if let Some(held) = kit.harnesses.iter_mut().find(|held| held.harness == Harness::Codex)
+            && let Some(repaired) = repaired.held(Harness::Codex)
+        {
+            *held = repaired.clone();
+        }
+        store(file, &kit, now)?;
+        return Ok(Some((current, kit)));
+    }
     let (mut kit, _) = compose(&current, &host, Writing::Refresh);
     crate::kit_research::research(&current, &mut kit, now, host.research);
     store(file, &kit, now)?;
@@ -1465,6 +1491,34 @@ mod tests {
         assert!(
             refresh_at(&file, 1002, || panic!("the repaired kit is current")).unwrap().is_none()
         );
+    }
+
+    #[test]
+    fn an_unsuccessful_codex_repair_preserves_the_kit_and_waits_an_hour() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("kit.json");
+        let current = Kit {
+            harnesses: vec![held(Harness::Codex, "codex", &[]), held(Harness::Dsh, "dsh-tui", &[])],
+            stock_consult: None,
+        };
+        store(&file, &current, 1000).unwrap();
+        let bytes = std::fs::read(&file).unwrap();
+        let host = || {
+            Ok(Host {
+                found: &|_| Err("not answering".into()),
+                listed: &|_, _| panic!("nothing was found"),
+                probe: &|asked| {
+                    assert!(asked.is_empty());
+                    vec![]
+                },
+                research: &|_, _| panic!("no model answered"),
+                now: 1001,
+            })
+        };
+        let (before, after) = refresh_at(&file, 1001, host).unwrap().unwrap();
+        assert_eq!(before, after);
+        assert_eq!(std::fs::read(&file).unwrap(), bytes);
+        assert!(refresh_at(&file, 1002, || panic!("backoff")).unwrap().is_none());
     }
 
     #[test]

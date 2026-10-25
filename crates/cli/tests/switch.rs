@@ -173,6 +173,17 @@ fn a_switch_moves_the_worker_onto_the_harness_in_the_same_worktree_and_records_i
 }
 
 #[test]
+fn a_codex_successor_without_a_selected_model_does_not_end_the_existing_worker() {
+    let world = blocked();
+    world.kit_models("codex", &[]);
+    let dir = worktree(&world, 7);
+    let why = switch(&world, "800", &["7", "--harness", "codex"]).error();
+    assert!(why.contains("no selected Codex model"), "{why}");
+    assert_eq!(open_commands(&world, &dir), ["agent"]);
+    assert_eq!(world.claims().len(), 1);
+}
+
+#[test]
 fn a_harness_that_cannot_be_started_is_refused_before_any_worker_is_ended() {
     let world = blocked();
     let dir = worktree(&world, 7);
