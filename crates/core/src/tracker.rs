@@ -106,6 +106,29 @@ impl Tracker {
         }
     }
 
+    /// What an issue of the tracker carrying `labels` lacks to be the repo's
+    /// and no other's, as a command that hands it to the fleet makes it so
+    /// (`intake`, `lock`): the repo label, of one in another tracker that
+    /// carries no repo label; nothing, of one that is the repo's already. An
+    /// error saying why of one that is another repo's, or more than one's.
+    pub fn to_take(&self, labels: &[String]) -> Result<Option<String>, String> {
+        let carried = repo_labels(labels);
+        let mine = self.repo_label();
+        let others: Vec<&str> = carried
+            .iter()
+            .copied()
+            .filter(|label| mine.as_ref().is_none_or(|mine| !label.eq_ignore_ascii_case(mine)))
+            .collect();
+        if !others.is_empty() {
+            return Err(format!(
+                "carries the repo label of another repo ({}): it is that repo's to work, and \
+                 its fleet's",
+                others.join(", ")
+            ));
+        }
+        Ok(mine.filter(|_| carried.is_empty()))
+    }
+
     /// Issue `number` as the repo names it, in a PR's closing line and a
     /// join commit: `#7` of its own, `acme/tracker#7` of another tracker's.
     pub fn issue(&self, number: u64) -> String {
@@ -276,6 +299,20 @@ mod tests {
         assert!(other().holds(&labels(&["repo:acme/dev", "repo:acme/web"])));
         assert!(!other().holds(&labels(&["repo:acme/web"])));
         assert!(!other().holds(&labels(&["ready-for-agent"])));
+    }
+
+    #[test]
+    fn an_issue_handed_to_the_fleet_is_given_the_repo_label_unless_it_is_another_repos() {
+        let labels = |all: &[&str]| all.iter().map(|label| label.to_string()).collect::<Vec<_>>();
+        assert_eq!(other().to_take(&labels(&["bug"])), Ok(Some("repo:acme/dev".to_string())));
+        assert_eq!(other().to_take(&labels(&["Repo:Acme/Dev"])), Ok(None));
+        assert_eq!(Tracker::Own.to_take(&labels(&["bug"])), Ok(None));
+        for theirs in [&["repo:acme/web"][..], &["repo:acme/dev", "repo:acme/web"]] {
+            let refused = other().to_take(&labels(theirs)).unwrap_err();
+            assert!(refused.contains("(repo:acme/web)"), "{refused}");
+        }
+        let refused = Tracker::Own.to_take(&labels(&["repo:acme/web"])).unwrap_err();
+        assert!(refused.contains("(repo:acme/web)"), "{refused}");
     }
 
     #[test]

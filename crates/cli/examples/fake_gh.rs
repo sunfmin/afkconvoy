@@ -608,11 +608,15 @@ fn comments(st: &State, number: &str) -> Vec<Value> {
 /// `gh api graphql`: the one query the fleet makes — every open issue, each
 /// with the first `COMMENTS_WITH` of its comments.
 fn open_issues(st: &State) -> ! {
+    // `labels`, where the query names it: those carrying any of them.
+    let labels: Vec<&str> = st.argv.iter().filter_map(|a| a.strip_prefix("labels[]=")).collect();
+    let labelled = |issue: &&Value| labels.is_empty() || labels.iter().any(|l| carries(issue, l));
     if st.argv.contains(&format!("query={LANDED_ISSUES_QUERY}")) {
         assert_eq!(st.opt("--jq"), Some(LANDED_ISSUES_JQ));
         assert!(st.has("--paginate"));
         let rows: Vec<String> = st.doc["issues"].as_array().unwrap().iter()
             .filter(|issue| !is_open(issue) && issue["state_reason"] == "completed")
+            .filter(labelled)
             .map(|issue| {
                 let mut with = comments(st, &issue["number"].to_string());
                 let more = with.len() > COMMENTS_WITH;
@@ -629,14 +633,12 @@ fn open_issues(st: &State) -> ! {
     for filled in ["owner={owner}", "repo={repo}"] {
         assert!(st.argv.iter().any(|arg| arg == filled), "{:?}", st.argv);
     }
-    // `labels`, where the query names it: those carrying any of them.
-    let labels: Vec<&str> = st.argv.iter().filter_map(|a| a.strip_prefix("labels[]=")).collect();
     let rows: Vec<String> = st.doc["issues"]
         .as_array()
         .unwrap()
         .iter()
         .filter(|issue| is_open(issue))
-        .filter(|issue| labels.is_empty() || labels.iter().any(|label| carries(issue, label)))
+        .filter(labelled)
         .map(|issue| {
             let number = issue["number"].to_string();
             let edges: Vec<Value> = blockers(st, &number)
