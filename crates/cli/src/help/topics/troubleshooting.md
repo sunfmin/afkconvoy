@@ -64,7 +64,7 @@ A warning may be the fleet mid-step: run `doctor` again after a tick before you 
 - A missing worker launch command is discovered automatically for a known harness in the worker's login shell and merged into the latest host kit. If resolution fails, install the named program or fix that shell's PATH. If login or required flags fail, follow the named harness's login command or update its explicit command in the host kit. An explicit command is never replaced by a default; running fleets read kit edits at their next worker launch.
 - `cannot read the host kit`: Run `afkconvoy kit` on this host, or `run`, which writes it where there is none.
 - `--worker-command is gone`: Run `afkconvoy kit` to edit this host's worker launch commands.
-- `is no harness`: Use claude-code, pi, codex or dsh.
+- `is no harness`: Use claude-code, pi, codex, dsh or kimi.
 
 ## What neither says
 

@@ -325,7 +325,10 @@ impl Conversation {
 
 /// Whether `error` is the host runner's end closing on the line: it ended.
 fn closed(error: &std::io::Error) -> bool {
-    matches!(error.kind(), ErrorKind::BrokenPipe | ErrorKind::ConnectionReset)
+    matches!(
+        error.kind(),
+        ErrorKind::BrokenPipe | ErrorKind::ConnectionReset | ErrorKind::InvalidInput
+    )
 }
 
 /// `ask`, of the socket in `dir`.
@@ -615,5 +618,12 @@ mod tests {
         assert!(matches!(asked(dir.path()), Reached::Unanswered));
         assert!(matches!(asked(dir.path()), Reached::Closed));
         held.join().unwrap();
+    }
+
+    #[test]
+    fn macos_s_invalid_read_of_a_closed_socket_is_a_close_not_an_error() {
+        let invalid = std::io::Error::from(ErrorKind::InvalidInput);
+        assert!(closed(&invalid));
+        assert!(!closed(&std::io::Error::from(ErrorKind::InvalidData)));
     }
 }

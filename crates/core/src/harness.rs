@@ -15,6 +15,7 @@ use crate::role::{HARNESS_ENV, MODEL_ENV, Start};
 mod claude_code;
 mod codex;
 mod dsh;
+mod kimi;
 mod pi;
 
 /// A file or a directory of the host user's that a directory the host keeps
@@ -76,6 +77,7 @@ pub enum Harness {
     Pi,
     Codex,
     Dsh,
+    Kimi,
 }
 
 /// A harness is written, wherever the fleet answers with one, as its key.
@@ -94,7 +96,8 @@ impl Harness {
     pub const UNNAMED: Harness = Harness::ClaudeCode;
 
     /// Every harness there is.
-    pub const ALL: [Harness; 4] = [Harness::ClaudeCode, Harness::Pi, Harness::Codex, Harness::Dsh];
+    pub const ALL: [Harness; 5] =
+        [Harness::ClaudeCode, Harness::Pi, Harness::Codex, Harness::Dsh, Harness::Kimi];
 
     /// What a team, a config and a stage record write it as.
     pub const fn key(self) -> &'static str {
@@ -103,6 +106,7 @@ impl Harness {
             Harness::Pi => pi::KEY,
             Harness::Codex => codex::KEY,
             Harness::Dsh => dsh::KEY,
+            Harness::Kimi => kimi::KEY,
         }
     }
 
@@ -124,6 +128,7 @@ impl Harness {
             Harness::Pi => pi::NAME,
             Harness::Codex => codex::NAME,
             Harness::Dsh => dsh::NAME,
+            Harness::Kimi => kimi::NAME,
         }
     }
 
@@ -134,6 +139,7 @@ impl Harness {
             Harness::Pi => pi::PROGRAM,
             Harness::Codex => codex::PROGRAM,
             Harness::Dsh => dsh::PROGRAM,
+            Harness::Kimi => kimi::PROGRAM,
         }
     }
 
@@ -145,6 +151,7 @@ impl Harness {
             Harness::Pi => pi::STOCK,
             Harness::Codex => codex::STOCK,
             Harness::Dsh => dsh::STOCK,
+            Harness::Kimi => kimi::STOCK,
         }
     }
 
@@ -153,11 +160,12 @@ impl Harness {
     /// would start a worker on another provider than the fleet's own. pi
     /// has none: its providers are read from its user directory. Codex has
     /// none either: it keeps a custom provider in its user's configuration,
-    /// which a worker is given none of.
+    /// which a worker is given none of. Kimi reads its generated model
+    /// routing from its isolated home.
     pub const fn provider_variable(self) -> Option<&'static str> {
         match self {
             Harness::ClaudeCode => Some(claude_code::PROVIDER),
-            Harness::Pi | Harness::Codex | Harness::Dsh => None,
+            Harness::Pi | Harness::Codex | Harness::Dsh | Harness::Kimi => None,
         }
     }
 
@@ -169,6 +177,7 @@ impl Harness {
             Harness::Pi => &pi::FLAGS,
             Harness::Codex => &codex::FLAGS,
             Harness::Dsh => &dsh::FLAGS,
+            Harness::Kimi => &kimi::FLAGS,
         }
     }
 
@@ -181,6 +190,28 @@ impl Harness {
             Harness::Pi => pi::KEPT,
             Harness::Codex => codex::KEPT,
             Harness::Dsh => dsh::KEPT,
+            Harness::Kimi => kimi::KEPT,
+        }
+    }
+
+    /// The generated configuration this harness's kept home needs, if any.
+    pub fn kept_configuration(
+        self,
+        user: Option<&str>,
+        role: Option<&str>,
+        guard: Option<&str>,
+    ) -> Result<Option<String>, String> {
+        match self {
+            Harness::Kimi => kimi::configuration(user, role, guard).map(Some),
+            _ => Ok(None),
+        }
+    }
+
+    /// The generated system prompt this harness's kept home needs, if any.
+    pub fn kept_system(self, told: &crate::role::Told) -> Option<String> {
+        match self {
+            Harness::Kimi => kimi::system(told),
+            _ => None,
         }
     }
 
@@ -192,6 +223,7 @@ impl Harness {
             Harness::Pi => pi::LIMITS,
             Harness::Codex => codex::LIMITS,
             Harness::Dsh => dsh::LIMITS,
+            Harness::Kimi => kimi::LIMITS,
         }
     }
 
@@ -205,6 +237,25 @@ impl Harness {
             Harness::Pi => Ok(pi::limited(held)),
             Harness::Codex => codex::limited(held),
             Harness::Dsh => Ok(matches!(held, Held::File(_))),
+            Harness::Kimi => kimi::limited(held),
+        }
+    }
+
+    /// Reads the role's limits file in this harness's own format.
+    pub fn limited_file(self, text: &str) -> Result<bool, String> {
+        if self == Harness::Kimi {
+            return kimi::limited_file(text);
+        }
+        let mut json = serde_json::Deserializer::from_str(text);
+        self.limited(Held::File(&mut json)).map_err(|error| error.to_string())
+    }
+
+    /// Where this harness reads the role's rules, when it cannot read the
+    /// file every harness shares and the fleet's role copy needs a link.
+    pub const fn rules_link(self) -> Option<&'static str> {
+        match self {
+            Harness::Kimi => Some(kimi::RULES_LINK),
+            _ => None,
         }
     }
 
@@ -216,6 +267,7 @@ impl Harness {
             Harness::Pi => &pi::BEFORE_THE_RULES,
             Harness::Codex => &codex::BEFORE_THE_RULES,
             Harness::Dsh => &[],
+            Harness::Kimi => &kimi::BEFORE_THE_RULES,
         }
     }
 
@@ -227,6 +279,7 @@ impl Harness {
         match self {
             Harness::ClaudeCode | Harness::Pi | Harness::Dsh => &[],
             Harness::Codex => &codex::REPO_RULES,
+            Harness::Kimi => &kimi::REPO_RULES,
         }
     }
 
@@ -238,7 +291,7 @@ impl Harness {
     /// named them.
     pub const fn skills(self) -> &'static [&'static str] {
         match self {
-            Harness::ClaudeCode | Harness::Pi | Harness::Dsh => &[],
+            Harness::ClaudeCode | Harness::Pi | Harness::Dsh | Harness::Kimi => &[],
             Harness::Codex => &codex::SKILLS,
         }
     }
@@ -249,7 +302,7 @@ impl Harness {
     /// (`Start::shadowed`). Empty: a role's skill wins by itself.
     pub const fn shadowed_in(self) -> &'static [&'static str] {
         match self {
-            Harness::ClaudeCode | Harness::Pi | Harness::Dsh => &[],
+            Harness::ClaudeCode | Harness::Pi | Harness::Dsh | Harness::Kimi => &[],
             Harness::Codex => &codex::SHADOWED_IN,
         }
     }
@@ -265,6 +318,7 @@ impl Harness {
             Harness::Pi => pi::models_question(command, kept),
             Harness::Codex => codex::models_question(command, kept),
             Harness::Dsh => dsh::models_question(kept),
+            Harness::Kimi => kimi::models_question(command, kept),
         }
     }
 
@@ -285,6 +339,7 @@ impl Harness {
             Harness::Pi => pi::prompt_question(command, kept, model, prompt),
             Harness::Codex => codex::prompt_question(command, kept, model, prompt),
             Harness::Dsh => dsh::prompt_question(kept, model, prompt),
+            Harness::Kimi => kimi::prompt_question(command, kept, model, prompt),
         }
     }
 
@@ -303,6 +358,7 @@ impl Harness {
             Harness::Pi => pi::probe_question(command, kept, model, prompt),
             Harness::Codex => codex::probe_question(command, kept, model, prompt),
             Harness::Dsh => dsh::prompt_question(kept, model, prompt),
+            Harness::Kimi => kimi::probe_question(command, kept, model, prompt),
         }
     }
 
@@ -314,6 +370,7 @@ impl Harness {
             Harness::Pi => pi::answered_as(answer),
             Harness::Codex => return codex::answered_as(answer),
             Harness::Dsh => dsh::answered_as(answer),
+            Harness::Kimi => kimi::answered_as(answer),
         };
         said.map_or(AnsweredAs::Unsaid, AnsweredAs::Said)
     }
@@ -323,7 +380,7 @@ impl Harness {
     pub fn answered_in_session(self, session: &str) -> Option<String> {
         match self {
             Harness::Codex => codex::answered_in_session(session),
-            Harness::ClaudeCode | Harness::Pi | Harness::Dsh => None,
+            Harness::ClaudeCode | Harness::Pi | Harness::Dsh | Harness::Kimi => None,
         }
     }
 
@@ -334,6 +391,7 @@ impl Harness {
         match self {
             Harness::ClaudeCode => claude_code::shown(answer),
             Harness::Dsh => dsh::shown(answer),
+            Harness::Kimi => kimi::shown(answer),
             Harness::Pi | Harness::Codex => vec![],
         }
     }
@@ -342,7 +400,7 @@ impl Harness {
     pub fn listing_failure(self, answer: &str) -> Option<String> {
         match self {
             Harness::Dsh => dsh::listing_failure(answer),
-            Harness::ClaudeCode | Harness::Pi | Harness::Codex => None,
+            Harness::ClaudeCode | Harness::Pi | Harness::Codex | Harness::Kimi => None,
         }
     }
 
@@ -354,6 +412,7 @@ impl Harness {
             Harness::ClaudeCode => claude_code::MODEL,
             Harness::Pi => pi::MODEL,
             Harness::Codex => codex::MODEL,
+            Harness::Kimi => kimi::MODEL,
             Harness::Dsh => return command.to_string(),
         };
         Line::new().launch(command).fixed(" ").fixed(flag).fixed(" ").word(model).done()
@@ -367,6 +426,7 @@ impl Harness {
             Harness::Pi => pi::models(answer),
             Harness::Codex => codex::models(answer),
             Harness::Dsh => dsh::models(answer),
+            Harness::Kimi => kimi::models(answer),
         }
     }
 
@@ -377,7 +437,9 @@ impl Harness {
             Harness::Pi => pi::knows(listed, model),
             // Each of the rest takes any name at all and fails at its first
             // turn on one it has no model for.
-            Harness::ClaudeCode | Harness::Codex | Harness::Dsh => whole(listed, model),
+            Harness::ClaudeCode | Harness::Codex | Harness::Dsh | Harness::Kimi => {
+                whole(listed, model)
+            }
         }
     }
 
@@ -387,7 +449,9 @@ impl Harness {
         match self {
             Harness::Pi => pi::names(listed, model),
             // Each of the rest knows a model by its whole name and no other way.
-            Harness::ClaudeCode | Harness::Codex | Harness::Dsh => whole(listed, model),
+            Harness::ClaudeCode | Harness::Codex | Harness::Dsh | Harness::Kimi => {
+                whole(listed, model)
+            }
         }
     }
 
@@ -419,6 +483,7 @@ impl Harness {
             Harness::Pi => pi::environment(line, start),
             Harness::Codex => codex::environment(line, start),
             Harness::Dsh => dsh::environment(line, start),
+            Harness::Kimi => kimi::environment(line, start),
         };
         for (name, value) in start.facts.env() {
             line = line.fixed(" ").fixed(name).fixed("=").word(&value);
@@ -433,6 +498,7 @@ impl Harness {
             Harness::Pi => pi::added(line, start),
             Harness::Codex => codex::added(line, start),
             Harness::Dsh => dsh::added(line, start),
+            Harness::Kimi => kimi::added(line, start),
         }
         .done()
     }
@@ -443,6 +509,7 @@ impl Harness {
     const fn environment(self) -> &'static [&'static str] {
         match self {
             Harness::ClaudeCode => &claude_code::ENVIRONMENT,
+            Harness::Kimi => &kimi::ENVIRONMENT,
             Harness::Pi | Harness::Codex | Harness::Dsh => &[],
         }
     }
@@ -456,6 +523,7 @@ impl Harness {
             Harness::Pi => pi::asked_its_flags(line),
             Harness::Codex => codex::asked_its_flags(line),
             Harness::Dsh => dsh::asked_its_flags(line),
+            Harness::Kimi => kimi::asked_its_flags(line),
         }
         .done()
     }
@@ -492,7 +560,7 @@ impl Harness {
     pub fn shows_background(self, screen: &[String]) -> bool {
         match self {
             Harness::ClaudeCode => claude_code::shows_background(screen),
-            Harness::Pi | Harness::Codex | Harness::Dsh => false,
+            Harness::Pi | Harness::Codex | Harness::Dsh | Harness::Kimi => false,
         }
     }
 
@@ -510,6 +578,7 @@ impl Harness {
             Harness::Pi => pi::call(described),
             Harness::Codex => codex::call(described),
             Harness::Dsh => dsh::call(described),
+            Harness::Kimi => kimi::call(described),
         }
     }
 
@@ -522,6 +591,7 @@ impl Harness {
             Harness::Pi => pi::REFUSED,
             Harness::Codex => codex::REFUSED,
             Harness::Dsh => dsh::REFUSED,
+            Harness::Kimi => kimi::REFUSED,
         }
     }
 }
