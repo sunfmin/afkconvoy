@@ -246,6 +246,10 @@ impl Fleet {
             "health": crate::health::show(), "why": "first eligible harness in kit order; role limits still apply"})
     }
 
+    pub(crate) fn invalidate_selection(&self) {
+        *self.runnable.borrow_mut() = None;
+    }
+
     /// Whether issue `number`, labelled `labels`, is to be cast again: a
     /// caster cast it to a harness paused on this host, or to what the host
     /// kit holds nothing by, and no worker has started on it

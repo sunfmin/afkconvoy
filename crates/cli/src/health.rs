@@ -60,6 +60,8 @@ pub struct Diagnosis {
 struct Book {
     workers: Vec<Observed>,
     faults: Vec<Fault>,
+    #[serde(default)]
+    observations_failed: Vec<(PathBuf, String, u64)>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Fault {
@@ -94,6 +96,8 @@ struct Observed {
     continuations: u32,
     #[serde(default)]
     failed_candidates: Vec<(String, u64)>,
+    #[serde(default)]
+    background: Option<u64>,
     diagnosis: Option<Diagnosis>,
     source: String,
     action: String,
@@ -122,10 +126,12 @@ fn store(book: &Book) -> Result<()> {
 /// Exposes evidence and pending actions to every read-only surface.
 pub fn show() -> Value {
     match read() {
-        Ok(book) => json!({"workers": book.workers, "faults": book.faults,
+        Ok(book) => {
+            json!({"workers": book.workers, "faults": book.faults, "observations_failed":book.observations_failed,
             "observe_seconds": OBSERVE_SECONDS, "check_seconds": CHECK_SECONDS,
             "diagnosis_seconds": DIAGNOSIS_SECONDS, "max_diagnoses": MAX_DIAGNOSES,
-            "max_rate_retries": MAX_RATE_RETRIES}),
+            "max_rate_retries": MAX_RATE_RETRIES})
+        }
         Err(e) => json!({"error": format!("{e:#}")}),
     }
 }
@@ -386,11 +392,16 @@ pub fn diagnose_on_host(evidence: &Value) -> Result<(Harness, String)> {
 /// A tick's issue workers being observed or held for diagnosis. Legacy silent
 /// worker escalation cannot bypass this decision branch.
 pub fn holding(worktree: &Worktree) -> bool {
-    read().is_ok_and(|book| {
-        book.workers.iter().any(|o| {
-            o.path == worktree.path && !["healthy", "continued"].contains(&o.action.as_str())
-        })
+    read().map_or(true, |book| {
+        book.observations_failed.iter().any(|(path, _, _)| *path == worktree.path)
+            || book.workers.iter().any(|o| {
+                o.path == worktree.path && !["healthy", "continued"].contains(&o.action.as_str())
+            })
     })
+}
+
+pub fn background_since(worktree: &Worktree) -> Option<u64> {
+    read().ok()?.workers.into_iter().find(|o| o.path == worktree.path)?.background
 }
 
 /// Recovery probes are scoped exactly like the evidence. A successful probe
@@ -521,10 +532,25 @@ pub fn reconcile(
     }
     let mut events = vec![];
     for (issue, patrol, worktree) in jobs {
+        if book
+            .observations_failed
+            .iter()
+            .any(|(path, _, next)| *path == worktree.path && fleet.now < *next)
+        {
+            continue;
+        }
         let handled =
             observe(&mut book, fleet, me, agent, &kit, issue, patrol.as_deref(), &worktree);
         if let Err(e) = handled {
             events.push(json!({"worktree": worktree.path, "error": format!("{e:#}")}));
+            book.observations_failed.retain(|(path, _, _)| *path != worktree.path);
+            book.observations_failed.push((
+                worktree.path.clone(),
+                format!("{e:#}"),
+                fleet.now.saturating_add(CHECK_SECONDS),
+            ));
+        } else {
+            book.observations_failed.retain(|(path, _, _)| *path != worktree.path);
         }
         store(&book)?;
     }
@@ -580,6 +606,7 @@ fn observe(
             rate_retries: 0,
             continuations: 0,
             failed_candidates: vec![],
+            background: None,
             diagnosis: None,
             source: "observation".into(),
             action: "observing".into(),
@@ -687,13 +714,15 @@ fn decide(
     }
     let raw_error = structured.get("error").unwrap_or(structured);
     let rule = classified(raw_error);
+    if let Some(background) = crate::judge::own_background(fleet, worktree, true)? {
+        observed.action = "waiting for background work".into();
+        observed.background = Some(background.since);
+        return Ok(());
+    }
+    observed.background = None;
     let quiet = fleet.now.saturating_sub(observed.snapshots.first().map_or(fleet.now, |s| s.at));
     if rule.is_none() && (state == WorkerState::Busy || quiet < OBSERVE_SECONDS) {
         observed.action = if state == WorkerState::Busy { "healthy" } else { "observing" }.into();
-        return Ok(());
-    }
-    if crate::judge::own_background(fleet, worktree, true)?.is_some() {
-        observed.action = "healthy".into();
         return Ok(());
     }
     let diagnosis = if let Some(rule) = rule {
@@ -791,6 +820,8 @@ fn decide(
             "snapshots": observed.snapshots, "pending": "continue the original task and current stage"}))?,
     )?;
     let mut excluded = vec![observed.harness];
+    store(book)?;
+    fleet.invalidate_selection();
     excluded.extend(
         observed
             .failed_candidates

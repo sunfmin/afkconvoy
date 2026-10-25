@@ -146,6 +146,7 @@ pub fn tick(
     let (mut fleet, mut open) = Fleet::read(repo, me.now)?;
     let (mut set, mut flows) = fleet.rebuild(&open, Some(&me.instance))?;
     let _health_events = crate::health::reconcile(&mut fleet, me, agent, &open, &flows)?;
+    fleet.invalidate_selection();
     // A roster entry that names no model the host kit holds is the team's to
     // correct: one issue is opened for it in the team's repo. One that cannot
     // be opened costs the tick nothing; the next tries again.
@@ -283,6 +284,9 @@ fn carry_out(
             && worktree.state(fleet.now)? != afkconvoy_core::worker::WorkerState::Gone
             && crate::health::holding(&worktree)
         {
+            if let Some(since) = crate::health::background_since(&worktree) {
+                return Ok(Outcome::Waiting(since));
+            }
             return Ok(Outcome::Nothing);
         }
     }
