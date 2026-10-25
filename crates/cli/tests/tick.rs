@@ -117,6 +117,46 @@ fn a_start_that_failed_holds_its_claim_and_its_slot() {
 }
 
 #[test]
+fn a_worker_that_never_took_its_brief_is_started_again_in_the_same_worktree() {
+    for knob in ["never_ready", "trust_sticks"] {
+        let world = backlog(&[3]);
+        world.with_orca(|orca| {
+            orca[knob] = json!(true);
+            orca["trust_prompt"] = json!(knob == "trust_sticks");
+        });
+        let failed = tick(&world, "1000");
+        assert_eq!(did(&failed), ["dispatch 3 failed", "heartbeat done"]);
+        let before = world.orca();
+        let path = before["worktrees"][0]["path"].clone();
+        let branch = before["worktrees"][0]["branch"].clone();
+        world.with_orca(|orca| {
+            orca[knob] = json!(false);
+            orca["trust_prompt"] = json!(false);
+        });
+        world.orca_calls();
+
+        let again = tick(&world, "1090");
+        assert!(again["errors"].as_array().unwrap().is_empty(), "{again}");
+        let calls = world.orca_calls();
+        assert!(
+            calls.iter().any(|call| common::asked(call) == "terminal create"),
+            "{knob}: the next tick must start the worker again: {again}"
+        );
+        assert!(!calls.iter().any(|call| common::asked(call) == "worktree create"));
+        let after = world.orca();
+        assert_eq!(after["worktrees"][0]["path"], path);
+        assert_eq!(after["worktrees"][0]["branch"], branch);
+        let terminals = after["terminals"].as_array().unwrap();
+        let worker = terminals.iter().find(|terminal| terminal["open"] == true).unwrap();
+        let sent = worker["sent"].as_array().unwrap();
+        assert_eq!(sent.len(), 1);
+        assert!(sent[0]["text"].as_str().unwrap().contains("convoy-worker-prompt.md"));
+        assert!(!world.comments(3).iter().any(|body| body.contains("convoy:escalation")));
+        assert_eq!(world.claims(), alpha(&[3]));
+    }
+}
+
+#[test]
 fn an_issue_a_peer_holds_is_passed_over() {
     let world = backlog(&[3, 5, 9]);
     world.afk(&["claim", "--issue", "3", "--instance", "beta", "--now", "1000"]).ok();
