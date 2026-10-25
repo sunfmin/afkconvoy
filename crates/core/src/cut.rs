@@ -69,8 +69,8 @@ pub struct Steps {
 }
 
 impl Steps {
-    /// The steps, each with something to run → them, or the key that has
-    /// nothing.
+    /// The steps, each with something to run and a valid initial version
+    /// where declared → them, or the key whose value is invalid.
     pub fn checked(self) -> Result<Steps, &'static str> {
         if self.initial.is_some() && self.initial_version().is_none() {
             return Err("initial");
@@ -376,7 +376,8 @@ pub struct Record {
     pub version: String,
     #[serde(default)]
     pub from: Option<String>,
-    /// The PRs it holds: those that landed since that tag, lowest first.
+    /// The PRs it holds: those that landed since that tag, or all landings
+    /// for an initial cut, lowest first.
     #[serde(default)]
     pub prs: Vec<u64>,
     /// Whether it raises the minor version, for a PR carrying `MINOR_LABEL`.

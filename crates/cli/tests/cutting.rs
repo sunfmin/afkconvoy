@@ -310,7 +310,9 @@ fn first_cut(preset: bool) {
     assert_eq!(std::fs::read_to_string(world.root.join("published")).unwrap(), "1.2.3 v1.2.3\n");
     assert_eq!(world.gh()["prs"].as_array().unwrap().len(), 2, "one old PR and one cut PR");
     assert!(failures(&world).is_empty());
-    assert_eq!(cut(&tick_as(&world, "alpha", 10_200)), ["end_cut done"]);
+    // The failed run already gave its claim back; the manual continuation
+    // closed its failure and left no run for the tick to end again.
+    assert_eq!(cut(&tick_as(&world, "alpha", 10_200)), Vec::<String>::new());
     assert_eq!(standing(&world, "alpha", 10_210), "tagged");
     assert!(!claimed(&world));
 
