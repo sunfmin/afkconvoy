@@ -88,30 +88,26 @@ pub struct Agent {
 }
 
 impl Agent {
-    /// Starts a worker outside a role. Codex gets the fleet's user directory
-    /// with the host user's skills and rules, and trusts this worktree on
-    /// the command line; no host configuration is changed. An issue's worker
-    /// carries its issue in the environment for every command it runs; the
-    /// train's carries none.
-    pub fn start_in_worktree(
+    /// Starts an interactive worker with the fleet's selected model and
+    /// freshly read host-user effort. Shell-only auxiliaries use `start`.
+    /// An issue given here is exported for every command that worker runs;
+    /// the train and inspections carry no issue context.
+    pub fn start_worker(
         &self,
         worktree: &Worktree,
-        harness: Harness,
+        selection: (Harness, Option<&str>),
         command: &str,
+        in_role: bool,
         issue: Option<u64>,
         now: u64,
     ) -> Result<String> {
-        let command = match harness {
-            Harness::Codex => {
-                let kept = crate::kept::keep(harness, true)?;
-                harness.in_worktree(
-                    command,
-                    &worktree.path.display().to_string(),
-                    &kept.display().to_string(),
-                )
-            }
-            _ => command.to_string(),
+        let (harness, model) = selection;
+        let prepared = if harness == Harness::Codex {
+            Some(crate::codex_launch::prepare(worktree, model, command, in_role)?)
+        } else {
+            None
         };
+        let command = prepared.as_ref().map_or(command, |(line, _)| line.as_str());
         let command = match issue {
             Some(issue) => Line::new()
                 .fixed("export ")
@@ -119,11 +115,16 @@ impl Agent {
                 .fixed("=")
                 .number(issue)
                 .fixed(" && ")
-                .launch(&command)
+                .launch(command)
                 .done(),
-            None => command,
+            None => command.to_string(),
         };
-        self.start(worktree, harness, &command, now)
+        let terminal = self.start(worktree, harness, &command, now)?;
+        std::fs::write(worktree.note("convoy-worker-model")?, model.unwrap_or_default())?;
+        if let Some((_, settings)) = prepared {
+            crate::codex_launch::record(worktree, &settings)?;
+        }
+        Ok(terminal)
     }
 
     /// Starts every kind of worker with its harness's host network settings.
@@ -284,13 +285,21 @@ pub(crate) struct Continuing {
 /// Validate the successor before ending the old worker.
 pub(crate) fn continuation_harness(fleet: &Fleet, agent: &Agent, number: u64) -> Result<Harness> {
     let issue = fleet.gh.issue(number)?;
-    let harness = match &fleet.config.bound {
-        Some(bound) => Staged::enter(fleet, bound, number, &issue.labels)?.harness(),
-        None if issue.labels.contains(&fleet.config.escalate_label) => {
-            fleet.stock_consult()?.harness
+    let (harness, model) = match &fleet.config.bound {
+        Some(bound) => {
+            let staged = Staged::enter(fleet, bound, number, &issue.labels)?;
+            (staged.harness(), staged.model().map(str::to_string))
         }
-        None => fleet.cast(&issue.labels)?.map_err(|e| anyhow!(e))?.harness,
+        None if issue.labels.contains(&fleet.config.escalate_label) => {
+            let cast = fleet.stock_consult()?;
+            (cast.harness, cast.model)
+        }
+        None => {
+            let cast = fleet.cast(&issue.labels)?.map_err(|e| anyhow!(e))?;
+            (cast.harness, cast.model)
+        }
     };
+    crate::codex_launch::selected(harness, model.as_deref())?;
     crate::role::startable(&agent.launches, harness, "worker continuation")?;
     Ok(harness)
 }
@@ -455,25 +464,31 @@ fn start(
                     })?;
                 }
                 terminal = Some(match &staged {
-                    Some(staged) => {
-                        agent.start(cut, harness, &staged.command(launch, cut)?, fleet.now)?
-                    }
+                    Some(staged) => agent.start_worker(
+                        cut,
+                        (harness, model.as_deref()),
+                        &staged.command(launch, cut)?,
+                        true,
+                        None,
+                        fleet.now,
+                    )?,
                     None => {
                         let launch = match &model {
                             Some(model) => harness.with_model(launch, model),
                             None => launch.to_string(),
                         };
-                        agent.start_in_worktree(cut, harness, &launch, Some(number), fleet.now)?
+                        agent.start_worker(
+                            cut,
+                            (harness, model.as_deref()),
+                            &launch,
+                            false,
+                            Some(number),
+                            fleet.now,
+                        )?
                     }
                 });
             }
             DispatchStep::AwaitReady => {
-                if let Some(cut) = &worktree {
-                    std::fs::write(
-                        cut.note("convoy-worker-model")?,
-                        model.as_deref().unwrap_or(""),
-                    )?;
-                }
                 let (cut, handle) =
                     worktree.as_ref().zip(terminal.as_ref()).ok_or_else(undecided)?;
                 cut.await_ready(handle, agent.ready_timeout)?;

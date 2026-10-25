@@ -647,7 +647,12 @@ fn a_resident_launches_reads_added_and_changed_commands() {
 fn every_known_harness_discovers_its_existing_stock_command() {
     for harness in afkconvoy_core::harness::Harness::ALL {
         let world = World::new();
-        world.with_kit(|kit| kit["harnesses"] = json!([{"harness": harness.key()}]));
+        world.with_kit(|kit| {
+            kit["harnesses"] = json!([{"harness": harness.key()}]);
+            if harness == afkconvoy_core::harness::Harness::Codex {
+                kit["harnesses"][0]["models"] = json!([{"model":"gpt-x"}]);
+            }
+        });
         world.issue(7, &["ready-for-agent"]);
         let ran = world.afk(&TICK);
         assert_eq!(ran.json["errors"], json!([]), "{}: {} {}", harness.key(), ran.json, ran.stderr);
