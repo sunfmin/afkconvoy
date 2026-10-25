@@ -653,10 +653,6 @@ pub fn judge(
                 Blocked::Redispatch => {
                     // Every blocker closed: the issue is worked again, from what is here.
                     dispatch(fleet, me, agent, issue, StartFrom::Auto)?;
-                    // Last: a start that failed is made again by the next tick.
-                    if let Some(said) = said {
-                        worktree.record_answered(said)?;
-                    }
                     return Ok(Outcome::Continued);
                 }
                 Blocked::Escalate(reason) => Handed::new(
