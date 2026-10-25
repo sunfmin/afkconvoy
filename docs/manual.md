@@ -980,7 +980,7 @@ afkconvoy panel [OPTIONS] [CHECKOUT]
 
 #### `afkconvoy cast`
 
-Choose models only within each issue's kit-selected harnesses, when this host enables casting
+Choose a model within each issue's selected harness and add its `model:` label, in one session when enabled on this host
 
 ##### When to run it
 
@@ -3629,7 +3629,7 @@ On a host, a role's range is its entry cut to the host kit (`afkconvoy kit --hel
 
 #### An issue's casting
 
-An issue's casting is its `model:` labels, put on by a caster or a human. Every worker chooses the first eligible harness and model in this machine's host kit order; its role's range and limits remain constraints. A matching model label overrides model order only within the selected harness. Legacy `harness:` labels are retained but never select a harness. Labels for other harnesses are kept and apply again when their harness is selected.
+An issue's casting is its `model:` labels, put on by a caster or a human. Every worker chooses the first eligible harness and model in this machine's host kit order; its role's range and limits remain constraints. A matching model label takes priority over model order only within the selected harness. Legacy `harness:` labels are retained but never select a harness. Labels for other harnesses are kept and apply again when their harness is selected.
 
 Automatic casting defaults off, including for an older kit. `afkconvoy kit --cast on` enables it on this host for every checkout; `afkconvoy kit --cast off` disables it. The setting lives only in the kit and survives rebuilding, daily refresh and runner restarts. With it off, no issue waits for a caster, and `afkconvoy cast` sends no prompt. Human model labels are still followed.
 

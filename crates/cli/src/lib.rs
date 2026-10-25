@@ -273,7 +273,7 @@ enum Command {
         #[arg(long, value_parser = ["on", "off"])]
         cast: Option<String>,
     },
-    /// Choose models only within each issue's kit-selected harnesses, when this host enables casting
+    /// Choose a model within each issue's selected harness and add its `model:` label, in one session when enabled on this host
     ///
     /// ## When to run it
     ///
