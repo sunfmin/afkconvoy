@@ -316,16 +316,6 @@ impl Waiting {
             .iter()
             .rev()
             .find_map(|source| self.waits.reason(source.body).map(|reason| (source, reason)));
-        // A position can call for a human before a tick has written its
-        // escalation comment. The stage record is the evidence then.
-        let source = source.or_else(|| {
-            if !matches!(self.waits, Waits::Escalated(_)) {
-                return None;
-            }
-            sources.iter().rev().find_map(|source| {
-                StageRecord::read(source.body).map(|record| (source, record.text))
-            })
-        });
         if let Some((source, reason)) = source {
             let reason = first_sentence(&reason);
             if !reason.is_empty() {
@@ -359,7 +349,12 @@ impl Waits {
         let after_marker = || body.split_once('\n').map(|(_, text)| text.trim());
         match self {
             Waits::Escalated(_) => {
-                crate::transition::escalated_at([body])?;
+                // A position may call for a human before the tick writes
+                // its escalation. A newer stage record then supersedes an
+                // old escalation from before the issue was handed back.
+                if crate::transition::escalated_at([body]).is_none() {
+                    return StageRecord::read(body).map(|record| record.text);
+                }
                 let text = after_marker()?;
                 Some(text.strip_prefix("**afkconvoy: escalated to a human.**")?.trim().into())
             }
