@@ -486,11 +486,15 @@ impl World {
     }
 
     /// Every `gh` call made since the last look, as argv lists — all but the
-    /// read of the base branch's protection every start makes.
+    /// reads every start makes: of the base branch's protection, and of who
+    /// may see the tracker.
     pub fn gh_calls(&self) -> Vec<Vec<String>> {
         let mut calls: Vec<Vec<String>> =
             serde_json::from_value(self.gh()["calls"].clone()).unwrap();
-        calls.retain(|call| !call.iter().any(|arg| arg.ends_with("/protection")));
+        let visibility = afkconvoy::gh::VISIBILITY_JQ;
+        calls.retain(|call| {
+            !call.iter().any(|arg| arg.ends_with("/protection") || arg == visibility)
+        });
         self.with_gh(|gh| {
             gh["calls"] = json!([]);
             gh["envs"] = json!([]);

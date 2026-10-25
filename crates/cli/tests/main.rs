@@ -49,6 +49,7 @@ mod plan;
 mod precedent;
 mod probe;
 mod proxy;
+mod public_tracker;
 mod rebuild;
 mod rehearse;
 mod release;

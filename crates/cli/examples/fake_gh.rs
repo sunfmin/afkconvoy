@@ -28,13 +28,16 @@
 //! `owner` and `repo` — each with a state of its own, as this one's issues,
 //! comments, labels and edges. Such a call is logged here and there, and
 //! answered from there.
+//!
+//! `visibility`: who GitHub lets see the repo — of a tracker, in its own
+//! state — `private` where it says none.
 
 mod fake;
 
 use afkconvoy::gh::{
     BLOCKED_BY_JQ, CARRYING_JQ, CLOSED_JQ, COMMENTS_JQ, COMMENTS_WITH, ISSUE_JQ, LABELS_JQ,
     LANDED_ISSUES_JQ, LANDED_ISSUES_QUERY, OPEN_ISSUES_JQ, OPEN_ISSUES_QUERY, PR_FIELDS,
-    PR_OF_FIELDS,
+    PR_OF_FIELDS, VISIBILITY_JQ,
 };
 use std::path::PathBuf;
 
@@ -120,6 +123,10 @@ fn main() {
             rows.push(issue);
             st.finish(&format!("https://gh/{repo}/issues/{number}"), 0, "")
         }
+        ["api", "repos/{owner}/{repo}", "--jq", jq] if *jq == VISIBILITY_JQ => {
+            let visibility = st.doc["visibility"].as_str().unwrap_or("private").to_string();
+            st.finish(&visibility, 0, "")
+        }
         ["api", "graphql", ..] => open_issues(&st),
         ["api", ..] => api(&mut st),
         ["issue", "create", ..] => issue_create(&mut st),
@@ -156,13 +163,14 @@ fn main() {
     }
 }
 
-/// The state of the tracker the call names (`trackers`), with the call as
-/// though it named this repo; this one's where it names none.
+/// The state of the tracker the call names (`trackers`) — an endpoint under
+/// it, or the repo itself — with the call as though it named this repo; this
+/// one's where it names none.
 fn tracked(st: State) -> State {
     let named = st.doc["trackers"].as_object().into_iter().flatten().find(|(repo, _)| {
         let (owner, name) = repo.split_once('/').unwrap();
         let endpoint = format!("repos/{repo}/");
-        st.argv.iter().any(|arg| arg.starts_with(&endpoint))
+        st.argv.iter().any(|arg| arg.starts_with(&endpoint) || *arg == format!("repos/{repo}"))
             || st.argv.contains(&format!("owner={owner}"))
                 && st.argv.contains(&format!("repo={name}"))
     });
@@ -180,6 +188,7 @@ fn tracked(st: State) -> State {
         argv.push(match arg {
             arg if *arg == owner => "owner={owner}".to_string(),
             arg if *arg == name => "repo={repo}".to_string(),
+            arg if *arg == endpoint.trim_end_matches('/') => REPO.trim_end_matches('/').to_string(),
             arg => arg.replacen(&endpoint, REPO, 1),
         });
     }
