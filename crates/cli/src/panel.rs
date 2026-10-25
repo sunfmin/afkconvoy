@@ -1006,8 +1006,8 @@ fn host_part(out: &mut String, page: &Page) {
         let running = host.inspection.as_ref().expect("held back by above");
         let _ = writeln!(
             out,
-            "<section class=\"hot\" data-inspection=\"host\"><b>Host inspection</b>: admission \
-             held back new workers for {} past its span; <b>the host</b> is inspected by \
+            "<section class=\"hot\" data-inspection=\"host\"><b>Host inspection</b>: \
+             {} past its span; <b>the host</b> is inspected by \
              <code>{by}</code>, for {} so far, for {}.</section>",
             reason.word(),
             lasted(host.now.saturating_sub(running.since)),
@@ -1032,7 +1032,7 @@ fn host_part(out: &mut String, page: &Page) {
         let _ = writeln!(
             out,
             "<section class=\"hot\" data-host-inspected=\"{found}\"><b>Host inspection</b>, \
-             {} ago: admission held back for {} ({}); <code>{by}</code>, as the operator on \
+             {} ago: {} ({}); <code>{by}</code>, as the operator on \
              this host: <b>{found}</b> · {}</section>",
             lasted(host.now.saturating_sub(last.ended)),
             last.reason.word(),
@@ -1846,7 +1846,7 @@ mod tests {
             held_back_by: Some(Reason::Disk),
         });
         let running = render(&page_of(host.clone(), vec![]));
-        assert!(running.contains("held back new workers for disk past its span; <b>the host</b> is inspected by <code>stock-consult</code>, for 5m so far"), "{running}");
+        assert!(running.contains("disk past its span; <b>the host</b> is inspected by <code>stock-consult</code>, for 5m so far"), "{running}");
         for (found, prs) in [("said", vec![]), ("said", vec![451])] {
             host.inspection = None;
             host.host_inspected = Some(Last {
@@ -1863,12 +1863,7 @@ mod tests {
             });
             let page = render(&page_of(host.clone(), vec![]));
             assert!(page.contains(&format!("data-host-inspected=\"{found}\"")), "{page}");
-            assert!(
-                page.contains(
-                    "admission held back for disk (22.9 GiB of the checkout's disk is free"
-                ),
-                "{page}"
-            );
+            assert!(page.contains("disk (22.9 GiB of the checkout's disk is free"), "{page}");
             assert!(page.contains(&format!("as the operator on this host: <b>{found}</b> · five worktrees of 14 GiB · did: removed /w/a/target")), "{page}");
         }
         let page = render(&page_of(host, vec![]));
