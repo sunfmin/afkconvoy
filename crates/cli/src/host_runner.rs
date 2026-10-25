@@ -22,6 +22,14 @@
 //! on the panel's port of the host settings, or on any free port where that
 //! is taken.
 //!
+//! It moves onto a newer afkconvoy by itself (`Watched`, `handed_over`): it
+//! looks at the file it was started from, and once that answers a newer
+//! release and nothing holds the move back (`held_back`), it stops every
+//! fleet instance between two ticks, lets the host go and starts the new
+//! one's in its place, which starts every checkout on the list. One that
+//! does not answer is ended, and this one takes the host back and holds
+//! every checkout again, on its own release.
+//!
 //! `run --foreground` holds the host the same way — its lock, its socket and
 //! its panel — with one fleet instance, its own checkout's, in the process
 //! that ran it, and leaves the checkout list alone (`foreground`).
@@ -32,23 +40,26 @@ use std::ffi::OsString;
 use std::fs::{File, OpenOptions, TryLockError};
 use std::io::Write;
 use std::num::NonZeroUsize;
+use std::os::fd::AsRawFd;
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::process::CommandExt;
 use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use afkconvoy_core::checkouts::{OnList, on_list};
 use afkconvoy_core::exclusive::Ticket;
-use afkconvoy_core::host_runner::{Found, backoff, found};
+use afkconvoy_core::host_runner::{Found, HeldBack, Stands, backoff, found, held_back};
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::checkout_list::{self, Entry, List};
 use crate::copies::cache;
+use crate::doctor::{Finding, Kind, finding};
 use crate::exclusive::Queue;
 use crate::git::Repo;
 use crate::host_panel::HostPanel;
@@ -103,12 +114,26 @@ const WATCHED_EVERY: Duration = Duration::from_millis(250);
 /// host runner starts.
 const LOG_ROLLS_AT: u64 = 1 << 20;
 
+/// How often the host runner looks at the file it was started from, for a
+/// newer afkconvoy installed there.
+pub(crate) const INSTALLED_LOOKED_EVERY: Duration = Duration::from_secs(1);
+
+/// How long the afkconvoy installed there has to say its version.
+const VERSION_SAID_WITHIN: Duration = Duration::from_secs(10);
+
+/// How long a host runner moving waits for the one it started to answer: as
+/// long as `run` waits for one, the new one's wait for the host among it.
+pub(crate) const MOVED_WITHIN: Duration = Duration::from_secs(UP_WITHIN.as_secs() + 5);
+
 /// The host runner as it holds its checkouts.
 struct Runner {
     list: List,
     log: Arc<RunnerLog>,
     /// The process's: SIGTERM, SIGINT, the lock file gone.
     stop: Stop,
+    /// Whether it is moving onto a newer afkconvoy: every fleet instance was
+    /// told to stop, and none starts again.
+    moving: AtomicBool,
     /// Every fleet instance this host runner holds, by checkout root.
     held: Mutex<BTreeMap<PathBuf, Held>>,
     /// The page it serves.
@@ -118,20 +143,30 @@ struct Runner {
 
 /// What the fleet instances of a host share, held by its host runner for
 /// them all (docs/adr/0023): how each stands for host sleep, the one
-/// inspection on the host and who waits for it, and the exclusive queue. A
-/// clone is the same.
+/// inspection on the host and who waits for it, and the exclusive queue; and
+/// the newer afkconvoy installed where it was started from, which it moves
+/// onto. A clone is the same.
 #[derive(Clone, Default)]
 pub struct Shared {
     pub standings: Standings,
     pub turn: Turn,
     pub queue: Queue,
+    pub installed: Arc<Mutex<Option<Installed>>>,
 }
 
 impl Shared {
     /// What it holds now: what `shared` is answered, and the panel the host
     /// runner serves shows.
     pub fn now(&self) -> SharedNow {
-        SharedNow { exclusive: self.queue.standing(), inspection: self.turn.running() }
+        SharedNow {
+            exclusive: self.queue.standing(),
+            inspection: self.turn.running(),
+            installed: self.installed().clone(),
+        }
+    }
+
+    fn installed(&self) -> MutexGuard<'_, Option<Installed>> {
+        self.installed.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// What `shared` is answered.
@@ -147,6 +182,31 @@ pub struct SharedNow {
     pub exclusive: Vec<Ticket>,
     /// The inspection running on the host; `None`: none.
     pub inspection: Option<Running>,
+    /// The afkconvoy installed where the host runner was started from, where
+    /// it is newer than the host runner's or does not start; `None`: none is,
+    /// or the host runner is of an afkconvoy that does not say it.
+    #[serde(default)]
+    pub installed: Option<Installed>,
+}
+
+/// The afkconvoy installed where the host runner was started from, once that
+/// file changed and is newer than the host runner's or does not start, and
+/// how the host runner's move onto it stands.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Installed {
+    /// The file: the path the host runner was started as.
+    pub path: PathBuf,
+    /// The release it says it is, `--version`; `None` where it said none.
+    pub version: Option<String>,
+    /// The host runner's own.
+    pub from: String,
+    /// What holds the move back now, each in words; empty as it moves, and
+    /// where it failed.
+    pub held_back: Vec<String>,
+    /// Why it did not start, as the host runner moved onto it — or did not
+    /// say its version: the host runner works on, on its own, and tries that
+    /// file no more until it changes.
+    pub failed: Option<String>,
 }
 
 /// What the host's fleets share, as its host runner says it (`Shared`);
@@ -171,10 +231,41 @@ pub fn shared() -> Result<Option<SharedNow>> {
     }
 }
 
+/// What `doctor` finds of the host runner's move onto a newer afkconvoy, as
+/// the host runner says it (`shared`): the one installed where it was started
+/// from did not start, or does not say its version. None where no host
+/// runner runs, or it cannot say.
+pub fn findings() -> Vec<Finding> {
+    let installed = shared().ok().flatten().and_then(|shared| shared.installed);
+    installed.as_ref().and_then(not_moved).into_iter().collect()
+}
+
+/// The finding of `installed`, where the host runner did not move onto it.
+fn not_moved(installed: &Installed) -> Option<Finding> {
+    let why = installed.failed.clone()?;
+    let at = installed.path.display();
+    let what = match &installed.version {
+        Some(version) => format!(
+            "the host runner did not move onto afkconvoy {version}, installed at {at}: it did not \
+             start, and the host runner works on, of afkconvoy {}",
+            installed.from
+        ),
+        None => format!(
+            "the host runner did not move onto the afkconvoy installed at {at}: it does not say \
+             its version, and the host runner works on, of afkconvoy {}",
+            installed.from
+        ),
+    };
+    Some(finding(Kind::NotMoved, what, why, format!("{at} --version")))
+}
+
 /// One checkout's fleet instance, from its start until its thread ends.
 struct Held {
     /// The repo it is of (`checkout_list::repo_of`).
     repo: String,
+    /// The host its `run` named, else this machine's: its tick log's lines
+    /// are of it.
+    host: String,
     seen: Arc<Seen>,
     /// The stop of its start now, which `stop` tells: the thread of a broken
     /// one puts here that of each start of it again (`rested`).
@@ -363,6 +454,15 @@ pub fn log_path() -> Result<PathBuf> {
 /// leaving the list as it is →
 /// {"stopped", "pid", "checkouts"}; or, where another host runner held the
 /// host all the while, {"started": false}.
+///
+/// Meanwhile it looks at the file it was started from (`Watched`): once that
+/// says a newer release and nothing holds the move back, every fleet
+/// instance stops between two ticks, and the host runner of the newer
+/// afkconvoy is started in this one's place, on the same list (`handed_over`)
+/// → {"moved": true, "pid", "to"}, `to` being what that one says of itself;
+/// the move and its two releases are a line of each checkout's tick log.
+/// One that does not answer leaves this one holding the host again, as it
+/// held it before, and trying that file no more until it changes.
 pub fn serve() -> Result<Value> {
     // Before any thread starts: nothing moves it after, and nothing the
     // fleet does leans on it.
@@ -376,14 +476,99 @@ pub fn serve() -> Result<Value> {
         let log = Arc::clone(&log);
         std::panic::set_hook(Box::new(move |panic| log.say(&panic.to_string())));
     }
-    let Some((lock, before)) = took_host(&dir.join(LOCK))? else {
-        let holder = holder_of(&dir.join(LOCK));
-        let said = holder.map_or("another".to_string(), |pid| format!("pid {pid}"));
-        log.say(&format!("host runner not started: {said} holds this host"));
-        return Ok(json!({"started": false, "holder": holder}));
-    };
+    let mut watched = Watched::started();
+    // Heard from the first hold of the host on, and across every hold after.
+    let mut stop = None;
+    loop {
+        let Some((lock, before)) = took_host(&dir.join(LOCK))? else {
+            let holder = holder_of(&dir.join(LOCK));
+            let said = holder.map_or("another".to_string(), |pid| format!("pid {pid}"));
+            log.say(&format!("host runner not started: {said} holds this host"));
+            return Ok(json!({"started": false, "holder": holder}));
+        };
+        let stop = stop.get_or_insert_with(Stop::listen);
+        let (lock, left) = match held_host(&dir, &log, (lock, &before), stop, &mut watched)? {
+            Hold::Stopped(stopped) => return Ok(stopped),
+            Hold::Moving { lock, left } => (lock, left),
+        };
+        let Some(path) = watched.path.clone() else { bail!("no file to move onto") };
+        let pid = std::process::id();
+        let to = watched.installed().as_ref().and_then(|installed| installed.version.clone());
+        let to = to.unwrap_or_default();
+        let at = path.display();
+        match handed_over(&path, lock) {
+            Ok(about) => {
+                let (moved_to, new) = (about["version"].as_str().unwrap_or(&to), &about["pid"]);
+                log.say(&format!(
+                    "host runner moved: from afkconvoy {VERSION} (pid {pid}) to afkconvoy \
+                     {moved_to} (pid {new}), installed at {at}"
+                ));
+                let (from, to) = (VERSION.to_string(), moved_to.to_string());
+                let moved = What::Moved { from, to, path: path.clone() };
+                left.iter().for_each(|left| left.told(&log, moved.clone()));
+                return Ok(json!({"moved": true, "pid": pid, "to": about}));
+            }
+            Err(why) => {
+                let why = format!("{why:#}");
+                followed_log();
+                log.say(&format!(
+                    "host runner not moved: afkconvoy {to}, installed at {at}, did not start: \
+                     {why} — it takes the host back, on afkconvoy {VERSION}, and tries that file \
+                     no more until it changes"
+                ));
+                let (from, failed) = (VERSION.to_string(), why.clone());
+                let not_moved = What::NotMoved { from, to, path: path.clone(), why: failed };
+                left.iter().for_each(|left| left.told(&log, not_moved.clone()));
+                watched.failed(why);
+            }
+        }
+    }
+}
+
+/// How one hold of the host ended.
+enum Hold {
+    /// The host runner stopped, as told, and let the host go: its answer.
+    Stopped(Value),
+    /// Every fleet instance stopped for the move onto the newer afkconvoy
+    /// installed: the lock, the host still held by it, and each checkout
+    /// held, as its fleet instance left it.
+    Moving { lock: File, left: Vec<Left> },
+}
+
+/// A checkout whose fleet instance stopped for the host runner's move.
+struct Left {
+    root: PathBuf,
+    /// The fleet instance that stopped, and its host: the move is kept in
+    /// its tick log as of it.
+    instance: String,
+    host: String,
+}
+
+impl Left {
+    /// Keeps `what`, of the host runner's move, in its tick log, now.
+    fn told(&self, log: &RunnerLog, what: What) {
+        let (instance, host) = (self.instance.clone(), self.host.clone());
+        let entry = log::Entry { at: crate::clock(), instance, host, what };
+        if let Err(error) = kept_in(&self.root, &entry) {
+            let at = self.root.display();
+            log.say(&format!("{at}: its tick log could not keep `{}`: {error:#}", entry.said()));
+        }
+    }
+}
+
+/// Holds the host, its lock taken — `took` is the lock and what the host
+/// runner before wrote into it: serves the panel, starts every checkout on
+/// its list, and answers on its socket, until `stop` is told, its lock file
+/// is gone, or nothing holds back the move onto a newer afkconvoy `watched`
+/// finds → how it ended, once every fleet instance has.
+fn held_host(
+    dir: &Path,
+    log: &Arc<RunnerLog>,
+    (lock, before): (File, &Value),
+    stop: &Stop,
+    watched: &mut Watched,
+) -> Result<Hold> {
     let ours = identity(&lock.metadata()?);
-    let stop = Stop::listen();
     let (list, pid) = (List::of_host()?, std::process::id());
     let started = runner_socket::listen().and_then(|listener| Ok((listener, list.read()?)));
     let (listener, listed) = started.inspect_err(|error| {
@@ -401,7 +586,8 @@ pub fn serve() -> Result<Value> {
             before["pid"]
         ));
     }
-    let (held, shared) = (Mutex::default(), Shared::default());
+    let held = Mutex::default();
+    let shared = Shared { installed: Arc::clone(&watched.installed), ..Shared::default() };
     let panel = HostPanel::new(shared.clone());
     // Read once: a port the host settings change to holds from the next start.
     let port = host_settings::of_host().map_or(host_settings::PANEL_PORT, |said| said.panel_port());
@@ -416,7 +602,8 @@ pub fn serve() -> Result<Value> {
             None
         }
     };
-    let runner = Arc::new(Runner { list, log, stop: stop.clone(), held, panel, shared });
+    let (log, stop, moving) = (Arc::clone(log), stop.clone(), AtomicBool::new(false));
+    let runner = Arc::new(Runner { list, log, stop: stop.clone(), moving, held, panel, shared });
     runner.start_listed(listed.checkouts);
     let about = json!({"pid": pid, "version": VERSION, "log": dir.join(LOG), "panel": address});
     let answerer = Arc::clone(&runner);
@@ -424,7 +611,8 @@ pub fn serve() -> Result<Value> {
 
     let lock_file = dir.join(LOCK);
     let still_ours = || std::fs::metadata(&lock_file).is_ok_and(|now| identity(&now) == ours);
-    while !stop.told() {
+    let mut left = None;
+    while !stop.told() && left.is_none() {
         std::thread::sleep(WATCHED_EVERY);
         if !stop.told() && !still_ours() {
             runner.log.say(
@@ -432,9 +620,19 @@ pub fn serve() -> Result<Value> {
             );
             stop.tell();
         }
+        if !stop.told() && watched.looked(&runner.log) {
+            left = runner.stopped_for_move();
+        }
     }
     if still_ours() {
-        runner.log.say("host runner stopping: told to stop, each fleet instance ends its step");
+        runner.log.say(match left {
+            None => "host runner stopping: told to stop, each fleet instance ends its step",
+            Some(_) => {
+                "host runner moving: nothing holds it back, so each fleet instance stops \
+                 between two ticks, and the newer afkconvoy's host runner is started in its \
+                 place"
+            }
+        });
         // A `run` from now on starts a host runner, which waits for this one.
         let _ = std::fs::remove_file(dir.join(runner_socket::SOCKET));
     }
@@ -446,9 +644,13 @@ pub fn serve() -> Result<Value> {
     let kept = runner.list.read().map_or(0, |listed| listed.checkouts.len());
     // Before the host is let go: the host runner that takes it next serves on the port.
     runner.panel.close();
+    // Told to stop as it moved, it stops.
+    if let Some(left) = left.filter(|_| !stop.told() && still_ours()) {
+        return Ok(Hold::Moving { lock, left });
+    }
     runner.log.say(&format!("host runner stopped: {kept} checkouts kept on the list"));
     drop(lock);
-    Ok(json!({"stopped": true, "pid": pid, "checkouts": kept}))
+    Ok(Hold::Stopped(json!({"stopped": true, "pid": pid, "checkouts": kept})))
 }
 
 /// Takes the lock in `file`, waiting `UP_WITHIN` for a host runner that
@@ -497,9 +699,245 @@ fn identity(file: &std::fs::Metadata) -> (u64, u64) {
     (file.dev(), file.ino())
 }
 
+/// The file the host runner was started from, as it looks at it for a newer
+/// afkconvoy installed there: `brew upgrade` points the path at another file,
+/// and an install in place writes it anew.
+struct Watched {
+    /// Its path, as the host runner was started as it — a link Homebrew
+    /// keeps among them; `None` where the process cannot say it.
+    path: Option<PathBuf>,
+    /// The file there as it was last looked at: which file, when it was
+    /// last written and how long it is; `None`: no file was.
+    seen: Option<((u64, u64), i64, u64)>,
+    looked: Instant,
+    /// What it found there, where it is newer than this host runner's
+    /// afkconvoy or does not say its version: said on the socket.
+    installed: Arc<Mutex<Option<Installed>>>,
+}
+
+impl Watched {
+    /// The file this process was started from, as it is now: the afkconvoy
+    /// of this host runner, which it moves onto none of.
+    fn started() -> Watched {
+        let path = std::env::current_exe().ok();
+        let seen = path.as_deref().and_then(file_at);
+        let installed = Arc::default();
+        Watched { path, seen, looked: Instant::now(), installed }
+    }
+
+    fn installed(&self) -> MutexGuard<'_, Option<Installed>> {
+        self.installed.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Looks at the file again, once `INSTALLED_LOOKED_EVERY` has passed,
+    /// and where it changed asks the afkconvoy there its version, saying in
+    /// `log` what it found → whether the host runner moves onto it: one of a
+    /// newer release than its own, and not one that did not start.
+    fn looked(&mut self, log: &RunnerLog) -> bool {
+        if self.looked.elapsed() >= INSTALLED_LOOKED_EVERY {
+            self.looked = Instant::now();
+            if let Some(path) = &self.path {
+                let now = file_at(path);
+                if now != self.seen {
+                    self.seen = now;
+                    let found = now.and_then(|_| found_at(path, log));
+                    *self.installed() = found;
+                }
+            }
+        }
+        matches!(&*self.installed(), Some(Installed { version: Some(_), failed: None, .. }))
+    }
+
+    /// The move onto what it found failed, `why`: the host runner works on,
+    /// on its own, and tries that file no more until it changes.
+    fn failed(&mut self, why: String) {
+        if let Some(installed) = self.installed().as_mut() {
+            (installed.failed, installed.held_back) = (Some(why), vec![]);
+        }
+    }
+}
+
+/// The file at `path`, as `Watched` tells one from another: which file, when
+/// it was last written and how long it is; `None` where there is none.
+fn file_at(path: &Path) -> Option<((u64, u64), i64, u64)> {
+    let file = std::fs::metadata(path).ok()?;
+    Some((identity(&file), file.mtime(), file.len()))
+}
+
+/// What the afkconvoy at `path`, a file changed since it was last looked at,
+/// is to this host runner, said in `log` → it, where it is of a newer release
+/// than this host runner's, or does not say its version; `None` where it is of
+/// this release or an older one, which the host runner never moves onto.
+fn found_at(path: &Path, log: &RunnerLog) -> Option<Installed> {
+    let at = path.display();
+    let installed = |version, failed| Installed {
+        path: path.to_path_buf(),
+        version,
+        from: VERSION.to_string(),
+        held_back: vec![],
+        failed,
+    };
+    let version = match version_of(path) {
+        Ok(version) => version,
+        Err(error) => {
+            let why = format!("{error:#}");
+            log.say(&format!(
+                "{at}, which this host runner was started from, changed and does not say its \
+                 version: {why} — the host runner works on, of afkconvoy {VERSION}, and looks again \
+                 once it changes"
+            ));
+            return Some(installed(None, Some(why)));
+        }
+    };
+    match found(VERSION, &version) {
+        Found::Newer => {
+            log.say(&format!(
+                "afkconvoy {version} is installed at {at}, newer than this host runner's, \
+                 {VERSION}: it moves onto it once its fleets are idle"
+            ));
+            Some(installed(Some(version), None))
+        }
+        Found::Older => {
+            log.say(&format!(
+                "afkconvoy {version} is installed at {at}, older than this host runner's, \
+                 {VERSION}: it never moves onto an older one"
+            ));
+            None
+        }
+        Found::Same => None,
+    }
+}
+
+/// The release the afkconvoy at `path` says it is, asked with `--version`
+/// and given `VERSION_SAID_WITHIN`: `afkconvoy 0.6.0` is `0.6.0`. Errors: it
+/// could not be started, said nothing in time and was ended, ended in an
+/// error, or said no version.
+fn version_of(path: &Path) -> Result<String> {
+    let mut child = Command::new(path)
+        .arg("--version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("it could not be started")?;
+    let until = Instant::now() + VERSION_SAID_WITHIN;
+    while child.try_wait()?.is_none() {
+        if Instant::now() >= until {
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!("it said nothing within {}s, and was ended", VERSION_SAID_WITHIN.as_secs());
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let said = child.wait_with_output()?;
+    let (out, err) = (String::from_utf8_lossy(&said.stdout), String::from_utf8_lossy(&said.stderr));
+    if !said.status.success() {
+        bail!("`--version` ended {}: {}", said.status, err.trim());
+    }
+    let version = out.trim().strip_prefix("afkconvoy ").map(str::trim);
+    let version = version.filter(|version| !version.is_empty() && !version.contains(' '));
+    version.map(str::to_string).with_context(|| format!("`--version` said {:?}", out.trim()))
+}
+
+/// Starts the host runner of the afkconvoy at `path` as `run` starts one
+/// (`start_detached`), lets the host go, `lock`, and waits `MOVED_WITHIN` for
+/// a host runner to answer in this one's place → what it says of itself:
+/// {pid, version, log, panel} — the one started, or another a `run` started
+/// meanwhile. Errors: it could not be started, or ended before any answered;
+/// or none answered in time, and the one started is ended. The host is then
+/// free for this one to take back.
+fn handed_over(path: &Path, lock: File) -> Result<Value> {
+    let (lock_file, log) = (cache()?.join(LOCK), log_path()?);
+    // What it says as it ends is what it wrote past here.
+    let written = std::fs::metadata(&log).map_or(0, |kept| kept.len());
+    let started = start_detached(path);
+    // Once it can wait for it: it takes the host as this one lets it go.
+    drop(lock);
+    let mut child = started?;
+    let (pid, until) = (std::process::id(), Instant::now() + MOVED_WITHIN);
+    loop {
+        if let Ok(Reached::Answer(said)) = runner_socket::ask(&Request::Version, SAID_WITHIN)
+            && said["host_runner"]["pid"] != pid
+        {
+            return Ok(said["host_runner"].clone());
+        }
+        if let Some(ended) = child.try_wait()?
+            && !held(&lock_file)
+        {
+            bail!("it ended as it started ({ended}): {}", last_lines(&log, written, 5));
+        }
+        if Instant::now() >= until {
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!("it did not answer within {}s, and was ended", MOVED_WITHIN.as_secs());
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 impl Runner {
     fn holding(&self) -> MutexGuard<'_, BTreeMap<PathBuf, Held>> {
         self.held.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Whether it moves onto a newer afkconvoy: each fleet instance was told
+    /// to stop for it, and none starts again.
+    fn moved(&self) -> bool {
+        self.moving.load(Ordering::Relaxed)
+    }
+
+    /// Where nothing holds back the move onto the newer afkconvoy installed
+    /// (`held_back`) → tells every fleet instance to stop for it, between two
+    /// ticks, and answers each checkout held, as its fleet instance left it;
+    /// else `None`. Either way the installed afkconvoy's `held_back` says
+    /// what holds it back now. Decided and told while every fleet instance
+    /// stands still between two ticks — none begins one meanwhile — and none
+    /// is started or added.
+    fn stopped_for_move(&self) -> Option<Vec<Left>> {
+        let holding = self.holding();
+        // Read before every instance is held still: none of them waits on it.
+        let (exclusive, inspecting) =
+            (self.shared.queue.standing().len(), self.shared.turn.running().is_some());
+        let each: Vec<(String, Option<String>, Option<Stands>)> = holding
+            .iter()
+            .map(|(root, held)| {
+                let stage = held.seen.stage();
+                let stands = match stage.came {
+                    Came::Broken => Some(Stands::Broken),
+                    Came::Ticked { .. } => None,
+                    Came::Starting | Came::Refused(_) | Came::Ended(_) => Some(Stands::Starting),
+                };
+                (root.display().to_string(), stage.instance.clone(), stands)
+            })
+            .collect();
+        let held = self.shared.standings.held_still(|stand| {
+            let each: Vec<(String, Stands)> = each
+                .iter()
+                .map(|(root, instance, stands)| {
+                    // One whose loop ended stands no more: it is ending.
+                    let ticked = instance.as_ref().and_then(|instance| stand.get(instance));
+                    (root.clone(), stands.or(ticked.copied()).unwrap_or(Stands::Starting))
+                })
+                .collect();
+            let held = held_back(&each, exclusive, inspecting);
+            if held.is_empty() {
+                self.moving.store(true, Ordering::Relaxed);
+                holding.values().for_each(|held| held.stop.tell());
+            }
+            held
+        });
+        if let Some(installed) = self.shared.installed().as_mut() {
+            installed.held_back = held.iter().map(HeldBack::said).collect();
+        }
+        if !held.is_empty() {
+            return None;
+        }
+        let left = holding.iter().map(|(root, held)| Left {
+            root: root.clone(),
+            instance: held.seen.stage().instance.clone().unwrap_or_default(),
+            host: held.host.clone(),
+        });
+        Some(left.collect())
     }
 
     /// Starts the fleet instance of each checkout `listed`, as the `run`
@@ -574,11 +1012,12 @@ impl Runner {
     /// that. The concurrency `start` says is the checkout's from now on,
     /// whichever it is (`said`).
     fn add(self: &Arc<Self>, checkout: &Path, start: Start) -> Result<Value> {
-        if self.stop.told() {
+        if self.stop.told() || self.moved() {
             bail!(
-                "the host runner (pid {}) is stopping: run again once it has stopped; its log, \
+                "the host runner (pid {}) is stopping{}: run again once it has stopped; its log, \
                  {}, says how far it is",
                 std::process::id(),
+                if self.moved() { ", to move onto a newer afkconvoy" } else { "" },
                 log_path()?.display()
             );
         }
@@ -713,6 +1152,7 @@ impl Runner {
         let (stop, reach) = (self.stop.instance(), Reach::default());
         let holding = Held {
             repo: key.clone(),
+            host: start.named.host.clone().unwrap_or_else(crate::this_host),
             seen: Arc::clone(&seen),
             stop: stop.clone(),
             reach: reach.clone(),
@@ -807,7 +1247,7 @@ impl Runner {
     /// next start, kept where `stop` finds it, how that start is reached, kept
     /// where a question about it finds it, and what that `run` asked; `None`
     /// where `stop` took its checkout off the list, or the host runner was
-    /// told to stop, first.
+    /// told to stop or moves, first.
     fn rested(
         &self,
         root: &Path,
@@ -817,7 +1257,7 @@ impl Runner {
         let again = {
             let mut stage = seen.stage();
             loop {
-                if stage.removed || self.stop.told() {
+                if stage.removed || self.stop.told() || self.moved() {
                     return None;
                 }
                 if let Some(again) = stage.again.take() {
@@ -837,7 +1277,7 @@ impl Runner {
         // after tells this start.
         let mut holding = self.holding();
         let held = holding.get_mut(root)?;
-        if seen.stage().removed || self.stop.told() {
+        if seen.stage().removed || self.stop.told() || self.moved() {
             return None;
         }
         (held.stop, held.reach) = (self.stop.instance(), Reach::default());
@@ -856,6 +1296,8 @@ impl Runner {
         let mut stage = seen.stage();
         let why = if stage.removed {
             "it was broken, and `afkconvoy stop` took its checkout off the list"
+        } else if self.moved() {
+            "it was broken, and the host runner moves onto a newer afkconvoy, which starts it"
         } else {
             "it was broken, and the host runner stops"
         };
@@ -901,7 +1343,8 @@ impl Runner {
                 Came::Ticked { .. } => true,
                 Came::Refused(_) | Came::Ended(_) | Came::Broken => false,
             };
-            let broke = at_work && held.is_err() && !stage.removed && !self.stop.told();
+            let broke =
+                at_work && held.is_err() && !stage.removed && !self.stop.told() && !self.moved();
             if broke {
                 stage.came = Came::Broken;
             }
@@ -961,8 +1404,7 @@ impl Runner {
     /// log of the checkout `root`: a line the host runner writes of one of
     /// its fleet instances. A tick log that cannot keep it costs that line.
     fn said_of(&self, root: &Path, entry: &log::Entry, said: &str) {
-        let kept = Repo::at(root).and_then(|repo| log::Log::of(&repo)?.append(entry));
-        match kept {
+        match kept_in(root, entry) {
             Ok(()) => self.log.say(said),
             Err(error) => {
                 self.log.say(&format!("{said}; its tick log could not be written: {error:#}"))
@@ -1039,6 +1481,12 @@ impl Runner {
         let kept = self.list.read()?.checkouts.len();
         Ok(json!({"stopped": stopped, "checkouts": kept}))
     }
+}
+
+/// Keeps `entry` in the tick log of the checkout `root`: a line the host
+/// runner writes of one of its fleet instances.
+fn kept_in(root: &Path, entry: &log::Entry) -> Result<()> {
+    Repo::at(root).and_then(|repo| log::Log::of(&repo)?.append(entry))
 }
 
 /// Why a `run` waiting on a fleet instance that `stop` stopped before its
@@ -1639,7 +2087,8 @@ fn let_go(file: &Path, within: Duration) -> bool {
 /// an error with the last lines of its log; one that ends saying another
 /// holds the host leaves that one to answer.
 fn started_and_asked(add: &Request) -> Result<Reached> {
-    let mut child = start_detached()?;
+    let this = std::env::current_exe().context("cannot find this afkconvoy")?;
+    let mut child = start_detached(&this)?;
     let log = log_path()?;
     let given = UP_WITHIN + Duration::from_secs(5);
     let until = Instant::now() + given;
@@ -1654,7 +2103,7 @@ fn started_and_asked(add: &Request) -> Result<Reached> {
             bail!(
                 "the host runner ended as it started ({ended}): its log, {}, says why:\n{}",
                 log.display(),
-                last_lines(&log, 20)
+                last_lines(&log, 0, 20)
             );
         }
         if Instant::now() >= until {
@@ -1674,14 +2123,15 @@ fn started_and_asked(add: &Request) -> Result<Reached> {
     }
 }
 
-/// Starts the hidden `afkconvoy host-runner`, detached from this process: in
-/// a process group of its own, so a terminal's Ctrl-C and hangup and a
-/// harness that ends the caller's group all miss it; from /; with nothing on
-/// stdin and its stdout and stderr appended to its log; and with the
-/// environment of a fresh login shell, but for the cache and config
-/// directories of this `run` (`pinned`). It is never waited on: once `run`
-/// exits, it is nobody's child.
-fn start_detached() -> Result<Child> {
+/// Starts the hidden `afkconvoy host-runner` of the afkconvoy at `program` —
+/// this `run`'s own, or the newer one a host runner moves onto — detached
+/// from this process: in a process group of its own, so a terminal's Ctrl-C
+/// and hangup and a harness that ends the caller's group all miss it; from /;
+/// with nothing on stdin and its stdout and stderr appended to its log; and
+/// with the environment of a fresh login shell, but for the cache and config
+/// directories of this process (`pinned`). It is never waited on: once this
+/// process exits, it is nobody's child.
+fn start_detached(program: &Path) -> Result<Child> {
     let dir = cache()?;
     std::fs::create_dir_all(&dir).with_context(|| format!("cannot make {}", dir.display()))?;
     let env = launch::login_environment()
@@ -1690,7 +2140,6 @@ fn start_detached() -> Result<Child> {
     let config = kit.parent().and_then(Path::parent).unwrap_or(Path::new("/"));
     let env = pinned(env, &dir, config);
     let log = opened_log(&dir.join(LOG))?;
-    let program = std::env::current_exe().context("cannot find this afkconvoy")?;
     Command::new(program)
         .arg("host-runner")
         .env_clear()
@@ -1721,6 +2170,18 @@ fn pinned(
     unpinned.chain(pins.map(|(name, value)| (name.into(), value.to_os_string()))).collect()
 }
 
+/// Points this host runner's stdout and stderr, which are its log, at the
+/// log as it is now: starting another host runner may have moved the file
+/// they were aside (`opened_log`). Where it cannot be opened, they stay.
+fn followed_log() {
+    let Ok(log) = log_path().and_then(|file| opened_log(&file)) else { return };
+    for to in [libc::STDOUT_FILENO, libc::STDERR_FILENO] {
+        // SAFETY: both descriptors are open; `to` is pointed at the file
+        // `log` holds, which stays open there as `log` is dropped.
+        unsafe { libc::dup2(log.as_raw_fd(), to) };
+    }
+}
+
 /// The host runner's log, opened to append to; one past `LOG_ROLLS_AT` is
 /// moved aside to `.1` first.
 fn opened_log(file: &Path) -> Result<File> {
@@ -1731,10 +2192,13 @@ fn opened_log(file: &Path) -> Result<File> {
     opened.with_context(|| format!("cannot open the host runner's log {}", file.display()))
 }
 
-/// The last `count` lines of `file`, or nothing where it cannot be read.
-fn last_lines(file: &Path, count: usize) -> String {
-    let text = std::fs::read(file).map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
-    let text = text.unwrap_or_default();
+/// The last `count` lines of `file` written past its first `from` bytes —
+/// of all of it, where it is shorter, having rolled — or nothing where it
+/// cannot be read.
+fn last_lines(file: &Path, from: u64, count: usize) -> String {
+    let bytes = std::fs::read(file).unwrap_or_default();
+    let from = usize::try_from(from).ok().filter(|from| *from <= bytes.len()).unwrap_or(0);
+    let text = String::from_utf8_lossy(&bytes[from..]);
     let lines: Vec<&str> = text.lines().collect();
     lines[lines.len().saturating_sub(count)..].join("\n")
 }
@@ -1792,9 +2256,12 @@ mod tests {
     fn the_end_of_a_log_is_its_last_lines() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join(LOG);
-        assert_eq!(last_lines(&file, 2), "");
+        assert_eq!(last_lines(&file, 0, 2), "");
         std::fs::write(&file, "a\nb\nc\n").unwrap();
-        assert_eq!(last_lines(&file, 2), "b\nc");
-        assert_eq!(last_lines(&file, 5), "a\nb\nc");
+        assert_eq!(last_lines(&file, 0, 2), "b\nc");
+        assert_eq!(last_lines(&file, 0, 5), "a\nb\nc");
+        // what was written past a point, and all of a log that rolled since
+        assert_eq!(last_lines(&file, 2, 5), "b\nc");
+        assert_eq!(last_lines(&file, 99, 5), "a\nb\nc");
     }
 }

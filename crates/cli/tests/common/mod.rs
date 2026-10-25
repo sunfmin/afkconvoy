@@ -285,7 +285,12 @@ impl World {
     }
 
     pub fn afk_in(&self, cwd: &Path, args: &[&str]) -> Answer {
-        let out = self.command(env!("CARGO_BIN_EXE_afkconvoy"), cwd).args(args).output().unwrap();
+        self.afk_as(Path::new(env!("CARGO_BIN_EXE_afkconvoy")), cwd, args)
+    }
+
+    /// `afk_in`, as the afkconvoy at `program`: one installed elsewhere.
+    pub fn afk_as(&self, program: &Path, cwd: &Path, args: &[&str]) -> Answer {
+        let out = self.command(program, cwd).args(args).output().unwrap();
         let stdout = String::from_utf8_lossy(&out.stdout);
         let json = serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
             panic!(

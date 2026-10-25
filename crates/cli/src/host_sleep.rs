@@ -16,6 +16,7 @@ use std::process::Command;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::Duration;
 
+use afkconvoy_core::host_runner::Stands;
 use afkconvoy_core::host_sleep::{Awake, Host, Hours, SLEEP_HOURS, Standing, awake, check_at};
 use anyhow::{Context, Result, bail};
 
@@ -51,6 +52,9 @@ struct One {
     /// How many ticks it began, and how many it ended.
     began: u64,
     ended: u64,
+    /// Whether its last tick held a claim, had something on the landing
+    /// train, or failed whole: so until its first has ended.
+    at_work: bool,
     /// How it is woken to tick.
     waker: Waker,
 }
@@ -117,6 +121,21 @@ impl Standings {
         }
     }
 
+    /// Calls `with` with how every instance stands now, as a move of their
+    /// host runner reads it — each by its id: `Ticking` from the start of a
+    /// tick until it ends, else `AtWork` or `Quiet` as its last tick left it —
+    /// and no instance begins a tick until `with` returns.
+    pub fn held_still<T>(&self, with: impl FnOnce(&BTreeMap<String, Stands>) -> T) -> T {
+        let held = self.held();
+        let stands = |one: &One| match one {
+            One { began, ended, .. } if began > ended => Stands::Ticking,
+            One { at_work: true, .. } => Stands::AtWork,
+            One { at_work: false, .. } => Stands::Quiet,
+        };
+        let each = held.each.values().map(|one| (one.standing.instance.clone(), stands(one)));
+        with(&each.collect())
+    }
+
     /// Lets the check of the instance `key` go, if it makes it: another may
     /// check from now on.
     fn let_go(&self, key: u64) {
@@ -170,7 +189,7 @@ impl HostSleep {
             let mut held = standings.held();
             let key = held.next;
             held.next += 1;
-            let one = One { standing, began: 0, ended: 0, waker: wakes.waker() };
+            let one = One { standing, began: 0, ended: 0, at_work: true, waker: wakes.waker() };
             held.each.insert(key, one);
             key
         };
@@ -194,8 +213,10 @@ impl HostSleep {
     /// idle. A check that waits for its tick is told.
     pub fn ticked(&self, now: u64, idle: Option<(bool, bool)>) {
         let kept_awake = host_settings::kept_awake();
+        let at_work = idle.is_none_or(|(_, worked)| worked);
         let (idle, worked) = idle.unwrap_or((false, false));
         self.standings.change(self.key, |one| {
+            one.at_work = at_work;
             let standing = &mut one.standing;
             standing.no_host_sleep = kept_awake;
             if standing.idle != idle {

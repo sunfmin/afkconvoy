@@ -1,7 +1,8 @@
 //! What a `run` does with the host runner it finds, by the release each is
 //! of: a newer afkconvoy moves the host runner onto itself, and an older one
-//! changes nothing; and how long a broken fleet instance waits before the host
-//! runner starts it again (docs/adr/0023).
+//! changes nothing; what holds back the host runner's own move onto a newer
+//! afkconvoy installed where its binary was; and how long a broken fleet
+//! instance waits before the host runner starts it again (docs/adr/0023).
 
 use flux_rs::attrs::*;
 
@@ -63,6 +64,85 @@ fn release(version: &str) -> Option<Vec<u64>> {
     release.split('.').map(|number| number.parse().ok()).collect()
 }
 
+/// How one fleet instance of a host runner stands, as the host runner's move
+/// onto a newer afkconvoy reads it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stands {
+    /// Started, and its first tick has not ended yet.
+    Starting,
+    /// In a tick.
+    Ticking,
+    /// Between two ticks, the last of which held a claim — on an issue, a
+    /// patrol's run or a proposal — or had something on the landing train,
+    /// or failed whole.
+    AtWork,
+    /// Between two ticks, the last of which held no claim and had nothing on
+    /// the landing train: a frontier it left is the next tick's.
+    Quiet,
+    /// Broken, and waiting to be started again: the host runner it moves
+    /// onto starts it.
+    Broken,
+}
+
+/// One thing that holds back a host runner's move onto a newer afkconvoy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HeldBack {
+    /// The fleet instance of the checkout `checkout` stands so.
+    Instance { checkout: String, stands: Stands },
+    /// This many commands are in the host's exclusive queue, running or
+    /// waiting.
+    Exclusive { commands: usize },
+    /// An inspection runs on the host.
+    Inspection,
+}
+
+impl HeldBack {
+    /// The thing, as the host runner's log and `doctor` say it.
+    pub fn said(&self) -> String {
+        match self {
+            HeldBack::Instance { checkout, stands: Stands::Starting } => {
+                format!("{checkout} has not ended its first tick")
+            }
+            HeldBack::Instance { checkout, stands: Stands::Ticking } => {
+                format!("{checkout} is in a tick")
+            }
+            HeldBack::Instance { checkout, stands: Stands::AtWork } => {
+                format!("{checkout} holds a claim or has something on the landing train")
+            }
+            HeldBack::Instance { checkout, stands: Stands::Quiet | Stands::Broken } => {
+                format!("{checkout} holds nothing back")
+            }
+            HeldBack::Exclusive { commands } => {
+                format!("{commands} command(s) in the exclusive queue")
+            }
+            HeldBack::Inspection => "an inspection runs".to_string(),
+        }
+    }
+}
+
+/// What holds back a host runner's move onto a newer afkconvoy now: each of
+/// its fleet instances `each`, by its checkout, that is neither quiet nor
+/// broken; the `exclusive` commands in the host's exclusive queue; and the
+/// inspection that runs, where one does (`inspecting`). Nothing: it moves
+/// now. Its fleets are idle for it once nothing is held, nothing is on a
+/// landing train, nothing is in the exclusive queue and no inspection runs —
+/// a frontier left is no work yet, and its next tick is on the newer one.
+pub fn held_back(each: &[(String, Stands)], exclusive: usize, inspecting: bool) -> Vec<HeldBack> {
+    let mut held = vec![];
+    for (checkout, stands) in each {
+        if !matches!(stands, Stands::Quiet | Stands::Broken) {
+            held.push(HeldBack::Instance { checkout: checkout.clone(), stands: *stands });
+        }
+    }
+    if exclusive > 0 {
+        held.push(HeldBack::Exclusive { commands: exclusive });
+    }
+    if inspecting {
+        held.push(HeldBack::Inspection);
+    }
+    held
+}
+
 #[cfg(test)]
 mod tests {
     use proptest::prelude::*;
@@ -115,6 +195,33 @@ mod tests {
         // a build past a release is of that release
         assert_eq!(found("0.6.0+3.g9f58035", "0.5.13+11.gabcdef0.dirty"), Found::Older);
         assert_eq!(found("0.5.13", "0.6.0+1.g9f58035"), Found::Newer);
+    }
+
+    #[test]
+    fn a_host_runner_moves_once_nothing_is_held_on_the_train_queued_or_inspected() {
+        let each = |stands: &[Stands]| -> Vec<(String, Stands)> {
+            stands.iter().enumerate().map(|(at, stands)| (format!("/c{at}"), *stands)).collect()
+        };
+        // a frontier left, or a fleet instance broken, holds nothing back
+        assert_eq!(held_back(&each(&[Stands::Quiet, Stands::Broken]), 0, false), vec![]);
+        assert_eq!(held_back(&[], 0, false), vec![], "no fleet instance at all");
+        for stands in [Stands::Starting, Stands::Ticking, Stands::AtWork] {
+            let held = held_back(&each(&[Stands::Quiet, stands]), 0, false);
+            let instance = HeldBack::Instance { checkout: "/c1".to_string(), stands };
+            assert_eq!(held, vec![instance], "{stands:?}");
+        }
+        let held = held_back(&each(&[Stands::AtWork]), 2, true);
+        let said: Vec<String> = held.iter().map(HeldBack::said).collect();
+        assert_eq!(
+            said,
+            [
+                "/c0 holds a claim or has something on the landing train",
+                "2 command(s) in the exclusive queue",
+                "an inspection runs"
+            ]
+        );
+        assert_eq!(held_back(&each(&[Stands::Quiet]), 1, false).len(), 1, "a command alone");
+        assert_eq!(held_back(&each(&[Stands::Quiet]), 0, true).len(), 1, "an inspection alone");
     }
 
     #[test]
