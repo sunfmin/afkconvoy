@@ -23,6 +23,7 @@ mod fake;
 
 use std::path::Path;
 
+use afkconvoy::worker_tmp;
 use afkconvoy_core::line::niced;
 use afkconvoy_core::question;
 use fake::State;
@@ -215,7 +216,7 @@ fn terminal_create(st: &mut State) -> ! {
     if !knows_worktree(st, &path) {
         fail(st, "selector_not_found");
     }
-    let niced = niced(&format!("{path}/.afkconvoy-tmp"), "");
+    let niced = niced(&worker_tmp::of(Path::new(&path)).display().to_string(), "");
     let command = given.strip_prefix(&niced).unwrap_or_else(|| panic!("not niced: {given}"));
     let command = command.to_string();
     let handle = format!("term-{}", st.list("terminals").len() + 1);

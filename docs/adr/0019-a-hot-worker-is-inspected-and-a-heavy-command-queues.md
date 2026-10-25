@@ -19,7 +19,17 @@ A **hot worker** is one whose processes — the process tree under its terminal 
 
 The thresholds are shares of the host — of its cores, its memory, its free disk — and the host can say others. CPU, memory and bytes written are sampled every ten seconds by `run`, from each process's own usage (no root needed); what the worktree holds is measured once a tick, for measuring it is slow.
 
-A worker is started with its own `TMPDIR`, a directory git ignores in its worktree, so what it writes there is counted as its own and goes when its worktree does. What it writes elsewhere — a shared cache, a download — cannot be told apart, and is not counted.
+A worker is started with its own `TMPDIR`, so what it writes there is its own and goes when its worktree does. What it writes elsewhere — a shared cache, a download — cannot be told apart, and is not counted.
+
+### A worker's `TMPDIR`
+
+Its `TMPDIR` is a link, `/tmp/afkconvoy-<uid>/<16 hex digits>`, to `.afkconvoy-tmp` in its worktree, a directory git ignores. A worktree is named for its issue's title, so its path is long, and macOS holds a socket's path in 104 bytes: a `TMPDIR` in the worktree left no room for a tool that binds a socket under it. sccache is one: the first build after its server went idle starts one, and waits for it on a socket under its `TMPDIR` (#439). The link is no longer than macOS's own temporary directory for a user, and what is written through it lands in the worktree. Its name is the key of the worktree's whole path, so it is unique on the host, across its fleets, and the same after `run` starts again: the sampler finds a worker by it whenever it samples. One place says it (`worker_tmp`), and every other reads it there.
+
+A process started with it can outlive the worktree. A server shared by the host that the worker happened to start keeps the `TMPDIR` it was started with, and sccache's makes a directory under it for every compile, whoever asks: with that gone, every build of the host fails until the server goes idle, which a busy host never lets it. So a worktree removed by the fleet has its link turned first, in one step, to the fleet's own temporary directory, and a link no worktree holds — turned, or pointing at nothing once its worktree went some other way — is removed once no process started with it runs; one a process still runs with is turned where it points at nothing, and kept. Each start of a worker, and each removal, reclaims them.
+
+### A server a worker started is the host's
+
+A worker's processes are those started with its `TMPDIR`, and every one under them. But a worker may start a server shared by the host, and a process may outlive what started it, and both are then handed to pid 1, started with the worker's `TMPDIR`. They are told apart by where they work. A process handed to pid 1 that works outside the worktree, as a daemon does, is a server shared by the host: it is no worker's, and nothing under it is counted to one through it. sccache's server works in `/`, and each compile it runs for a worker is started with that worker's `TMPDIR`, so that compile is counted to that worker. A process handed to pid 1 that works in the worktree is the worker's, left behind: a test its runner left, still running, is counted to its worker as it was before.
 
 The fleet's own gate runs on the landing train are no worker's and are not counted to one.
 
@@ -67,6 +77,9 @@ A host inspection frees what it found reclaimable, for nothing else ends the dea
 - **A cap on build jobs** (`CARGO_BUILD_JOBS`) per worker. It slows a worker that is alone on the host as much as one that is not.
 - **Once per worker, as the nudge.** A nudge is for a worker that stopped: one that did not wake to one line will not wake to ten (ADR-0005). A hot worker is at work, and may make one mistake and then another.
 - **A new kind of role for inspections.** The consult already stands for the team's senior judgement, read-only, on the stage's harness; a second setting would say the same thing twice.
+- **A short directory of its own, outside the worktree, for a worker's `TMPDIR`.** What a worker leaves there would not show in its worktree, where a host inspection measures it and reclaims it.
+- **Telling a server by its terminal or its session.** A daemon leaves its terminal and starts a session of its own. But Claude Code runs each command a worker gives it the same way, so a test it left has neither, and macOS's `ps` says no session.
+- **Telling a server by its name.** sccache's is one of many: Gradle's, Bazel's and others' are started the same way. Where it works says the same of each, and no list has to be kept.
 
 ## Consequences
 
@@ -74,6 +87,8 @@ A host inspection frees what it found reclaimable, for nothing else ends the dea
 - An inspection's comment is no stage record: the stage an issue is at is not derived from it (ADR-0010).
 - `doctor` and the panel show the hot workers, the inspection running and the queue of `exclusive`.
 - The tick log has a line as a worker turns hot, as its inspection starts and what it found, and as an `exclusive` command waits and runs.
+- A worker's `TMPDIR` is short enough for a socket's path, and a server a worker started keeps its `TMPDIR` until it ends.
+- A server a worker started is taken for the host's, and so is a process the worker left that works outside its worktree.
 
 ## Open
 

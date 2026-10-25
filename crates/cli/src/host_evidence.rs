@@ -23,7 +23,7 @@ use crate::evidence::tree as ps_of;
 use crate::git::Repo;
 use crate::hot::{processes, tree};
 use crate::measure;
-use crate::orca::{OnHost, TMP_DIR, Worktree};
+use crate::orca::{OnHost, Worktree};
 
 /// The directory of the cache the evidence is written to.
 const DIR: &str = "host-inspection";
@@ -314,8 +314,7 @@ fn processes_of(out: &mut String, on_host: &[OnHost]) {
     let mut inside: HashSet<u32> = HashSet::new();
     out.push_str("\n## The process tree of each worker and of the landing train\n");
     for on in on_host {
-        let tmp = on.path.join(TMP_DIR).display().to_string();
-        let pids: Vec<u32> = tree(&procs, &tmp).iter().map(|proc| proc.pid).collect();
+        let pids: Vec<u32> = tree(&procs, &on.path).iter().map(|proc| proc.pid).collect();
         if pids.is_empty() {
             continue;
         }

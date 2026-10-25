@@ -18,8 +18,9 @@ serde_json.workspace = true
 serde_yaml = "0.9"
 signal-hook = "0.3"
 
-[target.'cfg(target_os = "macos")'.dependencies]
-# What a process wrote to disk, as the kernel counts it for it (`proc_pid_rusage`).
+[target.'cfg(unix)'.dependencies]
+# What a process wrote to disk and where it works, as the kernel says them
+# (`proc_pid_rusage`, `proc_pidinfo`), and the user's id (`getuid`).
 libc = "0.2"
 
 [dev-dependencies]
