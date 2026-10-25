@@ -593,9 +593,11 @@ impl Cutting<'_> {
         self.sh(Step::Publish, &self.steps.publish, &record.version)
     }
 
-    /// Runs `lines` by `sh` in the checkout with the version in
+    /// Runs `lines` by `sh -e` in the checkout with the version in
     /// `cut::VERSION_ENV`, what they print added to the cut's log under the
-    /// step's name.
+    /// step's name. The first line that fails ends them, its status theirs:
+    /// by `sh` alone the lines after it would run, and the last one's would
+    /// stand for them all.
     fn sh(&self, step: Step, lines: &str, version: &str) -> Result<()> {
         let file = self.checkout.cut_log()?;
         let mut log = OpenOptions::new()
@@ -605,7 +607,7 @@ impl Cutting<'_> {
             .with_context(|| format!("cannot write {}", file.display()))?;
         writeln!(log, "== {} (VERSION={version})", step.word())?;
         let status = Command::new("sh")
-            .args(["-c", lines])
+            .args(["-e", "-c", lines])
             .current_dir(&self.repo.dir)
             .env(cut::VERSION_ENV, version)
             .stdin(Stdio::null())

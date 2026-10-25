@@ -2476,7 +2476,7 @@ publish: |
 ```
 ~~~
 
-Both keys are required, and nothing else is read. Each is run by `sh` in the cut's checkout with the version, `0.5.17`, in `$VERSION`; what it prints goes to the cut's log, in the checkout's git dir (`convoy-cut.log`). A repo whose file has no such block turns cutting off: nothing is cut. `afkconvoy config` answers the steps as `cut`, and `afkconvoy plan` says where the cut stands.
+Both keys are required, and nothing else is read. Each is run by `sh -e` in the cut's checkout with the version, `0.5.17`, in `$VERSION`; what it prints goes to the cut's log, in the checkout's git dir (`convoy-cut.log`). Its lines run in order, and the first that fails fails the step: the lines after it are not run. Above, a publish that fails is not followed by the upgrade, which would find nothing newer and succeed. A line `set -e` changes nothing of that, and `set -ex` adds each line to the log as it runs. A repo whose file has no such block turns cutting off: nothing is cut. `afkconvoy config` answers the steps as `cut`, and `afkconvoy plan` says where the cut stands.
 
 ##### What it does
 
@@ -2513,6 +2513,7 @@ Errors: the checkout is no cut's, or keeps no cut's record; the repo names no cu
 
 - One cut runs at a time across a repo's hosts: it is claimed on the remote as a patrol's run is, and the tick that claims it reads the version tags again. A peer's that went silent is unclaimed by the next tick, and a new one starts when the fleet is idle again.
 - A cut that ran out of time at `land` leaves its PR on the train, which may still land it: the next cut finds the version set, and tags that landing.
+- `sh -e` fails a step at a line whose command fails, not at one whose command it tests: a command of an `if` or `while` test, on the left of `&&` or `||`, after `!`, or before the last of a pipe fails nothing. `./packaging/release.sh publish "$VERSION" | tee published` passes whatever `release.sh` did.
 - The cut's commit is made in the checkout's name, by its git config: a repo whose base branch is protected against pushes is as good as any other here, for the cut pushes nothing to it.
 
 ##### Which checkout it is about

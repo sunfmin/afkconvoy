@@ -40,7 +40,7 @@ Its time: two gate limits — its own gate and the train's — and an hour besid
 
 ## Turning it on
 
-The repo names its cut steps in its config file, in a block of their own opened by ```` ```yaml cut ````: `set` and `publish`, each run by `sh` in the cut's checkout with the version in `$VERSION`. The config's own ```` ```yaml ```` block refuses a key it does not know, so a key there would make every afkconvoy older than this one refuse the repo's config once the change lands on the base branch — every fleet of the repo, on every host not yet upgraded. An older afkconvoy reads only the first block whose line is ```` ```yaml ```` alone, and reads past this one.
+The repo names its cut steps in its config file, in a block of their own opened by ```` ```yaml cut ````: `set` and `publish`, each run by `sh -e` in the cut's checkout with the version in `$VERSION`: the first line that fails fails the step, as a release script's would. By `sh` alone the lines after it would run, and the last one's status would stand for them all — a publish that failed, followed by an install that found nothing newer, would pass. The config's own ```` ```yaml ```` block refuses a key it does not know, so a key there would make every afkconvoy older than this one refuse the repo's config once the change lands on the base branch — every fleet of the repo, on every host not yet upgraded. An older afkconvoy reads only the first block whose line is ```` ```yaml ```` alone, and reads past this one.
 
 ## Considered options
 

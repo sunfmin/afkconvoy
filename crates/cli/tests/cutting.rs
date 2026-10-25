@@ -5,15 +5,22 @@ use common::{BASE, CONFIG, World, git};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
-/// The cut steps of a repo that turns cutting on: `set` writes the version to
-/// a file, and `publish` says, in the world, what it published with which tag
-/// checked out.
-fn cut_block(world: &World) -> String {
+/// The `publish` line that says, in the world, what it published with which
+/// tag checked out.
+fn says_published(world: &World) -> String {
     let published = world.root.join("published");
     format!(
-        "```yaml cut\nset: |\n  printf '%s\\n' \"$VERSION\" > VERSION\npublish: |\n  printf \
-         '%s %s\\n' \"$VERSION\" \"$(git describe --tags --exact-match)\" >> '{}'\n```\n",
+        "printf '%s %s\\n' \"$VERSION\" \"$(git describe --tags --exact-match)\" >> '{}'",
         published.display()
+    )
+}
+
+/// The cut steps of a repo that turns cutting on: `set` writes the version to
+/// a file, and `publish` runs the lines `publish`.
+fn cut_block(publish: &str) -> String {
+    let publish: String = publish.lines().map(|line| format!("  {line}\n")).collect();
+    format!(
+        "```yaml cut\nset: |\n  printf '%s\\n' \"$VERSION\" > VERSION\npublish: |\n{publish}```\n"
     )
 }
 
@@ -39,15 +46,24 @@ fn tag(world: &World, name: &str) {
 }
 
 fn turn_cutting_on(world: &World, subject: &str) {
-    commit_config(world, &format!("{CONFIG}\n{}", cut_block(world)), subject);
+    turn_cutting_on_publishing(world, &says_published(world), subject);
+}
+
+fn turn_cutting_on_publishing(world: &World, publish: &str, subject: &str) {
+    commit_config(world, &format!("{CONFIG}\n{}", cut_block(publish)), subject);
 }
 
 /// A repo that turns cutting on, tagged `v0.1.0` a commit before its base
 /// branch's tip: a PR, #7, landed since.
 fn cutting() -> World {
+    cutting_publishing(says_published)
+}
+
+/// `cutting`, its `publish` lines what `publish` says in its world.
+fn cutting_publishing(publish: impl Fn(&World) -> String) -> World {
     let world = World::new();
     tag(&world, "v0.1.0");
-    turn_cutting_on(&world, "Turn cutting on (#7)");
+    turn_cutting_on_publishing(&world, &publish(&world), "Turn cutting on (#7)");
     world
 }
 
@@ -86,6 +102,18 @@ fn logged(world: &World) -> Vec<String> {
     let text: String = files.map(|file| std::fs::read_to_string(file).unwrap()).collect();
     let entry = |line: &str| serde_json::from_str::<Entry>(line).unwrap().said();
     text.lines().map(entry).collect()
+}
+
+/// The cut's PR lands: the train puts `widgets 0.1.1` on the base branch, and
+/// the cut's record in `checkout` says so → the commit that landed it.
+fn its_pr_lands(world: &World, checkout: &Path) -> String {
+    land(world, "widgets 0.1.1");
+    let landed = git(&world.clone, &["rev-parse", "HEAD"]).trim().to_string();
+    let mut record = record(checkout);
+    record["pr"] = json!(8);
+    record["landed"] = json!(landed);
+    std::fs::write(record_file(checkout), record.to_string()).unwrap();
+    landed
 }
 
 /// The checkout the cut was started in.
@@ -216,13 +244,7 @@ fn a_cut_tags_the_commit_that_landed_it_and_publishes_with_the_tag_checked_out()
     let world = cutting();
     assert_eq!(cut(&tick_as(&world, "alpha", 10_000)), ["cut done"]);
     let checkout = checkout(&world);
-    // Its PR landed: the train put it on the base branch.
-    land(&world, "widgets 0.1.1");
-    let landed = git(&world.clone, &["rev-parse", "HEAD"]).trim().to_string();
-    let mut record = record(&checkout);
-    record["pr"] = json!(8);
-    record["landed"] = json!(landed);
-    std::fs::write(record_file(&checkout), record.to_string()).unwrap();
+    let landed = its_pr_lands(&world, &checkout);
 
     let cut_answer = world.afk_in(&checkout, &["cut", "--from", "tag", "--host", "h1"]).ok();
     assert_eq!(cut_answer["tag"], "v0.1.1", "{cut_answer}");
@@ -257,17 +279,45 @@ fn a_patch_that_holds_a_pr_labelled_for_a_minor_version_is_tagged_nothing() {
             "headRefOid": "", "body": "", "state": "merged", "labels": ["release:minor"]});
         gh["prs"].as_array_mut().unwrap().push(pr);
     });
-    land(&world, "widgets 0.1.1");
-    let landed = git(&world.clone, &["rev-parse", "HEAD"]).trim().to_string();
-    let mut record = record(&checkout);
-    record["pr"] = json!(8);
-    record["landed"] = json!(landed);
-    std::fs::write(record_file(&checkout), record.to_string()).unwrap();
+    its_pr_lands(&world, &checkout);
 
     let failed = world.afk_in(&checkout, &["cut", "--from", "tag", "--host", "h1"]).ok();
     assert_eq!(failed["failed"], "tag", "{failed}");
     assert!(failed["why"].as_str().unwrap().contains("#9, labelled `release:minor`"), "{failed}");
     assert!(world.remote(&["tag", "--list", "v0.1.1"]).trim().is_empty(), "tagged nothing");
+}
+
+/// A line of a step that fails fails the step there, and the lines after it
+/// are not run: a publish that fails is not passed by the upgrade after it,
+/// which finds nothing newer and succeeds. Lines that begin `set -ex` run as
+/// they did.
+#[test]
+fn a_line_that_fails_fails_its_step_and_the_lines_after_it_are_not_run() {
+    for first in ["", "set -ex\n"] {
+        let world = cutting_publishing(|world| {
+            format!("{first}./packaging/release.sh publish \"$VERSION\"\n{}", says_published(world))
+        });
+        assert_eq!(cut(&tick_as(&world, "alpha", 10_000)), ["cut done"]);
+        let checkout = checkout(&world);
+        its_pr_lands(&world, &checkout);
+
+        let failed = world.afk_in(&checkout, &["cut", "--from", "tag", "--host", "h1"]).ok();
+        assert_eq!(failed["failed"], "publish", "{first:?}: {failed}");
+        assert!(failed["why"].as_str().unwrap().starts_with("its lines exited "), "{failed}");
+        assert!(!world.root.join("published").exists(), "{first:?}: the line after it ran");
+        let log = std::fs::read_to_string(failed["log"].as_str().unwrap()).unwrap();
+        assert!(log.contains("packaging/release.sh"), "{first:?}: {log}");
+
+        // The next tick ends it, and says so: the issue it opens names the step.
+        assert_eq!(cut(&tick_as(&world, "alpha", 10_100)), ["end_cut done"]);
+        let said = logged(&world);
+        assert!(said.iter().any(|line| line.contains("FAILED at its step `publish`")), "{said:#?}");
+        let issues = world.gh()["issues"].as_array().unwrap().clone();
+        let opened = issues.iter().find(|issue| issue["number"] == failures(&world)[0].0).unwrap();
+        let body = opened["body"].as_str().unwrap();
+        assert!(body.contains("failed at its step `publish`: its lines exited "), "{body}");
+        assert!(body.contains("afkconvoy cut --from 'publish'"), "{body}");
+    }
 }
 
 /// A start that fails once it holds the claim gives it back: the checkout a
