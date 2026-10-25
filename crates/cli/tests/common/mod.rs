@@ -1136,7 +1136,7 @@ case "$2" in
   *" --list-models")
     if [ -f "$root/shell-models" ]; then cat "$root/shell-models"; exit 0; fi
     echo "command not found" >&2; exit 127 ;;
-  *" debug models")
+  *" debug models"*)
     if [ -f "$root/shell-server-models" ]; then cat "$root/shell-server-models"; exit 0; fi
     echo "command not found" >&2; exit 127 ;;
   *" --help")

@@ -503,7 +503,17 @@ fn refresh_at<'a>(
     // The lock holds when a refresh was last tried, in epoch seconds.
     let lock = file.with_extension("refresh");
     let tried = || std::fs::read_to_string(&lock).ok().and_then(|text| text.trim().parse().ok());
-    if !due(written(file), tried(), now) {
+    // Command discovery used to leave Codex with no models until the daily
+    // refresh. Repair those entries without waiting a day or restarting a
+    // runner, retaining the ordinary backoff when discovery cannot answer.
+    let is_due = || {
+        let incomplete = load_at(file)
+            .ok()
+            .is_some_and(|kit| kit.held(Harness::Codex).is_some_and(|held| held.models.is_empty()));
+        due(written(file), tried(), now)
+            || (incomplete && tried().is_none_or(|at| now.saturating_sub(at) >= TRIED_AGAIN_AFTER))
+    };
+    if !is_due() {
         return Ok(None);
     }
     let held = OpenOptions::new()
@@ -520,7 +530,7 @@ fn refresh_at<'a>(
         }
     }
     // Another process may have written it again since it was found due.
-    if !due(written(file), tried(), now) {
+    if !is_due() {
         return Ok(None);
     }
     std::fs::write(&lock, now.to_string())
@@ -1429,6 +1439,32 @@ mod tests {
         assert!(!due(Some(day), Some(2 * day), 2 * day + 3599), "tried within the hour");
         assert!(due(Some(day), Some(2 * day), 2 * day + 3600));
         assert!(!due(Some(3 * day), None, day), "written after now");
+    }
+
+    #[test]
+    fn a_command_only_codex_entry_is_probed_without_waiting_for_the_daily_refresh() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("kit.json");
+        let current =
+            Kit { harnesses: vec![held(Harness::Codex, "codex", &[])], stock_consult: None };
+        store(&file, &current, 1000).unwrap();
+        let found = |harness| if harness == Harness::Codex { Ok(()) } else { Err("absent".into()) };
+        let listed = |_: Harness, _: &str| Ok(vec![listed("gpt-first", None)]);
+        let probe = |asked: &[Asked]| asked.iter().map(|_| Answer::Answered(1.0, None)).collect();
+        let host = || {
+            Ok(Host {
+                found: &found,
+                listed: &listed,
+                probe: &probe,
+                research: &|_, _| bail!("no research"),
+                now: 1001,
+            })
+        };
+        let (_, after) = refresh_at(&file, 1001, host).unwrap().unwrap();
+        assert_eq!(after.harnesses[0].models[0].model, "gpt-first");
+        assert!(
+            refresh_at(&file, 1002, || panic!("the repaired kit is current")).unwrap().is_none()
+        );
     }
 
     #[test]

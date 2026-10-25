@@ -60,6 +60,11 @@ const HELP: &str = " --help";
 /// it fetches from its server with that login and keeps a while. Not the
 /// ones it was built with (`--bundled`): those differ from an account's.
 const LIST_MODELS: &str = " debug models";
+/// The catalog also carries hundreds of kilobytes of model instructions.
+/// Keep only names before it reaches a terminal's bounded scrollback: losing
+/// the opening question mark makes a successful listing look like a timeout.
+const MODEL_NAMES: &str = " | awk '{ while (match($0, /\"slug\"[[:space:]]*:[[:space:]]*\"[^\"]+\"/)) \
+    { print substr($0, RSTART, RLENGTH); $0 = substr($0, RSTART + RLENGTH) } }'";
 /// What comes before each model's name in what Codex answers: the key of it,
 /// in the JSON it prints. A `"` inside a JSON string is written `\"`, so this
 /// is in the answer only where a key is.
@@ -370,6 +375,7 @@ pub(super) fn models_question(command: &str, kept: &str) -> String {
         .fixed(" && ")
         .launch(command)
         .fixed(LIST_MODELS)
+        .fixed(MODEL_NAMES)
         .done()
 }
 

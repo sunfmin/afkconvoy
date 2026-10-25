@@ -57,6 +57,28 @@ fn bound() -> World {
     bound_with(TEAM)
 }
 
+#[test]
+fn a_large_codex_catalog_reaches_the_terminal_as_model_names_alone() {
+    use afkconvoy_core::harness::Harness;
+    let world = World::new();
+    let catalog = json!({"models": [
+        {"slug": "gpt-first", "base_instructions": "instructions ".repeat(100_000)},
+        {"slug": "gpt-second", "base_instructions": "more instructions"}
+    ]});
+    write(&world.root, "catalog.json", &catalog.to_string());
+    // A real shell runs the production listing, including its output filter.
+    let command = format!("/bin/sh -c 'cat \"{}/catalog.json\"' --", world.root.display());
+    let question = Harness::Codex.models_question(&command, "/unused");
+    let output = Command::new("/bin/sh").args(["-c", &question]).output().unwrap();
+    assert!(output.status.success());
+    let printed = String::from_utf8(output.stdout).unwrap();
+    assert!(printed.len() < 100, "the catalog must fit in terminal scrollback");
+    assert_eq!(
+        Harness::Codex.models(&printed),
+        Some(vec!["gpt-first".into(), "gpt-second".into()])
+    );
+}
+
 /// `bound`, of a team whose workers are given nothing of the host user's.
 fn bound_alone() -> World {
     bound_with(&TEAM.replace("```\n", "host_user: false\n```\n"))
