@@ -600,6 +600,45 @@ fn the_guide_carries_what_an_agent_needs_before_its_first_command() {
     }
 }
 
+/// Each group the guide describes names every command of its own in its
+/// bullet: the guide reads top to bottom, with no "it" or "them" to match
+/// against the commands listed below it.
+#[test]
+fn each_group_the_guide_describes_names_every_command_of_its_own() {
+    let long = manual();
+    let described = guide(&long).lines().filter_map(|line| line.strip_prefix("- **"));
+    for (name, said) in described.filter_map(|line| line.split_once("** — ")) {
+        for command in group(&long, name) {
+            assert!(said.contains(&format!("`{command}`")), "{name} names no `{command}`: {said}");
+        }
+    }
+}
+
+/// The index says what a bound repo is, and an unbound one, before it first
+/// says either.
+#[test]
+fn the_index_says_what_a_bound_repo_is_before_it_names_one() {
+    let index = help("--help");
+    let at = index.find("A repo whose config names a team is a bound repo").expect("defined");
+    assert!(!index[..at].to_lowercase().contains("bound"), "{}", &index[..at]);
+    let next = index[at..].split(". ").nth(1).unwrap();
+    assert!(next.starts_with("One whose config names none is unbound"), "{next}");
+}
+
+/// `cast`'s one line says what it does in words of its own: the labels it puts
+/// on and who chooses them, and none of the glossary's words for either.
+#[test]
+fn casts_one_line_says_what_it_does_in_plain_words() {
+    let short = asked(&["cast", "-h"]);
+    let line = short.lines().next().unwrap();
+    for plain in ["harness and model", "`harness:`", "`model:`", "label", "session"] {
+        assert!(line.contains(plain), "{line}");
+    }
+    for term in ["uncast", "a choice to make", "the host kit's first"] {
+        assert!(!line.contains(term), "{line}");
+    }
+}
+
 /// Whether `text` shows `key` as a key of a file: followed by its `:`, in
 /// backticks or not, and not as the end of a longer key.
 fn shows(text: &str, key: &str) -> bool {

@@ -148,7 +148,7 @@ const SKILL: &str = include_str!("../../../skills/afkconvoy/SKILL.md");
 ///
 /// ## What it needs
 ///
-/// - A config on the base branch: the first yaml block of {const:CONFIG_FILE}.
+/// - A config on the base branch: the first yaml block of {const:CONFIG_FILE}. A repo whose config names a team is a bound repo: the team's workflows say how its issues are worked. One whose config names none is unbound: each issue is worked by one worker, then the landing train.
 /// - `gh` logged in as a user who may push to the repo.
 /// - `orca` on the PATH: every worker is started through it. It is running (`orca open`) and was given this checkout, once (`orca repo add --path "$PWD"`).
 /// - `claude` on the PATH and logged in, when it is what starts a worker.
@@ -158,7 +158,7 @@ const SKILL: &str = include_str!("../../../skills/afkconvoy/SKILL.md");
 ///
 /// ## What to run first, in a checkout of the repo
 ///
-/// 1. `afkconvoy config`: read the config, what the fleet goes by. Its `--help` shows one whole. Then `afkconvoy check`, only where the config names a team: does the team load? A team is designed first: see designing a team, below.
+/// 1. `afkconvoy config`: read the config, what the fleet goes by. Its `--help` shows one whole. Then `afkconvoy check`, only in a bound repo: does the team load? A team is designed first: see designing a team, below.
 /// 2. `afkconvoy plan`: what a tick would act on. It changes nothing.
 /// 3. `afkconvoy run`: the checkout's fleet instance, held by the host runner until it is stopped. It answers once the first tick ended.
 ///
@@ -172,15 +172,15 @@ const SKILL: &str = include_str!("../../../skills/afkconvoy/SKILL.md");
 ///
 /// Read `afkconvoy <command> --help` before the first time you run one. The commands below are grouped by who runs them:
 ///
-/// - **{const:OPERATOR}** — starting, watching or stopping a fleet. Read these first. `doctor` is what to run when something looks wrong, or you are asked whether the fleet is working: it says what the fleet on this host is doing and what is wrong, each finding with the line that fixes it.
-/// - **{const:DESIGNER}** — `scaffold` to start one or a role of it from a skeleton, `draft` to draft its roster from the host kit, then, once `check` accepts it, the others: to review a workflow, to try one out, or to ask where an issue is in it.
-/// - **{const:HANDS_WORK}** — a human, or the agent a human is talking to, with work decided on and issues to open for it. Read it before opening the first: it says which workflow takes which issue and the line that opens one, and creates the labels.
-/// - **{const:SETS_UP}** — it prints the skill file that sends their agent to `afkconvoy --help`.
-/// - **{const:WORKER}** — its prompt names each one as it is needed. Read them only when you are a worker, or are finding out why one stopped (`rule` is a consult's too).
-/// - **{const:HUMAN}** — in a bound repo. Read them to answer an escalated issue, to put an issue at a stage of your choosing, or to see what a `by: human` stage asks.
-/// - **{const:HOOK}** — its harness asks it before each thing a bound repo's worker does. Nobody runs it by hand. Read it to learn what a worker is refused, and why one was.
-/// - **{const:BY_HAND}** — each is something a tick does on its own. Read one when a plan shows a transition the fleet is not making, or you are told to make it yourself.
-/// - **{const:PLUMBING}** — what the transitions are built on. Read these only to inspect or repair claims and heartbeats on the remote.
+/// - **{const:OPERATOR}** — starting, watching or stopping a fleet. Read these first: `config`, `check` and `plan` before it starts, `run` to start it, `tick` for one pass of it and `stop` to stop it, `checkouts` and `panel` to watch it, `kit`, `cast` and `switch` for the harness and model each worker runs, `patrol-now` to have a patrol run now and `takeover` to take another fleet instance's claims. `doctor` is what to run when something looks wrong, or you are asked whether the fleet is working: it says what the fleet on this host is doing and what is wrong, each finding with the line that fixes it.
+/// - **{const:DESIGNER}** — `scaffold` to start one or a role of it from a skeleton, `draft` to draft its roster from the host kit, then, once `check` accepts it, `show` to review a workflow or to ask where an issue is in it, and `rehearse` to try one out.
+/// - **{const:HANDS_WORK}** — a human, or the agent a human is talking to, with work decided on and issues to open for it. Read `flows` before opening the first issue: it says which workflow takes which issue and the line that opens one, and creates the labels.
+/// - **{const:SETS_UP}** — `skill` prints the skill file that sends their agent to `afkconvoy --help`.
+/// - **{const:WORKER}** — `gate`, `land`, `verdict`, `wake`, `intake`, `lock`, `over`, `exclusive` and `inspected`: its prompt names each one as it is needed. Read them only when you are a worker, or are finding out why one stopped (`rule` is a consult's too).
+/// - **{const:HUMAN}** — in a bound repo: `rule` to answer an escalated issue, `send` to put an issue at a stage of your choosing. A `by: human` stage waits for your `verdict`, a worker's command too. [`afkconvoy help humans`](help:humans) says what each case asks of you.
+/// - **{const:HOOK}** — `guard`, which the harness of a bound repo's worker asks before each thing the worker does. Nobody runs it by hand. Read its help to learn what a worker is refused, and why one was.
+/// - **{const:BY_HAND}** — `dispatch`, `close`, `escalate`, `park`, `nudge`, `restart` and `abandon`: each is something a tick does on its own, and `recovery` shows what `dispatch` would continue an issue from. Read one when a plan shows a transition the fleet is not making, or you are told to make it yourself.
+/// - **{const:PLUMBING}** — `scan`, `claim`, `release` and `heartbeat`: what the transitions are built on. Read these only to inspect or repair claims and heartbeats on the remote.
 ///
 /// ## The topics
 ///
@@ -196,7 +196,7 @@ const SKILL: &str = include_str!("../../../skills/afkconvoy/SKILL.md");
 ///
 /// ## Designing a team, for a bound repo
 ///
-/// A repo whose config names a team — `team: owner/repo`, or `team: owner/repo/path` for a team in a subdirectory — is a bound repo. An issue of it that carries a flow label is walked through that workflow's stages, each performed by a new worker started in the stage's role. A team and a role are each a directory of text files — a whole repo, or a subdirectory of one, so that one repo can hold a team and every role it names — and designing one is editing them. Nothing else holds any of it.
+/// A bound repo names its team in its config: `team: owner/repo`, or `team: owner/repo/path` for a team in a subdirectory. An issue of it that carries a flow label is walked through that workflow's stages, each performed by a new worker started in the stage's role. A team and a role are each a directory of text files — a whole repo, or a subdirectory of one, so that one repo can hold a team and every role it names — and designing one is editing them. Nothing else holds any of it.
 ///
 /// What those files are, and every key of them, is three topics: [`afkconvoy help team`](help:team) (a team's directory and a role's), [`afkconvoy help workflows`](help:workflows), [`afkconvoy help patrols`](help:patrols).
 ///
@@ -262,7 +262,7 @@ enum Command {
     /// A tick — of `run`, or `afkconvoy tick` — writes the host kit again once its file was last written a day ago or more, before anything else: a model a harness now lists is added once it answers its probe, and one it no longer lists is dropped. The rest is kept as it is, unprobed: a harness that cannot be found or listed, or that stops answering, is kept, and a pause leaves it out, as above. The file's modification time is when it was last written — by `kit`, by `run` on a host without one, or by a tick — and `plan` and `doctor` answer it as `host_kit.refreshed`. Every fleet of the host shares the file and the lock beside it (kit.refresh): one of them writes it again, once a day, and the others read what it wrote. A refresh that changed the host kit is a line of the run log, `refresh_kit (fleet): the host kit was written again: added claude-code sonnet; dropped claude-code opus`; one that failed is one too, and is tried again an hour later. The pause is the host's running state, in its cache: this file is not changed. `plan`, `doctor` and the panel say which is paused, since when and why.
     #[command(next_help_heading = OPERATOR, verbatim_doc_comment)]
     Kit,
-    /// Cast every uncast issue that has a choice to make, in one session of the host kit's first
+    /// Choose the harness and model to run for each issue handed to the fleet that has no `harness:` or `model:` label and more than one to choose from, and label it with them, in one session of the host kit's preferred harness and model
     ///
     /// ## When to run it
     ///
