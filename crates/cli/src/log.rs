@@ -276,11 +276,11 @@ impl Entry {
                 format!("inspection: {worker}: {found} · {said}")
             }
             What::HostInspecting { reason, by, reading } => format!(
-                "host inspection: admission held back for {reason} past its span ({reading}): \
+                "host inspection: {reason} past its span ({reading}): \
                  the host is inspected by {by}"
             ),
             What::HostInspected { reason, found, said } => {
-                format!("host inspection: held back for {reason}: {found} · {said}")
+                format!("host inspection: {reason}: {found} · {said}")
             }
             What::CutStarted { .. } | What::CutEnded { .. } => {
                 format!("cut: {}", cut_said(&self.what).unwrap_or_default())
@@ -327,10 +327,9 @@ impl Entry {
             What::Inspected { worker, found, said } => {
                 Some(("inspection", format!("{worker}: {found} · {said}")))
             }
-            What::HostInspected { reason, found, said } => Some((
-                "inspection",
-                format!("{THE_HOST}, held back for {reason}: {found} · {said}"),
-            )),
+            What::HostInspected { reason, found, said } => {
+                Some(("inspection", format!("{THE_HOST}, {reason}: {found} · {said}")))
+            }
             What::CutStarted { .. } | What::CutEnded { .. } => Some(("cut", cut_said(&self.what)?)),
             What::TickStarted { .. }
             | What::Tick(_)
@@ -945,7 +944,7 @@ mod tests {
         let host = Entry { what: host, ..tick(1) }.event().unwrap();
         assert_eq!(
             host.1,
-            "the host, held back for disk: said · the gate built in /tmp · on the landing train: #451"
+            "the host, disk: said · the gate built in /tmp · on the landing train: #451"
         );
         let starts = What::Inspecting { worker: "#7".into(), by: "stock-consult".into() };
         let starts = Entry { what: starts, ..tick(1) };
