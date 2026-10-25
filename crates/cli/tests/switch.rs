@@ -177,7 +177,8 @@ fn a_codex_successor_without_a_selected_model_does_not_end_the_existing_worker()
     let world = blocked();
     world.kit_models("codex", &[]);
     let dir = worktree(&world, 7);
-    let why = switch(&world, "800", &["7", "--harness", "codex"]).error();
+    let answer = switch(&world, "800", &["7", "--harness", "codex"]).ok();
+    let why = answer["failed"][0]["error"].as_str().unwrap();
     assert!(why.contains("no selected Codex model"), "{why}");
     assert_eq!(open_commands(&world, &dir), ["agent"]);
     assert_eq!(world.claims().len(), 1);
