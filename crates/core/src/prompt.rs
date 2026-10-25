@@ -1128,7 +1128,8 @@ gate's run changed the worktree. Nothing landed — commit what belongs to a fix
 - **`target_moved`** — `{base_branch}` moved while the gate ran, so the push was refused. Nothing
   landed. Run the command again: it merges the new tip in and gates that.
 
-Keep going until the command says `idle`; nothing counts your attempts.
+Keep going until the command says `idle`, or a proven red base branch has you raise a lock below;
+nothing counts your attempts.
 
 <defect>
 ## Hard rules
@@ -1181,8 +1182,9 @@ const DEFECT_TRAIN_INTAKE: &str =
 /// it has no issue to park.
 const PARK_TRAIN: &str =
     "**You have no issue to park.** Once you raised the lock, stop: the fix's issue is worked
-   first, and its PR joins the train. Run the command again when told to carry on. If the base
-   branch was green, go on as for any `gate_red`: fix the train, commit, and run the command again.";
+   first. Run the command again once the fix's PR has joined the train or the lock has closed.
+   Until then stop without another gate, even if nudged. If the base branch was green, go on as
+   for any `gate_red`: fix the train, commit, and run the command again.";
 
 /// The prompt the train worker is given: started on it, and pointed at it
 /// again whenever more joined.
@@ -2366,7 +2368,8 @@ mod tests {
             train.contains("When `develop` may be what is red, and not the train,\n  see below")
         );
         assert!(train.contains("**You have no issue to park.** Once you raised the lock, stop"));
-        assert!(train.contains("Run the command again when told to carry on."));
+        assert!(train.contains("once the fix's PR has joined the train or the lock has closed"));
+        assert!(train.contains("Until then stop without another gate, even if nudged."));
         assert!(train.contains("The one exception is the issue of a defect of `develop`, above."));
         // Said in one place: the section is the same text wherever it is given.
         let section = |brief: &str| {
