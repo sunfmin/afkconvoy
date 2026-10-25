@@ -2,10 +2,8 @@ use crate::common;
 
 use std::path::{Path, PathBuf};
 
-use common::{World, commit, git};
+use common::{World, codex_line, commit, git};
 use serde_json::{Value, json};
-
-const CODEX: &str = "codex --dangerously-bypass-approvals-and-sandbox";
 
 #[test]
 fn switching_a_model_promotes_its_harness_and_preserves_every_entry() {
@@ -166,7 +164,7 @@ fn a_switch_moves_the_worker_onto_the_harness_in_the_same_worktree_and_records_i
     assert_eq!(answer["order"][0], "codex");
 
     // the old worker's terminal is closed, a codex worker is in the same worktree
-    assert_eq!(open_commands(&world, &dir), [CODEX]);
+    assert_eq!(open_commands(&world, &dir), [codex_line(&world, &dir)]);
     let calls: Vec<String> = world.orca_calls().iter().map(|call| common::asked(call)).collect();
     assert!(!calls.iter().any(|call| call == "worktree rm" || call == "worktree create"));
     assert_eq!(git(&dir, &["rev-parse", "HEAD"]), head);
@@ -190,7 +188,10 @@ fn a_switch_moves_the_worker_onto_the_harness_in_the_same_worktree_and_records_i
     // every worker this host starts for the repo from now on is a codex one
     world.issue(8, &["ready-for-agent", "bug", "harness:codex"]);
     tick(&world, 900);
-    assert_eq!(open_commands(&world, &worktree(&world, 8)), [CODEX]);
+    assert_eq!(
+        open_commands(&world, &worktree(&world, 8)),
+        [codex_line(&world, &worktree(&world, 8))]
+    );
 
     // `--clear` forgets the choice: the worker it names runs what its casting
     // says again — the host kit's first, for none — recorded as a switch is
@@ -210,7 +211,11 @@ fn a_switch_moves_the_worker_onto_the_harness_in_the_same_worktree_and_records_i
     assert!(records[0].contains("switched from `codex` to `claude-code` by `alpha`"));
     let said = switch(&world, "1000", &["--harness", "config"]).error();
     assert!(said.contains("`--harness config` is gone: switch"), "{said}");
-    assert_eq!(open_commands(&world, &dir), [CODEX], "a worker it names not is left alone");
+    assert_eq!(
+        open_commands(&world, &dir),
+        [codex_line(&world, &dir)],
+        "a worker it names not is left alone"
+    );
 }
 
 #[test]
@@ -255,8 +260,8 @@ fn all_moves_every_claim_of_the_instance_and_a_claim_it_does_not_hold_is_refused
     let issues: Vec<&Value> = switched.iter().map(|one| &one["issue"]).collect();
     assert_eq!(issues, [&json!(7), &json!(8)], "{moved}");
     assert_eq!(moved["failed"], json!([]));
-    assert_eq!(open_commands(&world, &seven), [CODEX]);
-    assert_eq!(open_commands(&world, &eight), [CODEX]);
+    assert_eq!(open_commands(&world, &seven), [codex_line(&world, &seven)]);
+    assert_eq!(open_commands(&world, &eight), [codex_line(&world, &eight)]);
     assert!(brief(&eight).contains("its terminal was already gone"), "{}", brief(&eight));
     assert_eq!(world.claims().len(), 2);
 }
@@ -278,7 +283,7 @@ fn a_failed_close_preserves_work_and_all_continues_with_the_other_workers() {
     assert_eq!(moved["failed"][0]["issue"], 7, "{moved}");
     assert!(moved["failed"][0]["error"].as_str().unwrap().contains("terminal_close_failed"));
     assert_eq!(open_commands(&world, &seven), ["agent"]);
-    assert_eq!(open_commands(&world, &eight), [CODEX]);
+    assert_eq!(open_commands(&world, &eight), [codex_line(&world, &eight)]);
     assert_eq!(std::fs::read_to_string(uncommitted).unwrap(), "work in progress\n");
     assert_eq!(git(&seven, &["rev-parse", "HEAD"]), head);
     assert_eq!(world.claims().len(), 2);
@@ -453,7 +458,7 @@ fn account_faults_continue_stalled_workers_across_checkouts_and_switch_all_is_ho
     assert_eq!(switched["failed"], json!([]), "{switched}");
     assert_eq!(switched["switched"].as_array().unwrap().len(), 2);
     for dir in [&seven, &eight] {
-        assert_eq!(open_commands(&world, dir), [CODEX]);
+        assert_eq!(open_commands(&world, dir), [codex_line(&world, dir)]);
     }
 }
 

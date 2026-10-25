@@ -17,6 +17,17 @@ pub const BASE: &str = "main";
 pub const CONFIG: &str =
     "```yaml\nbase_branch: main\ngate_command: ./gate.sh\ngate_seconds: 600\n```\n";
 
+/// The expected Codex command in a worktree for selection and continuation
+/// tests. `codex.rs` separately checks its decoded arguments and isolation.
+pub fn codex_line(world: &World, dir: &Path) -> String {
+    use afkconvoy_core::harness::Harness;
+    Harness::Codex.in_worktree(
+        Harness::Codex.stock(),
+        &dir.display().to_string(),
+        &world.cache().join("afkconvoy/harness/codex-host-user").display().to_string(),
+    )
+}
+
 /// The code blocks of `language` the manual shows at `at` — a command as
 /// `` `afkconvoy config` ``, a topic as `` topic `example` `` — each as its
 /// reader sees it: a test runs what the help shows, so the two cannot drift.

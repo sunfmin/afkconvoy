@@ -621,6 +621,7 @@ fn a_resident_launches_reads_added_and_changed_commands() {
     }
     let world = World::new();
     world.shell_knows("missing-custom", None);
+    world.shell_help(Some("--add-dir --config --model --dangerously-bypass-hook-trust"));
     let out = world
         .command(std::env::current_exe().unwrap(), &world.clone)
         .args([
@@ -649,7 +650,11 @@ fn every_known_harness_discovers_its_existing_stock_command() {
         assert_eq!(ran.json["errors"], json!([]), "{}: {} {}", harness.key(), ran.json, ran.stderr);
         let commands = started(&world);
         assert_eq!(commands.len(), 1, "{}", harness.key());
-        assert!(commands[0].ends_with(harness.stock()), "{}: {commands:?}", harness.key());
+        if harness == afkconvoy_core::harness::Harness::Codex {
+            assert_eq!(commands, [common::codex_line(&world, &world.worktrees()[0])]);
+        } else {
+            assert!(commands[0].ends_with(harness.stock()), "{}: {commands:?}", harness.key());
+        }
         let kit: Value = serde_json::from_slice(&std::fs::read(world.kit_path()).unwrap()).unwrap();
         assert_eq!(kit["harnesses"][0]["command"], harness.stock());
     }
