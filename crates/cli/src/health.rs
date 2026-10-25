@@ -174,12 +174,18 @@ fn error_of(worktree: &Worktree) -> Result<String> {
 /// Conservative structured/error classification. Plain terminal text is sent
 /// through diagnosis first, even when it appears to name a known fault.
 fn classified(value: &Value) -> Option<Diagnosis> {
+    let retry = value
+        .get("retry_after")
+        .or_else(|| value.get("retryAfter"))
+        .or_else(|| value.pointer("/headers/Retry-After"))
+        .or_else(|| value.pointer("/headers/retry-after"))
+        .and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok())));
     if let Some(fields) = value.as_object() {
         for (key, nested) in fields {
             if key != "code"
                 && let Some(found) = classified(nested)
             {
-                return Some(found);
+                return Some(Diagnosis { retry_after: retry.or(found.retry_after), ..found });
             }
         }
     }
@@ -218,7 +224,7 @@ fn classified(value: &Value) -> Option<Diagnosis> {
         evidence: vec![code.into()],
         action,
         missing: vec![],
-        retry_after: value.get("retry_after").and_then(Value::as_u64),
+        retry_after: retry,
     })
 }
 
@@ -319,8 +325,22 @@ pub fn diagnose(kit: &Kit, evidence: &Value) -> Result<(Harness, String)> {
     let mut failed = vec![];
     for held in &kit.harnesses {
         let kept = crate::kept::keep(held.harness, false)?;
+        // The stock Codex worker command opts out of sandboxing. A diagnostic
+        // is a different, read-only invocation. Never rewrite an opaque
+        // custom shell command to strip flags from it.
+        let launch = if held.harness == Harness::Codex && held.command == Harness::Codex.stock() {
+            "codex"
+        } else {
+            if held.harness == Harness::Codex
+                && held.command.contains("--dangerously-bypass-approvals-and-sandbox")
+            {
+                failed.push("codex: custom launch cannot certify a read-only diagnosis".into());
+                continue;
+            }
+            &held.command
+        };
         let mut command = held.harness.prompt_question(
-            &held.command,
+            launch,
             &kept.display().to_string(),
             held.models.first().map(|m| m.model.as_str()),
             &prompt,
@@ -328,16 +348,40 @@ pub fn diagnose(kit: &Kit, evidence: &Value) -> Result<(Harness, String)> {
         match held.harness {
             Harness::ClaudeCode => command.push_str(" --tools '' --strict-mcp-config --mcp-config '{\"mcpServers\":{}}'"),
             Harness::Pi => command.push_str(" --no-tools --no-extensions --no-mcp --no-skills"),
-            Harness::Codex => command.push_str(" --config features.shell_tool=false --config features.apply_patch_freeform=false --config web_search=disabled"),
+            Harness::Codex => command.push_str(" --sandbox read-only --config features.shell_tool=false --config features.apply_patch_freeform=false --config web_search=disabled"),
             Harness::Dsh => { failed.push("dsh: no tool-free diagnosis launch is available".into()); continue; }
         }
-        match crate::orca::ask(&command, Duration::from_secs(DIAGNOSIS_SECONDS)) {
+        // PTYs combine stderr with stdout. Keep CLI banners, echoed prompts
+        // and token counters out of the JSON protocol instead of guessing
+        // which JSON-looking substring is the model's final answer.
+        let stderr = crate::copies::cache()?.join(format!("diagnosis-{}.stderr", crate::unique()));
+        let dir = crate::copies::cache()?.join(format!("diagnosis-{}", crate::unique()));
+        std::fs::create_dir_all(&dir)?;
+        command = afkconvoy_core::line::Line::new()
+            .fixed("cd ")
+            .word(&dir.display().to_string())
+            .fixed(" && ")
+            .launch(&command)
+            .own();
+        command.push_str(&format!(
+            " 2>{}",
+            afkconvoy_core::line::Line::new().word(&stderr.display().to_string()).own()
+        ));
+        let answer = crate::orca::ask(&command, Duration::from_secs(DIAGNOSIS_SECONDS));
+        let _ = std::fs::remove_file(&stderr);
+        let _ = std::fs::remove_dir_all(&dir);
+        match answer {
             Ok(Some((true, answer))) => return Ok((held.harness, answer)),
             Ok(_) => failed.push(format!("{}: diagnosis failed or timed out", held.harness.key())),
             Err(e) => failed.push(format!("{}: {e:#}", held.harness.key())),
         }
     }
     bail!("waiting for diagnosis: {}", failed.join("; "))
+}
+
+/// Read-only local verification using the host's available kit.
+pub fn diagnose_on_host(evidence: &Value) -> Result<(Harness, String)> {
+    diagnose(&crate::kit::running()?.0, evidence)
 }
 
 /// A tick's issue workers being observed or held for diagnosis. Legacy silent
@@ -415,6 +459,23 @@ pub fn reconcile(
         let comments = open.issues.comments(claim.number);
         let bodies = || comments.iter().map(|c| c.body.as_str());
         let asked = afkconvoy_core::stock::asked_at(bodies(), &claim.id);
+        let labels = open.issues.rows.iter().find(|i| i.number == claim.number).map(|i| &i.labels);
+        let stock_answered = asked.is_some()
+            && labels.is_some_and(|labels| {
+                labels.contains(&fleet.config.ready_label)
+                    || afkconvoy_core::stock::parked(
+                        labels,
+                        &fleet.config.ready_label,
+                        &fleet.config.escalate_label,
+                    )
+            });
+        let prohibited_work = worktree.writes_nothing()?.is_some_and(|start| {
+            start.broken(&claim.id, &worktree.tip().unwrap_or_default()).is_some()
+        });
+        if stock_answered || prohibited_work {
+            book.workers.retain(|o| o.path != worktree.path);
+            continue;
+        }
         let verdict = afkconvoy_core::verdict::latest_verdict(bodies())
             .filter(|v| asked.is_none_or(|at| v.comment > at));
         let said = verdict.as_ref().and_then(|v| comments.get(v.comment)).map(|c| c.url.as_str());

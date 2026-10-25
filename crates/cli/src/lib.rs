@@ -2806,6 +2806,10 @@ enum Command {
     ///
     /// `afkconvoy switch --harness codex` moves Codex to the front of the host kit. Run it anywhere, with no repo or instance required. Every checkout uses this order. To change priority again, switch again. There is no separate choice to clear.
     ///
+    /// ## Who runs it
+    ///
+    /// The operator, on the host whose kit and workers are being changed.
+    ///
     /// ## What it reads and writes
     ///
     /// Only this machine's kit order changes. Commands, models, probe evidence and the relative order of the other harnesses stay intact. Unknown, logged-out or unstartable harnesses are refused. Ticket labels and team rosters are untouched. Role limits still constrain candidates. Paused candidates are skipped without reordering the kit, and become eligible again after a successful recovery probe. A switch with no target leaves running workers alone.

@@ -133,7 +133,7 @@ fn a_switch_moves_the_worker_onto_the_harness_in_the_same_worktree_and_records_i
     assert!(records[0].contains("switched from `claude-code` to `codex` by `alpha`"));
 
     // every worker this host starts for the repo from now on is a codex one
-    world.issue(8, &["ready-for-agent", "bug"]);
+    world.issue(8, &["ready-for-agent", "bug", "harness:codex"]);
     tick(&world, 900);
     assert_eq!(open_commands(&world, &worktree(&world, 8)), [CODEX]);
 
@@ -368,7 +368,7 @@ fn account_faults_continue_stalled_workers_across_checkouts_and_switch_all_is_ho
     let other = world.second_repo();
     world.issue(7, &["ready-for-agent"]);
     let mut gh = world.gh2();
-    gh["issues"] = json!([{"number":8,"title":"second repo task", "labels":["ready-for-agent"], "state":"OPEN"}]);
+    gh["issues"] = json!([{"number":8,"title":"second repo task", "labels":["ready-for-agent"], "state":"open"}]);
     std::fs::write(world.root.join("gh2.json"), gh.to_string()).unwrap();
     tick(&world, 700);
     world.afk_in(&other, &["tick", "--instance", "beta", "--host", "h1", "--now", "700"]).ok();

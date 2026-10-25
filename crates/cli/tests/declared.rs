@@ -101,7 +101,7 @@ fn a_claim_whose_worker_declared_frees_its_slot_for_the_frontier() {
 
     // Once the grace runs out it is acted on as ever, and frees no slot it never took.
     let ticked = tick(&world, 1400);
-    assert_eq!(did(&ticked)[..2], ["judge 7 nudged", "judge 8 done"]);
+    assert_eq!(did(&ticked)[..2], ["judge 7 nothing", "judge 8 done"]);
     assert!(!did(&ticked).contains(&"dispatch 10 done".to_string()), "{ticked}");
     assert_eq!(world.labels(8), ["ready-for-human"]);
     assert_eq!(ticked["held"], 2);
