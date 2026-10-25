@@ -512,7 +512,7 @@ const BY_STOCK_CONSULT: &str = "the host kit's stock consult";
 /// Checks the worker launch command of each harness `called` for, as
 /// `launches` has it, asking the login shell a worker gets: that its first
 /// word resolves there, that a harness it runs by name holds credentials,
-/// and — in a bound repo — that it takes what the fleet adds to it for that
+/// and — where launch flags are added — that it takes what the fleet adds for that
 /// harness. Each fault is said with its harness and what
 /// calls for it. A command only a human could say, in a start that asks
 /// none, is left out.
@@ -543,7 +543,7 @@ pub fn check(launches: &Launches, called: &[(Harness, Vec<String>)]) -> Result<V
             command: proposed.as_str().to_string(),
             tool: tools::harness(&proposed).filter(|_| *harness != launches.default()),
             fault: proposed.fault().map(said),
-            flags_fault: takes().err().filter(|_| launches.bound()).map(said),
+            flags_fault: takes().err().filter(|_| launches.adds_flags(*harness)).map(said),
         });
     }
     Ok(checked)

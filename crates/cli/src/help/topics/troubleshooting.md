@@ -24,6 +24,7 @@ Start with `afkconvoy doctor`, in the checkout the fleet runs in: it reads every
 
 A warning may be the fleet mid-step: run `doctor` again after a tick before you act on one.
 
+- `failed in tick`: A step failed, including a worker that could not start or take its brief. `evidence` is the error and `fix` is the line to try after correcting it: a failed dispatch can be run again, and a failed train worker start uses `afkconvoy tick`. It stays visible across unrelated ticks until the step succeeds or the issue's work continues or ends. Three consecutive failed ticks make it critical instead.
 - `has no worker`: A claim's worker is gone; a tick starts one. `fix` is for a claim it leaves so.
 - `has been stopped for`: A worker stopped half an hour ago and declared nothing: read its terminal; `fix`.
 - `the last tick started no worker`: Slots are free, the frontier is not empty, and nothing was dispatched: `evidence` is the tick's line, and `fix` the step that failed or the dispatch by hand.
