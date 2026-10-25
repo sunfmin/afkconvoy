@@ -388,7 +388,7 @@ fn first_sentence(text: &str) -> String {
     let paragraph = text.trim().split("\n\n").next().unwrap_or("");
     let text = paragraph.split_whitespace().collect::<Vec<_>>().join(" ");
     for (at, ch) in text.char_indices() {
-        let end = at + ch.len_utf8();
+        let end = at.saturating_add(ch.len_utf8());
         let rest = text.get(end..).unwrap_or("");
         let ended = matches!(ch, '。' | '！' | '？')
             || (matches!(ch, '.' | '!' | '?')
