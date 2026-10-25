@@ -201,22 +201,20 @@ fn pressure_coverage_survives_an_inspection_for_another_reason_and_a_cache_upgra
         let last = world.cache().join("afkconvoy/host-inspection/last.json");
         std::fs::create_dir_all(last.parent().unwrap()).unwrap();
         std::fs::write(&last, prior.to_string()).unwrap();
-        world
-            .afk(&[
-                "run",
-                "--foreground",
-                "--instance",
-                "alpha",
-                "--host",
-                "h1",
-                "--now",
-                "1000",
-                "--second-ms",
-                "0",
-                "--ticks",
-                "2",
-            ])
-            .ok();
+        world.afk_lines(&[
+            "run",
+            "--foreground",
+            "--instance",
+            "alpha",
+            "--host",
+            "h1",
+            "--now",
+            "1000",
+            "--second-ms",
+            "0",
+            "--ticks",
+            "2",
+        ]);
         assert_eq!(started(&world), 0);
         assert!(entries(&world).iter().any(|entry|
             matches!(&entry.what, What::HostInspected { found, .. } if found == "covered")), "{:#?}", entries(&world));

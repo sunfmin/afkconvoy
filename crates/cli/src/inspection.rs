@@ -8,7 +8,7 @@
 //! which hot worker is next and what it is told are the core's
 //! (`afkconvoy_core::inspection`); what holds it to its bounds is the guard's.
 //!
-//! When admission has held back new workers for one reason past its span, the
+//! When admission holds for one reason, or memory pressure lasts, past its span, the
 //! host is inspected the same way (`afkconvoy_core::host_inspection`), once an
 //! episode: the stock consult, given what holds the disk, the load or the
 //! memory (`host_evidence`). What it did is kept in the cache every fleet of
@@ -60,7 +60,7 @@ use crate::role::ToldRules;
 use crate::stage::records_of;
 use crate::team::keep;
 
-/// What the last host inspection did, in the cache every fleet of the host
+/// The last completed host inspection of each reason, in the cache every fleet of the host
 /// shares.
 const LAST: &str = "host-inspection/last.json";
 
@@ -107,7 +107,7 @@ pub struct Running {
     pub by: String,
     /// When it started, in epoch seconds.
     pub since: u64,
-    /// Of a host inspection: what admission held back for.
+    /// Of a host inspection: the resource that called for it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub held_back_by: Option<Reason>,
 }
@@ -228,7 +228,7 @@ pub struct Last {
     /// The main checkout of the repo whose fleet started it.
     pub repo: String,
     pub reason: Reason,
-    /// What admission read as it started.
+    /// What called for the inspection as it started.
     pub reading: String,
     pub by: String,
     pub started: u64,
@@ -310,7 +310,7 @@ pub fn last_json(last: &Last) -> Value {
 enum Subject {
     /// A hot worker, and `why` it turned hot.
     Worker { hot: HotNow, why: String },
-    /// The host, on which admission held back for `reason`, having read
+    /// The host, whose `reason` called for an inspection, having read
     /// `reading`.
     Host { reason: Reason, reading: String },
 }
@@ -948,7 +948,7 @@ fn said_of(finding: Option<&Finding>) -> String {
 }
 
 /// Ends the host's inspection, which the fleet of the checkout `repo`
-/// started, of what admission held back for — `reason`, having read
+/// started, of what called for it — `reason`, having read
 /// `reading` — which said `finding` at `now`: keeps it for `doctor` and the
 /// panel, beside admission's reading.
 fn end_host(
