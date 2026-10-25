@@ -67,7 +67,7 @@ pub const BLOCKED_BY_JQ: &str = ".[] | {number, state}";
 /// What is read of each label a repo has.
 pub const LABELS_JQ: &str = ".[].name";
 /// What is read of each open PR: `isCrossRepository` says its head is in
-/// another repository — a fork's, which the fleet reads nothing of.
+/// another repository — a fork's (`GitHub::open_prs`).
 pub const PR_FIELDS: &str =
     "number,title,headRefName,headRefOid,body,closingIssuesReferences,isCrossRepository";
 /// What is read of each open PR of another repo.
@@ -549,12 +549,9 @@ impl GitHub {
         Ok(carrying)
     }
 
-    /// Every open pull request whose head is a branch of the repo itself.
-    ///
-    /// Only a login with write access can push a branch here, so such a PR
-    /// is a collaborator's; one from a fork is anyone's, and is read by
-    /// nothing — it is neither joined nor closed, holds no issue off, and is
-    /// not reported: the fleet acts as if it did not exist.
+    /// Every open pull request whose head is a branch of the repo itself. One
+    /// from a fork is anyone's and no part of fleet state (GLOSSARY: Fleet
+    /// state): it is dropped here, so that nothing of the fleet reads it.
     pub fn open_prs(&self) -> Result<Vec<PullRequest>> {
         #[derive(Deserialize)]
         #[serde(rename_all = "camelCase")]
