@@ -15,6 +15,7 @@ use afkconvoy_core::prompt::{PatrolFields, patrol_prompt};
 use afkconvoy_core::role::{Facts, On, Start};
 use afkconvoy_core::team::PRECEDENTS;
 use afkconvoy_core::tick::Outcome;
+use afkconvoy_core::tracker::Tracker;
 use anyhow::{Result, anyhow, bail};
 use serde_json::{Value, json};
 
@@ -96,19 +97,19 @@ pub fn ask(repo: &Repo, name: &str, host: &str, now: u64) -> Result<Value> {
     let locks = lock::standing(&open.issues.rows, &fleet.config);
     let held = afkconvoy_core::patrol::ask(patrol, &fleet.scan.beats(), now, !locks.is_empty());
     if let Err(held) = held {
-        return Err(See::Patrols.refusal(refused(patrol, held, &locks)));
+        return Err(See::Patrols.refusal(refused(patrol, held, &locks, &fleet.gh.tracker)));
     }
     let refname = push_ask(&fleet.repo, &mut fleet.scan, name, host, now)?;
     Ok(json!({"patrol": name, "asked": now, "ref": refname}))
 }
 
 /// Why an ask for a run of `patrol` is refused, held as `held`, and what
-/// clears it; `locks` are the fleet locks standing.
-fn refused(patrol: &Seen, held: Standing, locks: &[u64]) -> String {
+/// clears it; `locks` are the fleet locks standing, issues of `tracker`.
+fn refused(patrol: &Seen, held: Standing, locks: &[u64], tracker: &Tracker) -> String {
     let name = &patrol.name;
     match held {
         Standing::Locked => {
-            let numbers: Vec<String> = locks.iter().map(|lock| format!("#{lock}")).collect();
+            let numbers: Vec<String> = locks.iter().map(|&lock| tracker.issue(lock)).collect();
             format!(
                 "a fleet lock stands ({}): no patrol runs while one does, asked for or not. It \
                  ends when the last lock issue closes",
@@ -128,8 +129,10 @@ fn refused(patrol: &Seen, held: Standing, locks: &[u64]) -> String {
         ),
         Standing::Failed => match patrol.failure {
             Some(failure) => format!(
-                "the last run of the patrol `{name}` failed, and #{failure} reports it: it runs \
-                 once you have looked and closed it (gh issue close {failure})"
+                "the last run of the patrol `{name}` failed, and {} reports it: it runs once you \
+                 have looked and closed it ({})",
+                tracker.issue(failure),
+                tracker.gh_issue("close", failure).own()
             ),
             None => format!("the last run of the patrol `{name}` failed"),
         },
@@ -214,6 +217,7 @@ pub fn run(fleet: &mut Fleet, me: &Me, agent: &Agent, read: &Flows, row: &Row) -
         intake_command: &own().fixed(" intake --issue <number> --workflow <name>").own(),
         lock_command: &own().fixed(" lock --issue <number>").own(),
         over_command: &own().fixed(" over --run ").word(&claim.key).own(),
+        tracker: &fleet.gh.tracker,
     };
     let brief = checkout.write_brief(&patrol_prompt(&fields).map_err(|e| anyhow!(e))?)?;
     let line = in_role(fleet, kept, name, &cast, launch.as_str(), &checkout)?;

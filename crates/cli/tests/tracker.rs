@@ -310,7 +310,7 @@ fn a_lock_issue_of_the_tracker_holds_the_fleet_and_one_of_the_checkouts_repo_doe
     assert_eq!(plan["frontier"], json!([]), "{plan}");
 }
 
-const TEAM: &str = "```yaml\nroles:\n  dev: acme/dev\n  reviewer: acme/reviewer\n```\n";
+const ROLES: &str = "roles:\n  dev: acme/dev\n  reviewer: acme/reviewer\n  lander: acme/lander\n  clerk: acme/clerk\n";
 const FEATURE: &str = "\
 ```yaml
 stages:
@@ -327,18 +327,69 @@ stages:
     on: { pass: done }
 ```
 ";
+/// `build`, then `review`, then the landing train.
+const SHIP: &str = "\
+```yaml
+stages:
+  - name: build
+    by: dev
+    do: implement
+    on: { pass: review }
+  - name: review
+    by: reviewer
+    do: review
+    writes: false
+    on: { pass: land }
+land: { by: lander, do: join }
+```
+";
+const SWEEP: &str = "```yaml\nby: dev\ndo: sweep\nevery: 1h\nmax_open: 2\n```\n";
 
-/// `world`, its repo bound to a team with the one workflow `feature`.
+/// `world`, its repo bound to a team with the workflows `feature` and `ship`
+/// and the patrol `sweep`.
 fn bound() -> World {
+    bound_with("", "")
+}
+
+/// `bound`, the team's `team.md` saying `team` beside its roles, and the
+/// repo's config `config` beside naming the team.
+fn bound_with(team: &str, config: &str) -> World {
     let world = world();
-    let skill = |name: &str| format!("---\nname: {name}\ndescription: {name}\n---\n");
-    world.repo("acme/dev", &[(".claude/skills/implement/SKILL.md", &skill("implement"))]);
-    world.repo("acme/reviewer", &[(".claude/skills/review/SKILL.md", &skill("review"))]);
-    world.repo("acme/team", &[("team.md", TEAM), ("workflows/feature.md", FEATURE)]);
-    let config = "```yaml\nbase_branch: main\ngate_command: ./gate.sh\nteam: acme/team\n```\n";
-    write(&world.clone, "docs/agents/afkconvoy.md", config);
+    for (repo, skills) in [
+        ("acme/dev", &["implement", "sweep"][..]),
+        ("acme/reviewer", &["review"]),
+        ("acme/lander", &["join"]),
+        ("acme/clerk", &["propose"]),
+    ] {
+        let files: Vec<(String, String)> = skills
+            .iter()
+            .map(|name| {
+                let file = format!(".claude/skills/{name}/SKILL.md");
+                (file, format!("---\nname: {name}\ndescription: {name}\n---\n"))
+            })
+            .collect();
+        let files: Vec<(&str, &str)> =
+            files.iter().map(|(file, text)| (file.as_str(), text.as_str())).collect();
+        world.repo(repo, &files);
+    }
+    let team = format!("```yaml\n{ROLES}{team}```\n");
+    world.repo(
+        "acme/team",
+        &[
+            ("team.md", &team),
+            ("workflows/feature.md", FEATURE),
+            ("workflows/ship.md", SHIP),
+            ("patrols/sweep.md", SWEEP),
+            ("precedents.md", "# Precedents\n"),
+        ],
+    );
+    let config = format!(
+        "```yaml\nbase_branch: main\ngate_command: \"true\"\nteam: acme/team\n{config}```\n"
+    );
+    write(&world.clone, "docs/agents/afkconvoy.md", &config);
     git(&world.clone, &["commit", "-q", "-am", "bind the repo"]);
     git(&world.clone, &["push", "-q", "origin", "main"]);
+    world.say_concurrency(&world.clone, 4);
     world
 }
 
@@ -503,4 +554,310 @@ fn run_tracker_keeps_it_on_the_checkout_list_makes_its_labels_and_refuses_a_chan
     // naming no repo is refused, saying what is taken
     let error = world.afk(&["run", "--tracker", "acme"]).error();
     assert!(error.contains("`acme` is no repo, `<owner>/<repo>`, nor `default`"), "{error}");
+}
+
+/// What a tick did that came to anything, but for the `stage:` labels.
+fn walked(ticked: &Value) -> Vec<String> {
+    did(ticked).into_iter().filter(|step| !step.starts_with("stage_label ")).collect()
+}
+
+/// Declares `verdict` for `stage` of the tracker's issue 7, as its worker would.
+fn declare(world: &World, stage: &str, verdict: &str) {
+    let line = ["verdict", verdict, "--issue", "7", "--stage", stage, "--text", "Done."];
+    let commits = ["--role-commit", "r1", "--team-commit", "t1"];
+    let declared = world.afk(&[&line[..], &commits].concat()).ok();
+    assert_eq!(declared["declared"], true, "{declared}");
+}
+
+/// The worktree a worker on the tracker's issue 7 was last started in.
+fn worktree_of_7(world: &World) -> PathBuf {
+    let named = |path: &PathBuf| path.to_str().unwrap().contains("acme-tracker-7-");
+    world.worktrees().into_iter().rfind(named).expect("a worktree of acme/tracker#7")
+}
+
+#[test]
+fn a_bound_repos_tracker_issue_goes_through_its_stages_to_the_landing_train_and_closes() {
+    let world = bound();
+    tracker_issue(&world, 7, &["flow:ship", MINE]);
+    world.issue(7, &["flow:ship"]);
+    let own = world.gh()["issues"].clone();
+
+    // `build`, whose worker reads and writes its issue in the tracker, and
+    // opens the PR that closes it by the name the repo gives it.
+    assert_eq!(walked(&tick_at_work(&world, 1000)), ["dispatch 7 done"]);
+    let dir = worktree_of_7(&world);
+    let branch = git(&dir, &["symbolic-ref", "--short", "HEAD"]);
+    assert_eq!(branch, "tester/acme-tracker-7-tracked-7");
+    let told = brief(&dir);
+    for said in [
+        "**Issue:** acme/tracker#7 — tracked 7",
+        "`gh issue view 7 --repo acme/tracker --comments`",
+        "`gh issue create --repo acme/tracker --label repo:acme/dev`",
+    ] {
+        assert!(told.contains(said), "{said}: {told}");
+    }
+    commit(&dir, "seven.txt", "7\n");
+    git(&dir, &["push", "-q", "origin", "HEAD"]);
+    world.pr_closing(70, "acme/tracker#7", &branch);
+    let gated = world.afk_in(&dir, &["gate", "--train"]).ok();
+    assert_eq!((&gated["status"], &gated["recorded"]), (&json!("green"), &json!(true)));
+    declare(&world, "build", "pass");
+    assert_eq!(walked(&tick_at_work(&world, 1090)), ["advance 7 done", "dispatch 7 done"]);
+    // `review`, which passes to the landing train.
+    declare(&world, "review", "pass");
+    assert_eq!(walked(&tick_at_work(&world, 1180)), ["advance 7 done"]);
+    assert_eq!(issue_of(&world.tracker(), 7)["labels"], json!(["flow:ship", MINE, "stage:land"]));
+
+    // The landing worker gates the PR and joins the train.
+    assert_eq!(walked(&tick_at_work(&world, 1270)), ["dispatch 7 done"]);
+    assert_eq!(worktree_of_7(&world), dir);
+    let told = brief(&dir);
+    assert!(told.contains("PR #70 is open for it"), "{told}");
+    let gated = world.afk_in(&dir, &["gate", "--train"]).ok();
+    assert_eq!(gated["status"], "green", "{gated}");
+    let joined = world.afk_in(&dir, &["land", "--issue", "7", "--now", "1300"]).ok();
+    assert_eq!(joined["outcome"], "joined", "{joined}");
+    assert_eq!(walked(&tick_at_work(&world, 1360)), ["tend_train done"]);
+
+    // The train lands it and the tracker's issue closes: the workflow has ended.
+    let landed = world.afk_in(&world.root.join("wt/convoy-train"), &["land", "--train"]).ok();
+    assert_eq!(landed["outcome"], "landed", "{landed}");
+    assert_eq!(world.remote(&["show", "refs/heads/main:seven.txt"]), "7");
+    let joined = world.remote(&["log", "--format=%s%n%b", "--merges", "-1", "main"]);
+    assert_eq!(joined, "pr 70 (#70)\nCloses acme/tracker#7");
+    assert_eq!(issue_of(&world.tracker(), 7)["state"], "closed");
+    assert_eq!(walked(&tick_at_work(&world, 1450)), ["settle 7 done"]);
+    assert_eq!(world.claims(), []);
+
+    // Each stage's record is on the tracker's issue; the repo's are as they were.
+    let said = comments_of(&world.tracker(), 7).join("\n");
+    for record in ["stage=build verdict=pass", "stage=review verdict=pass"] {
+        assert!(said.contains(record), "{record}: {said}");
+    }
+    assert_eq!(world.gh()["issues"], own);
+    routed(&world);
+}
+
+/// A worker of `dev` takes the tracker's issue `issue` in to `feature`, on
+/// what `on` says: `--patrol` or `--from`, and what it waits for.
+fn take_in(world: &World, issue: u64, on: &[&str]) -> common::Answer {
+    let issue = issue.to_string();
+    let line = ["intake", "--issue", &issue, "--workflow", "feature", "--role", "dev"];
+    world.afk(&[&line[..], on].concat())
+}
+
+#[test]
+fn a_patrols_and_a_splits_issues_are_the_trackers_with_the_repo_label_and_the_intake_limit_counts_the_repos()
+ {
+    let world = bound_with("", "intake_limit: 3\npatrols: [sweep]\n");
+    // `flows` makes the flow labels in the tracker, and gives the line that
+    // opens an issue there.
+    let flows = world.afk(&["flows"]).ok();
+    assert_eq!(flows["created"], json!(["flow:feature", "flow:ship"]), "{flows}");
+    let labels = world.tracker()["labels"].clone();
+    assert!(labels.as_array().unwrap().contains(&json!("flow:ship")), "{labels}");
+    assert_eq!(
+        flows["workflows"][0]["line"],
+        "gh issue create --repo acme/tracker --label 'flow:feature' --label 'repo:acme/dev' \
+         --title '<title>' --body-file <file>"
+    );
+    assert_eq!(flows["intake"], json!({"open": 0, "limit": 3}), "{flows}");
+
+    // Another repo's issue, taken in by its own fleet's patrol: not this
+    // fleet's to count.
+    tracker_issue(&world, 20, &["flow:feature", "repo:acme/web"]);
+    world.with_tracker(|gh| {
+        let record = "<!--convoy:intake workflow=feature role=dev patrol=sweep-->\ntaken in";
+        let comment = json!({"id": 2001, "body": record, "html_url": "https://gh/c/2001"});
+        gh["comments"]["20"] = json!([comment]);
+    });
+
+    // The patrol's worker is told to open its issues in the tracker, with the
+    // repo label, and to look there for one that covers what it found.
+    assert_eq!(did(&tick(&world, "10000")), ["patrol done"]);
+    let checkout = world
+        .worktrees()
+        .into_iter()
+        .find(|path| path.to_str().unwrap().contains("/convoy-patrol-sweep"));
+    let told = brief(&checkout.expect("the patrol's checkout"));
+    for said in [
+        "`gh issue create --repo acme/tracker --label repo:acme/dev`",
+        "`gh issue list --repo acme/tracker --label repo:acme/dev --state open`",
+    ] {
+        assert!(told.contains(said), "{said}: {told}");
+    }
+    // It opens one with the repo label and one without: intake gives it.
+    tracker_issue(&world, 12, &[MINE]);
+    tracker_issue(&world, 13, &[]);
+    assert_eq!(take_in(&world, 12, &["--patrol", "sweep"]).ok()["open"], 1);
+    assert_eq!(take_in(&world, 13, &["--patrol", "sweep"]).ok()["open"], 2);
+    let tracker = world.tracker();
+    for number in [12, 13] {
+        assert_eq!(issue_of(&tracker, number)["labels"], json!([MINE, "flow:feature"]));
+        let record = &comments_of(&tracker, number)[0];
+        assert!(record.starts_with("<!--convoy:intake workflow=feature role=dev patrol=sweep-->"));
+    }
+    let plan = world.afk(&["plan", "--instance", "alpha", "--now", "10001"]).ok();
+    assert_eq!(plan["patrols"][0]["open"], 2, "{plan}");
+
+    // A stage's worker splits its issue: the child, and the edge it waits
+    // on, are the tracker's.
+    tracker_issue(&world, 15, &[]);
+    tracker_issue(&world, 16, &[MINE]);
+    let split = take_in(&world, 15, &["--from", "7", "--blocked-by", "16"]).ok();
+    assert_eq!((&split["open"], &split["limit"]), (&json!(3), &json!(3)), "{split}");
+    assert_eq!(world.tracker()["edges"]["15"], json!([16]));
+    assert_eq!(issue_of(&world.tracker(), 15)["labels"], json!([MINE, "flow:feature"]));
+
+    // Three of the repo's are open, whatever the other repo's: no more.
+    tracker_issue(&world, 17, &[MINE]);
+    let full = take_in(&world, 17, &["--from", "7"]).error();
+    assert!(full.contains("the intake limit is reached: 3 open issues"), "{full}");
+    // Another repo's issue is that repo's to take in.
+    tracker_issue(&world, 18, &["repo:acme/web"]);
+    let theirs = take_in(&world, 18, &["--from", "7"]).error();
+    assert!(
+        theirs.contains("issue acme/tracker#18 carries the repo label of another repo"),
+        "{theirs}"
+    );
+    assert_eq!(issue_of(&world.tracker(), 18)["labels"], json!(["repo:acme/web"]));
+    assert_eq!(comments_of(&world.tracker(), 18), Vec::<String>::new());
+
+    // `flows` counts the same.
+    assert_eq!(world.afk(&["flows"]).ok()["intake"], json!({"open": 3, "limit": 3}));
+    assert_eq!(world.gh()["issues"], json!([]), "the repo has no issue of its own");
+    routed(&world);
+}
+
+#[test]
+fn a_lock_raised_on_a_tracker_issue_is_given_the_repo_label_and_one_of_another_repo_is_refused() {
+    let world = bound();
+    tracker_issue(&world, 7, &["flow:feature", MINE]);
+    tracker_issue(&world, 9, &["bug"]);
+    tracker_issue(&world, 10, &["bug", "repo:acme/web"]);
+
+    let raised = world.afk(&["lock", "--issue", "9", "--role", "dev"]).ok();
+    assert_eq!((&raised["raised"], &raised["locks"]), (&json!(true), &json!([9])), "{raised}");
+    let tracker = world.tracker();
+    assert_eq!(issue_of(&tracker, 9)["labels"], json!(["bug", MINE, "fleet-lock"]));
+    assert!(comments_of(&tracker, 9)[0].starts_with("<!--convoy:lock"), "{tracker}");
+    let plan = world.afk(&["plan", "--instance", "alpha", "--now", "1000"]).ok();
+    assert_eq!((&plan["locks"], &plan["frontier"]), (&json!([9]), &json!([])), "{plan}");
+
+    // The lock of another repo's issue would hold that repo's fleet, and not
+    // this one: it is refused, and nothing is written.
+    let refused = world.afk(&["lock", "--issue", "10", "--role", "dev"]).error();
+    assert!(
+        refused.contains("issue acme/tracker#10 carries the repo label of another repo"),
+        "{refused}"
+    );
+    let tracker = world.tracker();
+    assert_eq!(issue_of(&tracker, 10)["labels"], json!(["bug", "repo:acme/web"]));
+    assert_eq!(comments_of(&tracker, 10), Vec::<String>::new());
+    assert_eq!(world.gh()["issues"], json!([]));
+    routed(&world);
+}
+
+#[test]
+fn rule_and_send_steer_the_trackers_issue_and_its_ruling_is_proposed_on_the_teams_repo() {
+    let world = bound_with("precedents: { by: clerk, do: propose, max_open: 1 }\n", "");
+    tracker_issue(&world, 7, &["flow:feature", MINE]);
+    world.issue(7, &["flow:feature"]);
+    let own = world.gh()["issues"].clone();
+    assert_eq!(walked(&tick_at_work(&world, 1000)), ["dispatch 7 done"]);
+    declare(&world, "build", "escalate");
+    assert_eq!(walked(&tick_at_work(&world, 1090)), ["advance 7 done"]);
+    let labels = issue_of(&world.tracker(), 7)["labels"].clone();
+    assert!(labels.as_array().unwrap().contains(&json!("ready-for-human")), "{labels}");
+    let said = comments_of(&world.tracker(), 7).join("\n");
+    assert!(said.contains("gh issue close 7 --repo acme/tracker"), "{said}");
+
+    // A human rules: the tracker's issue goes back to its stage.
+    let ruled = world.afk(&["rule", "--issue", "7", "--text", "Keep the v1 schema."]).ok();
+    assert_eq!((&ruled["ruled"], &ruled["relabelled"]), (&json!(true), &json!(true)), "{ruled}");
+    let labels = issue_of(&world.tracker(), 7)["labels"].clone();
+    assert!(labels.as_array().unwrap().contains(&json!("flow:feature")), "{labels}");
+    assert!(!labels.as_array().unwrap().contains(&json!("ready-for-human")), "{labels}");
+    let tracker = world.tracker();
+    let comments = tracker["comments"]["7"].as_array().unwrap();
+    let ruling = comments
+        .iter()
+        .rfind(|comment| comment["body"].as_str().unwrap().contains(" verdict=ruling by=human-->"))
+        .expect("the ruling, on the tracker's issue");
+    let (comment, link) = (ruling["id"].as_u64().unwrap(), ruling["html_url"].as_str().unwrap());
+
+    // The stage runs again, and the ruling is proposed as a PR on the team's
+    // repo by a worker told to read the tracker's issue.
+    assert_eq!(walked(&tick_at_work(&world, 1180)), ["dispatch 7 done", "propose 7 done"]);
+    let dir = world.root.join("wt").join(format!("convoy-precedent-7-c{comment}"));
+    let told = brief(&dir);
+    for said in [
+        format!("issue acme/tracker#7, which was escalated to them — {link}"),
+        "`gh issue view 7 --repo acme/tracker --comments`".to_string(),
+        format!("opening one PR on `acme/team`, from the branch `convoy-precedent-7-c{comment}`"),
+    ] {
+        assert!(told.contains(&said), "{said}: {told}");
+    }
+    let said = comments_of(&world.tracker(), 7).join("\n");
+    assert!(said.contains(&format!("<!--convoy:precedent-proposed ruling={comment}-->")));
+
+    // A human sends it on to `review`, once its worker has let it go.
+    world.afk(&["release", "--issue", "7", "--instance", "alpha", "--host", "h1"]).ok();
+    let line = ["send", "--issue", "7", "--stage", "review", "--text", "Review it."];
+    let sent = world.afk(&line).ok();
+    assert_eq!((&sent["stage"], &sent["sent"]), (&json!("review"), &json!(true)), "{sent}");
+    let said = comments_of(&world.tracker(), 7).join("\n");
+    assert!(said.contains("a human sent this issue to the stage `review`"), "{said}");
+    let plan = world.afk(&["plan", "--instance", "alpha"]).ok();
+    assert_eq!(plan["frontier"][0]["stage"], "review", "{plan}");
+
+    assert_eq!(world.gh()["issues"], own);
+    assert_eq!(world.gh()["comments"], json!({}), "nothing is said on the checkout's repo");
+}
+
+#[test]
+fn cast_labels_the_trackers_issue_and_says_why_there() {
+    let world = world();
+    world.hold_every_harness();
+    world.kit_models("pi", &["a/fast", "a/slow"]);
+    tracker_issue(&world, 7, &["ready-for-agent", MINE]);
+    world.issue(7, &["ready-for-agent"]);
+    let own = world.gh()["issues"].clone();
+    world.caster_answers(
+        "{\"issue\": 7, \"harness\": \"pi\", \"model\": \"a/fast\", \"why\": \"A one-line fix.\"}\n",
+    );
+    let answered = world.afk(&["cast", "--now", "1000"]).ok();
+    assert_eq!(
+        answered["cast"],
+        json!([{"issue": 7, "harness": "pi", "model": "a/fast", "why": "A one-line fix."}]),
+        "{answered}"
+    );
+    let tracker = world.tracker();
+    assert_eq!(
+        issue_of(&tracker, 7)["labels"],
+        json!(["ready-for-agent", MINE, "harness:pi", "model:a/fast"])
+    );
+    assert!(comments_of(&tracker, 7).join("\n").contains("A one-line fix."), "{tracker}");
+    assert_eq!(world.gh()["issues"], own);
+    assert_eq!(world.gh()["comments"], json!({}));
+    routed(&world);
+}
+
+/// The team's roster names a model for `reviewer` that the host kit holds by
+/// no name.
+const UNMATCHED: &str = "roster:\n  reviewer: { run: [{ harness: claude-code, model: opuss }] }\n";
+
+#[test]
+fn a_roster_issue_of_a_bound_repo_is_opened_in_the_teams_repo_and_not_the_tracker() {
+    let world = bound_with(UNMATCHED, "");
+    world.kit_models("claude-code", &["opus"]);
+    tracker_issue(&world, 7, &["flow:feature", MINE]);
+    tick_at_work(&world, 1000);
+    let opened = world.gh()["other_issues"]["acme/team"].clone();
+    assert_eq!(opened.as_array().map(Vec::len), Some(1), "{opened}");
+    assert!(opened[0]["body"].as_str().unwrap().contains("opuss"), "{opened}");
+    let tracker = world.tracker();
+    let numbers: Vec<&Value> =
+        tracker["issues"].as_array().unwrap().iter().map(|i| &i["number"]).collect();
+    assert_eq!(numbers, [&json!(7)], "nothing is opened in the tracker");
 }

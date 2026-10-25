@@ -25,7 +25,7 @@ The repo a fleet reads and writes its issues in: its checkout's own, until the c
 _Avoid_: issue repo, backlog (all the issues a repo has open), project (a GitHub Project)
 
 **Repo label**:
-`repo:<owner>/<repo>`: what makes an issue of a tracker one of that repo's. A fleet whose tracker is another repo works only the issues there that carry its repo's; one carrying two is no fleet's. In a repo that is its own tracker, an issue carrying one is the repo's it names.
+`repo:<owner>/<repo>`: what makes an issue of a tracker one of that repo's. A fleet whose tracker is another repo works only the issues there that carry its repo's, and gives it to every issue it opens, takes in or locks there; one carrying two is no fleet's. In a repo that is its own tracker, an issue carrying one is the repo's it names.
 _Avoid_: component label, project label
 
 **Broken**:
@@ -129,7 +129,7 @@ The label that names the workflow an issue follows: `flow:<name>`, unless the wo
 _Avoid_: type label
 
 **Intake**:
-Putting a flow label on an issue. A human does it on GitHub; a worker does it through the fleet, which records who did and holds the number of such issues still open under a limit.
+Putting a flow label on an issue. A human does it on GitHub; a worker does it through the fleet, which records who did and holds the number of such issues still open under a limit — of a tracker that is another repo, the repo's issues alone, each of which intake gives the repo label.
 _Avoid_: enroll, admit (a tick starting new workers on a host not busy: admission), triage
 
 **Stage**:
@@ -177,7 +177,7 @@ A role run on a schedule rather than for an issue. It opens issues and takes the
 _Avoid_: cron, job, scheduled worker
 
 **Fleet lock**:
-An open issue carrying the lock label, in a bound repo or an unbound one. While one stands the fleet works lock issues only — nothing else is dispatched, no PR of another issue joins the landing train, and workers already running are left alone, what they declare being acted on afterwards — and closing the last one ends it. A stage's `escalate` or failure the lock explains — declared before it closed, and not acted on since — is then not carried out: the stage runs again, which is no rework.
+An open issue carrying the lock label, in a bound repo or an unbound one — of a tracker that is another repo, and the repo label of the repo whose fleet it holds: no other repo's fleet that works the same tracker. While one stands the fleet works lock issues only — nothing else is dispatched, no PR of another issue joins the landing train, and workers already running are left alone, what they declare being acted on afterwards — and closing the last one ends it. A stage's `escalate` or failure the lock explains — declared before it closed, and not acted on since — is then not carried out: the stage runs again, which is no rework.
 _Avoid_: freeze, pause (a harness paused on a host, as under Host kit), kill switch
 
 ### Workers

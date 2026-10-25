@@ -227,9 +227,10 @@ pub fn end(fleet: &mut Fleet, me: &Me, read: &Flows, row: &Row) -> Result<Outcom
                 )?,
             };
             let failed = format!(
-                "at its step `{}`: {} — #{issue} says so, and goes on with `{line}`",
+                "at its step `{}`: {} — {} says so, and goes on with `{line}`",
                 failure.step.word(),
-                failure.why.trim()
+                failure.why.trim(),
+                fleet.gh.tracker.issue(issue)
             );
             fleet.cut_said.push(What::CutEnded {
                 version,

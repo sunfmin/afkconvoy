@@ -1,8 +1,8 @@
 //! `afkconvoy flows`: what whoever hands the fleet work needs to open an issue
 //! the fleet will work — each workflow of the team and what it is for, the
-//! labels to keep off an issue, and the line that opens one — with the labels
-//! that line names created on the repo where they are missing. In an unbound
-//! repo the one label is the ready label.
+//! labels to keep off an issue, and the line that opens one in the fleet's
+//! tracker — with the labels that line names created there where they are
+//! missing. In an unbound repo the one label is the ready label.
 
 use afkconvoy_core::config::Config;
 use afkconvoy_core::line::Line;
@@ -11,7 +11,7 @@ use anyhow::Result;
 use serde_json::{Value, json};
 
 use crate::config;
-use crate::gh::GitHub;
+use crate::gh::{GitHub, Tracker};
 use crate::git::Repo;
 use crate::intake::open_taken_in;
 use crate::team;
@@ -21,10 +21,18 @@ use crate::team;
 const FLOW_LABEL_SAYS: &str = "afkconvoy: the workflow an issue that carries this follows";
 pub(crate) const READY_LABEL_SAYS: &str = "afkconvoy: the fleet works an issue that carries this";
 
-/// The line that opens an issue carrying `label`, its title and body left to
+/// The line that opens an issue of `tracker` carrying `label` — in a tracker
+/// that is another repo, with the repo label too — its title and body left to
 /// whoever runs it.
-fn line(label: &str) -> String {
-    let line = Line::new().fixed("gh issue create --label ").word(label);
+fn line(tracker: &Tracker, label: &str) -> String {
+    let mut line = Line::new().fixed("gh issue create");
+    if let Some(named) = tracker.named() {
+        line = line.fixed(" --repo ").program(named.as_str());
+    }
+    line = line.fixed(" --label ").word(label);
+    if let Some(repo_label) = tracker.repo_label() {
+        line = line.fixed(" --label ").word(&repo_label);
+    }
     line.fixed(" --title '<title>' --body-file <file>").own()
 }
 
@@ -42,8 +50,8 @@ pub(crate) fn create_missing(gh: &GitHub, labels: &[String], says: &str) -> Resu
     Ok(created)
 }
 
-/// One workflow, as whoever opens an issue into it reads it.
-fn workflow(team: &Team, workflow: &Workflow) -> Value {
+/// One workflow, as whoever opens an issue of `tracker` into it reads it.
+fn workflow(tracker: &Tracker, team: &Team, workflow: &Workflow) -> Value {
     let first = workflow.first();
     let (by, skill) = match &first.by {
         Performer::Human => (HUMAN, None),
@@ -67,7 +75,7 @@ fn workflow(team: &Team, workflow: &Workflow) -> Value {
         "description": workflow.description,
         "first": {"stage": first.name, "by": by, "do": skill},
         "ends": ends,
-        "line": line(flow_label),
+        "line": line(tracker, flow_label),
     })
 }
 
@@ -92,7 +100,7 @@ pub fn flows(repo: &Repo) -> Result<Value> {
         let created =
             create_missing(&gh, std::slice::from_ref(&config.ready_label), READY_LABEL_SAYS)?;
         return Ok(json!({"team": null, "ready_label": config.ready_label,
-            "line": line(&config.ready_label),
+            "line": line(&gh.tracker, &config.ready_label),
             "keep_off": keep_off(&config, &config.escalate_label), "created": created}));
     };
     let team = team::load(team::From::Config, Some(repo))?.team;
@@ -102,7 +110,8 @@ pub fn flows(repo: &Repo) -> Result<Value> {
     let created = create_missing(&gh, &flow_labels, FLOW_LABEL_SAYS)?;
     Ok(json!({
         "team": bound.team,
-        "workflows": team.workflows.iter().map(|w| workflow(&team, w)).collect::<Vec<_>>(),
+        "workflows":
+            team.workflows.iter().map(|w| workflow(&gh.tracker, &team, w)).collect::<Vec<_>>(),
         "keep_off": keep_off(&config, &team.escalate_label),
         "intake": {"open": open, "limit": bound.intake_limit},
         "created": created,

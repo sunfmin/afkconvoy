@@ -928,7 +928,9 @@ fn an_issue_handed_to_a_human_that_no_consult_saw_is_put_to_its_consult_once() {
 
 #[test]
 fn a_consult_runs_the_commands_a_human_answering_runs_and_the_two_lists_are_one() {
-    use afkconvoy_core::waiting::ANSWERING;
+    use afkconvoy_core::tracker::Tracker;
+    use afkconvoy_core::waiting::answering;
+    let answering = answering(&Tracker::Own);
     // The commands the `humans` help names for answering an escalation.
     let help = world_help("humans");
     let section = help.split("\n## Answering an escalation\n").nth(1).expect("the section");
@@ -939,13 +941,13 @@ fn a_consult_runs_the_commands_a_human_answering_runs_and_the_two_lists_are_one(
         .map(|(command, _)| command)
         .filter(|line| line.starts_with("afkconvoy ") || line.starts_with("gh "))
         .collect();
-    assert_eq!(named, ANSWERING, "{section}");
+    assert_eq!(named, answering, "{section}");
     // The consult is given the same list, and its guard lets each through.
     let world = bound(FEATURE, 2);
     asked(&world);
     tick(&world, 1180);
     let told = brief(&worktree(&world));
-    for line in ANSWERING {
+    for line in &answering {
         let line = line.replace("<n>", "7");
         assert!(told.contains(&format!("    {line}\n")), "{line}\n{told}");
     }

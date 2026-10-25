@@ -353,6 +353,7 @@ impl Staged {
             self.verdicts.iter().map(|(record, url)| Said { record, url }).collect();
         let fields = StageFields {
             number: self.issue,
+            tracker: &fleet.gh.tracker,
             title,
             flow: &self.flow,
             stage: &self.stage,

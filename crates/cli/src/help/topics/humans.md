@@ -14,7 +14,7 @@ For a failure, fix what failed first: `afkconvoy rule` starts the same stage ane
 
 ## Answering an escalation
 
-Every command a human runs to answer one, `<n>` the issue's number. A consult may run each, and any read-only command, the gate too; never commit, push or change the host.
+Every command a human runs to answer one, `<n>` the issue's number. Where the checkout's tracker is another repo (`afkconvoy run --tracker`), name it in every `gh` line — `--repo <owner>/<tracker>`, `repos/<owner>/<tracker>/…` — and give `gh issue create` the repo label too, `--label repo:<owner>/<repo>`: run in the checkout, `gh` acts on the checkout's own repo. The lines an escalation's comment, `plan` and `doctor` give name it already. A consult may run each, and any read-only command, the gate too; never commit, push or change the host.
 
 - `afkconvoy rule --issue <n> --text-file <file>`: The stage runs again under your ruling; both rework counts start over (a consult's starts none over). `afkconvoy rule --help`.
 - `afkconvoy send --issue <n> --stage <stage> --text-file <file>`: Put it at another stage, when the approach or workflow changed, or bring it back from a park. `afkconvoy send --help`.

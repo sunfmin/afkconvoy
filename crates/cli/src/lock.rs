@@ -26,9 +26,11 @@ pub fn explaining_lock(gh: &GitHub, config: &Config, at: Option<u64>) -> Result<
 }
 
 /// `afkconvoy lock --issue <n>`: raise a fleet lock on an open issue — leave
-/// the record of the `role` that did, and put the lock label on it; the fleet
-/// is woken as the command ends (`crate::acting`). An issue that is a lock
-/// already gets no second record.
+/// the record of the `role` that did, and put the lock label on it, with the
+/// repo label before it where the tracker is another repo and the issue
+/// lacks it: a lock there holds the fleet of the repo whose issue it is; the
+/// fleet is woken as the command ends (`crate::acting`). An issue that is a
+/// lock already gets no second record; one of another repo is refused.
 ///
 ///   {"issue", "label", "role", "raised": true, "locks"}
 ///   {…, "raised": false, …}
@@ -39,10 +41,16 @@ pub fn lock(config: &Config, gh: &GitHub, issue: u64, role: Option<&str>) -> Res
     if read.is_closed() {
         bail!("issue #{issue} is closed: a fleet lock is an open issue, and ends when it closes");
     }
+    if let Err(why) = gh.tracker.to_take(&read.labels) {
+        bail!("issue {} {why}: a lock holds the fleet whose issue it is", gh.tracker.issue(issue));
+    }
     let label = &config.lock_label;
     let raised = !read.labels.contains(label);
     if raised {
         gh.comment(issue, &raised_comment(role))?;
+    }
+    gh.take(issue, &read.labels)?;
+    if raised {
         gh.add_label(issue, label)?;
     }
     Ok(json!({"issue": issue, "label": label, "role": role, "raised": raised,

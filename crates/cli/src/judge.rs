@@ -257,7 +257,7 @@ pub(crate) fn escalate_claim(
             escalate: fleet.config.escalate_label.clone(),
         },
     };
-    let answer = Waits::Escalated(back).answer_lines(issue);
+    let answer = Waits::Escalated(back).answer_lines(issue, &fleet.gh.tracker);
     let begun = Escalation::read(said, swap.done());
     let spare = leaving.as_ref().and_then(|leaving| leaving.left.spare());
     let only_here = match (&leaving, worktree) {

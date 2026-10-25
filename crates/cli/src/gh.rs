@@ -46,10 +46,13 @@ pub const OPEN_ISSUES_JQ: &str = ".data.repository.issues.nodes[] | {number, tit
     more: .comments.pageInfo.hasNextPage, comments: [.comments.nodes[] | \
     {id: (.fullDatabaseId | tonumber), body, url, at: (.createdAt | fromdateiso8601? // null)}]}";
 /// Completed issues with closure times and intake comments, paged together so
-/// reading a patrol's landings never makes one request per ordinary issue.
-pub const LANDED_ISSUES_QUERY: &str = "query($owner: String!, $repo: String!, $endCursor: String) { \
+/// reading a patrol's landings never makes one request per ordinary issue:
+/// of a tracker that is another repo, those carrying the repo label, `$labels`
+/// (`OPEN_ISSUES_QUERY`).
+pub const LANDED_ISSUES_QUERY: &str = "query($owner: String!, $repo: String!, \
+    $labels: [String!], $endCursor: String) { \
     repository(owner: $owner, name: $repo) { \
-    issues(states: CLOSED, first: 100, after: $endCursor, \
+    issues(states: CLOSED, labels: $labels, first: 100, after: $endCursor, \
     orderBy: {field: UPDATED_AT, direction: DESC}) { \
     pageInfo { hasNextPage endCursor } \
     nodes { number stateReason closedAt \
@@ -957,6 +960,19 @@ impl GitHub {
         let field = format!("labels[]={label}");
         self.gh(&["api", "--method", "POST", &endpoint, "-f", &field, "--silent"])?;
         Ok(())
+    }
+
+    /// Makes issue `number`, carrying `labels`, the repo's in its tracker
+    /// before a command hands it to the fleet (`Tracker::to_take`): puts the
+    /// repo label on it, in a tracker that is another repo, where it carries
+    /// none. An error of one that is another repo's, which is left as it is.
+    pub fn take(&self, number: u64, labels: &[String]) -> Result<()> {
+        let issue = self.tracker.issue(number);
+        match self.tracker.to_take(labels) {
+            Ok(Some(label)) => self.add_label(number, &label),
+            Ok(None) => Ok(()),
+            Err(why) => bail!("issue {issue} {why}"),
+        }
     }
 
     /// Takes one label off an issue that carries it.

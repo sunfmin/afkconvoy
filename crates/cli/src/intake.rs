@@ -91,11 +91,13 @@ fn blockers(gh: &GitHub, number: u64, blocked_by: &[u64]) -> Result<Vec<(u64, u6
 }
 
 /// `afkconvoy intake`: take the issue `taking` names in to its workflow — a
-/// blocked-by edge to each issue it is to wait for, the intake record, then
-/// the flow label; the fleet is woken as the command ends (`crate::acting`). The edges come first: the flow label
-/// is what puts the issue on the frontier, and it is never there ahead of
-/// what blocks it. An issue that follows that workflow already is left as it
-/// is, whoever took it in.
+/// blocked-by edge to each issue it is to wait for, the intake record, then,
+/// in a tracker that is another repo, the repo label where the issue lacks
+/// it, and the flow label; the fleet is woken as the command ends
+/// (`crate::acting`). The edges come first: the flow label is what puts the
+/// issue on the frontier, and it is never there ahead of what blocks it. An
+/// issue that follows that workflow already is left as it is, whoever took
+/// it in, but for the repo label. One that is another repo's is refused.
 ///
 ///   {"issue", "workflow", "taken": true, "role", "from" | "patrol" — or "train",
 ///    "blocked_by", "open", "limit", "woke"}
@@ -138,9 +140,13 @@ pub fn intake(repo: &Repo, taking: Taking) -> Result<Value> {
     if issue.is_closed() {
         bail!("issue #{number} is closed: only an open issue is taken in");
     }
+    if let Err(why) = gh.tracker.to_take(&issue.labels) {
+        bail!("issue {} {why}", gh.tracker.issue(number));
+    }
     match kept.team.flows(&issue.labels).as_slice() {
         [] => {}
         [carried] if *carried == workflow.flow_label() => {
+            gh.take(number, &issue.labels)?;
             let standing = came_in(&kept.team, &issue.labels, &gh.comments(number)?);
             return Ok(json!({"issue": number, "workflow": name, "taken": false,
                 "standing": standing}));
@@ -166,6 +172,7 @@ pub fn intake(repo: &Repo, taking: Taking) -> Result<Value> {
     }
     let record = IntakeRecord { workflow: name, by };
     gh.comment(number, &record.comment())?;
+    gh.take(number, &issue.labels)?;
     gh.add_label(number, workflow.flow_label())?;
     let taken = json!({"issue": number, "workflow": record.workflow, "taken": true,
         "blocked_by": blocked_by, "open": open + 1, "limit": limit});

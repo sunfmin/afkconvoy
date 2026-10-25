@@ -126,6 +126,7 @@ pub fn propose(
         base_branch: &fleet.config.base_branch,
         // The worker works in a clone of its own: the line is run from the checkout.
         over_command: &crate::own_command_in(&path).fixed(" over --run ").word(&claim.key).own(),
+        tracker: &fleet.gh.tracker,
     };
     let brief = checkout.write_brief(&proposal_prompt(&fields).map_err(|e| anyhow!(e))?)?;
     let told = crate::role::ToldRules::read(harness, &checkout.path, team_rules.as_deref())?;

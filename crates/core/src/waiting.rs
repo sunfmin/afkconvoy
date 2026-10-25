@@ -8,23 +8,33 @@ use serde::Serialize;
 
 use crate::line::Line;
 use crate::position::{Declared, Position};
+use crate::prompt::in_tracker;
 use crate::role::{Due, due};
 use crate::stage_record::{StageRecord, history};
 use crate::team::{Team, Workflow};
+use crate::tracker::Tracker;
 
-/// Every command a human runs to answer an escalated issue, as the
-/// `humans` help names them, `<n>` standing for the issue's number: a
-/// consult, who stands where that human stands (docs/adr/0018), is given
-/// the same list. A command added here is both's.
-pub const ANSWERING: [&str; 7] = [
+/// Every command a human runs to answer an escalated issue, `<n>` standing
+/// for the issue's number, with the marks of the fleet's tracker in each of
+/// its issue commands (`answering`).
+const ANSWERING: [&str; 7] = [
     "afkconvoy rule --issue <n> --text-file <file>",
     "afkconvoy send --issue <n> --stage <stage> --text-file <file>",
-    "gh issue close <n> --comment <why>",
-    "gh issue create --title <title> --body-file <file> --label <ready label>",
-    "gh issue edit <n> --body-file <file>",
-    "gh api repos/{owner}/{repo}/issues/<n>/dependencies/blocked_by -F issue_id=<id>",
-    "gh api -X DELETE repos/{owner}/{repo}/issues/<n>/dependencies/blocked_by/<id>",
+    "gh issue close <n><tracker> --comment <why>",
+    "gh issue create<tracker> --title <title> --body-file <file> --label <ready label><labelled>",
+    "gh issue edit <n><tracker> --body-file <file>",
+    "gh api repos/<issues>/issues/<n>/dependencies/blocked_by -F issue_id=<id>",
+    "gh api -X DELETE repos/<issues>/issues/<n>/dependencies/blocked_by/<id>",
 ];
+
+/// Every command a human runs to answer an escalated issue of `tracker`, as
+/// the `humans` help names them of the checkout's own repo, `<n>` standing
+/// for the issue's number: a consult, who stands where that human stands
+/// (docs/adr/0018), is given the same list, each issue command naming the
+/// tracker. A command added here is both's.
+pub fn answering(tracker: &Tracker) -> Vec<String> {
+    ANSWERING.iter().map(|line| in_tracker(line, tracker)).collect()
+}
 
 /// How long an issue waits for a human before `doctor` counts it a finding.
 pub const WAITED_LONG: u64 = 3600;
@@ -74,14 +84,13 @@ pub struct WayOut {
     pub line: String,
 }
 
-fn close(issue: u64, what: &str) -> WayOut {
-    let line = Line::new().fixed("gh issue close ").number(issue).own();
-    WayOut { what: what.to_string(), line }
+fn close(issue: u64, tracker: &Tracker, what: &str) -> WayOut {
+    WayOut { what: what.to_string(), line: tracker.gh_issue("close", issue).own() }
 }
 
-/// The line that swaps the label `off` of `issue` for the label `on`.
-fn swap(issue: u64, on: &str, off: &str) -> String {
-    let line = Line::new().fixed("gh issue edit ").number(issue);
+/// The line that swaps the label `off` of `issue` of `tracker` for the label `on`.
+fn swap(issue: u64, tracker: &Tracker, on: &str, off: &str) -> String {
+    let line = tracker.gh_issue("edit", issue);
     line.fixed(" --add-label ").program(on).fixed(" --remove-label ").program(off).own()
 }
 
@@ -129,9 +138,10 @@ impl Waits {
         Some(format!("escalated: waits for {waits}"))
     }
 
-    /// Every way out for `issue`, the one that answers it first: each a line
-    /// to run as it is, but for what stands between `<` and `>`.
-    pub fn ways_out(&self, issue: u64) -> Vec<WayOut> {
+    /// Every way out for `issue` of `tracker`, the one that answers it first:
+    /// each a line to run as it is, in a checkout of the repo, but for what
+    /// stands between `<` and `>`.
+    pub fn ways_out(&self, issue: u64, tracker: &Tracker) -> Vec<WayOut> {
         let answered = match self {
             Waits::Escalated(Back::Rule { stage }) => WayOut {
                 what: format!("rule on it: the stage `{stage}` runs again under your ruling"),
@@ -146,11 +156,11 @@ impl Waits {
             Waits::Escalated(Back::Flow { escalate }) => WayOut {
                 what: "put its one flow label back: nothing says which workflow it left"
                     .to_string(),
-                line: swap(issue, "<flow label>", escalate),
+                line: swap(issue, tracker, "<flow label>", escalate),
             },
             Waits::Escalated(Back::Ready { ready, escalate }) => WayOut {
                 what: "fix what the comment names, and put the ready label back".to_string(),
-                line: swap(issue, ready, escalate),
+                line: swap(issue, tracker, ready, escalate),
             },
             Waits::Verdict { stage, verdicts } => {
                 let mut line = Line::new().fixed("afkconvoy verdict ");
@@ -165,37 +175,42 @@ impl Waits {
             }
             Waits::ParkedUnbound { ready } => WayOut {
                 what: "bring it back after recording new evidence".to_string(),
-                line: swap(issue, ready, crate::stock::PARKED_LABEL),
+                line: swap(issue, tracker, ready, crate::stock::PARKED_LABEL),
             },
             Waits::Parked { stage } => WayOut {
                 what: format!("bring it back with new evidence at {stage}"),
                 line: own("send", issue, " --stage <stage> --text-file <evidence-file>"),
             },
-            Waits::Ended => return vec![close(issue, "close it: nothing is left to do on it")],
+            Waits::Ended => {
+                return vec![close(issue, tracker, "close it: nothing is left to do on it")];
+            }
             Waits::PatrolFailed { .. } => {
-                return vec![close(issue, "close it once you have looked: the patrol runs again")];
+                let what = "close it once you have looked: the patrol runs again";
+                return vec![close(issue, tracker, what)];
             }
             Waits::CutFailed => {
                 return vec![close(
                     issue,
+                    tracker,
                     "go on from the step that failed with the line its body gives, which closes \
                      it — or close it once you have looked: the fleet cuts again from the start",
                 )];
             }
         };
-        vec![answered, close(issue, "close it: the fleet leaves a closed issue alone")]
+        vec![answered, close(issue, tracker, "close it: the fleet leaves a closed issue alone")]
     }
 
-    /// The line that answers `issue`: the first of its ways out.
-    pub fn answer(&self, issue: u64) -> String {
-        self.ways_out(issue).into_iter().next().map(|way| way.line).unwrap_or_default()
+    /// The line that answers `issue` of `tracker`: the first of its ways out.
+    pub fn answer(&self, issue: u64, tracker: &Tracker) -> String {
+        let first = self.ways_out(issue, tracker).into_iter().next();
+        first.map(|way| way.line).unwrap_or_default()
     }
 
     /// What the comment of an escalation and the status board end with: each
-    /// way out of `issue`, with its line.
-    pub fn answer_lines(&self, issue: u64) -> String {
+    /// way out of `issue` of `tracker`, with its line.
+    pub fn answer_lines(&self, issue: u64, tracker: &Tracker) -> String {
         let mut lines = vec!["**To answer it**, in a checkout of this repo:".to_string()];
-        for way in self.ways_out(issue) {
+        for way in self.ways_out(issue, tracker) {
             lines.push(format!("- {} — `{}`", way.what, way.line));
         }
         lines.join("\n")
@@ -271,13 +286,20 @@ pub struct Waiting {
 }
 
 impl Waiting {
-    pub fn new(issue: u64, title: &str, waits: Waits, since: Option<u64>) -> Waiting {
+    /// `issue` of `tracker`, which waits for a human with `waits`.
+    pub fn new(
+        issue: u64,
+        tracker: &Tracker,
+        title: &str,
+        waits: Waits,
+        since: Option<u64>,
+    ) -> Waiting {
         Waiting {
             issue,
             title: title.to_string(),
             why: waits.why(),
             since,
-            answer: waits.answer(issue),
+            answer: waits.answer(issue, tracker),
             waits,
         }
     }
@@ -300,12 +322,12 @@ mod tests {
 
     #[test]
     fn an_escalated_issue_names_the_command_that_answers_it_with_its_number() {
-        let waiting = Waiting::new(23, "prn doses", rule(), Some(1_791_862_506));
+        let waiting = Waiting::new(23, &Tracker::Own, "prn doses", rule(), Some(1_791_862_506));
         assert_eq!(waiting.why, "escalated at workup");
         assert_eq!(waiting.answer, "afkconvoy rule --issue 23 --text-file <file>");
         assert_eq!(rule().excluded().as_deref(), Some("escalated: waits for a ruling"));
         assert_eq!(
-            rule().answer_lines(23),
+            rule().answer_lines(23, &Tracker::Own),
             "**To answer it**, in a checkout of this repo:\n\
              - rule on it: the stage `workup` runs again under your ruling — `afkconvoy rule \
              --issue 23 --text-file <file>`\n\
@@ -315,7 +337,7 @@ mod tests {
 
     #[test]
     fn every_way_of_waiting_has_a_line_to_run() {
-        let answer = |waits: Waits| waits.answer(12);
+        let answer = |waits: Waits| waits.answer(12, &Tracker::Own);
         assert_eq!(
             answer(Waits::Verdict { stage: "sign-off".into(), verdicts: vec!["pass", "reject"] }),
             "afkconvoy verdict pass|reject --issue 12 --stage sign-off --text-file <file>"
@@ -342,8 +364,27 @@ mod tests {
     }
 
     #[test]
+    fn a_line_that_answers_an_issue_of_another_tracker_names_it() {
+        let tracker = Tracker::Other {
+            tracker: crate::config::RepoName::read("acme/tracker").unwrap(),
+            repo: crate::config::RepoName::read("acme/dev").unwrap(),
+        };
+        let answer = |waits: Waits| waits.answer(12, &tracker);
+        assert_eq!(answer(Waits::Ended), "gh issue close 12 --repo acme/tracker");
+        assert_eq!(
+            answer(Waits::Escalated(Back::Flow { escalate: "stuck".into() })),
+            "gh issue edit 12 --repo acme/tracker --add-label '<flow label>' --remove-label stuck"
+        );
+        // A command of the fleet's own works the checkout's tracker itself.
+        assert_eq!(answer(rule()), "afkconvoy rule --issue 12 --text-file <file>");
+        assert!(
+            rule().answer_lines(12, &tracker).ends_with("`gh issue close 12 --repo acme/tracker`")
+        );
+    }
+
+    #[test]
     fn an_issue_counts_as_waiting_long_only_past_the_hour() {
-        let waiting = |since| Waiting::new(7, "t", rule(), since);
+        let waiting = |since| Waiting::new(7, &Tracker::Own, "t", rule(), since);
         assert_eq!(waiting(Some(1000)).waited_long(1000 + WAITED_LONG), None);
         assert_eq!(waiting(Some(1000)).waited_long(1001 + WAITED_LONG), Some(WAITED_LONG + 1));
         assert_eq!(waiting(None).waited_long(u64::MAX), None, "nothing says since when");

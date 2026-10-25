@@ -8,7 +8,7 @@ use crate::recovery::Variant;
 use crate::stage_record::{Author, StageRecord, Stated};
 use crate::tracker::Tracker;
 use crate::verdict;
-use crate::waiting::ANSWERING;
+use crate::waiting::answering;
 
 /// What a worker prompt is filled with: the issue, and the branch and path
 /// orca actually returned.
@@ -294,12 +294,12 @@ const STAGE: &str = "\
 You are an afkconvoy worker, started in your role to perform one stage of one GitHub issue. Nobody
 reads this terminal: never wait for an answer.
 
-- **Issue:** #{n} — {title}
+- **Issue:** {issue} — {title}
 - **Stage:** `{stage}`, of the workflow `{flow}`
 - **Skill to perform:** `{skill}`, of the role you were started in (`{role}`)
 - **Worktree:** `{worktree_path}`, on the branch `{branch}` (the base is `{base_branch}`)
-- **History:** the issue and every comment on it (`gh issue view {n} --comments`), and what the
-  branch holds past `origin/{base_branch}`
+- **History:** the issue and every comment on it (`gh issue view {n}<tracker> --comments`), and what
+  the branch holds past `origin/{base_branch}`
 <rules>- **Precedents:** `{precedents}`
 
 ## Stage records
@@ -325,8 +325,8 @@ const SPLIT: &str = "
 A stage that finds its issue too large for one piece of work may split it, with these commands and
 in this order:
 
-1. Open one issue per piece (`gh issue create`), each saying what it is to deliver. Put no label of
-   a workflow on it yourself.
+1. Open one issue per piece (`gh issue create<tracker><labelled>`), each saying what it is to
+   deliver. Put no label of a workflow on it yourself.
 2. Take each in to the workflow it is to follow — the team has {workflows} — naming with
    `--blocked-by` the ones among them it has to wait for; the command's `--help` says what it takes:
    ```bash
@@ -389,7 +389,8 @@ or pushed to its branch, turn the gate green before you declare `pass`:
 
 /// How a stage puts an issue it opens for a defect before the fleet: it takes
 /// it in, as a split does, so the issue enters a workflow.
-const DEFECT_INTAKE: &str = "Put no label of a workflow on it yourself: take it in to the workflow
+const DEFECT_INTAKE: &str =
+    "Put no label of a workflow on it yourself<only_repo_label>: take it in to the workflow
    that fits — the team has {workflows} — with
    `{intake_command} --issue <n> --workflow <workflow>`.";
 
@@ -425,13 +426,13 @@ You are an afkconvoy worker, started in your role as a **consult**: the fleet wo
 issue to a human, and you stand where that human stands. You are asked first, and may answer as
 they would. Nobody reads this terminal: never wait for an answer.
 
-- **Issue:** #{n} — {title}
+- **Issue:** {issue} — {title}
 - **Stage that asked:** `{stage}`, of the workflow `{flow}`
 - **Skill to perform:** `{skill}`, of the role you were started in (`{role}`)
 - **Worktree:** `{worktree_path}`, on the branch `{branch}` (the base is `{base_branch}`). It is
   yours to read only: a consult writes no code, so never commit and never push
-- **History:** the issue and every comment on it (`gh issue view {n} --comments`), and what the
-  branch holds past `origin/{base_branch}`
+- **History:** the issue and every comment on it (`gh issue view {n}<tracker> --comments`), and what
+  the branch holds past `origin/{base_branch}`
 <rules>- **Precedents:** `{precedents}`
 
 ## Stage records
@@ -446,8 +447,8 @@ they would. Nobody reads this terminal: never wait for an answer.
 
 What a human answering this would look at, and nothing you must: you decide what to look into.
 
-- The issue, its comments and its blocked-by edges both ways: `gh issue view {n} --comments`,
-  `gh api repos/{owner}/{repo}/issues/{n}/dependencies/blocked_by` and `…/blocking`
+- The issue, its comments and its blocked-by edges both ways: `gh issue view {n}<tracker> --comments`,
+  `gh api repos/<issues>/issues/{n}/dependencies/blocked_by` and `…/blocking`
 - Where it is and its rework: `{show_command}`
 - The worktree, its branch and what only it holds: `git -C {worktree_path} status`, `git log`
 - Its worker's terminal: `orca terminal list --worktree path:{worktree_path}`, then `orca terminal
@@ -654,6 +655,9 @@ pub struct Said<'a> {
 #[derive(Debug, Clone)]
 pub struct StageFields<'a> {
     pub number: u64,
+    /// The fleet's tracker, which holds the issue: every issue command of
+    /// the brief names it (`WorkerFields::tracker`).
+    pub tracker: &'a Tracker,
     pub title: &'a str,
     /// The workflow's name.
     pub flow: &'a str,
@@ -747,7 +751,7 @@ pub fn stage_prompt(fields: &StageFields) -> Result<String, String> {
     let waited = match last.map_or(&[][..], |last| &last.blocked_by) {
         [] => "it named no issue to wait on".to_string(),
         on => {
-            let on: Vec<String> = on.iter().map(|blocker| format!("#{blocker}")).collect();
+            let on: Vec<String> = on.iter().map(|&blocker| fields.tracker.issue(blocker)).collect();
             format!("every issue it waited on has closed ({})", on.join(", "))
         }
     };
@@ -771,9 +775,8 @@ pub fn stage_prompt(fields: &StageFields) -> Result<String, String> {
             },
         )
         .replace("<precedents_first>", PRECEDENTS_FIRST);
-    // A bound repo's stages work the checkout's own issues (docs/adr/0027).
     fill(
-        &in_tracker(&template, &Tracker::Own),
+        &in_tracker(&template, fields.tracker),
         &[
             ("records", &records),
             ("rejecter", last.map_or("", |last| &last.stage)),
@@ -782,6 +785,7 @@ pub fn stage_prompt(fields: &StageFields) -> Result<String, String> {
             ("workflows", &workflows.join(", ")),
             ("intake_command", fields.intake_command),
             ("n", &number),
+            ("issue", &fields.tracker.issue(fields.number)),
             ("title", fields.title),
             ("flow", fields.flow),
             ("stage", fields.stage),
@@ -815,13 +819,13 @@ reads this terminal: never wait for an answer.
 ## What a patrol does
 
 A patrol finds work; it writes no code. For each thing you find that the fleet should work, open an
-issue for it and take it in to the workflow that fits, with this command — its `--help` says what
-it takes:
+issue for it (`gh issue create<tracker><labelled>`) and take it in to the workflow that fits, with
+this command — its `--help` says what it takes:
 ```bash
 {intake_command}
 ```
 You may have {room} more such issue(s) open: past that the patrol is not run again until some have
-closed. Open none that an open issue already covers.
+closed. Open none that an open issue already covers (`gh issue list<tracker><labelled> --state open`).
 
 If you find the base branch broken for every issue, raise a fleet lock on the issue you opened for
 the fix:
@@ -866,6 +870,9 @@ pub struct PatrolFields<'a> {
     pub lock_command: &'a str,
     /// The line the worker declares the run over with.
     pub over_command: &'a str,
+    /// The fleet's tracker, where the issues the patrol opens are opened
+    /// (`WorkerFields::tracker`).
+    pub tracker: &'a Tracker,
 }
 
 /// The brief a patrol's worker is given.
@@ -876,7 +883,7 @@ pub fn patrol_prompt(fields: &PatrolFields) -> Result<String, String> {
         named => named.join(", "),
     };
     fill(
-        &with_rules(PATROL, "checkout", fields.team_rules),
+        &in_tracker(&with_rules(PATROL, "checkout", fields.team_rules), fields.tracker),
         &[
             ("patrol", fields.patrol),
             ("role", fields.role),
@@ -910,12 +917,12 @@ const PROPOSAL: &str = "\
 You are an afkconvoy worker, started in your role to propose one **precedent**. You own no issue.
 Nobody reads this terminal: never wait for an answer.
 
-- **Ruling:** what a human ruled on issue #{n}, which was escalated to them — {link}
+- **Ruling:** what a human ruled on issue {issue}, which was escalated to them — {link}
 - **Skill to perform:** `{skill}`, of the role you were started in (`{role}`)
 - **Team:** `{team}`. Its precedents are the file `{file}` of that repo; as it stands now it
   is `{precedents}`, yours to read only
-- **History:** the issue and every comment on it (`gh issue view {n} --comments`), read from the
-  checkout
+- **History:** the issue and every comment on it (`gh issue view {n}<tracker> --comments`), read
+  from the checkout
 - **Checkout:** `{worktree_path}`, the base branch `{base_branch}` of the issue's repo as it stood
   when you started. It is read-only to you: commit nothing in it and push nothing from it
 <rules>
@@ -978,14 +985,18 @@ pub struct ProposalFields<'a> {
     pub base_branch: &'a str,
     /// The line the worker declares the run over with.
     pub over_command: &'a str,
+    /// The fleet's tracker, which holds the issue the ruling was given on
+    /// (`WorkerFields::tracker`); the proposal is the team's repo's.
+    pub tracker: &'a Tracker,
 }
 
 /// The brief a proposal's worker is given.
 pub fn proposal_prompt(fields: &ProposalFields) -> Result<String, String> {
     fill(
-        &with_rules(PROPOSAL, "checkout", fields.team_rules),
+        &in_tracker(&with_rules(PROPOSAL, "checkout", fields.team_rules), fields.tracker),
         &[
             ("n", &fields.number.to_string()),
+            ("issue", &fields.tracker.issue(fields.number)),
             ("link", fields.link),
             ("ruling", &quoted(fields.ruling)),
             ("role", fields.role),
@@ -1032,16 +1043,20 @@ pub fn consult_prompt(fields: &StageFields, consulting: &Consulting) -> Result<S
             format!("{asked}{}", quoted(&said.record.text))
         }
     };
-    let answering: Vec<String> =
-        ANSWERING.iter().map(|line| format!("    {}", line.replace("<n>", &number))).collect();
+    let answering: Vec<String> = answering(fields.tracker)
+        .iter()
+        .map(|line| format!("    {}", line.replace("<n>", &number)))
+        .collect();
+    let template = with_rules(CONSULT, "worktree", fields.team_rules)
+        .replace("<precedents_first>", PRECEDENTS_FIRST);
     fill(
-        &with_rules(CONSULT, "worktree", fields.team_rules)
-            .replace("<precedents_first>", PRECEDENTS_FIRST),
+        &in_tracker(&template, fields.tracker),
         &[
             ("records", &records_said(fields.records)),
             ("asked", &asked),
             ("answering", &answering.join("\n")),
             ("n", &number),
+            ("issue", &fields.tracker.issue(fields.number)),
             ("title", fields.title),
             ("flow", fields.flow),
             ("stage", fields.stage),
@@ -1143,7 +1158,8 @@ pub enum Enters<'a> {
 
 /// How the train worker of a bound repo puts an issue it opens for a defect
 /// before the fleet: it takes it in, by default to the team's first workflow.
-const DEFECT_TRAIN_INTAKE: &str = "Put no label of a workflow on it yourself: take it in with
+const DEFECT_TRAIN_INTAKE: &str =
+    "Put no label of a workflow on it yourself<only_repo_label>: take it in with
    `{intake_command} --issue <n> --workflow <workflow>`, to the team's first workflow,
    `{first_workflow}`, unless another of its workflows fits the defect clearly better — the team
    has {workflows}. The fleet works it like any other issue.";
@@ -1392,23 +1408,32 @@ pub fn switched(switched: &Switched) -> String {
 /// its marks say: `<tracker>` after a `gh issue` command, `<issues>` in a
 /// `gh api` path, `<labelled>` on one that opens or looks for an issue of
 /// the repo, and `<repo_label>` where the brief says which labels that issue
-/// carries. Of the checkout's own repo they say nothing more than they did
-/// before there were trackers (docs/adr/0027).
-fn in_tracker(template: &str, tracker: &Tracker) -> String {
-    let (flag, path, labelled, said) = match (tracker.named(), tracker.repo_label()) {
+/// carries — `<only_repo_label>` where it carries no other the worker puts
+/// on. Of the checkout's own repo they say nothing more than they did before
+/// there were trackers (docs/adr/0027).
+pub(crate) fn in_tracker(template: &str, tracker: &Tracker) -> String {
+    let (flag, path, labelled, said, only) = match (tracker.named(), tracker.repo_label()) {
         (Some(named), Some(label)) => (
             format!(" --repo {named}"),
             named.to_string(),
             format!(" --label {label}"),
             format!(", and the repo label `{label}` (`--label {label}`)"),
+            format!(", only the repo label `{label}` (`--label {label}`)"),
         ),
-        _ => (String::new(), "{owner}/{repo}".to_string(), String::new(), String::new()),
+        _ => (
+            String::new(),
+            "{owner}/{repo}".to_string(),
+            String::new(),
+            String::new(),
+            String::new(),
+        ),
     };
     template
         .replace("<tracker>", &flag)
         .replace("<issues>", &path)
         .replace("<labelled>", &labelled)
         .replace("<repo_label>", &said)
+        .replace("<only_repo_label>", &only)
 }
 
 /// Fills every `{name}` of `template` in one pass, so a value is never itself
@@ -1534,6 +1559,168 @@ mod tests {
         ));
     }
 
+    /// Each issue command of `brief` names the tracker `acme/tracker`, every
+    /// one that lists issues the repo label of `acme/dev` too — and one that
+    /// opens an issue, or the brief beside it — and no PR command names a
+    /// repo; no mark is left in it.
+    fn names_the_tracker(brief: &str) {
+        for mark in ["<tracker>", "<issues>", "<labelled>", "<repo_label>", "<only_repo_label>"] {
+            assert!(!brief.contains(mark), "{mark}: {brief}");
+        }
+        assert!(!brief.contains("{owner}"), "{brief}");
+        let named = |(at, _): (usize, &str)| {
+            brief[..at].ends_with("acme/tracker")
+                || brief[at + 2..].starts_with(|c: char| c.is_ascii_digit())
+        };
+        assert!(brief.match_indices("#7").all(named), "the issue is the tracker's: {brief}");
+        for (at, _) in brief.match_indices("gh issue ") {
+            let command = brief[at..].split(['`', '\n']).next().unwrap();
+            assert!(command.contains(" --repo acme/tracker"), "{command}");
+            let labelled = match command.starts_with("gh issue create") {
+                true => brief.contains("`--label repo:acme/dev`") || command.contains("repo:"),
+                false => !command.starts_with("gh issue list") || command.contains("repo:"),
+            };
+            assert!(labelled, "{command}: {brief}");
+        }
+        for (at, _) in brief.match_indices("gh api ") {
+            let command = brief[at..].split(['`', '\n']).next().unwrap();
+            assert!(command.contains(" repos/acme/tracker/issues/7/"), "{command}");
+        }
+        for (at, _) in brief.match_indices("gh pr ") {
+            let command = brief[at..].split('\n').next().unwrap();
+            assert!(!command.contains("--repo"), "{command}");
+        }
+    }
+
+    #[test]
+    fn every_issue_command_of_a_bound_roles_brief_names_the_tracker() {
+        let tracker = Tracker::Other {
+            tracker: crate::config::RepoName::read("acme/tracker").unwrap(),
+            repo: crate::config::RepoName::read("acme/dev").unwrap(),
+        };
+        let workflows = ["feature".to_string()];
+        let record = |stated, blocked_by| StageRecord {
+            stage: "build".to_string(),
+            stated: Stated::Declared(stated),
+            by: Author::Worker {
+                consult: false,
+                claim: "c".to_string(),
+                role_commit: "r".to_string(),
+                team_commit: "t".to_string(),
+                harness: Harness::ClaudeCode,
+                model: None,
+            },
+            blocked_by,
+            text: "v1 or v2?".to_string(),
+        };
+        let (asked, parked) =
+            (record(Declared::Escalate, vec![]), record(Declared::Blocked, vec![11, 12]));
+        let stage = StageFields {
+            number: 7,
+            tracker: &tracker,
+            title: "Add support",
+            flow: "feature",
+            stage: "build",
+            role: "dev",
+            skill: "implement",
+            branch: "tester/acme-tracker-7-add",
+            worktree: "/wt/acme-tracker-7",
+            base_branch: "develop",
+            precedents: "/copies/acme/team/def/precedents.md",
+            team_rules: None,
+            records: &[],
+            verdict_command: "/opt/bin/afkconvoy verdict --issue 7 --stage build",
+            intake_command: "/opt/bin/afkconvoy intake",
+            split: true,
+            workflows: &workflows,
+            gate: Some(Gate { train: "afkconvoy gate --train", alone: "afkconvoy gate" }),
+        };
+        let consulting = Consulting {
+            rule: "/opt/bin/afkconvoy rule --issue 7 --stage build",
+            handed: None,
+            show: "afkconvoy show --issue 7",
+            gate: "afkconvoy gate",
+            doctor: "afkconvoy doctor",
+            plan: "afkconvoy plan",
+        };
+        let escalated = [Said { record: &asked, url: "https://gh/c/5" }];
+        let consult = StageFields { records: &escalated, role: "boss", skill: "rule", ..stage };
+        let waited = [Said { record: &parked, url: "https://gh/c/6" }];
+        let patrol = PatrolFields {
+            patrol: "sweep",
+            tracker: &tracker,
+            role: "dev",
+            skill: "implement",
+            worktree: "/wt/convoy-patrol-sweep",
+            base_branch: "develop",
+            precedents: "/copies/acme/team/def/precedents.md",
+            team_rules: None,
+            workflows: &["feature"],
+            room: 2,
+            intake_command: "/opt/bin/afkconvoy intake",
+            lock_command: "/opt/bin/afkconvoy lock",
+            over_command: "/opt/bin/afkconvoy over --run sweep",
+        };
+        let proposal = ProposalFields {
+            number: 7,
+            tracker: &tracker,
+            link: "https://github.com/acme/tracker/issues/7#issuecomment-2001",
+            ruling: "Keep the v1 schema.",
+            role: "clerk",
+            skill: "propose",
+            team: "acme/team",
+            file: "precedents.md",
+            branch: "convoy-precedent-7-c2001",
+            precedents: "/copies/acme/team/def/precedents.md",
+            team_rules: None,
+            worktree: "/wt/convoy-precedent-7-c2001",
+            base_branch: "develop",
+            over_command: "/opt/bin/afkconvoy over --run precedent-7-c2001",
+        };
+        let landing = Landing { role: "dev", skill: "land" };
+        let train = TrainFields {
+            worktree: "/wt/convoy-train",
+            base_branch: "develop",
+            land_command: "/opt/bin/afkconvoy land --train",
+            gate_alone_command: "/opt/bin/afkconvoy gate",
+            enters: Enters::Intake {
+                command: "/opt/bin/afkconvoy intake --train",
+                workflows: &workflows,
+            },
+            tracker: &tracker,
+        };
+        let worker = WorkerFields { tracker: &tracker, ..fields() };
+        let briefs = [
+            ("stage", stage_prompt(&stage).unwrap()),
+            ("parked", stage_prompt(&StageFields { records: &waited, ..stage.clone() }).unwrap()),
+            ("consult", consult_prompt(&consult, &consulting).unwrap()),
+            ("patrol", patrol_prompt(&patrol).unwrap()),
+            ("proposal", proposal_prompt(&proposal).unwrap()),
+            ("landing", landing_prompt(&worker, 70, landing).unwrap()),
+            ("train", train_prompt(&train).unwrap()),
+        ];
+        for (_, brief) in &briefs {
+            names_the_tracker(brief);
+        }
+        let [stage, parked, consult, patrol, proposal, ..] = &briefs.map(|(_, brief)| brief);
+        for brief in [stage, parked, consult] {
+            assert!(brief.contains("- **Issue:** acme/tracker#7 — Add support\n"), "{brief}");
+        }
+        assert!(stage.contains("(`gh issue create --repo acme/tracker --label repo:acme/dev`)"));
+        assert!(stage.contains(
+            "Put no label of a workflow on it yourself, only the repo label `repo:acme/dev` \
+             (`--label repo:acme/dev`): take it in"
+        ));
+        assert!(parked.contains("(acme/tracker#11, acme/tracker#12)"), "{parked}");
+        assert!(consult.contains("    gh issue close 7 --repo acme/tracker --comment <why>\n"));
+        assert!(patrol.contains(
+            "open an\nissue for it (`gh issue create --repo acme/tracker --label repo:acme/dev`)"
+        ));
+        assert!(proposal.contains("ruled on issue acme/tracker#7, which"), "{proposal}");
+        // The proposal is the team's: its PR names its repo, as it always did.
+        assert!(proposal.contains("one PR on `acme/team`"), "{proposal}");
+    }
+
     #[test]
     fn the_unbound_stock_consult_is_told_what_a_human_would_be_and_how_a_human_answers() {
         let stock = StockFields {
@@ -1657,6 +1844,7 @@ mod tests {
     fn the_brief_of_a_worker_in_its_role_is_a_fixed_form() {
         let fields = StageFields {
             number: 7,
+            tracker: &Tracker::Own,
             title: "Add {branch} support",
             flow: "feature",
             stage: "build",
@@ -1849,6 +2037,7 @@ mod tests {
     fn a_stage_is_told_how_to_split_its_issue_and_that_it_judges_the_whole_after_the_park() {
         let fields = StageFields {
             number: 7,
+            tracker: &Tracker::Own,
             title: "Add support",
             flow: "feature",
             stage: "plan",
@@ -1946,6 +2135,7 @@ mod tests {
     fn a_stage_that_may_commit_is_told_to_turn_the_gate_green_before_it_passes() {
         let fields = StageFields {
             number: 7,
+            tracker: &Tracker::Own,
             title: "Add support",
             flow: "feature",
             stage: "build",
@@ -2034,6 +2224,7 @@ mod tests {
     fn every_worker_that_runs_the_gate_opens_an_issue_for_a_red_gate_that_is_not_its_own() {
         let stage = StageFields {
             number: 7,
+            tracker: &Tracker::Own,
             title: "Add support",
             flow: "feature",
             stage: "build",
@@ -2217,6 +2408,7 @@ mod tests {
         let link = "https://github.com/acme/app/issues/7#issuecomment-2001";
         let fields = ProposalFields {
             number: 7,
+            tracker: &Tracker::Own,
             link,
             ruling: "Keep the v1 schema.\nMigrate later.",
             role: "clerk",
@@ -2271,6 +2463,7 @@ mod tests {
         let escalated = [Said { record: &asked, url: "https://gh/c/5" }];
         let stage = |team_rules| StageFields {
             number: 7,
+            tracker: &Tracker::Own,
             title: "Add support",
             flow: "feature",
             stage: "build",
@@ -2290,6 +2483,7 @@ mod tests {
         };
         let patrol = |team_rules| PatrolFields {
             patrol: "sweep",
+            tracker: &Tracker::Own,
             role: "dev",
             skill: "implement",
             worktree: "/wt/convoy-patrol-sweep",
@@ -2304,6 +2498,7 @@ mod tests {
         };
         let proposal = |team_rules| ProposalFields {
             number: 7,
+            tracker: &Tracker::Own,
             link: "https://github.com/acme/app/issues/7#issuecomment-2001",
             ruling: "Keep the v1 schema.",
             role: "clerk",
