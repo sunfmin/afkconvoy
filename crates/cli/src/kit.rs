@@ -1250,7 +1250,7 @@ mod tests {
         assert_eq!(kit.harnesses[1].models[1].good_at, None);
         // A stock consult named by a name runs the model's id.
         assert_eq!(kit.stock_consult, current.stock_consult);
-        let stock = Named { harness: Harness::ClaudeCode, model: Some("claude-opus-5-5".into()) };
+        let stock = Named { harness: Harness::Codex, model: Some("gpt-a".into()) };
         assert_eq!(kit.stock_consult(), Some(stock));
         // A model gone from its harness's list is left out, and said so.
         assert!(
@@ -1520,7 +1520,7 @@ mod tests {
         let named = Named { harness: Harness::Codex, model: None };
         kit.stock_consult = Some(named.clone());
         assert_eq!(kit.fault(), None);
-        assert_eq!(kit.stock_consult(), Some(named));
+        assert_eq!(kit.stock_consult(), Some(first.clone()));
         // One the host kit does not hold: the host kit's first, and said.
         kit.stock_consult = Some(Named { harness: Harness::Dsh, model: None });
         assert_eq!(kit.fault(), None);
