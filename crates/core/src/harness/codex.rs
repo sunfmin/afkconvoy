@@ -5,7 +5,8 @@
 //! user's configuration out, so it is given a user directory of the fleet's
 //! own (docs/adr/0013). It writes its configuration file in that directory
 //! by itself: what the fleet says to it is said on the line that starts it,
-//! and in no file — the hooks that ask the guard and tell the worker backend
+//! and in no shared file — each session's user directory is private, so a
+//! saved /model choice cannot affect a later worker. The hooks that ask the guard and tell the worker backend
 //! among it. It loads rules from the directory it starts in and from no
 //! directory added to it: a role's it is told to load from the file every
 //! harness does, and the repo's own and the team rules are said on the line

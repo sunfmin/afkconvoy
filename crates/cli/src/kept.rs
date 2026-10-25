@@ -112,12 +112,15 @@ pub fn for_worker(
     let dir = if harness == Harness::Codex {
         // Codex writes /model preferences to CODEX_HOME. A fresh home has
         // only the allowed links, never a previous worker's config.toml.
-        keep_under(
+        let dir = keep_under(
             &crate::codex_launch::directory(worktree),
             home().as_deref(),
             harness,
             host_user,
-        )?
+        )?;
+        let worker = crate::orca::Worktree::at(worktree.to_path_buf(), String::new());
+        std::fs::write(worker.note(crate::codex_launch::HOME_NOTE)?, dir.display().to_string())?;
+        dir
     } else {
         shared
     };

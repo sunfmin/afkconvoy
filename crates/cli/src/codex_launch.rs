@@ -14,6 +14,7 @@ use serde_json::{Value, json};
 use crate::orca::Worktree;
 
 const RECORD: &str = "convoy-codex-launch.json";
+pub(crate) const HOME_NOTE: &str = "convoy-codex-home";
 const EFFORT: &str = "model_reasoning_effort";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -23,6 +24,8 @@ pub(crate) struct Settings {
     /// None means the model's own Codex default, not a fleet default.
     pub effort: Option<String>,
     pub effort_source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex_home: Option<PathBuf>,
 }
 
 fn user_config() -> PathBuf {
@@ -56,12 +59,13 @@ fn settings(model: &str, config: &toml::Table, file: &Path) -> Result<Settings> 
         model_source: "fleet_selection".into(),
         effort,
         effort_source,
+        codex_home: None,
     })
 }
 
 /// A fresh launch's directory, under the worktree so it goes with the work.
 pub(crate) fn directory(worktree: &Path) -> PathBuf {
-    crate::worker_tmp::of(worktree).join(format!("codex-{}", crate::unique()))
+    worktree.join(crate::worker_tmp::TMP_DIR).join(format!("codex-{}", crate::unique()))
 }
 
 /// An unbound session keeps the user's other settings and files, as before,
@@ -120,17 +124,20 @@ pub(crate) fn prepare(
     };
     let file = user_config();
     let config = config(&file)?;
-    let settings = settings(model, &config, &file)?;
-    let line = if in_role {
-        Line::new().launch(command)
+    let mut settings = settings(model, &config, &file)?;
+    let (line, home) = if in_role {
+        let home = std::fs::read_to_string(worktree.note(HOME_NOTE)?)?;
+        (Line::new().launch(command), PathBuf::from(home))
     } else {
         let dir = user_directory(&worktree.path, config, &file)?;
-        Line::new()
+        let line = Line::new()
             .fixed("export CODEX_HOME=")
             .word(&dir.display().to_string())
             .fixed(" && ")
-            .launch(command)
+            .launch(command);
+        (line, dir)
     };
+    settings.codex_home = Some(home);
     let line = match &settings.effort {
         Some(effort) => line
             .fixed(" --config ")
@@ -147,7 +154,25 @@ pub(crate) fn record(worktree: &Worktree, settings: &Settings) -> Result<()> {
 
 pub(crate) fn recorded(worktree: &Worktree) -> Option<Settings> {
     (worktree.harness().ok().flatten()? == Harness::Codex).then_some(())?;
-    serde_json::from_slice(&std::fs::read(worktree.note(RECORD).ok()?).ok()?).ok()
+    let mut settings: Settings =
+        serde_json::from_slice(&std::fs::read(worktree.note(RECORD).ok()?).ok()?).ok()?;
+    // /model saves to this session's private config. Surface that choice
+    // when present; editing the user's original config still affects only
+    // future launches. An incomplete write leaves the launch evidence intact.
+    if let Some(home) = &settings.codex_home {
+        let file = home.join("config.toml");
+        if let Ok(saved) = config(&file) {
+            if let Some(model) = saved.get("model").and_then(toml::Value::as_str) {
+                settings.model = model.into();
+                settings.model_source = format!("session:{}:model", file.display());
+            }
+            if let Some(effort) = saved.get(EFFORT).and_then(toml::Value::as_str) {
+                settings.effort = Some(effort.into());
+                settings.effort_source = format!("session:{}:{EFFORT}", file.display());
+            }
+        }
+    }
+    Some(settings)
 }
 
 pub(crate) fn planned(model: &str) -> Value {
