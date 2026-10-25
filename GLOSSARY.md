@@ -243,7 +243,7 @@ Recovering a claim whose worker died from the progress that survived: its worktr
 _Avoid_: resume, checkpoint restore
 
 **Wake**:
-A signal that ends the sleep between ticks of its host's fleet instance early: every command that changes fleet state sends one as it ends — a worker's last among them, once its outcome is on GitHub — naming itself and what it acted on, and carrying no state. The `run` that hears it answers at once, naming the tick it starts or the tick in progress it follows.
+A signal that ends the sleep between ticks of its host's fleet instance early: every command that changes fleet state sends one as it ends — a worker's last among them, once its outcome is on GitHub — naming itself and what it acted on, and carrying no state. `gh` sends none: whoever hands the fleet work sends one with `afkconvoy wake` after the issues they opened with it. The `run` that hears it answers at once, naming the tick it starts or the tick in progress it follows.
 _Avoid_: notification, callback, done signal
 
 ### Claims
