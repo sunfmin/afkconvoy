@@ -938,7 +938,6 @@ fn the_guide_and_each_subcommand_agree_on_who_runs_it_and_why() {
             "intake",
             "lock",
             "over",
-            "wake",
             "exclusive",
             "inspected"
         ])
@@ -952,9 +951,13 @@ fn the_guide_and_each_subcommand_agree_on_who_runs_it_and_why() {
     assert_eq!(hooks, ["guard"]);
     assert!(who("guard").trim_start().starts_with("Claude Code, as a hook"));
     // Nor is opening issues the operator's: whoever has work for the fleet does.
+    // Waking the fleet after opening them is theirs too, and a worker's last.
     let hands = group(&long, "Run by whoever hands the fleet work");
-    assert_eq!(hands, ["flows"]);
-    assert!(who("flows").trim_start().starts_with("Whoever hands the fleet work: "));
+    assert_eq!(hands, ["flows", "wake"]);
+    for command in &hands {
+        assert!(who(command).trim_start().starts_with("Whoever hands the fleet work: "));
+    }
+    assert!(who("wake").contains("And a worker, in its own worktree."));
     // Nor is giving an agent of one's own the skill file.
     let sets_up = group(&long, "Run by whoever sets an agent up");
     assert_eq!(sets_up, ["skill"]);
@@ -1084,6 +1087,27 @@ fn the_help_of_tick_and_of_run_say_what_run_does_about_the_hop_between_two_stage
     let run = asked(&["run", "--help"]);
     assert!(run.contains("· next now\n"), "{run}");
     assert!(run.contains(&format!("At most {most} ticks run back to back")), "{run}");
+}
+
+/// Whoever opens issues with `gh` learns from `flows` that that woke no fleet,
+/// how soon its next tick takes them up, and what starts that tick now; and
+/// `-h` does not give `wake` as a worker's alone.
+#[test]
+fn the_help_of_flows_says_when_an_issue_opened_with_gh_is_taken_up_and_what_wakes_the_fleet() {
+    use afkconvoy_core::tick::{BUSY_SECONDS, IDLE_AFTER, IDLE_SECONDS};
+    let trips = section(&asked(&["flows", "--help"]), "## What trips you up");
+    let said = trips.lines().find(|line| line.contains("wakes no fleet")).expect(&trips);
+    for part in [
+        "at its next tick".to_string(),
+        format!("within {BUSY_SECONDS} seconds while it has work"),
+        format!("within {} minutes once it has been idle {IDLE_AFTER} ticks", IDLE_SECONDS / 60),
+        "`afkconvoy wake <checkout>`, on the fleet's host, starts that tick now".to_string(),
+    ] {
+        assert!(said.contains(&part), "{part:?} in {said}");
+    }
+    let short = help("-h");
+    let wake = short.lines().find(|line| line.trim_start().starts_with("wake ")).unwrap();
+    assert!(wake.ends_with("(after opening issues with `gh`, and as a worker's last command)"));
 }
 
 /// A role is a directory: no help says any more that a role is a repo.

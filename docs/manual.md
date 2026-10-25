@@ -34,9 +34,9 @@ Read `afkconvoy <command> --help` before the first time you run one. The command
 
 - **Run by the operator** — starting, watching or stopping a fleet. Read these first: `config`, `check` and `plan` before it starts, `run` to start it, `tick` for one pass of it and `stop` to stop it, `checkouts` and `panel` to watch it, `kit`, `cast` and `switch` for the harness and model each worker runs, `patrol-now` to have a patrol run now and `takeover` to take another fleet instance's claims. `doctor` is what to run when something looks wrong, or you are asked whether the fleet is working: it says what the fleet on this host is doing and what is wrong, each finding with the line that fixes it.
 - **Run by whoever designs a team** — `scaffold` to start one or a role of it from a skeleton, `draft` to draft its roster from the host kit, then, once `check` accepts it, `show` to review a workflow or to ask where an issue is in it, and `rehearse` to try one out.
-- **Run by whoever hands the fleet work** — a human, or the agent a human is talking to, with work decided on and issues to open for it. Read `flows` before opening the first issue: it says which workflow takes which issue and the line that opens one, and creates the labels.
+- **Run by whoever hands the fleet work** — a human, or the agent a human is talking to, with work decided on and issues to open for it. Read `flows` before opening the first issue: it says which workflow takes which issue and the line that opens one, and creates the labels. `wake`, after the last, has the fleet take them up now.
 - **Run by whoever sets an agent up** — `skill` prints the skill file that sends their agent to `afkconvoy --help`.
-- **Run by a worker** — `gate`, `land`, `verdict`, `wake`, `intake`, `lock`, `over`, `exclusive` and `inspected`: its prompt names each one as it is needed. Read them only when you are a worker, or are finding out why one stopped (`rule` is a consult's too).
+- **Run by a worker** — `gate`, `land`, `verdict`, `intake`, `lock`, `over`, `exclusive` and `inspected`: its prompt names each one as it is needed, and `wake`, above, as its last. Read them only when you are a worker, or are finding out why one stopped (`rule` is a consult's too).
 - **Run by a human an issue waits for** — in a bound repo: `rule` to answer an escalated issue, `send` to put an issue at a stage of your choosing. A `by: human` stage waits for your `verdict`, a worker's command too. [`afkconvoy help humans`](help:humans) says what each case asks of you.
 - **Run by a worker's hook** — `guard`, which the harness of a bound repo's worker asks before each thing the worker does. Nobody runs it by hand. Read its help to learn what a worker is refused, and why one was.
 - **One transition by hand** — `dispatch`, `close`, `escalate`, `park`, `nudge`, `restart` and `abandon`: each is something a tick does on its own, and `recovery` shows what `dispatch` would continue an issue from. Read one when a plan shows a transition the fleet is not making, or you are told to make it yourself.
@@ -1828,6 +1828,7 @@ Errors, as {"error": …} with a non-zero exit: the team has a fault — {"error
 ##### What trips you up
 
 - `gh issue create --label` refuses a label the repo lacks, and nothing but this command creates a flow label ahead of the first issue. Run it before the line.
+- Opening an issue with `gh`, or labelling one, wakes no fleet: the fleet takes it up at its next tick — within 90 seconds while it has work, within 25 minutes once it has been idle 3 ticks in a row. `afkconvoy wake <checkout>`, on the fleet's host, starts that tick now: run it once, after the last issue you open.
 - An issue follows one workflow: put one flow label on it. With several it follows none, and no stage of any is performed on it.
 - The flow label is what hands the issue over. Leave it off an issue that is not ready to be worked, and put it on later: `gh issue edit <n> --add-label <label>`.
 - A workflow whose `first` is `by: human` starts by waiting for a human: the fleet does nothing on its issue until one declares a verdict (`afkconvoy verdict --help`).
@@ -1842,6 +1843,58 @@ Name it after the command, as `[CHECKOUT]`: a checkout of the repo, or any direc
 
 ```
 afkconvoy flows [CHECKOUT]
+```
+
+##### Arguments
+
+- `[CHECKOUT]`: The checkout it is about, or a directory in it [default: the one it is run in]
+
+#### `afkconvoy wake`
+
+End the sleep of this host's `run` for this repo: its next tick starts now (after opening issues with `gh`, and as a worker's last command)
+
+##### When to run it
+
+Once, after the last of the issues you open for the fleet with `gh`, or label: nothing `gh` does wakes the fleet, which otherwise takes them up at its next tick (`afkconvoy flows --help` says how soon).
+
+Once, as a worker's last command: after its PR is on the landing train, or its verdict is posted on the issue. A worker's prompt names the exact command. Every command that changes fleet state wakes the `run` as it ends, so after `land` or `verdict` this one is redundant, and harmless.
+
+##### Who runs it
+
+Whoever hands the fleet work: a human, or the agent a human is talking to, after opening issues with `gh`, in a checkout of the repo on the fleet's host. And a worker, in its own worktree. Any worktree or checkout of the repo on the fleet's host reaches the same fleet instance.
+
+##### What it reads and writes
+
+It speaks to this host's runner, on its socket in the cache directory (host-runner.sock): one signal for the fleet instance it holds of this repo, naming its checkout, itself, and the issue the worker is on if its environment says one. It waits 3 seconds at most for the answer. The signal ends that fleet instance's sleep, and no other's; it carries nothing else, and it writes nothing to GitHub: the tick it starts reads the outcome from GitHub itself.
+
+##### What it answers
+
+{"woke": true, "tick"} — no tick was in progress: tick `tick` starts now. The fleet instance's tick log says "tick N: started (woken by wake #12)" of it.
+
+{"woke": true, "after_tick"} — tick `after_tick` is in progress: the next starts as it ends. The fleet instance's tick log says "woken by wake #12 during tick N: tick N+1 follows" of the first such wake.
+
+{"woke": false, "detail"} — no fleet instance heard it. With no host runner on this host, `detail` is "no host runner runs on this host, so no fleet instance heard it: start one with `afkconvoy run <checkout>`". Otherwise the host runner holds no fleet instance of this repo, holds it broken — waiting to be started again — or did not answer within 3 seconds: `detail` says which, with the line that fixes it — `afkconvoy run <checkout>`, or ask `afkconvoy doctor`.
+
+It exits 0 with each of them. Errors: only "is not in a git checkout". Failing to wake anybody is not an error, and costs at most the 3 seconds it waits.
+
+##### What trips you up
+
+- It reports nothing. A worker's outcome is its PR on the train or its verdict comment: without one of them on GitHub, a wake only makes the fleet look sooner at a worker that stopped with nothing.
+- `woke: false` needs no second `wake`: the fleet finds the outcome, or the issue, at its next tick anyway.
+- It reaches a fleet instance of this host's runner only: run it on the host whose `run` works the repo. A fleet driven by `tick` hears nothing.
+
+##### Which checkout it is about
+
+Name it after the command, as `[CHECKOUT]`: a checkout of the repo, or any directory in one, which names that checkout. Naming none, it is about the checkout it is run in. A worker runs it in its own worktree.
+
+##### What it logs
+
+As it acts it appends one line to the tick log of this host for this repo, then wakes this host's fleet instance of this repo, through the host runner; its answer says whether it woke one, as "woke": [`afkconvoy help tick-log`](help:tick-log).
+
+##### Usage
+
+```
+afkconvoy wake [CHECKOUT]
 ```
 
 ##### Arguments
@@ -2436,56 +2489,6 @@ afkconvoy gate [OPTIONS] [CHECKOUT]
 - `[CHECKOUT]`: The checkout it is about, or a directory in it [default: the one it is run in]
 - `--train`: First merge in what the PR lands behind: the landing train, or the base branch
 - `--host <HOST>`: The host a green run is recorded as made on [default: this machine's name]
-
-#### `afkconvoy wake`
-
-End the sleep of this host's `run` for this repo: its next tick starts now (a worker's command)
-
-##### When to run it
-
-Once, as a worker's last command: after its PR is on the landing train, or its verdict is posted on the issue. A worker's prompt names the exact command. Every command that changes fleet state wakes the `run` as it ends, so after `land` or `verdict` this one is redundant, and harmless.
-
-##### Who runs it
-
-A worker, in its own worktree — any worktree or checkout of the repo on the fleet's host reaches the same fleet instance.
-
-##### What it reads and writes
-
-It speaks to this host's runner, on its socket in the cache directory (host-runner.sock): one signal for the fleet instance it holds of this repo, naming its checkout, itself, and the issue the worker is on if its environment says one. It waits 3 seconds at most for the answer. The signal ends that fleet instance's sleep, and no other's; it carries nothing else, and it writes nothing to GitHub: the tick it starts reads the outcome from GitHub itself.
-
-##### What it answers
-
-{"woke": true, "tick"} — no tick was in progress: tick `tick` starts now. The fleet instance's tick log says "tick N: started (woken by wake #12)" of it.
-
-{"woke": true, "after_tick"} — tick `after_tick` is in progress: the next starts as it ends. The fleet instance's tick log says "woken by wake #12 during tick N: tick N+1 follows" of the first such wake.
-
-{"woke": false, "detail"} — no fleet instance heard it. With no host runner on this host, `detail` is "no host runner runs on this host, so no fleet instance heard it: start one with `afkconvoy run <checkout>`". Otherwise the host runner holds no fleet instance of this repo, holds it broken — waiting to be started again — or did not answer within 3 seconds: `detail` says which, with the line that fixes it — `afkconvoy run <checkout>`, or ask `afkconvoy doctor`.
-
-It exits 0 with each of them. Errors: only "is not in a git checkout". Failing to wake anybody is not an error, and costs at most the 3 seconds it waits.
-
-##### What trips you up
-
-- It reports nothing. A worker's outcome is its PR on the train or its verdict comment: without one of them on GitHub, a wake only makes the fleet look sooner at a worker that stopped with nothing.
-- `woke: false` needs no second `wake`: the fleet finds the outcome at its next tick anyway.
-- It reaches a fleet instance of this host's runner only. A fleet driven by `tick` hears nothing.
-
-##### Which checkout it is about
-
-Name it after the command, as `[CHECKOUT]`: a checkout of the repo, or any directory in one, which names that checkout. Naming none, it is about the checkout it is run in. A worker runs it in its own worktree.
-
-##### What it logs
-
-As it acts it appends one line to the tick log of this host for this repo, then wakes this host's fleet instance of this repo, through the host runner; its answer says whether it woke one, as "woke": [`afkconvoy help tick-log`](help:tick-log).
-
-##### Usage
-
-```
-afkconvoy wake [CHECKOUT]
-```
-
-##### Arguments
-
-- `[CHECKOUT]`: The checkout it is about, or a directory in it [default: the one it is run in]
 
 ### One transition by hand
 
@@ -4442,7 +4445,7 @@ Recovering a claim whose worker died from the progress that survived: its worktr
 _Avoid_: resume, checkpoint restore
 
 **Wake**:
-A signal that ends the sleep between ticks of its host's fleet instance early: every command that changes fleet state sends one as it ends — a worker's last among them, once its outcome is on GitHub — naming itself and what it acted on, and carrying no state. The `run` that hears it answers at once, naming the tick it starts or the tick in progress it follows.
+A signal that ends the sleep between ticks of its host's fleet instance early: every command that changes fleet state sends one as it ends — a worker's last among them, once its outcome is on GitHub — naming itself and what it acted on, and carrying no state. `gh` sends none: whoever hands the fleet work sends one with `afkconvoy wake` after the issues they opened with it. The `run` that hears it answers at once, naming the tick it starts or the tick in progress it follows.
 _Avoid_: notification, callback, done signal
 
 ##### Claims
