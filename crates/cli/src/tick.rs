@@ -1256,20 +1256,23 @@ pub fn run(
             }
         }
         let served = show.is_some();
-        let tracker = crate::checkout_list::tracker_of(repo)?;
-        let named = match tracker.named() {
-            Some(named) => named.to_string(),
-            None => crate::checkout_list::named_repo(repo)
-                .map(|named| named.to_string())
-                .or_else(|_| crate::checkout_list::repo_of(repo))?,
-        };
-        watching.begins(&named);
+        watching.begins();
         // A tick that could not even rebuild is a line, not the end of the loop.
         let ticked = turn(
             || wakes.forget(count),
             || {
                 let (ticked, fleet) = tick(repo, me, agent, &stop, before.as_ref())?;
-                watching.saw(ticked.blockers.iter().copied(), &fleet.gh.closed());
+                let tracker = match fleet.gh.tracker.named() {
+                    Some(named) => Ok(named.to_string()),
+                    None => crate::checkout_list::named_repo(repo)
+                        .map(|named| named.to_string())
+                        .or_else(|_| crate::checkout_list::repo_of(repo)),
+                };
+                // Wake routing is best effort, like a command's wake: a
+                // name this host cannot read never fails a completed tick.
+                if let Ok(tracker) = tracker {
+                    watching.saw(&tracker, ticked.blockers.iter().copied(), &fleet.gh.closed());
+                }
                 let panel = served.then(|| ticked.panel(&fleet, me));
                 Ok::<_, anyhow::Error>((ticked, panel))
             },

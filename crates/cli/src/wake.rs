@@ -35,7 +35,7 @@ struct Waiting {
     wakes: Wakes,
     /// Closures heard while this fleet reads GitHub. Applying these to the
     /// new routes prevents an overlapping, older read from losing a wake.
-    reading: Option<BTreeMap<u64, String>>,
+    reading: Option<BTreeMap<(String, u64), String>>,
 }
 
 /// One running fleet's routes, removed when its loop ends or panics.
@@ -64,16 +64,11 @@ impl Blockers {
 }
 
 impl Watching {
-    /// Starts a read of `tracker`. A newly said tracker drops the old
-    /// routes; closures heard during this read are kept until `saw`.
-    pub fn begins(&self, tracker: &str) {
+    /// Starts a read. Closures heard during it are kept until `saw`, even
+    /// of a newly said tracker whose name this read has not returned yet.
+    pub fn begins(&self) {
         let mut routes = self.host.routes();
         let Some(mine) = routes.get_mut(&self.instance) else { return };
-        let tracker = tracker.to_ascii_lowercase();
-        if mine.tracker != tracker {
-            mine.blockers.clear();
-            mine.tracker = tracker;
-        }
         mine.reading = Some(BTreeMap::new());
     }
 
@@ -82,27 +77,28 @@ impl Watching {
     /// or made. A route is used up by its wake, so seeing a closed blocker
     /// again starts no stream of empty ticks. The woken tick decides what
     /// is unblocked, from GitHub alone.
-    pub fn saw(&self, blockers: impl IntoIterator<Item = u64>, closed: &[u64]) {
+    pub fn saw(&self, tracker: &str, blockers: impl IntoIterator<Item = u64>, closed: &[u64]) {
         let mut routes = self.host.routes();
         let Some(mine) = routes.get_mut(&self.instance) else { return };
+        let tracker = tracker.to_ascii_lowercase();
+        mine.tracker.clone_from(&tracker);
         mine.blockers = blockers.into_iter().collect();
         let mut wakes = vec![];
-        for (issue, by) in mine.reading.take().unwrap_or_default() {
-            if mine.blockers.remove(&issue) {
+        for ((of, issue), by) in mine.reading.take().unwrap_or_default() {
+            if of == tracker && mine.blockers.remove(&issue) {
                 wakes.push((mine.wakes.clone(), by));
             }
         }
-        let tracker = mine.tracker.clone();
         for issue in closed {
             let by = format!("{tracker}#{issue} closed, seen by fleet instance {}", self.instance);
             for (instance, peer) in routes.iter_mut() {
-                if *instance == self.instance || peer.tracker != tracker {
+                if *instance == self.instance {
                     continue;
                 }
                 if let Some(reading) = &mut peer.reading {
-                    reading.entry(*issue).or_insert_with(|| by.clone());
+                    reading.entry((tracker.clone(), *issue)).or_insert_with(|| by.clone());
                 }
-                if peer.blockers.remove(issue) {
+                if peer.tracker == tracker && peer.blockers.remove(issue) {
                     wakes.push((peer.wakes.clone(), by.clone()));
                 }
             }
@@ -345,10 +341,14 @@ mod tests {
             .map(|(i, wakes)| host.watch(&format!("fleet-{i}"), wakes))
             .collect();
         for (i, watch) in watchers.iter().enumerate() {
-            watch.begins(if i == 4 { "acme/elsewhere" } else { "ACME/tracker" });
-            watch.saw(if i == 3 { vec![99] } else { vec![7, 8] }, &[]);
+            watch.begins();
+            watch.saw(
+                if i == 4 { "acme/elsewhere" } else { "ACME/tracker" },
+                if i == 3 { vec![99] } else { vec![7, 8] },
+                &[],
+            );
         }
-        watchers[0].saw([7, 8], &[7]);
+        watchers[0].saw("acme/tracker", [7, 8], &[7]);
         let by = "acme/tracker#7 closed, seen by fleet instance fleet-0";
         for i in [1, 2] {
             assert_eq!(wakes[i].rest(Duration::ZERO), Some(Woken { by: Some(by.into()) }));
@@ -356,9 +356,9 @@ mod tests {
         for i in [0, 3, 4] {
             assert!(!wakes[i].heard(), "no wake of self, unrelated issues or another tracker");
         }
-        watchers[0].saw([], &[7]);
+        watchers[0].saw("acme/tracker", [], &[7]);
         assert!(!wakes[1].heard() && !wakes[2].heard(), "a repeated observation sends none");
-        watchers[0].saw([], &[8]);
+        watchers[0].saw("acme/tracker", [], &[8]);
         assert!(wakes[1].heard() && wakes[2].heard(), "the other blocker still has its route");
     }
 
@@ -368,20 +368,21 @@ mod tests {
         let wakes = Wakes::default();
         let source = host.watch("source", &Wakes::default());
         let target = host.watch("target", &wakes);
-        source.begins("acme/tracker");
-        target.begins("acme/tracker");
+        source.begins();
+        target.begins();
         // The target's first read has not published a route yet.
-        source.saw([], &[7]);
+        source.saw("acme/tracker", [], &[7]);
         assert!(!wakes.heard());
-        target.saw([7], &[]);
+        target.saw("acme/tracker", [7], &[]);
         assert!(wakes.rest(Duration::ZERO).is_some(), "the older read cannot hide the closure");
-        target.begins("acme/tracker");
-        target.saw([], &[]);
-        source.saw([], &[7]);
+        target.begins();
+        target.saw("acme/tracker", [], &[]);
+        source.saw("acme/tracker", [], &[7]);
         assert!(!wakes.heard(), "a fresh read with no edge replaces the route");
-        target.begins("acme/another");
-        target.saw([7], &[]);
-        source.saw([], &[7]);
+        target.begins();
+        source.saw("acme/tracker", [], &[7]);
+        target.saw("acme/another", [7], &[]);
+        source.saw("acme/tracker", [], &[7]);
         assert!(!wakes.heard(), "a tracker change replaces the route");
         drop(target);
         assert_eq!(host.routes().len(), 1, "a stopped or broken fleet leaves no route");

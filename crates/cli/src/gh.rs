@@ -217,6 +217,8 @@ impl GitHub {
         Ok(GitHub::new(repo.dir.clone(), tracker))
     }
 
+    /// A new read of `tracker` from `dir`, with its closure observations
+    /// shared only by this view and its clones.
     pub fn new(dir: PathBuf, tracker: Tracker) -> GitHub {
         GitHub { dir, tracker, closed: Arc::default() }
     }
