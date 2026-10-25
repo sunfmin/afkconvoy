@@ -93,6 +93,7 @@ pub fn tend_train(fleet: &mut Fleet, me: &Me, agent: &Agent) -> Result<Outcome> 
                 &worktree,
                 first.harness,
                 &first.command(launch.as_str()),
+                None,
                 fleet.now,
             )?;
             worktree.await_ready(&terminal, agent.ready_timeout)?;
