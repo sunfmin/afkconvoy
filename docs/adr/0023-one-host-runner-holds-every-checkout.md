@@ -15,8 +15,9 @@ A fleet instance is still one repo's fleet — its own id, claims, heartbeat, ti
 - The checkout list and the **host settings** — host sleep and its sleep hours, the hot-worker limits, admission's shares, the panel's port — are one file on the host. The host runner converges on it: started again — after an upgrade, a crash, a reboot — it starts every checkout on it. A `run` that names a host setting changes it for the host.
 - The host runner starts with the environment of a fresh login shell, never with that of the session that started it.
 - A newer afkconvoy that finds an older host runner has it exit and starts itself on the same list.
+- The host runner moves onto a newer afkconvoy installed where it was started from by itself, once its fleets are idle: no fleet instance in a tick, holding a claim or with something on the landing train, no command in the exclusive queue, no inspection running. Each fleet instance stops between two ticks, and the host runner starts the newer one's on the same list and lets the host go to it. It never moves onto an older release; one that does not start leaves it holding the host, and `doctor` names it.
 - A fleet instance whose tick panics, whose loop ends in an error, or whose probe no longer passes as the host runner starts it again harms no other: it stays on the list, shown as broken with why, and is tried again after a backoff. A tick that fails is a line of its tick log, as before, and the loop goes on.
-- The host runner keeps a log of its own — checkouts added and removed, fleet instances broken and back, upgrades — beside each repo's tick log, which is unchanged.
+- The host runner keeps a log of its own — checkouts added and removed, fleet instances broken and back, upgrades and moves — beside each repo's tick log, which is unchanged.
 
 ## What becomes one
 
@@ -35,5 +36,5 @@ A fleet instance is still one repo's fleet — its own id, claims, heartbeat, ti
 
 - Supersedes, of ADR-0002, that `run` is itself the long-running process: `run` adds a checkout and returns, and the host runner is the process that ticks. A wake is still a signal, sent through the host runner's socket.
 - Supersedes, of ADR-0016, the socket per instance and the two-second and two-minute answers: whether every fleet instance is idle is known inside the process. The conditions for a host sleep stand, the sleep hours among them: a host is put to sleep only within the hours of its local time its host settings say, 00:00 to 06:00 unless they say others.
-- The release step of restarting every `run` becomes running `afkconvoy run` once, in any checkout.
+- The release step of restarting every `run` becomes nothing beyond the upgrade itself: each host runner moves onto the release once its fleets are idle.
 - A personal control session that reads every repo needs nothing of afkconvoy but this: the checkout list, and `doctor` for every checkout, as JSON.

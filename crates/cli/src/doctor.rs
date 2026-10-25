@@ -148,6 +148,7 @@ kinds! {
     StepFailed: Critical, "failed in each of the last";
     HarnessDown: Critical, "harness is down";
     HarnessPaused: Warning, "is paused on this host";
+    NotMoved: Warning, "the host runner did not move onto";
     RosterModelUnmatched: Warning, "names no model the host kit holds";
     TeamUnread: Critical, "the team this repo names cannot be read";
     TeamFaulty: Critical, "has a fault at its head";
@@ -177,7 +178,8 @@ kinds! {
 impl Kind {
     /// Whether what a finding of this kind says is wrong is the host's, the
     /// same whichever checkout `doctor` is asked in: a command missing or
-    /// logged out, orca not running, a harness paused.
+    /// logged out, orca not running, a harness paused, the host runner not
+    /// moved onto a newer afkconvoy.
     fn of_host(self) -> bool {
         matches!(
             self,
@@ -186,6 +188,7 @@ impl Kind {
                 | Kind::NoProvider
                 | Kind::OrcaNotRunning
                 | Kind::HarnessPaused
+                | Kind::NotMoved
         )
     }
 }
@@ -1627,6 +1630,7 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String]) -> Result<Exami
     let mut found = findings(&seen);
     found.extend(crate::harness_down::findings(repo, run.instance.as_deref())?);
     found.extend(crate::paused::findings(now));
+    found.extend(host_runner::findings());
     found.sort_by_key(|finding| finding.severity);
     let (claims, issues, waiting) = match &state {
         Ok(state) => (
@@ -1666,16 +1670,25 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String]) -> Result<Exami
 
 /// What of `doctor`'s `host` is the host's alone, the same whichever
 /// checkout it is asked in — the host kit, the queue of `exclusive`, the
-/// inspection running — by its key: `doctor --all` says it once.
+/// inspection running, the newer afkconvoy the host runner moves onto — by
+/// its key: `doctor --all` says it once. All but the host kit are as the
+/// host runner says them, asked once.
 fn host_once(now: u64) -> Map<String, Value> {
-    let inspection = crate::inspection::on_host();
+    let (exclusive, inspection, installed) = match host_runner::shared() {
+        Ok(said) => {
+            let said = said.unwrap_or_default();
+            (Ok(said.exclusive), said.inspection, said.installed)
+        }
+        Err(error) => (Err(error), None, None),
+    };
     Map::from_iter([
         ("host_kit".to_string(), crate::kit::show(now)),
-        ("exclusive".to_string(), exclusive_json(crate::exclusive::standing())),
+        ("exclusive".to_string(), exclusive_json(exclusive)),
         (
             "inspection".to_string(),
             inspection.map_or(Value::Null, |running| crate::inspection::json(&running)),
         ),
+        ("installed".to_string(), serde_json::to_value(installed).unwrap_or_default()),
     ])
 }
 
@@ -1684,7 +1697,7 @@ fn host_once(now: u64) -> Map<String, Value> {
 /// fleet of `host` — else of the host its `run` named, else of this machine
 /// — under the network settings `proxy` names:
 ///
-///   {"host": {"host_kit", "exclusive", "inspection"}, "findings",
+///   {"host": {"host_kit", "exclusive", "inspection", "installed"}, "findings",
 ///    "checkouts": [{"checkout", "repo", "doctor"}]}
 ///
 /// What is the host's is said once, at the top: the part of `host` that is
