@@ -3764,9 +3764,22 @@ fn shown_issue(workflow: Option<&str>, issue: Option<u64>) -> Option<u64> {
 /// A copyable correction when naming an existing directory with `-C` makes
 /// an otherwise refused `show` valid. Reparse with the real argument schema:
 /// a directory that is a flag's value, or another fault, is no checkout hint.
-fn show_checkout_hint(args: &[OsString]) -> Option<String> {
+fn show_checkout_hint(error: &clap::Error, args: &[OsString]) -> Option<String> {
+    let directory = match error.kind() {
+        clap::error::ErrorKind::UnknownArgument => {
+            error.get(clap::error::ContextKind::InvalidArg)?.to_string()
+        }
+        clap::error::ErrorKind::ArgumentConflict => {
+            let parsed = Cli::command().ignore_errors(true).try_get_matches_from(args).ok()?;
+            parsed.subcommand_matches("show")?.get_one::<String>("workflow")?.clone()
+        }
+        _ => return None,
+    };
+    if !PathBuf::from(&directory).is_dir() {
+        return None;
+    }
     for (index, arg) in args.iter().enumerate().skip(1) {
-        if !PathBuf::from(arg).is_dir() {
+        if arg != directory.as_str() {
             continue;
         }
         let mut corrected = args.to_vec();
@@ -3837,11 +3850,7 @@ pub fn main(args: impl IntoIterator<Item = OsString>) -> ExitCode {
         Err(e) if !e.use_stderr() => e.exit(),
         Err(e) => {
             let mut said = e.render().to_string().trim().to_string();
-            if matches!(
-                e.kind(),
-                clap::error::ErrorKind::ArgumentConflict | clap::error::ErrorKind::UnknownArgument
-            ) && let Some(hint) = show_checkout_hint(&args)
-            {
+            if let Some(hint) = show_checkout_hint(&e, &args) {
                 said.push_str(&format!("\n\n{hint}"));
             }
             return fail(2, &said);

@@ -98,6 +98,8 @@ fn show_points_a_positional_checkout_to_c() {
     let world = World::new();
     let dir = world.root.join("a checkout's directory");
     std::fs::create_dir(&dir).unwrap();
+    // A directory whose name is the issue number is not the extra argument.
+    std::fs::create_dir(world.root.join("11")).unwrap();
     for named in [path(&dir), "a checkout's directory"] {
         for args in [["show", "--issue", "11", named].as_slice(), &["show", "11", named]] {
             let answer = world.afk_in(&world.root, args);
@@ -112,6 +114,9 @@ fn show_points_a_positional_checkout_to_c() {
             assert!(error.lines().any(|said| said == line), "{args:?}: {error}");
         }
     }
+    let args = ["--now", "1000", "show", "--dir", ".", "--team", "acme/team", "11", path(&dir)];
+    let error = world.afk_in(&world.root, &args).error();
+    assert!(error.ends_with("--issue 11 --dir '.' --team 'acme/team' --now 1000"), "{error}");
 }
 
 #[test]
