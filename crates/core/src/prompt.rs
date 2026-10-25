@@ -28,6 +28,8 @@ pub struct WorkerFields<'a> {
     /// The line the worker gates another checkout with, in that checkout:
     /// `afkconvoy gate`.
     pub gate_alone_command: &'a str,
+    /// The line that raises a fleet lock on the issue of a proven red base branch.
+    pub lock_command: &'a str,
     /// The label that makes an issue dispatchable: what an issue a worker
     /// opens for a defect it found carries.
     pub ready_label: &'a str,
@@ -94,7 +96,8 @@ fails, ignore it:
 /// told of a red gate its own work did not cause: the defect it found is
 /// opened as an issue the fleet works, and never left to a human. `<proof>`
 /// is what is gated alone, `<open>` how the issue enters the fleet's work and
-/// `<park>` what the worker does once it is recorded.
+/// `<park>` what the worker does once it is recorded and, for a red base
+/// branch, locked.
 const DEFECT: &str = "\
 ## A red gate that is not yours
 
@@ -119,7 +122,12 @@ writes its issue: you do.
    reproduce it on `{base_branch}`; what the logs show; what is guessed and what is verified; and
    acceptance criteria that require the cause to be found with evidence, and a test that reproduces
    it. <open> Name no blocker unless it has a real one.
-3. <park>
+3. **Raise the fleet lock for a red base branch.** If you proved only the landing train's tip
+   red, gate `origin/{base_branch}` alone in a clean checkout too, as above. Only when the base
+   branch is red the same way, make sure the fix's issue — existing or new — is dispatchable as
+   above, then run `{lock_command} --issue <n>` on it from your worktree. The fleet works that
+   issue first while the lock stands. A defect confined to the train raises no lock.
+4. <park>
 ";
 
 /// What an issue's worker gates alone to prove a red gate is not its own:
@@ -680,6 +688,8 @@ pub struct StageFields<'a> {
     pub split: bool,
     /// The line the worker declares its verdict with.
     pub verdict_command: &'a str,
+    /// The line that raises a fleet lock from the issue's worktree.
+    pub lock_command: &'a str,
     /// The line the worker takes an issue in with, before what names the
     /// issue and its workflow: a stage that splits its issue takes each
     /// child in.
@@ -797,6 +807,7 @@ pub fn stage_prompt(fields: &StageFields) -> Result<String, String> {
             ("precedents", fields.precedents),
             ("team_rules", fields.team_rules.unwrap_or_default()),
             ("verdict_command", fields.verdict_command),
+            ("lock_command", fields.lock_command),
             ("gate_command", fields.gate.map_or("", |gate| gate.train)),
             ("gate_alone_command", fields.gate.map_or("", |gate| gate.alone)),
         ],
@@ -1138,6 +1149,8 @@ pub struct TrainFields<'a> {
     /// The line the train worker gates another checkout with, in that
     /// checkout: `afkconvoy gate`.
     pub gate_alone_command: &'a str,
+    /// The line that raises a fleet lock on the base branch's defect.
+    pub lock_command: &'a str,
     /// How an issue the train worker opens for a defect of the base branch
     /// enters the fleet's work.
     pub enters: Enters<'a>,
@@ -1167,9 +1180,9 @@ const DEFECT_TRAIN_INTAKE: &str =
 /// What the train worker does once a defect of the base branch is recorded:
 /// it has no issue to park.
 const PARK_TRAIN: &str =
-    "**Then go on as for any `gate_red`.** You have no issue to park: fix the train if you can,
-   commit, and run the command again. The defect's issue is worked like any other, and its PR joins
-   the train.";
+    "**You have no issue to park.** Once you raised the lock, stop: the fix's issue is worked
+   first, and its PR joins the train. Run the command again when told to carry on. If the base
+   branch was green, go on as for any `gate_red`: fix the train, commit, and run the command again.";
 
 /// The prompt the train worker is given: started on it, and pointed at it
 /// again whenever more joined.
@@ -1192,6 +1205,7 @@ pub fn train_prompt(fields: &TrainFields) -> Result<String, String> {
             ("base_branch", fields.base_branch),
             ("land_command", fields.land_command),
             ("gate_alone_command", fields.gate_alone_command),
+            ("lock_command", fields.lock_command),
             ("ready_label", ready_label),
             ("intake_command", intake_command),
             ("workflows", &named.join(", ")),
@@ -1283,6 +1297,7 @@ fn prompt(
             ("base_branch", fields.base_branch),
             ("gate_command", fields.gate_command),
             ("gate_alone_command", fields.gate_alone_command),
+            ("lock_command", fields.lock_command),
             ("ready_label", fields.ready_label),
             ("land_command", fields.land_command),
             ("wake_command", fields.wake_command),
@@ -1485,6 +1500,7 @@ mod tests {
             base_branch: "develop",
             gate_command: "/opt/bin/afkconvoy gate --train",
             gate_alone_command: "/opt/bin/afkconvoy gate",
+            lock_command: "/opt/bin/afkconvoy lock",
             ready_label: "agent-ready",
             land_command: "/opt/bin/afkconvoy land --issue 7",
             wake_command: "/opt/bin/afkconvoy wake",
@@ -1509,6 +1525,7 @@ mod tests {
             base_branch: "develop",
             land_command: "/opt/bin/afkconvoy land --train",
             gate_alone_command: "/opt/bin/afkconvoy gate",
+            lock_command: "/opt/bin/afkconvoy lock",
             enters: Enters::Ready("agent-ready"),
             tracker: &tracker,
         })
@@ -1630,6 +1647,7 @@ mod tests {
             team_rules: None,
             records: &[],
             verdict_command: "/opt/bin/afkconvoy verdict --issue 7 --stage build",
+            lock_command: "/opt/bin/afkconvoy lock",
             intake_command: "/opt/bin/afkconvoy intake",
             split: true,
             workflows: &workflows,
@@ -1683,6 +1701,7 @@ mod tests {
             base_branch: "develop",
             land_command: "/opt/bin/afkconvoy land --train",
             gate_alone_command: "/opt/bin/afkconvoy gate",
+            lock_command: "/opt/bin/afkconvoy lock",
             enters: Enters::Intake {
                 command: "/opt/bin/afkconvoy intake --train",
                 workflows: &workflows,
@@ -1857,6 +1876,7 @@ mod tests {
             team_rules: None,
             records: &[],
             verdict_command: "/opt/bin/afkconvoy verdict --issue 7 --stage build",
+            lock_command: "/opt/bin/afkconvoy lock",
             intake_command: "/opt/bin/afkconvoy intake",
             split: true,
             workflows: &["feature".to_string(), "small fix".to_string()],
@@ -2050,6 +2070,7 @@ mod tests {
             team_rules: None,
             records: &[],
             verdict_command: "/opt/bin/afkconvoy verdict --issue 7 --stage plan",
+            lock_command: "/opt/bin/afkconvoy lock",
             intake_command: "cd '/wt/issue-7' && /opt/bin/afkconvoy intake",
             split: true,
             workflows: &["feature".to_string(), "fix".to_string()],
@@ -2148,6 +2169,7 @@ mod tests {
             team_rules: None,
             records: &[],
             verdict_command: "/opt/bin/afkconvoy verdict --issue 7 --stage build",
+            lock_command: "/opt/bin/afkconvoy lock",
             intake_command: "/opt/bin/afkconvoy intake",
             split: true,
             workflows: &["feature".to_string()],
@@ -2207,6 +2229,7 @@ mod tests {
             base_branch: "develop",
             land_command: "/opt/bin/afkconvoy land --train",
             gate_alone_command: "/opt/bin/afkconvoy gate",
+            lock_command: "/opt/bin/afkconvoy lock",
             enters: Enters::Ready("agent-ready"),
             tracker: &Tracker::Own,
         })
@@ -2237,6 +2260,7 @@ mod tests {
             team_rules: None,
             records: &[],
             verdict_command: "/opt/bin/afkconvoy verdict --issue 7 --stage build",
+            lock_command: "/opt/bin/afkconvoy lock",
             intake_command: "cd '/wt/issue-7' && /opt/bin/afkconvoy intake",
             split: true,
             workflows: &["feature".to_string(), "fix".to_string()],
@@ -2250,6 +2274,7 @@ mod tests {
             base_branch: "develop",
             land_command: "/opt/bin/afkconvoy land --train",
             gate_alone_command: "/opt/bin/afkconvoy gate",
+            lock_command: "/opt/bin/afkconvoy lock",
             enters: Enters::Ready("agent-ready"),
             tracker: &Tracker::Own,
         })
@@ -2285,6 +2310,11 @@ mod tests {
                  guessed and what is verified; and\n   acceptance criteria that require the cause \
                  to be found with evidence, and a test that reproduces\n   it.",
                 "Name no blocker unless it has a real one.",
+                "**Raise the fleet lock for a red base branch.**",
+                "gate `origin/develop` alone in a clean checkout too",
+                "fix's issue — existing or new — is dispatchable",
+                "`/opt/bin/afkconvoy lock --issue <n>`",
+                "A defect confined to the train raises no lock.",
             ] {
                 assert!(brief.contains(said), "{said}\n{brief}");
             }
@@ -2304,7 +2334,12 @@ mod tests {
             "{staged}"
         );
         assert!(!staged.contains("--label"), "{staged}");
-        // Then each parks its issue on it, and the train worker, which has none, goes on.
+        // The lock is raised before parking, for existing and new defects alike.
+        for brief in [&fresh, &continuing, &taker, &staged] {
+            assert!(brief.find("**Raise the fleet lock").unwrap()
+                < brief.find("**Then park your issue").unwrap());
+        }
+        // Each parks its issue on it; the train worker has none and stops for the fix.
         for brief in [&fresh, &continuing] {
             assert!(brief.contains(
                 "**Then park your issue on it.** Push your branch (`git push origin HEAD`), open \
@@ -2328,7 +2363,8 @@ mod tests {
         assert!(
             train.contains("When `develop` may be what is red, and not the train,\n  see below")
         );
-        assert!(train.contains("You have no issue to park: fix the train if you can"));
+        assert!(train.contains("**You have no issue to park.** Once you raised the lock, stop"));
+        assert!(train.contains("Run the command again when told to carry on."));
         assert!(train.contains("The one exception is the issue of a defect of `develop`, above."));
         // Said in one place: the section is the same text wherever it is given.
         let section = |brief: &str| {
@@ -2355,6 +2391,7 @@ mod tests {
             base_branch: "develop",
             land_command: "/opt/bin/afkconvoy land --train",
             gate_alone_command: "/opt/bin/afkconvoy gate",
+            lock_command: "/opt/bin/afkconvoy lock",
             enters: Enters::Intake {
                 command: "/opt/bin/afkconvoy intake --train",
                 workflows: &workflows,
@@ -2362,6 +2399,7 @@ mod tests {
             tracker: &Tracker::Own,
         };
         let bound = train_prompt(&fields).unwrap();
+        assert!(bound.contains("`/opt/bin/afkconvoy lock --issue <n>`"), "{bound}");
         assert!(
             bound.contains(
                 "Put no label of a workflow on it yourself: take it in with\n   \
@@ -2476,6 +2514,7 @@ mod tests {
             team_rules,
             records: &[],
             verdict_command: "/opt/bin/afkconvoy verdict --issue 7 --stage build",
+            lock_command: "/opt/bin/afkconvoy lock",
             intake_command: "/opt/bin/afkconvoy intake",
             split: true,
             workflows: &workflows,

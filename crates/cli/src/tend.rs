@@ -74,6 +74,7 @@ pub fn tend_train(fleet: &mut Fleet, me: &Me, agent: &Agent) -> Result<Outcome> 
         base_branch: &fleet.config.base_branch,
         land_command: &crate::own_command().fixed(" land --train").own(),
         gate_alone_command: &crate::own_command().fixed(" gate").own(),
+        lock_command: &crate::own_command().fixed(" lock").own(),
         enters,
         tracker: &fleet.gh.tracker,
     })

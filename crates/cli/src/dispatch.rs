@@ -641,6 +641,7 @@ fn brief_with(
         base_branch: &fleet.config.base_branch,
         gate_command: &crate::own_command().fixed(" gate --train").own(),
         gate_alone_command: &crate::own_command().fixed(" gate").own(),
+        lock_command: &crate::own_command().fixed(" lock").own(),
         ready_label: &fleet.config.ready_label,
         land_command: &crate::own_command().fixed(" land --issue ").number(number).own(),
         wake_command: &crate::own_command().fixed(" wake").own(),
