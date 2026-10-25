@@ -178,6 +178,44 @@ fn a_silent_train_worker_is_nudged_once_and_then_the_train_is_abandoned() {
 }
 
 #[test]
+fn an_inspection_s_pr_alone_on_a_train_given_up_is_joined_again_by_the_fleet() {
+    let world = World::new();
+    world.set_gate("true");
+    // An inspection's change of the repo on the train, and nothing of the fleet's own.
+    git(&world.clone, &["fetch", "-q", "origin"]);
+    let checkout = world.root.join("wt/afkconvoy-inspection");
+    let (branch, at) = ("tester/afkconvoy-inspection", checkout.to_str().unwrap());
+    git(&world.clone, &["worktree", "add", "-q", "-b", branch, at, "origin/main"]);
+    let head = commit(&checkout, "gate.sh", "afkconvoy exclusive -- cargo test\n");
+    git(&checkout, &["push", "-q", "origin", "HEAD"]);
+    world.with_gh(|gh| {
+        let pr = json!({"number": 90, "title": "Queue the gates", "headRefName": branch,
+            "headRefOid": "", "body": "Run the gate through the host's queue.\n", "state": "open"});
+        gh["prs"].as_array_mut().unwrap().push(pr);
+    });
+    let land = ["land", "--inspection", "--host", "h1", "--now", "1050"];
+    let joined = world.afk_in(&checkout, &land).ok();
+    assert_eq!(joined["outcome"], "joined", "{joined}");
+
+    // The fleet tends the train for it, and gives it up once its worker stays silent.
+    assert_eq!(did(&tick(&world, 1090)), ["tend_train done"]);
+    assert_eq!(did(&tick(&world, 1390)), ["tend_train nudged"]);
+    let ticked = tick(&world, 1690);
+    assert_eq!(did(&ticked), ["tend_train abandoned"]);
+    assert_eq!(ticked["errors"], json!([]));
+
+    // Nobody is left to join it again: the fleet did, onto the base branch.
+    let base = world.remote(&["rev-parse", "refs/heads/main"]);
+    let tip = line(&world).expect("on the next train");
+    assert_ne!(json!(tip), joined["commit"]);
+    assert_eq!(world.remote(&["log", "-1", "--format=%P", &tip]), format!("{base} {head}"));
+    let message = world.remote(&["log", "-1", "--format=%B", &tip]);
+    assert_eq!(message, "Queue the gates (#90)\n\nBy an inspection on h1");
+    assert_eq!(pr_state(&world, 90), "open");
+    assert_eq!(did(&tick(&world, 1780)), ["tend_train done"], "a new train worker");
+}
+
+#[test]
 fn what_the_train_already_landed_is_settled_from_the_base_branch_not_abandoned() {
     let world = train(&[7, 8]);
     // the train worker landed #7's joining, and went silent on the rest

@@ -254,7 +254,8 @@ mod tests {
 
     #[test]
     fn a_cut_landing_is_this_claims_and_of_the_head_that_landed() {
-        let join = Joined { issue: 7, pr: 70, commit: "m".into(), head: "h".into() };
+        let join =
+            Joined { of: crate::train::Of::Issue(7), pr: 70, commit: "m".into(), head: "h".into() };
         let pr = |number: u64, head: &str| PullRequest {
             number,
             title: String::new(),

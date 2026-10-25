@@ -24,7 +24,7 @@ use crate::train::joins_in;
 fn landing_of(repo: &Repo, base_tip: &str, issue: u64) -> Result<Option<(Joined, u64)>> {
     let grep = format!("--grep=^Closes #{issue}$");
     let joins = joins_in(repo, &["-E", &grep, base_tip])?;
-    let Some(join) = joins.into_iter().rfind(|join| join.issue == issue) else {
+    let Some(join) = joins.into_iter().rfind(|join| join.issue() == Some(issue)) else {
         return Ok(None);
     };
     let at = repo.git(&["log", "-1", "--format=%ct", &join.commit])?.parse()?;

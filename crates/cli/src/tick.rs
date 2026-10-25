@@ -547,7 +547,7 @@ impl Ticked {
     /// it: held a claim — as its rebuild read the claims, or as its pass ended
     /// — or had something on the landing train.
     pub fn idle(&self) -> (bool, bool) {
-        let on_train = self.set.mine.iter().any(|mine| mine.status == Status::Joined);
+        let on_train = self.set.on_train();
         let pass = &self.pass;
         let idle = host_sleep::idle(pass.held, pass.frontier_remaining, on_train);
         (idle, host_sleep::worked(self.set.held().max(pass.held), on_train))

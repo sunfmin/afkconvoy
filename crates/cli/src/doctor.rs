@@ -1818,6 +1818,7 @@ mod tests {
             proposals: vec![],
             slow_gate: None,
             outgrown_train: None,
+            inspections_on_train: vec![],
             held_back: vec![],
             caster: None,
         }

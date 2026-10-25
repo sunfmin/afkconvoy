@@ -372,7 +372,7 @@ With `--all` it reads the checkout list (checkouts.json in the cache directory) 
   - `worker_commands`: one for each harness the fleet could be asked for: {harness, called_for_by, command, from, starts_a_worker, takes_role_flags} — called_for_by is the host kit's first, each role whose range holds the harness, and the stock consult; from is `host_kit`. Commands come from this host's kit, never a run log.
   - `host_kit`: {path, refreshed, harnesses, stock_consult}: where the kit is kept; when it was last written, in epoch seconds — by `kit`, by `run`, or by a tick's daily refresh (`afkconvoy kit --help`); each harness in order, first first, with its full worker launch command and its models in order, each with when it last answered a probe (`probed.at`, epoch seconds; null: a model a kit written before DSH was probed holds as named); and the harness and model the stock consult runs (`named` false: the host kit's first; `unmatched`: what is named for it matches nothing held, and it runs the host kit's first). {path, error} when unreadable. `afkconvoy kit` writes it again.
   - `settings`: the host settings (`afkconvoy run --help`): {file, said, in_force} — each by its key, the name of the flag of `run` that names it (`hot_cores` for `--hot-cores`), in that flag's units: said is what the host says, null where it says none and the default holds; in_force what holds for this repo's fleet on this host, each default worked out for it — the panel's port 7070 where the host says none. {file, error} where the file cannot be read
-  - `admission`: whether a tick would start a new worker on this host now, the thresholds in force and what the host reads: as `plan` answers it (`afkconvoy plan --help`), or {error} where a share the host says is wrong. A tick that admission held back is no "started no worker" finding. Its inspected is what the last host inspection on this host did, whichever fleet started it: {repo, reason, reading, by, started, ended, found, said, did, left} — what admission held back for and read, the role, how it ended (goes-on, held where it left something it could not fix, or nothing where it said nothing in time), what held the work back in its words, each thing it did and each thing it could not fix; null with none
+  - `admission`: whether a tick would start a new worker on this host now, the thresholds in force and what the host reads: as `plan` answers it (`afkconvoy plan --help`), or {error} where a share the host says is wrong. A tick that admission held back is no "started no worker" finding. Its inspected is what the last host inspection on this host did, whichever fleet started it: {repo, reason, reading, by, started, ended, found, said, did, prs} — what admission held back for and read, the role, how it ended (said, or nothing where it said nothing in time), what held the work back in its words, each thing it did and the PRs it put on the landing train; null with none
   - `exclusive`: the host's queue of `afkconvoy exclusive`, whatever its repo, as its host runner holds it: {running, waiting} — running is the command that runs alone now, null with none; waiting, those that wait their turn, next first; both empty with no host runner. Each is {command, dir, issue, pid, asked, ran}: the worktree it was run in, the issue of its worker, and when it asked and began to run, in epoch seconds. {error} when the host runner cannot say it
   - `inspection`: the inspection running on this host, whatever its repo: {kind, repo, worker, issue, by, since, held_back_by} — worker or host, the repo whose fleet started it, the hot worker and its issue ("the host" and null of a host's), the role it runs in, when it started, in epoch seconds, and of a host's what admission held back for; null with none (`afkconvoy inspected --help`)
 - `fleet`: the `run` of this host for this repo:
@@ -616,7 +616,7 @@ A fleet instance idle 10 minutes checks then, tick due or not, whatever the hour
 
 One check is made on the host at a time: while one waits for the others' ticks, no other fleet instance checks. It waits for a tick each began after it was woken, however long that takes, and no longer for one that ended meanwhile. A check whose own fleet instance is woken while it waits — something changed for its fleet — or told to stop ends there, with the host awake; it is checked again later.
 
-It samples what each worker's processes take every ten seconds. As one turns hot (`afkconvoy help concepts`, Hot worker) it takes down what shows it — the process tree, a five-second `sample` of the hottest process, the resident memory of late, what its processes wrote, the largest directories of its worktree — and starts an inspection of it once per episode: a worker in the role of the stage's consult, in a checkout of its own, as the operator on this host, that finds what holds the work back, fixes it and says what it did with `afkconvoy inspected`. One inspection runs on this host at a time, across its fleets — the host runner holds whose turn it is; it takes no slot of the concurrency, and is ended after 15 minutes. A host inspection is held to the same: of either kind, one runs on the host at a time, and a hot worker waiting for one goes first. While one runs, or a hot worker or the host waits for one, a fleet instance sleeps 30 seconds at most.
+It samples what each worker's processes take every ten seconds. As one turns hot (`afkconvoy help concepts`, Hot worker) it takes down what shows it — the process tree, a five-second `sample` of the hottest process, the resident memory of late, what its processes wrote, the largest directories of its worktree — and starts an inspection of it once per episode: a worker in the role of the stage's consult, in a checkout of its own, as the operator on this host, that finds what holds the work back, fixes it and says what it did with `afkconvoy inspected`. One inspection runs on this host at a time, across its fleets — the host runner holds whose turn it is; it takes no slot of the concurrency, and is ended after 60 minutes. A host inspection is held to the same: of either kind, one runs on the host at a time, and a hot worker waiting for one goes first. While one runs, or a hot worker or the host waits for one, a fleet instance sleeps 30 seconds at most.
 
 Each fleet instance also keeps a log on this host, its tick log, in a file under the cache directory (runs/; `afkconvoy help cache` says where it is and what moves it): one line when it starts, one as each tick starts — with why, and the command whose wake started it — and one as it ends — what `tick` answers for it — and one of each event that reached it: a wake heard during a tick, a check for host sleep, the host waking, being told to stop. Every command that changes fleet state writes a line of its own to the same file as it acts (its `--help` says so under "What it logs", and [`afkconvoy help tick-log`](help:tick-log) says what the line holds). It keeps every line of the last 24 hours, and never fewer than 200 lines nor more than 5000. A line is written whole as it happens, so killing the host runner loses none, and none a command appends while the fleet instance cuts the file back is lost. Nothing reads the log to decide anything; `afkconvoy doctor` reads it to say what the last ticks did, which steps failed, and the wakes, starts, stops and host sleeps of late.
 
@@ -1906,11 +1906,13 @@ afkconvoy exclusive [OPTIONS] <COMMAND>...
 
 #### `afkconvoy land`
 
-Put this worktree's PR on the landing train (a worker's command), or land the train
+Put this worktree's PR on the landing train (a worker's command, and an inspection's), or land the train
 
 ##### When to run it
 
 `land --issue <n>`: once the PR is open and its gate run is green and on record, to join the PR to the landing train. A worker's prompt names the exact command.
+
+`land --inspection`: the same, of an inspection's change of the repo: once its PR is open and its gate run is green and on record. The inspection's brief names the exact command.
 
 `land --train`: when the train's worker is told a PR joined, and again after each answer that says so, until the answer is `idle`.
 
@@ -1918,22 +1920,26 @@ Put this worktree's PR on the landing train (a worker's command), or land the tr
 
 `--issue`: the worker that wrote the PR, in its own worktree — in a bound repo, the worker in the landing role of the issue's workflow, in the issue's worktree.
 
+`--inspection`: an inspection, in the checkout it was started in (`afkconvoy-inspection`), on whose branch it committed the change. Run anywhere else it is refused.
+
 `--train`: the train worker, in the train's worktree — never anybody else, anywhere else.
 
 ##### What it reads and writes
 
-`--issue` reads the open issues, the open PRs and the train. With a fleet lock standing it joins the PR of a lock issue only, and for any other changes nothing. Otherwise it pushes this branch when it is ahead of the remote's, then pushes one merge commit — the PR's head joined onto the train's tip — as the train's new tip. No gate runs, and nothing on GitHub changes. A PR that conflicts with the train gets the train's tip merged into this worktree, left in progress.
+`--issue` reads the open issues, the open PRs and the train. With a fleet lock standing it joins the PR of a lock issue only, and for any other changes nothing. Otherwise it pushes this branch when it is ahead of the remote's, then pushes one merge commit — the PR's head joined onto the train's tip — as the train's new tip. Its message names the PR and the issue it closes (`Closes #<n>`), which is how the train knows what is on it. No gate runs, and nothing on GitHub changes. A PR that conflicts with the train gets the train's tip merged into this worktree, left in progress.
 
-`--train` puts this worktree on the train's tip, merges the base branch in when it moved, pushes that as the train's tip, and gates it — by the run on record for that tree, which it leaves as it is, else by a run made now, for no longer than the gate limit: the config's `gate_seconds` (default 3600), as for `afkconvoy gate`. That run is put on record with the seconds it took and the host (`--host`, else this machine's name). Green: it pushes the commit to the base branch as a fast-forward, closes the issue of every PR that landed, and deletes those PRs' branches once GitHub shows them merged. Red: it comments the failure on every PR on the train, and lands nothing. Either way it then measures this worktree: what git ignores in it, and the files git tracks; the first run here notes what it built.
+`--inspection` does the same for the open PR whose head is this checkout's branch: a change of the repo the inspection made itself, on no issue (`afkconvoy inspected --help`). The train takes it by the inspection where it takes a worker's by its issue: the join commit names the inspection and its host (`By an inspection on <host>`, `--host`, else this machine's name) and closes no issue. While it is on the train, every fleet of the repo tends the train as for a PR of its own — and a fleet that gives the train up joins it again itself, onto the next. A fleet lock standing, it joins nothing: an inspection's PR is no lock issue's. A PR that joined is kept in the checkout's own git dir, and the inspection's record names it once it ends (`afkconvoy inspected --help`).
+
+`--train` puts this worktree on the train's tip, merges the base branch in when it moved, pushes that as the train's tip, and gates it — by the run on record for that tree, which it leaves as it is, else by a run made now, for no longer than the gate limit: the config's `gate_seconds` (default 3600), as for `afkconvoy gate`. That run is put on record with the seconds it took and the host (`--host`, else this machine's name). Green: it pushes the commit to the base branch as a fast-forward, closes the issue of every PR that landed — an inspection's closes none — and deletes those PRs' branches once GitHub shows them merged. Red: it comments the failure on every PR on the train, and lands nothing. Either way it then measures this worktree: what git ignores in it, and the files git tracks; the first run here notes what it built.
 
 ##### What it answers
 
-`--issue`: {"issue", "pr", "outcome", "detail", …}
+`--issue`: {"issue", "pr", "outcome", "detail", …}; `--inspection`: the same, with "inspection" (the host) for "issue"
 
 - `joined`: the PR is on the train — stop. With "head", "commit" (the join commit) and "again": true when it was there already
 - `merged`: the base branch already holds the PR's head — stop. With "head"
 - `conflict`: with "files" and "worktree": resolve every file, commit the merge, run the gate again, then this again
-- `locked`: a fleet lock stands, and this issue is not one: nothing joined and nothing was pushed — stop, and run this again when told to carry on. With "locks", the lock issues
+- `locked`: a fleet lock stands, and this issue is not one — an inspection's PR never is: nothing joined and nothing was pushed — stop, and run this again when told to carry on. With "locks", the lock issues
 
 `--train`: {"train", "base", "outcome", "detail", …}
 
@@ -1941,7 +1947,7 @@ Put this worktree's PR on the landing train (a worker's command), or land the tr
 - `conflict`: with "files" and "worktree": resolve, commit the merge, run it again
 - `gate_red`: with "commit", "prs" and "gate" {status, exit_code, timed_out, seconds, command, excerpt}: fix the train with one more commit here, run it again. A run ended at the gate limit has exit_code 124 and timed_out true, and "detail" says so, and what the limit is
 - `target_moved`: the base branch moved while the gate ran; nothing landed — run it again
-- `landed`: with "commit", "prs", "gate" {status, source, command, at, seconds, host}, "landed" [{issue, pr, commit}], "unmerged" (PRs GitHub still shows open) and "more": true when the train grew meanwhile. "seconds" and "host" are how long the gate command ran and where, as the run that answered says — the one on record ("source": "recorded") or the one made now ("run"); a run recorded with no time has neither
+- `landed`: with "commit", "prs", "gate" {status, source, command, at, seconds, host}, "landed" [{issue, pr, commit}] — an inspection's PR with "inspection" (its host) for "issue" — "unmerged" (PRs GitHub still shows open) and "more": true when the train grew meanwhile. "seconds" and "host" are how long the gate command ran and where, as the run that answered says — the one on record ("source": "recorded") or the one made now ("run"); a run recorded with no time has neither
 
 gate_red and landed also say, in bytes, what this worktree holds once it is gated:
 
@@ -1951,7 +1957,7 @@ gate_red and landed also say, in bytes, what this worktree holds once it is gate
 
 This worktree is kept with what its gate runs built, landing after landing, until it has outgrown its fresh build: built more than 3 times fresh and more than 1 GiB — more than 1 GiB alone while no fresh is on record. Then the next tick that finds the train idle — nothing on it, and its worker not at work — removes the worktree and cuts it again at the base branch's tip, its notes with it; the run log says so, with built and fresh. The next gate run here builds from nothing, and is slower.
 
-Errors: no open PR closes the issue; tracked files have uncommitted changes; the remote has no such branch; the train moved under the command too many times ("run this again"); for `--train`, untracked files in the worktree ("is not the commit that would land").
+Errors: no open PR closes the issue — for `--inspection`, none has this checkout's branch for its head, or the checkout is no inspection's; tracked files have uncommitted changes; the remote has no such branch; the train moved under the command too many times ("run this again"); for `--train`, untracked files in the worktree ("is not the commit that would land").
 
 ##### What trips you up
 
@@ -1959,7 +1965,7 @@ Errors: no open PR closes the issue; tracked files have uncommitted changes; the
 - Joined is not landed. `--issue` ends at `joined`; the train worker gates and lands.
 - A `gate_red` may be the base branch's, not the train's: the train worker gates `origin/<base>` alone, in a clean checkout, and red the same way is a defect it records — on the open issue that already does, or on one it opens. In an unbound repo that one carries the ready label; in a bound repo, where only a flow label dispatches, it takes it in with `afkconvoy intake --train`: to the team's first workflow, unless another fits it clearly better. Then it goes on with the train.
 - `--issue` runs no gate. It joins whatever is committed: run `gate --train` first.
-- `--merged-timeout` and `--host` are read by `--train` only. How long the gate may run is no flag: it is `gate_seconds` in the config (`afkconvoy config --help`).
+- `--merged-timeout` is read by `--train` only, and `--host` by `--train` and `--inspection`. How long the gate may run is no flag: it is `gate_seconds` in the config (`afkconvoy config --help`).
 
 ##### Which checkout it is about
 
@@ -1979,10 +1985,11 @@ afkconvoy land [OPTIONS] [ISSUE]
 
 - `[ISSUE]`: The issue the PR closes
 - `--issue <ISSUE>`: The same, as a flag
+- `--inspection`: Join the PR of this inspection's checkout, a change of the repo on no issue (an inspection's command)
 - `--train`: Gate the landing train and land it on the base branch (the train worker's command)
 - `--merged-timeout <MERGED_TIMEOUT>`: Seconds GitHub is given to show a landed PR as merged
   - Default: `60`
-- `--host <HOST>`: The host a green run made by `--train` is recorded as made on [default: this machine's name]
+- `--host <HOST>`: The host a green run made by `--train` is recorded as made on, and an inspection's join names [default: this machine's name]
 - `-C <CHECKOUT>`: The checkout it is about, or a directory in it [default: the one it is run in]
 
 #### `afkconvoy verdict`
@@ -2299,17 +2306,16 @@ afkconvoy over --run <RUN> [CHECKOUT]
 
 #### `afkconvoy inspected`
 
-Say what an inspection of a hot worker or of the host did: what held the fleet's work back, each thing it did, and each thing it could not fix (an inspection's command)
+Say what an inspection of a hot worker or of the host did: what held the fleet's work back, and each thing it did (an inspection's command)
 
 ##### When to run it
 
 Once, as the last command of an inspection, once it has checked that the work goes on. Its brief ends with the exact line.
 
-An inspection is started so that the fleet's work goes on, as the operator on this host: on a hot worker — one whose processes take more than their share of the host — or on the host, once admission has held back new workers for one reason past its span (`afkconvoy run --help`, ADMISSION). It finds what holds the work back, fixes it — whatever the operator at this host's keyboard would do — checks that the work goes on, and says here what it did. It opens no issue of what it found and hands nothing to a human — a change of the repo it hands to the fleet's workers, by an issue of the change, as the landing train takes a PR by the issue it closes. What it could not fix, the next episode inspects again.
+An inspection is started so that the fleet's work goes on, as the operator on this host: on a hot worker — one whose processes take more than their share of the host — or on the host, once admission has held back new workers for one reason past its span (`afkconvoy run --help`, ADMISSION). It finds what holds the work back, fixes it — whatever the operator at this host's keyboard would do — checks that the work goes on, and says here what it did. It opens no issue and hands nothing to a human. A change of the repo it makes itself, on the branch of its checkout: it opens the PR, gates it (`afkconvoy gate --train`) and puts it on the landing train with `afkconvoy land --inspection`, which takes it by the inspection where a worker's is taken by its issue; the train lands it as any other, and it need not wait for that. What it could not fix it says in its text, and the next episode inspects again.
 
-- --text or --text-file: what held the work back, where and why
-- --did <what>: one thing it did, as often as wanted — a process it ended, a worker it told, restarted, nudged or switched, a gate it had run again, a host setting it changed, the disk it freed, heavy work it sent through `afkconvoy exclusive`, a change it put on the landing train
-- --left <what>: one thing it could not fix, as often as wanted: what still holds the work back, and why it could not
+- --text or --text-file: what held the work back, where and why — and what it could not fix, if anything, and why
+- --did <what>: one thing it did, as often as wanted — a process it ended, a worker it told, restarted, nudged or switched, a gate it had run again, a host setting it changed, the disk it freed, heavy work it sent through `afkconvoy exclusive`, a change of the repo it put on the landing train
 
 ##### Who runs it
 
@@ -2319,22 +2325,23 @@ A worker started as an inspection, in its own worktree: the checkout it was star
 
 It keeps what was said in that checkout's own git dir — a second run says it again, and the last one stands — and wakes the `run` of this host (`afkconvoy wake --help`). That `run` ends the inspection at its next look, within 30 seconds, and removes its checkout, its terminal with it.
 
-Each --did is then a line of the tick log and of the host runner's log — `inspection: <worker>: did <what>`, the worker `the host` of a host's — and so is how it ended: `goes-on`, or `held` where it left something it could not fix, with what held the work back, what it did and what it left. `afkconvoy doctor` lists them among its events.
+Each --did is then a line of the tick log and of the host runner's log — `inspection: <worker>: did <what>`, the worker `the host` of a host's — and so is how it ended: `said`, with what held the work back, what it did and each PR it put on the landing train with `land --inspection` (`on the landing train: #<pr>`), as the checkout keeps them when it ends. `afkconvoy doctor` lists them among its events.
 
-Of a hot worker, it also leaves a comment on the worker's issue saying what held the work back, what it did and what it could not fix, which is no stage record. The issue stays at its stage.
+Of a hot worker, it also leaves a comment on the worker's issue saying what held the work back, what it did and the PRs it put on the landing train, which is no stage record. The issue stays at its stage.
 
 Of the host, it also keeps what it said in the cache every fleet of the host shares (host-inspection/; `afkconvoy help cache`), shown by the panel and `doctor` beside admission's reading.
 
 ##### What it answers
 
-{"inspected": true, "kind", "found", "did", "left", "woke"} — what was said is kept; `kind` is worker or host; `found` is goes-on, or held where it left something; `did` and `left` are its lines; `woke` is whether a `run` on this host was told.
+{"inspected": true, "kind", "found", "did", "prs", "woke"} — what was said is kept; `kind` is worker or host; `found` is said; `did` is its lines; `prs` the PRs it put on the landing train so far; `woke` is whether a `run` on this host was told.
 
-Errors: the text is empty, or a --did or a --left is; the checkout it is about is no inspection's.
+Errors: the text is empty, or a --did is; the checkout it is about is no inspection's.
 
 ##### What trips you up
 
-- An inspection is given 15 minutes. One that has said nothing by then is ended, and the comment, or the host's record, says it said nothing in time.
-- It does nothing itself: what the inspection did, it did with its own commands before this. A thing done and not said here is not on the record.
+- An inspection is given 60 minutes. One that has said nothing by then is ended, and the comment, or the host's record, says it said nothing in time. A gate waits its turn on the host: an inspection that changes the repo gates it as soon as it is committed, and joins it before it says this.
+- It does nothing itself: what the inspection did, it did with its own commands before this. A thing done and not said here is not on the record — but a PR it put on the landing train is, said or not.
+- There is no --left: what it could not fix goes in its text, and opens no issue.
 - An inspection is the operator on this host, not a consult: it commits, pushes a branch of its own and changes the host, held to the bounds of any unattended worker — only what the fleets of this host started or own, never what cannot be rebuilt nor a change no commit holds, no force push, no push to the base branch, no merge outside the landing train. The guard holds it to them where it can (`afkconvoy guard --help`).
 
 ##### Which checkout it is about
@@ -2357,7 +2364,6 @@ afkconvoy inspected [OPTIONS] [CHECKOUT]
 - `--text <TEXT>`: The text of the record: what the stage produced, or what a human says
 - `--text-file <TEXT_FILE>`: A file holding that text
 - `--did <WHAT>`: One thing it did, as often as wanted
-- `--left <WHAT>`: One thing it could not fix, which still holds the work back, as often as wanted
 
 #### `afkconvoy gate`
 
@@ -2879,15 +2885,16 @@ The operator, in a checkout of the repo, on the host the train worker runs on.
 
 ##### What it reads and writes
 
-On the remote it deletes the landing train — only while its tip is still the one its worker went silent on. It clears the train's worktree and keeps it. For each PR of the instance that was on the train it records the abandonment in the fleet's comment on the PR and tells the PR's worker — in a bound repo, the one in its workflow's landing role — to join the next train; a PR taken off an abandoned train before is escalated instead. Nothing has landed, and what an earlier train put on the base branch is not touched.
+On the remote it deletes the landing train — only while its tip is still the one its worker went silent on. It clears the train's worktree and keeps it. For each PR of the instance that was on the train it records the abandonment in the fleet's comment on the PR and tells the PR's worker — in a bound repo, the one in its workflow's landing role — to join the next train; a PR taken off an abandoned train before is escalated instead. An inspection's PR, whose inspection is gone, it joins again itself, onto the train as it stands; one that conflicts with it is left open. Nothing has landed, and what an earlier train put on the base branch is not touched.
 
 ##### What it answers
 
-{"action": "abandoned", "train", "issues", "escalated", "worktree"}
+{"action": "abandoned", "train", "issues", "escalated", "inspections", "worktree"}
 
 - `train`: the tip of the train given up
 - `issues`: the issues whose PRs are to join the next train
 - `escalated`: the issues escalated instead
+- `inspections`: [{pr, joined}] — each inspection's PR that was on the train, and whether it is on the train again (false: it conflicts, and was left open)
 - `worktree`: the train's worktree, kept
 
 Errors, each with nothing abandoned: "nothing is on the landing train"; "has no worktree on this host"; "is not abandoned" — its worker is at work, gone, not told of what the train holds now, not nudged yet, or showed a sign of life within the grace period; "moved while it was being abandoned" — a PR joined meanwhile, and the train was kept.
@@ -4411,7 +4418,7 @@ A worker whose processes — every one started with its `TMPDIR`, and every one 
 _Avoid_: hog
 
 **Inspection**:
-The operator on its host, started so that the fleet's work goes on: a worker in the role of the consult of a hot worker's stage — the stock consult where the stage names none, at no stage, and in an unbound repo — started in a checkout of its own once per episode, and given what was taken down as that worker turned hot (its process tree, a `sample` of its hottest process, its resident memory over the last minutes, what its processes wrote, the largest directories of its worktree), the issue, the worktree and the hot worker's terminal. An inspection of the **host** is started by admission instead, on no worker: the stock consult, given what was taken down as it started — admission's reading and shares; for disk, each of the host's worktrees of every fleet with its issue, its stage, whether a worker holds it and what it holds, the landing train's, the fleet's caches and the largest directories of the whole volume under the home folder outside them, found within five minutes; for load or memory, the process trees of each worker and of the train and the hottest processes outside them. Either finds what holds the work back and fixes it — whatever the operator at this host's keyboard would do: end a runaway or orphaned process, restart, nudge or switch a worker, have a stopped gate run again, change a host setting, free disk, send heavy work through `afkconvoy exclusive`, change the repo through a branch, the gate and the landing train, by an issue of the change for the fleet's workers — checks that the work goes on, and says with `afkconvoy inspected` what held it back, what it did and what it could not fix. Its role chooses who inspects, not what it may do: it is no consult, and commits, pushes and changes the host. The guard holds it to the bounds of any unattended worker: only what the fleets of this host started or own, never the host runner nor the user's own; never deleting what cannot be rebuilt — model weights, downloads, media, Docker's images, a user's files, a change no commit holds; no force push, no push to the base branch, no merge outside the landing train. It opens no issue of what it found and hands nothing to a human: each thing it did is a line of the log, which `doctor` lists among its events; the panel and `doctor` show a host's beside admission's reading, and a hot worker's is left as a comment on its issue that is no stage record. What it could not fix, the next episode inspects again. Of either kind, one runs on a host at a time, across its fleets, takes no slot of the concurrency, and has 15 minutes; none where another fleet of the host inspected the host in the episode, and nobody inspects where the stage or the repo says `human`. A worker hot again after its inspection is never escalated for it.
+The operator on its host, started so that the fleet's work goes on: a worker in the role of the consult of a hot worker's stage — the stock consult where the stage names none, at no stage, and in an unbound repo — started in a checkout of its own once per episode, and given what was taken down as that worker turned hot (its process tree, a `sample` of its hottest process, its resident memory over the last minutes, what its processes wrote, the largest directories of its worktree), the issue, the worktree and the hot worker's terminal. An inspection of the **host** is started by admission instead, on no worker: the stock consult, given what was taken down as it started — admission's reading and shares; for disk, each of the host's worktrees of every fleet with its issue, its stage, whether a worker holds it and what it holds, the landing train's, the fleet's caches and the largest directories of the whole volume under the home folder outside them, found within five minutes; for load or memory, the process trees of each worker and of the train and the hottest processes outside them. Either finds what holds the work back and fixes it — whatever the operator at this host's keyboard would do: end a runaway or orphaned process, restart, nudge or switch a worker, have a stopped gate run again, change a host setting, free disk, send heavy work through `afkconvoy exclusive`, change the repo itself through a branch of its checkout, the gate and the landing train, on no issue (`afkconvoy land --inspection`) — checks that the work goes on, and says with `afkconvoy inspected` what held it back, what it could not fix, and what it did. Its role chooses who inspects, not what it may do: it is no consult, and commits, pushes and changes the host. The guard holds it to the bounds of any unattended worker: only what the fleets of this host started or own, never the host runner nor the user's own; never deleting what cannot be rebuilt — model weights, downloads, media, Docker's images, a user's files, a change no commit holds; no force push, no push to the base branch, no merge outside the landing train. It opens no issue — of what it found, nor of a change — and hands nothing to a human: each thing it did, and each PR it put on the landing train, is a line of the log, which `doctor` lists among its events; the panel and `doctor` show a host's beside admission's reading, and a hot worker's is left as a comment on its issue that is no stage record. What it could not fix, the next episode inspects again. Of either kind, one runs on a host at a time, across its fleets, takes no slot of the concurrency, and has an hour; none where another fleet of the host inspected the host in the episode, and nobody inspects where the stage or the repo says `human`. A worker hot again after its inspection is never escalated for it.
 _Avoid_: investigation, diagnosis
 
 **Exclusive queue**:
@@ -4505,11 +4512,11 @@ Bringing a branch up to date by merging into it. Nothing is ever rebased.
 _Avoid_: rebase, update branch
 
 **Landing train**:
-The one append-only line of merge commits ahead of the base branch that finished PRs join, one merge commit per PR.
+The one append-only line of merge commits ahead of the base branch that finished PRs join, one merge commit per PR, which names the issue the PR closes — or, of an inspection's change of the repo, the inspection.
 _Avoid_: merge queue, merge batch, landing turn
 
 **Join**:
-Putting a finished PR on the landing train. In an unbound repo the worker that wrote it does; in a bound repo a new worker does, in the landing role its workflow names, after the last stage passed.
+Putting a finished PR on the landing train. In an unbound repo the worker that wrote it does; in a bound repo a new worker does, in the landing role its workflow names, after the last stage passed. An inspection joins its own change of the repo, which closes no issue: the train takes it by the inspection.
 _Avoid_: merge (what git does to two branches, and a human to a proposal's PR), enqueue
 
 **Train worker**:

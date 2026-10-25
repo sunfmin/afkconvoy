@@ -21,8 +21,9 @@ pub enum TickStep {
     /// Let go of a claim of mine whose issue GitHub says was deleted or
     /// transferred: release it, and end its worker.
     Forget { issue: u64 },
-    /// Keep a train worker on the landing train while a PR of mine is on it.
-    /// The train worker holds no claim and takes no slot.
+    /// Keep a train worker on the landing train while a PR of mine, or an
+    /// inspection's, is on it. The train worker holds no claim and takes no
+    /// slot.
     TendTrain,
     /// Remove this machine's train's worktree and cut it again, once it has
     /// outgrown its build while the train is idle (`WorkingSet::outgrown_train`)
@@ -298,7 +299,7 @@ where
     let mut did = Vec::new();
     let slots = Slots::new(concurrency, held);
     let slots = end_claims(set, Sweep::Landed, slots, &mut did, &mut carry_out);
-    if set.mine.iter().any(|mine| mine.status == Status::Joined) {
+    if set.on_train() {
         let step = TickStep::TendTrain;
         did.push((step, carry_out(step)));
     }
@@ -841,6 +842,7 @@ mod tests {
             proposals: vec![],
             slow_gate: None,
             outgrown_train: None,
+            inspections_on_train: vec![],
             held_back: vec![],
             caster: None,
         }

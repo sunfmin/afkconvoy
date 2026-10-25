@@ -1,10 +1,11 @@
-//! The landing train on the remote, and a worker joining its PR to it.
+//! The landing train on the remote, and a worker — or an inspection — joining
+//! its PR to it.
 
 use afkconvoy_core::config::Config;
 use afkconvoy_core::lock::{keeps_off, named};
-use afkconvoy_core::plan::closing_pr;
+use afkconvoy_core::plan::{PullRequest, closing_pr};
 use afkconvoy_core::train::{
-    JoinStep, Joined, Line, Logged, PUSH_TRIES, join_message, join_steps, joins_onto, on_train,
+    JoinStep, Joined, Line, Logged, Of, PUSH_TRIES, join_message, join_steps, joins_onto, on_train,
     read_joins, train_refs,
 };
 use anyhow::{Result, anyhow, bail};
@@ -167,16 +168,9 @@ const RESOLVE: &str = "resolve every file, `git add` it, COMMIT the merge, run t
                        and run this again";
 
 /// `afkconvoy land --issue <n>`: a worker puts its own PR on the landing
-/// train, from the worktree it is called in → `joined`, `conflict`, or
-/// `merged` when the base branch already holds the PR's head. No gate runs
-/// here: the train's own worker gates the train and lands it.
-///
-/// With a fleet lock standing, the PR of an issue that is not one joins
-/// nothing → `locked`, and nothing is pushed.
-///
-/// The push of the train's tip is the only lock: refused — another PR joined
-/// first — the join is made again on the new tip. Nothing on the train is
-/// rewritten, so a PR that conflicts with it resolves that once.
+/// train, from the worktree it is called in → as `join` says. With a fleet
+/// lock standing, the PR of an issue that is not one joins nothing →
+/// `locked`, and nothing is pushed.
 pub fn land(repo: &Repo, config: &Config, gh: &GitHub, issue: u64, now: u64) -> Result<Value> {
     let prs = gh.open_prs()?;
     let Some(pr) = closing_pr(&prs, issue) else {
@@ -185,8 +179,45 @@ pub fn land(repo: &Repo, config: &Config, gh: &GitHub, issue: u64, now: u64) -> 
              merged, stop)"
         );
     };
+    let answer = json!({"issue": issue, "pr": pr.number});
+    let locks = standing_locks(gh, config)?;
+    if keeps_off(&locks, issue) {
+        return Ok(locked(answer, &locks));
+    }
+    join(repo, config, pr, &Of::Issue(issue), answer, now)
+}
+
+/// `answer`, with the `locked` outcome the standing `locks` give it.
+pub fn locked(mut answer: Value, locks: &[u64]) -> Value {
+    let detail = format!(
+        "a fleet lock stands ({}): no PR of another issue joins the landing train until it has \
+         ended — stop, and run this again when you are told to carry on",
+        named(locks)
+    );
+    answer["outcome"] = json!("locked");
+    answer["locks"] = json!(locks);
+    answer["detail"] = json!(detail);
+    answer
+}
+
+/// Puts `pr`, whose branch is checked out in the worktree `repo`, on the
+/// landing train, its join commit naming whose it is (`of`) → `answer` with
+/// the outcome: `joined`, `conflict`, or `merged` when the base branch
+/// already holds the PR's head. No gate runs here: the train's own worker
+/// gates the train and lands it.
+///
+/// The push of the train's tip is the only lock: refused — another PR joined
+/// first — the join is made again on the new tip. Nothing on the train is
+/// rewritten, so a PR that conflicts with it resolves that once.
+pub fn join(
+    repo: &Repo,
+    config: &Config,
+    pr: &PullRequest,
+    of: &Of,
+    mut answer: Value,
+    now: u64,
+) -> Result<Value> {
     let line = train_refs(repo.layout(), &config.base_branch).line;
-    let mut answer = json!({"issue": issue, "pr": pr.number});
     let mut stop = |outcome: &str, more: Value| {
         answer["outcome"] = json!(outcome);
         for (key, value) in more.as_object().into_iter().flatten() {
@@ -195,15 +226,6 @@ pub fn land(repo: &Repo, config: &Config, gh: &GitHub, issue: u64, now: u64) -> 
         answer.clone()
     };
     let conflict = |files: Vec<String>, detail: String| json!({"files": files, "worktree": repo.dir, "detail": detail});
-    let locks = standing_locks(gh, config)?;
-    if keeps_off(&locks, issue) {
-        let detail = format!(
-            "a fleet lock stands ({}): no PR of another issue joins the landing train until it \
-             has ended — stop, and run this again when you are told to carry on",
-            named(&locks)
-        );
-        return Ok(stop("locked", json!({"locks": locks, "detail": detail})));
-    }
     let mut pushed = own_head(repo, &pr.head_branch)?;
 
     for _ in 0..PUSH_TRIES {
@@ -236,7 +258,7 @@ pub fn land(repo: &Repo, config: &Config, gh: &GitHub, issue: u64, now: u64) -> 
                     if let Some(on) = on_train(&joins, &current).first() {
                         return Ok(stop("joined", joined(&head, &on.commit, true)));
                     }
-                    let message = join_message(&pr.title, pr.number, issue);
+                    let message = join_message(&pr.title, pr.number, of);
                     commit = merged_onto(repo, &train.tip, &head, &message, now)?;
                     if commit.is_none() {
                         let files = merge_in(repo, &train.tip, "the landing train")?;
@@ -270,6 +292,40 @@ pub fn land(repo: &Repo, config: &Config, gh: &GitHub, issue: u64, now: u64) -> 
          changed — run this again",
         pr.number
     )
+}
+
+/// Joins `pr`, at its branch's head on the remote, onto the train as it
+/// stands, from no worktree: an inspection's PR taken off a train that was
+/// given up, whose inspection is gone and joins nothing again itself →
+/// whether it is on the train, or on the base branch, now; false where it
+/// conflicts with the train, and nothing was pushed.
+pub fn join_again(
+    repo: &Repo,
+    config: &Config,
+    pr: &PullRequest,
+    of: &Of,
+    now: u64,
+) -> Result<bool> {
+    let line = train_refs(repo.layout(), &config.base_branch).line;
+    let branch = format!("refs/heads/{}", pr.head_branch);
+    let head =
+        repo.fetched(&branch)?.ok_or_else(|| anyhow!("the remote has no branch {branch:?}"))?;
+    for _ in 0..PUSH_TRIES {
+        let train = Train::read(repo, config)?;
+        if repo.within(&head, &train.base)?
+            || !on_train(&train.joins(repo)?, &[pr.at_head(&head)]).is_empty()
+        {
+            return Ok(true);
+        }
+        let message = join_message(&pr.title, pr.number, of);
+        let Some(commit) = merged_onto(repo, &train.tip, &head, &message, now)? else {
+            return Ok(false);
+        };
+        if repo.try_git(&["push", "--quiet", REMOTE, &format!("{commit}:{line}")])?.ok {
+            return Ok(true);
+        }
+    }
+    bail!("the landing train moved {PUSH_TRIES} times while PR #{} was joining it", pr.number)
 }
 
 fn joined(head: &str, commit: &str, again: bool) -> Value {

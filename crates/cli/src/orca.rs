@@ -59,6 +59,8 @@ const INSPECTED_FILE: &str = "convoy-inspected.json";
 /// What the inspection in this checkout was started on: a hot worker, or the
 /// host.
 const INSPECTION_KIND_FILE: &str = "convoy-inspection-kind";
+/// The PRs the inspection in this checkout put on the landing train.
+const INSPECTION_PRS_FILE: &str = "convoy-inspection-prs";
 /// More worktrees than one machine runs workers in.
 const PS_LIMIT: &str = "1000";
 /// What orca says holds up a worker asking whether its folder is trusted.
@@ -688,6 +690,26 @@ impl Worktree {
     pub fn record_inspection_kind(&self, kind: Kind) -> Result<()> {
         let file = self.note(INSPECTION_KIND_FILE)?;
         std::fs::write(&file, kind.word())
+            .with_context(|| format!("cannot write {}", file.display()))
+    }
+
+    /// The PRs the inspection in this checkout put on the landing train,
+    /// oldest first.
+    pub fn inspection_prs(&self) -> Result<Vec<u64>> {
+        let kept = std::fs::read_to_string(self.note(INSPECTION_PRS_FILE)?).unwrap_or_default();
+        Ok(kept.split_whitespace().filter_map(|pr| pr.parse().ok()).collect())
+    }
+
+    /// Records that the inspection in this checkout put `pr` on the landing
+    /// train.
+    pub fn record_inspection_pr(&self, pr: u64) -> Result<()> {
+        let mut prs = self.inspection_prs()?;
+        if !prs.contains(&pr) {
+            prs.push(pr);
+        }
+        let file = self.note(INSPECTION_PRS_FILE)?;
+        let kept: Vec<String> = prs.iter().map(u64::to_string).collect();
+        std::fs::write(&file, kept.join("\n"))
             .with_context(|| format!("cannot write {}", file.display()))
     }
 
