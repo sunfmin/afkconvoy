@@ -228,6 +228,7 @@ impl World {
             .env("XDG_CACHE_HOME", self.cache())
             .env_remove("XDG_CONFIG_HOME")
             .env("HOME", self.home())
+            .env_remove("AFKCONVOY_ISSUE")
             .env_remove("ANTHROPIC_BASE_URL");
         cmd
     }

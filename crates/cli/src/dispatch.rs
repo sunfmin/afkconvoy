@@ -6,11 +6,13 @@ use afkconvoy_core::casting::{self, Cast};
 use afkconvoy_core::guard::WritesNothing;
 use afkconvoy_core::harness::Harness;
 use afkconvoy_core::launch::LaunchCommand;
+use afkconvoy_core::line::Line;
 use afkconvoy_core::plan::closing_pr;
 use afkconvoy_core::prompt::{
     StockFields, Switched, WorkerFields, stock_prompt, switched, worker_prompt,
 };
 use afkconvoy_core::recovery::{Recovery, Tier, Variant, superseded};
+use afkconvoy_core::role::ISSUE_ENV;
 use afkconvoy_core::stock;
 use afkconvoy_core::tick::Outcome;
 use afkconvoy_core::transition::escalated_at;
@@ -88,12 +90,15 @@ pub struct Agent {
 impl Agent {
     /// Starts a worker outside a role. Codex gets the fleet's user directory
     /// with the host user's skills and rules, and trusts this worktree on
-    /// the command line; no host configuration is changed.
+    /// the command line; no host configuration is changed. An issue's worker
+    /// carries its issue in the environment for every command it runs; the
+    /// train's carries none.
     pub fn start_in_worktree(
         &self,
         worktree: &Worktree,
         harness: Harness,
         command: &str,
+        issue: Option<u64>,
         now: u64,
     ) -> Result<String> {
         let command = match harness {
@@ -106,6 +111,17 @@ impl Agent {
                 )
             }
             _ => command.to_string(),
+        };
+        let command = match issue {
+            Some(issue) => Line::new()
+                .fixed("export ")
+                .fixed(ISSUE_ENV)
+                .fixed("=")
+                .number(issue)
+                .fixed(" && ")
+                .launch(&command)
+                .done(),
+            None => command,
         };
         self.start(worktree, harness, &command, now)
     }
@@ -448,7 +464,7 @@ fn start(
                             Some(model) => harness.with_model(launch, model),
                             None => launch.to_string(),
                         };
-                        agent.start_in_worktree(cut, harness, &launch, fleet.now)?
+                        agent.start_in_worktree(cut, harness, &launch, Some(number), fleet.now)?
                     }
                 });
             }

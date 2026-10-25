@@ -7,8 +7,9 @@
 //! `envs`: beside each of `calls`, the names of the session's environment it
 //! ran in (`fake::State`), and `from`: the directory each call was run from,
 //! which real orca takes the current worktree from where a call names none.
-//! A terminal's `command` is the worker's line behind what starts every one
-//! under `nice` with the worktree's own `TMPDIR`: one without it is refused,
+//! A terminal's `line` is the whole line it was started with; `command` is
+//! behind the issue export and what starts every one under `nice` with the
+//! worktree's own `TMPDIR`: one without it is refused,
 //! but for a question (`question::typed`), which is put to `$SHELL -lic` —
 //! the stand-in login shell — at once. Its terminal is kept apart, in
 //! `questions` [{handle, worktreePath, script, stream, open}]: it shows what
@@ -27,6 +28,7 @@ use std::path::Path;
 use afkconvoy::worker_tmp;
 use afkconvoy_core::line::niced;
 use afkconvoy_core::question;
+use afkconvoy_core::role::ISSUE_ENV;
 use fake::State;
 use serde_json::{Value, json};
 
@@ -219,9 +221,15 @@ fn terminal_create(st: &mut State) -> ! {
     }
     let niced = niced(&worker_tmp::of(Path::new(&path)).display().to_string(), "");
     let command = given.strip_prefix(&niced).unwrap_or_else(|| panic!("not niced: {given}"));
+    let issue_export = format!("export {ISSUE_ENV}=");
+    let command = command
+        .strip_prefix(&issue_export)
+        .and_then(|line| line.split_once(" && "))
+        .map_or(command, |(_, command)| command);
     let command = command.to_string();
     let handle = format!("term-{}", st.list("terminals").len() + 1);
-    st.list("terminals").push(json!({"handle": handle, "worktreePath": path, "command": command,
+    st.list("terminals")
+        .push(json!({"handle": handle, "worktreePath": path, "command": command, "line": given,
         "sent": [], "open": true}));
     done(st, json!({"terminal": {"handle": handle, "worktreePath": path}}))
 }
