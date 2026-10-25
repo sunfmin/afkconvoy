@@ -140,6 +140,19 @@ fn a_repo_no_fleet_ever_ran_in_has_no_finding_no_log_and_exits_zero() {
     // with no `run` to say, the command is the one a `run` would use now
     assert_eq!(answer["host"]["worker_commands"][0]["from"], "host_kit");
     assert_eq!(answer["host"]["exclusive"], json!({"running": null, "waiting": []}));
+    // An unbound repo calls for no harness by name: its one command is the
+    // host kit's first's, which holds no model here — and neither is found.
+    let commands = answer["host"]["worker_commands"].as_array().unwrap();
+    assert_eq!(commands.len(), 1, "{commands:?}");
+    assert_eq!(
+        (&commands[0]["harness"], &commands[0]["called_for_by"]),
+        (&json!(null), &json!([]))
+    );
+    assert_eq!(commands[0]["command"], "agent");
+    let kit = &answer["host"]["host_kit"];
+    assert_eq!(kit["harnesses"][0]["harness"], "claude-code");
+    assert_eq!(kit["harnesses"][0]["models"], json!([]));
+    assert_eq!(kit["stock_consult"]["model"], json!(null));
 }
 
 #[test]
