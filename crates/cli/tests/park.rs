@@ -268,7 +268,32 @@ fn blockers_closed_before_parking_continue_the_same_worktree_after_a_fleet_lock(
         assert_eq!(world.open_terminals().len(), 1);
         assert_eq!(world.orca()["terminals"].as_array().unwrap().len(), 2);
         assert_eq!(did(&tick(&world, 1570))[0], "judge 7 nothing");
+
+        // Only the answered comment is retired. The successor's own verdict
+        // still stands, even when it names the same already-closed blocker.
+        blocked_by(&world, "41");
+        assert_eq!(did(&tick(&world, 1660))[0], "judge 7 continued");
+        assert_eq!(did(&tick(&world, 1750))[0], "judge 7 nothing");
     }
+}
+
+#[test]
+fn a_failed_continuation_of_a_cleared_blocked_verdict_is_completed_at_the_next_tick() {
+    let world = fleet();
+    let dir = worktree(&world);
+    commit(&dir, "work.txt", "kept work\n");
+    world.issue(41, &[]);
+    world.close_issue(41);
+    blocked_by(&world, "41");
+    world.with_orca(|orca| orca["send_refused"] = json!(true));
+    let refused = world.afk(&["dispatch", "--issue", "7", "--instance", "alpha", "--now", "1090"]);
+    assert!(refused.error().contains("did not accept"));
+    assert_eq!(world.claims(), [(7, "alpha".to_string())]);
+    world.with_orca(|orca| orca["send_refused"] = json!(false));
+    assert_eq!(did(&tick(&world, 1180)), ["judge 7 continued", "heartbeat done"]);
+    assert_eq!(did(&tick(&world, 1270))[0], "judge 7 nothing");
+    assert_eq!(worktree(&world), dir);
+    assert_eq!(world.open_terminals().len(), 1);
 }
 
 #[test]

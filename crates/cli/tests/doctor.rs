@@ -74,6 +74,38 @@ fn a_blocked_claim_whose_blockers_closed_has_a_working_doctor_fix() {
 }
 
 #[test]
+fn doctor_routes_other_declared_verdicts_and_respects_a_fleet_lock() {
+    for (phase, locked, command) in [
+        ("blocked blocked_by=41", false, "park --issue 7"),
+        ("blocked blocked_by=41", true, "tick"),
+        ("already-satisfied", false, "tick"),
+        ("escalate", false, "tick"),
+    ] {
+        let world = World::new();
+        world.issue(7, &["ready-for-agent"]);
+        run(&world, &["--instance", "alpha", "--ticks", "1", "--now", "1000"]);
+        world.issue(41, &["ready-for-agent"]);
+        world.comment(7, &format!("<!--convoy:verdict phase={phase}-->\nwhy"));
+        if locked {
+            world.afk(&["lock", "--issue", "41"]).ok();
+        }
+        world.with_orca(|orca| {
+            let terminal = &mut orca["terminals"][0];
+            terminal["agent"] = json!({"state": "idle", "stateStartedAt": 1000000});
+            terminal["lastOutputAt"] = json!(1000000);
+        });
+        let answer = doctor(&world, "3000").json;
+        let stopped = found(&answer, "the worker of #7 has been stopped");
+        assert_eq!(stopped.len(), 1, "{answer}");
+        let fix = stopped[0]["fix"].as_str().unwrap();
+        assert_eq!(fix, format!("afkconvoy {command} --instance alpha"));
+        let args: Vec<&str> = fix.split_whitespace().skip(1).chain(["--now", "3000"]).collect();
+        let acted = world.afk(&args).ok();
+        assert!(acted["errors"].is_null() || acted["errors"] == json!([]), "{acted}");
+    }
+}
+
+#[test]
 fn a_config_with_no_gate_seconds_is_a_finding_and_one_that_sets_it_is_none() {
     let world = World::new();
     world.set_gate_config("gate_command: ./gate.sh");
