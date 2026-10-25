@@ -145,6 +145,7 @@ pub fn tick(
     let _ = crate::kit::refresh(repo, me.instance.as_str(), &me.host, me.now);
     let (mut fleet, mut open) = Fleet::read(repo, me.now)?;
     let (mut set, mut flows) = fleet.rebuild(&open, Some(&me.instance))?;
+    let _health_events = crate::health::reconcile(&mut fleet, me, agent, &open, &flows)?;
     // A roster entry that names no model the host kit holds is the team's to
     // correct: one issue is opened for it in the team's repo. One that cannot
     // be opened costs the tick nothing; the next tries again.
@@ -183,7 +184,7 @@ pub fn tick(
         };
         // Whatever a step raised, the rest of the tick is still owed.
         made.unwrap_or_else(|error| {
-            if error.is::<crate::harness_down::Held>() || error.is::<crate::paused::Held>() {
+            if error.is::<crate::paused::Held>() {
                 if let TickStep::Dispatch { issue } = step
                     && !fleet
                         .scan
@@ -276,12 +277,10 @@ fn carry_out(
         }
         _ => None,
     };
-    if let Some(issue) = issue
-        && crate::harness_down::any_down(&fleet.repo)?
-    {
+    if let Some(issue) = issue {
         let source = crate::orca::Source::of(&fleet.repo)?;
         if let Some(worktree) = crate::orca::Worktree::of_issue(&source, issue)?
-            && crate::harness_down::holds(&worktree, fleet.now)?
+            && crate::health::holding(&worktree)
         {
             return Ok(Outcome::Nothing);
         }

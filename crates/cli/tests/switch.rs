@@ -244,3 +244,88 @@ fn an_acknowledged_close_that_leaves_the_terminal_is_no_permission_for_a_second_
     assert_eq!(open_commands(&world, &dir), ["agent"]);
     assert_eq!(world.claims().len(), 1);
 }
+
+fn diagnosis(world: &World, class: &str, action: &str, scope: &str, evidence: &[&str]) {
+    std::fs::write(
+        world.root.join("diagnosis-answer"),
+        json!({
+            "status": "observed", "class": class, "scope": scope, "evidence": evidence,
+            "action": action, "missing": [], "retry_after": null
+        })
+        .to_string(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn screen_faults_are_diagnosed_before_automatic_continuation_and_keep_the_scene() {
+    let world = blocked();
+    let dir = worktree(&world, 7);
+    let head = git(&dir, &["rev-parse", "HEAD"]);
+    std::fs::write(dir.join("unfinished.txt"), "keep me").unwrap();
+    let before = std::fs::read(world.kit_path()).unwrap();
+    diagnosis(
+        &world,
+        "disabled",
+        "continue",
+        "account",
+        &["Your organization has disabled Claude Code access"],
+    );
+    tick(&world, 800);
+    assert_eq!(open_commands(&world, &dir), ["agent"]);
+    assert!(!world.root.join("diagnosis-asked").exists());
+    tick(&world, 1100);
+    let asked = std::fs::read_to_string(world.root.join("diagnosis-asked")).unwrap();
+    assert!(asked.contains("Your organization has disabled Claude Code access"));
+    assert!(asked.contains("orca terminal read --screen"));
+    assert!(asked.contains("--no-tools"));
+    assert_eq!(open_commands(&world, &dir), [afkconvoy_core::harness::Harness::Pi.stock()]);
+    assert_eq!(std::fs::read_to_string(dir.join("unfinished.txt")).unwrap(), "keep me");
+    assert_eq!(git(&dir, &["rev-parse", "HEAD"]), head);
+    assert_eq!(world.claims().len(), 1);
+    assert_eq!(std::fs::read(world.kit_path()).unwrap(), before);
+    let brief = brief(&dir);
+    assert!(brief.contains("#70 is open"));
+    assert!(brief.contains("unfinished.txt"));
+    assert!(brief.contains("Fault evidence and pending work"));
+    let plan = world.afk(&["plan", "--now", "1101"]).ok();
+    assert_eq!(plan["host_kit"]["worker_health"]["workers"][0]["action"], "continued");
+    assert_eq!(plan["host_kit"]["worker_health"]["workers"][0]["successor"], "pi");
+    tick(&world, 1101);
+    assert_eq!(std::fs::read_to_string(world.root.join("diagnosis-asked")).unwrap(), asked);
+}
+
+#[test]
+fn ambiguous_normal_work_and_invalid_diagnoses_never_authorize_a_switch() {
+    for (class, action) in [
+        ("long_command", "wait"),
+        ("waiting_human", "wait"),
+        ("waiting_dependency", "wait"),
+        ("complete", "complete"),
+        ("unknown", "unknown"),
+    ] {
+        let world = blocked();
+        let dir = worktree(&world, 7);
+        diagnosis(&world, class, action, "worker", &[]);
+        tick(&world, 800);
+        tick(&world, 1100);
+        assert_eq!(open_commands(&world, &dir), ["agent"], "{class}");
+        assert_eq!(world.claims().len(), 1);
+        assert!(world.root.join("diagnosis-asked").exists(), "{class}");
+    }
+    for answer in [
+        "not JSON",
+        r#"{"status":"fault","class":"quota","scope":"account","evidence":["invented"],"action":"continue","missing":[],"retry_after":null}"#,
+    ] {
+        let world = blocked();
+        let dir = worktree(&world, 7);
+        std::fs::write(world.root.join("diagnosis-answer"), answer).unwrap();
+        tick(&world, 800);
+        tick(&world, 1100);
+        let asked = std::fs::read_to_string(world.root.join("diagnosis-asked")).unwrap();
+        tick(&world, 1101);
+        assert_eq!(std::fs::read_to_string(world.root.join("diagnosis-asked")).unwrap(), asked);
+        assert_eq!(open_commands(&world, &dir), ["agent"]);
+        assert_eq!(world.claims().len(), 1);
+    }
+}

@@ -1637,7 +1637,6 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String]) -> Result<Exami
     };
     let mut found = findings(&seen);
     found.extend(crate::tracker::findings(repo));
-    found.extend(crate::harness_down::findings(repo, run.instance.as_deref())?);
     found.extend(crate::paused::findings(now));
     found.extend(host_runner::findings());
     found.sort_by_key(|finding| finding.severity);

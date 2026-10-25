@@ -53,6 +53,7 @@ pub mod gh;
 pub mod git;
 pub mod guard;
 pub mod harness_down;
+pub mod health;
 pub mod host_evidence;
 pub mod host_panel;
 pub mod host_runner;

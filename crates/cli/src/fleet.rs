@@ -9,6 +9,7 @@
 use afkconvoy_core::casting::{self, Cast, ForCaster, HELD_FOR_CASTER, Standing, Why, choice};
 use afkconvoy_core::claims::{Claim, InstanceId};
 use afkconvoy_core::config::Config;
+use afkconvoy_core::harness::Harness;
 use afkconvoy_core::plan::{Excluded, Issue, Observed, WorkingSet, assemble, closing_pr};
 use afkconvoy_core::position::Position;
 use afkconvoy_core::stock;
@@ -34,6 +35,8 @@ use crate::train::Train;
 
 pub struct Fleet {
     pub repo: Repo,
+    /// Candidates excluded for this continuation only, never a preference.
+    pub avoiding: Vec<Harness>,
     /// The repo's config, with the concurrency its checkout says on this
     /// host laid over it (`concurrency::config_of`).
     pub config: Config,
@@ -96,6 +99,7 @@ impl Fleet {
         let scan = Scan::among(repo.layout(), gh.tracker.clone(), listing.records.clone());
         Ok(Fleet {
             repo,
+            avoiding: vec![],
             config,
             gh,
             scan,
@@ -130,7 +134,8 @@ impl Fleet {
     /// so does a range that holds nothing (`NothingSafe`): no worker of the
     /// role runs without its limits.
     pub fn cast_in(&self, role: &Role, labels: &[String]) -> Result<Cast> {
-        let (kit, paused) = crate::kit::running()?;
+        let (mut kit, paused) = crate::kit::running()?;
+        kit.harnesses.retain(|held| !self.avoiding.contains(&held.harness));
         let kit = kit.range();
         let range = casting::range(role, &kit);
         if range.is_empty() && !paused.is_empty() {
@@ -145,7 +150,8 @@ impl Fleet {
 
     /// The stock consult follows the same kit order as every other worker.
     pub fn stock_consult(&self) -> Result<Cast> {
-        let (kit, paused) = crate::kit::running()?;
+        let (mut kit, paused) = crate::kit::running()?;
+        kit.harnesses.retain(|held| !self.avoiding.contains(&held.harness));
         if kit.harnesses.is_empty() && !paused.is_empty() {
             return Err(crate::paused::Held::every(&paused, self.now).into());
         }
@@ -164,7 +170,8 @@ impl Fleet {
 
     /// Kit order chooses the harness. Labels can only choose a model within it.
     pub fn cast(&self, labels: &[String], recast: bool) -> Result<Result<Cast, String>> {
-        let (kit, paused) = crate::kit::running()?;
+        let (mut kit, paused) = crate::kit::running()?;
+        kit.harnesses.retain(|held| !self.avoiding.contains(&held.harness));
         let range = kit.range();
         let labels = if recast { casting::without_casting(labels) } else { labels.to_vec() };
         if range.is_empty() && !paused.is_empty() {
@@ -179,7 +186,8 @@ impl Fleet {
     /// (`casting::to_recast`). Its comments are read only where its casting
     /// names one of those.
     pub fn recast(&self, number: u64, labels: &[String]) -> Result<bool> {
-        let (kit, paused) = crate::kit::running()?;
+        let (mut kit, paused) = crate::kit::running()?;
+        kit.harnesses.retain(|held| !self.avoiding.contains(&held.harness));
         let kit = kit.range();
         if casting::paused_of(labels, &paused).is_none() && !casting::names_nothing(labels, &kit) {
             return Ok(false);
@@ -560,7 +568,7 @@ impl Fleet {
     /// created — one from an earlier claim is not its own — and not answered
     /// by a worker started on the issue again (`stopped::standing_verdict`).
     /// What cannot be read says no: the claim then takes a slot.
-    fn declared_since(&self, open: &Open, claim: &Claim) -> bool {
+    pub(crate) fn declared_since(&self, open: &Open, claim: &Claim) -> bool {
         let comments = open.issues.comments(claim.number);
         let Some(verdict) = latest_verdict(comments.iter().map(|c| c.body.as_str())) else {
             return false;

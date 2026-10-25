@@ -94,7 +94,7 @@ pub struct Named {
     pub model: Option<String>,
 }
 
-fn harness<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Harness, D::Error> {
+pub(crate) fn harness<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Harness, D::Error> {
     let key = String::deserialize(deserializer)?;
     Harness::read(&key).ok_or_else(|| serde::de::Error::custom(Harness::unknown(&key)))
 }
@@ -231,7 +231,7 @@ fn load_at(file: &Path) -> Result<Kit> {
 /// harnesses paused on it (`Kit::without`), with them.
 pub fn running() -> Result<(Kit, Vec<afkconvoy_core::casting::Paused>)> {
     let paused = crate::paused::read();
-    Ok((load()?.without(&paused), paused))
+    Ok((crate::health::available(load()?.without(&paused))?, paused))
 }
 
 /// The harness and model the stock consult runs, as this host's host kit
@@ -268,7 +268,7 @@ pub fn show(now: u64) -> Value {
                     "named": running.stock_consult.is_some(),
                     "unmatched": running.stock_unmatched(),
                 })),
-                "paused": paused_said,
+                "paused": paused_said, "worker_health": crate::health::show(),
             })
         }
         Err(error) => json!({"path": file, "error": format!("{error:#}"), "paused": paused_said}),
@@ -316,7 +316,14 @@ pub fn prefer(harness: Harness) -> Result<Value> {
     if at != 0 {
         let held = kit.harnesses.remove(at);
         kit.harnesses.insert(0, held);
-        store_unlocked(&file, &kit, written(&file).unwrap_or_else(crate::clock))?;
+        let mut raw: Value = serde_json::from_slice(&std::fs::read(&file)?)?;
+        let entries = raw["harnesses"].as_array_mut().context("kit harnesses must be an array")?;
+        let held = entries.remove(at);
+        entries.insert(0, held);
+        let temporary = file.with_extension(format!("{}.tmp", crate::unique()));
+        std::fs::write(&temporary, serde_json::to_vec_pretty(&raw)?)?;
+        stamp(&temporary, written(&file).unwrap_or_else(crate::clock))?;
+        std::fs::rename(&temporary, &file)?;
     }
     Ok(json!({"harness": harness, "path": file, "order_before": before,
         "order": kit.harnesses.iter().map(|held| held.harness).collect::<Vec<_>>(), "changed": at != 0}))

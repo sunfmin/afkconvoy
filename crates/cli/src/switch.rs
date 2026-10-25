@@ -238,6 +238,10 @@ pub(crate) fn switch_issue(
     let worktree = Worktree::of_issue(&Source::of(&fleet.repo)?, issue)?;
     let continued = continuing(worktree.as_ref(), before);
     let from = continued.from;
+    crate::dispatch::continuation_harness(fleet, agent, issue)?;
+    if let Some(worktree) = &worktree {
+        worktree.stop_for_continuation()?;
+    }
     let started = dispatch_continuing(fleet, me, agent, issue, StartFrom::Auto, Some(&continued))?;
     if started["started"] != true {
         bail!("issue #{issue}: no worker was started: {started}");

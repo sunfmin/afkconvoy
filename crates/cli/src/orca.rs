@@ -553,6 +553,21 @@ impl Worktree {
         Ok(worker_state(terminals, seconds(&row["lastOutputAt"]), lead(&agents), now))
     }
 
+    /// Actual structured runtime observations for diagnosis. A transport
+    /// failure is an error, never evidence that an agent has stopped.
+    pub fn health_report(&self) -> Result<Value> {
+        let ps = orca(&["worktree", "ps", "--limit", PS_LIMIT])?;
+        if ps["truncated"] == true {
+            bail!("cannot diagnose from truncated worktree ps");
+        }
+        let rows = ps["worktrees"].as_array().context("orca worktree ps returned no rows")?;
+        Ok(rows
+            .iter()
+            .find(|row| row["path"].as_str().is_some_and(|p| same_dir(Path::new(p), &self.path)))
+            .cloned()
+            .unwrap_or(Value::Null))
+    }
+
     /// The terminal a worker here would be in: the one that wrote last.
     pub fn terminal(&self) -> Result<Option<String>> {
         let listed = orca(&["terminal", "list", "--worktree", &self.selector()])?;
@@ -625,6 +640,37 @@ impl Worktree {
         }
         orca(&["terminal", "close", "--worktree", &self.selector(), "--all"])?;
         Ok(())
+    }
+
+    /// End the old agent before a continuation can rewrite its brief or
+    /// start another writer. Include descendants that escaped the terminal.
+    pub(crate) fn stop_for_continuation(&self) -> Result<()> {
+        let before = crate::hot::listed_checked()?;
+        let pids: Vec<_> = crate::hot::tree(&before, &self.path).iter().map(|p| p.pid).collect();
+        self.close_terminals()?;
+        let until = Instant::now() + Duration::from_secs(5);
+        loop {
+            let processes = crate::hot::listed_checked()?;
+            let writers = crate::hot::tree(&processes, &self.path);
+            let old_alive = processes.iter().any(|p| pids.contains(&p.pid));
+            let report = self.health_report()?;
+            let agents = report["agents"].as_array();
+            let agent_alive = agents.is_some_and(|agents| {
+                agents.iter().any(|a| {
+                    !matches!(a["state"].as_str(), Some("exited" | "stopped" | "closed" | "gone"))
+                })
+            });
+            if self.terminal()?.is_none() && writers.is_empty() && !old_alive && !agent_alive {
+                return Ok(());
+            }
+            if Instant::now() >= until {
+                bail!(
+                    "old worker termination is unconfirmed in {}; no replacement was started",
+                    self.path.display()
+                );
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
     }
 
     /// Clears the worktree and keeps it: its terminals closed, what it held

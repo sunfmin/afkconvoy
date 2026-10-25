@@ -134,6 +134,20 @@ pub(crate) struct Continuing {
     pub said: Vec<String>,
 }
 
+/// Validate the successor before ending the old worker.
+pub(crate) fn continuation_harness(fleet: &Fleet, agent: &Agent, number: u64) -> Result<Harness> {
+    let issue = fleet.gh.issue(number)?;
+    let harness = match &fleet.config.bound {
+        Some(bound) => Staged::enter(fleet, bound, number, &issue.labels)?.harness(),
+        None if issue.labels.contains(&fleet.config.escalate_label) => {
+            fleet.stock_consult()?.harness
+        }
+        None => fleet.cast(&issue.labels, false)?.map_err(|e| anyhow!(e))?.harness,
+    };
+    crate::role::startable(&agent.launches, harness, "worker continuation")?;
+    Ok(harness)
+}
+
 /// `dispatch`, but for an issue found gone on the way, which it fails on.
 fn start(
     fleet: &mut Fleet,
@@ -194,9 +208,6 @@ fn start(
         return Err(crate::paused::Held::of(&pause, fleet.now).into());
     }
     let launch = agent.command(harness)?;
-    if crate::harness_down::down(&fleet.repo, harness, fleet.now)? {
-        return Err(crate::harness_down::Held.into());
-    }
     if let Some(staged) = staged.as_ref().filter(|_| held) {
         staged.refuse_spent(fleet.scan.claim_of(number))?;
     }
@@ -305,6 +316,12 @@ fn start(
                 });
             }
             DispatchStep::AwaitReady => {
+                if let Some(cut) = &worktree {
+                    std::fs::write(
+                        Repo::new(cut.path.clone()).note("convoy-worker-model")?,
+                        model.as_deref().unwrap_or(""),
+                    )?;
+                }
                 let (cut, handle) =
                     worktree.as_ref().zip(terminal.as_ref()).ok_or_else(undecided)?;
                 cut.await_ready(handle, agent.ready_timeout)?;
@@ -395,6 +412,15 @@ pub(crate) fn continue_brief(
     let mut text = std::fs::read_to_string(&brief)
         .with_context(|| format!("cannot read the worker's brief {}", brief.display()))?;
     text.push_str(&added);
+    text.push_str(&format!(
+        "\nUncommitted work to preserve:\n```\n{}\n```\n",
+        Repo::new(worktree.path.clone()).git(&["status", "--short"])?
+    ));
+    if let Ok(evidence) = std::fs::read_to_string(
+        Repo::new(worktree.path.clone()).note("convoy-recovery-evidence.json")?,
+    ) {
+        text.push_str(&format!("\n## Fault evidence and pending work\n{evidence}\nContinue from this scene; preserve existing work and complete the original task.\n"));
+    }
     worktree.write_brief(&text)?;
     Ok(())
 }

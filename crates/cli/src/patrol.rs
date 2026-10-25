@@ -317,6 +317,7 @@ pub(crate) fn switch(
     let launch = agent.command(harness)?;
     let line = in_role(fleet, &kept, name, &cast, launch.as_str(), &checkout)?;
     let continuing = said(&checkout);
+    checkout.stop_for_continuation()?;
     crate::dispatch::continue_brief(fleet, &checkout, None, &continuing)?;
     let terminal = agent.start(&checkout, harness, &line, me.now)?;
     checkout.await_ready(&terminal, agent.ready_timeout)?;
