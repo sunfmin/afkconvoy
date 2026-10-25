@@ -17,3 +17,7 @@ This reverses where the design started — a human's label as the approval of ev
 - A human's ruling on an escalated issue may become a precedent: a worker proposes it as a change to the team's precedents, and a human merging that change is what accepts it. Open proposals are held under a limit.
 - Trunk broken is the one fault every issue shares, and with no human watching it would escalate them one by one. A fleet lock stops everything but the fix, and is itself the issue that carries the fix.
 - A human who is needed is not told (ADR-0008); the escalate label and the `stage:` label are what there is to look at.
+
+## Amended: a red base branch raises the lock in an unbound repo too
+
+A worker in an unbound repo, or its inspection, that proves the base branch red the same way gated alone in a clean checkout finds the open issue for the fix or opens one, makes it dispatchable with the ready label, and raises the fleet lock on it with `afkconvoy lock`. No role is needed. The train worker does the same in either repo; in a bound repo it takes the issue in to a workflow first. The issue is the tracker's, with the repo label where needed (ADR-0027). A red landing train whose base branch is green raises no lock. The worker parks its own issue on the fix's; the train worker has none to park and stops until told to carry on.
