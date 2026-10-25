@@ -2,7 +2,7 @@
 
 ### Issue tracker
 
-Issues and specs live as GitHub issues in `sunfmin/afkconvoy` (via the `gh` CLI). See `docs/agents/issue-tracker.md`.
+Issues and specs live as GitHub issues in this checkout's tracker, which its host names (via the `gh` CLI). See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 
