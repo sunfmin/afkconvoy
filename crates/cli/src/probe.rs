@@ -4,6 +4,10 @@
 //! A probe that passed is noted on the host that made it (`Passed`). `run`
 //! probes at every start; `tick` and `plan` trust a note that still stands
 //! (`standing`) and probe only without one.
+//!
+//! A check that found the checkout's tracker private is noted beside it
+//! (`Private`): a running fleet instance asks again once it no longer stands
+//! (`public_tracker`), and a probe stands only while it does.
 
 use std::path::Path;
 
@@ -14,9 +18,11 @@ use afkconvoy_core::layout::{
     no_gate_records, probe_stands,
 };
 use afkconvoy_core::tools::Tool;
+use afkconvoy_core::tracker::{Tracker, is_public, public};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+use crate::checkout_list::{named_repo, tracker_of};
 use crate::config;
 use crate::gh::GitHub;
 use crate::git::{REMOTE, Repo};
@@ -30,6 +36,80 @@ const PROBE_RECORD: &str = "convoy:probe";
 
 /// The note of the last startup probe that passed (`Repo::note`).
 const PASSED_NOTE: &str = "convoy-probe";
+
+/// The note of the last check that found the checkout's tracker private
+/// (`Private`).
+const TRACKER_NOTE: &str = "convoy-tracker";
+
+/// A check that found the checkout's tracker private, as the host that made
+/// it notes it: when, and of which tracker — the repo it names, or none for
+/// the checkout's own (`noted_as`). It stands for an hour, as a startup probe
+/// does (`probe_stands`), and of that tracker alone.
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct Private {
+    /// When it found it private, in epoch seconds.
+    at: u64,
+    tracker: Option<String>,
+}
+
+/// The tracker `tracker` as a note of it names it.
+fn noted_as(tracker: &Tracker) -> Option<String> {
+    tracker.named().map(|named| named.as_str().to_string())
+}
+
+/// Whether a check that found the tracker `tracker` of the checkout `repo`
+/// private stands at `now` on this host (`Private`).
+fn found_private(repo: &Repo, tracker: &Tracker, now: u64) -> bool {
+    let read = || -> Result<Private> {
+        Ok(serde_json::from_str(&std::fs::read_to_string(repo.note(TRACKER_NOTE)?)?)?)
+    };
+    read().is_ok_and(|found| found.tracker == noted_as(tracker) && probe_stands(found.at, now))
+}
+
+/// Why the fleet of the checkout `repo` is refused, where GitHub says its
+/// tracker is public (`tracker::public`); `None` where it is not. A start's
+/// probe asks GitHub every time; one `trusting` — a running fleet instance's,
+/// before each tick — asks nothing while a check that found this same
+/// tracker private stands, so a tracker made public is found within the
+/// hour, and one said anew at once. One found private is noted; one found
+/// public is not, and is asked about again at every check, until it is
+/// private again or another is said.
+pub fn public_tracker(repo: &Repo, now: u64, trusting: bool) -> Result<Option<String>> {
+    let gh = GitHub::of(repo)?;
+    if trusting && found_private(repo, &gh.tracker, now) {
+        return Ok(None);
+    }
+    let note = repo.note(TRACKER_NOTE)?;
+    // Gone before GitHub is asked: no check stands but one that found it private.
+    let _ = std::fs::remove_file(&note);
+    if let Some(why) = refused_public(repo, &gh)? {
+        return Ok(Some(why));
+    }
+    let found = Private { at: now, tracker: noted_as(&gh.tracker) };
+    std::fs::write(&note, serde_json::to_string(&found)?)
+        .with_context(|| format!("cannot write {}", note.display()))?;
+    Ok(None)
+}
+
+/// Why the fleet of the checkout `repo` is refused, where GitHub says the
+/// tracker `gh` names is public (`tracker::public`), naming it and the line
+/// that says a private one; `None` where it is not.
+pub fn refused_public(repo: &Repo, gh: &GitHub) -> Result<Option<String>> {
+    if !is_public(&gh.visibility()?) {
+        return Ok(None);
+    }
+    Ok(Some(public(&named(repo, &gh.tracker), &repo.dir.display().to_string())))
+}
+
+/// The tracker `tracker` of the checkout `repo`, as a human is told it: the
+/// repo it names — of the checkout's own, as its remote names it, where it
+/// does.
+pub fn named(repo: &Repo, tracker: &Tracker) -> String {
+    match tracker.named() {
+        Some(named) => named.to_string(),
+        None => named_repo(repo).map_or_else(|_| "its own repo".to_string(), |own| own.to_string()),
+    }
+}
 
 /// A startup probe that passed, as the host that made it notes it: when, what
 /// it was asked about, and what it warned of. A probe asked about anything
@@ -77,20 +157,25 @@ impl Asked {
 /// be made. One stands for an hour (`probe_stands`) on the host that made it,
 /// while the config's base branch and team, the remote, and the noted ref
 /// layout are what it was asked about — and, for a command that starts
-/// workers, `launches` are the worker launch commands it checked. Says on stderr
+/// workers, `launches` are the worker launch commands it checked — and while
+/// a check that found the tracker the checkout says now private stands
+/// (`Private`). Says on stderr
 /// that no probe was made. Whatever keeps the note from being read or
 /// compared is the probe's to report: none stands.
 pub fn standing(repo: &Repo, now: u64, launches: &Launches) -> Option<Vec<String>> {
-    let read = || -> Result<(Passed, Asked)> {
+    let read = || -> Result<(Passed, Asked, Tracker)> {
         let config = config::load(&repo.dir.join(config::FILE))?;
         let passed: Passed =
             serde_json::from_str(&std::fs::read_to_string(repo.note(PASSED_NOTE)?)?)?;
         // A command that starts no worker asks nothing of the launch commands.
         let launch = if launches.starts() { launches.key()? } else { passed.asked.launch };
-        Ok((passed, Asked::now(repo, &config, launch)?))
+        Ok((passed, Asked::now(repo, &config, launch)?, tracker_of(repo)?))
     };
-    let (passed, asked) = read().ok()?;
-    if !probe_stands(passed.at, now) || passed.asked != asked {
+    let (passed, asked, tracker) = read().ok()?;
+    if !probe_stands(passed.at, now)
+        || passed.asked != asked
+        || !found_private(repo, &tracker, now)
+    {
         return None;
     }
     eprintln!(
@@ -128,7 +213,8 @@ pub fn without_git(dir: &Path) -> Option<anyhow::Error> {
 /// every harness the fleet could be asked for can be started, its worker
 /// launch command taking what starts a worker in its role
 /// (`role::probe`); the base branch exists (none is ever created); no rule of its
-/// protection refuses the train's push; where the remote takes the fleet's
+/// protection refuses the train's push; the tracker is not public
+/// (`public_tracker`), before anything is pushed; where the remote takes the fleet's
 /// refs — noted for every later command (`Repo::layout`); whether it takes
 /// gate records, and the ones past their day are swept. A probe that passed is
 /// noted for `standing`.
@@ -150,6 +236,9 @@ pub fn startup(repo: &Repo, now: u64, launches: &Launches) -> Result<Vec<String>
         BaseCheck::Clear(_) => {}
         BaseCheck::Warn(warning) => warnings.push(warning),
         BaseCheck::Refuse(why) => return Err(See::Troubleshooting.refusal(why)),
+    }
+    if let Some(why) = public_tracker(repo, now, false)? {
+        return Err(See::Troubleshooting.refusal(why));
     }
 
     // The probe's own name: two starts probing at once never meet on one ref.

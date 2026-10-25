@@ -9,16 +9,19 @@
 //! it (`checkout_list::Asked`).
 
 use afkconvoy_core::config::{Config, RepoName};
-use afkconvoy_core::tracker::{names_a_ref, repo_label};
+use afkconvoy_core::tracker::{names_a_ref, repo_label, says_private};
 use anyhow::{Result, bail};
 use serde_json::{Value, json};
 
 use crate::checkout_list::{List, asked, named_repo, said_tracker};
 use crate::claims::Scan;
+use crate::doctor::{Finding, Kind, finding};
 use crate::flows::{READY_LABEL_SAYS, create_missing};
 use crate::gh::{GitHub, Tracker};
 use crate::git::Repo;
 use crate::host_settings::To;
+use crate::probe::refused_public;
+use crate::topic::See;
 use crate::train::Train;
 
 /// What the repo label says of itself in the tracker.
@@ -77,7 +80,9 @@ pub fn ask(list: &List, repo: &Repo, to: To<RepoName>, host: &str) -> Result<Val
 /// What the checkout `repo` says of its tracker once it says `to` → the
 /// tracker it then names, none where that is the checkout's own repo, and
 /// what that changes, as {from, to}, each the repo named or null for the
-/// checkout's own; null where it changes nothing. A tracker another repo
+/// checkout's own; null where it changes nothing. A tracker GitHub says is
+/// public is refused before anything is made in it, whether it changes
+/// or not, the checkout's own among them (`probe::refused_public`). A tracker another repo
 /// than the checkout's is given the labels its fleet's issues carry there
 /// where it lacks them — the repo label, and the ready, escalate and lock
 /// labels of the repo's config. A change is refused while the checkout's
@@ -106,8 +111,18 @@ fn checked(
     };
     let was = said_tracker(list, repo)?;
     let config = crate::concurrency::config_of(repo)?;
-    if let Some(named) = &tracker {
-        labelled(repo, named, &config)?;
+    let gh = GitHub {
+        dir: repo.dir.clone(),
+        tracker: match &tracker {
+            Some(named) => Tracker::Other { tracker: named.clone(), repo: named_repo(repo)? },
+            None => Tracker::Own,
+        },
+    };
+    if let Some(why) = refused_public(repo, &gh)? {
+        return Err(See::Troubleshooting.refusal(why));
+    }
+    if tracker.is_some() {
+        labelled(&gh, repo, &config)?;
     }
     if said(&was) == said(&tracker) {
         return Ok((tracker, Value::Null));
@@ -125,17 +140,34 @@ fn checked(
     Ok((tracker.clone(), json!({"from": was, "to": tracker})))
 }
 
-/// Makes in the tracker `named` each label the fleet of the checkout `repo`
-/// puts on its issues there that it lacks.
-fn labelled(repo: &Repo, named: &RepoName, config: &Config) -> Result<()> {
-    let tracker = Tracker::Other { tracker: named.clone(), repo: named_repo(repo)? };
-    let gh = GitHub { dir: repo.dir.clone(), tracker };
+/// Makes in the tracker `gh` names, another repo than the checkout `repo`'s,
+/// each label the checkout's fleet puts on its issues there that it lacks.
+fn labelled(gh: &GitHub, repo: &Repo, config: &Config) -> Result<()> {
     let label = repo_label(&named_repo(repo)?);
-    create_missing(&gh, &[label], REPO_LABEL_SAYS)?;
-    create_missing(&gh, std::slice::from_ref(&config.ready_label), READY_LABEL_SAYS)?;
-    create_missing(&gh, std::slice::from_ref(&config.escalate_label), ESCALATE_LABEL_SAYS)?;
-    create_missing(&gh, std::slice::from_ref(&config.lock_label), LOCK_LABEL_SAYS)?;
+    create_missing(gh, &[label], REPO_LABEL_SAYS)?;
+    create_missing(gh, std::slice::from_ref(&config.ready_label), READY_LABEL_SAYS)?;
+    create_missing(gh, std::slice::from_ref(&config.escalate_label), ESCALATE_LABEL_SAYS)?;
+    create_missing(gh, std::slice::from_ref(&config.lock_label), LOCK_LABEL_SAYS)?;
     Ok(())
+}
+
+/// What `doctor` finds of the tracker of the checkout `repo`: that GitHub
+/// says it is public, and its fleet works nothing — none where GitHub cannot
+/// be asked, which `doctor` finds otherwise.
+pub fn findings(repo: &Repo) -> Vec<Finding> {
+    let Ok(gh) = GitHub::of(repo) else { return vec![] };
+    let Ok(Some(why)) = refused_public(repo, &gh) else { return vec![] };
+    let checkout = repo.dir.display().to_string();
+    let named = crate::probe::named(repo, &gh.tracker);
+    vec![finding(
+        Kind::PublicTracker,
+        format!(
+            "this checkout's tracker, {named}, is public: its fleet instance works nothing, as \
+             anyone can comment on its issues"
+        ),
+        why,
+        says_private(&checkout),
+    )]
 }
 
 /// What the fleet of the checkout `repo` holds of the tracker it says now:
