@@ -6,6 +6,7 @@ use crate::precedent::entry_form;
 use crate::record;
 use crate::recovery::Variant;
 use crate::stage_record::{Author, StageRecord, Stated};
+use crate::tracker::Tracker;
 use crate::verdict;
 use crate::waiting::ANSWERING;
 
@@ -14,6 +15,10 @@ use crate::waiting::ANSWERING;
 #[derive(Debug, Clone)]
 pub struct WorkerFields<'a> {
     pub number: u64,
+    /// The fleet's tracker, which holds the issue: every issue command of
+    /// the brief names it, and the PR's closing line names the issue as the
+    /// repo names one of its (`Tracker::issue`).
+    pub tracker: &'a Tracker,
     pub title: &'a str,
     pub branch: &'a str,
     pub worktree: &'a str,
@@ -40,14 +45,14 @@ You own exactly ONE GitHub issue and work in its worktree, on its branch, which 
 earlier progress.";
 
 const STEP1_FRESH: &str = "\
-1. **Read the ground truth first.** `gh issue view {n} --comments`, then this repo's `GLOSSARY.md`,
+1. **Read the ground truth first.** `gh issue view {n}<tracker> --comments`, then this repo's `GLOSSARY.md`,
    the relevant `docs/adr/*`, and `docs/agents/*`. Use the glossary's exact vocabulary.";
 
 const STEP1_CONTINUE: &str = "\
 1. **Inspect the existing progress first.** See what the previous worker left: `git status`,
    `git diff origin/{base_branch}...HEAD`, `git log origin/{base_branch}..HEAD`, and any notes. It is
    partial work toward the same acceptance criteria — do not discard it, but verify it against them.
-   **Then read the ground truth:** `gh issue view {n} --comments`, then this repo's `GLOSSARY.md`,
+   **Then read the ground truth:** `gh issue view {n}<tracker> --comments`, then this repo's `GLOSSARY.md`,
    the relevant `docs/adr/*`, and `docs/agents/*`. Use the glossary's exact vocabulary. Continue from
    the first step that is not yet done.";
 
@@ -107,10 +112,10 @@ Once you have shown it, the failure is a defect outside your work, which you dis
 writes its issue: you do.
 
 1. **Look before opening.** Other workers hit the same red `{base_branch}`: search the open issues
-   for one that already records this defect (`gh issue list --state open --search \"<words of the
+   for one that already records this defect (`gh issue list<tracker><labelled> --state open --search \"<words of the
    failure>\"`). If one does, comment your evidence there — another occurrence, and when — and
    open none.
-2. **Otherwise open one** that a fresh worker can pick up (`gh issue create`): the symptom; how to
+2. **Otherwise open one** that a fresh worker can pick up (`gh issue create<tracker>`): the symptom; how to
    reproduce it on `{base_branch}`; what the logs show; what is guessed and what is verified; and
    acceptance criteria that require the cause to be found with evidence, and a test that reproduces
    it. <open> Name no blocker unless it has a real one.
@@ -125,7 +130,8 @@ const PROOF_MERGED: &str =
 
 /// How an issue a worker opens for a defect is put before the fleet: with the
 /// ready label, in an unbound repo, by every worker that opens one.
-const DEFECT_READY: &str = "Put the label `{ready_label}` on it (`--label {ready_label}`), so
+const DEFECT_READY: &str =
+    "Put the label `{ready_label}` on it (`--label {ready_label}`)<repo_label>, so
    the fleet works it like any other issue.";
 
 /// How a worker of an unbound repo parks its issue on the defect's.
@@ -153,7 +159,7 @@ You are an afkconvoy worker taking over an issue whose work is finished: PR #{pr
 is not on the landing train yet. Your ONLY job is to get that PR on the train. Write no feature and
 open no other PR. Nobody reads this terminal: never wait for an answer.
 
-**Your issue:** #{n} — {title}
+**Your issue:** {issue} — {title}
 **Your PR:** #{pr}, from the branch `{branch}` (already checked out; the base is `{base_branch}`).
 **Your worktree:** `{worktree_path}` — work only here.
 <landing>
@@ -182,13 +188,13 @@ kept when an earlier worker's claim was released — the issue was escalated or 
 on the landing train. The PR already exists: your job is to finish it and get it on the train. Open
 no other PR. Nobody reads this terminal: never wait for an answer.
 
-**Your issue:** #{n} — {title}
+**Your issue:** {issue} — {title}
 **Your PR:** #{pr}, from the branch `{branch}` (already checked out; the base is `{base_branch}`).
 **Your worktree:** `{worktree_path}` — work only here.
 
 ## Steps
 
-1. **Read why it stopped.** `gh issue view {n} --comments`: its latest comments say why the issue
+1. **Read why it stopped.** `gh issue view {n}<tracker> --comments`: its latest comments say why the issue
    left the fleet and, where a human answered, what is to be done on this PR — do that, on this
    branch. Then run `git status`: a merge left in progress is a conflict the worker before you was
    resolving — resolve it and commit the merge.
@@ -201,7 +207,7 @@ no other PR. Nobody reads this terminal: never wait for an answer.
 <defect>
 ## If you cannot finish it
 
-After a genuine effort, post a comment on the issue instead (`gh issue comment {n} --body \"...\"`),
+After a genuine effort, post a comment on the issue instead (`gh issue comment {n}<tracker> --body \"...\"`),
 wake the fleet (below) and stop. Its **first line** must be exactly this marker, with `phase=escalate`,
 on one line, followed by where you are stuck, so that a human can act on it in one reply — or, for
 a defect outside your issue (above), with `phase=blocked` and its issue in `blocked_by=`:
@@ -222,7 +228,7 @@ const WORKER: &str = "\
 <opening>
 Nobody reads this terminal: never wait for an answer.
 
-**Your issue:** #{n} — {title}
+**Your issue:** {issue} — {title}
 **Your branch:** `{branch}` (already checked out; the base is `{base_branch}`).
 **Your worktree:** `{worktree_path}` — work only here.
 
@@ -239,11 +245,11 @@ git add -A && git commit -m \"<what this step did>\" && git push origin HEAD
 <step1>
 2. **Implement** the issue's acceptance criteria, matching the surrounding code's conventions.
 <gate_step>
-4. **Open a PR** against `{base_branch}` whose body contains the line `Closes #{n}`:
+4. **Open a PR** against `{base_branch}` whose body contains the line `Closes {issue}`:
    ```bash
    git push origin HEAD && gh pr create --base {base_branch} --head {branch} --title \"<title>\" --body \"<what changed>
 
-   Closes #{n}\"
+   Closes {issue}\"
    ```
    Do not merge it.
 <join_step>
@@ -251,7 +257,7 @@ git add -A && git commit -m \"<what this step did>\" && git push origin HEAD
 <defect>
 ## If you will not open a PR
 
-Post a comment on the issue instead (`gh issue comment {n} --body \"...\"`), wake the fleet (below)
+Post a comment on the issue instead (`gh issue comment {n}<tracker> --body \"...\"`), wake the fleet (below)
 and stop. Its **first line** must be exactly this marker, on one line, followed by a human-readable
 body:
 ```
@@ -495,7 +501,7 @@ You are an afkconvoy worker, started as the **stock consult**: the fleet handed 
 human, and you stand where that human stands. You are asked first, and may answer as they would.
 Nobody reads this terminal: never wait for an answer.
 
-- **Issue:** #{n} — {title}
+- **Issue:** {issue} — {title}
 - **Worktree:** `{worktree_path}`, on the branch `{branch}` (the base is `{base_branch}`). It is
   yours to read only: a consult writes no code, so never commit and never push
 
@@ -510,8 +516,8 @@ The fleet handed this issue to a human, and told them:
 
 What a human answering this would look at, and nothing you must: you decide what to look into.
 
-- The issue, its comments and its blocked-by edges both ways: `gh issue view {n} --comments`,
-  `gh api repos/{owner}/{repo}/issues/{n}/dependencies/blocked_by` and `…/blocking`
+- The issue, its comments and its blocked-by edges both ways: `gh issue view {n}<tracker> --comments`,
+  `gh api repos/<issues>/issues/{n}/dependencies/blocked_by` and `…/blocking`
 - The worktree, its branch and what only it holds: `git -C {worktree_path} status`, `git log`
 - The gate, run again in the worktree: `{gate_command}`
 - The fleet and its host: `{doctor_command}`, `{plan_command}`, and any other read-only command
@@ -529,10 +535,10 @@ End with one answer, and not before. Then wake the fleet and stop.
 
 - **Say what is to be done, and hand it back.** The next worker reads the issue's comments:
   ```bash
-  gh issue comment {n} --body-file <file>
-  gh issue edit {n} --add-label {ready_label} --remove-label {escalate_label}
+  gh issue comment {n}<tracker> --body-file <file>
+  gh issue edit {n}<tracker> --add-label {ready_label} --remove-label {escalate_label}
   ```
-- **Close** it, nothing being left to do: `gh issue close {n} --comment <why>`
+- **Close** it, nothing being left to do: `gh issue close {n}<tracker> --comment <why>`
 - **Park** it for new evidence, with a reason. Run in the worktree:
   ```bash
   afkconvoy verdict park --consult --issue {n} --stage consult --text-file <file>
@@ -540,8 +546,8 @@ End with one answer, and not before. Then wake the fleet and stop.
   It carries `convoy:parked` and leaves the frontier. To bring it back, record the new evidence
   on the issue and restore `{ready_label}`, removing `convoy:parked`.
 - **Open the issue you found outside this one**, for the fleet to work, with
-  `gh issue create --title <title> --body-file <file> --label {ready_label}` — record this issue as
-  blocked by it (`gh api repos/{owner}/{repo}/issues/{n}/dependencies/blocked_by -F issue_id=<id>`)
+  `gh issue create<tracker> --title <title> --body-file <file> --label {ready_label}<labelled>` — record this issue as
+  blocked by it (`gh api repos/<issues>/issues/{n}/dependencies/blocked_by -F issue_id=<id>`)
   and hand it back as above, or let it through.
 - **Let it through.** It is not yours to answer either: post a comment whose first line is exactly
   this marker, followed by what a human has to decide, and the issue stays with a human:
@@ -571,9 +577,10 @@ pub fn stock_prompt(fields: &WorkerFields, stock: &StockFields) -> Result<String
     let marker = record::marker(verdict::VERDICT, &[("phase", verdict::Phase::Escalate.word())]);
     let wake = WAKE.replace("<outcomes>", " — your answer is");
     fill(
-        &STOCK_UNBOUND.replace("<wake>", &wake),
+        &in_tracker(&STOCK_UNBOUND.replace("<wake>", &wake), fields.tracker),
         &[
             ("n", &number),
+            ("issue", &fields.tracker.issue(fields.number)),
             ("title", fields.title),
             ("branch", fields.branch),
             ("worktree_path", fields.worktree),
@@ -764,8 +771,9 @@ pub fn stage_prompt(fields: &StageFields) -> Result<String, String> {
             },
         )
         .replace("<precedents_first>", PRECEDENTS_FIRST);
+    // A bound repo's stages work the checkout's own issues (docs/adr/0027).
     fill(
-        &template,
+        &in_tracker(&template, &Tracker::Own),
         &[
             ("records", &records),
             ("rejecter", last.map_or("", |last| &last.stage)),
@@ -1118,6 +1126,8 @@ pub struct TrainFields<'a> {
     /// How an issue the train worker opens for a defect of the base branch
     /// enters the fleet's work.
     pub enters: Enters<'a>,
+    /// The fleet's tracker, where that issue is opened.
+    pub tracker: &'a Tracker,
 }
 
 /// How an issue the train worker opens for a defect enters the fleet's work.
@@ -1160,7 +1170,7 @@ pub fn train_prompt(fields: &TrainFields) -> Result<String, String> {
         }
     };
     fill(
-        &TRAIN.replace("<defect>", &defect(proof, open, PARK_TRAIN)),
+        &in_tracker(&TRAIN.replace("<defect>", &defect(proof, open, PARK_TRAIN)), fields.tracker),
         &[
             ("worktree_path", fields.worktree),
             ("base_branch", fields.base_branch),
@@ -1245,11 +1255,12 @@ fn prompt(
         }
     };
     fill(
-        &template,
+        &in_tracker(&template, fields.tracker),
         &[
             ("role", landing.map_or("", |landing| landing.role)),
             ("skill", landing.map_or("", |landing| landing.skill)),
             ("n", &number),
+            ("issue", &fields.tracker.issue(fields.number)),
             ("title", fields.title),
             ("branch", fields.branch),
             ("worktree_path", fields.worktree),
@@ -1377,6 +1388,29 @@ pub fn switched(switched: &Switched) -> String {
     text
 }
 
+/// `template` with the fleet's tracker in each of its issue commands, where
+/// its marks say: `<tracker>` after a `gh issue` command, `<issues>` in a
+/// `gh api` path, `<labelled>` on one that opens or looks for an issue of
+/// the repo, and `<repo_label>` where the brief says which labels that issue
+/// carries. Of the checkout's own repo they say nothing more than they did
+/// before there were trackers (docs/adr/0027).
+fn in_tracker(template: &str, tracker: &Tracker) -> String {
+    let (flag, path, labelled, said) = match (tracker.named(), tracker.repo_label()) {
+        (Some(named), Some(label)) => (
+            format!(" --repo {named}"),
+            named.to_string(),
+            format!(" --label {label}"),
+            format!(", and the repo label `{label}` (`--label {label}`)"),
+        ),
+        _ => (String::new(), "{owner}/{repo}".to_string(), String::new(), String::new()),
+    };
+    template
+        .replace("<tracker>", &flag)
+        .replace("<issues>", &path)
+        .replace("<labelled>", &labelled)
+        .replace("<repo_label>", &said)
+}
+
 /// Fills every `{name}` of `template` in one pass, so a value is never itself
 /// read for placeholders: a title naming `{branch}` reaches the worker as it
 /// was given. A placeholder no field answers to, or a field with nothing in
@@ -1419,6 +1453,7 @@ mod tests {
     fn fields() -> WorkerFields<'static> {
         WorkerFields {
             number: 7,
+            tracker: &Tracker::Own,
             title: "Add {branch} support",
             branch: "tester/issue-7-add",
             worktree: "/wt/issue-7",
@@ -1429,6 +1464,74 @@ mod tests {
             land_command: "/opt/bin/afkconvoy land --issue 7",
             wake_command: "/opt/bin/afkconvoy wake",
         }
+    }
+
+    #[test]
+    fn every_issue_command_of_a_brief_names_the_tracker_and_no_pr_command_does() {
+        let tracker = Tracker::Other {
+            tracker: crate::config::RepoName::read("acme/tracker").unwrap(),
+            repo: crate::config::RepoName::read("acme/dev").unwrap(),
+        };
+        let fields = WorkerFields { tracker: &tracker, ..fields() };
+        let stock = StockFields {
+            asked: "Its worker went silent.",
+            escalate_label: "ready-for-human",
+            doctor: "/opt/bin/afkconvoy doctor",
+            plan: "/opt/bin/afkconvoy plan",
+        };
+        let train = train_prompt(&TrainFields {
+            worktree: "/wt/convoy-train",
+            base_branch: "develop",
+            land_command: "/opt/bin/afkconvoy land --train",
+            gate_alone_command: "/opt/bin/afkconvoy gate",
+            enters: Enters::Ready("agent-ready"),
+            tracker: &tracker,
+        })
+        .unwrap();
+        let mut briefs: Vec<String> = [
+            Variant::Fresh,
+            Variant::Continue,
+            Variant::Join { pr: 70 },
+            Variant::TakeUp { pr: 70 },
+        ]
+        .into_iter()
+        .map(|variant| worker_prompt(&fields, variant).unwrap())
+        .collect();
+        briefs.extend([stock_prompt(&fields, &stock).unwrap(), train]);
+        for brief in &briefs {
+            for mark in ["<tracker>", "<issues>", "<labelled>", "<repo_label>", "{owner}"] {
+                assert!(!brief.contains(mark), "{mark}: {brief}");
+            }
+            for (at, _) in brief.match_indices("gh issue ") {
+                let command = brief[at..].split(['`', '\n']).next().unwrap();
+                assert!(command.contains(" --repo acme/tracker"), "{command}");
+            }
+            for (at, _) in brief.match_indices("gh api ") {
+                assert!(brief[at..].starts_with("gh api repos/acme/tracker/issues/7/"), "{brief}");
+            }
+            for (at, _) in brief.match_indices("gh pr ") {
+                let command = brief[at..].split('\n').next().unwrap();
+                assert!(!command.contains("--repo"), "{command}");
+            }
+        }
+        let fresh = &briefs[0];
+        assert!(fresh.contains("**Your issue:** acme/tracker#7 — Add {branch} support"));
+        assert!(fresh.contains("\n   Closes acme/tracker#7\""), "{fresh}");
+        // An issue a worker opens is the repo's in the tracker.
+        for brief in [fresh, &briefs[5]] {
+            assert!(
+                brief.contains("`gh issue create --repo acme/tracker`): the symptom")
+                    && brief.contains(
+                        "(`--label agent-ready`), and the repo label `repo:acme/dev` (`--label \
+                     repo:acme/dev`), so"
+                    ),
+                "{brief}"
+            );
+        }
+        assert!(briefs[4].contains(
+            "`gh issue create --repo acme/tracker --title <title> --body-file <file> --label \
+             agent-ready --label repo:acme/dev`"
+        ));
     }
 
     #[test]
@@ -1915,6 +2018,7 @@ mod tests {
             land_command: "/opt/bin/afkconvoy land --train",
             gate_alone_command: "/opt/bin/afkconvoy gate",
             enters: Enters::Ready("agent-ready"),
+            tracker: &Tracker::Own,
         })
         .unwrap();
         assert!(prompt.contains("\n/opt/bin/afkconvoy land --train\n"));
@@ -1956,6 +2060,7 @@ mod tests {
             land_command: "/opt/bin/afkconvoy land --train",
             gate_alone_command: "/opt/bin/afkconvoy gate",
             enters: Enters::Ready("agent-ready"),
+            tracker: &Tracker::Own,
         })
         .unwrap();
         let fresh = worker_prompt(&fields(), Variant::Fresh).unwrap();
@@ -2063,6 +2168,7 @@ mod tests {
                 command: "/opt/bin/afkconvoy intake --train",
                 workflows: &workflows,
             },
+            tracker: &Tracker::Own,
         };
         let bound = train_prompt(&fields).unwrap();
         assert!(

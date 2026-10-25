@@ -215,7 +215,7 @@ impl Repo {
         let base = base.map(|record| record.sha.clone());
         let tags = tags_of(&records);
         records.retain(|record| record.name.starts_with(every.trim_end_matches('*')));
-        self.read_records(&mut records, &every)?;
+        self.read_records(&mut records)?;
         Ok(Listing { base_ref, base, records, tags })
     }
 
@@ -243,13 +243,14 @@ impl Repo {
     /// share both, and a worker's command may be reading the remote meanwhile.
     pub fn remote_records(&self, pattern: &str) -> Result<Vec<RemoteRecord>> {
         let mut records = self.listed(&[pattern])?;
-        self.read_records(&mut records, pattern)?;
+        self.read_records(&mut records)?;
         Ok(records)
     }
 
     /// Reads the record each of `records` carries: the subject of its commit,
-    /// fetched with everything `pattern` matches when it is not here yet.
-    fn read_records(&self, records: &mut [RemoteRecord], pattern: &str) -> Result<()> {
+    /// fetched by the name of each ref when one is not here yet — by name,
+    /// for git takes a pattern only with a ref of this repo to write.
+    fn read_records(&self, records: &mut [RemoteRecord]) -> Result<()> {
         if records.is_empty() {
             return Ok(());
         }
@@ -257,14 +258,10 @@ impl Repo {
         let subjects = match self.subjects(records)? {
             Some(subjects) => subjects,
             None => {
-                self.git(&[
-                    "fetch",
-                    "--quiet",
-                    "--no-write-fetch-head",
-                    "--no-tags",
-                    REMOTE,
-                    pattern,
-                ])?;
+                let mut fetch =
+                    vec!["fetch", "--quiet", "--no-write-fetch-head", "--no-tags", REMOTE];
+                fetch.extend(records.iter().map(|record| record.name.as_str()));
+                self.git(&fetch)?;
                 self.subjects(records)?.unwrap_or_default()
             }
         };

@@ -147,7 +147,7 @@ pub struct Config {
     /// `None` in an unbound repo, whose config is the keys above and nothing else.
     #[serde(flatten)]
     pub bound: Option<Bound>,
-    /// The repo's cut steps, which turn cutting on (docs/adr/0027): read off
+    /// The repo's cut steps, which turn cutting on (docs/adr/0028): read off
     /// a block of their own (`cut::BLOCK`), never the config's, and laid over
     /// it (`Config::cutting`). `None` where the file has no such block.
     #[serde(skip_serializing_if = "Option::is_none")]

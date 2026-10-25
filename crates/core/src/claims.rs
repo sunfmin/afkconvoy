@@ -6,15 +6,18 @@ use flux_rs::attrs::*;
 use crate::layout::Layout;
 use crate::lease::{heartbeat_due, is_stale};
 use crate::record::{self, Fields};
+use crate::tracker::Tracker;
 
 /// The kinds of ref a scan reads: a claim's is named for its issue, a
 /// heartbeat's for its instance.
 pub const CLAIM_KIND: &str = "claim/";
 pub const HEARTBEAT_KIND: &str = "heartbeat/";
 
-/// The ref that is the claim on issue `number`.
-pub fn claim_ref(layout: Layout, number: u64) -> String {
-    layout.under(&format!("{CLAIM_KIND}{number}"))
+/// The ref that is the claim on issue `number` of `tracker`: named for the
+/// tracker too where it is another repo (`Tracker::claim_key`), so that two
+/// fleets of one repo that work two trackers never claim one ref.
+pub fn claim_ref(layout: Layout, tracker: &Tracker, number: u64) -> String {
+    layout.under(&format!("{CLAIM_KIND}{}", tracker.claim_key(number)))
 }
 
 /// The ref that is the claim on a run — work that is no issue's — keyed `key`:

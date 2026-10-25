@@ -1419,7 +1419,7 @@ fn read_state(repo: &Repo, now: u64, run: &mut Run) -> Result<State> {
         .iter()
         .map(|&issue| OnGone {
             issue,
-            claim_ref: claim_ref(fleet.repo.layout(), issue),
+            claim_ref: claim_ref(fleet.repo.layout(), &fleet.scan.tracker, issue),
             holder: fleet
                 .scan
                 .claim_of(issue)
@@ -1658,6 +1658,10 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String]) -> Result<Exami
     }
     let mut fleet = fleet_json(&run);
     fleet["concurrency"] = crate::concurrency::json_of(repo);
+    fleet["tracker"] = match List::of_host() {
+        Ok(list) => crate::tracker::json_of(&list, repo),
+        Err(error) => json!({"error": format!("{error:#}")}),
+    };
     let answer = json!({
         "host": host,
         "fleet": fleet,

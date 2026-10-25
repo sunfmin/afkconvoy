@@ -1,4 +1,4 @@
-//! A cut (docs/adr/0027): the run that makes a new version of a repo from
+//! A cut (docs/adr/0028): the run that makes a new version of a repo from
 //! its base branch — it sets the version, lands it, tags it, and publishes
 //! and installs it. A tick that ends idle starts one in a repo that names its
 //! cut steps, once the base branch holds landed commits past the newest

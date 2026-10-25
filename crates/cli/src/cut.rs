@@ -1,4 +1,4 @@
-//! A cut (docs/adr/0027): what a rebuild reads of it, a tick's start and end
+//! A cut (docs/adr/0028): what a rebuild reads of it, a tick's start and end
 //! of one, and `afkconvoy cut`, which takes its steps in its own checkout.
 //! When a cut is due, which version it makes and how it ended are the core's
 //! (`afkconvoy_core::cut`).
@@ -427,7 +427,7 @@ impl Cutting<'_> {
     fn landed_titled(&self, from: &str, title: &str) -> Result<Option<Joined>> {
         let tag = self.tag_commit(from)?;
         let base = self.base()?;
-        let joins = joins_in(self.repo, &[&format!("{tag}..{base}")])?;
+        let joins = joins_in(self.repo, &self.gh.tracker, &[&format!("{tag}..{base}")])?;
         let ends = format!("{title} (#");
         Ok(joins.into_iter().find(|join| {
             matches!(join.of, Of::Cut(_))
@@ -504,7 +504,8 @@ impl Cutting<'_> {
             let train = Train::read(self.repo, self.config)?;
             if self.repo.within(&head, &train.base)? {
                 let tag = self.tag_commit(&record.from)?;
-                let joins = joins_in(self.repo, &[&format!("{tag}..{}", train.base)])?;
+                let joins =
+                    joins_in(self.repo, &self.gh.tracker, &[&format!("{tag}..{}", train.base)])?;
                 let Some(join) = joins.into_iter().rev().find(|join| join.pr == number) else {
                     bail!(
                         "PR #{number} is on {} with no landing of the landing train's: it was \
@@ -515,7 +516,7 @@ impl Cutting<'_> {
                 record.landed = Some(join.commit);
                 return Ok(());
             }
-            if !train.joins(self.repo)?.iter().any(|join| join.pr == number) {
+            if !train.joins(self.repo, &self.gh.tracker)?.iter().any(|join| join.pr == number) {
                 self.join(number, clock())?;
             }
             std::thread::sleep(LAND_POLL);
@@ -533,7 +534,8 @@ impl Cutting<'_> {
         let pr = open.iter().find(|pr| pr.number == number);
         let pr = pr.ok_or_else(|| anyhow!("PR #{number} is not open: it joins nothing"))?;
         let of = Of::Cut(self.host.to_string());
-        let answer = crate::train::join(self.repo, self.config, pr, &of, json!({}), now)?;
+        let answer =
+            crate::train::join(self.repo, self.config, &self.gh.tracker, pr, &of, json!({}), now)?;
         match answer["outcome"].as_str() {
             Some("joined" | "merged") => Ok(()),
             _ => bail!(

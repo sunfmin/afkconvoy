@@ -75,7 +75,7 @@ fn alone(named: &Named, config: &Config, flows: &FlowLabels) -> Standing {
         Some(bar @ LabelBar::Epic(_)) => {
             Standing::Unmet(format!("will never be dispatched: {}", bar.reason()))
         }
-        Some(bar @ (LabelBar::NotReady(_) | LabelBar::NoFlow)) => {
+        Some(bar @ (LabelBar::NotReady(_) | LabelBar::NoFlow | LabelBar::Repos(_))) => {
             if named.claimed || named.open_pr {
                 Standing::Waiting
             } else {

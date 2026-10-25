@@ -939,8 +939,8 @@ pub fn land(repo: &Repo, config: &Config, gh: &GitHub, host: &str, now: u64) -> 
     if !locks.is_empty() {
         return Ok(crate::train::locked(answer, &locks));
     }
-    let answer =
-        crate::train::join(repo, config, pr, &Of::Inspection(host.to_string()), answer, now)?;
+    let of = Of::Inspection(host.to_string());
+    let answer = crate::train::join(repo, config, &gh.tracker, pr, &of, answer, now)?;
     if matches!(answer["outcome"].as_str(), Some("joined" | "merged")) {
         checkout.record_inspection_pr(pr.number)?;
     }

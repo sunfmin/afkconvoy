@@ -7,7 +7,6 @@ use serde::Serialize;
 
 use crate::admission::Hold;
 use crate::claims::{Claim, InstanceId};
-use crate::closing::issues_closed_by;
 use crate::config::Config;
 use crate::cut;
 use crate::lease::is_stale;
@@ -17,6 +16,7 @@ use crate::precedent;
 use crate::role::Due;
 use crate::slow_gate::{Landing, Reported, SlowGate, slow};
 use crate::team::{FlowLabels, LAND};
+use crate::tracker::repo_labels;
 use crate::train::Built;
 use crate::waiting::{Waiting, Waits};
 
@@ -37,7 +37,7 @@ pub struct PullRequest {
     pub title: String,
     pub head_branch: String,
     pub head_sha: String,
-    /// The issues it closes (`PullRequest::closing`).
+    /// The issues of the fleet's tracker it closes (`Tracker::closed_by`).
     pub closes: Vec<u64>,
 }
 
@@ -45,11 +45,6 @@ impl PullRequest {
     /// This PR as it is once its branch is at `head`.
     pub fn at_head(&self, head: &str) -> PullRequest {
         PullRequest { head_sha: head.to_string(), ..self.clone() }
-    }
-
-    /// The issues a PR closes, from the ones GitHub linked and its body.
-    pub fn closing(body: &str, linked: &[u64]) -> Vec<u64> {
-        issues_closed_by(body, linked)
     }
 }
 
@@ -83,6 +78,9 @@ pub enum LabelBar {
     /// A bound repo's issue that carries no flow label: it was not handed to
     /// the fleet.
     NoFlow,
+    /// It carries these repo labels, of more than one repo: no repo's fleet
+    /// works it (docs/adr/0027).
+    Repos(Vec<String>),
 }
 
 impl LabelBar {
@@ -91,6 +89,9 @@ impl LabelBar {
             LabelBar::Epic(label) => format!("epic label ({label})"),
             LabelBar::NotReady(ready) => format!("no {ready} label"),
             LabelBar::NoFlow => "no flow label".to_string(),
+            LabelBar::Repos(labels) => {
+                format!("repo labels of more than one repo ({})", labels.join(", "))
+            }
         }
     }
 }
@@ -103,6 +104,10 @@ impl LabelBar {
 pub fn label_bar(labels: &[String], config: &Config, flows: &FlowLabels) -> Option<LabelBar> {
     if let Some(epic) = labels.iter().find(|label| config.epic_labels.contains(label)) {
         return Some(LabelBar::Epic(epic.clone()));
+    }
+    let repos = repo_labels(labels);
+    if repos.len() > 1 {
+        return Some(LabelBar::Repos(repos.into_iter().map(String::from).collect()));
     }
     // The ready label means something only in an unbound repo.
     match &config.bound {
@@ -275,7 +280,7 @@ pub struct WorkingSet {
     /// assembles the set leaves it out, and the effect layer puts it in.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub caster: Option<crate::casting::Standing>,
-    /// The repo's cut (docs/adr/0027), as it stands now: whether a pass that
+    /// The repo's cut (docs/adr/0028), as it stands now: whether a pass that
     /// ends idle starts one, or asks after one of mine. Left out of a set
     /// assembled with nothing read of it.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -765,6 +770,7 @@ mod tests {
             issue(4, READY),
             issue(5, READY),
             blocked,
+            issue(7, &["ready-for-agent", "repo:acme/dev", "Repo:acme/web"]),
         ];
         let seen = Observed {
             issues: &issues,
@@ -804,6 +810,7 @@ mod tests {
                 (4, "already claimed"),
                 (5, "has an open linked PR"),
                 (6, "open blockers: #41, #42"),
+                (7, "repo labels of more than one repo (repo:acme/dev, Repo:acme/web)"),
             ]
         );
     }

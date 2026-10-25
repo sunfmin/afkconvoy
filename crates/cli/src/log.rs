@@ -154,7 +154,7 @@ pub enum What {
     /// the episode; `said` is what held the work back, what it did and the
     /// PRs it put on the landing train, or why.
     HostInspected { reason: String, found: String, said: String },
-    /// A tick started a cut of `version` (docs/adr/0027): `said` is the
+    /// A tick started a cut of `version` (docs/adr/0028): `said` is the
     /// version, the tag it is cut past and the PRs it holds.
     CutStarted { version: String, said: String },
     /// A tick ended the cut of `version`: `said` is what it did — its PR,

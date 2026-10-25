@@ -15,7 +15,7 @@ use afkconvoy_core::position::Position;
 use afkconvoy_core::stock;
 use afkconvoy_core::stopped::standing_verdict;
 use afkconvoy_core::team::{Consult, Role, Team, Workflow};
-use afkconvoy_core::train::{Built, Of, on_train};
+use afkconvoy_core::train::{Built, on_train};
 use afkconvoy_core::verdict::latest_verdict;
 use afkconvoy_core::worker::recorded_branches;
 use anyhow::{Context, Result, anyhow};
@@ -98,7 +98,7 @@ impl Fleet {
         let config = crate::concurrency::config_of(&repo)?;
         let chosen = crate::switch::chosen(&repo)?;
         let listing = repo.listing(&config.base_branch)?;
-        let scan = Scan::among(repo.layout(), listing.records.clone());
+        let scan = Scan::among(repo.layout(), gh.tracker.clone(), listing.records.clone());
         Ok(Fleet {
             repo,
             config,
@@ -273,24 +273,21 @@ impl Fleet {
         }
         // What is on the train is read off the train's own commits.
         let train = Train::listed(&self.repo, &self.config, &self.listing)?;
-        let joins = train.joins(&self.repo)?;
+        let joins = train.joins(&self.repo, &self.gh.tracker)?;
         // …and what a cut landing left open, off the base branch.
         let mut landed = vec![];
         for claim in &self.scan.claims {
             if me.is_some_and(|me| claim.is_held_by(me))
                 && !closed.contains(&claim.number)
-                && cut_landing_of(&self.repo, &train.base, claim, prs)?.is_some()
+                && cut_landing_of(&self.repo, &self.gh.tracker, &train.base, claim, prs)?.is_some()
             {
                 landed.push(claim.number);
             }
         }
         let riding = on_train(&joins, prs);
         let joined: Vec<u64> = riding.iter().filter_map(|join| join.issue()).collect();
-        let inspections: Vec<u64> = riding
-            .iter()
-            .filter(|join| matches!(join.of, Of::Inspection(_)))
-            .map(|join| join.pr)
-            .collect();
+        let inspections: Vec<u64> =
+            riding.iter().filter(|join| join.is_inspection()).map(|join| join.pr).collect();
         // A PR is the fleet's own when its branch is one recorded on the issue.
         let mut kept = vec![];
         for issue in issues {

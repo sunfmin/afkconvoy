@@ -58,6 +58,7 @@ pub mod takeover;
 pub mod team;
 pub mod tick;
 pub mod tools;
+pub mod tracker;
 pub mod train;
 pub mod transition;
 pub mod verdict;

@@ -117,6 +117,9 @@ pub struct Tick {
 pub struct Panel {
     pub repo: String,
     pub base_branch: String,
+    /// The repo its fleet reads and writes its issues in, where that is not
+    /// its own (docs/adr/0027).
+    pub tracker: Option<String>,
     /// The fleet instance whose view this is, and its host; `None` of nobody's:
     /// every claim is then another instance's.
     pub who: Option<(String, String)>,
@@ -388,6 +391,7 @@ impl Panel {
         Panel {
             repo: name.unwrap_or_default(),
             base_branch: fleet.config.base_branch.clone(),
+            tracker: fleet.gh.tracker.named().map(|tracker| tracker.to_string()),
             who: me.map(|me| (me.instance.as_str().to_string(), me.host.clone())),
             tick: None,
             held: 0,
@@ -1284,10 +1288,14 @@ fn repo(out: &mut String, at: usize, panel: &Panel) {
         }
         None => "Seen as no fleet instance".to_string(),
     };
+    let issues = match &panel.tracker {
+        Some(tracker) => format!(", its issues in <b>{}</b>", esc(tracker)),
+        None => String::new(),
+    };
     let _ = write!(
         out,
         "<header class=\"top\"><div class=\"who\"><h2 class=\"name\">{repo}</h2>\
-         <p>{who}, landing on <b>{}</b></p></div>\n<dl class=\"gauges\">",
+         <p>{who}, landing on <b>{}</b>{issues}</p></div>\n<dl class=\"gauges\">",
         esc(&panel.base_branch),
         repo = esc(&panel.repo),
     );
@@ -1438,6 +1446,7 @@ mod tests {
         Panel {
             repo: repo.into(),
             base_branch: "main".into(),
+            tracker: None,
             who: None,
             tick: None,
             held: 0,

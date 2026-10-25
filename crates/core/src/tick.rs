@@ -76,7 +76,7 @@ pub enum TickStep {
     /// End the repo's cut when it is over: ask after a cut of mine, or delete
     /// the claim of one whose fleet is presumed dead. It takes no slot.
     EndCut,
-    /// Start a cut of the repo (docs/adr/0027): the pass ends idle, and the
+    /// Start a cut of the repo (docs/adr/0028): the pass ends idle, and the
     /// base branch holds landed commits past the newest version tag
     /// (`cut::starts`). It holds a claim on the run, and takes no slot.
     Cut,

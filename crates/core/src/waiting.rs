@@ -63,7 +63,7 @@ pub enum Waits {
     /// It reports a failed run of this patrol, which is not run again while
     /// it is open.
     PatrolFailed { patrol: String },
-    /// It says a cut failed (docs/adr/0027): no cut starts while it is open.
+    /// It says a cut failed (docs/adr/0028): no cut starts while it is open.
     CutFailed,
 }
 

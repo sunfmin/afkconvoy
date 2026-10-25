@@ -398,9 +398,15 @@ impl World {
 
     /// Adds an open PR from `branch` whose body closes issue `closes`.
     pub fn pr(&self, number: u64, closes: u64, branch: &str) {
+        self.pr_closing(number, &format!("#{closes}"), branch);
+    }
+
+    /// Adds an open PR from `branch` whose body closes the issue the repo
+    /// names `issue`: `#7` of its own, `acme/tracker#7` of another repo's.
+    pub fn pr_closing(&self, number: u64, issue: &str, branch: &str) {
         self.with_gh(|gh| {
             let pr = json!({"number": number, "title": format!("pr {number}"), "headRefName": branch, "headRefOid": "",
-                "body": format!("Closes #{closes}\n"), "state": "open"});
+                "body": format!("Closes {issue}\n"), "state": "open"});
             gh["prs"].as_array_mut().unwrap().push(pr);
         });
     }
@@ -870,16 +876,22 @@ impl World {
         std::fs::write(file, list.to_string()).unwrap();
     }
 
+    /// Has the remote of `checkout` be named as the repo `repo` (`owner/repo`)
+    /// on GitHub, as an issue of it in another tracker names it: git reads
+    /// that name as this world's remote all the same.
+    pub fn name_origin(&self, checkout: &Path, repo: &str) {
+        let url = format!("https://github.com/{repo}.git");
+        git(checkout, &["config", "remote.origin.url", &url]);
+        git(checkout, &["config", &format!("url.{}.insteadOf", self.bare.display()), &url]);
+    }
+
     /// Puts the repo `tracker` (`owner/repo`) on the stand-in GitHub, its
-    /// issues kept apart from this repo's in a state of their own
-    /// (`tracker.json`), which every call naming it reads and writes; and
+    /// issues kept apart from this repo's in a state of their own, which
+    /// every call naming it reads and writes, where it is not there yet; and
     /// has `checkout` say it is its tracker, with its entry on this world's
     /// checkout list.
     pub fn say_tracker(&self, checkout: &Path, tracker: &str) {
-        let state = json!({"issues": [], "comments": {}, "labels": ["ready-for-agent"],
-            "calls": [], "envs": []});
-        std::fs::write(self.tracker_file(), state.to_string()).unwrap();
-        self.with_gh(|gh| gh["trackers"][tracker] = json!(self.tracker_file()));
+        self.put_tracker(tracker);
         let file = self.cache().join("afkconvoy/checkouts.json");
         let mut list = self.checkout_list();
         let entries = list["checkouts"].as_array_mut().unwrap();
@@ -891,20 +903,52 @@ impl World {
         std::fs::write(file, list.to_string()).unwrap();
     }
 
-    fn tracker_file(&self) -> PathBuf {
-        self.root.join("tracker.json")
+    /// Puts the repo `tracker` (`owner/repo`) on the stand-in GitHub, its
+    /// issues kept apart from this repo's in a state of their own, which
+    /// every call naming it reads and writes, where it is not there yet.
+    pub fn put_tracker(&self, tracker: &str) {
+        let state = json!({"issues": [], "comments": {}, "labels": ["ready-for-agent"],
+            "calls": [], "envs": []});
+        let file = self.tracker_file(tracker);
+        if !file.exists() {
+            std::fs::write(&file, state.to_string()).unwrap();
+        }
+        self.with_gh(|gh| gh["trackers"][tracker] = json!(file));
     }
 
-    /// The stand-in GitHub's state of the tracker (`say_tracker`).
+    fn tracker_file(&self, tracker: &str) -> PathBuf {
+        self.root.join(format!("tracker-{}.json", tracker.replace('/', "-")))
+    }
+
+    /// The one tracker of a world that says one (`say_tracker`).
+    fn the_tracker(&self) -> String {
+        let trackers = self.gh()["trackers"].as_object().cloned().unwrap_or_default();
+        assert_eq!(trackers.len(), 1, "one tracker: {trackers:?}");
+        trackers.keys().next().unwrap().clone()
+    }
+
+    /// The stand-in GitHub's state of the tracker (`say_tracker`), of a
+    /// world that says one.
     pub fn tracker(&self) -> Value {
-        read(&self.tracker_file())
+        self.tracker_of(&self.the_tracker())
     }
 
-    /// Changes the state of the tracker (`say_tracker`) in place.
+    /// The stand-in GitHub's state of the tracker `tracker` (`say_tracker`).
+    pub fn tracker_of(&self, tracker: &str) -> Value {
+        read(&self.tracker_file(tracker))
+    }
+
+    /// Changes the state of the tracker (`say_tracker`) in place, of a world
+    /// that says one.
     pub fn with_tracker(&self, change: impl FnOnce(&mut Value)) {
-        let mut state = self.tracker();
+        self.with_tracker_of(&self.the_tracker(), change);
+    }
+
+    /// Changes the state of the tracker `tracker` (`say_tracker`) in place.
+    pub fn with_tracker_of(&self, tracker: &str, change: impl FnOnce(&mut Value)) {
+        let mut state = self.tracker_of(tracker);
         change(&mut state);
-        std::fs::write(self.tracker_file(), state.to_string()).unwrap();
+        std::fs::write(self.tracker_file(tracker), state.to_string()).unwrap();
     }
 
     /// Every line of the host runner's log, the stamp of each taken off.

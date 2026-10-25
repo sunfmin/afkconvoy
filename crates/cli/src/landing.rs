@@ -149,7 +149,7 @@ pub fn land_train(
              this again"
         );
     };
-    let joins = Train { tip: head.clone(), base: train.base.clone() }.joins(repo)?;
+    let joins = Train { tip: head.clone(), base: train.base.clone() }.joins(repo, &gh.tracker)?;
     let prs: BTreeSet<u64> = joins.iter().map(|join| join.pr).collect();
     answer["commit"] = json!(head);
     answer["prs"] = json!(prs);
@@ -255,6 +255,9 @@ pub fn land_train(
         .iter()
         .map(|join| match &join.of {
             Of::Issue(issue) => json!({"issue": issue, "pr": join.pr, "commit": join.commit}),
+            Of::Elsewhere(named) => {
+                json!({"elsewhere": named, "pr": join.pr, "commit": join.commit})
+            }
             Of::Inspection(host) => {
                 json!({"inspection": host, "pr": join.pr, "commit": join.commit})
             }
