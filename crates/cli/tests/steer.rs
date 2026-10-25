@@ -169,7 +169,7 @@ fn an_escalation_with_no_position_names_the_only_flow_label_in_its_answer() {
     world.with_tracker(|gh| {
         gh["issues"] = json!([{"number": 11, "title": "moved issue", "state": "open",
             "labels": ["repo:acme/dev", "stuck"]}]);
-        gh["comments"]["11"] = json!([{"id": 1, "created_at": 1000,
+        gh["comments"]["11"] = json!([{"id": 1, "created_at": "1970-01-01T00:16:40Z",
             "body": "<!--convoy:escalation claim=old-->\nFix the failure."}]);
     });
     let answer = "gh issue edit 11 --repo acme/tracker --add-label ready-for-agent --remove-label stuck";
