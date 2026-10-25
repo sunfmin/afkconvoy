@@ -796,3 +796,170 @@ fn a_claim_on_a_deleted_issue_is_a_finding_with_the_line_that_deletes_it() {
     assert_eq!(on_gone[0]["fix"], "git push origin :refs/convoy/claim/3");
     assert!(on_gone[0]["evidence"].as_str().unwrap().contains("held by alpha"), "{answer}");
 }
+
+/// Append the older releases' actual on-disk shape as well as current lines:
+/// the watching command must interpret the log, not a test-only event source.
+fn append_log(world: &World, lines: &[Value]) {
+    use std::io::Write;
+    let answer = doctor(world, "900").json;
+    let file = answer["fleet"]["log"].as_str().unwrap();
+    let mut file = std::fs::OpenOptions::new().append(true).open(file).unwrap();
+    for line in lines {
+        writeln!(file, "{line}").unwrap();
+    }
+}
+
+fn logged_command(at: u64, issue: Option<u64>, command: &str, outcome: &str) -> Value {
+    json!({"at": at, "instance": "", "host": "h1", "command": {
+        "command": command, "on": issue.map(|n| format!("#{n}")),
+        "by": "worker", "outcome": outcome}})
+}
+
+#[test]
+fn watching_combines_gate_progress_github_endings_and_adjacent_look_boundaries() {
+    let world = World::new();
+    world.say_concurrency(&world.clone, 3);
+    for n in [3, 5, 7, 8, 9] {
+        world.issue(n, &[]);
+    }
+    run(&world, &["--instance", "alpha", "--ticks", "1", "--now", "900"]);
+    world.pr(101, 3, "work3");
+    world.pr(102, 5, "work5");
+    world.pr(103, 7, "work7");
+    world.fork_pr(104, 8, "fork8");
+    world.with_gh(|gh| {
+        gh["issues"][1]["state"] = json!("closed");
+        gh["issues"][1]["closed_at"] = json!(1040);
+        gh["prs"][1]["state"] = json!("merged");
+        gh["prs"][1]["merged_at"] = json!(1041);
+        gh["prs"][1]["closed_at"] = json!(1041);
+        gh["prs"][1]["updated_at"] = json!(1041);
+        gh["prs"][2]["state"] = json!("closed");
+        gh["prs"][2]["closed_at"] = json!(1042);
+        gh["prs"][2]["updated_at"] = json!(1042);
+        gh["prs"][3]["state"] = json!("merged");
+        gh["prs"][3]["merged_at"] = json!(1043);
+        gh["prs"][3]["updated_at"] = json!(1043);
+        gh["comments"]["7"] = json!([{"id": 701, "at": 1030,
+            "body": "<!--convoy:intake workflow=feature by=train-->", "html_url": "intake7"}]);
+        gh["comments"]["9"] = json!([{"id": 901, "at": 1100,
+            "body": "<!--convoy:intake workflow=feature by=train-->", "html_url": "intake9"}]);
+    });
+    append_log(
+        &world,
+        &[
+            logged_command(950, Some(3), "gate", "started"),
+            logged_command(1000, Some(3), "exclusive", "waits behind 6 exclusive commands"),
+            logged_command(1020, Some(3), "exclusive", "runs (waited 633s)"),
+            logged_command(1040, Some(3), "exclusive", "exit 1 in 122s"),
+            logged_command(1040, Some(3), "gate", "red"),
+            logged_command(1045, Some(3), "land", "conflict"),
+            logged_command(1099, Some(3), "exclusive", "waits behind 4 exclusive commands"),
+            logged_command(1100, Some(8), "dispatch", "done"),
+        ],
+    );
+    world.gh_calls();
+    let args = ["doctor", "--all", "--host", "h1", "--since", "1000", "--now", "1100"];
+    let answer = world.afk(&args).ok();
+    assert_eq!(answer["until"], 1100);
+    let watching = &answer["checkouts"][0]["doctor"]["watching"];
+    let issue = |number| {
+        watching["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|issue| issue["issue"] == number)
+            .unwrap()
+    };
+    let steps = issue(3)["steps"].as_array().unwrap();
+    let names: Vec<_> =
+        steps.iter().map(|s| (s["at"].as_u64().unwrap(), s["step"].as_str().unwrap())).collect();
+    assert_eq!(
+        names,
+        [
+            (1000, "exclusive"),
+            (1020, "exclusive"),
+            (1040, "exclusive"),
+            (1040, "gate"),
+            (1045, "land"),
+            (1099, "exclusive")
+        ]
+    );
+    assert_eq!(issue(3)["pr"], 101);
+    assert_eq!(issue(3)["last_step"]["ago"], 1);
+    let ended: Vec<_> =
+        watching["ended"].as_array().unwrap().iter().map(|s| s["step"].as_str().unwrap()).collect();
+    assert_eq!(ended, ["intake", "issue_closed", "pr_merged", "pr_closed"]);
+    assert!(
+        watching["issues"].as_array().unwrap().iter().all(|s| s["issue"] != 8 && s["issue"] != 9)
+    );
+    for call in world.gh_calls() {
+        assert!(
+            !call
+                .iter()
+                .any(|a| ["POST", "PATCH", "PUT", "DELETE", "edit", "create", "close", "comment"]
+                    .contains(&a.as_str())),
+            "{call:?}"
+        );
+    }
+    // More lines arrive in the same second as the preceding boundary. Both
+    // belong to the next look, along with GitHub's intake stamped then.
+    append_log(&world, &[logged_command(1100, Some(8), "gate", "started")]);
+    let second =
+        world.afk(&["doctor", "--all", "--host", "h1", "--since", "1100", "--now", "1200"]).ok();
+    let next = &second["checkouts"][0]["doctor"]["watching"];
+    let rows = next["issues"].as_array().unwrap();
+    assert_eq!(rows.iter().find(|s| s["issue"] == 3).unwrap()["steps"], json!([]));
+    assert_eq!(
+        rows.iter().find(|s| s["issue"] == 8).unwrap()["steps"].as_array().unwrap().len(),
+        2
+    );
+    assert_eq!(next["ended"].as_array().unwrap().len(), 1);
+    assert_eq!(next["ended"][0]["issue"], 9);
+    // First looks still give the original state, with a boundary to start at.
+    let first = world.afk(&["doctor", "--all", "--now", "1200"]).ok();
+    assert_eq!(first["until"], 1200);
+    assert!(first["checkouts"][0]["doctor"].get("watching").is_none());
+}
+
+#[test]
+fn watching_pages_prs_and_comments_and_withholds_until_when_a_source_fails() {
+    let world = World::new();
+    world.say_concurrency(&world.clone, 3);
+    world.issue(3, &[]);
+    world.with_gh(|gh| {
+        // An intake beyond the comments returned in the issue query.
+        let mut comments: Vec<Value> = (0..101)
+            .map(|n| {
+                json!({"id": n + 1,
+            "at": 900 + n, "body": "ordinary comment", "html_url": "comment"})
+            })
+            .collect();
+        comments[100]["body"] = json!("<!--convoy:intake workflow=feature by=train-->");
+        gh["comments"]["3"] = json!(comments);
+        let prs: Vec<Value> = (0..101)
+            .map(|n| {
+                json!({"number": 200 + n,
+            "title": "ended", "body": "", "headRefName": "work", "headRefOid": "",
+            "state": "closed", "closed_at": 1000, "updated_at": 1000})
+            })
+            .collect();
+        gh["prs"] = json!(prs);
+    });
+    let args =
+        ["doctor", "--all", "--host", "h1", "--since", "1970-01-01T00:16:40Z", "--now", "1100"];
+    let answer = world.afk(&args).ok();
+    let ended = answer["checkouts"][0]["doctor"]["watching"]["ended"].as_array().unwrap();
+    assert_eq!(ended.len(), 102, "the intake and every PR, including page two");
+    for failure in ["since=", "pulls?", "/comments"] {
+        world.with_gh(|gh| gh["fail"] = json!([failure]));
+        let failed = world.afk(&args);
+        assert_eq!(failed.code, 1, "{}", failed.json);
+        assert_eq!(failed.json["until"], Value::Null);
+        assert!(failed.json["checkouts"][0]["doctor"]["watching"]["error"].is_string());
+        assert!(failed.json["checkouts"][0]["doctor"]["claims"].is_array());
+    }
+    let future = world.afk(&["doctor", "--all", "--since", "1200", "--now", "1100"]);
+    assert_eq!(future.code, 1);
+    assert!(future.json["error"].as_str().unwrap().contains("--since is after"));
+}

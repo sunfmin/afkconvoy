@@ -37,7 +37,7 @@ mod fake;
 use afkconvoy::gh::{
     BLOCKED_BY_JQ, CARRYING_JQ, CLOSED_JQ, COMMENTS_JQ, COMMENTS_WITH, ISSUE_JQ, LABELS_JQ,
     LANDED_ISSUES_JQ, LANDED_ISSUES_QUERY, OPEN_ISSUES_JQ, OPEN_ISSUES_QUERY, PR_FIELDS,
-    PR_OF_FIELDS, PR_OF_JQ, VISIBILITY_JQ,
+    PR_OF_FIELDS, PR_OF_JQ, VISIBILITY_JQ, WATCH_ISSUES_JQ, WATCH_ISSUES_QUERY, WATCH_PRS_JQ,
 };
 use std::path::PathBuf;
 
@@ -66,6 +66,25 @@ fn main() {
     let argv: Vec<&str> = st.argv.iter().map(String::as_str).collect();
     let other = st.opt("--repo").map(str::to_string);
     match argv.as_slice() {
+        ["api", endpoint, "--jq", jq] if endpoint.starts_with(&format!("{REPO}pulls?")) => {
+            assert_eq!(*jq, WATCH_PRS_JQ);
+            let page = endpoint.rsplit("page=").next().unwrap().parse::<usize>().unwrap();
+            let mut prs = st.doc["prs"].as_array().cloned().unwrap_or_default();
+            prs.sort_by_key(|pr| std::cmp::Reverse(pr["updated_at"].as_u64().unwrap_or(0)));
+            let rows: Vec<String> = prs
+                .iter()
+                .skip((page - 1) * 100)
+                .take(100)
+                .map(|pr| {
+                    json!({"number": pr["number"], "title": pr["title"], "body": pr["body"],
+                    "updated": pr["updated_at"].as_u64().unwrap_or(0),
+                    "closed": pr["closed_at"], "merged": pr["merged_at"],
+                    "fork": is_fork(pr), "of": pr["of"]})
+                    .to_string()
+                })
+                .collect();
+            st.finish(&rows.join("\n"), 0, "")
+        }
         ["pr", verb, ..] if other.is_some() => {
             let (verb, repo) = (verb.to_string(), other.unwrap());
             pr_of(&mut st, &verb, &repo)
@@ -633,6 +652,40 @@ fn open_issues(st: &State) -> ! {
     // `labels`, where the query names it: those carrying any of them.
     let labels: Vec<&str> = st.argv.iter().filter_map(|a| a.strip_prefix("labels[]=")).collect();
     let labelled = |issue: &&Value| labels.is_empty() || labels.iter().any(|l| carries(issue, l));
+    if st.argv.contains(&format!("query={WATCH_ISSUES_QUERY}")) {
+        assert_eq!(st.opt("--jq"), Some(WATCH_ISSUES_JQ));
+        assert!(st.has("--paginate"));
+        let raw = st.argv.iter().find_map(|a| a.strip_prefix("since=")).unwrap();
+        let since = afkconvoy::doctor::watching::since(raw).unwrap();
+        let rows: Vec<String> = st.doc["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(labelled)
+            .filter_map(|issue| {
+                let mut with = comments(st, &issue["number"].to_string());
+                let updated = with
+                    .iter()
+                    .filter_map(|c| c["at"].as_u64())
+                    .chain(issue["closed_at"].as_u64())
+                    .chain(issue["updated_at"].as_u64())
+                    .max()
+                    .unwrap_or(0);
+                if updated < since {
+                    return None;
+                }
+                let more = with.len() > COMMENTS_WITH;
+                with.truncate(COMMENTS_WITH);
+                Some(
+                    json!({"number": issue["number"], "title": issue["title"],
+                    "closed": issue["closed_at"], "labels": issue["labels"],
+                    "more": more, "comments": with})
+                    .to_string(),
+                )
+            })
+            .collect();
+        st.finish(&rows.join("\n"), 0, "")
+    }
     if st.argv.contains(&format!("query={LANDED_ISSUES_QUERY}")) {
         assert_eq!(st.opt("--jq"), Some(LANDED_ISSUES_JQ));
         assert!(st.has("--paginate"));

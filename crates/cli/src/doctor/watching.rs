@@ -96,10 +96,10 @@ fn record(comment: &Comment) -> Option<Step> {
     use afkconvoy_core::record::read_marker;
     let at = comment.at?;
     for (marker, name) in [
-        ("convoy:stage", "stage_record"),
-        ("convoy:verdict", "verdict"),
-        ("convoy:intake", "intake"),
-        ("convoy:inspected", "inspected"),
+        (afkconvoy_core::stage_record::STAGE_RECORD, "stage_record"),
+        (afkconvoy_core::verdict::VERDICT, "verdict"),
+        (afkconvoy_core::intake::INTAKE_RECORD, "intake"),
+        ("convoy:inspection", "inspected"),
     ] {
         if read_marker(marker, &comment.body).is_some() {
             return Some(Step {
@@ -300,4 +300,133 @@ fn interval(
     events.sort_by_key(|e| e["at"].as_u64());
     json!({"since": since, "until": until, "issues": moved, "ticks": ticks,
         "events": events, "ended": ended})
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::log::Tick;
+
+    fn entry(at: u64, instance: &str, what: What) -> Entry {
+        Entry { at, instance: instance.into(), host: "h1".into(), what }
+    }
+
+    fn tick(at: u64, line: &str, answer: Value) -> Entry {
+        entry(
+            at,
+            "alpha",
+            What::Tick(Tick {
+                count: at,
+                sleep: 90,
+                line: line.into(),
+                bound: Some(3),
+                answer: Some(answer),
+                error: None,
+            }),
+        )
+    }
+
+    fn command(at: u64, on: Option<&str>, outcome: &str) -> Entry {
+        entry(
+            at,
+            "",
+            What::Command {
+                command: "gate".into(),
+                on: on.map(str::to_string),
+                by: "worker".into(),
+                outcome: outcome.into(),
+                failed: false,
+            },
+        )
+    }
+
+    #[test]
+    fn adjacent_looks_partition_every_same_second_step_and_keep_the_last_step_before_since() {
+        let entries = [
+            command(9, Some("#7"), "started"),
+            command(10, Some("#7"), "queued (6 ahead)"),
+            command(20, Some("#7"), "runs (waited 633s)"),
+            command(20, Some("#7"), "exit 1 in 122s"),
+            command(20, Some("#7"), "red"),
+        ];
+        let active = || BTreeMap::from([(7, Issue { pr: Some(70), ..Issue::default() })]);
+        let first = interval(&entries, "h1", 10, 20, active(), vec![]);
+        let second = interval(&entries, "h1", 20, 30, active(), vec![]);
+        let whole = interval(&entries, "h1", 10, 30, active(), vec![]);
+        let steps = |v: &Value| v["issues"][0]["steps"].as_array().unwrap().clone();
+        assert_eq!([steps(&first), steps(&second)].concat(), steps(&whole));
+        assert_eq!(steps(&second).len(), 3);
+        assert_eq!(
+            second["issues"][0]["last_step"]["detail"]["entry"]["command"]["outcome"],
+            "red"
+        );
+        let quiet = interval(&entries, "h1", 30, 40, active(), vec![]);
+        assert_eq!(quiet["issues"][0]["steps"], json!([]));
+        assert_eq!(quiet["issues"][0]["last_step"]["at"], 20);
+        assert_eq!(quiet["issues"][0]["last_step"]["ago"], 20);
+    }
+
+    #[test]
+    fn admission_repeats_fold_but_each_failure_and_each_instance_stays_visible() {
+        let held = json!({"did": [], "errors": [], "held_back_by": ["load"]});
+        let mut failed = tick(15, "FAILED: git ls-remote SSL_ERROR_SYSCALL", json!({}));
+        let What::Tick(t) = &mut failed.what else { unreachable!() };
+        t.error = Some("GitHub not reached".into());
+        let mut peer = tick(17, "admission holding back", held.clone());
+        peer.host = "h2".into();
+        let entries = [
+            tick(10, "admission holding back", held.clone()),
+            tick(11, "admission holding back", held.clone()),
+            tick(12, "admission holding back", held.clone()),
+            tick(13, "FAILED: git ls-remote SSL_ERROR_SYSCALL", json!({})),
+            tick(14, "FAILED: git ls-remote SSL_ERROR_SYSCALL", json!({})),
+            failed,
+            tick(
+                16,
+                "dispatch failed",
+                json!({"did": [], "errors": [
+                {"do": "dispatch", "issue": 7, "error": "orca failed"}]}),
+            ),
+            peer,
+            entry(
+                18,
+                "beta",
+                What::Start { worker_command: "codex".into(), harness_commands: [].into() },
+            ),
+            entry(19, "beta", What::Stop { line: "idle".into() }),
+            command(20, None, "unattributed gate"),
+        ];
+        let report = interval(&entries, "h1", 10, 30, BTreeMap::new(), vec![]);
+        assert_eq!(report["ticks"].as_array().unwrap().len(), 5, "{report}");
+        assert_eq!(report["ticks"][0]["count"], 3);
+        assert_eq!(report["ticks"][0]["last"], 12);
+        assert!(report["ticks"].as_array().unwrap()[1..].iter().all(|t| t["failed"] == true));
+        assert_eq!(report["issues"][0]["issue"], 7);
+        assert_eq!(report["issues"][0]["steps"][0]["detail"]["failed"], true);
+        assert_eq!(report["events"].as_array().unwrap().len(), 3);
+        assert!(report["events"][2]["line"].as_str().unwrap().contains("unattributed gate"));
+    }
+
+    #[test]
+    fn boundaries_accept_epoch_or_valid_utc_and_reject_invalid_civil_dates() {
+        assert_eq!(since("1970-01-01T00:00:00Z"), Ok(0));
+        assert_eq!(since("2026-10-25T11:42:00Z"), Ok(1_792_928_520));
+        for at in [0, 951_782_400, 1_792_928_520, 253_402_300_799] {
+            assert_eq!(since(&format!("{}Z", log::utc(at).replace(' ', "T"))), Ok(at));
+            assert_eq!(since(&at.to_string()), Ok(at));
+        }
+        for raw in [
+            "",
+            "-1",
+            "tomorrow",
+            "2026-02-29T00:00:00Z",
+            "2026-04-31T00:00:00Z",
+            "2026-10-25T24:00:00Z",
+            "2026-10-25T11:42:60Z",
+            "2026-10-25T11:42:00+00:00",
+            "18446744073709551615",
+        ] {
+            assert!(since(raw).is_err(), "{raw}");
+        }
+    }
 }

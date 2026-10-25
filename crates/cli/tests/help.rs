@@ -599,14 +599,17 @@ fn the_guide_carries_what_an_agent_needs_before_its_first_command() {
     ] {
         assert!(guide.contains(needed), "the guide lost {needed:?}");
     }
-    // What to run when something looks wrong is named first of the operator's.
+    // Watching is discoverable before the other views, and at the first-run guide.
     let operator = guide.lines().find(|line| line.starts_with("- **Run by the operator**"));
     let operator = operator.expect("the guide says who the operator is");
-    assert!(operator.contains("`doctor` is what to run when something looks wrong"), "{operator}");
+    assert!(operator.find("doctor --all --since").unwrap() < operator.find("`checkouts`").unwrap());
     // The operator's flow, in order.
     let first = guide.split("\n## What to run first").nth(1).unwrap();
     let at = |command: &str| first.find(&format!("`afkconvoy {command}`")).unwrap();
     assert!(at("config") < at("plan") && at("plan") < at("run"));
+    let watching = "afkconvoy doctor --all --since <until of your last look>";
+    assert!(first.split("## What a command answers").next().unwrap().contains(watching));
+    assert!(first.contains("without `--since`"));
     // Each group the guide describes is one the manual puts commands in.
     let described = guide.lines().filter_map(|line| line.strip_prefix("- **"));
     let described: Vec<_> = described.filter_map(|line| line.split_once("** — ")).collect();

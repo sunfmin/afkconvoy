@@ -183,7 +183,11 @@ fn doctor_all_answers_each_checkouts_doctor_and_the_hosts_findings_once() {
     let all = world.afk_in(&world.root, &["doctor", "--all", "--now", "1000"]);
     assert_eq!(all.code, 1, "{}", all.json);
     let answer = all.json;
-    assert_eq!(keys(&answer), BTreeSet::from(["checkouts", "findings", "host"].map(String::from)));
+    assert_eq!(
+        keys(&answer),
+        BTreeSet::from(["checkouts", "findings", "host", "until"].map(String::from))
+    );
+    assert!(answer["until"].is_null(), "an unreadable checkout withholds the next boundary");
     assert_eq!(
         keys(&answer["host"]),
         BTreeSet::from(["exclusive", "host_kit", "inspection", "installed"].map(String::from))
