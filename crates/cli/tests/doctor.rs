@@ -369,6 +369,26 @@ fn a_step_that_fails_tick_after_tick_is_critical() {
 }
 
 #[test]
+fn a_worker_that_fails_to_start_is_a_finding_after_one_tick() {
+    for knob in ["create_fails", "never_ready", "trust_sticks"] {
+        let world = World::new();
+        world.issue(3, &["ready-for-agent"]);
+        world.with_orca(|orca| {
+            orca[knob] = if knob == "create_fails" { json!([3]) } else { json!(true) };
+            if knob == "trust_sticks" {
+                orca["trust_prompt"] = json!(true);
+            }
+        });
+        run(&world, &["--instance", "alpha", "--ticks", "1", "--now", "1000"]);
+        let answer = doctor(&world, "1000").json;
+        let failures = found(&answer, "`dispatch #3` failed");
+        assert_eq!(failures.len(), 1, "{knob}: {answer}");
+        assert_eq!(failures[0]["fix"], "afkconvoy dispatch 3 --instance alpha");
+        assert_eq!(failures[0]["evidence"], answer["fleet"]["failed_steps"][0]["error"]);
+    }
+}
+
+#[test]
 fn an_orca_that_does_not_know_the_checkout_or_is_not_running_is_critical() {
     let world = World::new();
     world.with_orca(|orca| orca["repos"] = json!([]));

@@ -12,7 +12,7 @@ use crate::common;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use common::{World, git, write};
+use common::{World, commit, git, write};
 use serde_json::{Value, json};
 
 /// A team whose `dev` runs Codex on one model, whose `auditor` runs Codex as
@@ -551,6 +551,70 @@ fn a_codex_worker_is_shown_its_role_s_rules_the_repo_s_own_and_the_team_rules() 
 /// A stand-in Codex: it prints the directory it was started in, the user
 /// directory it was given and each of its arguments, a NUL after each.
 const STAND_IN_CODEX: &str = "#!/bin/sh\nprintf '%s\\0' \"$PWD\" \"$CODEX_HOME\" \"$@\"\n";
+
+/// An unbound repo whose host kit holds Codex alone, on one model.
+fn unbound_codex() -> World {
+    let world = World::new();
+    world.kit_command("codex", afkconvoy_core::harness::Harness::Codex.stock());
+    world.with_kit(|kit| {
+        kit["harnesses"].as_array_mut().unwrap().retain(|held| held["harness"] == "codex");
+    });
+    world.kit_models("codex", &["gpt-5.5"]);
+    world
+}
+
+/// Runs the actual start line and checks the trust and isolation Codex gets
+/// before it reads a worktree it has never seen.
+fn assert_worktree_trusted(world: &World, dir: &Path) {
+    let ran = under_codex(world, &format!("cd '{}' && {}", dir.display(), started(world, dir)));
+    assert_eq!(ran[0], dir.to_str().unwrap());
+    assert_eq!(ran[1], kept_host_user(world).to_str().unwrap(), "{ran:?}");
+    for config in [
+        format!("projects={{\"{}\"={{trust_level=\"trusted\"}}}}", dir.display()),
+        "features.memories=false".to_string(),
+        "skills.bundled.enabled=false".to_string(),
+    ] {
+        assert!(ran.windows(2).any(|pair| pair == ["--config", &config]), "{ran:?}");
+    }
+    assert!(ran.iter().any(|word| word == "--dangerously-bypass-hook-trust"), "{ran:?}");
+    assert!(ran.windows(2).any(|pair| pair == ["--model", "gpt-5.5"]), "{ran:?}");
+    assert_eq!(
+        std::fs::read_link(kept_host_user(world).join("auth.json")).unwrap(),
+        world.home().join(".codex/auth.json")
+    );
+}
+
+#[test]
+fn a_codex_worker_outside_a_role_trusts_its_worktree_without_editing_the_user_s_config() {
+    let world = unbound_codex();
+    let config = "model = \"theirs\"\n";
+    write(&world.home(), ".codex/config.toml", config);
+    write(&world.home(), ".codex/auth.json", "{}\n");
+    world.issue(7, &["ready-for-agent"]);
+    assert_eq!(tick(&world, 1000).ok()["errors"], json!([]));
+    assert_worktree_trusted(&world, &worktree(&world, 7));
+    assert_eq!(std::fs::read_to_string(world.home().join(".codex/config.toml")).unwrap(), config);
+}
+
+#[test]
+fn a_codex_train_worker_trusts_its_worktree_without_editing_the_user_s_config() {
+    let world = unbound_codex();
+    write(&world.home(), ".codex/auth.json", "{}\n");
+    world.set_gate("true");
+    world.issue(7, &["ready-for-agent"]);
+    assert_eq!(tick(&world, 1000).ok()["errors"], json!([]));
+    let dir = worktree(&world, 7);
+    commit(&dir, "built.txt", "built\n");
+    git(&dir, &["push", "-q", "origin", "HEAD"]);
+    world.pr(70, 7, &git(&dir, &["symbolic-ref", "--short", "HEAD"]));
+    assert_eq!(
+        world.afk_in(&dir, &["land", "--issue", "7", "--now", "1050"]).ok()["outcome"],
+        "joined"
+    );
+    assert_eq!(tick(&world, 1090).ok()["errors"], json!([]));
+    assert_worktree_trusted(&world, &world.root.join("wt/convoy-train"));
+    assert!(!world.home().join(".codex/config.toml").exists());
+}
 
 /// Runs `line`, the line a Codex worker was started with, with the stand-in
 /// Codex for `codex` → what the stand-in printed. Nothing of this process's
