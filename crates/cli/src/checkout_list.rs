@@ -7,8 +7,10 @@
 //! next. Changes take the lock beside it, which keeps out a change made by
 //! another thread of the same process as well as by another process.
 
+use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard};
 
 use afkconvoy_core::checkouts;
 use afkconvoy_core::config::RepoName;
@@ -54,6 +56,40 @@ pub struct Entry {
     /// checkout's own: none, and it is its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tracker: Option<RepoName>,
+}
+
+/// What the `run` of a checkout the list holds no entry of yet asked of it,
+/// in this process: what its first tick puts on the list with it — a
+/// checkout whose first tick has not ended, or that a `run --foreground`
+/// holds, goes by it until then.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Asked {
+    /// `--concurrency` (`concurrency`).
+    pub concurrency: Option<NonZeroUsize>,
+    /// `--tracker` (`crate::tracker`).
+    pub tracker: Option<RepoName>,
+}
+
+/// What each `run` asked in this process, by its checkout's root.
+static ASKED: Mutex<BTreeMap<PathBuf, Asked>> = Mutex::new(BTreeMap::new());
+
+/// What each `run` asked in this process. Whoever reads it beside the list
+/// holds it while they read the list, and a first tick forgets what was
+/// asked (`forget`) only once the list holds it: a reader finds it in one or
+/// the other.
+pub fn asked() -> MutexGuard<'static, BTreeMap<PathBuf, Asked>> {
+    ASKED.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// What the `run` of the checkout at `root` asked in this process.
+pub fn asked_of(root: &Path) -> Asked {
+    asked().get(root).cloned().unwrap_or_default()
+}
+
+/// Forgets what the `run` of the checkout at `root` asked in this process:
+/// once its entry on the list holds it, or as a new start asks anew.
+pub fn forget(root: &Path) {
+    asked().remove(root);
 }
 
 /// A host's checkout list: its file, and the lock beside it.
@@ -138,13 +174,50 @@ pub fn tracker_of(repo: &Repo) -> Result<Tracker> {
 /// what is done next: as the entry of `repo` itself says it, or of its main
 /// checkout, which every worktree of it shares — a worker's command acts on
 /// the issues its fleet does. One the list holds no entry of, or whose entry
-/// says none, is its own repo's.
+/// says none, is its own repo's. Another repo's issues are the checkout's
+/// by its repo label, which names the repo its remote names (`named_repo`).
 pub fn tracker_on(list: &List, repo: &Repo) -> Result<Tracker> {
-    let listed = list.read()?;
+    match said_tracker(list, repo)? {
+        None => Ok(Tracker::Own),
+        Some(tracker) => Ok(Tracker::Other { tracker, repo: named_repo(repo)? }),
+    }
+}
+
+/// The tracker the checkout `repo` says on the host of `list`, with its
+/// entry or its main checkout's — where the list holds neither, what its
+/// `run` asked in this process: none, and it is its own repo.
+pub fn said_tracker(list: &List, repo: &Repo) -> Result<Option<RepoName>> {
     let main = repo.main_checkout()?;
-    let of = |entry: &Entry| entry.checkout == repo.dir || entry.checkout == main;
-    let entry = listed.checkouts.into_iter().find(of);
-    Ok(entry.and_then(|entry| entry.tracker).map_or(Tracker::Own, Tracker::Other))
+    let of = |root: &Path| root == repo.dir || root == main;
+    let asked = asked();
+    let listed = list.read()?;
+    Ok(match listed.checkouts.into_iter().find(|entry| of(&entry.checkout)) {
+        Some(entry) => entry.tracker,
+        None => {
+            asked.iter().find(|(root, _)| of(root)).and_then(|(_, asked)| asked.tracker.clone())
+        }
+    })
+}
+
+/// The repo the checkout `repo` is of, as GitHub names it, `owner/name`:
+/// what its remote `origin` is set to (`checkouts::repo_of`), in lower case,
+/// before any `insteadOf` of git's config rewrites it. An error where that
+/// names no repo of a host of git — a path on this one.
+pub fn named_repo(repo: &Repo) -> Result<RepoName> {
+    let set = repo.try_git(&["config", "--get", &format!("remote.{REMOTE}.url")])?;
+    let url = set.stdout.trim();
+    let named = checkouts::repo_of(url).and_then(|repo| {
+        let (_, path) = repo.split_once('/')?;
+        RepoName::read(path)
+    });
+    named.ok_or_else(|| {
+        anyhow::anyhow!(
+            "the remote `{REMOTE}` of {} is {url:?}, which names no repo on GitHub: in another \
+             repo its issues carry its repo label, `repo:<owner>/<repo>`, which names the repo \
+             its remote does",
+            repo.dir.display()
+        )
+    })
 }
 
 /// The repo the checkout `repo` is of, as its remote `origin` names it
@@ -269,10 +342,14 @@ mod tests {
         };
         git(&["init", "--quiet", "w"]);
         git(&["-C", "w", "commit", "--quiet", "--allow-empty", "-m", "initial"]);
+        git(&["-C", "w", "remote", "add", "origin", "git@github.com:Acme/Dev.git"]);
         git(&["-C", "w", "worktree", "add", "--quiet", "../wt"]);
         let (checkout, worktree) = (Repo::new(root.join("w")), Repo::new(root.join("wt")));
         let list = List::at(root.join(FILE));
-        let other = Tracker::Other(RepoName::read("acme/tracker").unwrap());
+        let other = Tracker::Other {
+            tracker: RepoName::read("acme/tracker").unwrap(),
+            repo: RepoName::read("acme/dev").unwrap(),
+        };
 
         // none on the list, or none said: its own repo
         assert_eq!(tracker_on(&list, &checkout).unwrap(), Tracker::Own);

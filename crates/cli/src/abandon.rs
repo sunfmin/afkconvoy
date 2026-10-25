@@ -78,16 +78,18 @@ fn route(fleet: &Fleet, stopped: &StoppedOn) -> Result<TrainRoute> {
 fn abandon_train(fleet: &mut Fleet, me: &Me, stopped: &StoppedOn, silent: Silent) -> Result<Value> {
     let train = stopped.train;
     let prs = fleet.gh.open_prs()?;
-    let joins = train.joins(&fleet.repo)?;
+    let joins = train.joins(&fleet.repo, &fleet.gh.tracker)?;
     let mut riders = vec![];
     let mut riding = vec![];
     let mut inspections = vec![];
     for join in on_train(&joins, &prs) {
         // An inspection's PR has nobody to join it again: the fleet does, below.
-        let Some(number) = join.issue() else {
+        if join.is_inspection() {
             inspections.push(join);
             continue;
-        };
+        }
+        // A PR of another tracker's issue is its own fleet's, as a peer's is.
+        let Some(number) = join.issue() else { continue };
         // A peer's PR on the train is its own fleet's: joining again there, from its next tick.
         let Some(claim) = fleet.scan.claim_of(number).filter(|c| c.is_held_by(&me.instance)) else {
             continue;
@@ -134,7 +136,8 @@ fn abandon_train(fleet: &mut Fleet, me: &Me, stopped: &StoppedOn, silent: Silent
     let mut rejoined = vec![];
     for join in inspections {
         let Some(pr) = prs.iter().find(|pr| pr.number == join.pr) else { continue };
-        let again = join_again(&fleet.repo, &fleet.config, pr, &join.of, fleet.now)?;
+        let tracker = &fleet.gh.tracker;
+        let again = join_again(&fleet.repo, &fleet.config, tracker, pr, &join.of, fleet.now)?;
         rejoined.push(json!({"pr": join.pr, "joined": again}));
     }
     Ok(json!({"action": "abandoned", "train": train.tip, "issues": done.again,

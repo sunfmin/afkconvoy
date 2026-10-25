@@ -14,6 +14,7 @@ use afkconvoy_core::patrol::{
 };
 use afkconvoy_core::record::fleet_number;
 use afkconvoy_core::takeover::{held, holds};
+use afkconvoy_core::tracker::{Claimed, Tracker};
 use anyhow::{Result, bail};
 use serde_json::{Value, json};
 
@@ -28,9 +29,14 @@ pub struct Me {
 
 /// Every claim and heartbeat the remote has, and what it records of the
 /// patrols, as one fetch saw them. A write this process makes is carried into
-/// it, so a read after a write sees it.
-#[derive(Debug, Default)]
+/// it, so a read after a write sees it. Its claims on issues are those of the
+/// issues of `tracker`: a claim on an issue of another tracker is another
+/// fleet's, and is no claim here, on an issue or on a run.
+#[derive(Debug)]
 pub struct Scan {
+    /// The tracker whose issues its claims are on, and which names the ref of
+    /// each claim it writes.
+    pub tracker: Tracker,
     pub claims: Vec<Claim>,
     pub heartbeats: BTreeMap<String, Beat>,
     /// The claims on runs — a patrol's, the proposal of a precedent: one for
@@ -52,29 +58,42 @@ pub struct Ask {
 }
 
 impl Scan {
-    /// Reads every claim and heartbeat record off the remote.
+    /// Reads every claim and heartbeat record off the remote, the claims on
+    /// issues those of the tracker the checkout `repo` says on this host.
     /// An error when the remote cannot be read: a fleet whose claims are
     /// unreadable must not look like one holding none.
     pub fn read(repo: &Repo) -> Result<Scan> {
-        let layout = repo.layout();
-        Ok(Scan::among(layout, repo.remote_records(&layout.every(""))?))
+        let (layout, tracker) = (repo.layout(), crate::checkout_list::tracker_of(repo)?);
+        Ok(Scan::among(layout, tracker, repo.remote_records(&layout.every(""))?))
     }
 
     /// The claims, heartbeats and runs among `records`: the fleet's refs
-    /// under `layout`, as one read of the remote saw them.
-    pub fn among(layout: Layout, records: Vec<RemoteRecord>) -> Scan {
-        let mut scan = Scan::default();
+    /// under `layout`, as one read of the remote saw them, its claims on
+    /// issues those of `tracker`.
+    pub fn among(layout: Layout, tracker: Tracker, records: Vec<RemoteRecord>) -> Scan {
+        let mut scan = Scan {
+            tracker,
+            claims: vec![],
+            heartbeats: BTreeMap::new(),
+            runs: vec![],
+            last_runs: BTreeMap::new(),
+            asks: BTreeMap::new(),
+        };
         // run key → the claim its worker declared over.
         let mut over: BTreeMap<String, String> = BTreeMap::new();
         for record in records {
             let Some(kept) = layout.kept(&record.name) else { continue };
             if let Some(name) = kept.strip_prefix(CLAIM_KIND) {
-                if let Some(number) = fleet_number(name) {
-                    scan.claims.push(Claim::read(number, &record.subject, record.sha));
-                } else {
-                    let owner = Owner::read(&record.subject);
-                    let (key, sha) = (name.to_string(), record.sha);
-                    scan.runs.push(RunClaim { key, owner, sha, over: false });
+                match scan.tracker.claimed(name) {
+                    Claimed::Issue(number) => {
+                        scan.claims.push(Claim::read(number, &record.subject, record.sha));
+                    }
+                    Claimed::Elsewhere => {}
+                    Claimed::Run => {
+                        let owner = Owner::read(&record.subject);
+                        let (key, sha) = (name.to_string(), record.sha);
+                        scan.runs.push(RunClaim { key, owner, sha, over: false });
+                    }
                 }
             } else if let Some(instance) = kept.strip_prefix(HEARTBEAT_KIND)
                 && let Some(beat) = read_heartbeat(&record.subject, record.sha.clone())
@@ -280,7 +299,7 @@ fn put(repo: &Repo, scan: &mut Scan, me: &Me, refname: &str, how: Take) -> Resul
 /// it was won. A lost race is an answer (`won: false`); a push that failed for
 /// any other reason is an error.
 pub fn take(repo: &Repo, scan: &mut Scan, me: &Me, number: u64, how: Take) -> Result<Value> {
-    let refname = claim_ref(repo.layout(), number);
+    let refname = claim_ref(repo.layout(), &scan.tracker, number);
     match put(repo, scan, me, &refname, how)? {
         Put::Won { sha, subject, .. } => {
             scan.written(number, Some(Claim::read(number, &subject, sha.clone())));
@@ -440,7 +459,7 @@ fn unput(repo: &Repo, refname: &str, expected: &str) -> Result<()> {
 /// Deletes the claim ref of issue `number`, only while it still points at
 /// `expected` (`unput`).
 pub fn delete(repo: &Repo, scan: &mut Scan, number: u64, expected: &str) -> Result<Value> {
-    let refname = claim_ref(repo.layout(), number);
+    let refname = claim_ref(repo.layout(), &scan.tracker, number);
     unput(repo, &refname, expected)?;
     scan.written(number, None);
     Ok(json!({"released": true, "issue": number, "ref": refname}))
@@ -454,7 +473,8 @@ pub fn release(repo: &Repo, scan: &mut Scan, me: &InstanceId, number: u64) -> Re
             delete(repo, scan, number, &sha)
         }
         None => {
-            Ok(json!({"released": true, "issue": number, "ref": claim_ref(repo.layout(), number)}))
+            let refname = claim_ref(repo.layout(), &scan.tracker, number);
+            Ok(json!({"released": true, "issue": number, "ref": refname}))
         }
     }
 }

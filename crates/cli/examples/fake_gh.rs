@@ -197,6 +197,13 @@ fn unsupported(st: &State) -> ! {
     st.finish("", 1, &format!("fake gh: unsupported call {:?}\n", st.argv))
 }
 
+/// Whether `issue` carries `label`: GitHub tells labels apart by their
+/// letters, not their case.
+fn carries(issue: &Value, label: &str) -> bool {
+    let labels = issue["labels"].as_array().into_iter().flatten();
+    labels.filter_map(Value::as_str).any(|had| had.eq_ignore_ascii_case(label))
+}
+
 fn is_open(row: &Value) -> bool {
     row["state"].as_str().unwrap_or("open") == "open"
 }
@@ -412,14 +419,14 @@ fn api(st: &mut State) -> ! {
         ["issues"] if query.contains("state=closed") => {
             assert!(st.has("--paginate"), "{:?}", st.argv);
             assert_eq!(jq, Some(CLOSED_JQ), "fake gh: unsupported jq");
-            let label = query.split('&').find_map(|field| field.strip_prefix("labels="));
-            let label = unescaped(label.expect("the closed issues of one label"));
+            let labels = query.split('&').find_map(|field| field.strip_prefix("labels="));
+            let labels = unescaped(labels.expect("the closed issues of one label"));
             let rows: Vec<String> = st.doc["issues"]
                 .as_array()
                 .unwrap()
                 .iter()
                 .filter(|issue| !is_open(issue))
-                .filter(|issue| issue["labels"].as_array().unwrap().contains(&json!(label)))
+                .filter(|issue| labels.split(',').all(|label| carries(issue, label)))
                 .map(|issue| {
                     json!({"number": issue["number"], "at": issue["closed_at"]}).to_string()
                 })
@@ -429,13 +436,13 @@ fn api(st: &mut State) -> ! {
         ["issues"] if query.contains("state=all") => {
             assert!(st.has("--paginate"), "{:?}", st.argv);
             assert_eq!(jq, Some(CARRYING_JQ), "fake gh: unsupported jq");
-            let label = query.split('&').find_map(|field| field.strip_prefix("labels="));
-            let label = unescaped(label.expect("the issues of one label"));
+            let labels = query.split('&').find_map(|field| field.strip_prefix("labels="));
+            let labels = unescaped(labels.expect("the issues of one label"));
             let rows: Vec<String> = st.doc["issues"]
                 .as_array()
                 .unwrap()
                 .iter()
-                .filter(|issue| issue["labels"].as_array().unwrap().contains(&json!(label)))
+                .filter(|issue| labels.split(',').all(|label| carries(issue, label)))
                 .map(|issue| {
                     json!({"number": issue["number"], "open": is_open(issue),
                         "closed_at": issue["closed_at"]})
@@ -622,11 +629,14 @@ fn open_issues(st: &State) -> ! {
     for filled in ["owner={owner}", "repo={repo}"] {
         assert!(st.argv.iter().any(|arg| arg == filled), "{:?}", st.argv);
     }
+    // `labels`, where the query names it: those carrying any of them.
+    let labels: Vec<&str> = st.argv.iter().filter_map(|a| a.strip_prefix("labels[]=")).collect();
     let rows: Vec<String> = st.doc["issues"]
         .as_array()
         .unwrap()
         .iter()
         .filter(|issue| is_open(issue))
+        .filter(|issue| labels.is_empty() || labels.iter().any(|label| carries(issue, label)))
         .map(|issue| {
             let number = issue["number"].to_string();
             let edges: Vec<Value> = blockers(st, &number)

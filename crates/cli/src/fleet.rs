@@ -95,7 +95,7 @@ impl Fleet {
         let config = crate::concurrency::config_of(&repo)?;
         let chosen = crate::switch::chosen(&repo)?;
         let listing = repo.listing(&config.base_branch)?;
-        let scan = Scan::among(repo.layout(), listing.records.clone());
+        let scan = Scan::among(repo.layout(), gh.tracker.clone(), listing.records.clone());
         Ok(Fleet {
             repo,
             config,
@@ -263,13 +263,13 @@ impl Fleet {
         }
         // What is on the train is read off the train's own commits.
         let train = Train::listed(&self.repo, &self.config, &self.listing)?;
-        let joins = train.joins(&self.repo)?;
+        let joins = train.joins(&self.repo, &self.gh.tracker)?;
         // …and what a cut landing left open, off the base branch.
         let mut landed = vec![];
         for claim in &self.scan.claims {
             if me.is_some_and(|me| claim.is_held_by(me))
                 && !closed.contains(&claim.number)
-                && cut_landing_of(&self.repo, &train.base, claim, prs)?.is_some()
+                && cut_landing_of(&self.repo, &self.gh.tracker, &train.base, claim, prs)?.is_some()
             {
                 landed.push(claim.number);
             }
@@ -277,7 +277,7 @@ impl Fleet {
         let riding = on_train(&joins, prs);
         let joined: Vec<u64> = riding.iter().filter_map(|join| join.issue()).collect();
         let inspections: Vec<u64> =
-            riding.iter().filter(|join| join.issue().is_none()).map(|join| join.pr).collect();
+            riding.iter().filter(|join| join.is_inspection()).map(|join| join.pr).collect();
         // A PR is the fleet's own when its branch is one recorded on the issue.
         let mut kept = vec![];
         for issue in issues {

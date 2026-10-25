@@ -11,29 +11,17 @@
 //! or a `run --foreground` holds it — goes by what its `run` asked, kept in
 //! that process alone until its first tick puts it on the list with it.
 
-use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
-use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard};
+use std::path::Path;
 
 use afkconvoy_core::config::Config;
 use anyhow::Result;
 use serde_json::{Value, json};
 
-use crate::checkout_list::List;
+use crate::checkout_list::{List, asked};
 use crate::config;
 use crate::git::Repo;
 use crate::host_settings::To;
-
-/// What the `run` of each checkout the list holds no entry of asked, in this
-/// process, by the checkout's root. Whoever reads it beside the list holds
-/// it while they read the list, and its first tick forgets it only once the
-/// list holds it (`forget`): a reader finds it in one or the other.
-static ASKED: Mutex<BTreeMap<PathBuf, NonZeroUsize>> = Mutex::new(BTreeMap::new());
-
-fn asked() -> MutexGuard<'static, BTreeMap<PathBuf, NonZeroUsize>> {
-    ASKED.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
-}
 
 /// `--concurrency` as said: a whole number, at least 1, or `default`.
 pub fn claims_or_default(said: &str) -> Result<To<NonZeroUsize>, String> {
@@ -63,7 +51,7 @@ pub fn own(list: &List, root: &Path) -> Result<Option<NonZeroUsize>> {
     let listed = list.read()?;
     Ok(match listed.checkouts.iter().find(|entry| entry.checkout == root) {
         Some(entry) => entry.concurrency,
-        None => asked.get(root).copied(),
+        None => asked.get(root).and_then(|asked| asked.concurrency),
     })
 }
 
@@ -82,22 +70,13 @@ pub fn say(list: &List, root: &Path, to: To<NonZeroUsize>) -> Result<()> {
 /// process alone: `Default` asks none. What a checkout on the list says
 /// with its entry holds over it.
 pub fn ask(root: &Path, to: To<NonZeroUsize>) {
-    match to.kept() {
-        Some(own) => asked().insert(root.to_path_buf(), own),
-        None => asked().remove(root),
-    };
+    asked().entry(root.to_path_buf()).or_default().concurrency = to.kept();
 }
 
 /// What the `run` of the checkout at `root` asked in this process, where it
 /// asked one: what its first tick puts on the list with it.
 pub fn asked_of(root: &Path) -> Option<NonZeroUsize> {
-    asked().get(root).copied()
-}
-
-/// Forgets what the `run` of the checkout at `root` asked in this process,
-/// once its entry on the list holds it.
-pub fn forget(root: &Path) {
-    asked().remove(root);
+    crate::checkout_list::asked_of(root).concurrency
 }
 
 /// The concurrency `config` goes by, as `plan`, `doctor` and `checkouts` say
@@ -120,7 +99,7 @@ pub fn json_of(repo: &Repo) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::checkout_list::Entry;
+    use crate::checkout_list::{Entry, forget};
     use crate::instance::Named;
 
     fn of(n: usize) -> NonZeroUsize {

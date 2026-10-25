@@ -43,7 +43,8 @@ pub fn checkouts() -> Result<Value> {
 /// says when it ended, `ticked`, and whether it was idle, the claims it held
 /// and the frontier it left as it did: null with no tick, and the three
 /// where it failed whole. Its concurrency is the one its fleet instance goes
-/// by (`concurrency::json_of`), read from its config and its entry. Its repo
+/// by (`concurrency::json_of`), read from its config and its entry; its
+/// tracker the one its entry says, null where it says none. Its repo
 /// and its tick log are null where the checkout is no git checkout any more,
 /// and its concurrency {error}.
 fn standing(listed: &Entry, holding: Option<&Holding>) -> Value {
@@ -85,6 +86,7 @@ fn standing(listed: &Entry, holding: Option<&Holding>) -> Value {
             Some(repo) => concurrency::json_of(repo),
             None => json!({"error": format!("{} is no git checkout", root.display())}),
         },
+        "tracker": listed.tracker,
         "ticked": last.map(|(at, _)| at),
         "tick_log": tick_log.map(|log| log.file),
     })
