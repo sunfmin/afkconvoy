@@ -589,7 +589,7 @@ The checkout list: checkouts.json in the cache directory, kept on this host and 
 
 The checkout's concurrency, with its entry: how many claims its fleet instance holds at work at once on this host. `--concurrency 6` says it — a whole number, at least 1 — and `--concurrency default` changes it back to the default, 3; a `run` that names none leaves it as it is. Until the checkout says one, its fleet instance holds 3. It is said here and nowhere else: the repo config's `concurrency` is read no more, and `afkconvoy doctor` gives the `run` that keeps what one still says. Unlike the `--instance`, `--host` and `--worker-no-proxy` it named, which hold from the start of its fleet instance, it is read at each tick, as the host settings are: a change holds at the next tick, and the fleet instance is never started again for it. Lowered below the claims held, it ends no worker: those claims are worked to the end — the tick's line counts those past it, as `holding 2/2 · 1 past the bound` — and no new one is taken until fewer are held. A checkout the list does not hold yet goes by it from its first tick, which puts it on the list with it. A host runner started again keeps it; `plan`, `doctor` and `checkouts` say the one in force and who says it.
 
-The checkout's tracker, with its entry, read at each tick as its concurrency is: the repo its fleet reads and writes its issues in — the issues, their labels, comments, blockers, escalations and closing — while PRs, branches, the gate and the landing train stay the checkout's own repo's (`docs/adr/0027`). `--tracker me/issues` says it, and `--tracker default`, or the checkout's own repo, says none; a `run` that names none leaves it as it is. Until the checkout says one, its tracker is its own repo. A tracker another repo than the checkout's holds the issues of many repos: the fleet works the open issues there that carry its repo's repo label, `repo:<owner>/<repo>`, and the ready label; every issue it or a worker opens there carries the repo label; and a PR or a join commit names its issue `me/issues#7`, never `#7`, which is the checkout's own repo's. `run` makes the repo label, and the ready, escalate and lock labels of the repo config, in the tracker where it lacks them. It refuses to change the tracker while the checkout's fleet holds a claim on an issue of the tracker it had, or the landing train carries a PR of one, naming them, and changes nothing: run it again once they are done. The issues of the tracker it had stay there. Keep the tracker private where the repo is public: whoever can comment on an issue writes what a worker reads. `plan`, `doctor`, `checkouts` and the panel say the tracker.
+The checkout's tracker, with its entry, read at each tick as its concurrency is: the repo its fleet reads and writes its issues in — the issues, their labels, comments, blockers, escalations and closing — while PRs, branches, the gate and the landing train stay the checkout's own repo's (`docs/adr/0027`). `--tracker me/issues` says it, and `--tracker default`, or the checkout's own repo, says none; a `run` that names none leaves it as it is. Until the checkout says one, its tracker is its own repo. A tracker another repo than the checkout's holds the issues of many repos: the fleet works the open issues there that carry its repo's repo label, `repo:<owner>/<repo>`, and the ready label — in a bound repo, a flow label; every issue it or a worker opens there carries the repo label, and `intake` and `lock` give it to one that lacks it; and a PR or a join commit names its issue `me/issues#7`, never `#7`, which is the checkout's own repo's. `run` makes the repo label, and the ready, escalate and lock labels of the repo config, in the tracker where it lacks them. It refuses to change the tracker while the checkout's fleet holds a claim on an issue of the tracker it had, or the landing train carries a PR of one, naming them, and changes nothing: run it again once they are done. The issues of the tracker it had stay there. Keep the tracker private where the repo is public: whoever can comment on an issue writes what a worker reads. `plan`, `doctor`, `checkouts` and the panel say the tracker.
 
 The host settings, in the same file: what this host says for every fleet instance on it — whether it may be put to sleep (`--no-host-sleep`, `--host-sleep`) and in which hours of its local time (`--host-sleep-hours`), the limits past which a worker is hot (`--hot-cores`, `--hot-memory`, `--hot-written`), the shares admission holds back at (`--admit-load`, `--admit-memory`, `--admit-disk`, `--admit-inspect-after`) and the panel's port (`--panel`). A `run` that names one — by its flag, or by the variable of its environment that stands for it, the flag winning: AFKCONVOY_NO_HOST_SLEEP=true, AFKCONVOY_HOST_SLEEP_HOURS, AFKCONVOY_HOT_CORES, AFKCONVOY_HOT_MEMORY, AFKCONVOY_HOT_WRITTEN, AFKCONVOY_ADMIT_LOAD, AFKCONVOY_ADMIT_MEMORY, AFKCONVOY_ADMIT_DISK, AFKCONVOY_ADMIT_INSPECT_AFTER — changes it for the host before it hands its checkout over. Every fleet instance on the host reads them as it goes — admission at each tick, the hot limits at each sample, host sleep at each check — so a change holds for all of them at once, and none is started again for it; the host runner reads the panel's port as it starts. A `run` that names none changes none, and nothing else changes them: `tick`, `plan` and `doctor` read them as they are, and a host runner started again keeps them. `--host-sleep` changes `--no-host-sleep` back, and `default` changes any other back to its default (`--hot-cores default`, `--host-sleep-hours default`). `afkconvoy doctor` says those in force, as `host.settings`.
 
@@ -1804,9 +1804,9 @@ Whoever hands the fleet work: a human, or the agent a human is talking to, with 
 
 ##### What it reads and writes
 
-It reads the config of the checkout and the labels the repo has. In a bound repo it also reads the team as `afkconvoy check` does — the team's files and every role's repo, from GitHub at the head of each default branch — and, to count, the comments of every open issue that carries a flow label.
+It reads the config of the checkout and the labels its tracker has — the checkout's own repo, until its host says another (`afkconvoy run --tracker`). In a bound repo it also reads the team as `afkconvoy check` does — the team's files and every role's repo, from GitHub at the head of each default branch — and, to count, the comments of every open issue that carries a flow label.
 
-It writes one thing: each label its lines name that the repo lacks. In a bound repo that is the flow label of every workflow of the team — `flow:<workflow>`, or the one its file's `label` names; in an unbound one, the ready label. It puts no label on any issue and opens none. Everything is read first: a team with a fault creates nothing.
+It writes one thing: each label its lines name that the tracker lacks. In a bound repo that is the flow label of every workflow of the team — `flow:<workflow>`, or the one its file's `label` names; in an unbound one, the ready label. It puts no label on any issue and opens none. Everything is read first: a team with a fault creates nothing.
 
 ##### What it answers
 
@@ -1820,7 +1820,7 @@ In a bound repo:
   - `description`: what the workflow is for and what an issue of it holds: the prose of its file, workflows/<name>.md, above the yaml block. Empty when the file says nothing there — `afkconvoy check` warns of that. Choose the workflow by it
   - `first`: the stage an issue enters at, {"stage", "by", "do"}: the role that performs it and the skill — `by` is `human`, and `do` null, where a human's decision is waited for
   - `ends`: where its passes end: `land`, the landing train — its issues end in a PR landed on the base branch — `done`, nothing more to do, or both, by different stages
-  - `line`: the line that opens an issue into it. Give it a title and a file holding the body
+  - `line`: the line that opens an issue into it, in the tracker. Give it a title and a file holding the body
 - `keep_off`: the labels that keep an issue from being worked as one of a workflow, {"epic_labels", "escalate_label", "lock_label"}: an issue carrying an epic label is never dispatched; the escalate label is the fleet's to put on, when it hands an issue to a human; and an open issue carrying the lock label is a fleet lock, which stops all other work (`afkconvoy lock --help`)
 - `intake`: {"open", "limit"}: the open issues workers took in, against the repo's `intake_limit`. An issue a human opens with a flow label is outside both: nothing refuses it
 - `created`: the flow labels this run created on the repo; empty when it had them all
@@ -1842,6 +1842,7 @@ Errors, as {"error": …} with a non-zero exit: the team has a fault — {"error
 - Opening an issue with `gh`, or labelling one, wakes no fleet: the fleet takes it up at its next tick — within 90 seconds while it has work, within 25 minutes once it has been idle 3 ticks in a row. `afkconvoy wake <checkout>`, on the fleet's host, starts that tick now: run it once, after the last issue you open.
 - An issue follows one workflow: put one flow label on it. With several it follows none, and no stage of any is performed on it.
 - The flow label is what hands the issue over. Leave it off an issue that is not ready to be worked, and put it on later: `gh issue edit <n> --add-label <label>`.
+- Where the tracker is another repo, the line opens the issue there, `--repo <owner>/<tracker>`, with this repo's repo label, `repo:<owner>/<repo>`: an issue there without it is no issue of this repo, and its fleet never works it. Name the tracker in every `gh issue` command (`--repo`): run in the checkout, `gh` acts on the checkout's own repo.
 - A workflow whose `first` is `by: human` starts by waiting for a human: the fleet does nothing on its issue until one declares a verdict (`afkconvoy verdict --help`).
 - It answers the team as pushed to its default branch. A workflow added in a checkout of the team is not answered, and its label not created, until it is pushed.
 - A label of a workflow the team no longer has is left on the repo: this command creates labels and removes none.
@@ -2194,7 +2195,9 @@ A worker, in its own worktree: it starts in its role's directory, so it changes 
 
 ##### What it reads and writes
 
-It reads the config of the checkout, the team it names, the issue, and — to count — the comments of every open issue that carries a flow label. It writes on the issue, in this order: a blocked-by edge to each issue `--blocked-by` names that GitHub does not record yet; one comment, the intake record, whose marker carries the workflow, the role and the issue the worker was on — or the patrol it ran, or, of the train worker's, `by=train` and nothing else; then the workflow's flow label, `flow:<workflow>`. Nothing but this command writes that format. Then it wakes the fleet, as `afkconvoy wake` does: the issue is on the frontier at the next tick — or, with an open issue to wait for, once that has closed. The edges go first, so the issue is never on the frontier ahead of what blocks it.
+It reads the config of the checkout, the team it names, the issue, and — to count — the comments of every open issue that carries a flow label. It writes on the issue, in this order: a blocked-by edge to each issue `--blocked-by` names that GitHub does not record yet; one comment, the intake record, whose marker carries the workflow, the role and the issue the worker was on — or the patrol it ran, or, of the train worker's, `by=train` and nothing else; then, where the checkout's tracker is another repo (`afkconvoy run --tracker`) and the issue lacks it, this repo's repo label, `repo:<owner>/<repo>`; then the workflow's flow label, `flow:<workflow>`. Nothing but this command writes that format. Then it wakes the fleet, as `afkconvoy wake` does: the issue is on the frontier at the next tick — or, with an open issue to wait for, once that has closed. The edges go first, so the issue is never on the frontier ahead of what blocks it.
+
+The issue, the issues it waits for and every issue it counts are the tracker's: the checkout's own repo, or the one its host says, where it counts only the issues that carry this repo's repo label.
 
 The limit. Before it writes anything it counts the open issues taken in by workers: those that carry a flow label and an intake record for it. With that count at the repo's `intake_limit` (see `afkconvoy config --help`) it refuses and writes nothing. The count is taken from the records each time and stored nowhere, so closing such an issue makes room. An issue a human labelled has no record: it is never counted, and nothing here refuses a human's label.
 
@@ -2214,7 +2217,7 @@ The limit. Before it writes anything it counts the open issues taken in by worke
 - taken: false: the issue follows that workflow already: nothing was written
 - `standing`: how it came in: {"by": "worker", "role", "from", "url"} with the comment of its intake record — `patrol` in place of `from` where a patrol's worker took it in, "train": true in place of both where the train worker did — or {"by": "human"}
 
-Errors, as {"error": …} with a non-zero exit: the intake limit is reached — the error says the count and the limit; the team has no workflow of that name — the error lists the ones it has; the team has no such role, or no such patrol; the repo is unbound; the issue is closed, is a pull request, or already carries the flow label of another workflow; the role, or both the issue the worker is on and its patrol, is neither in the environment nor given, and `--train` is not given; `--train` with a role, an issue or a patrol, given or in the environment; both `--from` and `--patrol` are given; `--blocked-by` names the issue itself, a pull request, or an issue that cannot be read; the team has a fault; "is not in a git checkout".
+Errors, as {"error": …} with a non-zero exit: the intake limit is reached — the error says the count and the limit; the team has no workflow of that name — the error lists the ones it has; the team has no such role, or no such patrol; the repo is unbound; the issue is closed, is a pull request, already carries the flow label of another workflow, or carries the repo label of another repo — it is that repo's to work — or, in a repo that is its own tracker, any repo label; the role, or both the issue the worker is on and its patrol, is neither in the environment nor given, and `--train` is not given; `--train` with a role, an issue or a patrol, given or in the environment; both `--from` and `--patrol` are given; `--blocked-by` names the issue itself, a pull request, or an issue that cannot be read; the team has a fault; "is not in a git checkout".
 
 ##### What trips you up
 
@@ -2279,6 +2282,8 @@ A worker, in its own worktree: a patrol that finds the base branch red, or a sta
 
 It reads the issue and the config's `lock_label` (default fleet-lock). On an open issue that does not carry the label it writes one comment — the record of the role that raised the lock, read from `--role` or from the worker's environment (AFKCONVOY_ROLE); a worker of an unbound repo has none — and then puts the label on the issue. Then it wakes the fleet, as `afkconvoy wake` does.
 
+The issue is the tracker's: the checkout's own repo, or the one its host says (`afkconvoy run --tracker`). There a lock holds the fleets of the repos whose repo label it carries, `repo:<owner>/<repo>`, and no other repo's fleet that works the same tracker: before the lock label it puts this repo's repo label on an issue that lacks it.
+
 It claims nothing and starts nothing. The lock issue is worked as any issue is: in a bound repo once it carries a flow label, in an unbound one once it carries the ready label. Nothing here takes a lock off: closing the issue ends it — landing the PR that closes it does.
 
 ##### What it answers
@@ -2292,7 +2297,7 @@ It claims nothing and starts nothing. The lock issue is worked as any issue is: 
 - `locks`: every fleet lock standing now, lowest number first
 - `woke`: whether a `run` on this host was told, as `afkconvoy wake` answers
 
-Errors, as {"error": …} with a non-zero exit: the issue is closed; there is no such issue; the config cannot be read; "is not in a git checkout".
+Errors, as {"error": …} with a non-zero exit: the issue is closed; there is no such issue; the issue carries the repo label of another repo — or, in a repo that is its own tracker, any repo label; the config cannot be read; "is not in a git checkout".
 
 ##### What trips you up
 
@@ -4241,7 +4246,7 @@ The repo a fleet reads and writes its issues in: its checkout's own, until the c
 _Avoid_: issue repo, backlog (all the issues a repo has open), project (a GitHub Project)
 
 **Repo label**:
-`repo:<owner>/<repo>`: what makes an issue of a tracker one of that repo's. A fleet whose tracker is another repo works only the issues there that carry its repo's; one carrying two is no fleet's. In a repo that is its own tracker, an issue carrying one is the repo's it names.
+`repo:<owner>/<repo>`: what makes an issue of a tracker one of that repo's. A fleet whose tracker is another repo works only the issues there that carry its repo's, and gives it to every issue it opens, takes in or locks there; one carrying two is no fleet's. In a repo that is its own tracker, an issue carrying one is the repo's it names.
 _Avoid_: component label, project label
 
 **Broken**:
@@ -4345,7 +4350,7 @@ The label that names the workflow an issue follows: `flow:<name>`, unless the wo
 _Avoid_: type label
 
 **Intake**:
-Putting a flow label on an issue. A human does it on GitHub; a worker does it through the fleet, which records who did and holds the number of such issues still open under a limit.
+Putting a flow label on an issue. A human does it on GitHub; a worker does it through the fleet, which records who did and holds the number of such issues still open under a limit — of a tracker that is another repo, the repo's issues alone, each of which intake gives the repo label.
 _Avoid_: enroll, admit (a tick starting new workers on a host not busy: admission), triage
 
 **Stage**:
@@ -4393,7 +4398,7 @@ A role run on a schedule rather than for an issue. It opens issues and takes the
 _Avoid_: cron, job, scheduled worker
 
 **Fleet lock**:
-An open issue carrying the lock label, in a bound repo or an unbound one. While one stands the fleet works lock issues only — nothing else is dispatched, no PR of another issue joins the landing train, and workers already running are left alone, what they declare being acted on afterwards — and closing the last one ends it. A stage's `escalate` or failure the lock explains — declared before it closed, and not acted on since — is then not carried out: the stage runs again, which is no rework.
+An open issue carrying the lock label, in a bound repo or an unbound one — of a tracker that is another repo, and the repo label of the repo whose fleet it holds: no other repo's fleet that works the same tracker. While one stands the fleet works lock issues only — nothing else is dispatched, no PR of another issue joins the landing train, and workers already running are left alone, what they declare being acted on afterwards — and closing the last one ends it. A stage's `escalate` or failure the lock explains — declared before it closed, and not acted on since — is then not carried out: the stage runs again, which is no rework.
 _Avoid_: freeze, pause (a harness paused on a host, as under Host kit), kill switch
 
 ##### Workers
