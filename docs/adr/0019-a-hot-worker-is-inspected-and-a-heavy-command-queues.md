@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: accepted, its inspection sections superseded by ADR-0026
 ---
 
 # A hot worker is inspected, and a heavy command queues

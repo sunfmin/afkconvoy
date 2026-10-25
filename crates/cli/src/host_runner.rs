@@ -342,6 +342,13 @@ impl std::fmt::Display for Answered {
 
 impl std::error::Error for Answered {}
 
+/// The pid of this host's runner, as its lock says the last one to hold it;
+/// `None` where none ever did, or the cache directory is not known.
+pub fn pid() -> Option<u32> {
+    let pid = holder_of(&cache().ok()?.join(LOCK))?;
+    u32::try_from(pid).ok()
+}
+
 /// The host runner's log: host-runner.log in the cache directory.
 pub fn log_path() -> Result<PathBuf> {
     Ok(cache()?.join(LOG))

@@ -16,7 +16,7 @@
 //! thread of its own (`evidence`), and the `run` is woken: its inspector
 //! starts the worker's inspection (`crate::inspection`).
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
@@ -304,6 +304,56 @@ pub(crate) fn tree<'a>(procs: &'a [Proc], worktree: &Path) -> Vec<&'a Proc> {
         }
     }
     found
+}
+
+/// The pids of `procs` the fleets of this host started: each started with a
+/// worker's `TMPDIR` (`worker_tmp::is_workers`), or one in a worktree's own
+/// (`TMP_DIR`) — or under either, as a gate sets one — where `ours` says the
+/// fleet put a worker, and each under one of those, or left behind by one. A
+/// worker's harness, its gates and its tests are; what a human runs in a
+/// checkout of their own is not.
+pub(crate) fn fleets(procs: &[Proc], ours: impl Fn(&Path) -> bool) -> HashSet<u32> {
+    let mut asked: HashMap<PathBuf, bool> = HashMap::new();
+    let mut started = |proc: &Proc| {
+        let dirs: Vec<&str> = tmp_dirs(&proc.line).collect();
+        dirs.iter().any(|dir| worker_tmp::is_workers(dir))
+            || dirs
+                .into_iter()
+                .filter_map(worktree_of)
+                .any(|worktree| *asked.entry(worktree.clone()).or_insert_with(|| ours(&worktree)))
+    };
+    let mut children: HashMap<u32, Vec<&Proc>> = HashMap::new();
+    for proc in procs {
+        children.entry(proc.ppid).or_default().push(proc);
+    }
+    let mut found: Vec<u32> = procs.iter().filter(|proc| started(proc)).map(|p| p.pid).collect();
+    let mut seen: HashSet<u32> = found.iter().copied().collect();
+    let mut next = 0;
+    while let Some(pid) = found.get(next).copied() {
+        next += 1;
+        for child in children.get(&pid).into_iter().flatten() {
+            if seen.insert(child.pid) {
+                found.push(child.pid);
+            }
+        }
+    }
+    seen
+}
+
+/// Each `TMPDIR` the line of `ps` names, its command's words then its
+/// environment.
+fn tmp_dirs(line: &str) -> impl Iterator<Item = &str> {
+    line.split(' ').filter_map(|word| word.strip_prefix("TMPDIR=")).filter(|dir| !dir.is_empty())
+}
+
+/// The worktree whose own `TMPDIR` holds `dir`; `None` where none does.
+fn worktree_of(dir: &str) -> Option<PathBuf> {
+    let needle = format!("/{}", worker_tmp::TMP_DIR);
+    let (at, _) = dir.match_indices(&needle).find(|(at, _)| {
+        let after = &dir[at + needle.len()..];
+        after.is_empty() || after.starts_with('/')
+    })?;
+    (at > 0).then(|| PathBuf::from(&dir[..at]))
 }
 
 /// One worker the sampler watches.
@@ -746,6 +796,39 @@ mod tests {
             proc(60, 1, &format!("cargo TMPDIR={a}")),
         ];
         assert_eq!(pids(&procs, "/w/a"), [50, 51, 60]);
+    }
+
+    #[test]
+    fn the_fleets_processes_are_those_started_in_a_worktree_it_put_a_worker_in() {
+        let link = worker_tmp::of(Path::new("/w/b")).display().to_string();
+        let procs = [
+            proc(1, 0, "launchd"),
+            proc(10, 1, "zsh -l"),
+            proc(11, 10, "claude TMPDIR=/w/a/.afkconvoy-tmp HOME=/u"),
+            proc(12, 11, "cargo test"),
+            // A gate there sets a TMPDIR of its own under the worktree's,
+            // and its tests, left behind as their gate was killed, are still
+            // the fleet's.
+            proc(13, 1, "nextest TMPDIR=/w/a/.afkconvoy-tmp/the-tests HOME=/u"),
+            // A human's gate in their own checkout, the user's shell, orca.
+            proc(20, 1, "nextest TMPDIR=/src/widgets/.afkconvoy-tmp/the-tests HOME=/u"),
+            proc(21, 1, "zsh TMPDIR=/var/folders/x HOME=/u"),
+            proc(22, 1, "/Applications/Orca.app/Contents/MacOS/Orca"),
+            proc(23, 1, "claude TMPDIR=/w/a/.afkconvoy-tmp-2"),
+            // A worker started with the link the fleet made for its
+            // worktree, and a server it left, under the link, its worktree
+            // gone.
+            proc(30, 10, &format!("claude TMPDIR={link} HOME=/u")),
+            proc(31, 1, &format!("sccache TMPDIR={link}/sccache HOME=/u")),
+            proc(32, 1, "sh TMPDIR=/tmp/afkconvoy-0x/abc HOME=/u"),
+        ];
+        let ours = |worktree: &Path| worktree.starts_with("/w");
+        let mut pids: Vec<u32> = fleets(&procs, ours).into_iter().collect();
+        pids.sort();
+        assert_eq!(pids, [11, 12, 13, 30, 31]);
+        assert_eq!(worktree_of("/w/a/.afkconvoy-tmp"), Some(PathBuf::from("/w/a")));
+        assert_eq!(worktree_of("/.afkconvoy-tmp"), None);
+        assert_eq!(worktree_of("/w/a/.afkconvoy-tmp-2/x"), None);
     }
 
     #[test]
