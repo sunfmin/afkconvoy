@@ -228,6 +228,8 @@ fn a_tick_starts_one_caster_and_holds_the_issues_it_casts_back_for_ten_minutes_a
     world.issue(8, &["ready-for-agent"]);
     // A human's casting is never the caster's: 9 is dispatched as it says.
     world.issue(9, &["ready-for-agent", "harness:codex"]);
+    // GitHub lists newest first; the caster's public lists remain numbered.
+    world.with_gh(|gh| gh["issues"].as_array_mut().unwrap().reverse());
     let ticked = tick_at(&world, 1000);
     assert_eq!(casters(&world), 1, "{ticked}");
     assert_eq!(started(&world).len(), 2, "the caster and the worker on 9: {ticked}");

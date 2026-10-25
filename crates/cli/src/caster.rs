@@ -72,7 +72,7 @@ pub fn status(fleet: &Fleet, open: &OpenIssues, team: Option<&Team>) -> Vec<Mode
     let kit = crate::kit::load().unwrap_or_default();
     let whole = kit.range();
     let source = Source::of(&fleet.repo).ok();
-    open.rows.iter().map(|issue| {
+    let mut statuses: Vec<ModelStatus> = open.rows.iter().map(|issue| {
         let labels = &issue.labels;
         let ranges = ranges(fleet, team, labels);
         let bodies = bodies(open, issue.number);
@@ -129,7 +129,9 @@ pub fn status(fleet: &Fleet, open: &OpenIssues, team: Option<&Team>) -> Vec<Mode
                 Some(ModelRun { harness, model })
             });
         ModelStatus { number: issue.number, needed, why, stages, running }
-    }).collect()
+    }).collect();
+    statuses.sort_by_key(|status| status.number);
+    statuses
 }
 
 /// The last caster this host started for the repo, where it can be read: a
