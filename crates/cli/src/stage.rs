@@ -766,9 +766,9 @@ impl Flows {
                 && label_bar(&issue.labels, config, &self.flow_labels()).is_some();
             let Some(at) = escalated_at(bodies()).filter(|_| handed) else { continue };
             let back = match (team, escalate) {
-                (Some(team), Some(escalate)) if config.bound.is_some() => {
+                (Some(team), Some(_)) if config.bound.is_some() => {
                     let workflow = followed(team, &issue.labels, bodies()).ok();
-                    back(workflow, &records_in(comments).0, escalate)
+                    back(team, workflow, &records_in(comments).0)
                 }
                 _ => Back::Ready {
                     ready: config.ready_label.clone(),

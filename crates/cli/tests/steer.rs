@@ -172,7 +172,8 @@ fn an_escalation_with_no_position_names_the_only_flow_label_in_its_answer() {
         gh["comments"]["11"] = json!([{"id": 1, "at": 1000, "html_url": "https://gh/c/1",
             "body": "<!--convoy:escalation claim=old-->\nFix the failure."}]);
     });
-    let answer = "gh issue edit 11 --repo acme/tracker --add-label ready-for-agent --remove-label stuck";
+    let answer =
+        "gh issue edit 11 --repo acme/tracker --add-label ready-for-agent --remove-label stuck";
     let plan = world.afk(&["plan", "--now", "5000"]).ok();
     assert_eq!(plan["waiting_on_human"][0]["answer"], answer, "{plan}");
 }

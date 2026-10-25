@@ -250,7 +250,7 @@ pub(crate) fn escalate_claim(
             // off what it left, as a ruling does.
             let workflow = followed(&kept.team, &labels, bodies()).ok();
             let records: Vec<_> = stage_records(bodies()).into_iter().map(|(_, r)| r).collect();
-            back(workflow, &records, &kept.team.escalate_label)
+            back(&kept.team, workflow, &records)
         }
         None => Back::Ready {
             ready: fleet.config.ready_label.clone(),
