@@ -174,7 +174,7 @@ const SKILL: &str = include_str!("../../../skills/afkconvoy/SKILL.md");
 ///
 /// - **{const:OPERATOR}** — starting, watching or stopping a fleet. Read these first. `doctor` is what to run when something looks wrong, or you are asked whether the fleet is working: it says what the fleet on this host is doing and what is wrong, each finding with the line that fixes it.
 /// - **{const:DESIGNER}** — `scaffold` to start one or a role of it from a skeleton, `draft` to draft its roster from the host kit, then, once `check` accepts it, the others: to review a workflow, to try one out, or to ask where an issue is in it.
-/// - **{const:HANDS_WORK}** — a human, or the agent a human is talking to, with work decided on and issues to open for it. Read it before opening the first: it says which workflow takes which issue and the line that opens one, and creates the labels.
+/// - **{const:HANDS_WORK}** — a human, or the agent a human is talking to, with work decided on and issues to open for it. Read `flows` before opening the first: it says which workflow takes which issue and the line that opens one, and creates the labels. `wake`, after the last, has the fleet take them up now.
 /// - **{const:SETS_UP}** — it prints the skill file that sends their agent to `afkconvoy --help`.
 /// - **{const:WORKER}** — its prompt names each one as it is needed. Read them only when you are a worker, or are finding out why one stopped (`rule` is a consult's too).
 /// - **{const:HUMAN}** — in a bound repo. Read them to answer an escalated issue, to put an issue at a stage of your choosing, or to see what a `by: human` stage asks.
@@ -592,6 +592,7 @@ enum Command {
     /// ## What trips you up
     ///
     /// - `gh issue create --label` refuses a label the repo lacks, and nothing but this command creates a flow label ahead of the first issue. Run it before the line.
+    /// - Opening an issue with `gh`, or labelling one, wakes no fleet: the fleet takes it up at its next tick — within {const:TICK_BUSY_SECONDS} seconds while it has work, within {const:TICK_IDLE_MINUTES} minutes once it has been idle {const:TICK_IDLE_AFTER} ticks in a row. `afkconvoy wake <checkout>`, on the fleet's host, starts that tick now: run it once, after the last issue you open.
     /// - An issue follows one workflow: put one flow label on it. With several it follows none, and no stage of any is performed on it.
     /// - The flow label is what hands the issue over. Leave it off an issue that is not ready to be worked, and put it on later: `gh issue edit <n> --add-label <label>`.
     /// - A workflow whose `first` is `by: human` starts by waiting for a human: the fleet does nothing on its issue until one declares a verdict (`afkconvoy verdict --help`).
@@ -599,6 +600,42 @@ enum Command {
     /// - A label of a workflow the team no longer has is left on the repo: this command creates labels and removes none.
     #[command(next_help_heading = HANDS_WORK, verbatim_doc_comment)]
     Flows {
+        #[command(flatten)]
+        at: At,
+    },
+    /// End the sleep of this host's `run` for this repo: its next tick starts now (after opening issues with `gh`, and as a worker's last command)
+    ///
+    /// ## When to run it
+    ///
+    /// Once, after the last of the issues you open for the fleet with `gh`, or label: nothing `gh` does wakes the fleet, which otherwise takes them up at its next tick (`afkconvoy flows --help` says how soon).
+    ///
+    /// Once, as a worker's last command: after its PR is on the landing train, or its verdict is posted on the issue. A worker's prompt names the exact command. Every command that changes fleet state wakes the `run` as it ends, so after `land` or `verdict` this one is redundant, and harmless.
+    ///
+    /// ## Who runs it
+    ///
+    /// Whoever hands the fleet work: a human, or the agent a human is talking to, after opening issues with `gh`, in a checkout of the repo on the fleet's host. And a worker, in its own worktree. Any worktree or checkout of the repo on the fleet's host reaches the same fleet instance.
+    ///
+    /// ## What it reads and writes
+    ///
+    /// It speaks to this host's runner, on its socket in the cache directory (host-runner.sock): one signal for the fleet instance it holds of this repo, naming its checkout, itself, and the issue the worker is on if its environment says one. It waits {const:WAKE_ANSWER_SECONDS} seconds at most for the answer. The signal ends that fleet instance's sleep, and no other's; it carries nothing else, and it writes nothing to GitHub: the tick it starts reads the outcome from GitHub itself.
+    ///
+    /// ## What it answers
+    ///
+    /// {"woke": true, "tick"} — no tick was in progress: tick `tick` starts now. The fleet instance's tick log says "tick N: started (woken by wake #12)" of it.
+    ///
+    /// {"woke": true, "after_tick"} — tick `after_tick` is in progress: the next starts as it ends. The fleet instance's tick log says "woken by wake #12 during tick N: tick N+1 follows" of the first such wake.
+    ///
+    /// {"woke": false, "detail"} — no fleet instance heard it. With no host runner on this host, `detail` is "no host runner runs on this host, so no fleet instance heard it: start one with `afkconvoy run <checkout>`". Otherwise the host runner holds no fleet instance of this repo, holds it broken — waiting to be started again — or did not answer within {const:WAKE_ANSWER_SECONDS} seconds: `detail` says which, with the line that fixes it — `afkconvoy run <checkout>`, or ask `afkconvoy doctor`.
+    ///
+    /// It exits 0 with each of them. Errors: only "is not in a git checkout". Failing to wake anybody is not an error, and costs at most the {const:WAKE_ANSWER_SECONDS} seconds it waits.
+    ///
+    /// ## What trips you up
+    ///
+    /// - It reports nothing. A worker's outcome is its PR on the train or its verdict comment: without one of them on GitHub, a wake only makes the fleet look sooner at a worker that stopped with nothing.
+    /// - `woke: false` needs no second `wake`: the fleet finds the outcome, or the issue, at its next tick anyway.
+    /// - It reaches a fleet instance of this host's runner only: run it on the host whose `run` works the repo. A fleet driven by `tick` hears nothing.
+    #[command(next_help_heading = HANDS_WORK, verbatim_doc_comment)]
+    Wake {
         #[command(flatten)]
         at: At,
     },
@@ -2816,40 +2853,6 @@ enum Command {
         #[command(flatten)]
         at: At,
     },
-    /// End the sleep of this host's `run` for this repo: its next tick starts now (a worker's command)
-    ///
-    /// ## When to run it
-    ///
-    /// Once, as a worker's last command: after its PR is on the landing train, or its verdict is posted on the issue. A worker's prompt names the exact command. Every command that changes fleet state wakes the `run` as it ends, so after `land` or `verdict` this one is redundant, and harmless.
-    ///
-    /// ## Who runs it
-    ///
-    /// A worker, in its own worktree — any worktree or checkout of the repo on the fleet's host reaches the same fleet instance.
-    ///
-    /// ## What it reads and writes
-    ///
-    /// It speaks to this host's runner, on its socket in the cache directory (host-runner.sock): one signal for the fleet instance it holds of this repo, naming its checkout, itself, and the issue the worker is on if its environment says one. It waits {const:WAKE_ANSWER_SECONDS} seconds at most for the answer. The signal ends that fleet instance's sleep, and no other's; it carries nothing else, and it writes nothing to GitHub: the tick it starts reads the outcome from GitHub itself.
-    ///
-    /// ## What it answers
-    ///
-    /// {"woke": true, "tick"} — no tick was in progress: tick `tick` starts now. The fleet instance's tick log says "tick N: started (woken by wake #12)" of it.
-    ///
-    /// {"woke": true, "after_tick"} — tick `after_tick` is in progress: the next starts as it ends. The fleet instance's tick log says "woken by wake #12 during tick N: tick N+1 follows" of the first such wake.
-    ///
-    /// {"woke": false, "detail"} — no fleet instance heard it. With no host runner on this host, `detail` is "no host runner runs on this host, so no fleet instance heard it: start one with `afkconvoy run <checkout>`". Otherwise the host runner holds no fleet instance of this repo, holds it broken — waiting to be started again — or did not answer within {const:WAKE_ANSWER_SECONDS} seconds: `detail` says which, with the line that fixes it — `afkconvoy run <checkout>`, or ask `afkconvoy doctor`.
-    ///
-    /// It exits 0 with each of them. Errors: only "is not in a git checkout". Failing to wake anybody is not an error, and costs at most the {const:WAKE_ANSWER_SECONDS} seconds it waits.
-    ///
-    /// ## What trips you up
-    ///
-    /// - It reports nothing. A worker's outcome is its PR on the train or its verdict comment: without one of them on GitHub, a wake only makes the fleet look sooner at a worker that stopped with nothing.
-    /// - `woke: false` needs no second `wake`: the fleet finds the outcome at its next tick anyway.
-    /// - It reaches a fleet instance of this host's runner only. A fleet driven by `tick` hears nothing.
-    #[command(next_help_heading = WORKER, verbatim_doc_comment)]
-    Wake {
-        #[command(flatten)]
-        at: At,
-    },
     /// List every claim and heartbeat on the remote
     ///
     /// ## When to run it
@@ -3334,6 +3337,9 @@ pub fn manual() -> agent_help::Help {
         .constant("LOG_KEPT_MOST", log::KEPT_MOST)
         .constant("WAKE_ANSWER_SECONDS", wake::ANSWER_WITHIN.as_secs())
         .constant("BACK_TO_BACK", afkconvoy_core::tick::BACK_TO_BACK)
+        .constant("TICK_BUSY_SECONDS", afkconvoy_core::tick::BUSY_SECONDS)
+        .constant("TICK_IDLE_MINUTES", afkconvoy_core::tick::IDLE_SECONDS / 60)
+        .constant("TICK_IDLE_AFTER", afkconvoy_core::tick::IDLE_AFTER)
         .constant("INSPECTION_MINUTES", afkconvoy_core::inspection::TIME_LIMIT / 60)
         .constant("HOST_IDLE_MINUTES", afkconvoy_core::host_sleep::IDLE_WAIT / 60)
         .constant("SLEEP_HOURS", afkconvoy_core::host_sleep::SLEEP_HOURS.to_string())
