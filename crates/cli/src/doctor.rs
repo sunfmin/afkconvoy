@@ -48,6 +48,8 @@ use crate::team::{self, Refused};
 use crate::tools;
 use crate::topic::See;
 
+pub mod watching;
+
 /// How many ticks in a row a step fails in before its finding is critical.
 const FAILED_TICKS: usize = 3;
 /// How many failed steps the answer lists, newest first.
@@ -1795,6 +1797,21 @@ fn host_once(now: u64) -> Map<String, Value> {
 /// answer with a critical finding, or a checkout that could not be asked,
 /// is an `Unwell` error.
 pub fn all(now: u64, host: Option<&str>, proxy: &[String]) -> Result<Value> {
+    all_since(now, host, proxy, None)
+}
+
+/// Adds the interval report when `since` is named. Every checkout uses the
+/// same upper boundary, captured before any reads; a failed interval read
+/// withholds that boundary so it cannot silently skip unread events.
+pub fn all_since(
+    now: u64,
+    host: Option<&str>,
+    proxy: &[String],
+    since: Option<u64>,
+) -> Result<Value> {
+    if since.is_some_and(|since| since > now) {
+        anyhow::bail!("--since is after this look's time: use the previous answer's `until`");
+    }
     let listed = List::of_host()?.read()?.checkouts;
     // Each checkout's repo, where it can be read, beside what was made of it.
     let asked: Vec<(Option<String>, Result<Examined>)> = std::thread::scope(|scope| {
@@ -1806,7 +1823,17 @@ pub fn all(now: u64, host: Option<&str>, proxy: &[String]) -> Result<Value> {
                 scope.spawn(move || {
                     let repo = Repo::at(&entry.checkout);
                     let key = repo.as_ref().ok().and_then(|repo| repo_of(repo).ok());
-                    (key, repo.and_then(|repo| examined(&repo, now, &host, proxy)))
+                    let examined = repo.and_then(|repo| {
+                        let (mut answer, found) = examined(&repo, now, &host, proxy)?;
+                        if let Some(since) = since {
+                            answer["watching"] = match watching::read(&repo, &host, since, now) {
+                                Ok(watching) => watching,
+                                Err(error) => crate::error_json(&error),
+                            };
+                        }
+                        Ok((answer, found))
+                    });
+                    (key, examined)
                 })
             })
             .collect();
@@ -1816,10 +1843,12 @@ pub fn all(now: u64, host: Option<&str>, proxy: &[String]) -> Result<Value> {
     let once = host_once(now);
     let mut of_host: Vec<Finding> = vec![];
     let mut unwell = false;
+    let mut complete = true;
     let mut checkouts = vec![];
     for (entry, (key, examined)) in listed.iter().zip(asked) {
         let doctor = match examined {
             Ok((mut answer, found)) => {
+                complete &= answer["watching"]["error"].is_null();
                 let (host_found, own): (Vec<Finding>, Vec<Finding>) =
                     found.into_iter().partition(|finding| finding.of_host);
                 for finding in host_found {
@@ -1836,6 +1865,7 @@ pub fn all(now: u64, host: Option<&str>, proxy: &[String]) -> Result<Value> {
             }
             Err(error) => {
                 unwell = true;
+                complete = false;
                 crate::error_json(&error)
             }
         };
@@ -1843,7 +1873,9 @@ pub fn all(now: u64, host: Option<&str>, proxy: &[String]) -> Result<Value> {
     }
     of_host.sort_by_key(|finding| finding.severity);
     unwell |= critical(&of_host);
+    unwell |= !complete;
     let answer = json!({
+        "until": complete.then_some(now),
         "host": once,
         "findings": of_host,
         "checkouts": checkouts,
