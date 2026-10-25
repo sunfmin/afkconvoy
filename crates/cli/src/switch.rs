@@ -92,6 +92,28 @@ pub fn on_host(
                     }
                 }
             }
+            if matches!(which, Which::All) {
+                let source = Source::of(&repo)?;
+                for (name, worktree, caster) in [
+                    ("landing train", Worktree::of_train(&source)?, false),
+                    (
+                        "caster",
+                        Worktree::named(&source, afkconvoy_core::casting::CASTER_WORKTREE)?,
+                        true,
+                    ),
+                ] {
+                    if let Some(worktree) =
+                        worktree.filter(|w| w.terminal().ok().flatten().is_some())
+                    {
+                        match auxiliary(&fleet, &agent, &worktree, caster) {
+                            Ok(value) => moved.push(value),
+                            Err(e) => {
+                                errors.push(json!({"worker": name, "error": format!("{e:#}")}))
+                            }
+                        }
+                    }
+                }
+            }
             if moved.is_empty() && errors.is_empty() && !matches!(which, Which::All) {
                 bail!("no claim on the targeted worker is held on this host");
             }
