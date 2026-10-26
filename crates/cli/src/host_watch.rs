@@ -151,6 +151,10 @@ fn read() -> Result<State> {
     }
 }
 
+pub(crate) fn running() -> Result<Option<Watch>> {
+    Ok(read()?.running)
+}
+
 /// The running watch, shared with what the host runner answers.
 #[derive(Clone, Default)]
 pub struct Shared {

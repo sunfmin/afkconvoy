@@ -107,6 +107,7 @@ mod turn;
 pub mod wake;
 pub mod watch;
 pub mod watch_landing;
+mod watch_report;
 pub mod worker_tmp;
 pub mod workflow;
 
@@ -1853,6 +1854,36 @@ enum Command {
         host: Option<String>,
         #[command(flatten)]
         at: AtFlag,
+    },
+    /// Record what this host's watch did and end its session (a watch's command)
+    ///
+    /// ## When to run it
+    ///
+    /// As the watch's last step, using the exact line at the end of its brief:
+    ///
+    /// ```
+    /// afkconvoy watched --watch <id> --text-file <report.json>
+    /// ```
+    ///
+    /// Write a JSON object with all five keys: `held_back`, `did`, `verified` and `pending` are lists of nonempty strings; `human` is a list of {question, answer}, both nonempty strings. Use [] where nothing belongs. `held_back` says what held work back; `did` each action and its evidence, including repo, PR, cut and version; `verified` what was checked and what it showed; `human` each decision left alone and its exact answer command; `pending` everything unfinished. Printed terminal output is no report.
+    ///
+    /// ## What it reads and writes
+    ///
+    /// It reads the running watch on this host and the report file, and atomically keeps the report in the host cache. It needs no repo or GitHub login. The same report may be submitted again; a different report cannot replace it. A missing part, unknown key, empty entry, wrong watch or expired hour is refused with {error} and nonzero exit; fix the JSON or use the running watch's brief.
+    ///
+    /// The host runner ends the harness after recording, keeping its terminal and screen until the next watch starts in that directory. `doctor.host.watch` and later briefs show the report; an ended watch with no report says `reported: false`.
+    ///
+    /// ## What it answers
+    ///
+    /// {watch, reported: true, report}: the watch id and its complete record. Reporting does not claim recovery beyond the evidence in the report.
+    #[command(help_heading = WORKER)]
+    Watched {
+        /// The watch id from its brief
+        #[arg(long)]
+        watch: String,
+        /// The JSON report with all five parts
+        #[arg(long)]
+        text_file: PathBuf,
     },
     /// Declare the verdict that ends a stage, with the text it produced (a worker's command, and a human's for a stage nobody holds)
     ///
@@ -4022,6 +4053,7 @@ impl Command {
             Command::Gate { .. } => Acting::new("gate").on_own_issue().saying_start(),
             Command::Cut { .. } => Acting::new("cut").saying_start(),
             Command::Wake { .. } => Acting::new("wake").on_own_issue(),
+            Command::Watched { .. } => return None,
             Command::Cast { .. } => Acting::new("cast"),
             Command::Tick { who, .. } => as_who("tick", who),
             Command::Kit { .. }
@@ -4059,6 +4091,7 @@ fn run(
 ) -> anyhow::Result<Value> {
     let now = fixed_now.unwrap_or_else(clock);
     match command {
+        Command::Watched { watch, text_file } => watch_report::record(&watch, &text_file, now),
         Command::Kit { cast: Some(cast), .. } => kit::set_cast(cast == "on"),
         Command::Kit { research: Some(file), .. } => kit::apply_research(&file, now),
         Command::Kit { harness: Some(harness), .. } => kit::write_one(harness, now),
