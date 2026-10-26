@@ -122,7 +122,8 @@ impl Copies {
     }
 
     /// The directory the stock consult's worker starts in (docs/adr/0018):
-    /// its instruction as the rules file, and nothing else. It is kept
+    /// its instruction as the rules file and a native discovery boundary.
+    /// It is kept
     /// once for each text of the instruction, which its commit names.
     pub fn stock(&self) -> Result<Copy> {
         use std::hash::{Hash, Hasher};
