@@ -576,7 +576,7 @@ enum Command {
     ///
     /// ## Who runs it
     ///
-    /// Whoever hands the fleet work: a human, or the agent a human is talking to, with work decided on and issues to open for it. In a checkout of the repo the issues go to, bound or unbound. A worker does not: it takes an issue in with `afkconvoy intake`.
+    /// Whoever hands the fleet work: a human, or the agent a human is talking to, with work decided on and issues to open for it. In a checkout of the repo the issues go to, bound or unbound. A worker opening a blocker for another repo of the host names that repo's main checkout: `afkconvoy flows <target-checkout>`. It takes the issue in there with `afkconvoy intake`.
     ///
     /// ## What it reads and writes
     ///

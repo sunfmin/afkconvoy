@@ -334,7 +334,7 @@ const CROSS_REPO_BLOCKER: &str = "
 
 For a blocker or defect belonging to another repo of this host, open it on the tracker
 `<blocker_tracker>`, with that repo's `repo:<owner>/<repo>` label. Name that repo's main checkout as
-`<target-checkout>` and run `afkconvoy flows -C <target-checkout>`
+`<target-checkout>` and run `afkconvoy flows <target-checkout>`
 and use its `line` (the matching workflow's in a bound repo), with a title and body file. In a bound
 repo omit the line's flow label while opening, then take it in there with
 `afkconvoy intake -C <target-checkout> --issue <n> --workflow <workflow>` and your worker identity; keep the line's ready
@@ -1583,7 +1583,7 @@ mod tests {
         for brief in [fresh, &briefs[1], &briefs[3], &briefs[5]] {
             assert!(brief.contains("open it on the tracker\n`acme/tracker`"), "{brief}");
             assert!(brief.contains("that repo's `repo:<owner>/<repo>` label"), "{brief}");
-            assert!(brief.contains("run `afkconvoy flows -C <target-checkout>`"), "{brief}");
+            assert!(brief.contains("run `afkconvoy flows <target-checkout>`"), "{brief}");
             assert!(brief.contains("omit the line's flow label while opening"), "{brief}");
             assert_eq!(brief.matches("## Cross-repo blockers").count(), 1, "{brief}");
         }

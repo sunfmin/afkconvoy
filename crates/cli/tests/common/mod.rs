@@ -1404,7 +1404,9 @@ pub fn refusing_a_workers_worktree(brief: &str) -> Vec<String> {
     };
     let named = brief.split("afkconvoy ").skip(1).filter_map(|after| {
         let command = after.split(['`', '\n']).next().unwrap_or_default();
-        (!command.contains(" -C <target-checkout>")).then(|| word(after))
+        let target = command.contains(" -C <target-checkout>")
+            || command.starts_with("flows <target-checkout>");
+        (!target).then(|| word(after))
     });
     let mut named: Vec<String> = named.filter(|name| !name.is_empty()).collect();
     named.sort();
