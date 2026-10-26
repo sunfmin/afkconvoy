@@ -8,7 +8,9 @@ An escalated issue carries the escalate label (`{const:ESCALATE_LABEL}` unless r
 
 ## An escalation
 
-A stage failed or declared `escalate`. Its consult — the stock consult where none is named, and in an unbound repo — was asked first and let it through, unless the stage says `escalate: { to: human }` or the config `escalate_to: human`. The comment says what failed or gives the question that needs your answer.
+A stage failed or declared `escalate`. For a hand-off about the work, its consult — the stock consult where none is named, and in an unbound repo — was asked first and let it through, unless the stage says `escalate: { to: human }` or the config `escalate_to: human`. The comment says what failed or gives the question that needs your answer.
+
+A **fleet fault** escalates at once, with no consult asked and no consult claim taken: a worker start that failed again, a worktree trust gap, or a landing train given up twice. The comment and `doctor`'s `waiting_on_human` entry say it is a fleet fault and that the fix is on the host — trusting a worktree, switching a harness, waiting out a usage limit, or mending a build server. Fix it there, then hand the issue back with the line given. Another failed start escalates at once again; nothing new retries. A worker gone silent had its brief, so that hand-off still goes to the consult first, as do an `escalate`, a tripped breaker, an impossible `blocked`, a refuted `already-satisfied`, a commit a stage may not leave and a changed workflow.
 
 For a failure, fix what failed first: `afkconvoy rule` starts the same stage anew, and what failed it once fails it again. In an unbound repo there is no stage to run again: fix what the comment names and put the ready label back, with the line the comment ends with. A PR the escalation kept is not started anew: the next worker takes it up — it reads the issue's comments, merges the base branch, gates and joins the landing train — so say on the issue what is to be done on it.
 

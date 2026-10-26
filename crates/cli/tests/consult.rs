@@ -988,6 +988,69 @@ fn an_issue_handed_to_a_human_that_no_consult_saw_is_put_to_its_consult_once() {
 }
 
 #[test]
+fn a_failed_start_or_trust_gap_skips_both_a_named_and_a_stock_consult() {
+    for named in [true, false] {
+        let feature = if named {
+            FEATURE.to_string()
+        } else {
+            FEATURE.replace("    escalate: { to: reviewer, do: rule }\n", "")
+        };
+        for knob in ["never_ready", "trust_prompt"] {
+            let world = bound(&feature, 2);
+            world.issue(7, &["flow:feature"]);
+            world.with_orca(|orca| orca[knob] = json!(true));
+            assert_eq!(tick(&world, 1000)["errors"].as_array().unwrap().len(), 1);
+            if knob == "never_ready" {
+                assert_eq!(world.claims().len(), 1, "the first failed start is continued");
+                assert_eq!(tick(&world, 1090)["errors"].as_array().unwrap().len(), 1);
+            }
+            assert!(with_a_human(&world));
+            assert_eq!(world.claims(), []);
+            let comments = world.comments(7);
+            let escalation =
+                comments.iter().find(|body| body.contains("convoy:escalation")).unwrap();
+            assert!(
+                escalation.contains("Fleet fault:")
+                    && escalation.contains("the fix is on the host")
+            );
+            // Fix the host: even with a working harness the next ticks must
+            // leave the issue with its operator, taking no consult claim.
+            world.with_orca(|orca| orca[knob] = json!(false));
+            world.orca_calls();
+            for now in [1180, 1270] {
+                assert_eq!(did(&tick(&world, now)), [] as [&str; 0]);
+                assert_eq!(world.claims(), []);
+                assert!(with_a_human(&world));
+            }
+            assert_eq!(world.comments(7), comments, "no consult record is written");
+            assert!(
+                !world.orca_calls().iter().any(|call| common::asked(call) == "terminal create")
+            );
+            let doctor = world.afk(&["doctor", "--now", "1300"]).json;
+            let why = doctor["waiting_on_human"][0]["why"].as_str().unwrap();
+            assert!(
+                why.contains("Fleet fault:") && why.contains("the fix is on the host"),
+                "{doctor}"
+            );
+            // A human hands it back. Another failed start is a fleet fault
+            // again, rather than a new opportunity to ask a consult.
+            world.with_gh(|gh| gh["issues"][0]["labels"] = json!(["flow:feature"]));
+            world.with_orca(|orca| orca[knob] = json!(true));
+            tick(&world, 1360);
+            if knob == "never_ready" {
+                tick(&world, 1450);
+            }
+            assert_eq!(world.claims(), []);
+            assert!(with_a_human(&world));
+            let escalations =
+                world.comments(7).iter().filter(|body| body.contains("convoy:escalation")).count();
+            assert_eq!(escalations, 2);
+            assert_eq!(did(&tick(&world, 1540)), [] as [&str; 0]);
+        }
+    }
+}
+
+#[test]
 fn a_consult_runs_the_commands_a_human_answering_runs_and_the_two_lists_are_one() {
     use afkconvoy_core::tracker::Tracker;
     use afkconvoy_core::waiting::answering;

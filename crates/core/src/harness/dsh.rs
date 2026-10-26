@@ -72,6 +72,11 @@ pub(super) fn prompt_question(kept: &str, model: Option<&str>, prompt: &str) -> 
         .own()
 }
 
+/// Starts one watch through DSH's non-interactive profile.
+pub(super) fn watch(kept: &str, model: Option<&str>, prompt: &str) -> String {
+    format!("export {TRUST} && {}", prompt_question(kept, model, prompt))
+}
+
 /// What the probe's plugin prints before the model each request is sent
 /// to, on a line of its own (`dsh/probe.mjs`): DSH's headless answer says no
 /// other.

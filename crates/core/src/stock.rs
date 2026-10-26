@@ -5,6 +5,7 @@
 //! where the human would.
 
 use crate::record;
+use crate::transition::FleetFault;
 
 /// The stock consult's whole instruction: the rules of the directory its
 /// worker starts in.
@@ -56,7 +57,7 @@ pub fn asked_comment(claim: &str) -> String {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Said {
     /// An escalation, under this claim.
-    Escalated(String),
+    Escalated(String, bool),
     /// The stock consult was asked, under this claim.
     Asked(String),
 }
@@ -67,7 +68,7 @@ fn said<'a>(bodies: impl IntoIterator<Item = &'a str>) -> Vec<Said> {
         .into_iter()
         .filter_map(|body| {
             if let Some(fields) = record::read_marker(ESCALATION, body) {
-                return Some(Said::Escalated(claim(fields)));
+                return Some(Said::Escalated(claim(fields), FleetFault::read(body).is_some()));
             }
             record::read_marker(ASKED, body).map(|fields| Said::Asked(claim(fields)))
         })
@@ -77,12 +78,13 @@ fn said<'a>(bodies: impl IntoIterator<Item = &'a str>) -> Vec<Said> {
 /// Whether the stock consult is to be asked of an unbound repo's escalated
 /// issue, by its comments (`bodies`, oldest first): it was escalated, under
 /// no consult's claim — what a consult let through, or its own failure, is a
-/// human's — no consult was asked of that escalation yet, and the hand-off
+/// human's — and is no fleet fault, no consult was asked of that escalation yet, and the hand-off
 /// before it was not one a consult answered: the same again goes to a human.
 pub fn due<'a>(bodies: impl IntoIterator<Item = &'a str>) -> bool {
     let said = said(bodies);
-    let escalated =
-        |claim: &str| said.iter().any(|said| *said == Said::Escalated(claim.to_string()));
+    let escalated = |claim: &str| {
+        said.iter().any(|said| matches!(said, Said::Escalated(under, _) if under == claim))
+    };
     // Read in order: the latest escalation, whether a consult was asked
     // since it, and whether one that escalated nothing itself answered the
     // escalation before it.
@@ -90,8 +92,8 @@ pub fn due<'a>(bodies: impl IntoIterator<Item = &'a str>) -> bool {
         (None, false, false, false);
     for said in &said {
         match said {
-            Said::Escalated(claim) => {
-                (last, asked_since, answered_before) = (Some(claim), false, answered);
+            Said::Escalated(claim, fault) => {
+                (last, asked_since, answered_before) = (Some((claim, fault)), false, answered);
                 answered = false;
             }
             Said::Asked(claim) => {
@@ -100,10 +102,10 @@ pub fn due<'a>(bodies: impl IntoIterator<Item = &'a str>) -> bool {
             }
         }
     }
-    let Some(last) = last else { return false };
+    let Some((last, fault)) = last else { return false };
     // What a consult let through, or its own failure, is escalated under its claim.
     let consults = said.contains(&Said::Asked(last.clone()));
-    !consults && !asked_since && !answered_before
+    !fault && !consults && !asked_since && !answered_before
 }
 
 /// Whether `claim` is the stock consult's on an unbound repo's issue, by its
@@ -159,5 +161,22 @@ mod tests {
         assert!(!due([e1.as_str(), asked.as_str(), through.as_str()]));
         // A human answered that; the next hand-off is the consult's again.
         assert!(due([e1.as_str(), asked.as_str(), through.as_str(), e2.as_str()]));
+    }
+
+    #[test]
+    fn a_fleet_fault_skips_the_consult_without_consuming_a_later_work_hand_off() {
+        let work = escalation_comment("work", None, "The schema is ambiguous.");
+        for fault in
+            [FleetFault::WorkerStart, FleetFault::WorktreeTrust, FleetFault::TrainAbandoned]
+        {
+            let faulted = fault.comment("fault", None, "Evidence from the host.");
+            assert_eq!(FleetFault::read(&faulted), Some(fault));
+            assert!(!due([faulted.as_str()]));
+            assert!(!due([work.as_str(), faulted.as_str()]));
+            assert!(due([faulted.as_str(), work.as_str()]));
+            let quoted = escalation_comment("work", None, &format!("Earlier evidence:\n{faulted}"));
+            assert_eq!(FleetFault::read(&quoted), None, "only the escalation's own marker");
+            assert!(due([quoted.as_str()]));
+        }
     }
 }
