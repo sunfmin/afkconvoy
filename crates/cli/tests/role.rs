@@ -109,7 +109,12 @@ fn head(world: &World, repo: &str) -> String {
 
 /// Where the fleet keeps its copy of `repo` at `commit`.
 fn copy(world: &World, repo: &str, commit: &str) -> PathBuf {
-    world.cache().join("afkconvoy/copies").join(repo).join(commit)
+    let name = if repo == "acme/team" {
+        commit.to_string()
+    } else {
+        format!("{commit}-role+claude-code-")
+    };
+    world.cache().join("afkconvoy/copies").join(repo).join(name)
 }
 
 fn worktree(world: &World, issue: u64) -> PathBuf {
@@ -209,7 +214,8 @@ fn a_flow_labelled_issue_is_dispatched_to_its_first_stage_with_the_worker_in_its
     );
     assert_eq!(world.claims(), [(7, "alpha".to_string())], "no flow label: left alone");
 
-    // The copies: the role's and the team's files at their heads, and no git dir.
+    // The copies: the role's and team's files, and no Git metadata. The
+    // role's empty marker stops Claude's ancestor skill discovery.
     let (dev, team) = (head(&world, "acme/dev"), head(&world, "acme/team"));
     let (role_dir, team_dir) = (copy(&world, "acme/dev", &dev), copy(&world, "acme/team", &team));
     assert_eq!(
@@ -218,7 +224,8 @@ fn a_flow_labelled_issue_is_dispatched_to_its_first_stage_with_the_worker_in_its
     );
     assert!(role_dir.join(".claude/skills/implement/SKILL.md").is_file());
     assert!(team_dir.join("workflows/feature.md").is_file());
-    assert!(!role_dir.join(".git").exists());
+    assert!(role_dir.join(".git").is_dir());
+    assert_eq!(std::fs::read_dir(role_dir.join(".git")).unwrap().count(), 0);
     for kept in
         [&role_dir, &role_dir.join("CLAUDE.md"), &role_dir.join(".claude/skills"), &team_dir]
     {

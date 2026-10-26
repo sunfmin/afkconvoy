@@ -6,15 +6,19 @@
 use std::path::Path;
 use std::process::{Command, Stdio};
 
+use afkconvoy::copies::{Copies, Copy};
 use afkconvoy::kept::keep_under;
+use afkconvoy_core::config::RepoDir;
 use afkconvoy_core::harness::Harness;
 use afkconvoy_core::line::Line;
 use afkconvoy_core::role::{Facts, On, Start, Told};
-use serde_json::Value;
+use serde_json::{Value, json};
 
 const USER: &str = "convoy-ancestor-user";
 const ROLE: &str = "convoy-ancestor-role";
 const PROJECT: &str = "convoy-ancestor-project";
+const SHARED: &str = "convoy-ancestor-shared";
+const ROLE_WORD: &str = "ROLE-SKILL-7391";
 
 fn write(dir: &Path, file: &str, text: &str) {
     let path = dir.join(file);
@@ -23,17 +27,34 @@ fn write(dir: &Path, file: &str, text: &str) {
 }
 
 fn skill(dir: &Path, name: &str) {
+    skill_saying(dir, name, "Reply OK.");
+}
+
+fn skill_saying(dir: &Path, name: &str, body: &str) {
     write(
         dir,
         &format!(".claude/skills/{name}/SKILL.md"),
         &format!(
-            "---\nname: {name}\ndescription: Controlled ancestor discovery sentinel\n---\nReply OK.\n"
+            "---\nname: {name}\ndescription: Controlled ancestor discovery sentinel\n---\n{body}\n"
         ),
     );
 }
 
 fn quoted(text: &str) -> String {
     Line::new().word(text).own()
+}
+
+fn hook(log: &Path) -> String {
+    json!({"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{
+        "type": "command",
+        "command": format!(
+            "echo \"$AFKCONVOY_STAGE\" >> {}; if grep -q role-forbidden; then echo ROLE-REFUSED >&2; exit 2; fi",
+            quoted(&log.display().to_string()))
+    }]}]}}).to_string()
+}
+
+fn lines(log: &Path) -> Vec<String> {
+    std::fs::read_to_string(log).unwrap_or_default().lines().map(str::to_string).collect()
 }
 
 #[test]
@@ -64,8 +85,36 @@ fn real_claude_skills_keep_host_ancestors_opt_in() {
         skill(&home, USER);
         skill(&role, ROLE);
         skill(&project, PROJECT);
+        skill_saying(&home, SHARED, "Reply HOST-SKILL-9176.");
+        skill_saying(&project, SHARED, "Reply PROJECT-SKILL-5528.");
+        skill_saying(
+            &role,
+            SHARED,
+            &format!(
+                "Run these three Bash commands, each exactly once and in this order: \
+                 `echo smoke`, `echo role-forbidden`, `git commit --allow-empty -m smoke`. \
+                 Carry on when one is refused; do not retry it or run other commands or tools. \
+                 Then reply {ROLE_WORD}."
+            ),
+        );
+        let (role_log, project_log, user_log) =
+            (fixture.join("role.log"), fixture.join("project.log"), fixture.join("user.log"));
+        write(&role, ".claude/settings.json", &hook(&role_log));
+        write(&project, ".claude/settings.json", &hook(&project_log));
+        write(&home, ".claude/settings.json", &hook(&user_log));
         write(&team, "team.md", "A controlled team.\n");
+        let cache = home.join(".cache/afkconvoy");
+        let role = Copies::under(&cache)
+            .role(
+                &Copy { dir: role, commit: "abc".into() },
+                &RepoDir::read("acme/dev").unwrap(),
+                Harness::ClaudeCode,
+            )
+            .unwrap()
+            .dir;
         for host_user in [false, true] {
+            std::fs::write(&role_log, "").unwrap();
+            let debug = fixture.join(format!("host-user-{host_user}.debug"));
             let kept = keep_under(
                 &home.join(".cache/afkconvoy"),
                 Some(&home),
@@ -99,10 +148,12 @@ fn real_claude_skills_keep_host_ancestors_opt_in() {
             };
             let line = format!(
                 "export CLAUDE_SECURESTORAGE_CONFIG_DIR=\"${{CLAUDE_SECURESTORAGE_CONFIG_DIR-${{CLAUDE_CONFIG_DIR-}}}}\" \
-                 CLAUDE_CONFIG_DIR={} && {} -p 'Reply OK.' --output-format stream-json \
-                 --verbose --no-session-persistence",
+                 CLAUDE_CONFIG_DIR={} && {} -p {} --output-format stream-json \
+                 --verbose --include-hook-events --no-session-persistence --debug-file {}",
                 quoted(&text(&home.join(".claude"))),
                 Harness::ClaudeCode.in_role(&launch, &start),
+                quoted(&format!("/{SHARED}")),
+                quoted(&text(&debug)),
             );
             let out =
                 Command::new(&shell).args(["-lic", &line]).stdin(Stdio::null()).output().unwrap();
@@ -122,8 +173,39 @@ fn real_claude_skills_keep_host_ancestors_opt_in() {
                 .filter_map(Value::as_str)
                 .collect();
             println!("{layout}, host_user={host_user}: native skills: {skills:?}");
+            let debug = std::fs::read_to_string(&debug).unwrap();
+            for line in debug.lines().filter(|line| {
+                line.contains("Loading skills from:") || line.contains("unique skills (")
+            }) {
+                println!("{layout}, host_user={host_user}: {line}");
+            }
             assert!(skills.contains(&ROLE) && skills.contains(&PROJECT), "{skills:?}");
             assert_eq!(skills.contains(&USER), host_user, "{layout}: {skills:?}");
+            assert_eq!(init.unwrap()["cwd"], text(&role));
+            let result = events.iter().find(|e| e["type"] == "result").unwrap();
+            assert_eq!(result["subtype"], "success", "{result}");
+            assert!(result["result"].as_str().unwrap().contains(ROLE_WORD), "{result}");
+            let logged = lines(&role_log);
+            assert_eq!(logged, ["smoke-stage"; 3], "{layout}: {logged:?}");
+            assert!(lines(&project_log).is_empty() && lines(&user_log).is_empty());
+            let hooks = events
+                .iter()
+                .filter(|e| {
+                    e["type"] == "system"
+                        && e["subtype"] == "hook_started"
+                        && e["hook_name"] == "PreToolUse:Bash"
+                })
+                .count();
+            assert_eq!(hooks, logged.len() * 3, "native role hook, guard and report");
+            let shown = events
+                .iter()
+                .filter(|e| e["type"] == "user")
+                .map(Value::to_string)
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(shown.contains("ROLE-REFUSED"), "{shown}");
+            assert!(shown.contains("writes: false"), "{shown}");
         }
     }
+    assert!(Command::new("chmod").args(["-R", "u+w"]).arg(&root).status().unwrap().success());
 }

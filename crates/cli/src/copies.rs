@@ -72,7 +72,12 @@ impl Copies {
     /// their cache directory, outside every checkout — a worker started in
     /// one finds no rules above it but its role's.
     pub fn of_host() -> Result<Copies> {
-        Ok(Copies { root: cache()?.join("copies") })
+        Ok(Self::under(&cache()?))
+    }
+
+    /// The same copies under an explicitly named fleet cache.
+    pub fn under(cache: &Path) -> Copies {
+        Copies { root: cache.join("copies") }
     }
 
     /// The copy of `repo` at the head of its default branch
@@ -102,14 +107,16 @@ impl Copies {
     /// in. Nothing above the directory in its repo is in it or above it, and
     /// no neighbour's. Where `harness` needs a link to the role's skills or
     /// shared rules, the copy is that harness's and holds it (`role_links`),
-    /// made once with the copy. Otherwise it is every harness's, and a role
-    /// that is a whole repo is `fetched` itself.
+    /// made once with the copy. Claude Code's copy also holds a discovery
+    /// boundary: its project skill loader must not walk into host ancestors.
+    /// Otherwise it is every harness's, and a whole repo is `fetched` itself.
     pub fn role(&self, fetched: &Copy, dir: &RepoDir, harness: Harness) -> Result<Copy> {
         let links = role_links(&fetched.dir.join(dir.path()), harness);
-        if links.is_empty() {
-            self.take(fetched, dir, "role", &[], &[])
+        let rooted = harness == Harness::ClaudeCode;
+        if links.is_empty() && !rooted {
+            self.take(fetched, dir, "role", &[], &[], false)
         } else {
-            self.take(fetched, dir, &format!("role+{}", harness.key()), &[], &links)
+            self.take(fetched, dir, &format!("role+{}", harness.key()), &[], &links, rooted)
         }
     }
 
@@ -120,6 +127,8 @@ impl Copies {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         stock::INSTRUCTION.hash(&mut hasher);
+        // Older copies have no boundary for native ancestor skill discovery.
+        "rooted".hash(&mut hasher);
         let commit = format!("{}-{:016x}", stock::ROLE, hasher.finish());
         let kept = Copy { dir: self.root.join(stock::ROLE).join(&commit), commit };
         if kept.dir.is_dir() {
@@ -129,6 +138,7 @@ impl Copies {
         let _ = std::fs::remove_dir_all(&scratch);
         let taken = std::fs::create_dir_all(&scratch)
             .and_then(|()| std::fs::write(scratch.join(RULES), stock::INSTRUCTION))
+            .and_then(|()| discovery_root(&scratch))
             .with_context(|| format!("cannot write {}", scratch.display()))
             .and_then(|()| keep_whole(&scratch, &kept.dir));
         let _ = std::fs::remove_dir_all(&scratch);
@@ -141,7 +151,7 @@ impl Copies {
     /// itself. It is kept as a team with its rules: a copy an older afkconvoy
     /// kept, which left those out, is not taken for one.
     pub fn team(&self, fetched: &Copy, dir: &RepoDir, without: &[PathBuf]) -> Result<Copy> {
-        self.take(fetched, dir, "team+rules", without, &[])
+        self.take(fetched, dir, "team+rules", without, &[], false)
     }
 
     /// The copy of `dir` out of `fetched`, leaving out each of `without`, a
@@ -156,10 +166,11 @@ impl Copies {
         kind: &str,
         without: &[PathBuf],
         links: &[Link],
+        rooted: bool,
     ) -> Result<Copy> {
         let from = fetched.dir.join(dir.path());
         let there = |path: &PathBuf| from.join(path).symlink_metadata().is_ok();
-        if dir.path().is_empty() && !without.iter().any(there) && links.is_empty() {
+        if dir.path().is_empty() && !without.iter().any(there) && links.is_empty() && !rooted {
             return Ok(fetched.clone());
         }
         let repo = self.root.join(dir.repo.as_str());
@@ -174,6 +185,9 @@ impl Copies {
         let _ = std::fs::remove_dir_all(&scratch);
         let taken = copy_dir(&from, &scratch, Path::new(""), without)
             .and_then(|()| links.iter().try_for_each(|link| link.add(&scratch)))
+            .and_then(
+                |()| if rooted { discovery_root(&scratch).map_err(Into::into) } else { Ok(()) },
+            )
             .and_then(|()| keep_whole(&scratch, &kept.dir))
             .with_context(|| format!("{dir} cannot be copied"));
         let _ = std::fs::remove_dir_all(&scratch);
@@ -213,6 +227,14 @@ impl Copies {
         let _ = std::fs::remove_dir_all(&scratch);
         copied
     }
+}
+
+/// Stops Claude Code's native project discovery at the role. Its loader
+/// recognises a `.git` entry before walking to a parent; this empty directory
+/// carries no repository, hooks, config or history. Role settings and skills
+/// still load natively, and opted-in host skills arrive through `--add-dir`.
+fn discovery_root(role: &Path) -> std::io::Result<()> {
+    std::fs::create_dir(role.join(".git"))
 }
 
 /// A link the fleet adds to a copy of a directory.
