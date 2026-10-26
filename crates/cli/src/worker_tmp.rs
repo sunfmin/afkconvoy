@@ -284,13 +284,14 @@ mod tests {
         let under = tempfile::tempdir().unwrap();
         let worktree = worktree(under.path(), 0);
         let tmp = make(&worktree).unwrap();
-        let mut server = Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "worker_tmp::tests::a_server", "--ignored"])
-            .env("TMPDIR", &tmp)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .spawn()
-            .unwrap();
+        let mut server = crate::process::spawn(
+            Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "worker_tmp::tests::a_server", "--ignored"])
+                .env("TMPDIR", &tmp)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null()),
+        )
+        .unwrap();
         let reclaimed = || {
             reclaim().unwrap();
             std::fs::read_link(&tmp).ok()

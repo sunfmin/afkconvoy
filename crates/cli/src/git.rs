@@ -141,12 +141,10 @@ impl Repo {
     /// One git call that must succeed → its stdout as it came: for output whose
     /// leading spaces mean something.
     pub fn git_raw(&self, args: &[&str]) -> Result<String> {
-        let out = Command::new("git")
-            .current_dir(&self.dir)
-            .args(args)
-            .env("LC_ALL", "C")
-            .output()
-            .context("git could not run")?;
+        let out = crate::process::output(
+            Command::new("git").current_dir(&self.dir).args(args).env("LC_ALL", "C"),
+        )
+        .context("git could not run")?;
         if !out.status.success() {
             bail!("git {} failed: {}", args.join(" "), String::from_utf8_lossy(&out.stderr).trim());
         }
@@ -351,13 +349,14 @@ const RECORD_IDENTITY: [(&str, &str); 4] = [
 /// git's messages are read — a ref the remote lacks, a push the server turned
 /// down — so they are asked for in one language whatever the machine's locale.
 fn run(dir: &Path, args: &[&str], env: &[(&str, &str)]) -> Result<Ran> {
-    let out = Command::new("git")
-        .current_dir(dir)
-        .args(args)
-        .env("LC_ALL", "C")
-        .envs(env.iter().copied())
-        .output()
-        .context("git could not run")?;
+    let out = crate::process::output(
+        Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .env("LC_ALL", "C")
+            .envs(env.iter().copied()),
+    )
+    .context("git could not run")?;
     Ok(Ran {
         ok: out.status.success(),
         stdout: String::from_utf8_lossy(&out.stdout).trim().to_string(),
