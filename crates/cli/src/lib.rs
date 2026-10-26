@@ -113,7 +113,8 @@ use git::Repo;
 use host_settings::{
     ADMIT_DISK_ENV, ADMIT_INSPECT_AFTER_ENV, ADMIT_LOAD_ENV, ADMIT_MEMORY_ENV,
     HOST_SLEEP_HOURS_ENV, HOT_CORES_ENV, HOT_MEMORY_ENV, HOT_WRITTEN_ENV, NO_HOST_SLEEP_ENV, To,
-    hours_or_default, port_or_default, thousandths_or_default, whole_or_default,
+    WATCH_DIR_ENV, WATCH_EVERY_ENV, hours_or_default, port_or_default, thousandths_or_default,
+    watch_dir_or_default, watch_every_or_default, whole_or_default,
 };
 use launch::Launches;
 
@@ -1333,6 +1334,14 @@ enum Command {
         /// `default` changes it back [default: 7070, or any free port where it is taken]
         #[arg(long, value_name = "PORT", value_parser = port_or_default)]
         panel: Option<To<u16>>,
+        /// The operator's directory in which this host starts a watch when a doctor look
+        /// needs acting on: a host setting; `default` disables watches [default: none]
+        #[arg(long, env = WATCH_DIR_ENV, value_name = "DIR", value_parser = watch_dir_or_default)]
+        watch_dir: Option<To<PathBuf>>,
+        /// Seconds between this host's doctor looks: a host setting; `default` changes it
+        /// back [default: 300]
+        #[arg(long, env = WATCH_EVERY_ENV, value_name = "SECONDS", value_parser = watch_every_or_default)]
+        watch_every: Option<To<u64>>,
         /// Keep this host awake: no fleet on it puts it to sleep. A host setting, for every
         /// fleet on it until a `run` says `--host-sleep`, which changes it back
         #[arg(long, env = NO_HOST_SLEEP_ENV)]
@@ -3699,6 +3708,8 @@ fn start_of(
         tracker,
         agent,
         panel,
+        watch_dir,
+        watch_every,
         no_host_sleep,
         host_sleep,
         host_sleep_hours,
@@ -3741,6 +3752,8 @@ fn start_of(
         admit_disk,
         admit_inspect_after,
         panel,
+        watch_dir,
+        watch_every,
     };
     let ready_timeout = agent.ready_timeout;
     let panic_at = panic_at_tick;
