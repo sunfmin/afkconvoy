@@ -274,9 +274,9 @@ pub struct Host {
     pub now: u64,
     /// Admission's reading of the host now; why it cannot be read.
     pub admission: Result<Admission, String>,
-    /// The host's `exclusive` queue, whatever its repo: the first runs alone,
-    /// and the rest wait their turn, next first.
+    /// The host's exclusive queue, with running requests before waiters.
     pub exclusive: Vec<Ticket>,
+    pub exclusive_paused: bool,
     pub gate_lanes: u64,
     /// The hours of its local time a fleet may put it to sleep in; `None`
     /// where its host settings keep it awake.
@@ -301,6 +301,7 @@ impl Host {
             now,
             admission: Admission::read(dir).map_err(|error| format!("{error:#}")),
             exclusive: shared.exclusive,
+            exclusive_paused: shared.exclusive_paused,
             gate_lanes: settings.gate_lanes(),
             sleep_hours: host_settings::host_sleep(),
             kit: crate::kit::load().map_err(|error| format!("{error:#}")),
@@ -893,14 +894,59 @@ fn patrol_says(row: &patrol::Row, now: u64) -> String {
     }
 }
 
-/// What the `exclusive` command `ticket` is doing at `now` — the one that
-/// runs, or one waiting in `place` — and whose it is, in words.
-fn exclusive_says(ticket: &Ticket, place: usize, now: u64) -> String {
-    let doing = match ticket.ran {
-        Some(ran) => format!("runs alone, for {}", lasted(now.saturating_sub(ran))),
-        None if place == 0 => "about to run".to_string(),
-        None => {
-            format!("waits behind {place}, for {}", lasted(now.saturating_sub(ticket.asked)))
+/// Display the scheduler's decision, never a prediction from array position.
+fn exclusive_says(request: &afkconvoy_core::exclusive::Observed) -> String {
+    use afkconvoy_core::exclusive::State;
+    let ticket = &request.ticket;
+    let doing = match request.scheduling.state {
+        State::Running => format!("running, for {}", lasted(request.elapsed_seconds.unwrap_or(0))),
+        State::Eligible => {
+            format!("eligible now, waiting for grant, for {}", lasted(request.waiting_seconds))
+        }
+        State::Waiting => {
+            let holders: std::collections::BTreeSet<_> = request
+                .scheduling
+                .reasons
+                .iter()
+                .flat_map(|reason| reason.requests.iter().map(|holder| holder.number))
+                .collect();
+            let why: Vec<_> = request
+                .scheduling
+                .reasons
+                .iter()
+                .map(|reason| {
+                    let requests: Vec<_> = reason
+                        .requests
+                        .iter()
+                        .map(|holder| {
+                            format!(
+                                "request {} ({})",
+                                holder.number,
+                                if holder.state == State::Running {
+                                    "running"
+                                } else {
+                                    "earlier reservation"
+                                }
+                            )
+                        })
+                        .collect();
+                    format!(
+                        "{}{}",
+                        reason.explanation,
+                        if requests.is_empty() {
+                            String::new()
+                        } else {
+                            format!(": {}", requests.join(", "))
+                        }
+                    )
+                })
+                .collect();
+            format!(
+                "waits behind {} holding or reserving requests, for {} · {}",
+                holders.len(),
+                lasted(request.waiting_seconds),
+                why.join("; ")
+            )
         }
     };
     let dir = ticket.dir.rsplit('/').next().unwrap_or_default();
@@ -1019,25 +1065,36 @@ fn host_part(out: &mut String, page: &Page) {
     }
 
     {
+        let observation = afkconvoy_core::exclusive::snapshot(
+            &host.exclusive,
+            host.gate_lanes,
+            host.exclusive_paused,
+            host.now,
+        );
         let lanes: std::collections::BTreeSet<_> =
             host.exclusive.iter().map(afkconvoy_core::exclusive::lane).collect();
         out.push_str("<section class=\"exclusive\"><h2>Command lanes</h2>");
-        let _ = write!(out, "<p>{} worker lanes</p>", host.gate_lanes);
+        let _ = write!(
+            out,
+            "<p>{} worker lanes · {} used · {} free</p>",
+            observation.worker.capacity, observation.worker.used, observation.worker.free
+        );
         for lane in lanes {
             let _ = write!(out, "<h3>{} lane</h3><ul class=\"cards\">", esc(&lane));
-            for (place, ticket) in host
-                .exclusive
+            for request in observation
+                .running
                 .iter()
-                .filter(|ticket| afkconvoy_core::exclusive::lane(ticket) == lane)
-                .enumerate()
+                .chain(&observation.waiting)
+                .filter(|request| request.lane == lane)
             {
+                let ticket = &request.ticket;
                 let class = if ticket.ran.is_some() { "busy" } else { "queued" };
                 let _ = write!(
                     out,
                     "<li class=\"card {class}\"><span class=\"title\"><code>{}</code></span>\
                  <span class=\"meta\"><span class=\"note\">{}</span></span></li>",
                     esc(&ticket.command),
-                    esc(&exclusive_says(ticket, place, host.now)),
+                    esc(&exclusive_says(request)),
                 );
             }
             out.push_str("</ul>");
@@ -1618,6 +1675,7 @@ mod tests {
             now,
             admission: Ok(Admission { shares: SHARES, said: vec![], reading, span: 600 }),
             exclusive: vec![],
+            exclusive_paused: false,
             gate_lanes: 1,
             sleep_hours: Some(SLEEP_HOURS),
             kit: Ok(Kit::default()),
