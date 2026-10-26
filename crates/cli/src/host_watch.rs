@@ -591,8 +591,8 @@ fn session_identity(watch: &Watch) -> String {
     format!("{}-{}", watch.id, watch.attempts.len() + 1)
 }
 
-/// Ends only processes carrying this session's marker, and their children.
-/// The terminal shell never carries it, so its screen and input stay open.
+/// Ends the session's uniquely named wrapper and its descendants. Its
+/// terminal shell is above that wrapper and keeps its screen and input.
 fn stop_session(watch: &Watch) -> Result<()> {
     // A pre-upgrade, headless session carried no marker and its terminal
     // was disposable. Keep its former termination behavior until it ends.
@@ -604,15 +604,18 @@ fn stop_session(watch: &Watch) -> Result<()> {
 }
 
 fn stop_marked(identity: &str) -> Result<()> {
-    let marker = format!("{}={identity}", host_watch::SESSION_ENV);
+    let marker = format!("{}{identity}", host_watch::SESSION_PROCESS);
     let began = Instant::now();
+    let mut pids = BTreeSet::new();
     loop {
         let processes = crate::hot::listed_checked()?;
-        let mut pids: BTreeSet<u32> = processes
-            .iter()
-            .filter(|proc| proc.line.split_whitespace().any(|word| word == marker))
-            .map(|proc| proc.pid)
-            .collect();
+        pids.retain(|pid| processes.iter().any(|proc| proc.pid == *pid));
+        pids.extend(
+            processes
+                .iter()
+                .filter(|proc| proc.line.split_whitespace().any(|word| word == marker))
+                .map(|proc| proc.pid),
+        );
         loop {
             let before = pids.len();
             for proc in &processes {
@@ -631,7 +634,7 @@ fn stop_marked(identity: &str) -> Result<()> {
             bail!("watch session {identity} still has processes; no replacement started");
         }
         let signal = if began.elapsed() >= Duration::from_secs(1) { "-KILL" } else { "-TERM" };
-        for pid in pids {
+        for pid in &pids {
             let _ = crate::process::output(Command::new("kill").args([signal, &pid.to_string()]));
         }
         std::thread::sleep(Duration::from_millis(100));

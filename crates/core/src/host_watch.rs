@@ -96,6 +96,9 @@ pub fn expired(started: u64, now: u64) -> bool {
 /// A marker present only in this watch session's processes, never in the
 /// terminal's shell or a human's other sessions in the same directory.
 pub const SESSION_ENV: &str = "AFKCONVOY_WATCH_SESSION";
+/// The watch's wrapper shell has this unique argument even on hosts where
+/// `ps` cannot read a process's environment. It stays until the harness ends.
+pub const SESSION_PROCESS: &str = "afkconvoy-watch-session-";
 
 /// Runs the interactive harness on the terminal's own input and output.
 /// Only its exit status goes to `transcript`; its shell and screen stay.
@@ -107,10 +110,13 @@ pub fn session(line: &str, transcript: &str, identity: &str) -> String {
         .word(identity)
         .fixed(" && ")
         .launch(line)
+        .fixed("; afkconvoy_status=$?; exit \"$afkconvoy_status\"")
         .done();
     Line::new()
         .fixed("sh -c ")
         .word(&child)
+        .fixed(" ")
+        .word(&format!("{SESSION_PROCESS}{identity}"))
         .fixed("; printf '%s %s\\n' '")
         .fixed(EXITED)
         .fixed("' \"$?\" > ")
