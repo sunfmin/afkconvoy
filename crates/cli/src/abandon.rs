@@ -10,6 +10,7 @@ use afkconvoy_core::prompt::{rejoin_pointer, train_nudge_line};
 use afkconvoy_core::stopped::{Silent, past_grace};
 use afkconvoy_core::tick::Outcome;
 use afkconvoy_core::train::{Tend, on_train, tend, train_refs};
+use afkconvoy_core::transition::FleetFault;
 use afkconvoy_core::worker::WorkerState;
 use anyhow::{Result, anyhow, bail};
 use serde_json::{Value, json};
@@ -125,8 +126,7 @@ fn abandon_train(fleet: &mut Fleet, me: &Me, stopped: &StoppedOn, silent: Silent
             AbandonStep::Escalate { issue, pr } => {
                 let worktree = Worktree::of_issue(&source, issue)?;
                 let claim = of(issue)?.claim.clone();
-                let reason =
-                    Handed::new("its landing train was given up twice", abandoned_reason(pr));
+                let reason = Handed::fleet_fault(FleetFault::TrainAbandoned, abandoned_reason(pr));
                 escalate_claim(fleet, &claim, &reason, Some(pr), worktree.as_ref())?;
             }
         }

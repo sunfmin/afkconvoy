@@ -272,11 +272,14 @@ fn start_failed(
     keep_starting(fleet, number, &failed)?;
     let trust_gap = error.is::<afkconvoy_core::launch::TrustGap>();
     let why = if trust_gap {
-        crate::judge::Handed::new("its harness's worktree trust gap", failed.clone())
+        crate::judge::Handed::fleet_fault(
+            afkconvoy_core::transition::FleetFault::WorktreeTrust,
+            failed.clone(),
+        )
     } else {
         let Some(previous) = previous else { return Err(error) };
-        crate::judge::Handed::new(
-            "its worker start failed again",
+        crate::judge::Handed::fleet_fault(
+            afkconvoy_core::transition::FleetFault::WorkerStart,
             format!(
                 "The worker start failed again before it could take its brief.\n\n\
                  Previous start: {}\n\nFailed start: {failed}",
