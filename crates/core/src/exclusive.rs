@@ -98,18 +98,9 @@ pub fn in_order(mut queue: Vec<Ticket>) -> Vec<Ticket> {
     queue
 }
 
-/// Where `ticket` stands in the order the queue runs: one that runs before
-/// every one that waits, then trains before other waiters, then the one
-/// that asked first, then the one that joined first.
+/// Stable display order: running first, then lane, ask time and ticket.
 fn place(ticket: &Ticket) -> (bool, bool, u64, u64) {
     (ticket.ran.is_none(), !ticket.train, ticket.asked, ticket.number)
-}
-
-/// How many earlier ordinary commands `ticket` runs ahead of as a train's
-/// command gets its turn. Commands already running are never passed.
-pub fn runs_ahead_of(ticket: &Ticket, queue: &[Ticket]) -> usize {
-    let _ = (ticket, queue);
-    0
 }
 
 /// Since when a worker in the worktree `dir` has waited in the queue — or run
@@ -255,6 +246,27 @@ mod tests {
         assert_eq!(ahead(&queue, 2), Some(0));
         assert_eq!(ahead(&queue, 3), Some(1));
         assert_eq!(ahead(&queue, 4), Some(0));
+    }
+
+    #[test]
+    fn two_lanes_admit_different_repos_and_skip_a_second_turn_of_a_running_repo() {
+        let mut a = ticket(1, "/a/one", 100);
+        a.repo = Some("a".into());
+        a.ran = Some(100);
+        let mut another_a = ticket(2, "/a/two", 101);
+        another_a.repo = Some("a".into());
+        let mut b = ticket(3, "/b/one", 102);
+        b.repo = Some("b".into());
+        let queue = [a, another_a, b];
+        assert!(!ready(&queue, 2, 2, 1));
+        assert!(ready(&queue, 3, 2, 1));
+        assert!(!ready(&queue, 3, 1, 1));
+        let mut trains = queue.to_vec();
+        for ticket in &mut trains {
+            ticket.train = true;
+        }
+        assert!(!ready(&trains, 2, 1, 2));
+        assert!(ready(&trains, 3, 1, 2));
     }
 
     #[test]

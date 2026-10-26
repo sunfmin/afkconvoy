@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 
 use afkconvoy_core::exclusive::{
     Ticket, ahead, at_once_line, ended_line, in_order, queued_since, ready, rejoins_line,
-    runs_ahead_of, runs_line, same_lane, waits_line,
+    runs_line, same_lane, waits_line,
 };
 use afkconvoy_core::role::ISSUE_ENV;
 use afkconvoy_core::train::is_train_worktree;
@@ -187,9 +187,8 @@ struct Bound {
     waiting: usize,
 }
 
-/// The host's exclusive queue, as its host runner holds it: one command runs
-/// at a time, with trains ahead of other waiters, in request order within
-/// each priority. Each leaves as its asker's line closes. A clone is the same.
+/// The host's exclusive queue, as its host runner holds it: worker and train lanes run independently, up to the counts the host says, and
+/// at most one command of each repo in each lane. Requests keep their order. Each leaves as its asker's line closes. A clone is the same.
 #[derive(Clone, Default)]
 pub struct Queue {
     held: Arc<(Mutex<Joined>, Condvar)>,
@@ -224,8 +223,32 @@ impl Joined {
     /// Account for the interval before any queue change, so short waits,
     /// gaps without waiters and a changing set of waiters count correctly.
     fn count(&mut self, now: Instant) {
+        let settings = crate::host_settings::of_host().unwrap_or_default();
         for running in self.tickets.iter().filter(|ticket| ticket.ran.is_some()) {
-            if self.tickets.iter().any(|other| other.ran.is_none() && same_lane(running, other)) {
+            let limit = if running.repo_lane.is_some() {
+                1
+            } else if running.train {
+                settings.train_lanes()
+            } else {
+                settings.gate_lanes()
+            };
+            let occupied =
+                self.tickets.iter().filter(|t| t.ran.is_some() && same_lane(t, running)).count()
+                    as u64;
+            let repo_of = |t: &Ticket| t.repo.clone().unwrap_or_else(|| t.dir.clone());
+            if self.tickets.iter().filter(|t| t.ran.is_none() && same_lane(running, t)).any(
+                |waiting| {
+                    let own = self.tickets.iter().find(|t| {
+                        t.ran.is_some()
+                            && t.train == waiting.train
+                            && repo_of(t) == repo_of(waiting)
+                    });
+                    match own {
+                        Some(owner) => owner.number == running.number,
+                        None => occupied >= limit,
+                    }
+                },
+            ) {
                 let waited = self.waited.entry(running.number).or_default();
                 *waited = waited.saturating_add(now.duration_since(self.counted_at));
             }
@@ -318,11 +341,6 @@ impl Queue {
             }
         }
         let ran = crate::clock();
-        let ahead_of = joined
-            .tickets
-            .iter()
-            .find(|ticket| ticket.number == number)
-            .map_or(0, |ticket| runs_ahead_of(ticket, &joined.tickets));
         joined.count(Instant::now());
         joined.waited.insert(number, Duration::ZERO);
         joined.counted_at = Instant::now();
@@ -330,7 +348,7 @@ impl Queue {
             ticket.ran = Some(ran);
         }
         drop(joined);
-        if !kept.say(json!({"runs": ran, "ahead_of": ahead_of})) {
+        if !kept.say(json!({"runs": ran, "ahead_of": 0})) {
             self.leave(number);
             return;
         }
