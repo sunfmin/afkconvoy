@@ -368,7 +368,8 @@ fn a_stage_that_names_no_consult_hands_off_to_the_stock_consult() {
     assert_eq!(dirs.len(), 1, "{dirs:?}");
     let rules = std::fs::read_to_string(dirs[0].join("CLAUDE.md")).unwrap();
     assert_eq!(rules, afkconvoy_core::stock::INSTRUCTION);
-    assert_eq!(std::fs::read_dir(&dirs[0]).unwrap().count(), 1, "nothing else");
+    assert_eq!(std::fs::read_dir(&dirs[0]).unwrap().count(), 2, "rules and discovery boundary");
+    assert_eq!(std::fs::read_dir(dirs[0].join(".git")).unwrap().count(), 0);
     let told = brief(&worktree(&world));
     for said in [
         "started in your role as a **consult**",

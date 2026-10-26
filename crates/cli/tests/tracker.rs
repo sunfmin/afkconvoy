@@ -230,8 +230,6 @@ fn every_issue_is_the_trackers_and_every_pr_branch_and_ref_the_checkouts() {
         "`gh issue view 7 --repo acme/tracker --comments`",
         "`gh issue comment 7 --repo acme/tracker --body",
         "   Closes acme/tracker#7\"",
-        "`gh issue create --repo acme/tracker`",
-        "(`--label ready-for-agent`), and the repo label `repo:acme/dev` (`--label repo:acme/dev`)",
     ] {
         assert!(brief.contains(said), "{said}: {brief}");
     }
@@ -652,7 +650,7 @@ fn a_bound_repos_tracker_issue_goes_through_its_stages_to_the_landing_train_and_
     commit(&dir, "seven.txt", "7\n");
     git(&dir, &["push", "-q", "origin", "HEAD"]);
     world.pr_closing(70, "acme/tracker#7", &branch);
-    let gated = world.afk_in(&dir, &["gate", "--train"]).ok();
+    let gated = world.afk_in(&dir, &["gate"]).ok();
     assert_eq!((&gated["status"], &gated["recorded"]), (&json!("green"), &json!(true)));
     declare(&world, "build", "pass");
     assert_eq!(walked(&tick_at_work(&world, 1090)), ["advance 7 done", "dispatch 7 done"]);

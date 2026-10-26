@@ -22,6 +22,7 @@ Codex effort is a later exception (sunfmin/control#22): each worker takes `model
 What is linked is kept in a directory of the fleet's own, apart from the one kept for a worker given none of it, and holds links to those files alone:
 
 - Claude Code: the directory is added (`--add-dir`), and holds `.claude/skills` and `.claude/CLAUDE.md`. Claude Code loads the skills and rules of an added directory and not its settings; `--setting-sources project` still leaves the user's settings out.
+- Claude Code's role copy also has the native discovery boundary described in ADR-0014. Excluding user settings alone does not exclude a host profile's skills when project discovery finds them above a role; the boundary keeps that path out in either opt-in mode. The explicit added directory remains how host-user skills reach a worker.
 - pi: the user directory the fleet keeps links to the user's skills and rules; the skills are named after the role's (`--skill`), and pi loads a user directory's rules itself.
 - Codex: the user directory the fleet keeps links to the user's skills and rules, where Codex finds a user's.
 

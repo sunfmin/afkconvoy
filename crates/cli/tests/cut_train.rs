@@ -53,11 +53,14 @@ fn worktree_of(world: &World, issue: u64) -> PathBuf {
     PathBuf::from(row["path"].as_str().unwrap())
 }
 
-/// The train's worktree orca lists: the one linked to no issue.
+/// The train's worktree orca lists for this repo: the one linked to no issue.
 fn train_worktree(world: &World) -> PathBuf {
     let orca = world.orca();
     let rows = orca["worktrees"].as_array().unwrap();
-    let trains: Vec<&Value> = rows.iter().filter(|row| row["linkedIssue"].is_null()).collect();
+    let trains: Vec<&Value> = rows
+        .iter()
+        .filter(|row| row["repoId"] == "repo-1" && row["linkedIssue"].is_null())
+        .collect();
     assert_eq!(trains.len(), 1, "{trains:?}");
     PathBuf::from(trains[0]["path"].as_str().unwrap())
 }
@@ -76,6 +79,10 @@ fn finish(world: &World, issue: u64) {
 /// The train worker lands the train → the answer.
 fn land(world: &World, now: &str) -> Value {
     let train = train_worktree(world);
+    // These scenarios exercise rebuilding a train tip without a record.
+    for name in world.remote(&["for-each-ref", "--format=%(refname)", "refs/convoy/gate"]).lines() {
+        world.remote(&["update-ref", "-d", name]);
+    }
     let args = ["--now", now, "land", "--train", "--merged-timeout", "5"];
     let landed = world.afk_in(&train, &args).ok();
     assert_eq!(landed["outcome"], "landed", "{landed}");

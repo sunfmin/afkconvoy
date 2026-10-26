@@ -417,12 +417,12 @@ fn a_red_gate_says_which_lock_stands_and_a_green_one_says_nothing_of_it() {
     let red = world.root.join("red");
     world.set_gate(&format!("test ! -f {}", red.display()));
     world.issue(8, &["fleet-lock"]);
-    let green = world.afk(&["gate", "--train"]).ok();
+    let green = world.afk(&["gate"]).ok();
     assert_eq!((&green["status"], &green["locks"]), (&json!("green"), &Value::Null));
     assert!(!green["detail"].as_str().unwrap().contains("lock"), "{green}");
 
     std::fs::write(&red, "").unwrap();
-    let answer = world.afk(&["gate", "--train"]).ok();
+    let answer = world.afk(&["gate"]).ok();
     assert_eq!((&answer["status"], &answer["locks"]), (&json!("red"), &json!([8])));
     let detail = answer["detail"].as_str().unwrap();
     assert!(detail.contains("A fleet lock stands (#8): the base branch may be what is red"));
@@ -430,7 +430,7 @@ fn a_red_gate_says_which_lock_stands_and_a_green_one_says_nothing_of_it() {
 
     // No lock stands: a red gate is the worker's own to fix.
     world.close_issue(8);
-    let own = world.afk(&["gate", "--train"]).ok();
+    let own = world.afk(&["gate"]).ok();
     assert_eq!((&own["status"], &own["locks"]), (&json!("red"), &Value::Null));
     assert!(own["detail"].as_str().unwrap().contains("fix it, commit, and run this again"));
 }

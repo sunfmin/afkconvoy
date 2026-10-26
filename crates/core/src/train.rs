@@ -311,20 +311,6 @@ pub fn under_repair(ahead: bool, red: Option<(bool, bool)>) -> bool {
     }
 }
 
-/// What a worker's branch takes in before its own gate run while the train is
-/// under repair: the newest commit of the line below the red one with a green
-/// run on record — `below`, newest first, each with whether it has one — else
-/// the base branch. A worker's gate must not be red for a reason that is not
-/// its own.
-pub fn last_green<'a>(below: &[(&'a str, bool)], base: &'a str) -> &'a str {
-    for (commit, recorded) in below {
-        if *recorded {
-            return commit;
-        }
-    }
-    base
-}
-
 /// The joinings a landing finished, of those its commit put on the base
 /// branch: all but a PR still open on another head than the one that joined —
 /// its worker pushed more since, and joins again with it.
@@ -618,14 +604,11 @@ mod tests {
     }
 
     #[test]
-    fn a_worker_under_a_red_train_gates_on_its_last_green_commit() {
+    fn a_red_mark_is_of_the_current_unlanded_train() {
         assert!(under_repair(true, Some((false, true))));
         assert!(!under_repair(true, Some((true, true))), "the red commit landed: it was fixed");
         assert!(!under_repair(true, Some((false, false))), "red on a train that is gone");
         assert!(!under_repair(true, None));
-        assert_eq!(last_green(&[("c3", false), ("c2", true), ("c1", true)], "base"), "c2");
-        assert_eq!(last_green(&[("c3", false)], "base"), "base");
-        assert_eq!(last_green(&[], "base"), "base");
     }
 
     #[test]

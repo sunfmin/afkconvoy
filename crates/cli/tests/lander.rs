@@ -205,7 +205,7 @@ fn through_the_stages(world: &World) -> u64 {
             commit(&dir, "seven.txt", "7\n");
             git(&dir, &["push", "-q", "origin", "HEAD"]);
             world.pr(70, 7, &git(&dir, &["symbolic-ref", "--short", "HEAD"]));
-            let gate = world.afk_in(&dir, &["gate", "--train"]).ok();
+            let gate = world.afk_in(&dir, &["gate"]).ok();
             assert_eq!((&gate["status"], &gate["recorded"]), (&json!("green"), &json!(true)));
         } else {
             assert!(!brief(&dir).contains("## The gate"), "{stage} writes nothing");

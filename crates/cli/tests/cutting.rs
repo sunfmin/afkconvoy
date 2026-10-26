@@ -314,8 +314,8 @@ fn a_watch_s_landed_fix_reaches_the_published_version_through_a_cut() {
             "headRefOid": "", "body": "The watch's lasting fix.", "state": "open"
         }))
     });
-    assert_eq!(world.afk_in(&checkout, &["gate", "--train"]).ok()["recorded"], true);
     let joined = world.afk_in(&checkout, &["land", "--inspection", "--host", "h1"]).ok();
+    assert_eq!(joined["recorded"], true);
     assert_eq!(joined["outcome"], "joined");
     assert!(!world.root.join("published").exists(), "joining has installed nothing");
 
@@ -362,6 +362,7 @@ fn first_cut(preset: bool) {
 
     // Failure at gate leaves one PR and a record that resumes at gate. A
     // peer still starts no cut, and the retry closes the reported failure.
+    assert_eq!(world.afk(&["gate"]).ok()["recorded"], true, "the cut starts on a green base");
     std::fs::write(world.root.join("red"), "red").unwrap();
     let failed = world.afk_in(&checkout, &["cut", "--host", "h1"]).ok();
     assert_eq!(failed["failed"], "gate", "{failed}");

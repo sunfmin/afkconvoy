@@ -4,6 +4,8 @@ status: accepted
 
 # The host runner watches its host
 
+Amended by ADR-0033 (sunfmin/control#94): every host has a watch. Where no operator directory is named, the stock watch runs in afkconvoy's own directory. The statements below that no directory means no look or watch no longer hold.
+
 An inspection starts only on a hot worker, or on admission holding back or memory pressure (ADR-0019, ADR-0026, ADR-0029). Everything else that holds a fleet's work back waits for a human. On afkconvoy 0.5.19, 25 to 26 October 2026, that was all of what held it back: every unbound repo's Kimi worker stopped at Kimi's "Trust this folder?" and its claim was escalated to a human (sunfmin/control#75, #76, #77, #77 being the fix, which could not start either); two workers sat on Codex's usage limit for about an hour and a half until the operator came back (sunfmin/control#74); and the only thing watching the host was an agent session a human had left running, checking `doctor --all --since` every five minutes by hand, which sat on a permission prompt from 13:58Z to 23:15Z.
 
 So the host runner watches its host itself. It is the one long-running process on the host (ADR-0023), and it already knows how to look: `afkconvoy doctor --all --since <until>` (sunfmin/control#48) is the operator's check-in.
