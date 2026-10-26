@@ -80,9 +80,10 @@ pub fn unworked(
             let path = target
                 .map(|checkout| checkout.path.display().to_string())
                 .unwrap_or_else(|| "<target-checkout>".to_string());
-            let label = target
-                .map(|checkout| format!("repo:{}", checkout.repo))
-                .unwrap_or_else(|| "repo:<owner>/<repo>".to_string());
+            let label =
+                target.map(|checkout| format!("repo:{}", checkout.repo)).unwrap_or_else(|| {
+                    if outside { format!("repo:{of}") } else { "repo:<owner>/<repo>".to_string() }
+                });
             let ready = target
                 .and_then(|checkout| {
                     crate::config::load(&checkout.path.join(crate::config::FILE)).ok()
@@ -112,9 +113,11 @@ pub fn unworked(
             } else {
                 label_line.number(edge.number)
             };
+            let mut label_line = label_line.fixed(" --repo ").word(named);
+            for old in labels.iter().flatten().filter(|old| !old.eq_ignore_ascii_case(&label)) {
+                label_line = label_line.fixed(" --remove-label ").word(old);
+            }
             let label_line = label_line
-                .fixed(" --repo ")
-                .word(named)
                 .fixed(" --add-label ")
                 .word(&label)
                 .fixed(" --add-label ")
