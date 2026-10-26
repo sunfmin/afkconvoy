@@ -94,7 +94,9 @@ fn a_failed_train_agent_is_diagnosed_on_the_first_tick_and_keeps_its_train() {
     tick(&world, "1100");
     assert!(world.root.join("diagnosis-asked").exists());
     assert_eq!(world.remote(&["rev-parse", LINE]), joined);
-    let health = world.afk(&["doctor", "--now", "1101", "--host", "h1"]).ok();
+    // There is no live host runner in this world; doctor still reports the
+    // train's evidence alongside that independent critical finding.
+    let health = world.afk(&["doctor", "--now", "1101", "--host", "h1"]).json;
     let workers = health["host"]["host_kit"]["worker_health"]["workers"].as_array().unwrap();
     let worker = workers.iter().find(|w| w["path"] == json!(train)).unwrap();
     assert_eq!(worker["attempts"], 1);
