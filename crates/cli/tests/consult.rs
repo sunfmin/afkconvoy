@@ -101,7 +101,8 @@ fn reads(world: &World) -> Vec<String> {
 /// `escalate` and stopped — and no tick having read that.
 fn declared_unread(world: &World) {
     world.issue(7, &["flow:feature"]);
-    assert_eq!(did(&tick(world, 1000)), ["dispatch 7 done"]);
+    let first = tick(world, 1000);
+    assert_eq!(did(&first), ["dispatch 7 done"], "{first}");
     declare(world, "build", "escalate", "Which schema: v1 or v2?");
     stop(world, 1010);
 }

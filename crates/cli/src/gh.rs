@@ -239,7 +239,7 @@ impl GitHub {
         self.closed.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).insert(number);
     }
 
-    fn blockers(&self, edges: Vec<BlockedBy>) -> Vec<u64> {
+    pub(crate) fn blockers(&self, edges: Vec<BlockedBy>) -> Vec<u64> {
         for edge in &edges {
             if edge.state.eq_ignore_ascii_case("closed") {
                 self.saw_closed(edge.number);

@@ -213,7 +213,7 @@ no other PR. Nobody reads this terminal: never wait for an answer.
 <gate_step>
 <join_step>
 
-<defect>
+<defect><cross_repo>
 ## If you cannot finish it
 
 After a genuine effort, post a comment on the issue instead (`gh issue comment {n}<tracker> --body \"...\"`),
@@ -263,7 +263,7 @@ git add -A && git commit -m \"<what this step did>\" && git push origin HEAD
    Do not merge it.
 <join_step>
 
-<defect>
+<defect><cross_repo>
 ## If you will not open a PR
 
 Post a comment on the issue instead (`gh issue comment {n}<tracker> --body \"...\"`), wake the fleet (below)
@@ -273,10 +273,10 @@ body:
 {verdict_marker}
 ```
 - **`already-satisfied`** — the issue is already implemented in `{base_branch}`: you changed nothing.
-- **`blocked`** — the issue needs something that belongs to another issue and does not exist yet. Do
-  not create it yourself — unless it is a defect outside your issue that you discovered, which no
-  issue covers yet (above). Name every blocking issue in `blocked_by=` (e.g. `blocked_by=41,42`) and
-  say what is missing. For another repo of this host, follow the cross-repo blocker procedure below.
+- **`blocked`** — the issue needs something that belongs to another issue and does not exist yet.
+  Reuse its issue. Open one only for an uncovered defect you discovered (above), or for another
+  repo of this host, following the cross-repo blocker procedure below. Name every blocking issue
+  in `blocked_by=` (e.g. `blocked_by=41,42`) and say what is missing.
 - **`escalate`** — after a genuine effort you cannot complete the work or make the gate pass, or
   the issue as written cannot be done. Say where you are stuck, or the decision that has to be made,
   so that a human can act on it in one reply.
@@ -325,6 +325,19 @@ what it takes. Then stop.
 ```bash
 {verdict_command}
 ```
+";
+
+/// Where another checkout's missing work enters the fleet, shared by the
+/// blocked, defect and split paths.
+const CROSS_REPO_BLOCKER: &str = "
+## Cross-repo blockers
+
+For a blocker, defect or split piece belonging to another repo of this host, open it on the tracker
+`<blocker_tracker>`, with that repo's `repo:<owner>/<repo>` label. In that repo's checkout run `afkconvoy flows`
+and use its `line` (the matching workflow's in a bound repo), with a title and body file. In a bound
+repo omit the line's flow label while opening, then take it in there with
+`afkconvoy intake --issue <n> --workflow <workflow>` and your worker identity; keep the line's ready
+label when it is unbound. Record the tracker issue as the blocker, then declare `blocked` on it.
 ";
 
 /// The procedure offered only by teams that allow splitting.
@@ -1133,7 +1146,7 @@ gate's run changed the worktree. Nothing landed — commit what belongs to a fix
 Keep going until the command says `idle`, or a proven red base branch has you raise a lock below;
 nothing counts your attempts.
 
-<defect>
+<defect><cross_repo>
 ## Hard rules
 
 - Never land anything any other way — no `gh pr merge`, no push to `{base_branch}` of your own.
@@ -1447,17 +1460,12 @@ pub(crate) fn in_tracker(template: &str, tracker: &Tracker) -> String {
             String::new(),
         ),
     };
-    // Worker and defect templates reach this shared procedure by a pointer;
-    // every path uses the target checkout's own workflow and intake.
-    let template = if template.contains("cross-repo blocker procedure below")
-        && !template.contains("<cross_repo>")
-    {
-        format!("{template}\n<cross_repo>")
-    } else {
-        template.to_string()
-    };
     template
-        .replace("<cross_repo>", "\n## Cross-repo blockers\n\nFor a blocker, defect or split piece belonging to another repo of this host, open it on the tracker `<issues>`, with that repo's `repo:<owner>/<repo>` label. In that repo's checkout run `afkconvoy flows` and use its `line` (the matching workflow's in a bound repo), with a title and body file. In a bound repo omit the line's flow label while opening, then take it in there with `afkconvoy intake --issue <n> --workflow <workflow>` and your worker identity when that repo is bound; keep the line's ready label when it is unbound. Record the tracker issue as the blocker, then declare `blocked` on it.\n")
+        .replace("<cross_repo>", CROSS_REPO_BLOCKER)
+        .replace(
+            "<blocker_tracker>",
+            tracker.named().map_or("<owner>/<tracker>", |name| name.as_str()),
+        )
         .replace("<tracker>", &flag)
         .replace("<issues>", &path)
         .replace("<labelled>", &labelled)
@@ -2363,8 +2371,8 @@ mod tests {
             ));
             assert!(brief.contains("commented on — in `blocked_by=`. When it closes, your issue"));
             assert!(brief.contains(
-                "not create it yourself — unless it is a defect outside your issue that you \
-                 discovered, which no\n  issue covers yet (above)."
+                "Open one only for an uncovered defect you discovered (above), or for another\n  \
+                 repo of this host"
             ));
         }
         assert!(taker.contains("verdict comment (below) with `phase=blocked` and that issue"));
