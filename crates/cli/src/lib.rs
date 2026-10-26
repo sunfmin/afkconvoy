@@ -85,6 +85,7 @@ pub mod paused;
 pub mod precedent;
 pub mod probe;
 mod process;
+mod process_scope;
 mod publication;
 pub mod queue;
 pub mod recovery;

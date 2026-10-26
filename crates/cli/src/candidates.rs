@@ -195,6 +195,12 @@ pub(crate) const PROCESS_ENV: &str = "AFKCONVOY_CANDIDATE_PROCESS";
 /// Freeze and durably identify the whole owned tree BEFORE killing any of it.
 /// Another process may finish this cancellation from the saved identities.
 fn signal(repo: &Repo, config: &Config, candidate: &Candidate) -> Result<Vec<Process>> {
+    let scope = crate::process_scope::path(&candidate.worktree);
+    let has_scope = scope.exists();
+    ensure!(
+        candidate.gate.is_none() || has_scope,
+        "gate process ownership is missing; its lane remains occupied"
+    );
     let mut owned: Vec<Process> = candidate
         .descendants
         .iter()
@@ -232,15 +238,21 @@ fn signal(repo: &Repo, config: &Config, candidate: &Candidate) -> Result<Vec<Pro
     }
     loop {
         let all = crate::hot::listed_checked()?;
-        let found: Vec<_> = all
-            .iter()
-            .filter(|p| {
-                !owned.iter().any(|known| known.pid == p.pid)
-                    && (owned.iter().any(|known| known.pid == p.ppid)
-                        || p.line.split_whitespace().any(|word| word == marker))
-            })
-            .map(|p| p.pid)
-            .collect();
+        let mut found = vec![];
+        for p in &all {
+            if p.pid == candidate.owner.pid
+                || p.pid == std::process::id()
+                || owned.iter().any(|known| known.pid == p.pid)
+            {
+                continue;
+            }
+            if owned.iter().any(|known| known.pid == p.ppid)
+                || p.line.split_whitespace().any(|word| word == marker)
+                || (has_scope && crate::process_scope::owns(p.pid, &scope)?)
+            {
+                found.push(p.pid);
+            }
+        }
         let mut added = false;
         for pid in found {
             if let Some(process) = identity(pid)? {
@@ -284,12 +296,15 @@ fn signal(repo: &Repo, config: &Config, candidate: &Candidate) -> Result<Vec<Pro
     Ok(owned)
 }
 
-fn confirmed(processes: &[Process]) -> Result<()> {
+fn confirmed(processes: &[Process], scope: &std::path::Path) -> Result<()> {
     let began = std::time::Instant::now();
     loop {
         let mut live = false;
         for process in processes {
             live |= alive(process)?;
+        }
+        if scope.exists() {
+            live |= !crate::process_scope::free(scope)?;
         }
         if !live {
             return Ok(());
@@ -313,7 +328,7 @@ fn stop_candidate(repo: &Repo, config: &Config, id: &str) -> Result<()> {
         return Ok(());
     }
     let processes = signal(repo, config, c)?;
-    confirmed(&processes)?;
+    confirmed(&processes, &crate::process_scope::path(&c.worktree))?;
     change(repo, config, |chain| {
         for c in &mut chain.candidates {
             if c.id == id {
@@ -337,10 +352,14 @@ fn cleanup(repo: &Repo, config: &Config, chain: &Chain) -> Result<()> {
         if c.owner.host != crate::this_host() || (c.gate.is_none() && alive(&c.owner)?) {
             continue;
         }
-        signalled.push((c.id.clone(), signal(repo, config, c)?));
+        signalled.push((
+            c.id.clone(),
+            signal(repo, config, c)?,
+            crate::process_scope::path(&c.worktree),
+        ));
     }
-    for (id, processes) in signalled {
-        confirmed(&processes)?;
+    for (id, processes, scope) in signalled {
+        confirmed(&processes, &scope)?;
         change(repo, config, |chain| {
             for c in &mut chain.candidates {
                 if c.id == id && !c.valid() {
@@ -417,6 +436,15 @@ pub(crate) struct Gate<'a> {
 }
 
 impl Gate<'_> {
+    pub fn scope(&self) -> Result<std::path::PathBuf> {
+        let chain = read(self.repo, self.config)?.chain;
+        let candidate = chain
+            .candidates
+            .iter()
+            .find(|c| c.id == self.id)
+            .context("candidate disappeared before gate start")?;
+        Ok(crate::process_scope::path(&candidate.worktree))
+    }
     /// Called at the first observed red exit or limit, before log draining,
     /// gate-record I/O or process teardown can delay dependent cancellation.
     pub fn failed(
@@ -792,6 +820,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
         // Candidate artifacts are disposable only after success. Failed ones
         // retain their evidence; source worktrees are never removed here.
         let _ = repo.git(&["worktree", "remove", "--force", &path.to_string_lossy()]);
+        let _ = std::fs::remove_file(crate::process_scope::path(&candidate.worktree));
         drop(permit);
         return Ok(result);
     }

@@ -93,6 +93,9 @@ fn run_command(
     if let Some(candidate) = candidate {
         shell.env(crate::candidates::PROCESS_ENV, candidate.process_marker());
     }
+    let scope = candidate
+        .map(|c| c.scope().and_then(|path| crate::process_scope::create(&path, &mut shell)))
+        .transpose()?;
     let prefix = if candidate.is_some() { "read -r convoy_ready || exit 125\n" } else { "" };
     let mut child = crate::process::spawn(
         shell
@@ -105,6 +108,7 @@ fn run_command(
             .process_group(0),
     )
     .context("the gate command could not be started")?;
+    drop(scope); // only descendants retain the shared process-ownership lease.
     let pid = child.id();
     if let Some(candidate) = candidate {
         if let Err(error) = candidate.started(pid) {
