@@ -188,6 +188,10 @@ fn first_failure_invalidates_running_suffix_kills_children_and_rebuilds_from_ori
     began(&world, "c");
     release(&world, "a", true);
     let answers = [finish(aa), finish(bb), finish(cc)];
+    eprintln!(
+        "CANDIDATE_DISCARDED_WORK={}",
+        json!({"cancelled_gate_seconds": answers[1..].iter().map(|a| a["seconds"].as_u64().unwrap_or(0)).sum::<u64>(), "gates": &answers[1..]})
+    );
     assert_eq!(answers[0]["outcome"], "gate_red", "{:?}", answers);
     for answer in &answers[1..] {
         assert_eq!(answer["outcome"], "cancelled", "{answer}");

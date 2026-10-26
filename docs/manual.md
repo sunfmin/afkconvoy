@@ -2056,6 +2056,8 @@ The remote candidate record holds original head, predecessor, commit, tree, gate
 
 Failure invalidates the dependent suffix before terminating its running gates and children. Their lanes remain occupied until exit is confirmed. Cancellation never consumes a dependent worker's gate failure or rework budget. A later turn rebuilds from preserved original heads and the last landed base, respecting issue blockers. Gate startup waits until its group is recorded; inherited kernel lane leases prevent duplicate capacity after runner or owner death. Interrupted cancellation is completed on the owning host; unconfirmed remote processes are not replaced. A successful base push records its landed prefix atomically, and merge history recovers issue settlement after a crash.
 
+Publication uses an explicit atomic Git receive-pack transaction so an unchanged source head is verified alongside the base and candidate record. Normal git push omits that unchanged-ref condition. Local remotes use git; SSH origins use their existing SSH login. A GitHub HTTPS origin publishes to the same repository through Git SSH: verify `ssh -T git@github.com` before starting the fleet. No token is read or handled. Other HTTP transports require an SSH origin. Failed authentication or missing atomic capability refuses before any ref update is sent.
+
 An unrecorded base tip is gated alone in a separate checkout using its own gate declaration. While it is red, ordinary turns wait outside worker lanes. The fleet opens a dispatchable fleet-lock issue for its repair. That issue's worker alone may take a turn on the red tip, and must still gate its complete merge green before landing. A standing fleet lock allows only its issues to land.
 
 ##### What it answers
