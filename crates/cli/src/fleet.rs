@@ -43,6 +43,9 @@ pub struct Fleet {
     /// Candidates excluded for this continuation only, never a preference.
     pub avoiding: Vec<Harness>,
     runnable: std::cell::RefCell<Option<Runnable>>,
+    /// One view of the issue's refusal comments, seeded by the paged rebuild.
+    refusals:
+        std::cell::RefCell<std::collections::BTreeMap<u64, Vec<afkconvoy_core::worker::Refusal>>>,
     /// The repo's config, with the concurrency its checkout says on this
     /// host laid over it (`concurrency::config_of`).
     pub config: Config,
@@ -109,6 +112,7 @@ impl Fleet {
             repo,
             avoiding: vec![],
             runnable: std::cell::RefCell::new(None),
+            refusals: std::cell::RefCell::new(Default::default()),
             config,
             gh,
             scan,
@@ -139,16 +143,16 @@ impl Fleet {
     /// Select the first eligible harness and model in kit order within the
     /// role's range. Matching model labels override model order within that
     /// harness alone; a role without an eligible candidate waits safely.
-    pub fn cast_in(&self, role: &Role, labels: &[String]) -> Result<Cast> {
-        let range = self.range_in(role)?;
+    pub fn cast_in(&self, role: &Role, labels: &[String], issue: Option<u64>) -> Result<Cast> {
+        let range = self.range_in(role, issue)?;
         casting::preferred(labels, &range, &range)
             .map_err(|why| anyhow!("the role `{}`: {why}", role.name))
     }
 
     /// The role's permitted range in current kit order, with health and
     /// startability exclusions applied after its permissions are resolved.
-    pub fn range_in(&self, role: &Role) -> Result<Vec<casting::Held>> {
-        let kit = self.runnable()?;
+    pub fn range_in(&self, role: &Role, issue: Option<u64>) -> Result<Vec<casting::Held>> {
+        let kit = self.runnable_for(issue)?;
         let kit = kit.range();
         // Apply the role to the whole kit before excluding unhealthy
         // candidates. Temporary unavailability is never an unmatched roster
@@ -175,8 +179,8 @@ impl Fleet {
     }
 
     /// The stock consult follows the same kit order as every other worker.
-    pub fn stock_consult(&self) -> Result<Cast> {
-        let kit = self.runnable()?;
+    pub fn stock_consult(&self, issue: Option<u64>) -> Result<Cast> {
+        let kit = self.runnable_for(issue)?;
         let paused = crate::paused::read();
         if kit.harnesses.is_empty() && !paused.is_empty() {
             return Err(crate::paused::Held::every(&paused, self.now).into());
@@ -195,8 +199,8 @@ impl Fleet {
     }
 
     /// Kit order chooses the harness. Labels can only choose a model within it.
-    pub fn cast(&self, labels: &[String]) -> Result<Result<Cast, String>> {
-        let kit = self.runnable()?;
+    pub fn cast(&self, labels: &[String], issue: Option<u64>) -> Result<Result<Cast, String>> {
+        let kit = self.runnable_for(issue)?;
         let paused = crate::paused::read();
         let range = kit.range();
         if range.is_empty() && !paused.is_empty() {
@@ -239,12 +243,50 @@ impl Fleet {
         Ok(kit)
     }
 
+    /// Eligible on this issue, across every stage and host. The full kit is
+    /// still used to resolve role permissions before this exclusion applies.
+    pub fn runnable_for(&self, issue: Option<u64>) -> Result<crate::kit::Kit> {
+        let mut kit = self.runnable()?;
+        if let Some(issue) = issue {
+            let refusals = self.refusals(issue)?;
+            kit.harnesses.retain(|h| !refusals.iter().any(|r| r.harness == h.harness));
+        }
+        Ok(kit)
+    }
+
+    pub fn refusals(&self, issue: u64) -> Result<Vec<afkconvoy_core::worker::Refusal>> {
+        if !self.refusals.borrow().contains_key(&issue) {
+            let comments = self.gh.comments(issue)?;
+            self.refusals.borrow_mut().insert(
+                issue,
+                afkconvoy_core::worker::refusals(comments.iter().map(|c| c.body.as_str())),
+            );
+        }
+        Ok(self.refusals.borrow().get(&issue).cloned().unwrap_or_default())
+    }
+
+    /// Publish before continuation: losing this process cannot forget why
+    /// this harness must never be chosen again for the issue.
+    pub fn remember_refusal(
+        &self,
+        issue: u64,
+        refusal: afkconvoy_core::worker::Refusal,
+    ) -> Result<()> {
+        let mut refusals = self.refusals(issue)?;
+        if !refusals.iter().any(|r| r.harness == refusal.harness) {
+            self.gh.comment(issue, &refusal.comment())?;
+            refusals.push(refusal);
+            self.refusals.borrow_mut().insert(issue, refusals);
+        }
+        Ok(())
+    }
+
     pub fn selection(&self) -> serde_json::Value {
         let kit = self.runnable();
         serde_json::json!({"order": crate::kit::load().map(|k| k.harnesses.iter().map(|h| h.harness).collect::<Vec<_>>()).unwrap_or_default(),
             "eligible": kit.map(|k| k.harnesses.iter().map(|h| h.harness).collect::<Vec<_>>()).unwrap_or_default(),
             "skipped": self.runnable.borrow().as_ref().map(|runnable| &runnable.skipped),
-            "health": crate::health::show(), "why": "first eligible harness in kit order; role limits still apply"})
+            "health": crate::health::show(), "refusals": *self.refusals.borrow(), "why": "first eligible harness in kit order; role limits and issue refusals still apply"})
     }
 
     pub(crate) fn invalidate_selection(&self) {
@@ -252,15 +294,21 @@ impl Fleet {
     }
 
     pub fn role_selection(&self, role: &Role) -> serde_json::Value {
-        let chosen = self.cast_in(role, &[]).ok().map(|cast| cast.harness);
-        let skipped = chosen.map_or_else(Vec::new, |to| self.skipped_before(to, Some(role)));
+        let chosen = self.cast_in(role, &[], None).ok().map(|cast| cast.harness);
+        let skipped = chosen.map_or_else(Vec::new, |to| self.skipped_before(to, Some(role), None));
         serde_json::json!({"role":role.name,"harness":chosen,"skipped":skipped})
     }
 
     /// Every kit candidate ahead of the one a worker landed on, with the
     /// concrete constraint that excluded it and the change that makes it
     /// eligible. The same selection snapshot feeds plan, dispatch and switch.
-    pub fn skipped_before(&self, to: Harness, role: Option<&Role>) -> Vec<serde_json::Value> {
+    pub fn skipped_before(
+        &self,
+        to: Harness,
+        role: Option<&Role>,
+        issue: Option<u64>,
+    ) -> Vec<serde_json::Value> {
+        let refusals = issue.and_then(|n| self.refusals(n).ok()).unwrap_or_default();
         let whole = crate::kit::load().map(|kit| kit.range()).unwrap_or_default();
         let allowed = role.map_or_else(|| whole.clone(), |role| casting::range(role, &whole));
         let eligible = self.runnable().map(|kit| kit.range()).unwrap_or_default();
@@ -277,7 +325,9 @@ impl Fleet {
             .map(|held| {
                 let harness = held.harness;
                 let key = harness.key();
-                let (why, fix) = if let Some(role) = role.filter(|role| {
+                let (why, fix) = if let Some(refusal) = refusals.iter().find(|r| r.harness == harness) {
+                    (format!("{key} refused this task: {}", refusal.evidence), "continue this issue on another eligible harness".into())
+                } else if let Some(role) = role.filter(|role| {
                     afkconvoy_core::team::unlimited(role, harness).is_some()
                 }) {
                     (
@@ -323,7 +373,7 @@ impl Fleet {
     /// a landing whose casting the host kit does not hold: the host kit's
     /// first, or this host's switch.
     pub fn first(&self) -> Result<Cast> {
-        self.cast(&[])?.map_err(|why| anyhow!("{why}: run `afkconvoy kit`"))
+        self.cast(&[], None)?.map_err(|why| anyhow!("{why}: run `afkconvoy kit`"))
     }
 
     /// Every version tag the remote had when this view was opened, each with
@@ -346,6 +396,14 @@ impl Fleet {
     /// issue that cannot be read costs only itself: it is taken for open,
     /// and noted in `unread`.
     pub fn rebuild(&mut self, open: &Open, me: Option<&InstanceId>) -> Result<(WorkingSet, Flows)> {
+        for issue in &open.issues.rows {
+            self.refusals.borrow_mut().insert(
+                issue.number,
+                afkconvoy_core::worker::refusals(
+                    open.issues.comments(issue.number).iter().map(|c| c.body.as_str()),
+                ),
+            );
+        }
         let (issues, prs) = (&open.issues.rows, &open.prs);
         let stages = Flows::read(self, &open.issues)?;
         // The list holds only open issues: a claim missing from it is asked
@@ -451,9 +509,7 @@ impl Fleet {
     /// unbound frontier. Only an enabled, missing model choice waits, at most
     /// ten minutes; human labels and ineligible harnesses never hold it back.
     fn cast_frontier(&self, set: &mut WorkingSet, open: &OpenIssues, consults: &[u64]) {
-        let Ok(kit) = self.runnable() else { return };
         let paused = crate::paused::read();
-        let range = kit.range();
         let issues = &open.rows;
         let labels_of = |number: u64| -> Vec<String> {
             issues
@@ -474,6 +530,17 @@ impl Fleet {
         };
         let frontier = std::mem::take(&mut set.frontier);
         for mut issue in frontier {
+            let range = match self.runnable_for(Some(issue.number)) {
+                Ok(kit) => kit.range(),
+                Err(error) => {
+                    set.excluded.push(Excluded {
+                        number: issue.number,
+                        title: issue.title,
+                        reason: format!("{error:#}"),
+                    });
+                    continue;
+                }
+            };
             let labels = labels_of(issue.number);
             if consults.contains(&issue.number) {
                 set.frontier.push(issue);
@@ -564,7 +631,7 @@ impl Fleet {
             let ranges = casting::stage_ranges(team, workflow, &kit);
             // Held back while a harness it is cast to is paused, and while its
             // role can run nothing safely.
-            if let Err(error) = self.cast_in(role, &labels) {
+            if let Err(error) = self.cast_in(role, &labels, Some(issue.number)) {
                 let reason = match (
                     error.downcast_ref::<crate::paused::Held>(),
                     error.downcast_ref::<NothingSafe>(),
@@ -591,7 +658,7 @@ impl Fleet {
                 });
                 continue;
             }
-            match self.cast_in(role, &labels).map_err(|e| format!("{e:#}")) {
+            match self.cast_in(role, &labels, Some(issue.number)).map_err(|e| format!("{e:#}")) {
                 Ok(cast) => {
                     let mut cast = casting::unmatched_in(cast, &labels, &ranges);
                     if held == ForCaster::Late && cast.why == Why::RangeFirst {

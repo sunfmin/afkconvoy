@@ -18,7 +18,7 @@ use afkconvoy_core::stage_record::{
 use afkconvoy_core::stock;
 use afkconvoy_core::team::{Consult, FlowLabels, LAND, Team, Workflow};
 use afkconvoy_core::tick::Outcome;
-use afkconvoy_core::transition::{FleetFault, Relabel, escalated_at};
+use afkconvoy_core::transition::{Relabel, escalated_at, skips_consult};
 use afkconvoy_core::waiting::{Back, Waits, back, waits};
 use anyhow::{Result, anyhow, bail};
 use serde_json::{Map, Value, json};
@@ -169,7 +169,7 @@ pub fn put_to_consults(fleet: &Fleet, flows: &Flows, open: &OpenIssues) -> Resul
         let comments = open.comments(issue.number);
         let bodies = || comments.iter().map(|comment| comment.body.as_str());
         let Some(at) = escalated_at(bodies()) else { continue };
-        if comments.get(at).is_some_and(|comment| FleetFault::read(&comment.body).is_some()) {
+        if comments.get(at).is_some_and(|comment| skips_consult(&comment.body)) {
             continue;
         }
         let Ok(workflow) = followed(team, &issue.labels, bodies()) else { continue };
@@ -333,6 +333,7 @@ pub fn show_issue(gh: &GitHub, team: &Team, number: u64) -> Result<Value> {
         "rework": {"had": place.rework(), "left": place.rework_left()},
         "consecutive_rework": in_a_row,
         "records": records,
+        "refusals": afkconvoy_core::worker::refusals(comments.iter().map(|c| c.body.as_str())),
     }))
 }
 

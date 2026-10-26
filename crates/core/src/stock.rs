@@ -5,7 +5,6 @@
 //! where the human would.
 
 use crate::record;
-use crate::transition::FleetFault;
 
 /// The stock consult's whole instruction: the rules of the directory its
 /// worker starts in.
@@ -68,7 +67,10 @@ fn said<'a>(bodies: impl IntoIterator<Item = &'a str>) -> Vec<Said> {
         .into_iter()
         .filter_map(|body| {
             if let Some(fields) = record::read_marker(ESCALATION, body) {
-                return Some(Said::Escalated(claim(fields), FleetFault::read(body).is_some()));
+                return Some(Said::Escalated(
+                    claim(fields),
+                    crate::transition::skips_consult(body),
+                ));
             }
             record::read_marker(ASKED, body).map(|fields| Said::Asked(claim(fields)))
         })
@@ -126,6 +128,7 @@ pub fn asked_at<'a>(bodies: impl IntoIterator<Item = &'a str>, claim: &str) -> O
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::transition::FleetFault;
     use crate::transition::escalation_comment;
 
     #[test]
