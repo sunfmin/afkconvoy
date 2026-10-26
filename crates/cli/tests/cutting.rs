@@ -438,7 +438,7 @@ fn an_idle_tick_starts_one_cut_of_the_next_patch_and_a_peer_starts_none() {
 fn a_cut_shows_its_plan_and_each_step_around_the_commands_output() {
     let world = cutting_publishing(|world| {
         format!(
-            "printf 'publish stdout\\n'\nprintf 'publish stderr\\n' >&2\n{}",
+            "printf 'publish stdout\\n'\nprintf 'publish stderr\\n' >&2\n{}\nprintf 'no final newline'",
             says_published(world)
         )
     });
@@ -460,6 +460,7 @@ fn a_cut_shows_its_plan_and_each_step_around_the_commands_output() {
     let screen = answer.stderr.clone();
     let answer = answer.ok();
     assert_eq!(answer["tag"], "v0.1.1", "{answer}");
+    assert_eq!(answer["took"].as_array().unwrap().len(), 6, "{answer}");
     let first = screen.lines().next().unwrap();
     assert!(first.contains("v0.1.1 (past v0.1.0, holding #7)"), "{first}");
     assert!(first.contains("steps: set, pr, gate, land, tag, publish"), "{first}");
@@ -477,12 +478,16 @@ fn a_cut_shows_its_plan_and_each_step_around_the_commands_output() {
         if ["set", "gate", "publish"].contains(&name) {
             assert!(output.contains(&format!("{name} stdout\n{name} stderr\n")), "{screen}");
         }
+        if name == "publish" {
+            assert!(output.ends_with("no final newline\n"), "{screen}");
+        }
         rest = after;
     }
     let log = std::fs::read_to_string(log_file).unwrap();
     for name in ["set", "publish"] {
         assert!(log.contains(&format!("{name} stdout\n{name} stderr\n")), "{log}");
     }
+    assert!(log.ends_with("no final newline"), "{log}");
 }
 
 #[test]

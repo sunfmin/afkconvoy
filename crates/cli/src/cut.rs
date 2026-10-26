@@ -3,8 +3,8 @@
 //! When a cut is due, which version it makes and how it ended are the core's
 //! (`afkconvoy_core::cut`).
 
-use std::fs::OpenOptions;
-use std::io::{Read, Write};
+use std::fs::{File, OpenOptions};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -641,38 +641,53 @@ impl Cutting<'_> {
             .open(&file)
             .with_context(|| format!("cannot write {}", file.display()))?;
         writeln!(log, "== {} (VERSION={version})", step.word())?;
+        let mut output = File::open(&file)?;
+        output.seek(SeekFrom::End(0))?;
         let mut child = crate::process::spawn(
             Command::new("sh")
-                .args(["-e", "-c", &format!("exec 2>&1\n{lines}")])
+                .args(["-e", "-c", lines])
                 .current_dir(&self.repo.dir)
                 .env(cut::VERSION_ENV, version)
                 .stdin(Stdio::null())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::inherit()),
+                .stdout(log.try_clone()?)
+                .stderr(log),
         )
         .context("sh could not run")?;
-        let mut output = child.stdout.take().context("the cut step has no output stream")?;
-        let streamed = (|| -> std::io::Result<()> {
+        // Follow the same file the commands have always written. A child
+        // left in the background can keep that file open without keeping
+        // this step waiting on an output pipe after its shell exits.
+        let streamed = (|| -> std::io::Result<_> {
             let mut buffer = [0; 8192];
             let mut terminal = std::io::stderr().lock();
+            let mut newline = true;
             loop {
-                let read = match output.read(&mut buffer) {
-                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-                    read => read?,
-                };
-                if read == 0 {
-                    return Ok(());
+                let status = child.try_wait()?;
+                loop {
+                    let read = match output.read(&mut buffer) {
+                        Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                        read => read?,
+                    };
+                    if read == 0 {
+                        break;
+                    }
+                    terminal.write_all(&buffer[..read])?;
+                    newline = buffer[read - 1] == b'\n';
                 }
-                log.write_all(&buffer[..read])?;
-                terminal.write_all(&buffer[..read])?;
                 terminal.flush()?;
+                if let Some(status) = status {
+                    if !newline {
+                        writeln!(terminal)?;
+                    }
+                    return Ok(status);
+                }
+                std::thread::sleep(Duration::from_millis(50));
             }
         })();
         if streamed.is_err() {
             let _ = child.kill();
+            let _ = child.wait();
         }
-        let status = child.wait().context("sh could not be waited for")?;
-        streamed.context("cannot stream the cut step's output")?;
+        let status = streamed.context("cannot stream the cut step's output")?;
         if !status.success() {
             let code = status.code().map_or("a signal".to_string(), |code| code.to_string());
             bail!("its lines exited {code}; what they printed is in {}", file.display());
