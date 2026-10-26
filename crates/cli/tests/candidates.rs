@@ -473,6 +473,38 @@ fn runner_restart_keeps_running_candidate_ownership_and_capacity() {
 }
 
 #[test]
+fn ordinary_work_recovers_an_orphan_gate_after_owner_and_runner_death() {
+    let world = world(2);
+    let (a, head) = worker(&world, 1, "a");
+    let runner = world.host_held();
+    let mut aa = start(&world, &a, &world.cache(), 1);
+    began(&world, "a");
+    world.kill_host_runner("KILL");
+    drop(runner);
+    aa.kill().unwrap();
+    let _ = aa.wait();
+    let _replacement = world.host_held();
+    let marker = world.root.join("ordinary-recovered");
+    let script = format!("touch {}", quote(&marker));
+    let mut ordinary = world
+        .command(env!("CARGO_BIN_EXE_afkconvoy"), &a)
+        .args(["exclusive", "--", "sh", "-c", &script])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    until(|| marker.exists() || ordinary.try_wait().unwrap().is_some());
+    let output = ordinary.wait_with_output().unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(marker.exists());
+    gone(&world, "a");
+    let state = chain(&world);
+    assert_eq!(state["candidates"][0]["phase"], "cancelled");
+    assert_eq!(state["candidates"][0]["stopped"], true);
+    assert_eq!(git(&a, &["rev-parse", "HEAD"]), head);
+}
+
+#[test]
 fn a_reparented_descendant_is_still_owned_and_terminated() {
     let world = world(2);
     let gate = std::fs::read_to_string(world.clone.join("gate.sh")).unwrap().replace(
