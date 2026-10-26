@@ -42,6 +42,21 @@ fn land(world: &World, subject: &str) {
     git(&world.clone, &["push", "-q", "origin", BASE]);
 }
 
+/// A landing at a known time whose side-branch work was authored earlier.
+fn land_at(world: &World, subject: &str, when: u64) {
+    std::fs::write(world.clone.join("widget.txt"), subject).unwrap();
+    git(&world.clone, &["add", "widget.txt"]);
+    let out = world
+        .command("git", &world.clone)
+        .env("GIT_COMMITTER_DATE", format!("@{when} +0000"))
+        .env("GIT_AUTHOR_DATE", "@100 +0000")
+        .args(["commit", "-q", "-m", subject])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    git(&world.clone, &["push", "-q", "origin", BASE]);
+}
+
 /// Tags the base branch's tip `name`, and pushes the tag.
 fn tag(world: &World, name: &str) {
     git(&world.clone, &["tag", "-a", name, "-m", name]);
@@ -439,11 +454,14 @@ fn a_repo_can_shorten_the_busy_bound_and_admission_does_not_hold_an_overdue_cut(
         "Turn cutting on",
     );
     tag(&world, "v0.1.0");
-    land(&world, "Add a widget (#9)");
-    let landed: u64 = git(&world.clone, &["log", "-1", "--format=%ct"]).trim().parse().unwrap();
+    land_at(&world, "Add a widget (#9)", 10_000);
+    land_at(&world, "Add a gadget (#10)", 10_100);
     world.busy("1000");
-    assert!(cut(&tick_as(&world, "alpha", landed + 119)).is_empty());
-    assert_eq!(cut(&tick_as(&world, "alpha", landed + 120)), ["cut done"]);
+    let plan = planned(&world, "alpha", 10_119);
+    assert_eq!(plan["cut"]["oldest_landing_age_seconds"], 119, "{plan}");
+    assert_eq!(plan["cut"]["busy_in_seconds"], 1, "{plan}");
+    assert!(cut(&tick_as(&world, "alpha", 10_119)).is_empty());
+    assert_eq!(cut(&tick_as(&world, "alpha", 10_120)), ["cut done"]);
 }
 
 #[test]
