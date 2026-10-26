@@ -33,6 +33,10 @@ use crate::role::Staged;
 struct Starting {
     claim: String,
     error: String,
+    /// A harness ready once, still waiting to take its brief. This terminal
+    /// belongs to this claim alone, and is reused only while it remains live.
+    #[serde(default)]
+    ready: Option<String>,
 }
 
 fn starting_file(fleet: &Fleet, number: u64) -> Result<PathBuf> {
@@ -58,7 +62,18 @@ pub(crate) fn incomplete(fleet: &Fleet, number: u64) -> Result<bool> {
 
 fn keep_starting(fleet: &Fleet, number: u64, error: &str) -> Result<()> {
     let Some(claim) = fleet.scan.claim_of(number) else { return Ok(()) };
-    let kept = Starting { claim: claim.id.clone(), error: error.to_string() };
+    let kept = Starting { claim: claim.id.clone(), error: error.to_string(), ready: None };
+    std::fs::write(starting_file(fleet, number)?, serde_json::to_vec(&kept)?)?;
+    Ok(())
+}
+
+fn keep_ready(fleet: &Fleet, number: u64, terminal: &str) -> Result<()> {
+    let Some(claim) = fleet.scan.claim_of(number) else { return Ok(()) };
+    let kept = Starting {
+        claim: claim.id.clone(),
+        error: String::new(),
+        ready: Some(terminal.to_string()),
+    };
     std::fs::write(starting_file(fleet, number)?, serde_json::to_vec(&kept)?)?;
     Ok(())
 }
@@ -226,17 +241,22 @@ pub(crate) fn dispatch_continuing(
     continuing: Option<&Continuing>,
 ) -> Result<Value> {
     let previous = starting(fleet, number)?;
-    let started = start(fleet, me, agent, number, from, continuing);
+    let ready = previous.as_ref().and_then(|previous| previous.ready.as_deref());
+    let started = start(fleet, me, agent, number, from, continuing, ready);
     let Some(how) = started.as_ref().err().and_then(gone).cloned() else {
         return match started {
             Ok(started) => {
-                if started["started"] == true {
+                if started["started"] == true && started["brief_pending"] != true {
                     forget_starting(fleet, number)?;
                 }
                 Ok(started)
             }
             Err(error) if error.is::<crate::paused::Held>() => Err(error),
-            Err(error) => start_failed(fleet, me, number, previous, error),
+            Err(error) => {
+                // Waiting to hand a ready worker its brief is no failed
+                // start, even if it subsequently disappears or refuses it.
+                start_failed(fleet, me, number, previous.filter(|p| p.ready.is_none()), error)
+            }
         };
     };
     let held = fleet.scan.claim_of(number).is_some_and(|claim| claim.is_held_by(&me.instance));
@@ -331,6 +351,7 @@ fn start(
     number: u64,
     from: StartFrom,
     continuing: Option<&Continuing>,
+    ready: Option<&str>,
 ) -> Result<Value> {
     let issue = fleet.gh.issue(number)?;
     if issue.is_closed() {
@@ -385,6 +406,7 @@ fn start(
     let mut worktree: Option<Worktree> = None;
     let mut brief = None;
     let mut terminal: Option<String> = None;
+    let mut brief_pending = false;
     let mut discarded = None;
     let undecided = || anyhow!("a dispatch step ran before the one that feeds it");
     let interrupted = "dispatch ended before the worker took its brief";
@@ -454,6 +476,15 @@ fn start(
             }
             DispatchStep::Start => {
                 let cut = worktree.as_ref().ok_or_else(undecided)?;
+                if !by_hand
+                    && continuing.is_none()
+                    && let Some(ready) = ready
+                    && cut.live(ready)?
+                {
+                    terminal = Some(ready.to_string());
+                    keep_ready(fleet, number, ready)?;
+                    continue;
+                }
                 let launch = launch.as_str();
                 if let Some((staged, claim)) = staged.as_ref().zip(fleet.scan.claim_of(number)) {
                     staged.keep_start(cut, claim)?;
@@ -482,20 +513,25 @@ fn start(
                         )?
                     }
                 });
+                keep_ready(fleet, number, terminal.as_deref().ok_or_else(undecided)?)?;
             }
             // `Agent::start_worker` returns only once its worker is ready.
             DispatchStep::AwaitReady => {}
             DispatchStep::Deliver => {
                 let (cut, handle) =
                     worktree.as_ref().zip(terminal.as_ref()).ok_or_else(undecided)?;
-                cut.deliver(handle, brief.as_ref().ok_or_else(undecided)?)?;
+                match cut.deliver(handle, brief.as_ref().ok_or_else(undecided)?) {
+                    Ok(()) => {}
+                    Err(error) if error.is::<crate::orca::IdleTimeout>() => brief_pending = true,
+                    Err(error) => return Err(error),
+                }
             }
         }
     }
     let cut = worktree.ok_or_else(undecided)?;
     // Last: a failed start leaves the verdict standing for the next tick.
     // This belongs to dispatch so a continuation by hand answers it too.
-    if let Some(said) = answered {
+    if !brief_pending && let Some(said) = answered {
         cut.record_answered(&said)?;
     }
     let mut started = json!({"issue": number, "started": true,
@@ -504,6 +540,9 @@ fn start(
         "prompt": plan.variant.word(), "reason": plan.reason,
         "worktree": cut.path, "branch": cut.branch, "terminal": terminal, "harness": harness,
         "model": model});
+    if brief_pending {
+        started["brief_pending"] = json!(true);
+    }
     if let Some(staged) = &staged {
         started["prompt"] = json!(staged.prompt());
         started["stage"] = staged.json();
