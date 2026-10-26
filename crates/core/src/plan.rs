@@ -508,24 +508,18 @@ fn blocker_reason(blockers: &[u64]) -> String {
 
 fn call<'d>(issue: &Issue, due: &'d [(u64, Due<'d>)], handoffs: &[u64]) -> Call<'d> {
     // Where its stage records put it decides. An open PR declares nothing.
-    match due.iter().find(|(number, _)| *number == issue.number).map(|(_, due)| due) {
+    let due = due.iter().find(|(number, _)| *number == issue.number).map(|(_, due)| due);
+    let handing =
+        matches!(due, Some(Due::Consult(_) | Due::Stock(..))) && handoffs.contains(&issue.number);
+    let blocked = !issue.open_blockers.is_empty() && !handing;
+    match due {
         Some(Due::Human(reason)) => Call::Human(reason.clone()),
         Some(Due::Nothing(why)) => Call::Nothing(why.clone()),
-        Some(due @ Due::Consult(entry)) if handoffs.contains(&issue.number) => {
-            Call::Start(entry.stage.name.clone(), due)
-        }
-        Some(due @ Due::Stock(_, stage)) if handoffs.contains(&issue.number) => {
-            Call::Start(stage.name.clone(), due)
-        }
-        Some(Due::Worker(_) | Due::Consult(_) | Due::Lander(_))
-            if !issue.open_blockers.is_empty() =>
-        {
+        Some(Due::Worker(_) | Due::Consult(_) | Due::Lander(_)) if blocked => {
             Call::Nothing(blocker_reason(&issue.open_blockers))
         }
         // Apart: Flux reads no pattern that joins it to those of an entry.
-        Some(Due::Stock(..)) if !issue.open_blockers.is_empty() => {
-            Call::Nothing(blocker_reason(&issue.open_blockers))
-        }
+        Some(Due::Stock(..)) if blocked => Call::Nothing(blocker_reason(&issue.open_blockers)),
         Some(due @ Due::Lander(_)) => Call::Start(LAND.to_string(), due),
         // A consult is started at the stage that asked it.
         Some(due @ (Due::Worker(entry) | Due::Consult(entry))) => {
