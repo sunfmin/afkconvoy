@@ -234,6 +234,10 @@ _Avoid_: liveness, status (as under Position)
 A harness's fixed refusal message on a worker's screen: it refuses this issue, by rule, and the worker continues on the next harness of the host kit that can start for its role. The issue remembers the harness at every later stage and start; other issues may still run it. With no harness left for the issue, it escalates at once with the refusal's words as evidence.
 _Avoid_: account fault, model fault, failed task
 
+**Capacity stop**:
+A worker stopped by its harness's fixed message that its selected model is at capacity. It is transient and belongs to that worker: the harness remains available to other workers.
+_Avoid_: quota fault, task refusal
+
 **Verdict**:
 What ends a stage, declared on the issue by whoever performed it: `pass`, `reject`, `blocked`, `already-satisfied`, or `escalate`. Opening a PR declares nothing.
 _Avoid_: outcome (what a worker leaves on GitHub: its PR on the landing train, or its verdict), result, needs-human
@@ -259,7 +263,7 @@ The queue of the commands run through `afkconvoy exclusive` on one host, held by
 _Avoid_: mutex, semaphore, heavy lock (the fleet lock is another thing)
 
 **Nudge**:
-The one line the fleet types at a silent worker with no outcome, telling it to carry on. Sent once per worker.
+The one line the fleet types at a stopped worker with no outcome, telling it to carry on. Sent once for silence; a capacity stop may call for another after a longer wait.
 _Avoid_: ping, reminder, retry
 
 **Restart**:
