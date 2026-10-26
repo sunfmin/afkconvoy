@@ -17,7 +17,7 @@ use common::{World, asked, commit, git};
 use serde_json::{Value, json};
 
 /// A `run` of the first repo on the host `h1`, its sleeps short.
-const RUN: [&str; 5] = ["run", "--host", "h1", "--second-ms", "100"];
+const RUN: [&str; 7] = ["run", "--tracker", "default", "--host", "h1", "--second-ms", "100"];
 
 /// A `run` as `RUN`, for a test that waits for the next tick of a fleet
 /// instance that holds claims: a second of its sleeps takes 10ms, so each tick
@@ -260,7 +260,7 @@ fn the_host_runner_starts_with_a_fresh_login_shells_environment() {
     // so the check above can fail
     let control = World::new();
     control.issue(7, &["ready-for-agent"]);
-    let held = ["run", "--foreground", "--ticks", "1", "--second-ms", "0"];
+    let held = ["run", "--tracker", "default", "--foreground", "--ticks", "1", "--second-ms", "0"];
     let ran = control.command(program, &control.clone).args(held).envs(SESSION).output().unwrap();
     assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stdout));
     let calls = control.gh_called_with().into_iter().chain(control.orca_called_with());

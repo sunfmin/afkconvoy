@@ -13,7 +13,8 @@ fn run_once(world: &World) -> Answer {
 }
 
 fn run_once_at(world: &World, now: &str) -> Answer {
-    let args = "run --foreground --instance alpha --host h1 --ticks 1 --second-ms 0";
+    let args =
+        "run --tracker default --foreground --instance alpha --host h1 --ticks 1 --second-ms 0";
     let out = world
         .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
         .args(args.split(' '))
