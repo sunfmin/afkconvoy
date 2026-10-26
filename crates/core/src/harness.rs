@@ -507,22 +507,15 @@ impl Harness {
         }
     }
 
-    /// Starts a non-interactive watch in the operator's trusted directory,
-    /// with this harness's login and model, and exits when its answer ends.
-    pub fn watch(
-        self,
-        command: &str,
-        worktree: &str,
-        kept: &str,
-        model: Option<&str>,
-        prompt: &str,
-    ) -> String {
+    /// Starts an interactive watch with the worker's trust, login and model.
+    /// The brief is delivered at its input after startup, as a worker's is.
+    pub fn watch(self, command: &str, worktree: &str, kept: &str, model: Option<&str>) -> String {
         match self {
-            Harness::ClaudeCode => claude_code::watch(command, model, prompt),
-            Harness::Pi => pi::watch(command, kept, model, prompt),
-            Harness::Codex => codex::watch(command, worktree, kept, model, prompt),
-            Harness::Dsh => dsh::watch(kept, model, prompt),
-            Harness::Kimi => kimi::watch(command, kept, model, prompt),
+            Harness::ClaudeCode => claude_code::watch(command, model),
+            Harness::Pi => pi::watch(command, kept, model),
+            Harness::Codex => codex::watch(command, worktree, kept, model),
+            Harness::Dsh => dsh::watch(command, worktree, kept, model),
+            Harness::Kimi => kimi::watch(command, kept, model),
         }
     }
 
@@ -748,15 +741,14 @@ mod tests {
     }
 
     #[test]
-    fn every_watch_is_trusted_non_interactive_and_given_its_model_and_brief() {
+    fn every_watch_is_interactive_trusted_and_given_its_model() {
         for harness in Harness::ALL {
-            let line =
-                harness.watch("agent", "/operator dir", "/kept", Some("model one"), "look at this");
+            let line = harness.watch("agent", "/operator dir", "/kept", Some("model one"));
             assert!(line.contains(harness.worktree_trust()), "{}: {line}", harness.key());
             assert!(line.contains("model one"), "{}: {line}", harness.key());
-            assert!(line.contains("look at this"), "{}: {line}", harness.key());
+
             let headless = ["--print", " exec ", "--prompt", "headless"];
-            assert!(headless.iter().any(|mode| line.contains(mode)), "{}: {line}", harness.key());
+            assert!(!headless.iter().any(|mode| line.contains(mode)), "{}: {line}", harness.key());
         }
     }
 
