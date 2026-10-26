@@ -16,8 +16,9 @@ pub fn red_ref(repo: &Repo, branch: &str) -> String {
 pub fn is_for(gh: &crate::gh::GitHub, issue: u64, tip: &str) -> Result<bool> {
     let marker = format!("<!--convoy:base-repair tip={tip}-->");
     let read = gh.issue(issue)?;
-    Ok(afkconvoy_core::plan::is_repair(&read.labels)
-        && read.body.is_some_and(|body| body.starts_with(&marker)))
+    Ok(read.body.is_none_or(|body| {
+        !body.starts_with("<!--convoy:base-repair ") || body.starts_with(&marker)
+    }))
 }
 
 pub fn tend(fleet: &mut Fleet, me: &Me) -> Result<Outcome> {

@@ -69,6 +69,8 @@ pub struct Settings {
     pub watch_dir: Option<PathBuf>,
     /// `--watch-every`: seconds between the host runner's looks.
     pub watch_every: Option<u64>,
+    /// `--jev-key-command`: a shell command whose stdout is the TypeSafe key.
+    pub jev_key_command: Option<String>,
     /// What another afkconvoy says beside them, kept as it is.
     #[serde(flatten)]
     rest: Map<String, Value>,
@@ -101,6 +103,7 @@ pub struct Named {
     pub panel: Option<To<u16>>,
     pub watch_dir: Option<To<PathBuf>>,
     pub watch_every: Option<To<u64>>,
+    pub jev_key_command: Option<To<String>>,
 }
 
 /// What a `run` sets one setting to: a value of its own, or back to its
@@ -178,6 +181,17 @@ pub fn watch_every_or_default(said: &str) -> Result<To<u64>, String> {
     })
 }
 
+/// `--jev-key-command` as said: a nonempty shell command, or `default`.
+pub fn jev_key_command_or_default(said: &str) -> Result<To<String>, String> {
+    To::parse(said, |said| {
+        if said.trim().is_empty() {
+            Err("the Jev key command is empty; name a command, or `default`".into())
+        } else {
+            Ok(said.to_string())
+        }
+    })
+}
+
 impl Named {
     /// Whether it names none.
     pub fn is_empty(&self) -> bool {
@@ -210,6 +224,7 @@ impl Settings {
         lay(&mut self.panel, named.panel.as_ref());
         lay(&mut self.watch_dir, named.watch_dir.as_ref());
         lay(&mut self.watch_every, named.watch_every.as_ref());
+        lay(&mut self.jev_key_command, named.jev_key_command.as_ref());
         self
     }
 
@@ -289,6 +304,7 @@ impl Settings {
             "panel": self.panel_port(),
             "watch_dir": crate::host_watch::directory(self).ok(),
             "watch_every": self.watch_every(),
+            "jev_key_command": self.jev_key_command,
         });
         match in_force {
             Value::Object(in_force) => in_force,
@@ -381,6 +397,7 @@ pub const ADMIT_INSPECT_AFTER_ENV: &str = "AFKCONVOY_ADMIT_INSPECT_AFTER";
 pub const EXCLUSIVE_SECONDS_ENV: &str = "AFKCONVOY_EXCLUSIVE_SECONDS";
 pub const WATCH_DIR_ENV: &str = "AFKCONVOY_WATCH_DIR";
 pub const WATCH_EVERY_ENV: &str = "AFKCONVOY_WATCH_EVERY";
+pub const JEV_KEY_COMMAND_ENV: &str = "AFKCONVOY_JEV_KEY_COMMAND";
 
 /// Sleep hours as the file keeps them: as they are said, `22:00-06:00`.
 mod hours {

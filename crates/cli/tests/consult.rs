@@ -497,7 +497,7 @@ fn a_consult_takes_one_slot_of_concurrency() {
 }
 
 #[test]
-fn a_silent_consult_waits_for_diagnosis_without_handing_its_claim_to_a_human() {
+fn a_silent_consult_waits_for_the_operator_without_handing_its_claim_to_a_human() {
     let world = bound(FEATURE, 2);
     asked(&world);
     tick(&world, 1180);
@@ -508,7 +508,7 @@ fn a_silent_consult_waits_for_diagnosis_without_handing_its_claim_to_a_human() {
     assert!(!world.labels(7).contains(&"ready-for-human".to_string()));
     assert!(!world.comments(7).join("\n").contains("stopped with no ruling"));
     let plan = world.afk(&["plan", "--now", "3100"]).ok();
-    assert_eq!(plan["host_kit"]["worker_health"]["workers"][0]["action"], "waiting");
+    assert_eq!(plan["host_kit"]["worker_health"]["workers"][0]["action"], "waiting for operator");
 }
 
 #[test]
@@ -593,7 +593,7 @@ fn a_ruling_declared_before_its_claim_is_taken_over_is_read() {
 }
 
 #[test]
-fn a_taken_over_silent_stage_keeps_its_stage_and_claim_while_waiting_for_diagnosis() {
+fn a_taken_over_silent_stage_keeps_its_stage_and_claim_while_waiting_for_the_operator() {
     let world = bound(FEATURE, 2);
     world.issue(7, &["flow:feature"]);
     tick(&world, 1000);
@@ -856,10 +856,13 @@ fn already_satisfied_over_a_branch_that_holds_work_goes_to_its_consult() {
     world.issue(7, &["flow:feature"]);
     assert_eq!(did(&tick(&world, 1000)), ["dispatch 7 done"]);
     commit(&worktree(&world), "half.txt", "half\n");
+    commit(&world.clone, "landed.txt", "only on the base branch\n");
+    git(&world.clone, &["push", "-q", "origin", "main"]);
     declare(&world, "build", "already-satisfied", "Nothing to do.");
     assert_eq!(did(&tick(&world, 1090)), ["advance 7 done"]);
     assert_eq!(world.state(7), "open");
     assert!(world.comments(7).last().unwrap().contains("half.txt"));
+    assert!(!world.comments(7).last().unwrap().contains("landed.txt"));
     consulted_on(&world, 1180, "already-satisfied");
 }
 

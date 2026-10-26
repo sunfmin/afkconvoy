@@ -2,6 +2,7 @@
 //! lives in. Nothing here creates or removes one any other way.
 
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
@@ -72,6 +73,90 @@ const TRUST_PROMPT: &str = "agent-trust-workspace";
 /// How long each accepted line is observed for a turn start. Orca observes
 /// the same request throughout this bound and never resends it.
 const SUBMIT_SECONDS: u64 = 30;
+
+/// A process left after terminal close, and the bounded effort to end it.
+/// The command is read without its environment: the process-tree listing
+/// includes environment variables, which must never be copied to the log.
+struct Ending {
+    description: String,
+    since: Instant,
+    forced: bool,
+    sent: bool,
+    logged: bool,
+    error: Option<String>,
+}
+
+impl Ending {
+    fn observe(proc: &crate::hot::Proc) -> Self {
+        let pid = proc.pid.to_string();
+        let metadata = crate::process::output(Command::new("ps").args([
+            "-ww",
+            "-p",
+            &pid,
+            "-o",
+            "etime=,command=",
+        ]))
+        .ok()
+        .filter(|out| out.status.success())
+        .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string());
+        let description =
+            match metadata.as_deref().and_then(|row| row.split_once(char::is_whitespace)) {
+                Some((ran, command)) => format!("pid {pid}, command {}, ran {ran}", command.trim()),
+                None => format!(
+                    "pid {pid}, command {}, elapsed time unavailable",
+                    proc.line.split_whitespace().next().unwrap_or("unavailable")
+                ),
+            };
+        Self {
+            description,
+            since: Instant::now(),
+            forced: false,
+            sent: false,
+            logged: false,
+            error: None,
+        }
+    }
+
+    fn signal(&mut self, pid: u32, forced: bool) {
+        self.forced = forced;
+        let signal = if forced { "-KILL" } else { "-TERM" };
+        let sent = crate::process::output(Command::new("kill").args([signal, &pid.to_string()]));
+        match sent {
+            Ok(out) if out.status.success() => self.sent = true,
+            Ok(out) => {
+                self.error =
+                    Some(format!("{signal}: {}", String::from_utf8_lossy(&out.stderr).trim()))
+            }
+            Err(error) => self.error = Some(format!("{signal}: {error}")),
+        }
+    }
+
+    fn log_ended(&mut self, worktree: &Path) {
+        if !self.sent || self.logged {
+            return;
+        }
+        self.logged = true;
+        let signal = if self.forced { "SIGKILL" } else { "SIGTERM" };
+        let entry = crate::log::Entry {
+            at: crate::clock(),
+            instance: String::new(),
+            host: crate::this_host(),
+            what: crate::log::What::Command {
+                command: "start".to_string(),
+                on: Some(worktree.display().to_string()),
+                by: "fleet".to_string(),
+                outcome: format!("ended old worker {}, after {signal}", self.description),
+                failed: false,
+            },
+        };
+        // Logging is soft, as for every command that acts.
+        if let Err(error) = crate::log::Log::of(&Repo::new(worktree.to_path_buf()))
+            .and_then(|log| log.append(&entry))
+        {
+            eprintln!("warning: worker termination left no line in the tick log: {error:#}");
+        }
+    }
+}
 
 thread_local! {
     /// One read-only view per tick, dropped even when the tick fails. Each
@@ -804,10 +889,32 @@ impl Worktree {
         let pids: Vec<_> = crate::hot::tree(&before, &self.path).iter().map(|p| p.pid).collect();
         self.close_terminals()?;
         let until = Instant::now() + Duration::from_secs(5);
+        let mut ending = BTreeMap::<u32, Ending>::new();
         loop {
             let processes = crate::hot::listed_checked()?;
             let writers = crate::hot::tree(&processes, &self.path);
-            let old_alive = processes.iter().any(|p| pids.contains(&p.pid));
+            for proc in &processes {
+                if pids.contains(&proc.pid)
+                    || ending.contains_key(&proc.pid)
+                    || writers.iter().any(|writer| writer.pid == proc.pid)
+                {
+                    let record = ending.entry(proc.pid).or_insert_with(|| {
+                        let mut record = Ending::observe(proc);
+                        record.signal(proc.pid, false);
+                        record
+                    });
+                    if !record.forced && record.since.elapsed() >= Duration::from_secs(1) {
+                        record.signal(proc.pid, true);
+                    }
+                }
+            }
+            for (pid, record) in &mut ending {
+                if !processes.iter().any(|proc| proc.pid == *pid) {
+                    record.log_ended(&self.path);
+                }
+            }
+            let old_alive =
+                processes.iter().any(|p| pids.contains(&p.pid) || ending.contains_key(&p.pid));
             // Termination must be confirmed after close, never against the
             // tick's earlier observation of the running agent.
             let report = runtime_row(&runtime_live()?, &self.path);
@@ -821,9 +928,23 @@ impl Worktree {
                 return Ok(());
             }
             if Instant::now() >= until {
+                let survivors = ending
+                    .iter()
+                    .filter(|(pid, _)| processes.iter().any(|proc| proc.pid == **pid))
+                    .map(|(_, record)| match &record.error {
+                        Some(error) => format!("{} ({error})", record.description),
+                        None => record.description.clone(),
+                    })
+                    .collect::<Vec<_>>()
+                    .join("; ");
                 bail!(
-                    "old worker termination is unconfirmed in {}; no replacement was started",
-                    self.path.display()
+                    "old worker termination is unconfirmed in {}; no replacement was started{}",
+                    self.path.display(),
+                    if survivors.is_empty() {
+                        String::new()
+                    } else {
+                        format!("; survived SIGKILL: {survivors}")
+                    }
                 );
             }
             std::thread::sleep(Duration::from_millis(100));

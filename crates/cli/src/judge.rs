@@ -40,13 +40,15 @@ use crate::orca::{Source, Worktree};
 use crate::park::{park_claim, standings};
 use crate::team::keep;
 
-/// A worktree's git progress against the base branch's tip on the remote —
-/// never the local branch of that name, against which a worktree freshly cut
-/// from the remote would read as ahead with no work in it.
+/// A worktree's git progress since its merge base with the base branch on
+/// the remote. Changes landed only on the base branch are no work of this
+/// branch's, and the local base branch may be out of date.
 pub fn progress(worktree: &Worktree, base_tip: &str) -> Result<Progress> {
     let repo = Repo::new(worktree.path.clone());
-    let ahead = repo.try_git(&["rev-list", "--count", &format!("{base_tip}..HEAD")])?;
-    let base_tree = repo.try_git(&["rev-parse", "--verify", &format!("{base_tip}^{{tree}}")])?;
+    let merge_base = repo.try_git(&["merge-base", base_tip, "HEAD"])?;
+    let ahead = repo.try_git(&["rev-list", "--count", &format!("{}..HEAD", merge_base.stdout)])?;
+    let base_tree =
+        repo.try_git(&["rev-parse", "--verify", &format!("{}^{{tree}}", merge_base.stdout)])?;
     let head_tree = repo.try_git(&["rev-parse", "--verify", "HEAD^{tree}"])?;
     let committed = repo.try_git(&["log", "-1", "--format=%ct"])?;
     let dirty = !repo.git_raw(&["status", "--porcelain"])?.trim().is_empty();
@@ -59,8 +61,9 @@ pub fn progress(worktree: &Worktree, base_tip: &str) -> Result<Progress> {
         .filter_map(|at| Some(at.duration_since(UNIX_EPOCH).ok()?.as_secs()))
         .max();
     Ok(Progress {
-        commits_ahead: ahead.stdout.parse().ok().filter(|_| ahead.ok),
-        trees_equal: (base_tree.ok && head_tree.ok).then_some(base_tree.stdout == head_tree.stdout),
+        commits_ahead: ahead.stdout.parse().ok().filter(|_| merge_base.ok && ahead.ok),
+        trees_equal: (merge_base.ok && base_tree.ok && head_tree.ok)
+            .then_some(base_tree.stdout == head_tree.stdout),
         dirty,
         last_commit: committed.stdout.parse().ok().filter(|_| committed.ok),
         touched,
@@ -79,8 +82,7 @@ pub(crate) fn refuted_work(fleet: &Fleet, worktree: Option<&Worktree>) -> Result
         "--no-ext-diff",
         "--name-only",
         "--no-renames",
-        &fleet.base_tip()?,
-        "HEAD",
+        &format!("{}...HEAD", fleet.base_tip()?),
         "--",
     ])?;
     let dirty = repo.git_raw(&["status", "--porcelain"])?;
@@ -88,7 +90,7 @@ pub(crate) fn refuted_work(fleet: &Fleet, worktree: Option<&Worktree>) -> Result
     if !changed.ok {
         reason.push_str(&format!("\n\nTree comparison failed: {}", changed.stderr));
     } else if !changed.stdout.is_empty() {
-        reason.push_str(&format!("\n\nFiles differing from the base branch:\n{}", changed.stdout));
+        reason.push_str(&format!("\n\nFiles changed since the merge base:\n{}", changed.stdout));
     }
     if !dirty.trim().is_empty() {
         reason.push_str(&format!("\n\nUncommitted files:\n{dirty}"));
@@ -351,8 +353,8 @@ fn only_here(claim: &Claim, worktree: &Worktree, leaving: &Leaving) -> Option<St
 
 /// `afkconvoy close`: close one of my claims whose issue needed no change —
 /// close the issue → release → remove the worktree. Refused unless the
-/// worktree here shows a tree equal to the base's and nothing
-/// uncommitted.
+/// worktree here shows no commits or tree changes past the merge base and
+/// nothing uncommitted.
 pub fn close(fleet: &mut Fleet, me: &Me, issue: u64) -> Result<Value> {
     let Some(claim) = mine(fleet, me, issue)? else { return Ok(nothing_held(issue)) };
     let (worktree, workless) = worktree_and_work(fleet, issue)?;

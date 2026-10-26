@@ -203,9 +203,6 @@ pub(crate) fn processes() -> Vec<Proc> {
     let mut procs = listed();
     for proc in &mut procs {
         proc.written = written_by(proc.pid);
-        if proc.ppid == 1 {
-            proc.cwd = works_in(proc.pid);
-        }
     }
     procs
 }
@@ -223,11 +220,18 @@ pub(crate) fn listed_checked() -> anyhow::Result<Vec<Proc>> {
         "pid=,ppid=,rss=,time=,command=",
     ]))?;
     anyhow::ensure!(out.status.success(), "cannot confirm worker termination: ps failed");
-    let rows: Vec<_> = String::from_utf8_lossy(&out.stdout).lines().filter_map(parse).collect();
+    let mut rows: Vec<_> = String::from_utf8_lossy(&out.stdout).lines().filter_map(parse).collect();
     anyhow::ensure!(
         !rows.is_empty(),
         "cannot confirm worker termination: ps returned no processes"
     );
+    // Every caller of tree needs the same shared-server exclusion, including
+    // continuation's checked observation, not only the hot-worker sampler.
+    for proc in &mut rows {
+        if proc.ppid == 1 {
+            proc.cwd = works_in(proc.pid);
+        }
+    }
     Ok(rows)
 }
 

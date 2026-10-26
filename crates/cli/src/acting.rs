@@ -264,6 +264,7 @@ pub fn outcome(command: &str, answer: &Value) -> String {
             _ => "a lock already".to_string(),
         }),
         "land" => word("outcome"),
+        "gate" if !answer["termination"].is_null() => word("detail"),
         "gate" => word("status"),
         "tick" => {
             let did = answer["did"].as_array().map_or(0, Vec::len);
