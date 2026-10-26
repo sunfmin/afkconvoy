@@ -178,7 +178,24 @@ pub(crate) fn identity(pid: u32) -> Result<Option<Process>> {
     }))
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
+pub(crate) fn identity(pid: u32) -> Result<Option<Process>> {
+    let stat = match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        Ok(stat) => stat,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let (_, rest) = stat.rsplit_once(')').context("kernel process identity is malformed")?;
+    let fields: Vec<_> = rest.split_whitespace().collect();
+    if fields.first() == Some(&"Z") {
+        return Ok(None);
+    }
+    let start = fields.get(19).context("kernel process start time is missing")?;
+    let boot = std::fs::read_to_string("/proc/sys/kernel/random/boot_id")?;
+    Ok(Some(Process { host: crate::this_host(), pid, started: format!("{}:{start}", boot.trim()) }))
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 pub(crate) fn identity(pid: u32) -> Result<Option<Process>> {
     let out = crate::process::output(std::process::Command::new("ps").args([
         "-p",
