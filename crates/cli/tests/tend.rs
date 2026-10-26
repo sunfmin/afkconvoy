@@ -217,7 +217,7 @@ fn a_new_join_replaces_a_failed_paused_faulted_or_outdated_train_worker() {
         );
         let old_sends = world.orca_calls().iter().any(|call| {
             common::asked(call) == "terminal send"
-                && call.to_string().contains(old.as_str().unwrap())
+                && call.iter().any(|arg| arg == old.as_str().unwrap())
         });
         assert!(!old_sends, "{cause}: never type into the old session");
         assert_eq!(git(&train, &["rev-parse", "HEAD"]), head, "{cause}");
