@@ -139,7 +139,7 @@ fn a_watch_can_fix_a_fleet_fault_and_hand_it_back_while_a_human_decision_stays()
     world.afk_in(&other, &["run", "--host", "h1"]).ok();
     world.issue(7, &["ready-for-agent"]);
     world.issue(8, &["ready-for-human"]);
-    world.comment(8, "Should we migrate the customer's data now or wait for approval?");
+    world.comment(8, "<!--convoy:escalation claim=old-->\nShould we migrate the customer's data now or wait for approval?");
     world.with_orca(|orca| orca["trust_prompt"] = json!(true));
     let fault = world.afk(&["dispatch", "--issue", "7", "--instance", "alpha", "--host", "h1"]);
     assert!(fault.error().contains("worktree trust gap"));
@@ -168,8 +168,8 @@ fn a_watch_can_fix_a_fleet_fault_and_hand_it_back_while_a_human_decision_stays()
 
     let doctor = world.afk(&["doctor"]).json;
     let waiting = doctor["waiting_on_human"].as_array().unwrap();
-    let answer = waiting.iter().find(|item| item["issue"] == 7).unwrap()["answer"]
-        .as_str().unwrap();
+    let answer =
+        waiting.iter().find(|item| item["issue"] == 7).unwrap()["answer"].as_str().unwrap();
     // The operator fixes the cause before running precisely the current
     // answer line. Only gh and orca are stood in for; dispatch is real.
     world.with_orca(|orca| orca["trust_prompt"] = json!(false));
@@ -178,17 +178,37 @@ fn a_watch_can_fix_a_fleet_fault_and_hand_it_back_while_a_human_decision_stays()
     world.afk(&["wake"]).ok();
     until(&world, "the recovered issue to dispatch", || {
         let orca = world.orca();
-        orca["terminals"].as_array().unwrap().iter().find(|terminal| {
-            terminal["open"] == true && terminal["sent"].as_array().is_some_and(|sent| {
-                sent.iter().any(|line| line.as_str().is_some_and(|line| line.contains("task brief")))
+        orca["terminals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|terminal| {
+                terminal["open"] == true
+                    && terminal["sent"].as_array().is_some_and(|sent| {
+                        sent.iter().any(|line| {
+                            line["text"].as_str().is_some_and(|line| line.contains("task brief"))
+                        })
+                    })
             })
-        }).cloned()
+            .cloned()
     });
-    let human = world.gh()["issues"].as_array().unwrap().iter()
-        .find(|issue| issue["number"] == 8).unwrap().clone();
+    let human = world.gh()["issues"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|issue| issue["number"] == 8)
+        .unwrap()
+        .clone();
     assert_eq!(human["labels"], json!(["ready-for-human"]));
-    printed(&world, &watch, &["fixed trust and checked #7 took its brief",
-        "left #8 with the human: decide when to migrate the customer's data"], Some(0));
+    printed(
+        &world,
+        &watch,
+        &[
+            "fixed trust and checked #7 took its brief",
+            "left #8 with the human: decide when to migrate the customer's data",
+        ],
+        Some(0),
+    );
     let last = until(&world, "the watch's record", || ended(&world, "ended"));
     assert!(last["did"][1].as_str().unwrap().contains("left #8 with the human"));
 }
