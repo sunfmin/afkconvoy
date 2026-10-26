@@ -178,6 +178,7 @@ pub fn findings(rows: &[UnworkedBlocker]) -> Vec<crate::doctor::Finding> {
             fix: row.fix.clone(),
             see: crate::topic::See::Troubleshooting,
             of_host: false,
+            watch_id: None,
         })
         .collect()
 }
