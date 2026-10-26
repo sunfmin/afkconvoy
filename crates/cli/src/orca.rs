@@ -949,10 +949,9 @@ impl Worktree {
     /// Starts a watch in the operator's directory, which need not be a git
     /// checkout. Its launch is non-interactive and exits with the harness.
     pub fn start_watch(&self, command: &str) -> Result<String> {
-        self.close_terminals()?;
         if self.terminal()?.is_some() {
             bail!(
-                "the previous watch in {} still has a terminal after close; none was started",
+                "{} already has a live terminal; no second watch was started beside it",
                 self.path.display()
             );
         }

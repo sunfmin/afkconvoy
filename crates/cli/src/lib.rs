@@ -60,6 +60,7 @@ pub mod host_panel;
 pub mod host_runner;
 pub mod host_settings;
 pub mod host_sleep;
+pub mod host_watch;
 pub mod hot;
 pub mod inspection;
 pub mod instance;

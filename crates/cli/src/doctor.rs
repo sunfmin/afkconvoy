@@ -156,6 +156,7 @@ kinds! {
     StepUnrecovered: Warning, "failed in tick";
     HarnessDown: Critical, "harness is down";
     HarnessPaused: Warning, "is paused on this host";
+    WatchUnavailable: Critical, "no harness can start this host's watch";
     NotMoved: Warning, "the host runner did not move onto";
     RosterModelUnmatched: Warning, "names no model the host kit holds";
     TeamUnread: Critical, "the team this repo names cannot be read";
@@ -197,6 +198,7 @@ impl Kind {
                 | Kind::NoProvider
                 | Kind::OrcaNotRunning
                 | Kind::HarnessPaused
+                | Kind::WatchUnavailable
                 | Kind::NotMoved
         )
     }
@@ -1740,6 +1742,7 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String]) -> Result<Exami
     found.extend(crate::tracker::findings(repo));
     found.extend(crate::paused::findings(now));
     found.extend(host_runner::findings());
+    found.extend(crate::host_watch::finding());
     found.sort_by_key(|finding| finding.severity);
     let (claims, issues, waiting) = match &state {
         Ok(state) => (
@@ -1751,6 +1754,7 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String]) -> Result<Exami
     };
     let mut host = host_json(&seen_host);
     host["worker_no_proxy"] = launches.proxy_json();
+    host["worker_health"] = crate::health::show();
     host["admission"] = match Admission::read(&repo.dir) {
         Ok(admission) => admission.json(),
         Err(error) => json!({"error": format!("{error:#}")}),
@@ -1789,12 +1793,12 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String]) -> Result<Exami
 /// its key: `doctor --all` says it once. All but the host kit are as the
 /// host runner says them, asked once.
 fn host_once(now: u64) -> Map<String, Value> {
-    let (exclusive, inspection, installed) = match host_runner::shared() {
+    let (exclusive, inspection, installed, watch) = match host_runner::shared() {
         Ok(said) => {
             let said = said.unwrap_or_default();
-            (Ok(said.exclusive), said.inspection, said.installed)
+            (Ok(said.exclusive), said.inspection, said.installed, said.watch)
         }
-        Err(error) => (Err(error), None, None),
+        Err(error) => (Err(error), None, None, None),
     };
     Map::from_iter([
         ("host_kit".to_string(), crate::kit::show(now)),
@@ -1804,6 +1808,14 @@ fn host_once(now: u64) -> Map<String, Value> {
             inspection.map_or(Value::Null, |running| crate::inspection::json(&running)),
         ),
         ("installed".to_string(), serde_json::to_value(installed).unwrap_or_default()),
+        (
+            "watch".to_string(),
+            json!({
+                "running": watch.as_ref().map(crate::host_watch::watch_json),
+                "last": crate::host_watch::last().as_ref().map(crate::host_watch::watch_json),
+                "unavailable": crate::host_watch::unavailable(),
+            }),
+        ),
     ])
 }
 

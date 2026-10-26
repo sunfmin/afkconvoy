@@ -93,6 +93,7 @@ pub fn forget(root: &Path) {
 }
 
 /// A host's checkout list: its file, and the lock beside it.
+#[derive(Clone)]
 pub struct List {
     file: PathBuf,
 }

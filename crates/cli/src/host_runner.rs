@@ -155,6 +155,7 @@ pub struct Shared {
     pub queue: Queue,
     pub installed: Arc<Mutex<Option<Installed>>>,
     pub blockers: wake::Blockers,
+    pub watch: crate::host_watch::Shared,
 }
 
 impl Shared {
@@ -165,6 +166,7 @@ impl Shared {
             exclusive: self.queue.standing(),
             inspection: self.turn.running(),
             installed: self.installed().clone(),
+            watch: self.watch.running(),
         }
     }
 
@@ -190,6 +192,9 @@ pub struct SharedNow {
     /// or the host runner is of an afkconvoy that does not say it.
     #[serde(default)]
     pub installed: Option<Installed>,
+    /// The watch running on the host; `None`: none.
+    #[serde(default)]
+    pub watch: Option<crate::host_watch::Watch>,
 }
 
 /// The afkconvoy installed where the host runner was started from, once that
@@ -604,6 +609,24 @@ fn held_host(
     };
     let (log, stop, moving) = (Arc::clone(log), stop.clone(), AtomicBool::new(false));
     let runner = Arc::new(Runner { list, log, stop: stop.clone(), moving, held, panel, shared });
+    let watching = {
+        let (list, log) = (runner.list.clone(), Arc::clone(&runner.log));
+        crate::host_watch::HostWatch::start(
+            runner.list.clone(),
+            runner.stop.clone(),
+            runner.shared.watch.clone(),
+            move |what| {
+                let entry = log::Entry {
+                    at: crate::clock(),
+                    instance: "host-watch".into(),
+                    host: crate::this_host(),
+                    what: what.clone(),
+                };
+                log.say(&entry.said());
+                crate::host_watch::append_to_tick_logs(&list, what);
+            },
+        )
+    };
     runner.start_listed(listed.checkouts);
     let about = json!({"pid": pid, "version": VERSION, "log": dir.join(LOG), "panel": address});
     let answerer = Arc::clone(&runner);
@@ -639,6 +662,7 @@ fn held_host(
     while !runner.holding().is_empty() {
         std::thread::sleep(Duration::from_millis(50));
     }
+    drop(watching);
     // `stop --all` among them, which is answered once they all stopped.
     answering.settled(ANSWERED_WITHIN);
     let kept = runner.list.read().map_or(0, |listed| listed.checkouts.len());
@@ -2115,8 +2139,27 @@ pub fn foreground(checkout: &Repo, start: &Start, settings: host_settings::Named
         Line::Warning(warning) => probe::announce(&[warning.to_string()]),
     });
     let Reach { wakes } = reach;
+    let watching = {
+        let list = List::of_host()?;
+        crate::host_watch::HostWatch::start(
+            list.clone(),
+            stop.clone(),
+            shared.watch.clone(),
+            move |what| {
+                let entry = log::Entry {
+                    at: crate::clock(),
+                    instance: "host-watch".into(),
+                    host: crate::this_host(),
+                    what: what.clone(),
+                };
+                println!("{}", entry.said());
+                crate::host_watch::append_to_tick_logs(&list, what);
+            },
+        )
+    };
     let holder = Holder { stop: stop.instance(), echo, wakes, shared, show: Some(show) };
     let held = instance::hold(checkout, start, holder);
+    drop(watching);
     // It holds the host no more: a `run` from now on starts a host runner,
     // which waits for the lock.
     let _ = std::fs::remove_file(dir.join(runner_socket::SOCKET));
