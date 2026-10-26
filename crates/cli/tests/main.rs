@@ -61,6 +61,7 @@ mod roster;
 mod scaffold;
 mod slow_gate;
 mod smoke;
+mod smoke_claude_skills;
 mod smoke_codex;
 mod smoke_kimi;
 mod smoke_pi;
