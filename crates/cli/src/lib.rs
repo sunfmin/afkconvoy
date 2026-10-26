@@ -2443,7 +2443,7 @@ enum Command {
     ///
     /// Commands use worker lanes, {const:GATE_LANES} by default. `run --gate-lanes N` sets the count live across the host, and `default` restores it. N must be above zero. One repo holds at most one turn, regardless of the count. Heavy gates, tests, benchmarks and builds use these lanes in FIFO order; a light gate takes its repo's own lane. A turn holds its lane through merge, gate, recording and landing. A process that dies frees it.
     ///
-    /// A cut's commands share the train's priority, known by the cut's own worktree. Trains and cuts keep request order among themselves, ahead of waiting ordinary commands, so queued worker gates cannot run out a busy cut's time limit. A worker may therefore also wait behind a cut's gate or publish step. The cut's runs line says "runs ahead of N waiting commands, as a cut's".
+    /// A cut's turn and exclusive commands go ahead of waiting worker commands, known by the cut's own worktree. Cuts keep request order among themselves, and ordinary commands keep theirs. Priority never interrupts a running command or adds a lane. A worker may therefore wait behind a cut's gate or publish step. Its runs line says "runs as a cut, ahead of waiting worker commands".
     ///
     /// The queue is the host runner's (`afkconvoy run --help`), held in its process: `exclusive` asks it on its socket, naming its checkout, and stays on the line while it waits and while its command runs. A process that leaves it — its command ended, or it was killed while waiting or running — frees its place for the next. The command runs in the directory `exclusive` is run in, or with `-C <dir>` in that one, as named: a checkout of the repo or a directory in one, and not that checkout's top.
     ///
