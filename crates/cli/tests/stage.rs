@@ -94,7 +94,7 @@ fn a_ready_stage_worker_takes_its_pending_brief_in_the_same_terminal() {
             .filter(|worker| worker["open"] == true)
             .map(|worker| worker["handle"].clone())
             .collect();
-        assert_eq!(open, [terminal.clone()]);
+        assert_eq!(open.as_slice(), std::slice::from_ref(&terminal));
         assert!(!world.orca_calls().iter().any(|call| common::asked(call) == "terminal create"));
     }
     let orca = world.orca();
