@@ -40,6 +40,13 @@ pub(super) fn task_refusal(output: &[String]) -> Option<String> {
     screen.contains(words).then(|| words.to_string())
 }
 
+/// Codex's capacity words reported on sunfmin/control#104, 2026-10-26.
+pub(super) fn capacity_stop(output: &[String]) -> Option<String> {
+    let screen = output.join(" ").split_whitespace().collect::<Vec<_>>().join(" ");
+    let words = "Selected model is at capacity. Please try a different model.";
+    screen.contains(words).then(|| words.to_string())
+}
+
 pub(super) const NAME: &str = "Codex";
 pub(super) const KEY: &str = "codex";
 pub(super) const PROGRAM: &str = "codex";

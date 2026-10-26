@@ -54,6 +54,34 @@ With no eligible harness left for this issue, it escalates immediately with the
 refusal evidence. No consult is started on the exhausted kit. This amends the
 observation and one-hour recovery window above for explicit task refusals only.
 
+## Capacity stops wait briefly, then continue (sunfmin/control#108)
+
+Codex's fixed `Selected model is at capacity. Please try a different model.`
+screen, reported on sunfmin/control#104 on 2026-10-26, classes a capacity stop
+by rule, before observation or diagnosis. Other harnesses acquire a rule only
+with an observed screen in a test. This amends the 300-second observation
+rule above for capacity stops, beside usage limits and task refusals.
+
+The first stop waits 60 seconds before nudging the same session. A second
+stop in the episode waits 120 seconds before another nudge. A third continues
+through the existing confirmed-termination path to the next eligible harness
+in host kit order, keeping the worktree, branch, stage, claim and PR. One
+unchanged screen during a wait counts once, and each successful nudge must
+have a receipt proving a turn started before another stop counts. The episode
+survives brief working turns and host-runner restarts, and ends after 300
+seconds observed healthy or when the session or harness changes. Changing
+terminal output or git progress alone does not erase its bound.
+
+Capacity is worker scope. It faults no harness or model for other workers,
+and adds no task refusal to the issue. The tick log records the capacity rule,
+each wait, each nudge and continuation; doctor retains the number of capacity
+stops per harness on the host, including after a worker's episode ends.
+
+Immediate continuation would abandon capacity that passes in a minute;
+unbounded nudges would keep a slot indefinitely. Two increasing waits give
+transient capacity time to pass without paying for diagnosis or spending
+another five minutes merely observing a fixed message.
+
 ## Considered options
 
 
