@@ -61,6 +61,7 @@ fn sourced_research_places_models_in_file_order_without_calling_a_model() {
 #[test]
 fn legacy_not_researched_models_named_by_doctor_accept_dated_research() {
     let world = World::new();
+    world.kit_command("codex", "codex");
     world.kit_models("codex", &["gpt-6-sol"]);
     world.with_kit(|kit| {
         let codex = kit["harnesses"]
