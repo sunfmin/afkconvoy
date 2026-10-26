@@ -190,7 +190,9 @@ fn doctor_all_answers_each_checkouts_doctor_and_the_hosts_findings_once() {
     assert!(answer["until"].is_null(), "an unreadable checkout withholds the next boundary");
     assert_eq!(
         keys(&answer["host"]),
-        BTreeSet::from(["exclusive", "host_kit", "inspection", "installed"].map(String::from))
+        BTreeSet::from(
+            ["exclusive", "host_kit", "inspection", "installed", "watch"].map(String::from)
+        )
     );
 
     // each checkout's `doctor` under it, as `doctor` in it answers, but for
@@ -207,7 +209,7 @@ fn doctor_all_answers_each_checkouts_doctor_and_the_hosts_findings_once() {
         let doctor = &row["doctor"];
         assert_eq!(keys(doctor), keys(&alone), "{doctor}");
         assert!(doctor["waiting_on_human"].is_array(), "{doctor}");
-        for key in ["host_kit", "exclusive", "inspection", "installed"] {
+        for key in ["host_kit", "exclusive", "inspection", "installed", "watch"] {
             assert!(doctor["host"].get(key).is_none(), "{key} is said once: {doctor}");
         }
         for key in ["tools", "settings", "admission"] {

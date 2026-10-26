@@ -9,6 +9,7 @@ use std::collections::BTreeSet;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -25,7 +26,6 @@ use crate::git::Repo;
 use crate::health::Diagnosis;
 use crate::log::{Entry, What};
 use crate::orca::Worktree;
-use crate::stop::Stop;
 
 const STATE: &str = "watch/state.json";
 /// How often a running watch's terminal and transcript are read.
@@ -133,30 +133,33 @@ impl Shared {
     }
 }
 
-/// The host runner's watch, on a thread of its own. Dropping it waits for that
-/// thread, never for the watch's session nor ends it: the next host runner
-/// keeps it.
+/// The host runner's watch, on a thread of its own, for as long as it is
+/// held. Dropping it ends that thread, a look it is taking with it, and waits
+/// for it: never for the watch's session, which it does not end — the next
+/// host runner keeps it.
 pub struct HostWatch {
+    ended: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl HostWatch {
-    /// Watches the host until `stop` is told, saying each start, end and
-    /// thing done to `say`.
-    pub fn start(
-        stop: Stop,
-        shared: Shared,
-        say: impl Fn(What) + Send + Sync + 'static,
-    ) -> HostWatch {
-        let thread = std::thread::spawn(move || {
-            Watcher { stop, shared, say: Box::new(say), failed: None }.run();
-        });
-        HostWatch { thread: Some(thread) }
+    /// Watches the host, saying each start, end and thing done to `say`.
+    pub fn start(shared: Shared, say: impl Fn(What) + Send + Sync + 'static) -> HostWatch {
+        let ended = Arc::new(AtomicBool::new(false));
+        let watcher = Watcher {
+            ended: Arc::clone(&ended),
+            shared,
+            say: Box::new(say),
+            looking: Failing::default(),
+            checking: Failing::default(),
+        };
+        HostWatch { ended, thread: Some(std::thread::spawn(move || watcher.run())) }
     }
 }
 
 impl Drop for HostWatch {
     fn drop(&mut self) {
+        self.ended.store(true, Ordering::Relaxed);
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
@@ -164,48 +167,55 @@ impl Drop for HostWatch {
 }
 
 struct Watcher {
-    stop: Stop,
+    ended: Arc<AtomicBool>,
     shared: Shared,
     say: Box<dyn Fn(What) + Send + Sync>,
-    /// What failed last, said once until something else fails.
-    failed: Option<String>,
+    looking: Failing,
+    checking: Failing,
+}
+
+/// What failed last of one kind of step, said once until it fails otherwise.
+#[derive(Default)]
+struct Failing(Option<String>);
+
+impl Failing {
+    fn said(&mut self, done: Result<()>, say: &dyn Fn(What)) {
+        let failed = done.err().map(|error| format!("{error:#}"));
+        if let Some(said) = &failed
+            && self.0.as_ref() != Some(said)
+        {
+            say(What::WatchFailed { said: said.clone() });
+        }
+        self.0 = failed;
+    }
 }
 
 impl Watcher {
-    fn run(&mut self) {
+    fn run(mut self) {
         self.shared.set(read().ok().and_then(|state| state.running));
         let (mut next_look, mut next_check) = (Instant::now(), Instant::now());
-        while !self.stop.told() {
+        while !self.ended.load(Ordering::Relaxed) {
             let now = Instant::now();
             if now >= next_check {
                 next_check = now + CHECK_EVERY;
                 let checked = self.check();
-                self.failing(checked);
+                self.checking.said(checked, &self.say);
             }
-            let settings = crate::host_settings::of_host().unwrap_or_default();
-            match &settings.watch_dir {
-                // A look is taken only while no watch runs: what it would
-                // find waits for the first look after the watch ends.
-                Some(directory) if now >= next_look && self.shared.running().is_none() => {
-                    next_look = now + Duration::from_secs(settings.watch_every());
-                    let looked = self.look(directory);
-                    self.failing(looked);
-                }
-                Some(_) => {}
-                None => next_look = now,
+            // A look is taken only while no watch runs: what it would find
+            // waits for the first look after the watch ends.
+            if now >= next_look && self.shared.running().is_none() {
+                let settings = crate::host_settings::of_host().unwrap_or_default();
+                next_look = match &settings.watch_dir {
+                    Some(directory) => {
+                        let looked = self.look(directory);
+                        self.looking.said(looked, &self.say);
+                        now + Duration::from_secs(settings.watch_every())
+                    }
+                    None => now + CHECK_EVERY,
+                };
             }
             std::thread::sleep(Duration::from_millis(250));
         }
-    }
-
-    fn failing(&mut self, done: Result<()>) {
-        let failed = done.err().map(|error| format!("{error:#}"));
-        if let Some(said) = &failed
-            && self.failed.as_ref() != Some(said)
-        {
-            (self.say)(What::WatchFailed { said: said.clone() });
-        }
-        self.failed = failed;
     }
 
     fn save(&self, state: &State) -> Result<()> {
@@ -233,7 +243,7 @@ impl Watcher {
                 directory.display()
             );
         }
-        let look = doctor_look(state.until)?;
+        let look = doctor_look(state.until, &self.ended)?;
         state.until = look["until"].as_u64().or(state.until);
         let current = actionable(&look, look["until"].as_u64().unwrap_or_else(crate::clock));
         state.watched = host_watch::covered(&state.watched, &current);
@@ -529,8 +539,8 @@ fn brief(watch: &Watch) -> String {
 
 /// What `afkconvoy doctor --all --since <until>` answers: the fleet's own
 /// look, which runs no model. One with something wrong exits non-zero, and is
-/// read all the same.
-fn doctor_look(until: Option<u64>) -> Result<Value> {
+/// read all the same. One under way when the watch is `ended` is given up.
+fn doctor_look(until: Option<u64>, ended: &AtomicBool) -> Result<Value> {
     let program = std::env::current_exe().context("cannot find this afkconvoy")?;
     let mut args = vec!["doctor".to_string(), "--all".to_string()];
     if let Some(until) = until {
@@ -551,7 +561,7 @@ fn doctor_look(until: Option<u64>) -> Result<Value> {
     });
     let deadline = Instant::now() + Duration::from_secs(LOOK_SECONDS);
     while child.try_wait()?.is_none() {
-        if Instant::now() >= deadline {
+        if Instant::now() >= deadline || ended.load(Ordering::Relaxed) {
             let _ = child.kill();
             let _ = child.wait();
             bail!("the host's look did not answer within {LOOK_SECONDS} seconds");
@@ -641,7 +651,7 @@ fn actionable(look: &Value, now: u64) -> Vec<Item> {
         let path = worker["path"].as_str().unwrap_or("unknown");
         if next <= now {
             let reason = format!(
-                "the health check of the worker in {path} was due at {} UTC and is still \
+                "the health observation of the worker in {path} was due at {} UTC and is still \
                  waiting: {}",
                 crate::log::utc(next),
                 worker["error"]
@@ -654,7 +664,7 @@ fn actionable(look: &Value, now: u64) -> Vec<Item> {
         let path = failed[0].as_str().unwrap_or("unknown");
         if next <= now {
             let reason = format!(
-                "the health check of the worker in {path} failed, and its retry is overdue: {}",
+                "the health observation of the worker in {path} failed, and its retry is overdue: {}",
                 failed[1]
             );
             push(&mut items, format!("health:{path}"), reason);

@@ -146,14 +146,14 @@ pub fn port_or_default(said: &str) -> Result<To<u16>, String> {
     To::parse(said, |said| said.parse().map_err(|_| format!("`{said}` is no port, nor `default`")))
 }
 
-/// `--watch-dir` as said: the operator's directory, or `default` for none.
+/// `--watch-dir` as said: the operator's directory, an existing one, kept by
+/// its whole path, or `default` for none.
 pub fn watch_dir_or_default(said: &str) -> Result<To<PathBuf>, String> {
     To::parse(said, |said| {
-        if said.trim().is_empty() {
-            Err("the watch directory is empty; name a directory, or `default`".to_string())
-        } else {
-            Ok(PathBuf::from(said))
-        }
+        std::fs::canonicalize(said)
+            .ok()
+            .filter(|dir| dir.is_dir())
+            .ok_or_else(|| format!("`{said}` is no directory, nor `default`"))
     })
 }
 
@@ -317,15 +317,6 @@ pub fn change(list: &List, named: &Named) -> Result<Map<String, Value>> {
         bail!(
             "this host is not macOS, the one a fleet can put to sleep once every fleet on it is \
              idle: `--host-sleep` cannot be said here, and it stays awake"
-        );
-    }
-    if let Some(To::Value(dir)) = &named.watch_dir
-        && !dir.is_dir()
-    {
-        bail!(
-            "watch directory {} is not a directory: name the operator's existing directory, or \
-             `--watch-dir default`",
-            dir.display()
         );
     }
     list.change(|listed| {
