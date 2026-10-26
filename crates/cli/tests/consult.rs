@@ -242,6 +242,59 @@ fn an_escalate_starts_the_consult_its_stage_names_with_the_history_and_the_reaso
 }
 
 #[test]
+fn an_escalate_with_an_outside_blocker_starts_its_consult_and_names_the_blocker() {
+    let world = bound(FEATURE, 2);
+    declared_unread(&world);
+    world.with_gh(|gh| {
+        gh["edges"]["7"] = json!([
+            {"number": 931, "state": "open", "repo": "acme/kernel", "labels": []}
+        ])
+    });
+    assert_eq!(did(&tick(&world, 1090)), ["advance 7 done"]);
+    let plan = world.afk(&["plan"]).ok();
+    assert_eq!(plan["frontier"][0]["number"], 7, "{plan}");
+    assert_eq!(plan["findings"].as_array().unwrap().len(), 1);
+    assert_eq!(did(&tick(&world, 1180)), ["dispatch 7 done"]);
+    let told = brief(&worktree(&world));
+    assert!(told.contains("acme/kernel#931"), "{told}");
+    assert!(told.contains("outside the tracker"), "{told}");
+    assert!(told.contains("gh issue transfer 931"), "{told}");
+}
+
+#[test]
+fn a_worked_blocker_holds_a_consult_even_when_an_outside_blocker_has_the_same_number() {
+    let world = bound(FEATURE, 2);
+    declared_unread(&world);
+    world.with_gh(|gh| {
+        gh["edges"]["7"] = json!([
+            {"number": 41, "state": "open", "labels": []},
+            {"number": 41, "state": "open", "repo": "acme/kernel", "labels": []}
+        ])
+    });
+    assert_eq!(did(&tick(&world, 1090)), ["advance 7 done"]);
+    let plan = world.afk(&["plan"]).ok();
+    assert_eq!(plan["frontier"], json!([]), "{plan}");
+    assert_eq!(did(&tick(&world, 1180)), [] as [&str; 0]);
+    assert_eq!(started(&world).len(), 1);
+}
+
+#[test]
+fn a_declared_human_hand_off_with_an_outside_blocker_escalates() {
+    let feature =
+        FEATURE.replace("escalate: { to: reviewer, do: rule }", "escalate: { to: human }");
+    let world = bound(&feature, 2);
+    declared_unread(&world);
+    world.with_gh(|gh| {
+        gh["edges"]["7"] = json!([
+            {"number": 931, "state": "open", "repo": "acme/kernel", "labels": []}
+        ])
+    });
+    tick(&world, 1090);
+    assert!(with_a_human(&world));
+    assert_eq!(world.claims(), []);
+}
+
+#[test]
 fn a_consult_s_ruling_is_a_stage_record_and_the_stage_that_asked_runs_again_under_it() {
     let world = bound(FEATURE, 2);
     asked(&world);

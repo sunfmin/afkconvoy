@@ -93,6 +93,31 @@ fn an_intake_puts_the_flow_label_on_and_leaves_a_record_of_the_role_and_the_issu
 }
 
 #[test]
+fn an_issue_outside_the_tracker_names_where_it_was_found_and_how_to_transfer_it() {
+    let world = bound(5);
+    world.name_origin(&world.clone, "acme/dev");
+    world.say_tracker(&world.clone, "acme/tracker");
+    world.issue(931, &[]);
+    let error = intake(&world, 931, "feature").error();
+    for said in [
+        "tracker acme/tracker",
+        "gh found it in acme/dev as #931",
+        "gh issue transfer 931 'acme/tracker' --repo 'acme/dev'",
+        "afkconvoy flows",
+    ] {
+        assert!(error.contains(said), "{said}: {error}");
+    }
+    assert_eq!(world.comments(931), Vec::<String>::new());
+    let unknown = intake(&world, 932, "feature").error();
+    assert!(unknown.contains("tracker acme/tracker"), "{unknown}");
+    assert!(unknown.contains("gh could not locate it"), "{unknown}");
+    assert!(
+        unknown.contains("gh issue transfer 932 'acme/tracker' --repo '<its repo>'"),
+        "{unknown}"
+    );
+}
+
+#[test]
 fn the_role_and_the_issue_are_read_from_the_worker_s_environment() {
     let world = bound(5);
     world.issue(12, &[]);

@@ -1457,7 +1457,7 @@ pub(crate) fn in_tracker(template: &str, tracker: &Tracker) -> String {
         template.to_string()
     };
     template
-        .replace("<cross_repo>", "\n## Cross-repo blockers\n\nFor a blocker, defect or split piece belonging to another repo of this host, open it on the tracker `<issues>`, with that repo's `repo:<owner>/<repo>` label. In that repo's checkout run `afkconvoy flows` and use its `line` (the matching workflow's in a bound repo), with a title and body file. Take it in there with `afkconvoy intake --issue <n> --workflow <workflow>` and your worker identity when that repo is bound; keep the line's ready label when it is unbound. Record the tracker issue as the blocker, then declare `blocked` on it.\n")
+        .replace("<cross_repo>", "\n## Cross-repo blockers\n\nFor a blocker, defect or split piece belonging to another repo of this host, open it on the tracker `<issues>`, with that repo's `repo:<owner>/<repo>` label. In that repo's checkout run `afkconvoy flows` and use its `line` (the matching workflow's in a bound repo), with a title and body file. In a bound repo omit the line's flow label while opening, then take it in there with `afkconvoy intake --issue <n> --workflow <workflow>` and your worker identity when that repo is bound; keep the line's ready label when it is unbound. Record the tracker issue as the blocker, then declare `blocked` on it.\n")
         .replace("<tracker>", &flag)
         .replace("<issues>", &path)
         .replace("<labelled>", &labelled)

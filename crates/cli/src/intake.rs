@@ -206,7 +206,7 @@ fn missing_issue(repo: &Repo, gh: &GitHub, number: u64, error: anyhow::Error) ->
         location.clone().unwrap_or_else(|| ("<its repo>".to_string(), number.to_string()));
     let transfer = afkconvoy_core::line::Line::new()
         .fixed("gh issue transfer ")
-        .fixed(&source_number)
+        .number(source_number.parse().unwrap_or(number))
         .fixed(" ")
         .word(tracker)
         .fixed(" --repo ")

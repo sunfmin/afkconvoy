@@ -102,14 +102,13 @@ pub fn unworked(
             let flows = Line::new().fixed("cd ").word(&path).fixed(" && afkconvoy flows").own();
             // Construct the repair independently of the number GitHub will
             // assign on transfer: that number cannot be known beforehand.
-            let number = if outside {
-                "<number after transfer>".to_string()
+            let label_line = Line::new().fixed("gh issue edit ");
+            let label_line = if outside {
+                label_line.fixed("<number-after-transfer>")
             } else {
-                edge.number.to_string()
+                label_line.number(edge.number)
             };
-            let label_line = Line::new()
-                .fixed("gh issue edit ")
-                .fixed(&number)
+            let label_line = label_line
                 .fixed(" --repo ")
                 .word(named)
                 .fixed(" --add-label ")

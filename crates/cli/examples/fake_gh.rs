@@ -113,6 +113,16 @@ fn main() {
                 None => st.finish("", 1, "gh: Not Found (HTTP 404)\n"),
             }
         }
+        ["issue", "view", number, ..] => {
+            assert_eq!(st.opt("--json"), Some("url"));
+            let Some(issue) = issue(&st, number) else {
+                st.finish("", 1, "gh: Not Found (HTTP 404)\n")
+            };
+            let url = issue["url"].as_str().map(str::to_string).unwrap_or_else(|| {
+                format!("https://github.com/{}/issues/{number}", other.as_deref().unwrap())
+            });
+            st.finish(&json!({"url": url}).to_string(), 0, "")
+        }
         ["issue", "list", ..] if other.is_some() => {
             // The issues of another repo, kept under `other_issues`.
             let repo = other.unwrap();
