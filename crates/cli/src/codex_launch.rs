@@ -1,6 +1,6 @@
 //! Codex model and effort precedence, and launch evidence. Each session has
-//! its own user directory: Codex may save a /model choice there, but no later
-//! worker reads it. Only the host user's effort is read at every launch.
+//! its own user directory. Automatic starts deliberately read the user's
+//! model and effort preferences, while session-local changes stay local.
 
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -16,6 +16,7 @@ use crate::orca::Worktree;
 const RECORD: &str = "convoy-codex-launch.json";
 pub(crate) const HOME_NOTE: &str = "convoy-codex-home";
 const EFFORT: &str = "model_reasoning_effort";
+const MODEL: &str = "model";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Settings {
@@ -42,7 +43,12 @@ fn config(file: &Path) -> Result<toml::Table> {
     text.parse().with_context(|| format!("cannot parse {}; fix its TOML", file.display()))
 }
 
-fn settings(model: Option<&str>, config: &toml::Table, file: &Path) -> Result<Settings> {
+fn settings(
+    model: Option<&str>,
+    source: &str,
+    config: &toml::Table,
+    file: &Path,
+) -> Result<Settings> {
     let effort = match config.get(EFFORT) {
         Some(toml::Value::String(effort)) if !effort.trim().is_empty() => Some(effort.clone()),
         None => None,
@@ -57,20 +63,52 @@ fn settings(model: Option<&str>, config: &toml::Table, file: &Path) -> Result<Se
     };
     Ok(Settings {
         model: model.map(str::to_string),
-        model_source: model_source(model).into(),
+        model_source: source.into(),
         effort,
         effort_source,
         codex_home: None,
     })
 }
 
-/// Where a launch's model comes from: the fleet's selection, or Codex's own
-/// default while the host kit places no Codex model.
-fn model_source(model: Option<&str>) -> &'static str {
-    match model {
-        Some(_) => "fleet_selection",
-        None => "codex_default",
+/// Resolve an automatic model from the user's current Codex preference. A
+/// model label on an issue is explicit and keeps its existing casting.
+pub(crate) fn automatic_model(explicit: Option<&str>) -> Result<(Option<String>, &'static str)> {
+    if let Some(model) = explicit {
+        return Ok((Some(model.to_string()), "casting"));
     }
+    let file = user_config();
+    let config = config(&file)?;
+    match config.get(MODEL) {
+        Some(toml::Value::String(model)) if !model.trim().is_empty() => {
+            let kit = crate::kit::load()?;
+            let listed = kit
+                .harnesses
+                .iter()
+                .find(|held| held.harness == Harness::Codex)
+                .is_some_and(|held| held.models.iter().any(|listed| listed.model == *model));
+            if !listed {
+                bail!(
+                    "Codex user selection `{model}` from {}:{MODEL} is not listed by the host kit; confirm the model is available to this Codex login and refresh `afkconvoy kit`",
+                    file.display()
+                );
+            }
+            Ok((Some(model.clone()), "user_selection"))
+        }
+        None => Ok((None, "codex_default")),
+        _ => bail!(
+            "{}: {MODEL} must be a nonempty string; fix it or remove it for Codex's default",
+            file.display()
+        ),
+    }
+}
+
+pub(crate) fn require_role_model(model: &str, allowed: &[String], role: &str) -> Result<()> {
+    if !allowed.iter().any(|allowed| allowed == model) {
+        bail!(
+            "Codex user selection `{model}` from ~/.codex/config.toml is outside role `{role}`'s range; update the role's roster to allow it or choose a model the role allows"
+        );
+    }
+    Ok(())
 }
 
 /// A fresh launch's directory, under the worktree so it goes with the work.
@@ -87,13 +125,19 @@ pub(crate) fn prepare(
     model: Option<&str>,
     command: &str,
     in_role: bool,
+    model_source: &str,
 ) -> Result<(String, Settings)> {
     let file = user_config();
     let config = config(&file)?;
-    let mut settings = settings(model, &config, &file)?;
+    let mut settings = settings(model, model_source, &config, &file)?;
+    let command = match model {
+        Some(model) if !command.contains("--model") => Harness::Codex.with_model(command, model),
+        Some(_) => command.to_string(),
+        None => command.to_string(),
+    };
     let (line, home) = if in_role {
         let home = std::fs::read_to_string(worktree.note(HOME_NOTE)?)?;
-        (Line::new().launch(command), PathBuf::from(home))
+        (Line::new().launch(&command), PathBuf::from(home))
     } else {
         let (home, _) = crate::kept::for_worker(
             Harness::Codex,
@@ -104,7 +148,7 @@ pub(crate) fn prepare(
             "",
         )?;
         let command =
-            Harness::Codex.in_worktree(command, &worktree.path.display().to_string(), &home);
+            Harness::Codex.in_worktree(&command, &worktree.path.display().to_string(), &home);
         (Line::new().launch(&command), PathBuf::from(home))
     };
     settings.codex_home = Some(home);
@@ -123,9 +167,14 @@ fn with_effort(line: Line, settings: &Settings) -> String {
 
 /// A watch's directory need not be git. Its fresh Codex home and user effort
 /// follow the worker contract without writing a worktree's launch notes.
-pub(crate) fn watch(worktree: &Path, model: Option<&str>, command: &str) -> Result<String> {
+pub(crate) fn watch(
+    worktree: &Path,
+    model: Option<&str>,
+    source: &str,
+    command: &str,
+) -> Result<String> {
     let file = user_config();
-    let settings = settings(model, &config(&file)?, &file)?;
+    let settings = settings(model, source, &config(&file)?, &file)?;
     let home = crate::kept::keep_under(
         &directory(worktree),
         std::env::var_os("HOME").map(PathBuf::from).as_deref(),
@@ -167,7 +216,7 @@ pub(crate) fn caster_question(
         "",
     )?;
     let question = Harness::Codex.prompt_question(command, &kept, model, prompt);
-    let (question, settings) = prepare(worktree, model, &question, true)?;
+    let (question, settings) = prepare(worktree, model, &question, true, "casting")?;
     // A human may also run `cast` in an existing worker's worktree. That
     // helper call must not overwrite the existing worker's launch evidence.
     if worktree.caster()?.is_some() {
@@ -199,12 +248,16 @@ pub(crate) fn recorded(worktree: &Worktree) -> Option<Settings> {
     Some(settings)
 }
 
-pub(crate) fn planned(model: Option<&str>) -> Value {
+pub(crate) fn planned(model: Option<&str>, explicit: bool) -> Value {
     let file = user_config();
-    match config(&file).and_then(|config| settings(model, &config, &file)) {
+    let selected = automatic_model(explicit.then_some(model).flatten());
+    match selected.and_then(|(model, source)| {
+        let config = config(&file)?;
+        Ok(settings(model.as_deref(), source, &config, &file)?)
+    }) {
         Ok(settings) => json!(settings),
         Err(error) => {
-            json!({"model":model,"model_source":model_source(model),"error":format!("{error:#}")})
+            json!({"model":model,"model_source":if explicit {"casting"} else {"user_selection"},"error":format!("{error:#}")})
         }
     }
 }

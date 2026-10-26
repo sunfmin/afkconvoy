@@ -205,11 +205,11 @@ Research states: `research pending` is a newly listed model awaiting dated resea
 _Avoid_: roster (the team's), host config, inventory
 
 **Default model**:
-What a harness's own login runs when a worker is started with no model flag, which the fleet cannot name. A harness the host kit holds with no model placed — none listed yet, or research pending — starts its workers on it, Codex too.
+What a harness's own login runs when a worker is started with no model flag, which the fleet cannot name. A harness the host kit holds with no model placed — none listed yet, or research pending — starts its workers on it. Codex automatic starts use this only when the user has no model preference.
 _Avoid_: fallback model, `default` alone (a model id Claude Code lists)
 
 **Codex effort**:
-The reasoning effort a Codex worker takes from the host user's own Codex settings at its start, or Codex's model default where the user says none. It is independent of the fleet's model selection and is no setting of the fleet.
+The reasoning effort a Codex worker takes from the host user's own Codex settings at its start, or Codex's model default where the user says none. It is independent of the model selected from the user's Codex preference, and is no setting of the fleet.
 _Avoid_: fleet effort, role effort
 
 **Casting**:
@@ -229,7 +229,7 @@ Moving a harness, or one of its models and that model's harness, to the first po
 _Avoid_: harness change (what a new casting makes)
 
 **Worker launch command**:
-The shell string every worker of one harness is started with, in a fleet instance: one for each harness its workers run. The host kit says it, per harness, kept on the host at `$XDG_CONFIG_HOME/afkconvoy/kit.json` or `$HOME/.config/afkconvoy/kit.json` and written by `afkconvoy kit`; each launch reads its latest command, or discovers and records a known harness's stock command when none is held; a start checks that of every harness it could be asked for, and starts no worker when one cannot be started. In an unbound repo it is opaque but for what the fleet adds: its harness's model flag where the worker runs a model — its issue's casting or the host kit's first — and its harness's worktree-trust setup, so every worker starts trusting its worktree and none waits on a folder-trust prompt. Every worker starts under `nice`, with a `TMPDIR` of its worktree's own: a link, `/tmp/afkconvoy-<uid>/<16 hex digits>`, to `.afkconvoy-tmp` in the worktree, short enough for a socket's path however long the worktree's is, and gone with the worktree once nothing started with it runs. A Codex worker's model is always the fleet's selection; its effort is the host user's Codex effort. A session's saved choice belongs to that session alone and chooses nothing for a later worker. In a bound repo the fleet adds to it what puts the worker in its role.
+The shell string every worker of one harness is started with, in a fleet instance: one for each harness its workers run. The host kit says it, per harness, kept on the host at `$XDG_CONFIG_HOME/afkconvoy/kit.json` or `$HOME/.config/afkconvoy/kit.json` and written by `afkconvoy kit`; each launch reads its latest command, or discovers and records a known harness's stock command when none is held; a start checks that of every harness it could be asked for, and starts no worker when one cannot be started. In an unbound repo it is opaque but for what the fleet adds: its harness's model flag where the worker runs a model — its issue's casting or the host kit's first — and its harness's worktree-trust setup, so every worker starts trusting its worktree and none waits on a folder-trust prompt. Every worker starts under `nice`, with a `TMPDIR` of its worktree's own: a link, `/tmp/afkconvoy-<uid>/<16 hex digits>`, to `.afkconvoy-tmp` in the worktree, short enough for a socket's path however long the worktree's is, and gone with the worktree once nothing started with it runs. An automatic Codex worker reads the user's current model from `~/.codex/config.toml` at launch, unless its issue has a model label; it records whether the model came from the user preference or casting. With no preference it leaves the model unset for Codex's native default. Its effort remains the host user's Codex effort. A worker's private session choice never changes what a later worker reads. In a bound repo the fleet adds to it what puts the worker in its role.
 _Avoid_: agent command, provider profile
 
 **Worker state**:

@@ -264,7 +264,11 @@ pub(crate) fn auxiliary(
     let command = if caster {
         crate::own_command().fixed(" cast; exit").own()
     } else {
-        cast.command(agent.command(cast.harness)?.as_str())
+        if cast.harness == Harness::Codex {
+            agent.command(cast.harness)?.as_str().to_string()
+        } else {
+            cast.command(agent.command(cast.harness)?.as_str())
+        }
     };
     let terminal = if caster {
         agent.start(worktree, cast.harness, &command, None, fleet.now)?
@@ -273,6 +277,7 @@ pub(crate) fn auxiliary(
             worktree,
             (cast.harness, cast.model.as_deref()),
             &command,
+            false,
             false,
             None,
             fleet.now,

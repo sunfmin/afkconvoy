@@ -377,7 +377,7 @@ fn a_codex_worker_starts_in_its_role_under_a_user_directory_of_the_fleet_s_own()
     for (file, text) in [
         (".codex/auth.json", "{\"a\": \"login\"}\n"),
         (".codex/AGENTS.md", "the user's rules\n"),
-        (".codex/config.toml", "model = \"theirs\"\n"),
+        (".codex/config.toml", "model = \"gpt-5.5\"\n"),
         (".codex/hooks.json", "{\"hooks\": {}}\n"),
         (".codex/skills/theirs/SKILL.md", "---\nname: theirs\ndescription: theirs\n---\n"),
         (".codex/memories/theirs.md", "theirs\n"),
@@ -600,7 +600,7 @@ fn assert_worktree_trusted(world: &World, dir: &Path) {
 #[test]
 fn a_codex_worker_outside_a_role_trusts_its_worktree_without_editing_the_user_s_config() {
     let world = unbound_codex();
-    let config = "model = \"theirs\"\n";
+    let config = "model = \"gpt-5.5\"\n";
     write(&world.home(), ".codex/config.toml", config);
     write(&world.home(), ".codex/auth.json", "{}\n");
     world.issue(7, &["ready-for-agent"]);
@@ -920,6 +920,7 @@ fn a_hook_of_a_role_s_limits_for_codex_runs_beside_the_guard_and_never_in_its_pl
 #[test]
 fn a_stage_record_of_a_codex_worker_names_codex() {
     let world = bound();
+    write(&world.home(), ".codex/config.toml", "model = 'gpt-5.5'\n");
     world.issue(7, &["flow:feature"]);
     assert_eq!(did(&tick(&world, 1000).ok())[0], "dispatch 7 done");
     let dir = worktree(&world, 7);
@@ -1164,7 +1165,7 @@ fn a_codex_worker_is_given_the_host_user_s_skills_and_rules_and_its_role_s_skill
     for (file, text) in [
         (".codex/auth.json", "{\"a\": \"login\"}\n".to_string()),
         (".codex/AGENTS.md", "the user's rules\n".to_string()),
-        (".codex/config.toml", "model = \"theirs\"\n".to_string()),
+        (".codex/config.toml", "model = \"gpt-5.5\"\n".to_string()),
         (".codex/hooks.json", "{\"hooks\": {}}\n".to_string()),
         (".codex/skills/theirs/SKILL.md", skill("theirs")),
         (".codex/skills/implement/SKILL.md", skill("implement")),
@@ -1278,6 +1279,15 @@ fn assert_selection(ran: &[String], model: &str, effort: Option<&str>) {
     let models: Vec<_> =
         ran.windows(2).filter(|args| args[0] == "--model").map(|args| args[1].as_str()).collect();
     assert_eq!(models, [model], "{ran:?}");
+    assert_selection_effort(ran, effort);
+    if let Ok(config) = std::fs::read_to_string(Path::new(&ran[1]).join("config.toml")) {
+        let config: toml::Table = config.parse().unwrap();
+        assert!(!config.contains_key("model"));
+        assert!(!config.contains_key("model_reasoning_effort"));
+    }
+}
+
+fn assert_selection_effort(ran: &[String], effort: Option<&str>) {
     let efforts: Vec<_> = ran
         .windows(2)
         .filter(|args| args[0] == "--config" && args[1].starts_with("model_reasoning_effort="))
@@ -1289,11 +1299,6 @@ fn assert_selection(ran: &[String], model: &str, effort: Option<&str>) {
         })
         .collect();
     assert_eq!(efforts, effort.into_iter().map(str::to_string).collect::<Vec<_>>(), "{ran:?}");
-    if let Ok(config) = std::fs::read_to_string(Path::new(&ran[1]).join("config.toml")) {
-        let config: toml::Table = config.parse().unwrap();
-        assert!(!config.contains_key("model"));
-        assert!(!config.contains_key("model_reasoning_effort"));
-    }
 }
 
 #[test]
@@ -1307,7 +1312,7 @@ fn codex_uses_fleet_models_and_fresh_user_effort_despite_saved_worker_preference
     write(
         &world.home(),
         ".codex/config.toml",
-        "model = 'user-model'\nmodel_reasoning_effort = 'xhigh' # current\n",
+        "model = 'gpt-5.5'\nmodel_reasoning_effort = 'xhigh' # current\n",
     );
     world.issue(7, &["flow:feature"]);
     let first = launch(&world, 7, 1000);
@@ -1317,14 +1322,18 @@ fn codex_uses_fleet_models_and_fresh_user_effort_despite_saved_worker_preference
     write(&world.home(), ".codex/config.toml", "model_reasoning_effort = 'high'\n");
     world.issue(8, &["flow:feature"]);
     let second = launch(&world, 8, 1100);
-    assert_selection(&second, "gpt-5.5", Some("high"));
+    assert!(!second.iter().any(|word| word == "--model"), "{second:?}");
+    assert_selection_effort(&second, Some("high"));
     assert_ne!(first[1], second[1]);
     // A role that opts out of user skills still takes the user's effort.
     world.issue(9, &["flow:audit"]);
-    assert_selection(&launch(&world, 9, 1200), "gpt-5.5", Some("high"));
+    let third = launch(&world, 9, 1200);
+    assert!(!third.iter().any(|word| word == "--model"), "{third:?}");
+    assert_selection_effort(&third, Some("high"));
     std::fs::remove_file(world.home().join(".codex/config.toml")).unwrap();
     world.issue(10, &["flow:audit"]);
-    assert_selection(&launch(&world, 10, 1300), "gpt-5.5", None);
+    let fourth = launch(&world, 10, 1300);
+    assert!(!fourth.iter().any(|word| word == "--model"), "{fourth:?}");
     assert_eq!(
         std::fs::read_to_string(kept_host_user(&world).join("config.toml")).unwrap(),
         stale,
@@ -1356,7 +1365,9 @@ fn unbound_codex_workers_load_only_user_effort_and_never_inherit_session_choices
     assert_eq!(std::fs::read_to_string(world.home().join(".codex/config.toml")).unwrap(), config);
     write(&world.home(), ".codex/config.toml", "model_reasoning_effort = 'high'\n");
     world.issue(8, &["ready-for-agent"]);
-    assert_selection(&launch(&world, 8, 1100), "fleet-first", Some("high"));
+    let second = launch(&world, 8, 1100);
+    assert!(!second.iter().any(|word| word == "--model"), "{second:?}");
+    assert_selection_effort(&second, Some("high"));
     write(
         &world.home(),
         ".codex/config.toml",
@@ -1364,14 +1375,79 @@ fn unbound_codex_workers_load_only_user_effort_and_never_inherit_session_choices
     );
     world.issue(9, &["ready-for-agent"]);
     let last = launch(&world, 9, 1200);
-    assert_selection(&last, "fleet-first", None);
+    assert!(!last.iter().any(|word| word == "--model"), "{last:?}");
     assert!(!Path::new(&last[1]).join("config.toml").exists());
+}
+
+#[test]
+fn automatic_codex_starts_follow_the_live_user_model_and_ignore_kit_order_and_sessions() {
+    let world = unbound_codex();
+    world.kit_models("codex", &["fleet-first", "user-selected", "user-next"]);
+    write(&world.home(), ".codex/config.toml", "model = 'user-selected'\n");
+    world.issue(7, &["ready-for-agent"]);
+    let first = launch(&world, 7, 1000);
+    assert_selection(&first, "user-selected", None);
+    let plan = world.afk(&["plan", "--instance", "alpha", "--now", "1100"]).ok();
+    assert_eq!(plan["codex_workers"][0]["model"], "user-selected");
+    assert_eq!(plan["codex_workers"][0]["model_source"], "user_selection");
+
+    // Kit order and an automatic session's private saved preference cannot
+    // replace the user's current choice for a later launch.
+    world.with_kit(|kit| {
+        let codex = kit["harnesses"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|held| held["harness"] == "codex")
+            .unwrap();
+        codex["models"].as_array_mut().unwrap().reverse();
+    });
+    write(Path::new(&first[1]), "config.toml", "model = 'session-only'\n");
+    write(&world.home(), ".codex/config.toml", "model = 'user-next'\n");
+    world.issue(8, &["ready-for-agent"]);
+    assert_selection(&launch(&world, 8, 1200), "user-next", None);
+    assert_eq!(
+        std::fs::read_to_string(world.home().join(".codex/config.toml")).unwrap(),
+        "model = 'user-next'\n"
+    );
+}
+
+#[test]
+fn a_codex_user_model_outside_the_role_range_is_reported_before_start() {
+    let world = bound();
+    world.kit_models("codex", &["gpt-5.5", "user-selected"]);
+    write(&world.home(), ".codex/config.toml", "model = 'user-selected'\n");
+    world.issue(7, &["flow:feature"]);
+    let error = world
+        .afk(&["dispatch", "7", "--instance", "alpha", "--host", "h1", "--now", "1000"])
+        .error();
+    assert!(error.contains("user-selected"), "{error}");
+    assert!(error.contains("outside this issue's role range"), "{error}");
+    assert!(world.worktrees().is_empty());
+}
+
+#[test]
+fn an_unavailable_codex_user_model_reports_its_preference_source() {
+    let world = unbound_codex();
+    write(&world.home(), ".codex/config.toml", "model = 'not-listed'\n");
+    world.issue(7, &["ready-for-agent"]);
+    let error = world
+        .afk(&["dispatch", "7", "--instance", "alpha", "--host", "h1", "--now", "1000"])
+        .error();
+    assert!(error.contains("not-listed"), "{error}");
+    assert!(error.contains("not listed by the host kit"), "{error}");
+    assert!(error.contains("config.toml:model"), "{error}");
+    assert!(world.worktrees().is_empty());
 }
 
 #[test]
 fn plan_doctor_and_panel_show_each_codex_launch_and_its_sources() {
     let world = bound();
-    write(&world.home(), ".codex/config.toml", "model_reasoning_effort = 'xhigh'\n");
+    write(
+        &world.home(),
+        ".codex/config.toml",
+        "model = 'gpt-5.5'\nmodel_reasoning_effort = 'xhigh'\n",
+    );
     world.issue(7, &["flow:feature"]);
     let plan = world.afk(&["plan", "--now", "1000"]).ok();
     assert_eq!(plan["frontier"][0]["codex"]["effort"], "xhigh");
@@ -1389,7 +1465,7 @@ fn plan_doctor_and_panel_show_each_codex_launch_and_its_sources() {
         let rows =
             result.json["codex_workers"].as_array().unwrap_or_else(|| panic!("{}", result.json));
         assert_eq!(rows[0]["model"], "gpt-5.5");
-        assert_eq!(rows[0]["model_source"], "fleet_selection");
+        assert_eq!(rows[0]["model_source"], "user_selection");
         assert_eq!(rows[0]["effort"], "xhigh");
         assert!(
             rows[0]["effort_source"]
@@ -1408,7 +1484,7 @@ fn plan_doctor_and_panel_show_each_codex_launch_and_its_sources() {
     for expected in [
         "data-codex-worker=\"#7\"",
         "gpt-5.5",
-        "fleet_selection",
+        "user_selection",
         "effort xhigh",
         ".codex/config.toml:model_reasoning_effort",
     ] {
@@ -1424,7 +1500,9 @@ fn plan_doctor_and_panel_show_each_codex_launch_and_its_sources() {
     assert_eq!(current["codex_workers"][0]["effort"], "low");
     assert!(current["codex_workers"][0]["model_source"].as_str().unwrap().starts_with("session:"));
     world.issue(8, &["flow:feature"]);
-    assert_selection(&launch(&world, 8, 1200), "gpt-5.5", Some("high"));
+    let next = launch(&world, 8, 1200);
+    assert!(!next.iter().any(|word| word == "--model"), "{next:?}");
+    assert_selection_effort(&next, Some("high"));
 }
 
 #[test]

@@ -10,7 +10,7 @@ So a worker of a bound repo is given the host user's own **skills and rules** by
 
 Nothing else of the host user's is loaded either way: no setting, hook, MCP server, plugin or extension. The guard and orca's status report stay the only hooks the fleet adds, and a role's limits are untouched.
 
-Codex effort is a later exception (sunfmin/control#22): each worker takes `model_reasoning_effort` from the host user's own Codex config at launch, independently of `host_user`; with none it takes Codex's model default. The fleet still selects the model and passes it explicitly. Each session has its own user directory, so Codex's saved `/model` preferences cannot become another worker's defaults. Other user settings remain excluded from a bound worker.
+Codex's model and effort are launch-time preferences (sunfmin/control#139). Unless an issue carries an explicit `model:` label, every automatic Codex start reads `model` from the host user's `~/.codex/config.toml`; it records `user_selection`, or uses Codex's native default when that setting is absent. A label retains its existing casting and is recorded as `casting`. Each session still has its own user directory, so a session's saved `/model` choice cannot overwrite or become the user's preference for later workers. `model_reasoning_effort` is read from the same user configuration independently of `host_user`; with none Codex uses its model default. Other user settings remain excluded from a bound worker.
 
 ## Precedence
 

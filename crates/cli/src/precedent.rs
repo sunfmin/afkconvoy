@@ -147,7 +147,7 @@ pub fn propose(
     let kept = read.kept()?;
     let bound = fleet.config.bound.as_ref().ok_or_else(|| anyhow!("the repo is not bound"))?;
     // The proposal of a precedent is cast by nothing: it runs the host kit's first.
-    let first = fleet.first()?;
+    let mut first = fleet.first()?;
     let (team, harness) = (&bound.team, first.harness);
     let launch = agent.command(harness)?;
     let work = &kept
@@ -157,6 +157,18 @@ pub fn propose(
         .ok_or_else(|| anyhow!("the team names nobody who proposes precedents"))?
         .work;
     let role = kept.team.role_of(work);
+    if harness == afkconvoy_core::harness::Harness::Codex {
+        let (model, _) = crate::codex_launch::automatic_model(None)?;
+        if let Some(model) = model.as_deref() {
+            let allowed = afkconvoy_core::casting::range(role, &crate::kit::load()?.range())
+                .into_iter()
+                .find(|held| held.harness == harness)
+                .map(|held| held.models.into_iter().map(|model| model.id).collect::<Vec<_>>())
+                .unwrap_or_default();
+            crate::codex_launch::require_role_model(model, &allowed, &role.name)?;
+        }
+        first.model = model;
+    }
     let role_copy = kept.role(role, harness)?;
     let Some(claim) = take_run(&fleet.repo, &mut fleet.scan, me, &ruling.claim_key())? else {
         return Ok(Outcome::Lost);
@@ -245,6 +257,7 @@ pub fn propose(
         (harness, first.model.as_deref()),
         &harness.in_role(launch.as_str(), &start),
         true,
+        false,
         None,
         me.now,
     )?;
