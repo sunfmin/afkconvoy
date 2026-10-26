@@ -236,9 +236,10 @@ fn finish_on_train(world: &World, checkout: &Path) -> Value {
         .unwrap();
     let until = Instant::now() + Duration::from_secs(60);
     let line = "refs/convoy/train/line/main";
+    let base = world.remote(&["rev-parse", "refs/heads/main"]);
     let joined = loop {
         let tip = world.remote(&["for-each-ref", "--format=%(objectname)", line]);
-        if !tip.is_empty() {
+        if !tip.is_empty() && tip != base {
             break tip;
         }
         if child.try_wait().unwrap().is_some() || Instant::now() >= until {
