@@ -96,12 +96,19 @@ fn on_stock_claude_the_stock_command_is_used_and_nobody_is_asked() {
             r#"claude --dangerously-skip-permissions --settings '{"skipDangerousModePermissionPrompt":true}'"#
         ]
     );
-    // Only resolution and authentication are checked, with no model discovery.
+    // Resolution, authentication and the trust flags are checked, with no model discovery.
     let asked = world.shell_asked();
     assert!(asked.iter().any(|line| line == "gh auth status"));
+    let harness = afkconvoy_core::harness::Harness::ClaudeCode;
+    let flags = harness.flags_question(harness.stock());
     assert!(
-        asked.iter().all(|line| ["type -- 'claude'", "gh auth status", "claude auth status"]
-            .contains(&line.as_str())),
+        asked.iter().all(|line| [
+            "type -- 'claude'",
+            "gh auth status",
+            "claude auth status",
+            &flags
+        ]
+        .contains(&line.as_str())),
         "{asked:?}"
     );
 }
@@ -111,7 +118,7 @@ fn on_stock_claude_a_command_that_was_passed_is_still_the_answer() {
     let world = backlog();
     world.kit_command("claude-code", "agent --fast");
     answer(&world, &TICK, false).ok();
-    assert_eq!(started(&world), ["agent --fast"]);
+    assert_eq!(started(&world), [common::trusted("agent --fast")]);
 }
 
 #[test]
@@ -120,11 +127,11 @@ fn a_command_given_for_a_harness_by_its_key_is_that_harness_s() {
     let passed = "agent  --model=fast ";
     world.kit_command("claude-code", passed);
     answer(&world, &TICK, false).ok();
-    assert_eq!(started(&world), ["agent  --model=fast "], "what follows the `=`, as given");
+    assert_eq!(started(&world), [common::trusted(passed)], "what follows the `=`, as given");
 }
 
 #[test]
-fn on_a_custom_provider_the_passed_command_is_handed_over_exactly_as_passed() {
+fn on_a_custom_provider_the_passed_command_is_preserved_and_worktree_trust_is_added() {
     let world = backlog();
     // Everything past the first word is the human's business.
     let passed = "kim  --model 'big one' \"$HOME\" ; true ";
@@ -137,11 +144,14 @@ fn on_a_custom_provider_the_passed_command_is_handed_over_exactly_as_passed() {
     assert_eq!(warnings(&ran), [] as [&str; 0], "{}", ran.stderr);
     ran.ok();
 
-    assert_eq!(started(&world), [passed], "not trimmed, not composed, not appended to");
+    assert_eq!(started(&world), [common::trusted(passed)], "the command itself is unchanged");
     let asked = world.shell_asked();
     assert!(asked.iter().any(|line| line == "type -- 'kim'"));
+    let flags = afkconvoy_core::harness::Harness::ClaudeCode.flags_question(passed);
     assert!(
-        asked.iter().all(|line| ["type -- 'kim'", "gh auth status"].contains(&line.as_str())),
+        asked
+            .iter()
+            .all(|line| ["type -- 'kim'", "gh auth status", &flags].contains(&line.as_str())),
         "opaque wrapper credentials are never inspected: {asked:?}"
     );
 
@@ -158,15 +168,15 @@ fn on_a_custom_provider_the_passed_command_is_handed_over_exactly_as_passed() {
     let create: Vec<String> = serde_json::from_value(create).unwrap();
     // …but for its issue, and starting it under `nice` with its own `TMPDIR`
     let dir = Path::new(create[3].strip_prefix("path:").unwrap());
-    let line = format!("export AFKCONVOY_ISSUE=7 && {passed}");
+    let line = format!("export AFKCONVOY_ISSUE=7 && {}", common::trusted(passed));
     let niced = common::niced(dir, &line);
     assert_eq!(create[create.len() - 3..create.len() - 1], ["--command", &niced], "{create:?}");
     assert!(create.len() <= 7, "a worktree, a command, and nothing else: {create:?}");
 
     // …and the command is in no file: not the brief, not a note, not the repo
-    // (orca.json is the stand-in orca's own memory of what it was handed)
+    // (the stand-ins' own files record what orca and the login shell were asked)
     assert_eq!(
-        written_anywhere(&world.root, "big one", &["orca.json", "kit.json"]),
+        written_anywhere(&world.root, "big one", &["orca.json", "kit.json", "shell-asked"]),
         [] as [String; 0]
     );
     assert_eq!(written_anywhere(&world.root, SECRET, &[]), [] as [String; 0]);
@@ -209,7 +219,7 @@ fn a_command_with_no_visible_unattended_flag_is_warned_about_not_refused() {
     assert!(said.contains("claude --model k"), "what it resolves to is shown: {said}");
     let ticked: Value = ran.ok();
     assert_eq!(ticked["errors"], json!([]));
-    assert_eq!(started(&world), ["kim"]);
+    assert_eq!(started(&world), [common::trusted("kim")]);
 }
 
 #[test]
@@ -219,14 +229,14 @@ fn a_script_that_could_carry_the_flag_inside_is_not_warned_about() {
     let ran = wrapped(&world, &TICK);
     assert_eq!(warnings(&ran), [] as [&str; 0], "{}", ran.stderr);
     ran.ok();
-    assert_eq!(started(&world), ["agent"]);
+    assert_eq!(started(&world), [common::trusted("agent")]);
 }
 
 #[test]
 fn a_custom_provider_still_uses_the_host_kit_without_a_terminal() {
     let world = backlog();
     wrapped(&world, &TICK).ok();
-    assert_eq!(started(&world), ["agent"]);
+    assert_eq!(started(&world), [common::trusted("agent")]);
 }
 
 #[test]
@@ -554,7 +564,11 @@ fn a_codex_casting_discovers_a_missing_entry_without_model_probes() {
     let before = std::fs::read(world.kit_path()).unwrap();
     let ran = world.afk(&TICK);
     assert_eq!(ran.json["errors"], json!([]), "{}", ran.stderr);
-    assert_eq!(started(&world), ["agent"], "discovery appends without overriding priority");
+    assert_eq!(
+        started(&world),
+        [common::trusted("agent")],
+        "discovery appends without overriding priority"
+    );
     assert!(ran.stderr.contains("discovered codex"), "{}", ran.stderr);
     let kit: Value = serde_json::from_slice(&std::fs::read(world.kit_path()).unwrap()).unwrap();
     let mut before: Value = serde_json::from_slice(&before).unwrap();
@@ -583,7 +597,7 @@ fn unavailable_later_casting_does_not_block_the_first_kit_harness() {
             world.afk(&["dispatch", "7", "--instance", "alpha", "--host", "h1", "--now", "1000"]);
         ran.ok();
         assert_eq!(world.claims(), [(7, "alpha".to_string())]);
-        assert_eq!(started(&world), ["agent"]);
+        assert_eq!(started(&world), [common::trusted("agent")]);
         let kit: Value = serde_json::from_slice(&std::fs::read(world.kit_path()).unwrap()).unwrap();
         assert_eq!(kit["harnesses"].as_array().unwrap().len(), 1);
     }
@@ -624,7 +638,9 @@ fn a_resident_launches_reads_added_and_changed_commands() {
     }
     let world = World::new();
     world.shell_knows("missing-custom", None);
-    world.shell_help(Some("--add-dir --config --model --dangerously-bypass-hook-trust"));
+    world.shell_help(Some(
+        "--add-dir --config --model --dangerously-bypass-hook-trust --setting-sources --settings",
+    ));
     let out = world
         .command(std::env::current_exe().unwrap(), &world.clone)
         .args([
@@ -661,8 +677,13 @@ fn every_known_harness_discovers_its_existing_stock_command() {
         if harness == afkconvoy_core::harness::Harness::Codex {
             assert_eq!(commands, [common::codex_line(&world, &world.worktrees()[0])]);
         } else {
-            assert!(commands[0].ends_with(harness.stock()), "{}: {commands:?}", harness.key());
+            assert!(commands[0].contains(harness.stock()), "{}: {commands:?}", harness.key());
         }
+        assert!(
+            commands[0].contains(harness.worktree_trust()),
+            "{} starts without worktree trust: {commands:?}",
+            harness.key()
+        );
         let kit: Value = serde_json::from_slice(&std::fs::read(world.kit_path()).unwrap()).unwrap();
         assert_eq!(kit["harnesses"][0]["command"], harness.stock());
     }

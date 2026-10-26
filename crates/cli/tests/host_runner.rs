@@ -1398,7 +1398,9 @@ fn default_sets_a_checkouts_concurrency_back_and_a_host_runner_started_again_kee
 #[test]
 fn a_running_fleet_uses_commands_added_and_changed_after_it_started() {
     let world = World::new();
-    world.shell_help(Some("--add-dir --config --model --dangerously-bypass-hook-trust"));
+    world.shell_help(Some(
+        "--add-dir --config --model --dangerously-bypass-hook-trust --setting-sources --settings",
+    ));
     let ran = world.afk(&RUN).ok();
     let pid = ran["host_runner"]["pid"].clone();
     for (number, command, effort) in

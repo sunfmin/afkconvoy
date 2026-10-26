@@ -38,6 +38,20 @@ pub(super) const STOCK: &str =
     concat!("claude --dangerously-skip-permissions --settings '{", warning_accepted!(), "}'");
 /// The variable Claude Code reads a custom provider's address from.
 pub(super) const PROVIDER: &str = "ANTHROPIC_BASE_URL";
+pub(super) const TRUST: &str = "--dangerously-skip-permissions";
+
+/// Starts Claude Code with its worktree trusted and its unattended warning
+/// answered, without replacing a setting the stock command already carries.
+pub(super) fn in_worktree(command: &str) -> String {
+    let mut command = command.to_string();
+    if !command.contains(TRUST) {
+        command.push_str(&format!(" {TRUST}"));
+    }
+    if !command.contains("skipDangerousModePermissionPrompt") {
+        command.push_str(&format!(" --settings '{{{}}}'", warning_accepted!()));
+    }
+    command
+}
 
 /// Claude Code's flag for a directory added to the one it was started in.
 const ADD_DIR: &str = "--add-dir";

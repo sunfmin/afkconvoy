@@ -58,7 +58,7 @@ fn act(world: &World, command: &str, instance: &str, more: &[&str]) -> common::A
 fn report(world: &World, state: &str, since: u64, output: u64) {
     world.with_orca(|orca| {
         for terminal in orca["terminals"].as_array_mut().unwrap() {
-            if terminal["command"] == "agent" {
+            if terminal["command"].as_str().is_some_and(|command| command.starts_with("agent")) {
                 terminal["agent"] = json!({"state": state, "stateStartedAt": since * 1000});
                 terminal["lastOutputAt"] = json!(output * 1000);
             }
@@ -216,7 +216,12 @@ fn escalate_and_an_unknown_phase_escalate() {
 fn typed(world: &World) -> Vec<String> {
     let orca = world.orca();
     let terminals = orca["terminals"].as_array().unwrap();
-    let worker = terminals.iter().find(|terminal| terminal["command"] == "agent").unwrap();
+    let worker = terminals
+        .iter()
+        .find(|terminal| {
+            terminal["command"].as_str().is_some_and(|command| command.starts_with("agent"))
+        })
+        .unwrap();
     let sent = worker["sent"].as_array().unwrap();
     sent.iter().map(|line| line["text"].as_str().unwrap().to_string()).collect()
 }

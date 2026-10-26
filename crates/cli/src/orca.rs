@@ -11,7 +11,7 @@ use afkconvoy_core::cut;
 use afkconvoy_core::guard::WritesNothing;
 use afkconvoy_core::harness::Harness;
 use afkconvoy_core::inspection::{self, Finding, Kind};
-use afkconvoy_core::launch::{Waited, until_ready};
+use afkconvoy_core::launch::{TrustGap, Waited};
 use afkconvoy_core::line::niced;
 use afkconvoy_core::prompt::brief_pointer;
 use afkconvoy_core::question;
@@ -68,9 +68,6 @@ const CUT_LOG_FILE: &str = "convoy-cut.log";
 const PS_LIMIT: &str = "1000";
 /// What orca says holds up a worker asking whether its folder is trusted.
 const TRUST_PROMPT: &str = "agent-trust-workspace";
-/// The Down key: from that question's default, "No, exit", to "Yes, I trust
-/// this folder".
-const DOWN: &str = "\x1b[B";
 
 /// One `orca … --json` call → its `result` object. An error when orca cannot
 /// be run, exits non-zero, or answers `ok: false` — never an empty answer.
@@ -957,19 +954,31 @@ impl Worktree {
         Ok(started.and_then(|at| at.trim().parse().ok()).max(since))
     }
 
-    /// Waits until the agent in `terminal` is ready for a prompt, trusting
-    /// the worktree for it when it asks.
-    pub fn await_ready(&self, terminal: &str, timeout_seconds: u64) -> Result<()> {
-        let waited = until_ready(|| self.wait(terminal, timeout_seconds), || self.trust(terminal))?;
-        let held_up = match waited {
-            Waited::Ready => return Ok(()),
-            Waited::AtTrustPrompt => "still asks whether to trust the folder, once answered",
-            Waited::NotReady => "was not ready for a prompt",
-        };
-        bail!(
-            "the worker in {} {held_up} within {timeout_seconds}s (terminal {terminal})",
-            self.path.display()
-        )
+    /// Waits until the agent in `terminal` is ready for a prompt. A trust
+    /// question names a gap in the launch configuration; it is never answered
+    /// at the terminal, where the worker's brief could become the answer.
+    pub fn await_ready(
+        &self,
+        terminal: &str,
+        timeout_seconds: u64,
+        harness: Harness,
+        command: &str,
+    ) -> Result<()> {
+        match self.wait(terminal, timeout_seconds)? {
+            Waited::Ready => Ok(()),
+            Waited::AtTrustPrompt => Err(TrustGap {
+                harness,
+                command: command.to_string(),
+                worktree: self.path.display().to_string(),
+                terminal: terminal.to_string(),
+                seconds: timeout_seconds,
+            }
+            .into()),
+            Waited::NotReady => bail!(
+                "the worker in {} was not ready for a prompt within {timeout_seconds}s (terminal {terminal})",
+                self.path.display()
+            ),
+        }
     }
 
     /// One wait for the agent in `terminal`. orca exits non-zero on a wait it
@@ -997,19 +1006,6 @@ impl Worktree {
         } else {
             Waited::NotReady
         })
-    }
-
-    /// Answers the agent's trust question in `terminal`: yes. Two sends —
-    /// typed in one, the Enter is read before the selection has moved, and
-    /// picks "No, exit".
-    fn trust(&self, terminal: &str) -> Result<()> {
-        for keys in [["--text", DOWN].as_slice(), &["--enter"]] {
-            let sent = orca(&[&["terminal", "send", "--terminal", terminal], keys].concat())?;
-            if sent["send"]["accepted"] != true {
-                bail!("terminal {terminal} did not accept the answer to its trust question");
-            }
-        }
-        Ok(())
     }
 
     /// A terminal may have fallen back to its shell since the worker was

@@ -243,9 +243,9 @@ fn on_a_custom_provider_plan_reads_the_host_kit_and_checks_its_command() {
         .unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));
     let asked = world.shell_asked();
-    assert_eq!(asked.len(), 4, "command eligibility, GitHub login and proxy exports are read");
+    assert_eq!(asked.len(), 6, "command eligibility, GitHub login and proxy exports are read");
     assert_eq!(asked[0], "type -- 'agent'");
-    assert_eq!(asked[1], "gh auth status");
+    assert!(asked.contains(&"gh auth status".to_string()), "{asked:?}");
     assert!(asked.iter().any(|line| line.starts_with("printf 'AFKCONVOY_PROXY")));
 }
 

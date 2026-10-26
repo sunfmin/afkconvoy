@@ -288,7 +288,6 @@ pub(crate) fn auxiliary(
         )?
     };
     if !caster {
-        worktree.await_ready(&terminal, agent.ready_timeout)?;
         worktree.deliver(&terminal, &worktree.brief()?)?;
     }
     Ok(json!({"worktree": worktree.path, "from": continued.from, "to": cast.harness,

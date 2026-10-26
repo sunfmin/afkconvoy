@@ -36,7 +36,7 @@ fn a_worker_is_started_under_nice_with_a_tmpdir_its_worktree_ignores_and_takes_w
     let worktree = Path::new(started["worktree"].as_str().unwrap()).to_path_buf();
     let calls = world.orca_calls();
     let created = calls.iter().find(|call| common::asked(call) == "terminal create").unwrap();
-    let line = format!("export AFKCONVOY_ISSUE=7 && {COMMAND}");
+    let line = format!("export AFKCONVOY_ISSUE=7 && {}", common::trusted(COMMAND));
     assert_eq!(created[4..6], ["--command".to_string(), common::niced(&worktree, &line)]);
 
     // what the worker writes there is in its worktree, and not git's to show…
@@ -71,7 +71,7 @@ fn dispatch_starts_a_worker_on_a_fresh_worktree() {
     let open: Vec<&Value> =
         orca["terminals"].as_array().unwrap().iter().filter(|t| t["open"] == true).collect();
     assert_eq!(open.len(), 1, "the bare shell orca opened is closed");
-    assert_eq!(open[0]["command"], COMMAND);
+    assert_eq!(open[0]["command"], common::trusted(COMMAND));
     assert_eq!(open[0]["handle"], started["terminal"]);
 
     // the prompt went to a brief file; the terminal got a one-line pointer, submitted
@@ -194,33 +194,25 @@ fn a_failure_of_orca_is_an_error_with_the_claim_still_held() {
 }
 
 #[test]
-fn a_worker_asking_whether_its_folder_is_trusted_is_answered_yes_then_briefed() {
+fn a_trust_prompt_is_a_named_trust_gap_and_the_worker_is_told_nothing() {
     let world = ready_world();
+    world.set_gate_config("gate_command: ./gate.sh\nescalate_to: human");
     world.with_orca(|orca| orca["trust_prompt"] = json!(true));
-    dispatch(&world, "7").ok();
-    let orca = world.orca();
-    let terminal = orca["terminals"].as_array().unwrap().iter().find(|t| t["open"] == true);
-    let terminal = terminal.expect("the worker's terminal");
-    assert_eq!(terminal["trusted"], true);
-    // the brief went to the agent, not to the question
-    let sent = terminal["sent"].as_array().unwrap();
-    assert_eq!(sent.len(), 1, "{sent:?}");
-    assert!(sent[0]["text"].as_str().unwrap().contains("convoy-worker-prompt.md"));
-}
-
-#[test]
-fn a_worker_that_asks_again_once_answered_is_an_error_and_is_told_nothing() {
-    let world = ready_world();
-    world.with_orca(|orca| {
-        orca["trust_prompt"] = json!(true);
-        orca["trust_sticks"] = json!(true);
-    });
     let error = dispatch(&world, "7").error();
-    assert!(error.contains("still asks whether to trust the folder"), "{error}");
+    assert!(error.contains("Claude Code worktree trust gap"), "{error}");
+    assert!(error.contains("harness `claude-code`"), "{error}");
+    assert!(error.contains(COMMAND), "{error}");
     let orca = world.orca();
+    let path = orca["terminals"][0]["worktreePath"].as_str().unwrap();
+    assert!(error.contains(path), "{error}");
     let terminal = orca["terminals"].as_array().unwrap().iter().find(|t| t["open"] == true);
-    let terminal = terminal.expect("the worker's terminal");
-    assert_eq!(terminal["sent"], json!([]));
+    assert!(terminal.is_none(), "the trust question is never answered at the terminal");
+    assert!(orca["terminals"].as_array().unwrap().iter().all(|t| t["sent"] == json!([])));
+    let comments = world.comments(7);
+    let escalations: Vec<_> =
+        comments.iter().filter(|body| body.contains("convoy:escalation")).collect();
+    assert_eq!(escalations.len(), 1, "{comments:?}");
+    assert!(escalations[0].contains("worktree trust gap"), "{comments:?}");
 }
 
 #[test]

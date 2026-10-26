@@ -280,7 +280,7 @@ fn terminal_wait(st: &State) -> ! {
 }
 
 /// `trust_prompt`: every agent asks whether its folder is trusted before it
-/// takes a prompt. `trust_sticks`: and asks again however it is answered.
+/// takes a prompt.
 fn asks_trust(st: &State, at: usize) -> bool {
     st.doc["trust_prompt"] == true && st.doc["terminals"][at]["trusted"] != true
 }
@@ -289,11 +289,10 @@ fn asks_trust(st: &State, at: usize) -> bool {
 /// then — in a send of its own — Enter. Anything else picks "No, exit".
 fn answer_trust(st: &mut State, at: usize) -> ! {
     let (text, enter) = (st.opt("--text").map(str::to_string), st.has("--enter"));
-    let sticks = st.doc["trust_sticks"] == true;
     let at_yes = st.doc["terminals"][at]["trust_cursor"] == 1;
     match (text.as_deref(), enter, at_yes) {
         (Some("\x1b[B"), false, _) => st.doc["terminals"][at]["trust_cursor"] = json!(1),
-        (None, true, true) => st.doc["terminals"][at]["trusted"] = json!(!sticks),
+        (None, true, true) => st.doc["terminals"][at]["trusted"] = json!(true),
         _ => {
             st.doc["terminals"][at]["open"] = json!(false);
             fail(st, "terminal_exited")

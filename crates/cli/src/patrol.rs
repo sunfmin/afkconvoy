@@ -228,7 +228,6 @@ pub fn run(fleet: &mut Fleet, me: &Me, agent: &Agent, read: &Flows, row: &Row) -
         None,
         me.now,
     )?;
-    checkout.await_ready(&terminal, agent.ready_timeout)?;
     checkout.deliver(&terminal, &brief)?;
 
     // The record carries the runs of the day before it: they are counted from it alone.
@@ -343,7 +342,6 @@ pub(crate) fn switch(
         None,
         me.now,
     )?;
-    checkout.await_ready(&terminal, agent.ready_timeout)?;
     checkout.deliver(&terminal, &checkout.brief()?)?;
     Ok(json!({"patrol": name, "from": continuing.from, "to": harness,
         "worktree": checkout.path, "terminal": terminal, "skipped": skipped}))
