@@ -3,7 +3,7 @@
 //! and what it keeps the fleet off is the core's (`afkconvoy_core::lock`).
 
 use afkconvoy_core::config::Config;
-use afkconvoy_core::lock::{Closed, explains, raised_comment, standing};
+use afkconvoy_core::lock::{Closed, explains, raised_comment};
 use anyhow::{Result, bail};
 use serde_json::{Value, json};
 
@@ -11,7 +11,7 @@ use crate::gh::GitHub;
 
 /// The fleet locks standing on GitHub now, lowest number first.
 pub fn standing_locks(gh: &GitHub, config: &Config) -> Result<Vec<u64>> {
-    Ok(standing(&gh.open_issues()?.rows, config))
+    gh.open_with(&config.lock_label)
 }
 
 /// The closed lock that explains an `escalate` or a failure declared at `at`

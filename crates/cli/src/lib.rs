@@ -1083,7 +1083,7 @@ enum Command {
     ///
     /// WHEN IT PROBES. Not every time: a startup probe that passed on this host in the last hour stands, and `plan` then makes none — it says so on stderr, repeats that probe's warnings, and pushes nothing. It probes when no probe stands: none passed on this host within the hour — `run` makes one at every start, `tick` and `plan` when they find none — or the config's `base_branch` or `team` changed since, or the remote's URL did, or the note of where the remote keeps the fleet's refs — or no check that found the tracker the checkout says now private stands: one stands for the hour, of that tracker alone. The probe is noted in the repo's git dir (`convoy-probe`), and the check of the tracker beside it (`convoy-tracker`); delete either file to have the next `plan` probe.
     ///
-    /// The rebuild asks GitHub twice, side by side with one listing of the remote, however many issues are open: one query for the open issues with their comments (an issue with more than a hundred comments is asked about once more), one for the open PRs. In a tracker another repo than the checkout's, GitHub answers only the open issues that carry this repo's repo label, so it asks as often however many repos' issues the tracker holds. It asks once more — for the issues that carry the label `slow-gate` — only while the recorded gate runs of the base branch's landings say the gate is slow.
+    /// The rebuild asks GitHub twice, side by side with one listing of the remote, however many issues are open: one query for the open issues with their comments (comments beyond the first hundred or blockers beyond the first ten are read in full through their paginated endpoints), one for the open PRs. In a tracker another repo than the checkout's, GitHub answers only the open issues that carry this repo's repo label, so it asks as often however many repos' issues the tracker holds. It asks once more — for the issues that carry the label `slow-gate` — only while the recorded gate runs of the base branch's landings say the gate is slow.
     ///
     /// ## What it answers
     ///
@@ -1856,6 +1856,8 @@ enum Command {
     /// ## What it reads and writes
     ///
     /// A turn holds one command through four steps: make the PR's merge commit on the current base tip; gate that exact commit; record green; push that commit to the base branch as a fast-forward. It pushes committed worker changes to the PR's branch first. The merge message names the PR and its issue, watch or cut. A landed issue is closed; the tick settles its claim and worktree. The tree that lands is always the tree that passed the gate.
+    ///
+    /// A watch finds its branch's PR through REST, and every turn checks fleet locks through REST. Exhausted GraphQL quota alone therefore does not prevent a watch from landing its repair; an unreadable lock listing still refuses the turn.
     ///
     /// An unrecorded base tip is gated alone in a separate checkout using its own gate declaration. While it is red, ordinary turns wait outside worker lanes. The fleet opens a dispatchable fleet-lock issue for its repair. That issue's worker alone may take a turn on the red tip, and must still gate its complete merge green before landing. A standing fleet lock allows only its issues to land.
     ///

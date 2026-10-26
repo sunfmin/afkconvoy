@@ -21,8 +21,7 @@ pub fn land(repo: &Repo, config: &Config, gh: &GitHub, host: &str, now: u64) -> 
             checkout.path.display()
         );
     };
-    let prs = gh.open_prs()?;
-    let Some(pr) = prs.iter().find(|pr| pr.head_branch == branch) else {
+    let Some(pr) = gh.pr_of_branch(&branch)? else {
         anyhow::bail!(
             "no open PR has this checkout's branch {branch:?} for its head — push it \
              (`git push origin HEAD`) and open one (`gh pr create --base {} --head {branch}`), \
@@ -36,5 +35,5 @@ pub fn land(repo: &Repo, config: &Config, gh: &GitHub, host: &str, now: u64) -> 
         return Ok(crate::turn::locked(answer, &locks));
     }
     let of = Of::Watch(host.to_string());
-    crate::turn::join(repo, config, &gh.tracker, pr, &of, answer, (host, now))
+    crate::turn::join(repo, config, &gh.tracker, &pr, &of, answer, (host, now))
 }

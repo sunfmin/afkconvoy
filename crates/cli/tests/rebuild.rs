@@ -119,6 +119,39 @@ fn a_rebuild_lists_the_remote_once() {
 }
 
 #[test]
+fn a_blocker_past_the_embedded_page_still_holds_the_issue_back() {
+    let world = bound();
+    world.issue(7, &["flow:feature"]);
+    for number in 100..111 {
+        world.issue(number, &["bug"]);
+        if number < 110 {
+            world.close(number, "completed");
+        }
+    }
+    world.with_gh(|gh| {
+        gh["edges"]["7"] = serde_json::json!((100..111).collect::<Vec<_>>());
+        let issue = gh["issues"].as_array_mut().unwrap().iter_mut()
+            .find(|issue| issue["number"] == 7).unwrap();
+        issue["blockers_at_rebuild"] = serde_json::json!((100..110).map(|number|
+            serde_json::json!({"number": number, "state": "CLOSED", "repo": "acme/widget", "labels": ["bug"]})
+        ).collect::<Vec<_>>());
+        issue["blockers_more"] = serde_json::json!(true);
+    });
+    let planned = plan(&world);
+    assert!(frontier(&planned).is_empty(), "{planned}");
+    assert!(
+        planned["excluded"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["number"] == 7 && issue["reason"] == "open blockers: #110"),
+        "{planned}"
+    );
+    world.close(110, "completed");
+    assert_eq!(frontier(&plan(&world)), [(7, "build")]);
+}
+
+#[test]
 fn an_issue_with_more_comments_than_come_with_it_is_read_to_its_last() {
     let world = bound();
     world.issue(7, &["flow:feature"]);
