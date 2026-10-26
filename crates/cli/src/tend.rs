@@ -34,8 +34,9 @@ pub fn tend_train(fleet: &mut Fleet, me: &Me, agent: &Agent) -> Result<Outcome> 
     let found = Worktree::of_train(&source)?;
     if found.as_ref().is_some_and(|w| {
         w.state(fleet.now).ok() != Some(WorkerState::Gone)
-            && crate::health::holding(w)
-            && w.told().ok().flatten().is_some_and(|told| told.tip == train.tip)
+            && (crate::health::has_signal(w).unwrap_or(true)
+                || (crate::health::holding(w)
+                    && w.told().ok().flatten().is_some_and(|told| told.tip == train.tip)))
     }) {
         return Ok(Outcome::Nothing);
     }

@@ -177,10 +177,13 @@ pub fn available(mut kit: Kit) -> Result<Kit> {
     Ok(kit)
 }
 
-/// Transport refusal is evidence for this worker first. Classification or
+/// The latest delivery failure, kept beside the worker's brief.
+pub(crate) const SIGNAL_FILE: &str = "convoy-worker-error.json";
+
+/// A delivery failure is evidence for this worker first. Classification or
 /// diagnosis determines its scope, never a count of arbitrary refused sends.
 pub fn signal(worktree: &Worktree, reason: &str) -> Result<()> {
-    let file = worktree.note("convoy-worker-error.json")?;
+    let file = worktree.note(SIGNAL_FILE)?;
     std::fs::write(
         file,
         serde_json::to_vec(
@@ -191,8 +194,14 @@ pub fn signal(worktree: &Worktree, reason: &str) -> Result<()> {
 }
 
 fn error_of(worktree: &Worktree) -> Result<String> {
-    let file = worktree.note("convoy-worker-error.json")?;
+    let file = worktree.note(SIGNAL_FILE)?;
     Ok(std::fs::read_to_string(file).unwrap_or_default())
+}
+
+/// A refused line is evidence of a stopped worker even if its last runtime
+/// report still says working. A replacement clears it only once started.
+pub fn has_signal(worktree: &Worktree) -> Result<bool> {
+    Ok(!error_of(worktree)?.is_empty())
 }
 
 fn terminal_rule(harness: Harness, output: &[String]) -> Option<Diagnosis> {
@@ -444,6 +453,9 @@ pub fn diagnose_on_host(evidence: &Value) -> Result<(Harness, String)> {
 /// A tick's issue workers being observed or held for diagnosis. Legacy silent
 /// worker escalation cannot bypass this decision branch.
 pub fn holding(worktree: &Worktree) -> bool {
+    if has_signal(worktree).unwrap_or(true) {
+        return true;
+    }
     read().map_or(true, |book| {
         book.observations_failed.iter().any(|(path, _, _)| *path == worktree.path)
             || book.workers.iter().any(|o| {
@@ -933,7 +945,6 @@ fn decide(
             observed.rate_retries += 1;
             observed.action = "retrying".into();
             if diagnosis.class != "rate_limit" {
-                worktree.ready_for_nudge(&observed.terminal)?;
                 worktree.tell(
                     &observed.terminal,
                     "Continue the existing task if ready. Do not restart or discard work.",
