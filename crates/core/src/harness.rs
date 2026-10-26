@@ -488,6 +488,25 @@ impl Harness {
         }
     }
 
+    /// Starts a non-interactive watch in the operator's trusted directory,
+    /// with this harness's login and model, and exits when its answer ends.
+    pub fn watch(
+        self,
+        command: &str,
+        worktree: &str,
+        kept: &str,
+        model: Option<&str>,
+        prompt: &str,
+    ) -> String {
+        match self {
+            Harness::ClaudeCode => claude_code::watch(command, model, prompt),
+            Harness::Pi => pi::watch(command, kept, model, prompt),
+            Harness::Codex => codex::watch(command, worktree, kept, model, prompt),
+            Harness::Dsh => dsh::watch(kept, model, prompt),
+            Harness::Kimi => kimi::watch(command, kept, model, prompt),
+        }
+    }
+
     /// The line a terminal opened on the issue's worktree runs to start a
     /// worker of this harness in its role with the worker launch command
     /// `command`: change to the role's copy, put the stage's facts and this
@@ -706,6 +725,19 @@ mod tests {
             let line = harness.in_worktree("agent", "/wt", "/kept");
             assert!(line.contains(harness.worktree_trust()), "{}: {line}", harness.key());
             assert!(line.contains("agent"), "{}: {line}", harness.key());
+        }
+    }
+
+    #[test]
+    fn every_watch_is_trusted_non_interactive_and_given_its_model_and_brief() {
+        for harness in Harness::ALL {
+            let line =
+                harness.watch("agent", "/operator dir", "/kept", Some("model one"), "look at this");
+            assert!(line.contains(harness.worktree_trust()), "{}: {line}", harness.key());
+            assert!(line.contains("model one"), "{}: {line}", harness.key());
+            assert!(line.contains("look at this"), "{}: {line}", harness.key());
+            let headless = ["--print", " exec ", "--prompt", "headless"];
+            assert!(headless.iter().any(|mode| line.contains(mode)), "{}: {line}", harness.key());
         }
     }
 

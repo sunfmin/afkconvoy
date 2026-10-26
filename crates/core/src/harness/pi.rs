@@ -35,6 +35,22 @@ pub(super) fn in_worktree(command: &str) -> String {
     if command.contains(APPROVE) { command.to_string() } else { format!("{command} {APPROVE}") }
 }
 
+/// Starts one watch non-interactively, with pi's login and approval setup.
+pub(super) fn watch(command: &str, kept: &str, model: Option<&str>, prompt: &str) -> String {
+    let line = Line::new()
+        .fixed("export ")
+        .fixed(USER_DIR)
+        .fixed("=")
+        .word(kept)
+        .fixed(" && ")
+        .launch(&in_worktree(command));
+    let line = match model {
+        Some(model) => line.fixed(" ").fixed(MODEL).fixed(" ").word(model),
+        None => line,
+    };
+    line.fixed(" --print ").word(prompt).done()
+}
+
 /// pi's flag that leaves out every skill it would find by itself: those of
 /// the host user's home among them, which it reads wherever its user
 /// directory is. The host user's own are named, where a worker is given

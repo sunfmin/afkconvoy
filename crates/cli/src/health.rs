@@ -90,6 +90,12 @@ struct Observed {
     #[serde(deserialize_with = "crate::kit::harness")]
     harness: Harness,
     #[serde(default)]
+    recorded_harness: Option<String>,
+    #[serde(default)]
+    harness_mismatch: bool,
+    #[serde(default)]
+    orca: Value,
+    #[serde(default)]
     command_key: Option<String>,
     model: Option<String>,
     snapshots: Vec<Snapshot>,
@@ -177,6 +183,112 @@ pub fn available(mut kit: Kit) -> Result<Kit> {
     Ok(kit)
 }
 
+/// The harnesses whose workers took their briefs, most recent first.
+fn delivered_file() -> Result<PathBuf> {
+    Ok(crate::copies::cache()?.join("watch/delivered.json"))
+}
+
+fn delivered_read() -> Vec<String> {
+    let bytes = delivered_file().and_then(|file| Ok(std::fs::read(file)?));
+    bytes.ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default()
+}
+
+/// Records that the worker in `worktree` took its brief: its harness is the
+/// one a watch starts on first.
+pub fn delivered(worktree: &Worktree) -> Result<()> {
+    let Some(harness) = worktree.harness()? else { return Ok(()) };
+    let mut delivered = delivered_read();
+    delivered.retain(|held| held != harness.key());
+    delivered.insert(0, harness.key().to_string());
+    let file = delivered_file()?;
+    std::fs::create_dir_all(file.parent().context("watch cache parent")?)?;
+    let temporary = file.with_extension(format!("{}.tmp", crate::unique()));
+    std::fs::write(&temporary, serde_json::to_vec(&delivered)?)?;
+    Ok(std::fs::rename(temporary, file)?)
+}
+
+/// The harnesses a watch may start on, in order: the one this host last
+/// started a worker on that took its brief first, then the host kit's order;
+/// none paused, and none with a fault on record, of any scope, until its
+/// probe answers.
+pub fn watch_candidates() -> Result<Vec<crate::kit::Named>> {
+    let (kit, _) = crate::kit::running()?;
+    let faults = read()?.faults;
+    let faulted = |held: &crate::kit::Held| {
+        faults.iter().any(|fault| {
+            fault.harness == held.harness
+                && fault.command_key.as_ref() == Some(&command_key(&held.command))
+        })
+    };
+    let delivered = delivered_read();
+    let delivered = delivered.iter().filter_map(|key| Harness::read(key));
+    let mut candidates: Vec<crate::kit::Named> = vec![];
+    for harness in delivered.chain(kit.harnesses.iter().map(|held| held.harness)) {
+        if candidates.iter().any(|named| named.harness == harness) {
+            continue;
+        }
+        if let Some(held) = kit.harnesses.iter().find(|held| held.harness == harness)
+            && !faulted(held)
+        {
+            let model = held.models.first().map(|model| model.model.clone());
+            candidates.push(crate::kit::Named { harness, model });
+        }
+    }
+    Ok(candidates)
+}
+
+/// Records the fault a watch's session showed of `harness`, at the scope its
+/// diagnosis proved: the watch skips it, and an account's fault every worker
+/// too, until the hourly probe answers.
+pub fn watch_fault(harness: Harness, diagnosis: &Diagnosis, now: u64) -> Result<()> {
+    let file = file()?;
+    std::fs::create_dir_all(file.parent().context("health cache parent")?)?;
+    let lock = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(file.with_extension("lock"))?;
+    lock.lock()?;
+    let mut book = read()?;
+    let command = crate::kit::load()?.command(harness).unwrap_or_default().to_string();
+    let fault = Fault {
+        harness,
+        command_key: Some(command_key(&command)),
+        model: None,
+        scope: diagnosis.scope,
+        since: now,
+        next_check: now.saturating_add(RECOVERY_SECONDS),
+        evidence: diagnosis.evidence.clone(),
+    };
+    book.faults.retain(|held| {
+        !(held.harness == fault.harness
+            && held.command_key == fault.command_key
+            && held.model.is_none()
+            && held.scope == fault.scope)
+    });
+    book.faults.push(fault);
+    store(&book)
+}
+
+/// A fault the harness's own words in `output` prove, without another model.
+pub fn terminal_fault(harness: Harness, output: &[String]) -> Option<Diagnosis> {
+    terminal_rule(harness, output)
+}
+
+/// A session that exited with a failure: its harness failed it, and is held
+/// to have failed that session alone.
+pub fn failed(evidence: Vec<String>) -> Diagnosis {
+    Diagnosis {
+        status: "fault".into(),
+        class: "failed".into(),
+        scope: Scope::Worker,
+        evidence,
+        action: Action::Continue,
+        missing: vec![],
+        retry_after: None,
+    }
+}
+
 /// The latest delivery failure, kept beside the worker's brief.
 pub(crate) const SIGNAL_FILE: &str = "convoy-worker-error.json";
 
@@ -239,17 +351,6 @@ fn terminal_rule(harness: Harness, output: &[String]) -> Option<Diagnosis> {
         action: Action::Continue,
         missing: vec![],
         retry_after: None,
-    })
-}
-
-/// A fixed screen rule also interrupts a stale busy report or a failed
-/// diagnosis's backoff. An unreadable screen proves nothing.
-fn has_terminal_rule(worktree: &Worktree) -> bool {
-    let harness = worktree.harness().ok().flatten().unwrap_or(Harness::DEFAULT);
-    worktree.terminal().ok().flatten().is_some_and(|terminal| {
-        worktree
-            .screen(&terminal, 100)
-            .is_ok_and(|screen| terminal_rule(harness, &screen).is_some())
     })
 }
 
@@ -568,10 +669,10 @@ pub fn reconcile(
             book.observations_failed.retain(|(path, _, _)| *path != worktree.path);
             continue;
         }
-        let busy_without_fault = state == WorkerState::Busy
+        let busy_without_fault = worktree.agent_report()?.is_null()
+            && state == WorkerState::Busy
             && classified(&worktree.health_report()?).is_none()
-            && error_of(&worktree)?.is_empty()
-            && !has_terminal_rule(&worktree);
+            && error_of(&worktree)?.is_empty();
         if state == WorkerState::Gone || busy_without_fault {
             book.workers.retain(|o| o.path != worktree.path);
             book.observations_failed.retain(|(path, _, _)| *path != worktree.path);
@@ -648,14 +749,6 @@ pub fn reconcile(
     }
     let mut events = vec![];
     for (issue, patrol, worktree) in jobs {
-        if book
-            .observations_failed
-            .iter()
-            .any(|(path, _, next)| *path == worktree.path && fleet.now < *next)
-            && !has_terminal_rule(&worktree)
-        {
-            continue;
-        }
         let handled =
             observe(&mut book, fleet, me, agent, &kit, issue, patrol.as_deref(), &worktree);
         if let Err(e) = handled {
@@ -692,17 +785,30 @@ fn observe(
         return Ok(());
     };
     let state = worktree.state(fleet.now)?;
+    let orca = worktree.agent_report()?;
+    let signal = error_of(worktree)?;
+    // A delivery that failed after the runtime reported working still
+    // belongs to classification; it cannot be cleared by that old report.
+    let working = orca["state"] == "working" && signal.is_empty();
     let harness = worktree.harness()?.unwrap_or(Harness::DEFAULT);
+    let recorded = worktree.recorded_harness()?;
+    let mismatch = recorded.is_some_and(|h| h != harness);
     let repo = Repo::new(worktree.path.clone());
     let model = std::fs::read_to_string(worktree.note("convoy-worker-model")?)
         .ok()
         .filter(|m| !m.is_empty());
     let binding = std::fs::read_to_string(worktree.note("convoy-worker-command-key")?)
         .ok()
-        .filter(|s| !s.is_empty());
-    let output = worktree.screen(&terminal, 100)?;
-    let signal = error_of(worktree)?;
-    let processes = crate::hot::listed_checked()?;
+        .filter(|s| !s.is_empty())
+        .filter(|key| {
+            !mismatch
+                || kit
+                    .harnesses
+                    .iter()
+                    .any(|h| h.harness == harness && *key == command_key(&h.command))
+        });
+    let output = if working { vec![] } else { worktree.screen(&terminal, 100)? };
+    let processes = if working { vec![] } else { crate::hot::listed_checked()? };
     let activity: Vec<_> = crate::hot::tree(&processes, &worktree.path)
         .into_iter()
         .map(|p| json!({"pid":p.pid,"parent":p.ppid,"cpu_ms":p.cpu_ms,"resident_bytes":p.resident}))
@@ -728,6 +834,9 @@ fn observe(
             path: worktree.path.clone(),
             terminal: terminal.clone(),
             harness,
+            recorded_harness: None,
+            harness_mismatch: false,
+            orca: Value::Null,
             model: model.clone(),
             command_key: binding.clone(),
             snapshots: vec![],
@@ -746,7 +855,7 @@ fn observe(
             error: None,
         },
     };
-    if observed.terminal != terminal {
+    if observed.terminal != terminal || observed.harness != harness {
         if observed.action == "continued" {
             observed.continuations = 0;
             observed.failed_candidates.clear();
@@ -763,6 +872,38 @@ fn observe(
         observed.diagnosis = None;
         observed.diagnosis_failures.clear();
         observed.action = "observing".into();
+    }
+    // A failed turn is actionable at its first observation, including a
+    // worker previously held until its next diagnosis. Repeated identical
+    // failures still obey the existing retry and recovery bounds.
+    let newly_failed = orca["state"] == "done"
+        && orca["outcome"] == "failure"
+        && ["state", "outcome", "stateStartedAt", "agentType"]
+            .iter()
+            .any(|key| observed.orca[*key] != orca[*key]);
+    if newly_failed {
+        observed.next_check = fleet.now;
+        observed.window_started = fleet.now;
+        observed.attempts = 0;
+        observed.diagnosis = None;
+        observed.diagnosis_failures.clear();
+    }
+    observed.harness = harness;
+    observed.recorded_harness = recorded.map(|h| h.key().to_string());
+    observed.harness_mismatch = mismatch;
+    observed.orca = orca;
+    if working {
+        observed.action = "healthy".into();
+        observed.source = "orca worktree ps".into();
+        observed.error = None;
+        observed.diagnosis = None;
+        observed.diagnosis_failures.clear();
+        observed.snapshots.clear();
+        observed.attempts = 0;
+        observed.next_check = fleet.now;
+        observed.background = None;
+        book.workers.push(observed);
+        return Ok(());
     }
     let changed =
         observed.snapshots.last().is_some_and(|s| s.output != output || s.progress != progress);
@@ -897,7 +1038,9 @@ fn decide(
     let rule = terminal
         .map(|rule| ("terminal rule", rule))
         .or_else(|| classified(raw_error).map(|rule| ("structured rule", rule)));
-    if rule.is_none()
+    let failed = observed.orca["state"] == "done" && observed.orca["outcome"] == "failure";
+    if !failed
+        && rule.is_none()
         && let Some(background) = crate::judge::own_background(fleet, worktree, true)?
     {
         observed.action = "waiting for background work".into();
@@ -906,7 +1049,7 @@ fn decide(
     }
     observed.background = None;
     let quiet = fleet.now.saturating_sub(observed.snapshots.first().map_or(fleet.now, |s| s.at));
-    if rule.is_none() && (state == WorkerState::Busy || quiet < OBSERVE_SECONDS) {
+    if !failed && rule.is_none() && (state == WorkerState::Busy || quiet < OBSERVE_SECONDS) {
         observed.action = if state == WorkerState::Busy { "healthy" } else { "observing" }.into();
         return Ok(());
     }
