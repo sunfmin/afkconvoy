@@ -261,13 +261,11 @@ Make it yourself, in your checkout, and land it as any worker's change lands —
 1. Commit it on your checkout's branch, `{branch}`, and push that: `git push origin HEAD`.
 2. Open its PR against `{base_branch}`, saying what it changes and why, and closing no issue:
    `gh pr create --base {base_branch} --head {branch} --title '<title>' --body '<what and why>'`.
-3. Gate it: `{afkconvoy} gate --train`. It waits its turn on the host, and may take most of your
-   time: start it as soon as the change is committed. On `conflict`, resolve every file it lists,
-   commit the merge and run it again; red, fix, commit and run it again, until it says green.
-4. Put it on the landing train: `{afkconvoy} land --inspection`. On `joined` or `merged` it is
-   done: the train gates and lands it as any other, and you need not wait for it. On `conflict`,
-   resolve every file, commit the merge and go back to 3. On `locked`, a fleet lock stands: the PR
-   stays open off the train, and you say so.
+3. Put it on the landing train: `{afkconvoy} land --inspection`. It takes a turn: merges the
+   train's green tip, gates, records green and joins before releasing the turn. On `joined` or
+   `merged` it is done: the train lands on that record, and you need not wait for it. On
+   `conflict`, resolve every file, commit the merge and ask again. Red: fix your change, commit
+   and ask again. On `locked`, a fleet lock stands: the PR stays open off the train, and you say so.
 
 ## A red base branch in an unbound repo
 
@@ -577,7 +575,7 @@ stages:
             said.contains("gh pr create --base main --head tester/afkconvoy-inspection"),
             "{said}"
         );
-        assert!(said.contains("`cd '/w/inspection' && afkconvoy gate --train`"), "{said}");
+        assert!(said.contains("takes a turn: merges"), "{said}");
         assert!(said.contains("`cd '/w/inspection' && afkconvoy land --inspection`"), "{said}");
         assert!(said.contains("open no issue"), "{said}");
         assert!(said.contains("## A red base branch in an unbound repo"), "{said}");

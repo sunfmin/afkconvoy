@@ -16,9 +16,12 @@ use afkconvoy::runner_socket::{self, Kept, Reply, Request, SOCKET};
 const GATE_BINARY: &str = env!("CARGO_BIN_EXE_afkconvoy");
 
 /// A gate held by an isolated runner until the test explicitly grants it.
+/// Its nested wrapper drops the inherited lease to model an installed CLI
+/// from before gate turns, which still queues inside the gate command.
 /// Drop cleans up even when an assertion fails before the grant.
 struct QueuedGate {
     _socket: tempfile::TempDir,
+    _permit: Kept,
     child: Option<Child>,
     group: i32,
     place: Kept,
@@ -54,11 +57,14 @@ impl QueuedGate {
             .stderr(Stdio::piped())
             .spawn()
             .unwrap();
+        let (owner, mut permit) = receive.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(owner, child.id(), "the gate takes its owning lease first");
+        assert!(permit.say(json!({"runs": 5000})));
         let (pid, place) = receive.recv_timeout(Duration::from_secs(5)).unwrap();
         // SAFETY: pid is this gate's exclusive child in the isolated runner.
         let group = unsafe { libc::getpgid(pid as i32) };
-        assert!(group > 0);
-        Self { _socket: socket, child: Some(child), group, place }
+        assert_eq!(group, pid as i32, "only the gate child's own group may be signalled");
+        Self { _socket: socket, _permit: permit, child: Some(child), group, place }
     }
 
     fn observe(&mut self, world: &World) {
@@ -108,7 +114,7 @@ impl Drop for QueuedGate {
 
 fn queue_command(world: &World) {
     let command = afkconvoy_core::line::Line::new()
-        .fixed("exec ")
+        .fixed("exec env -u AFKCONVOY_EXCLUSIVE_OWNER ")
         .program(GATE_BINARY)
         .fixed(" exclusive -- sh -c ")
         .word("echo executed >> \"$EXECUTED\"; if test -f \"$FAIL_GATE\"; then exit 3; fi")

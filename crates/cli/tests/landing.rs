@@ -111,6 +111,45 @@ fn gate_records(world: &World) -> String {
     ])
 }
 
+fn tip_record(world: &World) -> String {
+    let tree = world.remote(&["rev-parse", &format!("{LINE}^{{tree}}")]);
+    gate_records(world)
+        .lines()
+        .find(|line| line.contains(&format!("/{tree}-")))
+        .unwrap()
+        .to_string()
+}
+
+/// Simulate an external join that did not take a turn. The train must gate
+/// such a tip itself, and workers must wait for a green record of it.
+fn outside_join(world: &World, dir: &Path, issue: u64) -> String {
+    let head = git(dir, &["rev-parse", "HEAD"]);
+    let line = world.remote(&["for-each-ref", "--format=%(objectname)", LINE]);
+    let base = if line.is_empty() { base(world) } else { line };
+    let merged = git(&world.clone, &["merge-tree", "--write-tree", &base, &head]);
+    let message = format!("pr {} (#{})\n\nCloses #{issue}", issue * 10, issue * 10);
+    let commit = git(
+        &world.clone,
+        &[
+            "commit-tree",
+            merged.split_whitespace().next().unwrap(),
+            "-p",
+            &base,
+            "-p",
+            &head,
+            "-m",
+            &message,
+        ],
+    );
+    git(&world.clone, &["push", "-q", "origin", &format!("{commit}:{LINE}")]);
+    commit
+}
+
+fn forget_tip_run(world: &World) {
+    let name = tip_record(world).split_whitespace().next().unwrap().to_string();
+    world.remote(&["update-ref", "-d", &name]);
+}
+
 #[test]
 fn a_landing_answered_by_a_run_on_record_says_that_runs_time_and_writes_no_record() {
     let world = world();
@@ -121,7 +160,7 @@ fn a_landing_answered_by_a_run_on_record_says_that_runs_time_and_writes_no_recor
     let train = train(&world);
     let before = gate_records(&world);
     assert!(
-        before.ends_with(&format!(" seconds={} host=workers-host", gate["seconds"])),
+        tip_record(&world).ends_with(&format!(" seconds={} host=workers-host", gate["seconds"])),
         "{before}"
     );
 
@@ -139,6 +178,7 @@ fn a_landing_gated_by_a_run_made_now_puts_its_time_on_record() {
     let world = world();
     let seven = world.worker(7, "seven.txt", "7\n");
     join(&world, &seven, 7);
+    forget_tip_run(&world);
     let train = train(&world);
 
     let args = ["land", "--train", "--merged-timeout", "5", "--host", "trains-host"];
@@ -147,7 +187,7 @@ fn a_landing_gated_by_a_run_made_now_puts_its_time_on_record() {
     assert_eq!(answer["gate"]["source"], "run");
     assert_eq!(answer["gate"]["host"], "trains-host");
     let seconds = answer["gate"]["seconds"].as_u64().expect("the answer says the seconds");
-    let records = gate_records(&world);
+    let records = tip_record(&world);
     assert!(records.ends_with(&format!(" seconds={seconds} host=trains-host")), "{records}");
 }
 
@@ -159,14 +199,14 @@ fn a_record_with_no_time_answers_a_landing_and_is_not_rewritten() {
     join(&world, &seven, 7);
     let train = train(&world);
     // the record as it was written before records kept a time
-    let written = gate_records(&world);
+    let written = tip_record(&world);
     let (name, rest) = written.split_once(' ').unwrap();
     let subject = rest.split_once(' ').unwrap().1.split_once(" seconds=").unwrap().0;
     let tree = world.remote(&["rev-parse", &format!("{name}^{{tree}}")]);
     let old = git(&world.clone, &["commit-tree", &tree, "-m", subject]);
     git(&world.clone, &["push", "-q", "--force", "origin", &format!("{old}:{name}")]);
     let before = gate_records(&world);
-    assert_eq!(before, format!("{name} {old} {subject}"));
+    assert!(before.contains(&format!("{name} {old} {subject}")));
 
     let (answer, log) = land_train(&world, &train);
     assert_eq!(answer["outcome"], "landed", "{answer}");
@@ -182,7 +222,7 @@ fn a_signalled_train_gate_preserves_evidence_in_its_answer_and_pr_comment() {
     let world = World::new();
     world.set_gate("kill -TERM $$");
     let worker = world.worker(7, "seven.txt", "7\n");
-    join(&world, &worker, 7);
+    outside_join(&world, &worker, 7);
     let before = base(&world);
     let (answer, log) = land_train(&world, &train(&world));
     assert_eq!(answer["outcome"], "gate_red", "{answer}");
@@ -206,8 +246,8 @@ fn a_train_of_several_prs_is_gated_once_and_landed_whole() {
 
     let (answer, log) = land_train(&world, &train);
     assert_eq!(answer["outcome"], "landed", "{answer}");
-    assert_eq!(log.matches("gate-ran").count(), 1);
-    assert_eq!(answer["gate"]["source"], "run");
+    assert_eq!(log.matches("gate-ran").count(), 0);
+    assert_eq!(answer["gate"]["source"], "recorded");
     assert_eq!(answer["prs"], json!([70, 80]));
     assert_eq!(base(&world), tip);
     assert_eq!((state(&world, 7), state(&world, 8)), ("closed".into(), "closed".into()));
@@ -225,7 +265,7 @@ fn a_red_gate_lands_nothing_and_the_train_is_fixed_with_one_more_commit() {
     assert_eq!(world.afk_in(&eight, &["gate", "--train"]).ok()["recorded"], true);
     let green = join(&world, &eight, 8);
     let seven = world.worker(7, "broken", "it is\n");
-    let red = join(&world, &seven, 7);
+    let red = outside_join(&world, &seven, 7);
     let train = train(&world);
     let started = base(&world);
 
@@ -242,12 +282,7 @@ fn a_red_gate_lands_nothing_and_the_train_is_fixed_with_one_more_commit() {
         assert!(comments[0].contains("exited 1") && comments[0].contains("gate-ran"));
     }
 
-    // a worker gating meanwhile takes in the train's last green commit, not the red tip
-    let nine = world.worker(9, "nine.txt", "9\n");
-    let gate = world.afk_in(&nine, &["gate", "--train"]).ok();
-    assert_eq!(gate["merged"], green.as_str());
-    assert_eq!(gate["status"], "green");
-    assert!(!nine.join("broken").exists());
+    assert!(world.remote(&["merge-base", "--is-ancestor", &green, &red]).is_empty());
 
     // the train worker fixes the train: one more commit on top, here
     git(&train, &["rm", "-q", "broken"]);
@@ -271,7 +306,7 @@ fn a_train_whose_gate_reaches_the_configs_gate_limit_is_red_and_says_the_limit()
     let world = World::new();
     world.set_gate_config("gate_command: sleep 30\ngate_seconds: 1");
     let seven = world.worker(7, "seven.txt", "7\n");
-    join(&world, &seven, 7);
+    outside_join(&world, &seven, 7);
     let started = std::time::Instant::now();
     let (answer, _) = land_train(&world, &train(&world));
     assert!(started.elapsed().as_secs() < 15, "the run was killed");
@@ -285,16 +320,38 @@ fn a_train_whose_gate_reaches_the_configs_gate_limit_is_red_and_says_the_limit()
 }
 
 #[test]
-fn under_a_red_train_with_no_green_commit_a_worker_gates_on_the_base_branch() {
+fn a_worker_waits_for_the_train_to_fix_a_red_tip_instead_of_gating_on_an_older_commit() {
     let world = world();
     let seven = world.worker(7, "broken", "it is\n");
-    join(&world, &seven, 7);
+    outside_join(&world, &seven, 7);
     let train = train(&world);
     assert_eq!(land_train(&world, &train).0["outcome"], "gate_red");
     let nine = world.worker(9, "nine.txt", "9\n");
-    let gate = world.afk_in(&nine, &["gate", "--train"]).ok();
-    assert_eq!(gate["merged"], base(&world).as_str());
-    assert_eq!(gate["status"], "green");
+    let waiting = world.root.join("waiting");
+    std::fs::write(world.root.join("during"), format!("touch {}\n", waiting.display())).unwrap();
+    let mut worker = world
+        .command(env!("CARGO_BIN_EXE_afkconvoy"), &nine)
+        .args(["gate", "--train"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let began = std::time::Instant::now();
+    while !waiting.exists() {
+        assert!(began.elapsed().as_secs() < 10);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(worker.try_wait().unwrap().is_none());
+    assert!(!nine.join("broken").exists(), "a turn has not begun");
+    git(&train, &["rm", "-q", "broken"]);
+    git(&train, &["commit", "-q", "-m", "repair the train"]);
+    let fix = git(&train, &["rev-parse", "HEAD"]);
+    assert_eq!(land_train(&world, &train).0["outcome"], "landed");
+    let out = worker.wait_with_output().unwrap();
+    assert!(out.status.success());
+    let gated: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(gated["outcome"], "joined", "{gated}");
+    assert_eq!(gated["merged"], fix);
 }
 
 #[test]
@@ -302,6 +359,7 @@ fn a_base_branch_that_moved_during_the_gate_refuses_the_push() {
     let world = world();
     let seven = world.worker(7, "seven.txt", "7\n");
     let commit_7 = join(&world, &seven, 7);
+    forget_tip_run(&world);
     let train = train(&world);
     // someone lands on the base branch while the gate runs
     let other = world.root.join("other");
@@ -338,10 +396,27 @@ fn prs_that_joined_during_a_gate_run_land_behind_the_next_one() {
     let seven = world.worker(7, "seven.txt", "7\n");
     let eight = world.worker(8, "eight.txt", "8\n");
     let first = join(&world, &seven, 7);
+    forget_tip_run(&world);
     let train = train(&world);
+    let head = git(&eight, &["rev-parse", "HEAD"]);
+    let tree = git(&eight, &["merge-tree", "--write-tree", &first, &head]);
+    let later = git(
+        &eight,
+        &[
+            "commit-tree",
+            tree.split_whitespace().next().unwrap(),
+            "-p",
+            &first,
+            "-p",
+            &head,
+            "-m",
+            "pr 80 (#80)\n\nCloses #8",
+        ],
+    );
+    git(&eight, &["push", "-q", "origin", &format!("{later}:refs/convoy/test/later")]);
     std::fs::write(
         world.root.join("during"),
-        format!("cd {} && {} land --issue 8\n", eight.display(), env!("CARGO_BIN_EXE_afkconvoy")),
+        format!("git --git-dir={} update-ref {LINE} {later}\n", world.bare.display()),
     )
     .unwrap();
 
@@ -454,6 +529,8 @@ fn tracked_bytes(dir: &Path) -> u64 {
 fn land_one(world: &World, dir: &Path, issue: u64) -> Value {
     let worker = world.worker(issue, &format!("{issue}.txt"), &format!("{issue}\n"));
     join(world, &worker, issue);
+    // These scenarios measure a train build, so remove its joiner's record.
+    forget_tip_run(world);
     let (answer, _) = land_train(world, dir);
     assert_eq!(answer["outcome"], "landed", "{answer}");
     answer

@@ -27,6 +27,8 @@ Each command reads the variable for itself, so two commands find the same copies
 - `host-runner.sock`: the host runner's socket, the one socket of the host: `run`, `stop`, `wake`, `panel --open`, `exclusive` and `doctor` speak to the host runner there, each naming its checkout. No fleet instance and no repo has a socket of its own. One nobody listens on — a host runner killed with no goodbye left it — is removed by whoever finds it.
 - `host-runner.log`: the host runner's log, moved aside to host-runner.log.1 once past a MiB: what it started, added, refused and stopped, each line stamped in UTC.
 - `host-inspection/`: what the last inspection of the host was given (evidence.md) and what it did (last.json), whichever fleet of the host started it: what `doctor` and the panel show beside admission's reading.
+- `stock-watch/`: the stock watch's directory, made and kept when the host names no operator directory. Its rules are the short instruction carried in the binary, refreshed when a stock watch starts.
+- `watch/`: the watch's state, briefs and transcripts, in either directory. Its record survives a host runner restart and includes what it left with a human.
 
 None of it is fleet state: that is in GitHub and on the repo's remote.
 

@@ -706,7 +706,7 @@ fn held_host(
     };
     let (log, stop, moving) = (Arc::clone(log), stop.clone(), AtomicBool::new(false));
     let runner = Arc::new(Runner { list, log, stop: stop.clone(), moving, held, panel, shared });
-    // The host runner watches its host where a watch directory is set.
+    // Every host has a watch, in the operator's directory or the stock one's.
     let watching = {
         let (list, log) = (runner.list.clone(), Arc::clone(&runner.log));
         crate::host_watch::HostWatch::start(runner.shared.watch.clone(), move |what| {

@@ -61,15 +61,27 @@ const STEP1_CONTINUE: &str = "\
 /// The gate and the join, as every worker that has them is told them. `<g>` and
 /// `<j>` are the numbers the two steps carry in the prompt they are put in.
 const GATE_STEP: &str = "\
-<g>. **Gate.** Commit everything, then run this in your worktree:
+<g>. **Gate.** The PR must already be open. Commit everything, then run this in your worktree:
    ```bash
    {gate_command}
    ```
-   It first merges in what your PR will land behind (the landing train, or `{base_branch}`), then
-   runs the repo's gate, and ends with one JSON object. On `\"status\": \"conflict\"` nothing ran:
-   resolve every file it lists, `git add` it, commit the merge, and run it again. Otherwise fix the
-   code, commit, and run it again until it says `\"status\": \"green\"` and `\"recorded\": true` —
-   its `detail` says what is missing. Any further commit needs another run. Never rebase.";
+   This command asks for a turn. In that turn it merges the train's current green tip (or
+   `{base_branch}` when the train is empty), runs the gate, records green and joins your PR before
+   releasing the turn. Nobody waits on your agent between the merge and join. It ends with one
+   JSON object. On `\"outcome\": \"joined\"` or `\"merged\"`, wake the fleet and stop.
+   On `\"status\": \"conflict\"` no gate ran: resolve every file, `git add` it, commit the merge,
+   and run it again. Red: fix your change, commit and ask again. The tip you merged was green.
+   On `\"outcome\": \"locked\"`, stop until told to carry on. Any further commit needs another
+   turn. Never rebase.";
+
+const STAGE_GATE_STEP: &str = "\
+1. **Gate.** Commit everything, then run this in your worktree:
+   ```bash
+   {gate_command}
+   ```
+   This checks the committed change before review. Red: fix, commit and run it again until
+   `\"status\": \"green\"` and `\"recorded\": true`. Declare `pass` only then. The landing
+   worker takes the merge, gate and join turn after the workflow's last stage has passed.";
 
 const JOIN_STEP: &str = "\
 <j>. **Join the landing train.** Run this in your worktree:
@@ -130,31 +142,11 @@ writes its issue: you do.
 4. <park>
 ";
 
-/// What an issue's worker gates alone to prove a red gate is not its own:
-/// what its gate merged in.
-const PROOF_MERGED: &str =
-    "the commit your gate merged in — its `merged`: the landing train's tip, or
-`origin/{base_branch}` —";
-
 /// How an issue a worker opens for a defect is put before the fleet: with the
 /// ready label, in an unbound repo, by every worker that opens one.
 const DEFECT_READY: &str =
     "Put the label `{ready_label}` on it (`--label {ready_label}`)<repo_label>, so
    the fleet works it like any other issue.";
-
-/// How a worker of an unbound repo parks its issue on the defect's.
-const PARK_WORKER: &str =
-    "**Then park your issue on it.** Push your branch (`git push origin HEAD`), open no PR,
-   and post the `blocked` verdict (below) with that issue — the one you opened, or the one you
-   commented on — in `blocked_by=`. When it closes, your issue is the fleet's again: a worker gates
-   your branch again and joins it, and nothing waits for a human.";
-
-/// How a worker that took up a kept PR parks its issue on the defect's.
-const PARK_TAKER: &str =
-    "**Then park your issue on it.** Push your branch (`git push origin HEAD`) and post the
-   verdict comment (below) with `phase=blocked` and that issue — the one you opened, or the one you
-   commented on — in `blocked_by=`. Your PR stays open: when that issue closes, a worker takes it up
-   again, gates it and joins it, and nothing waits for a human.";
 
 /// `DEFECT`, of a worker that gates alone `proof`, puts an issue it opens
 /// before the fleet as `open` says and then does `park`.
@@ -217,8 +209,8 @@ no other PR. Nobody reads this terminal: never wait for an answer.
 
 After a genuine effort, post a comment on the issue instead (`gh issue comment {n}<tracker> --body \"...\"`),
 wake the fleet (below) and stop. Its **first line** must be exactly this marker, with `phase=escalate`,
-on one line, followed by where you are stuck, so that a human can act on it in one reply — or, for
-a defect outside your issue (above), with `phase=blocked` and its issue in `blocked_by=`:
+on one line, followed by where you are stuck, so that a human can act on it in one reply — or,
+with `phase=blocked` and every existing blocking issue in `blocked_by=`:
 ```
 {verdict_marker}
 ```
@@ -252,14 +244,14 @@ git add -A && git commit -m \"<what this step did>\" && git push origin HEAD
 
 <step1>
 2. **Implement** the issue's acceptance criteria, matching the surrounding code's conventions.
-<gate_step>
-4. **Open a PR** against `{base_branch}` whose body contains the line `Closes {issue}`:
+3. **Open a PR** against `{base_branch}` whose body contains the line `Closes {issue}`:
    ```bash
    git push origin HEAD && gh pr create --base {base_branch} --head {branch} --title \"<title>\" --body \"<what changed>
 
    Closes {issue}\"
    ```
    Do not merge it.
+<gate_step>
 <join_step>
 
 <defect>
@@ -273,8 +265,7 @@ body:
 ```
 - **`already-satisfied`** — the issue is already implemented in `{base_branch}`: you changed nothing.
 - **`blocked`** — the issue needs something that belongs to another issue and does not exist yet. Do
-  not create it yourself — unless it is a defect outside your issue that you discovered, which no
-  issue covers yet (above). Name every blocking issue in `blocked_by=` (e.g. `blocked_by=41,42`) and
+  not create it yourself. Name every blocking issue in `blocked_by=` (e.g. `blocked_by=41,42`) and
   say what is missing.
 - **`escalate`** — after a genuine effort you cannot complete the work or make the gate pass, or
   the issue as written cannot be done. Say where you are stuck, or the decision that has to be made,
@@ -394,19 +385,6 @@ or pushed to its branch, turn the gate green before you declare `pass`:
 <gate_step>
 
 <defect>";
-
-/// How a stage puts an issue it opens for a defect before the fleet: it takes
-/// it in, as a split does, so the issue enters a workflow.
-const DEFECT_INTAKE: &str =
-    "Put no label of a workflow on it yourself<only_repo_label>: take it in to the workflow
-   that fits — the team has {workflows} — with
-   `{intake_command} --issue <n> --workflow <workflow>`.";
-
-/// How a stage parks its issue on the defect's.
-const PARK_STAGE: &str = "**Then park your issue on it.** Push your branch (`git push origin HEAD`), then declare
-   `blocked` with the command below, with that issue — the one you opened, or the one you commented
-   on — in `--blocked-by`. When it closes this stage runs again, and gates your branch again: nothing
-   waits for a human.";
 
 /// What a stage is told of the human's ruling it runs again under.
 const RULED: &str = "
@@ -767,9 +745,7 @@ pub fn stage_prompt(fields: &StageFields) -> Result<String, String> {
     };
     let workflows: Vec<String> = fields.workflows.iter().map(|name| format!("`{name}`")).collect();
     let gate = match fields.gate {
-        Some(_) => GATE_BEFORE_PASS
-            .replace("<gate_step>", &GATE_STEP.replace("<g>", "1"))
-            .replace("<defect>", &defect(PROOF_MERGED, DEFECT_INTAKE, PARK_STAGE)),
+        Some(_) => GATE_BEFORE_PASS.replace("<gate_step>", STAGE_GATE_STEP).replace("<defect>", ""),
         None => String::new(),
     };
     let template = with_rules(STAGE, "worktree", fields.team_rules)
@@ -1282,7 +1258,7 @@ fn prompt(
         }
         Variant::TakeUp { pr } => {
             let outcomes = " — your PR is on the landing train, or your comment is posted";
-            let taker = TAKER.replace("<defect>", &defect(PROOF_MERGED, DEFECT_READY, PARK_TAKER));
+            let taker = TAKER.replace("<defect>", "");
             (steps(&taker, "3", "4", outcomes), pr.to_string())
         }
     };
@@ -1312,11 +1288,9 @@ fn prompt(
 /// The worker prompt with a variant's opening and first step in it.
 fn briefed(opening: &str, step1: &str) -> String {
     let outcomes = " — your PR is on the landing train, or your comment is posted";
-    let worker = WORKER
-        .replace("<opening>", opening)
-        .replace("<step1>", step1)
-        .replace("<defect>", &defect(PROOF_MERGED, DEFECT_READY, PARK_WORKER));
-    steps(&worker, "3", "5", outcomes)
+    let worker =
+        WORKER.replace("<opening>", opening).replace("<step1>", step1).replace("<defect>", "");
+    steps(&worker, "4", "5", outcomes)
 }
 
 /// `template` with the gate and join steps in it, numbered `gate` and `join`,
@@ -1562,7 +1536,8 @@ mod tests {
         assert!(fresh.contains("**Your issue:** acme/tracker#7 — Add {branch} support"));
         assert!(fresh.contains("\n   Closes acme/tracker#7\""), "{fresh}");
         // An issue a worker opens is the repo's in the tracker.
-        for brief in [fresh, &briefs[5]] {
+        {
+            let brief = &briefs[5];
             assert!(
                 brief.contains("`gh issue create --repo acme/tracker`): the symptom")
                     && brief.contains(
@@ -1728,10 +1703,7 @@ mod tests {
             assert!(brief.contains("- **Issue:** acme/tracker#7 — Add support\n"), "{brief}");
         }
         assert!(stage.contains("(`gh issue create --repo acme/tracker --label repo:acme/dev`)"));
-        assert!(stage.contains(
-            "Put no label of a workflow on it yourself, only the repo label `repo:acme/dev` \
-             (`--label repo:acme/dev`): take it in"
-        ));
+        assert!(!stage.contains("A red gate that is not yours"));
         assert!(parked.contains("(acme/tracker#11, acme/tracker#12)"), "{parked}");
         assert!(consult.contains("    gh issue close 7 --repo acme/tracker --comment <why>\n"));
         assert!(patrol.contains(
@@ -1815,8 +1787,8 @@ mod tests {
         }
         // the same two steps the whole brief gives, under its own numbers
         let whole = worker_prompt(&fields(), Variant::Fresh).unwrap();
-        assert!(whole.contains("\n3. **Gate.**") && whole.contains("\n5. **Join the landing"));
-        assert!(whole.contains("go back to step 3, and run this again"));
+        assert!(whole.contains("\n4. **Gate.**") && whole.contains("\n5. **Join the landing"));
+        assert!(whole.contains("go back to step 4, and run this again"));
         assert!(!whole.contains("<g>") && !whole.contains("_step>"));
     }
 
@@ -2190,13 +2162,7 @@ mod tests {
         );
         assert!(prompt.contains("turn the gate green before you declare `pass`:\n\n1. **Gate.**"));
         assert!(prompt.contains("   cd '/wt/issue-7' && /opt/bin/afkconvoy gate --train\n"));
-        // The gate step every worker with a PR is given, said in one place.
-        let whole = worker_prompt(&super::tests::fields(), Variant::Fresh).unwrap();
-        let step = |prompt: &str| {
-            let from = prompt.find("It first merges in what your PR will land behind").unwrap();
-            prompt[from..prompt[from..].find("Never rebase.").unwrap() + from].to_string()
-        };
-        assert_eq!(step(&prompt), step(&whole));
+        assert!(prompt.contains("landing\n   worker takes the merge, gate and join turn"));
         let gate = prompt.find("## The gate").unwrap();
         assert!(gate < prompt.find("## Declare a verdict").unwrap(), "before the verdict");
         assert!(!prompt.contains("<gate") && !prompt.contains("<g>"), "{prompt}");
@@ -2246,145 +2212,22 @@ mod tests {
     }
 
     #[test]
-    fn every_worker_that_runs_the_gate_opens_an_issue_for_a_red_gate_that_is_not_its_own() {
-        let stage = StageFields {
-            number: 7,
-            tracker: &Tracker::Own,
-            title: "Add support",
-            flow: "feature",
-            stage: "build",
-            role: "dev",
-            skill: "implement",
-            branch: "tester/issue-7-add",
-            worktree: "/wt/issue-7",
-            base_branch: "develop",
-            precedents: "/copies/acme/team/def/precedents.md",
-            team_rules: None,
-            records: &[],
-            verdict_command: "/opt/bin/afkconvoy verdict --issue 7 --stage build",
-            lock_command: "/opt/bin/afkconvoy lock",
-            intake_command: "cd '/wt/issue-7' && /opt/bin/afkconvoy intake",
-            split: true,
-            workflows: &["feature".to_string(), "fix".to_string()],
-            gate: Some(Gate {
-                train: "cd '/wt/issue-7' && /opt/bin/afkconvoy gate --train",
-                alone: "/opt/bin/afkconvoy gate",
-            }),
-        };
-        let train = train_prompt(&TrainFields {
-            worktree: "/wt/convoy-train",
-            base_branch: "develop",
-            land_command: "/opt/bin/afkconvoy land --train",
-            gate_alone_command: "/opt/bin/afkconvoy gate",
-            lock_command: "/opt/bin/afkconvoy lock",
-            enters: Enters::Ready("agent-ready"),
-            tracker: &Tracker::Own,
-        })
-        .unwrap();
+    fn workers_open_the_pr_before_the_turn_and_do_not_gate_the_tip_alone() {
         let fresh = worker_prompt(&fields(), Variant::Fresh).unwrap();
-        let continuing = worker_prompt(&fields(), Variant::Continue).unwrap();
-        let taker = worker_prompt(&fields(), Variant::TakeUp { pr: 70 }).unwrap();
-        let staged = stage_prompt(&stage).unwrap();
-        let merged = "The proof is that\nthe commit your gate merged in — its `merged`: the \
-                      landing train's tip, or\n`origin/develop` — is red the same way on its own.";
-        let base = "The proof is that\n`origin/develop`, without the train, is red the same way \
-                    on its own.";
-        let briefs = [
-            (&fresh, merged),
-            (&continuing, merged),
-            (&taker, merged),
-            (&staged, merged),
-            (&train, base),
-        ];
-        for (brief, proof) in briefs {
-            for said in [
-                "## A red gate that is not yours\n",
-                proof,
-                "```bash\ngit worktree add --detach <a new directory> <that commit>\n\
-                 cd <that directory> && /opt/bin/afkconvoy gate\n```\n",
-                "A red gate you have not shown this way stays yours.",
-                // Look before opening: a duplicate gets the evidence instead.
-                "search the open issues\n   for one that already records this defect \
-                 (`gh issue list --state open --search",
-                "comment your evidence there — another occurrence, and when — and\n   open none.",
-                // What the issue holds.
-                "the symptom; how to\n   reproduce it on `develop`; what the logs show; what is \
-                 guessed and what is verified; and\n   acceptance criteria that require the cause \
-                 to be found with evidence, and a test that reproduces\n   it.",
-                "Name no blocker unless it has a real one.",
-                "**Raise the fleet lock for a red base branch.**",
-                "gate `origin/develop` alone in a clean checkout too",
-                "fix's issue — existing or new — is dispatchable",
-                "`/opt/bin/afkconvoy lock --issue <n>`",
-                "A defect confined to the train raises no lock.",
-            ] {
-                assert!(brief.contains(said), "{said}\n{brief}");
-            }
-            assert!(!brief.contains("<proof>") && !brief.contains("<defect>"), "{brief}");
-        }
-        // An unbound repo's worker and the train worker put the ready label on
-        // it; a stage takes it in to a workflow.
-        for brief in [&fresh, &continuing, &taker, &train] {
-            assert!(brief.contains("Put the label `agent-ready` on it (`--label agent-ready`)"));
-        }
         assert!(
-            staged.contains(
-                "Put no label of a workflow on it yourself: take it in to the workflow\n   that \
-                 fits — the team has `feature`, `fix` — with\n   `cd '/wt/issue-7' && \
-                 /opt/bin/afkconvoy intake --issue <n> --workflow <workflow>`."
-            ),
-            "{staged}"
+            fresh.find("gh pr create").unwrap()
+                < fresh.find("This command asks for a turn").unwrap()
         );
-        assert!(!staged.contains("--label"), "{staged}");
-        // The lock is raised before parking, for existing and new defects alike.
-        for brief in [&fresh, &continuing, &taker, &staged] {
-            assert!(
-                brief.find("**Raise the fleet lock").unwrap()
-                    < brief.find("**Then park your issue").unwrap()
-            );
-        }
-        // Each parks its issue on it; the train worker has none and stops for the fix.
-        for brief in [&fresh, &continuing] {
-            assert!(brief.contains(
-                "**Then park your issue on it.** Push your branch (`git push origin HEAD`), open \
-                 no PR,\n   and post the `blocked` verdict (below) with that issue"
-            ));
-            assert!(brief.contains("commented on — in `blocked_by=`. When it closes, your issue"));
-            assert!(brief.contains(
-                "not create it yourself — unless it is a defect outside your issue that you \
-                 discovered, which no\n  issue covers yet (above)."
-            ));
-        }
-        assert!(taker.contains("verdict comment (below) with `phase=blocked` and that issue"));
-        assert!(
-            taker.contains("or, for\na defect outside your issue (above), with `phase=blocked`")
-        );
-        assert!(staged.contains(
-            "then declare\n   `blocked` with the command below, with that issue — the one you \
-             opened, or the one you commented\n   on — in `--blocked-by`. When it closes this stage \
-             runs again"
-        ));
-        assert!(
-            train.contains("When `develop` may be what is red, and not the train,\n  see below")
-        );
-        assert!(train.contains("**You have no issue to park.** Once you raised the lock, stop"));
-        assert!(train.contains("once the fix's PR has joined the train or the lock has closed"));
-        assert!(train.contains("Until then stop without another gate, even if nudged."));
-        assert!(train.contains("The one exception is the issue of a defect of `develop`, above."));
-        // Said in one place: the section is the same text wherever it is given.
-        let section = |brief: &str| {
-            let from = brief.find("A red gate you have not shown").unwrap();
-            brief[from..brief.find("a test that reproduces").unwrap()].to_string()
-        };
-        for brief in [&continuing, &taker, &staged, &train] {
-            assert_eq!(section(brief), section(&fresh));
-        }
-        // A worker that only joins has no verdict to park with, and a stage
-        // that writes nothing runs no gate.
-        let joiner = worker_prompt(&fields(), Variant::Join { pr: 70 }).unwrap();
-        let reads = stage_prompt(&StageFields { gate: None, ..stage }).unwrap();
-        for brief in [joiner, reads] {
-            assert!(!brief.contains("A red gate that is not yours"), "{brief}");
+        for variant in [
+            Variant::Fresh,
+            Variant::Continue,
+            Variant::TakeUp { pr: 70 },
+            Variant::Join { pr: 70 },
+        ] {
+            let prompt = worker_prompt(&fields(), variant).unwrap();
+            assert!(prompt.contains("joins your PR before"), "{prompt}");
+            assert!(!prompt.contains("A red gate that is not yours"), "{prompt}");
+            assert!(!prompt.contains("git worktree add --detach"), "{prompt}");
         }
     }
 

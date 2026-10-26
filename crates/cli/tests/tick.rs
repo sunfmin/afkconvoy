@@ -340,6 +340,8 @@ fn every_tick_says_as_it_starts_why_it_started() {
     let args = ["run", "--foreground", "--host", "h1", "--second-ms", "0"];
     let more = ["--instance", "alpha", "--ticks", "3", "--now", "1090", "--no-host-sleep"];
     let (lines, _) = world.afk_every_line(&[&args[..], &more[..]].concat());
+    // The host's watch has its own log events, independent of this fleet's ticks.
+    let lines: Vec<_> = lines.into_iter().filter(|line| !line.starts_with("watch: ")).collect();
     assert_eq!(
         lines,
         [

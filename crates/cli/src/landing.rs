@@ -81,8 +81,6 @@ pub fn land_train(
 ) -> Result<Value> {
     let branch = &config.base_branch;
     let refs = train_refs(repo.layout(), branch);
-    let command = GateCommand::new(&config.gate_command);
-    let limit = config.gate_seconds();
     let mut answer = json!({"train": refs.line, "base": branch});
     let stop = |answer: &Value, outcome: TrainOutcome, more: Value| {
         let mut answer = answer.clone();
@@ -150,6 +148,9 @@ pub fn land_train(
         );
     };
     let joins = Train { tip: head.clone(), base: train.base.clone() }.joins(repo, &gh.tracker)?;
+    let merged_config = crate::config::load(&crate::config::file_of(repo))?;
+    let command = GateCommand::new(&merged_config.gate_command);
+    let limit = merged_config.gate_seconds();
     let prs: BTreeSet<u64> = joins.iter().map(|join| join.pr).collect();
     answer["commit"] = json!(head);
     answer["prs"] = json!(prs);
