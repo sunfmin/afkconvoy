@@ -127,11 +127,27 @@ pub fn is_workers(dir: &str) -> bool {
 }
 
 /// The directory of this user's links, `/tmp/afkconvoy-<uid>`: as short as a
-/// path that is the user's alone can be, whoever is logged in.
+/// path that is the user's alone can be, whoever is logged in. Tests of the
+/// CLI give its subprocesses a directory of their own with
+/// `AFKCONVOY_TMP_LINKS`, including through their login shell.
+#[cfg(not(test))]
 fn links() -> PathBuf {
+    if let Some(dir) = std::env::var_os("AFKCONVOY_TMP_LINKS").filter(|dir| !dir.is_empty()) {
+        return PathBuf::from(dir);
+    }
     // SAFETY: getuid takes nothing, cannot fail and changes nothing.
     let uid = unsafe { libc::getuid() };
     PathBuf::from(format!("/tmp/afkconvoy-{uid}"))
+}
+
+/// Unit tests own their links too, independently of the caller's TMPDIR,
+/// which may be a worktree's long path. Nothing reclaims the host's links.
+#[cfg(test)]
+fn links() -> PathBuf {
+    thread_local! {
+        static OWN: tempfile::TempDir = tempfile::tempdir_in("/tmp").expect("a test's own links");
+    }
+    OWN.with(|own| own.path().join("links"))
 }
 
 /// The directory of this user's links, made if it was not; an error where
