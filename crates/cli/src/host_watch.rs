@@ -37,8 +37,7 @@ const LOOK_SECONDS: u64 = 300;
 const HISTORY: usize = 20;
 /// What a watch's terminal is titled in orca.
 const TITLE: &str = "afkconvoy watch";
-/// A checkout a watch makes for a change of a listed repo. Distinct from an
-/// watch's: starting a watch must never reuse a watch's checkout.
+/// The linked checkout a watch makes for a change of a listed repo.
 pub const CHECKOUT: &str = "afkconvoy-watch";
 
 /// The stock watch's whole instruction, kept as its directory's rules.

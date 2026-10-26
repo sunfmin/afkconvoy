@@ -399,6 +399,7 @@ With `--all` it reads the checkout list (checkouts.json in the cache directory) 
   - `settings`: the host settings (`afkconvoy run --help`): {file, said, in_force} — each by its key, the name of the flag of `run` that names it (`hot_cores` for `--hot-cores`), in that flag's units: said is what the host says, null where it says none and the default holds; in_force what holds for this repo's fleet on this host, each default worked out for it — the panel's port 7070 where the host says none. {file, error} where the file cannot be read
   - `admission`: whether a tick would start a new worker on this host now, the thresholds in force and what the host reads: as `plan` answers it (`afkconvoy plan --help`), or {error} where a share the host says is wrong. A tick that admission held back is no "started no worker" finding.
   - `exclusive`: the host's queues as {lanes: {worker, train, repos}, running, waiting}. Each lane has {running, running_all, waiting}, where running is the first active command for older readers and running_all lists every active command; repos lists {repo, queue} for light gates. The top-level running and waiting are the worker lane for older readers — running is the command that runs alone now, null with none; waiting, those that wait their turn, next first; both empty with no host runner. Each is {command, dir, issue, pid, asked, ran}: the worktree it was run in, the issue of its worker, and when it asked and began to run, in epoch seconds. {error} when the host runner cannot say it
+  - `resources`: resource episodes observed by the host runner, with stable ids, active conditions, since, episode, worker or host readings and evidence. Admission and pressure retain their identities during five minutes of recovery. Resource findings also have watch_id, the episode identity that starts at most one watch.
   - `watch`: this host's watch (`afkconvoy run --help`, WATCH): {directory, stock, running, last, unavailable} — directory is where the next watch runs, stock whether it uses afkconvoy's own instruction; running and last are each {id, directory, stock, items, started, harness, model, terminal, transcript, did, attempts, ended, outcome}: why it started (items, each {id, reason}), its session's harness, model and terminal, the file its session prints to, what its sessions printed (did), including each request left with a human, each session whose harness gave out ({harness, model, terminal, why, did}), and how it ended — outcome `ended`, `closed` (its terminal closed before its harness exited), `time_limit` or `no_harness`; null with none. unavailable: why the last watch a look called for could not start or go on, null where it could
   - `installed`: the release installed where the host runner was started from, where the host runner moves onto it or did not: {path, version, from, since, wait_expired, held_back, failed} — the file; the release it says, null where it says none; the host runner's own release; when that file answered, in epoch seconds; whether the 600s wait expired; what holds the move back, each in words ("/Users/me/Developments/hkj is in a tick", "1 exclusive command(s) running"), [] once nothing does, or the last blockers when the wait expired; and why the move failed — it did not start, or does not say its version — null until one did. null with none: nothing newer is installed there, or no host runner runs (`afkconvoy run --help`)
 - `fleet`: the `run` of this host for this repo:
@@ -439,7 +440,7 @@ It exits 0 with no critical finding, and non-zero with one — printing the same
 
 With `--all`:
 
-{"host": {"host_kit", "exclusive", "watch", "installed"}, "findings", "checkouts": [{"checkout", "repo", "doctor"}], "until"}
+{"host": {"host_kit", "exclusive", "watch", "resources", "installed"}, "findings", "checkouts": [{"checkout", "repo", "doctor"}], "until"}
 
 - `host`: what of `host` is the host's alone, as above, said once
 - `findings`: the host's findings, said once however many checkouts found them, most severe first: a command missing or logged out, orca not running, a harness paused, the host runner not moved onto a newer afkconvoy
@@ -4410,6 +4411,10 @@ Start with `afkconvoy doctor`, in the checkout the fleet runs in: it reads every
 - `harness is down`: Identical refusals hold claims and pause it; a prompt probes every 5m. Run `fix`.
 
 #### What `doctor` finds — warning: one issue or one patrol is held up
+
+- `hot worker is past its limits`: A worker crossed a host resource limit. The watch receives its condition, duration, worktree, terminal and evidence and checks that work goes on.
+- `admission has held back new workers`: One reason held admission for the host's span. The watch receives the host reading and evidence, once per episode.
+- `the host has been under memory pressure`: Pressure lasted for the host's span independently of admission. The watch checks pressure itself, once per episode; it makes no worker hot.
 
 A warning may be the fleet mid-step: run `doctor` again after a tick before you act on one.
 

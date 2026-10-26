@@ -175,27 +175,37 @@ pub fn findings(resources: &Value, now: u64) -> Vec<crate::doctor::Finding> {
         .map(|r| {
             let kind = r["kind"].as_str().unwrap_or("");
             let seconds = now.saturating_sub(r["since"].as_u64().unwrap_or(now));
-            let what = match kind {
-                "hot" => {
-                    format!("hot worker {} is past its limits: {}", r["worker"], r["condition"])
-                }
-                "pressure" => format!("the host has been under memory pressure for {seconds}s"),
-                _ => format!(
-                    "admission has held back new workers for {} for {seconds}s",
-                    r["reason"]
+            let (kind, what) = match kind {
+                "hot" => (
+                    crate::doctor::Kind::HotWorker,
+                    format!(
+                        "hot worker is past its limits: {}: {}",
+                        resource_text(r, "worker"),
+                        resource_text(r, "condition")
+                    ),
+                ),
+                "pressure" => (
+                    crate::doctor::Kind::MemoryPressure,
+                    format!("the host has been under memory pressure for {seconds}s"),
+                ),
+                _ => (
+                    crate::doctor::Kind::AdmissionHeld,
+                    format!(
+                        "admission has held back new workers for {} for {seconds}s",
+                        resource_text(r, "reason")
+                    ),
                 ),
             };
-            crate::doctor::Finding {
-                severity: crate::doctor::Severity::Warning,
-                what,
-                evidence: r.to_string(),
-                fix: "afkconvoy doctor --all".into(),
-                see: crate::topic::See::Troubleshooting,
-                of_host: true,
-                watch_id: r["id"].as_str().map(str::to_string),
-            }
+            let mut finding =
+                crate::doctor::finding(kind, what, r.to_string(), "afkconvoy doctor --all".into());
+            finding.watch_id = r["id"].as_str().map(str::to_string);
+            finding
         })
         .collect()
+}
+
+fn resource_text<'a>(resource: &'a Value, key: &str) -> &'a str {
+    resource[key].as_str().unwrap_or("unknown")
 }
 
 /// Take the former host evidence only for a condition a watch will act on.

@@ -1167,10 +1167,8 @@ fn check_host(host: &mut HostSleep, said: &Said, stop: &Stop, clock: &Clock) -> 
 /// heard during a tick, said as it is heard — and prints each as it is
 /// written (`Said`); nothing here ever reads the log. It watches what each
 /// worker's processes take, and says as one turns hot and as it stops being
-/// hot (`hot::watch`, docs/adr/0019); after each tick its inspector ends the
-/// watch that is over and starts the next a hot worker waits for, and
-/// it looks again within `INSPECTING_EVERY` while either is so
-/// (`Inspector`). Unless the host settings keep the host awake, it puts the
+/// hot (`hot::watch`, docs/adr/0019). Resource conditions are kept for the
+/// host watch's next look. Unless host settings keep it awake, it puts the
 /// host to sleep once every fleet on it has been idle long enough, within
 /// the host's sleep hours, as its host runner holds how each stands
 /// (`HostSleep`, docs/adr/0016, 0023). It obeys `holder`'s stop — whoever holds the
@@ -1334,8 +1332,7 @@ pub fn run(
         }
         let tick = log::Tick { count, sleep, line, bound, answer, error };
         said.keep(clock(), log::What::Tick(tick));
-        // Watch work and the tick's log are part of the tick too: a
-        // release move must not race a watch starting or ending.
+        // Resource observations and logging finish before a release move.
         host.ticked(clock(), idle);
         if pacing.panic_at == Some(count) {
             panic!("told to panic as tick {count} ended (--panic-at-tick)");

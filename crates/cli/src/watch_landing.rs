@@ -7,9 +7,6 @@ use serde_json::{Value, json};
 pub fn land(repo: &Repo, config: &Config, gh: &GitHub, host: &str, now: u64) -> Result<Value> {
     let checkout = Worktree::of(repo)?;
     let named = checkout.path.file_name().and_then(|name| name.to_str()).unwrap_or("");
-    // A watch uses the same no-issue landing path, from a checkout of its
-    // own in any listed repo. Its distinct name keeps a watch's start
-    // from taking that checkout for the one an earlier watch left.
     if !afkconvoy_core::worker::is_worktree_named(named, crate::host_watch::CHECKOUT) {
         anyhow::bail!(
             "{} is no watch's checkout: land from your own \
@@ -39,6 +36,5 @@ pub fn land(repo: &Repo, config: &Config, gh: &GitHub, host: &str, now: u64) -> 
         return Ok(crate::train::locked(answer, &locks));
     }
     let of = Of::Watch(host.to_string());
-    let answer = crate::train::join(repo, config, &gh.tracker, pr, &of, answer, (host, now))?;
-    Ok(answer)
+    crate::train::join(repo, config, &gh.tracker, pr, &of, answer, (host, now))
 }

@@ -100,8 +100,8 @@ impl Holding {
     }
 
     /// The host watch due at `now` under a span of `span` seconds: for
-    /// the reason held back for longest, once that is `span` or more, unless
-    /// coverage belongs to the host watch.
+    /// the reason held back for longest, once that is `span` or more.
+    /// Episode coverage belongs to the host watch.
     pub fn due(&self, now: u64, span: u64) -> Option<Due> {
         let episode = self.episode?;
         let mut due: Option<Due> = None;

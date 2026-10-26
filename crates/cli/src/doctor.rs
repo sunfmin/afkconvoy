@@ -159,6 +159,9 @@ kinds! {
     StepUnrecovered: Warning, "failed in tick";
     HarnessDown: Critical, "harness is down";
     HarnessPaused: Warning, "is paused on this host";
+    HotWorker: Warning, "hot worker is past its limits";
+    AdmissionHeld: Warning, "admission has held back new workers";
+    MemoryPressure: Warning, "the host has been under memory pressure";
     WatchUnavailable: Critical, "no harness can start this host's watch";
     NotMoved: Warning, "the host runner did not move onto";
     RosterModelUnmatched: Warning, "names no model the host kit holds";
@@ -202,6 +205,9 @@ impl Kind {
                 | Kind::NoProvider
                 | Kind::OrcaNotRunning
                 | Kind::HarnessPaused
+                | Kind::HotWorker
+                | Kind::AdmissionHeld
+                | Kind::MemoryPressure
                 | Kind::WatchUnavailable
                 | Kind::NotMoved
         )

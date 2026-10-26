@@ -622,10 +622,10 @@ impl Left {
             carried.push(format!("landing train PR #{}", join.pr));
         }
         let source = crate::orca::Source::of(&repo)?;
-        for (name, what) in [(afkconvoy_core::cut::CHECKOUT, "cut")] {
-            if let Some(checkout) = crate::orca::Worktree::named(&source, name)? {
-                carried.push(format!("{what} in {}", checkout.path.display()));
-            }
+        if let Some(checkout) =
+            crate::orca::Worktree::named(&source, afkconvoy_core::cut::CHECKOUT)?
+        {
+            carried.push(format!("cut in {}", checkout.path.display()));
         }
         Ok(carried)
     }
