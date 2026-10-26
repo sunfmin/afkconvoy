@@ -95,7 +95,7 @@ fn an_unbound_stock_consult_is_started_with_its_unworked_blocker() {
     let told = brief(&world);
     assert!(told.contains("acme/kernel#931"), "{told}");
     assert!(told.contains("outside the tracker"), "{told}");
-    assert!(told.contains("The schema is ambiguous."), "{told}");
+    assert!(told.contains("The worker declared `escalate`: https://gh/c/"), "{told}");
 }
 
 #[test]
