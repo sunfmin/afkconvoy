@@ -2929,13 +2929,15 @@ Tell the worker of one of my claims, stopped with no PR and no verdict, to carry
 
 ##### When to run it
 
-To send a worker its nudge by hand. A tick does this on its own only when a checked diagnosis asks the worker to carry on; silence alone starts observation and diagnosis. Do it yourself when you have checked the worker’s scene and want it to carry on.
+To send a worker its nudge by hand. A tick does this on its own when a checked diagnosis or the capacity rule asks the worker to carry on; silence alone starts observation and diagnosis. Do it yourself when you have checked the worker’s scene and want it to carry on.
 
 ##### What counts as silent
 
 A stopped worker with no verdict or progress is observed over at least 300 seconds. Actual terminal output, git progress, runtime reports and process activity are evidence for diagnosis, never proof of quota exhaustion by themselves. A harness's explicit usage-limit and task-refusal messages are exceptions: Codex's `Usage limit reached … Increase your limits to continue using codex` is an account quota fault by rule, with no diagnosis or observation delay. Codex's `We take extra care with some cybersecurity requests. If you're doing authorized security work, apply for Daybreak to get broader access.` is a refusal of this task by rule, also with no diagnosis or observation delay. This issue continues on the next harness in host kit order that can start for its role. The issue remembers each refusing harness on GitHub and skips it at every later stage and start; the harness stays healthy for other issues. With none left, the issue escalates at once with the refusal line as evidence and no consult. A diagnostic harness has 30 seconds per candidate, at most three attempts per unchanged episode and 300 seconds between attempts. Invalid judgments try the next diagnosis-capable harness and preserve the scene.
 
 Account quota with no reset time continues on the next harness in host kit order that can start for the worker's role. A reset within the one-hour recovery window may be waited for; a later reset continues instead. Repeated waits on unchanged evidence never restart that window. After one hour the fleet acts on the fault class or escalates the issue to a human with its evidence. Doctor names the worker, its diagnosis and its next check.
+
+Codex's `Selected model is at capacity. Please try a different model.` is a capacity stop by rule, also with no diagnosis or observation delay. The first stop waits {{CAPACITY_WAIT_SECONDS}} seconds before nudging the same session; the next waits {{CAPACITY_SECOND_WAIT_SECONDS}} seconds. After {{MAX_CAPACITY_STOPS}} stops in the episode, the worker continues on the next eligible harness in host kit order, keeping its worktree, branch, stage, claim and PR. The episode survives brief working turns and runner restarts, ending after {{CAPACITY_HEALTHY_SECONDS}} seconds observed healthy or a different session. Capacity faults no harness for other workers. Tick-log worker-health lines name the rule, waits and nudges; doctor's host kit reports capacity_stops per harness, retained after episodes end.
 
 Confirmed background work, waiting for a human or dependency and completed idle sessions are left alone. A worker's gate waiting in the exclusive queue is background work too. The tick does not turn a long wait into permission for another writer. Continuation closes the old agent and confirms its terminal, runtime and process tree are gone before starting the successor in the same worktree, branch, stage, claim and PR. Structured transient rate limits respect Retry-After and get two retries before session fallback. Account and model recovery probes run hourly; successful recovery affects new starts without moving healthy successors back.
 
@@ -4691,6 +4693,10 @@ _Avoid_: liveness, status (as under Position)
 A harness's fixed refusal message on a worker's screen: it refuses this issue, by rule, and the worker continues on the next harness of the host kit that can start for its role. The issue remembers the harness at every later stage and start; other issues may still run it. With no harness left for the issue, it escalates at once with the refusal's words as evidence.
 _Avoid_: account fault, model fault, failed task
 
+**Capacity stop**:
+A worker stopped by its harness's fixed message that its selected model is at capacity. It is transient and belongs to that worker: the harness remains available to other workers.
+_Avoid_: quota fault (an account's usage limit), task refusal (a harness refusing this issue)
+
 **Verdict**:
 What ends a stage, declared on the issue by whoever performed it: `pass`, `reject`, `blocked`, `already-satisfied`, or `escalate`. Opening a PR declares nothing.
 _Avoid_: outcome (what a worker leaves on GitHub: its PR on the landing train, or its verdict), result, needs-human
@@ -4717,7 +4723,7 @@ The queue of the commands run through `afkconvoy exclusive` on one host, held by
 _Avoid_: mutex, semaphore, heavy lock (the fleet lock is another thing)
 
 **Nudge**:
-The one line the fleet types at a silent worker with no outcome, telling it to carry on. Sent once per worker.
+The one line the fleet types at a stopped worker with no outcome, telling it to carry on. Sent once for silence; a capacity stop may call for another after a longer wait.
 _Avoid_: ping, reminder, retry
 
 **Restart**:
