@@ -64,9 +64,11 @@ const TRUST_PROMPT: &str = "agent-trust-workspace";
 /// the same request throughout this bound and never resends it.
 const SUBMIT_SECONDS: u64 = 30;
 /// How long a brief handed to a worker that just started waits for its
-/// prompt to settle: a harness ready once may redraw on, longer on a busy
-/// host. Any other line checks the input once, for a second.
+/// prompt to settle and its harness to leave a startup working episode.
+/// Any other line checks the input within a second.
 const BRIEF_SETTLE_SECONDS: u64 = 20;
+/// How often a quiet screen's harness state is read during that bound.
+const INPUT_POLL: Duration = Duration::from_millis(200);
 
 /// A process left after terminal close, and the bounded effort to end it.
 /// The command is read without its environment: the process-tree listing
@@ -1245,9 +1247,10 @@ impl Worktree {
         harness: Harness,
         command: &str,
     ) -> Result<()> {
-        let (ready, waited) = self.wait(terminal, timeout_seconds).with_context(|| {
-            self.prompt_context(terminal, "cannot confirm the worker is ready for its brief")
-        })?;
+        let (ready, waited) =
+            self.wait(terminal, Duration::from_secs(timeout_seconds)).with_context(|| {
+                self.prompt_context(terminal, "cannot confirm the worker is ready for its brief")
+            })?;
         match ready {
             Waited::Ready => Ok(()),
             Waited::AtTrustPrompt => Err(TrustGap {
@@ -1283,8 +1286,8 @@ impl Worktree {
 
     /// One wait for the agent in `terminal`. orca exits non-zero on a wait it
     /// answered but that was not satisfied: what it answered is still read.
-    fn wait(&self, terminal: &str, timeout_seconds: u64) -> Result<(Waited, Asked)> {
-        let timeout = (timeout_seconds * 1000).to_string();
+    fn wait(&self, terminal: &str, within: Duration) -> Result<(Waited, Asked)> {
+        let timeout = within.as_millis().max(1).to_string();
         let asked = Asked::of(&[
             "terminal",
             "wait",
@@ -1307,6 +1310,30 @@ impl Worktree {
             Waited::NotReady
         };
         Ok((ready, asked))
+    }
+
+    /// A quiet screen can belong to a working harness: Codex reports a
+    /// startup episode even with its animations off. Read its state afresh,
+    /// outside the tick's cached observation, until it leaves that episode.
+    /// Both checks share one bound; a harness with no report uses tui-idle.
+    fn wait_for_input(&self, terminal: &str, within: Duration) -> Result<Waited> {
+        let began = Instant::now();
+        loop {
+            let remaining = within.saturating_sub(began.elapsed());
+            if remaining.is_zero() {
+                return Ok(Waited::NotReady);
+            }
+            let (ready, _) = self.wait(terminal, remaining)?;
+            if ready != Waited::Ready {
+                return Ok(ready);
+            }
+            let agent = main_agent(&runtime_row(&runtime_live()?, &self.path));
+            let state = agent["programStatus"]["state"].as_str().or(agent["state"].as_str());
+            if state != Some("working") {
+                return Ok(Waited::Ready);
+            }
+            std::thread::sleep(INPUT_POLL.min(within.saturating_sub(began.elapsed())));
+        }
     }
 
     /// A failed delivery includes the current screen, even when no known
@@ -1338,9 +1365,14 @@ impl Worktree {
     }
 
     fn tell_unchecked(&self, terminal: &str, line: &str, settle_seconds: u64) -> Result<()> {
-        let (ready, _) = self.wait(terminal, settle_seconds).with_context(|| {
-            self.prompt_context(terminal, "no running worker harness confirmed; no line was sent")
-        })?;
+        let ready = self
+            .wait_for_input(terminal, Duration::from_secs(settle_seconds))
+            .with_context(|| {
+                self.prompt_context(
+                    terminal,
+                    "no running worker harness confirmed; no line was sent",
+                )
+            })?;
         if ready != Waited::Ready {
             return Err(self.prompt_failure(
                 terminal,

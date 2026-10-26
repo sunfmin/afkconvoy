@@ -240,6 +240,8 @@ fn the_steps_run_in_order() {
             "terminal create",
             "terminal wait",
             "terminal wait",
+            // Screen quiet alone does not end a harness's startup episode.
+            "worktree ps",
             "terminal send",
             // The successful delivery records Orca's harness for the host watch.
             "worktree ps"
