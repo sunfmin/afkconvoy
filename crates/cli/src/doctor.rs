@@ -156,6 +156,7 @@ kinds! {
     StepUnrecovered: Warning, "failed in tick";
     HarnessDown: Critical, "harness is down";
     HarnessPaused: Warning, "is paused on this host";
+    KitUnplaced: Warning, "has unplaced models in the host kit";
     WatchUnavailable: Critical, "no harness can start this host's watch";
     NotMoved: Warning, "the host runner did not move onto";
     RosterModelUnmatched: Warning, "names no model the host kit holds";
@@ -199,6 +200,7 @@ impl Kind {
                 | Kind::NoProvider
                 | Kind::OrcaNotRunning
                 | Kind::HarnessPaused
+                | Kind::KitUnplaced
                 | Kind::WatchUnavailable
                 | Kind::NotMoved
         )
@@ -1770,6 +1772,7 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String]) -> Result<Exami
     found.extend(crate::paused::findings(now));
     found.extend(host_runner::findings());
     found.extend(crate::host_watch::finding());
+    found.extend(crate::kit_research::findings());
     found.sort_by_key(|finding| finding.severity);
     let (claims, issues, waiting) = match &state {
         Ok(state) => (
@@ -1925,7 +1928,7 @@ pub fn all_since(
         asking.into_iter().map(|asked| asked.join().unwrap_or_else(|_| panicked())).collect()
     });
     let once = host_once(now);
-    let mut of_host: Vec<Finding> = vec![];
+    let mut of_host = crate::kit_research::findings();
     let mut unwell = false;
     let mut complete = true;
     let mut checkouts = vec![];
