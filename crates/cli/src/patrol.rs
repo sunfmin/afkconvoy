@@ -225,6 +225,7 @@ pub fn run(fleet: &mut Fleet, me: &Me, agent: &Agent, read: &Flows, row: &Row) -
         (harness, cast.model.as_deref()),
         &line,
         true,
+        false,
         None,
         me.now,
     )?;
@@ -339,6 +340,7 @@ pub(crate) fn switch(
         (harness, cast.model.as_deref()),
         &line,
         true,
+        false,
         None,
         me.now,
     )?;

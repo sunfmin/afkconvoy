@@ -245,6 +245,7 @@ pub fn propose(
         (harness, first.model.as_deref()),
         &harness.in_role(launch.as_str(), &start),
         true,
+        false,
         None,
         me.now,
     )?;
