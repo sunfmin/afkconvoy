@@ -90,6 +90,9 @@ fn run_command(
 ) -> Result<CommandRun> {
     let mut shell = Command::new("sh");
     crate::exclusive::inherit(&mut shell, repo)?;
+    if let Some(candidate) = candidate {
+        shell.env(crate::candidates::PROCESS_ENV, candidate.process_marker());
+    }
     let prefix = if candidate.is_some() { "read -r convoy_ready || exit 125\n" } else { "" };
     let mut child = crate::process::spawn(
         shell
@@ -155,6 +158,9 @@ fn run_command(
             break (status.code().unwrap_or(-1), false, termination);
         }
         if started.elapsed() >= limit {
+            if let Some(candidate) = candidate {
+                candidate.stop()?;
+            }
             let group = format!("-{}", child.id());
             let _ = crate::process::status(Command::new("kill").args(["-KILL", "--", &group]));
             let _ = child.wait();

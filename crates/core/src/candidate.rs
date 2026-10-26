@@ -43,6 +43,10 @@ pub struct Candidate {
     pub phase: Phase,
     pub owner: Process,
     pub gate: Option<Process>,
+    /// Frozen descendants are recorded before any are killed, so interrupted
+    /// cancellation still owns escaped and reparented processes.
+    #[serde(default)]
+    pub descendants: Vec<Process>,
     pub worktree: String,
     /// Cuts, watches, certification and fleet-lock repairs are barriers.
     pub barrier: bool,
@@ -141,7 +145,7 @@ impl Chain {
     pub fn observe_base(&mut self, base: &str) {
         let landed = self.candidates.iter().position(|c| c.commit == base && c.valid());
         if let Some(last) = landed {
-            for c in self.candidates.iter_mut().take(last + 1) {
+            for c in self.candidates.iter_mut().take(last.saturating_add(1)) {
                 if c.valid() {
                     c.phase = Phase::Landed;
                 }
@@ -217,6 +221,7 @@ mod tests {
             phase: Phase::Validating,
             owner: Process { host: "h".into(), pid: 1, started: "s".into() },
             gate: None,
+            descendants: vec![],
             worktree: format!("w{n}"),
             barrier: false,
             cancelled_by: None,

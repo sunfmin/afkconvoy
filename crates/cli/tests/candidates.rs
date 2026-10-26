@@ -61,7 +61,13 @@ fn start(world: &World, dir: &Path, cache: &Path, n: u64) -> Child {
 
 fn finish(child: Child) -> Value {
     let out = child.wait_with_output().unwrap();
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}; stdout: {}; stderr: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
     serde_json::from_slice(&out.stdout).unwrap()
 }
 

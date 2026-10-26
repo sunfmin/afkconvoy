@@ -141,97 +141,162 @@ fn alive(process: &Process) -> Result<bool> {
     Ok(identity(process.pid)?.as_ref() == Some(process))
 }
 
-/// Kill a registered group and escaped descendants, freezing before walking
-/// children. The root stays stopped until all known descendants have exited.
-/// If interrupted, a later owner walks the still-stopped root again.
-pub(crate) fn terminate(gate: &Process) -> Result<()> {
-    if gate.host != crate::this_host() {
-        return Ok(());
+/// A private environment mark follows descendants across process groups and
+/// reparenting. It is supplied only to this gate, never the turn's git/ps calls.
+pub(crate) const PROCESS_ENV: &str = "AFKCONVOY_CANDIDATE_PROCESS";
+
+/// Freeze and durably identify the whole owned tree BEFORE killing any of it.
+/// Another process may finish this cancellation from the saved identities.
+fn signal(repo: &Repo, config: &Config, candidate: &Candidate) -> Result<Vec<Process>> {
+    let mut owned: Vec<Process> = candidate
+        .descendants
+        .iter()
+        .filter_map(|p| match alive(p) {
+            Ok(true) => Some(Ok(p.clone())),
+            Ok(false) => None,
+            Err(e) => Some(Err(e)),
+        })
+        .collect::<Result<_>>()?;
+    let marker = format!("{PROCESS_ENV}={}", candidate.id);
+    let group = match &candidate.gate {
+        Some(gate) if gate.host == crate::this_host() => {
+            let current = identity(gate.pid)?;
+            if current.as_ref().is_none_or(|p| p == gate) {
+                // SAFETY: the group's identity belongs to this gate, with
+                // PID reuse excluded by its recorded process start time.
+                unsafe {
+                    libc::kill(-(gate.pid as i32), libc::SIGSTOP);
+                }
+                if current.is_some() && !owned.contains(gate) {
+                    owned.push(gate.clone());
+                }
+                Some(gate.pid)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    };
+    for p in &owned {
+        // SAFETY: checked identities belonging to this candidate alone.
+        unsafe {
+            libc::kill(p.pid as i32, libc::SIGSTOP);
+        }
     }
-    if let Some(current) = identity(gate.pid)?
-        && current != *gate
-    {
-        return Ok(());
-    }
-    // A live process group retains its ID even if its original leader exited.
-    // SAFETY: this group was created for the recorded candidate gate alone.
-    unsafe {
-        libc::kill(-(gate.pid as i32), libc::SIGSTOP);
-    }
-    let mut stopped = vec![gate.pid];
     loop {
         let all = crate::hot::listed_checked()?;
-        let children: Vec<_> = all
+        let found: Vec<_> = all
             .iter()
-            .filter(|p| stopped.contains(&p.ppid) && !stopped.contains(&p.pid))
+            .filter(|p| {
+                !owned.iter().any(|known| known.pid == p.pid)
+                    && (owned.iter().any(|known| known.pid == p.ppid)
+                        || p.line.split_whitespace().any(|word| word == marker))
+            })
             .map(|p| p.pid)
             .collect();
-        if children.is_empty() {
+        let mut added = false;
+        for pid in found {
+            if let Some(process) = identity(pid)? {
+                // SAFETY: an owned descendant, identified above.
+                unsafe {
+                    libc::kill(pid as i32, libc::SIGSTOP);
+                }
+                owned.push(process);
+                added = true;
+            }
+        }
+        if !added {
             break;
         }
-        for pid in children {
-            // SAFETY: a descendant of the stopped group, which cannot fork.
-            unsafe {
-                libc::kill(pid as i32, libc::SIGSTOP);
+    }
+    change(repo, config, |chain| {
+        for c in &mut chain.candidates {
+            if c.id == candidate.id {
+                for process in &owned {
+                    if !c.descendants.contains(process) {
+                        c.descendants.push(process.clone());
+                    }
+                }
             }
-            stopped.push(pid);
+        }
+    })?;
+    for process in owned.iter().rev() {
+        if identity(process.pid)?.as_ref() == Some(process) {
+            // SAFETY: the frozen process still has the saved identity.
+            unsafe {
+                libc::kill(process.pid as i32, libc::SIGKILL);
+            }
         }
     }
-    for pid in stopped.iter().rev().filter(|pid| **pid != gate.pid) {
-        // SAFETY: the process was discovered under the frozen gate above.
+    if let Some(group) = group {
+        // SAFETY: kill any group members that exited during discovery.
         unsafe {
-            libc::kill(*pid as i32, libc::SIGKILL);
+            libc::kill(-(group as i32), libc::SIGKILL);
         }
     }
-    // SAFETY: end all remaining group members, then the stopped root.
-    unsafe {
-        libc::kill(-(gate.pid as i32), libc::SIGKILL);
-        libc::kill(gate.pid as i32, libc::SIGKILL);
-    }
+    Ok(owned)
+}
+
+fn confirmed(processes: &[Process]) -> Result<()> {
     let began = std::time::Instant::now();
     loop {
-        let out = crate::process::output(Command::new("ps").args(["-axo", "pid=,pgid=,stat="]))?;
-        ensure!(out.status.success(), "cannot confirm candidate gate exit: ps failed");
-        let text = String::from_utf8_lossy(&out.stdout);
-        let live = text.lines().any(|line| {
-            let f: Vec<_> = line.split_whitespace().collect();
-            f.len() == 3
-                && !f[2].starts_with('Z')
-                && (f[1].parse::<u32>().ok() == Some(gate.pid)
-                    || f[0].parse::<u32>().ok().is_some_and(|pid| stopped.contains(&pid)))
-        });
+        let mut live = false;
+        for process in processes {
+            live |= alive(process)?;
+        }
         if !live {
-            break;
+            return Ok(());
         }
         ensure!(
             began.elapsed() < Duration::from_secs(10),
-            "candidate gate exit is unconfirmed; its lane stays occupied"
+            "candidate exit is unconfirmed; its lane stays occupied"
         );
         std::thread::sleep(Duration::from_millis(10));
     }
+}
+
+fn stop_candidate(repo: &Repo, config: &Config, id: &str) -> Result<()> {
+    let chain = read(repo, config)?.chain;
+    let c = chain
+        .candidates
+        .iter()
+        .find(|c| c.id == id)
+        .ok_or_else(|| anyhow!("candidate disappeared"))?;
+    let processes = signal(repo, config, c)?;
+    confirmed(&processes)?;
+    change(repo, config, |chain| {
+        for c in &mut chain.candidates {
+            if c.id == id {
+                c.stopped = true;
+                if c.phase == Phase::Cancelling {
+                    c.phase = Phase::Cancelled;
+                }
+            }
+        }
+    })?;
     Ok(())
 }
 
-/// Invalidation is durable BEFORE signalling any dependent gate. Every
-/// caller may complete interrupted cleanup, but no caller may resurrect it.
+/// Invalidate the suffix atomically, signal ALL its gates, then confirm each
+/// exit. A slow root's cleanup cannot postpone signalling its descendants.
 fn cleanup(repo: &Repo, config: &Config, chain: &Chain) -> Result<()> {
+    let mut signalled = vec![];
     for c in
         chain.candidates.iter().filter(|c| !c.stopped && !c.valid() && c.phase != Phase::Landed)
     {
-        if c.owner.host != crate::this_host() {
+        if c.owner.host != crate::this_host() || (c.gate.is_none() && alive(&c.owner)?) {
             continue;
         }
-        if let Some(gate) = &c.gate {
-            terminate(gate)?;
-        } else if alive(&c.owner)? {
-            continue;
-        }
-        change(repo, config, |state| {
-            for next in &mut state.candidates {
-                if next.id == c.id && !next.valid() {
-                    next.stopped = true;
-                    if next.phase == Phase::Cancelling {
-                        next.phase = Phase::Cancelled;
+        signalled.push((c.id.clone(), signal(repo, config, c)?));
+    }
+    for (id, processes) in signalled {
+        confirmed(&processes)?;
+        change(repo, config, |chain| {
+            for c in &mut chain.candidates {
+                if c.id == id && !c.valid() {
+                    c.stopped = true;
+                    if c.phase == Phase::Cancelling {
+                        c.phase = Phase::Cancelled;
                     }
                 }
             }
@@ -295,6 +360,13 @@ pub(crate) struct Gate<'a> {
 }
 
 impl Gate<'_> {
+    pub fn process_marker(&self) -> &str {
+        self.id
+    }
+
+    pub fn stop(&self) -> Result<()> {
+        stop_candidate(self.repo, self.config, self.id)
+    }
     pub fn started(&self, pid: u32) -> Result<()> {
         let process =
             identity(pid)?.ok_or_else(|| anyhow!("candidate gate vanished before registration"))?;
@@ -399,7 +471,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
                 continue;
             }
         }
-        if chain.can_assign(limit, barrier) {
+        if !barrier || chain.can_assign(limit, barrier) {
             break;
         }
         std::thread::sleep(EVERY);
@@ -409,9 +481,20 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
     } else {
         Permit::candidate(repo, "turn: validate candidate, record, land", heavy)?
     };
-    let id = crate::unique();
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos();
+    let id = format!(
+        "{:016x}-{stamp}-{}",
+        afkconvoy_core::gate::key(&crate::this_host()),
+        crate::unique()
+    );
     let path = repo.common_dir()?.join("convoy-candidates").join(&id);
     let candidate = loop {
+        let locks = crate::lock::standing_locks(&gh, config)?;
+        if issue.map_or(!locks.is_empty(), |n| keeps_off(&locks, n)) {
+            return Ok(crate::turn::locked(answer, &locks));
+        }
+        let barrier = barrier || !locks.is_empty();
+        let limit = if heavy { crate::host_settings::of_host()?.gate_lanes() } else { 1 };
         let mut snapshot = read(repo, config)?;
         let current = snapshot.base.clone();
         if snapshot.chain.candidates.iter().any(|c| c.pr == pr.number && c.active()) {
@@ -424,9 +507,11 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
         let declared = crate::turn::tip_config(repo, &current)?;
         let base_command = GateCommand::new(&declared.gate_command);
         let base_tree = Tree::named(&repo.git(&["rev-parse", &format!("{current}^{{tree}}")])?);
-        if locks.is_empty()
-            && crate::gate::recorded(repo, &base_tree, &base_command, now)?.is_none()
-        {
+        let repairing = match issue.filter(|n| locks.contains(n)) {
+            Some(n) => crate::repair::is_for(&gh, n, &current)?,
+            None => false,
+        };
+        if !repairing && crate::gate::recorded(repo, &base_tree, &base_command, now)?.is_none() {
             answer["outcome"] = json!("target_moved");
             answer["detail"] = json!(
                 "the base changed before assignment and needs certification; ask for another turn"
@@ -485,6 +570,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
             phase: Phase::Building,
             owner: owner.clone(),
             gate: None,
+            descendants: vec![],
             worktree: path.to_string_lossy().into_owned(),
             barrier,
             cancelled_by: None,
@@ -527,23 +613,6 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
             return Err(error);
         }
     };
-    // All processes must be gone even when a successful script leaves children.
-    if let Some(gate) = read(repo, config)?
-        .chain
-        .candidates
-        .iter()
-        .find(|c| c.id == id)
-        .and_then(|c| c.gate.as_ref())
-    {
-        terminate(gate)?;
-    }
-    change(repo, config, |chain| {
-        for c in &mut chain.candidates {
-            if c.id == id {
-                c.stopped = true;
-            }
-        }
-    })?;
     let mut result = result;
     for (key, value) in answer.as_object().into_iter().flatten() {
         result[key] = value.clone();
@@ -551,6 +620,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
     let green = result["status"] == "green" && result["recorded"] == true;
     let chain = change(repo, config, |chain| chain.finish(&id, green, result.clone()))?;
     cleanup(repo, config, &chain)?;
+    stop_candidate(repo, config, &id)?;
     let current = chain.candidates.iter().find(|c| c.id == id).expect("assigned candidate");
     if current.phase == Phase::Red {
         result["outcome"] = json!("gate_red");
@@ -586,7 +656,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
             bail!("candidate record disappeared");
         };
         let tree = Tree::named(&c.tree);
-        let run = crate::gate::recorded(repo, &tree, &command, crate::clock())?;
+        let run = crate::gate::recorded(repo, &tree, &command, now)?;
         let head = repo.remote_sha(&format!("refs/heads/{}", c.branch))?;
         let Some(publication) = Publication::new(
             c.valid(),
@@ -599,7 +669,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
             return Ok(cancelled(result, c));
         };
         let run = run.expect("publication requires green record");
-        let proof = Proven::by(&tree, &command, &run, crate::clock())
+        let proof = Proven::by(&tree, &command, &run, now)
             .ok_or_else(|| anyhow!("candidate green record expired"))?;
         let landed = c.commit.clone();
         c.phase = Phase::Landed;

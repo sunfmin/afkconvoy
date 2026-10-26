@@ -1459,8 +1459,8 @@ enum Command {
         /// worker waits for the operator as with none. `default` removes it [default: none]
         #[arg(long, env = JEV_KEY_COMMAND_ENV, value_name = "COMMAND", value_parser = jev_key_command_or_default)]
         jev_key_command: Option<To<String>>,
-        /// Worker lanes on this host, above zero, or `default` ({const:GATE_LANES}). A repo holds
-        /// at most one turn at a time, regardless of this count.
+        /// Worker lanes on this host, above zero, or `default` ({const:GATE_LANES}). Independent
+        /// candidate worktrees of one repo may validate together within this bound.
         #[arg(long, env = "AFKCONVOY_GATE_LANES", value_parser = host_settings::watch_every_or_default)]
         gate_lanes: Option<To<u64>>,
         /// Obsolete setting, ignored: turns land directly and only --gate-lanes applies.
