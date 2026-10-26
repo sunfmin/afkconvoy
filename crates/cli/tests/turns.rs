@@ -41,7 +41,8 @@ fn finish(child: Child) -> Value {
 }
 
 fn seed(world: &World) {
-    assert_eq!(world.afk(&["gate"]).ok()["recorded"], true);
+    let answer = world.afk(&["gate"]).ok();
+    assert_eq!(answer["recorded"], true, "{answer}");
 }
 
 fn workers_waiting(world: &World) -> usize {
@@ -133,7 +134,7 @@ fn a_missing_tip_record_is_gated_in_the_train_lane_before_any_worker_turn() {
 fn heavy(world: &World) {
     let gate = afkconvoy_core::line::Line::new()
         .program(env!("CARGO_BIN_EXE_afkconvoy"))
-        .fixed(" exclusive -- ./gate.sh")
+        .fixed(" exclusive -- sh ./gate.sh")
         .own();
     world.set_gate(&gate);
     let script = format!(
@@ -179,6 +180,7 @@ fn two_worker_lanes_run_two_repos_but_a_second_turn_of_one_repo_waits() {
 fn a_light_gate_takes_its_repo_turn_while_the_worker_lane_is_occupied() {
     let world = World::new();
     let other = World::new();
+    world.set_gate("true");
     seed(&world);
     let worker = world.worker(1, "one.txt", "one");
     let _runner = world.host_held();

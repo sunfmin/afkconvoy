@@ -168,6 +168,9 @@ pub fn rejoins_line(ticket: &Ticket) -> String {
 pub fn runs_line(ticket: &Ticket, now: u64, ahead_of: usize) -> String {
     let waited = now.saturating_sub(ticket.asked);
     let _ = ahead_of;
+    if ticket.train {
+        return format!("runs in the train lane: `{}`, after waiting {waited}s", ticket.command);
+    }
     format!("runs `{}` in the {} lane, after waiting {waited}s", ticket.command, lane(ticket))
 }
 
@@ -236,7 +239,7 @@ mod tests {
         assert_eq!(ahead(&queue, 2), Some(1), "workers keep request order");
         assert_eq!(
             runs_line(&train, 130, 0),
-            "runs `cargo test` in the train lane, after waiting 28s"
+            "runs in the train lane: `cargo test`, after waiting 28s"
         );
     }
 

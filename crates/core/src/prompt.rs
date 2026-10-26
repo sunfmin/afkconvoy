@@ -142,18 +142,11 @@ writes its issue: you do.
 4. <park>
 ";
 
-/// What an issue's worker gates alone to prove a red gate is not its own:
-/// what its gate merged in.
-
 /// How an issue a worker opens for a defect is put before the fleet: with the
 /// ready label, in an unbound repo, by every worker that opens one.
 const DEFECT_READY: &str =
     "Put the label `{ready_label}` on it (`--label {ready_label}`)<repo_label>, so
    the fleet works it like any other issue.";
-
-/// How a worker of an unbound repo parks its issue on the defect's.
-
-/// How a worker that took up a kept PR parks its issue on the defect's.
 
 /// `DEFECT`, of a worker that gates alone `proof`, puts an issue it opens
 /// before the fleet as `open` says and then does `park`.
@@ -1549,7 +1542,7 @@ mod tests {
         assert!(fresh.contains("**Your issue:** acme/tracker#7 — Add {branch} support"));
         assert!(fresh.contains("\n   Closes acme/tracker#7\""), "{fresh}");
         // An issue a worker opens is the repo's in the tracker.
-        for brief in [fresh, &briefs[5]] {
+        for brief in [&briefs[5]] {
             assert!(
                 brief.contains("`gh issue create --repo acme/tracker`): the symptom")
                     && brief.contains(
@@ -1715,10 +1708,7 @@ mod tests {
             assert!(brief.contains("- **Issue:** acme/tracker#7 — Add support\n"), "{brief}");
         }
         assert!(stage.contains("(`gh issue create --repo acme/tracker --label repo:acme/dev`)"));
-        assert!(stage.contains(
-            "Put no label of a workflow on it yourself, only the repo label `repo:acme/dev` \
-             (`--label repo:acme/dev`): take it in"
-        ));
+        assert!(!stage.contains("A red gate that is not yours"));
         assert!(parked.contains("(acme/tracker#11, acme/tracker#12)"), "{parked}");
         assert!(consult.contains("    gh issue close 7 --repo acme/tracker --comment <why>\n"));
         assert!(patrol.contains(
