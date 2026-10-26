@@ -35,7 +35,7 @@ stages:
 /// and runs `concurrency` workers at once.
 fn bound(feature: &str, concurrency: u64) -> World {
     let world = World::new();
-    world.kit_models("claude-code", &["opus", "sonnet"]);
+    world.kit_researched_models("claude-code", &["opus", "sonnet"]);
     world.repo(
         "acme/dev",
         &[(".claude/skills/implement/SKILL.md", "---\nname: implement\ndescription: build\n---\n")],

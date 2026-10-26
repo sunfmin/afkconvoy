@@ -89,18 +89,11 @@ fn bound_with(team: &str) -> World {
     let world = World::new();
     world.hold_every_harness();
     world.kit_command("claude-code", afkconvoy_core::harness::Harness::ClaudeCode.stock());
-    world.kit_models("codex", &["gpt-5.5"]);
+    world.kit_researched_models("codex", &["gpt-5.5"]);
     world.with_kit(|kit| {
         let entries = kit["harnesses"].as_array_mut().unwrap();
         let at = entries.iter().position(|h| h["harness"] == "codex").unwrap();
-        let mut held = entries.remove(at);
-        // This team's model is researched; these scenarios exercise worker
-        // starts and guards, independently of pending host-kit research.
-        held["models"][0]["good_at"] = json!("coding and review");
-        held["models"][0]["sources"] = json!([
-            {"url":"https://vendor.example/model-card", "date":"2026-10-24"}
-        ]);
-        held["models"][0]["researched_at"] = json!(900);
+        let held = entries.remove(at);
         entries.insert(0, held);
     });
     world.repo(

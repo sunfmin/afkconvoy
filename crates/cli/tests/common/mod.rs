@@ -162,6 +162,27 @@ impl World {
         });
     }
 
+    /// Holds dated model research for scenarios about workflows and worker
+    /// starts, so pending research does not start an unrelated host watch.
+    pub fn kit_researched_models(&self, harness: &str, models: &[&str]) {
+        self.kit_models(harness, models);
+        self.with_kit(|kit| {
+            let held = kit["harnesses"]
+                .as_array_mut()
+                .unwrap()
+                .iter_mut()
+                .find(|held| held["harness"] == harness)
+                .unwrap();
+            for model in held["models"].as_array_mut().unwrap() {
+                model["good_at"] = json!("coding and review");
+                model["sources"] = json!([
+                    {"url":"https://vendor.example/model-card", "date":"2026-10-24"}
+                ]);
+                model["researched_at"] = json!(900);
+            }
+        });
+    }
+
     /// Changes the host kit in place.
     pub fn with_kit(&self, change: impl FnOnce(&mut Value)) {
         let mut kit: Value =
