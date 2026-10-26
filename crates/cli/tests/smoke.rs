@@ -88,6 +88,7 @@ fn real_claude_code_started_in_a_role_keeps_host_rules_opt_in_and_enforces_both_
     let config = home.join(".claude");
     let user_log = root.join("user-hook.log");
     write(&config, "CLAUDE.md", &format!("The user word is {USER_WORD}.\n"));
+    write(&config, "rules/smoke.md", "A rule from the host user's rules directory.\n");
     write(&config, &format!("skills/{USER_SKILL}/SKILL.md"), &skill(USER_SKILL));
     write(&config, "settings.json", &hook(&user_log, "user").to_string());
     write(&role, "CLAUDE.md", &format!("The role word is {ROLE_WORD}.\n"));
@@ -99,6 +100,8 @@ fn real_claude_code_started_in_a_role_keeps_host_rules_opt_in_and_enforces_both_
 
     let launch = std::env::var("AFKCONVOY_SMOKE_COMMAND")
         .unwrap_or_else(|_| Harness::ClaudeCode.stock().to_string());
+    let mut host_rules = afkconvoy::kept::host_rules(Harness::ClaudeCode);
+    host_rules.extend(Harness::ClaudeCode.host_rule_excludes(&home.display().to_string()));
     let text = |path: &Path| path.display().to_string();
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
     for host_user in [false, true] {
@@ -125,6 +128,7 @@ fn real_claude_code_started_in_a_role_keeps_host_rules_opt_in_and_enforces_both_
             guard: &format!("{} guard", quoted(env!("CARGO_BIN_EXE_afkconvoy"))),
             kept: &text(&kept),
             host_user,
+            host_rules: &host_rules,
             dsh_profile: afkconvoy_core::team::DshProfile::Fleet,
             shadowed: &[],
             told: Told::default(),
@@ -176,7 +180,15 @@ fn real_claude_code_started_in_a_role_keeps_host_rules_opt_in_and_enforces_both_
         assert!(init["model"].as_str().unwrap().contains("haiku"), "{}", init["model"]);
         assert!(init["memory_paths"].is_null(), "{}", init["memory_paths"]);
 
-        let sources = receipts(&sources_log);
+        let sources: Vec<Value> = receipts(&sources_log)
+            .iter()
+            .map(|event| {
+                json!({
+                    "file_path": event["file_path"], "memory_type": event["memory_type"],
+                    "load_reason": event["load_reason"]
+                })
+            })
+            .collect();
         println!("host_user={host_user}: rule sources: {sources:?}");
         let loaded = |file: PathBuf| sources.iter().any(|event| event["file_path"] == text(&file));
         for (name, word, file) in [
@@ -193,6 +205,17 @@ fn real_claude_code_started_in_a_role_keeps_host_rules_opt_in_and_enforces_both_
         let user_loaded =
             loaded(config.join("CLAUDE.md")) || loaded(kept.join(".claude/CLAUDE.md"));
         assert_eq!(user_loaded, host_user, "host_user={host_user}: {sources:?}");
+        if !host_user {
+            for path in &host_rules {
+                let prefix = path.strip_suffix("**").unwrap_or(path);
+                assert!(
+                    !sources.iter().any(|event| event["file_path"]
+                        .as_str()
+                        .is_some_and(|file| file.starts_with(prefix))),
+                    "host rule was loaded: {sources:?}"
+                );
+            }
+        }
         assert_eq!(skills.contains(&USER_SKILL), host_user, "{skills:?}");
         let user_word = if host_user { USER_WORD } else { "NONE" };
         assert!(said.contains(&format!("USER={user_word}")), "{said}");

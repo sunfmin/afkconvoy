@@ -893,6 +893,8 @@ fn a_worker_is_given_the_host_user_s_skills_and_rules_unless_its_team_turns_them
     let command = command.as_str().unwrap();
     assert!(command.contains(&format!(" --add-dir '{}' ", kept.display())), "{command}");
     assert!(command.contains(" --setting-sources project "), "{command}");
+    let settings: Value = serde_json::from_str(&added_settings(command)).unwrap();
+    assert!(settings["claudeMdExcludes"].is_null(), "{settings}");
     assert_eq!(holds(&kept), [".claude"]);
     assert_eq!(holds(&kept.join(".claude")), ["CLAUDE.md", "skills"]);
     let link = |name: &str| std::fs::read_link(kept.join(".claude").join(name)).unwrap();
@@ -907,6 +909,14 @@ fn a_worker_is_given_the_host_user_s_skills_and_rules_unless_its_team_turns_them
     let command = open_terminals(&world, &worktree(&world, 8))[0]["command"].clone();
     let command = command.as_str().unwrap();
     assert!(!command.contains(host_user(&world).to_str().unwrap()), "{command}");
+    let settings: Value = serde_json::from_str(&added_settings(command)).unwrap();
+    assert_eq!(
+        settings["claudeMdExcludes"],
+        serde_json::json!([
+            home.join(".claude/CLAUDE.md").display().to_string(),
+            format!("{}/.claude/rules/**", home.display())
+        ])
+    );
     assert!(!world.cache().join("afkconvoy/harness/claude-code").exists());
 }
 
