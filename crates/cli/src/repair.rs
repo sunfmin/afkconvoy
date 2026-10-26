@@ -11,8 +11,8 @@ pub fn red_ref(repo: &Repo, branch: &str) -> String {
     repo.layout().under(&format!("base/red/{branch}"))
 }
 
-/// Only the repair opened for this red tip may bypass its missing green
-/// record. Another lock issue still waits for the base to be repaired.
+/// A repair opened for this tip, or an older unmarked lock, may bypass its
+/// missing green record. A marked repair for another tip still waits.
 pub fn is_for(gh: &crate::gh::GitHub, issue: u64, tip: &str) -> Result<bool> {
     let marker = format!("<!--convoy:base-repair tip={tip}-->");
     let read = gh.issue(issue)?;
@@ -39,17 +39,31 @@ pub fn tend(fleet: &mut Fleet, me: &Me) -> Result<Outcome> {
         return Ok(Outcome::Lost);
     };
     let opened = (|| {
-        for issue in crate::lock::standing_locks(&fleet.gh, &fleet.config)? {
-            if is_for(&fleet.gh, issue, &base)? {
-                return Ok(Outcome::Nothing);
-            }
-        }
         let config = &fleet.config;
         let label = config.ready_label.clone();
         let labels = fleet.gh.labels()?;
         for label in [label.as_str(), &config.lock_label, afkconvoy_core::plan::REPAIR_LABEL] {
             if !labels.iter().any(|known| known == label) {
                 fleet.gh.create_label(label, "afkconvoy: repair the red base branch")?;
+            }
+        }
+        for issue in crate::lock::standing_locks(&fleet.gh, config)? {
+            if is_for(&fleet.gh, issue, &base)? {
+                let read = fleet.gh.issue(issue)?;
+                let mut changed = false;
+                // Older locks can be waiting at a product workflow's human
+                // stage. The repair must run under the operator's authority.
+                for label in [config.ready_label.as_str(), afkconvoy_core::plan::REPAIR_LABEL] {
+                    if !read.labels.iter().any(|known| known == label) {
+                        fleet.gh.add_label(issue, label)?;
+                        changed = true;
+                    }
+                }
+                if read.labels.contains(&config.escalate_label) {
+                    fleet.gh.remove_label(issue, &config.escalate_label)?;
+                    changed = true;
+                }
+                return Ok(if changed { Outcome::Done } else { Outcome::Nothing });
             }
         }
         let body = format!(

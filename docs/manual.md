@@ -50,7 +50,7 @@ Read `afkconvoy <command> --help` before first running it. Commands are grouped 
 - **Run by a worker** — `gate`, `land`, `verdict`, `intake`, `lock`, `over`, `exclusive` and `inspected`: its prompt names each one as it is needed, and `wake`, above, as its last; `cut` is what a cut's terminal runs, and what you run to go on with a cut that failed. Read them only when you are a worker, or are finding out why one stopped (`rule` is a consult's too).
 - **Run by a human an issue waits for** — in a bound repo: `rule` to answer an escalated issue, `send` to put an issue at a stage of your choosing. A `by: human` stage waits for your `verdict`, a worker's command too. [`afkconvoy help humans`](help:humans) says what each case asks of you.
 - **Run by a worker's hook** — `guard`, called before each action of a bound repo's worker. Nobody runs it by hand. Its help explains what the worker is refused and why.
-- **One transition by hand** — `dispatch`, `close`, `escalate`, `park`, `nudge`, `restart` and `abandon`: each is something a tick does on its own, and `recovery` shows what `dispatch` would continue an issue from. Read one when a plan shows a transition the fleet is not making, or you are told to make it yourself.
+- **One transition by hand** — `dispatch`, `close`, `escalate`, `park`, `nudge` and `restart`: each is something a tick does on its own, and `recovery` shows what `dispatch` would continue an issue from. Read one when a plan shows a transition the fleet is not making, or you are told to make it yourself.
 - **The claim plumbing** — `scan`, `claim`, `release` and `heartbeat`: what the transitions are built on. Read these only to inspect or repair claims and heartbeats on the remote.
 
 ## The topics
@@ -564,7 +564,7 @@ The rebuild asks GitHub twice, side by side with one listing of the remote, howe
   - `running`: its worker, started by `--instance`, may still be at it
   - `peer_running`: a live peer started its worker
   - `stale_run`: it is claimed by a peer presumed dead: a tick ends it
-- `cut`: in a repo that turns cutting on (`afkconvoy cut --help`): {standing, newest_tag, initial, past, failure} — `newest_tag` the newest version tag on the remote (none: it has none), `initial` the declared first version, present only without a version tag, `past` how many commits the base branch holds past its newest tag (0 without one), `failure` the open issue that says the last cut failed, `on_base` the PR of a cut on the base branch. standing says what a tick does about it:
+- `cut`: in a repo that turns cutting on (`afkconvoy cut --help`): {standing, newest_tag, initial, past, failure} — `newest_tag` the newest version tag on the remote (none: it has none), `initial` the declared first version, present only without a version tag, `past` how many commits the base branch holds past its newest tag (0 without one), `failure` the open issue that says the last cut failed. standing says what a tick does about it:
 
   - `due`: the base branch holds commits past `newest_tag`, or the remote has no version tag and `initial` is declared: the next tick that ends idle starts a cut — it holds no claim, nothing is on the base branch, its frontier is empty and admission holds nothing back
   - `tagged`: the base branch holds nothing past `newest_tag`: nothing to cut

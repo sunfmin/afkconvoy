@@ -179,10 +179,7 @@ fn pressure_inspects_the_host_once_across_fleets_and_never_heats_the_largest_wor
         std::fs::read_to_string(world.cache().join("afkconvoy/host-inspection/evidence.md"))
             .unwrap();
     assert!(evidence.contains("memory pressure (level 2)"), "{evidence}");
-    assert!(
-        evidence.contains("process tree of each worker and of the landing train"),
-        "{evidence}"
-    );
+    assert!(evidence.contains("process tree of each worker"), "{evidence}");
     assert!(evidence.contains("outside-memory-holder"), "{evidence}");
 
     finish(&world);

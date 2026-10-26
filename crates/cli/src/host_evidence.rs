@@ -1,10 +1,10 @@
 //! What a host inspection is given, taken down as it starts (docs/adr/0019):
 //! admission's reading and shares; for disk, what each of this host's
 //! worktrees of every fleet holds — with its issue, its stage and whether a
-//! worker holds it — the landing train's among them, the fleet's caches, and
+//! worker holds it — the fleet's own among them, the fleet's caches, and
 //! the largest directories of the whole volume under the home folder outside
 //! them, found within five minutes; for load or memory, the process
-//! trees of each worker and of the train, and the hottest processes outside
+//! trees of each worker, and the hottest processes outside
 //! them. It is written to a directory of the cache every fleet of the host
 //! shares, and handed to the inspection (`crate::inspection`).
 
@@ -157,7 +157,7 @@ pub fn worktrees_said(listed: &[Listed]) -> String {
             .map(|built| format!(", {} of it build output", measure::said(built)))
             .unwrap_or_default();
         let what = match (listed.on.fleets, listed.on.issue) {
-            (true, _) => "the fleet's own (the landing train's, or an inspection's)".to_string(),
+            (true, _) => "the fleet's own (an inspection's, a caster's or a cut's)".to_string(),
             (false, Some(issue)) => match &listed.stage {
                 Some(stage) => format!("issue #{issue}, {stage}"),
                 None if listed.own => {
@@ -305,11 +305,11 @@ pub(crate) fn du(dir: &Path, deadline: Instant) -> Option<u64> {
 }
 
 /// The load's and memory's part: the process tree of each worker and of the
-/// train, and the hottest processes outside them.
+/// fleet, and the hottest processes outside them.
 fn processes_of(out: &mut String, on_host: &[OnHost]) {
     let procs = processes();
     let mut inside: HashSet<u32> = HashSet::new();
-    out.push_str("\n## The process tree of each worker and of the landing train\n");
+    out.push_str("\n## The process tree of each worker\n");
     for on in on_host {
         let pids: Vec<u32> = tree(&procs, &on.path).iter().map(|proc| proc.pid).collect();
         if pids.is_empty() {

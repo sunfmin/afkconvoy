@@ -31,15 +31,11 @@ use crate::log::What;
 use crate::orca::{Source, Worktree};
 use crate::stage::Flows;
 
-/// How many seconds the step `land` waits between two looks at the landing
-/// train.
+/// How many seconds the step `land` waits between two looks at the base branch.
 const LAND_POLL: u32 = 30;
 
-/// What the remote and GitHub say of the repo's cut, as a rebuild reads it:
-/// the version tags it listed (`Fleet::version_tags`) and the base branch at
-/// `base`, the open `issues`, and the PRs `riding` the landing train. A repo
-/// that names no cut steps reads nothing past a cut still going — its claim,
-/// its PR on the train — and has none where nothing is.
+/// What a rebuild reads of the cut: version tags, base tip, open issues
+/// and a running cut's claim. Without declared steps only its claim remains.
 pub fn seen(fleet: &Fleet, read: &Flows, issues: &[Issue], base: &str) -> Result<Option<Seen>> {
     let claim = fleet.scan.runs.iter().find(|run| run.key == CLAIM_KEY).cloned();
     let Some(steps) = &fleet.config.cut else {
@@ -507,10 +503,8 @@ impl Cutting<'_> {
         Ok(())
     }
 
-    /// Joins its PR to the landing train, on no issue, and waits for it to
-    /// land, joining it again whenever it is off the train and not landed: a
-    /// train given up and its PRs joined again without it. A fleet lock
-    /// standing, or a conflict with the train, fails it.
+    /// Recovers the cut's merge from the base branch after its landing turn.
+    /// An interrupted cut can take another turn if its PR has not landed.
     fn land(&self, record: &mut Record, clock: &impl Fn() -> u64) -> Result<()> {
         if record.landed.is_some() {
             return Ok(());
@@ -523,8 +517,8 @@ impl Cutting<'_> {
                 let joins = self.landings(record.from.as_deref(), &base)?;
                 let Some(join) = joins.into_iter().rev().find(|join| join.pr == number) else {
                     bail!(
-                        "PR #{number} is on {} with no landing of the landing train's: it was \
-                         merged outside it, and is no landing a cut tags",
+                        "PR #{number} is on {} without a recorded landing commit: it was \
+                         merged outside a turn, and is no landing a cut tags",
                         self.config.base_branch
                     );
                 };

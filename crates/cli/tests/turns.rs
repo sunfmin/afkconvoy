@@ -309,7 +309,7 @@ fn a_green_tip_whose_record_cannot_be_written_returns_a_retryable_error() {
     assert_eq!(world.afk_in(&worker, &["gate", "--land"]).ok()["outcome"], "merged");
 }
 
-fn red_base_repair(bound: bool) {
+fn red_base_repair(bound: bool, legacy_lock: bool) {
     let world = World::new();
     let certified = world.root.join("certified-red");
     let worker_gated = world.root.join("worker-gated");
@@ -344,16 +344,31 @@ fn red_base_repair(bound: bool) {
     });
     assert!(!worker_gated.exists(), "no ordinary turn starts on red");
     assert_ne!(std::fs::read_to_string(&certified).unwrap().trim(), worker.to_str().unwrap());
+    if legacy_lock {
+        world.issue(7, &["fleet-lock", "flow:decision", "stage:decision", "ready-for-human"]);
+    }
     let tick = world.afk(&["tick", "--instance", "repair-host"]).ok();
     let issues = world.gh();
     let repair = issues["issues"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|issue| issue["title"].as_str().is_some_and(|s| s.starts_with("Repair the red")))
+        .find(|issue| {
+            if legacy_lock {
+                issue["number"] == 7
+            } else {
+                issue["title"].as_str().is_some_and(|s| s.starts_with("Repair the red"))
+            }
+        })
         .expect("the fleet opened a repair")["number"]
         .as_u64()
         .unwrap();
+    if legacy_lock {
+        assert!(world.labels(7).contains(&"convoy-repair".into()));
+        assert!(world.labels(7).contains(&"ready-for-agent".into()));
+        assert!(!world.labels(7).contains(&"ready-for-human".into()));
+        assert_eq!(issues["issues"].as_array().unwrap().len(), 2, "reuse the existing lock");
+    }
     assert!(
         tick["did"]
             .as_array()
@@ -430,10 +445,15 @@ fn an_old_stored_train_lane_count_is_ignored_and_the_runner_starts() {
 
 #[test]
 fn an_outside_red_base_is_certified_alone_and_its_fleet_repair_lands_in_a_turn() {
-    red_base_repair(false);
+    red_base_repair(false, false);
 }
 
 #[test]
 fn a_bound_repo_repairs_its_base_without_entering_its_human_workflow() {
-    red_base_repair(true);
+    red_base_repair(true, false);
+}
+
+#[test]
+fn an_old_repair_lock_at_a_bound_human_stage_becomes_an_operator_repair() {
+    red_base_repair(true, true);
 }

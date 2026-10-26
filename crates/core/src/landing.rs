@@ -3,7 +3,7 @@ use crate::config::RepoName;
 use crate::record::fleet_number;
 use crate::tracker::Tracker;
 use flux_rs::attrs::*;
-/// Whose a PR on the train is, as its join commit names it.
+/// Whose PR a merge commit names.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Of {
     /// The issue of the fleet's tracker it closes: a worker's PR.
@@ -25,12 +25,12 @@ const BY_INSPECTION: &str = "By an inspection on ";
 /// The line of a join commit that names a cut's PR, the host after it.
 const BY_CUT: &str = "By a cut on ";
 
-/// One PR's joining of the train.
+/// One PR's recorded landing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LandedPr {
     pub of: Of,
     pub pr: u64,
-    /// The merge commit on the train.
+    /// The merge commit that landed.
     pub commit: String,
     /// The PR's head it merged: the commit's second parent.
     pub head: String,
@@ -50,20 +50,13 @@ impl LandedPr {
     pub fn is_inspection(&self) -> bool {
         matches!(self.of, Of::Inspection(_))
     }
-
-    /// Whether the fleet joins it again itself where a train is given up: an
-    /// inspection's PR or a cut's, which no worker of an issue holds.
-    pub fn rejoined_by_the_fleet(&self) -> bool {
-        matches!(self.of, Of::Inspection(_) | Of::Cut(_))
-    }
 }
 
 /// The line of a join commit that names the issue its PR closes, the issue
 /// after it.
 const CLOSES: &str = "Closes ";
 
-/// The message of the merge commit a PR joins the train with — which is how
-/// what is on a train is read back (`read_landings`). An issue is named as the
+/// The message of a PR's landing commit, read back by `read_landings`. An issue is named as the
 /// repo names one of `tracker`'s (`Tracker::issue`).
 pub fn merge_message(title: &str, pr: u64, of: &Of, tracker: &Tracker) -> String {
     let title = title.trim();
@@ -140,7 +133,7 @@ fn names_an_issue(named: &str) -> bool {
     fleet_number(number).is_some() && (repo.is_empty() || RepoName::read(repo).is_some())
 }
 
-/// The train's worktree has outgrown its build when what it built is more
+/// A worker's worktree has outgrown its build when what it built is more
 /// than this many times its fresh build…
 pub const OUTGROWN_TIMES: u64 = 3;
 
@@ -148,7 +141,7 @@ pub const OUTGROWN_TIMES: u64 = 3;
 /// again and again.
 pub const OUTGROWN_FLOOR: u64 = 1_073_741_824;
 
-/// What the last landing in the train's worktree measured of it, in bytes:
+/// What the last landing in a worker's worktree measured of it, in bytes:
 /// everything git ignores there, and its fresh build when one is on record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Built {
@@ -170,7 +163,7 @@ fn past_fresh(built: u64, fresh: u64) -> bool {
     fresh <= (built - 1) / OUTGROWN_TIMES
 }
 
-/// Has the train's worktree outgrown its build — `built` more than
+/// Has a worker's worktree outgrown its build — `built` more than
 /// `OUTGROWN_TIMES` its `fresh` build and more than `OUTGROWN_FLOOR`? With no
 /// fresh build on record (a worktree built in before measuring began), more
 /// than the floor is enough: the worktree cut again records one.
@@ -270,8 +263,6 @@ mod tests {
             [LandedPr { of: cut, pr: 470, commit: "m1".into(), head: "h470".into() }]
         );
         assert_eq!(joins[0].issue(), None);
-        // A train given up, the fleet joins it again, as an inspection's.
-        assert!(joins[0].rejoined_by_the_fleet() && !joins[0].is_inspection());
     }
 
     #[test]

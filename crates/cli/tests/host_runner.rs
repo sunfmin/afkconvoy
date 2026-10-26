@@ -583,7 +583,7 @@ fn the_host_settings_outlive_the_host_runner_and_doctor_says_those_in_force() {
     assert_eq!(in_force["exclusive_seconds"], 1500);
     assert_eq!(in_force["gate_lanes"], 2);
     assert!(in_force["train_lanes"].is_null());
-    assert!(settings["ignored"].to_string().contains("train_lanes is ignored"));
+    assert!(in_force["ignored"].to_string().contains("train_lanes is ignored"));
     let before = again["instance"].clone();
     let changed_live = world.afk(&["run", "--gate-lanes", "4", "--train-lanes", "2"]).ok();
     assert_eq!(changed_live["instance"], before, "settings change no fleet instance");

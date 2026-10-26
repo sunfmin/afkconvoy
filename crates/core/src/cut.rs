@@ -38,13 +38,12 @@ pub const VERSION_ENV: &str = "VERSION";
 /// The word of the marker of the issue a failed cut opens.
 pub const FAILED: &str = "convoy:cut-failed";
 
-/// What a cut is given beside two gate limits — its own gate and the
-/// landing train's — for the rest of its steps, publishing and installing
+/// What a cut is given beside two gate limits — base certification and its merge's gate — for the rest of its steps, publishing and installing
 /// among them, in seconds: an hour.
 pub const BESIDE_THE_GATES: u64 = 3600;
 
 /// How long, in seconds, a cut is given in a repo whose gate limit is
-/// `gate_seconds`: the gate of its own change and the train's, each to the
+/// `gate_seconds`: base certification and the gate of its own merge, each to the
 /// limit, and `BESIDE_THE_GATES` for the rest. One still going then is ended,
 /// and has failed.
 pub fn time_limit(gate_seconds: u64) -> u64 {
