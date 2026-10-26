@@ -1033,9 +1033,10 @@ fn the_host_runner_does_not_move_while_a_claim_is_held_or_a_command_is_queued() 
     });
 
     // an exclusive command holds it back as long as it runs, with the claim
-    // settled
+    // settled; it ends with the world too, should the test fail before `go`
     let go = world.root.join("go");
-    let script = format!("while [ ! -e '{}' ]; do sleep 0.05; done", go.display());
+    let (at, root) = (go.display(), world.root.display());
+    let script = format!("while [ ! -e '{at}' ] && [ -d '{root}' ]; do sleep 0.05; done");
     let mut exclusive = world
         .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
         .args(["exclusive", "--", "sh", "-c", &script])
