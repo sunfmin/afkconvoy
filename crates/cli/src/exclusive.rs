@@ -119,6 +119,20 @@ pub struct Permit {
 
 impl Permit {
     pub fn take(repo: &Repo, command: &str, heavy: bool, is_turn: bool) -> Result<Self> {
+        Self::acquire(repo, command, heavy, is_turn, false)
+    }
+
+    pub(crate) fn candidate(repo: &Repo, command: &str, heavy: bool) -> Result<Self> {
+        Self::acquire(repo, command, heavy, true, true)
+    }
+
+    fn acquire(
+        repo: &Repo,
+        command: &str,
+        heavy: bool,
+        is_turn: bool,
+        candidate: bool,
+    ) -> Result<Self> {
         if held() {
             bail!("this command already holds a turn");
         }
@@ -132,6 +146,7 @@ impl Permit {
             repo_lane: if heavy { None } else { Some(canonical(repo.common_dir()?)) },
             repo: Some(canonical(repo.common_dir()?)),
             is_turn,
+            candidate,
             asked: crate::clock(),
             ran: None,
         };
@@ -588,6 +603,7 @@ pub fn exclusive(
         repo_lane: None,
         repo: checkout.as_ref().and_then(|repo| repo.common_dir().ok()).map(canonical),
         is_turn: false,
+        candidate: false,
         asked: now(),
         ran: None,
     };
@@ -743,6 +759,7 @@ mod tests {
             repo_lane: None,
             repo: None,
             is_turn: false,
+            candidate: false,
             asked,
             ran: None,
         }

@@ -11,6 +11,7 @@ pub mod admission;
 pub mod before;
 pub mod blocked;
 pub mod board;
+pub mod candidate;
 pub mod casting;
 pub mod checkouts;
 pub mod claims;

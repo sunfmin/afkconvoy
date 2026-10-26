@@ -34,6 +34,10 @@ pub struct Ticket {
     /// the two branches configure different kinds of gate.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub is_turn: bool,
+    /// An immutable candidate worktree may overlap another candidate of
+    /// its repo. Ordinary commands and serial barriers retain exclusion.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub candidate: bool,
     /// When it asked to run, in epoch seconds: within each priority the one
     /// that asked first runs first, including in the next host runner.
     pub asked: u64,
@@ -74,7 +78,9 @@ pub fn ready(queue: &[Ticket], number: u64, worker_lanes: u64) -> bool {
         let limit = if ticket.repo_lane.is_some() { 1 } else { worker_lanes };
         let occupied = admitted.iter().filter(|t| same_lane(t, ticket)).count() as u64;
         let own = admitted.iter().any(|t| {
-            (same_lane(t, ticket) || (t.is_turn && ticket.is_turn)) && same_repo(t, ticket)
+            (same_lane(t, ticket) || (t.is_turn && ticket.is_turn))
+                && same_repo(t, ticket)
+                && !(t.candidate && ticket.candidate)
         });
         if occupied < limit && !own {
             if ticket.number == number {
@@ -194,6 +200,7 @@ mod tests {
             repo_lane: None,
             repo: None,
             is_turn: false,
+            candidate: false,
             asked,
             ran: None,
         }

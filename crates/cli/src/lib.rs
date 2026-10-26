@@ -30,6 +30,7 @@ pub mod admission;
 pub mod advance;
 pub mod blockers;
 pub mod board;
+mod candidates;
 pub mod caster;
 pub mod checkout;
 pub mod checkout_list;

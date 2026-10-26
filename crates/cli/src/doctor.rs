@@ -1854,6 +1854,8 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String]) -> Result<Exami
         "refusals": state.as_ref().ok().map(|state| &state.refusals),
         "waiting_on_human": waiting,
         "proposals": state.as_ref().ok().and_then(|state| state.proposals.as_ref()),
+        "candidates": config.as_ref().ok().map(|config| crate::candidates::view(repo, config)
+            .unwrap_or_else(|error| json!({"error": error.to_string()}))),
     });
     Ok((answer, found))
 }

@@ -500,6 +500,7 @@ mod tests {
             repo_lane: None,
             repo: None,
             is_turn: false,
+            candidate: false,
             command: "cargo test".into(),
             asked: 1000,
             ran: None,
