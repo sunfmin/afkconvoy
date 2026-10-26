@@ -60,7 +60,30 @@ pub fn seen(
     };
     let failure = cut::failure_of(issues, &escalate_label(fleet, read));
     let initial = steps.initial_version();
-    Ok(Some(Seen { on: true, newest, initial, past, claim, failure, on_train }))
+    let oldest_landing = match &newest {
+        Some(tag) if past > 0 => {
+            let dates = fleet.repo.git(&[
+                "log",
+                "--first-parent",
+                "--reverse",
+                "--format=%ct",
+                &history(Some(&tag.commit), base),
+            ])?;
+            dates.lines().next().map(str::parse).transpose().context("the oldest landing's time")?
+        }
+        _ => None,
+    };
+    Ok(Some(Seen {
+        on: true,
+        newest,
+        initial,
+        past,
+        oldest_landing,
+        busy_after_seconds: steps.busy_after_seconds,
+        claim,
+        failure,
+        on_train,
+    }))
 }
 
 /// How many commits the base branch at `base` holds past the tag `tag`, its
@@ -135,6 +158,7 @@ fn pick(fleet: &Fleet, base: &str, now: u64) -> Result<Option<Record>> {
         at: None,
         took: vec![],
         failed: None,
+        superseded: None,
     }))
 }
 
@@ -149,7 +173,7 @@ fn pick(fleet: &Fleet, base: &str, now: u64) -> Result<Option<Record>> {
 /// A step that fails after the claim gives the claim back and is an error:
 /// held, a later tick would read the record a cut before it left in the
 /// checkout as this one's, and say that cut's end again.
-pub fn start(fleet: &mut Fleet, me: &Me, agent: &Agent) -> Result<Outcome> {
+pub fn start(fleet: &mut Fleet, me: &Me, agent: &Agent, busy: bool) -> Result<Outcome> {
     if fleet.config.cut.is_none() {
         return Ok(Outcome::Nothing);
     }
@@ -166,7 +190,11 @@ pub fn start(fleet: &mut Fleet, me: &Me, agent: &Agent) -> Result<Outcome> {
         bail!("{failed}its claim could not be given back: {kept:#}");
     }
     let Some(record) = started? else { return Ok(Outcome::Lost) };
-    fleet.cut_said.push(What::CutStarted { version: record.version.clone(), said: record.line() });
+    fleet.cut_said.push(What::CutStarted {
+        version: record.version.clone(),
+        said: record.line(),
+        busy,
+    });
     Ok(Outcome::Done)
 }
 
@@ -229,11 +257,17 @@ pub fn end(fleet: &mut Fleet, me: &Me, read: &Flows, row: &Row) -> Result<Outcom
         at: None,
         took: vec![],
         failed: None,
+        superseded: None,
     });
     let version = record.version.clone();
     match ending.failure(limit) {
         None => {
-            fleet.cut_said.push(What::CutEnded { version, said: record.line(), failed: None });
+            fleet.cut_said.push(What::CutEnded {
+                version,
+                said: record.line(),
+                failed: None,
+                superseded: record.superseded.clone(),
+            });
             checkout.remove()?;
         }
         Some(failure) => {
@@ -260,11 +294,12 @@ pub fn end(fleet: &mut Fleet, me: &Me, read: &Flows, row: &Row) -> Result<Outcom
                 version,
                 said: record.line(),
                 failed: Some(failed),
+                superseded: None,
             });
         }
     }
     drop_run(&fleet.repo, &mut fleet.scan, claim)?;
-    Ok(Outcome::Done)
+    Ok(if record.superseded.is_some() { Outcome::Superseded } else { Outcome::Done })
 }
 
 /// The line that goes on with the cut in the checkout `path` from `step`.
@@ -298,7 +333,13 @@ pub fn says(repo: &Repo, row: &Row) -> Option<String> {
         Standing::StaleRun => {
             "the peer that was cutting went silent: the next tick unclaims it".to_string()
         }
-        Standing::Due => format!("due: {}; it starts once the fleet is idle", past()),
+        Standing::Due => match (row.oldest_landing_age_seconds, row.busy_in_seconds) {
+            (Some(age), Some(wait)) => format!(
+                "due: {}; oldest landing {age}s ago; starts when idle or in {wait}s while busy",
+                past()
+            ),
+            _ => format!("due: {}; it starts once the fleet is idle", past()),
+        },
         Standing::Locked => format!("{}; a fleet lock stands, and no cut starts", past()),
         Standing::Failed => match row.failure {
             Some(issue) => {
@@ -359,6 +400,9 @@ pub fn run(
         Cutting { repo, config, steps: &steps, gh: &gh, host, checkout: &checkout, second };
     let first = from.unwrap_or_else(|| record.step());
     record.failed = None;
+    if record.superseded.is_some() {
+        return Ok(stopped(&record));
+    }
     for step in first.from() {
         record.at = Some(step);
         checkout.record_cut(&record)?;
@@ -369,6 +413,10 @@ pub fn run(
             checkout.record_cut(&record)?;
             return Ok(json!({"version": record.version, "failed": step.word(), "why": why,
                 "said": record.line(), "log": checkout.cut_log()?}));
+        }
+        if record.superseded.is_some() {
+            checkout.record_cut(&record)?;
+            return Ok(stopped(&record));
         }
         record.took.retain(|took| took.step != step);
         record.took.push(Took { step, seconds: began.elapsed().as_secs() });
@@ -385,6 +433,12 @@ pub fn run(
     Ok(json!({"version": record.version, "tag": format!("v{}", record.version),
         "prs": record.prs, "pr": record.pr, "landed": record.landed, "took": record.took,
         "closed": closed, "said": record.line()}))
+}
+
+/// A patch overtaken by a minor landing is an expected stop, with no tag.
+fn stopped(record: &Record) -> Value {
+    json!({"version": record.version, "stopped": "tag", "why": record.superseded,
+        "said": record.line()})
 }
 
 /// The checkout `repo`, refused unless it is a cut's.
@@ -593,14 +647,15 @@ impl Cutting<'_> {
         let mut prs = prs_past(self.repo, from.as_deref(), &landed)?;
         prs.retain(|pr| Some(*pr) != record.pr);
         record.prs = prs;
-        if record.from.is_some() && !record.minor && !record.prs.is_empty() {
+        if record.from.is_some() && !record.minor {
+            let prs = prs_past(self.repo, from.as_deref(), &self.base()?)?;
             let labelled = self.gh.merged_prs_labelled(MINOR_LABEL)?;
-            if let Some(pr) = record.prs.iter().find(|pr| labelled.contains(pr)) {
-                bail!(
+            if let Some(pr) = prs.iter().find(|pr| labelled.contains(pr)) {
+                record.superseded = Some(format!(
                     "#{pr}, labelled `{MINOR_LABEL}`, landed while the cut ran, and {tag} is a \
-                     patch: close this issue, and the next tick that ends idle cuts again from \
-                     the start, the next minor"
-                );
+                     patch: the next tick cuts the next minor"
+                ));
+                return Ok(());
             }
         }
         let here =

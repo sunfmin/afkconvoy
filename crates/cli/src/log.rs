@@ -173,7 +173,12 @@ pub enum What {
     WatchFailed { said: String },
     /// A tick started a cut of `version` (docs/adr/0028): `said` is the
     /// version, the tag it is cut past and the PRs it holds.
-    CutStarted { version: String, said: String },
+    CutStarted {
+        version: String,
+        said: String,
+        #[serde(default)]
+        busy: bool,
+    },
     /// A tick ended the cut of `version`: `said` is what it did — its PR,
     /// where it landed, and each step it took with its seconds. `failed`, of
     /// one that ended short, says at which step, why, the issue that says so
@@ -183,6 +188,8 @@ pub enum What {
         said: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         failed: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        superseded: Option<String>,
     },
 }
 
@@ -190,7 +197,13 @@ pub enum What {
 /// any other line.
 pub fn cut_said(what: &What) -> Option<String> {
     match what {
-        What::CutStarted { said, .. } => Some(format!("started the cut of {said}")),
+        What::CutStarted { said, busy, .. } => {
+            let fleet = if *busy { "busy" } else { "idle" };
+            Some(format!("started the cut of {said}, fleet {fleet}"))
+        }
+        What::CutEnded { said, superseded: Some(why), .. } => {
+            Some(format!("cut {said}: stopped at `tag`, without tagging: {why}"))
+        }
         What::CutEnded { said, failed: None, .. } => {
             Some(format!("cut {said}: tagged, published and installed"))
         }

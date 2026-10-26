@@ -1,6 +1,6 @@
 //! A cut (docs/adr/0028): the run that makes a new version of a repo from
 //! its base branch — it sets the version, lands it, tags it, and publishes
-//! and installs it. A tick that ends idle starts one in a repo that names its
+//! and installs it. An idle tick, or one past the landed work's age bound, starts one in a repo that names its
 //! cut steps, once the base branch holds landed commits past the newest
 //! version tag, or the repo declares its initial version on an untagged
 //! remote; it is claimed on the remote as a run is, so one host cuts each
@@ -43,6 +43,14 @@ pub const FAILED: &str = "convoy:cut-failed";
 /// among them, in seconds: an hour.
 pub const BESIDE_THE_GATES: u64 = 3600;
 
+/// The default age of the oldest landing past the newest tag at which a
+/// busy fleet starts a cut, in seconds.
+pub const BUSY_AFTER_SECONDS: u64 = 3600;
+
+fn busy_after_seconds() -> u64 {
+    BUSY_AFTER_SECONDS
+}
+
 /// How long, in seconds, a cut is given in a repo whose gate limit is
 /// `gate_seconds`: the gate of its own change and the train's, each to the
 /// limit, and `BESIDE_THE_GATES` for the rest. One still going then is ended,
@@ -57,6 +65,10 @@ pub fn time_limit(gate_seconds: u64) -> u64 {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Steps {
+    /// How long landed work may wait before a busy tick starts a cut.
+    /// Zero starts one at the next tick, whatever the fleet holds.
+    #[serde(default = "busy_after_seconds")]
+    pub busy_after_seconds: u64,
     /// The version of the first cut where the remote has no version tag.
     /// Left out, an untagged repo is not cut; after a tag, this is ignored.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -193,6 +205,10 @@ pub struct Seen {
     pub initial: Option<Version>,
     /// How many commits the base branch holds past it.
     pub past: u64,
+    /// When the oldest first-parent commit past the tag landed. An initial
+    /// cut has no tag and remains idle-only.
+    pub oldest_landing: Option<u64>,
+    pub busy_after_seconds: u64,
     /// The claim on a cut, while one stands.
     pub claim: Option<RunClaim>,
     /// The open issue that says a cut failed, while one is open.
@@ -253,6 +269,9 @@ pub struct Row {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub initial: Option<String>,
     pub past: u64,
+    pub oldest_landing_age_seconds: Option<u64>,
+    /// How many seconds remain before a busy tick may start it; zero once due.
+    pub busy_in_seconds: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub failure: Option<u64>,
     /// The PR of a cut on the landing train: the train is tended while it
@@ -294,6 +313,10 @@ pub fn row(
         newest_tag: seen.newest.as_ref().map(|tag| tag.version.tag()),
         initial: seen.initial.filter(|_| seen.newest.is_none()).map(|version| version.to_string()),
         past: seen.past,
+        oldest_landing_age_seconds: seen.oldest_landing.map(|landed| now.saturating_sub(landed)),
+        busy_in_seconds: seen
+            .oldest_landing
+            .map(|landed| landed.saturating_add(seen.busy_after_seconds).saturating_sub(now)),
         failure: seen.failure,
         on_train: seen.on_train,
         claim: seen.claim.clone(),
@@ -302,10 +325,13 @@ pub fn row(
 
 /// Whether a tick that ends with `held` claims held, `frontier` issues left
 /// on its frontier and something on the landing train or not (`on_train`)
-/// starts the cut `row`: it is due, the tick ends idle, and admission holds
-/// nothing back (`held_back`): a cut gates and builds, as heavy as any worker.
+/// starts the cut `row`: it is due and either the age bound has been reached,
+/// or the tick ends idle with admission open. An overdue cut starts even
+/// while admission holds workers back: its heavy steps use the exclusive queue.
 pub fn starts(row: &Row, held: usize, frontier: usize, on_train: bool, held_back: bool) -> bool {
-    row.standing == Standing::Due && held == 0 && frontier == 0 && !on_train && !held_back
+    row.standing == Standing::Due
+        && (row.busy_in_seconds == Some(0)
+            || (held == 0 && frontier == 0 && !on_train && !held_back))
 }
 
 /// One step of a cut, in the order it takes them.
@@ -399,6 +425,10 @@ pub struct Record {
     /// The step it failed at, and why.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failed: Option<Failure>,
+    /// A minor landing overtook this patch before it tagged. It stops at
+    /// `tag`, without failing or publishing; the next tick picks the minor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub superseded: Option<String>,
 }
 
 impl Record {
@@ -468,6 +498,8 @@ fn short(commit: &str) -> &str {
 pub enum Ending {
     /// It took every step.
     Cut,
+    /// A minor landing overtook the patch: no tag, publication or failure.
+    Superseded,
     /// It failed at a step, as it said.
     Failed(Failure),
     /// Its time ran out at a step: it was ended there.
@@ -482,7 +514,7 @@ impl Ending {
     /// of one that took every step.
     pub fn failure(&self, limit: u64) -> Option<Failure> {
         match self {
-            Ending::Cut => None,
+            Ending::Cut | Ending::Superseded => None,
             Ending::Failed(failure) => Some(failure.clone()),
             Ending::OutOfTime(step) => Some(Failure {
                 step: *step,
@@ -510,6 +542,9 @@ pub fn ending(
 ) -> Option<Ending> {
     let step = record.map_or(Step::Set, Record::step);
     if let Some(record) = record {
+        if record.superseded.is_some() {
+            return Some(Ending::Superseded);
+        }
         if record.done() {
             return Some(Ending::Cut);
         }
@@ -675,6 +710,8 @@ mod tests {
             newest: Some(Tag { version: version(0, 5, 16), commit: "t".into() }),
             initial: None,
             past: 4,
+            oldest_landing: None,
+            busy_after_seconds: BUSY_AFTER_SECONDS,
             claim: None,
             failure: None,
             on_train: None,
@@ -765,6 +802,7 @@ mod tests {
             at: None,
             took: vec![],
             failed: None,
+            superseded: None,
         }
     }
 
@@ -880,6 +918,7 @@ mod tests {
     #[test]
     fn the_cut_steps_need_both_lines() {
         let steps = |set: &str, publish: &str| Steps {
+            busy_after_seconds: BUSY_AFTER_SECONDS,
             initial: None,
             set: set.into(),
             publish: publish.into(),

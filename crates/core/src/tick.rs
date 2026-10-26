@@ -76,10 +76,10 @@ pub enum TickStep {
     /// End the repo's cut when it is over: ask after a cut of mine, or delete
     /// the claim of one whose fleet is presumed dead. It takes no slot.
     EndCut,
-    /// Start a cut of the repo (docs/adr/0028): the pass ends idle, and the
+    /// Start a cut of the repo (docs/adr/0028): the pass ends idle or the age bound is reached, and the
     /// base branch holds landed commits past the newest version tag
     /// (`cut::starts`). It holds a claim on the run, and takes no slot.
-    Cut,
+    Cut { busy: bool },
     /// Show on the issue's status board the stage a claim of mine is at.
     Board { issue: u64, stage: Stage, pr: Option<u64> },
     /// Bring the `stage:` label of an issue that follows a workflow to the
@@ -95,6 +95,9 @@ pub enum Outcome {
     /// It did what it names. For `Settle`, `Forget`, `Judge`, `Watch` and `Advance`
     /// that ends the claim: its slot is free.
     Done,
+    /// `EndCut` ended a patch overtaken by a minor landing. Start the minor
+    /// in this pass, once its previous claim has been released.
+    Superseded,
     /// `Advance` ended the claim once its stage had declared, and left the
     /// issue where its stage records put it: its slot is free, and the
     /// worker due on it there, when one is (`Mine::due`), is this pass's to
@@ -273,8 +276,11 @@ impl Pass {
 /// Whether a cut of mine runs once a pass over `set` did `did`
 /// (`Pass::cutting`).
 fn cutting(set: &WorkingSet, did: &[(TickStep, Outcome)]) -> bool {
-    let started = did.contains(&(TickStep::Cut, Outcome::Done));
-    let ended = did.contains(&(TickStep::EndCut, Outcome::Done));
+    let started = did
+        .iter()
+        .any(|(step, outcome)| matches!(step, TickStep::Cut { .. }) && *outcome == Outcome::Done);
+    let ended = did.contains(&(TickStep::EndCut, Outcome::Done))
+        || did.contains(&(TickStep::EndCut, Outcome::Superseded));
     started || (set.cut_running() && !ended)
 }
 
@@ -357,8 +363,15 @@ where
     // Once the pass has taken every slot it takes: a cut starts from an idle end.
     let left = set.frontier.iter().filter(|issue| !dispatched(&did, issue.number)).count();
     let held_back = !set.held_back.is_empty();
-    if set.cut.as_ref().is_some_and(|cut| cut::starts(cut, held, left, set.on_train(), held_back)) {
-        let step = TickStep::Cut;
+    let superseded = did.contains(&(TickStep::EndCut, Outcome::Superseded)) && set.locks.is_empty();
+    if superseded
+        || set
+            .cut
+            .as_ref()
+            .is_some_and(|cut| cut::starts(cut, held, left, set.on_train(), held_back))
+    {
+        let busy = held > 0 || left > 0 || set.on_train() || held_back;
+        let step = TickStep::Cut { busy };
         did.push((step, carry_out(step)));
     }
     if set.slow_gate.as_ref().is_some_and(|slow| slow.issue.is_none()) {
@@ -1643,6 +1656,8 @@ mod tests {
             standing,
             newest_tag: Some("v0.5.16".into()),
             past: 4,
+            oldest_landing_age_seconds: None,
+            busy_in_seconds: None,
             failure: None,
             on_train: None,
             claim: None,
@@ -1656,27 +1671,39 @@ mod tests {
         let mut idle = set(&[], &[]);
         idle.cut = cut(Cutting::Due);
         let pass = run_pass(&idle, 3, 0, |_| Done);
-        assert_eq!(steps(&pass), [TickStep::Cut, Heartbeat], "it beats for the cut's claim");
+        assert_eq!(
+            steps(&pass),
+            [TickStep::Cut { busy: false }, Heartbeat],
+            "it beats for the cut's claim"
+        );
         assert_eq!(pass.held, 0, "no slot");
         assert!(pass.cutting(&idle));
         // Not while a claim is held, the frontier is left, or the train holds anything.
         let mut working = set(&[], &[(5, Status::NoPr)]);
         working.cut = cut(Cutting::Due);
-        assert!(!steps(&run_pass(&working, 3, 1, |_| Nothing)).contains(&TickStep::Cut));
+        assert!(
+            !steps(&run_pass(&working, 3, 1, |_| Nothing)).contains(&TickStep::Cut { busy: false })
+        );
         let mut frontier = set(&[9], &[]);
         frontier.cut = cut(Cutting::Due);
-        assert!(!steps(&run_pass(&frontier, 3, 0, |_| Done)).contains(&TickStep::Cut));
+        assert!(
+            !steps(&run_pass(&frontier, 3, 0, |_| Done)).contains(&TickStep::Cut { busy: false })
+        );
         // A frontier issue a peer won is off it, as `frontier_remaining` counts it.
         let mut lost = set(&[9], &[]);
         lost.cut = cut(Cutting::Due);
-        let lost = run_pass(&lost, 3, 0, |step| if step == TickStep::Cut { Done } else { Lost });
-        assert_eq!(steps(&lost), [Dispatch { issue: 9 }, TickStep::Cut, Heartbeat]);
+        let lost = run_pass(&lost, 3, 0, |step| {
+            if step == (TickStep::Cut { busy: false }) { Done } else { Lost }
+        });
+        assert_eq!(steps(&lost), [Dispatch { issue: 9 }, TickStep::Cut { busy: false }, Heartbeat]);
         let mut riding = set(&[], &[(5, Status::Joined)]);
         riding.cut = cut(Cutting::Due);
-        assert!(!steps(&run_pass(&riding, 3, 1, |_| Nothing)).contains(&TickStep::Cut));
+        assert!(
+            !steps(&run_pass(&riding, 3, 1, |_| Nothing)).contains(&TickStep::Cut { busy: false })
+        );
         // Nor while admission holds, nor where it is not due.
         idle.held_back = vec![Hold::Memory { free: 3, floor: 10 }];
-        assert!(!steps(&run_pass(&idle, 3, 0, |_| Done)).contains(&TickStep::Cut));
+        assert!(!steps(&run_pass(&idle, 3, 0, |_| Done)).contains(&TickStep::Cut { busy: false }));
         for not_due in
             [Cutting::Off, Cutting::Tagged, Cutting::Untagged, Cutting::Failed, Cutting::Locked]
         {
