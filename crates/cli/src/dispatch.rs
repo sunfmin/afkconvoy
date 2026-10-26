@@ -134,7 +134,12 @@ impl Agent {
         if let Some((_, settings)) = prepared {
             crate::codex_launch::record(worktree, &settings)?;
         }
-        worktree.await_ready(&terminal, self.ready_timeout, harness, &command)?;
+        worktree.await_ready(
+            &terminal,
+            self.ready_timeout,
+            harness,
+            &self.launches.worker_line(harness, &command),
+        )?;
         Ok(terminal)
     }
 

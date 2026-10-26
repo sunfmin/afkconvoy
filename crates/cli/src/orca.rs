@@ -44,8 +44,6 @@ const NUDGE_FILE: &str = "convoy-nudged";
 const BACKGROUND_FILE: &str = "convoy-background";
 /// When the worker here was started (epoch seconds), beside the brief.
 const START_FILE: &str = "convoy-started";
-/// The complete line handed to Orca, with credential values removed.
-const COMMAND_FILE: &str = "convoy-worker-command";
 /// Where a stage that writes nothing started here (`guard::WritesNothing`).
 const WRITES_NOTHING_FILE: &str = "convoy-writes-nothing";
 /// The comment of the `blocked` verdict a worker was last started again over.
@@ -1087,7 +1085,6 @@ impl Worktree {
         let handle = made["terminal"]["handle"].as_str();
         let handle =
             handle.ok_or_else(|| anyhow!("orca terminal create returned no terminal handle"))?;
-        std::fs::write(self.note(COMMAND_FILE)?, startup_redacted(&command))?;
         self.observed_terminals(1);
         self.forget(crate::health::SIGNAL_FILE)?;
         let file = self.note(START_FILE)?;
@@ -1140,6 +1137,8 @@ impl Worktree {
     /// Waits until the agent in `terminal` is ready for a prompt. A trust
     /// question names a gap in the launch configuration; it is never answered
     /// at the terminal, where the worker's brief could become the answer.
+    /// `command` is the line given to `start`, including network settings;
+    /// its `niced` wrapper is derived from the same worktree-owned TMPDIR.
     pub fn await_ready(
         &self,
         terminal: &str,
@@ -1154,8 +1153,10 @@ impl Worktree {
             Waited::Ready => Ok(()),
             Waited::AtTrustPrompt => Err(TrustGap {
                 harness,
-                command: std::fs::read_to_string(self.note(COMMAND_FILE)?)
-                    .unwrap_or_else(|_| startup_redacted(command)),
+                command: startup_redacted(&niced(
+                    &worker_tmp::of(&self.path).display().to_string(),
+                    command,
+                )),
                 worktree: self.path.display().to_string(),
                 terminal: terminal.to_string(),
                 seconds: timeout_seconds,
