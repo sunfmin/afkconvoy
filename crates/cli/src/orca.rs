@@ -1447,7 +1447,7 @@ mod tests {
             r#"{"text":"\ud800\u12"}"#,
             r#"{"text":"\u+800"}"#,
             r#"{"text":"\uD8XZ"}"#,
-            r#"{"text":"\udf13"}"#,
+            r#"{"text":"\udf13}"#,
             r#"{"text":"\udf13"} trailing"#,
             r#"{"text":\udf13}"#,
             "\"\\udf13\n\"",

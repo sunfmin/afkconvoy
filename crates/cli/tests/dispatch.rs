@@ -44,6 +44,7 @@ fn a_brief_with_lone_surrogates_in_the_screen_and_receipt_is_judged_on_the_recei
         .replace("SURROGATE", r"\udf17");
         world.with_orca(|orca| {
             orca["raw_answers"] = json!({
+                "terminal wait": r#"{"ok":true,"result":{"wait":{"satisfied":true,"preview":"⏺\ud800"}}}"#,
                 "terminal send": receipt,
                 "terminal read": r#"{"ok":true,"result":{"terminal":{"tail":["⏺\udf13"],"source":"screen"}}}"#
             });
@@ -66,6 +67,26 @@ fn a_brief_with_lone_surrogates_in_the_screen_and_receipt_is_judged_on_the_recei
             .map(|terminal| terminal["sent"].as_array().unwrap().len())
             .sum();
         assert_eq!(sent, 1, "the brief is submitted exactly once");
+    }
+}
+
+#[test]
+fn an_orca_error_with_a_lone_surrogate_and_non_json_output_still_fail() {
+    for (text, reason) in [
+        (
+            r#"{"ok":false,"error":{"code":"agent_prompt_blocked","details":{"reason":"Reason ⏺\udf13"}}}"#,
+            "agent_prompt_blocked: Reason ⏺�",
+        ),
+        (
+            r#"{"ok":false,"error":{"code":"terminal_not_writable","message":"⏺\ud800"}}"#,
+            "orca terminal send failed: terminal_not_writable",
+        ),
+        ("not JSON", "orca terminal send failed: not JSON"),
+    ] {
+        let world = ready_world();
+        world.with_orca(|orca| orca["raw_answers"] = json!({"terminal send": text}));
+        let error = dispatch(&world, "7").error();
+        assert!(error.contains(reason), "{error}");
     }
 }
 
