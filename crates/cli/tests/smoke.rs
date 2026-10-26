@@ -14,7 +14,7 @@ use std::process::{Command, Stdio};
 
 use afkconvoy::kept::keep_under;
 use afkconvoy_core::harness::Harness;
-use afkconvoy_core::line::quoted;
+use afkconvoy_core::line::Line;
 use afkconvoy_core::role::{Facts, On, Start, Told};
 use serde_json::{Value, json};
 
@@ -47,6 +47,10 @@ fn write(dir: &Path, file: &str, text: &str) {
     std::fs::write(path, text).unwrap();
 }
 
+fn quoted(text: &str) -> String {
+    Line::new().word(text).own()
+}
+
 fn skill(name: &str) -> String {
     format!(
         "---\nname: {name}\ndescription: A throwaway skill of afkconvoy's smoke test\n---\nSay {name}.\n"
@@ -68,7 +72,7 @@ fn lines(log: &Path) -> Vec<String> {
     std::fs::read_to_string(log).unwrap_or_default().lines().map(str::to_string).collect()
 }
 
-fn events(log: &Path) -> Vec<Value> {
+fn receipts(log: &Path) -> Vec<Value> {
     lines(log).iter().map(|line| serde_json::from_str(line).unwrap()).collect()
 }
 
@@ -172,7 +176,7 @@ fn real_claude_code_started_in_a_role_keeps_host_rules_opt_in_and_enforces_both_
         assert!(init["model"].as_str().unwrap().contains("haiku"), "{}", init["model"]);
         assert!(init["memory_paths"].is_null(), "{}", init["memory_paths"]);
 
-        let sources = self::events(&sources_log);
+        let sources = receipts(&sources_log);
         println!("host_user={host_user}: rule sources: {sources:?}");
         let loaded = |file: PathBuf| sources.iter().any(|event| event["file_path"] == text(&file));
         for (name, word, file) in [
@@ -212,7 +216,10 @@ fn real_claude_code_started_in_a_role_keeps_host_rules_opt_in_and_enforces_both_
             .map(|part| part["content"].to_string())
             .collect();
         let shown_once = |what: &str| shown.iter().filter(|text| text.contains(what)).count() == 1;
-        assert!(shown_once("smoke"), "the allowed Bash command did not run: {shown:?}");
+        assert!(
+            shown.iter().any(|text| text == r#""smoke\n""#),
+            "the allowed Bash command did not run: {shown:?}"
+        );
         assert!(shown_once(ROLE_SAYS), "the role's hook refused nothing: {shown:?}");
         assert!(
             shown_once(
