@@ -109,9 +109,13 @@ pub(crate) fn tree(pids: &[u32]) -> String {
         return "(no process left)\n".to_string();
     }
     let listed: Vec<String> = pids.iter().map(u32::to_string).collect();
-    let out = Command::new("ps")
-        .args(["-ww", "-o", "pid,ppid,rss,%cpu,command", "-p", &listed.join(",")])
-        .output();
+    let out = crate::process::output(Command::new("ps").args([
+        "-ww",
+        "-o",
+        "pid,ppid,rss,%cpu,command",
+        "-p",
+        &listed.join(","),
+    ]));
     out.map(|out| String::from_utf8_lossy(&out.stdout).into_owned())
         .unwrap_or_else(|error| format!("(ps could not be run: {error})\n"))
 }
@@ -122,10 +126,9 @@ fn sample(pid: Option<u32>, file: &Path) -> String {
     if !cfg!(target_os = "macos") {
         return format!("The hottest process was {pid}; this host has no `sample`.\n");
     }
-    let ran = Command::new("sample")
-        .args([&pid.to_string(), SAMPLED_FOR, "-mayDie", "-file"])
-        .arg(file)
-        .output();
+    let ran = crate::process::output(
+        Command::new("sample").args([&pid.to_string(), SAMPLED_FOR, "-mayDie", "-file"]).arg(file),
+    );
     match ran {
         Ok(out) if out.status.success() => {
             format!("The hottest process, {pid}, sampled into `{}`.\n", file.display())
@@ -147,7 +150,7 @@ fn largest(dir: &Path) -> String {
     if paths.is_empty() {
         return "(nothing in it)\n".to_string();
     }
-    let out = Command::new("du").arg("-sk").args(&paths).output();
+    let out = crate::process::output(Command::new("du").arg("-sk").args(&paths));
     let Ok(out) = out else { return "(du could not be run)\n".to_string() };
     let mut sized: Vec<(u64, String)> = String::from_utf8_lossy(&out.stdout)
         .lines()

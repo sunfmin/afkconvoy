@@ -181,12 +181,10 @@ impl std::error::Error for PromptBlocked {}
 impl Asked {
     fn of(args: &[&str]) -> Result<Asked> {
         let what = args.iter().take(2).copied().collect::<Vec<_>>().join(" ");
-        let out = Command::new("orca")
-            .args(args)
-            .arg("--json")
-            .current_dir(asked_from())
-            .output()
-            .with_context(|| format!("orca {what} could not run"))?;
+        let out = crate::process::output(
+            Command::new("orca").args(args).arg("--json").current_dir(asked_from()),
+        )
+        .with_context(|| format!("orca {what} could not run"))?;
         Ok(Asked {
             what,
             exited_ok: out.status.success(),
