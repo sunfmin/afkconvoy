@@ -636,6 +636,29 @@ impl Worktree {
             "stateStartedAt": agent["stateStartedAt"], "programStatus": agent["programStatus"]}))
     }
 
+    /// A terminal just created or confirmed closed supersedes this tick's
+    /// old row. Keep no agent or output from the session it replaced. A
+    /// newly created terminal is present, with its start time kept by start,
+    /// so later steps cannot mistake the continuation for a gone worker.
+    fn observed_terminals(&self, count: u64) {
+        OBSERVATION.with(|slot| {
+            if let Some(Ok(ps)) = slot.borrow_mut().as_mut()
+                && let Some(rows) = ps["worktrees"].as_array_mut()
+            {
+                let at = rows.iter().position(|row| {
+                    row["path"].as_str().is_some_and(|p| same_dir(Path::new(p), &self.path))
+                });
+                let at = at.unwrap_or_else(|| {
+                    rows.push(serde_json::json!({"path": self.path}));
+                    rows.len() - 1
+                });
+                rows[at]["agents"] = serde_json::json!([]);
+                rows[at]["lastOutputAt"] = Value::Null;
+                rows[at]["liveTerminalCount"] = serde_json::json!(count);
+            }
+        });
+    }
+
     /// The terminal a worker here would be in: the one that wrote last.
     pub fn terminal(&self) -> Result<Option<String>> {
         let listed = orca(&["terminal", "list", "--worktree", &self.selector()])?;
@@ -712,17 +735,7 @@ impl Worktree {
         if self.terminal()?.is_none() {
             // A closed worker's old identity cannot override the replacement
             // that starts later in this tick. Other workers keep their view.
-            OBSERVATION.with(|slot| {
-                if let Some(Ok(ps)) = slot.borrow_mut().as_mut()
-                    && let Some(rows) = ps["worktrees"].as_array_mut()
-                    && let Some(row) = rows.iter_mut().find(|row| {
-                        row["path"].as_str().is_some_and(|p| same_dir(Path::new(p), &self.path))
-                    })
-                {
-                    row["agents"] = serde_json::json!([]);
-                    row["liveTerminalCount"] = serde_json::json!(0);
-                }
-            });
+            self.observed_terminals(0);
         }
         Ok(())
     }
@@ -1027,6 +1040,7 @@ impl Worktree {
         let handle = made["terminal"]["handle"].as_str();
         let handle =
             handle.ok_or_else(|| anyhow!("orca terminal create returned no terminal handle"))?;
+        self.observed_terminals(1);
         let file = self.note(START_FILE)?;
         std::fs::write(&file, now.to_string())
             .with_context(|| format!("cannot write {}", file.display()))?;
