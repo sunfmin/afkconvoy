@@ -300,7 +300,7 @@ fn a_dispatch_answers_with_the_stage_and_the_commits_fixed_for_it() {
         started["stage"],
         json!({"flow": "audit", "name": "look", "role": "reviewer", "skill": "review",
             "writes": false, "consult": false, "harness": "claude-code", "model": "opus",
-            "role_commit": reviewer, "role_dir": copy(&world, "acme/reviewer", &reviewer),
+            "skipped": [], "role_commit": reviewer, "role_dir": copy(&world, "acme/reviewer", &reviewer),
             "team_commit": team, "team_dir": copy(&world, "acme/team", &team)})
     );
     // A role the roster names none for runs the host kit's one model, and

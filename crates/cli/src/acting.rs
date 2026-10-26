@@ -97,6 +97,7 @@ impl Acting {
     /// answers is the wake's whole answer.
     pub fn end(&self, now: u64, ended: anyhow::Result<Value>) -> anyhow::Result<Value> {
         match &ended {
+            Ok(answer) if self.command == "switch" => self.log_switch(now, answer),
             Ok(answer) => self.log(now, outcome(self.command, answer), false),
             Err(error) => self.log(now, format!("{error:#}"), true),
         }
@@ -113,12 +114,41 @@ impl Acting {
         Ok(answer)
     }
 
+    /// A switch that crosses checkouts leaves each moved worker's explanation
+    /// in that worker's own tick log, not only in the invoking checkout's.
+    fn log_switch(&self, now: u64, answer: &Value) {
+        let moved = answer["switched"].as_array().cloned().unwrap_or_default();
+        if moved.is_empty() {
+            self.log(now, switch_outcome(answer), false);
+            return;
+        }
+        for one in moved {
+            let checkout = one["checkout"]
+                .as_str()
+                .map(|path| Repo::new(path.into()))
+                .or_else(|| self.checkout.clone());
+            let mut line = Acting::new("switch").in_checkout(checkout);
+            line.instance = self.instance.clone();
+            line.on = one["issue"]
+                .as_u64()
+                .map(|issue| format!("#{issue}"))
+                .or_else(|| one["patrol"].as_str().map(|name| format!("patrol {name}")))
+                .or_else(|| self.on.clone());
+            line.log(now, switch_outcome(&json!({"switched": [one]})), false);
+        }
+    }
+
     fn log(&self, now: u64, outcome: String, failed: bool) {
+        let outcome = if self.command == "switch" {
+            outcome.split_whitespace().collect::<Vec<_>>().join(" ")
+        } else {
+            one_line(&outcome)
+        };
         let what = What::Command {
             command: self.command.to_string(),
             on: self.on.clone(),
             by: by(self.command).to_string(),
-            outcome: one_line(&outcome),
+            outcome,
             failed,
         };
         let instance = self.instance.clone().unwrap_or_default();
@@ -157,6 +187,34 @@ fn one_line(text: &str) -> String {
     }
 }
 
+/// Every worker a switch moved, with every candidate skipped before its
+/// successor and what would make that candidate eligible.
+fn switch_outcome(answer: &Value) -> String {
+    let mut moved = vec![];
+    for one in answer["switched"].as_array().into_iter().flatten() {
+        let worker = one["issue"]
+            .as_u64()
+            .map(|issue| format!("#{issue}"))
+            .or_else(|| one["patrol"].as_str().map(|name| format!("patrol {name}")))
+            .unwrap_or_else(|| one["worktree"].as_str().unwrap_or("worker").to_string());
+        let mut said = format!(
+            "{worker}: {} to {}",
+            one["from"].as_str().unwrap_or_default(),
+            one["to"].as_str().unwrap_or_default()
+        );
+        for skipped in one["skipped"].as_array().into_iter().flatten() {
+            said.push_str(&format!(
+                "; skipped {}: {} (to make it eligible: {})",
+                skipped["harness"].as_str().unwrap_or_default(),
+                skipped["why"].as_str().unwrap_or_default(),
+                skipped["fix"].as_str().unwrap_or_default()
+            ));
+        }
+        moved.push(said);
+    }
+    moved.join("; ")
+}
+
 /// How a command that acted came out, in a few words, from what it answers.
 pub fn outcome(command: &str, answer: &Value) -> String {
     let word = |key: &str| answer[key].as_str().map(str::to_string);
@@ -165,6 +223,7 @@ pub fn outcome(command: &str, answer: &Value) -> String {
         numbers.map(|number| format!("#{number}")).collect::<Vec<_>>().join(", ")
     };
     let said = match command {
+        "switch" => Some(switch_outcome(answer)),
         "park" => Some(format!("blocked by {}", issues("blocked_by"))),
         "escalate" | "close" | "nudge" | "restart" | "abandon" => word("action"),
         "dispatch" => Some(match answer["started"].as_bool() {

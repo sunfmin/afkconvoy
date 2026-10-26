@@ -346,6 +346,60 @@ pub fn write(now: u64) -> Result<Value> {
     Ok(json!({"path": file, "written": true, "kit": kit, "left_out": left_out}))
 }
 
+/// Lists, probes and researches only `harness`, merging the result into the
+/// latest kit without changing its order. A harness added by a switch stays
+/// command-only when listing or every probe fails, so its start fault remains
+/// visible instead of the entry disappearing.
+pub fn write_one(harness: Harness, now: u64) -> Result<Value> {
+    let host = Host::here(now)?;
+    let file = path()?;
+    let _writing = writing(&file)?;
+    let mut current = load_at(&file)?;
+    let found = |candidate| {
+        if candidate == harness {
+            (host.found)(candidate)
+        } else {
+            Err("not part of this targeted refresh".into())
+        }
+    };
+    let only = Host { found: &found, ..host };
+    let before = Kit {
+        cast: current.cast,
+        harnesses: current
+            .harnesses
+            .iter()
+            .filter(|held| held.harness == harness)
+            .cloned()
+            .collect(),
+        stock_consult: None,
+    };
+    let (mut repaired, left_out) = compose(&before, &only, Writing::Refresh);
+    let answered = repaired.harnesses.first().is_some_and(|held| !held.models.is_empty());
+    if answered {
+        crate::kit_research::research(&current, &mut repaired, now, only.research);
+        if let Some(held) = current.harnesses.iter_mut().find(|held| held.harness == harness) {
+            *held = repaired.harnesses.remove(0);
+        }
+        store(&file, &current, now)?;
+        resume_answered(&current, now)?;
+    }
+    eprint!("{}", report(&file.display().to_string(), &current, &left_out));
+    Ok(json!({"path": file, "written": answered, "kit": current, "left_out": left_out}))
+}
+
+/// Runs a targeted refresh in a process detached from the switch's answer.
+/// The caller invokes this only after writing that answer to stdout.
+pub fn refresh_after_answer(harness: Harness) -> Result<()> {
+    let mut command = std::process::Command::new(std::env::current_exe()?);
+    command
+        .args(["kit", "--harness", harness.key()])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    command.spawn()?;
+    Ok(())
+}
+
 /// Resolves a switch before any mutation. A model must identify exactly one
 /// harness as well as one model within it; all its usual names match.
 pub fn switch_target(harness: Option<Harness>, model: Option<&str>) -> Result<Named> {
@@ -396,18 +450,19 @@ pub fn set_cast(enabled: bool) -> Result<Value> {
     Ok(json!({"path": file, "cast": enabled, "changed": changed}))
 }
 
-/// Promotes an existing harness and optionally one of its models, preserving
-/// all contents, other relative orders and probe age under one lock.
+/// Promotes a harness and optionally one of its models, preserving all
+/// contents, other relative orders and probe age under one lock. An installed
+/// harness not held yet is added on its stock command with no model: a worker
+/// starts on its login's default while its targeted refresh runs afterwards.
 pub fn prefer(harness: Harness, model: Option<&str>) -> Result<Value> {
     let file = path()?;
     let _lock = mutation_lock(&file)?;
     let mut kit = load_at(&file)?;
     let before: Vec<_> = kit.harnesses.iter().map(|held| held.harness).collect();
-    let at = kit.harnesses.iter().position(|held| held.harness == harness).with_context(|| {
-        format!("the host kit does not hold `{}`: run `afkconvoy kit`", harness.key())
-    })?;
+    let at = kit.harnesses.iter().position(|held| held.harness == harness);
     let model_at = model
         .map(|name| {
+            let at = at.context("a model switch names an existing kit harness")?;
             kit.harnesses[at].models.iter().position(|seen| seen.model == name).with_context(|| {
                 format!(
                     "the host kit no longer holds model `{name}` of {}; run switch again",
@@ -416,13 +471,20 @@ pub fn prefer(harness: Harness, model: Option<&str>) -> Result<Value> {
             })
         })
         .transpose()?;
-    let changed = at != 0 || model_at.is_some_and(|at| at != 0);
+    let added = at.is_none();
+    let changed = added || at != Some(0) || model_at.is_some_and(|at| at != 0);
     if changed {
-        let held = kit.harnesses.remove(at);
+        let held = match at {
+            Some(at) => kit.harnesses.remove(at),
+            None => Held { harness, command: harness.stock().to_string(), models: vec![] },
+        };
         kit.harnesses.insert(0, held);
         let mut raw: Value = serde_json::from_slice(&std::fs::read(&file)?)?;
         let entries = raw["harnesses"].as_array_mut().context("kit harnesses must be an array")?;
-        let held = entries.remove(at);
+        let held = match at {
+            Some(at) => entries.remove(at),
+            None => json!({"harness": harness, "command": harness.stock(), "models": []}),
+        };
         entries.insert(0, held);
         if let Some(at) = model_at {
             let models =
@@ -436,7 +498,8 @@ pub fn prefer(harness: Harness, model: Option<&str>) -> Result<Value> {
         std::fs::rename(&temporary, &file)?;
     }
     Ok(json!({"harness": harness, "model": model, "path": file, "order_before": before,
-        "order": kit.harnesses.iter().map(|held| held.harness).collect::<Vec<_>>(), "changed": changed}))
+        "order": kit.harnesses.iter().map(|held| held.harness).collect::<Vec<_>>(),
+        "changed": changed, "added": added}))
 }
 
 fn mutation_lock(file: &Path) -> Result<std::fs::File> {
