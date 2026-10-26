@@ -28,11 +28,12 @@ use crate::git::Repo;
 /// however many of the issues have comments to read. `$owner` and `$repo`
 /// name the tracker (`GitHub::query`), `$labels` — where it is given — the
 /// repo label every issue read carries, and `gh api graphql` fills
-/// `$endCursor` in page after page.
+/// `$endCursor` in page after page. Forty issues keep the nested blocker
+/// labels and comments below GitHub's 500,000-node limit per query.
 pub const OPEN_ISSUES_QUERY: &str = "query($owner: String!, $repo: String!, $labels: [String!], \
     $endCursor: String) { \
     repository(owner: $owner, name: $repo) { \
-    issues(states: OPEN, labels: $labels, first: 100, after: $endCursor, \
+    issues(states: OPEN, labels: $labels, first: 40, after: $endCursor, \
     orderBy: {field: CREATED_AT, direction: DESC}) { \
     pageInfo { hasNextPage endCursor } \
     nodes { number title body url createdAt labels(first: 100) { nodes { name } } \
