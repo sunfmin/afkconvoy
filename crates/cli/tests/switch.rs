@@ -1006,13 +1006,18 @@ fn orcas_harness_overrules_a_wrong_record_for_quota_recovery_and_is_shown() {
     assert_eq!(open_commands(&world, &dir), [common::trusted("agent")]);
     assert!(!world.root.join("diagnosis-asked").exists());
     let health = world.afk(&["doctor", "--now", "801"]).ok();
-    let health = &health["host_kit"]["worker_health"];
+    let health = &health["host"]["host_kit"]["worker_health"];
     assert_eq!(health["workers"][0]["harness"], "codex");
     assert_eq!(health["workers"][0]["recorded_harness"], "claude-code");
     assert_eq!(health["workers"][0]["harness_mismatch"], true);
     assert_eq!(health["faults"][0]["harness"], "codex");
-    let panel = world.afk(&["panel", "--html", "--now", "801"]).ok();
-    let html = panel["html"].as_str().unwrap();
+    let panel = world
+        .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
+        .args(["panel", "--host", "h1", "--now", "801"])
+        .output()
+        .unwrap();
+    assert!(panel.status.success());
+    let html = String::from_utf8(panel.stdout).unwrap();
     assert!(html.contains("failure") && html.contains("codex") && html.contains("799000"));
     assert!(html.contains("recorded claude-code"));
 }

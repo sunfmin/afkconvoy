@@ -90,6 +90,12 @@ struct Observed {
     #[serde(deserialize_with = "crate::kit::harness")]
     harness: Harness,
     #[serde(default)]
+    recorded_harness: Option<String>,
+    #[serde(default)]
+    harness_mismatch: bool,
+    #[serde(default)]
+    orca: Value,
+    #[serde(default)]
     command_key: Option<String>,
     model: Option<String>,
     snapshots: Vec<Snapshot>,
@@ -532,7 +538,8 @@ pub fn reconcile(
             book.observations_failed.retain(|(path, _, _)| *path != worktree.path);
             continue;
         }
-        let busy_without_fault = state == WorkerState::Busy
+        let busy_without_fault = worktree.agent_report()?.is_null()
+            && state == WorkerState::Busy
             && classified(&worktree.health_report()?).is_none()
             && error_of(&worktree)?.is_empty();
         if state == WorkerState::Gone || busy_without_fault {
@@ -611,13 +618,6 @@ pub fn reconcile(
     }
     let mut events = vec![];
     for (issue, patrol, worktree) in jobs {
-        if book
-            .observations_failed
-            .iter()
-            .any(|(path, _, next)| *path == worktree.path && fleet.now < *next)
-        {
-            continue;
-        }
         let handled =
             observe(&mut book, fleet, me, agent, &kit, issue, patrol.as_deref(), &worktree);
         if let Err(e) = handled {
@@ -654,17 +654,28 @@ fn observe(
         return Ok(());
     };
     let state = worktree.state(fleet.now)?;
+    let orca = worktree.agent_report()?;
+    let working = orca["state"] == "working";
     let harness = worktree.harness()?.unwrap_or(Harness::DEFAULT);
+    let recorded = worktree.recorded_harness()?;
+    let mismatch = recorded.is_some_and(|h| h != harness);
     let repo = Repo::new(worktree.path.clone());
     let model = std::fs::read_to_string(worktree.note("convoy-worker-model")?)
         .ok()
         .filter(|m| !m.is_empty());
     let binding = std::fs::read_to_string(worktree.note("convoy-worker-command-key")?)
         .ok()
-        .filter(|s| !s.is_empty());
-    let output = worktree.screen(&terminal, 100)?;
+        .filter(|s| !s.is_empty())
+        .filter(|key| {
+            !mismatch
+                || kit
+                    .harnesses
+                    .iter()
+                    .any(|h| h.harness == harness && *key == command_key(&h.command))
+        });
+    let output = if working { vec![] } else { worktree.screen(&terminal, 100)? };
     let signal = error_of(worktree)?;
-    let processes = crate::hot::listed_checked()?;
+    let processes = if working { vec![] } else { crate::hot::listed_checked()? };
     let activity: Vec<_> = crate::hot::tree(&processes, &worktree.path)
         .into_iter()
         .map(|p| json!({"pid":p.pid,"parent":p.ppid,"cpu_ms":p.cpu_ms,"resident_bytes":p.resident}))
@@ -690,6 +701,9 @@ fn observe(
             path: worktree.path.clone(),
             terminal: terminal.clone(),
             harness,
+            recorded_harness: None,
+            harness_mismatch: false,
+            orca: Value::Null,
             model: model.clone(),
             command_key: binding.clone(),
             snapshots: vec![],
@@ -708,7 +722,7 @@ fn observe(
             error: None,
         },
     };
-    if observed.terminal != terminal {
+    if observed.terminal != terminal || observed.harness != harness {
         if observed.action == "continued" {
             observed.continuations = 0;
             observed.failed_candidates.clear();
@@ -725,6 +739,31 @@ fn observe(
         observed.diagnosis = None;
         observed.diagnosis_failures.clear();
         observed.action = "observing".into();
+    }
+    // A failed turn is actionable at its first observation, including a
+    // worker previously held until its next diagnosis. Repeated identical
+    // failures still obey the existing retry and recovery bounds.
+    let newly_failed =
+        orca["state"] == "done" && orca["outcome"] == "failure" && observed.orca != orca;
+    if newly_failed {
+        observed.next_check = fleet.now;
+    }
+    observed.harness = harness;
+    observed.recorded_harness = recorded.map(|h| h.key().to_string());
+    observed.harness_mismatch = mismatch;
+    observed.orca = orca;
+    if working {
+        observed.action = "healthy".into();
+        observed.source = "orca worktree ps".into();
+        observed.error = None;
+        observed.diagnosis = None;
+        observed.diagnosis_failures.clear();
+        observed.snapshots.clear();
+        observed.attempts = 0;
+        observed.next_check = fleet.now;
+        observed.background = None;
+        book.workers.push(observed);
+        return Ok(());
     }
     let changed =
         observed.snapshots.last().is_some_and(|s| s.output != output || s.progress != progress);
@@ -837,7 +876,9 @@ fn decide(
     let rule = classified(raw_error)
         .map(|rule| ("structured rule", rule))
         .or_else(|| terminal_rule(observed.harness, output).map(|rule| ("terminal rule", rule)));
-    if rule.is_none()
+    let failed = observed.orca["state"] == "done" && observed.orca["outcome"] == "failure";
+    if !failed
+        && rule.is_none()
         && let Some(background) = crate::judge::own_background(fleet, worktree, true)?
     {
         observed.action = "waiting for background work".into();
@@ -846,7 +887,7 @@ fn decide(
     }
     observed.background = None;
     let quiet = fleet.now.saturating_sub(observed.snapshots.first().map_or(fleet.now, |s| s.at));
-    if rule.is_none() && (state == WorkerState::Busy || quiet < OBSERVE_SECONDS) {
+    if !failed && rule.is_none() && (state == WorkerState::Busy || quiet < OBSERVE_SECONDS) {
         observed.action = if state == WorkerState::Busy { "healthy" } else { "observing" }.into();
         return Ok(());
     }

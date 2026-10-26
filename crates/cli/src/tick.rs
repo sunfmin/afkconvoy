@@ -138,6 +138,7 @@ pub fn tick(
     stop: &Stop,
     before: Option<&Before>,
 ) -> Result<(Ticked, Fleet)> {
+    let _observation = crate::orca::Observation::begin();
     // Each harness paused on this host is probed every hour (docs/adr/0020):
     // one that answers is back in the host kit for this tick's rebuild. A
     // probe that cannot be made leaves it paused, and costs the tick nothing.

@@ -1157,12 +1157,24 @@ fn kit(out: &mut String, host: &Host) {
         );
     }
     if let Some(workers) = host.worker_health["workers"].as_array().filter(|w| !w.is_empty()) {
-        out.push_str("<section data-worker-health><h2>Worker recovery</h2><table><tr><th>Worker</th><th>Action / successor</th><th>Evidence source</th><th>Next check</th><th>Evidence / failure</th></tr>");
+        out.push_str("<section data-worker-health><h2>Worker recovery</h2><table><tr><th>Worker</th><th>Orca state / outcome / agent type / since (epoch ms)</th><th>Action / successor</th><th>Evidence source</th><th>Next check</th><th>Evidence / failure</th></tr>");
         for worker in workers {
             let _ = write!(
                 out,
-                "<tr><td>{}</td><td>{} {}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+                "<tr><td>{}</td><td>{} / {} / {} / {}{}</td><td>{} {}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
                 esc(worker["path"].as_str().unwrap_or("")),
+                esc(worker["orca"]["state"].as_str().unwrap_or("unknown")),
+                esc(worker["orca"]["outcome"].as_str().unwrap_or("none")),
+                esc(worker["orca"]["agentType"].as_str().unwrap_or("unknown")),
+                worker["orca"]["stateStartedAt"],
+                if worker["harness_mismatch"] == true {
+                    format!(
+                        " (recorded {}; Orca's harness is used)",
+                        esc(worker["recorded_harness"].as_str().unwrap_or("unknown"))
+                    )
+                } else {
+                    String::new()
+                },
                 esc(worker["action"].as_str().unwrap_or("")),
                 esc(worker["successor"].as_str().unwrap_or("")),
                 esc(worker["source"].as_str().unwrap_or("")),

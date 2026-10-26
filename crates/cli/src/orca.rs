@@ -1,6 +1,7 @@
 //! orca, as a subprocess: it owns every worktree, branch and terminal a worker
 //! lives in. Nothing here creates or removes one any other way.
 
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
@@ -68,6 +69,75 @@ const CUT_LOG_FILE: &str = "convoy-cut.log";
 const PS_LIMIT: &str = "1000";
 /// What orca says holds up a worker asking whether its folder is trusted.
 const TRUST_PROMPT: &str = "agent-trust-workspace";
+
+thread_local! {
+    /// One read-only view per tick, dropped even when the tick fails. Each
+    /// fleet runs on its own thread, so another checkout never shares it.
+    static OBSERVATION: RefCell<Option<Result<Value, String>>> = const { RefCell::new(None) };
+}
+
+/// Holds a host-wide runtime observation for one tick or read-only command.
+/// Errors are shared too: an unreachable Orca never becomes an empty host.
+pub(crate) struct Observation(Option<Result<Value, String>>);
+
+impl Observation {
+    pub(crate) fn begin() -> Self {
+        let observed = runtime_live().map_err(|e| format!("{e:#}"));
+        Self(OBSERVATION.with(|slot| slot.replace(Some(observed))))
+    }
+}
+
+impl Drop for Observation {
+    fn drop(&mut self) {
+        OBSERVATION.with(|slot| slot.replace(self.0.take()));
+    }
+}
+
+fn runtime_live() -> Result<Value> {
+    let ps = orca(&["worktree", "ps", "--limit", PS_LIMIT])?;
+    if ps["truncated"] == true {
+        bail!("orca worktree ps was cut short at {PS_LIMIT} rows");
+    }
+    ps["worktrees"].as_array().context("orca worktree ps returned no rows")?;
+    Ok(ps)
+}
+
+fn runtime() -> Result<Value> {
+    match OBSERVATION.with(|slot| slot.borrow().clone()) {
+        Some(observed) => observed.map_err(|e| anyhow!(e)),
+        None => runtime_live(),
+    }
+}
+
+fn runtime_row(ps: &Value, path: &Path) -> Value {
+    ps["worktrees"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|row| row["path"].as_str().is_some_and(|p| same_dir(Path::new(p), path)))
+        .cloned()
+        .unwrap_or(Value::Null)
+}
+
+/// The newest top-level agent speaks for a worktree, as `worker::lead`
+/// does. Child panes cannot change the worker's harness or outcome.
+fn main_agent(row: &Value) -> Value {
+    row["agents"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|a| a["state"].is_string() && a["parentPaneKey"].is_null())
+        .max_by_key(|a| a["stateStartedAt"].as_u64().unwrap_or(0))
+        .cloned()
+        .unwrap_or(Value::Null)
+}
+
+pub(crate) fn agent_harness(agent: &Value) -> Option<Harness> {
+    match agent["agentType"].as_str()? {
+        "claude" => Some(Harness::ClaudeCode),
+        key => Harness::read(key),
+    }
+}
 
 /// One `orca … --json` call → its `result` object. An error when orca cannot
 /// be run, exits non-zero, or answers `ok: false` — never an empty answer.
@@ -452,7 +522,7 @@ impl Worktree {
     pub fn on_host() -> Result<Vec<OnHost>> {
         let repos = orca(&["repo", "list"])?;
         let listed = orca(&["worktree", "list"])?;
-        let ps = orca(&["worktree", "ps", "--limit", PS_LIMIT])?;
+        let ps = runtime()?;
         Ok(on_host(&repos, &listed, &ps))
     }
 
@@ -532,15 +602,7 @@ impl Worktree {
     /// page of `ps` that was cut short is an error: an orca that cannot say is
     /// never "no worker there".
     pub fn state(&self, now: u64) -> Result<WorkerState> {
-        let ps = orca(&["worktree", "ps", "--limit", PS_LIMIT])?;
-        if ps["truncated"] == true {
-            bail!("orca worktree ps was cut short at {PS_LIMIT} rows");
-        }
-        let rows = ps["worktrees"].as_array().cloned().unwrap_or_default();
-        let row = rows.iter().find(|row| {
-            row["path"].as_str().is_some_and(|path| same_dir(Path::new(path), &self.path))
-        });
-        let Some(row) = row else { return Ok(WorkerState::Gone) };
+        let row = self.health_report()?;
         // orca's clocks are epoch milliseconds
         let seconds = |stamp: &Value| stamp.as_u64().map(|ms| ms / 1000);
         let agents: Vec<AgentReport> = row["agents"]
@@ -560,16 +622,18 @@ impl Worktree {
     /// Actual structured runtime observations for diagnosis. A transport
     /// failure is an error, never evidence that an agent has stopped.
     pub fn health_report(&self) -> Result<Value> {
-        let ps = orca(&["worktree", "ps", "--limit", PS_LIMIT])?;
-        if ps["truncated"] == true {
-            bail!("cannot diagnose from truncated worktree ps");
+        Ok(runtime_row(&runtime()?, &self.path))
+    }
+
+    /// Orca's state, outcome, agent type and timestamps for this worker.
+    pub fn agent_report(&self) -> Result<Value> {
+        let agent = main_agent(&self.health_report()?);
+        if agent.is_null() {
+            return Ok(Value::Null);
         }
-        let rows = ps["worktrees"].as_array().context("orca worktree ps returned no rows")?;
-        Ok(rows
-            .iter()
-            .find(|row| row["path"].as_str().is_some_and(|p| same_dir(Path::new(p), &self.path)))
-            .cloned()
-            .unwrap_or(Value::Null))
+        Ok(serde_json::json!({"state": agent["state"],
+            "outcome": agent["mainAgent"]["outcome"], "agentType": agent["agentType"],
+            "stateStartedAt": agent["stateStartedAt"], "programStatus": agent["programStatus"]}))
     }
 
     /// The terminal a worker here would be in: the one that wrote last.
@@ -645,6 +709,21 @@ impl Worktree {
             return Ok(());
         }
         orca(&["terminal", "close", "--worktree", &self.selector(), "--all"])?;
+        if self.terminal()?.is_none() {
+            // A closed worker's old identity cannot override the replacement
+            // that starts later in this tick. Other workers keep their view.
+            OBSERVATION.with(|slot| {
+                if let Some(Ok(ps)) = slot.borrow_mut().as_mut()
+                    && let Some(rows) = ps["worktrees"].as_array_mut()
+                    && let Some(row) = rows.iter_mut().find(|row| {
+                        row["path"].as_str().is_some_and(|p| same_dir(Path::new(p), &self.path))
+                    })
+                {
+                    row["agents"] = serde_json::json!([]);
+                    row["liveTerminalCount"] = serde_json::json!(0);
+                }
+            });
+        }
         Ok(())
     }
 
@@ -659,7 +738,9 @@ impl Worktree {
             let processes = crate::hot::listed_checked()?;
             let writers = crate::hot::tree(&processes, &self.path);
             let old_alive = processes.iter().any(|p| pids.contains(&p.pid));
-            let report = self.health_report()?;
+            // Termination must be confirmed after close, never against the
+            // tick's earlier observation of the running agent.
+            let report = runtime_row(&runtime_live()?, &self.path);
             let agents = report["agents"].as_array();
             let agent_alive = agents.is_some_and(|agents| {
                 agents.iter().any(|a| {
@@ -845,10 +926,16 @@ impl Worktree {
             .with_context(|| format!("cannot write {}", file.display()))
     }
 
-    /// The harness the worker here was last started on, where a start kept it.
-    pub fn harness(&self) -> Result<Option<Harness>> {
+    /// The harness the start recorded. Kept separately so doctor can name
+    /// a disagreement without rewriting the evidence.
+    pub fn recorded_harness(&self) -> Result<Option<Harness>> {
         let kept = std::fs::read_to_string(self.note(HARNESS_FILE)?).unwrap_or_default();
         Ok(Harness::read(kept.trim()))
+    }
+
+    /// The harness actually running: Orca's agent type wins over the record.
+    pub fn harness(&self) -> Result<Option<Harness>> {
+        Ok(agent_harness(&self.agent_report()?).or(self.recorded_harness()?))
     }
 
     /// Keeps the harness the worker here is started on.
