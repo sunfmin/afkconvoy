@@ -1299,6 +1299,9 @@ fn tick_lines(answer: &Value) -> Vec<String> {
 
 #[test]
 fn a_checkouts_concurrency_a_run_says_holds_at_its_next_tick_and_nothing_is_started_again() {
+    // It waits for four ticks of a fleet instance that holds claims: a second
+    // of its sleeps takes 10ms, so each comes 0.9s after the last, not 9s.
+    const RUN: [&str; 5] = ["run", "--host", "h1", "--second-ms", "10"];
     let world = World::new();
     for issue in [7, 8, 9, 10] {
         world.issue(issue, &["ready-for-agent"]);
