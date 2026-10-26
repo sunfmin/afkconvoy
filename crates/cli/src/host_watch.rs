@@ -590,7 +590,7 @@ fn brief(watch: &Watch) -> String {
          When a lasting fix needs code, make it yourself, even if that repo's fleet cannot \
          start a worker. In the affected repo create a linked worktree on a branch of your \
          own from its configured base branch. Name its directory `{CHECKOUT}` or \
-         `{CHECKOUT}-<digits>` so `afkconvoy land --watch` accepts it; never reuse an \
+         `{CHECKOUT}-<digits>` so `afkconvoy land --watch` accepts it; never reuse \
          another worker's checkout. Work only in your own checkout of that \
          repo. Commit and push each completed piece before a long operation. Open its PR \
          against that repo's base branch, on no issue: no intake or flow label is needed, in \

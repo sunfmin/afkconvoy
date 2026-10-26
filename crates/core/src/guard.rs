@@ -1008,7 +1008,7 @@ mod tests {
     }
 
     #[test]
-    fn an_watch_is_the_operator_on_its_host_whatever_its_facts_say() {
+    fn a_watch_is_the_operator_on_its_host_whatever_its_facts_say() {
         // Started with a consult's facts, it is no consult all the same.
         let limits = watch();
         assert_eq!(
@@ -1046,7 +1046,7 @@ mod tests {
     }
 
     #[test]
-    fn an_watch_ends_only_what_the_fleets_of_its_host_started() {
+    fn a_watch_ends_only_what_the_fleets_of_its_host_started() {
         let limits = watch();
         let why = |line: &str| {
             refused(&Call::shell(line), &limits).unwrap_or_else(|| panic!("allowed: {line}"))
@@ -1068,7 +1068,7 @@ mod tests {
     }
 
     #[test]
-    fn an_watch_never_deletes_what_cannot_be_rebuilt() {
+    fn a_watch_never_deletes_what_cannot_be_rebuilt() {
         let limits = watch();
         let why = |line: &str| {
             refused(&Call::shell(line), &limits).unwrap_or_else(|| panic!("allowed: {line}"))
@@ -1101,7 +1101,7 @@ mod tests {
     }
 
     #[test]
-    fn an_watch_pushes_no_base_branch_and_forces_nothing() {
+    fn a_watch_pushes_no_base_branch_and_forces_nothing() {
         let limits = watch();
         let why = |line: &str| {
             refused(&Call::shell(line), &limits).unwrap_or_else(|| panic!("allowed: {line}"))

@@ -189,7 +189,7 @@ fn an_explicit_abandon_of_a_historically_nudged_train_keeps_prs_and_builds() {
 }
 
 #[test]
-fn an_watch_s_pr_alone_on_a_train_given_up_is_joined_again_by_the_fleet() {
+fn a_watch_s_pr_alone_on_a_train_given_up_is_joined_again_by_the_fleet() {
     let world = World::new();
     world.set_gate("true");
     // A watch's change of the repo on the train, and nothing of the fleet's own.

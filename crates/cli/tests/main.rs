@@ -33,7 +33,6 @@ mod help;
 mod host_runner;
 mod host_sleep;
 mod host_watch;
-mod hot;
 mod intake;
 mod joining;
 mod kimi;

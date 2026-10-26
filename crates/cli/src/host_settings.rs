@@ -54,7 +54,7 @@ pub struct Settings {
     /// percent of the checkout's.
     pub admit_disk: Option<u64>,
     /// `--admit-inspect-after`: the seconds admission holds back for one
-    /// reason before the host is inspected.
+    /// reason before the host calls for a watch.
     pub admit_inspect_after: Option<u64>,
     /// `--exclusive-seconds`: seconds a running command may hold others up.
     pub exclusive_seconds: Option<u64>,

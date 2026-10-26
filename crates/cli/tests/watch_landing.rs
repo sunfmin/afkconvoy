@@ -1,5 +1,5 @@
 //! A watch's change lands on no issue, through the landing train.
-use crate::common::{self, World, commit, git};
+use crate::common::{World, commit, git};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
@@ -97,7 +97,7 @@ fn a_watch_s_change_is_gated_and_lands_on_the_watch_path_on_no_issue() {
 }
 
 #[test]
-fn an_watch_s_change_lands_in_a_bound_repo_with_no_intake_nor_flow_label() {
+fn a_watch_s_change_lands_in_a_bound_repo_with_no_intake_nor_flow_label() {
     let team = "```yaml\nroles:\n  dev: acme/dev\n```\n";
     let feature = "```yaml\nstages:\n  - name: build\n    by: dev\n    do: implement\n    \
                    on: { pass: done }\n```\n";
@@ -112,7 +112,7 @@ fn an_watch_s_change_lands_in_a_bound_repo_with_no_intake_nor_flow_label() {
 }
 
 #[test]
-fn only_an_watch_lands_by_the_watch_and_only_its_branch_s_pr() {
+fn only_a_watch_lands_by_the_watch_and_only_its_branch_s_pr() {
     let world = World::new();
     world.set_gate("true");
     let elsewhere = world.afk(&["land", "--watch"]).error();
@@ -127,7 +127,7 @@ fn only_an_watch_lands_by_the_watch_and_only_its_branch_s_pr() {
 }
 
 #[test]
-fn with_a_fleet_lock_standing_an_watch_s_pr_joins_nothing() {
+fn with_a_fleet_lock_standing_a_watch_s_pr_joins_nothing() {
     let world = World::new();
     world.set_gate("true");
     world.issue(5, &["fleet-lock"]);

@@ -610,7 +610,7 @@ fn a_resource_trigger_while_a_watch_runs_waits_for_its_next_look() {
     until(&world, "hot reading", || {
         let file = world.cache().join("afkconvoy/watch/resources.json");
         let saved = std::fs::read_to_string(file).unwrap_or_default();
-        saved.contains("resident")
+        saved.contains("resident").then_some(())
     });
     assert_eq!(starts(&world).len(), 1, "no second watch while the first runs");
     printed(&world, &first, &["checked pi"], Some(0));

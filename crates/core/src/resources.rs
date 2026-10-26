@@ -5,11 +5,11 @@ use serde::{Deserialize, Serialize};
 use crate::admission::Hold;
 
 /// How long, in seconds, admission holds back for one reason before the host
-/// is inspected, where the host says no span of its own.
+/// calls for a watch, where the host says no span of its own.
 pub const SPAN: u64 = 600;
 
 /// How long, in seconds, admission admits before an episode ends: holding
-/// back after that is a new one, and the host is inspected again.
+/// back after that is a new one, and the host calls for a new watch.
 pub const ADMITTED_FOR: u64 = 300;
 
 /// What admission held new workers back for.
@@ -101,7 +101,7 @@ impl Holding {
 
     /// The host watch due at `now` under a span of `span` seconds: for
     /// the reason held back for longest, once that is `span` or more, unless
-    /// the host was inspected in this episode.
+    /// coverage belongs to the host watch.
     pub fn due(&self, now: u64, span: u64) -> Option<Due> {
         let episode = self.episode?;
         let mut due: Option<Due> = None;

@@ -543,7 +543,7 @@ mod tests {
     }
 
     #[test]
-    fn an_watch_s_pr_joins_on_no_issue_and_reads_back_by_its_host() {
+    fn a_watch_s_pr_joins_on_no_issue_and_reads_back_by_its_host() {
         let host = Of::Watch("felixmbp14".into());
         let message = join_message("Queue the gates", 45, &host, &Tracker::Own);
         assert_eq!(message, "Queue the gates (#45)\n\nBy a watch on felixmbp14\n");

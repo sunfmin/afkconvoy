@@ -43,7 +43,7 @@ const DEPTH: &str = "4";
 /// How many of the largest directories of the volume are listed.
 const LARGEST: usize = 40;
 
-/// What the inspecting fleet knows of its own worktrees.
+/// What the observing fleet knows of its own worktrees.
 pub struct Own<'a> {
     /// Its repo's main checkout.
     pub repo: &'a Path,
@@ -55,9 +55,9 @@ pub struct Own<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Listed {
     pub on: OnHost,
-    /// Whether it is of the inspecting fleet's repo.
+    /// Whether it is of the observing fleet's repo.
     pub own: bool,
-    /// Its issue's stage, of the inspecting fleet's issues.
+    /// Its issue's stage, of the observing fleet's issues.
     pub stage: Option<String>,
     /// What git ignores in it — what its builds made — and the files git
     /// tracks; `None` where it cannot be read.
@@ -68,7 +68,7 @@ pub struct Listed {
 /// Takes down what a host watch for `reason` is given, `admission`
 /// being what held back → the file it is in.
 pub fn take(admission: &Admission, reason: Reason, reading: &str, own: &Own) -> Result<PathBuf> {
-    let dir = cache()?.join(DIR);
+    let dir = cache()?.join(DIR).join(format!("{}-{}", reason.word(), crate::unique()));
     std::fs::create_dir_all(&dir).with_context(|| format!("cannot make {}", dir.display()))?;
     let on_host = Worktree::on_host()?;
     let mut out = format!("# What a host watch for {} was given\n\n", reason.word());
