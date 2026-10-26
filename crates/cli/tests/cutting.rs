@@ -5,6 +5,7 @@ use afkconvoy_core::{cut::CHECKOUT, worker::is_worktree_named};
 use common::{BASE, CONFIG, World, git};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 /// The `publish` line that says, in the world, what it published with which
@@ -438,7 +439,9 @@ fn an_idle_tick_starts_one_cut_of_the_next_patch_and_a_peer_starts_none() {
 fn a_cut_shows_its_plan_and_each_step_around_the_commands_output() {
     let world = cutting_publishing(|world| {
         format!(
-            "printf 'publish stdout\\n'\nprintf 'publish stderr\\n' >&2\n{}\nprintf 'no final newline'",
+            "printf 'publish stdout\\n'\nprintf 'publish stderr\\n' >&2\n\
+             while test ! -f '{}'; do sleep 0.01; done\n{}\nprintf 'no final newline'",
+            world.root.join("finish-publish").display(),
             says_published(world)
         )
     });
@@ -456,9 +459,37 @@ fn a_cut_shows_its_plan_and_each_step_around_the_commands_output() {
     commit_config(&world, &config, "Make the steps visible");
     assert_eq!(cut(&tick_as(&world, "alpha", 10_000)), ["cut done"]);
     let checkout = checkout(&world);
-    let answer = world.afk_in(&checkout, &["cut", "--host", "h1", "--second-ms", "10"]);
-    let screen = answer.stderr.clone();
-    let answer = answer.ok();
+    let screen_file = world.root.join("cut-screen");
+    let mut child = world
+        .command(env!("CARGO_BIN_EXE_afkconvoy"), &checkout)
+        .args(["cut", "--host", "h1", "--second-ms", "10"])
+        .stdout(Stdio::piped())
+        .stderr(std::fs::File::create(&screen_file).unwrap())
+        .spawn()
+        .unwrap();
+    // Publish cannot end until this test has seen its output: progress
+    // buffered until the cut exits would fail this handshake.
+    let until = Instant::now() + Duration::from_secs(30);
+    let during = loop {
+        let screen = std::fs::read_to_string(&screen_file).unwrap();
+        if screen.contains("publish stderr\n")
+            || child.try_wait().unwrap().is_some()
+            || Instant::now() >= until
+        {
+            break screen;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    std::fs::write(world.root.join("finish-publish"), "go\n").unwrap();
+    let output = child.wait_with_output().unwrap();
+    let screen = std::fs::read_to_string(screen_file).unwrap();
+    assert!(
+        during.contains("[afkconvoy] cut: publish started\npublish stdout\npublish stderr\n"),
+        "{screen}"
+    );
+    assert!(!during.contains("[afkconvoy] cut: publish passed"), "{during}");
+    assert!(output.status.success(), "{screen}");
+    let answer: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(answer["tag"], "v0.1.1", "{answer}");
     assert_eq!(answer["took"].as_array().unwrap().len(), 6, "{answer}");
     let first = screen.lines().next().unwrap();
