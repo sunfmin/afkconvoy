@@ -91,6 +91,31 @@ fn an_orca_error_with_a_lone_surrogate_and_non_json_output_still_fail() {
 }
 
 #[test]
+fn a_brief_orca_cannot_observe_is_delivered_for_worker_health_to_judge() {
+    let world = ready_world();
+    world.with_orca(|orca| {
+        orca["raw_answers"] = json!({
+            "terminal wait": r#"{"ok":true,"result":{"wait":{"satisfied":true,"preview":"⏺"}}}"#,
+            "terminal send": r#"{"ok":true,"result":{"send":{"accepted":true,
+                "prompt":{"stages":["input_accepted"],"observation":"unsupported",
+                "provider":"unsupported"}}}}"#,
+            "terminal read": r#"{"ok":true,"result":{"terminal":{"tail":["⏺ Working…"],"source":"screen"}}}"#
+        });
+    });
+    let answer = dispatch(&world, "7").ok();
+    assert_eq!(answer["started"], true, "{answer}");
+    let sent: usize = world
+        .orca()
+        ["terminals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|terminal| terminal["sent"].as_array().unwrap().len())
+        .sum();
+    assert_eq!(sent, 1, "the brief is submitted exactly once");
+}
+
+#[test]
 fn an_accepted_brief_that_starts_no_turn_is_a_failed_start_on_every_harness() {
     for harness in afkconvoy_core::harness::Harness::ALL {
         for screen in [
