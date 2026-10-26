@@ -15,8 +15,9 @@
 //! the host that the worker started, which keeps the `TMPDIR` it was started
 //! with — sccache's makes a directory under it for every compile, whoever
 //! asks for it. So before a worktree is removed its link is turned, in one
-//! step, to the fleet's own temporary directory, and a link no worktree
-//! holds is removed once no process started with it runs.
+//! step, to `retired` beside the links, independent of any caller's TMPDIR.
+//! A link no worktree holds is removed only after a successful observation
+//! finds no process started with it.
 
 use std::io::ErrorKind;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt};
@@ -59,14 +60,14 @@ pub fn make(worktree: &Path) -> Result<PathBuf> {
     Ok(link)
 }
 
-/// Turns the link of the worktree at `worktree` to the fleet's own temporary
-/// directory, before the worktree is removed: a process started with it that
+/// Turns the link of the worktree at `worktree` to the host's durable
+/// temporary directory, before the worktree is removed: a process started with it that
 /// outlives the worktree still has a directory there. A worktree no worker
 /// was started in has no link, and one turned already is left as it is.
 pub fn retire(worktree: &Path) -> Result<()> {
     let link = of(worktree);
     if std::fs::read_link(&link).is_ok_and(|to| to == worktree.join(TMP_DIR)) {
-        turn(&link, &std::env::temp_dir())
+        turn(&link, &retired()?)
             .with_context(|| format!("cannot turn the worker's TMPDIR {}", link.display()))?;
     }
     Ok(())
@@ -75,12 +76,13 @@ pub fn retire(worktree: &Path) -> Result<()> {
 /// Reclaims the links no worktree holds — turned at its removal, or left
 /// pointing at nothing by one removed some other way: each no running process
 /// was started with is removed; one a process was — a server shared by the
-/// host — is kept, and turned to the fleet's own temporary directory where
-/// it points at nothing.
+/// host — is kept, and turned to the host's durable temporary directory where
+/// it points at nothing. A failed process listing reclaims nothing: it is
+/// no evidence that a server has ended.
 pub fn reclaim() -> Result<()> {
     let Ok(entries) = std::fs::read_dir(links()) else { return Ok(()) };
     // A worktree holds its own link while it is there: turned, the link
-    // points at a directory of the fleet's, which may be a worker's own.
+    // points at the host's durable directory, outside every worktree.
     let held = |link: &Path, to: &Path| {
         to.file_name() == Some(TMP_DIR.as_ref())
             && to.parent().is_some_and(|worktree| of(worktree) == link)
@@ -97,12 +99,12 @@ pub fn reclaim() -> Result<()> {
     if unheld.is_empty() {
         return Ok(());
     }
-    let procs = hot::listed();
+    let procs = hot::listed_checked()?;
     for (link, to) in unheld {
         let tmp = link.display().to_string();
         if procs.iter().any(|proc| hot::started_with(proc, &tmp)) {
             if !to.is_dir() {
-                turn(&link, &std::env::temp_dir())?;
+                turn(&link, &retired()?)?;
             }
             continue;
         }
@@ -153,7 +155,19 @@ fn links() -> PathBuf {
 /// The directory of this user's links, made if it was not; an error where
 /// it is not this user's own, as a link put in it would not be either.
 fn own_links() -> Result<PathBuf> {
-    let dir = links();
+    own_dir(links())
+}
+
+/// The directory a retired link points at: short, owned by this user, and
+/// beside the links so it outlives every worktree and caller's TMPDIR. It
+/// is not a worktree key, so reclaim never removes it.
+fn retired() -> Result<PathBuf> {
+    own_dir(own_links()?.join("retired"))
+}
+
+/// Makes `dir` private to this user, refusing a directory owned by another
+/// user or a symlink, just as for the directory holding the links.
+fn own_dir(dir: PathBuf) -> Result<PathBuf> {
     match std::fs::DirBuilder::new().mode(0o700).create(&dir) {
         Err(error) if error.kind() != ErrorKind::AlreadyExists => {
             return Err(error).with_context(|| format!("cannot make {}", dir.display()));
@@ -285,7 +299,7 @@ mod tests {
         // removed some other way than the fleet's: it points at nothing, and
         // is turned
         std::fs::remove_dir_all(&worktree).unwrap();
-        assert_eq!(reclaimed(), Some(std::env::temp_dir()));
+        assert_eq!(reclaimed(), Some(retired().unwrap()));
         assert!(tmp.is_dir(), "the server still has a directory there");
 
         server.kill().unwrap();
