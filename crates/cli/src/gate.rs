@@ -11,9 +11,7 @@ use afkconvoy_core::config::Config;
 use afkconvoy_core::gate::{
     GateCommand, GreenRun, Ran, Recording, Tree, after_run, at_limit, record_ref,
 };
-use afkconvoy_core::layout::GATE_KIND;
 use afkconvoy_core::lock::named;
-use afkconvoy_core::train::{last_green, train_refs, under_repair};
 use anyhow::{Context, Result, anyhow};
 use serde_json::{Value, json};
 
@@ -272,49 +270,6 @@ pub fn gated(
     }
 }
 
-/// What a worker's branch takes in before its own gate run → (the commit, what
-/// to call it): the train's tip — or, while the train is under repair, its
-/// newest commit below the red one with a green run on record, else the base
-/// branch.
-fn lands_behind(
-    repo: &Repo,
-    config: &Config,
-    command: &GateCommand,
-) -> Result<(String, &'static str)> {
-    let train = Train::read(repo, config)?;
-    let ahead = train.tip != train.base;
-    if !ahead {
-        return Ok((train.base, "the base branch"));
-    }
-    let red = repo.fetched(&train_refs(repo.layout(), &config.base_branch).red)?;
-    let marked = match &red {
-        Some(red) => Some((repo.within(red, &train.base)?, repo.within(red, &train.tip)?)),
-        None => None,
-    };
-    let Some(red) = red.filter(|_| under_repair(ahead, marked)) else {
-        return Ok((train.tip, "the landing train"));
-    };
-    let layout = repo.layout();
-    let on_record = repo.git(&["ls-remote", REMOTE, &layout.every(GATE_KIND)])?;
-    let range = format!("{}..{red}^", train.base);
-    let listed = repo.git(&["log", "--first-parent", "--format=%H %T", &range])?;
-    let below: Vec<(&str, bool)> = listed
-        .lines()
-        .filter_map(|row| row.split_once(' '))
-        .map(|(commit, tree)| {
-            let name = record_ref(layout, &Tree::named(tree), command);
-            (commit, on_record.lines().any(|row| row.ends_with(&format!("\t{name}"))))
-        })
-        .collect();
-    let green = last_green(&below, &train.base);
-    let what = if green == train.base {
-        "the base branch"
-    } else {
-        "the landing train's last green commit"
-    };
-    Ok((green.to_string(), what))
-}
-
 /// `afkconvoy gate`: a worker's run of the gate, in the worktree it is called
 /// from, on `host`, under the config's gate limit. The log streams to the
 /// worker's terminal; the answer says how long the run took and whether it is
@@ -322,7 +277,7 @@ fn lands_behind(
 ///
 /// `train`: the branch first takes in what its PR will land behind — the
 /// train's tip, or the base branch when there is no train — by a merge, never
-/// a rebase (`lands_behind`). So a conflict with what is on the train is met before the run,
+/// a rebase. So a conflict with what is on the train is met before the run,
 /// and a green run is of the very tree the PR joins the train with. A merge
 /// that conflicts is left in progress and no gate runs.
 ///
@@ -350,9 +305,9 @@ pub fn gate(repo: &Repo, config: &Config, train: bool, host: &str, now: u64) -> 
     if train {
         let mut files = unmerged(repo)?;
         if files.is_empty() {
-            let (commit, what) = lands_behind(repo, config, &command)?;
-            files = merge_in(repo, &commit, what)?;
-            merged = Some(commit);
+            let train = Train::read(repo, config)?;
+            files = merge_in(repo, &train.tip, "the landing train")?;
+            merged = Some(train.tip);
         }
         if !files.is_empty() {
             return Ok(json!({"status": "conflict", "files": files, "recorded": false,

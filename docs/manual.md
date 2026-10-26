@@ -1957,7 +1957,7 @@ afkconvoy wake [CHECKOUT]
 
 #### `afkconvoy exclusive`
 
-Run a heavy command alone on this host, once no other `exclusive` command runs (a worker's command)
+Run a heavy command in this host's worker lanes (a worker's command)
 
 ##### When to run it
 
@@ -1983,7 +1983,7 @@ The queue is the host runner's (`afkconvoy run --help`), held in its process: `e
 
 It writes a line to the tick log of this host for this repo as it starts to wait, when another command is ahead of it; as its command runs — in its turn, or at once in no queue, with why; as it waits again, in the next host runner's queue; and as it ends, with its exit status. Its lines name the worker, train or repo lane. `doctor` and the panel show each lane's running and waiting commands, with the counts in force. A turn logs the commit it merged, whether its gate was green and its join.
 
-While it waits or runs, the fleet counts the worker busy, not silent: it is not nudged for that. The wait and run count toward the command's gate limit (`gate_seconds`). A worker with confirmed live background work remains waiting even past the observation interval; silence alone does not authorize escalation or continuation.
+While it waits or runs, the fleet counts the worker busy, not silent: it is not nudged for that. Waiting for a turn uses none of the gate limit (`gate_seconds`); the limit times the gate command once the turn starts. A worker with confirmed live background work remains waiting even past the observation interval; silence alone does not authorize escalation or continuation.
 
 ##### What it answers
 
