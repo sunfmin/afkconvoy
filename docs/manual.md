@@ -33,7 +33,7 @@ A watch is the operator for every repo on the host's checkout list. It trusts wo
 
 And whenever something looks wrong: `afkconvoy doctor` — it changes nothing, and names each fix.
 
-A stopped worker's health is classed by rule first. Jev is used only where the host settings name a Jev key command (`afkconvoy run --jev-key-command`): it then judges what the rules cannot class, and the worker's latest screen is sent to TypeSafe; no harness is asked. Without a key — or where the command, TypeSafe or Jev's answers settle nothing — what the rules cannot class goes to the operator and the watch: `doctor` names the worker, with the reason and a line of its screen.
+After rules, Jev judges screens sent to TypeSafe only with `run --jev-key-command`. Without a key or settled answer, workers go to the operator and watch: `help roster`.
 
 ## What a command answers
 
