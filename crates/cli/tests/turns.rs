@@ -131,6 +131,34 @@ fn a_missing_tip_record_is_gated_in_the_train_lane_before_any_worker_turn() {
     assert!(worker_gate.exists());
 }
 
+#[test]
+fn a_lock_issue_takes_its_turn_on_a_red_tip_and_its_fix_joins_first() {
+    let world = World::new();
+    // The base branch is red: its gate needs the file only the fix adds.
+    world.set_gate("test -f fixed.txt");
+    let fix = world.worker(7, "fixed.txt", "fixed");
+    world.issue(7, &["fleet-lock"]);
+    let mut child = start(&world, &fix, &world.cache(), 7);
+    let began = Instant::now();
+    while child.try_wait().unwrap().is_none() {
+        if began.elapsed() > Duration::from_secs(60) {
+            child.kill().unwrap();
+            panic!("the lock issue's turn waited for a green tip its own fix makes green");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let answer = finish(child);
+    assert_eq!(answer["outcome"], "joined", "{answer}");
+    let train = world.root.join("convoy-train");
+    git(
+        &world.clone,
+        &["worktree", "add", "-q", "--detach", train.to_str().unwrap(), "origin/main"],
+    );
+    let landed = world.afk_in(&train, &["land", "--train", "--merged-timeout", "0"]).ok();
+    assert_eq!(landed["gate"]["source"], "recorded", "{landed}");
+    assert_eq!(landed["commit"], answer["commit"]);
+}
+
 fn heavy(world: &World) {
     let gate = afkconvoy_core::line::Line::new()
         .program(env!("CARGO_BIN_EXE_afkconvoy"))
