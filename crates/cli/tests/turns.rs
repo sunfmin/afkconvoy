@@ -78,7 +78,8 @@ fn two_turns_land_in_order_with_a_record_of_each_landed_tree_and_no_line() {
     assert_eq!(a["outcome"], "merged", "{a}");
     assert_eq!(b["outcome"], "merged", "{b}");
     assert_eq!(b["merged"], a["commit"], "the tip is read when its turn starts");
-    assert!(two.join("one.txt").exists());
+    assert!(!two.join("one.txt").exists(), "candidate merges preserve the source worktree");
+    assert_eq!(world.remote(&["show", "refs/heads/main:one.txt"]), "one");
     assert_eq!(world.remote(&["rev-parse", "refs/heads/main"]), b["commit"].as_str().unwrap());
     assert!(world.remote(&["for-each-ref", "--format=%(refname)", LINE]).is_empty());
     for answer in [&a, &b] {
@@ -179,7 +180,7 @@ fn heavy(world: &World) {
 }
 
 #[test]
-fn two_worker_lanes_run_two_repos_but_a_second_turn_of_one_repo_waits() {
+fn two_worker_lanes_bound_candidates_and_leave_capacity_available_across_repos() {
     let (a, b) = (World::new(), World::new());
     heavy(&a);
     heavy(&b);
@@ -190,10 +191,10 @@ fn two_worker_lanes_run_two_repos_but_a_second_turn_of_one_repo_waits() {
     let _runner = a.host_held();
     let first = start(&a, &one, &a.cache(), 1);
     until(|| a.root.join("started").exists());
-    let second = start(&a, &another, &a.cache(), 2);
-    until(|| workers_waiting(&a) == 1);
     let third = start(&b, &other_repo, &a.cache(), 3);
     until(|| b.root.join("started").exists());
+    let second = start(&a, &another, &a.cache(), 2);
+    until(|| workers_waiting(&a) == 1);
     assert!(!another.join("held.txt").exists(), "the second turn has not merged yet");
     let doctor = a.afk(&["doctor"]).json;
     assert_eq!(doctor["host"]["settings"]["in_force"]["gate_lanes"], 2);
@@ -207,7 +208,8 @@ fn two_worker_lanes_run_two_repos_but_a_second_turn_of_one_repo_waits() {
     assert_eq!(finish(first)["outcome"], "merged");
     assert_eq!(finish(third)["outcome"], "merged");
     assert_eq!(finish(second)["outcome"], "merged");
-    assert!(another.join("held.txt").exists());
+    assert!(!another.join("held.txt").exists(), "source heads stay intact");
+    assert_eq!(a.remote(&["show", "refs/heads/main:held.txt"]), "one");
 }
 
 #[test]
