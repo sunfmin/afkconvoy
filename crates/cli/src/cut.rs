@@ -352,6 +352,9 @@ pub fn says(repo: &Repo, row: &Row) -> Option<String> {
     };
     let last = crate::log::Log::of(repo).ok().and_then(|log| log.read()).and_then(|entries| {
         entries.into_iter().rev().find_map(|entry| match entry.what {
+            What::CutEnded { said, superseded: Some(why), .. } => {
+                Some(format!("{said} — stopped at `tag`, without tagging: {why}"))
+            }
             What::CutEnded { said, failed, .. } => Some(match failed {
                 Some(failed) => format!("{said} — FAILED {failed}"),
                 None => said,

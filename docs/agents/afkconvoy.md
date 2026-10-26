@@ -83,7 +83,6 @@ patch/minor selection applies and the declaration is ignored. `plan` shows
 the declaration as `cut.initial` while there is no version tag.
 
 ```yaml cut
-busy_after_seconds: 3600
 set: |
   set -ex
   packaging/release.sh set "$VERSION"
@@ -96,6 +95,13 @@ publish: |
   brew update --quiet
   brew upgrade sunfmin/tap/afkconvoy
   test "$("$(brew --prefix)/bin/afkconvoy" --version)" = "afkconvoy $VERSION"
+```
+
+The bound is in a second cut block: afkconvoy versions that know cut steps
+but not this key read only the first one and skip this addition.
+
+```yaml cut
+busy_after_seconds: 3600
 ```
 
 - `set -ex` first: `sh` runs on past a line that fails and judges the step by

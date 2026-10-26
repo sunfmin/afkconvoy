@@ -2404,17 +2404,20 @@ enum Command {
     /// ~~~markdown
     /// ```yaml cut
     /// initial: 0.1.0
-    /// busy_after_seconds: {const:CUT_BUSY_AFTER_SECONDS}
     /// set: ./packaging/set-version.sh "$VERSION"
     /// publish: |
     ///   ./packaging/release.sh publish "$VERSION"
     ///   brew upgrade acme/tap/widget
     /// ```
+    ///
+    /// ```yaml cut
+    /// busy_after_seconds: {const:CUT_BUSY_AFTER_SECONDS}
+    /// ```
     /// ~~~
     ///
     /// `set` and `publish` are required. Optional `initial` declares the first version, exactly X.Y.Z: three whole numbers without leading zeroes, a `v` prefix or a prerelease suffix. Without a version tag and without `initial`, nothing is cut. With it, the next idle tick cuts that exact version, whatever labels earlier PRs carry; after a version tag exists, `initial` is ignored and the usual patch/minor selection applies. No seed tag or manual release is needed.
     ///
-    /// Optional `busy_after_seconds` bounds how long the oldest landing past the newest tag waits for an idle fleet. Leaving it out means {const:CUT_BUSY_AFTER_SECONDS}s; zero permits a busy cut at the next tick. Its clock uses the landing commit's time on the base branch, rather than the age of commits on a side branch. It belongs in this cut block, so older versions that read only the first yaml block read past it. `plan`'s `cut` row gives `oldest_landing_age_seconds` and `busy_in_seconds`: zero means a busy cut may start now; null means no landing past a version tag.
+    /// Optional `busy_after_seconds` bounds how long the oldest landing past the newest tag waits for an idle fleet. Leaving it out means {const:CUT_BUSY_AFTER_SECONDS}s; zero permits a busy cut at the next tick. Its clock uses the landing commit's time on the base branch, rather than the age of commits on a side branch. Put this key in a second cut block as above: older versions that know cut steps read only the first cut block and skip the addition. All cut blocks form one mapping, and a key declared twice is refused. `plan`'s `cut` row gives `oldest_landing_age_seconds` and `busy_in_seconds`: zero means a busy cut may start now; null means no landing past a version tag.
     ///
     /// Each step is run by `sh -e` in the cut's checkout with the version, `0.5.17`, in `$VERSION`; what it prints goes to the cut's log, in the checkout's git dir (`convoy-cut.log`). Its lines run in order, and the first that fails fails the step: the lines after it are not run. Above, a publish that fails is not followed by the upgrade, which would find nothing newer and succeed. A line `set -e` changes nothing of that, and `set -ex` adds each line to the log as it runs. A repo whose file has no such block turns cutting off: nothing is cut. `afkconvoy config` answers the steps as `cut`, and `afkconvoy plan` says where the cut stands, including `initial` while there is no version tag.
     ///
@@ -2492,6 +2495,8 @@ enum Command {
     /// ## What it reads and writes
     ///
     /// It runs the command once no other `exclusive` command runs on this host — whatever its repo, whatever its fleet — and waits in a queue until then. The landing train's commands go ahead of every waiting worker's or inspection's command: a landing unblocks every PR on the train, later conflicts and the next cut. Trains keep the order they asked between them, as do other commands between them. Priority never interrupts a running command. The train is known by its worktree, including when its worker runs `gate --train` or `land --train` runs the gate; a worker's `gate --train` in its own worktree has ordinary priority. A train asks once for each landing, so a worker waits behind at most one train gate per repo on the host, plus what runs now and the ordinary commands already ahead of it.
+    ///
+    /// A cut's commands share the train's priority, known by the cut's own worktree. Trains and cuts keep request order among themselves, ahead of waiting ordinary commands, so queued worker gates cannot run out a busy cut's time limit. A worker may therefore also wait behind a cut's gate or publish step. The cut's runs line says "runs ahead of N waiting commands, as a cut's".
     ///
     /// The queue is the host runner's (`afkconvoy run --help`), held in its process: `exclusive` asks it on its socket, naming its checkout, and stays on the line while it waits and while its command runs. A process that leaves it — its command ended, or it was killed while waiting or running — frees its place for the next. The command runs in the directory `exclusive` is run in, or with `-C <dir>` in that one, as named: a checkout of the repo or a directory in one, and not that checkout's top.
     ///
