@@ -225,7 +225,12 @@ pub(super) fn models_question(command: &str, kept: &str) -> String {
 /// The line that sends `model` of pi's the one-line `prompt` through
 /// `command`, under the user directory `kept` a worker of it is given, and
 /// prints its answer.
-pub(super) fn prompt_question(command: &str, kept: &str, model: Option<&str>, prompt: &str) -> String {
+pub(super) fn prompt_question(
+    command: &str,
+    kept: &str,
+    model: Option<&str>,
+    prompt: &str,
+) -> String {
     let line = Line::new()
         .fixed("export ")
         .fixed(USER_DIR)
