@@ -567,30 +567,43 @@ fn a_cut_tags_the_commit_that_landed_it_and_publishes_with_the_tag_checked_out()
 }
 
 #[test]
-fn a_patch_that_holds_a_pr_labelled_for_a_minor_version_is_tagged_nothing() {
-    let world = cutting();
-    assert_eq!(cut(&tick_as(&world, "alpha", 10_000)), ["cut done"]);
-    let checkout = checkout(&world);
-    // While it ran, a PR labelled for a minor version landed before its own.
-    land(&world, "Add a gadget (#9)");
-    world.with_gh(|gh| {
-        let pr = json!({"number": 9, "title": "Add a gadget", "headRefName": "nine",
-            "headRefOid": "", "body": "", "state": "merged", "labels": ["release:minor"]});
-        gh["prs"].as_array_mut().unwrap().push(pr);
-    });
-    its_pr_lands(&world, &checkout);
+fn a_minor_landing_before_or_after_the_cuts_own_landing_supersedes_the_patch() {
+    for minor_after_cut in [false, true] {
+        let world = cutting();
+        assert_eq!(cut(&tick_as(&world, "alpha", 10_000)), ["cut done"]);
+        let checkout = checkout(&world);
+        // A minor may land on either side of the cut's own landing.
+        if minor_after_cut {
+            its_pr_lands(&world, &checkout);
+        }
+        land(&world, "Add a gadget (#9)");
+        world.with_gh(|gh| {
+            let pr = json!({"number": 9, "title": "Add a gadget", "headRefName": "nine",
+                "headRefOid": "", "body": "", "state": "merged", "labels": ["release:minor"]});
+            gh["prs"].as_array_mut().unwrap().push(pr);
+        });
+        if !minor_after_cut {
+            its_pr_lands(&world, &checkout);
+        }
 
-    let stopped = world.afk_in(&checkout, &["cut", "--from", "tag", "--host", "h1"]).ok();
-    assert_eq!(stopped["stopped"], "tag", "{stopped}");
-    assert!(stopped.get("failed").is_none(), "{stopped}");
-    assert!(stopped["why"].as_str().unwrap().contains("#9, labelled `release:minor`"), "{stopped}");
-    assert!(world.remote(&["tag", "--list", "v0.1.1"]).trim().is_empty(), "tagged nothing");
-    assert!(!world.root.join("published").exists());
-    assert_eq!(cut(&tick_as(&world, "alpha", 10_100)), ["end_cut superseded", "cut done"]);
-    assert!(failures(&world).is_empty(), "no human is needed");
-    assert_eq!(record(&self::checkout(&world))["version"], "0.2.0");
-    let said = logged(&world);
-    assert!(said.iter().any(|line| line.contains("stopped at `tag`, without tagging")), "{said:?}");
+        let stopped = world.afk_in(&checkout, &["cut", "--from", "tag", "--host", "h1"]).ok();
+        assert_eq!(stopped["stopped"], "tag", "{stopped}");
+        assert!(stopped.get("failed").is_none(), "{stopped}");
+        assert!(
+            stopped["why"].as_str().unwrap().contains("#9, labelled `release:minor`"),
+            "{stopped}"
+        );
+        assert!(world.remote(&["tag", "--list", "v0.1.1"]).trim().is_empty(), "tagged nothing");
+        assert!(!world.root.join("published").exists());
+        assert_eq!(cut(&tick_as(&world, "alpha", 10_100)), ["end_cut superseded", "cut done"]);
+        assert!(failures(&world).is_empty(), "no human is needed");
+        assert_eq!(record(&self::checkout(&world))["version"], "0.2.0");
+        let said = logged(&world);
+        assert!(
+            said.iter().any(|line| line.contains("stopped at `tag`, without tagging")),
+            "{said:?}"
+        );
+    }
 }
 
 /// A line of a step that fails fails the step there, and the lines after it
