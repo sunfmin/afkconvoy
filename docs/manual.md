@@ -4035,7 +4035,7 @@ Each command reads the variable for itself, so two commands find the same copies
 
 #### What it holds
 
-- `copies/`: the fleet's copy of a team's repo and of each role's, one per commit, read-only: copies/<owner>/<repo>/<commit>. A worker of a bound repo starts in one; an unbound repo has none.
+- `copies/`: the fleet's copy of a team's repo and of each role's, one per commit, read-only: copies/<owner>/<repo>/<commit>. Derived copies name their kind and directory too. Claude Code's role copy is `<commit>-role+claude-code-<directory>` (the directory is empty for a whole repo), with an empty `.git` directory to bound native skill discovery. A worker of a bound repo starts in one; an unbound repo has none.
 - `harness/`: the user directory the fleet keeps for pi, Codex and Kimi Code, a worker's in place of yours: harness/pi, harness/codex, harness/kimi. A Kimi worker's role-specific home is under that directory, so concurrent roles do not share hooks or rules.
 - `runs/`: the tick log of each repo's fleet instance, one file per repo: what `doctor` reads. It keeps every line of the last 24 hours, and never fewer than 200 lines nor more than 5000, the oldest dropped first.
 - `checkouts.json`: the checkout list, the checkouts the host runner works, each with the `--instance`, `--host` and `--worker-no-proxy` its `run` named, and beside them the host settings (`afkconvoy run --help`); `checkouts.lock`, held while it is changed.
@@ -4104,6 +4104,8 @@ cd <the role's copy> && export <the stage's facts> && <worker launch command>
 ```
 
 The role's rules, skills and hooks load because it starts there. The repo's own rules load from the added worktree, and its hooks do not; the team rules load from the team's copy. Your own skills and rules load too, unless the team file says `host_user: false` ([`afkconvoy help team`](help:team)): the third directory added is the fleet's own (harness/claude-code-host-user under the cache directory), and holds links to your ~/.claude/skills and ~/.claude/CLAUDE.md and nothing else. A skill of the role's wins over one of yours of the same name. Nothing of your settings, hooks, MCP servers or plugins is loaded either way. The settings added hold the guard and orca's status report, as hooks, and the answer to the bypass warning. Outside a role, `--dangerously-skip-permissions` trusts the worktree and `--settings '{"skipDangerousModePermissionPrompt":true}'` answers the unattended warning; both are added when the command does not already carry them. A command you give must take `--add-dir`, `--setting-sources`, `--settings` and `--model`.
+
+The fleet's Claude Code role copy also holds an empty `.git` directory. It bounds native project skill discovery at the role, so a host profile above the cache cannot supply skills through ancestry when `host_user: false`. It holds no Git metadata or hooks. Opted-in host skills still load from the added directory, and the role's skill keeps its unprefixed name when names collide. Run the opt-in `smoke_claude_skills` test after upgrading Claude Code to verify this native discovery behavior.
 
 #### pi
 
