@@ -20,6 +20,10 @@ pub struct Ticket {
     pub dir: String,
     /// The issue of the worker that ran it, where its environment says one.
     pub issue: Option<u64>,
+    /// A cut goes ahead of waiting worker commands so their queue cannot
+    /// consume its time limit. Running commands keep their lanes.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cut: bool,
     /// A light gate's repo lane, independent of both host lanes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repo_lane: Option<String>,
@@ -97,9 +101,10 @@ pub fn in_order(mut queue: Vec<Ticket>) -> Vec<Ticket> {
     queue
 }
 
-/// Stable display order: running first, then lane, ask time and ticket.
-fn place(ticket: &Ticket) -> (bool, u64, u64) {
-    (ticket.ran.is_none(), ticket.asked, ticket.number)
+/// Running commands first, then waiting cuts, then other waiters; each
+/// group keeps ask time and ticket order within its lanes.
+fn place(ticket: &Ticket) -> (bool, bool, u64, u64) {
+    (ticket.ran.is_none(), !ticket.cut, ticket.asked, ticket.number)
 }
 
 /// Since when a worker in the worktree `dir` has waited in the queue — or run
@@ -158,7 +163,13 @@ pub fn rejoins_line(ticket: &Ticket) -> String {
 pub fn runs_line(ticket: &Ticket, now: u64, ahead_of: usize) -> String {
     let waited = now.saturating_sub(ticket.asked);
     let _ = ahead_of;
-    format!("runs `{}` in the {} lane, after waiting {waited}s", ticket.command, lane(ticket))
+    let line =
+        format!("runs `{}` in the {} lane, after waiting {waited}s", ticket.command, lane(ticket));
+    if ticket.cut {
+        format!("runs as a cut, ahead of waiting worker commands; {line}")
+    } else {
+        line
+    }
 }
 
 /// What the log says of a ticket whose command ended at `now`, as `ended`
@@ -179,6 +190,7 @@ mod tests {
             command: "cargo test".into(),
             dir: dir.into(),
             issue: Some(7),
+            cut: false,
             repo_lane: None,
             repo: None,
             is_turn: false,

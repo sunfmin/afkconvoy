@@ -392,7 +392,7 @@ fn carry_out(
             Some(row) => crate::cut::end(fleet, me, read.flows, row),
             None => Ok(Outcome::Nothing),
         },
-        TickStep::Cut => crate::cut::start(fleet, me, agent),
+        TickStep::Cut { busy } => crate::cut::start(fleet, me, agent, busy),
         TickStep::Cast => match &read.set.caster {
             Some(caster) => crate::caster::start(fleet, agent, &caster.to_cast),
             None => Ok(Outcome::Nothing),
@@ -426,7 +426,7 @@ fn words(step: TickStep) -> (&'static str, Option<u64>) {
         TickStep::Reclaim { issue } => ("reclaim", Some(issue)),
         TickStep::Dispatch { issue } => ("dispatch", Some(issue)),
         TickStep::EndCut => ("end_cut", None),
-        TickStep::Cut => ("cut", None),
+        TickStep::Cut { .. } => ("cut", None),
         TickStep::Cast => ("cast", None),
         TickStep::SlowGate => ("slow_gate", None),
         TickStep::Board { issue, .. } => ("board", Some(issue)),
@@ -674,6 +674,7 @@ impl Ticked {
                     Outcome::Lost => "lost",
                     Outcome::Blocked => "blocked",
                     Outcome::Gone => "gone",
+                    Outcome::Superseded => "superseded",
                     Outcome::Failed => "failed",
                 };
                 let mut did = self.named(*step);

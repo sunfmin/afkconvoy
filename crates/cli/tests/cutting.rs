@@ -42,6 +42,21 @@ fn land(world: &World, subject: &str) {
     git(&world.clone, &["push", "-q", "origin", BASE]);
 }
 
+/// A landing at a known time whose side-branch work was authored earlier.
+fn land_at(world: &World, subject: &str, when: u64) {
+    std::fs::write(world.clone.join("widget.txt"), subject).unwrap();
+    git(&world.clone, &["add", "widget.txt"]);
+    let out = world
+        .command("git", &world.clone)
+        .env("GIT_COMMITTER_DATE", format!("@{when} +0000"))
+        .env("GIT_AUTHOR_DATE", "@100 +0000")
+        .args(["commit", "-q", "-m", subject])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    git(&world.clone, &["push", "-q", "origin", BASE]);
+}
+
 /// Tags the base branch's tip `name`, and pushes the tag.
 fn tag(world: &World, name: &str) {
     git(&world.clone, &["tag", "-a", name, "-m", name]);
@@ -412,6 +427,51 @@ fn the_initial_cut_obeys_admission_and_a_fleet_lock() {
 }
 
 #[test]
+fn a_busy_fleet_cuts_at_the_age_bound_with_claims_and_a_frontier_left() {
+    let world = cutting();
+    let landed: u64 = git(&world.clone, &["log", "-1", "--format=%ct"]).trim().parse().unwrap();
+    for issue in 1..=4 {
+        world.issue(issue, &["ready-for-agent"]);
+    }
+    let before = tick_as(&world, "alpha", landed + 3599);
+    assert!(cut(&before).is_empty(), "{before}");
+    assert!(!claimed(&world));
+    let plan = planned(&world, "alpha", landed + 3599);
+    assert_eq!(plan["cut"]["oldest_landing_age_seconds"], 3599, "{plan}");
+    assert_eq!(plan["cut"]["busy_in_seconds"], 1, "{plan}");
+    let at_bound = tick_as(&world, "alpha", landed + 3600);
+    assert_eq!(cut(&at_bound), ["cut done"], "{at_bound}");
+    assert_eq!(at_bound["held"], 3, "the cut takes no slot: {at_bound}");
+    assert_eq!(at_bound["frontier_remaining"], 1, "{at_bound}");
+    assert!(logged(&world).iter().any(|line| line.contains("fleet busy")));
+    assert!(claimed(&world));
+    assert_eq!(standing(&world, "beta", landed + 3601), "peer_running");
+    assert!(cut(&tick_as(&world, "beta", landed + 3601)).is_empty());
+}
+
+#[test]
+fn a_repo_can_shorten_the_busy_bound_and_admission_does_not_hold_an_overdue_cut() {
+    let world = World::new();
+    commit_config(
+        &world,
+        &format!(
+            "{CONFIG}\n{}\n```yaml cut\nbusy_after_seconds: 120\n```\n",
+            cut_block(&says_published(&world))
+        ),
+        "Turn cutting on",
+    );
+    tag(&world, "v0.1.0");
+    land_at(&world, "Add a widget (#9)", 10_000);
+    land_at(&world, "Add a gadget (#10)", 10_100);
+    world.busy("1000");
+    let plan = planned(&world, "alpha", 10_119);
+    assert_eq!(plan["cut"]["oldest_landing_age_seconds"], 119, "{plan}");
+    assert_eq!(plan["cut"]["busy_in_seconds"], 1, "{plan}");
+    assert!(cut(&tick_as(&world, "alpha", 10_119)).is_empty());
+    assert_eq!(cut(&tick_as(&world, "alpha", 10_120)), ["cut done"]);
+}
+
+#[test]
 fn an_idle_tick_starts_one_cut_of_the_next_patch_and_a_peer_starts_none() {
     let world = cutting();
     assert_eq!(cut(&tick_as(&world, "alpha", 10_000)), ["cut done"]);
@@ -420,6 +480,7 @@ fn an_idle_tick_starts_one_cut_of_the_next_patch_and_a_peer_starts_none() {
     assert_eq!(record["version"], "0.1.1", "{record}");
     assert_eq!(record["prs"], json!([7]), "{record}");
     assert!(claimed(&world));
+    assert!(logged(&world).iter().any(|line| line.contains("fleet idle")));
     // The cut is this command, in a terminal of its checkout.
     let created =
         world.orca_calls().into_iter().filter(|call| common::asked(call) == "terminal create");
@@ -616,23 +677,43 @@ fn a_cut_tags_the_commit_that_landed_it_and_publishes_with_the_tag_checked_out()
 }
 
 #[test]
-fn a_patch_that_holds_a_pr_labelled_for_a_minor_version_is_tagged_nothing() {
-    let world = cutting();
-    assert_eq!(cut(&tick_as(&world, "alpha", 10_000)), ["cut done"]);
-    let checkout = checkout(&world);
-    // While it ran, a PR labelled for a minor version landed before its own.
-    land(&world, "Add a gadget (#9)");
-    world.with_gh(|gh| {
-        let pr = json!({"number": 9, "title": "Add a gadget", "headRefName": "nine",
-            "headRefOid": "", "body": "", "state": "merged", "labels": ["release:minor"]});
-        gh["prs"].as_array_mut().unwrap().push(pr);
-    });
-    its_pr_lands(&world, &checkout);
+fn a_minor_landing_before_or_after_the_cuts_own_landing_supersedes_the_patch() {
+    for minor_after_cut in [false, true] {
+        let world = cutting();
+        assert_eq!(cut(&tick_as(&world, "alpha", 10_000)), ["cut done"]);
+        let checkout = checkout(&world);
+        // A minor may land on either side of the cut's own landing.
+        if minor_after_cut {
+            its_pr_lands(&world, &checkout);
+        }
+        land(&world, "Add a gadget (#9)");
+        world.with_gh(|gh| {
+            let pr = json!({"number": 9, "title": "Add a gadget", "headRefName": "nine",
+                "headRefOid": "", "body": "", "state": "merged", "labels": ["release:minor"]});
+            gh["prs"].as_array_mut().unwrap().push(pr);
+        });
+        if !minor_after_cut {
+            its_pr_lands(&world, &checkout);
+        }
 
-    let failed = world.afk_in(&checkout, &["cut", "--from", "tag", "--host", "h1"]).ok();
-    assert_eq!(failed["failed"], "tag", "{failed}");
-    assert!(failed["why"].as_str().unwrap().contains("#9, labelled `release:minor`"), "{failed}");
-    assert!(world.remote(&["tag", "--list", "v0.1.1"]).trim().is_empty(), "tagged nothing");
+        let stopped = world.afk_in(&checkout, &["cut", "--from", "tag", "--host", "h1"]).ok();
+        assert_eq!(stopped["stopped"], "tag", "{stopped}");
+        assert!(stopped.get("failed").is_none(), "{stopped}");
+        assert!(
+            stopped["why"].as_str().unwrap().contains("#9, labelled `release:minor`"),
+            "{stopped}"
+        );
+        assert!(world.remote(&["tag", "--list", "v0.1.1"]).trim().is_empty(), "tagged nothing");
+        assert!(!world.root.join("published").exists());
+        assert_eq!(cut(&tick_as(&world, "alpha", 10_100)), ["end_cut superseded", "cut done"]);
+        assert!(failures(&world).is_empty(), "no human is needed");
+        assert_eq!(record(&self::checkout(&world))["version"], "0.2.0");
+        let said = logged(&world);
+        assert!(
+            said.iter().any(|line| line.contains("stopped at `tag`, without tagging")),
+            "{said:?}"
+        );
+    }
 }
 
 /// A line of a step that fails fails the step there, and the lines after it

@@ -330,6 +330,70 @@ fn two_commands_of_two_repos_fleets_run_one_after_the_other_in_the_order_they_as
 }
 
 #[test]
+fn a_cut_gates_ahead_of_waiting_workers_and_its_queue_wait_does_not_end_its_gate() {
+    let world = World::new();
+    let binary = env!("CARGO_BIN_EXE_afkconvoy");
+    let gate = afkconvoy_core::line::Line::new()
+        .program(binary)
+        .fixed(" exclusive -- sh -c ")
+        .word("echo \"$MARK\" >> \"$CACHE/order\"")
+        .own();
+    world.set_gate_config(&format!("gate_command: {gate}\ngate_seconds: 1"));
+    let cutting = world.root.join("afkconvoy-cut-2");
+    common::git(
+        &world.clone,
+        &["worktree", "add", "-q", "--detach", cutting.to_str().unwrap(), "origin/main"],
+    );
+    let cache = world.cache();
+    let _host_runner = world.host_held();
+    let order = cache.join("order");
+    let held = exclusive(
+        &world,
+        &cache,
+        11,
+        "echo holder-start >> \"$CACHE/order\"; \
+         while test -d \"$CACHE\" && test ! -f \"$CACHE/release\"; do sleep 0.02; done; \
+         echo holder-end >> \"$CACHE/order\"",
+    );
+    until(|| lines(&order) == ["holder-start"]);
+    let worker_a = exclusive(&world, &cache, 21, "echo worker-a >> \"$CACHE/order\"");
+    until(|| tickets(&world) == 2);
+    let worker_b = exclusive(&world, &cache, 22, "echo worker-b >> \"$CACHE/order\"");
+    until(|| tickets(&world) == 3);
+    let cutting = world
+        .command(binary, &cutting)
+        .env("CACHE", &cache)
+        .env("MARK", "cut")
+        .args(["gate"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    until(|| tickets(&world) == 4);
+    let shown = world.afk(&["doctor", "--host", "h1"]).json;
+    let queue = &shown["host"]["exclusive"]["lanes"]["worker"];
+    assert_eq!(queue["running"]["issue"], 11, "{queue}");
+    let first = Path::new(queue["waiting"][0]["dir"].as_str().unwrap());
+    assert_eq!(first.file_name().unwrap(), "afkconvoy-cut-2", "{queue}");
+    assert_eq!(lines(&order), ["holder-start"], "priority never interrupts the holder");
+    // Longer than the gate limit: the gate starts its clock after the grant.
+    std::thread::sleep(Duration::from_millis(1200));
+    std::fs::write(cache.join("release"), "").unwrap();
+    let out = cutting.wait_with_output().unwrap();
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let answer: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(answer["status"], "green", "{answer}");
+    assert_eq!(answer["recorded"], true, "{answer}");
+    for child in [held, worker_a, worker_b] {
+        let out = child.wait_with_output().unwrap();
+        assert!(out.status.success(), "{}", text(&out.stderr));
+    }
+    assert_eq!(lines(&order), ["holder-start", "holder-end", "cut", "worker-a", "worker-b"]);
+    until(|| tickets(&world) == 0);
+    assert!(logged(&cache).iter().any(|line| line.contains("runs as a cut")));
+}
+
+#[test]
 fn the_command_s_output_and_exit_status_are_its_own() {
     let world = World::new();
     let _host_runner = world.host_held();
