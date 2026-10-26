@@ -356,12 +356,15 @@ fn keep_asking_in(
             return Err(error.context("the host runner could not be asked"));
         }
     };
+    // Before the question: a host runner that answers and closes the line
+    // before the timeout is set leaves a line that refuses it (EINVAL on
+    // macOS). One it closed already reads its end at once.
+    let _ = stream.set_read_timeout(Some(within));
     let asked = serde_json::to_string(request)?;
     match writeln!(&stream, "{asked}") {
         Err(error) if closed(&error) => return Ok((Reached::Closed, None)),
         written => written.context("the host runner could not be asked")?,
     }
-    stream.set_read_timeout(Some(within))?;
     let mut lines = BufReader::new(stream);
     let mut line = String::new();
     match lines.read_line(&mut line) {
