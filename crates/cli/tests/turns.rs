@@ -248,9 +248,6 @@ fn the_tip_uses_its_own_gate_command_and_each_turn_uses_the_merged_config() {
         &world.clone,
         &["worktree", "add", "-q", "--detach", train.to_str().unwrap(), "origin/main"],
     );
-    // The train command loads its config before taking the tip too: put it
-    // on the current tip, as its worker does when starting on a new train.
-    git(&train, &["reset", "--hard", LINE]);
     let landed = world.afk_in(&train, &["land", "--train", "--merged-timeout", "0"]).ok();
     assert_eq!(landed["gate"]["source"], "recorded", "{landed}");
 }

@@ -89,17 +89,17 @@ fn turn(repo: &Repo, config: &Config, issue: Option<u64>, now: u64) -> Result<(P
             std::thread::sleep(std::time::Duration::from_secs(2));
             continue;
         }
-        let permit = Permit::take(
-            repo,
-            "turn: merge, gate, join",
-            false,
-            crate::config::heavy_gate(&config.gate_command),
-            true,
-        )?;
+        let heavy = crate::config::heavy_gate(&config.gate_command)
+            || crate::config::heavy_gate(&tip_config.gate_command);
+        let permit = Permit::take(repo, "turn: merge, gate, join", false, heavy, true)?;
         let current = Train::read(repo, config)?;
         let current_tree =
             Tree::named(&repo.git(&["rev-parse", &format!("{}^{{tree}}", current.tip)])?);
         let current_config = self::tip_config(repo, &current.tip)?;
+        if !heavy && crate::config::heavy_gate(&current_config.gate_command) {
+            drop(permit);
+            continue;
+        }
         let current_command = GateCommand::new(&current_config.gate_command);
         if crate::gate::recorded(repo, &current_tree, &current_command, now)?.is_none() {
             drop(permit);
