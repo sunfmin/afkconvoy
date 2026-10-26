@@ -4308,15 +4308,12 @@ fn run(
             let repo = checkout?;
             let config = config::load(&repo.dir.join(config::FILE))?;
             let gh = gh::GitHub::of(&repo)?;
+            let host = host.unwrap_or_else(this_host);
             match issue.or(number) {
-                Some(issue) => train::land(&repo, &config, &gh, issue, now),
-                None if inspection => {
-                    let host = host.unwrap_or_else(this_host);
-                    inspection::land(&repo, &config, &gh, &host, now)
-                }
+                Some(issue) => train::land(&repo, &config, &gh, issue, &host, now),
+                None if inspection => inspection::land(&repo, &config, &gh, &host, now),
                 None => {
                     let merged = Duration::from_secs(merged_timeout);
-                    let host = host.unwrap_or_else(this_host);
                     landing::land_train(&repo, &config, &gh, &host, now, merged)
                 }
             }

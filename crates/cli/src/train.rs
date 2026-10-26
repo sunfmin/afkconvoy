@@ -255,7 +255,14 @@ const RESOLVE: &str = "resolve every file, `git add` it, COMMIT the merge, run t
 /// train, from the worktree it is called in → as `join` says. With a fleet
 /// lock standing, the PR of an issue that is not one joins nothing →
 /// `locked`, and nothing is pushed.
-pub fn land(repo: &Repo, config: &Config, gh: &GitHub, issue: u64, now: u64) -> Result<Value> {
+pub fn land(
+    repo: &Repo,
+    config: &Config,
+    gh: &GitHub,
+    issue: u64,
+    host: &str,
+    now: u64,
+) -> Result<Value> {
     let prs = gh.open_prs()?;
     let Some(pr) = closing_pr(&prs, issue) else {
         bail!(
@@ -268,7 +275,7 @@ pub fn land(repo: &Repo, config: &Config, gh: &GitHub, issue: u64, now: u64) -> 
     if keeps_off(&locks, issue) {
         return Ok(locked(answer, &locks));
     }
-    join(repo, config, &gh.tracker, pr, &Of::Issue(issue), answer, now)
+    join(repo, config, &gh.tracker, pr, &Of::Issue(issue), answer, (host, now))
 }
 
 /// `answer`, with the `locked` outcome the standing `locks` give it.
@@ -301,7 +308,7 @@ pub fn join(
     pr: &PullRequest,
     of: &Of,
     answer: Value,
-    now: u64,
+    (host, now): (&str, u64),
 ) -> Result<Value> {
     own_head(repo, &pr.head_branch)?;
     let head = repo.git(&["rev-parse", "HEAD"])?;
@@ -339,7 +346,7 @@ pub fn join(
             return Ok(answer);
         }
         acting.say(crate::clock(), format!("turn merged {}", train.tip));
-        let mut gated = crate::gate::gate(repo, config, false, &crate::this_host(), now)?;
+        let mut gated = crate::gate::gate(repo, config, false, host, now)?;
         gated["merged"] = json!(train.tip);
         acting.say(
             crate::clock(),
@@ -482,7 +489,7 @@ pub fn join_again(
     let path = std::env::temp_dir().join(format!("afkconvoy-rejoin-{}", crate::unique()));
     repo.git(&["worktree", "add", "--quiet", "--detach", &path.to_string_lossy(), &head])?;
     let checkout = Repo::new(path.clone());
-    let answer = join(&checkout, config, tracker, pr, of, json!({}), now);
+    let answer = join(&checkout, config, tracker, pr, of, json!({}), (&crate::this_host(), now));
     let removed = repo.git(&["worktree", "remove", "--force", &path.to_string_lossy()]);
     let answer = answer?;
     removed?;

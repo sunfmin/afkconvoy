@@ -556,8 +556,15 @@ impl Cutting<'_> {
         let pr = open.iter().find(|pr| pr.number == number);
         let pr = pr.ok_or_else(|| anyhow!("PR #{number} is not open: it joins nothing"))?;
         let of = Of::Cut(self.host.to_string());
-        let answer =
-            crate::train::join(self.repo, self.config, &self.gh.tracker, pr, &of, json!({}), now)?;
+        let answer = crate::train::join(
+            self.repo,
+            self.config,
+            &self.gh.tracker,
+            pr,
+            &of,
+            json!({}),
+            (self.host, now),
+        )?;
         match answer["outcome"].as_str() {
             Some("joined" | "merged") => Ok(()),
             _ => bail!(

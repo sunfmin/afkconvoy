@@ -246,6 +246,7 @@ pub fn gated(
     if let Some(run) = recorded(repo, &tree, command, now)? {
         return Ok(Gated::Green { run, source: "recorded" });
     }
+    let _train_lane = crate::exclusive::Permit::take(repo, command.text(), true, true)?;
     let not_the_commit = |why: &str, strays: &[String]| {
         let listed: Vec<&str> = strays.iter().take(20).map(String::as_str).collect();
         anyhow!(
@@ -341,7 +342,7 @@ pub fn gate(repo: &Repo, config: &Config, train: bool, host: &str, now: u64) -> 
         let issue = pr.closes.first().ok_or_else(|| {
             anyhow!("this PR closes no issue — use `land --inspection` for an inspection's PR")
         })?;
-        return crate::train::land(repo, config, &gh, *issue, now);
+        return crate::train::land(repo, config, &gh, *issue, host, now);
     }
     let command = GateCommand::new(&config.gate_command);
     let mut merged = None;
