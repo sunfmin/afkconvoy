@@ -310,6 +310,9 @@ fn controlled_run(
     Ok(run)
 }
 
+/// Every newly assigned candidate runs its gate, including a cut whose tree
+/// matches the certified base. Its own green result survives predecessor
+/// landing; another candidate's record does not replace this run.
 pub(crate) fn candidate_gate(
     repo: &Repo,
     command: &GateCommand,
@@ -318,12 +321,6 @@ pub(crate) fn candidate_gate(
     limit: Duration,
     candidate: &crate::candidates::Gate<'_>,
 ) -> Result<Value> {
-    let tree = head_tree(repo)?;
-    if let Some(run) = recorded(repo, &tree, command, now)? {
-        return Ok(
-            json!({"status": "green", "recorded": true, "source": "recorded", "command": command.text(), "seconds": run.took().map(|took| took.seconds()), "head": repo.git(&["rev-parse", "HEAD"])?}),
-        );
-    }
     let run = controlled_run(repo, command, host, now, limit, Some(candidate))?;
     Ok(
         json!({"status": if run.cancelled { "cancelled" } else if run.ran.green() { "green" } else { "red" },
