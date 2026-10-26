@@ -38,6 +38,8 @@ pub struct Ticket {
     /// its repo. Ordinary commands and serial barriers retain exclusion.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub candidate: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validation: Option<crate::candidate::Validation>,
     /// When it asked to run, in epoch seconds: within each priority the one
     /// that asked first runs first, including in the next host runner.
     pub asked: u64,
@@ -380,6 +382,7 @@ mod tests {
             repo: None,
             is_turn: false,
             candidate: false,
+            validation: None,
             asked,
             ran: None,
         }

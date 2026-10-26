@@ -151,6 +151,7 @@ impl Permit {
             repo: Some(canonical(repo.common_dir()?)),
             is_turn,
             candidate,
+            validation: None,
             asked: crate::clock(),
             ran: None,
         };
@@ -302,6 +303,14 @@ impl Joined {
 }
 
 impl Queue {
+    /// Display copies never authorize a grant, invalidation or publication.
+    pub fn validation(&self, pid: u32, validation: afkconvoy_core::candidate::Validation) {
+        for ticket in &mut self.joined().tickets {
+            if ticket.pid == pid && ticket.is_turn {
+                ticket.validation = Some(validation.clone());
+            }
+        }
+    }
     /// Sends waiting commands to the next host runner. None is running when
     /// a release move calls this; closing also works when that move fails.
     pub fn close(&self) {
@@ -627,6 +636,7 @@ pub fn exclusive(
         repo: checkout.as_ref().and_then(|repo| repo.common_dir().ok()).map(canonical),
         is_turn: false,
         candidate: false,
+        validation: None,
         asked: now(),
         ran: None,
     };
@@ -790,6 +800,7 @@ mod tests {
             repo: None,
             is_turn: false,
             candidate: false,
+            validation: None,
             asked,
             ran: None,
         }

@@ -905,7 +905,7 @@ fn patrol_says(row: &patrol::Row, now: u64) -> String {
 fn exclusive_says(request: &afkconvoy_core::exclusive::Observed) -> String {
     use afkconvoy_core::exclusive::State;
     let ticket = &request.ticket;
-    let doing = match request.scheduling.state {
+    let mut doing = match request.scheduling.state {
         State::Running => format!("running, for {}", lasted(request.elapsed_seconds.unwrap_or(0))),
         State::Eligible => {
             format!("eligible now, waiting for grant, for {}", lasted(request.waiting_seconds))
@@ -956,6 +956,18 @@ fn exclusive_says(request: &afkconvoy_core::exclusive::Observed) -> String {
             )
         }
     };
+    if let Some(validation) = &ticket.validation {
+        doing.push_str(&format!(
+            " · candidate {} · predecessor {} · {}",
+            validation.id, validation.predecessor, validation.waiting
+        ));
+        if let Some(cause) = &validation.cause {
+            doing.push_str(&format!(
+                " · {cause} by {}",
+                validation.cancelled_by.as_deref().unwrap_or("unknown")
+            ));
+        }
+    }
     let dir = ticket.dir.rsplit('/').next().unwrap_or_default();
     match ticket.issue {
         Some(issue) => format!("{doing} · #{issue} in {dir}"),

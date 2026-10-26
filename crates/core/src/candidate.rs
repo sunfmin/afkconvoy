@@ -60,6 +60,18 @@ pub struct Candidate {
 }
 
 impl Candidate {
+    /// Display copy only: every interface uses this lifecycle interpretation.
+    pub fn observation(&self) -> Validation {
+        Validation {
+            id: self.id.clone(),
+            predecessor: self.predecessor.clone(),
+            commit: self.commit.clone(),
+            phase: self.phase,
+            waiting: self.waiting().to_string(),
+            cancelled_by: self.cancelled_by.clone(),
+            cause: self.cause.clone(),
+        }
+    }
     pub fn active(&self) -> bool {
         matches!(self.phase, Phase::Building | Phase::Validating | Phase::Green) || !self.stopped
     }
@@ -80,6 +92,17 @@ impl Candidate {
             Phase::Landed => "landed",
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Validation {
+    pub id: String,
+    pub predecessor: String,
+    pub commit: String,
+    pub phase: Phase,
+    pub waiting: String,
+    pub cancelled_by: Option<String>,
+    pub cause: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

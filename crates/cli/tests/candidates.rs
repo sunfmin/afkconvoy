@@ -144,6 +144,15 @@ fn three_candidates_overlap_finish_out_of_order_and_publish_exact_commits_once()
     green(&world, 3);
     release(&world, "b", false);
     green(&world, 2);
+    until(|| {
+        world.afk(&["queue"]).ok()["running"].as_array().is_some_and(|rows| {
+            rows.iter()
+                .any(|r| r["issue"] == 2 && r["validation"]["waiting"] == "waiting_for_predecessor")
+        })
+    });
+    let queue = world.afk(&["queue"]).ok();
+    let waiting = queue["running"].as_array().unwrap().iter().find(|r| r["issue"] == 2).unwrap();
+    assert_eq!(waiting["validation"]["predecessor"], chain(&world)["candidates"][0]["commit"]);
     assert_eq!(world.remote(&["rev-parse", "refs/heads/main"]), base);
     let before = chain(&world);
     release(&world, "a", false);

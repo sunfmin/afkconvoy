@@ -48,7 +48,38 @@ fn read(repo: &Repo, config: &Config) -> Result<Snapshot> {
         Some(sha) => serde_json::from_str(&repo.git(&["show", "-s", "--format=%B", sha])?)?,
         None => Chain::default(),
     };
+    announce(&chain);
     Ok(Snapshot { sha, base, chain })
+}
+
+thread_local! { static ANNOUNCED: std::cell::RefCell<Option<(afkconvoy_core::candidate::Validation, std::time::Instant)>> = const { std::cell::RefCell::new(None) }; }
+
+fn announce(chain: &Chain) {
+    let Some(candidate) = chain
+        .candidates
+        .iter()
+        .rev()
+        .find(|c| c.owner.pid == std::process::id() && c.owner.host == crate::this_host())
+    else {
+        return;
+    };
+    let validation = candidate.observation();
+    ANNOUNCED.with_borrow_mut(|last| {
+        if last
+            .as_ref()
+            .is_some_and(|(v, at)| *v == validation && at.elapsed() < Duration::from_secs(1))
+        {
+            return;
+        }
+        let _ = crate::runner_socket::ask(
+            &crate::runner_socket::Request::Candidate {
+                pid: std::process::id(),
+                validation: validation.clone(),
+            },
+            Duration::from_millis(500),
+        );
+        *last = Some((validation, std::time::Instant::now()));
+    });
 }
 
 /// No force push, including the state ref. Its first parent is the previous
@@ -86,6 +117,7 @@ fn change(repo: &Repo, config: &Config, mut edit: impl FnMut(&mut Chain)) -> Res
         let before = snapshot.chain.clone();
         edit(&mut snapshot.chain);
         if before == snapshot.chain || write(repo, config, &snapshot)? {
+            announce(&snapshot.chain);
             return Ok(snapshot.chain);
         }
     }

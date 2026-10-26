@@ -1712,6 +1712,7 @@ fn exclusive_json(standing: Result<(Vec<Ticket>, bool)>, now: u64) -> Value {
         json!({"command": ticket.command, "dir": ticket.dir, "issue": ticket.issue,
             "pid": ticket.pid, "asked": ticket.asked, "ran": ticket.ran,
             "candidate": ticket.candidate,
+            "validation": ticket.validation,
             "waiting": if ticket.ran.is_none() { "waiting_for_capacity" } else { "running" }})
     };
     match standing {
