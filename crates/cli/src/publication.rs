@@ -45,9 +45,15 @@ fn send(writer: &mut impl Write, line: &str) -> Result<()> {
 /// GitHub HTTPS origins use the same repo through existing Git SSH login.
 /// Unsupported transports are refused before commands are sent.
 fn transport(repo: &Repo) -> Result<Command> {
-    let url = repo.git(&["remote", "get-url", "origin"])?;
+    let urls = repo.git(&["remote", "get-url", "--push", "--all", "origin"])?;
+    let urls: Vec<_> = urls.lines().collect();
+    ensure!(
+        urls.len() == 1,
+        "conditional publication requires exactly one origin push URL; configure one SSH push destination before running land"
+    );
+    let url = urls[0];
     if !url.contains("://") && !url.contains(':') || url.starts_with("file://") {
-        let path = url.strip_prefix("file://").unwrap_or(&url);
+        let path = url.strip_prefix("file://").unwrap_or(url);
         let mut command = Command::new("git");
         command.args(["receive-pack", path]).current_dir(&repo.dir);
         return Ok(command);
