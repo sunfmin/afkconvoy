@@ -13,8 +13,8 @@
 //! started is not (`shared`). The landing train's worktree is no worker's.
 //!
 //! As a worker turns hot, what shows it is taken down there and then, on a
-//! thread of its own (`evidence`), and the `run` is woken: its inspector
-//! starts the worker's watch (`crate::watch`).
+//! thread of its own (`evidence`), and the `run` is woken. The resource
+//! reading becomes a doctor finding for the host watch's next look.
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};

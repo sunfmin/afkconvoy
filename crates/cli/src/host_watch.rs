@@ -279,12 +279,25 @@ impl Watcher {
             }
         }
         state.watched = host_watch::covered(&state.watched, &episodes);
-        let pending = host_watch::pending(&current, &state.watched, false);
+        let mut pending = host_watch::pending(&current, &state.watched, false);
         if pending.is_empty() {
             state.unavailable = None;
         } else {
             crate::resources::evidence(&mut look, &pending)?;
-            self.start(&mut state, &directory, settings.watch_dir.is_none(), look, pending)?;
+            // Disk evidence can take minutes. A condition that recovered
+            // while it was taken must not start a watch from an old look.
+            let resources = crate::resources::json(crate::clock())?;
+            pending.retain(|item| {
+                !item.id.starts_with("resource:")
+                    || resources
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .any(|resource| resource["id"] == item.id && resource["active"] == true)
+            });
+            if !pending.is_empty() {
+                self.start(&mut state, &directory, settings.watch_dir.is_none(), look, pending)?;
+            }
         }
         self.save(&state)
     }
@@ -572,6 +585,14 @@ fn brief(watch: &Watch) -> String {
          Your authority covers every repo on this host's checkout list, not just the repo of \
          the fault or this directory. `afkconvoy checkouts` gives the current list; the look \
          below names each checkout and its repo. Read the help of each command you need.\n\n\
+         ## Check the resource condition after acting\n\n\
+         For a hot worker, read its evidence, check its processes and worktree, and check \
+         that it is under its limits or that its heavy work goes through `afkconvoy exclusive`. \
+         You may end a fleet-owned runaway, type a line at its terminal, restart or switch it. \
+         For admission, check `afkconvoy plan`'s `admission` admits again. For memory pressure, \
+         check `sysctl -n kern.memorystatus_vm_pressure_level` is below 2: admission may already \
+         admit, and proves nothing about pressure. The look carries the condition, how long \
+         it held, the reading and its evidence.\n\n\
          ## Fix the host, then hand the issue back\n\n\
          You may trust a worktree for its harness; restart, nudge, continue or switch a worker; \
          or change a host setting. Read an escalation's reason and evidence before acting. \
