@@ -31,8 +31,8 @@ macro_rules! warning_accepted {
     };
 }
 /// Claude Code with the flag that lets it work with nobody at its terminal,
-/// and the warning it opens with under that flag answered: an unbound repo's
-/// worker is started with this alone. Of two `--settings` Claude Code takes
+/// and the warning it opens with under that flag answered. Each worker adds
+/// native session trust as well. Of two `--settings` Claude Code takes
 /// the last, whole: a worker in its role is started on the fleet's (`added`).
 pub(super) const STOCK: &str =
     concat!("claude --dangerously-skip-permissions --settings '{", warning_accepted!(), "}'");

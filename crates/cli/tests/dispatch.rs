@@ -312,7 +312,7 @@ fn a_trust_gap_keeps_screen_unavailability_and_redacts_echoed_credentials() {
     let world = ready_world();
     world.set_gate_config("gate_command: ./gate.sh\nescalate_to: human");
     world.kit_command("claude-code", COMMAND);
-    let secret = "startup-secret-103";
+    let secret = "startup-\"quoted'-secret-103";
     world.with_orca(|orca| {
         orca["trust_prompt"] = json!(true);
         orca["screen_source"] = json!("screen-unavailable");

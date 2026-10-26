@@ -169,7 +169,6 @@ fn real_claude_code_started_in_a_role_sees_the_role_and_the_project_and_nothing_
     let absent = theirs.iter().filter(|name| !skills.contains(&name.as_str())).count();
     assert!(theirs.is_empty() || absent > 0, "the user's skills were loaded: {skills:?}");
     let files = said.lines().find(|line| line.starts_with("FILES=")).unwrap_or_default();
-    assert!(!files.contains(&text(&home.join(".claude"))), "the user's rules were loaded: {files}");
     assert!(init["memory_paths"].is_null(), "{}", init["memory_paths"]);
 
     // The role's hook fired on every Bash call, and read the stage from the
@@ -200,6 +199,8 @@ fn real_claude_code_started_in_a_role_sees_the_role_and_the_project_and_nothing_
         shown_once("the stage `smoke-stage` is marked `writes: false`: `git commit` is refused"),
         "the guard refused nothing: {shown:?}"
     );
+    println!("verified role hook and fleet guard refusals; project and user hooks did not fire");
+    assert!(!files.contains(&text(&home.join(".claude"))), "the user's rules were loaded: {files}");
 
     // What this run could not show, on this host.
     for (shown, what) in [
