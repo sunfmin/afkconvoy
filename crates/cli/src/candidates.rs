@@ -9,7 +9,6 @@ use afkconvoy_core::lock::keeps_off;
 use afkconvoy_core::plan::PullRequest;
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use serde_json::{Value, json};
-use std::process::Command;
 use std::time::Duration;
 
 use crate::exclusive::Permit;
@@ -153,11 +152,35 @@ pub(crate) fn view(repo: &Repo, config: &Config) -> Result<Value> {
     Ok(json!(rows))
 }
 
-/// `ps` must answer successfully. An unreadable observation never proves
-/// death. Start time prevents a recycled PID from owning or being killed for
-/// an earlier candidate. Host identity is physical, independent of --host.
+/// An unreadable observation never proves death. Kernel start time prevents
+/// PID reuse; host identity is physical, independent of --host.
+#[cfg(target_os = "macos")]
 pub(crate) fn identity(pid: u32) -> Result<Option<Process>> {
-    let out = crate::process::output(Command::new("ps").args([
+    let mut info = std::mem::MaybeUninit::<libc::proc_bsdinfo>::zeroed();
+    let size = std::mem::size_of::<libc::proc_bsdinfo>() as i32;
+    // SAFETY: the exact libproc structure and its bounded output buffer.
+    let got = unsafe {
+        libc::proc_pidinfo(pid as i32, libc::PROC_PIDTBSDINFO, 0, info.as_mut_ptr().cast(), size)
+    };
+    if got == 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
+        return Ok(None);
+    }
+    ensure!(got == size, "cannot confirm process {pid}: {}", std::io::Error::last_os_error());
+    // SAFETY: a complete kernel write of numeric fields and byte arrays.
+    let info = unsafe { info.assume_init() };
+    if info.pbi_status == libc::SZOMB {
+        return Ok(None);
+    }
+    Ok(Some(Process {
+        host: crate::this_host(),
+        pid,
+        started: format!("{}.{:06}", info.pbi_start_tvsec, info.pbi_start_tvusec),
+    }))
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn identity(pid: u32) -> Result<Option<Process>> {
+    let out = crate::process::output(std::process::Command::new("ps").args([
         "-p",
         &pid.to_string(),
         "-o",
@@ -214,7 +237,10 @@ fn signal(repo: &Repo, config: &Config, candidate: &Candidate) -> Result<Vec<Pro
     let group = match &candidate.gate {
         Some(gate) if gate.host == crate::this_host() => {
             let current = identity(gate.pid)?;
-            if current.as_ref() == Some(gate) {
+            if current.as_ref() == Some(gate)
+                && has_scope
+                && crate::process_scope::owns(gate.pid, &scope)?
+            {
                 // SAFETY: the group's identity belongs to this gate, with
                 // PID reuse excluded by its recorded process start time.
                 unsafe {
