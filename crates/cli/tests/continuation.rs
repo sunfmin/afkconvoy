@@ -1,6 +1,8 @@
 use crate::common;
 
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use common::{World, commit, git};
 use serde_json::{Value, json};
@@ -83,6 +85,79 @@ fn dispatch(world: &World, more: &[&str]) -> common::Answer {
     args.extend(["--now", "1100"]);
     args.extend(more);
     world.afk(&args)
+}
+
+/// A real helper left running after Orca's terminal is gone. A separate
+/// thread reaps it as soon as it exits, including while the CLI is running.
+struct Escaped {
+    pid: u32,
+    reaper: Option<std::thread::JoinHandle<std::process::ExitStatus>>,
+}
+
+impl Escaped {
+    fn start(world: &World, dir: &Path, ignores_term: bool) -> Self {
+        let ready = dir.join("escaped-ready");
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "continuation::escaped_helper", "--ignored"])
+            .current_dir(dir)
+            .env("TMPDIR", world.tmp(dir))
+            .env("ESCAPED_READY", &ready)
+            .env("ESCAPED_IGNORES_TERM", ignores_term.to_string())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        let escaped = Self { pid, reaper: Some(std::thread::spawn(move || child.wait().unwrap())) };
+        let until = Instant::now() + Duration::from_secs(5);
+        while !ready.exists() {
+            assert!(Instant::now() < until, "escaped helper never became ready");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        escaped
+    }
+
+    fn ended(&mut self) -> std::process::ExitStatus {
+        assert!(self.reaper.as_ref().unwrap().is_finished(), "helper {} still runs", self.pid);
+        self.reaper.take().unwrap().join().unwrap()
+    }
+}
+
+impl Drop for Escaped {
+    fn drop(&mut self) {
+        if let Some(reaper) = self.reaper.take() {
+            // SAFETY: this pid belongs to the test's helper, which this
+            // guard owns until the reaper has observed its exit.
+            unsafe { libc::kill(self.pid as libc::pid_t, libc::SIGKILL) };
+            reaper.join().unwrap();
+        }
+    }
+}
+
+#[test]
+#[ignore = "the continuation tests start this as an escaped worker process"]
+fn escaped_helper() {
+    if std::env::var("ESCAPED_IGNORES_TERM").as_deref() == Ok("true") {
+        // SAFETY: this isolated helper deliberately ignores SIGTERM.
+        unsafe { libc::signal(libc::SIGTERM, libc::SIG_IGN) };
+    }
+    std::fs::write(std::env::var_os("ESCAPED_READY").unwrap(), "ready").unwrap();
+    std::thread::sleep(Duration::from_secs(120));
+}
+
+#[test]
+fn an_escaped_worker_process_is_ended_before_the_continuation_starts() {
+    use std::os::unix::process::ExitStatusExt;
+    let world = fleet();
+    let dir = worktree(&world);
+    let mut escaped = Escaped::start(&world, &dir, false);
+    kill_worker(&world);
+
+    let ticked = tick(&world, 1090);
+    assert_eq!(did(&ticked)[0], "judge 7 continued", "{ticked}");
+    assert_eq!(escaped.ended().signal(), Some(libc::SIGTERM));
+    assert_eq!(open_terminals(&world, &dir).len(), 1);
 }
 
 #[test]
