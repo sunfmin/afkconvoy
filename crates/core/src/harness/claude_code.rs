@@ -487,6 +487,21 @@ mod tests {
     use crate::line::quoted;
     use crate::role::{Facts, On, Told};
 
+    #[test]
+    fn folder_trust_is_session_configuration_beside_permission_bypass_and_both_settings() {
+        let outside = Harness::ClaudeCode.in_worktree(STOCK, "/new/worktree", "");
+        assert!(outside.starts_with("export CLAUDE_CODE_SANDBOXED=1 && "), "{outside}");
+        assert_eq!(in_worktree(&outside), outside, "trust setup is idempotent");
+        for host_user in [false, true] {
+            let start = Start { host_user, ..start(None) };
+            let role = in_role(STOCK, &start);
+            assert!(role.contains(" CLAUDE_CODE_SANDBOXED=1 "), "{role}");
+            assert_eq!(role.matches("--settings ").count(), 2, "{role}");
+            assert!(role.contains("--setting-sources project"), "{role}");
+            assert!(role.contains("/bin/afkconvoy guard"), "{role}");
+        }
+    }
+
     fn in_role(command: &str, start: &Start) -> String {
         Harness::ClaudeCode.in_role(command, start)
     }
