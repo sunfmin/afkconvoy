@@ -338,7 +338,7 @@ pub fn gate(repo: &Repo, config: &Config, train: bool, host: &str, now: u64) -> 
         let pr = prs.iter().find(|pr| pr.head_branch == branch)
             .ok_or_else(|| anyhow!("no open PR has branch {branch:?} for its head — push it and open its PR before asking for a turn (`gh pr create --base {} --head {branch}`)", config.base_branch))?;
         let issue = pr.closes.first().ok_or_else(|| {
-            anyhow!("this PR closes no issue — use `land --inspection` for an inspection's PR")
+            anyhow!("this PR closes no issue — use `land --watch` for a watch's PR")
         })?;
         return crate::turn::land(repo, config, &gh, *issue, host, now);
     }

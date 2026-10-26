@@ -87,8 +87,7 @@ pub enum Why {
     Memory,
     /// They wrote more to disk than the limit, within `WRITTEN_WITHIN`.
     Written,
-    /// Its worktree has outgrown its fresh build: the train worktree's rule
-    /// (`train::outgrown`).
+    /// Its worktree has outgrown its fresh build (`landing::outgrown`).
     Held,
 }
 
@@ -134,7 +133,7 @@ pub enum Turned {
 }
 
 /// What is known of one worker from its samples so far.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Watch {
     /// Since when its CPU has been past the limit, sample after sample.
     cpu_since: Option<u64>,
@@ -351,7 +350,7 @@ mod tests {
 
     #[test]
     fn host_pressure_never_makes_a_worker_under_its_memory_limit_hot() {
-        use crate::host_inspection::{Holding, Reason, SPAN};
+        use crate::resources::{Holding, Reason, SPAN};
 
         let mut host = Holding::default();
         let mut worker = Watch::default();

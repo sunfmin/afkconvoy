@@ -274,7 +274,7 @@ pub fn watch_candidates() -> Result<Vec<crate::kit::Named>> {
         if let Some(held) = kit.harnesses.iter().find(|held| held.harness == harness)
             && !faulted(held)
         {
-            let model = held.models.first().map(|model| model.model.clone());
+            let model = held.placed().next().map(|model| model.model.clone());
             candidates.push(crate::kit::Named { harness, model });
         }
     }

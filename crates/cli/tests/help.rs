@@ -608,7 +608,7 @@ fn the_guide_carries_what_an_agent_needs_before_its_first_command() {
         "--worker-command",
         "A watch is the operator for every repo on the host's checkout list",
         "hands the escalated issue back with the line `doctor` names",
-        "land it in that repo's turn with `land --inspection`",
+        "land it in that repo's turn with `land --watch`",
         "has that repo's fleet cut a version after landing",
         "checks the fault on the new version",
         "Human decisions stay with the human, untouched and listed",
@@ -968,17 +968,7 @@ fn the_guide_and_each_subcommand_agree_on_who_runs_it_and_why() {
     let workers = group(&long, "Run by a worker");
     assert_eq!(
         workers.iter().copied().collect::<BTreeSet<_>>(),
-        BTreeSet::from([
-            "gate",
-            "land",
-            "verdict",
-            "intake",
-            "lock",
-            "over",
-            "exclusive",
-            "inspected",
-            "cut"
-        ])
+        BTreeSet::from(["gate", "land", "verdict", "intake", "lock", "over", "exclusive", "cut"])
     );
     for command in &workers {
         let who = who(command);

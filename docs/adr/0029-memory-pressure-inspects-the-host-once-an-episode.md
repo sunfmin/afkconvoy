@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: accepted, operator lifecycle superseded by ADR-0035
 ---
 
 # Memory pressure inspects the host once an episode

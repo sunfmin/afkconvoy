@@ -10,7 +10,7 @@ Red, a conflict, or a rejected push ends the turn without landing. A conflict st
 
 An unrecorded base tip is gated alone in a separate checkout, using its own gate declaration. Ordinary turns wait outside the worker lanes while that tip is red. The fleet opens a dispatchable fleet-lock issue for its repair, under an exclusive claim on opening it. An operator worker makes the repair outside product workflows, so even a workflow that begins with a human stage cannot hold it back. Only the fleet-lock repair issue for that exact red tip may take a turn on it, and it must still gate and record its complete merge commit before landing. The fleet's repair label and ready label make it dispatchable through the ordinary issue and claim protocol, with no human stage. The guard reserves the repair label to the fleet. A standing lock raised by an older release also remains eligible to land its repair without waiting for a green tip.
 
-An older train line is migration input only. A green tip can fast-forward the base with its existing record; otherwise each PR takes a turn. No new line is written, and the old line is removed only when its work has been accounted for. Inspections and cuts use the same turn as issue workers.
+An older train line is migration input only. A green tip can fast-forward the base with its existing record; otherwise each PR takes a turn. No new line is written, and the old line is removed only when its work has been accounted for. The host watch (which replaced inspections in ADR-0035) and cuts use the same turn as issue workers.
 
 ## Evidence before removing the train
 

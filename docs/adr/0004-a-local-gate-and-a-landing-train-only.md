@@ -20,6 +20,6 @@ The worker that wrote a PR no longer joins the train when it is done, since stag
 
 A command holds a turn through merge, gate and join, and train gates use an independent lane. ADR-0034 replaces the earlier queue ordering and explains how one-at-a-time turns now feed the landing train.
 
-## Replaced by ADR-0035
+## Replaced by ADR-0036
 
-A turn now lands its gated merge commit directly on the base branch. The landing train, its worker and its lane have been removed; ADR-0035 describes certification, repair and migration of an older line.
+A turn now lands its gated merge commit directly on the base branch. The landing train, its worker and its lane have been removed; ADR-0036 describes certification, repair and migration of an older line.

@@ -288,6 +288,12 @@ fn terminal_wait(st: &State) -> ! {
     if st.doc["terminals"][at]["tui_busy"] == true {
         fail(st, "timeout"); // as real orca: a timeout is an error
     }
+    // A harness on a busy host whose prompt settles only this long after a
+    // wait begins: a shorter wait times out, as real orca's does.
+    let asked_ms = st.opt("--timeout-ms").unwrap().parse::<u64>().unwrap();
+    if st.doc["settles_after_ms"].as_u64().is_some_and(|ms| asked_ms < ms) {
+        fail(st, "timeout");
+    }
     if asks_trust(st, at) {
         // as real orca: answered, and a non-zero exit
         let wait = json!({"satisfied": false, "status": "running",

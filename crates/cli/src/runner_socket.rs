@@ -76,7 +76,7 @@ pub enum Request {
     /// that is: this line changes by fields with a default alone.
     Exclusive { ticket: Ticket },
     /// What the host's fleets share: answered at once with the `exclusive`
-    /// queue, in the order it runs, and the `inspection` running, or null.
+    /// queue, in the order it runs, and the `watch` running, or null.
     Shared,
 }
 

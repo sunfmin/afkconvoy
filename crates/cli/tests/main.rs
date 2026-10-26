@@ -31,11 +31,10 @@ mod help;
 mod host_runner;
 mod host_sleep;
 mod host_watch;
-mod hot;
-mod inspected;
 mod intake;
 mod joining;
 mod kimi;
+mod kit_research;
 mod lander;
 mod launch;
 mod lock;
@@ -79,6 +78,7 @@ mod turns;
 mod unreached;
 mod wake;
 mod walk;
+mod watch_landing;
 
 /// With `autotests = false`, a file here that is no module is never built:
 /// its tests would pass by not running.

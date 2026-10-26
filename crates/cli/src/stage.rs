@@ -432,7 +432,10 @@ impl Flows {
                 None => Unkept::Unloaded(format!("{error:#}")),
             });
         let flow_labels = team.as_ref().map(|kept| kept.team.flow_labels()).unwrap_or_default();
-        let flowing = open.rows.iter().filter(|issue| !flow_labels.among(&issue.labels).is_empty());
+        let flowing = open.rows.iter().filter(|issue| {
+            !afkconvoy_core::plan::is_repair(&issue.labels)
+                && !flow_labels.among(&issue.labels).is_empty()
+        });
         let mut issues = vec![];
         for issue in flowing {
             let comments = open.comments(issue.number);
