@@ -361,24 +361,39 @@ where
         did.push((step, carry_out(step)));
     }
     let held = admit(set, concurrency, held, &mut did, &mut carry_out);
-    start_cut(set, held, &mut did, &mut carry_out);
+    finish_pass(set, held, &mut did, &mut carry_out);
+    let left = set.frontier.iter().filter(|issue| !dispatched(&did, issue.number)).count();
+    Pass { did, held, bound: concurrency, frontier_remaining: left }
+}
+
+/// Takes the remaining steps that neither use nor free a claim slot: the
+/// cut, slow-gate report, boards, stage labels and heartbeat. `held` is read
+/// only to describe the fleet and decide whether to beat, so their branches
+/// and loops do not enlarge the proof of the pass's slot bound.
+fn finish_pass<F>(
+    set: &WorkingSet,
+    held: usize,
+    did: &mut Vec<(TickStep, Outcome)>,
+    carry_out: &mut F,
+) where
+    F: FnMut(TickStep) -> Outcome,
+{
+    start_cut(set, held, did, carry_out);
     if set.slow_gate.as_ref().is_some_and(|slow| slow.issue.is_none()) {
         let step = TickStep::SlowGate;
         did.push((step, carry_out(step)));
     }
-    for step in boards(set, &did) {
+    for step in boards(set, did) {
         did.push((step, carry_out(step)));
     }
     for issue in &set.flowing {
         let step = TickStep::StageLabel { issue: issue.number };
         did.push((step, carry_out(step)));
     }
-    if held > 0 || cutting(set, &did) {
+    if held > 0 || cutting(set, did) {
         let step = TickStep::Heartbeat;
         did.push((step, carry_out(step)));
     }
-    let left = set.frontier.iter().filter(|issue| !dispatched(&did, issue.number)).count();
-    Pass { did, held, bound: concurrency, frontier_remaining: left }
 }
 
 /// Starts a due cut after admission, naming whether the fleet ends busy,
