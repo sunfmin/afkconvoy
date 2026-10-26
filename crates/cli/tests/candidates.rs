@@ -387,6 +387,46 @@ fn publication_survives_issue_settlement_failure_without_a_duplicate_gate() {
 }
 
 #[test]
+fn a_head_moving_during_publication_cannot_land_the_stale_candidate() {
+    use std::os::unix::fs::PermissionsExt;
+    let world = world(1);
+    let (a, original) = worker(&world, 1, "a");
+    let base = world.remote(&["rev-parse", "refs/heads/main"]);
+    let later = world.root.join("later-source");
+    git(
+        &world.clone,
+        &["worktree", "add", "--quiet", "--detach", later.to_str().unwrap(), &original],
+    );
+    commit(&later, "late.txt", "a PR head advanced during publication");
+    let changed = git(&later, &["rev-parse", "HEAD"]);
+    git(&later, &["push", "--quiet", "origin", "HEAD:refs/heads/later-source"]);
+    let hook = world.bare.join("hooks/pre-receive");
+    let script = format!(
+        r#"#!/bin/sh
+while read old new ref; do
+  case "$ref" in refs/heads/main)
+    unset GIT_QUARANTINE_PATH GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES
+    git update-ref refs/heads/issue-1 {changed} {original} || exit 1
+    touch {}
+  esac
+done
+"#,
+        quote(&world.root.join("head-moved-in-transaction"))
+    );
+    std::fs::write(&hook, script).unwrap();
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    release(&world, "a", false);
+    let answer = finish(start(&world, &a, &world.cache(), 1));
+    assert!(world.root.join("head-moved-in-transaction").exists());
+    assert_eq!(world.remote(&["rev-parse", "refs/heads/issue-1"]), changed);
+    assert_ne!(
+        answer["outcome"], "merged",
+        "stale candidate landed after its source head changed: {answer}"
+    );
+    assert_eq!(world.remote(&["rev-parse", "refs/heads/main"]), base);
+}
+
+#[test]
 fn an_injected_clock_can_publish_its_own_fresh_record() {
     let world = world(1);
     let (a, _) = worker(&world, 1, "a");
