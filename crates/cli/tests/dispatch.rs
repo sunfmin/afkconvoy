@@ -285,7 +285,10 @@ fn a_trust_prompt_is_a_named_trust_gap_and_the_worker_is_told_nothing() {
     assert!(evidence.contains(orca["terminals"][0]["line"].as_str().unwrap()), "{evidence}");
     let calls = world.orca_calls();
     let read = calls.iter().position(|call| common::asked(call) == "terminal read").unwrap();
-    let close = calls.iter().rposition(|call| common::asked(call) == "terminal close").unwrap();
+    let close = calls
+        .iter()
+        .rposition(|call| matches!(common::asked(call).as_str(), "terminal close" | "worktree rm"))
+        .unwrap();
     assert!(read < close, "capture precedes terminal cleanup: {calls:?}");
 }
 

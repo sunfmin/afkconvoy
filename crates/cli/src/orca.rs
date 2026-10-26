@@ -236,7 +236,11 @@ fn startup_redacted(text: &str) -> String {
         })
         .flat_map(|(_, value)| {
             let json = serde_json::to_string(&value).unwrap_or_default();
-            let escaped = json.trim_matches('"').to_string();
+            let escaped = json
+                .strip_prefix('"')
+                .and_then(|s| s.strip_suffix('"'))
+                .unwrap_or(&json)
+                .to_string();
             [value.clone(), escaped, afkconvoy_core::line::Line::new().word(&value).done()]
         })
         .collect();
