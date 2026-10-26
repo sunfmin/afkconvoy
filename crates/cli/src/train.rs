@@ -477,26 +477,17 @@ pub fn join_again(
     of: &Of,
     now: u64,
 ) -> Result<bool> {
-    let line = train_refs(repo.layout(), &config.base_branch).line;
     let branch = format!("refs/heads/{}", pr.head_branch);
     let head =
         repo.fetched(&branch)?.ok_or_else(|| anyhow!("the remote has no branch {branch:?}"))?;
-    for _ in 0..PUSH_TRIES {
-        let train = Train::read(repo, config)?;
-        if repo.within(&head, &train.base)?
-            || !on_train(&train.joins(repo, tracker)?, &[pr.at_head(&head)]).is_empty()
-        {
-            return Ok(true);
-        }
-        let message = join_message(&pr.title, pr.number, of, tracker);
-        let Some(commit) = merged_onto(repo, &train.tip, &head, &message, now)? else {
-            return Ok(false);
-        };
-        if repo.try_git(&["push", "--quiet", REMOTE, &format!("{commit}:{line}")])?.ok {
-            return Ok(true);
-        }
-    }
-    bail!("the landing train moved {PUSH_TRIES} times while PR #{} was joining it", pr.number)
+    let path = std::env::temp_dir().join(format!("afkconvoy-rejoin-{}", crate::unique()));
+    repo.git(&["worktree", "add", "--quiet", "--detach", &path.to_string_lossy(), &head])?;
+    let checkout = Repo::new(path.clone());
+    let answer = join(&checkout, config, tracker, pr, of, json!({}), now);
+    let removed = repo.git(&["worktree", "remove", "--force", &path.to_string_lossy()]);
+    let answer = answer?;
+    removed?;
+    Ok(matches!(answer["outcome"].as_str(), Some("joined" | "merged")))
 }
 
 fn joined(head: &str, commit: &str, again: bool) -> Value {

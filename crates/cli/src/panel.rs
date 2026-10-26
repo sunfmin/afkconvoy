@@ -1786,10 +1786,15 @@ mod tests {
         train.asked = 900;
         host.exclusive = afkconvoy_core::exclusive::in_order(vec![running, waiting, train]);
         let page = render(&page_of(host, vec![]));
-        assert!(page.contains("<h2>Run alone on this host</h2>"), "{page}");
+        assert!(
+            page.contains("<h2>Command lanes</h2>")
+                && page.contains("<h3>train lane</h3>")
+                && page.contains("<h3>worker lane</h3>"),
+            "{page}"
+        );
         assert!(page.contains("<code>cargo test &lt;all&gt;</code>"), "{page}");
         assert!(page.find("cargo test").unwrap() < page.find("make bench").unwrap());
-        assert!(page.find("cargo test").unwrap() < page.find("train gate").unwrap());
+        assert!(page.find("train gate").unwrap() < page.find("cargo test").unwrap());
         assert!(page.find("train gate").unwrap() < page.find("make bench").unwrap());
     }
 

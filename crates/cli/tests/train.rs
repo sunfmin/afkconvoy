@@ -267,7 +267,7 @@ fn a_gate_train_merge_that_conflicts_runs_no_gate() {
     assert_eq!(answer["status"], "conflict");
     assert_eq!(answer["files"], serde_json::json!(["README.md"]));
     assert_eq!(answer["recorded"], false);
-    assert_eq!(gate_records(&world), 0);
+    assert_eq!(gate_records(&world), 2, "the green base and first join stay on record");
 
     // still unresolved: still no run
     let again = world.afk_in(&eight, &["gate", "--train"]);
