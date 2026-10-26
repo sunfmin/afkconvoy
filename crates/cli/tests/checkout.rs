@@ -211,6 +211,15 @@ fn every_command_a_workers_brief_gives_it_takes_its_worktree() {
     // …as a command that would refuse it is found
     let said = "an afkconvoy worker runs `afkconvoy claim -C . 3` and `afkconvoy scan`";
     assert_eq!(common::refusing_a_workers_worktree(said), ["claim"]);
+    assert_eq!(common::refusing_a_workers_worktree("run `afkconvoy flows`"), ["flows"]);
+    assert_eq!(
+        common::refusing_a_workers_worktree("run `afkconvoy flows <target-checkout>`"),
+        [] as [String; 0]
+    );
+    let target = world.second_repo();
+    let flows = world.afk_in(&worktree, &["flows", path(&target)]).ok();
+    assert_eq!(flows["ready_label"], "ready-for-agent");
+    assert!(world.afk_in(&worktree, &["flows"]).error().contains("worker's worktree"));
 }
 
 #[test]

@@ -111,6 +111,9 @@ fn handed_said(history: &History, records: &[StageRecord], urls: &[String]) -> O
 }
 
 impl Staged {
+    pub fn is_consult(&self) -> bool {
+        self.consult
+    }
     /// The stage issue `issue`, carrying `labels`, is at by its stage
     /// records as they stand now — or the consult its `escalate` goes to, or,
     /// its last stage having passed to the landing train, the join of its
@@ -383,7 +386,17 @@ impl Staged {
         } else {
             stage_prompt(&fields)
         };
-        worktree.write_brief(&prompt.map_err(|e| anyhow!(e))?)
+        let mut prompt = prompt.map_err(|e| anyhow!(e))?;
+        if self.consult {
+            let unworked = crate::blockers::for_issue(&fleet.repo, &fleet.gh, self.issue)?;
+            if !unworked.is_empty() {
+                prompt.push_str(&format!(
+                    "\n## Blockers no fleet works\n\n{}\n",
+                    crate::blockers::evidence(&unworked)
+                ));
+            }
+        }
+        worktree.write_brief(&prompt)
     }
 
     pub fn json(&self) -> Value {
