@@ -24,7 +24,7 @@ fn config_prints_every_key_with_defaults_filled() {
         "epic_labels": ["epic", "prd"],
         "escalate_label": "ready-for-human",
         "lock_label": "fleet-lock",
-        "escalate_to": "consult",
+            "escalate_to": "human",
     });
     assert_eq!(config, every);
     // A concurrency is its checkout's, said on its host: one the config

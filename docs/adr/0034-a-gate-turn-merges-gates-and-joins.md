@@ -18,6 +18,6 @@ On FelixMBP14.local on 2026-10-26, commit `199483c91e4e585b97b8549d2b56eb540ad10
 
 The host had one worker lane and one train lane. The train started one second before the worker; both were observed running in their respective lanes. An outer reservation excluded other heavy commands for each measurement. The two checkouts used separate target directories, with dependency artifacts copied before the runs; the train checkout rebuilt its workspace artifacts. The worker's extra 82 seconds is one observed comparison, not a repeated benchmark. It shows the cost of overlap on this host while confirming that the train gate starts without waiting for the worker lane.
 
-## Replaced by ADR-0036
+## Replaced by ADR-0037
 
-A turn now lands its gated merge commit directly on the base branch. The landing train, its worker and its lane have been removed; ADR-0036 describes certification, repair and migration of an older line.
+A turn now lands its gated merge commit directly on the base branch. The landing train, its worker and its lane have been removed; ADR-0037 describes certification, repair and migration of an older line.

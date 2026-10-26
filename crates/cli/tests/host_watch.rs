@@ -128,6 +128,8 @@ fn a_host_with_no_operator_directory_runs_the_stock_watch_and_records_what_stays
     assert_eq!(doctor["host"]["watch"]["directory"], json!(dir));
     assert_eq!(doctor["host"]["watch"]["stock"], true);
     assert!(!dir.exists());
+    world.issue(7, &["ready-for-human"]);
+    world.comment(7, "<!--convoy:escalation claim=old-->\nChoose the schema.");
     paused(&world, "pi", "it refused every prompt");
     world.afk(&["run", "--host", "h1", "--second-ms", "100", "--watch-every", "1"]).ok();
     let watch = until(&world, "the stock watch", || running(&world));
@@ -149,6 +151,13 @@ fn a_host_with_no_operator_directory_runs_the_stock_watch_and_records_what_stays
     ] {
         assert!(rules.contains(required), "stock instruction lacks {required}: {rules}");
     }
+    let told = brief(&starts(&world)[0]);
+    assert!(told.contains("Answer an escalation yourself"));
+    assert!(told.contains("afkconvoy rule --issue 7 --text-file <file>"));
+    assert!(
+        told.contains("gh issue edit 7 --add-label ready-for-agent --remove-label ready-for-human")
+    );
+    assert!(told.contains("Leave only these four kinds with a human"));
     assert_eq!(open(&world, &dir), [watch["terminal"].as_str().unwrap()]);
     let doctor = world.afk(&["doctor", "--all"]).json;
     assert_eq!(doctor["host"]["watch"]["running"]["stock"], true);
@@ -299,7 +308,7 @@ fn unplaced_models_start_a_daily_watch_that_places_research_and_keeps_its_bound_
 }
 
 #[test]
-fn a_watch_can_fix_a_fleet_fault_and_hand_it_back_while_a_human_decision_stays() {
+fn a_watch_answers_escalations_and_leaves_only_the_four_human_kinds() {
     let world = World::new();
     let dir = operator(&world);
     world.set_gate_config("gate_command: ./gate.sh\nescalate_to: human");
@@ -312,7 +321,10 @@ fn a_watch_can_fix_a_fleet_fault_and_hand_it_back_while_a_human_decision_stays()
         .ok();
     world.issue(7, &["ready-for-agent"]);
     world.issue(8, &["ready-for-human"]);
-    world.comment(8, "<!--convoy:escalation claim=old-->\nShould we migrate the customer's data now or wait for approval?");
+    world.comment(
+        8,
+        "<!--convoy:escalation claim=old-->\nShould we take the customer's data off this host?",
+    );
     world.with_orca(|orca| orca["trust_prompt"] = json!(true));
     let fault = world.afk(&["dispatch", "--issue", "7", "--instance", "alpha", "--host", "h1"]);
     assert!(fault.error().contains("worktree trust gap"));
@@ -329,7 +341,16 @@ fn a_watch_can_fix_a_fleet_fault_and_hand_it_back_while_a_human_decision_stays()
         "trust a worktree for its harness",
         "waiting_on_human.answer",
         "actually dispatches or continues",
-        "An escalation that asks a human for a decision stays with the human",
+        "Answer an escalation yourself",
+        "afkconvoy rule --issue 8 --text-file <file>",
+        "afkconvoy send --issue 8 --stage <stage> --text-file <file>",
+        "gh issue close 8 --comment <why>",
+        "dependencies/blocked_by",
+        "Leave only these four kinds with a human",
+        "spending money, or needing an account, a credential or a person's hands",
+        "what cannot be undone",
+        "taking a secret or private data off the host",
+        "changing what a product is for, or who it is for",
         "afkconvoy-watch-<digits>",
         "merge commit",
         "afkconvoy land --watch",
@@ -381,7 +402,7 @@ fn a_watch_can_fix_a_fleet_fault_and_hand_it_back_while_a_human_decision_stays()
         &watch,
         &[
             "fixed trust and checked #7 took its brief",
-            "left #8 with the human: decide when to migrate the customer's data",
+            "left #8 with the human: private data leaving the host",
         ],
         Some(0),
     );

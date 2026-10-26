@@ -32,7 +32,7 @@ A bound repo's config names a team. The issue passes through the stages of one o
    - `reject`: back to an earlier stage, which runs again: rework. Breakers bound it, and the rework past one escalates
    - `blocked`: parked until the issues it waits on close
    - `already-satisfied`: nothing needs changing: the workflow ends
-   - `escalate`: to the stage's consult — a worker in a more senior role, or afkconvoy's stock consult where it names none, who rules or lets it through — or to a human where it says so
+   - `escalate`: to the stage's consult — a worker in a named senior role who rules or lets it through — or escalates for the host's watch where no consult is named
 4. The next stage. The tick that reads a verdict ends that stage's claim and starts the stage that follows, under a claim of its own, with a new worker: the one that judges a piece of work never inherits the reasoning of the one that wrote it.
 5. Landing. Once the last stage passes, a new worker in the workflow's landing role takes the same merge, gate, record and landing turn as an unbound worker.
 

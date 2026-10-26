@@ -11,3 +11,5 @@ The instruction asks it to find what holds the fleets' work back, fix it with th
 This amends ADR-0030, *The host runner watches its host* (sunfmin/control#78): no operator directory means the stock watch, rather than no look and no watch. `--watch-dir default` returns to the stock watch. The directory and whether it is stock are shown even before a watch starts. The trigger, look, harness choice, bounds, record and authority are the same in either directory, including sunfmin/control#79's authority across the checkout list. A running watch and its continuations keep the directory and rules they started under when the setting changes.
 
 Keeping operational work in one watch ends the need for each fleet agent to stand in as the operator. Later issues move inspections, the stock consult and kit research into it; this decision does not move or remove those agents yet. The stock consult of ADR-0018 remains where it is until that work lands.
+
+Amended by ADR-0036 (sunfmin/control#96): the stock consult is removed; its hand-offs escalate for the watch to answer with the operator's authority. Named consults remain.

@@ -444,7 +444,7 @@ fn a_start_checks_every_harness_it_could_be_asked_for_and_names_what_calls_for_e
     git(&world.clone, &["push", "-q", "origin", "main"]);
     let called = "it is the worker launch command of the harness `claude-code`, called for by the \
                   host kit's first, the range of the role `dev`, the range of the role \
-                  `reviewer`, the host kit's stock consult";
+                  `reviewer`";
 
     // One that takes no role flags: a start, `plan` and `doctor` each say so.
     world.shell_help(Some("Usage: agent [options]\n  --model <model>\n"));
@@ -466,8 +466,7 @@ fn a_start_checks_every_harness_it_could_be_asked_for_and_names_what_calls_for_e
         json!([
             "the host kit's first",
             "the range of the role `dev`",
-            "the range of the role `reviewer`",
-            "the host kit's stock consult"
+            "the range of the role `reviewer`"
         ])
     );
     let findings = doctor["findings"].as_array().unwrap();
@@ -912,10 +911,6 @@ fn claude_role_copies_bound_discovery_without_reusing_older_unbounded_copies() {
     );
     let dir = RepoDir::read("acme/dev").unwrap();
     assert_eq!(copies.role(&fetched, &dir, Harness::Pi).unwrap().dir, source);
-    let stock = copies.stock().unwrap();
-    assert_eq!(holds(&stock.dir.join(".git")), [] as [String; 0]);
-    assert!(is_read_only(&stock.dir.join(".git")));
-    assert_eq!(copies.stock().unwrap().dir, stock.dir);
 }
 
 #[test]

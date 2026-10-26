@@ -304,7 +304,7 @@ feature — flow:feature — max_rework 3, max_consecutive_rework 2
     let triage = "\
 triage — flow:triage — max_rework 3, max_consecutive_rework 2
 
-  sort  reviewer: review
+  sort  reviewer: review · escalate → human
     ↓ pass → done
   done
 ";

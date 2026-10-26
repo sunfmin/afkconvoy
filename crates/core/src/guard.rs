@@ -891,9 +891,7 @@ impl WritesNothing {
         if self.claim != claim || self.tip == tip {
             return None;
         }
-        let who = if self.stage == crate::stock::ROLE {
-            "a consult writes no code, and the stock consult".to_string()
-        } else if self.consult {
+        let who = if self.consult {
             format!("a consult writes no code, and the consult of the stage `{}`", self.stage)
         } else {
             format!("the stage `{}` is marked `writes: false`, and it", self.stage)

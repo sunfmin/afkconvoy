@@ -588,27 +588,15 @@ pub fn reconcile(
         }
         let comments = open.issues.comments(claim.number);
         let bodies = || comments.iter().map(|c| c.body.as_str());
-        let asked = afkconvoy_core::stock::asked_at(bodies(), &claim.id);
-        let labels = open.issues.rows.iter().find(|i| i.number == claim.number).map(|i| &i.labels);
-        let stock_answered = asked.is_some()
-            && labels.is_some_and(|labels| {
-                labels.contains(&fleet.config.ready_label)
-                    || afkconvoy_core::stock::parked(
-                        labels,
-                        &fleet.config.ready_label,
-                        &fleet.config.escalate_label,
-                    )
-            });
         let prohibited_work = worktree.writes_nothing()?.is_some_and(|start| {
             start.broken(&claim.id, &worktree.tip().unwrap_or_default()).is_some()
         });
-        if stock_answered || prohibited_work {
+        if prohibited_work {
             book.workers.retain(|o| o.path != worktree.path);
             book.observations_failed.retain(|(path, _, _)| *path != worktree.path);
             continue;
         }
-        let verdict = afkconvoy_core::verdict::latest_verdict(bodies())
-            .filter(|v| asked.is_none_or(|at| v.comment > at));
+        let verdict = afkconvoy_core::verdict::latest_verdict(bodies());
         let said = verdict.as_ref().and_then(|v| comments.get(v.comment)).map(|c| c.url.as_str());
         let answered = worktree.answered()?;
         let unbound_declared =
