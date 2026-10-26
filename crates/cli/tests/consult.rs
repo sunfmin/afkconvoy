@@ -768,10 +768,13 @@ fn already_satisfied_over_a_branch_that_holds_work_goes_to_its_consult() {
     world.issue(7, &["flow:feature"]);
     assert_eq!(did(&tick(&world, 1000)), ["dispatch 7 done"]);
     commit(&worktree(&world), "half.txt", "half\n");
+    commit(&world.clone, "landed.txt", "only on the base branch\n");
+    git(&world.clone, &["push", "-q", "origin", "main"]);
     declare(&world, "build", "already-satisfied", "Nothing to do.");
     assert_eq!(did(&tick(&world, 1090)), ["advance 7 done"]);
     assert_eq!(world.state(7), "open");
     assert!(world.comments(7).last().unwrap().contains("half.txt"));
+    assert!(!world.comments(7).last().unwrap().contains("landed.txt"));
     consulted_on(&world, 1180, "already-satisfied");
 }
 
