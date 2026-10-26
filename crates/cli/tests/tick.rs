@@ -121,6 +121,51 @@ fn a_brief_whose_idle_check_times_out_follows_in_the_same_terminal_on_a_later_ti
 }
 
 #[test]
+fn a_ready_terminal_waiting_for_its_brief_is_not_reused_under_a_later_claim() {
+    let world = backlog(&[3]);
+    world.with_orca(|orca| orca["timeout_on_waits"] = json!([2]));
+    tick(&world, "1000");
+    let before = world.open_terminals()[0].clone();
+    world.afk(&["release", "--issue", "3", "--instance", "alpha"]).ok();
+    world.with_orca(|orca| orca["timeout_on_waits"] = json!([]));
+    let again = tick(&world, "1090");
+    assert_eq!(again["errors"], json!([]), "{again}");
+    assert_ne!(world.open_terminals()[0], before);
+}
+
+#[test]
+fn a_missing_ready_terminal_is_replaced_without_counting_its_pending_brief_as_a_failed_start() {
+    let world = backlog(&[3]);
+    world.with_orca(|orca| orca["timeout_on_waits"] = json!([2]));
+    tick(&world, "1000");
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            terminal["open"] = json!(false);
+        }
+        orca["never_ready"] = json!(true);
+    });
+    let failed = tick(&world, "1090");
+    assert_eq!(failed["errors"][0]["do"], "judge", "{failed}");
+    assert_eq!(world.claims(), alpha(&[3]));
+    assert!(!world.comments(3).iter().any(|body| body.contains("convoy:escalation")));
+    tick(&world, "1180");
+    assert_eq!(world.claims(), [], "two genuine readiness failures still escalate");
+    assert!(world.comments(3).iter().any(|body| body.contains("worker start failed again")));
+}
+
+#[test]
+fn a_readiness_wait_timeout_is_still_a_failed_start() {
+    let world = backlog(&[3]);
+    world.with_orca(|orca| orca["timeout_on_waits"] = json!([1]));
+    let failed = tick(&world, "1000");
+    assert!(failed["errors"][0]["error"].as_str().unwrap().contains("timeout"), "{failed}");
+    assert_eq!(world.claims(), alpha(&[3]));
+    tick(&world, "1090");
+    assert_eq!(world.claims(), []);
+    assert!(world.comments(3).iter().any(|body| body.contains("worker start failed again")));
+}
+
+#[test]
 fn a_claim_whose_issue_is_closed_is_settled_and_its_slot_refilled() {
     let world = backlog(&[3, 5, 9]);
     tick(&world, "1000");

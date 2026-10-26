@@ -55,7 +55,7 @@ fn starting(fleet: &Fleet, number: u64) -> Result<Option<Starting>> {
     Ok(fleet.scan.claim_of(number).filter(|claim| claim.id == kept.claim).map(|_| kept))
 }
 
-/// The claim has no worker yet, even if orca still holds its terminal.
+/// The claim's worker has not taken its brief yet, even if its harness is ready.
 pub(crate) fn incomplete(fleet: &Fleet, number: u64) -> Result<bool> {
     Ok(starting(fleet, number)?.is_some())
 }
@@ -208,6 +208,9 @@ pub enum StartFrom {
 ///   {"started": true, "claim": "won"|"held", tier, action, prompt, reason,
 ///    worktree, branch, terminal}   and, in a bound repo, the `stage` it performs
 ///                                  — `land` for the join that follows the last
+///   {"started": false, "brief_pending": true, …}
+///                                  readiness succeeded but the prompt is still
+///                                  settling; a later tick uses that terminal
 ///   {"started": false, "claim": "lost", "owner": {…}}   a peer holds the issue
 ///   {"started": false, "skipped": "blocked", "blocked_by": [n…]}
 ///                                  an open blocker, read just before the claim
@@ -246,7 +249,7 @@ pub(crate) fn dispatch_continuing(
     let Some(how) = started.as_ref().err().and_then(gone).cloned() else {
         return match started {
             Ok(started) => {
-                if started["started"] == true && started["brief_pending"] != true {
+                if started["started"] == true {
                     forget_starting(fleet, number)?;
                 }
                 Ok(started)
@@ -411,7 +414,14 @@ fn start(
     let undecided = || anyhow!("a dispatch step ran before the one that feeds it");
     let interrupted = "dispatch ended before the worker took its brief";
     if held {
-        keep_starting(fleet, number, interrupted)?;
+        if !by_hand
+            && continuing.is_none()
+            && let Some(ready) = ready
+        {
+            keep_ready(fleet, number, ready)?;
+        } else {
+            keep_starting(fleet, number, interrupted)?;
+        }
     }
     for step in dispatch_steps(held, by_hand) {
         match step {
@@ -534,7 +544,7 @@ fn start(
     if !brief_pending && let Some(said) = answered {
         cut.record_answered(&said)?;
     }
-    let mut started = json!({"issue": number, "started": true,
+    let mut started = json!({"issue": number, "started": !brief_pending,
         "claim": if held { "held" } else { "won" },
         "tier": plan.tier.number(), "action": plan.tier.word(),
         "prompt": plan.variant.word(), "reason": plan.reason,
