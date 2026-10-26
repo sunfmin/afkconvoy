@@ -743,10 +743,17 @@ fn observe(
     // A failed turn is actionable at its first observation, including a
     // worker previously held until its next diagnosis. Repeated identical
     // failures still obey the existing retry and recovery bounds.
-    let newly_failed =
-        orca["state"] == "done" && orca["outcome"] == "failure" && observed.orca != orca;
+    let newly_failed = orca["state"] == "done"
+        && orca["outcome"] == "failure"
+        && ["state", "outcome", "stateStartedAt", "agentType"]
+            .iter()
+            .any(|key| observed.orca[*key] != orca[*key]);
     if newly_failed {
         observed.next_check = fleet.now;
+        observed.window_started = fleet.now;
+        observed.attempts = 0;
+        observed.diagnosis = None;
+        observed.diagnosis_failures.clear();
     }
     observed.harness = harness;
     observed.recorded_harness = recorded.map(|h| h.key().to_string());
