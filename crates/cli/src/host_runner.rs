@@ -975,6 +975,10 @@ impl Runner {
     /// stands still between two ticks — none begins one meanwhile — and none
     /// is started or added.
     fn stopped_for_move(&self) -> Option<Vec<Left>> {
+        self.stopped_for_move_at(crate::clock())
+    }
+
+    fn stopped_for_move_at(&self, now: u64) -> Option<Vec<Left>> {
         let holding = self.holding();
         // Prevent a fresh tick or queue grant from racing the safe moment.
         // Existing ticks and the running command finish as ever.
@@ -1010,8 +1014,7 @@ impl Runner {
         });
         if let Some(installed) = self.shared.installed().as_mut() {
             installed.held_back = held.iter().map(HeldBack::said).collect();
-            if !held.is_empty()
-                && crate::clock().saturating_sub(installed.since) >= MOVE_WAIT_WITHIN.as_secs()
+            if !held.is_empty() && now.saturating_sub(installed.since) >= MOVE_WAIT_WITHIN.as_secs()
             {
                 installed.wait_expired = true;
                 self.log.say(&format!("host runner not moved: wait exceeded {}s: {} — it works on and tries again once the installed file changes", MOVE_WAIT_WITHIN.as_secs(), installed.held_back.join("; ")));
@@ -2373,6 +2376,62 @@ mod tests {
         assert!(finding["what"].as_str().unwrap().contains("exceeded 600s"), "{finding}");
         assert_eq!(finding["evidence"], "/checkout is in a tick; 1 exclusive command(s) running");
         assert_eq!(finding["severity"], "warning");
+    }
+
+    #[test]
+    fn a_move_waits_at_most_ten_minutes_then_resumes_the_old_runner() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = Shared::default();
+        *shared.installed() = Some(Installed {
+            path: "/bin/afkconvoy".into(),
+            version: Some("999.0.0".into()),
+            from: VERSION.into(),
+            since: 1000,
+            wait_expired: false,
+            held_back: vec![],
+            failed: None,
+        });
+        let seen = Arc::new(Seen::default());
+        seen.stage().instance = Some("alpha".into());
+        let stop = Stop::never();
+        let runner = Runner {
+            list: List::at(dir.path().join("checkouts.json")),
+            log: Arc::default(),
+            stop: stop.clone(),
+            moving: AtomicBool::new(false),
+            panel: HostPanel::new(shared.clone()),
+            shared: shared.clone(),
+            held: Mutex::new(BTreeMap::from([(
+                PathBuf::from("/checkout"),
+                Held {
+                    repo: "repo".into(),
+                    host: "h1".into(),
+                    seen,
+                    stop: stop.clone(),
+                    reach: Reach::default(),
+                },
+            )])),
+        };
+        let standing = afkconvoy_core::host_sleep::Standing {
+            instance: "alpha".into(),
+            no_host_sleep: true,
+            idle: false,
+            since: 1000,
+            worked: None,
+        };
+        let host =
+            crate::host_sleep::HostSleep::open(standing, &Wakes::default(), &shared.standings, 600);
+        host.begins();
+        assert!(runner.stopped_for_move_at(1599).is_none());
+        assert!(!shared.installed().as_ref().unwrap().wait_expired);
+        assert!(runner.stopped_for_move_at(1600).is_none());
+        let installed = shared.installed().clone().unwrap();
+        assert!(installed.wait_expired);
+        assert_eq!(installed.held_back, ["/checkout is in a tick"]);
+        assert!(not_moved(&installed).is_some());
+        assert!(!runner.moved() && !stop.told());
+        host.ticked(1600, Some((false, true)));
+        assert!(host.begins_unless_stopped(&stop), "new ticks resume after expiry");
     }
 
     #[test]
