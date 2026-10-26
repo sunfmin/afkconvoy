@@ -30,6 +30,34 @@ fn ready_world() -> World {
 }
 
 #[test]
+fn an_accepted_brief_that_starts_no_turn_is_a_failed_start_on_every_harness() {
+    for harness in afkconvoy_core::harness::Harness::ALL {
+        for screen in [
+            include_str!("screens/kimi-migration.txt"),
+            include_str!("screens/kimi-empty-input.txt"),
+        ] {
+            let world = ready_world();
+            world.with_kit(|kit| {
+                kit["harnesses"] = json!([{"harness":harness.key(), "command":harness.stock(),
+                    "models":[{"model":"test-model"}]}]);
+            });
+            world.with_orca(|orca| {
+                orca["prompt_stages"] = json!(["input_accepted"]);
+                orca["send_screen"] = json!(screen.lines().collect::<Vec<_>>());
+            });
+            let error = world.afk(&["dispatch", "--issue", "7", "--instance", "alpha",
+                "--host", "h1", "--now", "1000"]).error();
+            assert!(error.contains("started no turn"), "{}: {error}", harness.key());
+            assert!(error.contains(screen.trim()), "screen evidence missing: {error}");
+            let orca = world.orca();
+            let sent: usize = orca["terminals"].as_array().unwrap().iter()
+                .map(|t| t["sent"].as_array().unwrap().len()).sum();
+            assert_eq!(sent, 1, "an unproven send is never resent");
+        }
+    }
+}
+
+#[test]
 fn a_worker_is_started_under_nice_with_a_tmpdir_its_worktree_ignores_and_takes_with_it() {
     let world = ready_world();
     let started = dispatch(&world, "7").ok();

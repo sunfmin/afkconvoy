@@ -228,9 +228,10 @@ fn terminal_create(st: &mut State) -> ! {
         .map_or(command, |(_, command)| command);
     let command = command.to_string();
     let handle = format!("term-{}", st.list("terminals").len() + 1);
+    let screen = st.doc["start_screen"].clone();
     st.list("terminals")
         .push(json!({"handle": handle, "worktreePath": path, "command": command, "line": given,
-        "sent": [], "open": true}));
+        "sent": [], "open": true, "screen": screen}));
     done(st, json!({"terminal": {"handle": handle, "worktreePath": path}}))
 }
 
@@ -274,7 +275,7 @@ fn terminal_wait(st: &State) -> ! {
         let answer = json!({"id": "x", "ok": true, "result": {"wait": wait}});
         st.finish(&answer.to_string(), 1, "")
     }
-    let ready = st.doc["never_ready"] != true;
+    let ready = st.doc["never_ready"] != true && st.doc["terminals"][at]["menu"] != true;
     let status = if ready { "idle" } else { "timeout" };
     done(st, json!({"wait": {"satisfied": ready, "status": status}}))
 }
@@ -319,7 +320,17 @@ fn terminal_send(st: &mut State) -> ! {
     }
     let sent = json!({"text": st.opt("--text").expect("--text"), "enter": st.has("--enter")});
     st.doc["terminals"][at]["sent"].as_array_mut().unwrap().push(sent);
-    done(st, json!({"send": {"accepted": true}}))
+    if st.doc["send_screen"].is_array() {
+        st.doc["terminals"][at]["screen"] = st.doc["send_screen"].clone();
+    }
+    let stages = st.doc["terminals"][at]["prompt_stages"]
+        .as_array()
+        .or_else(|| st.doc["prompt_stages"].as_array())
+        .cloned()
+        .unwrap_or_else(|| vec![json!("input_accepted"), json!("turn_started")]);
+    done(st, json!({"send": {"accepted": true, "prompt": {
+        "requestId": "request-1", "stages": stages, "observation": "observed"
+    }}}))
 }
 
 fn terminal_list(st: &State) -> ! {
