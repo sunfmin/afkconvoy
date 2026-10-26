@@ -319,6 +319,16 @@ pub fn terminal_fault(harness: Harness, output: &[String]) -> Option<Diagnosis> 
     terminal_rule(harness, output)
 }
 
+/// A watch uses the same structured errors and fixed harness messages as
+/// an issue worker, with runtime evidence scoped to its terminal's pane.
+pub(crate) fn watch_diagnosis(
+    harness: Harness,
+    output: &[String],
+    runtime: &Value,
+) -> Option<Diagnosis> {
+    terminal_rule(harness, output).or_else(|| classified(runtime))
+}
+
 /// A session that exited with a failure: its harness failed it, and is held
 /// to have failed that session alone.
 pub fn failed(evidence: Vec<String>) -> Diagnosis {

@@ -1171,6 +1171,38 @@ impl Worktree {
         Ok(rows.iter().any(|row| row["handle"] == terminal))
     }
 
+    /// A session sharing a directory with the operator uses only its own
+    /// pane's runtime report and output, never the directory's lead agent.
+    pub(crate) fn terminal_health(&self, terminal: &str, now: u64) -> Result<(WorkerState, Value)> {
+        let shown = orca(&["terminal", "show", "--terminal", terminal])?;
+        let shown = &shown["terminal"];
+        let pane = format!(
+            "{}:{}",
+            shown["tabId"].as_str().unwrap_or(""),
+            shown["leafId"].as_str().unwrap_or("")
+        );
+        let row = self.health_report()?;
+        let agent = row["agents"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|agent| agent["paneKey"] == pane && agent["parentPaneKey"].is_null());
+        let lead = agent.map(|agent| AgentReport {
+            working: agent["state"] == "working",
+            since: agent["stateStartedAt"].as_u64().map(|at| at / 1000),
+        });
+        Ok((
+            worker_state(1, shown["lastOutputAt"].as_u64().map(|at| at / 1000), lead, now),
+            agent.cloned().unwrap_or(Value::Null),
+        ))
+    }
+
+    /// Delivers to a watch with the same input check and turn receipt as a
+    /// worker. Its directory need not be git, so it keeps no worktree notes.
+    pub(crate) fn tell_watch(&self, terminal: &str, line: &str) -> Result<()> {
+        self.tell_unchecked(terminal, line, BRIEF_SETTLE_SECONDS)
+    }
+
     /// Closes `terminal` alone, of the terminals here.
     pub fn close_terminal(&self, terminal: &str) -> Result<()> {
         orca(&["terminal", "close", "--terminal", terminal])?;

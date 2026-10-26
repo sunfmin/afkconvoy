@@ -35,8 +35,8 @@ pub(super) fn in_worktree(command: &str) -> String {
     if command.contains(APPROVE) { command.to_string() } else { format!("{command} {APPROVE}") }
 }
 
-/// Starts one watch non-interactively, with pi's login and approval setup.
-pub(super) fn watch(command: &str, kept: &str, model: Option<&str>, prompt: &str) -> String {
+/// Starts one watch interactively, with pi's login and approval setup.
+pub(super) fn watch(command: &str, kept: &str, model: Option<&str>) -> String {
     let line = Line::new()
         .fixed("export ")
         .fixed(USER_DIR)
@@ -48,7 +48,7 @@ pub(super) fn watch(command: &str, kept: &str, model: Option<&str>, prompt: &str
         Some(model) => line.fixed(" ").fixed(MODEL).fixed(" ").word(model),
         None => line,
     };
-    line.fixed(" --print ").word(prompt).done()
+    line.done()
 }
 
 /// pi's flag that leaves out every skill it would find by itself: those of
@@ -225,12 +225,7 @@ pub(super) fn models_question(command: &str, kept: &str) -> String {
 /// The line that sends `model` of pi's the one-line `prompt` through
 /// `command`, under the user directory `kept` a worker of it is given, and
 /// prints its answer.
-pub(super) fn prompt_question(
-    command: &str,
-    kept: &str,
-    model: Option<&str>,
-    prompt: &str,
-) -> String {
+pub(super) fn prompt_question(command: &str, kept: &str, model: Option<&str>) -> String {
     let line = Line::new()
         .fixed("export ")
         .fixed(USER_DIR)

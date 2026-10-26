@@ -93,19 +93,29 @@ pub fn expired(started: u64, now: u64) -> bool {
     now.saturating_sub(started) >= TIME_LIMIT
 }
 
-/// The line a watch's terminal runs: `line`, a harness's watch, with all it
-/// prints kept in `transcript` too, then how it exited; then the terminal's
-/// shell exits, and the terminal with it.
-pub fn session(line: &str, transcript: &str) -> String {
-    Line::new()
-        .fixed("{ ")
+/// A marker present only in this watch session's processes, never in the
+/// terminal's shell or a human's other sessions in the same directory.
+pub const SESSION_ENV: &str = "AFKCONVOY_WATCH_SESSION";
+
+/// Runs the interactive harness on the terminal's own input and output.
+/// Only its exit status goes to `transcript`; its shell and screen stay.
+pub fn session(line: &str, transcript: &str, identity: &str) -> String {
+    let child = Line::new()
+        .fixed("export ")
+        .fixed(SESSION_ENV)
+        .fixed("=")
+        .word(identity)
+        .fixed(" && ")
         .launch(line)
+        .done();
+    Line::new()
+        .fixed("sh -c ")
+        .word(&child)
         .fixed("; printf '%s %s\\n' '")
         .fixed(EXITED)
-        .fixed("' \"$?\"; } 2>&1 | tee -a ")
+        .fixed("' \"$?\" > ")
         .word(transcript)
-        .fixed("; exit")
-        .done()
+        .own()
 }
 
 /// How the harness of a session whose transcript is `transcript` exited:
@@ -223,10 +233,12 @@ mod tests {
     }
 
     #[test]
-    fn a_session_keeps_what_it_printed_and_says_how_its_harness_exited() {
-        let line = session("claude --print 'look'", "/cache/watch/it's.log");
-        assert!(line.starts_with("{ claude --print 'look'; printf "), "{line}");
-        assert!(line.ends_with(" 2>&1 | tee -a '/cache/watch/it'\\''s.log'; exit"), "{line}");
+    fn a_session_keeps_its_terminal_and_records_only_how_its_harness_exited() {
+        let line = session("claude", "/cache/watch/it's.log", "watch-1");
+        assert!(line.starts_with("sh -c "), "{line}");
+        assert!(line.contains(SESSION_ENV), "{line}");
+        assert!(!line.contains("tee") && !line.ends_with("; exit"), "{line}");
+        assert!(line.ends_with(" > '/cache/watch/it'\\''s.log'"), "{line}");
 
         assert_eq!(exited("started\nchecked #7\n"), None);
         let printed = format!("checked #7\n\nanswered #7\n{EXITED} 0\n");
