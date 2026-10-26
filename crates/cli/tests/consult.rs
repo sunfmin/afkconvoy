@@ -819,7 +819,7 @@ fn an_issue_handed_to_a_human_that_no_consult_saw_is_put_to_its_consult_once() {
 }
 
 #[test]
-fn a_failed_start_or_trust_gap_skips_both_a_named_and_a_stock_inspector() {
+fn a_failed_start_or_trust_gap_escalates_with_or_without_a_named_consult() {
     for named in [true, false] {
         let feature = if named {
             FEATURE.to_string()
@@ -940,73 +940,57 @@ fn world_help(topic: &str) -> String {
 
 #[test]
 fn consult_close_and_park_are_outcomes_and_a_park_waits_for_an_explicit_send() {
-    for stock in [false, true] {
-        for verdict in ["close", "park"] {
-            let feature = if stock {
-                FEATURE.replace("    escalate: { to: reviewer, do: rule }\n", "")
-            } else {
-                FEATURE.to_string()
-            };
-            let world = bound(&feature, 2);
-            asked(&world);
-            if verdict == "close" {
-                commit(&worktree(&world), "investigation.txt", "builder evidence\n");
-            }
-            tick(&world, 1180);
-            let text = "No reproduction after four investigations; reopen with raw output.";
-            let args = [
-                "verdict",
-                verdict,
-                "--consult",
+    for verdict in ["close", "park"] {
+        let world = bound(FEATURE, 2);
+        asked(&world);
+        if verdict == "close" {
+            commit(&worktree(&world), "investigation.txt", "builder evidence\n");
+        }
+        tick(&world, 1180);
+        let text = "No reproduction after four investigations; reopen with raw output.";
+        let args =
+            ["verdict", verdict, "--consult", "--issue", "7", "--stage", "build", "--text", text];
+        let declared = world.afk(&[&args[..], &COMMITS].concat()).ok();
+        assert_eq!(declared["declared"], true);
+        let read = shown(&world);
+        assert_eq!(read["rework"]["had"], 0, "{read}");
+        assert!(world.comments(7).last().unwrap().contains(text));
+        assert_eq!(did(&tick(&world, 1270)), ["advance 7 done"]);
+        assert_eq!(world.claims(), []);
+        assert_eq!(started(&world).len(), 2);
+        assert_eq!(did(&tick(&world, 1360)), [] as [&str; 0]);
+        if verdict == "close" {
+            assert!(worktree(&world).join("investigation.txt").exists());
+            let plan = world.afk(&["plan", "--now", "1400"]).ok();
+            assert_eq!(plan["frontier"], json!([]));
+            assert_eq!(plan["waiting_on_human"], json!([]));
+            continue;
+        }
+        assert_eq!(shown(&world)["position"]["is"], "parked-for-evidence");
+        let parked = world.comments(7).pop().unwrap();
+        let url = world.comment_url(7, &parked);
+        world.comment(7, "A later status comment.");
+        for command in ["plan", "doctor"] {
+            let view = world.afk(&[command, "--now", "1400"]).ok();
+            assert_eq!(view["waiting_on_human"][0]["issue"], 7, "{view}");
+            assert!(view["waiting_on_human"][0]["why"].as_str().unwrap().contains("parked"));
+            assert!(view["waiting_on_human"][0]["why"].as_str().unwrap().ends_with(text));
+            assert_eq!(view["waiting_on_human"][0]["url"], url);
+        }
+        world.comment(7, "A routine status comment does not resume the investigation.");
+        assert_eq!(did(&tick(&world, 1450)), [] as [&str; 0]);
+        world
+            .afk(&[
+                "send",
                 "--issue",
                 "7",
                 "--stage",
                 "build",
                 "--text",
-                text,
-            ];
-            let declared = world.afk(&[&args[..], &COMMITS].concat()).ok();
-            assert_eq!(declared["declared"], true);
-            let read = shown(&world);
-            assert_eq!(read["rework"]["had"], 0, "{read}");
-            assert!(world.comments(7).last().unwrap().contains(text));
-            assert_eq!(did(&tick(&world, 1270)), ["advance 7 done"]);
-            assert_eq!(world.claims(), []);
-            assert_eq!(started(&world).len(), 2);
-            assert_eq!(did(&tick(&world, 1360)), [] as [&str; 0]);
-            if verdict == "close" {
-                assert!(worktree(&world).join("investigation.txt").exists());
-                let plan = world.afk(&["plan", "--now", "1400"]).ok();
-                assert_eq!(plan["frontier"], json!([]));
-                assert_eq!(plan["waiting_on_human"], json!([]));
-                continue;
-            }
-            assert_eq!(shown(&world)["position"]["is"], "parked-for-evidence");
-            let parked = world.comments(7).pop().unwrap();
-            let url = world.comment_url(7, &parked);
-            world.comment(7, "A later status comment.");
-            for command in ["plan", "doctor"] {
-                let view = world.afk(&[command, "--now", "1400"]).ok();
-                assert_eq!(view["waiting_on_human"][0]["issue"], 7, "{view}");
-                assert!(view["waiting_on_human"][0]["why"].as_str().unwrap().contains("parked"));
-                assert!(view["waiting_on_human"][0]["why"].as_str().unwrap().ends_with(text));
-                assert_eq!(view["waiting_on_human"][0]["url"], url);
-            }
-            world.comment(7, "A routine status comment does not resume the investigation.");
-            assert_eq!(did(&tick(&world, 1450)), [] as [&str; 0]);
-            world
-                .afk(&[
-                    "send",
-                    "--issue",
-                    "7",
-                    "--stage",
-                    "build",
-                    "--text",
-                    "New raw failure output attached.",
-                ])
-                .ok();
-            assert_eq!(did(&tick(&world, 1540)), ["dispatch 7 done"]);
-            assert!(brief(&worktree(&world)).contains("New raw failure output attached."));
-        }
+                "New raw failure output attached.",
+            ])
+            .ok();
+        assert_eq!(did(&tick(&world, 1540)), ["dispatch 7 done"]);
+        assert!(brief(&worktree(&world)).contains("New raw failure output attached."));
     }
 }
