@@ -23,6 +23,7 @@ mod dispatch;
 mod doctor;
 mod dsh;
 mod exclusive;
+mod first_start;
 mod fixture;
 mod flows;
 mod gate;
