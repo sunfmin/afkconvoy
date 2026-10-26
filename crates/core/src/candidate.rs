@@ -85,6 +85,15 @@ impl Candidate {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Chain {
     pub candidates: Vec<Candidate>,
+    /// A serial turn reserves its place without occupying a worker lane.
+    #[serde(default)]
+    pub barriers: Vec<Barrier>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Barrier {
+    pub id: String,
+    pub owner: Process,
 }
 
 impl Chain {
@@ -94,6 +103,7 @@ impl Chain {
         let active: Vec<_> = self.candidates.iter().filter(|c| c.active()).collect();
         (active.len() as u64) < limit
             && (!barrier || active.is_empty())
+            && (barrier || self.barriers.is_empty())
             && !active.iter().any(|c| c.barrier || !c.valid())
     }
 
@@ -270,7 +280,7 @@ mod tests {
 
     #[test]
     fn late_completion_never_resurrects_an_invalidated_suffix_or_erases_the_root_failure() {
-        let mut chain = Chain { candidates: (0..3).map(candidate).collect() };
+        let mut chain = Chain { candidates: (0..3).map(candidate).collect(), ..Chain::default() };
         chain.finish("c0", false, serde_json::json!({"exit_code": 9}));
         let invalidated = chain.clone();
         for c in ["c1", "c2"] {
@@ -287,7 +297,10 @@ mod tests {
         // Exactly three assigned candidates, two results per gate, cancellation
         // and exit confirmations, external moves and publication. Enumerates
         // every reachable state, not arbitrary graph sizes or OS behaviour.
-        let initial = (Chain { candidates: (0..3).map(candidate).collect() }, "base".to_string());
+        let initial = (
+            Chain { candidates: (0..3).map(candidate).collect(), ..Chain::default() },
+            "base".to_string(),
+        );
         let mut pending = VecDeque::from([initial]);
         let mut seen = HashSet::new();
         while let Some((chain, base)) = pending.pop_front() {

@@ -146,6 +146,7 @@ fn run_command(
             && candidate.cancelled()?
         {
             cancelled = true;
+            candidate.stop()?;
             let _ = child.wait();
             break (-1, false, None);
         }

@@ -1,7 +1,7 @@
 //! Remote candidate ownership. Every write extends one ref; a competing
 //! writer's child cannot fast-forward it. Publishing the base and the next
 //! record is one atomic push, so invalidation and publication cannot both win.
-use afkconvoy_core::candidate::{Candidate, Chain, Phase, Process, Publication};
+use afkconvoy_core::candidate::{Barrier, Candidate, Chain, Phase, Process, Publication};
 use afkconvoy_core::config::Config;
 use afkconvoy_core::gate::{GateCommand, Proven, Tree};
 use afkconvoy_core::landing::{Of, merge_message};
@@ -88,6 +88,18 @@ fn change(repo: &Repo, config: &Config, mut edit: impl FnMut(&mut Chain)) -> Res
         if before == snapshot.chain || write(repo, config, &snapshot)? {
             return Ok(snapshot.chain);
         }
+    }
+}
+
+struct Reservation<'a> {
+    repo: &'a Repo,
+    config: &'a Config,
+    id: String,
+}
+
+impl Drop for Reservation<'_> {
+    fn drop(&mut self) {
+        let _ = change(self.repo, self.config, |chain| chain.barriers.retain(|b| b.id != self.id));
     }
 }
 
@@ -324,7 +336,14 @@ fn reconcile(repo: &Repo, config: &Config) -> Result<Chain> {
             }
         }
         let mut updated = snapshot;
+        let mut dead_barriers = vec![];
+        for barrier in &updated.chain.barriers {
+            if !alive(&barrier.owner)? {
+                dead_barriers.push(barrier.id.clone());
+            }
+        }
         let before = updated.chain.clone();
+        updated.chain.barriers.retain(|b| !dead_barriers.contains(&b.id));
         updated.chain.observe_base(&updated.base);
         for (id, cause) in &invalid {
             updated.chain.invalidate(id, cause);
@@ -420,6 +439,8 @@ pub(crate) struct Request<'a> {
 /// Assignment happens only after capacity is granted, by one atomic record.
 pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
     let Request { repo, config, tracker, pr, of, host, now } = request;
+    let began = std::time::Instant::now();
+    let clock = || now.saturating_add(began.elapsed().as_secs());
     let gh = GitHub::of(repo)?;
     let issue = if let Of::Issue(n) = of { Some(*n) } else { None };
     let original = repo
@@ -450,6 +471,22 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
             .iter()
             .any(|c| c.valid() && crate::config::heavy_gate(&c.command));
     let limit = if heavy { crate::host_settings::of_host()?.gate_lanes() } else { 1 };
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos();
+    let id = format!(
+        "{:016x}-{stamp}-{}",
+        afkconvoy_core::gate::key(&crate::this_host()),
+        crate::unique()
+    );
+    let _reservation = if barrier {
+        change(repo, config, |chain| {
+            if !chain.barriers.iter().any(|b| b.id == id) {
+                chain.barriers.push(Barrier { id: id.clone(), owner: owner.clone() });
+            }
+        })?;
+        Some(Reservation { repo, config, id: id.clone() })
+    } else {
+        None
+    };
     // Do not reserve a host lane while waiting for a barrier/window or for
     // another invocation of this PR. Dead owners are reconciled first.
     loop {
@@ -471,7 +508,11 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
                 continue;
             }
         }
-        if !barrier || chain.can_assign(limit, barrier) {
+        if (!barrier && chain.barriers.is_empty())
+            || (barrier
+                && chain.can_assign(limit, true)
+                && chain.barriers.first().is_some_and(|b| b.id == id))
+        {
             break;
         }
         std::thread::sleep(EVERY);
@@ -481,12 +522,6 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
     } else {
         Permit::candidate(repo, "turn: validate candidate, record, land", heavy)?
     };
-    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos();
-    let id = format!(
-        "{:016x}-{stamp}-{}",
-        afkconvoy_core::gate::key(&crate::this_host()),
-        crate::unique()
-    );
     let path = repo.common_dir()?.join("convoy-candidates").join(&id);
     let candidate = loop {
         let locks = crate::lock::standing_locks(&gh, config)?;
@@ -511,7 +546,8 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
             Some(n) => crate::repair::is_for(&gh, n, &current)?,
             None => false,
         };
-        if !repairing && crate::gate::recorded(repo, &base_tree, &base_command, now)?.is_none() {
+        if !repairing && crate::gate::recorded(repo, &base_tree, &base_command, clock())?.is_none()
+        {
             answer["outcome"] = json!("target_moved");
             answer["detail"] = json!(
                 "the base changed before assignment and needs certification; ask for another turn"
@@ -579,6 +615,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
             result: None,
         };
         snapshot.chain.candidates.push(c.clone());
+        snapshot.chain.barriers.retain(|b| b.id != id);
         if write(repo, config, &snapshot)? {
             break c;
         }
@@ -602,7 +639,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
         &checkout,
         &command,
         host,
-        now,
+        clock(),
         Duration::from_secs(candidate.seconds),
         &hook,
     );
@@ -656,7 +693,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
             bail!("candidate record disappeared");
         };
         let tree = Tree::named(&c.tree);
-        let run = crate::gate::recorded(repo, &tree, &command, now)?;
+        let run = crate::gate::recorded(repo, &tree, &command, clock())?;
         let head = repo.remote_sha(&format!("refs/heads/{}", c.branch))?;
         let Some(publication) = Publication::new(
             c.valid(),
@@ -670,12 +707,19 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
             return Ok(cancelled(result, c));
         };
         let run = run.expect("publication requires green record");
-        let proof = Proven::by(&tree, &command, &run, now)
+        let proof = Proven::by(&tree, &command, &run, clock())
             .ok_or_else(|| anyhow!("candidate green record expired"))?;
         let landed = c.commit.clone();
         c.phase = Phase::Landed;
         let next = commit(repo, &snapshot)?;
-        let pushed = publish(repo, config, &landed, &next, &proof, &publication)?;
+        let pushed = publish(
+            repo,
+            config,
+            (&landed, &candidate.original_head, &candidate.branch),
+            &next,
+            &proof,
+            &publication,
+        )?;
         if !pushed {
             if crate::turn::base(repo, config)? != base {
                 continue;
@@ -710,7 +754,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
 fn publish(
     repo: &Repo,
     config: &Config,
-    candidate: &str,
+    (candidate, head, branch): (&str, &str, &str),
     state: &str,
     proven: &Proven,
     _publication: &Publication,
@@ -727,6 +771,7 @@ fn publish(
             REMOTE,
             &format!("{state}:{}", refname(repo, config)),
             &format!("{candidate}:refs/heads/{}", config.base_branch),
+            &format!("{head}:refs/heads/{branch}"),
         ])?
         .ok)
 }

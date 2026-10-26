@@ -366,7 +366,15 @@ impl Queue {
                 Some(_)
                     if !joined.paused && {
                         let settings = crate::host_settings::of_host().unwrap_or_default();
-                        ready(&joined.tickets, number, settings.gate_lanes())
+                        let eligible: Vec<_> = joined
+                            .tickets
+                            .iter()
+                            .filter(|t| {
+                                t.ran.is_some() || crate::slots::repo_available(t).unwrap_or(false)
+                            })
+                            .cloned()
+                            .collect();
+                        ready(&eligible, number, settings.gate_lanes())
                     } =>
                 {
                     break;

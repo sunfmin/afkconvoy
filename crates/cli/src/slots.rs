@@ -20,10 +20,55 @@ struct Owner {
     candidate: bool,
 }
 
-pub(crate) struct Slot(File);
+pub(crate) struct Slot(File, Option<File>);
+
+fn repo_file(ticket: &Ticket) -> Result<Option<File>> {
+    let Some(repo) = &ticket.repo else {
+        return Ok(None);
+    };
+    let cache = crate::copies::cache()?.join("worker-slots");
+    std::fs::create_dir_all(&cache)?;
+    let key = afkconvoy_core::gate::key(repo);
+    Ok(Some(
+        OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(cache.join(format!("repo-{key:016x}")))?,
+    ))
+}
+
+fn try_repo(file: &File, ticket: &Ticket) -> Result<bool> {
+    let mode = if ticket.candidate { libc::LOCK_SH } else { libc::LOCK_EX };
+    // SAFETY: lock only this live descriptor, without waiting.
+    if unsafe { libc::flock(file.as_raw_fd(), mode | libc::LOCK_NB) } == 0 {
+        return Ok(true);
+    }
+    ensure!(
+        std::io::Error::last_os_error().kind() == std::io::ErrorKind::WouldBlock,
+        "cannot inspect repo command ownership"
+    );
+    Ok(false)
+}
+
+/// A replacement runner may have no ticket for a still-running gate. Its
+/// inherited repo lease retains ordinary-command exclusion independently.
+pub(crate) fn repo_available(ticket: &Ticket) -> Result<bool> {
+    match repo_file(ticket)? {
+        Some(file) => try_repo(&file, ticket),
+        None => Ok(true),
+    }
+}
 
 impl Slot {
     pub fn take(ticket: &Ticket) -> Result<Self> {
+        let repo = repo_file(ticket)?;
+        if let Some(file) = &repo {
+            while !try_repo(file, ticket)? {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
         let cache = crate::copies::cache()?.join("worker-slots");
         std::fs::create_dir_all(&cache)?;
         let lane = afkconvoy_core::gate::key(&afkconvoy_core::exclusive::lane(ticket));
@@ -53,7 +98,7 @@ impl Slot {
                     };
                     serde_json::to_writer(&mut file, &owner)?;
                     file.flush()?;
-                    return Ok(Self(file));
+                    return Ok(Self(file, repo));
                 }
                 ensure!(
                     std::io::Error::last_os_error().kind() == std::io::ErrorKind::WouldBlock,
@@ -78,12 +123,14 @@ impl Slot {
     /// Only the owned child receives the descriptor. Other subprocesses
     /// retain close-on-exec, including concurrent git and ps observations.
     pub fn inherit(&self, command: &mut Command) {
-        let fd = self.0.as_raw_fd();
+        let fds = [self.0.as_raw_fd(), self.1.as_ref().map_or(-1, AsRawFd::as_raw_fd)];
         // SAFETY: the child only clears one descriptor flag before exec.
         unsafe {
             command.pre_exec(move || {
-                if libc::fcntl(fd, libc::F_SETFD, 0) < 0 {
-                    return Err(std::io::Error::last_os_error());
+                for fd in fds {
+                    if fd >= 0 && libc::fcntl(fd, libc::F_SETFD, 0) < 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
                 }
                 Ok(())
             });
