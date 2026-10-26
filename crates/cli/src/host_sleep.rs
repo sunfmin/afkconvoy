@@ -44,6 +44,8 @@ struct Held {
     next: u64,
     /// The instance whose check is underway: one at a time.
     checking: Option<u64>,
+    /// No new tick begins while the host runner prepares a release move.
+    paused: bool,
 }
 
 /// One fleet instance, as it last said it stands.
@@ -60,6 +62,14 @@ struct One {
 }
 
 impl Standings {
+    pub fn pause(&self) {
+        self.held().paused = true;
+    }
+
+    pub fn resume(&self) {
+        self.held().paused = false;
+        self.held.1.notify_all();
+    }
     fn held(&self) -> MutexGuard<'_, Held> {
         self.held.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
@@ -128,6 +138,7 @@ impl Standings {
     pub fn held_still<T>(&self, with: impl FnOnce(&BTreeMap<String, Stands>) -> T) -> T {
         let held = self.held();
         let stands = |one: &One| match one {
+            One { began: 0, .. } => Stands::Starting,
             One { began, ended, .. } if began > ended => Stands::Ticking,
             One { at_work: true, .. } => Stands::AtWork,
             One { at_work: false, .. } => Stands::Quiet,
@@ -203,9 +214,37 @@ impl HostSleep {
         }
     }
 
-    /// Says that this instance begins a tick.
+    /// Says that this instance begins a tick, without a release move's pause.
+    #[cfg(test)]
     pub fn begins(&self) {
         self.standings.change(self.key, |one| one.began += 1);
+    }
+
+    /// Begins a tick only while the host runner permits it. A release move
+    /// pauses here, then stops the instance without entering another tick.
+    pub fn begins_unless_stopped(&self, stop: &Stop) -> bool {
+        let mut held = self.standings.held();
+        // A checkout is put on the list by its first tick. Let that finish
+        // even when a move is pending, so the replacement finds it there.
+        while held.paused
+            && held.each.get(&self.key).is_some_and(|one| one.began > 0)
+            && !stop.told()
+        {
+            held = self
+                .standings
+                .held
+                .1
+                .wait_timeout(held, LOOKS_EVERY)
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .0;
+        }
+        if stop.told() {
+            return false;
+        }
+        if let Some(one) = held.each.get_mut(&self.key) {
+            one.began += 1;
+        }
+        true
     }
 
     /// Says how this instance stands after a tick at `now`: idle or not, and
@@ -416,6 +455,26 @@ mod tests {
 
     fn instances(every: &[Standing]) -> Vec<&str> {
         every.iter().map(|standing| standing.instance.as_str()).collect()
+    }
+
+    #[test]
+    fn a_release_move_lets_a_tick_end_and_holds_the_next_until_the_instance_stops() {
+        let standings = Standings::default();
+        let host = HostSleep::open(standing("alpha"), &Wakes::default(), &standings, 600);
+        let stop = Stop::never();
+        assert!(host.begins_unless_stopped(&stop));
+        standings.pause();
+        standings.held_still(|each| assert_eq!(each["alpha"], Stands::Ticking));
+        host.ticked(100, Some((false, true)));
+        standings.held_still(|each| assert_eq!(each["alpha"], Stands::AtWork));
+        let (sent, received) = std::sync::mpsc::channel();
+        let stopping = stop.clone();
+        let waiting =
+            std::thread::spawn(move || sent.send(host.begins_unless_stopped(&stopping)).unwrap());
+        assert!(received.recv_timeout(Duration::from_millis(100)).is_err());
+        stop.tell();
+        assert!(!received.recv_timeout(Duration::from_secs(2)).unwrap(), "no new tick began");
+        waiting.join().unwrap();
     }
 
     #[test]

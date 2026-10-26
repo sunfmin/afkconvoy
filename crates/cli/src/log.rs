@@ -114,7 +114,13 @@ pub enum What {
     /// fleet instance stopped for it, and the new one's starts it again.
     /// Written by the host runner that moved, as that fleet instance, once
     /// the new one answered.
-    Moved { from: String, to: String, path: PathBuf },
+    Moved {
+        from: String,
+        to: String,
+        path: PathBuf,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        carried: Vec<String>,
+    },
     /// The host runner did not move from the afkconvoy `from` onto `to`,
     /// installed at `path`: that one did not start, `why`, and this one took
     /// the host back and starts the fleet instance again. Written by the host
@@ -261,7 +267,9 @@ impl Entry {
                 format!("broken: {}", broken(why, *since, *next, self.at))
             }
             What::Back { since } => format!("back: {}", back(*since, self.at)),
-            What::Moved { from, to, path } => format!("moved: {}", moved(from, to, path)),
+            What::Moved { from, to, path, carried } => {
+                format!("moved: {}", moved(from, to, path, carried))
+            }
             What::NotMoved { from, to, path, why } => {
                 format!("not moved: {}", not_moved(from, to, path, why))
             }
@@ -339,7 +347,9 @@ impl Entry {
             What::Back { since } => {
                 Some(("back", format!("started again, broken since {} UTC", utc(*since))))
             }
-            What::Moved { from, to, path } => Some(("moved", moved(from, to, path))),
+            What::Moved { from, to, path, carried } => {
+                Some(("moved", moved(from, to, path, carried)))
+            }
             What::NotMoved { from, to, path, why } => {
                 Some(("not_moved", not_moved(from, to, path, why)))
             }
@@ -392,11 +402,16 @@ impl Entry {
 
 /// The host runner's move from the afkconvoy `from` onto `to`, installed at
 /// `path`, in words.
-fn moved(from: &str, to: &str, path: &Path) -> String {
-    format!(
+fn moved(from: &str, to: &str, path: &Path, carried: &[String]) -> String {
+    let moved = format!(
         "the host runner moved from afkconvoy {from} to afkconvoy {to}, installed at {}",
         path.display()
-    )
+    );
+    if carried.is_empty() {
+        moved
+    } else {
+        format!("{moved} · carried over: {}", carried.join("; "))
+    }
 }
 
 /// The host runner's move from `from` onto `to`, installed at `path`, that
@@ -943,7 +958,12 @@ mod tests {
         let entry = |what| Entry { at: 7, instance: "alpha".into(), host: "h1".into(), what };
         let path = PathBuf::from("/opt/homebrew/bin/afkconvoy");
         let (from, to) = ("0.6.0".to_string(), "0.6.1".to_string());
-        let moved = entry(What::Moved { from: from.clone(), to: to.clone(), path: path.clone() });
+        let moved = entry(What::Moved {
+            from: from.clone(),
+            to: to.clone(),
+            path: path.clone(),
+            carried: vec![],
+        });
         let said = "the host runner moved from afkconvoy 0.6.0 to afkconvoy 0.6.1, installed at \
                     /opt/homebrew/bin/afkconvoy";
         assert_eq!(moved.said(), format!("moved: {said}"));

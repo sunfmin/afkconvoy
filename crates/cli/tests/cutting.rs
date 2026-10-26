@@ -192,6 +192,39 @@ fn with_no_version_tag_there_is_nothing_to_cut_from() {
     assert_eq!(cut(&tick_as(&world, "alpha", 10_000)), Vec::<String>::new());
 }
 
+#[test]
+fn a_cut_keeps_its_claim_checkout_and_terminal_when_the_host_runner_moves() {
+    use crate::host_runner::{as_built, installed, logged, upgraded};
+    let world = cutting();
+    let link = installed(&world);
+    let first =
+        world.afk_as(&link, &world.clone, &["run", "--host", "h1", "--second-ms", "100"]).ok();
+    let checkout = checkout(&world);
+    let before = record(&checkout);
+    assert!(claimed(&world));
+    let terminals = world.orca()["terminals"].clone();
+    upgraded(&link, "999.0.0", &as_built());
+    logged(&world, "host runner moved: ");
+    let until = Instant::now() + Duration::from_secs(30);
+    while !world
+        .runner_log()
+        .iter()
+        .any(|line| line.contains("start: took") && line.contains("cut"))
+    {
+        assert!(Instant::now() < until, "{:#?}", world.runner_log());
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert_ne!(world.host_runner().map(u64::from), first["host_runner"]["pid"].as_u64());
+    assert!(claimed(&world));
+    assert_eq!(record(&checkout), before);
+    assert_eq!(world.orca()["terminals"], terminals);
+    let text = std::fs::read_to_string(first["tick_log"].as_str().unwrap()).unwrap();
+    assert!(
+        text.lines().any(|line| line.contains("\"moved\"") && line.contains("cut in ")),
+        "{text}"
+    );
+}
+
 /// An untagged repo declaring its first version. Its gate can be failed by
 /// a file outside the checkout, so retry uses exactly the same committed tree.
 fn initial(preset: bool) -> World {
