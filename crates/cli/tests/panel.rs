@@ -580,12 +580,13 @@ fn a_broken_fleet_instance_waits_with_a_human_on_the_page_served_and_the_page_pr
     let world = World::new();
     world.afk(&RUN).ok();
     let clone2 = world.second_repo();
-    // an issue of the second repo waits for a human: parked for evidence
+    // An escalated issue of the second repo waits for an answer.
     let gh2 = world.root.join("gh2.json");
     let mut state: Value = serde_json::from_str(&std::fs::read_to_string(&gh2).unwrap()).unwrap();
-    let parked = json!({"number": 4, "title": "Pick a name", "labels": ["convoy:parked"],
+    let parked = json!({"number": 4, "title": "Pick a name", "labels": ["ready-for-human"],
         "state": "open"});
     state["issues"].as_array_mut().unwrap().push(parked);
+    state["comments"]["4"] = json!([{"id": 2000, "body": "<!--convoy:escalation claim=old-->\nPick a name.", "html_url": "https://gh/c/2000"}]);
     std::fs::write(&gh2, state.to_string()).unwrap();
     world.afk_in(&clone2, &RUN).ok();
     world.kill_host_runner("KILL");

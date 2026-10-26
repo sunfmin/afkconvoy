@@ -912,10 +912,10 @@ fn claude_role_copies_bound_discovery_without_reusing_older_unbounded_copies() {
     );
     let dir = RepoDir::read("acme/dev").unwrap();
     assert_eq!(copies.role(&fetched, &dir, Harness::Pi).unwrap().dir, source);
-    let stock = copies.stock().unwrap();
+    let stock = copies.inspector().unwrap();
     assert_eq!(holds(&stock.dir.join(".git")), [] as [String; 0]);
     assert!(is_read_only(&stock.dir.join(".git")));
-    assert_eq!(copies.stock().unwrap().dir, stock.dir);
+    assert_eq!(copies.inspector().unwrap().dir, stock.dir);
 }
 
 #[test]
