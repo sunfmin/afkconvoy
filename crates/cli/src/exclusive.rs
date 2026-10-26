@@ -21,8 +21,8 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, mpsc};
 use std::time::{Duration, Instant};
 
 use afkconvoy_core::exclusive::{
-    Ticket, ahead, at_once_line, ended_line, in_order, queued_since, rejoins_line, runs_ahead_of,
-    runs_line, same_lane, waits_line,
+    Ticket, ahead, at_once_line, ended_line, in_order, queued_since, ready, rejoins_line,
+    runs_ahead_of, runs_line, same_lane, waits_line,
 };
 use afkconvoy_core::role::ISSUE_ENV;
 use afkconvoy_core::train::is_train_worktree;
@@ -110,6 +110,7 @@ impl Permit {
             issue: std::env::var(ISSUE_ENV).ok().and_then(|v| v.parse().ok()),
             train,
             repo_lane: if train || heavy { None } else { Some(canonical(repo.common_dir()?)) },
+            repo: Some(canonical(repo.common_dir()?)),
             asked: crate::clock(),
             ran: None,
         };
@@ -295,8 +296,25 @@ impl Queue {
             match ahead(&joined.tickets, number) {
                 // Its asker left as it waited.
                 None => return,
-                Some(0) if !joined.paused => break,
-                Some(_) => joined = turned.wait(joined).unwrap_or_else(PoisonError::into_inner),
+                Some(_)
+                    if !joined.paused && {
+                        let settings = crate::host_settings::of_host().unwrap_or_default();
+                        ready(
+                            &joined.tickets,
+                            number,
+                            settings.gate_lanes(),
+                            settings.train_lanes(),
+                        )
+                    } =>
+                {
+                    break;
+                }
+                Some(_) => {
+                    joined = turned
+                        .wait_timeout(joined, CHECK_EVERY)
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .0
+                }
             }
         }
         let ran = crate::clock();
@@ -523,6 +541,7 @@ pub fn exclusive(
             .and_then(|name| name.to_str())
             .is_some_and(is_train_worktree),
         repo_lane: None,
+        repo: checkout.as_ref().and_then(|repo| repo.common_dir().ok()).map(canonical),
         asked: now(),
         ran: None,
     };
@@ -676,6 +695,7 @@ mod tests {
             issue: Some(7),
             train: false,
             repo_lane: None,
+            repo: None,
             asked,
             ran: None,
         }

@@ -498,6 +498,7 @@ mod tests {
             issue: Some(46),
             train: false,
             repo_lane: None,
+            repo: None,
             command: "cargo test".into(),
             asked: 1000,
             ran: None,

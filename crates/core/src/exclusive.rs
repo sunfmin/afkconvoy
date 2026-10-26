@@ -26,6 +26,9 @@ pub struct Ticket {
     /// A light gate's repo lane, independent of both host lanes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repo_lane: Option<String>,
+    /// The shared git directory, identifying a repo across its worktrees.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
     /// When it asked to run, in epoch seconds: within each priority the one
     /// that asked first runs first, including in the next host runner.
     pub asked: u64,
@@ -48,6 +51,35 @@ pub fn ahead(queue: &[Ticket], number: u64) -> Option<usize> {
 /// Commands contend only with others in the same lane.
 pub fn same_lane(a: &Ticket, b: &Ticket) -> bool {
     a.train == b.train && a.repo_lane == b.repo_lane
+}
+
+/// Whether this ticket can start with the host's lane counts. Earlier
+/// requests reserve available lanes in order, but a second request of a
+/// running repo waits without holding another repo back from a free lane.
+pub fn ready(queue: &[Ticket], number: u64, worker_lanes: u64, train_lanes: u64) -> bool {
+    let ordered = in_order(queue.to_vec());
+    let mut admitted: Vec<&Ticket> = ordered.iter().filter(|t| t.ran.is_some()).collect();
+    for ticket in ordered.iter().filter(|t| t.ran.is_none()) {
+        let limit = if ticket.repo_lane.is_some() {
+            1
+        } else if ticket.train {
+            train_lanes
+        } else {
+            worker_lanes
+        };
+        let occupied = admitted.iter().filter(|t| same_lane(t, ticket)).count() as u64;
+        let repo = ticket.repo.as_deref().unwrap_or(&ticket.dir);
+        let own = admitted
+            .iter()
+            .any(|t| t.train == ticket.train && t.repo.as_deref().unwrap_or(&t.dir) == repo);
+        if occupied < limit && !own {
+            if ticket.number == number {
+                return true;
+            }
+            admitted.push(ticket);
+        }
+    }
+    false
 }
 
 /// The lane a ticket names in the log, doctor and the panel.
@@ -159,6 +191,7 @@ mod tests {
             issue: Some(7),
             train: false,
             repo_lane: None,
+            repo: None,
             asked,
             ran: None,
         }

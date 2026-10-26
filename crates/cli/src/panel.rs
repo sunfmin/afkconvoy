@@ -1047,10 +1047,17 @@ fn host_part(out: &mut String, page: &Page) {
         );
     }
 
-    if !host.exclusive.is_empty() {
+    {
         let lanes: std::collections::BTreeSet<_> =
             host.exclusive.iter().map(afkconvoy_core::exclusive::lane).collect();
         out.push_str("<section class=\"exclusive\"><h2>Command lanes</h2>");
+        let counts = &host.settings["in_force"];
+        let _ = write!(
+            out,
+            "<p>{} worker lanes · {} train lanes</p>",
+            counts["gate_lanes"].as_u64().unwrap_or(1),
+            counts["train_lanes"].as_u64().unwrap_or(1)
+        );
         for lane in lanes {
             let _ = write!(out, "<h3>{} lane</h3><ul class=\"cards\">", esc(&lane));
             for (place, ticket) in host
@@ -1770,6 +1777,7 @@ mod tests {
             issue,
             train: false,
             repo_lane: None,
+            repo: None,
             asked: 700,
             ran,
         };

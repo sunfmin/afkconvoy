@@ -1416,6 +1416,13 @@ enum Command {
         /// [default: {const:EXCLUSIVE_SECONDS}]
         #[arg(long, env = EXCLUSIVE_SECONDS_ENV, value_name = "SECONDS", value_parser = whole_or_default)]
         exclusive_seconds: Option<To<u64>>,
+        /// Worker lanes on this host, at least 1, or `default` (1). A repo holds
+        /// at most one turn at a time, regardless of this count.
+        #[arg(long, env = "AFKCONVOY_GATE_LANES", value_parser = host_settings::watch_every_or_default)]
+        gate_lanes: Option<To<u64>>,
+        /// Train lanes on this host, at least 1, or `default` (1).
+        #[arg(long, env = "AFKCONVOY_TRAIN_LANES", value_parser = host_settings::watch_every_or_default)]
+        train_lanes: Option<To<u64>>,
         /// Stop after this many ticks
         #[arg(long, hide = true)]
         ticks: Option<u64>,
@@ -3756,6 +3763,8 @@ fn start_of(
         admit_disk,
         admit_inspect_after,
         exclusive_seconds,
+        gate_lanes,
+        train_lanes,
         ticks,
         second_ms,
         panic_at_tick,
@@ -3787,6 +3796,8 @@ fn start_of(
         admit_disk,
         admit_inspect_after,
         exclusive_seconds,
+        gate_lanes,
+        train_lanes,
         panel,
         watch_dir,
         watch_every,
