@@ -59,7 +59,8 @@ pub struct Copies {
 }
 
 /// One repo as it stood at one commit, or one directory taken out of it:
-/// plain files, with no git dir.
+/// plain files, with no Git metadata. A Claude role has an empty `.git`
+/// directory solely as its native discovery boundary.
 #[derive(Debug, Clone)]
 pub struct Copy {
     pub dir: PathBuf,
@@ -158,7 +159,8 @@ impl Copies {
     /// path from `dir`, and with each of `links` added. It is kept beside
     /// `fetched`, named for the commit, for `kind` — what the directory is
     /// copied as, which says what is left out and what is added — and for
-    /// its path: one already here is used as it is.
+    /// its path: one already here is used as it is. `rooted` adds a native
+    /// discovery boundary before the copy is closed.
     fn take(
         &self,
         fetched: &Copy,

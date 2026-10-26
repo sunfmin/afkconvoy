@@ -770,12 +770,14 @@ fn a_stage_whose_role_is_a_subdirectory_starts_its_worker_in_that_directory_alon
     let stage = &started["stage"];
     assert_eq!((&stage["role_commit"], &stage["team_commit"]), (&json!(team), &json!(team)));
     let kept = world.cache().join("afkconvoy/copies/acme/team");
-    let (role_dir, team_dir) =
-        (kept.join(format!("{team}-role-roles%2Fdev")), kept.join(format!("{team}-team+rules-")));
+    let (role_dir, team_dir) = (
+        kept.join(format!("{team}-role+claude-code-roles%2Fdev")),
+        kept.join(format!("{team}-team+rules-")),
+    );
     assert_eq!((&stage["role_dir"], &stage["team_dir"]), (&json!(role_dir), &json!(team_dir)));
 
     // The role's copy is its directory and nothing else of its repo…
-    assert_eq!(holds(&role_dir), [".claude", "CLAUDE.md"]);
+    assert_eq!(holds(&role_dir), [".claude", ".git", "CLAUDE.md"]);
     assert_eq!(
         std::fs::read_to_string(role_dir.join("CLAUDE.md")).unwrap(),
         "the rules of a dev\n"
@@ -840,9 +842,9 @@ fn a_stage_whose_role_is_a_subdirectory_starts_its_worker_in_that_directory_alon
     let moved = commit(&repo, "workflows/audit.md", &audit);
     let started = dispatch(&world, 8).ok();
     assert_eq!(cloned(&world), ["acme/team"], "one fetch of the new commit");
-    let tester = kept.join(format!("{moved}-role-roles%2Ftester"));
+    let tester = kept.join(format!("{moved}-role+claude-code-roles%2Ftester"));
     assert_eq!(started["stage"]["role_dir"], json!(tester));
-    assert_eq!(holds(&tester), [".claude", "CLAUDE.md"]);
+    assert_eq!(holds(&tester), [".claude", ".git", "CLAUDE.md"]);
 }
 
 /// One repo that holds a team and seven roles is fetched once per commit,
@@ -874,7 +876,46 @@ fn a_team_and_seven_roles_in_one_repo_are_loaded_with_one_fetch() {
     let commit = head(&world, "acme/team");
     assert_eq!(started["stage"]["role_commit"], commit);
     let role_dir = PathBuf::from(started["stage"]["role_dir"].as_str().unwrap());
-    assert_eq!(holds(&role_dir), [".claude"]);
+    assert_eq!(holds(&role_dir), [".claude", ".git"]);
+}
+
+#[test]
+fn claude_role_copies_bound_discovery_without_reusing_older_unbounded_copies() {
+    use afkconvoy::copies::{Copies, Copy};
+    use afkconvoy_core::config::RepoDir;
+    use afkconvoy_core::harness::Harness;
+
+    let world = World::new();
+    let cache = world.cache().join("afkconvoy");
+    let copies = Copies::under(&cache);
+    let repo = cache.join("copies/acme/dev");
+    let source = repo.join("abc");
+    write(&source, "CLAUDE.md", "Whole role.\n");
+    write(&source, "roles/dev/CLAUDE.md", "Nested role.\n");
+    let older = repo.join("abc-role-roles%2Fdev");
+    write(&older, "CLAUDE.md", "An older cached copy.\n");
+    let fetched = Copy { dir: source.clone(), commit: "abc".into() };
+    for (name, rules) in [("acme/dev", "Whole role.\n"), ("acme/dev/roles/dev", "Nested role.\n")] {
+        let dir = RepoDir::read(name).unwrap();
+        let role = copies.role(&fetched, &dir, Harness::ClaudeCode).unwrap();
+        assert_ne!(role.dir, source);
+        assert_ne!(role.dir, older);
+        assert_eq!(std::fs::read_to_string(role.dir.join("CLAUDE.md")).unwrap(), rules);
+        assert_eq!(holds(&role.dir.join(".git")), [] as [String; 0]);
+        assert!(is_read_only(&role.dir.join(".git")));
+        assert_eq!(copies.role(&fetched, &dir, Harness::ClaudeCode).unwrap().dir, role.dir);
+    }
+    assert!(!source.join(".git").exists() && !older.join(".git").exists());
+    assert_eq!(
+        std::fs::read_to_string(older.join("CLAUDE.md")).unwrap(),
+        "An older cached copy.\n"
+    );
+    let dir = RepoDir::read("acme/dev").unwrap();
+    assert_eq!(copies.role(&fetched, &dir, Harness::Pi).unwrap().dir, source);
+    let stock = copies.stock().unwrap();
+    assert_eq!(holds(&stock.dir.join(".git")), [] as [String; 0]);
+    assert!(is_read_only(&stock.dir.join(".git")));
+    assert_eq!(copies.stock().unwrap().dir, stock.dir);
 }
 
 #[test]

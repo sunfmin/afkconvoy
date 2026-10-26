@@ -57,13 +57,23 @@ fn lines(log: &Path) -> Vec<String> {
     std::fs::read_to_string(log).unwrap_or_default().lines().map(str::to_string).collect()
 }
 
+// Copies are read-only, including on a failed assertion. Make only this
+// test's scratch writable before TempDir removes it.
+struct Scratch(tempfile::TempDir);
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = Command::new("chmod").args(["-R", "u+w"]).arg(self.0.path()).status();
+    }
+}
+
 #[test]
 #[ignore = "starts real Claude Code: needs a login, costs a little; run by hand"]
 fn real_claude_skills_keep_host_ancestors_opt_in() {
     let temp = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.afkconvoy-tmp");
     write(&temp, ".gitignore", "*\n");
-    let scratch = tempfile::tempdir_in(temp).unwrap();
-    let root = scratch.path().canonicalize().unwrap();
+    let scratch = Scratch(tempfile::tempdir_in(temp).unwrap());
+    let root = scratch.0.path().canonicalize().unwrap();
     let launch = std::env::var("AFKCONVOY_SMOKE_COMMAND")
         .unwrap_or_else(|_| Harness::ClaudeCode.stock().to_string());
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
@@ -103,7 +113,11 @@ fn real_claude_skills_keep_host_ancestors_opt_in() {
         write(&project, ".claude/settings.json", &hook(&project_log));
         write(&home, ".claude/settings.json", &hook(&user_log));
         write(&team, "team.md", "A controlled team.\n");
-        let cache = home.join(".cache/afkconvoy");
+        let cache = if layout == "project-ancestor" {
+            fixture.join("cache/afkconvoy")
+        } else {
+            home.join(".cache/afkconvoy")
+        };
         let role = Copies::under(&cache)
             .role(
                 &Copy { dir: role, commit: "abc".into() },
@@ -207,5 +221,4 @@ fn real_claude_skills_keep_host_ancestors_opt_in() {
             assert!(shown.contains("writes: false"), "{shown}");
         }
     }
-    assert!(Command::new("chmod").args(["-R", "u+w"]).arg(&root).status().unwrap().success());
 }

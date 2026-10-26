@@ -327,8 +327,10 @@ fn a_patrol_by_a_role_in_a_subdirectory_starts_in_that_directory_alone() {
     let started = calls(&world, "terminal create");
     let command = common::unniced(option(&started[0], "--command").unwrap());
     let kept = world.cache().join("afkconvoy/copies/acme/team");
-    let (role_dir, team_dir) =
-        (kept.join(format!("{head}-role-roles%2Fdev")), kept.join(format!("{head}-team+rules-")));
+    let (role_dir, team_dir) = (
+        kept.join(format!("{head}-role+claude-code-roles%2Fdev")),
+        kept.join(format!("{head}-team+rules-")),
+    );
     assert!(command.starts_with(&format!("cd '{}' && ", role_dir.display())), "{command}");
     assert!(command.contains(&format!(" --add-dir '{}' ", team_dir.display())), "{command}");
     let commits = format!(" AFKCONVOY_ROLE_COMMIT='{head}' AFKCONVOY_TEAM_COMMIT='{head}' ");
