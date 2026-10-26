@@ -361,9 +361,7 @@ fn local(_at: u64) -> Option<u64> {
 
 /// The output of `program` with `args`, which must succeed.
 pub(crate) fn output(program: &str, args: &[&str]) -> Result<String> {
-    let out = Command::new(program)
-        .args(args)
-        .output()
+    let out = crate::process::output(Command::new(program).args(args))
         .with_context(|| format!("`{program}` could not be run"))?;
     if !out.status.success() {
         bail!("`{program} {}` failed: {}", args.join(" "), String::from_utf8_lossy(&out.stderr));
