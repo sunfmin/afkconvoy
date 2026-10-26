@@ -367,7 +367,7 @@ fn semantic_blockers_hold_a_cancelled_successor_and_a_live_lock_blocks_a_waiting
 fn publication_survives_issue_settlement_failure_without_a_duplicate_gate() {
     let world = world(1);
     let (a, head) = worker(&world, 1, "a");
-    world.with_gh(|gh| gh["fail"] = json!(["issue close"]));
+    world.with_gh(|gh| gh["fail"] = json!(["state=closed"]));
     release(&world, "a", false);
     let failed = start(&world, &a, &world.cache(), 1).wait_with_output().unwrap();
     assert!(!failed.status.success());
@@ -384,4 +384,56 @@ fn publication_survives_issue_settlement_failure_without_a_duplicate_gate() {
     assert_eq!(world.state(1), "closed");
     assert_eq!(git(&a, &["rev-parse", "HEAD"]), head);
     assert_eq!(chain(&world)["candidates"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn an_injected_clock_can_publish_its_own_fresh_record() {
+    let world = world(1);
+    let (a, _) = worker(&world, 1, "a");
+    release(&world, "a", false);
+    let landed = world.afk_in(&a, &["land", "--issue", "1", "--now", "1000"]).ok();
+    assert_eq!(landed["outcome"], "merged", "{landed}");
+}
+
+#[test]
+fn runner_restart_keeps_running_candidate_ownership_and_capacity() {
+    let world = world(2);
+    let (a, _) = worker(&world, 1, "a");
+    let (b, _) = worker(&world, 2, "b");
+    let first_runner = world.host_held();
+    let aa = start(&world, &a, &world.cache(), 1);
+    began(&world, "a");
+    world.kill_host_runner("KILL");
+    drop(first_runner);
+    let _replacement = world.host_held();
+    let bb = start(&world, &b, &world.cache(), 2);
+    began(&world, "b");
+    assert_eq!(chain(&world)["candidates"].as_array().unwrap().len(), 2);
+    release(&world, "b", false);
+    green(&world, 2);
+    release(&world, "a", false);
+    assert_eq!(finish(aa)["outcome"], "merged");
+    assert_eq!(finish(bb)["outcome"], "merged");
+}
+
+#[test]
+fn a_reparented_descendant_is_still_owned_and_terminated() {
+    let world = world(2);
+    let gate = std::fs::read_to_string(world.clone.join("gate.sh")).unwrap().replace(
+        "sleep 120 &",
+        "sh -c 'sleep 120 & echo $! > \"$1/escaped\"' sh \"$root\"\nsleep 120 &",
+    );
+    commit(&world.clone, "gate.sh", &gate);
+    git(&world.clone, &["push", "-q", "origin", "HEAD"]);
+    assert_eq!(world.afk(&["gate"]).ok()["recorded"], true);
+    let (a, _) = worker(&world, 1, "a");
+    let _runner = world.host_held();
+    let child = start(&world, &a, &world.cache(), 1);
+    began(&world, "a");
+    let pid = std::fs::read_to_string(world.root.join("escaped")).unwrap();
+    release(&world, "a", true);
+    assert_eq!(finish(child)["outcome"], "gate_red");
+    let ps = Command::new("ps").args(["-p", pid.trim(), "-o", "stat="]).output().unwrap();
+    let status = String::from_utf8_lossy(&ps.stdout);
+    assert!(status.trim().is_empty() || status.trim().starts_with('Z'), "{status}");
 }

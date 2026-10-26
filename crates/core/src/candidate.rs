@@ -71,7 +71,7 @@ impl Candidate {
 
     pub fn waiting(&self) -> &'static str {
         match self.phase {
-            Phase::Building => "waiting_for_capacity",
+            Phase::Building => "constructing_worktree",
             Phase::Validating => "validating",
             Phase::Green => "waiting_for_predecessor",
             Phase::Cancelling => "confirming_process_exit",
