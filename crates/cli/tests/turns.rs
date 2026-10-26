@@ -178,6 +178,7 @@ fn two_worker_lanes_run_two_repos_but_a_second_turn_of_one_repo_waits() {
 #[test]
 fn a_light_gate_takes_its_repo_turn_while_the_worker_lane_is_occupied() {
     let world = World::new();
+    let other = World::new();
     seed(&world);
     let worker = world.worker(1, "one.txt", "one");
     let _runner = world.host_held();
@@ -189,7 +190,8 @@ fn a_light_gate_takes_its_repo_turn_while_the_worker_lane_is_occupied() {
         quote(&world.root),
         quote(&release)
     );
-    let mut command = world.command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone);
+    let mut command = other.command(env!("CARGO_BIN_EXE_afkconvoy"), &other.clone);
+    command.env("XDG_CACHE_HOME", world.cache());
     let heavy = command
         .args(["exclusive", "--", "sh", "-c", &script])
         .stdout(Stdio::null())

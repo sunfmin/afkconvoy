@@ -1674,6 +1674,7 @@ fn exclusive_json(standing: Result<Vec<Ticket>>) -> Value {
                     .filter(|t| t.train == train && t.repo_lane.as_deref() == repo)
                     .collect();
                 json!({"running": each.iter().find(|t| t.ran.is_some()).map(|t| ticket(t)),
+                    "running_all": each.iter().filter(|t| t.ran.is_some()).map(|t| ticket(t)).collect::<Vec<_>>(),
                     "waiting": each.iter().filter(|t| t.ran.is_none()).map(|t| ticket(t)).collect::<Vec<_>>()})
             };
             let worker = lane(false, None);
