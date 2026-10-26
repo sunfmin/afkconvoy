@@ -385,6 +385,7 @@ fn run_command(
                 bound.waiting,
                 ticket.command
             );
+            let line = line.split_whitespace().collect::<Vec<_>>().join(" ");
             eprintln!("[afkconvoy] exclusive: {line}");
             acting.say(now(), line);
             return Ok(None);

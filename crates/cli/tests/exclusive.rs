@@ -20,7 +20,7 @@ fn a_command_is_ended_after_contended_time_and_the_next_runs_after_its_descendan
         &world,
         &cache,
         11,
-        "trap '' TERM; sleep 10 & echo $! > \"$CACHE/descendant\"; wait",
+        "trap '' TERM\nsleep 10 & echo $! > \"$CACHE/descendant\"; wait",
     );
     until(|| cache.join("descendant").exists());
     // A late waiter must receive the whole bound: time alone did not count.
