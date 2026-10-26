@@ -518,10 +518,9 @@ fn probe_due(book: &mut Book, kit: &Kit, now: u64) {
     });
 }
 
-/// Observe claimed workers on this fleet. Every checkout's fleet calls this,
-/// sharing account/model evidence across the host. The rebuild's joined and
-/// landed outcomes retire an issue worker before its local evidence is read.
-/// No remote selection data changes.
+/// Observe this fleet's workers and retire evidence of ended workers across
+/// the host, including casters without a claim. An unreadable runtime keeps
+/// its evidence. Account/model faults survive the workers that proved them.
 pub fn reconcile(
     fleet: &mut Fleet,
     me: &Me,
@@ -541,6 +540,25 @@ pub fn reconcile(
         return Ok(vec![]);
     }
     let mut book = read()?;
+    // A caster has no claim to retire its record. Any fleet's next tick can
+    // retire an ended worker, even after its worktree was removed. Check
+    // failure-only entries too, and keep evidence when Orca cannot answer.
+    let paths: std::collections::BTreeSet<_> = book
+        .workers
+        .iter()
+        .map(|worker| worker.path.clone())
+        .chain(book.observations_failed.iter().map(|(path, _, _)| path.clone()))
+        .collect();
+    let gone: std::collections::BTreeSet<_> = paths
+        .into_iter()
+        .filter(|path| {
+            Worktree::at(path.clone(), String::new())
+                .state(fleet.now)
+                .is_ok_and(|state| state == WorkerState::Gone)
+        })
+        .collect();
+    book.workers.retain(|worker| !gone.contains(&worker.path));
+    book.observations_failed.retain(|(path, _, _)| !gone.contains(path));
     let kit = crate::kit::load()?;
     probe_due(&mut book, &kit, fleet.now);
     store(&book)?;
@@ -639,11 +657,13 @@ pub fn reconcile(
             jobs.push((None, Some(name.to_string()), worktree));
         }
     }
-    if set.locks.is_empty()
-        && let Some(worktree) = Worktree::named(&source, afkconvoy_core::casting::CASTER_WORKTREE)?
-        && crate::caster::last(fleet).is_some_and(|c| c.live)
-    {
-        jobs.push((None, Some("@caster".into()), worktree));
+    if let Some(worktree) = Worktree::named(&source, afkconvoy_core::casting::CASTER_WORKTREE)? {
+        if set.caster.is_none() {
+            book.workers.retain(|worker| worker.path != worktree.path);
+            book.observations_failed.retain(|(path, _, _)| *path != worktree.path);
+        } else if set.locks.is_empty() && crate::caster::last(fleet).is_some_and(|c| c.live) {
+            jobs.push((None, Some("@caster".into()), worktree));
+        }
     }
     let mut events = vec![];
     for (issue, patrol, worktree) in jobs {

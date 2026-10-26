@@ -243,6 +243,117 @@ fn casters(world: &World) -> usize {
     started(world).iter().filter(|command| command.contains(" cast; exit")).count()
 }
 
+/// A caster, with no claim or Jev key, whose health waits for the operator.
+/// Keep a failed observation too: both records must end with the caster.
+fn waiting_caster() -> World {
+    let world = cast(&[]);
+    world.say_concurrency(&world.clone, 3);
+    world.afk(&["kit", "--cast", "on"]).ok();
+    tick_at(&world, 1000);
+    assert_eq!(casters(&world), 1);
+    assert!(world.claims().is_empty());
+    let path = world.orca()["terminals"][0]["worktreePath"].clone();
+    world.with_orca(|orca| {
+        let terminal = &mut orca["terminals"][0];
+        terminal["agent"] = json!({"state": "idle", "stateStartedAt": 1000000});
+        terminal["lastOutputAt"] = json!(1000000);
+        terminal["screen"] = json!(["Waiting for input."]);
+    });
+    tick_at(&world, 1001);
+    tick_at(&world, 1301);
+    let doctor = world.afk(&["doctor", "--all", "--host", "h1", "--now", "1302"]).json;
+    let health = &doctor["host"]["host_kit"]["worker_health"];
+    assert_eq!(health["workers"][0]["path"], path, "{doctor}");
+    assert_eq!(health["workers"][0]["action"], "waiting for operator", "{doctor}");
+    assert!(doctor.to_string().contains("worker health is waiting for the operator"));
+    assert!(world.claims().is_empty());
+
+    let file = world.cache().join("afkconvoy/worker-health.json");
+    let mut book: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    book["observations_failed"] = json!([[path, "could not read the caster's screen", 1601]]);
+    std::fs::write(&file, serde_json::to_vec(&book).unwrap()).unwrap();
+    world
+}
+
+fn assert_caster_health_retired(world: &World, now: u64) {
+    let doctor = world.afk(&["doctor", "--all", "--host", "h1", "--now", &now.to_string()]).json;
+    let health = &doctor["host"]["host_kit"]["worker_health"];
+    assert_eq!(health["workers"], json!([]), "{doctor}");
+    assert_eq!(health["observations_failed"], json!([]), "{doctor}");
+    assert!(!doctor.to_string().contains("worker health is waiting for the operator"));
+}
+
+#[test]
+fn an_ended_caster_retires_its_worker_health_and_doctor_finding_without_a_claim() {
+    let world = waiting_caster();
+    world.with_orca(|orca| orca["terminals"][0]["open"] = json!(false));
+    tick_at(&world, 1400);
+    assert_caster_health_retired(&world, 1401);
+}
+
+#[test]
+fn another_fleet_retires_an_ended_casters_evidence_even_without_its_worktree_or_worker_record() {
+    for failure_only in [false, true] {
+        let world = waiting_caster();
+        let other = world.second_repo();
+        let file = world.cache().join("afkconvoy/worker-health.json");
+        let mut book: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+        let faults = json!([{"harness": "claude-code", "command_key": null,
+            "model": null, "scope": "account",
+            "since": 1000, "next_check": 5000, "evidence": ["previous usage limit"]}]);
+        book["faults"] = faults.clone();
+        book["capacity_stops"] = json!({"claude-code": 3});
+        if failure_only {
+            book["workers"] = json!([]);
+            std::fs::remove_dir_all(book["observations_failed"][0][0].as_str().unwrap()).unwrap();
+        }
+        std::fs::write(&file, serde_json::to_vec(&book).unwrap()).unwrap();
+        if !failure_only {
+            world
+                .afk_in(&other, &["tick", "--instance", "beta", "--host", "h1", "--now", "1350"])
+                .ok();
+            let live: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+            assert_eq!(live["workers"], book["workers"], "another fleet keeps a live caster");
+            assert_eq!(live["observations_failed"], book["observations_failed"]);
+        }
+        world.with_orca(|orca| {
+            orca["terminals"][0]["open"] = json!(false);
+            if failure_only {
+                orca["worktrees"] = json!([]);
+            }
+        });
+        if !failure_only {
+            world.with_orca(|orca| orca["ps_truncated"] = json!(true));
+            world
+                .afk_in(&other, &["tick", "--instance", "beta", "--host", "h1", "--now", "1360"])
+                .ok();
+            let unknown: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+            assert_eq!(unknown["workers"], book["workers"], "unreadable Orca proves no end");
+            assert_eq!(unknown["observations_failed"], book["observations_failed"]);
+            world.with_orca(|orca| orca["ps_truncated"] = json!(false));
+        }
+        world.afk_in(&other, &["tick", "--instance", "beta", "--host", "h1", "--now", "1400"]).ok();
+        assert_caster_health_retired(&world, 1401);
+        let book: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+        assert_eq!(book["faults"], faults, "scoped faults outlive their workers");
+        assert_eq!(book["capacity_stops"], json!({"claude-code": 3}));
+    }
+}
+
+#[test]
+fn a_caster_no_longer_due_retires_its_health_even_while_its_terminal_stays_open() {
+    for expired in [false, true] {
+        let world = waiting_caster();
+        if !expired {
+            world.afk(&["kit", "--cast", "off"]).ok();
+        }
+        let now = if expired { 1600 } else { 1400 };
+        tick_at(&world, now);
+        assert!(!world.open_terminals().is_empty());
+        assert_caster_health_retired(&world, now + 1);
+    }
+}
+
 #[test]
 fn a_tick_starts_one_caster_and_holds_the_issues_it_casts_back_for_ten_minutes_at_most() {
     let world = cast(&[]);
