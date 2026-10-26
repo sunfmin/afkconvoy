@@ -121,15 +121,30 @@ fn a_failed_train_agent_is_diagnosed_on_the_first_tick_and_keeps_its_train() {
     assert_eq!(worker["orca"]["programStatus"]["observedAt"], 1102000);
 
     let handle = terminals(&world, &train)[0]["handle"].clone();
+    let notes = PathBuf::from(git(&train, &["rev-parse", "--absolute-git-dir"]));
+    let held: Value =
+        serde_json::from_slice(&std::fs::read(notes.join("convoy-train-health-held")).unwrap())
+            .unwrap();
+    assert_eq!(held, json!([handle, 1100]));
+    // The issue worker has finished joining; only the train session is held.
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            if terminal["worktreePath"] != json!(train) {
+                terminal["open"] = json!(false);
+            }
+        }
+    });
     let head = commit(&train, "repair.txt", "keep the train's repair\n");
     std::fs::write(train.join("unfinished.txt"), "keep this too\n").unwrap();
+    // Keep this fleet's claim live across the simulated hour, as run does.
+    world.afk(&["heartbeat", "--instance", "alpha", "--host", "h1", "--now", "4600"]).ok();
     tick(&world, "4699");
     assert_eq!(terminals(&world, &train)[0]["handle"], handle, "the health hold has a bound");
     let ticked = tick(&world, "4700");
     assert_eq!(ticked["errors"], json!([]), "{ticked}");
     let open = terminals(&world, &train);
     assert_eq!(open.len(), 1);
-    assert_ne!(open[0]["handle"], handle, "health no longer holds this train");
+    assert_ne!(open[0]["handle"], handle, "health no longer holds this train: {ticked}");
     assert_eq!(open[0]["command"], common::trusted("agent"));
     assert_eq!(git(&train, &["rev-parse", "HEAD"]), head);
     assert_eq!(std::fs::read_to_string(train.join("unfinished.txt")).unwrap(), "keep this too\n");
@@ -261,6 +276,32 @@ fn switch_all_moves_a_busy_train_worker_and_lists_it_without_a_claim() {
     assert_eq!(open.len(), 1);
     assert_ne!(open[0]["handle"], old);
     assert!(open[0]["command"].as_str().unwrap().contains("kimi"));
+    assert_eq!(world.remote(&["rev-parse", LINE]), tip);
+}
+
+#[test]
+fn a_train_replacement_that_cannot_end_the_old_worker_keeps_its_brief_and_starts_nobody() {
+    let world = fleet(&[7, 8]);
+    let first = finish(&world, 7);
+    tick(&world, "1090");
+    world.hold_every_harness();
+    let train = train_worktree(&world);
+    let old = terminals(&world, &train)[0].clone();
+    let notes = PathBuf::from(git(&train, &["rev-parse", "--absolute-git-dir"]));
+    let brief = std::fs::read(notes.join("convoy-worker-prompt.md")).unwrap();
+    world.afk(&["switch", "--harness", "kimi"]).ok();
+    let tip = finish(&world, 8);
+    world.with_orca(|orca| orca["close_fails"] = json!([train]));
+    world.orca_calls();
+    let ticked = tick(&world, "1180");
+    assert!(
+        ticked["errors"].as_array().unwrap().iter().any(|e| e["do"] == "tend_train"),
+        "{ticked}"
+    );
+    assert_eq!(terminals(&world, &train), [old]);
+    assert!(!world.orca_calls().iter().any(|call| common::asked(call) == "terminal create"));
+    assert_eq!(std::fs::read(notes.join("convoy-worker-prompt.md")).unwrap(), brief);
+    assert!(std::fs::read_to_string(notes.join("convoy-train-told")).unwrap().starts_with(&first));
     assert_eq!(world.remote(&["rev-parse", LINE]), tip);
 }
 
