@@ -4,7 +4,7 @@
 
 afkconvoy works a repo's ready GitHub issues unattended. One host runner, started by `afkconvoy run`, holds one fleet instance per repo. Each dispatches a worker per issue — a coding agent in its own git worktree — and lands finished PRs on the base branch through the gate and landing train. Fleet state lives in GitHub and the repo's remote; no process holds it.
 
-`afkconvoy --help` answers the index: this guide, then each command's one line under who runs it, then each topic's first sentence. `afkconvoy help all` answers the guide, commands and topics in full. `afkconvoy -h` lists commands on one screen.
+`afkconvoy --help` answers the index: this guide, then each command's one line under who runs it, then each topic's first sentence. `afkconvoy help all` answers the whole manual: guide, commands and topics in full. `afkconvoy -h` lists commands on one screen.
 
 ## What it needs
 
@@ -47,7 +47,7 @@ Read `afkconvoy <command> --help` before first running it. Commands are grouped 
 - **Run by whoever sets an agent up** — `skill` prints the skill file that sends their agent to `afkconvoy --help`.
 - **Run by a worker** — `gate`, `land`, `verdict`, `intake`, `lock`, `over`, `exclusive` and `inspected`: its prompt names each one as it is needed, and `wake`, above, as its last; `cut` is what a cut's terminal runs, and what you run to go on with a cut that failed. Read them only when you are a worker, or are finding out why one stopped (`rule` is a consult's too).
 - **Run by a human an issue waits for** — in a bound repo: `rule` to answer an escalated issue, `send` to put an issue at a stage of your choosing. A `by: human` stage waits for your `verdict`, a worker's command too. [`afkconvoy help humans`](help:humans) says what each case asks of you.
-- **Run by a worker's hook** — `guard`, which the harness of a bound repo's worker asks before each thing the worker does. Nobody runs it by hand. Read its help to learn what a worker is refused, and why one was.
+- **Run by a worker's hook** — `guard`, called before each action of a bound repo's worker. Nobody runs it by hand. Its help explains what the worker is refused and why.
 - **One transition by hand** — `dispatch`, `close`, `escalate`, `park`, `nudge`, `restart` and `abandon`: each is something a tick does on its own, and `recovery` shows what `dispatch` would continue an issue from. Read one when a plan shows a transition the fleet is not making, or you are told to make it yourself.
 - **The claim plumbing** — `scan`, `claim`, `release` and `heartbeat`: what the transitions are built on. Read these only to inspect or repair claims and heartbeats on the remote.
 
