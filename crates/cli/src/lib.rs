@@ -94,6 +94,7 @@ pub mod runner_socket;
 pub mod scaffold;
 pub mod serve;
 pub mod settle;
+mod slots;
 pub mod slow_gate;
 pub mod stage;
 pub mod steer;

@@ -9,10 +9,9 @@
 //! the core's to say (`afkconvoy_core::exclusive`).
 
 use std::cell::Cell;
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::ffi::OsString;
-use std::fs::{File, OpenOptions};
-use std::os::fd::AsRawFd;
 use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
 use std::process::{Command, ExitCode, ExitStatus};
@@ -61,6 +60,7 @@ fn is_cut(repo: &Repo) -> bool {
 /// wrappers use the already held lane instead of waiting on their parent.
 const OWNER_ENV: &str = "AFKCONVOY_EXCLUSIVE_OWNER";
 thread_local! { static HELD: Cell<bool> = const { Cell::new(false) }; }
+thread_local! { static SLOT: RefCell<Option<crate::slots::Slot>> = const { RefCell::new(None) }; }
 
 pub fn held() -> bool {
     HELD.get()
@@ -71,6 +71,11 @@ pub fn inherit(command: &mut Command, repo: &Repo) -> Result<()> {
     if held() {
         let scope = lease_scope(repo)?;
         command.env(OWNER_ENV, format!("{}:{scope}", std::process::id()));
+        SLOT.with_borrow(|slot| {
+            if let Some(slot) = slot {
+                slot.inherit(command);
+            }
+        });
     }
     Ok(())
 }
@@ -114,7 +119,6 @@ fn inherited(checkout: Option<&Repo>) -> bool {
 pub struct Permit {
     stop: Arc<AtomicBool>,
     monitor: Option<std::thread::JoinHandle<()>>,
-    _file: Option<File>,
 }
 
 impl Permit {
@@ -152,64 +156,48 @@ impl Permit {
         };
         let acting = Acting::new("exclusive").on_own_issue().in_checkout(Some(repo.clone()));
         let stop = Arc::new(AtomicBool::new(false));
-        let (monitor, file) = match turn(&ticket, &acting, &crate::clock)? {
+        let monitor = match turn(&ticket, &acting, &crate::clock)? {
             Turn::Queued(place, _) => {
                 acting.say(crate::clock(), runs_line(&ticket, crate::clock(), 0));
                 let watch = Watch::new(place)?;
                 let stopping = stop.clone();
-                (
-                    Some(std::thread::spawn(move || {
-                        let began = Instant::now();
-                        while !stopping.load(Ordering::Acquire) {
-                            let heard = watch.read.recv_timeout(CHECK_EVERY);
-                            if matches!(heard, Err(mpsc::RecvTimeoutError::Disconnected)) {
-                                std::thread::sleep(CHECK_EVERY);
-                            }
-                            if let Ok(bound) = heard {
-                                // Freeze each child before walking below it. The
-                                // owning CLI remains able to reap and exit.
-                                for child in crate::hot::listed()
-                                    .iter()
-                                    .filter(|p| p.ppid == std::process::id())
-                                {
-                                    end_descendants(child.pid);
-                                }
-                                let line = format!(
-                                    "ended at the exclusive bound of {}s after {}s with {} commands waiting: `{}`",
-                                    bound.bound,
-                                    began.elapsed().as_secs(),
-                                    bound.waiting,
-                                    ticket.command
-                                );
-                                acting.say(crate::clock(), line.clone());
-                                eprintln!("[afkconvoy] exclusive: {line}");
-                                println!("{}", json!({"error": line}));
-                                std::process::exit(i32::from(BOUND_CODE));
-                            }
+                let watching = ticket.clone();
+                Some(std::thread::spawn(move || {
+                    let began = Instant::now();
+                    while !stopping.load(Ordering::Acquire) {
+                        let heard = watch.read.recv_timeout(CHECK_EVERY);
+                        if matches!(heard, Err(mpsc::RecvTimeoutError::Disconnected)) {
+                            std::thread::sleep(CHECK_EVERY);
                         }
-                    })),
-                    None,
-                )
+                        if let Ok(bound) = heard {
+                            // Freeze each child before walking below it. The
+                            // owning CLI remains able to reap and exit.
+                            for child in
+                                crate::hot::listed().iter().filter(|p| p.ppid == std::process::id())
+                            {
+                                end_descendants(child.pid);
+                            }
+                            let line = format!(
+                                "ended at the exclusive bound of {}s after {}s with {} commands waiting: `{}`",
+                                bound.bound,
+                                began.elapsed().as_secs(),
+                                bound.waiting,
+                                watching.command
+                            );
+                            acting.say(crate::clock(), line.clone());
+                            eprintln!("[afkconvoy] exclusive: {line}");
+                            println!("{}", json!({"error": line}));
+                            std::process::exit(i32::from(BOUND_CODE));
+                        }
+                    }
+                }))
             }
-            Turn::AtOnce(_) => {
-                let dir = crate::copies::cache()?;
-                std::fs::create_dir_all(&dir)?;
-                let key = afkconvoy_core::gate::key(&afkconvoy_core::exclusive::lane(&ticket));
-                let file = OpenOptions::new()
-                    .create(true)
-                    .truncate(false)
-                    .read(true)
-                    .write(true)
-                    .open(dir.join(format!("exclusive-{key:016x}.lock")))?;
-                // SAFETY: a live descriptor is locked until File drops.
-                if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
-                    return Err(std::io::Error::last_os_error().into());
-                }
-                (None, Some(file))
-            }
+            Turn::AtOnce(_) => None,
         };
+        let slot = crate::slots::Slot::take(&ticket)?;
+        SLOT.with_borrow_mut(|held| *held = Some(slot));
         HELD.set(true);
-        Ok(Self { stop, monitor, _file: file })
+        Ok(Self { stop, monitor })
     }
 }
 
@@ -220,6 +208,7 @@ impl Drop for Permit {
             let _ = monitor.join();
         }
         HELD.set(false);
+        SLOT.with_borrow_mut(|held| *held = None);
     }
 }
 
@@ -288,6 +277,7 @@ impl Joined {
                     t.ran.is_some()
                         && same_repo(t, waiting)
                         && (same_lane(t, waiting) || (t.is_turn && waiting.is_turn))
+                        && !(t.candidate && waiting.candidate)
                 });
                 match owner {
                     Some(owner) => owner.number == number,
@@ -429,6 +419,14 @@ impl Queue {
     /// Takes the ticket `number` out of the queue: the next runs, if it was
     /// the one that ran.
     fn leave(&self, number: u64) {
+        let candidate =
+            self.joined().tickets.iter().find(|t| t.number == number && t.candidate).cloned();
+        if let Some(ticket) = candidate
+            && let Err(error) = crate::candidates::abandoned(&ticket.dir)
+        {
+            eprintln!("[afkconvoy] candidate cleanup unconfirmed; lane retained: {error}");
+            return;
+        }
         let mut joined = self.joined();
         joined.count(Instant::now());
         joined.tickets.retain(|ticket| ticket.number != number);
@@ -627,7 +625,11 @@ pub fn exclusive(
         Ok(watch) => watch,
         Err(error) => return failed(&format!("{error:#}")),
     };
-    let status = run_command(command, dir, watch.as_ref(), &ticket, &acting, &now);
+    let slot = match crate::slots::Slot::take(&ticket) {
+        Ok(slot) => slot,
+        Err(error) => return failed(&format!("{error:#}")),
+    };
+    let status = run_command(command, dir, watch.as_ref(), &ticket, &acting, &now, &slot);
     // Its place is free the moment the command ends.
     drop(watch);
     let (code, ended) = match status {
@@ -652,9 +654,12 @@ fn run_command(
     ticket: &Ticket,
     acting: &Acting,
     now: &dyn Fn() -> u64,
+    slot: &crate::slots::Slot,
 ) -> std::io::Result<Option<ExitStatus>> {
-    let mut child =
-        crate::process::spawn(Command::new(&command[0]).args(&command[1..]).current_dir(dir))?;
+    let mut cmd = Command::new(&command[0]);
+    cmd.args(&command[1..]).current_dir(dir);
+    slot.inherit(&mut cmd);
+    let mut child = crate::process::spawn(&mut cmd)?;
     let started = Instant::now();
     loop {
         if let Some(status) = child.try_wait()? {

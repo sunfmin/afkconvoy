@@ -24,16 +24,31 @@ fn refname(repo: &Repo, config: &Config) -> String {
 
 pub(crate) struct Snapshot {
     sha: Option<String>,
+    base: String,
     pub chain: Chain,
 }
 
 fn read(repo: &Repo, config: &Config) -> Result<Snapshot> {
-    let sha = repo.fetched(&refname(repo, config))?;
+    let state_ref = refname(repo, config);
+    let base_ref = format!("refs/heads/{}", config.base_branch);
+    let refs = repo.git(&["ls-remote", REMOTE, &state_ref, &base_ref])?;
+    let found = |name: &str| {
+        refs.lines()
+            .filter_map(|line| line.split_once('\t'))
+            .find(|(_, r)| *r == name)
+            .map(|(sha, _)| sha.to_string())
+    };
+    let sha = found(&state_ref);
+    let base = found(&base_ref).ok_or_else(|| anyhow!("base branch disappeared"))?;
+    repo.bring(&base, &base_ref)?;
+    if let Some(sha) = &sha {
+        repo.bring(sha, &state_ref)?;
+    }
     let chain = match &sha {
         Some(sha) => serde_json::from_str(&repo.git(&["show", "-s", "--format=%B", sha])?)?,
         None => Chain::default(),
     };
-    Ok(Snapshot { sha, chain })
+    Ok(Snapshot { sha, base, chain })
 }
 
 /// No force push, including the state ref. Its first parent is the previous
@@ -231,26 +246,30 @@ pub(crate) fn invalidate(repo: &Repo, config: &Config, id: &str, cause: &str) ->
 }
 
 fn reconcile(repo: &Repo, config: &Config) -> Result<Chain> {
-    let base = crate::turn::base(repo, config)?;
-    let snapshot = read(repo, config)?;
-    let mut invalid = vec![];
-    for c in snapshot.chain.candidates.iter().filter(|c| c.valid()) {
-        if repo.remote_sha(&format!("refs/heads/{}", c.branch))?.as_deref()
-            != Some(&c.original_head)
-        {
-            invalid.push((c.id.clone(), "head_changed"));
-        } else if !alive(&c.owner)? {
-            invalid.push((c.id.clone(), "owner_died"));
+    loop {
+        let snapshot = read(repo, config)?;
+        let mut invalid = vec![];
+        for c in snapshot.chain.candidates.iter().filter(|c| c.valid()) {
+            if repo.remote_sha(&format!("refs/heads/{}", c.branch))?.as_deref()
+                != Some(&c.original_head)
+            {
+                invalid.push((c.id.clone(), "head_changed"));
+            } else if !alive(&c.owner)? {
+                invalid.push((c.id.clone(), "owner_died"));
+            }
         }
-    }
-    let chain = change(repo, config, |chain| {
-        chain.observe_base(&base);
+        let mut updated = snapshot;
+        let before = updated.chain.clone();
+        updated.chain.observe_base(&updated.base);
         for (id, cause) in &invalid {
-            chain.invalidate(id, cause);
+            updated.chain.invalidate(id, cause);
         }
-    })?;
-    cleanup(repo, config, &chain)?;
-    Ok(read(repo, config)?.chain)
+        if before != updated.chain && !write(repo, config, &updated)? {
+            continue;
+        }
+        cleanup(repo, config, &updated.chain)?;
+        return Ok(read(repo, config)?.chain);
+    }
 }
 
 /// Used before queue capacity is released after a candidate owner dies.
