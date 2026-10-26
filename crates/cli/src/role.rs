@@ -363,6 +363,7 @@ impl Staged {
         };
         let records: Vec<Said> =
             self.verdicts.iter().map(|(record, url)| Said { record, url }).collect();
+        let stage_gate = own().fixed(" gate").own();
         let fields = StageFields {
             number: self.issue,
             tracker: &fleet.gh.tracker,
@@ -382,7 +383,7 @@ impl Staged {
             intake_command: &own().fixed(" intake").own(),
             split: self.split,
             workflows: &self.workflows,
-            gate: self.writes.then_some(Gate { train: &gate, alone: &gate_alone }),
+            gate: self.writes.then_some(Gate { train: &stage_gate, alone: &gate_alone }),
         };
         let prompt = if self.consult {
             let issue = own().fixed(" show --issue ").number(self.issue).own();

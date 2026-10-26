@@ -106,7 +106,8 @@ fn a_pr_whose_worker_pushed_again_joins_again_and_nothing_is_rewritten() {
     let third = land(&world, &seven, 7);
     assert_eq!(third["again"], false);
     let tip = line(&world);
-    assert_eq!(parents(&world, &tip), [second.clone(), head]);
+    assert_eq!(parents(&world, &tip), [second.clone(), git(&seven, &["rev-parse", "HEAD"])]);
+    assert!(git(&seven, &["merge-base", "--is-ancestor", &head, "HEAD"]).is_empty());
     let below = world.remote(&["rev-list", "--first-parent", &tip]);
     let below: Vec<&str> = below.lines().collect();
     assert_eq!(&below[..3], [tip.as_str(), second.as_str(), first.as_str()]);
@@ -229,14 +230,14 @@ fn gate_train_gates_the_branch_with_the_train_merged_in() {
 
     // no train yet: what the PR lands behind is the base branch
     let moved = world.land_elsewhere("else.txt");
-    let answer = world.afk_in(&seven, &["gate", "--train"]).ok();
+    let answer = world.afk_in(&seven, &["gate", "--train", "--now", "7000"]).ok();
     assert_eq!(answer["status"], "green");
     assert_eq!(answer["merged"], moved.as_str());
     assert_eq!(answer["recorded"], true);
     assert!(seven.join("else.txt").exists());
     let tip = land(&world, &seven, 7)["commit"].as_str().unwrap().to_string();
 
-    let gate = world.afk_in(&eight, &["gate", "--train"]);
+    let gate = world.afk_in(&eight, &["gate", "--train", "--now", "7000"]);
     assert!(gate.stderr.contains("gate-ran"));
     let answer = gate.ok();
     assert_eq!(answer["merged"], tip.as_str());
@@ -261,23 +262,23 @@ fn a_gate_train_merge_that_conflicts_runs_no_gate() {
     let eight = world.worker(8, "README.md", "eight\n");
     land(&world, &seven, 7);
 
-    let gate = world.afk_in(&eight, &["gate", "--train"]);
+    let gate = world.afk_in(&eight, &["gate", "--train", "--now", "7000"]);
     assert!(!gate.stderr.contains("gate-ran"), "{}", gate.stderr);
     let answer = gate.ok();
     assert_eq!(answer["status"], "conflict");
     assert_eq!(answer["files"], serde_json::json!(["README.md"]));
     assert_eq!(answer["recorded"], false);
-    assert_eq!(gate_records(&world), 0);
+    assert_eq!(gate_records(&world), 2, "the green base and first join stay on record");
 
     // still unresolved: still no run
-    let again = world.afk_in(&eight, &["gate", "--train"]);
+    let again = world.afk_in(&eight, &["gate", "--train", "--now", "7000"]);
     assert!(!again.stderr.contains("gate-ran"));
     assert_eq!(again.ok()["status"], "conflict");
 
     std::fs::write(eight.join("README.md"), "both\n").unwrap();
     git(&eight, &["add", "."]);
     git(&eight, &["commit", "-q", "--no-edit"]);
-    let answer = world.afk_in(&eight, &["gate", "--train"]).ok();
+    let answer = world.afk_in(&eight, &["gate", "--train", "--now", "7000"]).ok();
     assert_eq!(answer["status"], "green");
     assert_eq!(answer["recorded"], true);
     assert_eq!(land(&world, &eight, 8)["outcome"], "joined");

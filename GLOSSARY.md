@@ -37,7 +37,7 @@ A fleet instance whose loop panicked or ended in an error — its tracker found 
 _Avoid_: crashed, dead (a heartbeat past the lease), down (a harness that refuses every prompt)
 
 **Host settings**:
-What a host says for every fleet instance on it — whether it may be put to sleep and its sleep hours, the limits past which a worker is hot, the shares admission holds back at, the bound on an exclusive command holding others up, the panel's port, the operator's directory a watch starts in and how often the host runner looks — kept beside the checkout list and changed by any `run` that names one, for every fleet instance on the host at once.
+What a host says for every fleet instance on it — whether it may be put to sleep and its sleep hours, the limits past which a worker is hot, the shares admission holds back at, the bound on an exclusive command holding others up, the numbers of worker and train lanes, the panel's port, the operator's directory a watch starts in and how often the host runner looks — kept beside the checkout list and changed by any `run` that names one, for every fleet instance on the host at once.
 _Avoid_: global config, runner flags
 
 **Tick**:
@@ -264,7 +264,7 @@ Its authority spans every repo on the host's checkout list: it fixes the host an
 _Avoid_: patrol (a role run on a schedule that writes no code), supervisor (the host runner is the process)
 
 **Exclusive queue**:
-The queue of the commands run through `afkconvoy exclusive` on one host, held by its host runner for every fleet on it whatever its repo: one runs at a time and the rest wait. The landing train's commands go first among the waiting, because a landing unblocks every PR on the train, later conflicts and the next cut; trains keep their request order between them, and other commands theirs. Priority never interrupts a running command. A train asks once for each landing, so a worker waits behind at most one train gate per repo on the host, plus what runs now and the ordinary commands already ahead of it. A running command can be ended at a bound the host settings say, counting only time while another command waits; running alone uses none of it. A command whose process dies leaves it; one waiting as its host runner is replaced keeps its priority and when it asked in the next one's. A worker with a command in it is busy, not silent, for no longer than the gate limit.
+The lines of commands waiting to run on a host: worker commands and train gates in independent lanes, each in request order, with the number of each said in the host settings (one each until the host says otherwise). A repo holds at most one turn and one train gate at a time; a light gate takes its turns in its repo's own line; a running command is bounded by time holding others in its lane up, and a command whose process dies frees its place.
 _Avoid_: mutex, semaphore, heavy lock (the fleet lock is another thing)
 
 **Nudge**:
@@ -354,12 +354,16 @@ Bringing a branch up to date by merging into it. Nothing is ever rebased.
 _Avoid_: rebase, update branch
 
 **Landing train**:
-The one append-only line of merge commits ahead of the base branch that finished PRs join, one merge commit per PR, which names the issue the PR closes as the repo names it — `#7`, or `acme/tracker#7` of a tracker's — or, of an inspection's change of the repo, the inspection; of a cut's version, the cut. Every fleet of the repo joins the one train, whatever its tracker, and closes only its own tracker's issues.
+The one append-only line of merge commits ahead of the base branch that finished PRs join, one per PR, each naming its issue, inspection or cut. A PR joins in a turn on the train's green tip, and the train lands on the last joiner's recorded gate run; only a tip without a green record needs the train lane's gate.
 _Avoid_: merge queue, merge batch, landing turn
 
 **Join**:
-Putting a finished PR on the landing train. In an unbound repo the worker that wrote it does; in a bound repo a new worker does, in the landing role its workflow names, after the last stage passed. An inspection joins its own change of the repo, which closes no issue: the train takes it by the inspection. A cut joins its version the same way, taken by the cut.
+Putting a finished PR on the landing train in a turn that merges the green tip, gates and records the resulting tree before joining. An unbound worker joins its own PR, a bound workflow's landing worker joins after the last stage passes, and inspections and cuts join their own changes the same way.
 _Avoid_: merge (what git does to two branches, and a human to a proposal's PR), enqueue
+
+**Turn**:
+One command's uninterrupted merge, gate and join of an open PR, starting on the train's green tip as it stands when the turn starts and ending only after the join, or at red or a conflict. The command holds it, so nothing waits on the worker's agent between the merge and the join.
+_Avoid_: landing turn, landing slot
 
 **Train worker**:
 The one worker per repo that gates the landing train's tip and pushes it to the base branch as a fast-forward, on its host kit's first eligible harness. It holds no claim and wrote none of the PRs it lands.
