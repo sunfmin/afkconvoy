@@ -210,7 +210,7 @@ fn a_role_s_range_holds_pi_and_pi_has_a_stock_worker_launch_command() {
 /// `plan`, a `tick` and a `run` → the answer of each, its last line: the
 /// starts that probe.
 fn starts(world: &World) -> Vec<common::Answer> {
-    let run = "run --foreground --instance alpha --host h1 --now 1000 --ticks 1 --second-ms 0";
+    let run = "run --tracker default --foreground --instance alpha --host h1 --now 1000 --ticks 1 --second-ms 0";
     let tick = "tick --instance alpha --host h1 --now 1000";
     let answer = |start: &str| {
         let afk = env!("CARGO_BIN_EXE_afkconvoy");
@@ -441,6 +441,7 @@ fn a_stage_that_names_no_harness_starts_its_worker_as_before() {
     assert_eq!(did(&ticked)[0], "dispatch 7 done", "{ticked}");
     let line = started(&world, &worktree(&world, 7));
     let (role, team) = (copy(&world, "acme/reviewer"), copy(&world, "acme/team"));
+    let role = role.with_file_name(format!("{}-role+claude-code-", head(&world, "acme/reviewer")));
     let begins = format!(
         "cd '{}' && export CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1 \
          CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 CLAUDE_CODE_SANDBOXED=1 \

@@ -562,7 +562,8 @@ impl Drop for Running {
 }
 
 fn start(world: &World) -> Running {
-    let args = ["run", "--foreground", "--instance", "alpha", "--host", "h1"];
+    let args =
+        ["run", "--tracker", "default", "--foreground", "--instance", "alpha", "--host", "h1"];
     let child = world
         .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
         .args(args)
