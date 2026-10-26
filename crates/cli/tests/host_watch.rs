@@ -819,6 +819,58 @@ fn resource_host(world: &World) {
         "999990 2 10485760 0:00.00 outside-memory-holder\n",
     )
     .unwrap();
+    // The runner takes its PATH from the login profile. Keep a hostvitals
+    // installed on the test host out of it; tests opt into a stand-in below.
+    let path = world.login_env().into_iter().find(|(key, _)| key == "PATH").unwrap().1;
+    let dirs = std::env::split_paths(&path).filter(|dir| !dir.join("hostvitals").exists());
+    let path = std::env::join_paths(dirs).unwrap().to_string_lossy().replace('\'', "'\\''");
+    let profile = world.home().join(".profile");
+    let mut text = std::fs::read_to_string(&profile).unwrap();
+    text.push_str(&format!("\nexport PATH='{path}'\n"));
+    std::fs::write(profile, text).unwrap();
+}
+
+fn hostvitals(world: &World, answer: &str, status: i32) {
+    use std::os::unix::fs::PermissionsExt;
+    let file = world.root.join("bin/hostvitals");
+    std::fs::write(&file, format!(
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"${{0%/*}}/../hostvitals-calls\"\ncat \"${{0%/*}}/../hostvitals-answer\"\nprintf 'stand-in diagnostic\\n' >&2\nexit {status}\n"
+    )).unwrap();
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::write(world.root.join("hostvitals-answer"), answer).unwrap();
+}
+
+fn hostvitals_answer() -> Value {
+    let process = json!({"pid": 42, "uid": 0, "name": "fseventsd",
+        "resident_bytes": 10630044058_u64, "started_at": "2026-10-12T00:00:00Z"});
+    json!({
+        "findings": [{"rule": "process_resident", "subject": process,
+            "measured": {"percent": 30}, "next_command": "hostvitals memory 42"}],
+        "rankings": {"processes_by_memory": [process], "apps_by_memory": [{"app_pid": 12}]},
+        "host": {"memory": {"pressure": "warning", "swap": {"used_bytes": 4096}}},
+        "processes": [process], "apps": [{"app_pid": 12}], "skipped": []
+    })
+}
+
+/// Read the evidence actually handed to the running watch in its look.
+fn host_evidence(world: &World) -> String {
+    let watch = running(world).unwrap();
+    let resources = watch["look"]["host"]["resources"].as_array().unwrap();
+    let file = resources.iter().find_map(|r| r["evidence"].as_str()).unwrap();
+    std::fs::read_to_string(file).unwrap()
+}
+
+fn assert_hostvitals_evidence(world: &World) {
+    let evidence = host_evidence(world);
+    assert!(evidence.contains("Source: `hostvitals now`"), "{evidence}");
+    assert!(!evidence.contains("The most memory resident"), "{evidence}");
+    let start = evidence.find("```json\n{\n  \"findings\"").unwrap() + "```json\n".len();
+    let end = start + evidence[start..].find("\n```").unwrap();
+    let answer: Value = serde_json::from_str(&evidence[start..end]).unwrap();
+    assert_eq!(answer, hostvitals_answer(), "all readings reach the watch");
+    assert!(evidence[start..].find("\"findings\"") < evidence[start..].find("\"rankings\""));
+    assert!(evidence[start..].find("\"rankings\"") < evidence[start..].find("\"apps\""));
+    assert_eq!(std::fs::read_to_string(world.root.join("hostvitals-calls")).unwrap(), "now\n");
 }
 
 fn resource_worker(world: &World, issue: u64, mib: u64) -> PathBuf {
@@ -845,6 +897,7 @@ fn resource_worker(world: &World, issue: u64, mib: u64) -> PathBuf {
 fn a_hot_worker_starts_the_host_watch_with_its_reading_and_evidence() {
     let world = World::new();
     resource_host(&world);
+    hostvitals(&world, &hostvitals_answer().to_string(), 0);
     let path = resource_worker(&world, 7, 1536);
     world.say_host_settings(json!({"hot_memory": 1}));
     let dir = operator(&world);
@@ -863,6 +916,10 @@ fn a_hot_worker_starts_the_host_watch_with_its_reading_and_evidence() {
     {
         assert!(told.contains(text), "missing {text}: {told}");
     }
+    assert!(
+        !world.root.join("hostvitals-calls").exists(),
+        "hot-worker sampling stays the fleet's own"
+    );
     assert!(
         !world.worktrees().iter().any(|p| p.to_string_lossy().contains("afkconvoy-inspection"))
     );
@@ -925,6 +982,15 @@ fn admission_held_ten_minutes_starts_a_watch_with_the_host_reading() {
     for text in ["admission has held back", "load", "600", "reading", "cores", "evidence.md"] {
         assert!(told.contains(text), "missing {text}: {told}");
     }
+    let evidence = host_evidence(&world);
+    for text in [
+        "Source: afkconvoy",
+        "The most CPU taken",
+        "The most memory resident",
+        "outside-memory-holder",
+    ] {
+        assert!(evidence.contains(text), "{evidence}");
+    }
     printed(&world, &watch, &["moved the heavy work through exclusive"], Some(0));
     until(&world, "watch end", || ended(&world, "ended"));
     let second = world.second_repo();
@@ -937,12 +1003,57 @@ fn admission_held_ten_minutes_starts_a_watch_with_the_host_reading() {
     assert_eq!(starts(&world).len(), 1, "episode coverage survives a runner replacement");
 }
 
+#[test]
+fn a_load_watch_receives_hostvitals_findings_then_rankings() {
+    let world = World::new();
+    resource_host(&world);
+    hostvitals(&world, &hostvitals_answer().to_string(), 0);
+    world.busy("1000.00");
+    held_since(&world, false);
+    let dir = operator(&world);
+    run(&world, &dir);
+    until(&world, "load's watch", || running(&world));
+    assert_hostvitals_evidence(&world);
+}
+
+#[test]
+fn a_failed_or_unrecognisable_hostvitals_answer_keeps_the_fleets_evidence() {
+    for (answer, status) in [
+        ("failed to read host\ntry hostvitals doctor", 1),
+        (r#"{"error":"host reading unavailable"}"#, 0),
+        ("not JSON", 0),
+        (r#"{"findings":[],"rankings":{},"error":"partial failure"}"#, 0),
+        (r#"{"findings":[]}"#, 0),
+    ] {
+        let world = World::new();
+        resource_host(&world);
+        hostvitals(&world, answer, status);
+        world.busy("1000.00");
+        held_since(&world, false);
+        let dir = operator(&world);
+        run(&world, &dir);
+        until(&world, "watch despite hostvitals failure", || running(&world));
+        let evidence = host_evidence(&world);
+        let source = evidence.lines().find(|line| line.starts_with("Source:")).unwrap();
+        assert!(source.contains("Source: afkconvoy"), "{evidence}");
+        assert!(
+            source.contains(&answer.split_whitespace().collect::<Vec<_>>().join(" ")),
+            "{evidence}"
+        );
+        assert!(source.contains("stand-in diagnostic"), "{evidence}");
+        for text in ["The most CPU taken", "The most memory resident", "outside-memory-holder"] {
+            assert!(evidence.contains(text), "{evidence}");
+        }
+    }
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn pressure_starts_one_watch_across_fleets_and_no_worker_turns_hot() {
     let world = World::new();
     resource_host(&world);
-    resource_worker(&world, 7, 620);
+    hostvitals(&world, &hostvitals_answer().to_string(), 0);
+    let path = resource_worker(&world, 7, 620);
     std::fs::write(world.root.join("host-pressure"), "2").unwrap();
     held_since(&world, true);
     let dir = operator(&world);
@@ -952,6 +1063,10 @@ fn pressure_starts_one_watch_across_fleets_and_no_worker_turns_hot() {
     let told = brief(&world, &starts(&world)[0]);
     assert!(told.contains("under memory pressure"), "{told}");
     assert!(told.contains("level"), "{told}");
+    assert_hostvitals_evidence(&world);
+    let evidence = host_evidence(&world);
+    assert!(evidence.contains(&format!("### `{}` (issue #7)", path.display())), "{evidence}");
+    assert!(evidence.contains("worker TMPDIR="), "{evidence}");
     let second = world.second_repo();
     world.afk_in(&second, &["run", "--host", "h1", "--second-ms", "100"]).ok();
     printed(&world, &watch, &["checked the outside memory holder"], Some(0));

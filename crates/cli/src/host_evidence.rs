@@ -4,9 +4,10 @@
 //! worker holds it — the fleet's own among them, the fleet's caches, and
 //! the largest directories of the whole volume under the home folder outside
 //! them, found within five minutes; for load or memory, the process
-//! trees of each worker, and the hottest processes outside
-//! them. It is written to a directory of the cache every fleet of the host
-//! shares, and handed to the watch (`crate::watch`).
+//! trees of each worker, and `hostvitals now` where it answers, otherwise
+//! the fleet's hottest processes outside them. It is written to a directory
+//! of the cache every fleet of the host shares, and handed to the watch
+//! (`crate::watch`).
 
 use std::collections::HashSet;
 use std::fmt::Write as _;
@@ -15,7 +16,9 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use afkconvoy_core::resources::Reason;
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 
 use crate::admission::Admission;
 use crate::copies::cache;
@@ -327,6 +330,18 @@ fn processes_of(out: &mut String, on_host: &[OnHost]) {
             ps_of(&pids)
         );
     }
+    match hostvitals() {
+        Ok(answer) => {
+            out.push_str("\n## Host processes and Apps\n\nSource: `hostvitals now` (the whole host).\n\n```json\n");
+            out.push_str(&answer);
+            out.push_str("\n```\n");
+            return;
+        }
+        Err(error) => {
+            let said = format!("{error:#}").split_whitespace().collect::<Vec<_>>().join(" ");
+            let _ = writeln!(out, "\nSource: afkconvoy; `hostvitals now`: {said}.");
+        }
+    }
     out.push_str("\n## The hottest processes outside them\n\n");
     let mut outside: Vec<_> = procs.iter().filter(|proc| !inside.contains(&proc.pid)).collect();
     outside.sort_by_key(|proc| std::cmp::Reverse(proc.cpu_ms));
@@ -340,6 +355,36 @@ fn processes_of(out: &mut String, on_host: &[OnHost]) {
         ps_of(&by_cpu),
         ps_of(&by_memory)
     );
+}
+
+/// Optional whole-host evidence, preserving every reading but placing
+/// findings first and process and App rankings next. Missing, failed or
+/// unrecognisable answers leave the fleet's evidence available.
+fn hostvitals() -> Result<String> {
+    #[derive(Deserialize, Serialize)]
+    struct Now {
+        findings: Vec<Value>,
+        rankings: Map<String, Value>,
+        #[serde(flatten)]
+        readings: Map<String, Value>,
+    }
+
+    let output = crate::process::output(Command::new("hostvitals").arg("now"))
+        .context("could not be run from the host runner's PATH")?;
+    let said = format!(
+        "{} {}",
+        String::from_utf8_lossy(&output.stdout).trim(),
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+    if !output.status.success() {
+        bail!("{}: {}", output.status, said.trim());
+    }
+    let answer: Now = serde_json::from_slice(&output.stdout)
+        .with_context(|| format!("unrecognisable answer: {}", said.trim()))?;
+    if answer.readings.get("error").is_some_and(|error| !error.is_null()) {
+        bail!("{}", said.trim());
+    }
+    Ok(serde_json::to_string_pretty(&answer)?)
 }
 
 #[cfg(test)]
