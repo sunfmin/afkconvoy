@@ -567,6 +567,43 @@ fn one_watch_covers_an_episode_is_kept_across_a_restart_and_is_recorded() {
 }
 
 #[test]
+fn a_watch_closed_without_reporting_does_not_consume_the_unresolved_episode() {
+    let world = World::new();
+    let dir = operator(&world);
+    paused(&world, "pi", "the same unresolved fault");
+    run(&world, &dir);
+    let watch = until(&world, "the first watch", || running(&world));
+    let first_look = state(&world)["until"].as_u64().unwrap();
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            if terminal["handle"] == watch["terminal"] {
+                terminal["open"] = json!(false);
+            }
+        }
+    });
+    until(&world, "the unreported watch to end", || ended(&world, "closed"));
+    // Observe a completed look after that failure, rather than guessing how
+    // long the host needs to notice it. The fault has not changed or cleared.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let after = loop {
+        let after = state(&world);
+        if after["until"].as_u64().unwrap_or(0) > first_look {
+            break after;
+        }
+        assert!(Instant::now() < deadline, "no look after watch closure: {after}");
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    assert!(
+        after["running"].is_object(),
+        "an unreported watch must not suppress automatic recovery of the same fault: {after}"
+    );
+    assert_ne!(after["running"]["id"], watch["id"]);
+    assert_eq!(after["running"]["items"], watch["items"]);
+    assert_eq!(starts(&world).len(), 2);
+    assert!(open(&world, &dir).contains(&OPERATORS.to_string()));
+}
+
+#[test]
 fn a_watch_whose_harness_runs_out_goes_on_on_the_next_with_the_same_look() {
     let world = World::new();
     let dir = operator(&world);
