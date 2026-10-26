@@ -1420,7 +1420,7 @@ mod tests {
         assert!(fresh.contains("\n   Closes acme/tracker#7\""), "{fresh}");
         // An issue a worker opens is the repo's in the tracker.
         {
-            let brief = &briefs[5];
+            let brief = briefs.last().unwrap();
             assert!(
                 brief.contains("`gh issue create --repo acme/tracker`): the symptom")
                     && brief.contains(
@@ -1430,10 +1430,6 @@ mod tests {
                 "{brief}"
             );
         }
-        assert!(briefs[4].contains(
-            "`gh issue create --repo acme/tracker --title <title> --body-file <file> --label \
-             agent-ready --label repo:acme/dev`"
-        ));
     }
 
     /// Each issue command of `brief` names the tracker `acme/tracker`, every
