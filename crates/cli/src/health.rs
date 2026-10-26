@@ -177,6 +177,112 @@ pub fn available(mut kit: Kit) -> Result<Kit> {
     Ok(kit)
 }
 
+/// The harnesses whose workers took their briefs, most recent first.
+fn delivered_file() -> Result<PathBuf> {
+    Ok(crate::copies::cache()?.join("watch/delivered.json"))
+}
+
+fn delivered_read() -> Vec<String> {
+    let bytes = delivered_file().and_then(|file| Ok(std::fs::read(file)?));
+    bytes.ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default()
+}
+
+/// Records that the worker in `worktree` took its brief: its harness is the
+/// one a watch starts on first.
+pub fn delivered(worktree: &Worktree) -> Result<()> {
+    let Some(harness) = worktree.harness()? else { return Ok(()) };
+    let mut delivered = delivered_read();
+    delivered.retain(|held| held != harness.key());
+    delivered.insert(0, harness.key().to_string());
+    let file = delivered_file()?;
+    std::fs::create_dir_all(file.parent().context("watch cache parent")?)?;
+    let temporary = file.with_extension(format!("{}.tmp", crate::unique()));
+    std::fs::write(&temporary, serde_json::to_vec(&delivered)?)?;
+    Ok(std::fs::rename(temporary, file)?)
+}
+
+/// The harnesses a watch may start on, in order: the one this host last
+/// started a worker on that took its brief first, then the host kit's order;
+/// none paused, and none with a fault on record, of any scope, until its
+/// probe answers.
+pub fn watch_candidates() -> Result<Vec<crate::kit::Named>> {
+    let (kit, _) = crate::kit::running()?;
+    let faults = read()?.faults;
+    let faulted = |held: &crate::kit::Held| {
+        faults.iter().any(|fault| {
+            fault.harness == held.harness
+                && fault.command_key.as_ref() == Some(&command_key(&held.command))
+        })
+    };
+    let delivered = delivered_read();
+    let delivered = delivered.iter().filter_map(|key| Harness::read(key));
+    let mut candidates: Vec<crate::kit::Named> = vec![];
+    for harness in delivered.chain(kit.harnesses.iter().map(|held| held.harness)) {
+        if candidates.iter().any(|named| named.harness == harness) {
+            continue;
+        }
+        if let Some(held) = kit.harnesses.iter().find(|held| held.harness == harness)
+            && !faulted(held)
+        {
+            let model = held.models.first().map(|model| model.model.clone());
+            candidates.push(crate::kit::Named { harness, model });
+        }
+    }
+    Ok(candidates)
+}
+
+/// Records the fault a watch's session showed of `harness`, at the scope its
+/// diagnosis proved: the watch skips it, and an account's fault every worker
+/// too, until the hourly probe answers.
+pub fn watch_fault(harness: Harness, diagnosis: &Diagnosis, now: u64) -> Result<()> {
+    let file = file()?;
+    std::fs::create_dir_all(file.parent().context("health cache parent")?)?;
+    let lock = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(file.with_extension("lock"))?;
+    lock.lock()?;
+    let mut book = read()?;
+    let command = crate::kit::load()?.command(harness).unwrap_or_default().to_string();
+    let fault = Fault {
+        harness,
+        command_key: Some(command_key(&command)),
+        model: None,
+        scope: diagnosis.scope,
+        since: now,
+        next_check: now.saturating_add(RECOVERY_SECONDS),
+        evidence: diagnosis.evidence.clone(),
+    };
+    book.faults.retain(|held| {
+        !(held.harness == fault.harness
+            && held.command_key == fault.command_key
+            && held.model.is_none()
+            && held.scope == fault.scope)
+    });
+    book.faults.push(fault);
+    store(&book)
+}
+
+/// A fault the harness's own words in `output` prove, without another model.
+pub fn terminal_fault(harness: Harness, output: &[String]) -> Option<Diagnosis> {
+    terminal_rule(harness, output)
+}
+
+/// A session that exited with a failure: its harness failed it, and is held
+/// to have failed that session alone.
+pub fn failed(evidence: Vec<String>) -> Diagnosis {
+    Diagnosis {
+        status: "fault".into(),
+        class: "failed".into(),
+        scope: Scope::Worker,
+        evidence,
+        action: Action::Continue,
+        missing: vec![],
+        retry_after: None,
+    }
+}
+
 /// The latest delivery failure, kept beside the worker's brief.
 pub(crate) const SIGNAL_FILE: &str = "convoy-worker-error.json";
 
