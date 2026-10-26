@@ -588,6 +588,34 @@ mod tests {
     }
 
     #[test]
+    fn a_train_runs_next_and_reports_how_many_earlier_workers_still_wait() {
+        let dir = tempfile::tempdir().unwrap();
+        let queue = Queue::default();
+        served(dir.path(), &queue);
+        let (mut running, _) = Asker::joins(dir.path(), ticket("running", 100));
+        assert!(running.next().unwrap()["runs"].is_u64());
+        let (mut worker, _) = Asker::joins(dir.path(), ticket("worker", 101));
+        let (mut inspection, _) = Asker::joins(dir.path(), ticket("inspection", 102));
+        let mut train = ticket("train", 103);
+        train.train = true;
+        let (mut train, said) = Asker::joins(dir.path(), train);
+        assert_eq!(said["ahead"], 1);
+        assert_eq!(commands(&queue), ["running", "train", "worker", "inspection"]);
+        assert!(queue.standing()[0].ran.is_some());
+        assert!(queue.standing()[1].ran.is_none(), "the running command keeps its turn");
+        drop(running);
+        let said = train.next().unwrap();
+        assert!(said["runs"].is_u64());
+        assert_eq!(said["ahead_of"], 2);
+        drop(train);
+        assert!(worker.next().unwrap()["runs"].is_u64());
+        drop(worker);
+        assert!(inspection.next().unwrap()["runs"].is_u64());
+        drop(inspection);
+        holds(&queue, &[]);
+    }
+
+    #[test]
     fn one_whose_process_dies_as_it_waits_leaves_and_one_that_asked_again_keeps_its_place() {
         let dir = tempfile::tempdir().unwrap();
         let queue = Queue::default();
