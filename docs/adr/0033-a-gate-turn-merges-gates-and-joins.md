@@ -1,0 +1,17 @@
+---
+status: accepted
+---
+
+# A gate turn merges, gates and joins on the train's green tip
+
+A worker used to merge the train before waiting twenty to forty-five minutes for its gate. The train then gated the combined tree again: of thirteen observed landings, ten needed its own gate. One red tip also made many workers repeat the same failure. A turn now holds one command through merge, gate, recording and join, with the PR open before it asks. Red or a merge conflict frees the turn and joins nothing; conflicts stay in progress for the worker to resolve and commit.
+
+This amends ADR-0004: one PR at a time gets a turn again, as the way into the landing train, never as a second way to land. “Landing turn” stays avoided. It amends ADR-0019 and replaces the train priority from sunfmin/control#104: the host has independent worker and train lanes, each FIFO across repos. A train gate can run beside one worker command, never waits behind one and never interrupts one. Light gates take turns in a line of their own repo. The contention bound of ADR-0031 covers the complete turn and counts waiters only in its lane.
+
+A turn takes the green tip as it stands when the turn starts. A missing record is established in a separate checkout in the train lane; a red tip holds worker turns until the train worker repairs it. After acquiring its lane, a turn reads the tip and its record again. Its join is accepted only if the new merge commit's tree is the tested tree, so a join from another host cannot silently add untested work. The train lands on that record without another gate. Cuts, inspections and rejoined PRs follow the same rule.
+
+Existing gate commands that wrap the build in `afkconvoy exclusive` inherit the owning command's lease. They do not ask for another place behind themselves. Config and check refuse gate commands that call `afkconvoy gate` or `land`, with the build-and-test command to set instead. A standalone gate before workflow review joins nothing; only the workflow's landing worker takes the joining turn.
+
+## Host measurement
+
+The acceptance measurement on FelixMBP14.local is recorded here after the implementation's gate runs, with the exact commit, the seconds alone, and the seconds beside a train gate.
