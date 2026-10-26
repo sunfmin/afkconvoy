@@ -1423,7 +1423,10 @@ impl Worktree {
 
     /// Types one line only at the harness's input, then requires Orca's
     /// receipt to prove that this submission started a turn. Input acceptance
-    /// alone is no delivery. A failed line is kept for worker health.
+    /// alone is no delivery, except where Orca reports that it cannot observe
+    /// the harness at all (`observation: unsupported`): there the screen is
+    /// the evidence and worker health judges it. A failed line is kept for
+    /// worker health.
     pub fn tell(&self, terminal: &str, line: &str) -> Result<()> {
         self.tell_at(terminal, line, crate::clock())
     }
@@ -1469,10 +1472,16 @@ impl Worktree {
             .into());
         }
         let prompt = &sent["send"]["prompt"];
-        if !prompt["stages"]
-            .as_array()
-            .is_some_and(|stages| stages.iter().any(|stage| stage == "turn_started"))
-        {
+        let stages = prompt["stages"].as_array();
+        let started =
+            stages.is_some_and(|stages| stages.iter().any(|stage| stage == "turn_started"));
+        // Orca names no turn start for a harness it cannot observe: it
+        // accepts the line and says so as `observation: unsupported`. Such a
+        // harness is judged by worker health from its screen, not refused
+        // here — the screen after this send is what health reads next.
+        let accepted_unobserved = prompt["observation"] == "unsupported"
+            && stages.is_some_and(|stages| stages.iter().any(|stage| stage == "input_accepted"));
+        if !started && !accepted_unobserved {
             return Err(self.prompt_failure(
                 terminal,
                 &format!(
