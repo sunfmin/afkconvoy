@@ -352,8 +352,10 @@ fn a_proposal_by_a_role_in_a_subdirectory_starts_in_that_directory_alone() {
     let command = commands.into_iter().find(|command| command.contains("AFKCONVOY_PROPOSAL"));
     let command = common::unniced(command.expect("one worker proposes"));
     let kept = world.cache().join("afkconvoy/copies/acme/team");
-    let (role_dir, team_dir) =
-        (kept.join(format!("{head}-role-roles%2Fclerk")), kept.join(format!("{head}-team+rules-")));
+    let (role_dir, team_dir) = (
+        kept.join(format!("{head}-role+claude-code-roles%2Fclerk")),
+        kept.join(format!("{head}-team+rules-")),
+    );
     assert!(command.starts_with(&format!("cd '{}' && ", role_dir.display())), "{command}");
     assert!(command.contains(&format!(" --add-dir '{}' ", team_dir.display())), "{command}");
     let commits = format!(" AFKCONVOY_ROLE_COMMIT='{head}' AFKCONVOY_TEAM_COMMIT='{head}' ");

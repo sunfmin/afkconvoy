@@ -10,6 +10,11 @@ use serde::{Serialize, Serializer};
 use crate::config;
 
 #[derive(Topic)]
+#[topic(name = "first-start")]
+#[doc = include_str!("help/topics/first-start.md")]
+pub struct FirstStart;
+
+#[derive(Topic)]
 #[topic(name = "concepts")]
 #[doc = include_str!("help/topics/concepts.md")]
 pub struct Concepts;
@@ -110,6 +115,7 @@ pub fn unknown(name: &str, topics: &[&str]) -> String {
 /// names a topic there is not.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum See {
+    FirstStart,
     Team,
     Workflows,
     Patrols,
@@ -119,12 +125,19 @@ pub enum See {
 
 impl See {
     /// Every topic a `see` can name.
-    pub const ALL: &[See] =
-        &[See::Team, See::Workflows, See::Patrols, See::Humans, See::Troubleshooting];
+    pub const ALL: &[See] = &[
+        See::FirstStart,
+        See::Team,
+        See::Workflows,
+        See::Patrols,
+        See::Humans,
+        See::Troubleshooting,
+    ];
 
     /// The command that prints the topic.
     pub fn reference(self) -> TopicRef {
         match self {
+            See::FirstStart => FirstStart::REFERENCE,
             See::Team => Team::REFERENCE,
             See::Workflows => Workflows::REFERENCE,
             See::Patrols => Patrols::REFERENCE,
