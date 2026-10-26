@@ -130,7 +130,6 @@ fn the_plugin_refuses_through_the_real_guard_and_reports_running_and_interrupted
         .env("AFKCONVOY_LOCK_LABEL", "halt")
         .env("AFKCONVOY_DSH_MODEL", "stage-model")
         .env_remove("AFKCONVOY_WATCH")
-        .env_remove("DSH_HOME")
         .env_remove("DSH_AGENTS_HOME")
         .env_remove("DSH_PROFILE")
         .env_remove("DSH_PROFILE_DIR")
