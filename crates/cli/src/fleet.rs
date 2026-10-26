@@ -378,9 +378,13 @@ impl Fleet {
     /// The base branch's tip on the remote, its commits in this repo.
     pub fn base_tip(&self) -> Result<String> {
         let branch = &self.config.base_branch;
-        self.repo
-            .fetched(&format!("refs/heads/{branch}"))?
-            .ok_or_else(|| anyhow!("the remote has no branch {branch:?}"))
+        let tip = self
+            .listing
+            .base
+            .as_ref()
+            .ok_or_else(|| anyhow!("the remote has no branch {branch:?}"))?;
+        self.repo.bring(tip, &self.listing.base_ref)?;
+        Ok(tip.clone())
     }
 
     /// Rebuilds the working set of `me` from `open` and the remote as this

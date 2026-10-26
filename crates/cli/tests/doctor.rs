@@ -252,10 +252,7 @@ fn a_repo_no_fleet_ever_ran_in_has_no_finding_no_log_and_exits_zero() {
     assert_eq!(answer["issues"]["frontier"][0]["number"], 3);
     // with no `run` to say, the command is the one a `run` would use now
     assert_eq!(answer["host"]["worker_commands"][0]["from"], "host_kit");
-    assert_eq!(
-        answer["host"]["exclusive"]["lanes"]["train"],
-        json!({"running": null, "running_all": [], "waiting": []})
-    );
+    assert_eq!(answer["host"]["exclusive"]["lanes"]["train"], Value::Null);
     // An unbound repo calls for no harness by name: its one command is the
     // host kit's first's, which holds no model here — and neither is found.
     let commands = answer["host"]["worker_commands"].as_array().unwrap();
@@ -503,34 +500,6 @@ fn a_brief_that_starts_no_turn_is_named_with_its_screen_in_doctor_and_on_the_iss
         );
         assert!(world.labels(3).contains(&"ready-for-human".into()));
     }
-}
-
-#[test]
-fn a_train_worker_s_failed_start_is_a_finding_until_it_starts() {
-    let world = World::new();
-    world.set_gate("true");
-    world.issue(3, &["ready-for-agent"]);
-    run(&world, &["--instance", "alpha", "--ticks", "1", "--now", "1000"]);
-    let dir = world.worktrees()[0].clone();
-    commit(&dir, "built.txt", "built\n");
-    git(&dir, &["push", "-q", "origin", "HEAD"]);
-    world.pr(30, 3, &git(&dir, &["symbolic-ref", "--short", "HEAD"]));
-    assert_eq!(
-        world.afk_in(&dir, &["land", "--issue", "3", "--now", "1050"]).ok()["outcome"],
-        "joined"
-    );
-    world.with_orca(|orca| orca["never_ready"] = json!(true));
-    run(&world, &["--instance", "alpha", "--ticks", "1", "--now", "1090"]);
-    let answer = doctor(&world, "1090").json;
-    let failures = found(&answer, "`tend_train` failed");
-    assert_eq!(failures.len(), 1, "{answer}");
-    assert_eq!(failures[0]["fix"], "afkconvoy tick --instance alpha");
-    assert!(failures[0]["evidence"].as_str().unwrap().contains("not ready"), "{answer}");
-
-    world.with_orca(|orca| orca["never_ready"] = json!(false));
-    run(&world, &["--instance", "alpha", "--ticks", "1", "--now", "1180"]);
-    let answer = doctor(&world, "1180").json;
-    assert!(found(&answer, "`tend_train` failed").is_empty(), "{answer}");
 }
 
 #[test]

@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
-use common::{World, git};
+use common::World;
 use serde_json::json;
 
 #[test]
@@ -327,86 +327,6 @@ fn two_commands_of_two_repos_fleets_run_one_after_the_other_in_the_order_they_as
         let ended = said.iter().any(|line| line.starts_with(issue) && line.contains("(exit 0)"));
         assert!(ended, "{said:?}");
     }
-}
-
-#[test]
-fn train_gates_have_their_own_fifo_lane_but_other_train_commands_use_worker_lanes() {
-    let (first, second) = (World::new(), World::new());
-    let binary = env!("CARGO_BIN_EXE_afkconvoy");
-    let gate = afkconvoy_core::line::Line::new().program(binary)
-        .fixed(" exclusive -- sh -c ")
-        .word("echo \"$MARK-start\" >> \"$CACHE/order\"; while test -d \"$CACHE\" && test ! -f \"$CACHE/release-trains\"; do sleep 0.02; done; echo \"$MARK-end\" >> \"$CACHE/order\"")
-        .own();
-    first.set_gate(&gate);
-    second.set_gate(&gate);
-    let train = |world: &World| {
-        let dir = world.root.join("convoy-train");
-        git(&world.clone, &["worktree", "add", "-q", "--detach", dir.to_str().unwrap(), "HEAD"]);
-        dir
-    };
-    let (train_a, train_b) = (train(&first), train(&second));
-    let cache = first.cache();
-    let _host_runner = first.host_held();
-    let order = cache.join("order");
-    let worker = exclusive(
-        &first,
-        &cache,
-        11,
-        "echo worker-start >> \"$CACHE/order\"; while test -d \"$CACHE\" && test ! -f \"$CACHE/release-worker\"; do sleep 0.02; done; echo worker-end >> \"$CACHE/order\"",
-    );
-    until(|| lines(&order) == ["worker-start"]);
-    let run = |world: &World, dir: &Path, mark: &str| {
-        world
-            .command(binary, dir)
-            .env("XDG_CACHE_HOME", &cache)
-            .env("CACHE", &cache)
-            .env("MARK", mark)
-            .args(["gate"])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap()
-    };
-    let first_train = run(&first, &train_a, "train-a");
-    until(|| lines(&order) == ["worker-start", "train-a-start"]);
-    let second_train = run(&second, &train_b, "train-b");
-    until(|| tickets(&first) == 3);
-    let shown = first.afk(&["doctor", "--host", "h1"]).json;
-    let lanes = &shown["host"]["exclusive"]["lanes"];
-    assert_eq!(lanes["worker"]["running"]["issue"], 11, "{lanes}");
-    assert!(!lanes["train"]["running"].is_null(), "{lanes}");
-    assert_eq!(lanes["train"]["waiting"].as_array().unwrap().len(), 1);
-    std::fs::write(cache.join("release-trains"), "").unwrap();
-    for child in [first_train, second_train] {
-        let out = child.wait_with_output().unwrap();
-        assert!(out.status.success(), "{}", text(&out.stderr));
-    }
-    assert_eq!(
-        lines(&order),
-        ["worker-start", "train-a-start", "train-a-end", "train-b-start", "train-b-end"]
-    );
-    // A repair's heavy test or benchmark is an ordinary worker command,
-    // even when its current directory is the train checkout.
-    let repair = first
-        .command(binary, &train_a)
-        .env("XDG_CACHE_HOME", &cache)
-        .env("CACHE", &cache)
-        .args(["exclusive", "--", "sh", "-c", "echo repair >> \"$CACHE/order\""])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    until(|| tickets(&first) == 2);
-    let shown = first.afk(&["doctor", "--host", "h1"]).json;
-    let lanes = &shown["host"]["exclusive"]["lanes"];
-    assert_eq!(lanes["worker"]["waiting"].as_array().unwrap().len(), 1, "{lanes}");
-    assert!(lanes["train"]["running"].is_null(), "{lanes}");
-    std::fs::write(cache.join("release-worker"), "").unwrap();
-    assert!(worker.wait_with_output().unwrap().status.success());
-    assert!(repair.wait_with_output().unwrap().status.success());
-    assert_eq!(&lines(&order)[5..], ["worker-end", "repair"]);
-    until(|| tickets(&first) == 0);
-    assert!(logged(&cache).iter().any(|line| line.contains("in the train lane")));
 }
 
 #[test]

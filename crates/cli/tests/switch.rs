@@ -186,9 +186,9 @@ fn a_switch_moves_the_worker_onto_the_harness_in_the_same_worktree_and_records_i
 
     // the PR records the switch, which is no restart
     let records: Vec<String> =
-        world.comments(70).into_iter().filter(|body| body.contains("convoy:join")).collect();
+        world.comments(70).into_iter().filter(|body| body.contains("convoy:landing")).collect();
     assert_eq!(records.len(), 1);
-    assert!(records[0].starts_with("<!--convoy:join switched=800/claude-code/codex/alpha-->"));
+    assert!(records[0].starts_with("<!--convoy:landing switched=800/claude-code/codex/alpha-->"));
     assert!(records[0].contains("switched from `claude-code` to `codex` by `alpha`"));
 
     // every worker this host starts for the repo from now on is a codex one
@@ -212,7 +212,7 @@ fn a_switch_moves_the_worker_onto_the_harness_in_the_same_worktree_and_records_i
     assert_eq!(back["pr"], 80);
     assert_eq!(open_commands(&world, &eight), [common::trusted("agent")]);
     let records: Vec<String> =
-        world.comments(80).into_iter().filter(|body| body.contains("convoy:join")).collect();
+        world.comments(80).into_iter().filter(|body| body.contains("convoy:landing")).collect();
     assert_eq!(records.len(), 1);
     assert!(records[0].contains("switched from `codex` to `claude-code` by `alpha`"));
     let said = switch(&world, "1000", &["--harness", "config"]).error();

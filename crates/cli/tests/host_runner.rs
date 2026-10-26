@@ -582,7 +582,8 @@ fn the_host_settings_outlive_the_host_runner_and_doctor_says_those_in_force() {
     assert_eq!(said["exclusive_seconds"], 1500);
     assert_eq!(in_force["exclusive_seconds"], 1500);
     assert_eq!(in_force["gate_lanes"], 2);
-    assert_eq!(in_force["train_lanes"], 3);
+    assert!(in_force["train_lanes"].is_null());
+    assert!(settings["ignored"].to_string().contains("train_lanes is ignored"));
     let before = again["instance"].clone();
     let changed_live = world.afk(&["run", "--gate-lanes", "4", "--train-lanes", "2"]).ok();
     assert_eq!(changed_live["instance"], before, "settings change no fleet instance");
@@ -1045,7 +1046,7 @@ fn the_host_runner_never_moves_onto_an_older_afkconvoy_nor_one_that_does_not_say
 }
 
 #[test]
-fn the_host_runner_moves_with_claims_and_a_pr_on_the_train_after_only_the_running_command_ends() {
+fn the_host_runner_moves_with_claims_and_an_open_pr_after_only_the_running_command_ends() {
     let world = World::new();
     world.set_gate("true");
     world.issue(7, &["ready-for-agent"]);
@@ -1086,8 +1087,7 @@ fn the_host_runner_moves_with_claims_and_a_pr_on_the_train_after_only_the_runnin
     commit(&worker, "finished.txt", "done\n");
     git(&worker, &["push", "-q", "origin", "HEAD"]);
     world.pr(70, 7, &git(&worker, &["symbolic-ref", "--short", "HEAD"]));
-    assert_eq!(world.afk_in(&worker, &["land", "--issue", "7"]).ok()["outcome"], "joined");
-    let train = world.remote(&["rev-parse", "refs/convoy/train/line/main"]);
+    let base = world.remote(&["rev-parse", "refs/heads/main"]);
     let terminals = world.orca()["terminals"].clone();
     let ran = world.root.join("queued-ran");
     let queued_script = format!(
@@ -1137,7 +1137,7 @@ fn the_host_runner_moves_with_claims_and_a_pr_on_the_train_after_only_the_runnin
     let held: Vec<_> =
         instances.iter().flat_map(|instance| instance["claims"].as_array().unwrap()).collect();
     assert!(held.contains(&&json!(8)), "{claims}");
-    assert_eq!(world.remote(&["rev-parse", "refs/convoy/train/line/main"]), train);
+    assert_eq!(world.remote(&["rev-parse", "refs/heads/main"]), base);
     for terminal in terminals.as_array().unwrap() {
         assert!(
             world.orca()["terminals"].as_array().unwrap().contains(terminal),
@@ -1147,7 +1147,7 @@ fn the_host_runner_moves_with_claims_and_a_pr_on_the_train_after_only_the_runnin
     let moved = of_kind(&tick_log(&first), "moved");
     let carried = moved[0]["moved"]["carried"].to_string();
     assert!(
-        carried.contains("claim #8 and its worker") && carried.contains("landing train PR #70"),
+        carried.contains("claim #8 and its worker") && carried.contains("claim #7 and its worker"),
         "{moved:#?}"
     );
 }

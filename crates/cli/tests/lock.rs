@@ -63,7 +63,7 @@ fn with_a_lock_standing_the_frontier_is_the_lock_issues_and_plan_says_which() {
 
     // No lock stands: `plan` says so, and the frontier is what it was.
     world.close_issue(7);
-    world.close_issue(8);
+    assert_eq!(world.state(8), "closed");
     let plan = world.afk(&["plan", "--now", "1000"]).ok();
     assert_eq!(plan["locks"], json!([]));
     assert_eq!(numbers(&plan["frontier"]), [3]);
@@ -131,7 +131,7 @@ fn the_line_of_a_tick_says_that_a_lock_stands_and_which_issue_it_is() {
 }
 
 #[test]
-fn with_a_lock_standing_no_pr_of_another_issue_joins_the_landing_train() {
+fn with_a_lock_standing_only_its_own_issue_can_land() {
     let world = World::new();
     world.set_gate("true");
     let seven = world.worker(7, "seven.txt", "7\n");
@@ -146,10 +146,10 @@ fn with_a_lock_standing_no_pr_of_another_issue_joins_the_landing_train() {
     assert_eq!(world.pushes(), [] as [String; 0], "nothing joined, and nothing was pushed");
 
     // The lock issue's own PR joins: it carries the fix.
-    assert_eq!(land(&world, &eight, 8)["outcome"], "joined");
+    assert_eq!(land(&world, &eight, 8)["outcome"], "merged");
     // …and once it has closed, so does every other.
     world.close_issue(8);
-    assert_eq!(land(&world, &seven, 7)["outcome"], "joined");
+    assert_eq!(land(&world, &seven, 7)["outcome"], "merged");
 }
 
 #[test]

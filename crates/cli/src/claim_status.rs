@@ -15,7 +15,7 @@ pub enum ClaimStatus {
     NoPr,
     /// An open PR closes it, and that PR is not on the base branch yet. In a bound repo, only under a landing worker's claim.
     Landing,
-    /// The landing train put its work on the base branch, and the landing was cut short before the issue was closed: a tick closes it, then settles the claim.
+    /// Its turn put the work on the base branch, and the landing was cut short before the issue was closed: a tick closes it, then settles the claim.
     Landed,
     /// The issue is closed: a tick settles the claim and releases it.
     Closed,

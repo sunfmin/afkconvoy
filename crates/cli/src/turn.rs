@@ -316,10 +316,10 @@ fn run(
     let here = repo.git(&["rev-parse", "HEAD"])?;
     let current = base(repo, config)?;
     if repo.within(&here, &current)? {
-        if let Some(n) = issue {
-            if !gh.issue(n)?.is_closed() {
-                gh.close_issue(n)?;
-            }
+        if let Some(n) = issue
+            && !gh.issue(n)?.is_closed()
+        {
+            gh.close_issue(n)?;
         }
         answer["outcome"] = json!("merged");
         answer["commit"] = json!(current);
@@ -387,10 +387,10 @@ fn run(
         acting.say(crate::clock(), "turn push rejected; another turn is needed".into());
         return Ok(gated);
     }
-    if let Some(n) = issue {
-        if !gh.issue(n)?.is_closed() {
-            gh.close_issue(n)?;
-        }
+    if let Some(n) = issue
+        && !gh.issue(n)?.is_closed()
+    {
+        gh.close_issue(n)?;
     }
     gated["outcome"] = json!("merged");
     gated["commit"] = json!(commit);

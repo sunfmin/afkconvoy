@@ -274,7 +274,7 @@ process.stdin.once('data', input => {
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     let read: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(read["input"], "the worker's brief");
-    assert_eq!(read["cwd"], role.to_str().unwrap());
+    assert_eq!(read["cwd"], role.canonicalize().unwrap().to_str().unwrap());
     assert_eq!(read["harness"], "dsh");
     assert_eq!(read["stage"], "build");
     assert_eq!(read["model"], "deepseek-stage");

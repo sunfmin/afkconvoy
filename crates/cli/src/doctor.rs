@@ -2404,6 +2404,18 @@ mod tests {
     }
 
     #[test]
+    fn retired_train_steps_do_not_leave_an_actionable_failure_after_upgrade() {
+        let failed = tick(
+            4,
+            json!([
+                {"do": "tend_train", "error": "not ready"},
+                {"do": "cut_train", "error": "no checkout"}
+            ]),
+        );
+        assert_eq!(log_findings(&run(vec![failed, tick(5, json!([]))])), []);
+    }
+
+    #[test]
     fn failures_stay_visible_across_unrelated_ticks_and_clear_when_work_recovers() {
         let failed = tick(4, json!([{"do": "slow_gate", "error": "not ready"}]));
         let unrelated = tick(5, json!([]));

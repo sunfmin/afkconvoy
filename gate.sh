@@ -1,8 +1,8 @@
 #!/bin/sh
 # The gate: what must pass before anything lands. This repo's own
 # docs/agents/afkconvoy.md names it as `gate_command`, run through
-# `afkconvoy exclusive`: PR turns use the worker lanes and a train gate
-# uses the independent train lanes. Run by hand, it is
+# `afkconvoy exclusive`: every landing turn uses the host's worker lanes.
+# Run by hand, it is
 # `afkconvoy exclusive -- ./gate.sh`.
 set -e
 cd "$(dirname "$0")"

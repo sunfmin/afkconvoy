@@ -295,7 +295,8 @@ fn a_faulted_landing_worker_continues_in_its_role_without_consuming_a_restart() 
     assert_eq!(std::fs::read_to_string(dir.join("unfinished.txt")).unwrap(), "landing work");
     assert_eq!(status(&world), "landing");
     assert!(brief(&dir).contains("**Your role:** `lander`"));
-    let record = world.comments(70).into_iter().find(|c| c.starts_with("<!--convoy:join")).unwrap();
+    let record =
+        world.comments(70).into_iter().find(|c| c.starts_with("<!--convoy:landing")).unwrap();
     assert!(record.contains("restarted=1040"));
     assert!(record.contains("switched="));
 }
