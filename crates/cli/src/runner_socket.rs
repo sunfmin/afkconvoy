@@ -303,6 +303,15 @@ pub struct Conversation {
 }
 
 impl Conversation {
+    /// A handle that ends this conversation, including a read on another
+    /// thread. The caller uses it once its command ends, then joins the reader.
+    pub fn ender(&self) -> Result<impl FnOnce() + use<>> {
+        let stream = self.lines.get_ref().try_clone()?;
+        Ok(move || {
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+        })
+    }
+
     /// Waits, as long as it takes, for what the host runner says next →
     /// `None`: it closed the line, as it ended. Errors: what it said is no
     /// JSON; the line could not be read.

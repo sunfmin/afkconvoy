@@ -8,6 +8,87 @@ use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
 use common::World;
+use serde_json::json;
+
+#[test]
+fn a_command_is_ended_after_contended_time_and_the_next_runs_after_its_descendants_end() {
+    let world = World::new();
+    world.say_host_settings(json!({"exclusive_seconds": 1}));
+    let _host_runner = world.host_held();
+    let cache = world.cache();
+    let held = exclusive(
+        &world,
+        &cache,
+        11,
+        "trap '' TERM; (while :; do sleep 0.02; done) & echo $! > \"$CACHE/descendant\"; wait",
+    );
+    until(|| cache.join("descendant").exists());
+    // A late waiter must receive the whole bound: time alone did not count.
+    std::thread::sleep(Duration::from_millis(1200));
+    let asked = Instant::now();
+    let waiting = exclusive(&world, &cache, 22, "echo next");
+    let held = held.wait_with_output().unwrap();
+    let waiting = waiting.wait_with_output().unwrap();
+    assert!(asked.elapsed() >= Duration::from_secs(1));
+    assert_eq!(held.status.code(), Some(124));
+    let stderr = text(&held.stderr);
+    assert_eq!(stderr.lines().count(), 1, "{stderr}");
+    assert!(stderr.starts_with("[afkconvoy] exclusive: ended at the exclusive bound"), "{stderr}");
+    assert!(
+        stderr.contains("run each step of the work as its own `afkconvoy exclusive`"),
+        "{stderr}"
+    );
+    assert!(waiting.status.success(), "{}", text(&waiting.stderr));
+    assert_eq!(waiting.stdout, b"next\n");
+    let pid = std::fs::read_to_string(cache.join("descendant")).unwrap();
+    let state = Command::new("ps").args(["-p", pid.trim(), "-o", "stat="]).output().unwrap();
+    let state = text(&state.stdout);
+    assert!(
+        state.trim().is_empty() || state.trim().starts_with('Z'),
+        "descendant still runs: {state}"
+    );
+    until(|| tickets(&world) == 0);
+    let said = logged(&cache);
+    let bounded: Vec<_> =
+        said.iter().filter(|line| line.contains("ended at the exclusive bound")).collect();
+    assert_eq!(bounded.len(), 1, "{said:?}");
+    assert!(bounded[0].contains("with 1 commands waiting"), "{bounded:?}");
+    let doctor = world.afk(&["doctor", "--host", "h1"]).json;
+    let found: Vec<_> = doctor["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|finding| {
+            finding["what"].as_str().unwrap().contains("ended at the exclusive bound")
+        })
+        .collect();
+    assert_eq!(found.len(), 1, "{doctor}");
+    assert_eq!(found[0]["severity"], "warning");
+    assert!(found[0]["evidence"].as_str().unwrap().contains("with 1 commands waiting"));
+}
+
+#[test]
+fn a_long_command_with_nothing_waiting_finishes_and_a_live_setting_changes_the_bound() {
+    let world = World::new();
+    world.say_host_settings(json!({"exclusive_seconds": 0}));
+    let _host_runner = world.host_held();
+    let cache = world.cache();
+    let alone = exclusive(&world, &cache, 11, "sleep 1.2; echo finished");
+    let out = alone.wait_with_output().unwrap();
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert_eq!(out.stdout, b"finished\n");
+    assert!(out.stderr.is_empty());
+    world.say_host_settings(json!({"exclusive_seconds": 60}));
+    let held = exclusive(&world, &cache, 12, "touch \"$CACHE/held\"; sleep 30");
+    until(|| cache.join("held").exists());
+    let next = exclusive(&world, &cache, 13, "echo next");
+    until(|| tickets(&world) == 2);
+    world.say_host_settings(json!({"exclusive_seconds": 0}));
+    assert_eq!(held.wait_with_output().unwrap().status.code(), Some(124));
+    assert!(next.wait_with_output().unwrap().status.success());
+    let child_code = exclusive(&world, &cache, 14, "exit 124").wait_with_output().unwrap();
+    assert_eq!(child_code.status.code(), Some(1), "124 is reserved for the bound");
+}
 
 /// `afkconvoy exclusive -- sh -c <script>`, started in `world`'s checkout on
 /// the host whose cache is `cache`, as the worker of `issue`. The script
