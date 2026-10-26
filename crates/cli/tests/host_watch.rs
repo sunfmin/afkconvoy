@@ -585,7 +585,9 @@ fn a_hot_worker_starts_the_host_watch_with_its_reading_and_evidence() {
     {
         assert!(told.contains(text), "missing {text}: {told}");
     }
-    assert!(!world.worktrees().iter().any(|p| p.to_string_lossy().contains("afkconvoy-watch")));
+    assert!(
+        !world.worktrees().iter().any(|p| p.to_string_lossy().contains("afkconvoy-inspection"))
+    );
     printed(&world, &watch, &["told #7 to end its runaway process"], Some(0));
     until(&world, "watch record", || ended(&world, "ended"));
     std::thread::sleep(Duration::from_secs(3));
@@ -718,6 +720,6 @@ fn the_removed_reporting_command_is_not_in_the_manual_or_command_tree() {
         .output()
         .unwrap();
     let help = String::from_utf8(help.stdout).unwrap();
-    assert!(!help.contains("watch"));
+    assert!(!help.contains("inspection"));
     assert!(!help.contains("inspected"));
 }
