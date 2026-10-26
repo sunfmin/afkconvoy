@@ -262,7 +262,7 @@ fn a_command_that_does_not_take_what_the_fleet_adds_for_codex_starts_nothing() {
 /// `plan`, a `tick` and a `run` → the answer of each, its last line: the
 /// starts that probe.
 fn starts(world: &World) -> Vec<common::Answer> {
-    let run = "run --foreground --instance alpha --host h1 --now 1000 --ticks 1 --second-ms 0";
+    let run = "run --tracker default --foreground --instance alpha --host h1 --now 1000 --ticks 1 --second-ms 0";
     let tick = "tick --instance alpha --host h1 --now 1000";
     let answer = |start: &str| {
         let afk = env!("CARGO_BIN_EXE_afkconvoy");
