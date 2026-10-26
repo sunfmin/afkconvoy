@@ -36,7 +36,10 @@ pub fn parse(markdown: &str) -> Result<Config> {
     let config = Config::new(settings)?.cutting(steps);
     // An outer gate/land would ask for the lane a second time before it
     // could even reach the inherited gate wrapper.
-    if config.gate_command.split_whitespace().any(|word| word.ends_with("afkconvoy"))
+    if config
+        .gate_command
+        .split_whitespace()
+        .any(|word| word.trim_matches(['\'', '"']).ends_with("afkconvoy"))
         && config.gate_command.split_whitespace().any(|word| matches!(word, "gate" | "land"))
     {
         return Err(anyhow!(
@@ -111,6 +114,32 @@ mod tests {
         let config = parse(text).unwrap();
         assert_eq!(config.base_branch, "main");
         assert_eq!(config.gate_command, "make");
+    }
+
+    #[test]
+    fn existing_exclusive_gate_wrappers_use_the_worker_lanes_and_recursion_is_refused() {
+        for command in [
+            "afkconvoy exclusive -- ./gate.sh",
+            "/opt/homebrew/bin/afkconvoy exclusive -- ./gate.sh",
+            "'/opt/homebrew/bin/afkconvoy' -C . exclusive -- make test",
+        ] {
+            let config =
+                parse(&format!("```yaml\nbase_branch: main\ngate_command: {command}\n```\n"))
+                    .unwrap();
+            assert!(heavy_gate(&config.gate_command), "{command}");
+        }
+        assert!(!heavy_gate("./gate.sh"));
+        for command in
+            ["afkconvoy gate", "afkconvoy exclusive -- afkconvoy gate", "afkconvoy land --train"]
+        {
+            let why = error(&format!("base_branch: main\ngate_command: {command}"));
+            assert!(why.contains("gate_command: afkconvoy exclusive -- ./gate.sh"), "{why}");
+        }
+        for key in ["gate_lanes", "train_lanes"] {
+            assert!(
+                error(&format!("base_branch: main\ngate_command: make\n{key}: 2")).contains(key)
+            );
+        }
     }
 
     #[test]

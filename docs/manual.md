@@ -394,7 +394,7 @@ With `--all` it reads the checkout list (checkouts.json in the cache directory) 
     A harness with `models` [] or no placed model runs on its default model with no model flag, and is no fault. Automatic command discovery, a switch, failed research or a hand-written kit can leave one. `afkconvoy kit` lists and researches them now. A tick lists an empty Codex entry without waiting for the daily refresh, with an hour between unsuccessful tries. A roster or casting model that matches nothing placed is still reported as such.
   - `settings`: the host settings (`afkconvoy run --help`): {file, said, in_force} — each by its key, the name of the flag of `run` that names it (`hot_cores` for `--hot-cores`), in that flag's units: said is what the host says, null where it says none and the default holds; in_force what holds for this repo's fleet on this host, each default worked out for it — the panel's port 7070 where the host says none. {file, error} where the file cannot be read
   - `admission`: whether a tick would start a new worker on this host now, the thresholds in force and what the host reads: as `plan` answers it (`afkconvoy plan --help`), or {error} where a share the host says is wrong. A tick that admission held back is no "started no worker" finding. Its inspected is what the last host inspection on this host did, whichever fleet started it: {repo, reason, reading, by, started, ended, found, said, did, prs} — what called for the inspection and what it read, the role, how it ended (said, or nothing where it said nothing in time), what held the work back in its words, each thing it did and the PRs it put on the landing train; null with none
-  - `exclusive`: the host's queue of `afkconvoy exclusive`, whatever its repo, as its host runner holds it: {running, waiting} — running is the command that runs alone now, null with none; waiting, those that wait their turn, next first; both empty with no host runner. Each is {command, dir, issue, pid, asked, ran}: the worktree it was run in, the issue of its worker, and when it asked and began to run, in epoch seconds. {error} when the host runner cannot say it
+  - `exclusive`: the host's queues as {lanes: {worker, train, repos}, running, waiting}. Each lane has {running, running_all, waiting}, where running is the first active command for older readers and running_all lists every active command; repos lists {repo, queue} for light gates. The top-level running and waiting are the worker lane for older readers — running is the command that runs alone now, null with none; waiting, those that wait their turn, next first; both empty with no host runner. Each is {command, dir, issue, pid, asked, ran}: the worktree it was run in, the issue of its worker, and when it asked and began to run, in epoch seconds. {error} when the host runner cannot say it
   - `inspection`: the inspection running on this host, whatever its repo: {kind, repo, worker, issue, by, since, held_back_by} — worker or host, the repo whose fleet started it, the hot worker and its issue ("the host" and null of a host's), the role it runs in, when it started, in epoch seconds, and of a host's which resource called for it; null with none (`afkconvoy inspected --help`)
   - `watch`: this host's watch (`afkconvoy run --help`, WATCH): {running, last, unavailable} — running and last are each {id, directory, items, started, harness, model, terminal, transcript, did, attempts, ended, outcome}: why it started (items, each {id, reason}), its session's harness, model and terminal, the file its session prints to, what its sessions printed (did), each session whose harness gave out ({harness, model, terminal, why, did}), and how it ended — outcome `ended`, `closed` (its terminal closed before its harness exited), `time_limit` or `no_harness`; null with none. unavailable: why the last watch a look called for could not start or go on, null where it could
   - `installed`: the release installed where the host runner was started from, where the host runner moves onto it or did not: {path, version, from, since, wait_expired, held_back, failed} — the file; the release it says, null where it says none; the host runner's own release; when that file answered, in epoch seconds; whether the 600s wait expired; what holds the move back, each in words ("/Users/me/Developments/hkj is in a tick", "1 exclusive command(s) running"), [] once nothing does, or the last blockers when the wait expired; and why the move failed — it did not start, or does not say its version — null until one did. null with none: nothing newer is installed there, or no host runner runs (`afkconvoy run --help`)
@@ -839,6 +839,10 @@ afkconvoy run [OPTIONS] [CHECKOUT]
   - Environment: `AFKCONVOY_ADMIT_INSPECT_AFTER`
 - `--exclusive-seconds <SECONDS>`: Seconds a running exclusive command may hold others up, counting only while another waits: a host setting; `default` changes it back [default: 1200]
   - Environment: `AFKCONVOY_EXCLUSIVE_SECONDS`
+- `--gate-lanes <GATE_LANES>`: Worker lanes on this host, at least 1, or `default` (1). A repo holds at most one turn at a time, regardless of this count
+  - Environment: `AFKCONVOY_GATE_LANES`
+- `--train-lanes <TRAIN_LANES>`: Train lanes on this host, at least 1, or `default` (1)
+  - Environment: `AFKCONVOY_TRAIN_LANES`
 
 #### `afkconvoy stop`
 
@@ -1965,11 +1969,11 @@ A worker, in its own worktree. Anyone else on the host may too: the queue is the
 
 ##### What it reads and writes
 
-It runs the command once no other `exclusive` command runs on this host — whatever its repo, whatever its fleet — and waits in a queue until then. The landing train's commands go ahead of every waiting worker's or inspection's command: a landing unblocks every PR on the train, later conflicts and the next cut. Trains keep the order they asked between them, as do other commands between them. Priority never interrupts a running command. The train is known by its worktree, including when its worker runs `gate --train` or `land --train` runs the gate; a worker's `gate --train` in its own worktree has ordinary priority. A train asks once for each landing, so a worker waits behind at most one train gate per repo on the host, plus what runs now and the ordinary commands already ahead of it.
+Commands use independent host worker and train lanes, 1 each by default. `run --gate-lanes N` and `--train-lanes N` set their counts live for every fleet on the host, or `default` restores 1. N must be at least 1. One repo holds at most one turn and one train gate at a time, regardless of the counts. Worker gates, heavy tests, benchmarks, cut builds and inspection commands run one at a time in the worker lane, in request order. Train gates run one at a time in the train lane, in request order across every repo, and can run beside a worker command. A train never waits behind or interrupts a worker. Light gates take turns in their repo's own lane. A turn holds its lane through merge, gate, record and join; a process that dies frees it.
 
 The queue is the host runner's (`afkconvoy run --help`), held in its process: `exclusive` asks it on its socket, naming its checkout, and stays on the line while it waits and while its command runs. A process that leaves it — its command ended, or it was killed while waiting or running — frees its place for the next. The command runs in the directory `exclusive` is run in, or with `-C <dir>` in that one, as named: a checkout of the repo or a directory in one, and not that checkout's top.
 
-It writes a line to the tick log of this host for this repo as it starts to wait, when another command is ahead of it; as its command runs — in its turn, or at once in no queue, with why; as it waits again, in the next host runner's queue; and as it ends, with its exit status. A train's runs line says "runs ahead of N waiting commands, as the landing train's", counting the earlier commands still waiting when it starts. `doctor` and the panel show what runs alone and what waits in the order they will run, with trains first among the waiting.
+It writes a line to the tick log of this host for this repo as it starts to wait, when another command is ahead of it; as its command runs — in its turn, or at once in no queue, with why; as it waits again, in the next host runner's queue; and as it ends, with its exit status. Its lines name the worker, train or repo lane. `doctor` and the panel show each lane's running and waiting commands, with the counts in force. A turn logs the commit it merged, its gate result and its join.
 
 While it waits or runs, the fleet counts the worker busy, not silent: it is not nudged for that. The wait and run count toward the command's gate limit (`gate_seconds`). A worker with confirmed live background work remains waiting even past the observation interval; silence alone does not authorize escalation or continuation.
 
@@ -1981,7 +1985,7 @@ Unlike every other command, no JSON of its own: what the command prints is print
 
 With no host runner on this host it runs the command at once, in no queue, and says so on stderr: `[afkconvoy] exclusive: runs `<command>` at once, in no queue: no host runner runs on this host`. So it does too where the host runner cannot hold it — one of an older afkconvoy, which cannot read the question — saying why. A host runner that is starting or stopping is waited for, as one replaced is.
 
-When the host runner is replaced — an upgrade moves it (`afkconvoy run --help`) — or ends, a command that waits asks the next one, within a minute, keeping its priority and when it first asked: within its priority it waits before every command that asked after it, saying so on stderr. Where no host runner places it within the minute, it runs at once, saying so. A command that runs runs on to its end: the next host runner does not know of it, and may start the next command beside it.
+When the host runner is replaced — an upgrade moves it (`afkconvoy run --help`) — or ends, a command that waits asks the next one, within a minute, keeping its lane and when it first asked: within its lane it waits before every command that asked after it, saying so on stderr. Where no host runner places it within the minute, it runs at once, saying so. A command that runs runs on to its end: the next host runner does not know of it, and may start the next command beside it.
 
 Exit 124 is reserved for the bound: a command that itself exits 124 is reported as exit 1. Every other command exit status is passed through. It exits 127 when the command cannot be started, and 125, with one JSON object {"error"} on stdout, when the host runner cannot be asked — the cache directory is not known — or what it said cannot be read, or `-C` names no directory of a checkout: the command did not run, and nothing waited.
 
@@ -1990,7 +1994,7 @@ Exit 124 is reserved for the bound: a command that itself exits 124 is reported 
 - It may wait long: as long as every heavy command ahead of it runs. Run it as you would the gate — in the background, or with a time limit of the gate limit — not under a short tool time limit that kills it while it waits.
 - Killing it kills its place in the queue, not only its wait: run it again to wait from the end.
 - Only commands run through it wait for one another. A heavy command run without it runs beside the one that runs alone.
-- The gate, run by `afkconvoy gate`, goes through the queue only when the config's `gate_command` does — `afkconvoy exclusive -- ./gate.sh`, for a gate that fills the host by itself. Never put `afkconvoy gate` itself through it: the gate's own `exclusive` would wait behind it, on itself, until the gate limit.
+- The gate, run by `afkconvoy gate`, goes through the queue only when the config's `gate_command` does — `afkconvoy exclusive -- ./gate.sh`, for a gate that fills the host by itself. The turn owns the lane before it merges; the gate command's nested `exclusive` inherits that lease and never waits on itself. Existing `gate_command: afkconvoy exclusive -- ./gate.sh` configurations keep working. Never use `afkconvoy gate` or `land` as the gate_command: config and check name the build-and-test command to set.
 
 ##### Which checkout it is about
 
@@ -2013,9 +2017,9 @@ Put this worktree's PR on the landing train (a worker's command, and an inspecti
 
 ##### When to run it
 
-`land --issue <n>`: once the PR is open and its gate run is green and on record, to join the PR to the landing train. A worker's prompt names the exact command.
+`land --issue <n>`: once the PR is open and the change is committed, to take the merge, gate and join turn. A worker's prompt names the exact command.
 
-`land --inspection`: the same, of an inspection's change of the repo: once its PR is open and its gate run is green and on record. The inspection's brief names the exact command.
+`land --inspection`: the same turn for an inspection's committed change with an open PR. The inspection's brief names the exact command.
 
 `land --train`: when the train's worker is told a PR joined, and again after each answer that says so, until the answer is `idle`.
 
@@ -2031,7 +2035,7 @@ The train worker runs on the host kit's first eligible harness, skipping paused 
 
 ##### What it reads and writes
 
-`--issue` reads the open issues, the open PRs and the train. With a fleet lock standing it joins the PR of a lock issue only, and for any other changes nothing. Otherwise it pushes this branch when it is ahead of the remote's, then pushes one merge commit — the PR's head joined onto the train's tip — as the train's new tip. Its message names the PR and the issue it closes (`Closes #<n>`), which is how the train knows what is on it. No gate runs, and nothing on GitHub changes. A PR that conflicts with the train gets the train's tip merged into this worktree, left in progress.
+`--issue` reads the open issues, the open PRs and the train. With a fleet lock standing it joins the PR of a lock issue only, and for any other changes nothing. Otherwise it pushes this branch when it is ahead of the remote's, then pushes one merge commit — the PR's head joined onto the train's tip — as the train's new tip. Its message names the PR and the issue it closes (`Closes #<n>`), which is how the train knows what is on it. In its turn it merges the current green tip, gates, records the resulting committed tree and joins before releasing the turn. Red joins nothing. A conflict stays in progress here. Cuts and inspections take the same turn.
 
 `--inspection` does the same for the open PR whose head is this checkout's branch: a change of the repo the inspection made itself, on no issue (`afkconvoy inspected --help`). The train takes it by the inspection where it takes a worker's by its issue: the join commit names the inspection and its host (`By an inspection on <host>`, `--host`, else this machine's name) and closes no issue. While it is on the train, every fleet of the repo tends the train as for a PR of its own — and a fleet that gives the train up joins it again itself, onto the next. A fleet lock standing, it joins nothing: an inspection's PR is no lock issue's. A PR that joined is kept in the checkout's own git dir, and the inspection's record names it once it ends (`afkconvoy inspected --help`). A cut joins its PR the same way, from no command of yours: its join commit says `By a cut on <host>` (`afkconvoy cut --help`).
 
@@ -2069,7 +2073,7 @@ Errors: no open PR closes the issue — for `--inspection`, none has this checko
 - `--train` moves the branch checked out here onto the train's tip, with a hard reset. Run in a checkout of your own it takes that checkout's branch with it.
 - Joined is not landed. `--issue` ends at `joined`; the train worker gates and lands.
 - A `gate_red` may be the base branch's, not the train's: the train worker gates `origin/<base>` alone, in a clean checkout, and red the same way is a defect it records — on the open issue that already does, or on one it opens. In an unbound repo that one carries the ready label; in a bound repo, where only a flow label dispatches, it takes it in with `afkconvoy intake --train`: to the team's first workflow, unless another fits it clearly better. Then, in either repo, it raises the fleet lock on that issue with `afkconvoy lock --issue <n>` and stops until told to carry on: the fix's PR joins first. A green base branch leaves it to fix the train as for any `gate_red`.
-- `--issue` runs no gate. It joins whatever is committed: run `gate --train` first.
+- `--issue` runs the gate inside its turn; `gate --train` performs the same turn for this branch's issue PR. Running either again after it joined changes nothing.
 - `--merged-timeout` is read by `--train` only, and `--host` by `--train` and `--inspection`. How long the gate may run is no flag: it is `gate_seconds` in the config (`afkconvoy config --help`).
 
 ##### Which checkout it is about
@@ -2117,7 +2121,7 @@ The five verdicts:
 - `already-satisfied`: the issue needs no change: it is already done
 - `escalate`: the stage cannot decide; the text says what has to be decided
 
-Opening a PR declares nothing: a stage that wrote one still declares `pass` — after `afkconvoy gate --train` says green on what it pushed, as its brief tells it.
+Opening a PR declares nothing: a stage that wrote one still declares `pass` — after `afkconvoy gate` says green on what it pushed, as its brief tells it.
 
 A consult also declares `close` or `park`, with its reason in the text. Close ends the issue; park leaves it open for new evidence, off the frontier until explicitly brought back (see `afkconvoy help humans`). Neither adds rework or resets its counts. `escalate` lets through to a human what the consult was asked to rule on. Its ruling uses `afkconvoy rule --help`. In an unbound repo the stock consult uses `--consult` and `--stage consult` with `close` or `park`, with no role or team commits.
 
@@ -2421,7 +2425,7 @@ Say what an inspection of a hot worker or of the host did: what held the fleet's
 
 Once, as the last command of an inspection, once it has checked that the work goes on. Its brief ends with the exact line.
 
-An inspection is started so that the fleet's work goes on, as the operator on this host: on a hot worker — one whose processes take more than their share of the host — or on the host, once admission has held back new workers for one reason, or memory pressure has lasted, past its span (`afkconvoy run --help`, ADMISSION). It finds what holds the work back, fixes it — whatever the operator at this host's keyboard would do — checks that the work goes on, and says here what it did. It hands nothing to a human. In an unbound repo, a base branch proved red the same way gated alone in a clean checkout has it find or open the fix's issue with the ready label and raise the fleet lock (`afkconvoy lock --issue <n>`). It opens no other issue. A change of the repo it makes itself, on the branch of its checkout: it opens the PR, gates it (`afkconvoy gate --train`) and puts it on the landing train with `afkconvoy land --inspection`, which takes it by the inspection where a worker's is taken by its issue; the train lands it as any other, and it need not wait for that. What it could not fix it says in its text, and the next episode inspects again.
+An inspection is started so that the fleet's work goes on, as the operator on this host: on a hot worker — one whose processes take more than their share of the host — or on the host, once admission has held back new workers for one reason, or memory pressure has lasted, past its span (`afkconvoy run --help`, ADMISSION). It finds what holds the work back, fixes it — whatever the operator at this host's keyboard would do — checks that the work goes on, and says here what it did. It hands nothing to a human. In an unbound repo, a base branch proved red the same way gated alone in a clean checkout has it find or open the fix's issue with the ready label and raise the fleet lock (`afkconvoy lock --issue <n>`). It opens no other issue. A change of the repo it makes itself, on the branch of its checkout: it opens the PR, takes its merge, gate and join turn with `afkconvoy land --inspection`, which takes it by the inspection where a worker's is taken by its issue; the train lands it as any other, and it need not wait for that. What it could not fix it says in its text, and the next episode inspects again.
 
 - --text or --text-file: what held the work back, where and why — and what it could not fix, if anything, and why
 - --did <what>: one thing it did, as often as wanted — a process it ended, a worker it told, restarted, nudged or switched, a gate it had run again, a host setting it changed, the disk it freed, heavy work it sent through `afkconvoy exclusive`, a change of the repo it put on the landing train
@@ -2516,7 +2520,7 @@ Its steps, in order, each timed:
 
 1. `set` — runs the `set` lines on the base branch as it stood, and commits what they changed, titled `<repo> <version>`. Lines that change nothing find the version set: by a cut whose end was cut short after its PR landed. Where a cut's PR of that title landed past the tag (anywhere on the base branch for an initial cut), that landing is the one tagged, and the steps up to `tag` are passed by. An initial version already set gets an empty commit and follows the same PR, gate and landing train steps; otherwise lines that change nothing fail.
 2. `pr` — pushes the commit to a branch of its own, `afkconvoy-cut/v<version>-<started>`, and opens its PR.
-3. `gate` — gates it, the landing train merged in (`afkconvoy gate --train`): green, and on record.
+3. `gate` — takes a turn: merges the train's green tip, gates, records green and joins before releasing the turn.
 4. `land` — joins its PR to the landing train on no issue, as an inspection's change joins it: its join commit says `By a cut on <host>`. It waits for the train to land it, looking every 30 seconds, and joins it again whenever it is off the train and not landed — a train given up joins it again by itself where it can. A fleet lock standing, or a conflict with the train, fails it.
 5. `tag` — tags the commit that landed it `v<version>` (annotated), and pushes the tag. The PRs it holds are read again, up to that commit; where it is a patch past an existing tag and one of them, landed while it ran, is labelled `release:minor`, it fails before it tags: the cut that starts once its issue is closed picks the next minor. An initial cut holds every PR the base branch's landings name, and keeps its declared version.
 6. `publish` — with the tag checked out, runs the `publish` lines.
@@ -2582,7 +2586,7 @@ A worker, in its own worktree. The operator runs it only to find out why a worke
 
 It runs the config's `gate_command` in this worktree, its log streaming to stderr, for no longer than the gate limit: the config's `gate_seconds` (default 3600). A run that reaches it is ended, with everything it started, and is red.
 
-With `--train` it first merges in what the PR will land behind — the landing train's tip, or the base branch when nothing is on the train — a merge: nothing is rebased. On the remote it writes only the recorded gate run: put on record for a green run of a committed tree, with the seconds it took and the host it ran on (`--host`, else this machine's name); taken off record for a red one. It pushes no branch and changes nothing on GitHub; after a red run it reads which fleet locks stand.
+With `--train`, open the PR first. The command waits for a turn, merges the train's current green tip (the base branch when empty), gates, records green and joins before releasing the turn. Red or a conflict releases the turn with nothing joined; a conflict stays in progress here. A tip without a green record waits for the train lane to establish it; a red tip waits for the train worker to repair it. A fleet lock allows only its issues to take a turn. Without `--train`, this runs the gate before workflow review or for diagnosis and joins nothing. Records name the tested tree, command, seconds and host (`--host`, else this machine's name).
 
 After the first green run in a worktree it notes, in the worktree's own git dir, what git ignores there as the worktree's fresh build: what `run` judges its held disk by.
 
@@ -2590,7 +2594,7 @@ After the first green run in a worktree it notes, in the worktree's own git dir,
 
 {"status", "recorded", "detail", …}
 
-- `status`: green, red or conflict
+- `status`: green, red or conflict; with `--train`, `outcome` is joined, merged, gate_red, conflict or locked, as `land --issue` answers
 - `recorded`: true only when the run is on record as a pass of the commit's tree
 - `detail`: what to do next, in words
 - `exit_code`, `timed_out`, `command`, `head`: the run: the gate command, its exit code, and the commit it ran on. A run ended at the gate limit is red, with exit_code 124 and timed_out true, and `detail` says so, and what the limit is
@@ -2611,7 +2615,7 @@ Errors: the config cannot be read; with `--train`, tracked files have uncommitte
 - Green is not enough. An untracked or modified file — the gate's own artifacts included, unless `.gitignore` covers them — makes the run green with `recorded` false: it proves nothing about a commit.
 - A recorded run is of one tree. Any further commit needs another run.
 - The gate limit is no flag. It is `gate_seconds` in the config of this worktree (`afkconvoy config --help`), the same for a worker's run and the train's.
-- A red run is the worker's own until it shows otherwise: the commit `merged` names, gated alone in a clean checkout of it (this command, without `--train`), red the same way. Then the defect is outside its issue, and its prompt says how it records it: on the open issue that already does, or on one it opens — with the ready label, or through `afkconvoy intake` in a bound repo — and parks its issue on that one. If `merged` was the train's tip, gate `origin/<base>` alone too: when the base branch is red the same way, first raise the fleet lock on the fix's issue with `afkconvoy lock --issue <n>`. A defect confined to the train raises no lock.
+- A turn merges a tip with a green record. A red worker gate is its own change to fix; it need not gate the merged commit alone.
 - A conflict is resolved by committing the merge, then running this again. A resolved merge left uncommitted is refused.
 
 ##### Which checkout it is about
@@ -4478,7 +4482,7 @@ A fleet instance whose loop panicked or ended in an error — its tracker found 
 _Avoid_: crashed, dead (a heartbeat past the lease), down (a harness that refuses every prompt)
 
 **Host settings**:
-What a host says for every fleet instance on it — whether it may be put to sleep and its sleep hours, the limits past which a worker is hot, the shares admission holds back at, the bound on an exclusive command holding others up, the panel's port, the operator's directory a watch starts in and how often the host runner looks — kept beside the checkout list and changed by any `run` that names one, for every fleet instance on the host at once.
+What a host says for every fleet instance on it — whether it may be put to sleep and its sleep hours, the limits past which a worker is hot, the shares admission holds back at, the bound on an exclusive command holding others up, the numbers of worker and train lanes, the panel's port, the operator's directory a watch starts in and how often the host runner looks — kept beside the checkout list and changed by any `run` that names one, for every fleet instance on the host at once.
 _Avoid_: global config, runner flags
 
 **Tick**:
@@ -4700,7 +4704,7 @@ The operator on its host, started by its host runner when a **look** at the host
 _Avoid_: patrol (a role run on a schedule that writes no code), supervisor (the host runner is the process)
 
 **Exclusive queue**:
-The queue of the commands run through `afkconvoy exclusive` on one host, held by its host runner for every fleet on it whatever its repo: one runs at a time and the rest wait. The landing train's commands go first among the waiting, because a landing unblocks every PR on the train, later conflicts and the next cut; trains keep their request order between them, and other commands theirs. Priority never interrupts a running command. A train asks once for each landing, so a worker waits behind at most one train gate per repo on the host, plus what runs now and the ordinary commands already ahead of it. A running command can be ended at a bound the host settings say, counting only time while another command waits; running alone uses none of it. A command whose process dies leaves it; one waiting as its host runner is replaced keeps its priority and when it asked in the next one's. A worker with a command in it is busy, not silent, for no longer than the gate limit.
+The lines of commands waiting to run on a host: worker commands and train gates in independent lanes, each in request order, with the number of each said in the host settings (one each until the host says otherwise). A repo holds at most one turn and one train gate at a time. A light gate takes its turns in its repo's own line; a running command is bounded by time holding others in its lane up, and a command whose process dies frees its place.
 _Avoid_: mutex, semaphore, heavy lock (the fleet lock is another thing)
 
 **Nudge**:
@@ -4790,12 +4794,16 @@ Bringing a branch up to date by merging into it. Nothing is ever rebased.
 _Avoid_: rebase, update branch
 
 **Landing train**:
-The one append-only line of merge commits ahead of the base branch that finished PRs join, one merge commit per PR, which names the issue the PR closes as the repo names it — `#7`, or `acme/tracker#7` of a tracker's — or, of an inspection's change of the repo, the inspection; of a cut's version, the cut. Every fleet of the repo joins the one train, whatever its tracker, and closes only its own tracker's issues.
+The one append-only line of merge commits ahead of the base branch that finished PRs join, one per PR, each naming its issue, inspection or cut. A PR joins in a turn on the train's green tip, and the train lands on the last joiner's recorded gate run; only a tip without a green record needs the train lane's gate.
 _Avoid_: merge queue, merge batch, landing turn
 
 **Join**:
-Putting a finished PR on the landing train. In an unbound repo the worker that wrote it does; in a bound repo a new worker does, in the landing role its workflow names, after the last stage passed. An inspection joins its own change of the repo, which closes no issue: the train takes it by the inspection. A cut joins its version the same way, taken by the cut.
+Putting a finished PR on the landing train in a turn that merges the green tip, gates and records the resulting tree before joining. An unbound worker joins its own PR, a bound workflow's landing worker joins after the last stage passes, and inspections and cuts join their own changes the same way.
 _Avoid_: merge (what git does to two branches, and a human to a proposal's PR), enqueue
+
+**Turn**:
+One command's uninterrupted merge, gate and join of an open PR, starting on the train's green tip as it stands when the turn starts and ending only after the join, or at red or a conflict. The command holds it, so nothing waits on the worker's agent between the merge and the join.
+_Avoid_: landing turn, landing slot
 
 **Train worker**:
 The one worker per repo that gates the landing train's tip and pushes it to the base branch as a fast-forward, on its host kit's first eligible harness. It holds no claim and wrote none of the PRs it lands.

@@ -78,7 +78,7 @@ fn turn(repo: &Repo, config: &Config, issue: Option<u64>, now: u64) -> Result<(P
                 eprintln!("[afkconvoy] {line}");
                 acting.say(crate::clock(), line);
             }
-            std::thread::sleep(std::time::Duration::from_millis(250));
+            std::thread::sleep(std::time::Duration::from_secs(2));
             continue;
         }
         let permit = Permit::take(

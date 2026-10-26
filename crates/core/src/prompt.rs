@@ -387,11 +387,6 @@ or pushed to its branch, turn the gate green before you declare `pass`:
 
 <defect>";
 
-/// How a stage puts an issue it opens for a defect before the fleet: it takes
-/// it in, as a split does, so the issue enters a workflow.
-
-/// How a stage parks its issue on the defect's.
-
 /// What a stage is told of the human's ruling it runs again under.
 const RULED: &str = "
 ## Ruling
@@ -1542,7 +1537,8 @@ mod tests {
         assert!(fresh.contains("**Your issue:** acme/tracker#7 — Add {branch} support"));
         assert!(fresh.contains("\n   Closes acme/tracker#7\""), "{fresh}");
         // An issue a worker opens is the repo's in the tracker.
-        for brief in [&briefs[5]] {
+        {
+            let brief = &briefs[5];
             assert!(
                 brief.contains("`gh issue create --repo acme/tracker`): the symptom")
                     && brief.contains(
