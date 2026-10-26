@@ -55,6 +55,9 @@ fn read(repo: &Repo, config: &Config) -> Result<Snapshot> {
 thread_local! { static ANNOUNCED: std::cell::RefCell<Option<(afkconvoy_core::candidate::Validation, std::time::Instant)>> = const { std::cell::RefCell::new(None) }; }
 
 fn announce(chain: &Chain) {
+    if !crate::exclusive::held() {
+        return;
+    }
     let Some(candidate) = chain
         .candidates
         .iter()
@@ -205,7 +208,7 @@ fn signal(repo: &Repo, config: &Config, candidate: &Candidate) -> Result<Vec<Pro
     let group = match &candidate.gate {
         Some(gate) if gate.host == crate::this_host() => {
             let current = identity(gate.pid)?;
-            if current.as_ref().is_none_or(|p| p == gate) {
+            if current.as_ref() == Some(gate) {
                 // SAFETY: the group's identity belongs to this gate, with
                 // PID reuse excluded by its recorded process start time.
                 unsafe {
