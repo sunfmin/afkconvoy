@@ -971,7 +971,10 @@ impl Worktree {
         harness: Harness,
         command: &str,
     ) -> Result<()> {
-        match self.wait(terminal, timeout_seconds)? {
+        let ready = self.wait(terminal, timeout_seconds).with_context(|| {
+            self.prompt_context(terminal, "cannot confirm the worker is ready for its brief")
+        })?;
+        match ready {
             Waited::Ready => Ok(()),
             Waited::AtTrustPrompt => Err(TrustGap {
                 harness,
@@ -1018,15 +1021,18 @@ impl Worktree {
     /// A failed delivery includes the current screen, even when no known
     /// rule names its menu. An unreadable screen cannot hide the failure.
     fn prompt_failure(&self, terminal: &str, reason: &str) -> anyhow::Error {
+        PromptBlocked(self.prompt_context(terminal, reason)).into()
+    }
+
+    fn prompt_context(&self, terminal: &str, reason: &str) -> String {
         let screen = match self.screen(terminal, 20) {
             Ok(lines) => lines.join("\n"),
             Err(error) => format!("screen unavailable: {error:#}"),
         };
-        PromptBlocked(format!(
+        format!(
             "{reason}; worktree {} (terminal {terminal})\nScreen's last lines:\n{screen}",
             self.path.display()
-        ))
-        .into()
+        )
     }
 
     /// Types one line only at the harness's input, then requires Orca's
@@ -1042,7 +1048,7 @@ impl Worktree {
 
     fn tell_unchecked(&self, terminal: &str, line: &str) -> Result<()> {
         let ready = self.wait(terminal, 1).with_context(|| {
-            format!("no running worker harness confirmed in terminal {terminal}; no line was sent")
+            self.prompt_context(terminal, "no running worker harness confirmed; no line was sent")
         })?;
         if ready != Waited::Ready {
             return Err(self.prompt_failure(

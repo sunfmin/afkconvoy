@@ -73,6 +73,19 @@ fn an_accepted_brief_that_starts_no_turn_is_a_failed_start_on_every_harness() {
 }
 
 #[test]
+fn a_first_run_menu_that_is_not_input_is_a_failed_start_without_typing() {
+    let world = ready_world();
+    let screen = include_str!("screens/kimi-migration.txt");
+    world.with_orca(|orca| {
+        orca["never_ready"] = json!(true);
+        orca["start_screen"] = json!(screen.lines().collect::<Vec<_>>());
+    });
+    let error = dispatch(&world, "7").error();
+    assert!(error.contains("not ready") && error.contains(screen.trim()), "{error}");
+    assert!(!world.orca_calls().iter().any(|call| common::asked(call) == "terminal send"));
+}
+
+#[test]
 fn a_worker_is_started_under_nice_with_a_tmpdir_its_worktree_ignores_and_takes_with_it() {
     let world = ready_world();
     let started = dispatch(&world, "7").ok();

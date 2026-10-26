@@ -19,7 +19,9 @@
 //! fails), `create_fails` [issue…], `rm_fails`, `never_ready`, `send_refused`,
 //! `stale_base` (a ref worktrees are cut at instead of the one asked for),
 //! `ps_truncated`, `ps_fails`, `close_fails` [worktree paths…],
-//! `close_keeps_terminal` (acknowledges close without ending its terminal).
+//! `close_keeps_terminal` (acknowledges close without ending its terminal),
+//! `start_screen`, `send_screen`, `prompt_stages` (a receipt without a turn
+//! start); each terminal can also have `menu` and its own `prompt_stages`.
 
 mod fake;
 
@@ -327,7 +329,13 @@ fn terminal_send(st: &mut State) -> ! {
         .as_array()
         .or_else(|| st.doc["prompt_stages"].as_array())
         .cloned()
-        .unwrap_or_else(|| vec![json!("input_accepted"), json!("turn_started")]);
+        .unwrap_or_else(|| {
+            if st.opt("--wait-submit").is_some() {
+                vec![json!("input_accepted"), json!("turn_started")]
+            } else {
+                vec![json!("input_accepted")]
+            }
+        });
     done(
         st,
         json!({"send": {"accepted": true, "prompt": {
