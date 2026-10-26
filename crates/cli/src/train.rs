@@ -18,6 +18,13 @@ use crate::gh::{GitHub, Tracker};
 use crate::git::{Listing, REMOTE, Repo};
 use crate::lock::standing_locks;
 
+/// A tip's green evidence is of the command that tip declares, not a
+/// joining branch's replacement for it (which may not exist on the tip).
+fn tip_config(repo: &Repo, tip: &str) -> Result<Config> {
+    let text = repo.git_raw(&["show", &format!("{tip}:{}", crate::config::FILE)])?;
+    crate::config::parse(&text)
+}
+
 /// A missing tip record is established in the train lane, never on a
 /// worker's changed tree. Keep the checkout separate even when the train
 /// is empty: the base branch needs evidence too.
@@ -50,7 +57,6 @@ fn certify_tip(repo: &Repo, config: &Config, tip: &str, now: u64) -> Result<bool
 /// to repair. Re-read after acquiring the worker lane, since it can move
 /// while we wait there.
 fn turn(repo: &Repo, config: &Config, issue: Option<u64>, now: u64) -> Result<(Permit, Train)> {
-    let command = GateCommand::new(&config.gate_command);
     let mut tried = None;
     loop {
         let gh = GitHub::of(repo)?;
@@ -62,10 +68,12 @@ fn turn(repo: &Repo, config: &Config, issue: Option<u64>, now: u64) -> Result<(P
             );
         }
         let train = Train::read(repo, config)?;
+        let tip_config = tip_config(repo, &train.tip)?;
+        let command = GateCommand::new(&tip_config.gate_command);
         let tree = Tree::named(&repo.git(&["rev-parse", &format!("{}^{{tree}}", train.tip)])?);
         if crate::gate::recorded(repo, &tree, &command, now)?.is_none() {
             if tried.as_deref() != Some(train.tip.as_str()) {
-                let green = certify_tip(repo, config, &train.tip, now)?;
+                let green = certify_tip(repo, &tip_config, &train.tip, now)?;
                 tried = Some(train.tip.clone());
                 if green {
                     continue;
@@ -91,7 +99,9 @@ fn turn(repo: &Repo, config: &Config, issue: Option<u64>, now: u64) -> Result<(P
         let current = Train::read(repo, config)?;
         let current_tree =
             Tree::named(&repo.git(&["rev-parse", &format!("{}^{{tree}}", current.tip)])?);
-        if crate::gate::recorded(repo, &current_tree, &command, now)?.is_none() {
+        let current_config = self::tip_config(repo, &current.tip)?;
+        let current_command = GateCommand::new(&current_config.gate_command);
+        if crate::gate::recorded(repo, &current_tree, &current_command, now)?.is_none() {
             drop(permit);
             continue;
         }
@@ -347,7 +357,8 @@ pub fn join(
             return Ok(answer);
         }
         acting.say(crate::clock(), format!("turn merged {}", train.tip));
-        let mut gated = crate::gate::gate(repo, config, false, host, now)?;
+        let merged_config = crate::config::load(&crate::config::file_of(repo))?;
+        let mut gated = crate::gate::gate(repo, &merged_config, false, host, now)?;
         gated["merged"] = json!(train.tip);
         acting.say(
             crate::clock(),

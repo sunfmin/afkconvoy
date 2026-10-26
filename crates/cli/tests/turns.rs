@@ -224,3 +224,33 @@ fn the_exclusive_bound_ends_the_whole_turn_and_releases_the_next_one() {
     assert_eq!(finish(next)["outcome"], "joined");
     assert!(!two.join("held.txt").exists(), "the red turn joined nothing");
 }
+
+#[test]
+fn the_tip_uses_its_own_gate_command_and_each_turn_uses_the_merged_config() {
+    let world = World::new();
+    world.set_gate("true");
+    let first = world.worker(1, "required.txt", "one");
+    let second = world.worker(2, "second.txt", "two");
+    crate::common::commit(
+        &first,
+        "docs/agents/afkconvoy.md",
+        "```yaml\nbase_branch: main\ngate_command: test -f required.txt\ngate_seconds: 600\n```\n",
+    );
+    let changed = world.afk_in(&first, &["gate", "--train"]).ok();
+    assert_eq!(changed["outcome"], "joined", "{changed}");
+    assert_eq!(changed["command"], "test -f required.txt");
+    let merged = world.afk_in(&second, &["gate", "--train"]).ok();
+    assert_eq!(merged["outcome"], "joined", "{merged}");
+    assert_eq!(merged["command"], "test -f required.txt", "the merged config names the gate");
+    assert_eq!(merged["recorded"], true);
+    let train = world.root.join("convoy-train");
+    git(
+        &world.clone,
+        &["worktree", "add", "-q", "--detach", train.to_str().unwrap(), "origin/main"],
+    );
+    // The train command loads its config before taking the tip too: put it
+    // on the current tip, as its worker does when starting on a new train.
+    git(&train, &["reset", "--hard", LINE]);
+    let landed = world.afk_in(&train, &["land", "--train", "--merged-timeout", "0"]).ok();
+    assert_eq!(landed["gate"]["source"], "recorded", "{landed}");
+}
