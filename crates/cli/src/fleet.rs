@@ -509,9 +509,7 @@ impl Fleet {
     /// unbound frontier. Only an enabled, missing model choice waits, at most
     /// ten minutes; human labels and ineligible harnesses never hold it back.
     fn cast_frontier(&self, set: &mut WorkingSet, open: &OpenIssues, consults: &[u64]) {
-        let Ok(kit) = self.runnable() else { return };
         let paused = crate::paused::read();
-        let range = kit.range();
         let issues = &open.rows;
         let labels_of = |number: u64| -> Vec<String> {
             issues

@@ -242,6 +242,17 @@ fn terminal_rule(harness: Harness, output: &[String]) -> Option<Diagnosis> {
     })
 }
 
+/// A fixed screen rule also interrupts a stale busy report or a failed
+/// diagnosis's backoff. An unreadable screen proves nothing.
+fn has_terminal_rule(worktree: &Worktree) -> bool {
+    let harness = worktree.harness().ok().flatten().unwrap_or(Harness::DEFAULT);
+    worktree.terminal().ok().flatten().is_some_and(|terminal| {
+        worktree
+            .screen(&terminal, 100)
+            .is_ok_and(|screen| terminal_rule(harness, &screen).is_some())
+    })
+}
+
 /// Conservative structured/error classification. Plain terminal text is sent
 /// through diagnosis unless the harness's own explicit words decide the fault.
 fn classified(value: &Value) -> Option<Diagnosis> {
@@ -560,15 +571,7 @@ pub fn reconcile(
         let busy_without_fault = state == WorkerState::Busy
             && classified(&worktree.health_report()?).is_none()
             && error_of(&worktree)?.is_empty()
-            && !worktree.terminal()?.is_some_and(|terminal| {
-                worktree.screen(&terminal, 100).is_ok_and(|screen| {
-                    terminal_rule(
-                        worktree.harness().ok().flatten().unwrap_or(Harness::DEFAULT),
-                        &screen,
-                    )
-                    .is_some()
-                })
-            });
+            && !has_terminal_rule(&worktree);
         if state == WorkerState::Gone || busy_without_fault {
             book.workers.retain(|o| o.path != worktree.path);
             book.observations_failed.retain(|(path, _, _)| *path != worktree.path);
@@ -649,6 +652,7 @@ pub fn reconcile(
             .observations_failed
             .iter()
             .any(|(path, _, next)| *path == worktree.path && fleet.now < *next)
+            && !has_terminal_rule(&worktree)
         {
             continue;
         }
@@ -883,7 +887,10 @@ fn decide(
         return Ok(());
     }
     let expired = fleet.now.saturating_sub(observed.window_started) >= RECOVERY_SECONDS;
-    if expired && (observed.error.is_some() || observed.continuations >= MAX_CONTINUATIONS) {
+    if terminal.is_none()
+        && expired
+        && (observed.error.is_some() || observed.continuations >= MAX_CONTINUATIONS)
+    {
         return escalate_observed(observed, fleet, me, issue);
     }
     let raw_error = structured.get("error").unwrap_or(structured);

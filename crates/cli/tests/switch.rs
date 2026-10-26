@@ -819,6 +819,21 @@ fn codex_refusal(world: &World, dir: &Path) {
 }
 
 #[test]
+fn the_task_refusal_rule_requires_the_observed_harness_words_and_tolerates_wrapping() {
+    use afkconvoy_core::harness::Harness;
+    let wrapped: Vec<String> = CODEX_REFUSAL.split(". ").map(str::to_string).collect();
+    let screen = vec![
+        "We take extra care with some cybersecurity requests.".into(),
+        "If you're doing authorized security work, apply for Daybreak".into(),
+        "to get broader access.".into(),
+    ];
+    assert_eq!(Harness::Codex.task_refusal(&screen).as_deref(), Some(CODEX_REFUSAL.trim()));
+    assert!(Harness::Codex.task_refusal(&wrapped).is_none());
+    assert!(Harness::Codex.task_refusal(&["I cannot help with that request.".into()]).is_none());
+    assert!(Harness::ClaudeCode.task_refusal(&screen).is_none());
+}
+
+#[test]
 fn codex_task_refusal_continues_immediately_and_only_excludes_this_issue() {
     let world = blocked();
     let dir = worktree(&world, 7);
