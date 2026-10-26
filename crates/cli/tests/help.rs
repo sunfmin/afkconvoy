@@ -1249,6 +1249,19 @@ fn the_help_of_checkouts_says_what_host_runner_panel_holds() {
 }
 
 #[test]
+fn kit_and_doctor_print_the_glossarys_research_states_and_kit_gives_both_outcomes() {
+    let glossary = fs::read_to_string(repository().join("GLOSSARY.md")).unwrap();
+    let states = glossary.lines().find(|line| line.starts_with("Research states: ")).unwrap();
+    for command in ["kit", "doctor"] {
+        assert!(asked(&[command, "--help"]).contains(states), "{command}");
+    }
+    let kit = asked(&["kit", "--help"]);
+    assert!(kit.contains("\"settled\":\"approval reviewer, unsuited to workers\""));
+    assert!(kit.contains("\"good_at\":\"wide refactors; slower on small fixes\""));
+    assert!(kit.contains("{path, written, placed, settled, kit}"));
+}
+
+#[test]
 fn the_retired_train_commands_and_lanes_are_absent_from_public_help() {
     let help = manual();
     for retired in
