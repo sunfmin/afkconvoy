@@ -32,6 +32,18 @@ The harness may stop the watch partway: its usage limit reached, its account ref
 
 While a watch runs no look is taken, so none can start another: what a look would have found meanwhile is in the first look after the watch ends, whose `--since` is the until before it. The watch, its terminal, its transcript and the episodes watched are kept in the host's cache, not in the process: a host runner that starts again — after moving onto a release a watch cut, say — first finds the watch still running, and keeps it.
 
+## The operator for every checkout (sunfmin/control#79)
+
+The watch's authority spans every repo on its host's checkout list, bound or unbound. A fleet unable to start a worker cannot make the change that fixes its own start: on 26 October 2026 the Kimi worktree trust gap held afkconvoy's fix, sunfmin/control#77, back along with every affected repo's work. The watch can fix that host and make the lasting change itself.
+
+It may trust a worktree, restart, nudge, continue or switch a worker and change a host setting. After fixing a fleet fault it hands the escalated issue back with the current line `doctor` gives, using that repo's tracker, wakes it after a `gh` change and checks the next tick dispatches or continues it and the worker takes its brief. An escalation asking a human for a decision stays untouched: the watch lists the question and its answer line in its record and supplies no ruling of its own.
+
+A code change is made in a linked worktree of the affected repo, on a branch of the watch's own from its configured base branch. Its checkout is named `afkconvoy-watch` (with the usual numeric suffix allowed), distinct from `afkconvoy-inspection`: a later inspection must never take the watch's checkout for one a previous inspection left. The watch commits, pushes, opens the PR against that repo's base branch, gates it with `gate --train` and joins with `land --inspection`, on no issue and with no intake or flow label. This reuses the inspection's join attribution and all its train behavior — including locks and rejoining an abandoned train — rather than adding a second no-issue landing protocol. `inspected` still belongs only to inspections; the watch's transcript names its repo and PR.
+
+When code must reach an installed tool, the watch follows through: wait for landing, wake that repo's fleet and check its due cut, fix what holds back its next idle tick, and check publication and installation. It may continue a mechanically failed cut with its report's `cut --from` line after fixing its cause. It neither manufactures a cut record nor tags outside the declared steps (ADR-0028). It lets afkconvoy's host runner move onto the installed version itself (ADR-0023), reads what holds that move back and checks the fault and the fleets' work on the new version. It never kills or restarts the host runner. A human decision, missing cut steps or an unfinished cut or move is recorded as pending within its existing hour, never reported as verified.
+
+No new remedy command or retry loop is added: the operator has the existing commands and their help. The brief and top-level help say its whole authority and require evidence of recovery, not just a label change, joined PR or installed version.
+
 ## The record
 
 The watch's start, each thing it did, how it continued and its end are lines of every tick log on the host's checkout list, and of the host runner's log. `doctor` answers the watch running and what the last one did, under `host.watch`.
