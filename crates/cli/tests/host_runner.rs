@@ -534,7 +534,16 @@ fn a_host_setting_a_run_names_holds_for_every_fleet_instance_at_once() {
 #[test]
 fn the_host_settings_outlive_the_host_runner_and_doctor_says_those_in_force() {
     let world = World::new();
-    let named = ["--hot-cores", "2.5", "--hot-memory", "8", "--admit-disk", "0"];
+    let named = [
+        "--hot-cores",
+        "2.5",
+        "--hot-memory",
+        "8",
+        "--admit-disk",
+        "0",
+        "--exclusive-seconds",
+        "1500",
+    ];
     let hours = ["--host-sleep-hours", "22:00-06:00"];
     let first = world.afk(&[&RUN[..], &named[..], &hours[..]].concat()).ok();
     let changed = &first["settings"];
@@ -543,6 +552,7 @@ fn the_host_settings_outlive_the_host_runner_and_doctor_says_those_in_force() {
     assert_eq!(changed["hot_cores"], json!({"from": null, "to": 2.5}), "{first}");
     assert_eq!(changed["hot_memory"], json!({"from": null, "to": 8.0}), "{first}");
     assert_eq!(changed["admit_disk"], json!({"from": null, "to": 0}), "{first}");
+    assert_eq!(changed["exclusive_seconds"], json!({"from": null, "to": 1500}), "{first}");
     world.kill_host_runner("KILL");
 
     // a host runner started again keeps them, and a `run` that names none
@@ -556,6 +566,12 @@ fn the_host_settings_outlive_the_host_runner_and_doctor_says_those_in_force() {
     assert_eq!((&said["hot_cores"], &in_force["hot_cores"]), (&json!(2.5), &json!(2.5)));
     assert_eq!((&said["admit_disk"], &in_force["admit_disk"]), (&json!(0), &json!(0)));
     assert_eq!(in_force["hot_memory"], 8.0);
+    assert_eq!(said["exclusive_seconds"], 1500);
+    assert_eq!(in_force["exclusive_seconds"], 1500);
+    let back = world.afk(&["run", "--exclusive-seconds", "default"]).ok();
+    assert_eq!(back["settings"]["exclusive_seconds"], json!({"from": 1500, "to": null}));
+    let defaulted = world.afk(&["doctor", "--host", "h1"]).json;
+    assert_eq!(defaulted["host"]["settings"]["in_force"]["exclusive_seconds"], 1200);
     // what it says none of, its default worked out for this host
     assert_eq!((&said["admit_load"], &in_force["admit_load"]), (&Value::Null, &json!(200)));
     assert_eq!(said["hot_written"], Value::Null);

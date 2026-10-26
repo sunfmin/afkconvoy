@@ -836,6 +836,8 @@ afkconvoy run [OPTIONS] [CHECKOUT]
   - Environment: `AFKCONVOY_ADMIT_DISK`
 - `--admit-inspect-after <SECONDS>`: The seconds admission holds back for one reason before the host is inspected: a host setting; `default` changes it back [default: 600]
   - Environment: `AFKCONVOY_ADMIT_INSPECT_AFTER`
+- `--exclusive-seconds <SECONDS>`: Seconds a running exclusive command may hold others up, counting only while another waits: a host setting; `default` changes it back [default: 1200]
+  - Environment: `AFKCONVOY_EXCLUSIVE_SECONDS`
 
 #### `afkconvoy stop`
 
@@ -1951,6 +1953,8 @@ afkconvoy exclusive -- cargo test --workspace
 
 Not for everyday commands — `git`, a single test, a quick build: the queue makes each one wait for every heavy one before it, of every fleet on this host.
 
+Split a long measurement up front. Run each step that needs a quiet host as its own `afkconvoy exclusive`, so gates and the landing train can run between steps.
+
 ##### Who runs it
 
 A worker, in its own worktree. Anyone else on the host may too: the queue is the host's, not a fleet's.
@@ -1965,13 +1969,15 @@ While it waits or runs, the fleet counts the worker busy, not silent: it is not 
 
 ##### What it answers
 
+A running command is ended once it has held other commands up for 1200s, or the seconds the host setting `afkconvoy run --exclusive-seconds N` says (`AFKCONVOY_EXCLUSIVE_SECONDS` names it too). `--exclusive-seconds default` changes it back; 0 ends a command as soon as another waits. Only time with another command waiting counts: time running alone never uses the bound, and gaps without waiters pause it. A changed host setting applies to the command already running. On reaching the bound it ends the command and its descendants before the next command starts, exits 124, and prints one line on stderr beginning `[afkconvoy] exclusive:` telling the worker to run each step as its own `afkconvoy exclusive`. The tick log records the command, its runtime and how many commands waited; `doctor` names each recent occurrence as a warning.
+
 Unlike every other command, no JSON of its own: what the command prints is printed, and it exits with the command's exit status — 128 and the signal for a command a signal ended. While it waits it says so on stderr, in one line beginning `[afkconvoy] exclusive:`.
 
 With no host runner on this host it runs the command at once, in no queue, and says so on stderr: `[afkconvoy] exclusive: runs `<command>` at once, in no queue: no host runner runs on this host`. So it does too where the host runner cannot hold it — one of an older afkconvoy, which cannot read the question — saying why. A host runner that is starting or stopping is waited for, as one replaced is.
 
 When the host runner is replaced — an upgrade moves it (`afkconvoy run --help`) — or ends, a command that waits asks the next one, within a minute, keeping when it first asked: it waits there before every command that asked after it, saying so on stderr. Where no host runner places it within the minute, it runs at once, saying so. A command that runs runs on to its end: the next host runner does not know of it, and may start the next command beside it.
 
-It exits 127 when the command cannot be started, and 125, with one JSON object {"error"} on stdout, when the host runner cannot be asked — the cache directory is not known — or what it said cannot be read, or `-C` names no directory of a checkout: the command did not run, and nothing waited.
+Exit 124 is reserved for the bound: a command that itself exits 124 is reported as exit 1. Every other command exit status is passed through. It exits 127 when the command cannot be started, and 125, with one JSON object {"error"} on stdout, when the host runner cannot be asked — the cache directory is not known — or what it said cannot be read, or `-C` names no directory of a checkout: the command did not run, and nothing waited.
 
 ##### What trips you up
 
@@ -3674,6 +3680,8 @@ With it on, only a stage's selected harness offering multiple eligible models le
 
 Rebuild, daily refresh and new-model research preserve established harness and model order. An unavailable or paused candidate is skipped without reordering; a successful recovery probe makes it eligible again. Fault recovery keeps claims and work, reads real output and uses another available harness for bounded diagnosis when structured signals or an explicit harness usage-limit message do not decide the action. Account quota without a reset continues at once; unresolved waits on unchanged evidence are bounded to one hour. Plan, doctor and panel show the host's cast setting, each issue's casting reason, whether model labels were followed, actual running models and why earlier candidates were skipped.
 
+Every tick first reads Orca's agent state for every worker, the train worker included, from one host-wide `orca worktree ps`. `working` is healthy without screen judgment; the existing time bounds still apply. A failed delivery still goes to classification when the runtime's last report says `working`. `done` with `mainAgent.outcome: failure` is stopped at its first observation: classification rules run at once, then bounded diagnosis where no rule decides the fault, without waiting for two screen observations. A turn ending without failure follows the existing finished, verdict and nudge logic. Orca's `agentType` decides the harness for a continuation or pause when the recorded harness disagrees. Doctor and the panel show each observed worker's Orca state, outcome, agent type and `stateStartedAt` (epoch milliseconds), and name a wrong harness record. Termination is confirmed by a fresh runtime read before any replacement starts.
+
 ### `afkconvoy help skill-file`
 
 What a skill's file holds: where it is, what it opens with, and what `afkconvoy check` holds it to. What belongs in a skill and what in a role's rules or its limits is in [`afkconvoy help roles`](help:roles); the other files of a role are in [`afkconvoy help team`](help:team).
@@ -4369,6 +4377,8 @@ Start with `afkconvoy doctor`, in the checkout the fleet runs in: it reads every
 
 A warning may be the fleet mid-step: run `doctor` again after a tick before you act on one.
 
+- `ended at the exclusive bound`: A command held others up for the host's bound. Each occurrence in the last day has the command, runtime and number waiting in `evidence`. Run each step of a long measurement as its own `afkconvoy exclusive`. If a single gate or release build reaches it, check the host setting with `afkconvoy doctor` and change it with `afkconvoy run --exclusive-seconds N`, or `--exclusive-seconds default` to restore 1200s.
+
 - `failed in tick`: A step failed, including a worker that could not start or take its brief. `evidence` is the error and `fix` is the line to try after correcting it: a failed dispatch can be run again, and a failed train worker start uses `afkconvoy tick`. It stays visible across unrelated ticks until the step succeeds or the issue's work continues or ends. Three consecutive failed ticks make it critical instead.
 - `has no worker`: A claim's worker is gone; a tick starts one. `fix` is for a claim it leaves so.
 - `has been stopped for`: A worker stopped half an hour ago and its claim is still at work. Read its terminal; `fix` follows its verdict and progress. A `blocked` verdict whose blockers all closed names `dispatch`, which continues its worktree; open blockers name `park`. Only a worker eligible for a nudge names `nudge`; other cases name `tick`.
@@ -4434,7 +4444,7 @@ One repo's fleet in its host's host runner, and everything it owns: the workers 
 _Avoid_: launcher, coordinator, node, process (the host runner is the process)
 
 **Host runner**:
-A host's one long-running process of the fleet, holding a fleet instance for each checkout on its host's checkout list. `run` starts it in the background where none runs, and adds its checkout to it either way. `stop` takes one checkout off its list, and `stop --all`, or SIGTERM, stops it and keeps the list. Once a newer release is installed where it was started from, it moves onto it by itself between ticks once no exclusive command runs, on the same list, with its workers and work carried over (docs/adr/0031).
+A host's one long-running process of the fleet, holding a fleet instance for each checkout on its host's checkout list. `run` starts it in the background where none runs, and adds its checkout to it either way. `stop` takes one checkout off its list, and `stop --all`, or SIGTERM, stops it and keeps the list. Once a newer release is installed where it was started from, it moves onto it by itself between ticks once no exclusive command runs, on the same list, with its workers and work carried over (docs/adr/0032).
 _Avoid_: daemon (a process outside the fleet), server (an MCP server, a model provider's), supervisor
 
 **Checkout list**:
@@ -4458,7 +4468,7 @@ A fleet instance whose loop panicked or ended in an error — its tracker found 
 _Avoid_: crashed, dead (a heartbeat past the lease), down (a harness that refuses every prompt)
 
 **Host settings**:
-What a host says for every fleet instance on it — whether it may be put to sleep and its sleep hours, the limits past which a worker is hot, the shares admission holds back at, the panel's port, the operator's directory a watch starts in and how often the host runner looks — kept beside the checkout list and changed by any `run` that names one, for every fleet instance on the host at once.
+What a host says for every fleet instance on it — whether it may be put to sleep and its sleep hours, the limits past which a worker is hot, the shares admission holds back at, the bound on an exclusive command holding others up, the panel's port, the operator's directory a watch starts in and how often the host runner looks — kept beside the checkout list and changed by any `run` that names one, for every fleet instance on the host at once.
 _Avoid_: global config, runner flags
 
 **Tick**:
@@ -4676,7 +4686,7 @@ The operator on its host, started by its host runner when a **look** at the host
 _Avoid_: patrol (a role run on a schedule that writes no code), supervisor (the host runner is the process)
 
 **Exclusive queue**:
-The queue of the commands run through `afkconvoy exclusive` on one host, held by its host runner for every fleet on it whatever its repo: one runs at a time, in the order they asked, and the rest wait. A command whose process dies leaves it; one waiting as its host runner is replaced waits in the next one's, from when it asked. A worker with a command in it is busy, not silent, for no longer than the gate limit.
+The queue of the commands run through `afkconvoy exclusive` on one host, held by its host runner for every fleet on it whatever its repo: one runs at a time, in the order they asked, and the rest wait. A running command can be ended at a bound the host settings say, counting only time while another command waits; running alone uses none of it. A command whose process dies leaves it; one waiting as its host runner is replaced waits in the next one's, from when it asked. A worker with a command in it is busy, not silent, for no longer than the gate limit.
 _Avoid_: mutex, semaphore, heavy lock (the fleet lock is another thing)
 
 **Nudge**:

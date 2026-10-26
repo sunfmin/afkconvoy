@@ -179,6 +179,7 @@ kinds! {
     NotOurs: Warning, "is held off by a PR not the fleet's";
     ClaimOnGone: Warning, "is claimed but GitHub has it no more";
     SlowGate: Warning, "the gate is slow";
+    ExclusiveBound: Warning, "ended at the exclusive bound";
     Moved: Info, "moved since the stage";
     RetiredConcurrency: Info, "which nothing reads any more";
     KeptWorktree: Info, "is kept with no claim";
@@ -1627,6 +1628,11 @@ fn held_json(held: &Held) -> Value {
         && let Ok(Some(harness)) = Worktree::at(path.clone(), String::new()).harness()
     {
         worker["harness"] = json!(harness);
+        let worktree = Worktree::at(path.clone(), String::new());
+        worker["orca"] = worktree.agent_report().unwrap_or(Value::Null);
+        let recorded = worktree.recorded_harness().ok().flatten();
+        worker["recorded_harness"] = json!(recorded);
+        worker["harness_mismatch"] = json!(recorded.is_some_and(|h| h != harness));
         if let Some(settings) =
             crate::codex_launch::recorded(&Worktree::at(path.clone(), String::new()))
         {
@@ -1704,10 +1710,12 @@ type Examined = (Value, Vec<Finding>);
 /// What `doctor` reads of the fleet of `host` in the checkout `repo`, under
 /// the network settings `proxy` names.
 fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String]) -> Result<Examined> {
+    let _observation = crate::orca::Observation::begin();
     let launches = Launches::foreseen(repo).with_no_proxy(proxy)?;
 
     let log = Log::of(repo).ok();
     let entries = log.as_ref().and_then(Log::read);
+    let bounded = exclusive_findings(entries.as_deref().unwrap_or_default(), now);
     let (instance, _started_with, ticks) = read_log(entries.as_deref().unwrap_or_default(), host);
     let mut run = Run {
         alive: host_runner::holds(repo),
@@ -1739,6 +1747,7 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String]) -> Result<Exami
         state: state.as_ref().map_err(String::as_str),
     };
     let mut found = findings(&seen);
+    found.extend(bounded);
     found.extend(crate::tracker::findings(repo));
     found.extend(crate::paused::findings(now));
     found.extend(host_runner::findings());
@@ -1784,6 +1793,32 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String]) -> Result<Exami
         "proposals": state.as_ref().ok().and_then(|state| state.proposals.as_ref()),
     });
     Ok((answer, found))
+}
+
+/// Each recent bound outcome is evidence for splitting the work or checking
+/// the host setting. Read commands too: they need no live fleet instance.
+fn exclusive_findings(entries: &[Entry], now: u64) -> Vec<Finding> {
+    entries
+        .iter()
+        .filter_map(|entry| {
+            let What::Command { command, outcome, .. } = &entry.what else { return None };
+            if command != "exclusive"
+                || !outcome.starts_with("ended at the exclusive bound")
+                || now.saturating_sub(entry.at) > log::KEPT_FOR
+            {
+                return None;
+            }
+            Some(finding(
+                Kind::ExclusiveBound,
+                format!("an exclusive command ended at the exclusive bound at {}", entry.at),
+                format!(
+                    "{}: {outcome}; check `afkconvoy run --exclusive-seconds` if this was one step",
+                    entry.host
+                ),
+                "afkconvoy exclusive -- <one step of the work>".into(),
+            ))
+        })
+        .collect()
 }
 
 /// What of `doctor`'s `host` is the host's alone, the same whichever

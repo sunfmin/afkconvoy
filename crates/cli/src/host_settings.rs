@@ -56,6 +56,8 @@ pub struct Settings {
     /// `--admit-inspect-after`: the seconds admission holds back for one
     /// reason before the host is inspected.
     pub admit_inspect_after: Option<u64>,
+    /// `--exclusive-seconds`: seconds a running command may hold others up.
+    pub exclusive_seconds: Option<u64>,
     /// `--panel`: the port the host runner serves the panel on; `PANEL_PORT`
     /// where the host says none.
     pub panel: Option<u16>,
@@ -87,6 +89,7 @@ pub struct Named {
     pub admit_memory: Option<To<u64>>,
     pub admit_disk: Option<To<u64>>,
     pub admit_inspect_after: Option<To<u64>>,
+    pub exclusive_seconds: Option<To<u64>>,
     pub panel: Option<To<u16>>,
     pub watch_dir: Option<To<PathBuf>>,
     pub watch_every: Option<To<u64>>,
@@ -193,6 +196,7 @@ impl Settings {
         lay(&mut self.admit_memory, named.admit_memory.as_ref());
         lay(&mut self.admit_disk, named.admit_disk.as_ref());
         lay(&mut self.admit_inspect_after, named.admit_inspect_after.as_ref());
+        lay(&mut self.exclusive_seconds, named.exclusive_seconds.as_ref());
         lay(&mut self.panel, named.panel.as_ref());
         lay(&mut self.watch_dir, named.watch_dir.as_ref());
         lay(&mut self.watch_every, named.watch_every.as_ref());
@@ -222,6 +226,11 @@ impl Settings {
     /// The port it has the host runner serve the panel on.
     pub fn panel_port(&self) -> u16 {
         self.panel.unwrap_or(PANEL_PORT)
+    }
+
+    /// The exclusive bound, counting only time with another command waiting.
+    pub fn exclusive_seconds(&self) -> u64 {
+        self.exclusive_seconds.unwrap_or(crate::exclusive::SECONDS)
     }
 
     /// The sleep hours it says, else the default.
@@ -260,6 +269,7 @@ impl Settings {
             "admit_memory": self.admit_memory.unwrap_or(SHARES.memory),
             "admit_disk": self.admit_disk.unwrap_or(SHARES.disk),
             "admit_inspect_after": self.admit_inspect_after.unwrap_or(SPAN),
+            "exclusive_seconds": self.exclusive_seconds(),
             "panel": self.panel_port(),
             "watch_dir": self.watch_dir,
             "watch_every": self.watch_every(),
@@ -352,6 +362,7 @@ pub const ADMIT_LOAD_ENV: &str = "AFKCONVOY_ADMIT_LOAD";
 pub const ADMIT_MEMORY_ENV: &str = "AFKCONVOY_ADMIT_MEMORY";
 pub const ADMIT_DISK_ENV: &str = "AFKCONVOY_ADMIT_DISK";
 pub const ADMIT_INSPECT_AFTER_ENV: &str = "AFKCONVOY_ADMIT_INSPECT_AFTER";
+pub const EXCLUSIVE_SECONDS_ENV: &str = "AFKCONVOY_EXCLUSIVE_SECONDS";
 pub const WATCH_DIR_ENV: &str = "AFKCONVOY_WATCH_DIR";
 pub const WATCH_EVERY_ENV: &str = "AFKCONVOY_WATCH_EVERY";
 
