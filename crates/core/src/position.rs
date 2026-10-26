@@ -697,6 +697,7 @@ mod tests {
                 let role = &team.role_of(work).name;
                 format!("consult on {} by {role}: {}", stage.name, work.skill)
             }
+            Position::ParkedForEvidence(stage) => format!("parked for evidence at {}", stage.name),
             Position::Parked(stage) => format!("parked at {}", stage.name),
             Position::Landing => "landing".to_string(),
             Position::Ended => "ended".to_string(),
