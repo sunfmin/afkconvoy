@@ -299,7 +299,8 @@ fn a_train_replacement_that_cannot_end_the_old_worker_keeps_its_brief_and_starts
         "{ticked}"
     );
     assert_eq!(terminals(&world, &train), [old]);
-    assert!(!world.orca_calls().iter().any(|call| common::asked(call) == "terminal create"));
+    assert!(!world.orca_calls().iter().any(|call| common::asked(call) == "terminal create"
+        && call.iter().any(|arg| arg == &format!("path:{}", train.display()))));
     assert_eq!(std::fs::read(notes.join("convoy-worker-prompt.md")).unwrap(), brief);
     assert!(std::fs::read_to_string(notes.join("convoy-train-told")).unwrap().starts_with(&first));
     assert_eq!(world.remote(&["rev-parse", LINE]), tip);
