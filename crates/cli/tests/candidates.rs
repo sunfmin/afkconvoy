@@ -257,6 +257,32 @@ fn middle_failure_preserves_landed_prefix_and_a_green_descendant_is_ineligible()
 }
 
 #[test]
+fn a_gate_timeout_invalidates_and_terminates_its_running_successor() {
+    let world = world(2);
+    let config = std::fs::read_to_string(world.clone.join("docs/agents/afkconvoy.md"))
+        .unwrap()
+        .replace("gate_seconds: 600", "gate_seconds: 4");
+    commit(&world.clone, "docs/agents/afkconvoy.md", &config);
+    git(&world.clone, &["push", "-q", "origin", "HEAD"]);
+    assert_eq!(world.afk(&["gate"]).ok()["recorded"], true);
+    let (a, _) = worker(&world, 1, "a");
+    let (b, _) = worker(&world, 2, "b");
+    let _runner = world.host_held();
+    let aa = start(&world, &a, &world.cache(), 1);
+    began(&world, "a");
+    let bb = start(&world, &b, &world.cache(), 2);
+    began(&world, "b");
+    let failed = finish(aa);
+    let cancelled = finish(bb);
+    assert_eq!(failed["outcome"], "gate_red", "{failed}");
+    assert_eq!(failed["timed_out"], true);
+    assert_eq!(cancelled["outcome"], "cancelled", "{cancelled}");
+    assert_eq!(cancelled["cause"], "predecessor_failed");
+    gone(&world, "a");
+    gone(&world, "b");
+}
+
+#[test]
 fn a_changed_head_cancels_its_suffix_and_an_external_base_move_invalidates_the_chain() {
     for head_change in [true, false] {
         let world = world(2);

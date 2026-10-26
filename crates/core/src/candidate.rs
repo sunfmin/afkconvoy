@@ -149,6 +149,9 @@ impl Chain {
             }
             if c.id == root || invalid.contains(&c.predecessor) {
                 invalid.push(c.commit.clone());
+                if c.cancelled_by.is_some() {
+                    continue;
+                }
                 c.cancelled_by = Some(root.to_string());
                 c.cause = Some(cause.to_string());
                 if c.phase != Phase::Red {
