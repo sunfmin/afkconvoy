@@ -12,7 +12,7 @@ use std::ffi::OsString;
 use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
 use std::process::{Command, ExitCode, ExitStatus};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, mpsc};
 use std::time::{Duration, Instant};
 
 use afkconvoy_core::exclusive::{
@@ -21,6 +21,7 @@ use afkconvoy_core::exclusive::{
 };
 use afkconvoy_core::role::ISSUE_ENV;
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::acting::Acting;
@@ -37,6 +38,21 @@ const ASKS_EVERY: Duration = Duration::from_millis(200);
 /// queue: it says it at once.
 const PLACED_WITHIN: Duration = Duration::from_secs(10);
 
+/// The default bound on time holding other commands up (docs/adr/0031).
+pub const SECONDS: u64 = 1200;
+/// Reserved for a command ended at the exclusive bound. A child's own use
+/// of it is reported as exit 1, so this outcome is unambiguous.
+pub const BOUND_CODE: u8 = 124;
+const CHECK_EVERY: Duration = Duration::from_millis(100);
+
+/// What the host runner tells a command that reached the bound. It keeps
+/// its place until the command has ended and reaped its descendants.
+#[derive(Debug, Deserialize, Serialize)]
+struct Bound {
+    bound: u64,
+    waiting: usize,
+}
+
 /// The host's exclusive queue, as its host runner holds it: one command runs
 /// at a time, the one that asked first, and each leaves as its asker's line
 /// closes. A clone is the same.
@@ -47,10 +63,28 @@ pub struct Queue {
 
 /// Every ticket in the queue, waiting or running, and the number the next
 /// to join takes.
-#[derive(Default)]
 struct Joined {
     tickets: Vec<Ticket>,
     next: u64,
+    waited: Duration,
+    counted_at: Instant,
+}
+
+impl Default for Joined {
+    fn default() -> Self {
+        Self { tickets: vec![], next: 0, waited: Duration::ZERO, counted_at: Instant::now() }
+    }
+}
+
+impl Joined {
+    /// Account for the interval before any queue change, so short waits,
+    /// gaps without waiters and a changing set of waiters count correctly.
+    fn count(&mut self, now: Instant) {
+        if self.tickets.len() > 1 && self.tickets.iter().any(|ticket| ticket.ran.is_some()) {
+            self.waited = self.waited.saturating_add(now.duration_since(self.counted_at));
+        }
+        self.counted_at = now;
+    }
 }
 
 impl Queue {
@@ -66,11 +100,13 @@ impl Queue {
     pub fn answer(&self, ticket: Ticket) -> Reply {
         let (number, ahead) = {
             let mut joined = self.joined();
+            joined.count(Instant::now());
             joined.next = joined.next.saturating_add(1);
             let number = joined.next;
             joined.tickets.push(Ticket { number, ran: None, ..ticket });
             (number, ahead(&joined.tickets, number).unwrap_or(0))
         };
+        self.held.1.notify_all();
         let queue = self.clone();
         Reply::Kept(json!({"ahead": ahead}), Box::new(move |kept| queue.hold(number, kept)))
     }
@@ -92,24 +128,87 @@ impl Queue {
             }
         }
         let ran = crate::clock();
+        joined.waited = Duration::ZERO;
+        joined.counted_at = Instant::now();
         for ticket in joined.tickets.iter_mut().filter(|ticket| ticket.number == number) {
             ticket.ran = Some(ran);
         }
         drop(joined);
         if !kept.say(json!({"runs": ran})) {
             self.leave(number);
+            return;
+        }
+        let mut joined = self.joined();
+        loop {
+            if !joined.tickets.iter().any(|ticket| ticket.number == number) {
+                return;
+            }
+            joined.count(Instant::now());
+            // A changed host setting applies to the command already running.
+            // An unreadable file leaves the default in force.
+            let bound = crate::host_settings::of_host().unwrap_or_default().exclusive_seconds();
+            let waiting = joined.tickets.len().saturating_sub(1);
+            if waiting > 0 && joined.waited >= Duration::from_secs(bound) {
+                drop(joined);
+                kept.say(json!(Bound { bound, waiting }));
+                // Do not give the next command its turn before cleanup.
+                return;
+            }
+            joined =
+                turned.wait_timeout(joined, CHECK_EVERY).unwrap_or_else(PoisonError::into_inner).0;
         }
     }
 
     /// Takes the ticket `number` out of the queue: the next runs, if it was
     /// the one that ran.
     fn leave(&self, number: u64) {
-        self.joined().tickets.retain(|ticket| ticket.number != number);
+        let mut joined = self.joined();
+        joined.count(Instant::now());
+        joined.tickets.retain(|ticket| ticket.number != number);
+        drop(joined);
         self.held.1.notify_all();
     }
 
     fn joined(&self) -> MutexGuard<'_, Joined> {
         self.held.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// Listen while the command runs. Closing the conversation on drop both
+/// releases its ticket and unblocks the reader; no thread or socket remains.
+struct Watch {
+    read: mpsc::Receiver<Bound>,
+    end: Option<Box<dyn FnOnce()>>,
+    reader: Option<std::thread::JoinHandle<Conversation>>,
+}
+
+impl Watch {
+    fn new(mut place: Conversation) -> Result<Self> {
+        let end = Box::new(place.ender()?);
+        let (send, read) = mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            while let Ok(Some(said)) = place.heard() {
+                if let Ok(bound) = serde_json::from_value::<Bound>(said) {
+                    let _ = send.send(bound);
+                    break;
+                }
+            }
+            // Keep the ticket even after the host runner's line closes or
+            // it asks for the command to end: the owning thread cleans up.
+            place
+        });
+        Ok(Self { read, end: Some(end), reader: Some(reader) })
+    }
+}
+
+impl Drop for Watch {
+    fn drop(&mut self) {
+        if let Some(end) = self.end.take() {
+            end();
+        }
+        if let Some(reader) = self.reader.take() {
+            let _ = reader.join();
+        }
     }
 }
 
@@ -238,12 +337,16 @@ pub fn exclusive(
         Err(error) => return failed(&format!("{error:#}")),
     };
     let ticket = Ticket { ran: Some(now()), ..ticket };
-    let status =
-        crate::process::status(Command::new(&command[0]).args(&command[1..]).current_dir(dir));
+    let watch = match place.map(Watch::new).transpose() {
+        Ok(watch) => watch,
+        Err(error) => return failed(&format!("{error:#}")),
+    };
+    let status = run_command(command, dir, watch.as_ref(), &ticket, &acting, &now);
     // Its place is free the moment the command ends.
-    drop(place);
+    drop(watch);
     let (code, ended) = match status {
-        Ok(status) => ended(status),
+        Ok(None) => return ExitCode::from(BOUND_CODE),
+        Ok(Some(status)) => ended(status),
         Err(error) => {
             eprintln!("[afkconvoy] exclusive: `{}` could not be started: {error}", shown[0]);
             (127, "could not be started".to_string())
@@ -253,11 +356,88 @@ pub fn exclusive(
     ExitCode::from(code)
 }
 
+/// Wait for the child or the bound, preserving its streams. On the bound,
+/// end its descendants and reap it before releasing its ticket.
+/// `None` is the bound's outcome; it has its own single log line.
+fn run_command(
+    command: &[OsString],
+    dir: &Path,
+    watch: Option<&Watch>,
+    ticket: &Ticket,
+    acting: &Acting,
+    now: &dyn Fn() -> u64,
+) -> std::io::Result<Option<ExitStatus>> {
+    let mut child =
+        crate::process::spawn(Command::new(&command[0]).args(&command[1..]).current_dir(dir))?;
+    let started = Instant::now();
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(Some(status));
+        }
+        if let Some(bound) = watch.and_then(|watch| watch.read.try_recv().ok()) {
+            end_descendants(child.id());
+            child.wait()?;
+            let line = format!(
+                "ended at the exclusive bound of {}s after {}s with {} commands waiting: `{}`; \
+                 run each step of the work as its own `afkconvoy exclusive`",
+                bound.bound,
+                started.elapsed().as_secs(),
+                bound.waiting,
+                ticket.command
+            );
+            let line = line.split_whitespace().collect::<Vec<_>>().join(" ");
+            eprintln!("[afkconvoy] exclusive: {line}");
+            acting.say(now(), line);
+            return Ok(None);
+        }
+        std::thread::sleep(CHECK_EVERY);
+    }
+}
+
+/// Stop each process before discovering its children, repeating until none
+/// can fork another. Keep the inherited process group: a gate that reaches
+/// its own limit must still be able to end exclusive and its command together.
+fn end_descendants(root: u32) {
+    let mut stopped = vec![root];
+    // SAFETY: root is our unreaped child's pid, never the caller's group.
+    unsafe {
+        libc::kill(root as i32, libc::SIGSTOP);
+    }
+    loop {
+        let procs = crate::hot::listed();
+        let children: Vec<_> = procs
+            .iter()
+            .filter(|proc| stopped.contains(&proc.ppid) && !stopped.contains(&proc.pid))
+            .map(|proc| proc.pid)
+            .collect();
+        if children.is_empty() {
+            break;
+        }
+        for pid in children {
+            // SAFETY: these are descendants of the stopped child.
+            unsafe {
+                libc::kill(pid as i32, libc::SIGSTOP);
+            }
+            stopped.push(pid);
+        }
+    }
+    for pid in stopped.into_iter().rev() {
+        // SAFETY: each pid was found under the stopped child above.
+        unsafe {
+            libc::kill(pid as i32, libc::SIGKILL);
+        }
+    }
+}
+
 /// The exit code a command that ended with `status` is passed on with — a
 /// shell's for one a signal ended, 128 and the signal — and how it ended, in
 /// words.
 fn ended(status: ExitStatus) -> (u8, String) {
     match (status.code(), status.signal()) {
+        (Some(code), _) if code == i32::from(BOUND_CODE) => (
+            1,
+            format!("exit {code}, reported as 1: {BOUND_CODE} is reserved for the exclusive bound"),
+        ),
         (Some(code), _) => ((code & 0xff) as u8, format!("exit {code}")),
         (None, Some(signal)) => {
             ((128 + signal).clamp(0, 255) as u8, format!("killed by signal {signal}"))
@@ -292,6 +472,25 @@ mod tests {
             asked,
             ran: None,
         }
+    }
+
+    #[test]
+    fn contention_pauses_without_waiters_and_changing_waiters_does_not_reset_it() {
+        let start = Instant::now();
+        let mut running = ticket("running", 0);
+        running.ran = Some(0);
+        let mut joined = Joined { tickets: vec![running], counted_at: start, ..Joined::default() };
+        joined.count(start + Duration::from_secs(20));
+        assert_eq!(joined.waited, Duration::ZERO, "time alone does not count");
+        joined.tickets.push(ticket("waiting", 20));
+        joined.count(start + Duration::from_secs(23));
+        assert_eq!(joined.waited, Duration::from_secs(3));
+        joined.tickets.pop();
+        joined.count(start + Duration::from_secs(50));
+        assert_eq!(joined.waited, Duration::from_secs(3), "nobody waits in the gap");
+        joined.tickets.push(ticket("another waiter", 50));
+        joined.count(start + Duration::from_secs(54));
+        assert_eq!(joined.waited, Duration::from_secs(7), "another waiter resumes the count");
     }
 
     /// An asker on the queue's line: what it was told first, and the line.
