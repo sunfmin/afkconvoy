@@ -881,6 +881,33 @@ mod tests {
     use super::*;
 
     #[test]
+    fn each_waiting_issue_gets_answering_commands_for_its_own_tracker() {
+        let look = json!({"checkouts": [
+            {"checkout": "/one", "repo": "acme/one", "doctor": {
+                "fleet": {"tracker": "acme/tracker"}, "waiting_on_human": [
+                    {"issue": 7, "answer": "afkconvoy rule --issue 7 --text-file <file>"}]}},
+            {"checkout": "/two", "repo": "acme/two", "doctor": {
+                "fleet": {"tracker": null}, "waiting_on_human": [
+                    {"issue": 8, "answer": "gh issue edit 8 --add-label ready --remove-label human"}]}}
+        ]});
+        let commands = answering(&look);
+        for expected in [
+            "In `/one`, issue acme/tracker#7:",
+            "gh issue close 7 --repo acme/tracker --comment <why>",
+            "afkconvoy send --issue 7 --stage <stage> --text-file <file>",
+            "gh api repos/acme/tracker/issues/7/dependencies/blocked_by -F issue_id=<id>",
+            "--label repo:acme/one",
+            "In `/two`, issue #8:",
+            "gh issue close 8 --comment <why>",
+            "gh issue edit 8 --add-label ready --remove-label human",
+        ] {
+            assert!(commands.contains(expected), "{expected}: {commands}");
+        }
+        assert!(!commands.contains("<n>"));
+        assert!(!commands.contains("close 8 --repo acme/tracker"));
+    }
+
+    #[test]
     fn a_quiet_look_has_nothing_to_act_on() {
         let look = json!({"findings": [], "checkouts": [{"checkout": "/r", "doctor": {
             "findings": [], "waiting_on_human": [], "fleet": {"alive": true, "broken": null,

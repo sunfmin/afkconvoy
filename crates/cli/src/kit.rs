@@ -289,12 +289,6 @@ pub fn running() -> Result<(Kit, Vec<afkconvoy_core::casting::Paused>)> {
     Ok((crate::health::available(load()?.without(&paused))?, paused))
 }
 
-/// The harness and model the stock inspector runs, as this host's host kit
-/// says (`Kit::stock_inspector`).
-pub fn stock_inspector() -> Result<Named> {
-    load()?.stock_inspector().context("the host kit holds no harness: run `afkconvoy kit`")
-}
-
 /// The host kit as `doctor` and `plan` show it: where it is kept, each
 /// harness in order with its command and its models in order, whether it runs
 /// its default model and has research pending, what the stock inspector runs,
@@ -1008,6 +1002,21 @@ fn named_said(named: &Named) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_former_consult_choice_is_read_only_as_an_inspector_choice() {
+        let kit: Kit = serde_json::from_value(json!({
+            "harnesses": [], "stock_consult": {"harness": "pi", "model": "some/model"}
+        }))
+        .unwrap();
+        assert_eq!(
+            kit.stock_inspector,
+            Some(Named { harness: Harness::Pi, model: Some("some/model".into()) })
+        );
+        let written = serde_json::to_value(kit).unwrap();
+        assert!(written.get("stock_consult").is_none());
+        assert_eq!(written["stock_inspector"]["model"], "some/model");
+    }
 
     #[test]
     fn rebuild_and_refresh_preserve_cast_and_unresearched_model_priority() {

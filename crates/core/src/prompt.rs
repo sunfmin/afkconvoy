@@ -3,7 +3,6 @@
 
 use crate::position::Declared;
 use crate::precedent::entry_form;
-use crate::record;
 use crate::recovery::Variant;
 use crate::stage_record::{Author, StageRecord, Stated};
 use crate::tracker::Tracker;

@@ -15,7 +15,7 @@ use afkconvoy_core::stage_record::{
     Advance, Author, StageRecord, Stated, Unconsulted, advance, history, label_moves, lands,
     stage_records, unconsulted,
 };
-use afkconvoy_core::team::{Consult, FlowLabels, LAND, Team, Workflow};
+use afkconvoy_core::team::{FlowLabels, LAND, Team, Workflow};
 use afkconvoy_core::tick::Outcome;
 use afkconvoy_core::transition::{Relabel, escalated_at, skips_consult};
 use afkconvoy_core::waiting::{Back, Waits, back, waits};

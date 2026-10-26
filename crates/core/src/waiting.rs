@@ -14,7 +14,7 @@ use crate::stage_record::{StageRecord, Stated, history};
 use crate::team::{Team, Workflow};
 use crate::tracker::Tracker;
 
-/// Every command a human runs to answer an escalated issue, `<n>` standing
+/// Every command a human or the watch runs to answer an escalated issue, `<n>` standing
 /// for the issue's number, with the marks of the fleet's tracker in each of
 /// its issue commands (`answering`).
 const ANSWERING: [&str; 7] = [
@@ -29,9 +29,9 @@ const ANSWERING: [&str; 7] = [
 
 /// Every command a human runs to answer an escalated issue of `tracker`, as
 /// the `humans` help names them of the checkout's own repo, `<n>` standing
-/// for the issue's number: a consult, who stands where that human stands
+/// for the issue's number: a watch, or a named consult standing where that human stands
 /// (docs/adr/0018), is given the same list, each issue command naming the
-/// tracker. A command added here is both's.
+/// tracker. A command added here is given to all three.
 pub fn answering(tracker: &Tracker) -> Vec<String> {
     ANSWERING.iter().map(|line| in_tracker(line, tracker)).collect()
 }

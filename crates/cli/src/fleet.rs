@@ -10,10 +10,10 @@ use afkconvoy_core::casting::{self, Cast, ForCaster, HELD_FOR_CASTER, Standing, 
 use afkconvoy_core::claims::{Claim, InstanceId};
 use afkconvoy_core::config::Config;
 use afkconvoy_core::harness::Harness;
-use afkconvoy_core::plan::{Excluded, Issue, Observed, WorkingSet, assemble, closing_pr};
+use afkconvoy_core::plan::{Excluded, Observed, WorkingSet, assemble, closing_pr};
 use afkconvoy_core::position::Position;
 use afkconvoy_core::stopped::standing_verdict;
-use afkconvoy_core::team::{Consult, Role, Team, Workflow};
+use afkconvoy_core::team::{Role, Team, Workflow};
 use afkconvoy_core::train::{Built, on_train};
 use afkconvoy_core::verdict::latest_verdict;
 use afkconvoy_core::worker::recorded_branches;
@@ -616,7 +616,7 @@ impl Fleet {
                 set.frontier.push(issue);
                 continue;
             };
-            // The stock inspector is no role's, and has no range.
+            // No worker due means no role to cast.
             let Some(role) = due_role(team, workflow, *position) else {
                 set.frontier.push(issue);
                 continue;
@@ -680,11 +680,34 @@ impl Fleet {
         let worktree = Worktree::of_train(&Source::of(&self.repo).ok()?).ok()??;
         measure::measured(&Repo::new(worktree.path)).ok()?
     }
+    /// Whether the worker of `claim`, in an unbound repo, declared a verdict
+    /// that stands: the latest on the issue, written since the claim was
+    /// created — one from an earlier claim is not its own — and not answered
+    /// by a worker started on the issue again (`stopped::standing_verdict`).
+    /// What cannot be read says no: the claim then takes a slot.
+    pub(crate) fn declared_since(&self, open: &Open, claim: &Claim) -> bool {
+        let comments = open.issues.comments(claim.number);
+        let Some(verdict) = latest_verdict(comments.iter().map(|c| c.body.as_str())) else {
+            return false;
+        };
+        let Some(said) = comments.get(verdict.comment) else { return false };
+        let since = said.at.zip(claim.since).is_some_and(|(at, since)| at >= since);
+        // Only a verdict that is the claim's own is looked for in its worktree.
+        let answered = || -> Option<Option<String>> {
+            let worktree =
+                Worktree::of_issue(&Source::of(&self.repo).ok()?, claim.number).ok()??;
+            worktree.answered().ok()
+        };
+        since
+            && answered().is_some_and(|answered| {
+                standing_verdict(Some(verdict), Some(&said.url), answered.as_deref()).is_some()
+            })
+    }
 }
 
 /// The role of the worker due on an issue at `position` in `workflow`, one
-/// of `team`'s: the stage's, its consult's or its landing's. `None` of the
-/// stock inspector, and where no worker is due.
+/// of `team`'s: the stage's, its consult's or its landing's.
+/// `None` where no worker is due.
 pub fn due_role<'t>(
     team: &'t Team,
     workflow: &'t Workflow,

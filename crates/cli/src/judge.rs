@@ -19,15 +19,14 @@ use afkconvoy_core::stopped::{
 use afkconvoy_core::tick::Outcome;
 use afkconvoy_core::transition;
 use afkconvoy_core::transition::{
-    CloseStep, EscalateStep, Escalation, FleetFault, HandOnStep, Relabel, Released,
-    escalation_begun, escalation_comment,
+    CloseStep, EscalateStep, Escalation, FleetFault, Relabel, Released, escalation_begun,
+    escalation_comment,
 };
 use afkconvoy_core::verdict::{Verdict, latest_verdict};
 use afkconvoy_core::waiting::{Back, Waits, back};
 use anyhow::{Result, bail};
 use serde_json::{Value, json};
 
-use crate::advance::stated;
 use crate::board::{escalated, last_word};
 use crate::claims::{Me, delete};
 use crate::copies::Copies;
