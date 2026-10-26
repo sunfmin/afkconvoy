@@ -170,6 +170,18 @@ impl Turn {
         Some(Taken { turn: self.clone() })
     }
 
+    /// Reserves a surviving inspection before any fleet instance starts.
+    /// Its own inspector later takes this same turn, rather than competing
+    /// with a fresh inspection from a faster-starting checkout.
+    fn reserve(&self, running: Running) -> Result<()> {
+        let mut held = self.held();
+        if held.running.as_ref().is_some_and(|old| old != &running) {
+            anyhow::bail!("another inspection already holds the host's turn");
+        }
+        held.running = Some(running);
+        Ok(())
+    }
+
     /// A place at the turn for one fleet instance's inspector.
     fn place(&self) -> Place {
         let mut held = self.held();
@@ -314,12 +326,48 @@ pub fn last_json(last: &Last) -> Value {
 }
 
 /// What an inspection this `run` started is of.
+#[derive(Clone, Serialize, Deserialize)]
 enum Subject {
     /// A hot worker, and `why` it turned hot.
-    Worker { hot: HotNow, why: String },
+    Worker { worker: String, issue: Option<u64>, why: String },
     /// The host, whose `reason` called for an inspection, having read
     /// `reading`.
     Host { reason: Reason, reading: String },
+}
+
+/// Kept beside the inspection's checkout so a new host runner monitors the
+/// same terminal, with the original time limit and subject.
+#[derive(Serialize, Deserialize)]
+struct Record {
+    on: Subject,
+    started: u64,
+    by: String,
+}
+
+impl Record {
+    fn running(&self, repo: &Repo) -> Result<Running> {
+        let (worker, issue, held_back_by) = match &self.on {
+            Subject::Worker { worker, issue, .. } => (worker.clone(), *issue, None),
+            Subject::Host { reason, .. } => (THE_HOST.to_string(), None, Some(*reason)),
+        };
+        Ok(Running {
+            repo: repo.main_checkout()?.display().to_string(),
+            worker,
+            issue,
+            by: self.by.clone(),
+            since: self.started,
+            held_back_by,
+        })
+    }
+}
+
+const RECORD: &str = "convoy-inspection.json";
+
+fn keep_inspection(checkout: &Worktree, on: Subject, started: u64, by: &str) -> Result<()> {
+    let file = checkout.note(RECORD)?;
+    let record = Record { on, started, by: by.to_string() };
+    std::fs::write(&file, serde_json::to_vec(&record)?)
+        .with_context(|| format!("cannot write {}", file.display()))
 }
 
 /// An inspection this `run` started, while it runs.
@@ -388,7 +436,7 @@ impl As {
 
 /// The stock consult of an unbound repo, on what the host kit names for it.
 fn unbound_as(fleet: &Fleet) -> Result<As> {
-    let stock = fleet.stock_consult()?;
+    let stock = fleet.stock_consult(None)?;
     Ok(As::Unbound { harness: stock.harness, model: stock.model })
 }
 
@@ -397,7 +445,7 @@ fn unbound_as(fleet: &Fleet) -> Result<As> {
 fn stock_as(fleet: &Fleet, bound: &Bound) -> Result<As> {
     let copies = Copies::of_host()?;
     let kept = keep(&fleet.gh, &copies, &bound.team, &fleet.config.labels())?;
-    let stock = fleet.stock_consult()?;
+    let stock = fleet.stock_consult(None)?;
     Ok(As::Bound {
         harness: stock.harness,
         model: stock.model,
@@ -432,7 +480,7 @@ fn bound_as(fleet: &Fleet, bound: &Bound, issue: Option<u64>) -> Result<Option<A
         // A consult a stage names runs its role's range's first.
         Some(Who::Role(work)) => {
             let role = kept.team.role_of(work);
-            let cast = fleet.cast_in(role, &[])?;
+            let cast = fleet.cast_in(role, &[], None)?;
             let copy = kept.role(role, cast.harness)?;
             (
                 cast.harness,
@@ -446,7 +494,7 @@ fn bound_as(fleet: &Fleet, bound: &Bound, issue: Option<u64>) -> Result<Option<A
         }
         // The stock consult runs what the host kit names for it.
         Some(Who::Stock) => {
-            let stock = fleet.stock_consult()?;
+            let stock = fleet.stock_consult(None)?;
             (
                 stock.harness,
                 stock.model,
@@ -492,6 +540,41 @@ pub struct Inspector {
 }
 
 impl Inspector {
+    fn left(repo: &Repo) -> Result<Option<(Worktree, Record)>> {
+        let source = Source::of(repo)?;
+        let Some(checkout) = Worktree::named(&source, CHECKOUT)? else { return Ok(None) };
+        let file = checkout.note(RECORD)?;
+        let text = match std::fs::read(&file) {
+            Ok(text) => text,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => {
+                return Err(error).with_context(|| format!("cannot read {}", file.display()));
+            }
+        };
+        let record = serde_json::from_slice(&text)
+            .with_context(|| format!("cannot read {}", file.display()))?;
+        Ok(Some((checkout, record)))
+    }
+
+    /// Keeps a surviving inspection's turn ahead of every new fleet start.
+    pub fn reserve(repo: &Repo, turn: &Turn) -> Result<()> {
+        if let Some((_, record)) = Self::left(repo)? {
+            turn.reserve(record.running(repo)?)?;
+        }
+        Ok(())
+    }
+
+    /// Takes over an inspection left in its terminal by an earlier host
+    /// runner. Reading or reserving it must succeed before any new one starts.
+    pub fn resume(&mut self) -> Result<()> {
+        let Some((checkout, record)) = Self::left(&self.checkout)? else { return Ok(()) };
+        self.place.turn.reserve(record.running(&self.checkout)?)?;
+        let turn = Taken { turn: self.place.turn.clone() };
+        let Record { on, started, by } = record;
+        self.running = Some(Box::new(Inspection { on, checkout, started, by, _turn: turn }));
+        Ok(())
+    }
+
     /// The inspector of the `run` of the checkout `checkout`, inspecting in
     /// turn with every other of the host's, `turn`.
     pub fn new(checkout: &Repo, turn: &Turn) -> Inspector {
@@ -738,6 +821,12 @@ impl Inspector {
             let brief = host_inspection::brief(&fields).map_err(|e| anyhow!(e))?;
             let brief = checkout.write_brief(&brief)?;
             let command = command(&who, launch.as_str(), &checkout, &fleet, THE_HOST)?;
+            keep_inspection(
+                &checkout,
+                Subject::Host { reason: due.reason, reading: reading.clone() },
+                now,
+                who.role(),
+            )?;
             let admission = Admission::read(&fleet.repo.dir)?;
             self.observed(now, &admission, under_pressure());
             if !self.still_due(trigger, due, now) {
@@ -849,6 +938,12 @@ impl Inspector {
             let brief =
                 checkout.write_brief(&inspection::brief(&fields).map_err(|e| anyhow!(e))?)?;
             let command = command(&who, launch.as_str(), &checkout, &fleet, &hot.worker)?;
+            keep_inspection(
+                &checkout,
+                Subject::Worker { worker: hot.worker.clone(), issue: hot.issue, why: why.clone() },
+                now,
+                who.role(),
+            )?;
             if !still_hot(workers, hot) {
                 return Ok(false);
             }
@@ -875,7 +970,7 @@ impl Inspector {
             }
         }
         Ok(Started::Running(Box::new(Inspection {
-            on: Subject::Worker { hot: hot.clone(), why },
+            on: Subject::Worker { worker: hot.worker.clone(), issue: hot.issue, why },
             checkout,
             started: now,
             by: who.role().to_string(),
@@ -930,6 +1025,7 @@ fn command(
         kept: &kept,
         host_user: *host_user,
         dsh_profile: *dsh_profile,
+        host_rules: &crate::kept::host_rules(*harness),
         shadowed: &shadowed,
         told: told.told(),
         facts: Facts {
@@ -958,7 +1054,7 @@ fn end(repo: &Repo, inspection: Box<Inspection>, finding: Option<Finding>, now: 
     let prs = inspection.checkout.inspection_prs().unwrap_or_default();
     let finding = finding.map(|finding| Finding { prs, ..finding });
     let worker = match &inspection.on {
-        Subject::Worker { hot, .. } => hot.worker.clone(),
+        Subject::Worker { worker, .. } => worker.clone(),
         Subject::Host { .. } => THE_HOST.to_string(),
     };
     let did = finding.iter().flat_map(|finding| &finding.did);
@@ -966,7 +1062,9 @@ fn end(repo: &Repo, inspection: Box<Inspection>, finding: Option<Finding>, now: 
         .map(|did| What::InspectionDid { worker: worker.clone(), did: inspection::one_line(did) })
         .collect();
     let mut ended = match &inspection.on {
-        Subject::Worker { hot, why } => end_worker(repo, hot, why, &inspection.by, finding),
+        Subject::Worker { worker, issue, why } => {
+            end_worker(repo, worker, *issue, why, &inspection.by, finding)
+        }
         Subject::Host { reason, reading } => {
             end_host(repo, (*reason, reading.as_str()), &inspection, finding, now)
         }
@@ -1031,10 +1129,17 @@ fn end_host(
 /// Ends the inspection of the hot worker `hot`, `why` it turned hot, by
 /// `by`, which said `finding`: leaves it on the issue, in the tracker of the
 /// checkout `repo`.
-fn end_worker(repo: &Repo, hot: &HotNow, why: &str, by: &str, finding: Option<Finding>) -> What {
-    let worker = hot.worker.clone();
+fn end_worker(
+    repo: &Repo,
+    worker: &str,
+    issue: Option<u64>,
+    why: &str,
+    by: &str,
+    finding: Option<Finding>,
+) -> What {
+    let worker = worker.to_string();
     let mut said = said_of(finding.as_ref());
-    if let Some(issue) = hot.issue {
+    if let Some(issue) = issue {
         let body = inspection::comment(&worker, why, by, finding.as_ref());
         if let Err(error) = GitHub::of(repo).and_then(|gh| gh.comment(issue, &body)) {
             said.push_str(&format!(" · no comment was left on #{issue}: {error:#}"));
@@ -1080,7 +1185,7 @@ pub fn inspected(checkout: &Repo, said: &str, did: &[String]) -> Result<Value> {
         "prs": finding.prs}))
 }
 
-/// `afkconvoy land --inspection`: the inspection in the checkout `repo` puts
+/// `afkconvoy land --inspection`: the inspection or watch in checkout `repo` puts
 /// the PR of its branch there on the landing train — a change of the repo it
 /// made itself, on no issue — as a worker's joins it (`train::join`), its
 /// join commit naming the inspection on `host` where a worker's names its
@@ -1088,7 +1193,21 @@ pub fn inspected(checkout: &Repo, said: &str, did: &[String]) -> Result<Value> {
 /// in the checkout's notes for the inspection's record. With a fleet lock
 /// standing it joins nothing → `locked`: an inspection's is no lock issue's.
 pub fn land(repo: &Repo, config: &Config, gh: &GitHub, host: &str, now: u64) -> Result<Value> {
-    let checkout = inspection_checkout(repo)?;
+    let checkout = Worktree::of(repo)?;
+    let named = checkout.path.file_name().and_then(|name| name.to_str()).unwrap_or("");
+    // A watch uses the same no-issue landing path, from a checkout of its
+    // own in any listed repo. Its distinct name keeps an inspection's start
+    // from taking that checkout for the one an earlier inspection left.
+    if !afkconvoy_core::worker::is_worktree_named(named, crate::host_watch::CHECKOUT)
+        && !afkconvoy_core::worker::is_worktree_named(named, CHECKOUT)
+    {
+        anyhow::bail!(
+            "{} is no inspection's checkout or watch's own checkout: land from your own \
+             linked worktree named `{CHECKOUT}` or `{}`, optionally followed by -<digits>",
+            checkout.path.display(),
+            crate::host_watch::CHECKOUT
+        );
+    }
     let Some(branch) = checkout.branch_now()? else {
         anyhow::bail!(
             "{} is on no branch: commit the change on the branch of this checkout, push it and \

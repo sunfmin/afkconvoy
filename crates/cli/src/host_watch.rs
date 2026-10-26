@@ -37,6 +37,9 @@ const LOOK_SECONDS: u64 = 300;
 const HISTORY: usize = 20;
 /// What a watch's terminal is titled in orca.
 const TITLE: &str = "afkconvoy watch";
+/// A checkout a watch makes for a change of a listed repo. Distinct from an
+/// inspection's: starting an inspection must never reuse a watch's checkout.
+pub const CHECKOUT: &str = "afkconvoy-watch";
 
 /// A watch as the host keeps it: what a continuation of it needs too.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -522,8 +525,56 @@ fn brief(watch: &Watch) -> String {
          or orca; never delete what cannot be rebuilt, nor a change no commit holds; no force \
          push, no push to a base branch, no merge outside the landing train. Follow this \
          directory's own rules for looking after the host's projects.\n\n\
+         Your authority covers every repo on this host's checkout list, not just the repo of \
+         the fault or this directory. `afkconvoy checkouts` gives the current list; the look \
+         below names each checkout and its repo. Read the help of each command you need.\n\n\
+         ## Fix the host, then hand the issue back\n\n\
+         You may trust a worktree for its harness; restart, nudge, continue or switch a worker; \
+         or change a host setting. Read an escalation's reason and evidence before acting. \
+         A fleet fault — a worker start that failed, a worktree trust gap or a harness fault — \
+         is yours to fix on the host. Once its cause is gone, hand the escalated issue back \
+         with its current `waiting_on_human.answer` line from `afkconvoy doctor`, in that \
+         repo's checkout. Use the tracker and issue number that line names. Run \
+         `afkconvoy wake <checkout>` after changing GitHub with `gh`, then check the next tick \
+         actually dispatches or continues the issue and that its worker takes its brief. \
+         Relabelling it alone is no evidence of recovery.\n\n\
+         An escalation that asks a human for a decision stays with the human. Do not invent \
+         a ruling, pass a human stage, choose a workflow or clear its labels to make it run. \
+         Leave it alone and list its repo, issue, question and answer line in your record.\n\n\
+         ## Change any repo on the checkout list\n\n\
+         When a lasting fix needs code, make it yourself, even if that repo's fleet cannot \
+         start a worker. In the affected repo create a linked worktree on a branch of your \
+         own from its configured base branch. Name its directory `{CHECKOUT}` or \
+         `{CHECKOUT}-<digits>` so `afkconvoy land --inspection` accepts it; never reuse an \
+         inspection's or another worker's checkout. Work only in your own checkout of that \
+         repo. Commit and push each completed piece before a long operation. Open its PR \
+         against that repo's base branch, on no issue: no intake or flow label is needed, in \
+         a bound repo too. Run `afkconvoy gate --train` there until it answers `status: green` \
+         and `recorded: true`, then `afkconvoy land --inspection`. Resolve conflicts by \
+         merging, committing and gating again; never rebase. This is the inspection's \
+         landing path: its join names an inspection on this host and closes no issue. A \
+         fleet lock standing joins nothing: record what holds it back. Keep the branch and \
+         PR, and name the repo and PR in your record.\n\n\
+         ## Cut an installed fix, then check it\n\n\
+         Joining is not landing, and landing code is not fixing an installed tool. When the \
+         fix must reach an installed tool — afkconvoy itself, for example — wait until the \
+         change lands, then have that repo's fleet cut a version through its declared cut \
+         steps (`afkconvoy cut --help`). Wake its checkout and read `afkconvoy plan`'s `cut`: \
+         the next idle tick starts a due cut. Fix what holds that work back; do not bypass \
+         the gate or train, tag by hand, or manufacture a cut record. If a cut failed for a \
+         mechanical cause, fix it and continue with the `cut --from <step>` line its report \
+         gives. If cutting is off or a human decision holds it back, say so.\n\n\
+         Check that the cut published and installed the version containing your change. \
+         For afkconvoy, let the host runner move onto it by itself; read `doctor --all`'s \
+         `host.installed` for what holds the move back and `checkouts` for its version. Never \
+         kill or restart the host runner. On the new version repeat the check that showed \
+         the fault and check the fleets' work goes on. Record the version, the evidence and \
+         whether the fault is gone or still present; an upgrade alone proves nothing.\n\n\
          This watch has one hour from {}, its sessions together; at the hour it is ended. End \
-         with what you did and what you left, a line each: what you print is its record.\n\n\
+         with what held the work back, each thing you did and its evidence, each PR and cut, \
+         and what you left — including every human decision — a line each: what you print \
+         is its record. If landing, cutting or the move has not finished, say what is still \
+         pending; never report the fix verified before checking it.\n\n\
          ## Why it was started\n\n{}\n\n\
          ## What earlier watches on the same items did\n\n{}\n\n\
          ## What this watch did before this session\n\n{}\n\n\

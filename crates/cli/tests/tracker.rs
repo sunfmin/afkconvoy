@@ -625,7 +625,9 @@ fn two_fleets_of_one_repo_working_two_trackers_each_claim_land_and_close_only_th
     assert_eq!(world.gh()["issues"], own, "the repo's own #7 is as it was");
 }
 
-const RUN: [&str; 5] = ["run", "--host", "h1", "--second-ms", "100"];
+/// A `run` on the host `h1`: a second of its sleeps takes 10ms, so its next tick
+/// comes 0.9s after its first, not 9s.
+const RUN: [&str; 5] = ["run", "--host", "h1", "--second-ms", "10"];
 
 #[test]
 fn run_tracker_keeps_it_on_the_checkout_list_makes_its_labels_and_refuses_a_change_under_a_claim() {

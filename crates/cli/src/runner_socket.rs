@@ -181,6 +181,11 @@ pub struct Kept {
 }
 
 impl Kept {
+    /// Ends this conversation, including the copy watching its peer close.
+    pub fn close(&self) {
+        let _ = self.stream.shutdown(std::net::Shutdown::Both);
+    }
+
     /// Says `said` to the asker, with which host runner says it → whether it
     /// was still there to be told.
     pub fn say(&mut self, mut said: Value) -> bool {
@@ -303,6 +308,15 @@ pub struct Conversation {
 }
 
 impl Conversation {
+    /// A handle that ends this conversation, including a read on another
+    /// thread. The caller uses it once its command ends, then joins the reader.
+    pub fn ender(&self) -> Result<impl FnOnce() + use<>> {
+        let stream = self.lines.get_ref().try_clone()?;
+        Ok(move || {
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+        })
+    }
+
     /// Waits, as long as it takes, for what the host runner says next →
     /// `None`: it closed the line, as it ended. Errors: what it said is no
     /// JSON; the line could not be read.
@@ -356,12 +370,15 @@ fn keep_asking_in(
             return Err(error.context("the host runner could not be asked"));
         }
     };
+    // Before the question: a host runner that answers and closes the line
+    // before the timeout is set leaves a line that refuses it (EINVAL on
+    // macOS). One it closed already reads its end at once.
+    let _ = stream.set_read_timeout(Some(within));
     let asked = serde_json::to_string(request)?;
     match writeln!(&stream, "{asked}") {
         Err(error) if closed(&error) => return Ok((Reached::Closed, None)),
         written => written.context("the host runner could not be asked")?,
     }
-    stream.set_read_timeout(Some(within))?;
     let mut lines = BufReader::new(stream);
     let mut line = String::new();
     match lines.read_line(&mut line) {
@@ -479,6 +496,7 @@ mod tests {
             pid: 7,
             dir: "/w".into(),
             issue: Some(46),
+            train: false,
             command: "cargo test".into(),
             asked: 1000,
             ran: None,
@@ -486,7 +504,7 @@ mod tests {
         let exclusive = serde_json::to_string(&Request::Exclusive { ticket }).unwrap();
         assert_eq!(
             exclusive,
-            r#"{"op":"exclusive","ticket":{"number":0,"pid":7,"command":"cargo test","dir":"/w","issue":46,"asked":1000,"ran":null}}"#
+            r#"{"op":"exclusive","ticket":{"number":0,"pid":7,"command":"cargo test","dir":"/w","issue":46,"train":false,"asked":1000,"ran":null}}"#
         );
     }
 

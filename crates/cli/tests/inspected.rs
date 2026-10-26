@@ -108,8 +108,12 @@ const BRANCH: &str = "tester/afkconvoy-inspection";
 /// A checkout of `world`'s repo named as an inspection's is, on a branch of
 /// its own at the base branch's tip, as orca cuts one.
 fn inspection_on_branch(world: &World) -> PathBuf {
+    operator_on_branch(world, "afkconvoy-inspection")
+}
+
+fn operator_on_branch(world: &World, name: &str) -> PathBuf {
     git(&world.clone, &["fetch", "-q", "origin"]);
-    let checkout = world.root.join("wt").join("afkconvoy-inspection");
+    let checkout = world.root.join("wt").join(name);
     let at = checkout.to_str().unwrap();
     git(&world.clone, &["worktree", "add", "-q", "-b", BRANCH, at, "origin/main"]);
     checkout
@@ -148,8 +152,8 @@ fn issue_writes(world: &World) -> Vec<Vec<String>> {
 /// An inspection in `world` makes a change of the repo, gates it and puts it
 /// on the landing train; the train lands it on the base branch, and no issue
 /// is opened, closed or labelled for it.
-fn lands_on_no_issue(world: &World) {
-    let checkout = inspection_on_branch(world);
+fn lands_on_no_issue(world: &World, name: &str) {
+    let checkout = operator_on_branch(world, name);
     let head = change(world, &checkout);
     let gated = world.afk_in(&checkout, &["gate", "--train"]).ok();
     assert_eq!(
@@ -173,8 +177,13 @@ fn lands_on_no_issue(world: &World) {
     let plan = world.afk(&["plan", "--instance", "me", "--now", "10000"]).ok();
     assert_eq!(plan["inspections_on_train"], json!([90]), "{plan}");
     // What the inspection says names the PR.
-    let said = world.afk_in(&checkout, &["inspected", "--text", "four gates at once"]).ok();
-    assert_eq!(said["prs"], json!([90]), "{said}");
+    if name.starts_with("afkconvoy-watch") {
+        let said = world.afk_in(&checkout, &["inspected", "--text", "four gates at once"]).error();
+        assert!(said.contains("is no inspection's checkout"), "a watch prints its record");
+    } else {
+        let said = world.afk_in(&checkout, &["inspected", "--text", "four gates at once"]).ok();
+        assert_eq!(said["prs"], json!([90]), "{said}");
+    }
 
     let train = train(world);
     let landed: Value = world.afk_in(&train, &["land", "--train", "--merged-timeout", "5"]).ok();
@@ -194,20 +203,30 @@ fn lands_on_no_issue(world: &World) {
 fn an_inspection_s_change_lands_through_the_landing_train_on_no_issue() {
     let world = World::new();
     world.set_gate("true");
-    lands_on_no_issue(&world);
+    lands_on_no_issue(&world, "afkconvoy-inspection");
+}
+
+#[test]
+fn a_watch_s_change_is_gated_and_lands_on_the_inspection_path_on_no_issue() {
+    let world = World::new();
+    world.set_gate("true");
+    // A watch's numeric suffix is accepted, as an inspection's is.
+    lands_on_no_issue(&world, "afkconvoy-watch-79");
 }
 
 #[test]
 fn an_inspection_s_change_lands_in_a_bound_repo_with_no_intake_nor_flow_label() {
-    let world = World::new();
     let team = "```yaml\nroles:\n  dev: acme/dev\n```\n";
     let feature = "```yaml\nstages:\n  - name: build\n    by: dev\n    do: implement\n    \
                    on: { pass: done }\n```\n";
     let skill = "---\nname: implement\ndescription: build\n---\n";
-    world.repo("acme/dev", &[(".claude/skills/implement/SKILL.md", skill)]);
-    world.repo("acme/team", &[("team.md", team), ("workflows/feature.md", feature)]);
-    world.set_gate_config("gate_command: \"true\"\ngate_seconds: 600\nteam: acme/team");
-    lands_on_no_issue(&world);
+    for name in ["afkconvoy-inspection", "afkconvoy-watch"] {
+        let world = World::new();
+        world.repo("acme/dev", &[(".claude/skills/implement/SKILL.md", skill)]);
+        world.repo("acme/team", &[("team.md", team), ("workflows/feature.md", feature)]);
+        world.set_gate_config("gate_command: \"true\"\ngate_seconds: 600\nteam: acme/team");
+        lands_on_no_issue(&world, name);
+    }
 }
 
 #[test]

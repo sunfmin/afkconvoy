@@ -26,8 +26,9 @@ This repo names no `team`, so it is unbound. A bound repo's three keys more —
 ## Heavy work on the host
 
 One gate fills the host by itself: its Flux, clippy and test builds run one
-rustc job per core, and its tests run six at a time, each starting the CLI and
-the `git`, `gh` and `orca` it runs. Two gates side by side already reach the
+rustc job per core, and its tests run as many at a time as
+`.config/nextest.toml` says, each starting the CLI and the `git`, `gh` and
+`orca` it runs. Two gates side by side already reach the
 load at which admission holds new workers back, twice the host's cores (#426).
 So the gate runs through the host's exclusive queue (ADR-0019), in every
 checkout — a worker's `afkconvoy gate` and `gate --train`, the landing train's
@@ -105,4 +106,4 @@ publish: |
 - `brew update` comes first: `brew upgrade` alone fetches the tap at most once
   a day, and would find nothing newer. The last line fails the step unless the
   afkconvoy Homebrew links is the version cut. The host runner moves onto it
-  once its fleets are idle (`afkconvoy run --help`).
+  between ticks once no exclusive command runs (`afkconvoy run --help`).
