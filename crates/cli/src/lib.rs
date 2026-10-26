@@ -1785,7 +1785,7 @@ enum Command {
     ///
     /// `--issue`: the worker that wrote the PR, in its own worktree — in a bound repo, the worker in the landing role of the issue's workflow, in the issue's worktree.
     ///
-    /// `--inspection`: an inspection, in the checkout it was started in (`afkconvoy-inspection`), on whose branch it committed the change. Run anywhere else it is refused.
+    /// `--inspection`: an inspection, in the checkout it was started in (`afkconvoy-inspection`), or a watch, in its own linked worktree of the affected listed repo (`{const:WATCH_CHECKOUT}`, with an optional numeric suffix), on whose branch it committed the change. Run anywhere else it is refused.
     ///
     /// `--train`: the train worker, in the train's worktree — never anybody else, anywhere else.
     ///
