@@ -252,7 +252,7 @@ fn a_stopped_screen_and_a_complete_judgment_do_not_exempt_unfinished_work() {
         world.with_orca(|orca| {
             for terminal in orca["terminals"].as_array_mut().unwrap() {
                 if terminal["worktreePath"] == json!(dir) {
-                    terminal["output"] = json!(screen);
+                    terminal["screen"] = json!(screen);
                 }
             }
         });
