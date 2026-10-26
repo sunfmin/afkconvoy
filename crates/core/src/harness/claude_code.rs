@@ -31,26 +31,34 @@ macro_rules! warning_accepted {
     };
 }
 /// Claude Code with the flag that lets it work with nobody at its terminal,
-/// and the warning it opens with under that flag answered: an unbound repo's
-/// worker is started with this alone. Of two `--settings` Claude Code takes
+/// and the warning it opens with under that flag answered. Each worker adds
+/// native session trust as well. Of two `--settings` Claude Code takes
 /// the last, whole: a worker in its role is started on the fleet's (`added`).
 pub(super) const STOCK: &str =
     concat!("claude --dangerously-skip-permissions --settings '{", warning_accepted!(), "}'");
 /// The variable Claude Code reads a custom provider's address from.
 pub(super) const PROVIDER: &str = "ANTHROPIC_BASE_URL";
-pub(super) const TRUST: &str = "--dangerously-skip-permissions";
+/// Claude Code's native session trust. Permission bypass and its warning
+/// setting do not accept workspace trust, even when both settings are given.
+/// This does not write a trust entry in the host user's config.
+pub(super) const TRUST: &str = "CLAUDE_CODE_SANDBOXED=1";
+const BYPASS: &str = "--dangerously-skip-permissions";
 
 /// Starts Claude Code with its worktree trusted and its unattended warning
 /// answered, without replacing a setting the stock command already carries.
 pub(super) fn in_worktree(command: &str) -> String {
     let mut command = command.to_string();
-    if !command.contains(TRUST) {
-        command.push_str(&format!(" {TRUST}"));
+    if !command.contains(BYPASS) {
+        command.push_str(&format!(" {BYPASS}"));
     }
     if !command.contains("skipDangerousModePermissionPrompt") {
         command.push_str(&format!(" --settings '{{{}}}'", warning_accepted!()));
     }
-    command
+    if command.contains(TRUST) {
+        command
+    } else {
+        Line::new().fixed("export ").fixed(TRUST).fixed(" && ").launch(&command).done()
+    }
 }
 
 /// Starts one watch non-interactively, with the same unattended trust setup.
@@ -242,6 +250,14 @@ pub(super) fn shown(answer: &str) -> Vec<(String, String)> {
 /// role's — and nothing of the host user's: no hook, no MCP server, no
 /// permission of theirs.
 const SOURCES: &str = "project";
+
+/// Claude Code also walks `.claude` directories above its role as project
+/// rules: `--setting-sources project` alone does not exclude the host user's
+/// rules when the role's copy is under their home (sunfmin/control#107).
+pub(super) fn host_rule_excludes(home: &str) -> Vec<String> {
+    let home = home.trim_end_matches('/');
+    vec![format!("{home}/.claude/CLAUDE.md"), format!("{home}/.claude/rules/**")]
+}
 /// The event of Claude Code before each tool call: where the guard is asked.
 const BEFORE_A_CALL: &str = "PreToolUse";
 /// The events of Claude Code at which a worker's state changes: what the
@@ -272,7 +288,7 @@ const ADDED_RULES: &str = "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD";
 /// this host: a role is what its repo says, the same on every host.
 const NO_MEMORY: &str = "CLAUDE_CODE_DISABLE_AUTO_MEMORY";
 /// The variables a worker's environment sets for Claude Code.
-pub(super) const ENVIRONMENT: [&str; 2] = [ADDED_RULES, NO_MEMORY];
+pub(super) const ENVIRONMENT: [&str; 3] = [ADDED_RULES, NO_MEMORY, "CLAUDE_CODE_SANDBOXED"];
 
 /// What a host keeps for Claude Code: the host user's skills and rules, as
 /// a directory added to a worker's holds them, and nothing else. Claude Code
@@ -361,7 +377,9 @@ fn json_text(text: &str) -> String {
 /// added to the role's own, so a role's hooks run beside them and no role is
 /// without the guard (docs/adr/0012) — or unheard of by the worker backend,
 /// which would read a worker it has no report of off its terminal alone.
-fn added_settings(guard: &str, report: &str) -> String {
+/// `excluded` keeps host-user rule paths out of native ancestor discovery
+/// when the role has turned host-user rules off.
+fn added_settings(guard: &str, report: &str, excluded: &[String]) -> String {
     let guard = format!("{{\"type\":\"command\",\"command\":{}}}", json_text(guard));
     let report = format!(
         "{{\"type\":\"command\",\"command\":{},\"timeout\":{REPORT_TIMEOUT}}}",
@@ -372,7 +390,12 @@ fn added_settings(guard: &str, report: &str) -> String {
     for event in STATE_EVENTS {
         settings.push_str(&format!(",\"{event}\":[{{\"hooks\":[{report}]}}]"));
     }
-    settings.push_str(concat!("},", warning_accepted!(), "}"));
+    settings.push_str(concat!("},", warning_accepted!()));
+    if !excluded.is_empty() {
+        let paths = excluded.iter().map(|path| json_text(path)).collect::<Vec<_>>().join(",");
+        settings.push_str(&format!(",\"claudeMdExcludes\":[{paths}]"));
+    }
+    settings.push('}');
     settings
 }
 
@@ -382,6 +405,7 @@ fn added_settings(guard: &str, report: &str) -> String {
 /// settings left out, the guard and the report added, and the stage's model.
 #[spec(fn(Line[@l], &Start) -> Line[l])]
 pub(super) fn added(line: Line, start: &Start) -> Line {
+    let excluded = if start.host_user { &[][..] } else { start.host_rules };
     let line = line
         .fixed(" ")
         .fixed(ADD_DIR)
@@ -404,7 +428,7 @@ pub(super) fn added(line: Line, start: &Start) -> Line {
         .fixed(" ")
         .fixed(SETTINGS)
         .fixed(" ")
-        .word(&added_settings(start.guard, REPORT));
+        .word(&added_settings(start.guard, REPORT, excluded));
     match start.model {
         Some(model) => line.fixed(" ").fixed(MODEL).fixed(" ").word(model),
         None => line,
@@ -487,6 +511,21 @@ mod tests {
     use crate::line::quoted;
     use crate::role::{Facts, On, Told};
 
+    #[test]
+    fn folder_trust_is_session_configuration_beside_permission_bypass_and_both_settings() {
+        let outside = Harness::ClaudeCode.in_worktree(STOCK, "/new/worktree", "");
+        assert!(outside.starts_with("export CLAUDE_CODE_SANDBOXED=1 && "), "{outside}");
+        assert_eq!(in_worktree(&outside), outside, "trust setup is idempotent");
+        for host_user in [false, true] {
+            let start = Start { host_user, ..start(None) };
+            let role = in_role(STOCK, &start);
+            assert!(role.contains(" CLAUDE_CODE_SANDBOXED=1 "), "{role}");
+            assert_eq!(role.matches("--settings ").count(), 2, "{role}");
+            assert!(role.contains("--setting-sources project"), "{role}");
+            assert!(role.contains("/bin/afkconvoy guard"), "{role}");
+        }
+    }
+
     fn in_role(command: &str, start: &Start) -> String {
         Harness::ClaudeCode.in_role(command, start)
     }
@@ -522,6 +561,7 @@ mod tests {
             kept: "/cache/harness/claude-code",
             host_user: false,
             dsh_profile: crate::team::DshProfile::Fleet,
+            host_rules: &[],
             shadowed: &[],
             told: Told::default(),
             facts: Facts {
@@ -545,7 +585,8 @@ mod tests {
         assert_eq!(
             line,
             "cd '/copies/acme/dev/abc' && export CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1 \
-             CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 AFKCONVOY_ISSUE='7' AFKCONVOY_FLOW='feature' \
+             CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 CLAUDE_CODE_SANDBOXED=1 \
+             AFKCONVOY_ISSUE='7' AFKCONVOY_FLOW='feature' \
              AFKCONVOY_STAGE='build' AFKCONVOY_ROLE='dev' AFKCONVOY_SKILL='implement' \
              AFKCONVOY_WRITES='false' AFKCONVOY_CONSULT='false' AFKCONVOY_BASE_BRANCH='main' \
              AFKCONVOY_ESCALATE_LABEL='ready-for-human' AFKCONVOY_LOCK_LABEL='fleet-lock' \
@@ -596,10 +637,10 @@ mod tests {
         assert!(line.ends_with("--model 'a b;c'"), "{line}");
         // Nor by Claude Code, of the line that runs the guard.
         let odd = Start { guard: "/it's \"here\"/afk\\convoy guard", ..start(None) };
-        let settings = added_settings(odd.guard, r#"tell "$HOME""#);
+        let settings = added_settings(odd.guard, r#"tell "$HOME""#, &[]);
         assert!(settings.contains(r#""command":"/it's \"here\"/afk\\convoy guard""#), "{settings}");
         assert!(settings.contains(r#""command":"tell \"$HOME\"","timeout":10"#), "{settings}");
-        let settings = added_settings(odd.guard, REPORT);
+        let settings = added_settings(odd.guard, REPORT, &[]);
         assert!(in_role("claude", &odd).ends_with(&format!("{SETTINGS} {}", quoted(&settings))));
     }
 
