@@ -88,11 +88,9 @@ fn turn(repo: &Repo, config: &Config, issue: Option<u64>, now: u64) -> Result<(P
             crate::config::heavy_gate(&config.gate_command),
         )?;
         let current = Train::read(repo, config)?;
-        if current.tip != train.tip {
-            drop(permit);
-            continue;
-        }
-        if crate::gate::recorded(repo, &tree, &command, now)?.is_none() {
+        let current_tree =
+            Tree::named(&repo.git(&["rev-parse", &format!("{}^{{tree}}", current.tip)])?);
+        if crate::gate::recorded(repo, &current_tree, &command, now)?.is_none() {
             drop(permit);
             continue;
         }
