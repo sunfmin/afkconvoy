@@ -42,6 +42,24 @@ pub(super) fn in_worktree(command: &str) -> String {
     format!("export {TRUST} && {command}")
 }
 
+/// Starts one watch non-interactively, with Kimi's trust and isolated home.
+pub(super) fn watch(command: &str, kept: &str, model: Option<&str>, prompt: &str) -> String {
+    let line = Line::new()
+        .fixed("export ")
+        .fixed(TRUST)
+        .fixed(" ")
+        .fixed(USER_DIR)
+        .fixed("=")
+        .word(kept)
+        .fixed(" && ")
+        .launch(headless(command));
+    let line = match model {
+        Some(model) => line.fixed(" ").fixed(MODEL).fixed(" ").word(model),
+        None => line,
+    };
+    line.fixed(PROMPT).fixed(" ").word(prompt).done()
+}
+
 pub(super) const KEPT: Kept = Kept {
     links: &[Link { home: ".kimi-code/credentials", kept: "credentials" }],
     host_user: &[

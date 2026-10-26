@@ -160,6 +160,17 @@ pub enum What {
     /// the episode; `said` is what held the work back, what it did and the
     /// PRs it put on the landing train, or why.
     HostInspected { reason: String, found: String, said: String },
+    /// A watch started in the operator's directory for these reasons.
+    WatchStarted { id: String, directory: String, harness: String, reasons: Vec<String> },
+    /// A watch continued on another harness after `why`.
+    WatchContinued { id: String, from: String, to: String, why: String },
+    /// A watch did one thing, in its own words.
+    WatchDid { id: String, did: String },
+    /// A watch ended: `outcome` says how — `ended`, `closed`, `time_limit` or
+    /// `no_harness` — and `said` in words.
+    WatchEnded { id: String, outcome: String, said: String },
+    /// The host runner could not look at its host, or read its watch.
+    WatchFailed { said: String },
     /// A tick started a cut of `version` (docs/adr/0028): `said` is the
     /// version, the tag it is cut past and the PRs it holds.
     CutStarted { version: String, said: String },
@@ -290,6 +301,17 @@ impl Entry {
             What::HostInspected { reason, found, said } => {
                 format!("host inspection: {reason}: {found} · {said}")
             }
+            What::WatchStarted { id, directory, harness, reasons } => {
+                format!("watch: {id} started on {harness} in {directory}: {}", reasons.join("; "))
+            }
+            What::WatchContinued { id, from, to, why } => {
+                format!("watch: {id} continued from {from} to {to}: {why}")
+            }
+            What::WatchDid { id, did } => format!("watch: {id}: did {did}"),
+            What::WatchEnded { id, outcome, said } => {
+                format!("watch: {id}: {outcome} · {said}")
+            }
+            What::WatchFailed { said } => format!("watch: {said}"),
             What::CutStarted { .. } | What::CutEnded { .. } => {
                 format!("cut: {}", cut_said(&self.what).unwrap_or_default())
             }
@@ -340,6 +362,11 @@ impl Entry {
             What::HostInspected { reason, found, said } => {
                 Some(("inspection", format!("{THE_HOST}, {reason}: {found} · {said}")))
             }
+            What::WatchDid { did, .. } => Some(("watch", did.clone())),
+            What::WatchEnded { outcome, said, .. } => {
+                Some(("watch", format!("{outcome} · {said}")))
+            }
+            What::WatchFailed { said } => Some(("watch", said.clone())),
             What::CutStarted { .. } | What::CutEnded { .. } => Some(("cut", cut_said(&self.what)?)),
             What::TickStarted { .. }
             | What::Tick(_)
@@ -348,7 +375,9 @@ impl Entry {
             | What::Hot { .. }
             | What::Cooled { .. }
             | What::Inspecting { .. }
-            | What::HostInspecting { .. } => None,
+            | What::HostInspecting { .. }
+            | What::WatchStarted { .. }
+            | What::WatchContinued { .. } => None,
         }
     }
 
@@ -362,6 +391,11 @@ impl Entry {
                 | What::Back { .. }
                 | What::Moved { .. }
                 | What::NotMoved { .. }
+                | What::WatchStarted { .. }
+                | What::WatchContinued { .. }
+                | What::WatchDid { .. }
+                | What::WatchEnded { .. }
+                | What::WatchFailed { .. }
         )
     }
 }

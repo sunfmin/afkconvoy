@@ -263,7 +263,6 @@ pub(crate) fn auxiliary(
     caster: bool,
 ) -> Result<Value> {
     let cast = fleet.first()?;
-    crate::codex_launch::selected(cast.harness, cast.model.as_deref())?;
     crate::role::startable(&agent.launches, cast.harness, "worker continuation")?;
     let continued = continuing(Some(worktree), cast.harness);
     worktree.stop_for_continuation()?;

@@ -264,6 +264,7 @@ fn a_pr_taken_off_an_abandoned_train_a_second_time_is_escalated_with_its_branch_
     let said = world.comments(7);
     let escalation = said.iter().find(|body| body.contains("convoy:escalation")).unwrap();
     assert!(escalation.contains("PR #70") && escalation.contains("for the second time"));
+    assert!(escalation.contains("Fleet fault:") && escalation.contains("the fix is on the host"));
     let records = records(&world, 70);
     assert_eq!(records.len(), 1, "one marker comment per PR");
     assert!(records[0].starts_with("<!--convoy:join abandoned=1690-->\n"), "{records:?}");
@@ -272,6 +273,14 @@ fn a_pr_taken_off_an_abandoned_train_a_second_time_is_escalated_with_its_branch_
     // everything in the worktree is on the pushed branch: only the branch is kept
     assert!(!worktree.is_dir());
     assert_eq!(world.remote(&["rev-parse", &format!("refs/heads/{branch}")]), head);
+    world.orca_calls();
+    assert_eq!(tick(&world, 2470)["errors"], json!([]));
+    assert_eq!(world.claims(), [], "no consult claim is taken");
+    assert!(!world.orca_calls().iter().any(|call| common::asked(call) == "terminal create"));
+    assert!(!world.comments(7).iter().any(|body| body.contains("convoy:consult")));
+    let doctor = world.afk(&["doctor", "--now", "2500"]).json;
+    let why = doctor["waiting_on_human"][0]["why"].as_str().unwrap();
+    assert!(why.contains("Fleet fault:") && why.contains("the fix is on the host"), "{doctor}");
 }
 
 #[test]

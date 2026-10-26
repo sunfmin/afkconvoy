@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: accepted, its probe-answered ids superseded by ADR-0030
 ---
 
 # A model is held by what it answers as, and any of its names matches it
