@@ -71,6 +71,49 @@ fn pr_is_open(world: &World) -> bool {
     world.gh()["prs"][0]["state"] == "open"
 }
 
+#[test]
+fn a_joined_worker_leaves_health_while_the_train_waits_to_land() {
+    let world = joining();
+    world.set_gate("true");
+    let dir = worktree(&world);
+    let gate = world.afk_in(&dir, &["gate", "--train", "--now", "1040"]).ok();
+    assert_eq!((&gate["status"], &gate["recorded"]), (&json!("green"), &json!(true)));
+    let joined = world.afk_in(&dir, &["land", "--issue", "7", "--now", "1050"]).ok();
+    assert_eq!(joined["outcome"], "joined", "{joined}");
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            terminal["agent"] = json!({"state": "done", "stateStartedAt": 1_050_000});
+            terminal["lastOutputAt"] = json!(1_050_000);
+        }
+    });
+    let train = world.root.join("wt/convoy-train");
+    for now in [1300, 1600, 1900, 2200, 4900, 8500] {
+        world.with_orca(|orca| {
+            for terminal in orca["terminals"].as_array_mut().unwrap() {
+                if terminal["worktreePath"] == train.to_str().unwrap() {
+                    terminal["agent"] = json!({"state": "working", "stateStartedAt": now * 1000});
+                    terminal["lastOutputAt"] = json!(now * 1000);
+                }
+            }
+        });
+        let ticked = tick(&world, now);
+        assert_eq!(ticked["errors"], json!([]), "{ticked}");
+        let doctor = world.afk(&["doctor", "--now", &now.to_string()]).json;
+        let health = &doctor["host"]["host_kit"]["worker_health"];
+        assert_eq!(health["workers"], json!([]), "{health}");
+        assert_eq!(world.claims(), [(7, "alpha".into())]);
+        assert_eq!(world.labels(7), ["ready-for-agent", "bug"]);
+        assert!(pr_is_open(&world));
+        assert_eq!(world.remote(&["rev-parse", "refs/convoy/train/line/main"]), joined["commit"]);
+    }
+    assert!(!world.root.join("diagnosis-asked").exists());
+    let landed = world.afk_in(&train, &["land", "--train", "--now", "8600"]).ok();
+    assert_eq!(landed["outcome"], "landed", "{landed}");
+    tick(&world, 8700);
+    assert_eq!(world.state(7), "closed");
+    assert_eq!(world.claims(), []);
+}
+
 fn restart(world: &World, now: &str) -> common::Answer {
     let args = ["restart", "--issue", "7", "--instance", "alpha", "--host", "h1", "--now", now];
     world.afk(&[&args[..], &[]].concat())
