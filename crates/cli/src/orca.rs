@@ -738,7 +738,7 @@ impl Worktree {
     /// work here is over is ended, whatever it is doing. One with no terminal
     /// is as wanted.
     pub fn close_terminals(&self) -> Result<()> {
-        if self.terminal()?.is_none() {
+        if OBSERVATION.with(|slot| slot.borrow().is_some()) && self.terminal()?.is_none() {
             return Ok(());
         }
         orca(&["terminal", "close", "--worktree", &self.selector(), "--all"])?;
@@ -1030,7 +1030,7 @@ impl Worktree {
         // Check again even after an acknowledged close: Orca may still be
         // ending the previous terminal. Leave the worker's progress markers
         // intact until its replacement can actually be started.
-        if self.harness()?.is_some() {
+        if self.recorded_harness()?.is_some() {
             self.stop_for_continuation()?;
         } else {
             self.close_terminals()?;
