@@ -1208,8 +1208,7 @@ pub fn run(
             second,
             clock,
             hears,
-            hot,
-            shared.resources.clone(),
+            (hot, shared.resources.clone()),
             wakes.waker(),
             stop.clone(),
         );

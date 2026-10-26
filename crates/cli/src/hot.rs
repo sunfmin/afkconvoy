@@ -638,8 +638,7 @@ pub fn watch(
     second: Duration,
     clock: Arc<dyn Fn() -> u64 + Send + Sync>,
     hears: Arc<dyn Hears>,
-    hot: Hot,
-    resources: crate::resources::Shared,
+    (hot, resources): (Hot, crate::resources::Shared),
     waker: Waker,
     stop: Stop,
 ) {
