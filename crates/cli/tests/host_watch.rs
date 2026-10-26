@@ -251,6 +251,37 @@ fn the_operator_directory_wins_and_default_returns_to_the_stock_watch() {
 }
 
 #[test]
+fn a_look_reads_a_terminal_preview_ending_in_a_lone_surrogate() {
+    let world = World::new();
+    let dir = operator(&world);
+    paused(&world, "pi", "it refused every prompt");
+    run(&world, &dir);
+    let watch = until(&world, "the host watch", || running(&world));
+    let first = state(&world)["until"].as_u64().unwrap();
+    let answer = json!({"ok": true, "result": {"terminals": [{
+        "handle": OPERATORS, "worktreePath": dir, "connected": true, "writable": true,
+        "preview": "⏺SURROGATE"
+    }]}})
+    .to_string()
+    .replace("SURROGATE", r"\udf13");
+    world.with_orca(|orca| orca["raw_answers"] = json!({"terminal list": answer}));
+    printed(&world, &watch, &["checked the host"], Some(0));
+    let no_failures = || {
+        for file in std::fs::read_dir(world.cache().join("afkconvoy/runs")).unwrap() {
+            let text = std::fs::read_to_string(file.unwrap().path()).unwrap();
+            assert!(!text.contains("\"watch_failed\""), "{text}");
+        }
+    };
+    until(&world, "a successful look", || {
+        no_failures();
+        state(&world)["until"].as_u64().filter(|until| *until > first)
+    });
+    assert!(world.orca_calls().iter().any(|call| asked(call) == "terminal list"));
+    assert_eq!(state(&world)["last"]["outcome"], "ended");
+    no_failures();
+}
+
+#[test]
 fn a_look_with_nothing_to_act_on_starts_no_model_and_moves_its_until_on() {
     let world = World::new();
     world.afk(&["run", "--host", "h1", "--second-ms", "100", "--watch-every", "1"]).ok();

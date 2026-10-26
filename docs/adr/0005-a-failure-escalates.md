@@ -21,6 +21,22 @@ releases the claim, with the startup errors as its reason. An incomplete
 start is never judged silent, and a nudge requires a harness ready for a
 prompt immediately before it is sent.
 
+### A ready harness still redrawing waits for its brief
+
+A harness whose readiness wait was satisfied may still time out at the idle
+check before its brief, even after the brief's longer settle wait. That is
+no failed start: no line was sent. Keep the ready terminal under the same
+claim and check it once on each later tick, handing it the brief once its
+prompt settles. Neither a new worker nor a failed-start escalation follows
+from that timeout. A ready terminal that is gone is started again; another
+claim never inherits it. Readiness that never succeeds and a refused or
+unproven submission still fail as above.
+
+This preserves the tick's two waits for a new worker — readiness, then the
+idle check before its brief — without another wait in that tick. The
+incomplete dispatch remains outside worker health and silence judgments
+until the brief starts a turn.
+
 ## Amended by ADR-0010 and ADR-0011
 
 A failure is a worker that crashed, went silent past its nudge, could not turn the gate green, declared no valid verdict, or crossed a guard. Those still escalate at once and are never retried.

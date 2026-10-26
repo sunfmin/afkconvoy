@@ -28,6 +28,92 @@ fn tracker_issue(world: &World, number: u64, labels: &[&str]) {
     issue_in(world, TRACKER, number, labels);
 }
 
+#[test]
+fn unworked_blockers_are_named_with_repairs_in_plan_and_doctor() {
+    let world = world();
+    tracker_issue(&world, 7, &[MINE, "ready-for-agent"]);
+    world.with_tracker(|gh| {
+        gh["edges"]["7"] = json!([
+            {"number": 931, "state": "open", "repo": "acme/kernel", "labels": []},
+            {"number": 41, "state": "open", "repo": TRACKER, "labels": []},
+            {"number": 42, "state": "open", "repo": TRACKER, "labels": ["repo:acme/absent"]},
+            {"number": 43, "state": "closed", "repo": "acme/kernel", "labels": []}
+        ])
+    });
+    let plan = world.afk(&["plan"]).ok();
+    assert_eq!(plan["frontier"], json!([]), "a build still waits: {plan}");
+    let findings = plan["findings"].as_array().unwrap();
+    assert_eq!(findings.len(), 3, "{plan}");
+    let external = findings
+        .iter()
+        .find(|row| row["what"].as_str().unwrap().contains("acme/kernel#931"))
+        .unwrap();
+    for said in ["issue #7", "no fleet works"] {
+        assert!(external["what"].as_str().unwrap().contains(said), "{external}");
+    }
+    assert!(
+        external["fix"]
+            .as_str()
+            .unwrap()
+            .contains("gh issue transfer 931 'acme/tracker' --repo 'acme/kernel'"),
+        "{external}"
+    );
+    for row in findings {
+        let fix = row["fix"].as_str().unwrap();
+        assert!(fix.contains("afkconvoy flows"), "{row}");
+        assert!(fix.contains("gh issue edit ") && fix.contains("--add-label 'repo:"), "{row}");
+    }
+    let doctor = world.afk(&["doctor"]).ok();
+    for finding in findings {
+        assert!(doctor["findings"].as_array().unwrap().contains(finding), "{doctor}");
+    }
+}
+
+#[test]
+fn a_blocker_repair_read_in_a_workers_worktree_uses_the_main_checkout_for_flows() {
+    let world = world();
+    tracker_issue(&world, 7, &[MINE, "ready-for-agent"]);
+    assert_eq!(did(&tick(&world, "1000")), ["dispatch 7 done"]);
+    let worktree = world.worktrees()[0].clone();
+    world.with_tracker(|gh| {
+        gh["edges"]["7"] = json!([
+            {"number": 931, "state": "open", "repo": "acme/dev", "labels": []}
+        ])
+    });
+    let plan = world.afk_in(&worktree, &["plan", "--now", "1090"]).ok();
+    let fix = plan["findings"][0]["fix"].as_str().unwrap();
+    let flows = fix.lines().find(|line| line.contains("afkconvoy flows")).unwrap();
+    let out = world.command("sh", &worktree).args(["-c", flows]).output().unwrap();
+    assert!(out.status.success(), "{flows}: {}", String::from_utf8_lossy(&out.stdout));
+    let answer: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(answer["line"].as_str().unwrap().contains("--repo acme/tracker"), "{answer}");
+}
+
+#[test]
+fn a_blocker_of_another_checkout_serving_the_tracker_is_worked() {
+    let world = world();
+    let other = world.second_repo();
+    world.name_origin(&other, "acme/kernel");
+    world.say_tracker(&other, TRACKER);
+    tracker_issue(&world, 7, &[MINE, "ready-for-agent"]);
+    world.with_tracker(|gh| {
+        gh["edges"]["7"] = json!([
+            {"number": 41, "state": "open", "repo": TRACKER, "labels": ["repo:acme/kernel"]}
+        ])
+    });
+    let plan = world.afk(&["plan"]).ok();
+    assert_eq!(plan["findings"], json!([]), "{plan}");
+    assert_eq!(plan["excluded"][0]["reason"], "open blockers: #41");
+
+    // Outside the tracker, the same repo's issue is unworked. Its known
+    // checkout supplies the ready label and repo label for the repair.
+    world.with_tracker(|gh| gh["edges"]["7"][0]["repo"] = json!("acme/kernel"));
+    let plan = world.afk(&["plan"]).ok();
+    let fix = plan["findings"][0]["fix"].as_str().unwrap();
+    assert!(fix.contains("--add-label 'repo:acme/kernel' --add-label 'ready-for-agent'"), "{fix}");
+    assert!(fix.contains(&other.display().to_string()), "{fix}");
+}
+
 /// Adds an open issue carrying `labels` to the tracker `tracker`.
 fn issue_in(world: &World, tracker: &str, number: u64, labels: &[&str]) {
     world.with_tracker_of(tracker, |gh| {

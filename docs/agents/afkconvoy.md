@@ -7,7 +7,7 @@ type is an error, not a default.
 ```yaml
 base_branch: main                 # workers cut from it, open their PR against it, land on it
 gate_command: afkconvoy exclusive -- ./gate.sh  # what must pass before a PR lands, one at a time on the host
-gate_seconds: 3600                # the gate limit: the wait in the queue counts toward it
+gate_seconds: 3600                # the gate limit, starting after its turn is granted
 ready_label: ready-for-agent      # an issue is dispatchable while it carries this
 epic_labels: [epic, prd]          # never dispatched
 escalate_label: ready-for-human   # swapped in for ready_label when the fleet gives an issue up
@@ -47,18 +47,11 @@ wait.
   crate, `cargo fmt`, git and editing do not: they would wait behind every
   gate of the host for no reason.
 
-The wait in the queue counts toward the gate limit, `gate_seconds`, as the run
-does, and so toward the time a recorded gate run keeps, by which the gate is
-judged slow. This repo's own gates fit in the hour: the most that can queue is
-every worker's, with six workers six gates of about four and
-a half minutes each (the slowest green run on record took 273 seconds, beside
-other gates), about 32 minutes. Other fleets' commands in the queue add to the
-wait: bizkernel's gate goes through it too, and in this host's tick logs up to
-24 October 2026 its 340 runs took 197 seconds at the median and 734 at most,
-and a command waited 1022 seconds at most. A gate that reaches the limit while
-it waits is red (`timed_out`), and is run again. Where that keeps happening,
-`afkconvoy doctor` shows the queue, and the limit is raised here, the one place
-it is written, for every host.
+The gate limit, `gate_seconds`, starts after the queue grants its turn. A
+nested `exclusive` in the gate command inherits that turn, so it waits for
+no second lane. The recorded gate duration measures the gate command itself.
+A cut's overall limit still includes its queue waits; its commands go ahead
+of waiting workers so their gates cannot consume that limit (ADR-0028).
 
 Fewer workers at once (`--concurrency`) would also keep gates apart, but would
 slow every worker's editing as well, and still let two gates overlap. The queue
@@ -67,7 +60,8 @@ bounds only the heavy step.
 ## Cutting a version
 
 The fleet cuts each version of afkconvoy itself, once it goes idle with landed
-work past the newest `v*` tag: it sets the version, lands it through the
+work past the newest `v*` tag, or the oldest landing has waited 60 minutes
+while busy: it sets the version, lands it through the
 landing turn, tags it, and publishes and installs it on its host
 (`afkconvoy cut --help`, `docs/adr/0028`). These are its steps, and the one
 place they are written. Each is run by `sh` in the cut's checkout, with the
@@ -94,6 +88,13 @@ publish: |
   brew update --quiet
   brew upgrade sunfmin/tap/afkconvoy
   test "$("$(brew --prefix)/bin/afkconvoy" --version)" = "afkconvoy $VERSION"
+```
+
+The bound is in a second cut block: afkconvoy versions that know cut steps
+but not this key read only the first one and skip this addition.
+
+```yaml cut
+busy_after_seconds: 3600
 ```
 
 - `set -ex` first: `sh` runs on past a line that fails and judges the step by

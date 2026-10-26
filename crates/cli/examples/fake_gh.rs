@@ -113,6 +113,16 @@ fn main() {
                 None => st.finish("", 1, "gh: Not Found (HTTP 404)\n"),
             }
         }
+        ["issue", "view", number, ..] => {
+            assert_eq!(st.opt("--json"), Some("url"));
+            let Some(issue) = issue(&st, number) else {
+                st.finish("", 1, "gh: Not Found (HTTP 404)\n")
+            };
+            let url = issue["url"].as_str().map(str::to_string).unwrap_or_else(|| {
+                format!("https://github.com/{}/issues/{number}", other.as_deref().unwrap())
+            });
+            st.finish(&json!({"url": url}).to_string(), 0, "")
+        }
         ["issue", "list", ..] if other.is_some() => {
             // The issues of another repo, kept under `other_issues`.
             let repo = other.unwrap();
@@ -621,7 +631,9 @@ fn api(st: &mut State) -> ! {
                 .iter()
                 .map(|blocker| {
                     let state = blocker["state"].as_str().unwrap_or("open");
-                    json!({"number": blocker["number"], "state": state}).to_string()
+                    json!({"number": blocker["number"], "state": state,
+                        "repo": blocker["repo"], "labels": blocker["labels"]})
+                    .to_string()
                 })
                 .collect();
             st.finish(&lines.join("\n"), 0, "")
@@ -779,7 +791,8 @@ fn open_issues(st: &State) -> ! {
                 .iter()
                 .map(|blocker| {
                     json!({"number": blocker["number"],
-                    "state": blocker["state"].as_str().unwrap_or("open").to_uppercase()})
+                    "state": blocker["state"].as_str().unwrap_or("open").to_uppercase(),
+                    "repo": blocker["repo"], "labels": blocker["labels"]})
                 })
                 .collect();
             let mut with = comments(st, &number);
@@ -827,7 +840,16 @@ fn issue_id(issue: &Value) -> u64 {
 fn blockers(st: &State, number: &str) -> Vec<Value> {
     let named = st.doc["edges"][number].as_array().cloned().unwrap_or_default();
     let rows = st.doc["issues"].as_array().unwrap();
-    named.iter().filter_map(|n| rows.iter().find(|issue| issue["number"] == *n).cloned()).collect()
+    named
+        .iter()
+        .filter_map(|n| {
+            if n.is_object() {
+                Some(n.clone())
+            } else {
+                rows.iter().find(|issue| issue["number"] == *n).cloned()
+            }
+        })
+        .collect()
 }
 
 fn next_comment_id(st: &State) -> u64 {

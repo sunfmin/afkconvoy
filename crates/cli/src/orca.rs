@@ -248,6 +248,54 @@ struct Asked {
     stderr: String,
 }
 
+/// Reads Orca's JSON, replacing each unpaired UTF-16 surrogate escape with
+/// U+FFFD. Orca can split a pair when it cuts terminal text. Whole pairs and
+/// literal backslashes keep their meaning; all other JSON errors still fail.
+fn read_answer(bytes: &[u8]) -> serde_json::Result<Value> {
+    serde_json::from_slice(bytes).or_else(|_| {
+        let mut repaired = bytes.to_vec();
+        let mut quoted = false;
+        let mut at = 0;
+        while at < bytes.len() {
+            match bytes[at] {
+                b'"' => quoted = !quoted,
+                b'\\' if quoted => {
+                    if let Some(unit) = unicode_escape(&bytes[at..]) {
+                        if (0xd800..=0xdbff).contains(&unit)
+                            && unicode_escape(&bytes[at + 6..])
+                                .is_some_and(|next| (0xdc00..=0xdfff).contains(&next))
+                        {
+                            at += 12;
+                            continue;
+                        }
+                        if (0xd800..=0xdfff).contains(&unit) {
+                            repaired[at + 2..at + 6].copy_from_slice(b"fffd");
+                        }
+                        at += 6;
+                    } else {
+                        // An escaped quote cannot end a string, nor can an
+                        // escaped backslash begin a Unicode escape.
+                        at += 2;
+                    }
+                    continue;
+                }
+                _ => {}
+            }
+            at += 1;
+        }
+        serde_json::from_slice(&repaired)
+    })
+}
+
+/// One complete JSON Unicode escape at the start of `bytes`, if present.
+fn unicode_escape(bytes: &[u8]) -> Option<u16> {
+    let digits = bytes.strip_prefix(br"\u")?.get(..4)?;
+    if !digits.iter().all(u8::is_ascii_hexdigit) {
+        return None;
+    }
+    u16::from_str_radix(std::str::from_utf8(digits).ok()?, 16).ok()
+}
+
 /// Orca refused a prompt because the harness cannot accept it. Keep this
 /// distinct from a terminal or transport failure, including its full reason.
 #[derive(Debug)]
@@ -259,6 +307,17 @@ impl std::fmt::Display for PromptBlocked {
 }
 impl std::error::Error for PromptBlocked {}
 
+/// The idle check timed out before any line was sent. Readiness at start
+/// still fails on this; a ready worker can be handed its brief later.
+#[derive(Debug)]
+pub(crate) struct IdleTimeout;
+impl std::fmt::Display for IdleTimeout {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "orca terminal wait failed: timeout")
+    }
+}
+impl std::error::Error for IdleTimeout {}
+
 impl Asked {
     fn of(args: &[&str]) -> Result<Asked> {
         let what = args.iter().take(2).copied().collect::<Vec<_>>().join(" ");
@@ -269,7 +328,7 @@ impl Asked {
         Ok(Asked {
             what,
             exited_ok: out.status.success(),
-            answer: serde_json::from_slice(&out.stdout).unwrap_or(Value::Null),
+            answer: read_answer(&out.stdout).unwrap_or(Value::Null),
             stdout: String::from_utf8_lossy(&out.stdout).trim().to_string(),
             stderr: String::from_utf8_lossy(&out.stderr).trim().to_string(),
         })
@@ -1294,6 +1353,9 @@ impl Worktree {
         ])?;
         let wait = &asked.answer["result"]["wait"];
         if asked.answer["ok"] != true || !wait.is_object() {
+            if asked.answer["error"]["code"] == "timeout" {
+                return Err(IdleTimeout.into());
+            }
             return Err(asked.failure());
         }
         let ready = if wait["blockedReason"] == TRUST_PROMPT {
@@ -1425,6 +1487,65 @@ impl Worktree {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_lone_surrogate_in_an_answer_becomes_one_replacement_character() {
+        for unit in 0xd800..=0xdfff {
+            let text = format!(r#"{{"ok":true,"result":{{"text":"\u{unit:04x}"}}}}"#);
+            assert_eq!(
+                read_answer(text.as_bytes()).unwrap(),
+                serde_json::json!({"ok": true, "result": {"text": "�"}}),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn repairing_an_answer_keeps_pairs_keys_nesting_and_literal_escapes() {
+        let text = r#"{"ok":true,"result":{"\uD800key":["⏺\udf13","\ud83c\udf13","\ud800\ud800\udc00","\udfff\uDBFF\uDFFF","literal: \\udf13","quote: \"\udf17","slash: \\\udf13"]},"error":null}"#;
+        assert_eq!(
+            read_answer(text.as_bytes()).unwrap(),
+            serde_json::json!({
+                "ok": true, "result": {"�key": ["⏺�", "🌓", "�𐀀", "�\u{10ffff}",
+                    r"literal: \udf13", "quote: \"�", "slash: \\�"]}, "error": null
+            })
+        );
+        for high in [0xd800_u32, 0xda00, 0xdbff] {
+            for low in [0xdc00_u32, 0xdd00, 0xdfff] {
+                let text = format!(r#"["\u{high:04X}\u{low:04x}","\udf13"]"#);
+                let character =
+                    char::from_u32(0x10000 + ((high - 0xd800) << 10) + low - 0xdc00).unwrap();
+                assert_eq!(
+                    read_answer(text.as_bytes()).unwrap(),
+                    serde_json::json!([character.to_string(), "�"]),
+                    "{text}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn reading_an_answer_keeps_valid_json_and_rejects_other_malformed_json() {
+        let text = br#"{"ok":false,"error":{"code":"blocked","details":{"reason":"\ud83c\udf13"}},"result":[null,true,false,-12,1.25,18446744073709551615,"\\ud800"]}"#;
+        assert_eq!(read_answer(text).unwrap(), serde_json::from_slice::<Value>(text).unwrap());
+        for text in [
+            "not JSON",
+            r#"{"ok":true,"text":"\udf13",}"#,
+            r#"{"ok":true,"text":"\udf13\q"}"#,
+            r#"{"text":"\ud800\u12"}"#,
+            r#"{"text":"\u+800"}"#,
+            r#"{"text":"\uD8XZ"}"#,
+            r#"{"text":"\udf13}"#,
+            r#"{"text":"\udf13"} trailing"#,
+            r#"{"text":\udf13}"#,
+            "\"\\udf13\n\"",
+            "\"\\udf13\\",
+            "[\"\\udf13\"",
+        ] {
+            assert!(read_answer(text.as_bytes()).is_err(), "accepted malformed JSON: {text}");
+        }
+        assert!(read_answer(b"\"\\udf13\xff\"").is_err());
+    }
 
     /// An orca whose question terminal shows `shown` at every read, after the
     /// first: each call is kept in `calls`.

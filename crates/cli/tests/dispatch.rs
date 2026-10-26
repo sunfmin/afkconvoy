@@ -30,6 +30,67 @@ fn ready_world() -> World {
 }
 
 #[test]
+fn a_brief_with_lone_surrogates_in_the_screen_and_receipt_is_judged_on_the_receipt() {
+    for started in [false, true] {
+        let world = ready_world();
+        let stages = if started {
+            json!(["input_accepted", "turn_started"])
+        } else {
+            json!(["input_accepted"])
+        };
+        let receipt = json!({"ok": true, "result": {"send": {"accepted": true,
+            "prompt": {"stages": stages, "observation": "⏺SURROGATE"}}}})
+        .to_string()
+        .replace("SURROGATE", r"\udf17");
+        world.with_orca(|orca| {
+            orca["raw_answers"] = json!({
+                "terminal wait": r#"{"ok":true,"result":{"wait":{"satisfied":true,"preview":"⏺\ud800"}}}"#,
+                "terminal send": receipt,
+                "terminal read": r#"{"ok":true,"result":{"terminal":{"tail":["⏺\udf13"],"source":"screen"}}}"#
+            });
+        });
+        let answer = dispatch(&world, "7");
+        if started {
+            assert_eq!(answer.ok()["started"], true);
+        } else {
+            let error = answer.error();
+            assert!(error.contains("started no turn"), "{error}");
+            assert!(error.contains("Screen's last lines:\n⏺�"), "{error}");
+            assert!(!error.contains("screen unavailable"), "{error}");
+            assert!(world.orca_calls().iter().any(|call| common::asked(call) == "terminal read"));
+        }
+        let orca = world.orca();
+        let sent: usize = orca["terminals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|terminal| terminal["sent"].as_array().unwrap().len())
+            .sum();
+        assert_eq!(sent, 1, "the brief is submitted exactly once");
+    }
+}
+
+#[test]
+fn an_orca_error_with_a_lone_surrogate_and_non_json_output_still_fail() {
+    for (text, reason) in [
+        (
+            r#"{"ok":false,"error":{"code":"agent_prompt_blocked","details":{"reason":"Reason ⏺\udf13"}}}"#,
+            "agent_prompt_blocked: Reason ⏺�",
+        ),
+        (
+            r#"{"ok":false,"error":{"code":"terminal_not_writable","message":"⏺\ud800"}}"#,
+            "orca terminal send failed: terminal_not_writable",
+        ),
+        ("not JSON", "orca terminal send failed: not JSON"),
+    ] {
+        let world = ready_world();
+        world.with_orca(|orca| orca["raw_answers"] = json!({"terminal send": text}));
+        let error = dispatch(&world, "7").error();
+        assert!(error.contains(reason), "{error}");
+    }
+}
+
+#[test]
 fn an_accepted_brief_that_starts_no_turn_is_a_failed_start_on_every_harness() {
     for harness in afkconvoy_core::harness::Harness::ALL {
         for screen in [
