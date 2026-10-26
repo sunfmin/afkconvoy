@@ -110,7 +110,7 @@ fn brief(world: &World, line: &str) -> String {
 
 /// A successful session reports by command; a stopped or failed one leaves
 /// terminal evidence and, if it exited, its shell-written exit status.
-fn session(world: &World, watch: &Value, lines: &[&str], status: Option<i32>) {
+fn printed(world: &World, watch: &Value, lines: &[&str], status: Option<i32>) {
     if status == Some(0) {
         let file = world.root.join("watch-report.json");
         std::fs::write(
@@ -197,7 +197,7 @@ fn a_host_with_no_operator_directory_runs_the_stock_watch_and_records_what_stays
         "left with a human: taking private data off the host",
         "left with a human: changing who the product is for",
     ];
-    session(&world, &watch, &left, Some(0));
+    printed(&world, &watch, &left, Some(0));
     until(&world, "the stock watch's record", || ended(&world, "ended"));
     let doctor = world.afk(&["doctor", "--all"]).json;
     assert_eq!(doctor["host"]["watch"]["last"]["did"], json!(left));
@@ -240,7 +240,7 @@ fn the_operator_directory_wins_and_default_returns_to_the_stock_watch() {
     let doctor = world.afk(&["doctor", "--all"]).json;
     assert_eq!(doctor["host"]["watch"]["stock"], true);
     assert_eq!(doctor["host"]["watch"]["running"]["stock"], false);
-    session(&world, &watch, &["checked pi"], Some(0));
+    printed(&world, &watch, &["checked pi"], Some(0));
     paused(&world, "dsh", "another episode");
     let stock = until(&world, "the next stock watch", || {
         running(&world).filter(|watch| watch["stock"] == true)
@@ -265,7 +265,7 @@ fn a_look_reads_a_terminal_preview_ending_in_a_lone_surrogate() {
     .to_string()
     .replace("SURROGATE", r"\udf13");
     world.with_orca(|orca| orca["raw_answers"] = json!({"terminal list": answer}));
-    session(&world, &watch, &["checked the host"], Some(0));
+    printed(&world, &watch, &["checked the host"], Some(0));
     let no_failures = || {
         for file in std::fs::read_dir(world.cache().join("afkconvoy/runs")).unwrap() {
             let text = std::fs::read_to_string(file.unwrap().path()).unwrap();
@@ -322,7 +322,7 @@ fn unplaced_models_start_a_daily_watch_that_places_research_and_keeps_its_bound_
         "good_at":"small fixes; limited deep reasoning", "sources":[{"url":"https://vendor.example/card", "date":"2026-10-24"}]}]}).to_string()).unwrap();
     let applied = world.afk(&["kit", "--research", file.to_str().unwrap()]).ok();
     assert_eq!(applied["placed"], json!([{"harness":"claude-code", "model":"fast"}]));
-    session(&world, &watch, &["placed fast; deep remains unplaced"], Some(0));
+    printed(&world, &watch, &["placed fast; deep remains unplaced"], Some(0));
     until(&world, "research watch ended", || ended(&world, "ended"));
     let first_until = state(&world)["until"].as_u64().unwrap();
     until(&world, "a later look with research left", || {
@@ -346,7 +346,7 @@ fn unplaced_models_start_a_daily_watch_that_places_research_and_keeps_its_bound_
     assert_eq!(items.len(), 2, "{urgent}");
     assert!(items[0]["id"].as_str().unwrap().starts_with("finding:"));
     assert!(items[1]["id"].as_str().unwrap().starts_with("kit-research:"));
-    session(&world, &urgent, &["checked pi; deep has no evidence yet"], Some(0));
+    printed(&world, &urgent, &["checked pi; deep has no evidence yet"], Some(0));
     until(&world, "the urgent watch ended", || {
         ended(&world, "ended").filter(|last| last["id"] == urgent["id"])
     });
@@ -492,7 +492,7 @@ fn a_watch_answers_escalations_and_leaves_only_the_four_human_kinds() {
         .unwrap()
         .clone();
     assert_eq!(human["labels"], json!(["ready-for-human"]));
-    session(
+    printed(
         &world,
         &watch,
         &[
@@ -541,7 +541,7 @@ fn one_watch_covers_an_episode_is_kept_across_a_restart_and_is_recorded() {
     assert_eq!(starts(&world).len(), 1, "the running watch is kept, and none started beside it");
     assert_eq!(running(&world).unwrap()["id"], watch["id"]);
 
-    session(&world, &watch, &["looked at pi", "left dsh for the next look"], Some(0));
+    printed(&world, &watch, &["looked at pi", "left dsh for the next look"], Some(0));
     let last = until(&world, "the watch to end", || ended(&world, "ended"));
     assert_eq!(last["id"], watch["id"]);
     assert_eq!(last["did"], json!(["looked at pi", "left dsh for the next look"]));
@@ -583,7 +583,7 @@ fn a_watch_whose_harness_runs_out_goes_on_on_the_next_with_the_same_look() {
     assert!(starts(&world)[0].contains(" --search "), "the watch can search the web");
 
     let out = "Usage limit reached; increase your limits to continue using Codex";
-    session(&world, &first, &["checked kimi", out], None);
+    printed(&world, &first, &["checked kimi", out], None);
     let next = until(&world, "the watch on Claude Code", || {
         running(&world).filter(|running| running["harness"] == "claude-code")
     });
@@ -606,13 +606,13 @@ fn a_watch_whose_harness_runs_out_goes_on_on_the_next_with_the_same_look() {
     );
 
     // A harness that fails its session, and says nothing of why, gives out too.
-    session(&world, &next, &["API Error: 500"], Some(1));
+    printed(&world, &next, &["API Error: 500"], Some(1));
     let third = until(&world, "the watch on pi", || {
         running(&world).filter(|running| running["harness"] == "pi")
     });
     assert_eq!(third["attempts"][1]["harness"], "claude-code");
     assert_eq!(third["id"], first["id"]);
-    session(&world, &third, &["fixed it"], Some(0));
+    printed(&world, &third, &["fixed it"], Some(0));
     let last = until(&world, "the watch to end", || ended(&world, "ended"));
     assert_eq!(last["did"], json!(["fixed it"]));
 }
@@ -792,7 +792,7 @@ fn a_watch_at_capacity_continues_interactively_with_the_same_look() {
     run(&world, &dir);
     let watch = until(&world, "Codex watch", || running(&world));
     assert_eq!(watch["harness"], "codex");
-    session(
+    printed(
         &world,
         &watch,
         &["Selected model is at capacity. Please try a different model."],
@@ -866,7 +866,7 @@ fn a_hot_worker_starts_the_host_watch_with_its_reading_and_evidence() {
     assert!(
         !world.worktrees().iter().any(|p| p.to_string_lossy().contains("afkconvoy-inspection"))
     );
-    session(&world, &watch, &["told #7 to end its runaway process"], Some(0));
+    printed(&world, &watch, &["told #7 to end its runaway process"], Some(0));
     until(&world, "watch record", || ended(&world, "ended"));
     std::thread::sleep(Duration::from_secs(3));
     assert_eq!(starts(&world).len(), 1, "the same hot episode starts nothing again");
@@ -925,7 +925,7 @@ fn admission_held_ten_minutes_starts_a_watch_with_the_host_reading() {
     for text in ["admission has held back", "load", "600", "reading", "cores", "evidence.md"] {
         assert!(told.contains(text), "missing {text}: {told}");
     }
-    session(&world, &watch, &["moved the heavy work through exclusive"], Some(0));
+    printed(&world, &watch, &["moved the heavy work through exclusive"], Some(0));
     until(&world, "watch end", || ended(&world, "ended"));
     let second = world.second_repo();
     world.afk_in(&second, &["run", "--host", "h1", "--second-ms", "100"]).ok();
@@ -954,7 +954,7 @@ fn pressure_starts_one_watch_across_fleets_and_no_worker_turns_hot() {
     assert!(told.contains("level"), "{told}");
     let second = world.second_repo();
     world.afk_in(&second, &["run", "--host", "h1", "--second-ms", "100"]).ok();
-    session(&world, &watch, &["checked the outside memory holder"], Some(0));
+    printed(&world, &watch, &["checked the outside memory holder"], Some(0));
     until(&world, "watch end", || ended(&world, "ended"));
     std::thread::sleep(Duration::from_secs(3));
     assert_eq!(starts(&world).len(), 1, "one pressure episode across fleets");
@@ -980,7 +980,7 @@ fn a_resource_trigger_while_a_watch_runs_waits_for_its_next_look() {
         saved.contains("resident").then_some(())
     });
     assert_eq!(starts(&world).len(), 1, "no second watch while the first runs");
-    session(&world, &first, &["checked pi"], Some(0));
+    printed(&world, &first, &["checked pi"], Some(0));
     let next = until(&world, "watch on the new resource episode", || {
         running(&world).filter(|w| w["id"] != first["id"])
     });
