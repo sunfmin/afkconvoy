@@ -1172,7 +1172,10 @@ fn kit(out: &mut String, host: &Host) {
                 esc(worker["successor"].as_str().unwrap_or("")),
                 esc(worker["source"].as_str().unwrap_or("")),
                 worker["next_check"],
-                esc(&format!("{} {}", worker["diagnosis"], worker["error"]))
+                esc(&match worker["operator_reason"].as_str() {
+                    Some(reason) => format!("waiting for the operator: {reason}"),
+                    None => format!("{} {}", worker["diagnosis"], worker["error"]),
+                })
             );
         }
         out.push_str("</table></section>");
