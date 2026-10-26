@@ -148,8 +148,96 @@ fn escaped_helper() {
         // SAFETY: this isolated helper deliberately ignores SIGTERM.
         unsafe { libc::signal(libc::SIGTERM, libc::SIG_IGN) };
     }
-    std::fs::write(std::env::var_os("ESCAPED_READY").unwrap(), "ready").unwrap();
+    std::fs::write(std::env::var_os("ESCAPED_READY").unwrap(), std::process::id().to_string())
+        .unwrap();
     std::thread::sleep(Duration::from_secs(120));
+}
+
+#[test]
+#[ignore = "the orphan regression starts this as the helper's short-lived parent"]
+fn orphan_launcher() {
+    Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "continuation::escaped_helper", "--ignored"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+}
+
+/// A helper whose parent really exited: the same ppid=1 distinction that
+/// separates a worker's leftovers from a server shared by the host.
+struct Orphan(u32);
+
+impl Orphan {
+    fn start(world: &World, worktree: &Path, cwd: &Path) -> Self {
+        let ready = cwd.join("orphan-ready");
+        let status = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "continuation::orphan_launcher", "--ignored"])
+            .current_dir(cwd)
+            .env("TMPDIR", world.tmp(worktree))
+            .env("ESCAPED_READY", &ready)
+            .env("ESCAPED_IGNORES_TERM", "false")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let until = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Ok(ready) = std::fs::read_to_string(&ready) {
+                let pid: u32 = ready.parse().unwrap();
+                let ppid = Command::new("ps")
+                    .args(["-p", &pid.to_string(), "-o", "ppid="])
+                    .output()
+                    .unwrap();
+                assert_eq!(String::from_utf8_lossy(&ppid.stdout).trim(), "1");
+                return Self(pid);
+            }
+            assert!(Instant::now() < until, "orphan never became ready");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn alive(&self) -> bool {
+        // SAFETY: signal zero observes only, without delivering a signal.
+        unsafe { libc::kill(self.0 as libc::pid_t, 0) == 0 }
+    }
+}
+
+impl Drop for Orphan {
+    fn drop(&mut self) {
+        if self.alive() {
+            // SAFETY: this orphan was started and is owned by this test.
+            unsafe { libc::kill(self.0 as libc::pid_t, libc::SIGKILL) };
+        }
+    }
+}
+
+#[test]
+fn an_orphan_in_the_worktree_ends_while_a_shared_server_with_its_tmpdir_is_left_alone() {
+    use std::os::unix::fs::PermissionsExt;
+    let world = fleet();
+    let dir = worktree(&world);
+    let escaped = Orphan::start(&world, &dir, &dir);
+    let server = Orphan::start(&world, &dir, &world.root);
+    let kill = world.root.join("bin/kill");
+    std::fs::write(
+        &kill,
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"${0%/*}/../signals\"\nexec /bin/kill \"$@\"\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&kill, std::fs::Permissions::from_mode(0o755)).unwrap();
+    kill_worker(&world);
+
+    let ticked = tick(&world, 1090);
+    assert_eq!(did(&ticked)[0], "judge 7 continued", "{ticked}");
+    assert!(!escaped.alive(), "orphan in the worktree still runs");
+    assert!(server.alive(), "server shared by the host was ended");
+    let signals = std::fs::read_to_string(world.root.join("signals")).unwrap();
+    assert_eq!(signals.trim(), format!("-TERM {}", escaped.0));
+    assert_eq!(open_terminals(&world, &dir).len(), 1);
 }
 
 #[test]
