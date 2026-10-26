@@ -663,9 +663,9 @@ fn api(st: &mut State) -> ! {
         }
         ["issues", number, "comments"] if method == "POST" => {
             let body = body.expect("a comment has a body");
-            // Hold an inspection's final comment while its waiting worker
+            // Hold a watch's final comment while its waiting worker
             // cools, without blocking the sampler's orca observations.
-            if body.starts_with("<!--convoy:inspection ")
+            if body.starts_with("<!--convoy:watch ")
                 && let Some(release) = st.doc["comment_wait"].as_str()
             {
                 std::fs::write(format!("{release}.waiting"), "").unwrap();

@@ -7,7 +7,7 @@
 use flux_rs::attrs::*;
 
 use crate::harness::Harness;
-use crate::inspection::INSPECTION_ENV;
+use crate::host_watch::WATCH_ENV;
 use crate::patrol::PATROL_ENV;
 use crate::position::Position;
 use crate::precedent::PROPOSAL_ENV;
@@ -188,9 +188,8 @@ pub enum On<'a> {
     /// The proposal, as a precedent, of a ruling a human gave this issue: no
     /// stage, and the issue is not its worker's.
     Proposal { issue: u64 },
-    /// An inspection of the hot worker so named (docs/adr/0019): no stage,
-    /// and held as a consult whatever its role.
-    Inspection(&'a str),
+    /// The host watch: no issue or stage; its commands have operator authority.
+    Watch(&'a str),
 }
 
 /// The facts of one start: what its worker, and the commands it runs, read
@@ -228,7 +227,7 @@ impl Facts<'_> {
             ],
             On::Patrol(patrol) => vec![(PATROL_ENV, patrol.to_string())],
             On::Proposal { issue } => vec![(PROPOSAL_ENV, issue.to_string())],
-            On::Inspection(worker) => vec![(INSPECTION_ENV, worker.to_string())],
+            On::Watch(worker) => vec![(WATCH_ENV, worker.to_string())],
         };
         env.extend([
             (ROLE_ENV, self.role.to_string()),

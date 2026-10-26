@@ -1,4 +1,4 @@
-//! What a host inspection is given, taken down as it starts (docs/adr/0019):
+//! What a host watch is given, taken down as it starts (docs/adr/0019):
 //! admission's reading and shares; for disk, what each of this host's
 //! worktrees of every fleet holds — with its issue, its stage and whether a
 //! worker holds it — the landing train's among them, the fleet's caches, and
@@ -6,7 +6,7 @@
 //! them, found within five minutes; for load or memory, the process
 //! trees of each worker and of the train, and the hottest processes outside
 //! them. It is written to a directory of the cache every fleet of the host
-//! shares, and handed to the inspection (`crate::inspection`).
+//! shares, and handed to the watch (`crate::watch`).
 
 use std::collections::HashSet;
 use std::fmt::Write as _;
@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use afkconvoy_core::host_inspection::Reason;
+use afkconvoy_core::resources::Reason;
 use anyhow::{Context, Result};
 
 use crate::admission::Admission;
@@ -26,7 +26,7 @@ use crate::measure;
 use crate::orca::{OnHost, Worktree};
 
 /// The directory of the cache the evidence is written to.
-const DIR: &str = "host-inspection";
+const DIR: &str = "watch/evidence";
 /// The file it is written to there.
 const FILE: &str = "evidence.md";
 /// How many of the largest directories outside the worktrees, and of the
@@ -43,7 +43,7 @@ const DEPTH: &str = "4";
 /// How many of the largest directories of the volume are listed.
 const LARGEST: usize = 40;
 
-/// What the inspecting fleet knows of its own worktrees.
+/// What the observing fleet knows of its own worktrees.
 pub struct Own<'a> {
     /// Its repo's main checkout.
     pub repo: &'a Path,
@@ -55,9 +55,9 @@ pub struct Own<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Listed {
     pub on: OnHost,
-    /// Whether it is of the inspecting fleet's repo.
+    /// Whether it is of the observing fleet's repo.
     pub own: bool,
-    /// Its issue's stage, of the inspecting fleet's issues.
+    /// Its issue's stage, of the observing fleet's issues.
     pub stage: Option<String>,
     /// What git ignores in it — what its builds made — and the files git
     /// tracks; `None` where it cannot be read.
@@ -65,14 +65,14 @@ pub struct Listed {
     pub source: Option<u64>,
 }
 
-/// Takes down what a host inspection for `reason` is given, `admission`
+/// Takes down what a host watch for `reason` is given, `admission`
 /// being what held back → the file it is in.
 pub fn take(admission: &Admission, reason: Reason, reading: &str, own: &Own) -> Result<PathBuf> {
-    let dir = cache()?.join(DIR);
+    let dir = cache()?.join(DIR).join(format!("{}-{}", reason.word(), crate::unique()));
     std::fs::create_dir_all(&dir).with_context(|| format!("cannot make {}", dir.display()))?;
     let on_host = Worktree::on_host()?;
-    let mut out = format!("# What a host inspection for {} was given\n\n", reason.word());
-    let _ = writeln!(out, "What calls for this inspection: {reading}.\n");
+    let mut out = format!("# What a host watch for {} was given\n\n", reason.word());
+    let _ = writeln!(out, "What calls for this watch: {reading}.\n");
     out.push_str("## Admission's reading and shares\n\n```json\n");
     out.push_str(&serde_json::to_string_pretty(&admission.json()).unwrap_or_default());
     out.push_str("\n```\n");
@@ -157,7 +157,7 @@ pub fn worktrees_said(listed: &[Listed]) -> String {
             .map(|built| format!(", {} of it build output", measure::said(built)))
             .unwrap_or_default();
         let what = match (listed.on.fleets, listed.on.issue) {
-            (true, _) => "the fleet's own (the landing train's, or an inspection's)".to_string(),
+            (true, _) => "the fleet's own (the landing train's, or a watch's)".to_string(),
             (false, Some(issue)) => match &listed.stage {
                 Some(stage) => format!("issue #{issue}, {stage}"),
                 None if listed.own => {

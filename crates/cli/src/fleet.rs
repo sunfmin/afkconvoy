@@ -440,8 +440,8 @@ impl Fleet {
         }
         let riding = on_train(&joins, prs);
         let joined: Vec<u64> = riding.iter().filter_map(|join| join.issue()).collect();
-        let inspections: Vec<u64> =
-            riding.iter().filter(|join| join.is_inspection()).map(|join| join.pr).collect();
+        let watches: Vec<u64> =
+            riding.iter().filter(|join| join.is_watch()).map(|join| join.pr).collect();
         // A PR is the fleet's own when its branch is one recorded on the issue.
         let mut kept = vec![];
         for issue in issues {
@@ -491,7 +491,7 @@ impl Fleet {
             slow_gate: &slow_gate,
             idle_train: if train.tip == train.base { self.train_built() } else { None },
             consults: &consults,
-            inspections: &inspections,
+            watches: &watches,
             tracker: &self.gh.tracker,
             cut: cut.as_ref(),
         };

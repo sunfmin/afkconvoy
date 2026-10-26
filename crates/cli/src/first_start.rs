@@ -15,9 +15,9 @@ use crate::instance::Start;
 /// What the guide and first-start topic tell the user about host settings,
 /// with numeric defaults taken from the rules that use them.
 pub fn settings_help() -> String {
-    use afkconvoy_core::{admission::SHARES, host_inspection::SPAN, host_sleep};
+    use afkconvoy_core::{admission::SHARES, host_sleep, resources::SPAN};
     format!(
-        "Host settings apply to every fleet; `run` changes those named. Defaults: host sleep {} local time after host and fleets idle {} minutes (`--no-host-sleep` required off macOS); inspect workers above half the cores (at least one) for two minutes, a quarter of memory resident, or a tenth of free disk written in ten minutes (at least one GiB); admission holds starts above {}% load per core or below {}% memory or {}% disk free, inspecting after {} seconds held for one reason or memory pressure; end exclusive commands after {} seconds holding others up; panel port {} (a free port if taken); the host runner looks every {} seconds with an operator directory, none by default so no watch. Concurrency: {} claims at work per checkout. Flags: `afkconvoy run --help`.",
+        "Host settings apply to every fleet; `run` changes those named. Defaults: host sleep {} local time after host and fleets idle {} minutes (`--no-host-sleep` required off macOS); watch workers above half the cores (at least one) for two minutes, a quarter of memory resident, or a tenth of free disk written in ten minutes (at least one GiB); admission holds starts above {}% load per core or below {}% memory or {}% disk free, calling for the watch after {} seconds held for one reason or memory pressure; end exclusive commands after {} seconds holding others up; panel port {} (a free port if taken); the host runner looks every {} seconds in the operator's directory, or the stock watch's by default. Concurrency: {} claims at work per checkout. Flags: `afkconvoy run --help`.",
         host_sleep::SLEEP_HOURS,
         host_sleep::IDLE_WAIT / 60,
         SHARES.load,

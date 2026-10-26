@@ -92,7 +92,7 @@ impl Agent {
     /// freshly read host-user effort, and waits until it can take its brief.
     /// Outside a role it starts already trusting its worktree. Shell-only
     /// auxiliaries use `start`. An issue given here is exported for every
-    /// command that worker runs; the train and inspections carry no issue context.
+    /// command that worker runs; the train and watches carry no issue context.
     pub fn start_worker(
         &self,
         worktree: &Worktree,

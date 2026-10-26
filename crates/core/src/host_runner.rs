@@ -120,7 +120,7 @@ impl HeldBack {
 /// What holds back a host runner's move onto a newer afkconvoy now: each of
 /// its fleet instances `each`, by checkout, still starting or in a tick,
 /// and the `exclusive` commands running. Claims, workers, the landing train,
-/// cuts, inspections and commands waiting carry on across a move.
+/// cuts, watches and commands waiting carry on across a move.
 pub fn held_back(each: &[(String, Stands)], exclusive: usize) -> Vec<HeldBack> {
     let mut held = vec![];
     for (checkout, stands) in each {
