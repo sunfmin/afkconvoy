@@ -237,6 +237,44 @@ fn train_worktree(world: &World) -> PathBuf {
 }
 
 #[test]
+fn a_bound_issues_train_given_up_twice_is_a_fleet_fault_with_no_consult() {
+    let world = bound();
+    let now = through_the_stages(&world);
+    assert_eq!(did(&tick(&world, now)), ["dispatch 7 done"]);
+    join(&world, now + 60);
+    assert_eq!(did(&tick(&world, now + 90)), ["tend_train done"]);
+    for at in [now + 690, now + 1380] {
+        let dir = train_worktree(&world);
+        // Historical nudge evidence lets an operator abandon the stopped
+        // train. New unclassified silence waits for diagnosis instead.
+        stopped(&world, at - 590);
+        let notes = PathBuf::from(git(&dir, &["rev-parse", "--absolute-git-dir"]));
+        std::fs::write(notes.join("convoy-nudged"), (at - 300).to_string()).unwrap();
+        let abandoned = world
+            .afk(&["abandon", "--instance", "alpha", "--host", "h1", "--now", &at.to_string()])
+            .ok();
+        assert_eq!(abandoned["action"], "abandoned");
+        if at == now + 690 {
+            join(&world, at + 10);
+            assert_eq!(did(&tick(&world, at + 90)), ["tend_train done"]);
+        }
+    }
+    assert_eq!(world.claims(), []);
+    assert!(world.labels(7).contains(&"ready-for-human".to_string()));
+    let comments = world.comments(7);
+    let escalation = comments.iter().find(|body| body.contains("convoy:escalation")).unwrap();
+    assert!(escalation.contains("Fleet fault:") && escalation.contains("the fix is on the host"));
+    world.orca_calls();
+    assert_eq!(did(&tick(&world, now + 1470)), [] as [&str; 0]);
+    assert_eq!(world.claims(), [], "no consult claim is taken");
+    assert_eq!(world.comments(7), comments);
+    assert!(!world.orca_calls().iter().any(|call| common::asked(call) == "terminal create"));
+    let doctor = world.afk(&["doctor", "--now", &(now + 1500).to_string()]).json;
+    let why = doctor["waiting_on_human"][0]["why"].as_str().unwrap();
+    assert!(why.contains("Fleet fault:") && why.contains("the fix is on the host"), "{doctor}");
+}
+
+#[test]
 fn an_issue_walks_a_four_stage_workflow_to_the_base_branch() {
     let world = bound();
     let now = through_the_stages(&world);
