@@ -80,8 +80,8 @@ pub fn rehearse(loaded: &Loaded, name: &str, declared: &[Declared]) -> Result<Va
 
 /// A position as a command answers it: what it is, at which stage, who acts
 /// on it, and — where a worker does — on which harness with no casting on
-/// this host: a worker in a role on its range's first, the stock inspector on
-/// the host kit's. None on a host without a host kit.
+/// this host: a worker in a role on its range's first. None on a host without
+/// a host kit.
 pub(crate) fn position(team: &Team, workflow: &Workflow, position: Position) -> Value {
     let is = match position {
         Position::Perform(..) => "perform",

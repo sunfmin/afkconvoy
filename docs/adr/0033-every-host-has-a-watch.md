@@ -12,4 +12,4 @@ This amends ADR-0030, *The host runner watches its host* (sunfmin/control#78): n
 
 Keeping operational work in one watch ends the need for each fleet agent to stand in as the operator. Later issues move inspections, the stock consult and kit research into it; this decision does not move or remove those agents yet. The stock consult of ADR-0018 remains where it is until that work lands.
 
-Amended by ADR-0035 (sunfmin/control#96): the stock consult is removed; its hand-offs escalate for the watch to answer with the operator's authority. Named consults remain.
+Amended by ADR-0036 (sunfmin/control#96): the stock consult is removed; its hand-offs escalate for the watch to answer with the operator's authority. Named consults remain.

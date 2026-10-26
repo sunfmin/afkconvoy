@@ -94,6 +94,9 @@ pub struct Finding {
     /// says once.
     #[serde(skip)]
     pub of_host: bool,
+    /// Stable identity of a resource episode watched once.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub watch_id: Option<String>,
 }
 
 /// Names each kind of finding there is, with how much it matters and its
@@ -156,6 +159,9 @@ kinds! {
     StepUnrecovered: Warning, "failed in tick";
     HarnessDown: Critical, "harness is down";
     HarnessPaused: Warning, "is paused on this host";
+    HotWorker: Warning, "hot worker is past its limits";
+    AdmissionHeld: Warning, "admission has held back new workers";
+    MemoryPressure: Warning, "the host has been under memory pressure";
     KitUnplaced: Warning, "has unplaced models in the host kit";
     WatchUnavailable: Critical, "no harness can start this host's watch";
     NotMoved: Warning, "the host runner did not move onto";
@@ -201,6 +207,9 @@ impl Kind {
                 | Kind::NoProvider
                 | Kind::OrcaNotRunning
                 | Kind::HarnessPaused
+                | Kind::HotWorker
+                | Kind::AdmissionHeld
+                | Kind::MemoryPressure
                 | Kind::KitUnplaced
                 | Kind::WatchUnavailable
                 | Kind::NotMoved
@@ -212,7 +221,7 @@ impl Kind {
 pub(crate) fn finding(kind: Kind, what: String, evidence: String, fix: String) -> Finding {
     debug_assert!(what.contains(kind.symptom()), "{kind:?} is not said in: {what}");
     let (severity, see, of_host) = (kind.severity(), kind.see(), kind.of_host());
-    Finding { severity, what, evidence, fix, see, of_host }
+    Finding { severity, what, evidence, fix, see, of_host, watch_id: None }
 }
 
 /// An answer with a finding of the highest severity: printed as it is, with
@@ -1803,6 +1812,8 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String]) -> Result<Exami
     found.extend(crate::paused::findings(now));
     found.extend(host_runner::findings());
     found.extend(crate::host_watch::finding());
+    let resources = crate::resources::json(now)?;
+    found.extend(crate::resources::findings(&resources, now));
     found.extend(crate::kit_research::findings());
     found.sort_by_key(|finding| finding.severity);
     let (claims, issues, waiting) = match &state {
@@ -1819,9 +1830,6 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String]) -> Result<Exami
         Ok(admission) => admission.json(),
         Err(error) => json!({"error": format!("{error:#}")}),
     };
-    // Beside admission's reading: what the last host inspection found of it.
-    host["admission"]["inspected"] = crate::inspection::last_on_host()
-        .map_or(Value::Null, |last| crate::inspection::last_json(&last));
     host["settings"] = match List::of_host() {
         Ok(list) => crate::host_settings::json(&list, &repo.dir),
         Err(error) => json!({"error": format!("{error:#}")}),
@@ -1876,24 +1884,24 @@ fn exclusive_findings(entries: &[Entry], now: u64) -> Vec<Finding> {
 
 /// What of `doctor`'s `host` is the host's alone, the same whichever
 /// checkout it is asked in — the host kit, the queue of `exclusive`, the
-/// inspection running, the newer afkconvoy the host runner moves onto — by
+/// watch running, the newer afkconvoy the host runner moves onto — by
 /// its key: `doctor --all` says it once. All but the host kit are as the
 /// host runner says them, asked once.
 fn host_once(now: u64) -> Map<String, Value> {
-    let (exclusive, inspection, installed, watch) = match host_runner::shared() {
+    let (exclusive, installed, watch) = match host_runner::shared() {
         Ok(said) => {
             let said = said.unwrap_or_default();
-            (Ok(said.exclusive), said.inspection, said.installed, said.watch)
+            (Ok(said.exclusive), said.installed, said.watch)
         }
-        Err(error) => (Err(error), None, None, None),
+        Err(error) => (Err(error), None, None),
     };
     Map::from_iter([
         ("host_kit".to_string(), crate::kit::show(now)),
-        ("exclusive".to_string(), exclusive_json(exclusive)),
         (
-            "inspection".to_string(),
-            inspection.map_or(Value::Null, |running| crate::inspection::json(&running)),
+            "resources".to_string(),
+            crate::resources::json(now).unwrap_or_else(|e| json!({"error": format!("{e:#}")})),
         ),
+        ("exclusive".to_string(), exclusive_json(exclusive)),
         ("installed".to_string(), serde_json::to_value(installed).unwrap_or_default()),
         ("watch".to_string(), crate::host_watch::json(watch.as_ref())),
     ])
@@ -1904,7 +1912,7 @@ fn host_once(now: u64) -> Map<String, Value> {
 /// fleet of `host` — else of the host its `run` named, else of this machine
 /// — under the network settings `proxy` names:
 ///
-///   {"host": {"host_kit", "exclusive", "inspection", "installed"}, "findings",
+///   {"host": {"host_kit", "exclusive", "watch", "installed"}, "findings",
 ///    "checkouts": [{"checkout", "repo", "doctor"}]}
 ///
 /// What is the host's is said once, at the top: the part of `host` that is
@@ -2085,7 +2093,7 @@ mod tests {
             proposals: vec![],
             slow_gate: None,
             outgrown_train: None,
-            inspections_on_train: vec![],
+            watches_on_train: vec![],
             held_back: vec![],
             caster: None,
             casting: vec![],

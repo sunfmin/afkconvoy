@@ -6,7 +6,7 @@
 use std::path::Path;
 
 use afkconvoy_core::admission::{Disk, Hold, Reading, SHARES, Shares, holds, thresholds};
-use afkconvoy_core::host_inspection::{Reason, SPAN};
+use afkconvoy_core::resources::{Reason, SPAN};
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
 
@@ -23,7 +23,7 @@ pub struct Admission {
     pub said: Vec<&'static str>,
     pub reading: Reading,
     /// How long, in seconds, admission holds back for one reason before the
-    /// host is inspected: the host's, or `SPAN`.
+    /// host calls for a watch: the host's, or `SPAN`.
     pub span: u64,
 }
 

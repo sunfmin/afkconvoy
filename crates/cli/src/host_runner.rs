@@ -65,7 +65,6 @@ use crate::git::Repo;
 use crate::host_panel::HostPanel;
 use crate::host_settings::To;
 use crate::host_sleep::Standings;
-use crate::inspection::{Running, Turn};
 use crate::instance::{self, Named, Start};
 use crate::log::{self, What};
 use crate::panel::Broken;
@@ -147,14 +146,14 @@ struct Runner {
 
 /// What the fleet instances of a host share, held by its host runner for
 /// them all (docs/adr/0023): how each stands for host sleep, the one
-/// inspection on the host and who waits for it, and the exclusive queue; and
+/// watch on the host and who waits for it, and the exclusive queue; and
 /// the newer afkconvoy installed where it was started from, which it moves
 /// onto; and the wake routes of open blockers across repos on one tracker.
 /// A clone is the same.
 #[derive(Clone, Default)]
 pub struct Shared {
     pub standings: Standings,
-    pub turn: Turn,
+    pub resources: crate::resources::Shared,
     pub queue: Queue,
     pub installed: Arc<Mutex<Option<Installed>>>,
     pub blockers: wake::Blockers,
@@ -167,7 +166,6 @@ impl Shared {
     pub fn now(&self) -> SharedNow {
         SharedNow {
             exclusive: self.queue.standing(),
-            inspection: self.turn.running(),
             installed: self.installed().clone(),
             watch: self.watch.running(),
         }
@@ -188,8 +186,6 @@ impl Shared {
 pub struct SharedNow {
     /// The exclusive queue, in the order it runs.
     pub exclusive: Vec<Ticket>,
-    /// The inspection running on the host; `None`: none.
-    pub inspection: Option<Running>,
     /// The afkconvoy installed where the host runner was started from, where
     /// it is newer than the host runner's or does not start; `None`: none is,
     /// or the host runner is of an afkconvoy that does not say it.
@@ -626,13 +622,10 @@ impl Left {
             carried.push(format!("landing train PR #{}", join.pr));
         }
         let source = crate::orca::Source::of(&repo)?;
-        for (name, what) in [
-            (afkconvoy_core::cut::CHECKOUT, "cut"),
-            (afkconvoy_core::inspection::CHECKOUT, "inspection"),
-        ] {
-            if let Some(checkout) = crate::orca::Worktree::named(&source, name)? {
-                carried.push(format!("{what} in {}", checkout.path.display()));
-            }
+        if let Some(checkout) =
+            crate::orca::Worktree::named(&source, afkconvoy_core::cut::CHECKOUT)?
+        {
+            carried.push(format!("cut in {}", checkout.path.display()));
         }
         Ok(carried)
     }
@@ -680,16 +673,6 @@ fn held_host(
     }
     let held = Mutex::default();
     let shared = Shared { installed: Arc::clone(&watched.installed), ..Shared::default() };
-    for entry in &listed.checkouts {
-        let restored = Repo::at(&entry.checkout)
-            .and_then(|repo| crate::inspection::Inspector::reserve(&repo, &shared.turn));
-        if let Err(why) = restored {
-            log.say(&format!(
-                "{}: its inspection could not reserve the host's turn: {why:#}",
-                entry.checkout.display()
-            ));
-        }
-    }
     let panel = HostPanel::new(shared.clone());
     // Read once: a port the host settings change to holds from the next start.
     let port = host_settings::of_host().map_or(host_settings::PANEL_PORT, |said| said.panel_port());

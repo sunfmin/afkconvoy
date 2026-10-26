@@ -455,7 +455,7 @@ pub struct Checked {
 }
 
 /// What calls for the host kit's first: every worker in no role but the
-/// stock inspector, and whatever nothing casts.
+/// those that an issue casts, and whatever nothing casts.
 pub const BY_FIRST: &str = "the host kit's first";
 
 /// Adds `by` to what calls for `harness` in `called`.
@@ -477,8 +477,7 @@ pub fn current(repo: &Repo, bound: &Bound, labels: &RepoLabels) -> Option<Team> 
 
 /// Every harness the fleet of the checkout `repo`, bound to `team`, could be
 /// asked for, each with what calls for it: the host kit's first, every
-/// harness of each role's range (`casting::range`), and the stock inspector's,
-/// as the host kit names it. No team (`current`) calls for the first alone.
+/// harness of each role's range (`casting::range`). No team (`current`) calls for the first alone.
 pub fn called_for(repo: &Repo, team: Option<&Team>) -> Vec<(Harness, Vec<String>)> {
     let _ = repo;
     let Ok(kit) = crate::kit::load() else { return vec![] };
@@ -493,15 +492,8 @@ pub fn called_for(repo: &Repo, team: Option<&Team>) -> Vec<(Harness, Vec<String>
             }
         }
     }
-    // The stock inspector runs what the host kit names for it.
-    if let Some(stock) = kit.stock_inspector() {
-        call(&mut called, stock.harness, BY_STOCK_INSPECTOR.to_string());
-    }
     called
 }
-
-/// What calls for the harness the host kit names for the stock inspector.
-const BY_STOCK_INSPECTOR: &str = "the host kit's stock inspector";
 
 /// Checks the worker launch command of each harness `called` for, as
 /// `launches` has it, asking the login shell a worker gets: that its first

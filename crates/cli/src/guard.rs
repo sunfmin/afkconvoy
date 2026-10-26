@@ -5,7 +5,7 @@
 //! that harness's
 //! (`afkconvoy_core::harness`); whether the call is refused is the core's to
 //! say, in one place for every harness (`afkconvoy_core::guard`). Whom a
-//! process an inspection would end is, this reads off the host's processes,
+//! process a watch would end is, this reads off the host's processes,
 //! once a call ends one.
 
 use std::cell::OnceCell;

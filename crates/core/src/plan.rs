@@ -264,11 +264,11 @@ pub struct WorkingSet {
     /// again.
     #[serde(skip)]
     pub outgrown_train: Option<Built>,
-    /// The PRs of inspections on the landing train at their current head,
+    /// The PRs of watches on the landing train at their current head,
     /// changes of the repo made on no issue: the train is tended while one
     /// is, as while a PR of mine is (`on_train`).
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub inspections_on_train: Vec<u64>,
+    pub watches_on_train: Vec<u64>,
     /// The thresholds of its host that admission is past (`admission::holds`):
     /// while there is one, a pass starts no new worker into a free slot. Read
     /// of the host, not of GitHub: what assembles the set leaves it empty,
@@ -292,10 +292,10 @@ pub struct WorkingSet {
 
 impl WorkingSet {
     /// Whether the landing train holds something of this fleet's to tend: a
-    /// PR of mine, an inspection's, or a cut's.
+    /// PR of mine, a watch's, or a cut's.
     pub fn on_train(&self) -> bool {
         self.mine.iter().any(|mine| mine.status == Status::Joined)
-            || !self.inspections_on_train.is_empty()
+            || !self.watches_on_train.is_empty()
             || self.cut.as_ref().is_some_and(|cut| cut.on_train.is_some())
     }
 
@@ -447,9 +447,9 @@ pub struct Observed<'a> {
     /// while nothing is on the landing train: none while something is, or
     /// where no landing here measured it.
     pub idle_train: Option<Built>,
-    /// The open PRs of inspections on the landing train at their current
-    /// head: changes of the repo an inspection made on no issue.
-    pub inspections: &'a [u64],
+    /// The open PRs of watches on the landing train at their current
+    /// head: changes of the repo a watch made on no issue.
+    pub watches: &'a [u64],
     /// The fleet's tracker, which holds `issues`: the lines that answer one
     /// that waits for a human name it (`Waiting::new`).
     pub tracker: &'a Tracker,
@@ -561,7 +561,7 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
         proposals: vec![],
         slow_gate: slow(seen.landings, config.gate_seconds(), seen.slow_gate),
         outgrown_train: seen.idle_train.filter(|built| built.outgrown()),
-        inspections_on_train: seen.inspections.to_vec(),
+        watches_on_train: seen.watches.to_vec(),
         held_back: vec![],
         caster: None,
         casting: vec![],
@@ -779,7 +779,7 @@ mod tests {
             landings: &[],
             slow_gate: &Reported::NONE,
             idle_train: None,
-            inspections: &[],
+            watches: &[],
             tracker: &Tracker::Own,
             cut: None,
         };
@@ -826,7 +826,7 @@ mod tests {
             landings: &[],
             slow_gate: &Reported::NONE,
             idle_train: None,
-            inspections: &[],
+            watches: &[],
             tracker: &Tracker::Own,
             cut: None,
         };
@@ -870,7 +870,7 @@ mod tests {
             landings: &[],
             slow_gate: &Reported::NONE,
             idle_train: None,
-            inspections: &[],
+            watches: &[],
             tracker: &Tracker::Own,
             cut: None,
         };
@@ -929,7 +929,7 @@ mod tests {
             landings: &[],
             slow_gate: &Reported::NONE,
             idle_train: None,
-            inspections: &[],
+            watches: &[],
             tracker: &Tracker::Own,
             cut: None,
         };
@@ -1012,7 +1012,7 @@ mod tests {
             landings: &[],
             slow_gate: &Reported::NONE,
             idle_train: None,
-            inspections: &[],
+            watches: &[],
             tracker: &Tracker::Own,
             cut: None,
         };
@@ -1129,7 +1129,7 @@ mod tests {
             landings: &[],
             slow_gate: &Reported::NONE,
             idle_train: None,
-            inspections: &[],
+            watches: &[],
             tracker: &Tracker::Own,
             cut: None,
         };
@@ -1214,7 +1214,7 @@ mod tests {
             landings: &[],
             slow_gate: &Reported::NONE,
             idle_train: None,
-            inspections: &[],
+            watches: &[],
             tracker: &Tracker::Own,
             cut: None,
         };
@@ -1274,7 +1274,7 @@ mod tests {
             landings: &[],
             slow_gate: &Reported::NONE,
             idle_train: None,
-            inspections: &[],
+            watches: &[],
             tracker: &Tracker::Own,
             cut: None,
         };
@@ -1326,7 +1326,7 @@ mod tests {
             landings: &[],
             slow_gate: &Reported::NONE,
             idle_train: None,
-            inspections: &[],
+            watches: &[],
             tracker: &Tracker::Own,
             cut: None,
         };
@@ -1361,7 +1361,7 @@ mod tests {
             landings: &[],
             slow_gate: &Reported::NONE,
             idle_train: None,
-            inspections: &[],
+            watches: &[],
             tracker: &Tracker::Own,
             cut: None,
         };
@@ -1405,7 +1405,7 @@ mod tests {
                     landings: &[],
                     slow_gate: &Reported::NONE,
                     idle_train: None,
-                    inspections: &[],
+                    watches: &[],
                     tracker: &Tracker::Own,
                     cut: None,
                 };

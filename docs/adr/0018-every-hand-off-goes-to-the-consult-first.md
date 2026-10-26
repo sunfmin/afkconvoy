@@ -4,7 +4,7 @@ status: accepted
 
 # Every hand-off to a human goes to the stage's consult first
 
-Amended by ADR-0035 (sunfmin/control#96): only consults explicitly named by a team remain. All hand-offs formerly sent to the stock consult escalate for the host's watch to answer.
+Amended by ADR-0036 (sunfmin/control#96): only consults explicitly named by a team remain. All hand-offs formerly sent to the stock consult escalate for the host's watch to answer.
 
 ADR-0011 asked a consult only of an `escalate`; everything else went straight to a human, and a consult could only rule or let through. In practice most of what reached a human that way was something the team's senior role could have answered as well: a worker counted silent while it waited on its own gate on a full disk, a `blocked` that would have closed a cycle with its own blocker. The human answering each read the worktree and the issue's edges, ran the gate again and ruled — nothing a consult cannot do.
 

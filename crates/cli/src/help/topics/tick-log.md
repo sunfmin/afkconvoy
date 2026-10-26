@@ -9,7 +9,7 @@ park #46 (operator): blocked by #99
 verdict #121 (worker): FAILED: issue #121 is closed
 ```
 
-A worker's `gate` and `exclusive` lines name its issue, in a bound repo or an unbound one. A line names no issue when its command acts on none and is run by no issue's worker: the train, an inspection or a human, for example.
+A worker's `gate` and `exclusive` lines name its issue, in a bound repo or an unbound one. A line names no issue when its command acts on none and is run by no issue's worker: the train, a watch or a human, for example.
 
 ## The fleet instance it wakes
 

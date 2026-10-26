@@ -177,26 +177,6 @@ impl Fleet {
         Ok(range)
     }
 
-    /// The stock inspector follows the same kit order as every other worker.
-    pub fn inspector(&self) -> Result<Cast> {
-        let kit = self.runnable_for(None)?;
-        let paused = crate::paused::read();
-        if kit.harnesses.is_empty() && !paused.is_empty() {
-            return Err(crate::paused::Held::every(&paused, self.now).into());
-        }
-        let named = kit.stock_inspector();
-        let labels: Vec<String> = named
-            .into_iter()
-            .flat_map(|named| {
-                let mut labels = vec![format!("harness:{}", named.harness.key())];
-                labels.extend(named.model.map(|model| format!("model:{model}")));
-                labels
-            })
-            .collect();
-        let range = kit.range();
-        casting::preferred(&labels, &range, &range).map_err(|why| anyhow!("{why}"))
-    }
-
     /// Kit order chooses the harness. Labels can only choose a model within it.
     pub fn cast(&self, labels: &[String], issue: Option<u64>) -> Result<Result<Cast, String>> {
         let kit = self.runnable_for(issue)?;
@@ -439,8 +419,8 @@ impl Fleet {
         }
         let riding = on_train(&joins, prs);
         let joined: Vec<u64> = riding.iter().filter_map(|join| join.issue()).collect();
-        let inspections: Vec<u64> =
-            riding.iter().filter(|join| join.is_inspection()).map(|join| join.pr).collect();
+        let watches: Vec<u64> =
+            riding.iter().filter(|join| join.is_watch()).map(|join| join.pr).collect();
         // A PR is the fleet's own when its branch is one recorded on the issue.
         let mut kept = vec![];
         for issue in issues {
@@ -488,7 +468,7 @@ impl Fleet {
             landings: &landings,
             slow_gate: &slow_gate,
             idle_train: if train.tip == train.base { self.train_built() } else { None },
-            inspections: &inspections,
+            watches: &watches,
             tracker: &self.gh.tracker,
             cut: cut.as_ref(),
         };

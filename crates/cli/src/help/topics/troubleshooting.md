@@ -22,6 +22,10 @@ Start with `afkconvoy doctor`, in the checkout the fleet runs in: it reads every
 
 ## What `doctor` finds — warning: one issue or one patrol is held up
 
+- `hot worker is past its limits`: A worker crossed a host resource limit. The watch receives its condition, duration, worktree, terminal and evidence and checks that work goes on.
+- `admission has held back new workers`: One reason held admission for the host's span. The watch receives the host reading and evidence, once per episode.
+- `the host has been under memory pressure`: Pressure lasted for the host's span independently of admission. The watch checks pressure itself, once per episode; it makes no worker hot.
+
 A warning may be the fleet mid-step: run `doctor` again after a tick before you act on one.
 
 - `ended at the exclusive bound`: A command held others up for the host's bound. Each occurrence in the last day has the command, runtime and number waiting in `evidence`. Run each step of a long measurement as its own `afkconvoy exclusive`. If a single gate or release build reaches it, check the host setting with `afkconvoy doctor` and change it with `afkconvoy run --exclusive-seconds N`, or `--exclusive-seconds default` to restore {const:EXCLUSIVE_SECONDS}s.

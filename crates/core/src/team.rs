@@ -374,7 +374,7 @@ pub struct Team {
     /// rules beside its role's (docs/adr/0017): `true` unless the team file
     /// says `host_user: false`, which keeps a role the same on every host.
     /// The default of every role, which a role may set for itself
-    /// (`Role::host_user`); the stock inspector takes it.
+    /// (`Role::host_user`).
     pub host_user: bool,
     /// The team's default or the role's own DSH profile choice.
     pub dsh_profile: DshProfile,
@@ -784,8 +784,6 @@ pub struct Stage {
     /// human performs.
     #[field(Option<Consult{v: v.by_role => v.roles == roles}>)]
     pub consult: Option<Consult>,
-    /// Whether a hot worker is inspected; explicit `to: human` opts out.
-    pub inspect: bool,
     #[field(usize[at])]
     at: usize,
     /// How many stages its workflow has.
@@ -1760,7 +1758,6 @@ struct Draft<'n> {
     /// `None` when its `escalate` is at fault; `Some(None)` when it goes
     /// to a human.
     consult: Option<Option<Consult>>,
-    inspect: bool,
     pass: Option<&'n str>,
     reject: Option<&'n str>,
 }
@@ -1839,9 +1836,7 @@ fn draft<'n>(report: &mut Report, roles: &Roles, key: String, node: &'n Node) ->
             }
         }
     }
-    let inspect = !human
-        && !matches!(get(entries, "escalate"), Some(Node::Map(entries)) if matches!(get(entries, "to"), Some(Node::Text(to)) if to == HUMAN));
-    Some(Draft { key, name, by, writes, consult, inspect, pass, reject })
+    Some(Draft { key, name, by, writes, consult, pass, reject })
 }
 
 /// Where the verdicts of one stage lead, as far as its file could be read.
@@ -2216,7 +2211,6 @@ fn stage(
         by,
         writes: draft.writes?,
         consult,
-        inspect: draft.inspect,
         at,
         of: n,
         roles,
@@ -2269,7 +2263,6 @@ mod rejected {
             by: Performer::Human,
             writes: false,
             consult: None,
-            inspect: false,
             at: 0,
             of: n,
             roles: 0,

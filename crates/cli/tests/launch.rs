@@ -367,7 +367,7 @@ fn kit_with_no_terminal_writes_what_this_host_can_start_and_says_what_it_left_ou
     world.kit_command("dsh", "dsh");
     world.with_kit(|kit| {
         kit["harnesses"][0]["models"] = json!([{"model": "opus", "good_at": "hard work"}]);
-        kit["stock_inspector"] = json!({"harness": "claude-code", "model": "opus"});
+        kit["stock_consult"] = json!({"harness": "claude-code", "model": "opus"});
     });
     host_to_kit(&world);
     let written = world.afk(&["kit"]);
@@ -384,7 +384,6 @@ fn kit_with_no_terminal_writes_what_this_host_can_start_and_says_what_it_left_ou
                     "models": [{"model": "opus"}, {"model": "default", "good_at": "research pending"}]},
                 {"harness": "pi", "command": "pi", "models": [{"model": "openai/gpt-5.5", "good_at": "research pending"}]},
             ],
-            "stock_inspector": {"harness": "claude-code", "model": "opus"},
         })
     );
     let left_out: Vec<(&str, &str)> = written.json["left_out"]
@@ -426,10 +425,6 @@ fn plan_and_doctor_show_the_host_kit() {
         assert_eq!(kit["path"], world.kit_path().display().to_string());
         assert_eq!(kit["harnesses"][0]["harness"], "claude-code");
         assert_eq!(kit["harnesses"][0]["command"], "agent");
-        assert_eq!(
-            kit["stock_inspector"],
-            json!({"harness": "claude-code", "model": null, "named": false, "unmatched": null})
-        );
         assert_eq!(kit["harnesses"][0]["default_model"], true);
         assert_eq!(kit["harnesses"][0]["research_pending"], false);
         assert_eq!(kit["harnesses"][1]["harness"], "pi");
@@ -438,22 +433,6 @@ fn plan_and_doctor_show_the_host_kit() {
         assert_eq!(kit["harnesses"][1]["models"][0]["model"], "a/fast");
         assert!(kit["harnesses"][1]["models"][1].get("probed").is_none());
     }
-    // The stock inspector the human named, on a model the host kit holds.
-    kit["stock_inspector"] = json!({"harness": "pi", "model": "a/slow"});
-    std::fs::write(world.kit_path(), serde_json::to_vec(&kit).unwrap()).unwrap();
-    let shown = world.afk(&["plan", "--now", "1000"]).json;
-    assert_eq!(
-        shown["host_kit"]["stock_inspector"],
-        json!({"harness": "claude-code", "model": null, "named": true, "unmatched": null})
-    );
-    // …and one it does not hold is not followed: the host kit's first, and
-    // said.
-    kit["stock_inspector"] = json!({"harness": "pi", "model": "a/none"});
-    std::fs::write(world.kit_path(), serde_json::to_vec(&kit).unwrap()).unwrap();
-    let shown = world.afk(&["plan", "--now", "1000"]).json;
-    let stock = &shown["host_kit"]["stock_inspector"];
-    assert_eq!(stock["harness"], "claude-code", "{shown}");
-    assert!(stock["unmatched"].as_str().unwrap().contains("`a/none`"), "{stock}");
 }
 
 #[test]

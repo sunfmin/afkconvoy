@@ -13,8 +13,8 @@
 //! started is not (`shared`). The landing train's worktree is no worker's.
 //!
 //! As a worker turns hot, what shows it is taken down there and then, on a
-//! thread of its own (`evidence`), and the `run` is woken: its inspector
-//! starts the worker's inspection (`crate::inspection`).
+//! thread of its own (`evidence`), and the `run` is woken. The resource
+//! reading becomes a doctor finding for the host watch's next look.
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -152,21 +152,17 @@ fn sysctl(name: &str) -> Option<u64> {
 }
 
 /// A worker that is hot now, as the panel shows it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HotNow {
     /// `#7`, or the name of its worktree where it is linked to no issue.
     pub worker: String,
     pub episode: Episode,
-    /// Its worktree, and the issue orca links it to: what its inspection is
+    /// Its worktree, and the issue orca links it to: what its watch is
     /// started on.
-    #[serde(skip)]
     pub path: PathBuf,
-    #[serde(skip)]
     pub branch: String,
-    #[serde(skip)]
     pub issue: Option<u64>,
     /// Why it turned hot, in words, under the limits in force as it did.
-    #[serde(skip)]
     pub why: String,
 }
 
@@ -471,6 +467,8 @@ struct Sampler {
     samples: u32,
     /// The workers watched, by their worktrees.
     watched: BTreeMap<PathBuf, Watched>,
+    /// Samples carried over from the preceding host runner.
+    resumed: BTreeMap<PathBuf, Watch>,
 }
 
 impl Sampler {
@@ -519,10 +517,13 @@ impl Sampler {
         let mut taken = vec![];
         let mut hot_now = vec![];
         for (path, worker, worktree, issue) in &self.listed {
-            let watched = self
-                .watched
-                .entry(path.clone())
-                .or_insert_with(|| Watched::new(worker.clone(), worktree.clone(), *issue));
+            let watched = self.watched.entry(path.clone()).or_insert_with(|| {
+                let mut watched = Watched::new(worker.clone(), worktree.clone(), *issue);
+                if let Some(previous) = self.resumed.remove(path) {
+                    watched.watch = previous;
+                }
+                watched
+            });
             let took = took(watched, &tree(&procs, path));
             watched.resident.push_back((at, took.resident));
             if watched.resident.len() > RESIDENT_KEPT {
@@ -641,7 +642,7 @@ pub fn watch(
     second: Duration,
     clock: Arc<dyn Fn() -> u64 + Send + Sync>,
     hears: Arc<dyn Hears>,
-    hot: Hot,
+    (hot, resources): (Hot, crate::resources::Shared),
     waker: Waker,
     stop: Stop,
 ) {
@@ -657,6 +658,10 @@ pub fn watch(
         listed: vec![],
         samples: 0,
         watched: BTreeMap::new(),
+        resumed: crate::resources::samples(
+            &repo.main_checkout().unwrap_or_else(|_| repo.dir.clone()),
+        )
+        .unwrap_or_default(),
     };
     std::thread::spawn(move || {
         let started = (clock(), Instant::now());
@@ -701,7 +706,20 @@ pub fn watch(
                     waker.wake();
                 });
             }
-            *hot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = sampler.hot();
+            let current = sampler.hot();
+            let samples = sampler
+                .watched
+                .iter()
+                .map(|(path, worker)| (path.clone(), worker.watch.clone()))
+                .collect();
+            if let Err(error) = resources.hot(
+                repo.main_checkout().unwrap_or_else(|_| repo.dir.clone()),
+                current.clone(),
+                samples,
+            ) {
+                hears.warn(&format!("resource episodes were not kept: {error:#}"));
+            }
+            *hot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = current;
         }
     });
 }
