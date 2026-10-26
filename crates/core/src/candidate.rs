@@ -143,7 +143,10 @@ impl Chain {
     /// An external base move invalidates all candidates rooted elsewhere.
     /// This also recognizes a push whose process died before settlement.
     pub fn observe_base(&mut self, base: &str) {
-        let landed = self.candidates.iter().position(|c| c.commit == base && c.valid());
+        let landed = self
+            .candidates
+            .iter()
+            .position(|c| c.commit == base && c.phase == Phase::Green && c.stopped);
         if let Some(last) = landed {
             for c in self.candidates.iter_mut().take(last.saturating_add(1)) {
                 if c.valid() {

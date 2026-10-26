@@ -27,6 +27,7 @@ set -e
 root={root}
 name=
 for n in a b c d; do if test -f "$n.txt"; then name=$n; fi; done
+case "${{AFKCONVOY_ISSUE:-}}" in 1) name=a;; 2) name=b;; 3) name=c;; 4) name=d;; esac
 test -n "$name" || exit 0
 echo $$ > "$root/gate-$name"
 sleep 120 &
@@ -52,6 +53,7 @@ fn start(world: &World, dir: &Path, cache: &Path, n: u64) -> Child {
     world
         .command(env!("CARGO_BIN_EXE_afkconvoy"), dir)
         .env("XDG_CACHE_HOME", cache)
+        .env("AFKCONVOY_ISSUE", n.to_string())
         .args(["land", "--issue", &n.to_string()])
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
@@ -292,4 +294,94 @@ fn dead_owner_is_cancelled_before_replacement_and_duplicate_requests_never_start
     release(&world, "a", false);
     assert_eq!(finish(duplicate)["outcome"], "merged");
     assert_eq!(git(&a, &["rev-parse", "HEAD"]), head);
+}
+
+#[test]
+fn concurrent_assignment_is_a_single_chain_and_the_window_stays_bounded() {
+    let world = world(3);
+    let workers: Vec<_> = [(1, "a"), (2, "b"), (3, "c"), (4, "d")]
+        .into_iter()
+        .map(|(n, name)| worker(&world, n, name))
+        .collect();
+    let _runner = world.host_held();
+    let mut children: Vec<_> =
+        (0..3).map(|i| start(&world, &workers[i].0, &world.cache(), i as u64 + 1)).collect();
+    for name in ["a", "b", "c"] {
+        began(&world, name);
+    }
+    let mut fourth = start(&world, &workers[3].0, &world.cache(), 4);
+    std::thread::sleep(Duration::from_millis(200));
+    let state = chain(&world);
+    let rows = state["candidates"].as_array().unwrap();
+    assert_eq!(rows.len(), 3);
+    for i in 1..3 {
+        assert_eq!(rows[i]["predecessor"], rows[i - 1]["commit"]);
+    }
+    assert!(fourth.try_wait().unwrap().is_none());
+    assert!(!world.root.join("start-d").exists());
+    for name in ["a", "b", "c", "d"] {
+        release(&world, name, false);
+    }
+    children.push(fourth);
+    for child in children {
+        let result = finish(child);
+        assert_eq!(result["outcome"], "merged", "{result}");
+    }
+    assert_eq!(chain(&world)["candidates"].as_array().unwrap().len(), 4);
+}
+
+#[test]
+fn semantic_blockers_hold_a_cancelled_successor_and_a_live_lock_blocks_a_waiting_gate() {
+    let world = world(1);
+    let (a, _) = worker(&world, 1, "a");
+    let (b, _) = worker(&world, 2, "b");
+    let _runner = world.host_held();
+    let aa = start(&world, &a, &world.cache(), 1);
+    began(&world, "a");
+    let bb = start(&world, &b, &world.cache(), 2);
+    until(|| {
+        world.afk(&["doctor"]).json["host"]["exclusive"]["lanes"]["worker"]["waiting"]
+            .as_array()
+            .is_some_and(|w| !w.is_empty())
+    });
+    world.issue(9, &["fleet-lock"]);
+    release(&world, "a", false);
+    assert_eq!(finish(aa)["outcome"], "locked");
+    assert_eq!(finish(bb)["outcome"], "locked");
+    assert!(!world.root.join("start-b").exists());
+    world.with_gh(|gh| {
+        for issue in gh["issues"].as_array_mut().unwrap() {
+            if issue["number"] == 9 {
+                issue["state"] = json!("closed");
+            }
+        }
+        gh["edges"] = json!({"2":[1]});
+    });
+    let blocked = finish(start(&world, &b, &world.cache(), 2));
+    assert_eq!(blocked["outcome"], "blocked", "{blocked}");
+    assert_eq!(blocked["blocked_by"], json!([1]));
+    assert!(!world.root.join("start-b").exists());
+}
+
+#[test]
+fn publication_survives_issue_settlement_failure_without_a_duplicate_gate() {
+    let world = world(1);
+    let (a, head) = worker(&world, 1, "a");
+    world.with_gh(|gh| gh["fail"] = json!(["issue close"]));
+    release(&world, "a", false);
+    let failed = start(&world, &a, &world.cache(), 1).wait_with_output().unwrap();
+    assert!(!failed.status.success());
+    let state = chain(&world);
+    assert_eq!(state["candidates"][0]["phase"], "landed");
+    assert_eq!(
+        world.remote(&["rev-parse", "refs/heads/main"]),
+        state["candidates"][0]["commit"].as_str().unwrap()
+    );
+    assert_eq!(world.state(1), "open");
+    world.with_gh(|gh| gh["fail"] = json!([]));
+    let recovered = finish(start(&world, &a, &world.cache(), 1));
+    assert_eq!(recovered["outcome"], "merged");
+    assert_eq!(world.state(1), "closed");
+    assert_eq!(git(&a, &["rev-parse", "HEAD"]), head);
+    assert_eq!(chain(&world)["candidates"].as_array().unwrap().len(), 1);
 }
