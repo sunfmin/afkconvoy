@@ -114,9 +114,9 @@ use fleet::Fleet;
 use git::Repo;
 use host_settings::{
     ADMIT_DISK_ENV, ADMIT_INSPECT_AFTER_ENV, ADMIT_LOAD_ENV, ADMIT_MEMORY_ENV,
-    HOST_SLEEP_HOURS_ENV, HOT_CORES_ENV, HOT_MEMORY_ENV, HOT_WRITTEN_ENV, NO_HOST_SLEEP_ENV, To,
-    WATCH_DIR_ENV, WATCH_EVERY_ENV, hours_or_default, port_or_default, thousandths_or_default,
-    watch_dir_or_default, watch_every_or_default, whole_or_default,
+    EXCLUSIVE_SECONDS_ENV, HOST_SLEEP_HOURS_ENV, HOT_CORES_ENV, HOT_MEMORY_ENV, HOT_WRITTEN_ENV,
+    NO_HOST_SLEEP_ENV, To, WATCH_DIR_ENV, WATCH_EVERY_ENV, hours_or_default, port_or_default,
+    thousandths_or_default, watch_dir_or_default, watch_every_or_default, whole_or_default,
 };
 use launch::Launches;
 
@@ -1409,6 +1409,11 @@ enum Command {
             value_parser = whole_or_default
         )]
         admit_inspect_after: Option<To<u64>>,
+        /// Seconds a running exclusive command may hold others up, counting only while
+        /// another waits: a host setting; `default` changes it back
+        /// [default: {const:EXCLUSIVE_SECONDS}]
+        #[arg(long, env = EXCLUSIVE_SECONDS_ENV, value_name = "SECONDS", value_parser = whole_or_default)]
+        exclusive_seconds: Option<To<u64>>,
         /// Stop after this many ticks
         #[arg(long, hide = true)]
         ticks: Option<u64>,
@@ -2466,6 +2471,8 @@ enum Command {
     ///
     /// Not for everyday commands — `git`, a single test, a quick build: the queue makes each one wait for every heavy one before it, of every fleet on this host.
     ///
+    /// Split a long measurement up front. Run each step that needs a quiet host as its own `afkconvoy exclusive`, so gates and the landing train can run between steps.
+    ///
     /// ## Who runs it
     ///
     /// A worker, in its own worktree. Anyone else on the host may too: the queue is the host's, not a fleet's.
@@ -2480,13 +2487,15 @@ enum Command {
     ///
     /// ## What it answers
     ///
+    /// A running command is ended once it has held other commands up for {const:EXCLUSIVE_SECONDS}s, or the seconds the host setting `afkconvoy run --exclusive-seconds N` says (`AFKCONVOY_EXCLUSIVE_SECONDS` names it too). `--exclusive-seconds default` changes it back; 0 ends a command as soon as another waits. Only time with another command waiting counts: time running alone never uses the bound, and gaps without waiters pause it. A changed host setting applies to the command already running. On reaching the bound it ends the command and its descendants before the next command starts, exits {const:EXCLUSIVE_BOUND_CODE}, and prints one line on stderr beginning `[afkconvoy] exclusive:` telling the worker to run each step as its own `afkconvoy exclusive`. The tick log records the command, its runtime and how many commands waited; `doctor` names each recent occurrence as a warning.
+    ///
     /// Unlike every other command, no JSON of its own: what the command prints is printed, and it exits with the command's exit status — 128 and the signal for a command a signal ended. While it waits it says so on stderr, in one line beginning `[afkconvoy] exclusive:`.
     ///
     /// With no host runner on this host it runs the command at once, in no queue, and says so on stderr: `[afkconvoy] exclusive: runs `<command>` at once, in no queue: no host runner runs on this host`. So it does too where the host runner cannot hold it — one of an older afkconvoy, which cannot read the question — saying why. A host runner that is starting or stopping is waited for, as one replaced is.
     ///
     /// When the host runner is replaced — an upgrade moves it (`afkconvoy run --help`) — or ends, a command that waits asks the next one, within a minute, keeping when it first asked: it waits there before every command that asked after it, saying so on stderr. Where no host runner places it within the minute, it runs at once, saying so. A command that runs runs on to its end: the next host runner does not know of it, and may start the next command beside it.
     ///
-    /// It exits 127 when the command cannot be started, and 125, with one JSON object {"error"} on stdout, when the host runner cannot be asked — the cache directory is not known — or what it said cannot be read, or `-C` names no directory of a checkout: the command did not run, and nothing waited.
+    /// Exit {const:EXCLUSIVE_BOUND_CODE} is reserved for the bound: a command that itself exits {const:EXCLUSIVE_BOUND_CODE} is reported as exit 1. Every other command exit status is passed through. It exits 127 when the command cannot be started, and 125, with one JSON object {"error"} on stdout, when the host runner cannot be asked — the cache directory is not known — or what it said cannot be read, or `-C` names no directory of a checkout: the command did not run, and nothing waited.
     ///
     /// ## What trips you up
     ///
@@ -3479,6 +3488,8 @@ pub fn manual() -> agent_help::Help {
         .table::<claim_status::ClaimStatus>("claim_status")
         .constant("CONFIG_FILE", config::FILE)
         .constant("PANEL_PORT", host_settings::PANEL_PORT)
+        .constant("EXCLUSIVE_SECONDS", exclusive::SECONDS)
+        .constant("EXCLUSIVE_BOUND_CODE", exclusive::BOUND_CODE)
         .constant("WATCH_EVERY", host_settings::WATCH_EVERY)
         .constant("TEAM_FILE", afkconvoy_core::team::TEAM_FILE)
         .constant("ESCALATE_LABEL", afkconvoy_core::config::ESCALATE_LABEL)
@@ -3731,6 +3742,7 @@ fn start_of(
         admit_memory,
         admit_disk,
         admit_inspect_after,
+        exclusive_seconds,
         ticks,
         second_ms,
         panic_at_tick,
@@ -3761,6 +3773,7 @@ fn start_of(
         admit_memory,
         admit_disk,
         admit_inspect_after,
+        exclusive_seconds,
         panel,
         watch_dir,
         watch_every,
