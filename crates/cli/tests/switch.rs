@@ -242,7 +242,14 @@ fn a_missing_harness_starts_before_its_targeted_probe_and_research_finish() {
     assert_eq!(answer["start_fault"], Value::Null);
     assert_eq!(answer["order"][0], "kimi");
     assert_eq!(answer["switched"][0]["to"], "kimi");
-    assert_eq!(open_commands(&world, &dir), [afkconvoy_core::harness::Harness::Kimi.stock()]);
+    assert_eq!(
+        open_commands(&world, &dir),
+        [afkconvoy_core::harness::Harness::Kimi.in_worktree(
+            afkconvoy_core::harness::Harness::Kimi.stock(),
+            "",
+            ""
+        )]
+    );
     let kit: Value = serde_json::from_slice(&std::fs::read(world.kit_path()).unwrap()).unwrap();
     assert_eq!(kit["harnesses"][0]["models"], json!([]));
 
