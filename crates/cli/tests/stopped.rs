@@ -655,4 +655,26 @@ fn repeated_waits_keep_one_window_and_escalate_with_evidence_after_an_hour() {
     );
     let doctor = world.afk(&["doctor", "--host", "h1", "--now", "4901"]).json;
     assert_eq!(doctor["waiting_on_human"][0]["issue"], 7);
+
+    let world = fleet(1000);
+    world.hold_every_harness();
+    report(&world, "done", 1000, 1000);
+    std::fs::write(
+        world.root.join("diagnosis-answer"),
+        json!({
+            "status": "observed", "class": "long_command", "scope": "worker",
+            "evidence": [], "action": "wait", "missing": [], "retry_after": 10000
+        })
+        .to_string(),
+    )
+    .unwrap();
+    tick(&world, 1300);
+    tick(&world, 1600);
+    let doctor = world.afk(&["doctor", "--host", "h1", "--now", "1601"]).json;
+    let worker = &doctor["host"]["host_kit"]["worker_health"]["workers"][0];
+    assert_eq!(worker["action"], "waiting");
+    assert_eq!(worker["next_check"], 4900, "a diagnosis cannot extend the recovery window");
+    tick(&world, 4900);
+    assert_eq!(world.claims(), []);
+    assert_eq!(escalations(&world), 1);
 }

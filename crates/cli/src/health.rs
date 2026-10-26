@@ -920,6 +920,9 @@ fn decide(
                 if expired {
                     return escalate_observed(observed, fleet, me, issue);
                 }
+                observed.next_check = observed
+                    .next_check
+                    .min(observed.window_started.saturating_add(RECOVERY_SECONDS));
                 observed.action = "waiting".into();
                 return Ok(());
             }
