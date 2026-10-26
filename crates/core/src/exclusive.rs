@@ -76,7 +76,7 @@ pub fn same_repo(a: &Ticket, b: &Ticket) -> bool {
 pub fn ready(queue: &[Ticket], number: u64, worker_lanes: u64) -> bool {
     scheduling(queue, worker_lanes, false)
         .iter()
-        .any(|request| request.number == number && request.state == State::Eligible)
+        .any(|request| request.number == number && matches!(request.state, State::Eligible))
 }
 
 /// The scheduler's decision for a request at this observation. Eligible
@@ -174,7 +174,7 @@ pub fn scheduling(queue: &[Ticket], worker_lanes: u64, paused: bool) -> Vec<Sche
             });
         }
         let state = if reasons.is_empty() { State::Eligible } else { State::Waiting };
-        if state == State::Eligible {
+        if matches!(state, State::Eligible) {
             admitted.push(ticket);
         }
         decisions.push(Scheduling { number: ticket.number, state, reasons });
