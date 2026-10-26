@@ -135,6 +135,7 @@ fn a_look_with_nothing_to_act_on_starts_no_model_and_moves_its_until_on() {
 fn a_watch_can_fix_a_fleet_fault_and_hand_it_back_while_a_human_decision_stays() {
     let world = World::new();
     let dir = operator(&world);
+    world.set_gate_config("gate_command: ./gate.sh\nescalate_to: human");
     let other = world.second_repo();
     world.afk_in(&other, &["run", "--host", "h1"]).ok();
     world.issue(7, &["ready-for-agent"]);
