@@ -205,6 +205,32 @@ fn a_landing_pushed_before_closing_the_issue_also_retires_expired_health() {
 }
 
 #[test]
+fn a_landing_that_closed_the_issue_before_the_next_tick_also_retires_health() {
+    let world = gated();
+    let dir = worktree(&world);
+    tick(&world, 1300);
+    let joined = world.afk_in(&dir, &["land", "--issue", "7", "--now", "1350"]).ok();
+    assert_eq!(joined["outcome"], "joined", "{joined}");
+    // The train lands without a health tick between the join and the closing.
+    let train = world.root.join("train");
+    git(
+        &world.clone,
+        &["worktree", "add", "-q", "--detach", train.to_str().unwrap(), "origin/main"],
+    );
+    let landed = world.afk_in(&train, &["land", "--train", "--now", "1400"]).ok();
+    assert_eq!(landed["outcome"], "landed", "{landed}");
+    assert_eq!(world.state(7), "closed");
+
+    let ticked = tick(&world, 5000);
+    assert_eq!(ticked["errors"], json!([]), "{ticked}");
+    let path = world.cache().join("afkconvoy/worker-health.json");
+    let book: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    assert_eq!(book["workers"], json!([]), "{book}");
+    assert!(!world.root.join("diagnosis-asked").exists());
+    assert_eq!(world.claims(), []);
+}
+
+#[test]
 fn a_stopped_screen_and_a_complete_diagnosis_do_not_exempt_unfinished_work() {
     for outcome in ["open", "advanced", "none"] {
         let world = gated();
