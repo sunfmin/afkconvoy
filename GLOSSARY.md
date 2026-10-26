@@ -24,6 +24,10 @@ _Avoid_: parallelism, workers (the processes it bounds), the repo's concurrency
 The repo a fleet reads and writes its issues in: its checkout's own, until the checkout says another on the checkout list of its host (`run --tracker`), never pushed. Everything about an issue is the tracker's — its labels, its comments, its blockers, its escalation, its closing, and every issue the fleet opens — and every PR, branch, worktree, gate run and the landing train are the repo's. `#<n>` alone is the repo's own issue: the repo names a tracker's `<owner>/<tracker>#<n>` (`docs/adr/0027`). A public one is refused — the checkout's own repo too, where it says none — by every start's startup probe and by `run --tracker`, and a fleet instance whose tracker is made public is broken at its next check, within the hour one that found it private stands: anyone can comment on a public repo's issues, and so write what the fleet reads as its state and what its workers read as their task.
 _Avoid_: issue repo, backlog (all the issues a repo has open), project (a GitHub Project)
 
+**First start**:
+The start of a checkout not yet on its host's checkout list, whose tracker and concurrency are settled with the user; on a host with no host settings yet, its host sleep is settled too. The agent explains the choices, sets up what needs no decision, and asks the user together for what does.
+_Avoid_: onboarding, setup wizard
+
 **Repo label**:
 `repo:<owner>/<repo>`: what makes an issue of a tracker one of that repo's. A fleet whose tracker is another repo works only the issues there that carry its repo's, and gives it to every issue it opens, takes in or locks there; one carrying two is no fleet's. In a repo that is its own tracker, an issue carrying one is the repo's it names.
 _Avoid_: component label, project label
@@ -234,6 +238,10 @@ _Avoid_: liveness, status (as under Position)
 A harness's fixed refusal message on a worker's screen: it refuses this issue, by rule, and the worker continues on the next harness of the host kit that can start for its role. The issue remembers the harness at every later stage and start; other issues may still run it. With no harness left for the issue, it escalates at once with the refusal's words as evidence.
 _Avoid_: account fault, model fault, failed task
 
+**Capacity stop**:
+A worker stopped by its harness's fixed message that its selected model is at capacity. It is transient and belongs to that worker: the harness remains available to other workers.
+_Avoid_: quota fault (an account's usage limit), task refusal (a harness refusing this issue)
+
 **Verdict**:
 What ends a stage, declared on the issue by whoever performed it: `pass`, `reject`, `blocked`, `already-satisfied`, or `escalate`. Opening a PR declares nothing.
 _Avoid_: outcome (what a worker leaves on GitHub: its PR on the landing train, or its verdict), result, needs-human
@@ -260,7 +268,7 @@ The queue of the commands run through `afkconvoy exclusive` on one host, held by
 _Avoid_: mutex, semaphore, heavy lock (the fleet lock is another thing)
 
 **Nudge**:
-The one line the fleet types at a silent worker with no outcome, telling it to carry on. Sent once per worker.
+The one line the fleet types at a stopped worker with no outcome, telling it to carry on. Sent once for silence; a capacity stop may call for another after a longer wait.
 _Avoid_: ping, reminder, retry
 
 **Restart**:

@@ -46,6 +46,7 @@ pub mod doctor;
 pub mod draft;
 pub mod evidence;
 pub mod exclusive;
+pub mod first_start;
 pub mod fleet;
 pub mod flows;
 pub mod forget;
@@ -149,13 +150,15 @@ const SKILL: &str = include_str!("../../../skills/afkconvoy/SKILL.md");
 // crate's own, not clap's: it prints a topic too, and `help all` the whole
 // manual. The listing goes straight from the usage line to the commands: one
 // line less, so that `-h` stays one screen.
-/// afkconvoy works a repo's ready GitHub-issue backlog unattended. A fleet instance — one per repo, held by the host's one host runner, which `afkconvoy run` starts — dispatches one worker per issue, a coding agent isolated in its own git worktree, and lands each finished PR on the base branch through the landing train, behind the gate. Fleet state lives entirely in GitHub and the repo's remote: no process holds it.
+/// afkconvoy works a repo's ready GitHub issues unattended. One host runner, started by `afkconvoy run`, holds one fleet instance per repo. Each dispatches a worker per issue — a coding agent in its own git worktree — and lands finished PRs on the base branch through the gate and landing train. Fleet state lives in GitHub and the repo's remote; no process holds it.
 ///
-/// `afkconvoy --help` answers the index: this guide, the way in; then every command by its one line, under who runs it; then every topic by its first sentence, what belongs to no one command. `afkconvoy help all` answers the whole manual: this guide, then every command and every topic in full. `afkconvoy -h` lists the commands on one screen.
+/// `afkconvoy --help` answers the index: this guide, then each command's one line under who runs it, then each topic's first sentence. `afkconvoy help all` answers the whole manual: guide, commands and topics in full. `afkconvoy -h` lists commands on one screen.
 ///
 /// ## What it needs
 ///
-/// - A config on the base branch: the first yaml block of {const:CONFIG_FILE}. A repo whose config names a team is a bound repo: the team's workflows say how its issues are worked. One whose config names none is unbound: each issue is worked by one worker, then the landing train.
+/// - A config on the base branch: the first yaml block of {const:CONFIG_FILE}. A repo whose config names a team is a bound repo: its workflows say how issues are worked. One whose config names none is unbound: one worker per issue, then the landing train.
+/// - A private tracker for the issues the fleet reads and writes. Only a private repo can be its own tracker: anyone who can comment writes what workers read. Settle it with the user: [`afkconvoy help first-start`](help:first-start).
+/// - {const:FIRST_START_SETTINGS}
 /// - `gh` logged in as a user who may push to the repo.
 /// - `orca` on the PATH: every worker is started through it. It is running (`orca open`) and was given this checkout, once (`orca repo add --path "$PWD"`).
 /// - `claude` on the PATH and logged in, when it is what starts a worker.
@@ -165,9 +168,10 @@ const SKILL: &str = include_str!("../../../skills/afkconvoy/SKILL.md");
 ///
 /// ## What to run first, in a checkout of the repo
 ///
-/// 1. `afkconvoy config`: read the config, what the fleet goes by. Its `--help` shows one whole. Then `afkconvoy check`, only in a bound repo: does the team load? A team is designed first: see designing a team, below.
-/// 2. `afkconvoy plan`: what a tick would act on. It changes no fleet state, but may push and delete a startup probe on the remote. To read without writing anything, run `afkconvoy doctor`.
-/// 3. `afkconvoy run`: the checkout's fleet instance, held by the host runner until it is stopped. It answers once the first tick ended.
+/// 1. `afkconvoy checkouts`: if this checkout is absent, read [`afkconvoy help first-start`](help:first-start) and settle the first start with the user before `run`.
+/// 2. `afkconvoy config`: read the config, what the fleet goes by. Its `--help` shows one whole. Then `afkconvoy check`, only in a bound repo: does the team load? A team is designed first: see designing a team, below.
+/// 3. `afkconvoy plan`: what a tick would act on. It changes no fleet state, but may push and delete a startup probe on the remote. To read without writing anything, run `afkconvoy doctor`.
+/// 4. `afkconvoy run`: the checkout's fleet instance, held by the host runner until it is stopped. It answers once the first tick ended.
 ///
 /// To watch a running fleet, checking on it every few minutes, run `afkconvoy doctor --all --since <until of your last look>`. A first look runs `afkconvoy doctor --all` without `--since`; its `until` is where the next look starts.
 ///
@@ -183,21 +187,21 @@ const SKILL: &str = include_str!("../../../skills/afkconvoy/SKILL.md");
 ///
 /// ## The commands, by who runs them
 ///
-/// Read `afkconvoy <command> --help` before the first time you run one. The commands below are grouped by who runs them:
+/// Read `afkconvoy <command> --help` before first running it. Commands are grouped by who runs them:
 ///
-/// - **{const:OPERATOR}** — starting, watching or stopping a fleet. Read these first: `config`, `check` and `plan` before it starts, `run` to start it, `tick` for one pass of it and `stop` to stop it, `doctor --all --since <until of your last look>`, `checkouts` and `panel` to watch it, `kit`, `cast` and `switch` for the harness and model each worker runs, `patrol-now` to have a patrol run now and `takeover` to take another fleet instance's claims. `doctor` also says what is wrong, each finding with the line that fixes it.
+/// - **{const:OPERATOR}** — `config`, `check`, `plan` before `run`; `tick` for one pass, `stop` to stop; `doctor --all --since <until of your last look>`, `checkouts`, `panel` to watch (`doctor` names each fix); `kit`, `cast`, `switch` for workers' harnesses and models; `patrol-now` to run a patrol now; `takeover` to take another fleet instance's claims.
 /// - **{const:DESIGNER}** — `scaffold` to start one or a role of it from a skeleton, `draft` to draft its roster from the host kit, then, once `check` accepts it, `show` to review a workflow or to ask where an issue is in it, and `rehearse` to try one out.
-/// - **{const:HANDS_WORK}** — a human, or the agent a human is talking to, with work decided on and issues to open for it. Read `flows` before opening the first issue: it says which workflow takes which issue and the line that opens one, and creates the labels. `wake`, after the last, has the fleet take them up now.
+/// - **{const:HANDS_WORK}** — a human or their agent opening decided work. `flows` names the workflow, gives the issue-create line and makes labels. After opening issues, `wake` has the fleet take them up now.
 /// - **{const:SETS_UP}** — `skill` prints the skill file that sends their agent to `afkconvoy --help`.
 /// - **{const:WORKER}** — `gate`, `land`, `verdict`, `intake`, `lock`, `over`, `exclusive` and `inspected`: its prompt names each one as it is needed, and `wake`, above, as its last; `cut` is what a cut's terminal runs, and what you run to go on with a cut that failed. Read them only when you are a worker, or are finding out why one stopped (`rule` is a consult's too).
 /// - **{const:HUMAN}** — in a bound repo: `rule` to answer an escalated issue, `send` to put an issue at a stage of your choosing. A `by: human` stage waits for your `verdict`, a worker's command too. [`afkconvoy help humans`](help:humans) says what each case asks of you.
-/// - **{const:HOOK}** — `guard`, which the harness of a bound repo's worker asks before each thing the worker does. Nobody runs it by hand. Read its help to learn what a worker is refused, and why one was.
+/// - **{const:HOOK}** — `guard`, called before each action of a bound repo's worker. Nobody runs it by hand. Its help explains what the worker is refused and why.
 /// - **{const:BY_HAND}** — `dispatch`, `close`, `escalate`, `park`, `nudge`, `restart` and `abandon`: each is something a tick does on its own, and `recovery` shows what `dispatch` would continue an issue from. Read one when a plan shows a transition the fleet is not making, or you are told to make it yourself.
 /// - **{const:PLUMBING}** — `scan`, `claim`, `release` and `heartbeat`: what the transitions are built on. Read these only to inspect or repair claims and heartbeats on the remote.
 ///
 /// ## The topics
 ///
-/// Read `afkconvoy help <topic>` when this guide or a command's help names the topic: it prints that topic, Markdown, as `--help` itself is, and no JSON object. The topics below are what belongs to no one command, each opening with the sentence that says what it is for.
+/// Read `afkconvoy help <topic>` when this guide or a command's help names it: it prints that topic, Markdown, as `--help` does.
 ///
 /// ## Rules to know before you start
 ///
@@ -205,7 +209,6 @@ const SKILL: &str = include_str!("../../../skills/afkconvoy/SKILL.md");
 /// - `run` returns once its checkout's first tick ended: the host runner ticks on, in the background, until `afkconvoy stop --all` stops it, keeping the checkout list. `afkconvoy stop` takes one checkout off the list. `tick` is one pass that exits.
 /// - Between ticks a fleet instance sleeps {const:TICK_BUSY_SECONDS} seconds while it has work, or {const:TICK_IDLE_MINUTES} minutes after {const:TICK_IDLE_AFTER} empty ticks. Commands that change fleet state wake it sooner, including a worker's last `afkconvoy wake`. When a fleet on this host closes an issue or sees it closed, it also wakes every other fleet on the same tracker whose open issues it blocked. That next tick reads GitHub and takes up an issue whose last open blocker closed; its tick log names the closed issue and the fleet instance that saw it. After changing issues with `gh`, run `afkconvoy wake <checkout>` on the fleet's host: `gh` sends no wake.
 /// - Each harness's worker launch command comes from this host's host kit, kept outside the repo. `run` writes it on a host that has none, and `afkconvoy kit` writes it again; neither asks anything. `--worker-command` is gone. A known harness with no entry or command is discovered in the worker login shell, checked, and appended to the latest kit without model probes; an explicit command always wins. A running fleet reads command edits at its next worker launch.
-/// - A host whose fleets are all idle is put to sleep, but only within its sleep hours: {const:SLEEP_HOURS} of its local time, unless it says others. `afkconvoy run --host-sleep-hours 22:00-06:00` says others for every fleet on the host, `--host-sleep-hours default` changes them back, and `--no-host-sleep` keeps the host awake at any hour.
 /// - In a bound repo the worker launch command must end in its harness — Claude Code, pi, Codex, DSH or Kimi Code — taking flags: the fleet adds to it what starts each worker in its role and under the guard ([`afkconvoy help worker-launch`](help:worker-launch) says what, for each harness), and a start refuses a command whose `--help` does not name those flags. Every harness the team could ask for is checked first, and none is ever started in another's place.
 ///
 /// ## Designing a team, for a bound repo
@@ -1214,6 +1217,8 @@ enum Command {
     ///
     /// ## What it answers
     ///
+    /// Before a first start: a checkout off the checkout list must name `--tracker <owner>/<repo>` or `--tracker default` (its own repo, which must be private). A host with no saved host settings must name `--host-sleep`, `--no-host-sleep` or `--host-sleep-hours`. Missing answers refuse with a non-zero exit and write nothing: {"error", "asks", "see"}. Each `asks` item has `setting`, `question`, `default`, `recommend`, and `options`, each with `option` and `line`; `see` prints [`afkconvoy help first-start`](help:first-start). Settle these questions with the user before running the chosen lines. Existing checkouts and saved host settings run as before.
+    ///
     /// Once its checkout's fleet instance has ended its first tick, with exit 0:
     ///
     /// ```json
@@ -1340,9 +1345,9 @@ enum Command {
         /// and never pushed; `default` changes it back [default: {const:CONCURRENCY}]
         #[arg(long, value_name = "CLAIMS", value_parser = concurrency::claims_or_default)]
         concurrency: Option<To<NonZeroUsize>>,
-        /// The repo this checkout's fleet reads and writes its issues in, from its next tick:
-        /// the checkout's own, kept with it on the checkout list and never pushed; `default`
-        /// changes it back [default: the checkout's own repo]
+        /// The private repo this checkout's fleet reads and writes its issues in: required
+        /// on its first `run`; kept on this host and never pushed. `default` says its own repo
+        /// explicitly, which must be private; omitted on later runs, its saved choice holds
         #[arg(long, value_name = "OWNER/REPO", value_parser = tracker::repo_or_default)]
         tracker: Option<To<RepoName>>,
         #[command(flatten)]
@@ -2813,13 +2818,15 @@ enum Command {
     ///
     /// ## When to run it
     ///
-    /// To send a worker its nudge by hand. A tick does this on its own only when a checked diagnosis asks the worker to carry on; silence alone starts observation and diagnosis. Do it yourself when you have checked the worker’s scene and want it to carry on.
+    /// To send a worker its nudge by hand. A tick does this on its own when a checked diagnosis or the capacity rule asks the worker to carry on; silence alone starts observation and diagnosis. Do it yourself when you have checked the worker’s scene and want it to carry on.
     ///
     /// ## What counts as silent
     ///
     /// A stopped worker with no verdict or progress is observed over at least 300 seconds. Actual terminal output, git progress, runtime reports and process activity are evidence for diagnosis, never proof of quota exhaustion by themselves. A harness's explicit usage-limit and task-refusal messages are exceptions: Codex's `Usage limit reached … Increase your limits to continue using codex` is an account quota fault by rule, with no diagnosis or observation delay. Codex's `We take extra care with some cybersecurity requests. If you're doing authorized security work, apply for Daybreak to get broader access.` is a refusal of this task by rule, also with no diagnosis or observation delay. This issue continues on the next harness in host kit order that can start for its role. The issue remembers each refusing harness on GitHub and skips it at every later stage and start; the harness stays healthy for other issues. With none left, the issue escalates at once with the refusal line as evidence and no consult. A diagnostic harness has 30 seconds per candidate, at most three attempts per unchanged episode and 300 seconds between attempts. Invalid judgments try the next diagnosis-capable harness and preserve the scene.
     ///
     /// Account quota with no reset time continues on the next harness in host kit order that can start for the worker's role. A reset within the one-hour recovery window may be waited for; a later reset continues instead. Repeated waits on unchanged evidence never restart that window. After one hour the fleet acts on the fault class or escalates the issue to a human with its evidence. Doctor names the worker, its diagnosis and its next check.
+    ///
+    /// Codex's `Selected model is at capacity. Please try a different model.` is a capacity stop by rule, also with no diagnosis or observation delay. The first stop waits {{CAPACITY_WAIT_SECONDS}} seconds before nudging the same session; the next waits {{CAPACITY_SECOND_WAIT_SECONDS}} seconds. After {{MAX_CAPACITY_STOPS}} stops in the episode, the worker continues on the next eligible harness in host kit order, keeping its worktree, branch, stage, claim and PR. The episode survives brief working turns and runner restarts, ending after {{CAPACITY_HEALTHY_SECONDS}} seconds observed healthy or a different session. Capacity faults no harness for other workers. Tick-log worker-health lines name the rule, waits and nudges; doctor's host kit reports capacity_stops per harness, retained after episodes end.
     ///
     /// Confirmed background work, waiting for a human or dependency and completed idle sessions are left alone. A worker's gate waiting in the exclusive queue is background work too. The tick does not turn a long wait into permission for another writer. Continuation closes the old agent and confirms its terminal, runtime and process tree are gone before starting the successor in the same worktree, branch, stage, claim and PR. Structured transient rate limits respect Retry-After and get two retries before session fallback. Account and model recovery probes run hourly; successful recovery affects new starts without moving healthy successors back.
     ///
@@ -3496,6 +3503,7 @@ fn checkout_help(name: &str, positional: bool) -> String {
 pub fn manual() -> agent_help::Help {
     use topic::*;
     let mut help = agent_help::Help::new(cli())
+        .topic::<FirstStart>()
         .topic::<Concepts>()
         .topic::<Team>()
         .topic::<Roles>()
@@ -3517,6 +3525,8 @@ pub fn manual() -> agent_help::Help {
         .table::<claim_status::ClaimStatus>("claim_status")
         .constant("CONFIG_FILE", config::FILE)
         .constant("PANEL_PORT", host_settings::PANEL_PORT)
+        .constant("FIRST_START_SETTINGS", first_start::settings_help())
+        .constant("FIRST_START_QUESTIONS", first_start::help())
         .constant("EXCLUSIVE_SECONDS", exclusive::SECONDS)
         .constant("EXCLUSIVE_BOUND_CODE", exclusive::BOUND_CODE)
         .constant("WATCH_EVERY", host_settings::WATCH_EVERY)
@@ -3526,6 +3536,10 @@ pub fn manual() -> agent_help::Help {
         .constant("CONCURRENCY", afkconvoy_core::config::CONCURRENCY)
         .constant("GATE_SECONDS", afkconvoy_core::config::GATE_SECONDS)
         .constant("RECOVERY_SECONDS", crate::health::RECOVERY_SECONDS)
+        .constant("CAPACITY_WAIT_SECONDS", health::CAPACITY_WAIT_SECONDS)
+        .constant("CAPACITY_SECOND_WAIT_SECONDS", health::CAPACITY_WAIT_SECONDS * 2)
+        .constant("MAX_CAPACITY_STOPS", health::MAX_CAPACITY_STOPS)
+        .constant("CAPACITY_HEALTHY_SECONDS", health::CAPACITY_HEALTHY_SECONDS)
         .constant("INTAKE_LIMIT", afkconvoy_core::config::INTAKE_LIMIT)
         .constant("MAX_REWORK", afkconvoy_core::team::MAX_REWORK)
         .constant("MAX_CONSECUTIVE_REWORK", afkconvoy_core::team::MAX_CONSECUTIVE_REWORK)
@@ -4034,6 +4048,8 @@ pub fn main(args: impl IntoIterator<Item = OsString>) -> ExitCode {
 pub(crate) fn error_json(e: &anyhow::Error) -> Value {
     if let Some(refused) = e.downcast_ref::<team::Refused>() {
         json!({ "error": refused.to_string(), "faults": refused.json() })
+    } else if let Some(refused) = e.downcast_ref::<first_start::Refused>() {
+        json!({ "error": format!("{e:#}"), "asks": refused.asks, "see": topic::See::FirstStart })
     } else if let Some(see) = topic::explains(e) {
         json!({ "error": format!("{e:#}"), "see": see })
     } else {
@@ -4281,9 +4297,11 @@ fn run(
             let Some((foreground, start, settings)) = start_of(command, fixed_now) else {
                 unreachable!()
             };
+            let checkout = checkout?;
+            let start = first_start::settled(&checkout, start, &settings)?;
             match foreground {
-                true => host_runner::foreground(&checkout?, &start, settings),
-                false => host_runner::run(&checkout?, start, &settings, now),
+                true => host_runner::foreground(&checkout, &start, settings),
+                false => host_runner::run(&checkout, start, &settings, now),
             }
         }
         Command::Stop { all: true, .. } => host_runner::stop_all(),

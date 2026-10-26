@@ -30,8 +30,10 @@ fn answer(world: &World, args: &[&str], wrapped: bool) -> Answer {
     }
 }
 
-const RUN: [&str; 12] = [
+const RUN: [&str; 14] = [
     "run",
+    "--tracker",
+    "default",
     "--foreground",
     "--instance",
     "alpha",

@@ -117,16 +117,29 @@ impl List {
     /// What it lists. None yet is an empty list; a file that cannot be read
     /// is an error naming it.
     pub fn read(&self) -> Result<Listed> {
+        self.read_with_settings().map(|(listed, _)| listed)
+    }
+
+    /// The list, and whether its file holds host settings, even defaults.
+    /// A first `run` must distinguish settings never said from defaults
+    /// already accepted; reading this makes no file or lock.
+    pub fn read_with_settings(&self) -> Result<(Listed, bool)> {
         let bytes = match std::fs::read(&self.file) {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(Listed::default());
+                return Ok((Listed::default(), false));
             }
             Err(error) => {
                 return Err(error).with_context(|| format!("cannot read {}", self.file.display()));
             }
         };
-        serde_json::from_slice(&bytes).with_context(|| {
+        let read = || -> serde_json::Result<(Listed, bool)> {
+            let listed = serde_json::from_slice(&bytes)?;
+            let value: Value = serde_json::from_slice(&bytes)?;
+            let settings = value.get("settings").is_some();
+            Ok((listed, settings))
+        };
+        read().with_context(|| {
             format!(
                 "{} cannot be read as the checkout list: mend it, or remove it and run \
                  `afkconvoy run` again in each checkout to be worked",
