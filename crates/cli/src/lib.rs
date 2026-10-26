@@ -4228,7 +4228,7 @@ fn run(
                 unreachable!()
             };
             let checkout = checkout?;
-            first_start::check(&checkout, &start, &settings)?;
+            let start = first_start::settled(&checkout, start, &settings)?;
             match foreground {
                 true => host_runner::foreground(&checkout, &start, settings),
                 false => host_runner::run(&checkout, start, &settings, now),

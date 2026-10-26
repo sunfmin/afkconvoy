@@ -133,10 +133,16 @@ pub fn help() -> String {
     text
 }
 
-/// Refuses a start lacking a new checkout's tracker or a new host's sleep
-/// choice. Existing entries and settings keep their meaning. Every missing
-/// decision is returned together, with no write or external command.
-pub fn check(checkout: &Repo, start: &Start, settings: &host_settings::Named) -> Result<()> {
+/// Settles a start's required answers, or refuses with every missing
+/// decision together, writing nothing. An explicit default tracker of a new
+/// checkout needs no change applied: its startup probe checks privacy after
+/// checking all required tools. Existing entries and settings keep their
+/// meaning.
+pub fn settled(
+    checkout: &Repo,
+    mut start: Start,
+    settings: &host_settings::Named,
+) -> Result<Start> {
     let (listed, has_settings) = List::of_host()?.read_with_settings()?;
     let new_checkout = !listed.checkouts.iter().any(|entry| entry.checkout == checkout.dir);
     let tracker = new_checkout && start.tracker.is_none();
@@ -153,7 +159,10 @@ pub fn check(checkout: &Repo, start: &Start, settings: &host_settings::Named) ->
     if !asks.is_empty() {
         return Err(Refused { asks }.into());
     }
-    Ok(())
+    if new_checkout && matches!(start.tracker, Some(host_settings::To::Default)) {
+        start.tracker = None;
+    }
+    Ok(start)
 }
 
 /// The unanswered decisions carried by a first-start refusal.
