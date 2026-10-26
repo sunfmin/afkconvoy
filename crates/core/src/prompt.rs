@@ -758,8 +758,7 @@ pub fn stage_prompt(fields: &StageFields) -> Result<String, String> {
     };
     let workflows: Vec<String> = fields.workflows.iter().map(|name| format!("`{name}`")).collect();
     let gate = match fields.gate {
-        Some(_) => GATE_BEFORE_PASS
-            .replace("<gate_step>", STAGE_GATE_STEP).replace("<defect>", ""),
+        Some(_) => GATE_BEFORE_PASS.replace("<gate_step>", STAGE_GATE_STEP).replace("<defect>", ""),
         None => String::new(),
     };
     let template = with_rules(STAGE, "worktree", fields.team_rules)
@@ -1302,10 +1301,8 @@ fn prompt(
 /// The worker prompt with a variant's opening and first step in it.
 fn briefed(opening: &str, step1: &str) -> String {
     let outcomes = " — your PR is on the landing train, or your comment is posted";
-    let worker = WORKER
-        .replace("<opening>", opening)
-        .replace("<step1>", step1)
-        .replace("<defect>", "");
+    let worker =
+        WORKER.replace("<opening>", opening).replace("<step1>", step1).replace("<defect>", "");
     steps(&worker, "4", "5", outcomes)
 }
 
@@ -2232,8 +2229,16 @@ mod tests {
     #[test]
     fn workers_open_the_pr_before_the_turn_and_do_not_gate_the_tip_alone() {
         let fresh = worker_prompt(&fields(), Variant::Fresh).unwrap();
-        assert!(fresh.find("gh pr create").unwrap() < fresh.find("This command asks for a turn").unwrap());
-        for variant in [Variant::Fresh, Variant::Continue, Variant::TakeUp { pr: 70 }, Variant::Join { pr: 70 }] {
+        assert!(
+            fresh.find("gh pr create").unwrap()
+                < fresh.find("This command asks for a turn").unwrap()
+        );
+        for variant in [
+            Variant::Fresh,
+            Variant::Continue,
+            Variant::TakeUp { pr: 70 },
+            Variant::Join { pr: 70 },
+        ] {
             let prompt = worker_prompt(&fields(), variant).unwrap();
             assert!(prompt.contains("joins your PR before"), "{prompt}");
             assert!(!prompt.contains("A red gate that is not yours"), "{prompt}");
