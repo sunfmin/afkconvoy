@@ -331,6 +331,7 @@ pub fn join(
             answer["outcome"] = json!("conflict");
             answer["recorded"] = json!(false);
             answer["files"] = json!(files);
+            answer["worktree"] = json!(repo.dir);
             answer["detail"] =
                 json!(format!("merging the train's green tip conflicted; no gate ran — {RESOLVE}"));
             acting.say(

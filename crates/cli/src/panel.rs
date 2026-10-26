@@ -285,6 +285,8 @@ pub struct Host {
     /// The host's `exclusive` queue, whatever its repo: the first runs alone,
     /// and the rest wait their turn, next first.
     pub exclusive: Vec<Ticket>,
+    pub gate_lanes: u64,
+    pub train_lanes: u64,
     /// The hours of its local time a fleet may put it to sleep in; `None`
     /// where its host settings keep it awake.
     pub sleep_hours: Option<Hours>,
@@ -301,6 +303,7 @@ impl Host {
     /// so, or shows nothing. Admission reads the disk under `dir`; `shared`
     /// is what its host runner holds for its fleets.
     pub fn read(dir: &Path, now: u64, shared: SharedNow) -> Host {
+        let settings = host_settings::of_host().unwrap_or_default();
         Host {
             name: crate::this_host(),
             now,
@@ -308,6 +311,8 @@ impl Host {
             inspection: shared.inspection,
             host_inspected: inspection::last_on_host(),
             exclusive: shared.exclusive,
+            gate_lanes: settings.gate_lanes(),
+            train_lanes: settings.train_lanes(),
             sleep_hours: host_settings::host_sleep(),
             kit: crate::kit::load().map_err(|error| format!("{error:#}")),
             worker_health: crate::health::show(),
@@ -1051,12 +1056,10 @@ fn host_part(out: &mut String, page: &Page) {
         let lanes: std::collections::BTreeSet<_> =
             host.exclusive.iter().map(afkconvoy_core::exclusive::lane).collect();
         out.push_str("<section class=\"exclusive\"><h2>Command lanes</h2>");
-        let counts = &host.settings["in_force"];
         let _ = write!(
             out,
             "<p>{} worker lanes · {} train lanes</p>",
-            counts["gate_lanes"].as_u64().unwrap_or(1),
-            counts["train_lanes"].as_u64().unwrap_or(1)
+            host.gate_lanes, host.train_lanes
         );
         for lane in lanes {
             let _ = write!(out, "<h3>{} lane</h3><ul class=\"cards\">", esc(&lane));
@@ -1679,6 +1682,8 @@ mod tests {
             inspection: None,
             host_inspected: None,
             exclusive: vec![],
+            gate_lanes: 1,
+            train_lanes: 1,
             sleep_hours: Some(SLEEP_HOURS),
             kit: Ok(Kit::default()),
             worker_health: serde_json::json!({}),

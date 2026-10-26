@@ -76,6 +76,10 @@ fn finish(world: &World, issue: u64) {
 /// The train worker lands the train → the answer.
 fn land(world: &World, now: &str) -> Value {
     let train = train_worktree(world);
+    // These scenarios exercise rebuilding a train tip without a record.
+    for name in world.remote(&["for-each-ref", "--format=%(refname)", "refs/convoy/gate"]).lines() {
+        world.remote(&["update-ref", "-d", name]);
+    }
     let args = ["--now", now, "land", "--train", "--merged-timeout", "5"];
     let landed = world.afk_in(&train, &args).ok();
     assert_eq!(landed["outcome"], "landed", "{landed}");
