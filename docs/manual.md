@@ -838,6 +838,8 @@ afkconvoy run [OPTIONS] [CHECKOUT]
   - Environment: `AFKCONVOY_ADMIT_DISK`
 - `--admit-inspect-after <SECONDS>`: The seconds admission holds back for one reason before the host is inspected: a host setting; `default` changes it back [default: 600]
   - Environment: `AFKCONVOY_ADMIT_INSPECT_AFTER`
+- `--exclusive-seconds <SECONDS>`: Seconds a running exclusive command may hold others up, counting only while another waits: a host setting; `default` changes it back [default: 1200]
+  - Environment: `AFKCONVOY_EXCLUSIVE_SECONDS`
 - `--jev-key-command <COMMAND>`: The shell command whose stdout is the TypeSafe key Jev is asked with when it judges a stopped worker's screen, such as one that reads the key from a keychain: a host setting, run afresh for each check. The key is sent only to TypeSafe, and is in no file, answer or log line; a command that fails or prints nothing is an error, and the worker waits for the operator as with none. `default` removes it [default: none]
   - Environment: `AFKCONVOY_JEV_KEY_COMMAND`
 
@@ -1955,6 +1957,8 @@ afkconvoy exclusive -- cargo test --workspace
 
 Not for everyday commands — `git`, a single test, a quick build: the queue makes each one wait for every heavy one before it, of every fleet on this host.
 
+Split a long measurement up front. Run each step that needs a quiet host as its own `afkconvoy exclusive`, so gates and the landing train can run between steps.
+
 ##### Who runs it
 
 A worker, in its own worktree. Anyone else on the host may too: the queue is the host's, not a fleet's.
@@ -1969,13 +1973,15 @@ While it waits or runs, the fleet counts the worker busy, not silent: it is not 
 
 ##### What it answers
 
+A running command is ended once it has held other commands up for 1200s, or the seconds the host setting `afkconvoy run --exclusive-seconds N` says (`AFKCONVOY_EXCLUSIVE_SECONDS` names it too). `--exclusive-seconds default` changes it back; 0 ends a command as soon as another waits. Only time with another command waiting counts: time running alone never uses the bound, and gaps without waiters pause it. A changed host setting applies to the command already running. On reaching the bound it ends the command and its descendants before the next command starts, exits 124, and prints one line on stderr beginning `[afkconvoy] exclusive:` telling the worker to run each step as its own `afkconvoy exclusive`. The tick log records the command, its runtime and how many commands waited; `doctor` names each recent occurrence as a warning.
+
 Unlike every other command, no JSON of its own: what the command prints is printed, and it exits with the command's exit status — 128 and the signal for a command a signal ended. While it waits it says so on stderr, in one line beginning `[afkconvoy] exclusive:`.
 
 With no host runner on this host it runs the command at once, in no queue, and says so on stderr: `[afkconvoy] exclusive: runs `<command>` at once, in no queue: no host runner runs on this host`. So it does too where the host runner cannot hold it — one of an older afkconvoy, which cannot read the question — saying why. A host runner that is starting or stopping is waited for, as one replaced is.
 
 When the host runner is replaced — an upgrade moves it (`afkconvoy run --help`) — or ends, a command that waits asks the next one, within a minute, keeping when it first asked: it waits there before every command that asked after it, saying so on stderr. Where no host runner places it within the minute, it runs at once, saying so. A command that runs runs on to its end: the next host runner does not know of it, and may start the next command beside it.
 
-It exits 127 when the command cannot be started, and 125, with one JSON object {"error"} on stdout, when the host runner cannot be asked — the cache directory is not known — or what it said cannot be read, or `-C` names no directory of a checkout: the command did not run, and nothing waited.
+Exit 124 is reserved for the bound: a command that itself exits 124 is reported as exit 1. Every other command exit status is passed through. It exits 127 when the command cannot be started, and 125, with one JSON object {"error"} on stdout, when the host runner cannot be asked — the cache directory is not known — or what it said cannot be read, or `-C` names no directory of a checkout: the command did not run, and nothing waited.
 
 ##### What trips you up
 
@@ -2911,7 +2917,7 @@ Tell the worker of one of my claims, stopped with no PR and no verdict, to carry
 
 ##### When to run it
 
-To send a worker its nudge by hand. Silence alone starts observation: a rule, or Jev where the host settings name a key command, classes what stopped the worker, and what neither classes waits for the operator. Do it yourself when you have checked the worker’s scene and want it to carry on.
+To send a worker its nudge by hand. A tick does this on its own only when worker health asks the worker to carry on; silence alone starts observation, and what no rule classes goes to Jev, where the host settings name a key command, or else to the operator. Do it yourself when you have checked the worker’s scene and want it to carry on.
 
 ##### What counts as silent
 
@@ -4375,6 +4381,8 @@ Start with `afkconvoy doctor`, in the checkout the fleet runs in: it reads every
 
 A warning may be the fleet mid-step: run `doctor` again after a tick before you act on one.
 
+- `ended at the exclusive bound`: A command held others up for the host's bound. Each occurrence in the last day has the command, runtime and number waiting in `evidence`. Run each step of a long measurement as its own `afkconvoy exclusive`. If a single gate or release build reaches it, check the host setting with `afkconvoy doctor` and change it with `afkconvoy run --exclusive-seconds N`, or `--exclusive-seconds default` to restore 1200s.
+
 - `failed in tick`: A step failed, including a worker that could not start or take its brief. `evidence` is the error and `fix` is the line to try after correcting it: a failed dispatch can be run again, and a failed train worker start uses `afkconvoy tick`. It stays visible across unrelated ticks until the step succeeds or the issue's work continues or ends. Three consecutive failed ticks make it critical instead.
 - `has no worker`: A claim's worker is gone; a tick starts one. `fix` is for a claim it leaves so.
 - `has been stopped for`: A worker stopped half an hour ago and its claim is still at work. Read its terminal; `fix` follows its verdict and progress. A `blocked` verdict whose blockers all closed names `dispatch`, which continues its worktree; open blockers name `park`. Only a worker eligible for a nudge names `nudge`; other cases name `tick`.
@@ -4465,7 +4473,7 @@ A fleet instance whose loop panicked or ended in an error — its tracker found 
 _Avoid_: crashed, dead (a heartbeat past the lease), down (a harness that refuses every prompt)
 
 **Host settings**:
-What a host says for every fleet instance on it — whether it may be put to sleep and its sleep hours, the limits past which a worker is hot, the shares admission holds back at, the panel's port, the operator's directory a watch starts in and how often the host runner looks, the command that supplies a TypeSafe key for Jev's worker-health judgments — kept beside the checkout list and changed by any `run` that names one, for every fleet instance on the host at once.
+What a host says for every fleet instance on it — whether it may be put to sleep and its sleep hours, the limits past which a worker is hot, the shares admission holds back at, the bound on an exclusive command holding others up, the panel's port, the operator's directory a watch starts in and how often the host runner looks, the command that supplies a TypeSafe key for Jev's worker-health judgments — kept beside the checkout list and changed by any `run` that names one, for every fleet instance on the host at once.
 _Avoid_: global config, runner flags
 
 **Tick**:
@@ -4683,7 +4691,7 @@ The operator on its host, started by its host runner when a **look** at the host
 _Avoid_: patrol (a role run on a schedule that writes no code), supervisor (the host runner is the process)
 
 **Exclusive queue**:
-The queue of the commands run through `afkconvoy exclusive` on one host, held by its host runner for every fleet on it whatever its repo: one runs at a time, in the order they asked, and the rest wait. A command whose process dies leaves it; one waiting as its host runner is replaced waits in the next one's, from when it asked. A worker with a command in it is busy, not silent, for no longer than the gate limit.
+The queue of the commands run through `afkconvoy exclusive` on one host, held by its host runner for every fleet on it whatever its repo: one runs at a time, in the order they asked, and the rest wait. A running command can be ended at a bound the host settings say, counting only time while another command waits; running alone uses none of it. A command whose process dies leaves it; one waiting as its host runner is replaced waits in the next one's, from when it asked. A worker with a command in it is busy, not silent, for no longer than the gate limit.
 _Avoid_: mutex, semaphore, heavy lock (the fleet lock is another thing)
 
 **Nudge**:
