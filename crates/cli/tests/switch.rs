@@ -961,6 +961,70 @@ fn capacity_never_spends_a_stop_on_an_input_that_started_no_turn() {
     assert_eq!(open_commands(&world, &dir), [codex_line(&world, &dir)]);
 }
 
+#[test]
+fn capacity_continuation_preserves_the_stage_and_skips_harnesses_without_role_limits() {
+    let world = World::new();
+    hold_every_harness(&world);
+    world.repo(
+        "acme/dev",
+        &[
+            (
+                ".claude/skills/implement/SKILL.md",
+                "---\nname: implement\ndescription: build\n---\n",
+            ),
+            (".codex/hooks.json", r#"{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[]}]}}"#),
+            (".pi/extensions/limits.js", "export default () => {};\n"),
+        ],
+    );
+    world.repo("acme/team", &[
+        ("team.md", "```yaml\nroles:\n  dev: acme/dev\n```\n"),
+        ("workflows/feature.md", "```yaml\nstages:\n  - name: build\n    by: dev\n    do: implement\n    on: { pass: done }\n```\n"),
+    ]);
+    common::write(
+        &world.clone,
+        "docs/agents/afkconvoy.md",
+        "```yaml\nbase_branch: main\ngate_command: ./gate.sh\nteam: acme/team\n```\n",
+    );
+    git(&world.clone, &["commit", "-qam", "bind the repo"]);
+    git(&world.clone, &["push", "-q", "origin", "main"]);
+    world.afk(&["switch", "--harness", "codex"]).ok();
+    world.issue(7, &["flow:feature"]);
+    tick(&world, 700);
+    let dir = worktree(&world, 7);
+    let claims = world.claims();
+    capacity_turn(&world, &dir, "done", 790);
+    for at in [800, 860, 861, 981, 982] {
+        tick(&world, at);
+    }
+    assert_eq!(health_book(&world)["workers"][0]["successor"], "pi");
+    assert_eq!(world.afk(&["show", "--issue", "7"]).ok()["position"]["stage"], "build");
+    assert_eq!(world.claims(), claims);
+    assert_eq!(open_commands(&world, &dir).len(), 1);
+    assert!(open_commands(&world, &dir)[0].contains("pi"));
+}
+
+#[test]
+fn capacity_continuation_never_starts_a_second_writer_before_termination_is_confirmed() {
+    let world = blocked();
+    let dir = worktree(&world, 7);
+    switch(&world, "750", &["7", "--harness", "codex"]).ok();
+    capacity_turn(&world, &dir, "done", 790);
+    for at in [800, 860, 861, 981] {
+        tick(&world, at);
+    }
+    world.with_orca(|orca| orca["close_reports_ended"] = json!(true));
+    tick(&world, 982);
+    assert_eq!(open_commands(&world, &dir), [codex_line(&world, &dir)]);
+    assert_eq!(world.claims().len(), 1);
+    assert!(
+        health_book(&world)["workers"][0]["error"]
+            .as_str()
+            .unwrap()
+            .contains("termination is unconfirmed")
+    );
+    assert_eq!(health_book(&world)["faults"], json!([]));
+}
+
 fn codex_refusal(world: &World, dir: &Path) {
     world.with_orca(|orca| {
         for terminal in orca["terminals"].as_array_mut().unwrap() {
