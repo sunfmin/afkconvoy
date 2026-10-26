@@ -86,7 +86,7 @@ fn a_blocker_repair_read_in_a_workers_worktree_uses_the_main_checkout_for_flows(
     let out = world.command("sh", &worktree).args(["-c", flows]).output().unwrap();
     assert!(out.status.success(), "{flows}: {}", String::from_utf8_lossy(&out.stdout));
     let answer: Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert!(answer["line"].as_str().unwrap().contains("--repo 'acme/tracker'"), "{answer}");
+    assert!(answer["line"].as_str().unwrap().contains("--repo acme/tracker"), "{answer}");
 }
 
 #[test]
