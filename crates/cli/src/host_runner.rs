@@ -904,13 +904,14 @@ fn found_at(path: &Path, log: &RunnerLog) -> Option<Installed> {
 /// could not be started, said nothing in time and was ended, ended in an
 /// error, or said no version.
 fn version_of(path: &Path) -> Result<String> {
-    let mut child = Command::new(path)
-        .arg("--version")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .context("it could not be started")?;
+    let mut child = crate::process::spawn(
+        Command::new(path)
+            .arg("--version")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped()),
+    )
+    .context("it could not be started")?;
     let until = Instant::now() + VERSION_SAID_WITHIN;
     while child.try_wait()?.is_none() {
         if Instant::now() >= until {
@@ -2072,7 +2073,7 @@ impl Older {
     /// host go → its {pid, version}.
     fn replaced(self) -> Result<Value> {
         let Older { pid, version } = self;
-        let told = Command::new("kill").args(["-TERM", &pid.to_string()]).status();
+        let told = crate::process::status(Command::new("kill").args(["-TERM", &pid.to_string()]));
         told.context("`kill` could not be run to stop the host runner")?;
         // However `kill` ended: one already gone has let the host go.
         if !let_go(&cache()?.join(LOCK), UP_WITHIN) {
@@ -2301,17 +2302,18 @@ fn start_detached(program: &Path) -> Result<Child> {
     let config = kit.parent().and_then(Path::parent).unwrap_or(Path::new("/"));
     let env = pinned(env, &dir, config);
     let log = opened_log(&dir.join(LOG))?;
-    Command::new(program)
-        .arg("host-runner")
-        .env_clear()
-        .envs(env)
-        .current_dir("/")
-        .stdin(Stdio::null())
-        .stdout(log.try_clone()?)
-        .stderr(log)
-        .process_group(0)
-        .spawn()
-        .context("the host runner could not be started")
+    crate::process::spawn(
+        Command::new(program)
+            .arg("host-runner")
+            .env_clear()
+            .envs(env)
+            .current_dir("/")
+            .stdin(Stdio::null())
+            .stdout(log.try_clone()?)
+            .stderr(log)
+            .process_group(0),
+    )
+    .context("the host runner could not be started")
 }
 
 /// `env` with XDG_CACHE_HOME and XDG_CONFIG_HOME set to those of this

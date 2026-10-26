@@ -267,7 +267,8 @@ pub fn exclusive(
         Err(error) => return failed(&format!("{error:#}")),
     };
     let ticket = Ticket { ran: Some(now()), ..ticket };
-    let status = Command::new(&command[0]).args(&command[1..]).current_dir(dir).status();
+    let status =
+        crate::process::status(Command::new(&command[0]).args(&command[1..]).current_dir(dir));
     // Its place is free the moment the command ends.
     drop(place);
     let (code, ended) = match status {
@@ -438,7 +439,8 @@ mod tests {
 
     #[test]
     fn an_ended_command_is_passed_on_as_a_shell_would() {
-        let run = |line: &str| Command::new("sh").args(["-c", line]).status().unwrap();
+        let run =
+            |line: &str| crate::process::status(Command::new("sh").args(["-c", line])).unwrap();
         assert_eq!(ended(run("exit 3")), (3, "exit 3".to_string()));
         assert_eq!(ended(run("kill -9 $$")), (137, "killed by signal 9".to_string()));
     }
