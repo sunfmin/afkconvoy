@@ -1667,10 +1667,25 @@ fn exclusive_json(standing: Result<Vec<Ticket>>) -> Value {
             "pid": ticket.pid, "asked": ticket.asked, "ran": ticket.ran})
     };
     match standing {
-        Ok(live) => json!({
-            "running": live.first().map(ticket),
-            "waiting": live.iter().skip(1).map(ticket).collect::<Vec<_>>(),
-        }),
+        Ok(live) => {
+            let lane = |train: bool, repo: Option<&str>| {
+                let each: Vec<_> = live
+                    .iter()
+                    .filter(|t| t.train == train && t.repo_lane.as_deref() == repo)
+                    .collect();
+                json!({"running": each.iter().find(|t| t.ran.is_some()).map(|t| ticket(t)),
+                    "waiting": each.iter().filter(|t| t.ran.is_none()).map(|t| ticket(t)).collect::<Vec<_>>()})
+            };
+            let worker = lane(false, None);
+            let repos: std::collections::BTreeSet<_> =
+                live.iter().filter_map(|t| t.repo_lane.as_deref()).collect();
+            let repos: Vec<_> = repos
+                .into_iter()
+                .map(|repo| json!({"repo": repo, "queue": lane(false, Some(repo))}))
+                .collect();
+            json!({"running": worker["running"], "waiting": worker["waiting"],
+                "lanes": {"worker": worker, "train": lane(true, None), "repos": repos}})
+        }
         Err(error) => json!({"error": format!("{error:#}")}),
     }
 }

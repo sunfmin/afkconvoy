@@ -365,7 +365,7 @@ impl Queue {
 /// releases its ticket and unblocks the reader; no thread or socket remains.
 struct Watch {
     read: mpsc::Receiver<Bound>,
-    end: Option<Box<dyn FnOnce()>>,
+    end: Option<Box<dyn FnOnce() + Send>>,
     reader: Option<std::thread::JoinHandle<Conversation>>,
 }
 

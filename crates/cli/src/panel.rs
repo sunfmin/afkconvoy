@@ -1048,20 +1048,29 @@ fn host_part(out: &mut String, page: &Page) {
     }
 
     if !host.exclusive.is_empty() {
-        out.push_str(
-            "<section class=\"exclusive\"><h2>Run alone on this host</h2><ul class=\"cards\">",
-        );
-        for (place, ticket) in host.exclusive.iter().enumerate() {
-            let class = if place == 0 { "busy" } else { "queued" };
-            let _ = write!(
-                out,
-                "<li class=\"card {class}\"><span class=\"title\"><code>{}</code></span>\
+        let lanes: std::collections::BTreeSet<_> =
+            host.exclusive.iter().map(afkconvoy_core::exclusive::lane).collect();
+        out.push_str("<section class=\"exclusive\"><h2>Command lanes</h2>");
+        for lane in lanes {
+            let _ = write!(out, "<h3>{} lane</h3><ul class=\"cards\">", esc(&lane));
+            for (place, ticket) in host
+                .exclusive
+                .iter()
+                .filter(|ticket| afkconvoy_core::exclusive::lane(ticket) == lane)
+                .enumerate()
+            {
+                let class = if ticket.ran.is_some() { "busy" } else { "queued" };
+                let _ = write!(
+                    out,
+                    "<li class=\"card {class}\"><span class=\"title\"><code>{}</code></span>\
                  <span class=\"meta\"><span class=\"note\">{}</span></span></li>",
-                esc(&ticket.command),
-                esc(&exclusive_says(ticket, place, host.now)),
-            );
+                    esc(&ticket.command),
+                    esc(&exclusive_says(ticket, place, host.now)),
+                );
+            }
+            out.push_str("</ul>");
         }
-        out.push_str("</ul></section>\n");
+        out.push_str("</section>\n");
     }
 
     let sleep = match host.sleep_hours {
