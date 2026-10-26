@@ -329,6 +329,15 @@ mod tests {
     }
 
     #[test]
+    fn an_external_push_of_an_unfinished_candidate_does_not_settle_its_prefix() {
+        let mut chain = Chain { candidates: (0..3).map(candidate).collect(), ..Chain::default() };
+        chain.finish("c1", true, serde_json::json!({"green": true}));
+        chain.observe_base("m1");
+        assert!(chain.candidates.iter().all(|c| !c.valid() && c.phase != Phase::Landed));
+        assert!(chain.candidates.iter().all(|c| c.cause.as_deref() == Some("base_moved")));
+    }
+
+    #[test]
     fn exhaust_three_candidates_through_completion_invalidation_exit_and_publication() {
         // Exactly three assigned candidates, two results per gate, cancellation
         // and exit confirmations, external moves and publication. Enumerates
