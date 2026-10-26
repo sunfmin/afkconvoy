@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 
 use afkconvoy_core::exclusive::{
     Ticket, ahead, at_once_line, ended_line, in_order, queued_since, ready, rejoins_line,
-    runs_line, same_lane, waits_line,
+    runs_line, same_lane, same_repo, waits_line,
 };
 use afkconvoy_core::role::ISSUE_ENV;
 use afkconvoy_core::train::is_train_worktree;
@@ -249,35 +249,51 @@ impl Default for Joined {
 }
 
 impl Joined {
+    /// The waiters this running command actually holds up: a free lane
+    /// means another repo need not wait, and a repo's second turn waits
+    /// only for its own first turn.
+    fn waiting_for(&self, number: u64, settings: &crate::host_settings::Settings) -> usize {
+        let Some(running) = self.tickets.iter().find(|t| t.number == number && t.ran.is_some())
+        else {
+            return 0;
+        };
+        let limit = if running.repo_lane.is_some() {
+            1
+        } else if running.train {
+            settings.train_lanes()
+        } else {
+            settings.gate_lanes()
+        };
+        let occupied =
+            self.tickets.iter().filter(|t| t.ran.is_some() && same_lane(t, running)).count() as u64;
+        self.tickets
+            .iter()
+            .filter(|waiting| {
+                if waiting.ran.is_some()
+                    || !(same_lane(running, waiting)
+                        || (running.is_turn && waiting.is_turn && same_repo(running, waiting)))
+                {
+                    return false;
+                }
+                let owner = self.tickets.iter().find(|t| {
+                    t.ran.is_some()
+                        && same_repo(t, waiting)
+                        && (same_lane(t, waiting) || (t.is_turn && waiting.is_turn))
+                });
+                match owner {
+                    Some(owner) => owner.number == number,
+                    None => occupied >= limit,
+                }
+            })
+            .count()
+    }
+
     /// Account for the interval before any queue change, so short waits,
     /// gaps without waiters and a changing set of waiters count correctly.
     fn count(&mut self, now: Instant) {
         let settings = crate::host_settings::of_host().unwrap_or_default();
         for running in self.tickets.iter().filter(|ticket| ticket.ran.is_some()) {
-            let limit = if running.repo_lane.is_some() {
-                1
-            } else if running.train {
-                settings.train_lanes()
-            } else {
-                settings.gate_lanes()
-            };
-            let occupied =
-                self.tickets.iter().filter(|t| t.ran.is_some() && same_lane(t, running)).count()
-                    as u64;
-            let repo_of = |t: &Ticket| t.repo.clone().unwrap_or_else(|| t.dir.clone());
-            if self.tickets.iter().filter(|t| t.ran.is_none() && same_lane(running, t)).any(
-                |waiting| {
-                    let own = self.tickets.iter().find(|t| {
-                        t.ran.is_some()
-                            && t.train == waiting.train
-                            && repo_of(t) == repo_of(waiting)
-                    });
-                    match own {
-                        Some(owner) => owner.number == running.number,
-                        None => occupied >= limit,
-                    }
-                },
-            ) {
+            if self.waiting_for(running.number, &settings) > 0 {
                 let waited = self.waited.entry(running.number).or_default();
                 *waited = waited.saturating_add(now.duration_since(self.counted_at));
             }
@@ -389,13 +405,9 @@ impl Queue {
             joined.count(Instant::now());
             // A changed host setting applies to the command already running.
             // An unreadable file leaves the default in force.
-            let bound = crate::host_settings::of_host().unwrap_or_default().exclusive_seconds();
-            let mine = joined.tickets.iter().find(|ticket| ticket.number == number).unwrap();
-            let waiting = joined
-                .tickets
-                .iter()
-                .filter(|ticket| ticket.number != number && same_lane(ticket, mine))
-                .count();
+            let settings = crate::host_settings::of_host().unwrap_or_default();
+            let bound = settings.exclusive_seconds();
+            let waiting = joined.waiting_for(number, &settings);
             if waiting > 0
                 && joined.waited.get(&number).copied().unwrap_or_default()
                     >= Duration::from_secs(bound)
@@ -779,6 +791,28 @@ mod tests {
             Duration::from_secs(7),
             "another waiter resumes the count"
         );
+    }
+
+    #[test]
+    fn a_free_lane_is_no_contention_and_a_repos_second_turn_waits_only_for_its_own() {
+        let settings: crate::host_settings::Settings =
+            serde_json::from_value(json!({"gate_lanes": 2})).unwrap();
+        let mut a = ticket("a", 100);
+        a.number = 1;
+        a.repo = Some("a".into());
+        a.ran = Some(100);
+        let mut b = ticket("b", 101);
+        b.number = 2;
+        b.repo = Some("b".into());
+        let mut joined = Joined { tickets: vec![a.clone(), b.clone()], ..Joined::default() };
+        assert_eq!(joined.waiting_for(1, &settings), 0, "b has a free lane, even at a zero bound");
+        b.ran = Some(101);
+        let mut another_a = a;
+        another_a.number = 3;
+        another_a.ran = None;
+        joined.tickets = vec![joined.tickets[0].clone(), b, another_a];
+        assert_eq!(joined.waiting_for(1, &settings), 1);
+        assert_eq!(joined.waiting_for(2, &settings), 0, "b does not hold a's second turn up");
     }
 
     /// An asker on the queue's line: what it was told first, and the line.

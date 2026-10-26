@@ -57,6 +57,12 @@ pub fn same_lane(a: &Ticket, b: &Ticket) -> bool {
     a.train == b.train && a.repo_lane == b.repo_lane
 }
 
+/// A repo has one identity across its worktrees. Older tickets identify
+/// only their directory and still exclude another command from there.
+pub fn same_repo(a: &Ticket, b: &Ticket) -> bool {
+    a.repo.as_deref().unwrap_or(&a.dir) == b.repo.as_deref().unwrap_or(&b.dir)
+}
+
 /// Whether this ticket can start with the host's lane counts. Earlier
 /// requests reserve available lanes in order, but a second request of a
 /// running repo waits without holding another repo back from a free lane.
@@ -72,10 +78,8 @@ pub fn ready(queue: &[Ticket], number: u64, worker_lanes: u64, train_lanes: u64)
             worker_lanes
         };
         let occupied = admitted.iter().filter(|t| same_lane(t, ticket)).count() as u64;
-        let repo = ticket.repo.as_deref().unwrap_or(&ticket.dir);
         let own = admitted.iter().any(|t| {
-            (same_lane(t, ticket) || (t.is_turn && ticket.is_turn))
-                && t.repo.as_deref().unwrap_or(&t.dir) == repo
+            (same_lane(t, ticket) || (t.is_turn && ticket.is_turn)) && same_repo(t, ticket)
         });
         if occupied < limit && !own {
             if ticket.number == number {
