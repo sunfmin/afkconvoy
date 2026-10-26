@@ -536,13 +536,13 @@ fn the_exclusive_queue_its_host_runner_holds_is_on_the_page_printed_and_the_page
         page
     };
     let alone = exclusive("until [ -e \"$CACHE/done\" ]; do sleep 0.05; done");
-    printed_with("runs alone");
+    printed_with("running, for ");
     let after = exclusive("true");
 
     // printed: `panel` asks the host runner on its socket
     let page = printed_with("waits behind 1");
     assert!(page.html.contains("<h2>Command lanes</h2>"), "{}", page.html);
-    assert!(page.html.contains("runs alone, for "), "{}", page.html);
+    assert!(page.html.contains("running, for "), "{}", page.html);
     assert!(page.html.contains(" · #12 in "), "{}", page.html);
 
     // served: the page the next tick makes reads it where it is held

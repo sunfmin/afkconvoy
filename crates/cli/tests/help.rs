@@ -968,10 +968,27 @@ fn the_guide_and_each_subcommand_agree_on_who_runs_it_and_why() {
     let workers = group(&long, "Run by a worker");
     assert_eq!(
         workers.iter().copied().collect::<BTreeSet<_>>(),
-        BTreeSet::from(["gate", "land", "verdict", "intake", "lock", "over", "exclusive", "cut"])
+        BTreeSet::from([
+            "gate",
+            "land",
+            "verdict",
+            "intake",
+            "lock",
+            "over",
+            "exclusive",
+            "cut",
+            "watched"
+        ])
     );
     for command in &workers {
         let who = who(command);
+        if *command == "watched" {
+            assert!(
+                who.trim_start().starts_with("The host's watch, in its watch directory"),
+                "{who}"
+            );
+            continue;
+        }
         assert!(who.contains("worker") && who.contains("in its own worktree"), "{command}: {who}");
     }
     // The guard is nobody's to run: it is a hook of Claude Code's.
@@ -1246,6 +1263,19 @@ fn the_help_of_checkouts_says_what_host_runner_panel_holds() {
     for says in ["where the host runner serves the panel", "Where no host runner runs it is null"] {
         assert!(row.contains(says), "{says:?}: {row}");
     }
+}
+
+#[test]
+fn kit_and_doctor_print_the_glossarys_research_states_and_kit_gives_both_outcomes() {
+    let glossary = fs::read_to_string(repository().join("GLOSSARY.md")).unwrap();
+    let states = glossary.lines().find(|line| line.starts_with("Research states: ")).unwrap();
+    for command in ["kit", "doctor"] {
+        assert!(asked(&[command, "--help"]).contains(states), "{command}");
+    }
+    let kit = asked(&["kit", "--help"]);
+    assert!(kit.contains("\"settled\":\"approval reviewer, unsuited to workers\""));
+    assert!(kit.contains("\"good_at\":\"wide refactors; slower on small fixes\""));
+    assert!(kit.contains("{path, written, placed, settled, kit}"));
 }
 
 #[test]

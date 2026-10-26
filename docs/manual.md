@@ -43,11 +43,11 @@ Every command prints exactly one JSON object on stdout. A failure is {"error": �
 
 Read `afkconvoy <command> --help` before first running it. Commands are grouped by who runs them:
 
-- **Run by the operator** — `config`, `check`, `plan` before `run`; `tick` for one pass, `stop` to stop; `doctor --all --since <until of your last look>`, `checkouts`, `panel` to watch (`doctor` names each fix); `kit`, `cast`, `switch` for workers' harnesses and models; `patrol-now` to run a patrol now; `takeover` to take another fleet instance's claims.
+- **Run by the operator** — `config`, `check`, `plan` before `run`; `tick` for one pass, `stop` to stop; `queue` for the local exclusive queue; `doctor --all --since <until of your last look>`, `checkouts`, `panel` to watch (`doctor` names each fix); `kit`, `cast`, `switch` for workers' harnesses and models; `patrol-now` to run a patrol now; `takeover` to take another fleet instance's claims.
 - **Run by whoever designs a team** — `scaffold` to start one or a role of it from a skeleton, `draft` to draft its roster from the host kit, then, once `check` accepts it, `show` to review a workflow or to ask where an issue is in it, and `rehearse` to try one out.
 - **Run by whoever hands the fleet work** — a human or their agent opening decided work. `flows` names the workflow, gives the issue-create line and makes labels. After opening issues, `wake` has the fleet take them up now.
 - **Run by whoever sets an agent up** — `skill` prints the skill file that sends their agent to `afkconvoy --help`.
-- **Run by a worker** — `gate`, `land`, `verdict`, `intake`, `lock`, `over`, `exclusive`: its prompt names each one as it is needed, and `wake`, above, as its last; `cut` is what a cut's terminal runs, and what you run to go on with a cut that failed. Read them only when you are a worker, or are finding out why one stopped (`rule` is a consult's too).
+- **Run by a worker** — `gate`, `land`, `verdict`, `intake`, `lock`, `over`, `exclusive`, `watched`: its prompt names each one as it is needed, and `wake`, above, as its last; `cut` is what a cut's terminal runs, and what you run to go on with a cut that failed. Read them only when you are a worker, or are finding out why one stopped (`rule` is a consult's too).
 - **Run by a human an issue waits for** — in a bound repo: `rule` to answer an escalated issue, `send` to put an issue at a stage of your choosing. A `by: human` stage waits for your `verdict`, a worker's command too. [`afkconvoy help humans`](help:humans) says what each case asks of you.
 - **Run by a worker's hook** — `guard`, called before each action of a bound repo's worker. Nobody runs it by hand. Its help explains what the worker is refused and why.
 - **One transition by hand** — `dispatch`, `close`, `escalate`, `park`, `nudge` and `restart`: each is something a tick does on its own, and `recovery` shows what `dispatch` would continue an issue from. Read one when a plan shows a transition the fleet is not making, or you are told to make it yourself.
@@ -117,25 +117,33 @@ A model named by a roster entry or a `model:` label matches a placed model the h
 
 `afkconvoy kit --cast on` enables automatic model casting on this host; `afkconvoy kit --cast off` disables it. These change only `cast` in an existing kit, send no prompt and leave its refresh time unchanged. Run `afkconvoy kit` first on a host without one. New kits and older kits with no setting default off. Every checkout shares this setting, retained through rebuilding, daily refresh and runner restart. With casting off, workers follow matching model labels or the selected harness's first eligible model; with it on, a caster chooses only among multiple models within selected harnesses (`afkconvoy cast --help`).
 
-Without --cast or --research it says on stderr where the file is, what it holds — each harness's placed models, or its default model, and those research is pending for or left `not researched` — and what was left out.
+Without --cast or --research it says on stderr where the file is, what it holds — each harness's placed models, or its default model, and those `research pending`, `not researched` or settled — and what was left out.
 
 ##### What it answers
 
-With --cast: {path, cast, changed}, the kit file, the resulting boolean and whether it changed. With --research: {path, written, placed, kit}, the host kit file, true, each model placed as {harness, model}, and the resulting kit. Otherwise {path, written, kit, left_out}: the file; true; the kit written; and each harness or model not kept, as {harness, model, why} — model absent for a whole harness — why `not installed`, `listing failed`, or `no longer listed`. Run twice with nothing changed, it writes the same kit. Errors: orca not running, with the line that starts it; a kit that cannot be read or written.
+With --cast: {path, cast, changed}, the kit file, the resulting boolean and whether it changed. With --research: {path, written, placed, settled, kit}, the host kit file, true, each model placed or settled as {harness, model} in its respective array, and the resulting kit. Otherwise {path, written, kit, left_out}: the file; true; the kit written; and each harness or model not kept, as {harness, model, why} — model absent for a whole harness — why `not installed`, `listing failed`, or `no longer listed`. Run twice with nothing changed, it writes the same kit. Errors: orca not running, with the line that starts it; a kit that cannot be read or written.
 
 A harness with `models` [] or no placed model starts on its default. Automatic command discovery can append a harness with no models; one written by hand or by an older release is also read as it is: a model named in it with no research is started on until research answers for it, when the watch supplies its research. Neither the kit nor `left_out` carries probe evidence any more: an older kit's `probed` fields are read and not written again.
 
 ##### The research file
 
-`afkconvoy kit --research research.json` reads the existing host kit, checks the whole file, and atomically writes the placements. It needs neither a checkout nor orca. Read `afkconvoy doctor --all` for current ids and names. The JSON format is:
+Research states: `research pending` is a newly listed model awaiting dated research; `not researched` is an older release's model with no dated answer, also awaiting research. Neither is started on. A settled model has a dated source and a reason research found it unsuited to workers: it is not placed, is named by no unplaced-model finding and starts no watch. The finding names exactly the models awaiting research, including models held with no dated answer; every one can be placed or settled through `afkconvoy kit --research <file>`. Placements and settlements survive routine relisting; an identity dropped from the kit and later listed anew awaits research again.
+
+`afkconvoy kit --research research.json` reads the existing host kit, checks the whole file, and atomically writes the placements and settlements. It needs neither a checkout nor orca. Read `afkconvoy doctor --all` for current ids and names. To place a model, use:
 
 ```json
 {"models":[{"harness":"claude-code","model":"listed-id","good_at":"wide refactors; slower on small fixes","names":["sourced alias"],"sources":[{"url":"https://vendor.example/model-card","date":"2026-10-26"}]}]}
 ```
 
-Each entry names an exact listed id of a held harness. Name each identity once across harnesses: the same id without its provider prefix shares research. Each good_at is nonempty and describes coding strengths and weaknesses; names is optional and contains nonempty sourced aliases. Every entry needs at least one HTTP or HTTPS source URL and its publication or update date as a calendar date YYYY-MM-DD. Use primary and high-trust sources, with live web search. The models array ranks newly placed models, after established model priority; harness priority, commands, cast and existing dated research stay as held. Models omitted stay as held, pending ones still pending, for a later watch. Older models settled as `not researched` stay settled.
+To settle an unsuitable model, replace good_at and names with a nonempty settled reason:
 
-Refusals name the file and fault and write nothing: malformed JSON, unknown fields, unknown harnesses or ids, repeated identities, empty good_at or names, missing or malformed dated sources, or a file placing no model awaiting research. Correct the file and run the command again. The answer lists every placement, including identities shared by another harness. Research does not change when the models were last listed (`refreshed`).
+```json
+{"models":[{"harness":"codex","model":"codex-auto-review","settled":"approval reviewer, unsuited to workers","sources":[{"url":"https://vendor.example/reviewer","date":"2026-10-26"}]}]}
+```
+
+Each entry names an exact listed id of a held harness. Name each identity once across harnesses: the same id without its provider prefix shares research, including settlements. Each entry supplies either nonempty good_at describing coding strengths and weaknesses, with optional nonempty sourced names, or a settled reason with no names. Every entry needs at least one HTTP or HTTPS source URL and its publication or update date as a calendar date YYYY-MM-DD. Use primary and high-trust sources, with live web search. The models array ranks newly placed models, after established model priority; harness priority, commands, cast and existing dated research stay as held. Models omitted stay as held for a later watch.
+
+Refusals name the file and fault and write nothing: malformed JSON, unknown fields, unknown harnesses or ids, repeated identities, conflicting outcomes, empty good_at, settled reason or names, missing or malformed dated sources, or a file answering no model awaiting research. Correct the file and run the command again. The answer lists every placement and settlement, including identities shared by another harness. Research does not change when the models were last listed (`refreshed`).
 
 ##### What trips you up
 
@@ -159,7 +167,7 @@ afkconvoy kit [OPTIONS]
   - Values:
     - `on`
     - `off`
-- `--research <RESEARCH>`: Place the watch's sourced model research from a checked JSON file
+- `--research <RESEARCH>`: Place or settle the watch's sourced model research from a checked JSON file
 
 #### `afkconvoy checkouts`
 
@@ -215,6 +223,50 @@ It exits 0 whatever the checkouts' states. Errors, as {"error": …} with a non-
 
 ```
 afkconvoy checkouts
+```
+
+#### `afkconvoy queue`
+
+Read this host's exclusive queue and explain each wait
+
+##### When to run it
+
+Run `afkconvoy queue` from any directory on the host, as the host runner's user, to see who occupies its worker lanes and why each request waits. No checkout, login or running fleet is required. It accepts no checkout or host selector: it observes this user's local host runner across all its repos.
+
+##### Who runs it
+
+The operator, or their agent, on the host whose exclusive queue they want to read.
+
+##### What it reads and writes
+
+It reads the host settings once and asks the host runner once on its local socket, allowing 10s for its response, including partial lines. Settings absent use the defaults; unreadable settings fail. It reads no GitHub, git, harness, tick log or recorded gate outcomes, makes no probe or full diagnosis, sends no wake and changes no fleet, queue or settings. A stale socket is left in place. A temporary link used to reach a long socket path is removed afterwards. The runner's lock is checked only if its socket is absent or refuses the connection.
+
+##### What it answers
+
+Exactly one JSON object, exit 0:
+
+- `observed_at`: epoch seconds captured after the local response. Every duration uses this one time; clock differences clamp negative durations to zero. Settings and the queue are a bounded observation, not an atomic snapshot of both files and process.
+- `status`: `available` when the runner answered, including a healthy empty queue; `no_runner` when no runner listens or holds the host. No runner is a successful observation with empty arrays and `host_runner: null`, not evidence of commands running outside the queue.
+- `host_runner`: the answering runner's `pid` and `version`, plus the identity fields it supplies: `log` (whole path), `panel` (address or null), and `foreground` where applicable. Null with no runner.
+- `paused`: whether the runner has paused new grants for a release move; false with no runner.
+- `worker`: `{capacity, used, free}`. Capacity is the host setting `gate_lanes`, 1 by default; used counts running worker requests, free is capacity minus used, clamped to zero. Eligible reservations do not count as used.
+- `repos`: each repo lane with a running or waiting request, sorted by its whole identity, as `{repo, capacity, used, free}`. Each has capacity 1, independent of worker capacity. `repo` is the shared git directory supplied by the ticket, never inferred from a worktree's name.
+- `running`, `waiting`: requests in scheduler order within each array: cuts first, then ordinary commands; within each group ascending `asked`, then `number` to break ties. Cut priority never interrupts running commands. There is no priority by lane or repo. A request identifies `number` (runner-local ticket), `pid` (asking process), `command` (one line), `dir` (whole worktree or outside directory), `issue` (number or null; no lookup), `repo` (shared git directory or null for older/outside tickets), `repo_lane` (repo lane identity or null for worker), `is_turn` (whether this is a landing turn), `cut` (whether it has cut priority, false for older tickets), `asked` (request epoch seconds), `ran` (start epoch seconds or null), and `lane` (`worker` or `repo <identity>`).
+- Each request adds `elapsed_seconds` (time since `ran`, null while waiting), `waiting_seconds` (time from `asked` to `ran` when running, otherwise to `observed_at`), and `scheduling`: `{number, state, reasons}`. State is `running`, `eligible`, or `waiting`; reasons is empty for running or eligible requests.
+- Each reason has `kind`, `requests`, `capacity` and `explanation`. Kind `same_repo` means a running or earlier eligible request of this repo excludes this request in its lane, or across lanes when both are turns. `worker_capacity` or `repo_capacity` means all places in that lane are occupied or reserved, with the limit in `capacity`. `paused` means new grants are paused. Other reasons have `capacity: null`. `requests` names each relevant `{number, state}`: `running` holds a place now, `eligible` reserves one earlier in FIFO order; it is empty for a pause. `explanation` states the constraint in words.
+
+Earlier eligible requests reserve capacity in scheduler order, with cuts before ordinary waiters and FIFO within each group. Blocked requests reserve nothing: with three worker lanes, a running repo can leave two free while its other requests wait, and a different repo can be eligible. Turns of one repo exclude each other across worker and repo lanes. Older tickets lacking `repo` use their whole `dir` as the scheduler's fallback identity. `eligible` means allowed by this observation, not guaranteed to start next. Ordering is no fixed future start order or ETA; requests can leave and settings can change.
+
+Errors: unreadable host settings, an inaccessible socket, a runner holding the host but not listening, a closed connection, no response within the bound, a runner error, or an unsupported or unreadable response (including missing queue, pause or runner identity fields). These print `{"error": ...}` with exit 1 and a next action: inspect the host runner log and run the command again; `afkconvoy doctor --all` provides a full diagnosis. An unsupported response needs a host runner of this release. A failed observation never becomes an empty queue.
+
+##### What trips you up
+
+It reports current queued commands only. For historical gate outcomes, use `afkconvoy doctor --all --since <time>`; `afkconvoy doctor --help` explains its interval boundaries. Commands that bypass the exclusive queue are absent. Request numbers belong to this runner and may change after it is replaced.
+
+##### Usage
+
+```
+afkconvoy queue
 ```
 
 #### `afkconvoy config`
@@ -407,14 +459,16 @@ With `--all` it reads the checkout list (checkouts.json in the cache directory) 
 
   - `tools`: each command needed — a harness only where a worker launch command the fleet could be asked for runs it by name: {name, state} — state is ready, missing or logged_out; of orca also not_running, knows_no_checkout (the checkout worktrees are cut from was never added to it) or unasked
   - `worker_commands`: the host kit commands and their callers. The first eligible kit harness is selected for each role.
-  - `host_kit`: {path, cast, refreshed, harnesses}: where the kit is kept; when it was last written, in epoch seconds — by `kit`, by `run`, or by a tick's daily refresh (`afkconvoy kit --help`); each harness in order, first first, with its full worker launch command, its models in order, each with its good_at — sourced research, `research pending` or `not researched` — `default_model` (it has no placed model, so a worker runs its login's default, with no model flag) and `research_pending` (it holds a model research has not answered for). {path, error} when unreadable. `afkconvoy kit` writes it again.
+  - `host_kit`: {path, cast, refreshed, harnesses}: where the kit is kept; when it was last written, in epoch seconds — by `kit`, by `run`, or by a tick's daily refresh (`afkconvoy kit --help`); each harness in order, first first, with its full worker launch command, its models in order, each with its good_at or settled reason, sources and researched_at; `default_model` (it has no placed model, so a worker runs its login's default, with no model flag) and `research_pending` (it holds a model awaiting research). {path, error} when unreadable. `afkconvoy kit` writes it again.
 
-    A harness with `models` [] or no placed model runs on its default model with no model flag, and is no fault. Automatic command discovery, a switch, failed research or a hand-written kit can leave one. `afkconvoy kit` lists and researches them now. A tick lists an empty Codex entry without waiting for the daily refresh, with an hour between unsuccessful tries. A roster or casting model that matches nothing placed is still reported as such.
+    Research states: `research pending` is a newly listed model awaiting dated research; `not researched` is an older release's model with no dated answer, also awaiting research. Neither is started on. A settled model has a dated source and a reason research found it unsuited to workers: it is not placed, is named by no unplaced-model finding and starts no watch. The finding names exactly the models awaiting research, including models held with no dated answer; every one can be placed or settled through `afkconvoy kit --research <file>`. Placements and settlements survive routine relisting; an identity dropped from the kit and later listed anew awaits research again.
+
+    A harness with `models` [] or no placed model runs on its default model with no model flag, and is no fault. Automatic command discovery, a switch, failed research or a hand-written kit can leave one. `afkconvoy kit` lists them; the watch supplies research through `afkconvoy kit --research <file>`. A tick lists an empty Codex entry without waiting for the daily refresh, with an hour between unsuccessful tries. A roster or casting model that matches nothing placed is still reported as such.
   - `settings`: the host settings (`afkconvoy run --help`): {file, said, in_force} — each by its key, the name of the flag of `run` that names it (`hot_cores` for `--hot-cores`), in that flag's units: said is what the host says, null where it says none and the default holds; in_force what holds for this repo's fleet on this host, each default worked out for it — the panel's port 7070 where the host says none. {file, error} where the file cannot be read
   - `admission`: whether a tick would start a new worker on this host now, the thresholds in force and what the host reads: as `plan` answers it (`afkconvoy plan --help`), or {error} where a share the host says is wrong. A tick that admission held back is no "started no worker" finding.
-  - `exclusive`: the host's queues as {lanes: {worker, repos}, running, waiting}. Each lane has {running, running_all, waiting}, where running is the first active command for older readers and running_all lists every active command; repos lists {repo, queue} for light gates. The top-level running and waiting are the worker lane for older readers — running is the command that runs alone now, null with none; waiting, those that wait their turn, next first; both empty with no host runner. Each is {command, dir, issue, pid, asked, ran}: the worktree it was run in, the issue of its worker, and when it asked and began to run, in epoch seconds. {error} when the host runner cannot say it
+  - `exclusive`: the host's queues as {lanes: {worker, repos}, running, waiting, observation}. Each lane has {running, running_all, waiting}, where running is the first active command for older readers and running_all lists every active command; repos lists {repo, queue} for light gates. The top-level running and waiting are the worker lane for older readers — running is the first active command, null with none; waiting is in scheduler order, not a prediction of what starts next; both empty with no host runner. Each is {command, dir, issue, pid, asked, ran}: the worktree it was run in, the issue of its worker, and when it asked and began to run, in epoch seconds. `observation` adds {paused, worker, repos, running, waiting}, with occupancy, durations and scheduling reasons interpreted exactly as `afkconvoy queue --help` documents, at doctor's observation time. {error} when the host runner cannot say it. `afkconvoy queue` reads just the local queue, without this full diagnosis
   - `resources`: resource episodes observed by the host runner, with stable ids, active conditions, since, episode, worker or host readings and evidence. Admission and pressure retain their identities during five minutes of recovery. Resource findings also have watch_id, the episode identity that starts at most one watch.
-  - `watch`: this host's watch (`afkconvoy run --help`, WATCH): {directory, stock, running, last, unavailable} — directory is where the next watch runs, stock whether it uses afkconvoy's own instruction; running and last are each {id, directory, stock, items, started, harness, model, terminal, transcript, did, attempts, ended, outcome}: why it started (items, each {id, reason}), its session's harness, model and terminal, the file its session prints to, what its sessions printed (did), including each request left with a human, each session whose harness gave out ({harness, model, terminal, why, did}), and how it ended — outcome `ended`, `closed` (its terminal closed before its harness exited), `time_limit` or `no_harness`; null with none. unavailable: why the last watch a look called for could not start or go on, null where it could
+  - `watch`: this host's watch (`afkconvoy run --help`, WATCH): {directory, stock, running, last, unavailable}. directory is where the next watch runs and stock whether it uses afkconvoy's instruction. running and last are each {id, directory, stock, items, started, harness, model, terminal, transcript, did, reported, report, attempts, ended, outcome}. items says why it started; transcript holds the session's exit status, not its printed output. reported is whether it called `watched`; report is its complete {held_back, did, verified, human, pending} record, null if it did not report; did is that report's actions. attempts holds each session whose harness gave out: {harness, model, terminal, why, did, screen}; screen is terminal evidence for continuation, never a report. outcome is ended (reported), not_reported (exited without reporting), closed, time_limit or no_harness. running and last are null with none. unavailable says why no harness could start or continue the last requested watch, null where one could.
   - `installed`: the release installed where the host runner was started from, where the host runner moves onto it or did not: {path, version, from, since, wait_expired, held_back, failed} — the file; the release it says, null where it says none; the host runner's own release; when that file answered, in epoch seconds; whether the 600s wait expired; what holds the move back, each in words ("/Users/me/Developments/hkj is in a tick", "1 exclusive command(s) running"), [] once nothing does, or the last blockers when the wait expired; and why the move failed — it did not start, or does not say its version — null until one did. null with none: nothing newer is installed there, or no host runner runs (`afkconvoy run --help`)
 - `fleet`: the `run` of this host for this repo:
 
@@ -529,7 +583,7 @@ The rebuild asks GitHub twice, side by side with one listing of the remote, howe
 
 {"frontier", "excluded", "waiting_on_human", "mine", "peer_live", "stale", "stale_closed", "free_slots", "now", "locks", "concurrency", "tracker", "admission", "host_kit", "worker_no_proxy"} — "held_back" while admission holds; and in a bound repo "intake", "left_out", "unmatched" and "nothing_safe" where they name some, "patrols" where it names some, and "proposals" while a ruling is proposed as a precedent or waits to be; and "slow_gate" while the gate is slow; and "caster" while one runs or is due; and "cut" in a repo that turns cutting on, or while a cut is going or on the base branch
 
-- `host_kit`: {path, refreshed, harnesses}: this host's kit file; cast, whether this host enables automatic model casting (false by default); when it was last written, in epoch seconds — by `kit`, by `run`, or by a tick's daily refresh (`afkconvoy kit --help`); each harness in order of preference as {harness, command, models, default_model, research_pending}, each model {model, names, good_at, sources, researched_at}. `default_model` is true when the harness has no placed model, so a worker runs its login's default with no model flag; `research_pending` is true while it holds a model research has not answered for. good_at is sourced research — what a caster is told — or `research pending` (listed, not yet researched) or `not researched` (research gave it no dated source), neither of which a worker is started on, or absent of a model named with no research; sources holds dated URLs and researched_at the research time, absent where none succeeded. With an unreadable kit, {path, error}. `afkconvoy kit` writes it again.
+- `host_kit`: {path, refreshed, harnesses}: this host's kit file; cast, whether this host enables automatic model casting (false by default); when it was last written, in epoch seconds — by `kit`, by `run`, or by a tick's daily refresh (`afkconvoy kit --help`); each harness in order of preference as {harness, command, models, default_model, research_pending}, each model {model, names, good_at, settled, sources, researched_at}. `default_model` is true when the harness has no placed model, so a worker runs its login's default with no model flag; `research_pending` is true while it holds a model awaiting research. good_at is what a caster is told, or a research marker; settled is a reason research found it unsuitable. The research states are defined in `afkconvoy kit --help`. sources holds dated URLs and researched_at the research time, absent where none succeeded. With an unreadable kit, {path, error}. `afkconvoy kit` writes it again.
 - `frontier`: issues due to dispatch, with their stage and cast {harness, model, why}. Harness priority is kit order within role eligibility; model labels only match within the selected harness. `selection` lists kit order, eligible candidates, skipped candidates and health evidence.
 - `codex_workers`: started Codex sessions with their actual model, effort and sources, as `doctor` answers them. A frontier issue whose cast runs Codex also has `codex`: its next-launch model (null: Codex's own default) and the effort read now from your own ~/.codex/config.toml (`codex_default` with no setting). Existing sessions keep their launch evidence or their own saved /model choice. [`afkconvoy help worker-launch`](help:worker-launch).
 - `excluded`: every other open issue, with why: {number, title, reason}. An escalated issue says so — "escalated: waits for a ruling" — and not that it lacks the label its escalation took off. A name that matches nothing never excludes an issue: it runs the default, `unmatched` on the frontier. A bound repo's issue at a stage whose role has no harness on this host it holds limits for waits, "<role> has no harness on this host it holds limits for: ", naming what the role holds limits for and what the host kit holds, and is dispatched once the host kit holds one; one that waits for the caster is "held for the caster: "
@@ -678,15 +732,15 @@ Once every fleet on this host has been idle 10 minutes it puts the host to sleep
 
 ADMISSION. A tick starts no new worker while its host is busy: its 1-minute load average past 200% of its cores, less than 10% of its memory free (what the kernel counts as available: `sysctl kern.memorystatus_level`, or MemAvailable in /proc/meminfo), or less than 1% of the disk under the checkout free (`df`). The issue stays on the frontier for the next tick, and so do a stale claim, a due patrol and a due proposal. Workers already running are left alone, and so is the worker a declared verdict starts. The host says its own shares, each a whole percent, in its host settings: `--admit-load` (of its cores), `--admit-memory` and `--admit-disk` (free) — `--admit-load 400` lets the load reach four times the cores, and `--admit-disk 0` never holds for disk. A value that is no whole percent is refused, and `default` changes a share back. What cannot be read holds nothing back. `plan` and `doctor` say the thresholds in force and what the host reads.
 
-When admission holds back for one reason — load, memory or disk — at every tick for ten minutes (`--admit-inspect-after` sets the host's span), doctor names a finding that starts the host's watch at its next look. Reasons that change start none. Memory pressure (macOS's level at least 2) held for the same span is its own finding, even while admission admits, and never makes a worker hot. Each episode ends after five minutes of recovery. The watch receives the condition, how long it held, admission's reading and shares, and host evidence: for disk, each fleet's worktrees and caches and the largest directories outside them; for load or memory, worker process trees and the hottest processes outside them. It checks admission or pressure itself after acting. Resource readings continue during a watch; new triggers wait for the next look, and an episode already watched starts nothing again, including across a host runner move.
+When admission holds back for one reason — load, memory or disk — at every tick for ten minutes (`--admit-inspect-after` sets the host's span), doctor names a finding that starts the host's watch at its next look. Reasons that change start none. Memory pressure (macOS's level at least 2) held for the same span is its own finding, even while admission admits, and never makes a worker hot. Each episode ends after five minutes of recovery. The watch receives the condition, how long it held, admission's reading and shares, and host evidence: for disk, each fleet's worktrees and caches and the largest directories outside them; for load or memory, the fleet's worker process trees and, where `hostvitals` is on the host runner's `PATH` and `hostvitals now` answers, its whole-host findings first, then its rankings of processes and Apps and its remaining readings. Otherwise it receives the fleet's hottest processes outside those trees, with one line saying why hostvitals could not answer. The evidence names its source. hostvitals is optional and is never installed as a dependency; hot-worker sampling stays the fleet's own. It checks admission or pressure itself after acting. Resource readings continue during a watch; new triggers wait for the next look, and an episode already watched starts nothing again, including across a host runner move.
 
-WATCH. Every host watches itself. Where its host settings name an operator's directory — `--watch-dir ~/Developments/control`, known to orca — the watch runs there under that directory's own rules, with none of the stock instruction added. Otherwise the stock watch runs in the fleet's own directory, `stock-watch/` under the cache directory (`afkconvoy help cache` says where it is), made, kept and registered with orca when it starts. Its short instruction carried in the binary says: find what holds the fleets' work back, fix it with the watch's authority, check that the work goes on and say what it did. Every watch leaves spending money or needing an account, a credential or a person's hands; what cannot be undone; taking a secret or private data off the host; and changing what a product is for or who it is for with a human, acts on none and lists each in its printed record, which `doctor` lists as `did`. Unplaced host kit models are low priority: a watch started for other work takes them too, and they alone start a watch at most once a day, across runner restarts. The watch researches them with its web tools and places them through `afkconvoy kit --research <file>` (`afkconvoy kit --help` gives the checked file format). Its host runner takes a look every 300 seconds (`--watch-every`): `afkconvoy doctor --all --since <until of its last look>`, the fleet's own code, which runs no model, keeping `until` itself. A look that holds something an operator would act on — an issue waiting on a human, a finding that holds something up, a fleet instance not alive or broken, a failed tick or step, a worker whose health observation is past its time — starts one watch, once per episode of each such thing: an episode lasts while each look still holds it. A watch is an agent session in the watch directory, given its brief as a file in the cache directory — what the look answered, why it started, and what each earlier watch on the same items did — with authority over the fleets of this host and an hour, its continuations together. It runs on the harness this host last started a worker on that took its brief, then the host kit's order, never one paused or with a fault on record, started trusted and in its harness's non-interactive mode, so that nothing it runs waits on a prompt; its terminal, titled "afkconvoy watch", exits with the harness, beside whatever else is open in that directory, which it never closes. What it prints is kept as what it did. A watch whose harness gives out — its usage limit, or an exit that failed — is ended and continued on the next harness that can start it, with the same look and what it printed so far, one session at a time; the fault is recorded (`host_kit.worker_health`), and that harness is skipped until its hourly probe answers. While a watch runs no look is taken: what one would find is in the first look after the watch ends. A host runner started again — after moving onto a newer release, say — keeps the watch it finds running. Its start, its end and each thing it did are lines of every tick log on the checkout list and of the host runner's log; `doctor` says the watch running and the last one, as `host.watch`, and a critical finding where no harness could start or continue it. `--watch-dir default` returns to the stock watch; a running watch and its continuations keep their starting directory and rules. `doctor.host.watch.directory` says the directory the next watch runs in, and `stock` whether it is the stock one, even before a watch starts; each running or last watch says its own directory and `stock` too.
+WATCH. Every host watches itself. Where its host settings name an operator's directory — `--watch-dir ~/Developments/control`, known to orca — the watch runs there under that directory's own rules, with none of the stock instruction added. Otherwise the stock watch runs in the fleet's own directory, `stock-watch/` under the cache directory (`afkconvoy help cache` says where it is), made, kept and registered with orca when it starts. Its short instruction carried in the binary says: find what holds the fleets' work back, fix it with the watch's authority, check that the work goes on and say what it did. Every watch leaves spending money or needing an account, a credential or a person's hands; what cannot be undone; taking a secret or private data off the host; and changing what a product is for or who it is for with a human, acts on none and lists each in its command report, which `doctor` shows as `report`. Unplaced host kit models are low priority: a watch started for other work takes them too, and they alone start a watch at most once a day, across runner restarts. The watch researches them with its web tools and places them through `afkconvoy kit --research <file>` (`afkconvoy kit --help` gives the checked file format). Its host runner takes a look every 300 seconds (`--watch-every`): `afkconvoy doctor --all --since <until of its last look>`, the fleet's own code, which runs no model, keeping `until` itself. A look that holds something an operator would act on — an issue waiting on a human, a finding that holds something up, a fleet instance not alive or broken, a failed tick or step, a worker whose health observation is past its time — starts one watch, once per episode of each such thing: an episode lasts while each look still holds it. A watch is an agent session in the watch directory, given its brief as a file in the cache directory — what the look answered, why it started, and what each earlier watch on the same items did — with authority over the fleets of this host and an hour, its continuations together. It runs on the harness this host last started a worker on that took its brief, then the host kit's order, never one paused or with a fault on record, started trusted with prompts skipped, interactively in its terminal titled "afkconvoy watch", with the brief as its first message, as a worker is. A human may watch it and type to it. Its last step is the exact `afkconvoy watched --watch <id> --text-file <report.json>` line at the end of its brief (`afkconvoy watched --help`): the report records what held work back, each action, what it verified, each human question and answer line, and what remains pending. The host runner ends the harness once it reports, keeping its terminal and screen until the next watch starts in that directory. A watch ended without that command says it did not report. Printed output is no record. Worker health observes its own terminal; a stopped watch with no report is nudged. A watch whose harness gives out — a usage limit, capacity stop, refusal or failed exit — is ended and continued on the next harness that can start it, with the same look and terminal evidence of its work so far, one session at a time; the fault is recorded (`host_kit.worker_health`), and that harness is skipped until its hourly probe answers. While a watch runs no look is taken: what one would find is in the first look after the watch ends. A host runner started again — after moving onto a newer release, say — keeps the watch it finds running. Its start, its end and each thing it did are lines of every tick log on the checkout list and of the host runner's log; `doctor` says the watch running and the last one, as `host.watch`, and a critical finding where no harness could start or continue it. `--watch-dir default` returns to the stock watch; a running watch and its continuations keep their starting directory and rules. `doctor.host.watch.directory` says the directory the next watch runs in, and `stock` whether it is the stock one, even before a watch starts; each running or last watch says its own directory and `stock` too.
 
 The watch operates for every repo on the checkout list (`afkconvoy checkouts`), bound or unbound. It may trust a worktree for a harness, restart, nudge, continue or switch a worker and change host settings. Once the cause of a fleet fault is gone it hands the escalated issue back with its current `doctor.waiting_on_human.answer` line, naming that repo's tracker, wakes the checkout after a `gh` change and checks that the next tick dispatches or continues it and its worker takes its brief. The watch answers escalations with `rule`, handing back, `send`, closing or changing blocked-by, using the same commands as a human and starting rework counts over. Both watch directories leave only the four human kinds above, listing each question and answer line in the watch's record; `doctor` lists what it did.
 
 A lasting fix may be code in any listed repo, even one whose fleet cannot start workers. The watch makes it in a linked worktree of its own from that repo's configured base branch, named `afkconvoy-watch` or `afkconvoy-watch-<digits>`, on its own branch; never in another worker's or watch's checkout. It commits and pushes, opens the PR against that repo's base branch on no issue, then takes a turn with `afkconvoy land --watch` to merge, gate, record green and land. This reuses a watch's landing path and attribution, with no intake or flow label, and respects fleet locks. It records the repo and PR.
 
-When the fix must reach an installed tool, the watch waits for landing and has that repo's fleet cut a version through its declared cut steps (`afkconvoy cut --help`): it wakes the checkout, reads `plan.cut` and fixes what holds back the next idle tick. A mechanically failed cut is continued with its report's `cut --from <step>` line once its cause is fixed. It checks publication and installation; for afkconvoy, it lets the host runner move onto the version itself, reading `doctor`'s `host.installed` and `checkouts`'s host runner version, never killing or restarting it. Then it repeats the check that showed the fault and checks that the work goes on. Its transcript records each fix, PR, cut, version and evidence, the four human kinds left alone and anything still pending; landing or installing alone proves no recovery. All fits within the watch's one hour: anything unfinished is recorded as pending.
+When the fix must reach an installed tool, the watch waits for landing and has that repo's fleet cut a version through its declared cut steps (`afkconvoy cut --help`): it wakes the checkout, reads `plan.cut` and fixes what holds back the next idle tick. A mechanically failed cut is continued with its report's `cut --from <step>` line once its cause is fixed. It checks publication and installation; for afkconvoy, it lets the host runner move onto the version itself, reading `doctor`'s `host.installed` and `checkouts`'s host runner version, never killing or restarting it. Then it repeats the check that showed the fault and checks that the work goes on. Its report records each fix, PR, cut, version and evidence, the four human kinds left alone and anything still pending; landing or installing alone proves no recovery. All fits within the watch's one hour: anything unfinished is recorded as pending.
 
 A fleet instance idle 10 minutes checks then, tick due or not, whatever the hour, and again 10 minutes after a check that kept the host awake — or, where that is outside the sleep hours, as they start. It puts the host to sleep only when all hold:
 
@@ -1747,228 +1801,50 @@ Errors: none of its own.
 afkconvoy skill
 ```
 
-### Run by a worker's hook
-
-#### `afkconvoy guard`
-
-Allow or refuse the tool call described on stdin (a worker's hook, added at launch)
-
-##### When to run it
-
-Never by hand. It is the guard: the check made before each thing a worker of a bound repo does, refusing what no worker may do and what its stage may not. Read this to learn what a worker is refused, or why one was.
-
-##### Who runs it
-
-Claude Code, as a hook: the fleet adds it to every worker of a bound repo as it starts it, whatever the role's repo holds, and Claude Code runs it before each tool call the worker makes. A call it refuses is not made.
-
-pi, through an extension of afkconvoy's own, named on the line that starts a pi worker: pi hands it each tool call before making it, it asks this command, and a call this command does not allow — one it refuses, and one it could not be asked of — is not made. A pi worker whose extension is not there does not start.
-
-Codex, as a hook too, said on the line that starts a Codex worker and kept in no file: Codex runs it before each tool call. Codex makes a call whose hook fails in any way but one, so the hook turns every answer but an allowed call into that one: a call this command refuses, and one it could not be asked of, is not made.
-
-DSH, through a plugin of afkconvoy's own, which the overlay on the line that starts a DSH worker loads last: it asks this command before every tool call. A DSH worker whose plugin is missing or broken does not start.
-
-What each harness's worker is started with, the guard among it: [`afkconvoy help worker-launch`](help:worker-launch).
-
-A role's own limits are hooks in the role's repo — for pi, extensions there. They load because the worker starts there, run beside this one, and refuse in the same way.
-
-##### What it reads and writes
-
-It writes nothing. It reads two things, and a third for a watch that would end a process:
-
-Standard input: one tool call, as Claude Code describes it to a `PreToolUse` hook — a JSON object with `tool_name` and `tool_input`. Only a `Bash` call is judged, by the words of each simple command of its `tool_input.command`. pi's is described as pi describes it to an extension — `toolName` and `input` — and only a `bash` call is judged, the same way. Codex describes its own as Claude Code does, and a `Bash` call is judged; its `apply_patch` hands the text of a patch as `tool_input.command`, which is no shell line and is not judged as one. DSH describes a call with `name` and `arguments`: `bash` and `bash_persistent` are judged by `arguments.command`. What is refused is decided once, for all.
-
-The environment: the facts of the worker's stage, which the fleet put there when it started the worker — AFKCONVOY_STAGE, AFKCONVOY_WRITES, AFKCONVOY_CONSULT, AFKCONVOY_BASE_BRANCH, AFKCONVOY_ESCALATE_LABEL, AFKCONVOY_LOCK_LABEL — and AFKCONVOY_HARNESS, the harness that asks: how the call is described is its own. A watch names its host in AFKCONVOY_WATCH, in place of a stage, and HOME, the home folder it reads paths under.
-
-The host's processes, as `ps` says them, and the host runner's pid, as its lock says it: whom each process a `kill` names is. The fleets of this host started a process carrying a worker's `TMPDIR` — the link a fleet made for it (`afkconvoy help worker-launch`), or the own one (.afkconvoy-tmp) of a worktree they put a worker in — or one under either, as a gate sets, and every process under one of those, or left behind by one.
-
-Refused for every worker:
-
-- adding or removing a flow label, a `stage:` label, the escalate label or the lock label (`gh issue edit --add-label`, `--remove-label`, `gh issue create --label`, and any write of an issue's labels through `gh api`)
-- writing a stage record by hand: only `afkconvoy verdict` writes one
-- writing an intake record by hand: only `afkconvoy intake` writes one, and it is what puts a flow label on for a worker
-- merging a PR (`gh pr merge`, or the merge endpoint through `gh api`)
-- pushing the base branch (`git push` with a refspec that lands on it, `--all`, `--mirror`)
-
-Refused besides in a stage its workflow marks `writes: false`, for every consult, and for a patrol's worker (AFKCONVOY_PATROL, in place of a stage's facts):
-
-- committing and pushing (`git commit`, `merge`, `cherry-pick`, `revert`, `am`, `push`)
-
-A watch is no consult: it is the operator on its host, started so that the fleet's work goes on (`afkconvoy run --help`). It commits, pushes a branch of its own and changes the host, whatever the facts of its role say. It is held instead to the bounds of any unattended worker — refused, beside what every worker is:
-
-- ending what the fleets of this host did not start: `kill` of a pid that is no worker's, watch's process, nor one they left behind; of the host runner; of what names no pid the guard can read — a variable, a process group; and `pkill` and `killall`, which end whatever a name matches, the user's own among them
-- deleting what cannot be rebuilt: `rm`, `rmdir`, `unlink` or `shred` of a path that is, or holds, model weights, downloads, media, Docker's images or the user's own files under the home folder, or of a path outside it but for the system's temporary files; a path it cannot place — relative, or named by another variable — is its own to place
-- deleting a change no commit holds: `git clean` without `-X`, `git worktree remove --force`, `git reset --hard`, `orca worktree rm --force`
-- a force push: `--force`, `-f`, `--force-with-lease`, or a refspec that begins with `+`
-- stopping the host runner, or taking a checkout off its list: `afkconvoy stop`
-
-##### What it answers
-
-Unlike every other command, no JSON: it answers Claude Code the way a hook does.
-
-- exit 0, nothing printed: the call is allowed
-- exit 2, a line on stderr: the call is refused; the line is the reason, and Claude Code shows it to the worker — as pi does, given it by the extension, and Codex
-
-A call it cannot read, an environment that lacks one of the stage's facts, or one that names no harness there is, is refused with the reason: nothing is allowed unread.
-
-##### What trips you up
-
-- Heredoc bodies and quoted arguments are data, not commands: a report may name `rm` or `git worktree remove`, and a read-only `gh` call may search for stage or intake records with `--jq` or `--template`. Sending a handwritten record through a writing `gh` call is still refused, including through a heredoc. The argument after `sh -c` or `bash -c` is executable shell text and is judged as commands.
-- It recognises commands. The same act wrapped in a script, hidden in a variable or in a substitution inside quotes gets past it: it stops a worker that errs, not one that means to get by.
-- What it misses is checked after the stage: a commit left on the branch by a stage marked `writes: false`, or by a consult, is a failure, and the issue escalates; a patrol's final commit not on the base branch, working-tree changes, or a PR is a failed run, reported to a human — see `afkconvoy tick --help`.
-- An unbound repo's workers have no guard: their worker launch command is opaque.
-
-##### Usage
-
-```
-afkconvoy guard
-```
-
-### Run by whoever reads this manual
-
-#### `afkconvoy help`
-
-Print the index, the help of the given command, a help topic, or with `all` the whole manual
-
-##### Usage
-
-```
-afkconvoy help [NAME]
-```
-
-##### Arguments
-
-- `[NAME]`: A command, a topic, or `all`: `--help` lists the commands and the topics
-
-### Run by whoever hands the fleet work
-
-#### `afkconvoy flows`
-
-Say how to open an issue the fleet will work, and create the labels that takes
-
-##### When to run it
-
-Before opening an issue the fleet is to work, and again whenever the team gains a workflow: it says which workflow takes which kind of issue, what label puts an issue in it, and which labels to keep off — and it creates the labels that takes, so the line it gives works. Run it once for all the issues you open, not once per issue.
-
-```
-afkconvoy flows
-```
-
-##### Who runs it
-
-Whoever hands the fleet work: a human, or the agent a human is talking to, with work decided on and issues to open for it. In a checkout of the repo the issues go to, bound or unbound. A worker opening a blocker for another repo of the host names that repo's checkout: `afkconvoy flows <target-checkout>`. It takes the issue in there with `afkconvoy intake`.
-
-##### What it reads and writes
-
-It reads the config of the checkout and the labels its tracker has — the checkout's own repo, until its host says another (`afkconvoy run --tracker`). In a bound repo it also reads the team as `afkconvoy check` does — the team's files and every role's repo, from GitHub at the head of each default branch — and, to count, the comments of every open issue that carries a flow label.
-
-It writes one thing: each label its lines name that the tracker lacks. In a bound repo that is the flow label of every workflow of the team — `flow:<workflow>`, or the one its file's `label` names; in an unbound one, the ready label. It puts no label on any issue and opens none. Everything is read first: a team with a fault creates nothing.
-
-##### What it answers
-
-In a bound repo:
-
-{"team", "workflows", "keep_off", "intake", "created"}
-
-- `team`: the team's repo
-- `workflows`: every workflow of the team, each {"name", "flow_label", "description", "first", "ends", "line"}:
-
-  - `description`: what the workflow is for and what an issue of it holds: the prose of its file, workflows/<name>.md, above the yaml block. Empty when the file says nothing there — `afkconvoy check` warns of that. Choose the workflow by it
-  - `first`: the stage an issue enters at, {"stage", "by", "do"}: the role that performs it and the skill — `by` is `human`, and `do` null, where a human's decision is waited for
-  - `ends`: where its passes end: `land`, a landing turn — its issues end in a PR landed on the base branch — `done`, nothing more to do, or both, by different stages
-  - `line`: the line that opens an issue into it, in the tracker. Give it a title and a file holding the body
-- `keep_off`: the labels that keep an issue from being worked as one of a workflow, {"epic_labels", "escalate_label", "lock_label"}: an issue carrying an epic label is never dispatched; the escalate label is the fleet's to put on, when it hands an issue to a human; and an open issue carrying the lock label is a fleet lock, which stops all other work (`afkconvoy lock --help`)
-- `intake`: {"open", "limit"}: the open issues workers took in, against the repo's `intake_limit`. An issue a human opens with a flow label is outside both: nothing refuses it
-- `created`: the flow labels this run created on the repo; empty when it had them all
-
-In an unbound repo, which has no workflow:
-
-{"team": null, "ready_label", "line", "keep_off", "created"}
-
-- `ready_label`: the label an issue is worked under
-- `line`: the line that opens an issue carrying it
-- `keep_off`: as above; the escalate label is the config's
-- `created`: the ready label, when this run created it; else empty
-
-Errors, as {"error": …} with a non-zero exit: the team has a fault — {"error", "faults"}, as `check` answers it; the team's repo cannot be read; the config cannot be read; "is not in a git checkout"; GitHub refused to list or create a label.
-
-##### What trips you up
-
-- `gh issue create --label` refuses a label the repo lacks, and nothing but this command creates a flow label ahead of the first issue. Run it before the line.
-- Opening an issue with `gh`, or labelling one, wakes no fleet: the fleet takes it up at its next tick — within 90 seconds while it has work, within 25 minutes once it has been idle 3 ticks in a row. `afkconvoy wake <checkout>`, on the fleet's host, starts that tick now: run it once, after the last issue you open.
-- An issue follows one workflow: put one flow label on it. With several it follows none, and no stage of any is performed on it.
-- The flow label is what hands the issue over. Leave it off an issue that is not ready to be worked, and put it on later: `gh issue edit <n> --add-label <label>`.
-- Where the tracker is another repo, the line opens the issue there, `--repo <owner>/<tracker>`, with this repo's repo label, `repo:<owner>/<repo>`: an issue there without it is no issue of this repo, and its fleet never works it. Name the tracker in every `gh issue` command (`--repo`): run in the checkout, `gh` acts on the checkout's own repo.
-- A workflow whose `first` is `by: human` starts by waiting for a human: the fleet does nothing on its issue until one declares a verdict (`afkconvoy verdict --help`).
-- It answers the team as pushed to its default branch. A workflow added in a checkout of the team is not answered, and its label not created, until it is pushed.
-- A label of a workflow the team no longer has is left on the repo: this command creates labels and removes none.
-
-##### Which checkout it is about
-
-Name it after the command, as `[CHECKOUT]`: a checkout of the repo, or any directory in one, which names that checkout. Naming none, it is about the checkout it is run in. A worker's worktree is refused as its checkout: only a worker's own commands, and those that only read, are run there.
-
-##### Usage
-
-```
-afkconvoy flows [CHECKOUT]
-```
-
-##### Arguments
-
-- `[CHECKOUT]`: The checkout it is about, or a directory in it [default: the one it is run in]
-
-#### `afkconvoy wake`
-
-End the sleep of this host's `run` for this repo: its next tick starts now (after opening issues with `gh`, and as a worker's last command)
-
-##### When to run it
-
-Once, after the last of the issues you open for the fleet with `gh`, or label: nothing `gh` does wakes the fleet, which otherwise takes them up at its next tick (`afkconvoy flows --help` says how soon).
-
-Once, as a worker's last command: after its PR is on the base branch, or its verdict is posted on the issue. A worker's prompt names the exact command. Every command that changes fleet state wakes the `run` as it ends, so after `land` or `verdict` this one is redundant, and harmless.
-
-##### Who runs it
-
-Whoever hands the fleet work: a human, or the agent a human is talking to, after opening issues with `gh`, in a checkout of the repo on the fleet's host. And a worker, in its own worktree. Any worktree or checkout of the repo on the fleet's host reaches the same fleet instance.
-
-##### What it reads and writes
-
-It speaks to this host's runner, on its socket in the cache directory (host-runner.sock): one signal for the fleet instance it holds of this repo, naming its checkout, itself, and the issue the worker is on if its environment says one. It waits 3 seconds at most for the answer. The signal ends that fleet instance's sleep, and no other's; it carries nothing else, and it writes nothing to GitHub: the tick it starts reads the outcome from GitHub itself.
-
-##### What it answers
-
-{"woke": true, "tick"} — no tick was in progress: tick `tick` starts now. The fleet instance's tick log says "tick N: started (woken by wake #12)" of it.
-
-{"woke": true, "after_tick"} — tick `after_tick` is in progress: the next starts as it ends. The fleet instance's tick log says "woken by wake #12 during tick N: tick N+1 follows" of the first such wake.
-
-{"woke": false, "detail"} — no fleet instance heard it. With no host runner on this host, `detail` is "no host runner runs on this host, so no fleet instance heard it: start one with `afkconvoy run <checkout>`". Otherwise the host runner holds no fleet instance of this repo, holds it broken — waiting to be started again — or did not answer within 3 seconds: `detail` says which, with the line that fixes it — `afkconvoy run <checkout>`, or ask `afkconvoy doctor`.
-
-It exits 0 with each of them. Errors: only "is not in a git checkout". Failing to wake anybody is not an error, and costs at most the 3 seconds it waits.
-
-##### What trips you up
-
-- It reports nothing. A worker's outcome is its landed PR or its verdict comment: without one of them on GitHub, a wake only makes the fleet look sooner at a worker that stopped with nothing.
-- `woke: false` needs no second `wake`: the fleet finds the outcome, or the issue, at its next tick anyway.
-- It reaches a fleet instance of this host's runner only: run it on the host whose `run` works the repo. A fleet driven by `tick` hears nothing.
-
-##### Which checkout it is about
-
-Name it after the command, as `[CHECKOUT]`: a checkout of the repo, or any directory in one, which names that checkout. Naming none, it is about the checkout it is run in. A worker runs it in its own worktree.
-
-##### What it logs
-
-As it acts it appends one line to the tick log of this host for this repo, then wakes this host's fleet instance of this repo, through the host runner; its answer says whether it woke one, as "woke": [`afkconvoy help tick-log`](help:tick-log).
-
-##### Usage
-
-```
-afkconvoy wake [CHECKOUT]
-```
-
-##### Arguments
-
-- `[CHECKOUT]`: The checkout it is about, or a directory in it [default: the one it is run in]
-
 ### Run by a worker
+
+#### `afkconvoy watched`
+
+Record what this host's watch did and end its session (a watch's command)
+
+##### When to run it
+
+As the watch's last step, using the exact line at the end of its brief:
+
+```
+afkconvoy watched --watch <id> --text-file <report.json>
+```
+
+Write a JSON object with all five keys: `held_back`, `did`, `verified` and `pending` are lists of nonempty strings; `human` is a list of {question, answer}, both nonempty strings. Use [] where nothing belongs. `held_back` says what held work back; `did` each action and its evidence, including repo, PR, cut and version; `verified` what was checked and what it showed; `human` each decision left alone and its exact answer command; `pending` everything unfinished. Printed terminal output is no report.
+
+##### Who runs it
+
+The host's watch, in its watch directory, as the last step of its interactive session. The operator may repeat the watch's exact command if its receipt was lost.
+
+##### What it reads and writes
+
+It reads the running watch on this host and the report file, and atomically keeps the report in the host cache. It needs no repo or GitHub login. The same report may be submitted again; a different report cannot replace it. A missing part, unknown key, empty entry, wrong watch or expired hour is refused with {error} and nonzero exit; fix the JSON or use the running watch's brief.
+
+The host runner ends the harness after recording, keeping its terminal and screen until the next watch starts in that directory. `doctor.host.watch` and later briefs show the report; an ended watch with no report says `reported: false`.
+
+##### What it answers
+
+{watch, reported: true, report}: the watch id and its complete record. Reporting does not claim recovery beyond the evidence in the report.
+
+##### What trips you up
+
+Use the id and report path from this watch's brief. Include all five parts, even those with empty lists. The report cannot be replaced once recorded, and a successful harness exit without this command is shown as not reported.
+
+##### Usage
+
+```
+afkconvoy watched --watch <WATCH> --text-file <TEXT_FILE>
+```
+
+##### Arguments
+
+- `--watch <WATCH>`: The watch id from its brief
+- `--text-file <TEXT_FILE>`: The JSON report with all five parts
 
 #### `afkconvoy exclusive`
 
@@ -2569,6 +2445,227 @@ afkconvoy gate [OPTIONS] [CHECKOUT]
 - `[CHECKOUT]`: The checkout it is about, or a directory in it [default: the one it is run in]
 - `--land`: Take the open issue PR's merge, gate, record and landing turn
 - `--host <HOST>`: The host a green run is recorded as made on [default: this machine's name]
+
+### Run by a worker's hook
+
+#### `afkconvoy guard`
+
+Allow or refuse the tool call described on stdin (a worker's hook, added at launch)
+
+##### When to run it
+
+Never by hand. It is the guard: the check made before each thing a worker of a bound repo does, refusing what no worker may do and what its stage may not. Read this to learn what a worker is refused, or why one was.
+
+##### Who runs it
+
+Claude Code, as a hook: the fleet adds it to every worker of a bound repo as it starts it, whatever the role's repo holds, and Claude Code runs it before each tool call the worker makes. A call it refuses is not made.
+
+pi, through an extension of afkconvoy's own, named on the line that starts a pi worker: pi hands it each tool call before making it, it asks this command, and a call this command does not allow — one it refuses, and one it could not be asked of — is not made. A pi worker whose extension is not there does not start.
+
+Codex, as a hook too, said on the line that starts a Codex worker and kept in no file: Codex runs it before each tool call. Codex makes a call whose hook fails in any way but one, so the hook turns every answer but an allowed call into that one: a call this command refuses, and one it could not be asked of, is not made.
+
+DSH, through a plugin of afkconvoy's own, which the overlay on the line that starts a DSH worker loads last: it asks this command before every tool call. A DSH worker whose plugin is missing or broken does not start.
+
+What each harness's worker is started with, the guard among it: [`afkconvoy help worker-launch`](help:worker-launch).
+
+A role's own limits are hooks in the role's repo — for pi, extensions there. They load because the worker starts there, run beside this one, and refuse in the same way.
+
+##### What it reads and writes
+
+It writes nothing. It reads two things, and a third for a watch that would end a process:
+
+Standard input: one tool call, as Claude Code describes it to a `PreToolUse` hook — a JSON object with `tool_name` and `tool_input`. Only a `Bash` call is judged, by the words of each simple command of its `tool_input.command`. pi's is described as pi describes it to an extension — `toolName` and `input` — and only a `bash` call is judged, the same way. Codex describes its own as Claude Code does, and a `Bash` call is judged; its `apply_patch` hands the text of a patch as `tool_input.command`, which is no shell line and is not judged as one. DSH describes a call with `name` and `arguments`: `bash` and `bash_persistent` are judged by `arguments.command`. What is refused is decided once, for all.
+
+The environment: the facts of the worker's stage, which the fleet put there when it started the worker — AFKCONVOY_STAGE, AFKCONVOY_WRITES, AFKCONVOY_CONSULT, AFKCONVOY_BASE_BRANCH, AFKCONVOY_ESCALATE_LABEL, AFKCONVOY_LOCK_LABEL — and AFKCONVOY_HARNESS, the harness that asks: how the call is described is its own. A watch names its host in AFKCONVOY_WATCH, in place of a stage, and HOME, the home folder it reads paths under.
+
+The host's processes, as `ps` says them, and the host runner's pid, as its lock says it: whom each process a `kill` names is. The fleets of this host started a process carrying a worker's `TMPDIR` — the link a fleet made for it (`afkconvoy help worker-launch`), or the own one (.afkconvoy-tmp) of a worktree they put a worker in — or one under either, as a gate sets, and every process under one of those, or left behind by one.
+
+Refused for every worker:
+
+- adding or removing a flow label, a `stage:` label, the escalate label or the lock label (`gh issue edit --add-label`, `--remove-label`, `gh issue create --label`, and any write of an issue's labels through `gh api`)
+- writing a stage record by hand: only `afkconvoy verdict` writes one
+- writing an intake record by hand: only `afkconvoy intake` writes one, and it is what puts a flow label on for a worker
+- merging a PR (`gh pr merge`, or the merge endpoint through `gh api`)
+- pushing the base branch (`git push` with a refspec that lands on it, `--all`, `--mirror`)
+
+Refused besides in a stage its workflow marks `writes: false`, for every consult, and for a patrol's worker (AFKCONVOY_PATROL, in place of a stage's facts):
+
+- committing and pushing (`git commit`, `merge`, `cherry-pick`, `revert`, `am`, `push`)
+
+A watch is no consult: it is the operator on its host, started so that the fleet's work goes on (`afkconvoy run --help`). It commits, pushes a branch of its own and changes the host, whatever the facts of its role say. It is held instead to the bounds of any unattended worker — refused, beside what every worker is:
+
+- ending what the fleets of this host did not start: `kill` of a pid that is no worker's, watch's process, nor one they left behind; of the host runner; of what names no pid the guard can read — a variable, a process group; and `pkill` and `killall`, which end whatever a name matches, the user's own among them
+- deleting what cannot be rebuilt: `rm`, `rmdir`, `unlink` or `shred` of a path that is, or holds, model weights, downloads, media, Docker's images or the user's own files under the home folder, or of a path outside it but for the system's temporary files; a path it cannot place — relative, or named by another variable — is its own to place
+- deleting a change no commit holds: `git clean` without `-X`, `git worktree remove --force`, `git reset --hard`, `orca worktree rm --force`
+- a force push: `--force`, `-f`, `--force-with-lease`, or a refspec that begins with `+`
+- stopping the host runner, or taking a checkout off its list: `afkconvoy stop`
+
+##### What it answers
+
+Unlike every other command, no JSON: it answers Claude Code the way a hook does.
+
+- exit 0, nothing printed: the call is allowed
+- exit 2, a line on stderr: the call is refused; the line is the reason, and Claude Code shows it to the worker — as pi does, given it by the extension, and Codex
+
+A call it cannot read, an environment that lacks one of the stage's facts, or one that names no harness there is, is refused with the reason: nothing is allowed unread.
+
+##### What trips you up
+
+- Heredoc bodies and quoted arguments are data, not commands: a report may name `rm` or `git worktree remove`, and a read-only `gh` call may search for stage or intake records with `--jq` or `--template`. Sending a handwritten record through a writing `gh` call is still refused, including through a heredoc. The argument after `sh -c` or `bash -c` is executable shell text and is judged as commands.
+- It recognises commands. The same act wrapped in a script, hidden in a variable or in a substitution inside quotes gets past it: it stops a worker that errs, not one that means to get by.
+- What it misses is checked after the stage: a commit left on the branch by a stage marked `writes: false`, or by a consult, is a failure, and the issue escalates; a patrol's final commit not on the base branch, working-tree changes, or a PR is a failed run, reported to a human — see `afkconvoy tick --help`.
+- An unbound repo's workers have no guard: their worker launch command is opaque.
+
+##### Usage
+
+```
+afkconvoy guard
+```
+
+### Run by whoever reads this manual
+
+#### `afkconvoy help`
+
+Print the index, the help of the given command, a help topic, or with `all` the whole manual
+
+##### Usage
+
+```
+afkconvoy help [NAME]
+```
+
+##### Arguments
+
+- `[NAME]`: A command, a topic, or `all`: `--help` lists the commands and the topics
+
+### Run by whoever hands the fleet work
+
+#### `afkconvoy flows`
+
+Say how to open an issue the fleet will work, and create the labels that takes
+
+##### When to run it
+
+Before opening an issue the fleet is to work, and again whenever the team gains a workflow: it says which workflow takes which kind of issue, what label puts an issue in it, and which labels to keep off — and it creates the labels that takes, so the line it gives works. Run it once for all the issues you open, not once per issue.
+
+```
+afkconvoy flows
+```
+
+##### Who runs it
+
+Whoever hands the fleet work: a human, or the agent a human is talking to, with work decided on and issues to open for it. In a checkout of the repo the issues go to, bound or unbound. A worker opening a blocker for another repo of the host names that repo's checkout: `afkconvoy flows <target-checkout>`. It takes the issue in there with `afkconvoy intake`.
+
+##### What it reads and writes
+
+It reads the config of the checkout and the labels its tracker has — the checkout's own repo, until its host says another (`afkconvoy run --tracker`). In a bound repo it also reads the team as `afkconvoy check` does — the team's files and every role's repo, from GitHub at the head of each default branch — and, to count, the comments of every open issue that carries a flow label.
+
+It writes one thing: each label its lines name that the tracker lacks. In a bound repo that is the flow label of every workflow of the team — `flow:<workflow>`, or the one its file's `label` names; in an unbound one, the ready label. It puts no label on any issue and opens none. Everything is read first: a team with a fault creates nothing.
+
+##### What it answers
+
+In a bound repo:
+
+{"team", "workflows", "keep_off", "intake", "created"}
+
+- `team`: the team's repo
+- `workflows`: every workflow of the team, each {"name", "flow_label", "description", "first", "ends", "line"}:
+
+  - `description`: what the workflow is for and what an issue of it holds: the prose of its file, workflows/<name>.md, above the yaml block. Empty when the file says nothing there — `afkconvoy check` warns of that. Choose the workflow by it
+  - `first`: the stage an issue enters at, {"stage", "by", "do"}: the role that performs it and the skill — `by` is `human`, and `do` null, where a human's decision is waited for
+  - `ends`: where its passes end: `land`, a landing turn — its issues end in a PR landed on the base branch — `done`, nothing more to do, or both, by different stages
+  - `line`: the line that opens an issue into it, in the tracker. Give it a title and a file holding the body
+- `keep_off`: the labels that keep an issue from being worked as one of a workflow, {"epic_labels", "escalate_label", "lock_label"}: an issue carrying an epic label is never dispatched; the escalate label is the fleet's to put on, when it hands an issue to a human; and an open issue carrying the lock label is a fleet lock, which stops all other work (`afkconvoy lock --help`)
+- `intake`: {"open", "limit"}: the open issues workers took in, against the repo's `intake_limit`. An issue a human opens with a flow label is outside both: nothing refuses it
+- `created`: the flow labels this run created on the repo; empty when it had them all
+
+In an unbound repo, which has no workflow:
+
+{"team": null, "ready_label", "line", "keep_off", "created"}
+
+- `ready_label`: the label an issue is worked under
+- `line`: the line that opens an issue carrying it
+- `keep_off`: as above; the escalate label is the config's
+- `created`: the ready label, when this run created it; else empty
+
+Errors, as {"error": …} with a non-zero exit: the team has a fault — {"error", "faults"}, as `check` answers it; the team's repo cannot be read; the config cannot be read; "is not in a git checkout"; GitHub refused to list or create a label.
+
+##### What trips you up
+
+- `gh issue create --label` refuses a label the repo lacks, and nothing but this command creates a flow label ahead of the first issue. Run it before the line.
+- Opening an issue with `gh`, or labelling one, wakes no fleet: the fleet takes it up at its next tick — within 90 seconds while it has work, within 25 minutes once it has been idle 3 ticks in a row. `afkconvoy wake <checkout>`, on the fleet's host, starts that tick now: run it once, after the last issue you open.
+- An issue follows one workflow: put one flow label on it. With several it follows none, and no stage of any is performed on it.
+- The flow label is what hands the issue over. Leave it off an issue that is not ready to be worked, and put it on later: `gh issue edit <n> --add-label <label>`.
+- Where the tracker is another repo, the line opens the issue there, `--repo <owner>/<tracker>`, with this repo's repo label, `repo:<owner>/<repo>`: an issue there without it is no issue of this repo, and its fleet never works it. Name the tracker in every `gh issue` command (`--repo`): run in the checkout, `gh` acts on the checkout's own repo.
+- A workflow whose `first` is `by: human` starts by waiting for a human: the fleet does nothing on its issue until one declares a verdict (`afkconvoy verdict --help`).
+- It answers the team as pushed to its default branch. A workflow added in a checkout of the team is not answered, and its label not created, until it is pushed.
+- A label of a workflow the team no longer has is left on the repo: this command creates labels and removes none.
+
+##### Which checkout it is about
+
+Name it after the command, as `[CHECKOUT]`: a checkout of the repo, or any directory in one, which names that checkout. Naming none, it is about the checkout it is run in. A worker's worktree is refused as its checkout: only a worker's own commands, and those that only read, are run there.
+
+##### Usage
+
+```
+afkconvoy flows [CHECKOUT]
+```
+
+##### Arguments
+
+- `[CHECKOUT]`: The checkout it is about, or a directory in it [default: the one it is run in]
+
+#### `afkconvoy wake`
+
+End the sleep of this host's `run` for this repo: its next tick starts now (after opening issues with `gh`, and as a worker's last command)
+
+##### When to run it
+
+Once, after the last of the issues you open for the fleet with `gh`, or label: nothing `gh` does wakes the fleet, which otherwise takes them up at its next tick (`afkconvoy flows --help` says how soon).
+
+Once, as a worker's last command: after its PR is on the base branch, or its verdict is posted on the issue. A worker's prompt names the exact command. Every command that changes fleet state wakes the `run` as it ends, so after `land` or `verdict` this one is redundant, and harmless.
+
+##### Who runs it
+
+Whoever hands the fleet work: a human, or the agent a human is talking to, after opening issues with `gh`, in a checkout of the repo on the fleet's host. And a worker, in its own worktree. Any worktree or checkout of the repo on the fleet's host reaches the same fleet instance.
+
+##### What it reads and writes
+
+It speaks to this host's runner, on its socket in the cache directory (host-runner.sock): one signal for the fleet instance it holds of this repo, naming its checkout, itself, and the issue the worker is on if its environment says one. It waits 3 seconds at most for the answer. The signal ends that fleet instance's sleep, and no other's; it carries nothing else, and it writes nothing to GitHub: the tick it starts reads the outcome from GitHub itself.
+
+##### What it answers
+
+{"woke": true, "tick"} — no tick was in progress: tick `tick` starts now. The fleet instance's tick log says "tick N: started (woken by wake #12)" of it.
+
+{"woke": true, "after_tick"} — tick `after_tick` is in progress: the next starts as it ends. The fleet instance's tick log says "woken by wake #12 during tick N: tick N+1 follows" of the first such wake.
+
+{"woke": false, "detail"} — no fleet instance heard it. With no host runner on this host, `detail` is "no host runner runs on this host, so no fleet instance heard it: start one with `afkconvoy run <checkout>`". Otherwise the host runner holds no fleet instance of this repo, holds it broken — waiting to be started again — or did not answer within 3 seconds: `detail` says which, with the line that fixes it — `afkconvoy run <checkout>`, or ask `afkconvoy doctor`.
+
+It exits 0 with each of them. Errors: only "is not in a git checkout". Failing to wake anybody is not an error, and costs at most the 3 seconds it waits.
+
+##### What trips you up
+
+- It reports nothing. A worker's outcome is its landed PR or its verdict comment: without one of them on GitHub, a wake only makes the fleet look sooner at a worker that stopped with nothing.
+- `woke: false` needs no second `wake`: the fleet finds the outcome, or the issue, at its next tick anyway.
+- It reaches a fleet instance of this host's runner only: run it on the host whose `run` works the repo. A fleet driven by `tick` hears nothing.
+
+##### Which checkout it is about
+
+Name it after the command, as `[CHECKOUT]`: a checkout of the repo, or any directory in one, which names that checkout. Naming none, it is about the checkout it is run in. A worker runs it in its own worktree.
+
+##### What it logs
+
+As it acts it appends one line to the tick log of this host for this repo, then wakes this host's fleet instance of this repo, through the host runner; its answer says whether it woke one, as "woke": [`afkconvoy help tick-log`](help:tick-log).
+
+##### Usage
+
+```
+afkconvoy wake [CHECKOUT]
+```
+
+##### Arguments
+
+- `[CHECKOUT]`: The checkout it is about, or a directory in it [default: the one it is run in]
 
 ### One transition by hand
 
@@ -4168,7 +4265,7 @@ Every Codex session has a fresh user directory under its worktree's `.afkconvoy-
 
 #### Model and effort
 
-The fleet selects the model by host kit order, role eligibility and casting, and passes it explicitly with `--model` for both bound and unbound repos. No config.toml selects a worker's model. While the host kit places no Codex model — none listed yet, or research pending — a Codex worker starts with no `--model`, on Codex's own default, and its model is recorded as null with the source `codex_default`. `afkconvoy kit` lists and researches its models now, and the next tick also lists an entry with no Codex models without waiting for the daily refresh, with an hour between unsuccessful tries. Discovery filters the server catalog to model names before it reaches terminal scrollback.
+The fleet selects the model by host kit order, role eligibility and casting, and passes it explicitly with `--model` for both bound and unbound repos. No config.toml selects a worker's model. While the host kit places no Codex model — none listed yet, or research pending — a Codex worker starts with no `--model`, on Codex's own default, and its model is recorded as null with the source `codex_default`. `afkconvoy kit` lists its models now, and the watch supplies research through `afkconvoy kit --research <file>`. The next tick also lists an entry with no Codex models without waiting for the daily refresh, with an hour between unsuccessful tries. Discovery filters the server catalog to model names before it reaches terminal scrollback.
 
 Reasoning effort has a different source: every launch reads `model_reasoning_effort` from your own `~/.codex/config.toml` and passes it with `--config`. Changing that file changes the next worker without restarting the fleet. With no setting, Codex uses its selected model's default. This applies even with `host_user: false`. The fleet keeps no effort setting of its own. An unbound worker's fresh user directory holds the same allowed login, skill and rule links, and no other user settings; its `/model` writes change neither your configuration nor another worker's. Existing workers keep the settings they started with.
 
@@ -4357,7 +4454,7 @@ A warning may be the fleet mid-step: run `doctor` again after a tick before you 
 - `is one rework from a breaker`: The next `reject` escalates the issue. Nothing to do yet: [`afkconvoy help humans`](help:humans).
 - `no harness can start this host's watch`: A look of the host runner called for a watch, and no harness of the host kit could start it or go on with it: each paused, with a fault on record, or failing to start, as `evidence` says. Nothing watches the host until one can: `afkconvoy kit` shows the host kit, and its `worker_health` the faults. The next look tries again (`afkconvoy run --help`, WATCH).
 - `is paused on this host`: It refused every prompt: no worker starts on it till an hourly probe answers.
-- `has unplaced models in the host kit`: The watch researches these listed models with its web tools and places the evidence through `afkconvoy kit --research <file>`. `afkconvoy kit --help` gives the checked JSON format. Omitted models stay unplaced; a harness with none placed runs its default model. Research runs during a watch started for other work, or starts one alone at most once a day. A malformed file writes nothing and names what to correct.
+- `has unplaced models in the host kit`: The watch researches these listed models with its web tools and places or settles them through `afkconvoy kit --research <file>`. `afkconvoy kit --help` gives the checked JSON format and research states. Omitted models still await research; a harness with none placed runs its default model. Research runs during a watch started for other work, or starts one alone at most once a day. A malformed file writes nothing and names what to correct.
 - `names no model the host kit holds`: A team's roster names a model by a name that matches no model the host kit holds for its harness, by its id or any other name; `evidence` gives the nearest names. The fleet never changes a roster: a tick opens one issue for it in the team's repo, which the team's own fleet works. `fix` is the file and key to correct.
 - `has no harness on this host it holds limits for`: A role holds limits for no harness the host kit holds, so no worker of it starts and its stages wait; the rest go on. They go on by themselves once the host kit holds one: `afkconvoy kit`, or write the role's limits for one it holds.
 - `matches nothing in the host kit`: A role's roster entry names only harnesses or models this host lacks, so the role runs the host kit whole, less what it holds no limits for. Add one with `afkconvoy kit`, or change the roster.
@@ -4604,7 +4701,9 @@ A team's list, for each of its roles, of the harnesses and models that role's wo
 _Avoid_: harness config, model table, routing rules
 
 **Host kit**:
-The harnesses this host can start and their models, each in order of preference, with each harness's worker launch command and what research says of each model. Writing it lists each harness's models and sends none a prompt. Each model is held by the id its harness lists, with the names its listing shows it by and those research ties to it with a dated source. A harness found and listed is held at once and starts workers on its **default model** until research places its models: a model is placed once research ranks it with a dated source, and one `research pending` or `not researched` is never started on. The watch researches its unplaced models and places the sourced evidence; research runs alongside its other work or starts the watch alone at most once a day. A model that fails at work is found by worker health, not by the kit. These orders are this machine's sole priority for every checkout; the kit also holds whether automatic model casting is enabled, off until the user enables it.
+The harnesses this host can start and their models, each in order of preference, with each harness's worker launch command and what research says of each model. Writing it lists each harness's models and sends none a prompt. Each model is held by the id its harness lists, with the names its listing shows it by and those research ties to it with a dated source. A harness found and listed is held at once and starts workers on its **default model** until research places its models: a model is placed once research ranks it with a dated source. The watch researches models awaiting research and records sourced placements or settlements; research runs alongside its other work or starts the watch alone at most once a day. A model that fails at work is found by worker health, not by the kit. These orders are this machine's sole priority for every checkout; the kit also holds whether automatic model casting is enabled, off until the user enables it.
+
+Research states: `research pending` is a newly listed model awaiting dated research; `not researched` is an older release's model with no dated answer, also awaiting research. Neither is started on. A settled model has a dated source and a reason research found it unsuited to workers: it is not placed, is named by no unplaced-model finding and starts no watch. The finding names exactly the models awaiting research, including models held with no dated answer; every one can be placed or settled through `afkconvoy kit --research <file>`. Placements and settlements survive routine relisting; an identity dropped from the kit and later listed anew awaits research again.
 _Avoid_: roster (the team's), host config, inventory
 
 **Default model**:
@@ -4660,8 +4759,9 @@ A worker whose processes — every one started with its `TMPDIR`, and every one 
 _Avoid_: hog
 
 **Watch**:
-The operator on its host, started by its host runner when a **look** at the host holds something an operator would act on, in the operator's own directory where the host names one, otherwise as the **stock watch** in afkconvoy's own directory. The stock watch stands in where no operator directory is named: its one short instruction is to find what holds the fleets' work back, fix it with the watch's authority, check that the work goes on and say what it did. An operator's directory supplies its own rules, with none of the stock instruction added. A look is `afkconvoy doctor --all --since <until of the last look>`, every five minutes or as the host settings say (`--watch-every`): the fleet's own code, which runs no model. What starts a watch: a hot worker, admission held back for one reason past its span, memory pressure past that span, an issue waiting on a human, a finding that holds something up (no `info`), a fleet instance not alive or broken, a failed tick or a step failed since, a worker whose health observation is past its time. Each starts at most one watch in its **episode**, which lasts while each look still holds it. A watch is one agent session, given its brief as a file — the look, why it started and what earlier watches on the same items did — on the harness this host last started a worker on that took its brief, then the host kit's order, never one paused or with a fault on record; started trusted and in its harness's non-interactive mode, so that nothing it runs waits on a prompt. What it printed is kept as what it did. A watch whose harness gives out — its own words for a usage limit, or an exit that failed — is ended and continued on the next harness that can start it, with the same look and what it did so far, one session at a time; the fault is recorded, and the harness is skipped until its probe answers. One watch runs on a host at a time: no look is taken while it runs, and a host runner started again keeps the one it finds running. An hour bounds it, its continuations together, and it has the authority and the bounds of a watch. Its start, its end and each thing it did are lines of every tick log of the host; `doctor` says the one running and what the last one did, and a finding where none could start (`docs/adr/0030`).
+The operator on its host, started by its host runner when a **look** at the host holds something an operator would act on, in the operator's own directory where the host names one, otherwise as the **stock watch** in afkconvoy's own directory. The stock watch stands in where no operator directory is named: its one short instruction is to find what holds the fleets' work back, fix it with the watch's authority, check that the work goes on and say what it did. An operator's directory supplies its own rules, with none of the stock instruction added. A look is `afkconvoy doctor --all --since <until of the last look>`, every five minutes or as the host settings say (`--watch-every`): the fleet's own code, which runs no model. What starts a watch: a hot worker, admission held back for one reason past its span, memory pressure past that span, an issue waiting on a human, a finding that holds something up (no `info`), a fleet instance not alive or broken, a failed tick or a step failed since, a worker whose health observation is past its time. Each starts at most one watch in its **episode**, which lasts while each look still holds it. A watch is one agent session, given its brief as a file — the look, why it started and what earlier watches on the same items did — on the harness this host last started a worker on that took its brief, then the host kit's order, never one paused or with a fault on record; started trusted with prompts skipped, in the harness's interactive terminal, with its brief as the first message, as a worker is. A human can see it work and type to it. Its last step is `afkconvoy watched`: the command records what held work back, each thing it did, what it verified, each human question and answer line left alone, and what is pending. That report is what later watches receive and `doctor` shows. The host runner ends the harness after it reports and keeps the terminal and screen until the next watch starts in that directory. An ended watch that did not call the command is shown as not reported. A watch whose harness gives out — its own words for a usage limit, capacity stop or refusal, or an exit that failed — is ended and continued on the next harness that can start it, with the same look and terminal evidence of its work so far, one interactive session at a time; the fault is recorded, and the harness is skipped until its probe answers. One watch runs on a host at a time: no look is taken while it runs, and a host runner started again keeps the one it finds running. Worker health observes its own terminal as a worker's, nudging a stopped watch with no report. An hour bounds it, its continuations together; one reaching it is ended as not reported. It has the authority and the bounds of a watch (docs/adr/0038). Its start, its end and each thing it did are lines of every tick log of the host; `doctor` says the one running and what the last one did, and a finding where none could start (`docs/adr/0030`).
 Its authority spans every repo on the host's checkout list: it fixes the host and hands an issue escalated for a fleet fault back once its cause is gone; makes a lasting fix in a checkout of its own of any listed repo, through that repo's landing turn; and, where the fix must reach an installed tool, has that repo cut a version after landing, lets the host runner move onto it and checks the fault on the new version. It answers escalations with the same commands as a human, whose effect and rework counts its answer has. Every watch leaves spending money or needing an account, a credential or a person's hands; what cannot be undone; taking a secret or private data off the host; and changing what a product is for or who it is for with a human, and records each without acting on it.
+A watch for host load or memory receives the fleet's worker process trees and, where `hostvitals now` answers on the host runner's `PATH`, its whole-host findings followed by its process and App rankings and remaining readings; otherwise it receives the fleet's hottest processes outside those trees. The evidence names its source and says why hostvitals could not answer. hostvitals is optional; hot-worker sampling stays the fleet's own.
 _Avoid_: patrol (a role run on a schedule that writes no code), supervisor (the host runner is the process)
 
 **Exclusive queue**:

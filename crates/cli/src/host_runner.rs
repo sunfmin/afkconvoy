@@ -164,8 +164,10 @@ impl Shared {
     /// What it holds now: what `shared` is answered, and the panel the host
     /// runner serves shows.
     pub fn now(&self) -> SharedNow {
+        let (exclusive, exclusive_paused) = self.queue.observation();
         SharedNow {
-            exclusive: self.queue.standing(),
+            exclusive,
+            exclusive_paused,
             installed: self.installed().clone(),
             watch: self.watch.running(),
         }
@@ -184,8 +186,12 @@ impl Shared {
 /// What the host's fleets share, as their host runner says it on its socket.
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct SharedNow {
-    /// The exclusive queue, in the order it runs.
+    /// The exclusive queue, in scheduler order.
     pub exclusive: Vec<Ticket>,
+    /// Whether a release move has paused new grants. Default keeps older
+    /// host runners readable by doctor and the panel.
+    #[serde(default)]
+    pub exclusive_paused: bool,
     /// The afkconvoy installed where the host runner was started from, where
     /// it is newer than the host runner's or does not start; `None`: none is,
     /// or the host runner is of an afkconvoy that does not say it.

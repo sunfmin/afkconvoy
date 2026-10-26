@@ -72,24 +72,202 @@ pub fn same_repo(a: &Ticket, b: &Ticket) -> bool {
 /// requests reserve available lanes in order, but a second request of a
 /// running repo waits without holding another repo back from a free lane.
 pub fn ready(queue: &[Ticket], number: u64, worker_lanes: u64) -> bool {
+    scheduling(queue, worker_lanes, false)
+        .iter()
+        .any(|request| request.number == number && request.state == State::Eligible)
+}
+
+/// The scheduler's decision for a request at this observation. Eligible
+/// requests reserve lanes in scheduler order; this is no future start order.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum State {
+    Running,
+    Eligible,
+    Waiting,
+}
+
+/// A request occupying capacity now, or reserving it earlier in FIFO order.
+#[derive(Debug, Clone, Serialize)]
+pub struct Holder {
+    pub number: u64,
+    pub state: State,
+}
+
+/// One actual constraint, with the requests that hold or reserve it.
+#[derive(Debug, Clone, Serialize)]
+pub struct Constraint {
+    pub kind: ConstraintKind,
+    pub requests: Vec<Holder>,
+    pub capacity: Option<u64>,
+    pub explanation: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConstraintKind {
+    SameRepo,
+    WorkerCapacity,
+    RepoCapacity,
+    Paused,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Scheduling {
+    pub number: u64,
+    pub state: State,
+    pub reasons: Vec<Constraint>,
+}
+
+/// Interpret every request with the very same reservations used to grant a
+/// lane, with cuts before ordinary waiters. A same-repo waiter reserves nothing. Turns exclude each other
+/// across worker and repo lanes too. Pausing prevents every new grant.
+pub fn scheduling(queue: &[Ticket], worker_lanes: u64, paused: bool) -> Vec<Scheduling> {
     let ordered = in_order(queue.to_vec());
     let mut admitted: Vec<&Ticket> = ordered.iter().filter(|t| t.ran.is_some()).collect();
+    let mut decisions: Vec<Scheduling> = admitted
+        .iter()
+        .map(|ticket| Scheduling { number: ticket.number, state: State::Running, reasons: vec![] })
+        .collect();
     for ticket in ordered.iter().filter(|t| t.ran.is_none()) {
         let limit = if ticket.repo_lane.is_some() { 1 } else { worker_lanes };
-        let occupied = admitted.iter().filter(|t| same_lane(t, ticket)).count() as u64;
-        let own = admitted.iter().any(|t| {
-            (same_lane(t, ticket) || (t.is_turn && ticket.is_turn))
-                && same_repo(t, ticket)
-                && !(t.candidate && ticket.candidate)
-        });
-        if occupied < limit && !own {
-            if ticket.number == number {
-                return true;
-            }
+        let occupied: Vec<_> = admitted.iter().copied().filter(|t| same_lane(t, ticket)).collect();
+        let own: Vec<_> = admitted
+            .iter()
+            .copied()
+            .filter(|t| {
+                (same_lane(t, ticket) || (t.is_turn && ticket.is_turn))
+                    && same_repo(t, ticket)
+                    && !(t.candidate && ticket.candidate)
+            })
+            .collect();
+        let mut reasons = vec![];
+        if paused {
+            reasons.push(Constraint {
+                kind: ConstraintKind::Paused,
+                requests: vec![],
+                capacity: None,
+                explanation:
+                    "the host runner has paused new grants while moving to another release".into(),
+            });
+        }
+        if !own.is_empty() {
+            reasons.push(Constraint {
+                kind: ConstraintKind::SameRepo,
+                requests: holders(&own),
+                capacity: None,
+                explanation: "this repo already holds or reserves this lane, or another turn of this repo holds or reserves a different lane".into(),
+            });
+        }
+        if occupied.len() as u64 >= limit {
+            reasons.push(Constraint {
+                kind: if ticket.repo_lane.is_some() {
+                    ConstraintKind::RepoCapacity
+                } else {
+                    ConstraintKind::WorkerCapacity
+                },
+                requests: holders(&occupied),
+                capacity: Some(limit),
+                explanation: format!("all {limit} {} lane places are held by running requests or reserved by earlier eligible requests", lane(ticket)),
+            });
+        }
+        let state = if reasons.is_empty() { State::Eligible } else { State::Waiting };
+        if state == State::Eligible {
             admitted.push(ticket);
         }
+        decisions.push(Scheduling { number: ticket.number, state, reasons });
     }
-    false
+    decisions
+}
+
+fn holders(tickets: &[&Ticket]) -> Vec<Holder> {
+    tickets
+        .iter()
+        .map(|ticket| Holder {
+            number: ticket.number,
+            state: if ticket.ran.is_some() { State::Running } else { State::Eligible },
+        })
+        .collect()
+}
+
+/// Actual occupancy counts only running requests, never reservations. Free
+/// capacity does not imply that a request of an occupied repo can use it.
+#[derive(Debug, Serialize)]
+pub struct Capacity {
+    pub capacity: u64,
+    pub used: u64,
+    pub free: u64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RepoLane {
+    pub repo: String,
+    #[serde(flatten)]
+    pub occupancy: Capacity,
+}
+
+/// A ticket with durations at one observation time and its scheduler decision.
+#[derive(Debug, Serialize)]
+pub struct Observed {
+    #[serde(flatten)]
+    pub ticket: Ticket,
+    pub lane: String,
+    pub elapsed_seconds: Option<u64>,
+    pub waiting_seconds: u64,
+    pub scheduling: Scheduling,
+}
+
+#[derive(Debug, Serialize)]
+pub struct Snapshot {
+    pub paused: bool,
+    pub worker: Capacity,
+    pub repos: Vec<RepoLane>,
+    pub running: Vec<Observed>,
+    pub waiting: Vec<Observed>,
+}
+
+/// Common queue facts for operator output, doctor and the panel. Running
+/// and waiting arrays each put cuts first, then follow ask time and request number. Repo lanes
+/// are separate from worker capacity and sorted by their whole identity.
+pub fn snapshot(queue: &[Ticket], worker_lanes: u64, paused: bool, now: u64) -> Snapshot {
+    let ordered = in_order(queue.to_vec());
+    let decisions = scheduling(&ordered, worker_lanes, paused);
+    let mut repos: Vec<String> = ordered.iter().filter_map(|t| t.repo_lane.clone()).collect();
+    repos.sort();
+    repos.dedup();
+    let repos = repos
+        .into_iter()
+        .map(|repo| RepoLane { occupancy: occupancy(&ordered, Some(&repo), 1), repo })
+        .collect();
+    let mut result = Snapshot {
+        paused,
+        worker: occupancy(&ordered, None, worker_lanes),
+        repos,
+        running: vec![],
+        waiting: vec![],
+    };
+    for (ticket, scheduling) in ordered.into_iter().zip(decisions) {
+        let observed = Observed {
+            lane: lane(&ticket),
+            elapsed_seconds: ticket.ran.map(|ran| now.saturating_sub(ran)),
+            waiting_seconds: ticket.ran.unwrap_or(now).saturating_sub(ticket.asked),
+            scheduling,
+            ticket,
+        };
+        if observed.ticket.ran.is_some() {
+            result.running.push(observed);
+        } else {
+            result.waiting.push(observed);
+        }
+    }
+    result
+}
+
+fn occupancy(queue: &[Ticket], repo_lane: Option<&str>, capacity: u64) -> Capacity {
+    let used =
+        queue.iter().filter(|t| t.ran.is_some() && t.repo_lane.as_deref() == repo_lane).count()
+            as u64;
+    Capacity { capacity, used, free: capacity.saturating_sub(used) }
 }
 
 /// The lane a ticket names in the log, doctor and the panel.
@@ -100,8 +278,9 @@ pub fn lane(ticket: &Ticket) -> String {
     }
 }
 
-/// `queue` in the order it runs: the first runs — or is about to — and the
-/// rest wait.
+/// Stable scheduler order: running first, then waiting; within each group,
+/// cuts first, then ask time and request number. Position alone never
+/// predicts which request starts next.
 pub fn in_order(mut queue: Vec<Ticket>) -> Vec<Ticket> {
     queue.sort_by_key(place);
     queue

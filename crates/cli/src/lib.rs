@@ -86,6 +86,7 @@ pub mod precedent;
 pub mod probe;
 mod process;
 mod publication;
+pub mod queue;
 pub mod recovery;
 mod repair;
 pub mod resources;
@@ -111,6 +112,7 @@ mod turn;
 pub mod wake;
 pub mod watch;
 pub mod watch_landing;
+mod watch_report;
 pub mod worker_tmp;
 pub mod workflow;
 
@@ -198,11 +200,11 @@ const SKILL: &str = include_str!("../../../skills/afkconvoy/SKILL.md");
 ///
 /// Read `afkconvoy <command> --help` before first running it. Commands are grouped by who runs them:
 ///
-/// - **{const:OPERATOR}** — `config`, `check`, `plan` before `run`; `tick` for one pass, `stop` to stop; `doctor --all --since <until of your last look>`, `checkouts`, `panel` to watch (`doctor` names each fix); `kit`, `cast`, `switch` for workers' harnesses and models; `patrol-now` to run a patrol now; `takeover` to take another fleet instance's claims.
+/// - **{const:OPERATOR}** — `config`, `check`, `plan` before `run`; `tick` for one pass, `stop` to stop; `queue` for the local exclusive queue; `doctor --all --since <until of your last look>`, `checkouts`, `panel` to watch (`doctor` names each fix); `kit`, `cast`, `switch` for workers' harnesses and models; `patrol-now` to run a patrol now; `takeover` to take another fleet instance's claims.
 /// - **{const:DESIGNER}** — `scaffold` to start one or a role of it from a skeleton, `draft` to draft its roster from the host kit, then, once `check` accepts it, `show` to review a workflow or to ask where an issue is in it, and `rehearse` to try one out.
 /// - **{const:HANDS_WORK}** — a human or their agent opening decided work. `flows` names the workflow, gives the issue-create line and makes labels. After opening issues, `wake` has the fleet take them up now.
 /// - **{const:SETS_UP}** — `skill` prints the skill file that sends their agent to `afkconvoy --help`.
-/// - **{const:WORKER}** — `gate`, `land`, `verdict`, `intake`, `lock`, `over`, `exclusive`: its prompt names each one as it is needed, and `wake`, above, as its last; `cut` is what a cut's terminal runs, and what you run to go on with a cut that failed. Read them only when you are a worker, or are finding out why one stopped (`rule` is a consult's too).
+/// - **{const:WORKER}** — `gate`, `land`, `verdict`, `intake`, `lock`, `over`, `exclusive`, `watched`: its prompt names each one as it is needed, and `wake`, above, as its last; `cut` is what a cut's terminal runs, and what you run to go on with a cut that failed. Read them only when you are a worker, or are finding out why one stopped (`rule` is a consult's too).
 /// - **{const:HUMAN}** — in a bound repo: `rule` to answer an escalated issue, `send` to put an issue at a stage of your choosing. A `by: human` stage waits for your `verdict`, a worker's command too. [`afkconvoy help humans`](help:humans) says what each case asks of you.
 /// - **{const:HOOK}** — `guard`, called before each action of a bound repo's worker. Nobody runs it by hand. Its help explains what the worker is refused and why.
 /// - **{const:BY_HAND}** — `dispatch`, `close`, `escalate`, `park`, `nudge` and `restart`: each is something a tick does on its own, and `recovery` shows what `dispatch` would continue an issue from. Read one when a plan shows a transition the fleet is not making, or you are told to make it yourself.
@@ -272,25 +274,33 @@ enum Command {
     ///
     /// `afkconvoy kit --cast on` enables automatic model casting on this host; `afkconvoy kit --cast off` disables it. These change only `cast` in an existing kit, send no prompt and leave its refresh time unchanged. Run `afkconvoy kit` first on a host without one. New kits and older kits with no setting default off. Every checkout shares this setting, retained through rebuilding, daily refresh and runner restart. With casting off, workers follow matching model labels or the selected harness's first eligible model; with it on, a caster chooses only among multiple models within selected harnesses (`afkconvoy cast --help`).
     ///
-    /// Without --cast or --research it says on stderr where the file is, what it holds — each harness's placed models, or its default model, and those research is pending for or left `not researched` — and what was left out.
+    /// Without --cast or --research it says on stderr where the file is, what it holds — each harness's placed models, or its default model, and those `research pending`, `not researched` or settled — and what was left out.
     ///
     /// ## What it answers
     ///
-    /// With --cast: {path, cast, changed}, the kit file, the resulting boolean and whether it changed. With --research: {path, written, placed, kit}, the host kit file, true, each model placed as {harness, model}, and the resulting kit. Otherwise {path, written, kit, left_out}: the file; true; the kit written; and each harness or model not kept, as {harness, model, why} — model absent for a whole harness — why `not installed`, `listing failed`, or `no longer listed`. Run twice with nothing changed, it writes the same kit. Errors: orca not running, with the line that starts it; a kit that cannot be read or written.
+    /// With --cast: {path, cast, changed}, the kit file, the resulting boolean and whether it changed. With --research: {path, written, placed, settled, kit}, the host kit file, true, each model placed or settled as {harness, model} in its respective array, and the resulting kit. Otherwise {path, written, kit, left_out}: the file; true; the kit written; and each harness or model not kept, as {harness, model, why} — model absent for a whole harness — why `not installed`, `listing failed`, or `no longer listed`. Run twice with nothing changed, it writes the same kit. Errors: orca not running, with the line that starts it; a kit that cannot be read or written.
     ///
     /// A harness with `models` [] or no placed model starts on its default. Automatic command discovery can append a harness with no models; one written by hand or by an older release is also read as it is: a model named in it with no research is started on until research answers for it, when the watch supplies its research. Neither the kit nor `left_out` carries probe evidence any more: an older kit's `probed` fields are read and not written again.
     ///
     /// ## The research file
     ///
-    /// `afkconvoy kit --research research.json` reads the existing host kit, checks the whole file, and atomically writes the placements. It needs neither a checkout nor orca. Read `afkconvoy doctor --all` for current ids and names. The JSON format is:
+    /// {const:KIT_RESEARCH_STATES}
+    ///
+    /// `afkconvoy kit --research research.json` reads the existing host kit, checks the whole file, and atomically writes the placements and settlements. It needs neither a checkout nor orca. Read `afkconvoy doctor --all` for current ids and names. To place a model, use:
     ///
     /// ```json
     /// {"models":[{"harness":"claude-code","model":"listed-id","good_at":"wide refactors; slower on small fixes","names":["sourced alias"],"sources":[{"url":"https://vendor.example/model-card","date":"2026-10-26"}]}]}
     /// ```
     ///
-    /// Each entry names an exact listed id of a held harness. Name each identity once across harnesses: the same id without its provider prefix shares research. Each good_at is nonempty and describes coding strengths and weaknesses; names is optional and contains nonempty sourced aliases. Every entry needs at least one HTTP or HTTPS source URL and its publication or update date as a calendar date YYYY-MM-DD. Use primary and high-trust sources, with live web search. The models array ranks newly placed models, after established model priority; harness priority, commands, cast and existing dated research stay as held. Models omitted stay as held, pending ones still pending, for a later watch. Older models settled as `not researched` stay settled.
+    /// To settle an unsuitable model, replace good_at and names with a nonempty settled reason:
     ///
-    /// Refusals name the file and fault and write nothing: malformed JSON, unknown fields, unknown harnesses or ids, repeated identities, empty good_at or names, missing or malformed dated sources, or a file placing no model awaiting research. Correct the file and run the command again. The answer lists every placement, including identities shared by another harness. Research does not change when the models were last listed (`refreshed`).
+    /// ```json
+    /// {"models":[{"harness":"codex","model":"codex-auto-review","settled":"approval reviewer, unsuited to workers","sources":[{"url":"https://vendor.example/reviewer","date":"2026-10-26"}]}]}
+    /// ```
+    ///
+    /// Each entry names an exact listed id of a held harness. Name each identity once across harnesses: the same id without its provider prefix shares research, including settlements. Each entry supplies either nonempty good_at describing coding strengths and weaknesses, with optional nonempty sourced names, or a settled reason with no names. Every entry needs at least one HTTP or HTTPS source URL and its publication or update date as a calendar date YYYY-MM-DD. Use primary and high-trust sources, with live web search. The models array ranks newly placed models, after established model priority; harness priority, commands, cast and existing dated research stay as held. Models omitted stay as held for a later watch.
+    ///
+    /// Refusals name the file and fault and write nothing: malformed JSON, unknown fields, unknown harnesses or ids, repeated identities, conflicting outcomes, empty good_at, settled reason or names, missing or malformed dated sources, or a file answering no model awaiting research. Correct the file and run the command again. The answer lists every placement and settlement, including identities shared by another harness. Research does not change when the models were last listed (`refreshed`).
     ///
     /// ## What trips you up
     ///
@@ -306,7 +316,7 @@ enum Command {
         /// Enable or disable automatic model casting on this host, without probing
         #[arg(long, value_parser = ["on", "off"], conflicts_with_all = ["harness", "research"])]
         cast: Option<String>,
-        /// Place the watch's sourced model research from a checked JSON file
+        /// Place or settle the watch's sourced model research from a checked JSON file
         #[arg(long, conflicts_with = "harness")]
         research: Option<PathBuf>,
         /// Refresh only this harness after a switch has answered
@@ -965,14 +975,16 @@ enum Command {
     ///
     ///   - `tools`: each command needed — a harness only where a worker launch command the fleet could be asked for runs it by name: {name, state} — state is ready, missing or logged_out; of orca also not_running, knows_no_checkout (the checkout worktrees are cut from was never added to it) or unasked
     ///   - `worker_commands`: the host kit commands and their callers. The first eligible kit harness is selected for each role.
-    ///   - `host_kit`: {path, cast, refreshed, harnesses}: where the kit is kept; when it was last written, in epoch seconds — by `kit`, by `run`, or by a tick's daily refresh (`afkconvoy kit --help`); each harness in order, first first, with its full worker launch command, its models in order, each with its good_at — sourced research, `research pending` or `not researched` — `default_model` (it has no placed model, so a worker runs its login's default, with no model flag) and `research_pending` (it holds a model research has not answered for). {path, error} when unreadable. `afkconvoy kit` writes it again.
+    ///   - `host_kit`: {path, cast, refreshed, harnesses}: where the kit is kept; when it was last written, in epoch seconds — by `kit`, by `run`, or by a tick's daily refresh (`afkconvoy kit --help`); each harness in order, first first, with its full worker launch command, its models in order, each with its good_at or settled reason, sources and researched_at; `default_model` (it has no placed model, so a worker runs its login's default, with no model flag) and `research_pending` (it holds a model awaiting research). {path, error} when unreadable. `afkconvoy kit` writes it again.
     ///
-    ///     A harness with `models` [] or no placed model runs on its default model with no model flag, and is no fault. Automatic command discovery, a switch, failed research or a hand-written kit can leave one. `afkconvoy kit` lists and researches them now. A tick lists an empty Codex entry without waiting for the daily refresh, with an hour between unsuccessful tries. A roster or casting model that matches nothing placed is still reported as such.
+    ///     {const:KIT_RESEARCH_STATES}
+    ///
+    ///     A harness with `models` [] or no placed model runs on its default model with no model flag, and is no fault. Automatic command discovery, a switch, failed research or a hand-written kit can leave one. `afkconvoy kit` lists them; the watch supplies research through `afkconvoy kit --research <file>`. A tick lists an empty Codex entry without waiting for the daily refresh, with an hour between unsuccessful tries. A roster or casting model that matches nothing placed is still reported as such.
     ///   - `settings`: the host settings (`afkconvoy run --help`): {file, said, in_force} — each by its key, the name of the flag of `run` that names it (`hot_cores` for `--hot-cores`), in that flag's units: said is what the host says, null where it says none and the default holds; in_force what holds for this repo's fleet on this host, each default worked out for it — the panel's port {const:PANEL_PORT} where the host says none. {file, error} where the file cannot be read
     ///   - `admission`: whether a tick would start a new worker on this host now, the thresholds in force and what the host reads: as `plan` answers it (`afkconvoy plan --help`), or {error} where a share the host says is wrong. A tick that admission held back is no "started no worker" finding.
-    ///   - `exclusive`: the host's queues as {lanes: {worker, repos}, running, waiting}. Each lane has {running, running_all, waiting}, where running is the first active command for older readers and running_all lists every active command; repos lists {repo, queue} for light gates. The top-level running and waiting are the worker lane for older readers — running is the command that runs alone now, null with none; waiting, those that wait their turn, next first; both empty with no host runner. Each is {command, dir, issue, pid, asked, ran}: the worktree it was run in, the issue of its worker, and when it asked and began to run, in epoch seconds. {error} when the host runner cannot say it
+    ///   - `exclusive`: the host's queues as {lanes: {worker, repos}, running, waiting, observation}. Each lane has {running, running_all, waiting}, where running is the first active command for older readers and running_all lists every active command; repos lists {repo, queue} for light gates. The top-level running and waiting are the worker lane for older readers — running is the first active command, null with none; waiting is in scheduler order, not a prediction of what starts next; both empty with no host runner. Each is {command, dir, issue, pid, asked, ran}: the worktree it was run in, the issue of its worker, and when it asked and began to run, in epoch seconds. `observation` adds {paused, worker, repos, running, waiting}, with occupancy, durations and scheduling reasons interpreted exactly as `afkconvoy queue --help` documents, at doctor's observation time. {error} when the host runner cannot say it. `afkconvoy queue` reads just the local queue, without this full diagnosis
     ///   - `resources`: resource episodes observed by the host runner, with stable ids, active conditions, since, episode, worker or host readings and evidence. Admission and pressure retain their identities during five minutes of recovery. Resource findings also have watch_id, the episode identity that starts at most one watch.
-    ///   - `watch`: this host's watch (`afkconvoy run --help`, WATCH): {directory, stock, running, last, unavailable} — directory is where the next watch runs, stock whether it uses afkconvoy's own instruction; running and last are each {id, directory, stock, items, started, harness, model, terminal, transcript, did, attempts, ended, outcome}: why it started (items, each {id, reason}), its session's harness, model and terminal, the file its session prints to, what its sessions printed (did), including each request left with a human, each session whose harness gave out ({harness, model, terminal, why, did}), and how it ended — outcome `ended`, `closed` (its terminal closed before its harness exited), `time_limit` or `no_harness`; null with none. unavailable: why the last watch a look called for could not start or go on, null where it could
+    ///   - `watch`: this host's watch (`afkconvoy run --help`, WATCH): {directory, stock, running, last, unavailable}. directory is where the next watch runs and stock whether it uses afkconvoy's instruction. running and last are each {id, directory, stock, items, started, harness, model, terminal, transcript, did, reported, report, attempts, ended, outcome}. items says why it started; transcript holds the session's exit status, not its printed output. reported is whether it called `watched`; report is its complete {held_back, did, verified, human, pending} record, null if it did not report; did is that report's actions. attempts holds each session whose harness gave out: {harness, model, terminal, why, did, screen}; screen is terminal evidence for continuation, never a report. outcome is ended (reported), not_reported (exited without reporting), closed, time_limit or no_harness. running and last are null with none. unavailable says why no harness could start or continue the last requested watch, null where one could.
     ///   - `installed`: the release installed where the host runner was started from, where the host runner moves onto it or did not: {path, version, from, since, wait_expired, held_back, failed} — the file; the release it says, null where it says none; the host runner's own release; when that file answered, in epoch seconds; whether the {const:MOVE_WAIT_SECONDS}s wait expired; what holds the move back, each in words ("/Users/me/Developments/hkj is in a tick", "1 exclusive command(s) running"), [] once nothing does, or the last blockers when the wait expired; and why the move failed — it did not start, or does not say its version — null until one did. null with none: nothing newer is installed there, or no host runner runs (`afkconvoy run --help`)
     /// - `fleet`: the `run` of this host for this repo:
     ///
@@ -1080,7 +1092,7 @@ enum Command {
     ///
     /// {"frontier", "excluded", "waiting_on_human", "mine", "peer_live", "stale", "stale_closed", "free_slots", "now", "locks", "concurrency", "tracker", "admission", "host_kit", "worker_no_proxy"} — "held_back" while admission holds; and in a bound repo "intake", "left_out", "unmatched" and "nothing_safe" where they name some, "patrols" where it names some, and "proposals" while a ruling is proposed as a precedent or waits to be; and "slow_gate" while the gate is slow; and "caster" while one runs or is due; and "cut" in a repo that turns cutting on, or while a cut is going or on the base branch
     ///
-    /// - `host_kit`: {path, refreshed, harnesses}: this host's kit file; cast, whether this host enables automatic model casting (false by default); when it was last written, in epoch seconds — by `kit`, by `run`, or by a tick's daily refresh (`afkconvoy kit --help`); each harness in order of preference as {harness, command, models, default_model, research_pending}, each model {model, names, good_at, sources, researched_at}. `default_model` is true when the harness has no placed model, so a worker runs its login's default with no model flag; `research_pending` is true while it holds a model research has not answered for. good_at is sourced research — what a caster is told — or `research pending` (listed, not yet researched) or `not researched` (research gave it no dated source), neither of which a worker is started on, or absent of a model named with no research; sources holds dated URLs and researched_at the research time, absent where none succeeded. With an unreadable kit, {path, error}. `afkconvoy kit` writes it again.
+    /// - `host_kit`: {path, refreshed, harnesses}: this host's kit file; cast, whether this host enables automatic model casting (false by default); when it was last written, in epoch seconds — by `kit`, by `run`, or by a tick's daily refresh (`afkconvoy kit --help`); each harness in order of preference as {harness, command, models, default_model, research_pending}, each model {model, names, good_at, settled, sources, researched_at}. `default_model` is true when the harness has no placed model, so a worker runs its login's default with no model flag; `research_pending` is true while it holds a model awaiting research. good_at is what a caster is told, or a research marker; settled is a reason research found it unsuitable. The research states are defined in `afkconvoy kit --help`. sources holds dated URLs and researched_at the research time, absent where none succeeded. With an unreadable kit, {path, error}. `afkconvoy kit` writes it again.
     /// - `frontier`: issues due to dispatch, with their stage and cast {harness, model, why}. Harness priority is kit order within role eligibility; model labels only match within the selected harness. `selection` lists kit order, eligible candidates, skipped candidates and health evidence.
     /// - `codex_workers`: started Codex sessions with their actual model, effort and sources, as `doctor` answers them. A frontier issue whose cast runs Codex also has `codex`: its next-launch model (null: Codex's own default) and the effort read now from your own ~/.codex/config.toml (`codex_default` with no setting). Existing sessions keep their launch evidence or their own saved /model choice. [`afkconvoy help worker-launch`](help:worker-launch).
     /// - `excluded`: every other open issue, with why: {number, title, reason}. An escalated issue says so — "escalated: waits for a ruling" — and not that it lacks the label its escalation took off. A name that matches nothing never excludes an issue: it runs the default, `unmatched` on the frontier. A bound repo's issue at a stage whose role has no harness on this host it holds limits for waits, "<role> has no harness on this host it holds limits for: ", naming what the role holds limits for and what the host kit holds, and is dispatched once the host kit holds one; one that waits for the caster is "held for the caster: "
@@ -1215,15 +1227,15 @@ enum Command {
     ///
     /// ADMISSION. A tick starts no new worker while its host is busy: its 1-minute load average past 200% of its cores, less than 10% of its memory free (what the kernel counts as available: `sysctl kern.memorystatus_level`, or MemAvailable in /proc/meminfo), or less than 1% of the disk under the checkout free (`df`). The issue stays on the frontier for the next tick, and so do a stale claim, a due patrol and a due proposal. Workers already running are left alone, and so is the worker a declared verdict starts. The host says its own shares, each a whole percent, in its host settings: `--admit-load` (of its cores), `--admit-memory` and `--admit-disk` (free) — `--admit-load 400` lets the load reach four times the cores, and `--admit-disk 0` never holds for disk. A value that is no whole percent is refused, and `default` changes a share back. What cannot be read holds nothing back. `plan` and `doctor` say the thresholds in force and what the host reads.
     ///
-    /// When admission holds back for one reason — load, memory or disk — at every tick for ten minutes (`--admit-inspect-after` sets the host's span), doctor names a finding that starts the host's watch at its next look. Reasons that change start none. Memory pressure (macOS's level at least 2) held for the same span is its own finding, even while admission admits, and never makes a worker hot. Each episode ends after five minutes of recovery. The watch receives the condition, how long it held, admission's reading and shares, and host evidence: for disk, each fleet's worktrees and caches and the largest directories outside them; for load or memory, worker process trees and the hottest processes outside them. It checks admission or pressure itself after acting. Resource readings continue during a watch; new triggers wait for the next look, and an episode already watched starts nothing again, including across a host runner move.
+    /// When admission holds back for one reason — load, memory or disk — at every tick for ten minutes (`--admit-inspect-after` sets the host's span), doctor names a finding that starts the host's watch at its next look. Reasons that change start none. Memory pressure (macOS's level at least 2) held for the same span is its own finding, even while admission admits, and never makes a worker hot. Each episode ends after five minutes of recovery. The watch receives the condition, how long it held, admission's reading and shares, and host evidence: for disk, each fleet's worktrees and caches and the largest directories outside them; for load or memory, the fleet's worker process trees and, where `hostvitals` is on the host runner's `PATH` and `hostvitals now` answers, its whole-host findings first, then its rankings of processes and Apps and its remaining readings. Otherwise it receives the fleet's hottest processes outside those trees, with one line saying why hostvitals could not answer. The evidence names its source. hostvitals is optional and is never installed as a dependency; hot-worker sampling stays the fleet's own. It checks admission or pressure itself after acting. Resource readings continue during a watch; new triggers wait for the next look, and an episode already watched starts nothing again, including across a host runner move.
     ///
-    /// WATCH. Every host watches itself. Where its host settings name an operator's directory — `--watch-dir ~/Developments/control`, known to orca — the watch runs there under that directory's own rules, with none of the stock instruction added. Otherwise the stock watch runs in the fleet's own directory, `stock-watch/` under the cache directory (`afkconvoy help cache` says where it is), made, kept and registered with orca when it starts. Its short instruction carried in the binary says: find what holds the fleets' work back, fix it with the watch's authority, check that the work goes on and say what it did. Every watch leaves spending money or needing an account, a credential or a person's hands; what cannot be undone; taking a secret or private data off the host; and changing what a product is for or who it is for with a human, acts on none and lists each in its printed record, which `doctor` lists as `did`. Unplaced host kit models are low priority: a watch started for other work takes them too, and they alone start a watch at most once a day, across runner restarts. The watch researches them with its web tools and places them through `afkconvoy kit --research <file>` (`afkconvoy kit --help` gives the checked file format). Its host runner takes a look every {const:WATCH_EVERY} seconds (`--watch-every`): `afkconvoy doctor --all --since <until of its last look>`, the fleet's own code, which runs no model, keeping `until` itself. A look that holds something an operator would act on — an issue waiting on a human, a finding that holds something up, a fleet instance not alive or broken, a failed tick or step, a worker whose health observation is past its time — starts one watch, once per episode of each such thing: an episode lasts while each look still holds it. A watch is an agent session in the watch directory, given its brief as a file in the cache directory — what the look answered, why it started, and what each earlier watch on the same items did — with authority over the fleets of this host and an hour, its continuations together. It runs on the harness this host last started a worker on that took its brief, then the host kit's order, never one paused or with a fault on record, started trusted and in its harness's non-interactive mode, so that nothing it runs waits on a prompt; its terminal, titled "afkconvoy watch", exits with the harness, beside whatever else is open in that directory, which it never closes. What it prints is kept as what it did. A watch whose harness gives out — its usage limit, or an exit that failed — is ended and continued on the next harness that can start it, with the same look and what it printed so far, one session at a time; the fault is recorded (`host_kit.worker_health`), and that harness is skipped until its hourly probe answers. While a watch runs no look is taken: what one would find is in the first look after the watch ends. A host runner started again — after moving onto a newer release, say — keeps the watch it finds running. Its start, its end and each thing it did are lines of every tick log on the checkout list and of the host runner's log; `doctor` says the watch running and the last one, as `host.watch`, and a critical finding where no harness could start or continue it. `--watch-dir default` returns to the stock watch; a running watch and its continuations keep their starting directory and rules. `doctor.host.watch.directory` says the directory the next watch runs in, and `stock` whether it is the stock one, even before a watch starts; each running or last watch says its own directory and `stock` too.
+    /// WATCH. Every host watches itself. Where its host settings name an operator's directory — `--watch-dir ~/Developments/control`, known to orca — the watch runs there under that directory's own rules, with none of the stock instruction added. Otherwise the stock watch runs in the fleet's own directory, `stock-watch/` under the cache directory (`afkconvoy help cache` says where it is), made, kept and registered with orca when it starts. Its short instruction carried in the binary says: find what holds the fleets' work back, fix it with the watch's authority, check that the work goes on and say what it did. Every watch leaves spending money or needing an account, a credential or a person's hands; what cannot be undone; taking a secret or private data off the host; and changing what a product is for or who it is for with a human, acts on none and lists each in its command report, which `doctor` shows as `report`. Unplaced host kit models are low priority: a watch started for other work takes them too, and they alone start a watch at most once a day, across runner restarts. The watch researches them with its web tools and places them through `afkconvoy kit --research <file>` (`afkconvoy kit --help` gives the checked file format). Its host runner takes a look every {const:WATCH_EVERY} seconds (`--watch-every`): `afkconvoy doctor --all --since <until of its last look>`, the fleet's own code, which runs no model, keeping `until` itself. A look that holds something an operator would act on — an issue waiting on a human, a finding that holds something up, a fleet instance not alive or broken, a failed tick or step, a worker whose health observation is past its time — starts one watch, once per episode of each such thing: an episode lasts while each look still holds it. A watch is an agent session in the watch directory, given its brief as a file in the cache directory — what the look answered, why it started, and what each earlier watch on the same items did — with authority over the fleets of this host and an hour, its continuations together. It runs on the harness this host last started a worker on that took its brief, then the host kit's order, never one paused or with a fault on record, started trusted with prompts skipped, interactively in its terminal titled "afkconvoy watch", with the brief as its first message, as a worker is. A human may watch it and type to it. Its last step is the exact `afkconvoy watched --watch <id> --text-file <report.json>` line at the end of its brief (`afkconvoy watched --help`): the report records what held work back, each action, what it verified, each human question and answer line, and what remains pending. The host runner ends the harness once it reports, keeping its terminal and screen until the next watch starts in that directory. A watch ended without that command says it did not report. Printed output is no record. Worker health observes its own terminal; a stopped watch with no report is nudged. A watch whose harness gives out — a usage limit, capacity stop, refusal or failed exit — is ended and continued on the next harness that can start it, with the same look and terminal evidence of its work so far, one session at a time; the fault is recorded (`host_kit.worker_health`), and that harness is skipped until its hourly probe answers. While a watch runs no look is taken: what one would find is in the first look after the watch ends. A host runner started again — after moving onto a newer release, say — keeps the watch it finds running. Its start, its end and each thing it did are lines of every tick log on the checkout list and of the host runner's log; `doctor` says the watch running and the last one, as `host.watch`, and a critical finding where no harness could start or continue it. `--watch-dir default` returns to the stock watch; a running watch and its continuations keep their starting directory and rules. `doctor.host.watch.directory` says the directory the next watch runs in, and `stock` whether it is the stock one, even before a watch starts; each running or last watch says its own directory and `stock` too.
     ///
     /// The watch operates for every repo on the checkout list (`afkconvoy checkouts`), bound or unbound. It may trust a worktree for a harness, restart, nudge, continue or switch a worker and change host settings. Once the cause of a fleet fault is gone it hands the escalated issue back with its current `doctor.waiting_on_human.answer` line, naming that repo's tracker, wakes the checkout after a `gh` change and checks that the next tick dispatches or continues it and its worker takes its brief. The watch answers escalations with `rule`, handing back, `send`, closing or changing blocked-by, using the same commands as a human and starting rework counts over. Both watch directories leave only the four human kinds above, listing each question and answer line in the watch's record; `doctor` lists what it did.
     ///
     /// A lasting fix may be code in any listed repo, even one whose fleet cannot start workers. The watch makes it in a linked worktree of its own from that repo's configured base branch, named `{const:WATCH_CHECKOUT}` or `{const:WATCH_CHECKOUT}-<digits>`, on its own branch; never in another worker's or watch's checkout. It commits and pushes, opens the PR against that repo's base branch on no issue, then takes a turn with `afkconvoy land --watch` to merge, gate, record green and land. This reuses a watch's landing path and attribution, with no intake or flow label, and respects fleet locks. It records the repo and PR.
     ///
-    /// When the fix must reach an installed tool, the watch waits for landing and has that repo's fleet cut a version through its declared cut steps (`afkconvoy cut --help`): it wakes the checkout, reads `plan.cut` and fixes what holds back the next idle tick. A mechanically failed cut is continued with its report's `cut --from <step>` line once its cause is fixed. It checks publication and installation; for afkconvoy, it lets the host runner move onto the version itself, reading `doctor`'s `host.installed` and `checkouts`'s host runner version, never killing or restarting it. Then it repeats the check that showed the fault and checks that the work goes on. Its transcript records each fix, PR, cut, version and evidence, the four human kinds left alone and anything still pending; landing or installing alone proves no recovery. All fits within the watch's one hour: anything unfinished is recorded as pending.
+    /// When the fix must reach an installed tool, the watch waits for landing and has that repo's fleet cut a version through its declared cut steps (`afkconvoy cut --help`): it wakes the checkout, reads `plan.cut` and fixes what holds back the next idle tick. A mechanically failed cut is continued with its report's `cut --from <step>` line once its cause is fixed. It checks publication and installation; for afkconvoy, it lets the host runner move onto the version itself, reading `doctor`'s `host.installed` and `checkouts`'s host runner version, never killing or restarting it. Then it repeats the check that showed the fault and checks that the work goes on. Its report records each fix, PR, cut, version and evidence, the four human kinds left alone and anything still pending; landing or installing alone proves no recovery. All fits within the watch's one hour: anything unfinished is recorded as pending.
     ///
     /// A fleet instance idle {const:HOST_IDLE_MINUTES} minutes checks then, tick due or not, whatever the hour, and again {const:HOST_IDLE_MINUTES} minutes after a check that kept the host awake — or, where that is outside the sleep hours, as they start. It puts the host to sleep only when all hold:
     ///
@@ -1602,6 +1614,43 @@ enum Command {
     /// - `host_runner.panel` is where the host runner serves the panel: the address `afkconvoy panel --open` answers, with no need to ask it. Where no host runner runs it is null, as `host_runner` is whole; where the host runner serves none, it alone is null, and `panel --open` says why. `afkconvoy panel --help` says what the page shows.
     #[command(next_help_heading = OPERATOR, verbatim_doc_comment)]
     Checkouts,
+    /// Read this host's exclusive queue and explain each wait
+    ///
+    /// ## When to run it
+    ///
+    /// Run `afkconvoy queue` from any directory on the host, as the host runner's user, to see who occupies its worker lanes and why each request waits. No checkout, login or running fleet is required. It accepts no checkout or host selector: it observes this user's local host runner across all its repos.
+    ///
+    /// ## Who runs it
+    ///
+    /// The operator, or their agent, on the host whose exclusive queue they want to read.
+    ///
+    /// ## What it reads and writes
+    ///
+    /// It reads the host settings once and asks the host runner once on its local socket, allowing {const:QUEUE_SECONDS}s for its response, including partial lines. Settings absent use the defaults; unreadable settings fail. It reads no GitHub, git, harness, tick log or recorded gate outcomes, makes no probe or full diagnosis, sends no wake and changes no fleet, queue or settings. A stale socket is left in place. A temporary link used to reach a long socket path is removed afterwards. The runner's lock is checked only if its socket is absent or refuses the connection.
+    ///
+    /// ## What it answers
+    ///
+    /// Exactly one JSON object, exit 0:
+    ///
+    /// - `observed_at`: epoch seconds captured after the local response. Every duration uses this one time; clock differences clamp negative durations to zero. Settings and the queue are a bounded observation, not an atomic snapshot of both files and process.
+    /// - `status`: `available` when the runner answered, including a healthy empty queue; `no_runner` when no runner listens or holds the host. No runner is a successful observation with empty arrays and `host_runner: null`, not evidence of commands running outside the queue.
+    /// - `host_runner`: the answering runner's `pid` and `version`, plus the identity fields it supplies: `log` (whole path), `panel` (address or null), and `foreground` where applicable. Null with no runner.
+    /// - `paused`: whether the runner has paused new grants for a release move; false with no runner.
+    /// - `worker`: `{capacity, used, free}`. Capacity is the host setting `gate_lanes`, {const:GATE_LANES} by default; used counts running worker requests, free is capacity minus used, clamped to zero. Eligible reservations do not count as used.
+    /// - `repos`: each repo lane with a running or waiting request, sorted by its whole identity, as `{repo, capacity, used, free}`. Each has capacity 1, independent of worker capacity. `repo` is the shared git directory supplied by the ticket, never inferred from a worktree's name.
+    /// - `running`, `waiting`: requests in scheduler order within each array: cuts first, then ordinary commands; within each group ascending `asked`, then `number` to break ties. Cut priority never interrupts running commands. There is no priority by lane or repo. A request identifies `number` (runner-local ticket), `pid` (asking process), `command` (one line), `dir` (whole worktree or outside directory), `issue` (number or null; no lookup), `repo` (shared git directory or null for older/outside tickets), `repo_lane` (repo lane identity or null for worker), `is_turn` (whether this is a landing turn), `cut` (whether it has cut priority, false for older tickets), `asked` (request epoch seconds), `ran` (start epoch seconds or null), and `lane` (`worker` or `repo <identity>`).
+    /// - Each request adds `elapsed_seconds` (time since `ran`, null while waiting), `waiting_seconds` (time from `asked` to `ran` when running, otherwise to `observed_at`), and `scheduling`: `{number, state, reasons}`. State is `running`, `eligible`, or `waiting`; reasons is empty for running or eligible requests.
+    /// - Each reason has `kind`, `requests`, `capacity` and `explanation`. Kind `same_repo` means a running or earlier eligible request of this repo excludes this request in its lane, or across lanes when both are turns. `worker_capacity` or `repo_capacity` means all places in that lane are occupied or reserved, with the limit in `capacity`. `paused` means new grants are paused. Other reasons have `capacity: null`. `requests` names each relevant `{number, state}`: `running` holds a place now, `eligible` reserves one earlier in FIFO order; it is empty for a pause. `explanation` states the constraint in words.
+    ///
+    /// Earlier eligible requests reserve capacity in scheduler order, with cuts before ordinary waiters and FIFO within each group. Blocked requests reserve nothing: with three worker lanes, a running repo can leave two free while its other requests wait, and a different repo can be eligible. Turns of one repo exclude each other across worker and repo lanes. Older tickets lacking `repo` use their whole `dir` as the scheduler's fallback identity. `eligible` means allowed by this observation, not guaranteed to start next. Ordering is no fixed future start order or ETA; requests can leave and settings can change.
+    ///
+    /// Errors: unreadable host settings, an inaccessible socket, a runner holding the host but not listening, a closed connection, no response within the bound, a runner error, or an unsupported or unreadable response (including missing queue, pause or runner identity fields). These print `{"error": ...}` with exit 1 and a next action: inspect the host runner log and run the command again; `afkconvoy doctor --all` provides a full diagnosis. An unsupported response needs a host runner of this release. A failed observation never becomes an empty queue.
+    ///
+    /// ## What trips you up
+    ///
+    /// It reports current queued commands only. For historical gate outcomes, use `afkconvoy doctor --all --since <time>`; `afkconvoy doctor --help` explains its interval boundaries. Commands that bypass the exclusive queue are absent. Request numbers belong to this runner and may change after it is replaced.
+    #[command(next_help_heading = OPERATOR, verbatim_doc_comment)]
+    Queue,
     /// Hold every checkout on this host's checkout list, as `run` starts it in the background
     #[command(hide = true)]
     HostRunner,
@@ -1867,6 +1916,44 @@ enum Command {
         host: Option<String>,
         #[command(flatten)]
         at: AtFlag,
+    },
+    /// Record what this host's watch did and end its session (a watch's command)
+    ///
+    /// ## When to run it
+    ///
+    /// As the watch's last step, using the exact line at the end of its brief:
+    ///
+    /// ```
+    /// afkconvoy watched --watch <id> --text-file <report.json>
+    /// ```
+    ///
+    /// Write a JSON object with all five keys: `held_back`, `did`, `verified` and `pending` are lists of nonempty strings; `human` is a list of {question, answer}, both nonempty strings. Use [] where nothing belongs. `held_back` says what held work back; `did` each action and its evidence, including repo, PR, cut and version; `verified` what was checked and what it showed; `human` each decision left alone and its exact answer command; `pending` everything unfinished. Printed terminal output is no report.
+    ///
+    /// ## Who runs it
+    ///
+    /// The host's watch, in its watch directory, as the last step of its interactive session. The operator may repeat the watch's exact command if its receipt was lost.
+    ///
+    /// ## What it reads and writes
+    ///
+    /// It reads the running watch on this host and the report file, and atomically keeps the report in the host cache. It needs no repo or GitHub login. The same report may be submitted again; a different report cannot replace it. A missing part, unknown key, empty entry, wrong watch or expired hour is refused with {error} and nonzero exit; fix the JSON or use the running watch's brief.
+    ///
+    /// The host runner ends the harness after recording, keeping its terminal and screen until the next watch starts in that directory. `doctor.host.watch` and later briefs show the report; an ended watch with no report says `reported: false`.
+    ///
+    /// ## What it answers
+    ///
+    /// {watch, reported: true, report}: the watch id and its complete record. Reporting does not claim recovery beyond the evidence in the report.
+    ///
+    /// ## What trips you up
+    ///
+    /// Use the id and report path from this watch's brief. Include all five parts, even those with empty lists. The report cannot be replaced once recorded, and a successful harness exit without this command is shown as not reported.
+    #[command(next_help_heading = WORKER, verbatim_doc_comment)]
+    Watched {
+        /// The watch id from its brief
+        #[arg(long)]
+        watch: String,
+        /// The JSON report with all five parts
+        #[arg(long)]
+        text_file: PathBuf,
     },
     /// Declare the verdict that ends a stage, with the text it produced (a worker's command, and a human's for a stage nobody holds)
     ///
@@ -3442,6 +3529,7 @@ pub fn manual() -> agent_help::Help {
         .constant("EXCLUSIVE_BOUND_CODE", exclusive::BOUND_CODE)
         .constant("WATCH_EVERY", host_settings::WATCH_EVERY)
         .constant("WATCH_CHECKOUT", host_watch::CHECKOUT)
+        .constant("KIT_RESEARCH_STATES", kit_research::states_help())
         .constant("TEAM_FILE", afkconvoy_core::team::TEAM_FILE)
         .constant("ESCALATE_LABEL", afkconvoy_core::config::ESCALATE_LABEL)
         .constant("CONCURRENCY", afkconvoy_core::config::CONCURRENCY)
@@ -3471,6 +3559,7 @@ pub fn manual() -> agent_help::Help {
         .constant("BACKOFF_FIRST_MINUTES", afkconvoy_core::host_runner::BACKOFF_FIRST / 60)
         .constant("BACKOFF_MOST_MINUTES", afkconvoy_core::host_runner::BACKOFF_MOST / 60)
         .constant("INSTALLED_LOOKED_SECONDS", host_runner::INSTALLED_LOOKED_EVERY.as_secs())
+        .constant("QUEUE_SECONDS", queue::WITHIN.as_secs())
         .constant("MOVED_WITHIN_SECONDS", host_runner::MOVED_WITHIN.as_secs())
         .constant("MOVE_WAIT_SECONDS", host_runner::MOVE_WAIT_WITHIN.as_secs())
         .constant("OUTGROWN_TIMES", afkconvoy_core::landing::OUTGROWN_TIMES)
@@ -4051,6 +4140,7 @@ impl Command {
             Command::Gate { .. } => Acting::new("gate").on_own_issue().saying_start(),
             Command::Cut { .. } => Acting::new("cut").saying_start(),
             Command::Wake { .. } => Acting::new("wake").on_own_issue(),
+            Command::Watched { .. } => return None,
             Command::Cast { .. } => Acting::new("cast"),
             Command::Tick { who, .. } => as_who("tick", who),
             Command::Kit { .. }
@@ -4068,6 +4158,7 @@ impl Command {
             | Command::Stop { .. }
             | Command::HostRunner
             | Command::Checkouts
+            | Command::Queue
             | Command::Panel { .. }
             | Command::Guard
             | Command::Exclusive { .. }
@@ -4088,6 +4179,7 @@ fn run(
 ) -> anyhow::Result<Value> {
     let now = fixed_now.unwrap_or_else(clock);
     match command {
+        Command::Watched { watch, text_file } => watch_report::record(&watch, &text_file, now),
         Command::Kit { cast: Some(cast), .. } => kit::set_cast(cast == "on"),
         Command::Kit { research: Some(file), .. } => kit::apply_research(&file, now),
         Command::Kit { harness: Some(harness), .. } => kit::write_one(harness, now),
@@ -4222,6 +4314,7 @@ fn run(
         Command::Stop { .. } => host_runner::stop(&checkout?),
         Command::HostRunner => host_runner::serve(),
         Command::Checkouts => checkouts::checkouts(),
+        Command::Queue => queue::queue(fixed_now),
         Command::Panel { open: true, .. } => host_runner::panel(),
         Command::Panel { instance, host, at, .. } => {
             let host = host.unwrap_or_else(this_host);
@@ -4495,11 +4588,13 @@ mod tests {
         &["run"],
         &["stop"],
         &["checkouts"],
+        &["queue"],
         &["host-runner"],
         &["panel"],
         &["tick", "--instance", "a-h1-1"],
         &["gate"],
         &["land", "7"],
+        &["watched", "--watch", "watch-1", "--text-file", "report.json"],
         &["verdict", "pass", "7", "--stage", "build", "--text", "x"],
         &["rule", "7", "--text", "x"],
         &["send", "7", "--stage", "build", "--text", "x"],
@@ -4572,8 +4667,8 @@ mod tests {
         assert_eq!(named(&["land", "--train"]), "land");
     }
 
-    /// The commands a worker's worktree is taken for are commands about one
-    /// repo, and among them every one the manual says a worker runs.
+    /// Repo commands a worker runs accept its worktree. A watch's host-wide
+    /// report needs no repo and must stay usable in an operator's directory.
     #[test]
     fn a_workers_worktree_is_taken_for_every_command_a_worker_runs() {
         let cli = Cli::command();
@@ -4588,6 +4683,10 @@ mod tests {
         let workers: Vec<&str> = workers.map(clap::Command::get_name).collect();
         assert!(workers.len() >= 8, "{workers:?}");
         for name in workers {
+            if name == "watched" {
+                assert!(!about(cli.find_subcommand(name).unwrap()));
+                continue;
+            }
             assert!(IN_ITS_WORKTREE.contains(&name), "a worker runs `{name}`");
         }
         // `wake` is in the group of whoever hands the fleet work, and still a

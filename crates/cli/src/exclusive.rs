@@ -324,10 +324,15 @@ impl Queue {
         self.held.1.notify_all();
     }
 
-    /// The queue in the order it runs: the first runs, or is about to, and
-    /// the rest wait.
+    /// Tickets and whether new grants are paused, under the same lock.
+    pub fn observation(&self) -> (Vec<Ticket>, bool) {
+        let joined = self.joined();
+        (in_order(joined.tickets.clone()), joined.paused || joined.closed)
+    }
+
+    /// Running tickets first, then waiters, each by ask time and number.
     pub fn standing(&self) -> Vec<Ticket> {
-        in_order(self.joined().tickets.clone())
+        self.observation().0
     }
 
     /// Answers `exclusive` asking for `ticket`: it joins the queue, and its

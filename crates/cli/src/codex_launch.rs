@@ -108,13 +108,40 @@ pub(crate) fn prepare(
         (Line::new().launch(&command), PathBuf::from(home))
     };
     settings.codex_home = Some(home);
+    Ok((with_effort(line, &settings), settings))
+}
+
+fn with_effort(line: Line, settings: &Settings) -> String {
     let line = match &settings.effort {
         Some(effort) => line
             .fixed(" --config ")
             .word(&format!("{EFFORT}={}", toml::Value::String(effort.clone()))),
         None => line,
     };
-    Ok((line.done(), settings))
+    line.done()
+}
+
+/// A watch's directory need not be git. Its fresh Codex home and user effort
+/// follow the worker contract without writing a worktree's launch notes.
+pub(crate) fn watch(worktree: &Path, model: Option<&str>, command: &str) -> Result<String> {
+    let file = user_config();
+    let settings = settings(model, &config(&file)?, &file)?;
+    let home = crate::kept::keep_under(
+        &directory(worktree),
+        std::env::var_os("HOME").map(PathBuf::from).as_deref(),
+        Harness::Codex,
+        true,
+    )?;
+    let command = match model {
+        Some(model) => Harness::Codex.with_model(command, model),
+        None => command.to_string(),
+    };
+    let line = Harness::Codex.in_worktree(
+        &command,
+        &worktree.display().to_string(),
+        &home.display().to_string(),
+    );
+    Ok(with_effort(Line::new().launch(&line), &settings))
 }
 
 pub(crate) fn record(worktree: &Worktree, settings: &Settings) -> Result<()> {
