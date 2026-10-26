@@ -96,11 +96,15 @@ struct Escaped {
 
 impl Escaped {
     fn start(world: &World, dir: &Path, ignores_term: bool) -> Self {
+        Self::in_directory(world, dir, dir, ignores_term)
+    }
+
+    fn in_directory(world: &World, worktree: &Path, dir: &Path, ignores_term: bool) -> Self {
         let ready = dir.join("escaped-ready");
         let mut child = Command::new(std::env::current_exe().unwrap())
             .args(["--exact", "continuation::escaped_helper", "--ignored"])
             .current_dir(dir)
-            .env("TMPDIR", world.tmp(dir))
+            .env("TMPDIR", world.tmp(worktree))
             .env("ESCAPED_READY", &ready)
             .env("ESCAPED_IGNORES_TERM", ignores_term.to_string())
             .stdin(Stdio::null())
@@ -148,16 +152,87 @@ fn escaped_helper() {
 
 #[test]
 fn an_escaped_worker_process_is_ended_before_the_continuation_starts() {
+    ends_escaped(false, libc::SIGTERM);
+}
+
+#[test]
+fn an_escaped_worker_ignoring_term_is_forced_to_end_before_the_continuation_starts() {
+    ends_escaped(true, libc::SIGKILL);
+}
+
+fn entries(world: &World) -> Vec<Value> {
+    std::fs::read_dir(world.cache().join("afkconvoy/runs"))
+        .unwrap()
+        .flatten()
+        .filter(|file| file.path().extension().is_some_and(|ext| ext == "jsonl"))
+        .flat_map(|file| {
+            std::fs::read_to_string(file.path())
+                .unwrap()
+                .lines()
+                .map(|line| serde_json::from_str::<Value>(line).unwrap())
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+fn ends_escaped(ignores_term: bool, signal: i32) {
     use std::os::unix::process::ExitStatusExt;
     let world = fleet();
     let dir = worktree(&world);
-    let mut escaped = Escaped::start(&world, &dir, false);
+    let mut escaped = Escaped::start(&world, &dir, ignores_term);
+    let other_dir = world.root.join("outside");
+    std::fs::create_dir(&other_dir).unwrap();
+    // An unrelated helper, with no TMPDIR belonging to this worktree.
+    let outside = Escaped::start(&world, &other_dir, false);
     kill_worker(&world);
 
     let ticked = tick(&world, 1090);
     assert_eq!(did(&ticked)[0], "judge 7 continued", "{ticked}");
-    assert_eq!(escaped.ended().signal(), Some(libc::SIGTERM));
+    assert_eq!(escaped.ended().signal(), Some(signal));
+    assert!(!outside.reaper.as_ref().unwrap().is_finished(), "outside process was signalled");
     assert_eq!(open_terminals(&world, &dir).len(), 1);
+    let logged = entries(&world);
+    let lines: Vec<_> = logged
+        .iter()
+        .filter(|entry| entry["command"] == "start")
+        .map(|entry| entry["outcome"].as_str().unwrap())
+        .collect();
+    assert_eq!(lines.len(), 1, "{logged:?}");
+    assert!(lines[0].contains(&format!("pid {}", escaped.pid)), "{lines:?}");
+    assert!(lines[0].contains("continuation::escaped_helper"), "{lines:?}");
+    assert!(lines[0].contains("ran "), "{lines:?}");
+    assert!(!lines[0].contains("ESCAPED_READY="), "never log the environment: {lines:?}");
+}
+
+#[test]
+fn a_process_that_survives_kill_is_named_when_the_repeated_start_escalates() {
+    use std::os::unix::fs::PermissionsExt;
+    let world = fleet();
+    let dir = worktree(&world);
+    let mut escaped = Escaped::start(&world, &dir, false);
+    kill_worker(&world);
+    // Simulate an unkillable process: record each signal without delivering
+    // it. The process and all runtime observations are otherwise real.
+    let kill = world.root.join("bin/kill");
+    std::fs::write(&kill, "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"${0%/*}/../signals\"\n").unwrap();
+    std::fs::set_permissions(&kill, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let first = tick(&world, 1090);
+    assert_eq!(did(&first)[0], "judge 7 failed", "{first}");
+    let second = tick(&world, 1180);
+    assert_eq!(did(&second)[0], "judge 7 escalated", "{second}");
+    let comments = world.comments(7).join("\n");
+    assert!(comments.contains("survived SIGKILL"), "{comments}");
+    assert!(comments.contains(&format!("pid {}", escaped.pid)), "{comments}");
+    assert!(comments.contains("continuation::escaped_helper"), "{comments}");
+    assert_eq!(open_terminals(&world, &dir).len(), 0);
+    let signals = std::fs::read_to_string(world.root.join("signals")).unwrap();
+    assert_eq!(
+        signals.lines().collect::<Vec<_>>(),
+        [format!("-TERM {}", escaped.pid), format!("-KILL {}", escaped.pid)].repeat(2)
+    );
+    // The helper really remains alive until the guard ends it.
+    assert!(!escaped.reaper.as_mut().unwrap().is_finished());
 }
 
 #[test]
