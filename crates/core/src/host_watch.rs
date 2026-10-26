@@ -110,11 +110,17 @@ pub fn session(line: &str, transcript: &str, identity: &str) -> String {
         .word(identity)
         .fixed(" && ")
         .launch(line)
-        .fixed("; afkconvoy_status=$?; exit \"$afkconvoy_status\"")
         .done();
-    Line::new()
+    // A launch command may itself say `exec`. Keep it in its own shell so
+    // it cannot replace the named wrapper that owns this session's tree.
+    let wrapper = Line::new()
         .fixed("sh -c ")
         .word(&child)
+        .fixed("; afkconvoy_status=$?; exit \"$afkconvoy_status\"")
+        .own();
+    Line::new()
+        .fixed("sh -c ")
+        .word(&wrapper)
         .fixed(" ")
         .word(&format!("{SESSION_PROCESS}{identity}"))
         .fixed("; printf '%s %s\\n' '")
