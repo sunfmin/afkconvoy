@@ -52,7 +52,9 @@ fn sourced_research_places_models_in_file_order_without_calling_a_model() {
             .any(|f| f["what"].as_str().unwrap().contains("unplaced models"))
     );
     world.issue(7, &["ready-for-agent", "model:deep display"]);
-    let plan = world.afk(&["plan"]).ok();
+    let planned = world.afk(&["plan"]);
+    assert_eq!(planned.code, 0, "{}; orca: {}", planned.json, world.orca());
+    let plan = planned.ok();
     assert_eq!(plan["frontier"][0]["cast"]["model"], "deep");
 }
 

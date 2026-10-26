@@ -464,6 +464,7 @@ fn a_watch_whose_harness_runs_out_goes_on_on_the_next_with_the_same_look() {
     let first = until(&world, "a Codex watch", || running(&world));
     assert_eq!(first["harness"], "codex");
     assert!(starts(&world)[0].contains(" exec "), "{:?}", starts(&world));
+    assert!(starts(&world)[0].contains(" --search "), "the watch can search the web");
 
     let out = "Usage limit reached; increase your limits to continue using Codex";
     printed(&world, &first, &["checked kimi", out], None);

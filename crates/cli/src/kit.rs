@@ -365,7 +365,6 @@ pub fn write(now: u64) -> Result<Value> {
     let _writing = writing(&file)?;
     let current = if file.exists() { load()? } else { Kit::default() };
     let (kit, left_out) = compose(&current, &host, Writing::Whole);
-
     store(&file, &kit, now)?;
     eprint!("{}", report(&file.display().to_string(), &kit, &left_out));
     Ok(json!({"path": file, "written": true, "kit": kit, "left_out": left_out}))
@@ -750,7 +749,6 @@ fn refresh_at<'a>(
         return Ok(Some((current, kit)));
     }
     let (kit, _) = compose(&current, &host, Writing::Refresh);
-
     store(file, &kit, now)?;
     drop(held);
     Ok(Some((current, kit)))
