@@ -2742,7 +2742,7 @@ enum Command {
     /// ## What trips you up
     ///
     /// - `--instance` is required, and must be the instance that holds the claim.
-    /// - It does not read the verdict. Any claim of the instance whose committed tree equals the base branch's current tree on the remote and has nothing uncommitted is closed, whatever commits the branch holds — one whose worker has only just started as well. A refusal names the differing files.
+    /// - It does not read the verdict. Any claim of the instance whose branch has no commits past its merge base with the remote base branch, has the same tree as that merge base and has nothing uncommitted is closed — one whose worker has only just started as well. A clean branch only behind the base branch qualifies. A refusal names files the branch changed since the merge base and anything uncommitted.
     #[command(next_help_heading = BY_HAND, verbatim_doc_comment)]
     Close {
         #[command(flatten)]
