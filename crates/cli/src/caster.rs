@@ -172,7 +172,7 @@ pub fn start(fleet: &Fleet, agent: &Agent, given: &[u64]) -> Result<Outcome> {
     };
     let first = fleet.first()?;
     let command = crate::own_command().fixed(" cast; exit").own();
-    agent.start(&worktree, first.harness, &command, fleet.now)?;
+    agent.start(&worktree, first.harness, &command, None, fleet.now)?;
     worktree.record_caster(fleet.now, given, &context(fleet)?)?;
     Ok(Outcome::Done)
 }

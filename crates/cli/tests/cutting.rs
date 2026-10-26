@@ -321,8 +321,16 @@ fn first_cut(preset: bool) {
     // peer still starts no cut, and the retry closes the reported failure.
     assert_eq!(world.afk(&["gate"]).ok()["recorded"], true, "the cut starts on a green base");
     std::fs::write(world.root.join("red"), "red").unwrap();
-    let failed = world.afk_in(&checkout, &["cut", "--host", "h1"]).ok();
+    let failed = world.afk_in(&checkout, &["cut", "--host", "h1"]);
+    let screen = failed.stderr.clone();
+    let failed = failed.ok();
     assert_eq!(failed["failed"], "gate", "{failed}");
+    assert!(screen.lines().next().unwrap().contains("v1.2.3 (the initial version"), "{screen}");
+    assert!(screen.contains("[afkconvoy] cut: gate started\n"), "{screen}");
+    let ended = screen.lines().last().unwrap();
+    assert!(ended.starts_with("[afkconvoy] cut: gate failed after "), "{screen}");
+    assert!(ended.contains("s: "), "{screen}");
+    assert!(!screen.contains("[afkconvoy] cut: land started"), "{screen}");
     let failed_record = record(&checkout);
     let pr = failed_record["pr"].as_u64().unwrap();
     assert_ne!(git(&checkout, &["rev-parse", "HEAD"]), git(&world.clone, &["rev-parse", "HEAD"]));
@@ -417,12 +425,64 @@ fn an_idle_tick_starts_one_cut_of_the_next_patch_and_a_peer_starts_none() {
     let created: Vec<String> = created.map(|call| call.join(" ")).collect();
     assert_eq!(created.len(), 1, "{created:?}");
     assert!(created[0].contains(" cut; exit"), "{created:?}");
+    assert!(created[0].contains("--title afkconvoy cut v0.1.1"), "{created:?}");
 
     // Mine is running; a peer finds it claimed and starts none.
     assert_eq!(standing(&world, "alpha", 10_010), "running");
     assert_eq!(standing(&world, "beta", 10_010), "peer_running");
     assert_eq!(cut(&tick_as(&world, "beta", 10_010)), Vec::<String>::new());
     assert_eq!(world.worktrees().iter().filter(|p| p.ends_with("afkconvoy-cut")).count(), 1);
+}
+
+#[test]
+fn a_cut_shows_its_plan_and_each_step_around_the_commands_output() {
+    let world = cutting_publishing(|world| {
+        format!(
+            "printf 'publish stdout\\n'\nprintf 'publish stderr\\n' >&2\n{}",
+            says_published(world)
+        )
+    });
+    let file = world.clone.join("docs/agents/afkconvoy.md");
+    let config = std::fs::read_to_string(file).unwrap().replacen(
+        "set: |\n",
+        "set: |\n  printf 'set stdout\\n'\n  printf 'set stderr\\n' >&2\n",
+        1,
+    );
+    std::fs::write(
+        world.clone.join("gate.sh"),
+        "#!/bin/sh\nprintf 'gate stdout\\n'\nprintf 'gate stderr\\n' >&2\n",
+    )
+    .unwrap();
+    commit_config(&world, &config, "Make the steps visible");
+    assert_eq!(cut(&tick_as(&world, "alpha", 10_000)), ["cut done"]);
+    let checkout = checkout(&world);
+    let answer = world.afk_in(&checkout, &["cut", "--host", "h1", "--second-ms", "10"]);
+    let screen = answer.stderr.clone();
+    let answer = answer.ok();
+    assert_eq!(answer["tag"], "v0.1.1", "{answer}");
+    let first = screen.lines().next().unwrap();
+    assert!(first.contains("v0.1.1 (past v0.1.0, holding #7)"), "{first}");
+    assert!(first.contains("steps: set, pr, gate, land, tag, publish"), "{first}");
+    assert!(first.contains(&format!("record: {}", record_file(&checkout).display())), "{first}");
+    let log_file = record_file(&checkout).with_file_name("convoy-cut.log");
+    assert!(first.contains(&format!("log: {}", log_file.display())), "{first}");
+    let mut rest = screen.as_str();
+    for step in answer["took"].as_array().unwrap() {
+        let name = step["step"].as_str().unwrap();
+        let seconds = step["seconds"].as_u64().unwrap();
+        let start = format!("[afkconvoy] cut: {name} started\n");
+        rest = rest.split_once(&start).unwrap_or_else(|| panic!("{screen}")).1;
+        let end = format!("[afkconvoy] cut: {name} passed after {seconds}s\n");
+        let (output, after) = rest.split_once(&end).unwrap_or_else(|| panic!("{screen}"));
+        if ["set", "gate", "publish"].contains(&name) {
+            assert!(output.contains(&format!("{name} stdout\n{name} stderr\n")), "{screen}");
+        }
+        rest = after;
+    }
+    let log = std::fs::read_to_string(log_file).unwrap();
+    for name in ["set", "publish"] {
+        assert!(log.contains(&format!("{name} stdout\n{name} stderr\n")), "{log}");
+    }
 }
 
 #[test]
@@ -484,8 +544,18 @@ fn a_cut_tags_the_commit_that_landed_it_and_publishes_with_the_tag_checked_out()
     let checkout = checkout(&world);
     let landed = its_pr_lands(&world, &checkout);
 
-    let cut_answer = world.afk_in(&checkout, &["cut", "--from", "tag", "--host", "h1"]).ok();
+    let cut_answer = world.afk_in(&checkout, &["cut", "--from", "tag", "--host", "h1"]);
+    let screen = cut_answer.stderr.clone();
+    let cut_answer = cut_answer.ok();
     assert_eq!(cut_answer["tag"], "v0.1.1", "{cut_answer}");
+    let first = screen.lines().next().unwrap();
+    assert!(first.contains("v0.1.1 (past v0.1.0, holding #7)"), "{screen}");
+    assert!(first.contains("steps: tag, publish;"), "{screen}");
+    assert!(!screen.contains("[afkconvoy] cut: set started"), "{screen}");
+    for step in ["tag", "publish"] {
+        assert!(screen.contains(&format!("[afkconvoy] cut: {step} started\n")), "{screen}");
+        assert!(screen.contains(&format!("[afkconvoy] cut: {step} passed after ")), "{screen}");
+    }
     let tagged = world.remote(&["rev-parse", "v0.1.1^{commit}"]);
     assert_eq!(tagged.trim(), landed);
     let published = std::fs::read_to_string(world.root.join("published")).unwrap();
