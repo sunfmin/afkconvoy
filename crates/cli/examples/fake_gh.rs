@@ -36,8 +36,9 @@ mod fake;
 
 use afkconvoy::gh::{
     BLOCKED_BY_JQ, CARRYING_JQ, CLOSED_JQ, COMMENTS_JQ, COMMENTS_WITH, ISSUE_JQ, LABELS_JQ,
-    LANDED_ISSUES_JQ, LANDED_ISSUES_QUERY, OPEN_ISSUES_JQ, OPEN_ISSUES_QUERY, PR_FIELDS,
-    PR_OF_FIELDS, PR_OF_JQ, VISIBILITY_JQ, WATCH_ISSUES_JQ, WATCH_ISSUES_QUERY, WATCH_PRS_JQ,
+    LANDED_ISSUES_JQ, LANDED_ISSUES_QUERY, OPEN_ISSUES_JQ, OPEN_ISSUES_QUERY, OPEN_LABELLED_JQ,
+    PR_FIELDS, PR_HEADS_JQ, PR_OF_FIELDS, PR_OF_JQ, VISIBILITY_JQ, WATCH_ISSUES_JQ,
+    WATCH_ISSUES_QUERY, WATCH_PRS_JQ,
 };
 use std::path::PathBuf;
 
@@ -484,6 +485,42 @@ fn api(st: &mut State) -> ! {
     let jq = st.opt("--jq").map(str::to_string);
     let jq = jq.as_deref();
     match parts.as_slice() {
+        ["pulls"] if query.contains("state=open") => {
+            assert!(st.has("--paginate"));
+            assert_eq!(jq, Some(PR_HEADS_JQ));
+            notice_merges(st);
+            let bare = st.doc["bare"].as_str().unwrap();
+            let rows: Vec<String> = st.doc["prs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|pr| is_open(pr) && !is_fork(pr))
+                .map(|pr| {
+                    let head = branch_head(pr, bare);
+                    json!({"number":pr["number"], "title":pr["title"].as_str().unwrap_or(""),
+                        "head_branch":pr["headRefName"], "head_sha":head})
+                    .to_string()
+                })
+                .collect();
+            st.finish(&rows.join("\n"), 0, "")
+        }
+        ["issues"] if method == "GET" && query.contains("state=open") => {
+            assert!(st.has("--paginate"));
+            assert_eq!(jq, Some(OPEN_LABELLED_JQ));
+            let labels = query.split('&').find_map(|field| field.strip_prefix("labels="));
+            let labels = unescaped(labels.expect("the open issues of one label"));
+            let rows: Vec<String> = st.doc["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|issue| is_open(issue) && issue["pull_request"] != true)
+                .filter(|issue| labels.split(',').all(|label| carries(issue, label)))
+                .map(|issue| {
+                    json!({"number":issue["number"], "labels":issue["labels"]}).to_string()
+                })
+                .collect();
+            st.finish(&rows.join("\n"), 0, "")
+        }
         ["labels"] if method == "POST" => {
             let name = st.argv.iter().find_map(|a| a.strip_prefix("name=")).expect("a name");
             let name = name.to_string();

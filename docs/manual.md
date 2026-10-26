@@ -1928,6 +1928,8 @@ An issue's worker in its own worktree; in a bound workflow its landing worker af
 
 A turn holds one command through four steps: make the PR's merge commit on the current base tip; gate that exact commit; record green; push that commit to the base branch as a fast-forward. It pushes committed worker changes to the PR's branch first. The merge message names the PR and its issue, watch or cut. A landed issue is closed; the tick settles its claim and worktree. The tree that lands is always the tree that passed the gate.
 
+A watch finds its branch's PR through REST, and every turn checks fleet locks through REST. Exhausted GraphQL quota alone therefore does not prevent a watch from landing its repair; an unreadable lock listing still refuses the turn.
+
 An unrecorded base tip is gated alone in a separate checkout using its own gate declaration. While it is red, ordinary turns wait outside worker lanes. The fleet opens a dispatchable fleet-lock issue for its repair. That issue's worker alone may take a turn on the red tip, and must still gate its complete merge green before landing. A standing fleet lock allows only its issues to land.
 
 ##### What it answers

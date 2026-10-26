@@ -118,3 +118,42 @@ fn with_a_fleet_lock_standing_a_watch_s_pr_joins_nothing() {
     let line = world.remote(&["for-each-ref", "--format=%(objectname)", "refs/convoy/train"]);
     assert_eq!(line, "", "nothing joined");
 }
+
+#[test]
+fn a_watch_can_land_with_graphql_unavailable_and_still_obeys_locks() {
+    for locked in [false, true] {
+        let world = World::new();
+        world.set_gate("true");
+        let checkout = watch_on_branch(&world);
+        change(&world, &checkout);
+        if locked {
+            world.issue(5, &["fleet-lock"]);
+        }
+        world.with_gh(|gh| gh["fail"] = json!(["api graphql", "pr list"]));
+        let base = world.remote(&["rev-parse", "refs/heads/main"]);
+        let answer = world.afk_in(&checkout, &["land", "--watch", "--host", "h1"]).ok();
+        if locked {
+            assert_eq!(answer["outcome"], "locked", "{answer}");
+            assert_eq!(answer["locks"], json!([5]));
+            assert_eq!(world.remote(&["rev-parse", "refs/heads/main"]), base);
+        } else {
+            assert_eq!(answer["outcome"], "merged", "{answer}");
+            assert_eq!(answer["status"], "green");
+            assert_eq!(answer["recorded"], true);
+            assert!(issue_writes(&world).is_empty());
+        }
+    }
+}
+
+#[test]
+fn a_watch_never_treats_a_failed_rest_lock_read_as_no_locks() {
+    let world = World::new();
+    world.set_gate("true");
+    let checkout = watch_on_branch(&world);
+    change(&world, &checkout);
+    let base = world.remote(&["rev-parse", "refs/heads/main"]);
+    world.with_gh(|gh| gh["fail"] = json!(["issues?state=open"]));
+    let error = world.afk_in(&checkout, &["land", "--watch"]).error();
+    assert!(error.contains("injected failure"), "{error}");
+    assert_eq!(world.remote(&["rev-parse", "refs/heads/main"]), base);
+}

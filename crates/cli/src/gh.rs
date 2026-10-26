@@ -126,6 +126,13 @@ pub const CLOSED_JQ: &str = ".[] | select(.pull_request == null) | \
 /// What is read of each issue that carries one label, open or closed.
 pub const CARRYING_JQ: &str = ".[] | select(.pull_request == null) | \
     {number, open: (.state == \"open\"), closed_at: (.closed_at | fromdateiso8601? // null)}";
+/// Open issue identities and labels, without comments or dependency reads.
+pub const OPEN_LABELLED_JQ: &str = ".[] | select(.pull_request == null) | \
+    {number, labels: [.labels[].name]}";
+/// Same-repository PR heads. No closing-issue relationships are inferred.
+pub const PR_HEADS_JQ: &str = ".[] | select(.head.repo != null and \
+    .head.repo.full_name == .base.repo.full_name) | \
+    {number, title: (.title // \"\"), head_branch: .head.ref, head_sha: .head.sha}";
 /// What is read of each comment on an issue or a PR.
 pub const COMMENTS_JQ: &str =
     ".[] | {id, body, url: .html_url, at: (.created_at | fromdateiso8601? // null)}";
@@ -797,6 +804,59 @@ impl GitHub {
             carrying.push((row.number, (!row.open).then_some(row.closed_at)));
         }
         Ok(carrying)
+    }
+
+    /// Open issues carrying `label` in this fleet's tracker scope, lowest
+    /// number first. Lock checks need only this REST listing, not a rebuild
+    /// with every comment and blocker, and remain available without GraphQL.
+    pub fn open_with(&self, label: &str) -> Result<Vec<u64>> {
+        #[derive(Deserialize)]
+        struct Row {
+            number: u64,
+            labels: Vec<String>,
+        }
+        let labels = carrying_labels(&self.tracker, label);
+        let endpoint =
+            endpoint(&self.tracker, &format!("issues?state=open&labels={labels}&per_page=100"));
+        let out = self.read(&["api", "--paginate", &endpoint, "--jq", OPEN_LABELLED_JQ])?;
+        let mut numbers = vec![];
+        for line in out.lines().filter(|line| !line.trim().is_empty()) {
+            let row: Row =
+                serde_json::from_str(line).context("gh api issues: unexpected answer")?;
+            if self.tracker.holds(&row.labels) && row.labels.iter().any(|held| held == label) {
+                numbers.push(row.number);
+            }
+        }
+        numbers.sort_unstable();
+        Ok(numbers)
+    }
+
+    /// The same-repository open PR headed by `branch`, for a turn on no
+    /// issue. REST supplies its head without GraphQL quota. `closes` is empty:
+    /// callers associating a PR with an issue must use `open_prs` instead.
+    pub fn pr_of_branch(&self, branch: &str) -> Result<Option<PullRequest>> {
+        #[derive(Deserialize)]
+        struct Row {
+            number: u64,
+            title: String,
+            head_branch: String,
+            head_sha: String,
+        }
+        let endpoint = format!("repos/{OWN}/pulls?state=open&per_page=100");
+        let out = self.read(&["api", "--paginate", &endpoint, "--jq", PR_HEADS_JQ])?;
+        for line in out.lines().filter(|line| !line.trim().is_empty()) {
+            let row: Row = serde_json::from_str(line).context("gh api pulls: unexpected answer")?;
+            if row.head_branch == branch {
+                return Ok(Some(PullRequest {
+                    number: row.number,
+                    title: row.title,
+                    head_branch: row.head_branch,
+                    head_sha: row.head_sha,
+                    closes: vec![],
+                }));
+            }
+        }
+        Ok(None)
     }
 
     /// Every open pull request whose head is a branch of the repo itself. One
