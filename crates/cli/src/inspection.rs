@@ -1025,6 +1025,7 @@ fn command(
         kept: &kept,
         host_user: *host_user,
         dsh_profile: *dsh_profile,
+        host_rules: &crate::kept::host_rules(*harness),
         shadowed: &shadowed,
         told: told.told(),
         facts: Facts {

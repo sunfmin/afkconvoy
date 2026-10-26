@@ -583,6 +583,7 @@ mod tests {
             kept: "/cache/harness/codex",
             host_user: false,
             dsh_profile: crate::team::DshProfile::Fleet,
+            host_rules: &[],
             shadowed: &[],
             told: Told::default(),
             facts: Facts {
