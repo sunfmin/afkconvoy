@@ -104,9 +104,7 @@ fn a_brief_orca_cannot_observe_is_delivered_for_worker_health_to_judge() {
     });
     let answer = dispatch(&world, "7").ok();
     assert_eq!(answer["started"], true, "{answer}");
-    let sent: usize = world
-        .orca()
-        ["terminals"]
+    let sent: usize = world.orca()["terminals"]
         .as_array()
         .unwrap()
         .iter()
