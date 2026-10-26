@@ -493,6 +493,7 @@ mod tests {
             pid: 7,
             dir: "/w".into(),
             issue: Some(46),
+            train: false,
             command: "cargo test".into(),
             asked: 1000,
             ran: None,
@@ -500,7 +501,7 @@ mod tests {
         let exclusive = serde_json::to_string(&Request::Exclusive { ticket }).unwrap();
         assert_eq!(
             exclusive,
-            r#"{"op":"exclusive","ticket":{"number":0,"pid":7,"command":"cargo test","dir":"/w","issue":46,"asked":1000,"ran":null}}"#
+            r#"{"op":"exclusive","ticket":{"number":0,"pid":7,"command":"cargo test","dir":"/w","issue":46,"train":false,"asked":1000,"ran":null}}"#
         );
     }
 
