@@ -334,7 +334,7 @@ struct Record {
 
 const RECORD: &str = "convoy-inspection.json";
 
-fn keep(checkout: &Worktree, on: Subject, started: u64, by: &str) -> Result<()> {
+fn keep_inspection(checkout: &Worktree, on: Subject, started: u64, by: &str) -> Result<()> {
     let file = checkout.note(RECORD)?;
     let record = Record { on, started, by: by.to_string() };
     std::fs::write(&file, serde_json::to_vec(&record)?)
@@ -794,7 +794,7 @@ impl Inspector {
             let brief = host_inspection::brief(&fields).map_err(|e| anyhow!(e))?;
             let brief = checkout.write_brief(&brief)?;
             let command = command(&who, launch.as_str(), &checkout, &fleet, THE_HOST)?;
-            keep(
+            keep_inspection(
                 &checkout,
                 Subject::Host { reason: due.reason, reading: reading.clone() },
                 now,
@@ -911,7 +911,7 @@ impl Inspector {
             let brief =
                 checkout.write_brief(&inspection::brief(&fields).map_err(|e| anyhow!(e))?)?;
             let command = command(&who, launch.as_str(), &checkout, &fleet, &hot.worker)?;
-            keep(
+            keep_inspection(
                 &checkout,
                 Subject::Worker { worker: hot.worker.clone(), issue: hot.issue, why: why.clone() },
                 now,
