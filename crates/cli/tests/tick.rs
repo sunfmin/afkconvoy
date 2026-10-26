@@ -77,6 +77,50 @@ fn a_brief_waits_for_a_started_harness_whose_prompt_settles_late() {
 }
 
 #[test]
+fn a_brief_whose_idle_check_times_out_follows_in_the_same_terminal_on_a_later_tick() {
+    for timeouts in [json!([2]), json!([2, 3])] {
+        let world = backlog(&[3]);
+        world.with_orca(|orca| orca["timeout_on_waits"] = timeouts.clone());
+        let first = tick(&world, "1000");
+        assert_eq!(first["errors"], json!([]), "{first}");
+        assert_eq!(world.claims(), alpha(&[3]));
+        let before = world.orca();
+        let worker = before["terminals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|terminal| terminal["open"] == true)
+            .unwrap();
+        let handle = worker["handle"].clone();
+        assert_eq!(worker["sent"], json!([]), "no line before its prompt settles");
+        let calls = world.orca_calls();
+        assert_eq!(calls.iter().filter(|call| common::asked(call) == "terminal wait").count(), 2);
+
+        for (i, _) in timeouts.as_array().unwrap().iter().enumerate() {
+            let again = tick(&world, &(1090 + i * 90).to_string());
+            assert_eq!(again["errors"], json!([]), "{again}");
+            assert_eq!(world.claims(), alpha(&[3]));
+            assert!(!world.comments(3).iter().any(|body| body.contains("convoy:escalation")));
+            assert!(
+                !world.orca_calls().iter().any(|call| common::asked(call) == "terminal create")
+            );
+        }
+        let after = world.orca();
+        let worker = after["terminals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|terminal| terminal["handle"] == handle)
+            .unwrap();
+        let sent = worker["sent"].as_array().unwrap();
+        assert_eq!(sent.len(), 1);
+        assert!(sent[0]["text"].as_str().unwrap().contains("convoy-worker-prompt.md"));
+        tick(&world, "1270");
+        assert!(!world.orca_calls().iter().any(|call| common::asked(call) == "terminal create"));
+    }
+}
+
+#[test]
 fn a_claim_whose_issue_is_closed_is_settled_and_its_slot_refilled() {
     let world = backlog(&[3, 5, 9]);
     tick(&world, "1000");
