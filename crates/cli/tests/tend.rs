@@ -51,17 +51,67 @@ fn worktree_of(world: &World, issue: u64) -> PathBuf {
 /// The worker on `issue` finishes: commits, opens PR #`issue`0 and joins the
 /// train → the join commit.
 fn finish(world: &World, issue: u64) -> String {
+    finish_at(world, issue, "1050")
+}
+
+fn finish_at(world: &World, issue: u64, now: &str) -> String {
     let dir = worktree_of(world, issue);
     commit(&dir, &format!("f{issue}.txt"), "x\n");
     git(&dir, &["push", "-q", "origin", "HEAD"]);
     world.pr(issue * 10, issue, &git(&dir, &["symbolic-ref", "--short", "HEAD"]));
-    let answer = world.afk_in(&dir, &["land", "--issue", &issue.to_string(), "--now", "1050"]).ok();
+    let answer = world.afk_in(&dir, &["land", "--issue", &issue.to_string(), "--now", now]).ok();
     assert_eq!(answer["outcome"], "joined", "{answer}");
     answer["commit"].as_str().unwrap().to_string()
 }
 
 fn train_worktree(world: &World) -> PathBuf {
     world.root.join("wt/convoy-train")
+}
+
+#[test]
+fn a_pr_joining_after_the_train_worker_returned_idle_keeps_the_train_responsible() {
+    let world = fleet(&[7, 8]);
+    finish(&world, 7);
+    tick(&world, "1090");
+    let train = train_worktree(&world);
+    let landed = world.afk_in(&train, &["land", "--train", "--now", "1100"]).ok();
+    assert_eq!(landed["outcome"], "landed", "{landed}");
+    let idle = world.afk_in(&train, &["land", "--train", "--now", "1110"]).ok();
+    assert_eq!(idle["outcome"], "idle", "{idle}");
+    tick(&world, "1120");
+    let sent = terminals(&world, &train)[0]["sent"].as_array().unwrap().len();
+
+    let tip = finish_at(&world, 8, "1150");
+    let dir = worktree_of(&world, 8);
+    let ticked = tick(&world, "1180");
+    assert_eq!(ticked["errors"], json!([]), "{ticked}");
+    assert!(did(&ticked).contains(&"tend_train done".to_string()), "{ticked}");
+    assert_eq!(terminals(&world, &train)[0]["sent"].as_array().unwrap().len(), sent + 1);
+    for now in [1500, 5000, 8500] {
+        world.with_orca(|orca| {
+            for terminal in orca["terminals"].as_array_mut().unwrap() {
+                if terminal["worktreePath"] == train.to_str().unwrap() {
+                    terminal["agent"] = json!({"state": "working", "stateStartedAt": now * 1000});
+                    terminal["lastOutputAt"] = json!(now * 1000);
+                }
+            }
+        });
+        let ticked = tick(&world, &now.to_string());
+        assert_eq!(ticked["errors"], json!([]), "{ticked}");
+        assert_eq!(world.claims(), [(8, "alpha".into())]);
+        assert_eq!(world.labels(8), ["ready-for-agent"]);
+        assert_eq!(world.remote(&["rev-parse", LINE]), tip);
+        let path = world.cache().join("afkconvoy/worker-health.json");
+        let book: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        assert!(
+            book["workers"].as_array().unwrap().iter().all(|w| w["path"] != json!(dir)),
+            "{book}"
+        );
+    }
+    let landed = world.afk_in(&train, &["land", "--train", "--now", "8600"]).ok();
+    assert_eq!(landed["outcome"], "landed", "{landed}");
+    tick(&world, "8700");
+    assert_eq!(world.state(8), "closed");
 }
 
 #[test]

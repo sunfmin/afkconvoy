@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use afkconvoy_core::harness::Harness;
+use afkconvoy_core::plan::{Status, WorkingSet};
 use afkconvoy_core::worker::WorkerState;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -632,14 +633,16 @@ fn probe_due(book: &mut Book, kit: &Kit, now: u64) {
 }
 
 /// Observe claimed workers on this fleet. Every checkout's fleet calls this,
-/// sharing account/model evidence across the host. No remote selection data changes.
+/// sharing account/model evidence across the host. The rebuild's joined and
+/// landed outcomes retire an issue worker before its local evidence is read.
+/// No remote selection data changes.
 pub fn reconcile(
     fleet: &mut Fleet,
     me: &Me,
     agent: &Agent,
     open: &crate::gh::Open,
     flows: &crate::stage::Flows,
-    locks: &[u64],
+    set: &WorkingSet,
 ) -> Result<Vec<Value>> {
     let file = file()?;
     std::fs::create_dir_all(file.parent().context("health cache parent")?)?;
@@ -658,10 +661,23 @@ pub fn reconcile(
     let source = Source::of(&fleet.repo)?;
     let mut jobs = vec![];
     for claim in &fleet.scan.claims {
-        if !locks.is_empty() && !locks.contains(&claim.number) {
+        if !claim.is_held_by(&me.instance) {
             continue;
         }
-        if !claim.is_held_by(&me.instance) {
+        if set.mine.iter().any(|mine| {
+            mine.number == claim.number
+                && matches!(
+                    mine.status,
+                    Status::Joined | Status::Landed | Status::Closed | Status::Gone
+                )
+        }) {
+            if let Some(worktree) = Worktree::of_issue(&source, claim.number)? {
+                book.workers.retain(|o| o.path != worktree.path);
+                book.observations_failed.retain(|(path, _, _)| *path != worktree.path);
+            }
+            continue;
+        }
+        if set.locked_out(claim.number) {
             continue;
         }
         // Startup failures are continued by the next tick, with their own
@@ -734,7 +750,7 @@ pub fn reconcile(
         jobs.push((Some(claim.number), None, worktree));
     }
     for run in &fleet.scan.runs {
-        if !locks.is_empty() {
+        if !set.locks.is_empty() {
             continue;
         }
         if run.over {
@@ -750,7 +766,7 @@ pub fn reconcile(
             jobs.push((None, Some(name.to_string()), worktree));
         }
     }
-    if locks.is_empty()
+    if set.locks.is_empty()
         && let Some(worktree) = Worktree::of_train(&source)?
     {
         let train = crate::train::Train::read(&fleet.repo, &fleet.config)?;
@@ -758,7 +774,7 @@ pub fn reconcile(
             jobs.push((None, Some("@train".into()), worktree));
         }
     }
-    if locks.is_empty()
+    if set.locks.is_empty()
         && let Some(worktree) = Worktree::named(&source, afkconvoy_core::casting::CASTER_WORKTREE)?
         && crate::caster::last(fleet).is_some_and(|c| c.live)
     {
