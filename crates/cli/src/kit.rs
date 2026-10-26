@@ -317,9 +317,8 @@ pub fn show(now: u64) -> Value {
                 .map(|held| {
                     let mut shown = serde_json::to_value(held).expect("a held harness serializes");
                     shown["default_model"] = json!(held.placed().next().is_none());
-                    shown["research_pending"] = json!(
-                        held.models.is_empty() || held.models.iter().any(Seen::awaits_research)
-                    );
+                    shown["research_pending"] =
+                        json!(held.models.iter().any(Seen::awaits_research));
                     shown
                 })
                 .collect();

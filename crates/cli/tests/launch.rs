@@ -278,7 +278,7 @@ fn no_host_kit_has_run_write_it_and_start_its_first_tick_while_a_tick_refuses() 
     assert_eq!(kit["harnesses"][0]["harness"], "claude-code");
     assert_eq!(
         kit["harnesses"][0]["models"],
-        json!([{"model": "default", "good_at": "not researched"}, {"model": "opus", "good_at": "not researched"}])
+        json!([{"model": "default", "good_at": "research pending"}, {"model": "opus", "good_at": "research pending"}])
     );
     let workers = started(&world);
     assert_eq!(workers.len(), 1, "its first tick started a worker");
@@ -322,7 +322,7 @@ fn a_tick_a_day_later_writes_the_host_kit_again_once_for_every_fleet_of_the_host
     let models = |world: &World| kit_on_disk(world)["harnesses"][0]["models"].clone();
     assert_eq!(
         models(&world),
-        json!([{"model": "default", "good_at": "not researched"}, {"model": "opus", "good_at": "not researched"}])
+        json!([{"model": "default", "good_at": "research pending"}, {"model": "opus", "good_at": "research pending"}])
     );
     assert_eq!(world.afk(&["plan", "--now", "1000"]).json["host_kit"]["refreshed"], 1000);
     // Claude Code lists `sonnet` now, and no longer `opus`.
@@ -346,7 +346,7 @@ fn a_tick_a_day_later_writes_the_host_kit_again_once_for_every_fleet_of_the_host
     );
     assert_eq!(
         models(&world),
-        json!([{"model": "default", "good_at": "not researched"}, {"model": "sonnet", "good_at": "not researched"}])
+        json!([{"model": "default", "good_at": "research pending"}, {"model": "sonnet", "good_at": "research pending"}])
     );
     let plan = world.afk(&["plan", "--now", &(1000 + day).to_string()]);
     assert_eq!(plan.json["host_kit"]["refreshed"], 1000 + day);
@@ -378,8 +378,8 @@ fn kit_with_no_terminal_writes_what_this_host_can_start_and_says_what_it_left_ou
             "cast": false,
             "harnesses": [
                 {"harness": "claude-code", "command": "agent",
-                    "models": [{"model": "opus", "good_at": "not researched"}, {"model": "default", "good_at": "not researched"}]},
-                {"harness": "pi", "command": "pi", "models": [{"model": "openai/gpt-5.5", "good_at": "not researched"}]},
+                    "models": [{"model": "opus"}, {"model": "default", "good_at": "research pending"}]},
+                {"harness": "pi", "command": "pi", "models": [{"model": "openai/gpt-5.5", "good_at": "research pending"}]},
             ],
             "stock_consult": {"harness": "claude-code", "model": "opus"},
         })
@@ -492,14 +492,14 @@ fn kit_holds_each_listed_id_with_its_display_name_and_never_probes() {
     assert_eq!(
         models("claude-code"),
         json!([
-            {"model": "default", "names": ["Default (recommended)"], "good_at": "not researched"},
-            {"model": "opus", "names": ["Opus 5.5"], "good_at": "not researched"}
+            {"model": "default", "names": ["Default (recommended)"], "good_at": "research pending"},
+            {"model": "opus", "names": ["Opus 5.5"], "good_at": "research pending"}
         ])
     );
-    assert_eq!(models("codex"), json!([{"model": "gpt-6-sol", "good_at": "not researched"}]));
+    assert_eq!(models("codex"), json!([{"model": "gpt-6-sol", "good_at": "research pending"}]));
     assert_eq!(
         models("pi"),
-        json!([{"model": "openai-codex/gpt-6-sol", "good_at": "not researched"}])
+        json!([{"model": "openai-codex/gpt-6-sol", "good_at": "research pending"}])
     );
     world.issue(8, &["ready-for-agent", "model:Opus 5.5"]);
     let planned = world.afk(&["plan", "--now", "1000"]).ok();

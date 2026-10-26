@@ -1448,33 +1448,32 @@ fn plan_doctor_and_panel_show_each_codex_launch_and_its_sources() {
 }
 
 #[test]
-fn codex_starts_no_session_without_a_fleet_model_or_with_invalid_user_effort() {
-    for invalid in [false, true] {
-        let world = bound();
-        if invalid {
-            write(&world.home(), ".codex/config.toml", "model_reasoning_effort = 4\n");
-        } else {
-            world.kit_models("codex", &[]);
-        }
-        world.issue(7, &["flow:feature"]);
-        let why = world
-            .afk(&["dispatch", "7", "--instance", "alpha", "--host", "h1", "--now", "1000"])
-            .error();
-        assert!(
-            why.contains(if invalid {
-                "must be a nonempty string"
-            } else {
-                "no selected Codex model"
-            }),
-            "{why}"
-        );
-        assert!(world.orca()["terminals"].as_array().unwrap().iter().all(|terminal| {
-            !terminal["command"]
-                .as_str()
-                .unwrap_or("")
-                .contains("--dangerously-bypass-approvals-and-sandbox")
-        }));
-    }
+fn codex_with_no_placed_model_starts_on_its_own_default_and_records_it() {
+    let world = bound();
+    world.kit_models("codex", &[]);
+    world.issue(7, &["flow:feature"]);
+    let ran = launch(&world, 7, 1000);
+    assert!(!ran.iter().any(|word| word == "--model"), "{ran:?}");
+    let plan = world.afk(&["plan", "--instance", "alpha", "--now", "1100"]).ok();
+    assert_eq!(plan["codex_workers"][0]["model"], Value::Null);
+    assert_eq!(plan["codex_workers"][0]["model_source"], "codex_default");
+}
+
+#[test]
+fn codex_starts_no_session_with_invalid_user_effort() {
+    let world = bound();
+    write(&world.home(), ".codex/config.toml", "model_reasoning_effort = 4\n");
+    world.issue(7, &["flow:feature"]);
+    let why = world
+        .afk(&["dispatch", "7", "--instance", "alpha", "--host", "h1", "--now", "1000"])
+        .error();
+    assert!(why.contains("must be a nonempty string"), "{why}");
+    assert!(world.orca()["terminals"].as_array().unwrap().iter().all(|terminal| {
+        !terminal["command"]
+            .as_str()
+            .unwrap_or("")
+            .contains("--dangerously-bypass-approvals-and-sandbox")
+    }));
 }
 
 #[test]

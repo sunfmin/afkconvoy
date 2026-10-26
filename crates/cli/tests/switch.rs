@@ -256,7 +256,7 @@ fn a_missing_harness_starts_on_its_default_before_its_listing_is_researched() {
         {
             assert_eq!(kit["harnesses"][0]["harness"], "kimi");
             assert_eq!(kit["harnesses"][0]["models"][0]["model"], "kimi-code/k3");
-            assert_eq!(kit["harnesses"][0]["models"][0]["good_at"], "not researched");
+            assert_eq!(kit["harnesses"][0]["models"][0]["good_at"], "research pending");
             assert!(
                 !world
                     .shell_asked()
@@ -362,14 +362,15 @@ fn a_switch_names_every_skipped_harness_and_its_fix_in_the_answer_and_tick_log()
 }
 
 #[test]
-fn a_codex_successor_without_a_selected_model_does_not_end_the_existing_worker() {
+fn a_codex_successor_with_no_placed_model_starts_on_its_own_default() {
     let world = blocked();
     world.kit_models("codex", &[]);
     let dir = worktree(&world, 7);
     let answer = switch(&world, "800", &["7", "--harness", "codex"]).ok();
-    let why = answer["failed"][0]["error"].as_str().unwrap();
-    assert!(why.contains("no selected Codex model"), "{why}");
-    assert_eq!(open_commands(&world, &dir), [common::trusted("agent")]);
+    assert_eq!(answer["switched"][0]["to"], "codex", "{answer}");
+    let opened = open_commands(&world, &dir);
+    assert_eq!(opened.len(), 1, "{opened:?}");
+    assert!(opened[0].contains("codex") && !opened[0].contains("--model"), "{opened:?}");
     assert_eq!(world.claims().len(), 1);
 }
 
