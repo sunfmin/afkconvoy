@@ -45,13 +45,28 @@ fn an_accepted_brief_that_starts_no_turn_is_a_failed_start_on_every_harness() {
                 orca["prompt_stages"] = json!(["input_accepted"]);
                 orca["send_screen"] = json!(screen.lines().collect::<Vec<_>>());
             });
-            let error = world.afk(&["dispatch", "--issue", "7", "--instance", "alpha",
-                "--host", "h1", "--now", "1000"]).error();
+            let error = world
+                .afk(&[
+                    "dispatch",
+                    "--issue",
+                    "7",
+                    "--instance",
+                    "alpha",
+                    "--host",
+                    "h1",
+                    "--now",
+                    "1000",
+                ])
+                .error();
             assert!(error.contains("started no turn"), "{}: {error}", harness.key());
             assert!(error.contains(screen.trim()), "screen evidence missing: {error}");
             let orca = world.orca();
-            let sent: usize = orca["terminals"].as_array().unwrap().iter()
-                .map(|t| t["sent"].as_array().unwrap().len()).sum();
+            let sent: usize = orca["terminals"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|t| t["sent"].as_array().unwrap().len())
+                .sum();
             assert_eq!(sent, 1, "an unproven send is never resent");
         }
     }
@@ -147,6 +162,7 @@ fn the_steps_run_in_order() {
             // A close is verified before a replacement can write here.
             "terminal list",
             "terminal create",
+            "terminal wait",
             "terminal wait",
             "terminal send"
         ]

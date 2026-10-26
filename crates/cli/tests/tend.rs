@@ -78,23 +78,34 @@ fn a_train_pointer_requires_input_readiness_and_a_started_turn_before_recording_
                 if terminal["worktreePath"] == train.to_str().unwrap() {
                     terminal["agent"] = json!({"state":"idle", "stateStartedAt":1_100_000});
                     terminal["menu"] = json!(menu);
-                    terminal["screen"] = json!(include_str!("screens/codex-model-menu.txt")
-                        .lines().collect::<Vec<_>>());
+                    terminal["screen"] = json!(
+                        include_str!("screens/codex-model-menu.txt").lines().collect::<Vec<_>>()
+                    );
                     terminal["prompt_stages"] = json!(["input_accepted"]);
                 }
             }
         });
         world.orca_calls();
         let ticked = tick(&world, "1180");
-        assert!(ticked["errors"].as_array().unwrap().iter()
-            .any(|e| e["do"] == "tend_train"), "{ticked}");
+        assert!(
+            ticked["errors"].as_array().unwrap().iter().any(|e| e["do"] == "tend_train"),
+            "{ticked}"
+        );
         let told = std::fs::read_to_string(notes.join("convoy-train-told")).unwrap();
         assert!(told.starts_with(&first), "an unproven pointer changed told: {told}");
-        let sends = world.orca_calls().iter()
-            .filter(|call| common::asked(call) == "terminal send").count();
+        let sends =
+            world.orca_calls().iter().filter(|call| common::asked(call) == "terminal send").count();
         assert_eq!(sends, usize::from(!menu), "no pointer is typed into a menu");
-        assert!(notes.join("convoy-worker-error.json").exists(),
-            "worker health must see failed delivery on its next tick");
+        assert!(
+            notes.join("convoy-worker-error.json").exists(),
+            "worker health must see failed delivery on its next tick"
+        );
+        world.orca_calls();
+        tick(&world, "1270");
+        assert!(
+            !world.orca_calls().iter().any(|call| common::asked(call) == "terminal send"),
+            "the next tick leaves the stopped worker to health instead of resending"
+        );
     }
 }
 

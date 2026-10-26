@@ -328,9 +328,12 @@ fn terminal_send(st: &mut State) -> ! {
         .or_else(|| st.doc["prompt_stages"].as_array())
         .cloned()
         .unwrap_or_else(|| vec![json!("input_accepted"), json!("turn_started")]);
-    done(st, json!({"send": {"accepted": true, "prompt": {
-        "requestId": "request-1", "stages": stages, "observation": "observed"
-    }}}))
+    done(
+        st,
+        json!({"send": {"accepted": true, "prompt": {
+            "requestId": "request-1", "stages": stages, "observation": "observed"
+        }}}),
+    )
 }
 
 fn terminal_list(st: &State) -> ! {

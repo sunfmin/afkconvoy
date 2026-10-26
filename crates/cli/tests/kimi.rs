@@ -126,8 +126,10 @@ fn a_kimi_worker_gets_an_isolated_role_home_rules_skills_limits_and_guard() {
     let line = started(&world, &worktree(&world, 7));
     let role = role_copy(&world, "acme/dev");
     let kept = kept_from(&line);
-    assert!(kept.join(".skip-migration-from-kimi-cli").is_file(),
-        "a fresh role home must suppress the kimi-cli migration prompt");
+    assert!(
+        kept.join(".skip-migration-from-kimi-cli").is_file(),
+        "a fresh role home must suppress the kimi-cli migration prompt"
+    );
     assert!(line.starts_with(&format!("cd '{}'", role.display())), "{line}");
     assert!(
         line.contains(

@@ -60,8 +60,8 @@ fn a_tick_never_waits_for_the_workers_it_started() {
     let calls: Vec<String> = world.orca_calls().iter().map(|call| common::asked(call)).collect();
     assert_eq!(
         calls.iter().filter(|call| *call == "terminal wait").count(),
-        1,
-        "only for readiness"
+        2,
+        "only for readiness at start and immediately before the brief"
     );
 }
 
