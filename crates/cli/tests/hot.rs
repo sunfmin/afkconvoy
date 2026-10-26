@@ -66,7 +66,7 @@ fn processes(world: &World, workers: &[(&Path, u64)]) {
     // listed memory. Fake pids cannot be sampled or signalled on the host.
     let mut rows = "999990 2 10485760 0:00.00 outside-memory-holder\n".to_string();
     for (index, (path, mib)) in workers.iter().enumerate() {
-        let tmp = afkconvoy::worker_tmp::of(path);
+        let tmp = world.tmp(path);
         rows.push_str(&format!(
             "{} 2 {} 0:00.00 worker TMPDIR={}\n",
             999980 + index,

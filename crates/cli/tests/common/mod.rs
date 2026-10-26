@@ -49,6 +49,7 @@ pub fn shown(at: &str, language: &str) -> Vec<String> {
 
 pub struct World {
     _root: TempDir,
+    tmp_links: TempDir,
     pub root: PathBuf,
     /// The remote: every clone's `origin`.
     pub bare: PathBuf,
@@ -112,6 +113,7 @@ impl World {
             write_script(&bin.join(name), script);
         }
         let world = World {
+            tmp_links: tempfile::tempdir_in("/tmp").unwrap(),
             gh_file: root.join("gh.json"),
             orca_file: root.join("orca.json"),
             _root: dir,
@@ -258,6 +260,7 @@ impl World {
             ("PATH".to_string(), path),
             ("CONVOY_FAKE_GH".to_string(), shown(&self.gh_file)),
             ("CONVOY_FAKE_ORCA".to_string(), shown(&self.orca_file)),
+            ("AFKCONVOY_TMP_LINKS".to_string(), shown(&self.tmp_links.path().join("links"))),
         ];
         env.extend(GIT_ENV.iter().map(|(name, value)| (name.to_string(), value.to_string())));
         // No checkout above the world is one of its: a test's directory
@@ -273,6 +276,13 @@ impl World {
     /// of a team and its roles are under it.
     pub fn cache(&self) -> PathBuf {
         self.root.join("cache")
+    }
+
+    /// This world's worker link for `worktree`, with the production key but
+    /// in its own short directory, never among the host's real links.
+    pub fn tmp(&self, worktree: &Path) -> PathBuf {
+        let link = afkconvoy::worker_tmp::of(worktree);
+        self.tmp_links.path().join("links").join(link.file_name().unwrap())
     }
 
     /// The home of this world's host user: nothing of the home of whoever
@@ -1566,8 +1576,8 @@ pub fn asked(call: &[String]) -> String {
 
 /// What the fleet hands orca to start a worker in the worktree `dir` whose
 /// own line is `line`: that line under `nice`, with the worktree's `TMPDIR`.
-pub fn niced(dir: &Path, line: &str) -> String {
-    afkconvoy_core::line::niced(&afkconvoy::worker_tmp::of(dir).display().to_string(), line)
+pub fn niced(world: &World, dir: &Path, line: &str) -> String {
+    afkconvoy_core::line::niced(&world.tmp(dir).display().to_string(), line)
 }
 
 /// The worker's own line in `command`, what orca was handed to start it:

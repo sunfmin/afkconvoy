@@ -49,7 +49,9 @@ pub(super) const KEPT: Kept = Kept {
         Link { home: ".agents/skills", kept: HOST_SKILLS[1] },
         Link { home: ".kimi-code/AGENTS.md", kept: "AGENTS.md" },
     ],
-    files: &[],
+    // Each generated home is intentional: never offer to migrate the host's
+    // kimi-cli configuration into a worker's isolated role home.
+    files: &[(".skip-migration-from-kimi-cli", "")],
 };
 
 pub(super) const LIMITS: &str = ".kimi-code/limits.toml";
