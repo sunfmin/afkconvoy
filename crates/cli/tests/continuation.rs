@@ -284,8 +284,8 @@ fn ends_escaped(ignores_term: bool, signal: i32) {
     let logged = entries(&world);
     let lines: Vec<_> = logged
         .iter()
-        .filter(|entry| entry["command"] == "start")
-        .map(|entry| entry["outcome"].as_str().unwrap())
+        .filter(|entry| entry["command"]["command"] == "start")
+        .map(|entry| entry["command"]["outcome"].as_str().unwrap())
         .collect();
     assert_eq!(lines.len(), 1, "{logged:?}");
     assert!(lines[0].contains(&format!("pid {}", escaped.pid)), "{lines:?}");
