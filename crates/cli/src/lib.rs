@@ -84,6 +84,7 @@ pub mod paused;
 pub mod precedent;
 pub mod probe;
 mod process;
+pub mod queue;
 pub mod recovery;
 mod repair;
 pub mod resources;
@@ -196,7 +197,7 @@ const SKILL: &str = include_str!("../../../skills/afkconvoy/SKILL.md");
 ///
 /// Read `afkconvoy <command> --help` before first running it. Commands are grouped by who runs them:
 ///
-/// - **{const:OPERATOR}** — `config`, `check`, `plan` before `run`; `tick` for one pass, `stop` to stop; `doctor --all --since <until of your last look>`, `checkouts`, `panel` to watch (`doctor` names each fix); `kit`, `cast`, `switch` for workers' harnesses and models; `patrol-now` to run a patrol now; `takeover` to take another fleet instance's claims.
+/// - **{const:OPERATOR}** — `config`, `check`, `plan` before `run`; `tick` for one pass, `stop` to stop; `queue` for the local exclusive queue; `doctor --all --since <until of your last look>`, `checkouts`, `panel` to watch (`doctor` names each fix); `kit`, `cast`, `switch` for workers' harnesses and models; `patrol-now` to run a patrol now; `takeover` to take another fleet instance's claims.
 /// - **{const:DESIGNER}** — `scaffold` to start one or a role of it from a skeleton, `draft` to draft its roster from the host kit, then, once `check` accepts it, `show` to review a workflow or to ask where an issue is in it, and `rehearse` to try one out.
 /// - **{const:HANDS_WORK}** — a human or their agent opening decided work. `flows` names the workflow, gives the issue-create line and makes labels. After opening issues, `wake` has the fleet take them up now.
 /// - **{const:SETS_UP}** — `skill` prints the skill file that sends their agent to `afkconvoy --help`.
@@ -978,7 +979,7 @@ enum Command {
     ///     A harness with `models` [] or no placed model runs on its default model with no model flag, and is no fault. Automatic command discovery, a switch, failed research or a hand-written kit can leave one. `afkconvoy kit` lists them; the watch supplies research through `afkconvoy kit --research <file>`. A tick lists an empty Codex entry without waiting for the daily refresh, with an hour between unsuccessful tries. A roster or casting model that matches nothing placed is still reported as such.
     ///   - `settings`: the host settings (`afkconvoy run --help`): {file, said, in_force} — each by its key, the name of the flag of `run` that names it (`hot_cores` for `--hot-cores`), in that flag's units: said is what the host says, null where it says none and the default holds; in_force what holds for this repo's fleet on this host, each default worked out for it — the panel's port {const:PANEL_PORT} where the host says none. {file, error} where the file cannot be read
     ///   - `admission`: whether a tick would start a new worker on this host now, the thresholds in force and what the host reads: as `plan` answers it (`afkconvoy plan --help`), or {error} where a share the host says is wrong. A tick that admission held back is no "started no worker" finding.
-    ///   - `exclusive`: the host's queues as {lanes: {worker, repos}, running, waiting}. Each lane has {running, running_all, waiting}, where running is the first active command for older readers and running_all lists every active command; repos lists {repo, queue} for light gates. The top-level running and waiting are the worker lane for older readers — running is the command that runs alone now, null with none; waiting, those that wait their turn, next first; both empty with no host runner. Each is {command, dir, issue, pid, asked, ran}: the worktree it was run in, the issue of its worker, and when it asked and began to run, in epoch seconds. {error} when the host runner cannot say it
+    ///   - `exclusive`: the host's queues as {lanes: {worker, repos}, running, waiting, observation}. Each lane has {running, running_all, waiting}, where running is the first active command for older readers and running_all lists every active command; repos lists {repo, queue} for light gates. The top-level running and waiting are the worker lane for older readers — running is the first active command, null with none; waiting is in scheduler order, not a prediction of what starts next; both empty with no host runner. Each is {command, dir, issue, pid, asked, ran}: the worktree it was run in, the issue of its worker, and when it asked and began to run, in epoch seconds. `observation` adds {paused, worker, repos, running, waiting}, with occupancy, durations and scheduling reasons interpreted exactly as `afkconvoy queue --help` documents, at doctor's observation time. {error} when the host runner cannot say it. `afkconvoy queue` reads just the local queue, without this full diagnosis
     ///   - `resources`: resource episodes observed by the host runner, with stable ids, active conditions, since, episode, worker or host readings and evidence. Admission and pressure retain their identities during five minutes of recovery. Resource findings also have watch_id, the episode identity that starts at most one watch.
     ///   - `watch`: this host's watch (`afkconvoy run --help`, WATCH): {directory, stock, running, last, unavailable}. directory is where the next watch runs and stock whether it uses afkconvoy's instruction. running and last are each {id, directory, stock, items, started, harness, model, terminal, transcript, did, reported, report, attempts, ended, outcome}. items says why it started; transcript holds the session's exit status, not its printed output. reported is whether it called `watched`; report is its complete {held_back, did, verified, human, pending} record, null if it did not report; did is that report's actions. attempts holds each session whose harness gave out: {harness, model, terminal, why, did, screen}; screen is terminal evidence for continuation, never a report. outcome is ended (reported), not_reported (exited without reporting), closed, time_limit or no_harness. running and last are null with none. unavailable says why no harness could start or continue the last requested watch, null where one could.
     ///   - `installed`: the release installed where the host runner was started from, where the host runner moves onto it or did not: {path, version, from, since, wait_expired, held_back, failed} — the file; the release it says, null where it says none; the host runner's own release; when that file answered, in epoch seconds; whether the {const:MOVE_WAIT_SECONDS}s wait expired; what holds the move back, each in words ("/Users/me/Developments/hkj is in a tick", "1 exclusive command(s) running"), [] once nothing does, or the last blockers when the wait expired; and why the move failed — it did not start, or does not say its version — null until one did. null with none: nothing newer is installed there, or no host runner runs (`afkconvoy run --help`)
@@ -1610,6 +1611,43 @@ enum Command {
     /// - `host_runner.panel` is where the host runner serves the panel: the address `afkconvoy panel --open` answers, with no need to ask it. Where no host runner runs it is null, as `host_runner` is whole; where the host runner serves none, it alone is null, and `panel --open` says why. `afkconvoy panel --help` says what the page shows.
     #[command(next_help_heading = OPERATOR, verbatim_doc_comment)]
     Checkouts,
+    /// Read this host's exclusive queue and explain each wait
+    ///
+    /// ## When to run it
+    ///
+    /// Run `afkconvoy queue` from any directory on the host, as the host runner's user, to see who occupies its worker lanes and why each request waits. No checkout, login or running fleet is required. It accepts no checkout or host selector: it observes this user's local host runner across all its repos.
+    ///
+    /// ## Who runs it
+    ///
+    /// The operator, or their agent, on the host whose exclusive queue they want to read.
+    ///
+    /// ## What it reads and writes
+    ///
+    /// It reads the host settings once and asks the host runner once on its local socket, allowing {const:QUEUE_SECONDS}s for its response, including partial lines. Settings absent use the defaults; unreadable settings fail. It reads no GitHub, git, harness, tick log or recorded gate outcomes, makes no probe or full diagnosis, sends no wake and changes no fleet, queue or settings. A stale socket is left in place. A temporary link used to reach a long socket path is removed afterwards. The runner's lock is checked only if its socket is absent or refuses the connection.
+    ///
+    /// ## What it answers
+    ///
+    /// Exactly one JSON object, exit 0:
+    ///
+    /// - `observed_at`: epoch seconds captured after the local response. Every duration uses this one time; clock differences clamp negative durations to zero. Settings and the queue are a bounded observation, not an atomic snapshot of both files and process.
+    /// - `status`: `available` when the runner answered, including a healthy empty queue; `no_runner` when no runner listens or holds the host. No runner is a successful observation with empty arrays and `host_runner: null`, not evidence of commands running outside the queue.
+    /// - `host_runner`: the answering runner's `pid` and `version`, plus the identity fields it supplies: `log` (whole path), `panel` (address or null), and `foreground` where applicable. Null with no runner.
+    /// - `paused`: whether the runner has paused new grants for a release move; false with no runner.
+    /// - `worker`: `{capacity, used, free}`. Capacity is the host setting `gate_lanes`, {const:GATE_LANES} by default; used counts running worker requests, free is capacity minus used, clamped to zero. Eligible reservations do not count as used.
+    /// - `repos`: each repo lane with a running or waiting request, sorted by its whole identity, as `{repo, capacity, used, free}`. Each has capacity 1, independent of worker capacity. `repo` is the shared git directory supplied by the ticket, never inferred from a worktree's name.
+    /// - `running`, `waiting`: requests in scheduler order within each array: cuts first, then ordinary commands; within each group ascending `asked`, then `number` to break ties. Cut priority never interrupts running commands. There is no priority by lane or repo. A request identifies `number` (runner-local ticket), `pid` (asking process), `command` (one line), `dir` (whole worktree or outside directory), `issue` (number or null; no lookup), `repo` (shared git directory or null for older/outside tickets), `repo_lane` (repo lane identity or null for worker), `is_turn` (whether this is a landing turn), `cut` (whether it has cut priority, false for older tickets), `asked` (request epoch seconds), `ran` (start epoch seconds or null), and `lane` (`worker` or `repo <identity>`).
+    /// - Each request adds `elapsed_seconds` (time since `ran`, null while waiting), `waiting_seconds` (time from `asked` to `ran` when running, otherwise to `observed_at`), and `scheduling`: `{number, state, reasons}`. State is `running`, `eligible`, or `waiting`; reasons is empty for running or eligible requests.
+    /// - Each reason has `kind`, `requests`, `capacity` and `explanation`. Kind `same_repo` means a running or earlier eligible request of this repo excludes this request in its lane, or across lanes when both are turns. `worker_capacity` or `repo_capacity` means all places in that lane are occupied or reserved, with the limit in `capacity`. `paused` means new grants are paused. Other reasons have `capacity: null`. `requests` names each relevant `{number, state}`: `running` holds a place now, `eligible` reserves one earlier in FIFO order; it is empty for a pause. `explanation` states the constraint in words.
+    ///
+    /// Earlier eligible requests reserve capacity in scheduler order, with cuts before ordinary waiters and FIFO within each group. Blocked requests reserve nothing: with three worker lanes, a running repo can leave two free while its other requests wait, and a different repo can be eligible. Turns of one repo exclude each other across worker and repo lanes. Older tickets lacking `repo` use their whole `dir` as the scheduler's fallback identity. `eligible` means allowed by this observation, not guaranteed to start next. Ordering is no fixed future start order or ETA; requests can leave and settings can change.
+    ///
+    /// Errors: unreadable host settings, an inaccessible socket, a runner holding the host but not listening, a closed connection, no response within the bound, a runner error, or an unsupported or unreadable response (including missing queue, pause or runner identity fields). These print `{"error": ...}` with exit 1 and a next action: inspect the host runner log and run the command again; `afkconvoy doctor --all` provides a full diagnosis. An unsupported response needs a host runner of this release. A failed observation never becomes an empty queue.
+    ///
+    /// ## What trips you up
+    ///
+    /// It reports current queued commands only. For historical gate outcomes, use `afkconvoy doctor --all --since <time>`; `afkconvoy doctor --help` explains its interval boundaries. Commands that bypass the exclusive queue are absent. Request numbers belong to this runner and may change after it is replaced.
+    #[command(next_help_heading = OPERATOR, verbatim_doc_comment)]
+    Queue,
     /// Hold every checkout on this host's checkout list, as `run` starts it in the background
     #[command(hide = true)]
     HostRunner,
@@ -3509,6 +3547,7 @@ pub fn manual() -> agent_help::Help {
         .constant("BACKOFF_FIRST_MINUTES", afkconvoy_core::host_runner::BACKOFF_FIRST / 60)
         .constant("BACKOFF_MOST_MINUTES", afkconvoy_core::host_runner::BACKOFF_MOST / 60)
         .constant("INSTALLED_LOOKED_SECONDS", host_runner::INSTALLED_LOOKED_EVERY.as_secs())
+        .constant("QUEUE_SECONDS", queue::WITHIN.as_secs())
         .constant("MOVED_WITHIN_SECONDS", host_runner::MOVED_WITHIN.as_secs())
         .constant("MOVE_WAIT_SECONDS", host_runner::MOVE_WAIT_WITHIN.as_secs())
         .constant("OUTGROWN_TIMES", afkconvoy_core::landing::OUTGROWN_TIMES)
@@ -4107,6 +4146,7 @@ impl Command {
             | Command::Stop { .. }
             | Command::HostRunner
             | Command::Checkouts
+            | Command::Queue
             | Command::Panel { .. }
             | Command::Guard
             | Command::Exclusive { .. }
@@ -4262,6 +4302,7 @@ fn run(
         Command::Stop { .. } => host_runner::stop(&checkout?),
         Command::HostRunner => host_runner::serve(),
         Command::Checkouts => checkouts::checkouts(),
+        Command::Queue => queue::queue(fixed_now),
         Command::Panel { open: true, .. } => host_runner::panel(),
         Command::Panel { instance, host, at, .. } => {
             let host = host.unwrap_or_else(this_host);
@@ -4535,6 +4576,7 @@ mod tests {
         &["run"],
         &["stop"],
         &["checkouts"],
+        &["queue"],
         &["host-runner"],
         &["panel"],
         &["tick", "--instance", "a-h1-1"],
