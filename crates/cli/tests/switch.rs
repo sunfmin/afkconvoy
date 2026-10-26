@@ -940,6 +940,33 @@ fn codex_task_refusal_with_no_harness_left_escalates_now_and_stays_with_the_huma
 }
 
 #[test]
+fn codex_task_refusal_escalates_when_the_remaining_harness_is_paused() {
+    let world = blocked();
+    let dir = worktree(&world, 7);
+    switch(&world, "750", &["7", "--harness", "codex"]).ok();
+    world.with_kit(|kit| {
+        kit["harnesses"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|h| h["harness"] == "codex" || h["harness"] == "claude-code")
+    });
+    world.pause("claude-code", 790, "no allowance");
+    std::fs::write(dir.join("unfinished.txt"), "keep me").unwrap();
+    codex_refusal(&world, &dir);
+    tick(&world, 800);
+    assert!(world.claims().is_empty());
+    assert!(
+        world
+            .comments(7)
+            .iter()
+            .any(|body| body.contains("refusal=exhausted") && body.contains(CODEX_REFUSAL.trim()))
+    );
+    assert!(open_commands(&world, &dir).is_empty());
+    tick(&world, 801);
+    assert!(!world.comments(7).iter().any(|body| body.starts_with("<!--convoy:consult ")));
+}
+
+#[test]
 fn an_issue_refusal_is_remembered_at_the_next_stage_and_shown_without_host_health() {
     use afkconvoy_core::harness::Harness;
     let world = World::new();

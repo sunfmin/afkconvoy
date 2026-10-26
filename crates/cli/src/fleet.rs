@@ -530,8 +530,16 @@ impl Fleet {
         };
         let frontier = std::mem::take(&mut set.frontier);
         for mut issue in frontier {
-            let Ok(range) = self.runnable_for(Some(issue.number)).map(|kit| kit.range()) else {
-                continue;
+            let range = match self.runnable_for(Some(issue.number)) {
+                Ok(kit) => kit.range(),
+                Err(error) => {
+                    set.excluded.push(Excluded {
+                        number: issue.number,
+                        title: issue.title,
+                        reason: format!("{error:#}"),
+                    });
+                    continue;
+                }
             };
             let labels = labels_of(issue.number);
             if consults.contains(&issue.number) {

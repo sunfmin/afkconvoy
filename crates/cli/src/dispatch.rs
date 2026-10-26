@@ -368,7 +368,6 @@ fn start(
         (None, None) => {
             let cast = match fleet.cast(&issue.labels, Some(number)) {
                 Ok(Ok(cast)) => cast,
-                Err(error) if held && error.is::<crate::paused::Held>() => fleet.first()?,
                 Ok(Err(why)) => bail!("{why}: run `afkconvoy kit`"),
                 Err(error) => return Err(error),
             };

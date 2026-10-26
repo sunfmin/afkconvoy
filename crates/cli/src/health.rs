@@ -1205,7 +1205,10 @@ fn decide(
         // settled by the rule now, rather than waiting out a recovery window.
         if let Err(error) = crate::dispatch::continuation_harness(fleet, agent, issue) {
             let why = format!("{error:#}");
-            if error.is::<crate::fleet::NothingSafe>() || why.contains("no eligible harness") {
+            if error.is::<crate::fleet::NothingSafe>()
+                || error.is::<crate::paused::Held>()
+                || why.contains("no eligible harness")
+            {
                 observed.error = Some(why);
                 return escalate_observed(observed, fleet, me, Some(issue));
             }
