@@ -2460,6 +2460,9 @@ enum Command {
         /// The host its PR joins the landing train as cut on [default: this machine's name]
         #[arg(long)]
         host: Option<String>,
+        /// Milliseconds one second of sleep takes
+        #[arg(long, hide = true, default_value_t = 1000)]
+        second_ms: u64,
         #[command(flatten)]
         at: At,
     },
@@ -4431,11 +4434,12 @@ fn run(
         Command::Inspected { text, did, .. } => {
             inspection::inspected(&checkout?, &text.read()?, &did)
         }
-        Command::Cut { from, host, .. } => {
+        Command::Cut { from, host, second_ms, .. } => {
             let repo = checkout?;
             let config = config::load(&repo.dir.join(config::FILE))?;
             let host = host.unwrap_or_else(this_host);
-            cut::run(&repo, &config, from, &host, clock)
+            let second = Duration::from_millis(second_ms);
+            cut::run(&repo, &config, from, &host, second, clock)
         }
         // `main` answers it: a hook's answer is no JSON object.
         Command::Guard => anyhow::bail!("guard answers with its exit code"),

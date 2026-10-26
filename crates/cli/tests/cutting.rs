@@ -252,6 +252,7 @@ fn initial(preset: bool) -> World {
 
 /// Runs the real cut command while the real train command lands its PR.
 /// Only `gh` and `orca` are stood in for; no cut record is edited by the test.
+/// A second of the cut's sleeps takes 10ms: it looks at the train every 0.3s.
 fn finish_on_train(world: &World, checkout: &Path) -> Value {
     let train = world.root.join("train");
     git(
@@ -262,7 +263,7 @@ fn finish_on_train(world: &World, checkout: &Path) -> Value {
     let errors = world.root.join("cut-errors");
     let mut child = world
         .command(env!("CARGO_BIN_EXE_afkconvoy"), checkout)
-        .args(["cut", "--host", "h1"])
+        .args(["cut", "--host", "h1", "--second-ms", "10"])
         .stdout(std::fs::File::create(&answer).unwrap())
         .stderr(Stdio::from(std::fs::File::create(&errors).unwrap()))
         .spawn()
