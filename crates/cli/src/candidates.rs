@@ -309,6 +309,9 @@ fn stop_candidate(repo: &Repo, config: &Config, id: &str) -> Result<()> {
         .iter()
         .find(|c| c.id == id)
         .ok_or_else(|| anyhow!("candidate disappeared"))?;
+    if c.stopped {
+        return Ok(());
+    }
     let processes = signal(repo, config, c)?;
     confirmed(&processes)?;
     change(repo, config, |chain| {
@@ -414,6 +417,20 @@ pub(crate) struct Gate<'a> {
 }
 
 impl Gate<'_> {
+    /// Called at the first observed red exit or limit, before log draining,
+    /// gate-record I/O or process teardown can delay dependent cancellation.
+    pub fn failed(
+        &self,
+        exit_code: i32,
+        timed_out: bool,
+        seconds: u64,
+        termination: Option<crate::gate::Termination>,
+    ) -> Result<()> {
+        let evidence = json!({"status":"red", "exit_code":exit_code, "timed_out":timed_out, "seconds":seconds, "termination":termination});
+        let chain =
+            change(self.repo, self.config, |chain| chain.finish(self.id, false, evidence.clone()))?;
+        cleanup(self.repo, self.config, &chain)
+    }
     pub fn process_marker(&self) -> &str {
         self.id
     }

@@ -165,6 +165,14 @@ impl Chain {
                 c.result = Some(result.clone());
                 c.phase = if green { Phase::Green } else { Phase::Red };
                 failed = !green;
+            } else if c.id == id
+                && c.phase == Phase::Red
+                && c.cancelled_by.as_deref() == Some(id)
+                && !green
+            {
+                // The process observer invalidated immediately. Its owner
+                // later adds the complete log/worktree/recording evidence.
+                c.result = Some(result.clone());
             }
         }
         if failed {

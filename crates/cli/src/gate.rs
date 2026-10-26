@@ -156,11 +156,21 @@ fn run_command(
                 signal,
                 core_dumped: status.core_dumped(),
             });
+            if !status.success()
+                && let Some(candidate) = candidate
+            {
+                candidate.failed(
+                    status.code().unwrap_or(-1),
+                    false,
+                    started.elapsed().as_secs(),
+                    termination,
+                )?;
+            }
             break (status.code().unwrap_or(-1), false, termination);
         }
         if started.elapsed() >= limit {
             if let Some(candidate) = candidate {
-                candidate.stop()?;
+                candidate.failed(TIMED_OUT_CODE, true, started.elapsed().as_secs(), None)?;
             }
             let group = format!("-{}", child.id());
             let _ = crate::process::status(Command::new("kill").args(["-KILL", "--", &group]));
