@@ -1053,7 +1053,11 @@ fn the_host_runner_moves_with_claims_and_a_pr_on_the_train_after_only_the_runnin
     let train = world.remote(&["rev-parse", "refs/convoy/train/line/main"]);
     let terminals = world.orca()["terminals"].clone();
     let ran = world.root.join("queued-ran");
-    let queued_script = format!("touch '{}'", ran.display());
+    let queued_script = format!(
+        "cp '{}' '{}'",
+        world.cache().join("afkconvoy/host-runner.lock").display(),
+        ran.display()
+    );
     let mut queued = world
         .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
         .args(["exclusive", "--", "sh", "-c", &queued_script])
@@ -1079,7 +1083,12 @@ fn the_host_runner_moves_with_claims_and_a_pr_on_the_train_after_only_the_runnin
     logged(&world, "host runner moved: ");
     assert_ne!(world.host_runner().map(u64::from), Some(old));
     assert!(queued.wait().unwrap().success());
-    assert!(ran.exists());
+    let ran_under: Value = serde_json::from_str(&std::fs::read_to_string(&ran).unwrap()).unwrap();
+    assert_eq!(
+        ran_under["pid"].as_u64(),
+        world.host_runner().map(u64::from),
+        "the waiter runs under the replacement: {ran_under}"
+    );
     until("replacement first tick", || {
         (of_kind(&tick_log(&first), "start").len() == 2
             && of_kind(&tick_log(&first), "tick").len() >= 2)

@@ -460,6 +460,26 @@ mod tests {
     }
 
     #[test]
+    fn a_release_move_lets_a_tick_end_and_holds_the_next_until_the_instance_stops() {
+        let standings = Standings::default();
+        let host = HostSleep::open(standing("alpha"), &Wakes::default(), &standings, 600);
+        let stop = Stop::never();
+        assert!(host.begins_unless_stopped(&stop));
+        standings.pause();
+        standings.held_still(|each| assert_eq!(each["alpha"], Stands::Ticking));
+        host.ticked(100, Some((false, true)));
+        standings.held_still(|each| assert_eq!(each["alpha"], Stands::AtWork));
+        let (sent, received) = std::sync::mpsc::channel();
+        let stopping = stop.clone();
+        let waiting =
+            std::thread::spawn(move || sent.send(host.begins_unless_stopped(&stopping)).unwrap());
+        assert!(received.recv_timeout(Duration::from_millis(100)).is_err());
+        stop.tell();
+        assert!(!received.recv_timeout(Duration::from_secs(2)).unwrap(), "no new tick began");
+        waiting.join().unwrap();
+    }
+
+    #[test]
     fn how_each_instance_stands_is_held_for_every_other_and_one_drops_out_as_it_ends() {
         let standings = Standings::default();
         let (alpha_wakes, beta_wakes) = (Wakes::default(), Wakes::default());
