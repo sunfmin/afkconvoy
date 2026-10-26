@@ -132,54 +132,65 @@ pub fn scheduling(queue: &[Ticket], worker_lanes: u64, paused: bool) -> Vec<Sche
         .map(|ticket| Scheduling { number: ticket.number, state: State::Running, reasons: vec![] })
         .collect();
     for ticket in ordered.iter().filter(|t| t.ran.is_none()) {
-        let limit = if ticket.repo_lane.is_some() { 1 } else { worker_lanes };
-        let occupied: Vec<_> = admitted.iter().copied().filter(|t| same_lane(t, ticket)).collect();
-        let own: Vec<_> = admitted
-            .iter()
-            .copied()
-            .filter(|t| {
-                (same_lane(t, ticket) || (t.is_turn && ticket.is_turn))
-                    && same_repo(t, ticket)
-                    && !(t.candidate && ticket.candidate)
-            })
-            .collect();
-        let mut reasons = vec![];
-        if paused {
-            reasons.push(Constraint {
-                kind: ConstraintKind::Paused,
-                requests: vec![],
-                capacity: None,
-                explanation:
-                    "the host runner has paused new grants while moving to another release".into(),
-            });
-        }
-        if !own.is_empty() {
-            reasons.push(Constraint {
-                kind: ConstraintKind::SameRepo,
-                requests: holders(&own),
-                capacity: None,
-                explanation: "this repo already holds or reserves this lane, or another turn of this repo holds or reserves a different lane".into(),
-            });
-        }
-        if occupied.len() as u64 >= limit {
-            reasons.push(Constraint {
-                kind: if ticket.repo_lane.is_some() {
-                    ConstraintKind::RepoCapacity
-                } else {
-                    ConstraintKind::WorkerCapacity
-                },
-                requests: holders(&occupied),
-                capacity: Some(limit),
-                explanation: format!("all {limit} {} lane places are held by running requests or reserved by earlier eligible requests", lane(ticket)),
-            });
-        }
-        let state = if reasons.is_empty() { State::Eligible } else { State::Waiting };
-        if matches!(state, State::Eligible) {
+        let decision = reservation(ticket, &admitted, worker_lanes, paused);
+        if matches!(decision.state, State::Eligible) {
             admitted.push(ticket);
         }
-        decisions.push(Scheduling { number: ticket.number, state, reasons });
+        decisions.push(decision);
     }
     decisions
+}
+
+/// One admission decision, with earlier reservations already applied.
+fn reservation(
+    ticket: &Ticket,
+    admitted: &[&Ticket],
+    worker_lanes: u64,
+    paused: bool,
+) -> Scheduling {
+    let limit = if ticket.repo_lane.is_some() { 1 } else { worker_lanes };
+    let occupied: Vec<_> = admitted.iter().copied().filter(|t| same_lane(t, ticket)).collect();
+    let own: Vec<_> = admitted
+        .iter()
+        .copied()
+        .filter(|t| {
+            (same_lane(t, ticket) || (t.is_turn && ticket.is_turn))
+                && same_repo(t, ticket)
+                && !(t.candidate && ticket.candidate)
+        })
+        .collect();
+    let mut reasons = vec![];
+    if paused {
+        reasons.push(Constraint {
+            kind: ConstraintKind::Paused,
+            requests: vec![],
+            capacity: None,
+            explanation: "the host runner has paused new grants while moving to another release"
+                .into(),
+        });
+    }
+    if !own.is_empty() {
+        reasons.push(Constraint {
+            kind: ConstraintKind::SameRepo,
+            requests: holders(&own),
+            capacity: None,
+            explanation: "this repo already holds or reserves this lane, or another turn of this repo holds or reserves a different lane".into(),
+        });
+    }
+    if occupied.len() as u64 >= limit {
+        reasons.push(Constraint {
+            kind: if ticket.repo_lane.is_some() {
+                ConstraintKind::RepoCapacity
+            } else {
+                ConstraintKind::WorkerCapacity
+            },
+            requests: holders(&occupied),
+            capacity: Some(limit),
+            explanation: format!("all {limit} {} lane places are held by running requests or reserved by earlier eligible requests", lane(ticket)),
+        });
+    }
+    let state = if reasons.is_empty() { State::Eligible } else { State::Waiting };
+    Scheduling { number: ticket.number, state, reasons }
 }
 
 fn holders(tickets: &[&Ticket]) -> Vec<Holder> {
