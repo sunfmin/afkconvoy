@@ -1627,6 +1627,11 @@ fn held_json(held: &Held) -> Value {
         && let Ok(Some(harness)) = Worktree::at(path.clone(), String::new()).harness()
     {
         worker["harness"] = json!(harness);
+        let worktree = Worktree::at(path.clone(), String::new());
+        worker["orca"] = worktree.agent_report().unwrap_or(Value::Null);
+        let recorded = worktree.recorded_harness().ok().flatten();
+        worker["recorded_harness"] = json!(recorded);
+        worker["harness_mismatch"] = json!(recorded.is_some_and(|h| h != harness));
         if let Some(settings) =
             crate::codex_launch::recorded(&Worktree::at(path.clone(), String::new()))
         {
@@ -1704,6 +1709,7 @@ type Examined = (Value, Vec<Finding>);
 /// What `doctor` reads of the fleet of `host` in the checkout `repo`, under
 /// the network settings `proxy` names.
 fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String]) -> Result<Examined> {
+    let _observation = crate::orca::Observation::begin();
     let launches = Launches::foreseen(repo).with_no_proxy(proxy)?;
 
     let log = Log::of(repo).ok();
