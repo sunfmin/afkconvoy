@@ -150,6 +150,27 @@ fn main() {
         ["api", "graphql", ..] => open_issues(&st),
         ["api", ..] => api(&mut st),
         ["issue", "create", ..] => issue_create(&mut st),
+        ["issue", "edit", number, ..] => {
+            let number = number.parse::<u64>().unwrap();
+            let add = st.opts("--add-label");
+            let remove = st.opts("--remove-label");
+            let has = repo_labels(&st);
+            if let Some(lacked) = add.iter().find(|label| !has.contains(label)) {
+                st.finish("", 1, &format!("could not add label: '{lacked}' not found\n"));
+            }
+            let issues = st.doc["issues"].as_array_mut().unwrap();
+            let Some(issue) = issues.iter_mut().find(|issue| issue["number"] == number) else {
+                st.finish("", 1, "gh: Not Found (HTTP 404)\n");
+            };
+            let labels = issue["labels"].as_array_mut().unwrap();
+            labels.retain(|label| !remove.iter().any(|off| label == off));
+            for label in add {
+                if !labels.contains(&json!(label)) {
+                    labels.push(json!(label));
+                }
+            }
+            st.finish(&format!("https://gh/issues/{number}"), 0, "");
+        }
         ["repo", "clone", repo, into, "--", flags @ ..] => {
             let Some(from) = st.doc["repos"][*repo].as_str() else {
                 st.finish(

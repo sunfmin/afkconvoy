@@ -252,6 +252,7 @@ fn initial(preset: bool) -> World {
 
 /// Runs the real cut command while the real train command lands its PR.
 /// Only `gh` and `orca` are stood in for; no cut record is edited by the test.
+/// A second of the cut's sleeps takes 10ms: it looks at the train every 0.3s.
 fn finish_on_train(world: &World, checkout: &Path) -> Value {
     let train = world.root.join("train");
     git(
@@ -262,16 +263,17 @@ fn finish_on_train(world: &World, checkout: &Path) -> Value {
     let errors = world.root.join("cut-errors");
     let mut child = world
         .command(env!("CARGO_BIN_EXE_afkconvoy"), checkout)
-        .args(["cut", "--host", "h1"])
+        .args(["cut", "--host", "h1", "--second-ms", "10"])
         .stdout(std::fs::File::create(&answer).unwrap())
         .stderr(Stdio::from(std::fs::File::create(&errors).unwrap()))
         .spawn()
         .unwrap();
     let until = Instant::now() + Duration::from_secs(60);
     let line = "refs/convoy/train/line/main";
+    let base = world.remote(&["rev-parse", "refs/heads/main"]);
     let joined = loop {
         let tip = world.remote(&["for-each-ref", "--format=%(objectname)", line]);
-        if !tip.is_empty() {
+        if !tip.is_empty() && tip != base {
             break tip;
         }
         if child.try_wait().unwrap().is_some() || Instant::now() >= until {
@@ -294,6 +296,48 @@ fn finish_on_train(world: &World, checkout: &Path) -> Value {
     let answer: Value = serde_json::from_str(&std::fs::read_to_string(answer).unwrap()).unwrap();
     assert_eq!(answer["landed"], joined);
     answer
+}
+
+#[test]
+fn a_watch_s_landed_fix_reaches_the_published_version_through_a_cut() {
+    let world = initial(false);
+    let checkout = world.root.join("afkconvoy-watch");
+    git(
+        &world.clone,
+        &["worktree", "add", "-q", "-b", "watch-fix", checkout.to_str().unwrap(), "HEAD"],
+    );
+    common::commit(&checkout, "fixed.txt", "worktrees are trusted\n");
+    git(&checkout, &["push", "-q", "origin", "HEAD"]);
+    world.with_gh(|gh| {
+        gh["prs"].as_array_mut().unwrap().push(json!({
+            "number": 90, "title": "Trust every worktree", "headRefName": "watch-fix",
+            "headRefOid": "", "body": "The watch's lasting fix.", "state": "open"
+        }))
+    });
+    assert_eq!(world.afk_in(&checkout, &["gate", "--train"]).ok()["recorded"], true);
+    let joined = world.afk_in(&checkout, &["land", "--inspection", "--host", "h1"]).ok();
+    assert_eq!(joined["outcome"], "joined");
+    assert!(!world.root.join("published").exists(), "joining has installed nothing");
+
+    let train = world.root.join("watch-train");
+    git(
+        &world.clone,
+        &["worktree", "add", "-q", "-b", "watch-train", train.to_str().unwrap(), "HEAD"],
+    );
+    let landed = world.afk_in(&train, &["land", "--train", "--merged-timeout", "5"]).ok();
+    assert_eq!(landed["outcome"], "landed");
+    assert!(!world.root.join("published").exists(), "landing has installed nothing");
+
+    world.afk(&["wake"]).ok();
+    assert_eq!(cut(&tick_as(&world, "alpha", 10_000)), ["cut done"]);
+    let cut_checkout = self::checkout(&world);
+    let released = finish_on_train(&world, &cut_checkout);
+    assert_eq!(released["version"], "1.2.3");
+    assert!(released["prs"].as_array().unwrap().contains(&json!(90)));
+    let published = std::fs::read_to_string(world.root.join("published")).unwrap();
+    assert_eq!(published, "1.2.3 v1.2.3\n");
+    assert_eq!(world.remote(&["show", "v1.2.3:fixed.txt"]), "worktrees are trusted");
+    assert!(failures(&world).is_empty(), "the cut asked for no human");
 }
 
 /// The first version takes every release step, whether setting it changes

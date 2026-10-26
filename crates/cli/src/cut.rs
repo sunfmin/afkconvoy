@@ -31,8 +31,9 @@ use crate::orca::{Source, Worktree};
 use crate::stage::Flows;
 use crate::train::{Train, joins_in};
 
-/// How long the step `land` waits between two looks at the landing train.
-const LAND_POLL: Duration = Duration::from_secs(30);
+/// How many seconds the step `land` waits between two looks at the landing
+/// train.
+const LAND_POLL: u32 = 30;
 
 /// What the remote and GitHub say of the repo's cut, as a rebuild reads it:
 /// the version tags it listed (`Fleet::version_tags`) and the base branch at
@@ -329,12 +330,14 @@ pub fn says(repo: &Repo, row: &Row) -> Option<String> {
 /// fleet to read once it ends. A step that fails ends it there, saying why.
 /// One that took its last closes the open issue that said this version's cut
 /// failed. `config` is the checkout's own, whose cut steps it takes; on
-/// `host`, at the time `clock` says.
+/// `host`, at the time `clock` says, each second of its sleeps taking
+/// `second`.
 pub fn run(
     repo: &Repo,
     config: &Config,
     from: Option<Step>,
     host: &str,
+    second: Duration,
     clock: impl Fn() -> u64,
 ) -> Result<Value> {
     let checkout = cut_checkout(repo)?;
@@ -352,7 +355,8 @@ pub fn run(
         )
     })?;
     let gh = GitHub::of(repo)?;
-    let mut cutting = Cutting { repo, config, steps: &steps, gh: &gh, host, checkout: &checkout };
+    let mut cutting =
+        Cutting { repo, config, steps: &steps, gh: &gh, host, checkout: &checkout, second };
     let first = from.unwrap_or_else(|| record.step());
     record.failed = None;
     for step in first.from() {
@@ -405,6 +409,8 @@ struct Cutting<'a> {
     gh: &'a GitHub,
     host: &'a str,
     checkout: &'a Worktree,
+    /// How long one second of its sleeps takes.
+    second: Duration,
 }
 
 impl Cutting<'_> {
@@ -549,7 +555,7 @@ impl Cutting<'_> {
             if !train.joins(self.repo, &self.gh.tracker)?.iter().any(|join| join.pr == number) {
                 self.join(number, clock())?;
             }
-            std::thread::sleep(LAND_POLL);
+            std::thread::sleep(self.second * LAND_POLL);
         }
     }
 

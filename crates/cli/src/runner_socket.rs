@@ -370,12 +370,15 @@ fn keep_asking_in(
             return Err(error.context("the host runner could not be asked"));
         }
     };
+    // Before the question: a host runner that answers and closes the line
+    // before the timeout is set leaves a line that refuses it (EINVAL on
+    // macOS). One it closed already reads its end at once.
+    let _ = stream.set_read_timeout(Some(within));
     let asked = serde_json::to_string(request)?;
     match writeln!(&stream, "{asked}") {
         Err(error) if closed(&error) => return Ok((Reached::Closed, None)),
         written => written.context("the host runner could not be asked")?,
     }
-    stream.set_read_timeout(Some(within))?;
     let mut lines = BufReader::new(stream);
     let mut line = String::new();
     match lines.read_line(&mut line) {
@@ -493,6 +496,7 @@ mod tests {
             pid: 7,
             dir: "/w".into(),
             issue: Some(46),
+            train: false,
             command: "cargo test".into(),
             asked: 1000,
             ran: None,
@@ -500,7 +504,7 @@ mod tests {
         let exclusive = serde_json::to_string(&Request::Exclusive { ticket }).unwrap();
         assert_eq!(
             exclusive,
-            r#"{"op":"exclusive","ticket":{"number":0,"pid":7,"command":"cargo test","dir":"/w","issue":46,"asked":1000,"ran":null}}"#
+            r#"{"op":"exclusive","ticket":{"number":0,"pid":7,"command":"cargo test","dir":"/w","issue":46,"train":false,"asked":1000,"ran":null}}"#
         );
     }
 

@@ -424,6 +424,7 @@ fn on_host(repos: &Value, listed: &Value, ps: &Value) -> Vec<OnHost> {
             let fleets = is_worktree_named(name, TRAIN_WORKTREE)
                 || is_worktree_named(name, CASTER_WORKTREE)
                 || is_worktree_named(name, inspection::CHECKOUT)
+                || is_worktree_named(name, crate::host_watch::CHECKOUT)
                 || is_worktree_named(name, cut::CHECKOUT);
             Some(OnHost { issue: row["linkedIssue"].as_u64(), path, repo, fleets, held })
         })
@@ -575,6 +576,7 @@ impl Worktree {
         is_worktree_named(name, TRAIN_WORKTREE)
             || is_worktree_named(name, CASTER_WORKTREE)
             || is_worktree_named(name, inspection::CHECKOUT)
+            || is_worktree_named(name, crate::host_watch::CHECKOUT)
             || is_worktree_named(name, cut::CHECKOUT)
     }
 
