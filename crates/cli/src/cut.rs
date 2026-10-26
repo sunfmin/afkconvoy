@@ -636,15 +636,16 @@ impl Cutting<'_> {
             .open(&file)
             .with_context(|| format!("cannot write {}", file.display()))?;
         writeln!(log, "== {} (VERSION={version})", step.word())?;
-        let status = Command::new("sh")
-            .args(["-e", "-c", lines])
-            .current_dir(&self.repo.dir)
-            .env(cut::VERSION_ENV, version)
-            .stdin(Stdio::null())
-            .stdout(log.try_clone()?)
-            .stderr(log)
-            .status()
-            .context("sh could not run")?;
+        let status = crate::process::status(
+            Command::new("sh")
+                .args(["-e", "-c", lines])
+                .current_dir(&self.repo.dir)
+                .env(cut::VERSION_ENV, version)
+                .stdin(Stdio::null())
+                .stdout(log.try_clone()?)
+                .stderr(log),
+        )
+        .context("sh could not run")?;
         if !status.success() {
             let code = status.code().map_or("a signal".to_string(), |code| code.to_string());
             bail!("its lines exited {code}; what they printed is in {}", file.display());

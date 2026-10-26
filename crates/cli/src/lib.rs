@@ -81,6 +81,7 @@ pub mod patrol;
 pub mod paused;
 pub mod precedent;
 pub mod probe;
+mod process;
 pub mod recovery;
 pub mod role;
 pub mod roster_issue;

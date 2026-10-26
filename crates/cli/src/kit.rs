@@ -396,7 +396,7 @@ pub fn refresh_after_answer(harness: Harness) -> Result<()> {
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
-    command.spawn()?;
+    crate::process::spawn(&mut command)?;
     Ok(())
 }
 
@@ -1230,11 +1230,10 @@ mod tests {
         )
         .unwrap();
         for mode in ["list", "key", "refused", "truncated", "none", "malformed", "redirect"] {
-            let run = std::process::Command::new("node")
-                .arg(root.path().join("test.mjs"))
-                .arg(mode)
-                .output()
-                .unwrap();
+            let run = crate::process::output(
+                std::process::Command::new("node").arg(root.path().join("test.mjs")).arg(mode),
+            )
+            .unwrap();
             assert!(run.status.success(), "{mode}: {}", String::from_utf8_lossy(&run.stderr));
             let printed = String::from_utf8(run.stdout).unwrap();
             let found = |harness| {
