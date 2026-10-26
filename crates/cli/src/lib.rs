@@ -84,6 +84,7 @@ pub mod precedent;
 pub mod probe;
 mod process;
 pub mod recovery;
+mod repair;
 pub mod role;
 pub mod roster_issue;
 pub mod runner_socket;
@@ -103,6 +104,7 @@ pub mod tools;
 pub mod topic;
 pub mod tracker;
 pub mod train;
+mod turn;
 pub mod wake;
 pub mod watch;
 pub mod worker_tmp;
@@ -4340,7 +4342,7 @@ fn run(
             let gh = gh::GitHub::of(&repo)?;
             let host = host.unwrap_or_else(this_host);
             match issue.or(number) {
-                Some(issue) => train::land(&repo, &config, &gh, issue, &host, now),
+                Some(issue) => turn::land(&repo, &config, &gh, issue, &host, now),
                 None if inspection => inspection::land(&repo, &config, &gh, &host, now),
                 None => {
                     let merged = Duration::from_secs(merged_timeout);

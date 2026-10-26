@@ -1227,10 +1227,10 @@ pub fn land(repo: &Repo, config: &Config, gh: &GitHub, host: &str, now: u64) -> 
     let answer = json!({"inspection": host, "pr": pr.number});
     let locks = crate::lock::standing_locks(gh, config)?;
     if !locks.is_empty() {
-        return Ok(crate::train::locked(answer, &locks));
+        return Ok(crate::turn::locked(answer, &locks));
     }
     let of = Of::Inspection(host.to_string());
-    let answer = crate::train::join(repo, config, &gh.tracker, pr, &of, answer, (host, now))?;
+    let answer = crate::turn::join(repo, config, &gh.tracker, pr, &of, answer, (host, now))?;
     if matches!(answer["outcome"].as_str(), Some("joined" | "merged")) {
         checkout.record_inspection_pr(pr.number)?;
     }

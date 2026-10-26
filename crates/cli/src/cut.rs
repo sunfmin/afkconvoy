@@ -549,14 +549,14 @@ impl Cutting<'_> {
     fn join(&self, number: u64, now: u64) -> Result<()> {
         let locks = crate::lock::standing_locks(self.gh, self.config)?;
         if !locks.is_empty() {
-            let answer = crate::train::locked(json!({}), &locks);
+            let answer = crate::turn::locked(json!({}), &locks);
             bail!("{}", answer["detail"].as_str().unwrap_or("a fleet lock stands"));
         }
         let open = self.gh.open_prs()?;
         let pr = open.iter().find(|pr| pr.number == number);
         let pr = pr.ok_or_else(|| anyhow!("PR #{number} is not open: it joins nothing"))?;
         let of = Of::Cut(self.host.to_string());
-        let answer = crate::train::join(
+        let answer = crate::turn::join(
             self.repo,
             self.config,
             &self.gh.tracker,

@@ -21,7 +21,7 @@ use crate::train::{Train, merge_in, require_committed, unmerged};
 /// Pushes `commit` to the base branch as a fast-forward → whether the remote
 /// took it. It asks for the proof of the commit's tree, and pushes nothing
 /// that proof is not of.
-fn push_base(repo: &Repo, branch: &str, commit: &str, proven: &Proven) -> Result<bool> {
+pub fn push_base(repo: &Repo, branch: &str, commit: &str, proven: &Proven) -> Result<bool> {
     let tree = repo.git(&["rev-parse", &format!("{commit}^{{tree}}")])?;
     if tree != proven.tree() {
         bail!(

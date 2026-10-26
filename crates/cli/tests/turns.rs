@@ -75,18 +75,25 @@ fn two_turns_merge_gate_and_join_in_order_and_the_train_uses_the_last_record() {
     assert!(!second_started.exists(), "a worker without its turn runs no gate");
     std::fs::write(&release, "").unwrap();
     let (a, b) = (finish(a), finish(b));
-    assert_eq!(a["outcome"], "joined", "{a}");
-    assert_eq!(b["outcome"], "joined", "{b}");
+    assert_eq!(a["outcome"], "merged", "{a}");
+    assert_eq!(b["outcome"], "merged", "{b}");
     assert_eq!(b["merged"], a["commit"], "the tip is read when its turn starts");
     assert!(two.join("one.txt").exists());
-    let train = world.root.join("convoy-train");
-    git(
-        &world.clone,
-        &["worktree", "add", "-q", "--detach", train.to_str().unwrap(), "origin/main"],
-    );
-    let landed = world.afk_in(&train, &["land", "--train", "--merged-timeout", "0"]).ok();
-    assert_eq!(landed["gate"]["source"], "recorded", "{landed}");
-    assert_eq!(landed["commit"], b["commit"]);
+    assert_eq!(world.remote(&["rev-parse", "refs/heads/main"]), b["commit"].as_str().unwrap());
+    assert!(world.remote(&["for-each-ref", "--format=%(refname)", LINE]).is_empty());
+    for answer in [&a, &b] {
+        let commit = answer["commit"].as_str().unwrap();
+        let tree = git(&world.clone, &["rev-parse", &format!("{commit}^{{tree}}")]);
+        assert!(
+            !world
+                .remote(&[
+                    "for-each-ref",
+                    "--format=%(refname)",
+                    &format!("refs/convoy/gate/{tree}")
+                ])
+                .is_empty()
+        );
+    }
 }
 
 #[test]
@@ -100,12 +107,12 @@ fn red_and_conflict_release_the_turn_without_joining() {
     assert!(world.remote(&["for-each-ref", "--format=%(refname)", LINE]).is_empty());
     let one = world.worker(2, "README.md", "two");
     let two = world.worker(3, "README.md", "three");
-    assert_eq!(world.afk_in(&one, &["gate", "--train"]).ok()["outcome"], "joined");
-    let before = world.remote(&["rev-parse", LINE]);
+    assert_eq!(world.afk_in(&one, &["gate", "--train"]).ok()["outcome"], "merged");
+    let before = world.remote(&["rev-parse", "refs/heads/main"]);
     let answer = world.afk_in(&two, &["gate", "--train"]).ok();
     assert_eq!(answer["outcome"], "conflict", "{answer}");
     assert_eq!(git(&two, &["diff", "--name-only", "--diff-filter=U"]), "README.md");
-    assert_eq!(world.remote(&["rev-parse", LINE]), before);
+    assert_eq!(world.remote(&["rev-parse", "refs/heads/main"]), before);
 }
 
 #[test]
@@ -127,7 +134,7 @@ fn a_missing_tip_record_is_gated_in_the_train_lane_before_any_worker_turn() {
     assert_eq!(lanes["worker"]["running"], Value::Null);
     assert!(!worker_gate.exists());
     std::fs::write(release, "").unwrap();
-    assert_eq!(finish(child)["outcome"], "joined");
+    assert_eq!(finish(child)["outcome"], "merged");
     assert!(worker_gate.exists());
 }
 
@@ -170,9 +177,9 @@ fn two_worker_lanes_run_two_repos_but_a_second_turn_of_one_repo_waits() {
     assert_eq!(doctor["host"]["settings"]["in_force"]["train_lanes"], 2);
     std::fs::write(a.root.join("release"), "").unwrap();
     std::fs::write(b.root.join("release"), "").unwrap();
-    assert_eq!(finish(first)["outcome"], "joined");
-    assert_eq!(finish(third)["outcome"], "joined");
-    assert_eq!(finish(second)["outcome"], "joined");
+    assert_eq!(finish(first)["outcome"], "merged");
+    assert_eq!(finish(third)["outcome"], "merged");
+    assert_eq!(finish(second)["outcome"], "merged");
     assert!(another.join("held.txt").exists());
 }
 
@@ -201,7 +208,7 @@ fn a_light_gate_takes_its_repo_turn_while_the_worker_lane_is_occupied() {
         .spawn()
         .unwrap();
     until(|| held.exists());
-    assert_eq!(finish(start(&world, &worker, &world.cache(), 1))["outcome"], "joined");
+    assert_eq!(finish(start(&world, &worker, &world.cache(), 1))["outcome"], "merged");
     std::fs::write(release, "").unwrap();
     assert!(heavy.wait_with_output().unwrap().status.success());
 }
@@ -221,7 +228,7 @@ fn the_exclusive_bound_ends_the_whole_turn_and_releases_the_next_one() {
     assert_eq!(ended.status.code(), Some(124), "{}", String::from_utf8_lossy(&ended.stderr));
     let answer: Value = serde_json::from_slice(&ended.stdout).unwrap();
     assert!(answer["error"].as_str().unwrap().contains("exclusive bound of 1s"), "{answer}");
-    assert_eq!(finish(next)["outcome"], "joined");
+    assert_eq!(finish(next)["outcome"], "merged");
     assert!(!two.join("held.txt").exists(), "the red turn joined nothing");
 }
 
@@ -237,10 +244,10 @@ fn the_tip_uses_its_own_gate_command_and_each_turn_uses_the_merged_config() {
         "```yaml\nbase_branch: main\ngate_command: test -f required.txt\ngate_seconds: 600\n```\n",
     );
     let changed = world.afk_in(&first, &["gate", "--train"]).ok();
-    assert_eq!(changed["outcome"], "joined", "{changed}");
+    assert_eq!(changed["outcome"], "merged", "{changed}");
     assert_eq!(changed["command"], "test -f required.txt");
     let merged = world.afk_in(&second, &["gate", "--train"]).ok();
-    assert_eq!(merged["outcome"], "joined", "{merged}");
+    assert_eq!(merged["outcome"], "merged", "{merged}");
     assert_eq!(merged["command"], "test -f required.txt", "the merged config names the gate");
     assert_eq!(merged["recorded"], true);
     let train = world.root.join("convoy-train");
@@ -267,7 +274,7 @@ fn a_green_run_without_a_written_record_joins_nothing_and_keeps_the_pr_in_its_an
     assert_eq!(answer["pr"], 10);
     assert!(world.remote(&["for-each-ref", "--format=%(refname)", LINE]).is_empty());
     world.watch_pushes(None);
-    assert_eq!(world.afk_in(&worker, &["gate", "--train"]).ok()["outcome"], "joined");
+    assert_eq!(world.afk_in(&worker, &["gate", "--train"]).ok()["outcome"], "merged");
 }
 
 #[test]
@@ -279,5 +286,5 @@ fn a_green_tip_whose_record_cannot_be_written_returns_a_retryable_error() {
     let error = world.afk_in(&worker, &["gate", "--train"]).error();
     assert!(error.contains("gated green, but has no record"), "{error}");
     world.watch_pushes(None);
-    assert_eq!(world.afk_in(&worker, &["gate", "--train"]).ok()["outcome"], "joined");
+    assert_eq!(world.afk_in(&worker, &["gate", "--train"]).ok()["outcome"], "merged");
 }

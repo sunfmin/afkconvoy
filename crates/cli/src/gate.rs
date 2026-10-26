@@ -298,7 +298,7 @@ pub fn gate(repo: &Repo, config: &Config, train: bool, host: &str, now: u64) -> 
         let issue = pr.closes.first().ok_or_else(|| {
             anyhow!("this PR closes no issue — use `land --inspection` for an inspection's PR")
         })?;
-        return crate::train::land(repo, config, &gh, *issue, host, now);
+        return crate::turn::land(repo, config, &gh, *issue, host, now);
     }
     let command = GateCommand::new(&config.gate_command);
     let mut merged = None;
