@@ -604,6 +604,7 @@ fn measure_serial_and_parallel_batches() {
         let gate=std::fs::read_to_string(world.clone.join("gate.sh")).unwrap().replace(
             "while test -d \"$root\" && test ! -f \"$root/release-$name\"; do sleep 0.02; done",
             "awk 'BEGIN { n=500000; for(i=0;i<n;i++)a[i]=i; for(j=0;j<40;j++)for(i=0;i<n;i++)s+=a[i]; print s }' >/dev/null");
+        let gate = format!("{gate}\ntouch \"$root/end-$name\"\n");
         commit(&world.clone, "gate.sh", &gate);
         git(&world.clone, &["push", "-q", "origin", "HEAD"]);
         assert_eq!(world.afk(&["gate"]).ok()["recorded"], true);
@@ -623,7 +624,24 @@ fn measure_serial_and_parallel_batches() {
             assert_eq!(answer["outcome"], "merged", "{answer}");
             seconds.push(answer["seconds"].clone());
         }
-        batches.push(json!({"lanes":lanes,"batch_seconds":began.elapsed().as_secs_f64(),"gate_seconds":seconds,"discarded_gate_seconds":0}));
+        let gate_wall: Vec<_> = ["a", "b", "c"]
+            .into_iter()
+            .map(|name| {
+                let first = std::fs::metadata(world.root.join(format!("start-{name}")))
+                    .unwrap()
+                    .modified()
+                    .unwrap();
+                let last = std::fs::metadata(world.root.join(format!("end-{name}")))
+                    .unwrap()
+                    .modified()
+                    .unwrap();
+                last.duration_since(first).unwrap().as_secs_f64()
+            })
+            .collect();
+        batches.push(json!({"lanes":lanes,"batch_seconds":began.elapsed().as_secs_f64(),"gate_seconds":seconds,"gate_wall_seconds":gate_wall,"discarded_gate_seconds":0}));
     }
-    eprintln!("CANDIDATE_BATCH_MEASUREMENT={}", json!(batches));
+    eprintln!(
+        "CANDIDATE_BATCH_MEASUREMENT={}",
+        json!({"version":afkconvoy::VERSION,"batches":batches})
+    );
 }
