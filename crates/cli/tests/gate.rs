@@ -82,7 +82,13 @@ impl QueuedGate {
     }
 
     fn finish(&mut self) -> Output {
-        self.child.take().unwrap().wait_with_output().unwrap()
+        let out = self.child.take().unwrap().wait_with_output().unwrap();
+        eprintln!(
+            "stdout:\n{}stderr:\n{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        out
     }
 }
 
