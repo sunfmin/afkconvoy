@@ -209,8 +209,8 @@ no other PR. Nobody reads this terminal: never wait for an answer.
 
 After a genuine effort, post a comment on the issue instead (`gh issue comment {n}<tracker> --body \"...\"`),
 wake the fleet (below) and stop. Its **first line** must be exactly this marker, with `phase=escalate`,
-on one line, followed by where you are stuck, so that a human can act on it in one reply — or, for
-a defect outside your issue (above), with `phase=blocked` and its issue in `blocked_by=`:
+on one line, followed by where you are stuck, so that a human can act on it in one reply — or,
+with `phase=blocked` and every existing blocking issue in `blocked_by=`:
 ```
 {verdict_marker}
 ```
@@ -265,8 +265,7 @@ body:
 ```
 - **`already-satisfied`** — the issue is already implemented in `{base_branch}`: you changed nothing.
 - **`blocked`** — the issue needs something that belongs to another issue and does not exist yet. Do
-  not create it yourself — unless it is a defect outside your issue that you discovered, which no
-  issue covers yet (above). Name every blocking issue in `blocked_by=` (e.g. `blocked_by=41,42`) and
+  not create it yourself. Name every blocking issue in `blocked_by=` (e.g. `blocked_by=41,42`) and
   say what is missing.
 - **`escalate`** — after a genuine effort you cannot complete the work or make the gate pass, or
   the issue as written cannot be done. Say where you are stuck, or the decision that has to be made,
