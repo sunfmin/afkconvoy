@@ -63,7 +63,10 @@ fn certify_tip(repo: &Repo, config: &Config, tip: &str, now: u64) -> Result<bool
 /// Wait outside the worker lane while the train has no green tip. A train
 /// lane run can establish a missing record; a red tip is the train worker's
 /// to repair. Re-read after acquiring the worker lane, since it can move
-/// while we wait there.
+/// while we wait there. A lock issue's turn waits for no green tip: the
+/// train worker that raised the lock on a red base branch waits for that
+/// issue's fix to join first, and the turn's own gate of the merged tree
+/// decides whether it does.
 fn turn(repo: &Repo, config: &Config, issue: Option<u64>, now: u64) -> Result<(Permit, Train)> {
     let mut tried = None;
     loop {
@@ -75,11 +78,13 @@ fn turn(repo: &Repo, config: &Config, issue: Option<u64>, now: u64) -> Result<(P
                 named(&locks)
             );
         }
+        // Past the check above, a standing lock means this is its issue.
+        let repairs = !locks.is_empty();
         let train = Train::read(repo, config)?;
         let tip_config = tip_config(repo, &train.tip)?;
         let command = GateCommand::new(&tip_config.gate_command);
         let tree = Tree::named(&repo.git(&["rev-parse", &format!("{}^{{tree}}", train.tip)])?);
-        if crate::gate::recorded(repo, &tree, &command, now)?.is_none() {
+        if !repairs && crate::gate::recorded(repo, &tree, &command, now)?.is_none() {
             if tried.as_deref() != Some(train.tip.as_str()) {
                 let green = certify_tip(repo, &tip_config, &train.tip, now)?;
                 tried = Some(train.tip.clone());
@@ -109,7 +114,8 @@ fn turn(repo: &Repo, config: &Config, issue: Option<u64>, now: u64) -> Result<(P
             continue;
         }
         let current_command = GateCommand::new(&current_config.gate_command);
-        if crate::gate::recorded(repo, &current_tree, &current_command, now)?.is_none() {
+        if !repairs && crate::gate::recorded(repo, &current_tree, &current_command, now)?.is_none()
+        {
             drop(permit);
             continue;
         }

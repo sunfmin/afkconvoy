@@ -227,6 +227,78 @@ fn a_look_with_nothing_to_act_on_starts_no_model_and_moves_its_until_on() {
 }
 
 #[test]
+fn unplaced_models_start_a_daily_watch_that_places_research_and_keeps_its_bound_across_restarts() {
+    let world = World::new();
+    world.kit_models("claude-code", &["fast", "deep"]);
+    world.with_kit(|kit| {
+        for model in kit["harnesses"][0]["models"].as_array_mut().unwrap() {
+            model["good_at"] = json!("research pending");
+        }
+    });
+    let dir = operator(&world);
+    run(&world, &dir);
+    let watch = until(&world, "the watch of unplaced models", || running(&world));
+    assert_eq!(watch["items"].as_array().unwrap().len(), 1, "{watch}");
+    assert!(watch["items"][0]["id"].as_str().unwrap().starts_with("kit-research:"));
+    assert_eq!(watch["model"], Value::Null, "the watch starts on the default too");
+    let told = brief(&starts(&world)[0]);
+    for instruction in [
+        "after anything holding work up",
+        "Use your web tools",
+        "afkconvoy kit --research <file>",
+        "correct the file",
+        "what remains unplaced",
+    ] {
+        assert!(told.contains(instruction), "{told}");
+    }
+    let file = world.root.join("research.json");
+    std::fs::write(&file, json!({"models":[{"harness":"claude-code", "model":"fast",
+        "good_at":"small fixes; limited deep reasoning", "sources":[{"url":"https://vendor.example/card", "date":"2026-10-24"}]}]}).to_string()).unwrap();
+    let applied = world.afk(&["kit", "--research", file.to_str().unwrap()]).ok();
+    assert_eq!(applied["placed"], json!([{"harness":"claude-code", "model":"fast"}]));
+    printed(&world, &watch, &["placed fast; deep remains unplaced"], Some(0));
+    until(&world, "research watch ended", || ended(&world, "ended"));
+    let first_until = state(&world)["until"].as_u64().unwrap();
+    until(&world, "a later look with research left", || {
+        state(&world)["until"].as_u64().filter(|at| *at > first_until)
+    });
+    assert_eq!(starts(&world).len(), 1, "pending research alone waits a day");
+
+    world.kill_host_runner("KILL");
+    run(&world, &dir);
+    let before = state(&world)["until"].as_u64().unwrap();
+    until(&world, "a look after restart", || {
+        state(&world)["until"].as_u64().filter(|at| *at > before)
+    });
+    assert_eq!(starts(&world).len(), 1, "restart keeps the research bound");
+
+    // A new urgent item takes pending research even inside its daily bound.
+    paused(&world, "pi", "a new fault");
+    let urgent =
+        until(&world, "a watch of the new fault and remaining research", || running(&world));
+    let items = urgent["items"].as_array().unwrap();
+    assert_eq!(items.len(), 2, "{urgent}");
+    assert!(items[0]["id"].as_str().unwrap().starts_with("finding:"));
+    assert!(items[1]["id"].as_str().unwrap().starts_with("kit-research:"));
+    printed(&world, &urgent, &["checked pi; deep has no evidence yet"], Some(0));
+    until(&world, "the urgent watch ended", || {
+        ended(&world, "ended").filter(|last| last["id"] == urgent["id"])
+    });
+
+    world.kill_host_runner("KILL");
+    let mut kept = state(&world);
+    kept["research_started"] = json!(
+        kept["research_started"].as_u64().unwrap() - afkconvoy_core::host_watch::RESEARCH_EVERY
+    );
+    std::fs::write(world.cache().join("afkconvoy/watch/state.json"), kept.to_string()).unwrap();
+    run(&world, &dir);
+    let daily = until(&world, "research due again after a day", || running(&world));
+    assert_eq!(daily["items"].as_array().unwrap().len(), 1, "{daily}");
+    assert!(daily["items"][0]["id"].as_str().unwrap().starts_with("kit-research:"));
+    assert_eq!(daily["model"], "fast", "the next watch uses the placed model");
+}
+
+#[test]
 fn a_watch_can_fix_a_fleet_fault_and_hand_it_back_while_a_human_decision_stays() {
     let world = World::new();
     let dir = operator(&world);
@@ -392,6 +464,7 @@ fn a_watch_whose_harness_runs_out_goes_on_on_the_next_with_the_same_look() {
     let first = until(&world, "a Codex watch", || running(&world));
     assert_eq!(first["harness"], "codex");
     assert!(starts(&world)[0].contains(" exec "), "{:?}", starts(&world));
+    assert!(starts(&world)[0].contains(" --search "), "the watch can search the web");
 
     let out = "Usage limit reached; increase your limits to continue using Codex";
     printed(&world, &first, &["checked kimi", out], None);

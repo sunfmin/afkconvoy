@@ -124,6 +124,8 @@ struct State {
     until: Option<u64>,
     /// The items a watch was started on, while their episodes last.
     watched: Vec<String>,
+    /// Last successful start that took kit research, retained across restarts.
+    research_started: Option<u64>,
     running: Option<Watch>,
     last: Option<Watch>,
     history: Vec<Watch>,
@@ -279,7 +281,13 @@ impl Watcher {
             }
         }
         state.watched = host_watch::covered(&state.watched, &episodes);
-        let mut pending = host_watch::pending(&current, &state.watched, false);
+        let mut pending = host_watch::pending(
+            &current,
+            &state.watched,
+            false,
+            state.research_started,
+            crate::clock(),
+        );
         if pending.is_empty() {
             state.unavailable = None;
         } else {
@@ -354,6 +362,10 @@ impl Watcher {
                     state.watched.extend(watch.items.iter().map(|item| item.id.clone()));
                     state.watched.sort();
                     state.watched.dedup();
+                    if watch.items.iter().any(|item| item.id.starts_with(host_watch::RESEARCH_ITEM))
+                    {
+                        state.research_started = Some(now);
+                    }
                     state.unavailable = None;
                     (self.say)(What::WatchStarted {
                         id: watch.id.clone(),
@@ -536,6 +548,11 @@ fn start_session(watch: &Watch) -> Result<(String, PathBuf)> {
     // directory holds no config, and no role.
     let repo = Repo::new(watch.directory.clone());
     let command = crate::launch::Launches::new(&repo, true)?.command(watch.harness)?;
+    let command = if watch.harness == Harness::Codex {
+        format!("{} --search", command.as_str())
+    } else {
+        command.as_str().to_string()
+    };
     let kept = crate::kept::keep(watch.harness, true)?;
     let line = watch.harness.watch(
         command.as_str(),
@@ -606,6 +623,18 @@ fn brief(watch: &Watch) -> String {
          An escalation that asks a human for a decision stays with the human. Do not invent \
          a ruling, pass a human stage, choose a workflow or clear its labels to make it run. \
          Leave it alone and list its repo, issue, question and answer line in your record.\n\n\
+         ## Research the host kit's unplaced models\n\n\
+         Take the host kit's unplaced models after anything holding work up. Read \
+         `afkconvoy kit --help` for the research file's format and `afkconvoy doctor --all` \
+         for the latest listed ids, names and research. Use your web tools to search primary \
+         and high-trust sources: vendor model cards and release notes, SWE-bench, \
+         Terminal-Bench and Aider. Research each pending identity once across harnesses; \
+         use dated sources for its coding strengths, weaknesses and other names. Write a \
+         JSON research file in preference order and run `afkconvoy kit --research <file>`. \
+         A refusal names the fault: correct the file and run it again. Place what the \
+         evidence supports; omitted models stay unplaced, and a harness with none placed \
+         stays on its default model. Check the command's `placed` and the updated doctor \
+         answer; record what you placed and what remains unplaced.\n\n\
          ## Change any repo on the checkout list\n\n\
          When a lasting fix needs code, make it yourself, even if that repo's fleet cannot \
          start a worker. In the affected repo create a linked worktree on a branch of your \
@@ -708,10 +737,13 @@ fn findings(items: &mut Vec<Item>, at: &str, findings: &Value) {
             continue;
         }
         let reason = format!("{what}; evidence: {}; fix: {}", finding["evidence"], finding["fix"]);
-        let id = finding["watch_id"]
-            .as_str()
-            .map(str::to_string)
-            .unwrap_or_else(|| format!("finding:{at}:{what}"));
+        let id = finding["watch_id"].as_str().map(str::to_string).unwrap_or_else(|| {
+            if what.contains(crate::doctor::Kind::KitUnplaced.symptom()) {
+                format!("{}{what}", host_watch::RESEARCH_ITEM)
+            } else {
+                format!("finding:{at}:{what}")
+            }
+        });
         push(items, id, reason);
     }
 }

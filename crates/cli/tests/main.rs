@@ -36,6 +36,7 @@ mod host_watch;
 mod intake;
 mod joining;
 mod kimi;
+mod kit_research;
 mod lander;
 mod landing;
 mod launch;
