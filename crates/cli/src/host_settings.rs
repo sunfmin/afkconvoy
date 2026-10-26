@@ -61,7 +61,7 @@ pub struct Settings {
     /// `--panel`: the port the host runner serves the panel on; `PANEL_PORT`
     /// where the host says none.
     pub panel: Option<u16>,
-    /// `--watch-dir`: the operator's directory; none starts no watch.
+    /// `--watch-dir`: the operator's directory; none uses the stock watch's.
     pub watch_dir: Option<PathBuf>,
     /// `--watch-every`: seconds between the host runner's looks.
     pub watch_every: Option<u64>,
@@ -150,7 +150,7 @@ pub fn port_or_default(said: &str) -> Result<To<u16>, String> {
 }
 
 /// `--watch-dir` as said: the operator's directory, an existing one, kept by
-/// its whole path, or `default` for none.
+/// its whole path, or `default` for the stock watch's own directory.
 pub fn watch_dir_or_default(said: &str) -> Result<To<PathBuf>, String> {
     To::parse(said, |said| {
         std::fs::canonicalize(said)
@@ -271,7 +271,7 @@ impl Settings {
             "admit_inspect_after": self.admit_inspect_after.unwrap_or(SPAN),
             "exclusive_seconds": self.exclusive_seconds(),
             "panel": self.panel_port(),
-            "watch_dir": self.watch_dir,
+            "watch_dir": crate::host_watch::directory(self).ok(),
             "watch_every": self.watch_every(),
         });
         match in_force {

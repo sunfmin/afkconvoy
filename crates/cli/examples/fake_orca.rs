@@ -49,6 +49,7 @@ fn main() {
     let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
     match argv.as_slice() {
         ["repo", "list", ..] => done(&st, json!({"repos": st.doc["repos"]})),
+        ["repo", "add", ..] => repo_add(&mut st),
         ["worktree", "create", ..] => worktree_create(&mut st),
         ["worktree", "list", ..] => worktree_list(&st),
         ["worktree", "ps", ..] => worktree_ps(&st),
@@ -90,6 +91,18 @@ fn selected(st: &State) -> String {
 
 fn knows_worktree(st: &State, path: &str) -> bool {
     st.doc["worktrees"].as_array().is_some_and(|rows| rows.iter().any(|row| row["path"] == path))
+}
+
+/// As orca's folder projects: a non-git directory can hold terminals too.
+fn repo_add(st: &mut State) -> ! {
+    let path = st.opt("--path").expect("--path").to_string();
+    assert!(Path::new(&path).is_dir(), "no directory at {path}");
+    let id = format!("repo-{}", st.list("repos").len() + 1);
+    let repo = json!({"id": id, "path": path});
+    st.list("repos").push(repo.clone());
+    st.list("worktrees")
+        .push(json!({"path": path, "repoId": id, "isMainWorktree": true, "isArchived": false}));
+    done(st, json!({"repo": repo}))
 }
 
 fn open_terminals<'a>(st: &'a State, path: &str) -> Vec<&'a Value> {
