@@ -105,6 +105,42 @@ fn inspection(world: &World) -> PathBuf {
         .expect("inspection checkout")
 }
 
+#[test]
+fn an_inspection_is_monitored_in_the_same_terminal_after_the_host_runner_moves() {
+    use crate::host_runner::{as_built, installed, logged, upgraded};
+    let world = World::new();
+    host(&world);
+    pressure(&world, 2);
+    let link = installed(&world);
+    let first =
+        world.afk_as(&link, &world.clone, &["run", "--host", "h1", "--second-ms", "10"]).ok();
+    until(&world, "host inspection", || started(&world) == 1);
+    let checkout = inspection(&world);
+    let terminals = world.orca()["terminals"].clone();
+    upgraded(&link, "999.0.0", &as_built());
+    logged(&world, "host runner moved: ");
+    until(&world, "inspection resumed by the replacement", || {
+        let doctor = world.afk(&["doctor", "--host", "h1"]).json;
+        doctor["host"]["inspection"]["since"].is_u64()
+            && world.host_runner().map(u64::from) != first["host_runner"]["pid"].as_u64()
+    });
+    assert_eq!(inspection(&world), checkout);
+    assert_eq!(world.orca()["terminals"], terminals);
+    pressure(&world, 0);
+    finish(&world);
+    until(&world, "resumed inspection ended", || {
+        entries(&world).iter().any(
+            |entry| matches!(&entry.what, What::HostInspected { found, .. } if found == "said"),
+        )
+    });
+    assert!(!checkout.exists());
+    let text = std::fs::read_to_string(first["tick_log"].as_str().unwrap()).unwrap();
+    assert!(
+        text.lines().any(|line| line.contains("\"moved\"") && line.contains("inspection in ")),
+        "{text}"
+    );
+}
+
 fn finish(world: &World) {
     world
         .afk_in(

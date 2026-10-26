@@ -105,4 +105,4 @@ publish: |
 - `brew update` comes first: `brew upgrade` alone fetches the tap at most once
   a day, and would find nothing newer. The last line fails the step unless the
   afkconvoy Homebrew links is the version cut. The host runner moves onto it
-  once its fleets are idle (`afkconvoy run --help`).
+  between ticks once no exclusive command runs (`afkconvoy run --help`).

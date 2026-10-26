@@ -181,6 +181,11 @@ pub struct Kept {
 }
 
 impl Kept {
+    /// Ends this conversation, including the copy watching its peer close.
+    pub fn close(&self) {
+        let _ = self.stream.shutdown(std::net::Shutdown::Both);
+    }
+
     /// Says `said` to the asker, with which host runner says it → whether it
     /// was still there to be told.
     pub fn say(&mut self, mut said: Value) -> bool {

@@ -314,12 +314,31 @@ pub fn last_json(last: &Last) -> Value {
 }
 
 /// What an inspection this `run` started is of.
+#[derive(Clone, Serialize, Deserialize)]
 enum Subject {
     /// A hot worker, and `why` it turned hot.
-    Worker { hot: HotNow, why: String },
+    Worker { worker: String, issue: Option<u64>, why: String },
     /// The host, whose `reason` called for an inspection, having read
     /// `reading`.
     Host { reason: Reason, reading: String },
+}
+
+/// Kept beside the inspection's checkout so a new host runner monitors the
+/// same terminal, with the original time limit and subject.
+#[derive(Serialize, Deserialize)]
+struct Record {
+    on: Subject,
+    started: u64,
+    by: String,
+}
+
+const RECORD: &str = "convoy-inspection.json";
+
+fn keep(checkout: &Worktree, on: Subject, started: u64, by: &str) -> Result<()> {
+    let file = checkout.note(RECORD)?;
+    let record = Record { on, started, by: by.to_string() };
+    std::fs::write(&file, serde_json::to_vec(&record)?)
+        .with_context(|| format!("cannot write {}", file.display()))
 }
 
 /// An inspection this `run` started, while it runs.
@@ -492,6 +511,43 @@ pub struct Inspector {
 }
 
 impl Inspector {
+    /// Takes over an inspection left in its terminal by an earlier host
+    /// runner. Reading or reserving it must succeed before any new one starts.
+    pub fn resume(&mut self) -> Result<()> {
+        let source = Source::of(&self.checkout)?;
+        let Some(checkout) = Worktree::named(&source, CHECKOUT)? else { return Ok(()) };
+        let file = checkout.note(RECORD)?;
+        let text = match std::fs::read(&file) {
+            Ok(text) => text,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => {
+                return Err(error).with_context(|| format!("cannot read {}", file.display()));
+            }
+        };
+        let Record { on, started, by } = serde_json::from_slice(&text)
+            .with_context(|| format!("cannot read {}", file.display()))?;
+        let (worker, issue, held_back_by) = match &on {
+            Subject::Worker { worker, issue, .. } => (worker.clone(), *issue, None),
+            Subject::Host { reason, .. } => (THE_HOST.to_string(), None, Some(*reason)),
+        };
+        let running = Running {
+            repo: self.checkout.main_checkout()?.display().to_string(),
+            worker,
+            issue,
+            by: by.clone(),
+            since: started,
+            held_back_by,
+        };
+        let turn = self.place.turn.take(running).ok_or_else(|| {
+            anyhow!(
+                "cannot resume {}: another inspection holds the host's turn",
+                checkout.path.display()
+            )
+        })?;
+        self.running = Some(Box::new(Inspection { on, checkout, started, by, _turn: turn }));
+        Ok(())
+    }
+
     /// The inspector of the `run` of the checkout `checkout`, inspecting in
     /// turn with every other of the host's, `turn`.
     pub fn new(checkout: &Repo, turn: &Turn) -> Inspector {
@@ -738,6 +794,12 @@ impl Inspector {
             let brief = host_inspection::brief(&fields).map_err(|e| anyhow!(e))?;
             let brief = checkout.write_brief(&brief)?;
             let command = command(&who, launch.as_str(), &checkout, &fleet, THE_HOST)?;
+            keep(
+                &checkout,
+                Subject::Host { reason: due.reason, reading: reading.clone() },
+                now,
+                who.role(),
+            )?;
             let admission = Admission::read(&fleet.repo.dir)?;
             self.observed(now, &admission, under_pressure());
             if !self.still_due(trigger, due, now) {
@@ -849,6 +911,12 @@ impl Inspector {
             let brief =
                 checkout.write_brief(&inspection::brief(&fields).map_err(|e| anyhow!(e))?)?;
             let command = command(&who, launch.as_str(), &checkout, &fleet, &hot.worker)?;
+            keep(
+                &checkout,
+                Subject::Worker { worker: hot.worker.clone(), issue: hot.issue, why: why.clone() },
+                now,
+                who.role(),
+            )?;
             if !still_hot(workers, hot) {
                 return Ok(false);
             }
@@ -875,7 +943,7 @@ impl Inspector {
             }
         }
         Ok(Started::Running(Box::new(Inspection {
-            on: Subject::Worker { hot: hot.clone(), why },
+            on: Subject::Worker { worker: hot.worker.clone(), issue: hot.issue, why },
             checkout,
             started: now,
             by: who.role().to_string(),
@@ -958,7 +1026,7 @@ fn end(repo: &Repo, inspection: Box<Inspection>, finding: Option<Finding>, now: 
     let prs = inspection.checkout.inspection_prs().unwrap_or_default();
     let finding = finding.map(|finding| Finding { prs, ..finding });
     let worker = match &inspection.on {
-        Subject::Worker { hot, .. } => hot.worker.clone(),
+        Subject::Worker { worker, .. } => worker.clone(),
         Subject::Host { .. } => THE_HOST.to_string(),
     };
     let did = finding.iter().flat_map(|finding| &finding.did);
@@ -966,7 +1034,9 @@ fn end(repo: &Repo, inspection: Box<Inspection>, finding: Option<Finding>, now: 
         .map(|did| What::InspectionDid { worker: worker.clone(), did: inspection::one_line(did) })
         .collect();
     let mut ended = match &inspection.on {
-        Subject::Worker { hot, why } => end_worker(repo, hot, why, &inspection.by, finding),
+        Subject::Worker { worker, issue, why } => {
+            end_worker(repo, worker, *issue, why, &inspection.by, finding)
+        }
         Subject::Host { reason, reading } => {
             end_host(repo, (*reason, reading.as_str()), &inspection, finding, now)
         }
@@ -1031,10 +1101,17 @@ fn end_host(
 /// Ends the inspection of the hot worker `hot`, `why` it turned hot, by
 /// `by`, which said `finding`: leaves it on the issue, in the tracker of the
 /// checkout `repo`.
-fn end_worker(repo: &Repo, hot: &HotNow, why: &str, by: &str, finding: Option<Finding>) -> What {
-    let worker = hot.worker.clone();
+fn end_worker(
+    repo: &Repo,
+    worker: &str,
+    issue: Option<u64>,
+    why: &str,
+    by: &str,
+    finding: Option<Finding>,
+) -> What {
+    let worker = worker.to_string();
     let mut said = said_of(finding.as_ref());
-    if let Some(issue) = hot.issue {
+    if let Some(issue) = issue {
         let body = inspection::comment(&worker, why, by, finding.as_ref());
         if let Err(error) = GitHub::of(repo).and_then(|gh| gh.comment(issue, &body)) {
             said.push_str(&format!(" · no comment was left on #{issue}: {error:#}"));

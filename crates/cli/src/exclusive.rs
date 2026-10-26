@@ -51,9 +51,34 @@ pub struct Queue {
 struct Joined {
     tickets: Vec<Ticket>,
     next: u64,
+    /// A release move lets the running command end before any other starts.
+    paused: bool,
+    closed: bool,
 }
 
 impl Queue {
+    /// Sends waiting commands to the next host runner. None is running when
+    /// a release move calls this; closing also works when that move fails.
+    pub fn close(&self) {
+        self.joined().closed = true;
+        self.held.1.notify_all();
+    }
+
+    /// Pauses new commands atomically with reading those already running.
+    /// Waiting commands rejoin the replacement with their original ask time.
+    pub fn pause(&self) -> usize {
+        let mut joined = self.joined();
+        joined.paused = true;
+        joined.tickets.iter().filter(|ticket| ticket.ran.is_some()).count()
+    }
+
+    /// Lets commands start again if the installed release changed before
+    /// the host runner could move onto it.
+    pub fn resume(&self) {
+        self.joined().paused = false;
+        self.held.1.notify_all();
+    }
+
     /// The queue in the order it runs: the first runs, or is about to, and
     /// the rest wait.
     pub fn standing(&self) -> Vec<Ticket> {
@@ -84,10 +109,14 @@ impl Queue {
         let (_, turned) = &*self.held;
         let mut joined = self.joined();
         loop {
+            if joined.closed {
+                kept.close();
+                return;
+            }
             match ahead(&joined.tickets, number) {
                 // Its asker left as it waited.
                 None => return,
-                Some(0) => break,
+                Some(0) if !joined.paused => break,
                 Some(_) => joined = turned.wait(joined).unwrap_or_else(PoisonError::into_inner),
             }
         }
@@ -387,6 +416,24 @@ mod tests {
         holds(&queue, &["a", "c"]);
         drop(running);
         assert!(rejoined.next().unwrap()["runs"].is_u64());
+    }
+
+    #[test]
+    fn a_release_move_pauses_queue_grants_and_closes_waiters_without_running_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let queue = Queue::default();
+        served(dir.path(), &queue);
+        let (mut running, _) = Asker::joins(dir.path(), ticket("a", 100));
+        assert!(running.next().unwrap()["runs"].is_u64());
+        let (mut waiting, _) = Asker::joins(dir.path(), ticket("b", 101));
+        assert_eq!(queue.pause(), 1);
+        drop(running);
+        holds(&queue, &["b"]);
+        assert_eq!(queue.pause(), 0, "the waiter is not a running command");
+        assert_eq!(waiting.next(), None, "the move holds new commands");
+        queue.close();
+        assert_eq!(waiting.next(), None, "the waiter rejoins, never granted here");
+        holds(&queue, &[]);
     }
 
     #[test]

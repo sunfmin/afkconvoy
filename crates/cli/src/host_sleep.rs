@@ -44,6 +44,8 @@ struct Held {
     next: u64,
     /// The instance whose check is underway: one at a time.
     checking: Option<u64>,
+    /// No new tick begins while the host runner prepares a release move.
+    paused: bool,
 }
 
 /// One fleet instance, as it last said it stands.
@@ -60,6 +62,14 @@ struct One {
 }
 
 impl Standings {
+    pub fn pause(&self) {
+        self.held().paused = true;
+    }
+
+    pub fn resume(&self) {
+        self.held().paused = false;
+        self.held.1.notify_all();
+    }
     fn held(&self) -> MutexGuard<'_, Held> {
         self.held.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
@@ -206,6 +216,28 @@ impl HostSleep {
     /// Says that this instance begins a tick.
     pub fn begins(&self) {
         self.standings.change(self.key, |one| one.began += 1);
+    }
+
+    /// Begins a tick only while the host runner permits it. A release move
+    /// pauses here, then stops the instance without entering another tick.
+    pub fn begins_unless_stopped(&self, stop: &Stop) -> bool {
+        let mut held = self.standings.held();
+        while held.paused && !stop.told() {
+            held = self
+                .standings
+                .held
+                .1
+                .wait_timeout(held, LOOKS_EVERY)
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .0;
+        }
+        if stop.told() {
+            return false;
+        }
+        if let Some(one) = held.each.get_mut(&self.key) {
+            one.began += 1;
+        }
+        true
     }
 
     /// Says how this instance stands after a tick at `now`: idle or not, and
