@@ -14,4 +14,6 @@ Existing gate commands that wrap the build in `afkconvoy exclusive` inherit the 
 
 ## Host measurement
 
-The acceptance measurement on FelixMBP14.local is recorded here after the implementation's gate runs, with the exact commit, the seconds alone, and the seconds beside a train gate.
+On FelixMBP14.local on 2026-10-26, commit `199483c91e4e585b97b8549d2b56eb540ad10658` ran the full afkconvoy gate in 334 seconds alone. With a train gate beside it, the worker gate took 416 seconds and the train gate took 483 seconds. All three runs were green and recorded; each passed 1,638 tests, with 10 skipped.
+
+The host had one worker lane and one train lane. The train started one second before the worker; both were observed running in their respective lanes. An outer reservation excluded other heavy commands for each measurement. The two checkouts used separate target directories, with dependency artifacts copied before the runs; the train checkout rebuilt its workspace artifacts. The worker's extra 82 seconds is one observed comparison, not a repeated benchmark. It shows the cost of overlap on this host while confirming that the train gate starts without waiting for the worker lane.

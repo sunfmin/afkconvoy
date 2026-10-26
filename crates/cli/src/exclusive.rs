@@ -25,7 +25,6 @@ use afkconvoy_core::exclusive::{
     runs_line, same_lane, same_repo, waits_line,
 };
 use afkconvoy_core::role::ISSUE_ENV;
-use afkconvoy_core::train::is_train_worktree;
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -564,8 +563,9 @@ fn turn(ticket: &Ticket, acting: &Acting, now: &dyn Fn() -> u64) -> Result<Turn>
 }
 
 /// `afkconvoy exclusive -- <command>`: runs `command` in the directory `dir`
-/// once no other `exclusive` command runs on this host, waiting its turn in
-/// the host runner's queue until then → its exit status. `checkout` is the
+/// once a worker lane is available on this host, waiting in the host runner's
+/// queue until then → its exit status. Only a gate can take a train lane;
+/// other commands use worker lanes even in a train checkout. `checkout` is the
 /// checkout `dir` is in, where it is in one: its ticket names it, and its tick
 /// log is where the queue's own words go, as well as to stderr. What it prints
 /// is the command's. With no host runner, or one that cannot hold it, it runs
@@ -594,11 +594,7 @@ pub fn exclusive(
         command: shown.join(" "),
         dir: canonical(checkout.as_ref().map_or(dir, |repo| &repo.dir)),
         issue: std::env::var(ISSUE_ENV).ok().and_then(|issue| issue.parse().ok()),
-        train: checkout
-            .as_ref()
-            .and_then(|repo| repo.dir.file_name())
-            .and_then(|name| name.to_str())
-            .is_some_and(is_train_worktree),
+        train: false,
         repo_lane: None,
         repo: checkout.as_ref().and_then(|repo| repo.common_dir().ok()).map(canonical),
         is_turn: false,
