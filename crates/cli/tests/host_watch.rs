@@ -598,8 +598,58 @@ fn a_watch_closed_without_reporting_does_not_consume_the_unresolved_episode() {
         "an unreported watch must not suppress automatic recovery of the same fault: {after}"
     );
     assert_ne!(after["running"]["id"], watch["id"]);
-    assert_eq!(after["running"]["items"], watch["items"]);
+    let ids = |watch: &Value| {
+        watch["items"].as_array().unwrap().iter().map(|item| item["id"].clone()).collect::<Vec<_>>()
+    };
+    assert_eq!(ids(&after["running"]), ids(&watch));
     assert_eq!(starts(&world).len(), 2);
+    assert!(open(&world, &dir).contains(&OPERATORS.to_string()));
+
+    let next = &after["running"];
+    printed(&world, next, &["checked the same fault and recorded the decision"], Some(0));
+    until(&world, "the replacement's report", || {
+        ended(&world, "ended").filter(|last| last["id"] == next["id"])
+    });
+    until(&world, "a look after the replacement reported", || {
+        let state = state(&world);
+        (state["until"].as_u64() > after["until"].as_u64()).then_some(state)
+    });
+    assert_eq!(starts(&world).len(), 2, "the later report covers the earlier failure");
+    assert!(running(&world).is_none());
+}
+
+#[test]
+fn a_restart_recovers_an_unreported_episode_kept_by_an_older_runner() {
+    let world = World::new();
+    let dir = operator(&world);
+    paused(&world, "pi", "the same unresolved fault");
+    run(&world, &dir);
+    let watch = until(&world, "the first watch", || running(&world));
+    world.kill_host_runner("KILL");
+    // An older runner has already ended this watch without a report, but
+    // left its items covered. A now-available harness must get that work.
+    let mut failed = watch.clone();
+    failed["ended"] = watch["started"].clone();
+    failed["outcome"] = json!("no_harness");
+    let mut kept = state(&world);
+    kept["running"] = Value::Null;
+    kept["last"] = failed.clone();
+    kept["history"] = json!([failed]);
+    kept["unavailable"] = json!("no harness was available");
+    std::fs::write(world.cache().join("afkconvoy/watch/state.json"), kept.to_string()).unwrap();
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            if terminal["handle"] == watch["terminal"] {
+                terminal["open"] = json!(false);
+            }
+        }
+    });
+    run(&world, &dir);
+    let next = until(&world, "automatic recovery after restart", || running(&world));
+    assert_ne!(next["id"], watch["id"]);
+    assert_eq!(starts(&world).len(), 2);
+    assert!(state(&world)["unavailable"].is_null());
+    assert!(brief(&world, starts(&world).last().unwrap()).contains("It did not report."));
     assert!(open(&world, &dir).contains(&OPERATORS.to_string()));
 }
 
