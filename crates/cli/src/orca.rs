@@ -246,6 +246,54 @@ struct Asked {
     stderr: String,
 }
 
+/// Reads Orca's JSON, replacing each unpaired UTF-16 surrogate escape with
+/// U+FFFD. Orca can split a pair when it cuts terminal text. Whole pairs and
+/// literal backslashes keep their meaning; all other JSON errors still fail.
+fn read_answer(bytes: &[u8]) -> serde_json::Result<Value> {
+    serde_json::from_slice(bytes).or_else(|_| {
+        let mut repaired = bytes.to_vec();
+        let mut quoted = false;
+        let mut at = 0;
+        while at < bytes.len() {
+            match bytes[at] {
+                b'"' => quoted = !quoted,
+                b'\\' if quoted => {
+                    if let Some(unit) = unicode_escape(&bytes[at..]) {
+                        if (0xd800..=0xdbff).contains(&unit)
+                            && unicode_escape(&bytes[at + 6..])
+                                .is_some_and(|next| (0xdc00..=0xdfff).contains(&next))
+                        {
+                            at += 12;
+                            continue;
+                        }
+                        if (0xd800..=0xdfff).contains(&unit) {
+                            repaired[at + 2..at + 6].copy_from_slice(b"fffd");
+                        }
+                        at += 6;
+                    } else {
+                        // An escaped quote cannot end a string, nor can an
+                        // escaped backslash begin a Unicode escape.
+                        at += 2;
+                    }
+                    continue;
+                }
+                _ => {}
+            }
+            at += 1;
+        }
+        serde_json::from_slice(&repaired)
+    })
+}
+
+/// One complete JSON Unicode escape at the start of `bytes`, if present.
+fn unicode_escape(bytes: &[u8]) -> Option<u16> {
+    let digits = bytes.strip_prefix(br"\u")?.get(..4)?;
+    if !digits.iter().all(u8::is_ascii_hexdigit) {
+        return None;
+    }
+    u16::from_str_radix(std::str::from_utf8(digits).ok()?, 16).ok()
+}
+
 /// Orca refused a prompt because the harness cannot accept it. Keep this
 /// distinct from a terminal or transport failure, including its full reason.
 #[derive(Debug)]
@@ -267,7 +315,7 @@ impl Asked {
         Ok(Asked {
             what,
             exited_ok: out.status.success(),
-            answer: serde_json::from_slice(&out.stdout).unwrap_or(Value::Null),
+            answer: read_answer(&out.stdout).unwrap_or(Value::Null),
             stdout: String::from_utf8_lossy(&out.stdout).trim().to_string(),
             stderr: String::from_utf8_lossy(&out.stderr).trim().to_string(),
         })
