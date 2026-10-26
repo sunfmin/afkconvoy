@@ -48,6 +48,7 @@ impl QueuedGate {
         let child = world
             .command(GATE_BINARY, &world.clone)
             .env("EXECUTED", world.root.join("executed"))
+            .env("FAIL_GATE", world.root.join("fail-gate"))
             .args(["gate"])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -104,10 +105,9 @@ fn queue_command(world: &World) {
         .fixed("exec ")
         .program(GATE_BINARY)
         .fixed(" exclusive -- sh -c ")
-        .word("echo executed >> \"$EXECUTED\"; exit 3")
+        .word("echo executed >> \"$EXECUTED\"; if test -f \"$FAIL_GATE\"; then exit 3; fi")
         .own();
-    // The marker is outside the committed tree, so an interrupted run can
-    // invalidate an earlier green record for the very same tree and command.
+    // Markers are outside the committed tree so the gate can record a pass.
     world.set_gate_config(&format!("gate_command: {command}\ngate_seconds: 10"));
 }
 
@@ -115,16 +115,27 @@ fn queue_command(world: &World) {
 fn a_queued_gate_survives_observation_and_runs_exactly_once_when_granted() {
     let world = World::new();
     queue_command(&world);
-    let mut gate = QueuedGate::start(&world);
-    gate.observe(&world);
-    assert!(gate.place.say(json!({"runs": 5000})));
-    let out = gate.finish();
-    let answer: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert!(out.status.success(), "{out:?}");
-    assert_eq!(answer["exit_code"], 3, "{answer}");
-    assert_eq!(answer["timed_out"], false);
-    assert_eq!(answer["recorded"], false);
-    assert_eq!(std::fs::read_to_string(world.root.join("executed")).unwrap(), "executed\n");
+    for code in [0, 3] {
+        if code == 3 {
+            std::fs::write(world.root.join("fail-gate"), "").unwrap();
+            std::fs::remove_file(world.root.join("executed")).unwrap();
+            std::fs::remove_file(world.cache().join("afkconvoy").join(SOCKET)).unwrap();
+        }
+        let mut gate = QueuedGate::start(&world);
+        // The earlier green record remains until the second run ends.
+        if code == 0 {
+            gate.observe(&world);
+        }
+        assert!(gate.place.say(json!({"runs": 5000})));
+        let out = gate.finish();
+        let answer: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert!(out.status.success(), "{out:?}");
+        assert_eq!(answer["exit_code"], code, "{answer}");
+        assert_eq!(answer["timed_out"], false);
+        assert_eq!(answer["recorded"], code == 0);
+        assert_eq!(std::fs::read_to_string(world.root.join("executed")).unwrap(), "executed\n");
+    }
+    assert!(records(&world).is_empty(), "the failed run invalidated the earlier pass");
 }
 
 #[test]
@@ -233,6 +244,7 @@ fn a_run_that_reaches_the_configs_gate_limit_is_ended_and_red() {
     assert!(started.elapsed().as_secs() < 10, "the run was killed");
     assert_eq!(answer["status"], "red");
     assert_eq!((&answer["timed_out"], &answer["exit_code"]), (&json!(true), &json!(124)));
+    assert_eq!(answer["termination"], serde_json::Value::Null);
     assert_eq!(answer["recorded"], false);
     let detail = answer["detail"].as_str().unwrap();
     assert!(detail.contains("reached the gate limit of 1s"), "{detail}");
@@ -245,6 +257,24 @@ fn a_red_run_that_ended_by_itself_says_nothing_of_the_gate_limit() {
     let answer = world.afk(&["gate"]).ok();
     assert_eq!((&answer["status"], &answer["timed_out"]), (&json!("red"), &json!(false)));
     assert!(!answer["detail"].as_str().unwrap().contains("gate limit"), "{answer}");
+}
+
+#[test]
+fn a_signal_is_distinct_from_an_ordinary_shell_exit_and_a_gate_timeout() {
+    let world = World::new();
+    world.set_gate("kill -TERM $$");
+    let answer = world.afk(&["gate"]).ok();
+    assert_eq!(answer["termination"]["signal"], libc::SIGTERM, "{answer}");
+    assert_eq!(answer["exit_code"], -1);
+    assert_eq!(answer["timed_out"], false);
+    assert_eq!(answer["recorded"], false);
+
+    world.set_gate("exit 137");
+    let answer = world.afk(&["gate"]).ok();
+    assert_eq!(answer["exit_code"], 137);
+    assert_eq!(answer["termination"], serde_json::Value::Null);
+    assert_eq!(answer["timed_out"], false);
+    assert_eq!(answer["recorded"], false);
 }
 
 #[test]

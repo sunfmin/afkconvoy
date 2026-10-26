@@ -178,6 +178,24 @@ fn a_record_with_no_time_answers_a_landing_and_is_not_rewritten() {
 }
 
 #[test]
+fn a_signalled_train_gate_preserves_evidence_in_its_answer_and_pr_comment() {
+    let world = World::new();
+    world.set_gate("kill -TERM $$");
+    let worker = world.worker(7, "seven.txt", "7\n");
+    join(&world, &worker, 7);
+    let before = base(&world);
+    let (answer, log) = land_train(&world, &train(&world));
+    assert_eq!(answer["outcome"], "gate_red", "{answer}");
+    assert_eq!(answer["gate"]["termination"]["signal"], libc::SIGTERM, "{answer}");
+    assert_eq!(answer["gate"]["timed_out"], false);
+    assert_eq!(answer["gate"]["exit_code"], -1);
+    assert!(log.contains("signal 15"), "{log}");
+    assert!(world.comments(70).iter().any(|comment| comment.contains("signal 15")));
+    assert_eq!(base(&world), before);
+    assert!(gate_records(&world).is_empty());
+}
+
+#[test]
 fn a_train_of_several_prs_is_gated_once_and_landed_whole() {
     let world = world();
     let seven = world.worker(7, "seven.txt", "7\n");
