@@ -16,10 +16,11 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, mpsc};
 use std::time::{Duration, Instant};
 
 use afkconvoy_core::exclusive::{
-    Ticket, ahead, at_once_line, ended_line, in_order, queued_since, rejoins_line, runs_line,
-    waits_line,
+    Ticket, ahead, at_once_line, ended_line, in_order, queued_since, rejoins_line, runs_ahead_of,
+    runs_line, waits_line,
 };
 use afkconvoy_core::role::ISSUE_ENV;
+use afkconvoy_core::train::is_train_worktree;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -54,8 +55,8 @@ struct Bound {
 }
 
 /// The host's exclusive queue, as its host runner holds it: one command runs
-/// at a time, the one that asked first, and each leaves as its asker's line
-/// closes. A clone is the same.
+/// at a time, with trains ahead of other waiters, in request order within
+/// each priority. Each leaves as its asker's line closes. A clone is the same.
 #[derive(Clone, Default)]
 pub struct Queue {
     held: Arc<(Mutex<Joined>, Condvar)>,
@@ -66,13 +67,23 @@ pub struct Queue {
 struct Joined {
     tickets: Vec<Ticket>,
     next: u64,
+    /// A release move lets the running command end before any other starts.
+    paused: bool,
+    closed: bool,
     waited: Duration,
     counted_at: Instant,
 }
 
 impl Default for Joined {
     fn default() -> Self {
-        Self { tickets: vec![], next: 0, waited: Duration::ZERO, counted_at: Instant::now() }
+        Self {
+            tickets: vec![],
+            next: 0,
+            paused: false,
+            closed: false,
+            waited: Duration::ZERO,
+            counted_at: Instant::now(),
+        }
     }
 }
 
@@ -88,6 +99,28 @@ impl Joined {
 }
 
 impl Queue {
+    /// Sends waiting commands to the next host runner. None is running when
+    /// a release move calls this; closing also works when that move fails.
+    pub fn close(&self) {
+        self.joined().closed = true;
+        self.held.1.notify_all();
+    }
+
+    /// Pauses new commands atomically with reading those already running.
+    /// Waiting commands rejoin the replacement with their original ask time.
+    pub fn pause(&self) -> usize {
+        let mut joined = self.joined();
+        joined.paused = true;
+        joined.tickets.iter().filter(|ticket| ticket.ran.is_some()).count()
+    }
+
+    /// Lets commands start again if the installed release changed before
+    /// the host runner could move onto it.
+    pub fn resume(&self) {
+        self.joined().paused = false;
+        self.held.1.notify_all();
+    }
+
     /// The queue in the order it runs: the first runs, or is about to, and
     /// the rest wait.
     pub fn standing(&self) -> Vec<Ticket> {
@@ -120,21 +153,30 @@ impl Queue {
         let (_, turned) = &*self.held;
         let mut joined = self.joined();
         loop {
+            if joined.closed {
+                kept.close();
+                return;
+            }
             match ahead(&joined.tickets, number) {
                 // Its asker left as it waited.
                 None => return,
-                Some(0) => break,
+                Some(0) if !joined.paused => break,
                 Some(_) => joined = turned.wait(joined).unwrap_or_else(PoisonError::into_inner),
             }
         }
         let ran = crate::clock();
+        let ahead_of = joined
+            .tickets
+            .iter()
+            .find(|ticket| ticket.number == number)
+            .map_or(0, |ticket| runs_ahead_of(ticket, &joined.tickets));
         joined.waited = Duration::ZERO;
         joined.counted_at = Instant::now();
         for ticket in joined.tickets.iter_mut().filter(|ticket| ticket.number == number) {
             ticket.ran = Some(ran);
         }
         drop(joined);
-        if !kept.say(json!({"runs": ran})) {
+        if !kept.say(json!({"runs": ran, "ahead_of": ahead_of})) {
             self.leave(number);
             return;
         }
@@ -235,7 +277,7 @@ fn canonical(dir: &Path) -> String {
 enum Turn {
     /// The host runner says it runs: the line, held open for as long as it
     /// runs, holds its place.
-    Queued(Conversation),
+    Queued(Conversation, usize),
     /// It runs in no queue, as this says why.
     AtOnce(String),
 }
@@ -269,7 +311,11 @@ fn turn(ticket: &Ticket, acting: &Acting, now: &dyn Fn() -> u64) -> Result<Turn>
                 // What it cannot read, a newer host runner's, is passed over.
                 while let Some(said) = conversation.heard()? {
                     if said.get("runs").is_some() {
-                        return Ok(Turn::Queued(conversation));
+                        let ahead_of = said["ahead_of"].as_u64().unwrap_or(0);
+                        return Ok(Turn::Queued(
+                            conversation,
+                            usize::try_from(ahead_of).unwrap_or(usize::MAX),
+                        ));
                     }
                 }
                 let line = rejoins_line(ticket);
@@ -318,14 +364,19 @@ pub fn exclusive(
         command: shown.join(" "),
         dir: canonical(checkout.as_ref().map_or(dir, |repo| &repo.dir)),
         issue: std::env::var(ISSUE_ENV).ok().and_then(|issue| issue.parse().ok()),
+        train: checkout
+            .as_ref()
+            .and_then(|repo| repo.dir.file_name())
+            .and_then(|name| name.to_str())
+            .is_some_and(is_train_worktree),
         asked: now(),
         ran: None,
     };
     let acting = Acting::new("exclusive").on_own_issue().in_checkout(checkout);
     let place = match turn(&ticket, &acting, &now) {
-        Ok(Turn::Queued(place)) => {
+        Ok(Turn::Queued(place, ahead_of)) => {
             let started = now();
-            acting.say(started, runs_line(&ticket, started));
+            acting.say(started, runs_line(&ticket, started, ahead_of));
             Some(place)
         }
         Ok(Turn::AtOnce(why)) => {
@@ -469,6 +520,7 @@ mod tests {
             command: command.into(),
             dir: "/w/issue-7".into(),
             issue: Some(7),
+            train: false,
             asked,
             ran: None,
         }
@@ -572,6 +624,34 @@ mod tests {
     }
 
     #[test]
+    fn a_train_runs_next_and_reports_how_many_earlier_workers_still_wait() {
+        let dir = tempfile::tempdir().unwrap();
+        let queue = Queue::default();
+        served(dir.path(), &queue);
+        let (mut running, _) = Asker::joins(dir.path(), ticket("running", 100));
+        assert!(running.next().unwrap()["runs"].is_u64());
+        let (mut worker, _) = Asker::joins(dir.path(), ticket("worker", 101));
+        let (mut inspection, _) = Asker::joins(dir.path(), ticket("inspection", 102));
+        let mut train = ticket("train", 103);
+        train.train = true;
+        let (mut train, said) = Asker::joins(dir.path(), train);
+        assert_eq!(said["ahead"], 1);
+        assert_eq!(commands(&queue), ["running", "train", "worker", "inspection"]);
+        assert!(queue.standing()[0].ran.is_some());
+        assert!(queue.standing()[1].ran.is_none(), "the running command keeps its turn");
+        drop(running);
+        let said = train.next().unwrap();
+        assert!(said["runs"].is_u64());
+        assert_eq!(said["ahead_of"], 2);
+        drop(train);
+        assert!(worker.next().unwrap()["runs"].is_u64());
+        drop(worker);
+        assert!(inspection.next().unwrap()["runs"].is_u64());
+        drop(inspection);
+        holds(&queue, &[]);
+    }
+
+    #[test]
     fn one_whose_process_dies_as_it_waits_leaves_and_one_that_asked_again_keeps_its_place() {
         let dir = tempfile::tempdir().unwrap();
         let queue = Queue::default();
@@ -587,6 +667,24 @@ mod tests {
         holds(&queue, &["a", "c"]);
         drop(running);
         assert!(rejoined.next().unwrap()["runs"].is_u64());
+    }
+
+    #[test]
+    fn a_release_move_pauses_queue_grants_and_closes_waiters_without_running_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let queue = Queue::default();
+        served(dir.path(), &queue);
+        let (mut running, _) = Asker::joins(dir.path(), ticket("a", 100));
+        assert!(running.next().unwrap()["runs"].is_u64());
+        let (mut waiting, _) = Asker::joins(dir.path(), ticket("b", 101));
+        assert_eq!(queue.pause(), 1);
+        drop(running);
+        holds(&queue, &["b"]);
+        assert_eq!(queue.pause(), 0, "the waiter is not a running command");
+        assert_eq!(waiting.next(), None, "the move holds new commands");
+        queue.close();
+        assert_eq!(waiting.next(), None, "the waiter rejoins, never granted here");
+        holds(&queue, &[]);
     }
 
     #[test]

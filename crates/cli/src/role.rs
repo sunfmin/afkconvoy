@@ -161,9 +161,9 @@ impl Staged {
         // both.
         let cast = match &by {
             Some((_, role)) => {
-                casting::unmatched_in(fleet.cast_in(role, &labels)?, &labels, &ranges)
+                casting::unmatched_in(fleet.cast_in(role, &labels, Some(issue))?, &labels, &ranges)
             }
-            None => fleet.stock_consult()?,
+            None => fleet.stock_consult(Some(issue))?,
         };
         let (harness, model) = (cast.harness, cast.model.clone());
         let (role, skill, role_copy, host_user, dsh_profile) = match by {
@@ -182,7 +182,7 @@ impl Staged {
                 kept.team.dsh_profile,
             ),
         };
-        let skipped = fleet.skipped_before(harness, by.map(|(_, role)| role));
+        let skipped = fleet.skipped_before(harness, by.map(|(_, role)| role), Some(issue));
         Ok(Staged {
             verdicts: verdicts
                 .filter(|(_, reading)| {

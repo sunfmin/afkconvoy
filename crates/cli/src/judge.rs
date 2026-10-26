@@ -196,15 +196,30 @@ pub(crate) struct Handed {
     pub reason: String,
     /// A host fix is needed: no consult is asked on a later tick.
     fault: Option<FleetFault>,
+    refusal_exhausted: bool,
 }
 
 impl Handed {
     pub(crate) fn new(brief: &str, reason: String) -> Handed {
-        Handed { brief: brief.to_string(), reason, fault: None }
+        Handed { brief: brief.to_string(), reason, fault: None, refusal_exhausted: false }
     }
 
     pub(crate) fn fleet_fault(fault: FleetFault, reason: String) -> Handed {
-        Handed { brief: fault.brief().to_string(), reason, fault: Some(fault) }
+        Handed {
+            brief: fault.brief().to_string(),
+            reason,
+            fault: Some(fault),
+            refusal_exhausted: false,
+        }
+    }
+
+    pub(crate) fn refusal_exhausted(reason: String) -> Handed {
+        Handed {
+            brief: "no harness left after task refusal".into(),
+            reason,
+            fault: None,
+            refusal_exhausted: true,
+        }
     }
 
     /// The same of a claim at the stage `stage`, which the brief opens with.
@@ -279,6 +294,9 @@ pub(crate) fn escalate_claim(
                 };
                 let comment = match why.fault {
                     Some(fault) => fault.comment(&claim.id, flow.as_deref(), &reason),
+                    None if why.refusal_exhausted => {
+                        transition::refusal_exhausted_comment(&claim.id, flow.as_deref(), &reason)
+                    }
                     None => escalation_comment(&claim.id, flow.as_deref(), &reason),
                 };
                 fleet.gh.comment(issue, &comment)?
