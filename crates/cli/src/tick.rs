@@ -1262,6 +1262,8 @@ pub fn run(
         let ticked = turn(
             || wakes.forget(count),
             || {
+                // The served panel belongs to this same tick's view.
+                let _observation = crate::orca::Observation::begin();
                 let (ticked, fleet) = tick(repo, me, agent, &stop, before.as_ref())?;
                 let tracker = match fleet.gh.tracker.named() {
                     Some(named) => Ok(named.to_string()),

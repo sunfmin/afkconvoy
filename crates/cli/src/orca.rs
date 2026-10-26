@@ -81,18 +81,24 @@ thread_local! {
 
 /// Holds a host-wide runtime observation for one tick or read-only command.
 /// Errors are shared too: an unreachable Orca never becomes an empty host.
-pub(crate) struct Observation(Option<Result<Value, String>>);
+pub(crate) struct Observation(bool);
 
 impl Observation {
     pub(crate) fn begin() -> Self {
+        if OBSERVATION.with(|slot| slot.borrow().is_some()) {
+            return Self(false);
+        }
         let observed = runtime_live().map_err(|e| format!("{e:#}"));
-        Self(OBSERVATION.with(|slot| slot.replace(Some(observed))))
+        OBSERVATION.with(|slot| slot.replace(Some(observed)));
+        Self(true)
     }
 }
 
 impl Drop for Observation {
     fn drop(&mut self) {
-        OBSERVATION.with(|slot| slot.replace(self.0.take()));
+        if self.0 {
+            OBSERVATION.with(|slot| slot.borrow_mut().take());
+        }
     }
 }
 

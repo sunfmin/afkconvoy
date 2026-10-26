@@ -990,6 +990,36 @@ fn fleet_with_two_workers() -> World {
 }
 
 #[test]
+fn the_live_runners_tick_and_served_panel_share_one_orca_observation() {
+    let world = fleet_with_two_workers();
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            terminal["agent"] = json!({"state":"working", "agentType":"claude",
+                "stateStartedAt":799000});
+            terminal["lastOutputAt"] = json!(799000);
+        }
+    });
+    world.orca_calls();
+    let (_, ended) = world.afk_lines(&[
+        "run",
+        "--foreground",
+        "--instance",
+        "alpha",
+        "--host",
+        "h1",
+        "--now",
+        "800",
+        "--ticks",
+        "1",
+        "--second-ms",
+        "0",
+    ]);
+    assert!(ended.get("error").is_none(), "{ended}");
+    let calls = world.orca_calls();
+    assert_eq!(calls.iter().filter(|c| common::asked(c) == "worktree ps").count(), 1, "{calls:?}");
+}
+
+#[test]
 fn a_failed_delivery_is_classified_even_if_orcas_last_report_was_working() {
     let world = fleet_with_two_workers();
     let dir = worktree(&world, 7);
