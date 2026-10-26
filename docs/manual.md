@@ -9,8 +9,8 @@ afkconvoy works a repo's ready GitHub-issue backlog unattended. A fleet instance
 ## What it needs
 
 - A config on the base branch: the first yaml block of docs/agents/afkconvoy.md. A repo whose config names a team is a bound repo: the team's workflows say how its issues are worked. One whose config names none is unbound: each issue is worked by one worker, then the landing train.
-- A tracker: the private repo the fleet reads and writes its issues in. The checkout's own repo can be its tracker only when private; anyone who can comment on its issues writes what workers read. Settle which repo with the user before its first `run`: [`afkconvoy help first-start`](help:first-start).
-- Host settings apply to every fleet on this host. Host sleep defaults to 00:00-06:00 of its local time, once every fleet has been idle 10 minutes and the host has been unused that long; a host that is not macOS must say `--no-host-sleep`. Hot limits inspect a worker past half the host's cores (at least one) held two minutes, a quarter of its memory resident, or a tenth of the disk free written in ten minutes (at least one GiB). Admission holds back new workers past a load of 200% of the host's cores, under 10% memory free, or under 1% disk free; held for one reason 600 seconds, it starts an inspection. Memory pressure held that long starts one too. The panel's port defaults to 7070, or any free port if taken. Each checkout's concurrency defaults to 3 claims at work at once on this host. `afkconvoy run --help` gives the flags for changing each.
+- A private tracker for the issues the fleet reads and writes. Only a private repo can be its own tracker: anyone who can comment writes what workers read. Settle it with the user: [`afkconvoy help first-start`](help:first-start).
+- Host settings apply to every fleet here. Fleets put this host to sleep from 00:00-06:00 local time by default, once all fleets and the host have been idle 10 minutes; off macOS, say `--no-host-sleep`. Hot limits inspect a worker past half the host's cores (at least one) held two minutes, a quarter of its memory resident, or a tenth of the disk free written in ten minutes (at least one GiB). Admission holds back new workers past 200% load per core, under 10% memory free, or under 1% disk free; held for one reason 600 seconds, it starts an inspection. Memory pressure held that long starts one too. The panel's port defaults to 7070, or any free port if taken. A watch looks every 300 seconds when an operator directory is set; none is set by default, so no watch starts. Each checkout's concurrency defaults to 3 claims at work at once. `afkconvoy run --help` gives each flag.
 - `gh` logged in as a user who may push to the repo.
 - `orca` on the PATH: every worker is started through it. It is running (`orca open`) and was given this checkout, once (`orca repo add --path "$PWD"`).
 - `claude` on the PATH and logged in, when it is what starts a worker.
@@ -59,7 +59,7 @@ Read `afkconvoy help <topic>` when this guide or a command's help names the topi
 - `run` returns once its checkout's first tick ended: the host runner ticks on, in the background, until `afkconvoy stop --all` stops it, keeping the checkout list. `afkconvoy stop` takes one checkout off the list. `tick` is one pass that exits.
 - Between ticks a fleet instance sleeps 90 seconds while it has work, or 25 minutes after 3 empty ticks. Commands that change fleet state wake it sooner, including a worker's last `afkconvoy wake`. When a fleet on this host closes an issue or sees it closed, it also wakes every other fleet on the same tracker whose open issues it blocked. That next tick reads GitHub and takes up an issue whose last open blocker closed; its tick log names the closed issue and the fleet instance that saw it. After changing issues with `gh`, run `afkconvoy wake <checkout>` on the fleet's host: `gh` sends no wake.
 - Each harness's worker launch command comes from this host's host kit, kept outside the repo. `run` writes it on a host that has none, and `afkconvoy kit` writes it again; neither asks anything. `--worker-command` is gone. A known harness with no entry or command is discovered in the worker login shell, checked, and appended to the latest kit without model probes; an explicit command always wins. A running fleet reads command edits at its next worker launch.
-- A host whose fleets are all idle is put to sleep, but only within its sleep hours: 00:00-06:00 of its local time, unless it says others. `afkconvoy run --host-sleep-hours 22:00-06:00` says others for every fleet on the host, `--host-sleep-hours default` changes them back, and `--no-host-sleep` keeps the host awake at any hour.
+- Host settings are kept on this host for every fleet; a `run` changes those it names. Read `afkconvoy run --help` for each flag.
 - In a bound repo the worker launch command must end in its harness — Claude Code, pi, Codex, DSH or Kimi Code — taking flags: the fleet adds to it what starts each worker in its role and under the guard ([`afkconvoy help worker-launch`](help:worker-launch) says what, for each harness), and a start refuses a command whose `--help` does not name those flags. Every harness the team could ask for is checked first, and none is ever started in another's place.
 
 ## Designing a team, for a bound repo
@@ -3443,7 +3443,7 @@ A first start settles a new checkout's tracker and a new host's host settings wi
 
 Explain these briefly, in the user's words. A tracker is the private repo the fleet reads and writes its issues in. Anyone who can comment on its issues writes what workers read, so a public repo cannot be its own tracker. Two people working one repo need their own trackers; those choices stay on their hosts and are never pushed. `afkconvoy checkouts` shows the trackers other checkouts on this host already use.
 
-Host settings apply to every fleet on this host. Host sleep defaults to 00:00-06:00 of its local time, once every fleet has been idle 10 minutes and the host has been unused that long; a host that is not macOS must say `--no-host-sleep`. Hot limits inspect a worker past half the host's cores (at least one) held two minutes, a quarter of its memory resident, or a tenth of the disk free written in ten minutes (at least one GiB). Admission holds back new workers past a load of 200% of the host's cores, under 10% memory free, or under 1% disk free; held for one reason 600 seconds, it starts an inspection. Memory pressure held that long starts one too. The panel's port defaults to 7070, or any free port if taken. Each checkout's concurrency defaults to 3 claims at work at once on this host. `afkconvoy run --help` gives the flags for changing each.
+Host settings apply to every fleet here. Fleets put this host to sleep from 00:00-06:00 local time by default, once all fleets and the host have been idle 10 minutes; off macOS, say `--no-host-sleep`. Hot limits inspect a worker past half the host's cores (at least one) held two minutes, a quarter of its memory resident, or a tenth of the disk free written in ten minutes (at least one GiB). Admission holds back new workers past 200% load per core, under 10% memory free, or under 1% disk free; held for one reason 600 seconds, it starts an inspection. Memory pressure held that long starts one too. The panel's port defaults to 7070, or any free port if taken. A watch looks every 300 seconds when an operator directory is set; none is set by default, so no watch starts. Each checkout's concurrency defaults to 3 claims at work at once. `afkconvoy run --help` gives each flag.
 
 #### Set up without asking
 
@@ -3453,7 +3453,7 @@ Leave the host kit to `run`, which writes one where none exists, without asking.
 
 #### Ask the user
 
-Ask every applicable question below in one message, recommending an answer for each. Settle the tracker and concurrency for a checkout not on `afkconvoy checkouts`; settle host sleep on a host with no host settings yet. Existing choices stand unless the user asks to change them. Create a new private repo only on the user's yes to its owner and name. Run the lines only after the user answers. Replace placeholders with their answers and combine the selected flags in one `afkconvoy run <checkout>`; separate `run` lines may still lack another required answer.
+Ask every applicable question below in one message, recommending an answer for each. Settle the tracker and concurrency for a checkout not on `afkconvoy checkouts`; settle host sleep and the operator's watch directory on a host with no host settings yet. Existing choices stand unless the user asks to change them. Create a new private repo only on the user's yes to its owner and name. Run the lines only after the user answers. Replace placeholders with their answers and combine the selected flags in one `afkconvoy run <checkout>`; separate `run` lines may still lack another required answer.
 
 ##### tracker
 
@@ -3484,9 +3484,18 @@ Default: 3. Recommendation: Start with the default, then change it to what this 
 - The default: `afkconvoy run <checkout> --concurrency default`
 - Another whole number of claims, at least one: `afkconvoy run <checkout> --concurrency <N>`
 
+##### watch-dir
+
+Which operator directory should a watch start in, or should watches stay off?
+
+Default: none; no looks or watches. Recommendation: Use an existing operator directory holding the rules for looking after this host's projects; leave watches off until the user names one.
+
+- An existing operator directory chosen by the user: `afkconvoy run <checkout> --watch-dir '<operator-directory>'`
+- No watch: `afkconvoy run <checkout> --watch-dir default`
 
 
-A first `run` without `--tracker` for a checkout off the list, or without `--host-sleep`, `--no-host-sleep` or `--host-sleep-hours` for a host with no host settings, refuses before writing anything. Its JSON has `error`, `asks` (each unanswered setting, question, default, recommendation as `recommend`, and every option with its `line`) and `see`, the command that prints this topic. A flag's environment variable counts as saying it. Concurrency keeps its default if no flag names it. A checkout already on the list and host settings already kept run as before.
+
+A first `run` without `--tracker` for a checkout off the list, or without `--host-sleep`, `--no-host-sleep` or `--host-sleep-hours` for a host with no host settings, refuses before writing anything. Its JSON has `error`, `asks` (each unanswered setting, question, default, recommendation as `recommend`, and every option with its `line`) and `see`, the command that prints this topic. A flag's environment variable counts as saying it. Concurrency and the watch directory keep their defaults if no flag names them. A checkout already on the list and host settings already kept run as before.
 
 ### `afkconvoy help concepts`
 
