@@ -782,3 +782,9 @@ mod tests {
         }
     }
 }
+/// Codex's task-refusal screen reported on sunfmin/control#98, 2026-10-26.
+pub(super) fn task_refusal(output: &[String]) -> Option<String> {
+    let screen = output.join(" ").split_whitespace().collect::<Vec<_>>().join(" ");
+    let words = "We take extra care with some cybersecurity requests. If you're doing authorized security work, apply for Daybreak to get broader access.";
+    screen.contains(words).then(|| words.to_string())
+}

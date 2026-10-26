@@ -803,6 +803,191 @@ fn codex_usage_limit(world: &World) {
     });
 }
 
+// The refusal reported on hostvitals' sunfmin/control#98, 2026-10-26.
+const CODEX_REFUSAL: &str = include_str!("screens/codex-task-refusal-control-98.txt");
+
+fn codex_refusal(world: &World, dir: &Path) {
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            if terminal["worktreePath"] == dir.to_str().unwrap() && terminal["open"] == true {
+                terminal["screen"] = json!(CODEX_REFUSAL.lines().collect::<Vec<_>>());
+                // The rule wins even over a stale busy runtime report.
+                terminal["agent"] = json!({"state":"working", "stateStartedAt":790000});
+            }
+        }
+    });
+}
+
+#[test]
+fn codex_task_refusal_continues_immediately_and_only_excludes_this_issue() {
+    let world = blocked();
+    let dir = worktree(&world, 7);
+    switch(&world, "750", &["7", "--harness", "codex"]).ok();
+    let head = git(&dir, &["rev-parse", "HEAD"]);
+    let branch = git(&dir, &["symbolic-ref", "--short", "HEAD"]);
+    let claims = world.claims();
+    let kit = std::fs::read(world.kit_path()).unwrap();
+    std::fs::write(dir.join("unfinished.txt"), "keep me").unwrap();
+    codex_refusal(&world, &dir);
+
+    tick(&world, 800);
+
+    assert_eq!(open_commands(&world, &dir), [common::trusted("agent")]);
+    assert_eq!(git(&dir, &["rev-parse", "HEAD"]), head);
+    assert_eq!(git(&dir, &["symbolic-ref", "--short", "HEAD"]), branch);
+    assert_eq!(std::fs::read_to_string(dir.join("unfinished.txt")).unwrap(), "keep me");
+    assert_eq!(world.claims(), claims);
+    assert_eq!(std::fs::read(world.kit_path()).unwrap(), kit);
+    assert!(!world.root.join("diagnosis-asked").exists());
+    let plan = world.afk(&["plan", "--now", "801"]).ok();
+    let worker = &plan["selection"]["health"]["workers"][0];
+    assert_eq!(worker["source"], "terminal rule");
+    assert_eq!(worker["diagnosis"]["class"], "refusal");
+    assert_eq!(worker["action"], "continued");
+    assert_eq!(worker["attempts"], 0);
+    assert_eq!(plan["selection"]["health"]["faults"], json!([]));
+    assert_eq!(plan["selection"]["refusals"]["7"][0]["harness"], "codex");
+    assert!(
+        world
+            .comments(70)
+            .iter()
+            .any(|body| body.contains("switched from `codex` to `claude-code`"))
+    );
+    let doctor = world.afk(&["doctor", "--now", "801"]);
+    assert_eq!(doctor.json["refusals"]["7"][0]["evidence"], CODEX_REFUSAL.trim());
+
+    // A fresh CLI process has no health observation left to lean on.
+    std::fs::remove_file(world.cache().join("afkconvoy/worker-health.json")).unwrap();
+    let moved = switch(&world, "802", &["7", "--harness", "codex"]).ok();
+    assert_eq!(moved["switched"][0]["to"], "claude-code");
+    assert!(
+        moved["switched"][0]["skipped"][0]["why"].as_str().unwrap().contains("refused this task")
+    );
+    assert_eq!(
+        world.comments(7).iter().filter(|body| body.starts_with("<!--convoy:refusal ")).count(),
+        1
+    );
+    world.issue(8, &["ready-for-agent"]);
+    tick(&world, 803);
+    assert_eq!(
+        open_commands(&world, &worktree(&world, 8)),
+        [codex_line(&world, &worktree(&world, 8))]
+    );
+}
+
+#[test]
+fn codex_task_refusal_never_starts_a_second_writer_while_termination_is_unconfirmed() {
+    let world = blocked();
+    let dir = worktree(&world, 7);
+    switch(&world, "750", &["7", "--harness", "codex"]).ok();
+    codex_refusal(&world, &dir);
+    world.with_orca(|orca| orca["close_keeps_terminal"] = json!(true));
+    tick(&world, 800);
+    assert_eq!(open_commands(&world, &dir), [codex_line(&world, &dir)]);
+    assert_eq!(world.claims().len(), 1);
+    assert!(!world.root.join("diagnosis-asked").exists());
+    assert!(world.comments(7).iter().any(|body| body.starts_with("<!--convoy:refusal ")));
+}
+
+#[test]
+fn codex_task_refusal_with_no_harness_left_escalates_now_and_stays_with_the_human() {
+    let world = blocked();
+    let dir = worktree(&world, 7);
+    switch(&world, "750", &["7", "--harness", "codex"]).ok();
+    world.with_kit(|kit| {
+        kit["harnesses"].as_array_mut().unwrap().retain(|h| h["harness"] == "codex")
+    });
+    std::fs::write(dir.join("unfinished.txt"), "keep me").unwrap();
+    codex_refusal(&world, &dir);
+    tick(&world, 800);
+    assert!(world.claims().is_empty());
+    assert!(open_commands(&world, &dir).is_empty());
+    assert_eq!(std::fs::read_to_string(dir.join("unfinished.txt")).unwrap(), "keep me");
+    let escalation = world
+        .comments(7)
+        .into_iter()
+        .find(|body| body.starts_with("<!--convoy:escalation "))
+        .unwrap();
+    assert!(
+        escalation.contains("refusal=exhausted")
+            && escalation.contains("No eligible harness remains")
+            && escalation.contains(CODEX_REFUSAL.trim()),
+        "{escalation}"
+    );
+    assert!(!escalation.contains("one hour"));
+    tick(&world, 801);
+    let plan = world.afk(&["plan", "--now", "802"]).ok();
+    assert_eq!(plan["frontier"], json!([]));
+    assert!(!world.comments(7).iter().any(|body| body.starts_with("<!--convoy:consult ")));
+    assert!(!world.root.join("diagnosis-asked").exists());
+}
+
+#[test]
+fn an_issue_refusal_is_remembered_at_the_next_stage_and_shown_without_host_health() {
+    use afkconvoy_core::harness::Harness;
+    let world = World::new();
+    hold_every_harness(&world);
+    world.repo(
+        "acme/dev",
+        &[(".claude/skills/implement/SKILL.md", "---\nname: implement\ndescription: build\n---\n")],
+    );
+    world.repo("acme/team", &[
+        ("team.md", "```yaml\nroles:\n  dev: acme/dev\n```\n"),
+        ("workflows/feature.md", "```yaml\nstages:\n  - name: build\n    by: dev\n    do: implement\n    on: { pass: review }\n  - name: review\n    by: dev\n    do: implement\n    writes: false\n    on: { pass: done }\n```\n"),
+    ]);
+    common::write(
+        &world.clone,
+        "docs/agents/afkconvoy.md",
+        "```yaml\nbase_branch: main\ngate_command: ./gate.sh\nteam: acme/team\n```\n",
+    );
+    git(&world.clone, &["commit", "-qam", "bind the repo"]);
+    git(&world.clone, &["push", "-q", "origin", "main"]);
+    world.afk(&["switch", "--harness", "codex"]).ok();
+    world.issue(7, &["flow:feature"]);
+    tick(&world, 700);
+    let dir = worktree(&world, 7);
+    codex_refusal(&world, &dir);
+    tick(&world, 800);
+    assert_eq!(world.afk(&["show", "--issue", "7"]).ok()["position"]["stage"], "build");
+    world
+        .afk(&[
+            "verdict",
+            "pass",
+            "--issue",
+            "7",
+            "--stage",
+            "build",
+            "--role-commit",
+            "r1",
+            "--team-commit",
+            "t1",
+            "--text",
+            "done",
+            "--instance",
+            "alpha",
+        ])
+        .ok();
+    tick(&world, 801);
+    let shown = world.afk(&["show", "--issue", "7"]).ok();
+    assert_eq!(shown["position"]["stage"], "review");
+    assert_eq!(shown["refusals"][0]["harness"], "codex");
+    assert_eq!(shown["refusals"][0]["evidence"], CODEX_REFUSAL.trim());
+    let plan = world.afk(&["plan", "--now", "802"]).ok();
+    let casting = &plan["casting"][0];
+    assert!(
+        casting["stages"].as_array().unwrap().iter().all(|s| s["harness"] == "claude-code"),
+        "{casting}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(
+            PathBuf::from(git(&dir, &["rev-parse", "--absolute-git-dir"])).join("convoy-harness")
+        )
+        .unwrap()
+        .trim(),
+        Harness::ClaudeCode.key()
+    );
+}
+
 #[test]
 fn codex_explicit_usage_limit_continues_by_rule_without_a_diagnosis() {
     let world = blocked();

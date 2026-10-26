@@ -4,7 +4,44 @@
 use crate::lease::stamp_age;
 use flux_rs::attrs::*;
 
+use crate::harness::Harness;
 use crate::record;
+
+/// A task refusal belongs to the issue at every stage, never to the account.
+/// Its comment is fleet state, so another host reads the same exclusion.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct Refusal {
+    pub harness: Harness,
+    pub evidence: String,
+}
+
+impl Refusal {
+    pub fn comment(&self) -> String {
+        let marker = record::marker(
+            "convoy:refusal",
+            &[("harness", self.harness.key()), ("evidence", &self.evidence)],
+        );
+        format!(
+            "{marker}\n**afkconvoy** — `{}` refused this task. Later starts of this issue skip this harness at every stage; other issues may still use it.\n\n> {}",
+            self.harness.key(),
+            self.evidence
+        )
+    }
+}
+
+/// The issue's refused harnesses, once each, with the first refusal's words.
+pub fn refusals<'a>(bodies: impl IntoIterator<Item = &'a str>) -> Vec<Refusal> {
+    let mut found: Vec<Refusal> = vec![];
+    for body in bodies {
+        let Some(fields) = record::read_marker("convoy:refusal", body) else { continue };
+        let Some(harness) = fields.get("harness").and_then(Harness::read) else { continue };
+        let Some(evidence) = fields.get("evidence").filter(|e| !e.is_empty()) else { continue };
+        if !found.iter().any(|r| r.harness == harness) {
+            found.push(Refusal { harness, evidence: evidence.into() });
+        }
+    }
+    found
+}
 
 /// The kind of record that says a branch is the fleet's own for an issue.
 pub const BRANCH: &str = "convoy:branch";
@@ -374,6 +411,24 @@ mod rejected {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn refusal_comments_keep_evidence_and_ignore_unknown_or_duplicate_harnesses() {
+        let first = Refusal {
+            harness: Harness::Codex,
+            evidence: "a wrapped\nrefusal with <markup> & punctuation".into(),
+        };
+        let comments = [
+            first.comment(),
+            first.comment(),
+            "<!--convoy:refusal harness=unknown evidence=no-->".into(),
+            "<!--convoy:refusal harness=pi-->".into(),
+        ];
+        let read = refusals(comments.iter().map(String::as_str));
+        assert_eq!(read.len(), 1);
+        assert_eq!(read[0].harness, Harness::Codex);
+        assert_eq!(read[0].evidence, first.evidence);
+    }
 
     #[test]
     fn a_dispatch_runs_in_one_order() {

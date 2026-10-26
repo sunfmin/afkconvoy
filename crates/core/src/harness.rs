@@ -88,6 +88,15 @@ impl serde::Serialize for Harness {
 }
 
 impl Harness {
+    /// The harness's fixed task-refusal words on its screen. Whitespace may
+    /// wrap in a terminal; other prose alone establishes no refusal rule.
+    pub fn task_refusal(self, output: &[String]) -> Option<String> {
+        match self {
+            Harness::Codex => codex::task_refusal(output),
+            _ => None,
+        }
+    }
+
     /// The harness of a worker nothing names one for.
     pub const DEFAULT: Harness = Harness::ClaudeCode;
 

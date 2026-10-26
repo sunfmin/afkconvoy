@@ -205,6 +205,17 @@ pub fn has_signal(worktree: &Worktree) -> Result<bool> {
 }
 
 fn terminal_rule(harness: Harness, output: &[String]) -> Option<Diagnosis> {
+    if let Some(evidence) = harness.task_refusal(output) {
+        return Some(Diagnosis {
+            status: "fault".into(),
+            class: "refusal".into(),
+            scope: Scope::Worker,
+            evidence: vec![evidence],
+            action: Action::Continue,
+            missing: vec![],
+            retry_after: None,
+        });
+    }
     if harness != Harness::Codex {
         return None;
     }
@@ -548,7 +559,16 @@ pub fn reconcile(
         }
         let busy_without_fault = state == WorkerState::Busy
             && classified(&worktree.health_report()?).is_none()
-            && error_of(&worktree)?.is_empty();
+            && error_of(&worktree)?.is_empty()
+            && !worktree.terminal()?.is_some_and(|terminal| {
+                worktree.screen(&terminal, 100).is_ok_and(|screen| {
+                    terminal_rule(
+                        worktree.harness().ok().flatten().unwrap_or(Harness::DEFAULT),
+                        &screen,
+                    )
+                    .is_some()
+                })
+            });
         if state == WorkerState::Gone || busy_without_fault {
             book.workers.retain(|o| o.path != worktree.path);
             book.observations_failed.retain(|(path, _, _)| *path != worktree.path);
@@ -815,12 +835,30 @@ fn escalate_observed(
         "error": observed.error,
         "snapshots": observed.snapshots,
     }))?;
+    let why = if observed.diagnosis.as_ref().is_some_and(|d| d.class == "refusal") {
+        "No eligible harness remains for this issue after task refusal."
+    } else {
+        "The worker's fault remained unresolved for one hour on unchanged evidence."
+    };
     let reason = format!(
-        "The worker's fault remained unresolved for one hour on unchanged evidence. \
-         The fleet preserved its work and handed the issue to a human with this evidence:\n\
-         ```json\n{evidence}\n```"
+        "{why} The fleet preserved its work and handed the issue to a human with this evidence:\n\n```json\n{evidence}\n```"
     );
-    crate::judge::escalate(fleet, me, issue, &reason)?;
+    if observed.diagnosis.as_ref().is_some_and(|d| d.class == "refusal") {
+        if let Some(claim) = crate::judge::mine(fleet, me, issue)? {
+            let worktree = Worktree::of_issue(&Source::of(&fleet.repo)?, issue)?;
+            let pr =
+                afkconvoy_core::plan::closing_pr(&fleet.gh.open_prs()?, issue).map(|p| p.number);
+            crate::judge::escalate_claim(
+                fleet,
+                &claim,
+                &crate::judge::Handed::refusal_exhausted(reason),
+                pr,
+                worktree.as_ref(),
+            )?;
+        }
+    } else {
+        crate::judge::escalate(fleet, me, issue, &reason)?;
+    }
     observed.action = "escalated".into();
     Ok(())
 }
@@ -839,7 +877,9 @@ fn decide(
     state: WorkerState,
     structured: &Value,
 ) -> Result<()> {
-    if fleet.now < observed.next_check {
+    let output = observed.snapshots.last().map(|s| s.output.as_slice()).unwrap_or_default();
+    let terminal = terminal_rule(observed.harness, output);
+    if fleet.now < observed.next_check && terminal.is_none() {
         return Ok(());
     }
     let expired = fleet.now.saturating_sub(observed.window_started) >= RECOVERY_SECONDS;
@@ -847,10 +887,9 @@ fn decide(
         return escalate_observed(observed, fleet, me, issue);
     }
     let raw_error = structured.get("error").unwrap_or(structured);
-    let output = observed.snapshots.last().map(|s| s.output.as_slice()).unwrap_or_default();
-    let rule = classified(raw_error)
-        .map(|rule| ("structured rule", rule))
-        .or_else(|| terminal_rule(observed.harness, output).map(|rule| ("terminal rule", rule)));
+    let rule = terminal
+        .map(|rule| ("terminal rule", rule))
+        .or_else(|| classified(raw_error).map(|rule| ("structured rule", rule)));
     if rule.is_none()
         && let Some(background) = crate::judge::own_background(fleet, worktree, true)?
     {
@@ -911,6 +950,16 @@ fn decide(
         answer.with_context(|| format!("waiting for diagnosis: {}", failure.join("; ")))?
     };
     observed.diagnosis = Some(diagnosis.clone());
+    let refusal = diagnosis.class == "refusal";
+    if refusal && let Some(issue) = issue {
+        fleet.remember_refusal(
+            issue,
+            afkconvoy_core::worker::Refusal {
+                harness: observed.harness,
+                evidence: diagnosis.evidence.join("\n"),
+            },
+        )?;
+    }
     observed.error = None;
     observed.next_check =
         fleet.now.saturating_add(diagnosis.retry_after.unwrap_or(CHECK_SECONDS).max(1));
@@ -1001,6 +1050,18 @@ fn decide(
     let mut excluded = if same_command && !model_fault { vec![observed.harness] } else { vec![] };
     store(book)?;
     fleet.invalidate_selection();
+    if refusal && let Some(issue) = issue {
+        // Selection happens before the old writer is stopped. Exhaustion is
+        // settled by the rule now, rather than waiting out a recovery window.
+        if let Err(error) = crate::dispatch::continuation_harness(fleet, agent, issue) {
+            let why = format!("{error:#}");
+            if error.is::<crate::fleet::NothingSafe>() || why.contains("no eligible harness") {
+                observed.error = Some(why);
+                return escalate_observed(observed, fleet, me, Some(issue));
+            }
+            return Err(error);
+        }
+    }
     excluded.extend(
         observed
             .failed_candidates
@@ -1013,7 +1074,7 @@ fn decide(
         if excluded.contains(&candidate.harness) {
             continue;
         }
-        if observed.continuations >= MAX_CONTINUATIONS {
+        if !refusal && observed.continuations >= MAX_CONTINUATIONS {
             break;
         }
         observed.continuations += 1;

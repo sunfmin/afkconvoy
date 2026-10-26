@@ -313,9 +313,9 @@ pub(crate) fn continuation_harness(fleet: &Fleet, agent: &Agent, number: u64) ->
     let harness = match &fleet.config.bound {
         Some(bound) => Staged::enter(fleet, bound, number, &issue.labels)?.harness(),
         None if issue.labels.contains(&fleet.config.escalate_label) => {
-            fleet.stock_consult()?.harness
+            fleet.stock_consult(Some(number))?.harness
         }
-        None => fleet.cast(&issue.labels)?.map_err(|e| anyhow!(e))?.harness,
+        None => fleet.cast(&issue.labels, Some(number))?.map_err(|e| anyhow!(e))?.harness,
     };
     crate::role::startable(&agent.launches, harness, "worker continuation")?;
     Ok(harness)
@@ -362,11 +362,11 @@ fn start(
             (staged.harness(), staged.model().map(str::to_string), staged.unmatched().cloned())
         }
         (None, Some(_)) => {
-            let stock = fleet.stock_consult()?;
+            let stock = fleet.stock_consult(Some(number))?;
             (stock.harness, stock.model.clone(), stock.unmatched.clone().map(|name| (name, stock)))
         }
         (None, None) => {
-            let cast = match fleet.cast(&issue.labels) {
+            let cast = match fleet.cast(&issue.labels, Some(number)) {
                 Ok(Ok(cast)) => cast,
                 Err(error) if held && error.is::<crate::paused::Held>() => fleet.first()?,
                 Ok(Err(why)) => bail!("{why}: run `afkconvoy kit`"),
@@ -538,7 +538,7 @@ fn start(
     started["skipped"] = if staged.is_some() {
         started["stage"]["skipped"].clone()
     } else {
-        json!(fleet.skipped_before(harness, None))
+        json!(fleet.skipped_before(harness, None, Some(number)))
     };
     if consult.is_some() {
         started["prompt"] = json!(stock::ROLE);

@@ -388,7 +388,7 @@ impl As {
 
 /// The stock consult of an unbound repo, on what the host kit names for it.
 fn unbound_as(fleet: &Fleet) -> Result<As> {
-    let stock = fleet.stock_consult()?;
+    let stock = fleet.stock_consult(None)?;
     Ok(As::Unbound { harness: stock.harness, model: stock.model })
 }
 
@@ -397,7 +397,7 @@ fn unbound_as(fleet: &Fleet) -> Result<As> {
 fn stock_as(fleet: &Fleet, bound: &Bound) -> Result<As> {
     let copies = Copies::of_host()?;
     let kept = keep(&fleet.gh, &copies, &bound.team, &fleet.config.labels())?;
-    let stock = fleet.stock_consult()?;
+    let stock = fleet.stock_consult(None)?;
     Ok(As::Bound {
         harness: stock.harness,
         model: stock.model,
@@ -432,7 +432,7 @@ fn bound_as(fleet: &Fleet, bound: &Bound, issue: Option<u64>) -> Result<Option<A
         // A consult a stage names runs its role's range's first.
         Some(Who::Role(work)) => {
             let role = kept.team.role_of(work);
-            let cast = fleet.cast_in(role, &[])?;
+            let cast = fleet.cast_in(role, &[], None)?;
             let copy = kept.role(role, cast.harness)?;
             (
                 cast.harness,
@@ -446,7 +446,7 @@ fn bound_as(fleet: &Fleet, bound: &Bound, issue: Option<u64>) -> Result<Option<A
         }
         // The stock consult runs what the host kit names for it.
         Some(Who::Stock) => {
-            let stock = fleet.stock_consult()?;
+            let stock = fleet.stock_consult(None)?;
             (
                 stock.harness,
                 stock.model,

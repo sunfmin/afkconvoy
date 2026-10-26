@@ -178,6 +178,23 @@ pub fn escalation_comment(claim: &str, flow: Option<&str>, reason: &str) -> Stri
     format!("{marker}\n**afkconvoy: escalated to a human.**\n\n{}\n", reason.trim())
 }
 
+/// No harness can work this issue after refusal: a consult would read the
+/// same task on the same exhausted kit. Keep it with the human until ruled on.
+pub fn refusal_exhausted_comment(claim: &str, flow: Option<&str>, reason: &str) -> String {
+    let marker = record::marker(
+        ESCALATION,
+        &[("claim", claim), ("flow", flow.unwrap_or("")), ("refusal", "exhausted")],
+    );
+    format!("{marker}\n**afkconvoy: escalated to a human.**\n\n{}\n", reason.trim())
+}
+
+/// Whether this escalation cannot be answered by a consult on this host.
+pub fn skips_consult(body: &str) -> bool {
+    FleetFault::read(body).is_some()
+        || record::read_marker(ESCALATION, body)
+            .is_some_and(|fields| fields.get("refusal") == Some("exhausted"))
+}
+
 /// A hand-off caused by the fleet, its harness or its host, before a worker
 /// took its brief or after the landing machinery stopped. These go straight
 /// to a human: a consult may not fix the host (docs/adr/0030).

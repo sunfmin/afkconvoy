@@ -751,13 +751,14 @@ enum Command {
     ///
     /// With `--issue`, JSON:
     ///
-    /// {"issue", "workflow", "intake", "position", "follows", "rework", "consecutive_rework", "records"}
+    /// {"issue", "workflow", "intake", "position", "follows", "rework", "consecutive_rework", "records", "refusals"}
     ///
     /// - `intake`: how the issue came in. {"by": "worker", "role", "from", "url"}: a worker in that role, on the issue `from`, took it in with `afkconvoy intake`, and `url` is the comment that records it; `patrol` in place of `from` where a patrol's worker did. {"by": "human"}: its flow label has no intake record for it
     /// - `position`: where the issue is: {"is", "stage", "by", "do", "harness", "reason"}, as `afkconvoy rehearse --help` spells out
     /// - `follows`: the position a `pass` declared now would lead to; null where none can be declared: the issue is landing, ended, escalating or with a consult
     /// - `rework`: {"had", "left"}: its rework so far, and what `max_rework` still allows
     /// - `consecutive_rework`: for each stage that may reject, {"had", "left"}: its rejections in a row, and what `max_consecutive_rework` still allows
+    /// - `refusals`: the harnesses that refused this issue, each with `harness` and the refusal line as `evidence`; every later start skips them at every stage
     /// - `records`: its stage records, oldest first: {"stage", "verdict", "reads", "by", "claim", "role_commit", "team_commit", "harness", "url"}
     ///
     /// Of a record, `by` says who left it: `worker` or — asked to rule on the stage's `escalate` — `consult`, under the `claim` and the two commits it names, as a session of the `harness` it names, or `human`, for whom all four are null. `verdict` is what it states: one of the five verdicts, `ruling`, or `sent`. And `reads` says how it counted:
@@ -2765,7 +2766,7 @@ enum Command {
     ///
     /// ## What counts as silent
     ///
-    /// A stopped worker with no verdict or progress is observed over at least 300 seconds. Actual terminal output, git progress, runtime reports and process activity are evidence for diagnosis, never proof of quota exhaustion by themselves. A harness's explicit usage-limit message is the exception: Codex's `Usage limit reached … Increase your limits to continue using codex` is an account quota fault by rule, with no diagnosis or observation delay. A diagnostic harness has 30 seconds per candidate, at most three attempts per unchanged episode and 300 seconds between attempts. Invalid judgments try the next diagnosis-capable harness and preserve the scene.
+    /// A stopped worker with no verdict or progress is observed over at least 300 seconds. Actual terminal output, git progress, runtime reports and process activity are evidence for diagnosis, never proof of quota exhaustion by themselves. A harness's explicit usage-limit and task-refusal messages are exceptions: Codex's `Usage limit reached … Increase your limits to continue using codex` is an account quota fault by rule, with no diagnosis or observation delay. Codex's `We take extra care with some cybersecurity requests. If you're doing authorized security work, apply for Daybreak to get broader access.` is a refusal of this task by rule, also with no diagnosis or observation delay. This issue continues on the next harness in host kit order that can start for its role. The issue remembers each refusing harness on GitHub and skips it at every later stage and start; the harness stays healthy for other issues. With none left, the issue escalates at once with the refusal line as evidence and no consult. A diagnostic harness has 30 seconds per candidate, at most three attempts per unchanged episode and 300 seconds between attempts. Invalid judgments try the next diagnosis-capable harness and preserve the scene.
     ///
     /// Account quota with no reset time continues on the next harness in host kit order that can start for the worker's role. A reset within the one-hour recovery window may be waited for; a later reset continues instead. Repeated waits on unchanged evidence never restart that window. After one hour the fleet acts on the fault class or escalates the issue to a human with its evidence. Doctor names the worker, its diagnosis and its next check.
     ///

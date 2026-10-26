@@ -290,7 +290,7 @@ pub(crate) fn auxiliary(
         worktree.deliver(&terminal, &worktree.brief()?)?;
     }
     Ok(json!({"worktree": worktree.path, "from": continued.from, "to": cast.harness,
-            "terminal": terminal, "skipped": fleet.skipped_before(cast.harness, None)}))
+            "terminal": terminal, "skipped": fleet.skipped_before(cast.harness, None, None)}))
 }
 
 /// Moves the worker of my claim on `issue` onto what it runs now — this host's

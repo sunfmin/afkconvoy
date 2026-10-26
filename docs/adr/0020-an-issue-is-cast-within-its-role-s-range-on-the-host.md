@@ -36,7 +36,24 @@ Worker health is evidence, not priority: observations and scoped faults live in 
 
 Observation begins after a worker stops reporting progress. Two observations span at least 300 seconds; known background work and declared verdicts are excluded. Diagnosis has 30 seconds per candidate, three attempts per unchanged episode, and at least 300 seconds between attempts. Diagnostic failures try subsequent eligible harnesses and record which harness answered what. Account quota without a reset continues at once; a reset within the one-hour recovery window may be waited for. Repeated waits on unchanged evidence do not restart that window: after one hour the fleet acts on the fault class or escalates the issue with its evidence. Candidate account/model recovery probes run hourly, and only successful probes restore availability. A recovered preference participates in new starts without moving healthy successors back. Plan, doctor, panel and the tick log expose evidence, diagnosis source, scope, next check, action and actual successor.
 
+## Task refusal is remembered by the issue (sunfmin/control#101)
+
+A harness's fixed task-refusal words decide by rule, beside the explicit usage
+limit, before observation or diagnosis. Codex's refusal seen on hostvitals'
+sunfmin/control#98 is the first rule; another harness gets one only with its
+observed screen in a test. A refusal is of the task, never the account or model:
+the harness remains healthy for other issues. The worker continues through the
+same confirmed-termination path, keeping its worktree, branch, stage, claim and
+PR. The issue records each refusing harness on GitHub, and every subsequent
+start, across stages and hosts, excludes it before kit order chooses a harness.
+Role permissions are still resolved against the whole kit, so this exclusion
+cannot broaden a role's range. Doctor and show expose the harness and its words.
+With no eligible harness left for this issue, it escalates immediately with the
+refusal evidence. No consult is started on the exhausted kit. This amends the
+observation and one-hour recovery window above for explicit task refusals only.
+
 ## Considered options
+
 
 - **Keep a stage's harness and model as an override.** Two places would decide which harness runs, and a wrong one would be looked for in both. A role that must run on one harness is given a range of one.
 - **The roster on each host.** Which harness does the work changes the result, so it belongs with the team on every host, not with whichever host started the worker; what a host adds is only what it has.
