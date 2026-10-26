@@ -152,6 +152,17 @@ pub struct Excluded {
     pub reason: String,
 }
 
+/// An open blocker no checkout serving the tracker works, with the repair
+/// lines read from the host. It holds build work back, but never a hand-off.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnworkedBlocker {
+    pub issue: u64,
+    pub blocker: u64,
+    pub repo: String,
+    pub reason: String,
+    pub fix: String,
+}
+
 /// Where one of my claims stands: what the tick does with it next.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -207,6 +218,8 @@ pub struct PeerClaim {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct WorkingSet {
+    #[serde(skip)]
+    pub unworked_blockers: Vec<UnworkedBlocker>,
     /// The issues a worker can be started on right now: in a bound repo,
     /// each at the stage its stage records put it at, those a stage has
     /// already declared on ahead of those never started — work somebody
@@ -396,6 +409,9 @@ fn hold_back(set: &mut WorkingSet) {
 
 /// What the effect layer read, in whatever order it came.
 pub struct Observed<'a> {
+    pub unworked_blockers: &'a [UnworkedBlocker],
+    /// Issues whose open blockers are all unworked, compared by repo and number.
+    pub handoffs: &'a [u64],
     pub issues: &'a [Issue],
     pub prs: &'a [PullRequest],
     pub claims: &'a [Claim],
@@ -490,11 +506,17 @@ fn blocker_reason(blockers: &[u64]) -> String {
     format!("open blockers: {}", named.join(", "))
 }
 
-fn call<'d>(issue: &Issue, due: &'d [(u64, Due<'d>)]) -> Call<'d> {
+fn call<'d>(issue: &Issue, due: &'d [(u64, Due<'d>)], handoffs: &[u64]) -> Call<'d> {
     // Where its stage records put it decides. An open PR declares nothing.
     match due.iter().find(|(number, _)| *number == issue.number).map(|(_, due)| due) {
         Some(Due::Human(reason)) => Call::Human(reason.clone()),
         Some(Due::Nothing(why)) => Call::Nothing(why.clone()),
+        Some(due @ Due::Consult(entry)) if handoffs.contains(&issue.number) => {
+            Call::Start(entry.stage.name.clone(), due)
+        }
+        Some(due @ Due::Stock(_, stage)) if handoffs.contains(&issue.number) => {
+            Call::Start(stage.name.clone(), due)
+        }
         Some(Due::Worker(_) | Due::Consult(_) | Due::Lander(_))
             if !issue.open_blockers.is_empty() =>
         {
@@ -552,6 +574,7 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
     claims.sort_by_key(|claim| claim.number);
 
     let mut set = WorkingSet {
+        unworked_blockers: seen.unworked_blockers.to_vec(),
         frontier: vec![],
         escalating: vec![],
         excluded: vec![],
@@ -596,7 +619,7 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
         // consult, whatever PR it has: the escalation kept it.
         let consult = seen.consults.contains(&number) && !claimed;
         let epic = matches!(label_bar(&issue.labels, config, seen.flows), Some(LabelBar::Epic(_)));
-        if consult && !epic && issue.open_blockers.is_empty() {
+        if consult && !epic && (issue.open_blockers.is_empty() || seen.handoffs.contains(&number)) {
             set.frontier.push(Dispatchable { number, title, stage: None, cast: None });
             continue;
         }
@@ -608,7 +631,7 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
         } else if claimed {
             "already claimed".to_string()
         } else if config.bound.is_some() {
-            match call(issue, seen.due) {
+            match call(issue, seen.due, seen.handoffs) {
                 Call::Human(reason) => {
                     set.escalating.push(Excluded { number, title, reason });
                     continue;
@@ -668,9 +691,11 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
             let startable = |issue: &&&Issue| {
                 config.bound.is_some() && label_bar(&issue.labels, config, seen.flows).is_none()
             };
-            let due = issue.filter(startable).and_then(|issue| match call(issue, seen.due) {
-                Call::Start(stage, Due::Worker(_)) => Some(stage),
-                _ => None,
+            let due = issue.filter(startable).and_then(|issue| {
+                match call(issue, seen.due, seen.handoffs) {
+                    Call::Start(stage, Due::Worker(_)) => Some(stage),
+                    _ => None,
+                }
             });
             let at_work = matches!(status, Status::NoPr | Status::AtStage);
             let declared = at_work && seen.declared.contains(&claim.number);
@@ -780,6 +805,8 @@ mod tests {
             issue(7, &["ready-for-agent", "repo:acme/dev", "Repo:acme/web"]),
         ];
         let seen = Observed {
+            unworked_blockers: &[],
+            handoffs: &[],
             issues: &issues,
             prs: &[pr(40, 5)],
             claims: &[claim(4, "peer")],
@@ -827,6 +854,8 @@ mod tests {
     fn an_unclaimed_issue_whose_kept_pr_nothing_live_owns_is_on_the_frontier() {
         let issues = [issue(1, READY), issue(2, READY), issue(3, READY), issue(4, READY)];
         let seen = Observed {
+            unworked_blockers: &[],
+            handoffs: &[],
             issues: &issues,
             prs: &[pr(10, 1), pr(20, 2), pr(30, 3), pr(40, 4)],
             claims: &[claim(2, "peer")],
@@ -867,6 +896,8 @@ mod tests {
         let back = || Back::Ready { ready: "ready-for-agent".into(), escalate: "stuck".into() };
         let issues = [issue(2, &["bug"]), issue(3, &["stuck"]), issue(4, &["stuck"])];
         let seen = Observed {
+            unworked_blockers: &[],
+            handoffs: &[],
             issues: &issues,
             prs: &[],
             // An escalation still under way: its claim is released last.
@@ -933,6 +964,8 @@ mod tests {
         let none = precedent::Seen::default();
         let no_flows = FlowLabels::default();
         let seen = |issues, claims| Observed {
+            unworked_blockers: &[],
+            handoffs: &[],
             issues,
             prs: &[],
             claims,
@@ -1017,6 +1050,8 @@ mod tests {
         };
         let due = [of(1, &[]), of(2, &[]), of(3, &escalated)];
         let seen = Observed {
+            unworked_blockers: &[],
+            handoffs: &[],
             issues: &issues,
             prs: &[],
             claims: &[],
@@ -1135,6 +1170,8 @@ mod tests {
             of(12, &signed),
         ];
         let seen = Observed {
+            unworked_blockers: &[],
+            handoffs: &[],
             issues: &issues,
             prs: &prs,
             claims: &[claim(10, "peer")],
@@ -1220,6 +1257,8 @@ mod tests {
         let claims =
             [claim(1, "me"), claim(6, "me"), claim(7, "me"), claim(8, "me"), claim(9, "me")];
         let seen = Observed {
+            unworked_blockers: &[],
+            handoffs: &[],
             issues: &issues,
             prs: &[pr(70, 7), pr(80, 8), pr(90, 9)],
             claims: &[&claims[..], &[claim(10, "me")]].concat(),
@@ -1277,6 +1316,8 @@ mod tests {
             claim(9, "me"),
         ];
         let seen = Observed {
+            unworked_blockers: &[],
+            handoffs: &[],
             issues: &issues,
             prs: &[pr(70, 7), pr(80, 8)],
             claims: &claims,
@@ -1335,6 +1376,8 @@ mod tests {
     fn a_claim_on_an_issue_that_is_gone_is_let_go_by_its_holder_and_unlocked_if_stale() {
         let claims = [claim(1, "me"), claim(2, "live"), claim(3, "dead"), claim(4, "me")];
         let seen = Observed {
+            unworked_blockers: &[],
+            handoffs: &[],
             issues: &[],
             prs: &[],
             claims: &claims,
@@ -1371,6 +1414,8 @@ mod tests {
     #[test]
     fn a_heartbeat_from_the_future_is_stale() {
         let seen = Observed {
+            unworked_blockers: &[],
+            handoffs: &[],
             issues: &[issue(1, READY)],
             prs: &[],
             claims: &[claim(1, "peer")],
@@ -1416,6 +1461,8 @@ mod tests {
         let build =
             |issues: &[Issue], prs: &[PullRequest], claims: &[Claim], beats: &[(String, u64)]| {
                 let seen = Observed {
+                    unworked_blockers: &[],
+                    handoffs: &[],
                     issues,
                     prs,
                     claims,

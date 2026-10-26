@@ -348,6 +348,15 @@ impl Fleet {
     pub fn rebuild(&mut self, open: &Open, me: Option<&InstanceId>) -> Result<(WorkingSet, Flows)> {
         let (issues, prs) = (&open.issues.rows, &open.prs);
         let stages = Flows::read(self, &open.issues)?;
+        let unworked_blockers = crate::blockers::read(&self.repo, &self.gh.tracker, &open.issues)?;
+        let handoffs: Vec<u64> = open
+            .issues
+            .blockers
+            .iter()
+            .filter_map(|(&issue, edges)| {
+                crate::blockers::can_hand_on(issue, edges, &unworked_blockers).then_some(issue)
+            })
+            .collect();
         // The list holds only open issues: a claim missing from it is asked
         // about, and is closed, gone — deleted or transferred — or unread.
         let (mut closed, mut deleted) = (vec![], vec![]);
@@ -412,6 +421,8 @@ impl Fleet {
         let cut = crate::cut::seen(self, &stages, issues, &riding, &train.base)?;
         self.proposals = precedent::open(self, &stages)?;
         let seen = Observed {
+            unworked_blockers: &unworked_blockers,
+            handoffs: &handoffs,
             issues,
             prs,
             claims: &self.scan.claims,

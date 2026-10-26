@@ -36,14 +36,16 @@ pub const OPEN_ISSUES_QUERY: &str = "query($owner: String!, $repo: String!, $lab
     orderBy: {field: CREATED_AT, direction: DESC}) { \
     pageInfo { hasNextPage endCursor } \
     nodes { number title body url createdAt labels(first: 100) { nodes { name } } \
-    blockedBy(first: 100) { pageInfo { hasNextPage } nodes { number state } } \
+    blockedBy(first: 100) { pageInfo { hasNextPage } nodes { number state \
+    repository { nameWithOwner } labels(first: 100) { nodes { name } } } } \
     comments(first: 100) { pageInfo { hasNextPage } \
     nodes { fullDatabaseId body url createdAt } } } } } }";
 /// What is read of every open issue: `more` says its comments go on past
 /// those that came with it.
 pub const OPEN_ISSUES_JQ: &str = ".data.repository.issues.nodes[] | {number, title, body, url, \
     at: (.createdAt | fromdateiso8601? // null), \
-    labels: [.labels.nodes[].name], blockers: [.blockedBy.nodes[] | select(. != null) | {number, state}], \
+    labels: [.labels.nodes[].name], blockers: [.blockedBy.nodes[] | select(. != null) | \
+    {number, state, repo: .repository.nameWithOwner, labels: [.labels.nodes[].name]}], \
     blockers_more: .blockedBy.pageInfo.hasNextPage, \
     more: .comments.pageInfo.hasNextPage, comments: [.comments.nodes[] | \
     {id: (.fullDatabaseId | tonumber), body, url, at: (.createdAt | fromdateiso8601? // null)}]}";
@@ -126,7 +128,7 @@ pub const CARRYING_JQ: &str = ".[] | select(.pull_request == null) | \
 pub const COMMENTS_JQ: &str =
     ".[] | {id, body, url: .html_url, at: (.created_at | fromdateiso8601? // null)}";
 /// What is read of each issue another is blocked by.
-pub const BLOCKED_BY_JQ: &str = ".[] | {number, state}";
+pub const BLOCKED_BY_JQ: &str = ".[] | {number, state, repo: (.repository_url | split(\"/repos/\")[1]), labels: [.labels[].name]}";
 /// What is read of each label a repo has.
 pub const LABELS_JQ: &str = ".[].name";
 /// What is read of a repo for who may see it: `public`, `private` or
@@ -276,6 +278,10 @@ pub struct IssueRead {
 pub struct BlockedBy {
     pub number: u64,
     pub state: String,
+    #[serde(default)]
+    pub repo: Option<String>,
+    #[serde(default)]
+    pub labels: Option<Vec<String>>,
 }
 
 /// The one answer to which blockers are open, for both paged rebuilds and
@@ -307,6 +313,8 @@ pub struct Comment {
 #[derive(Debug, Default)]
 pub struct OpenIssues {
     pub rows: Vec<Issue>,
+    /// Native edges retain repo identity: issue numbers alone are not unique.
+    pub blockers: HashMap<u64, Vec<BlockedBy>>,
     /// issue → its comments, oldest first.
     comments: HashMap<u64, Vec<Comment>>,
     /// Failure reports written before reason comments were added still
@@ -645,6 +653,7 @@ impl GitHub {
             }
             let comments = if row.more { self.comments(row.number)? } else { row.comments };
             open.comments.insert(row.number, comments);
+            open.blockers.insert(row.number, row.blockers.clone());
             open.reports
                 .insert(row.number, Comment { id: 0, body: row.body, url: row.url, at: row.at });
             open.rows.push(Issue {

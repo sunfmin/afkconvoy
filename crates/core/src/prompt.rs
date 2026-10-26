@@ -127,6 +127,7 @@ writes its issue: you do.
    branch is red the same way, make sure the fix's issue — existing or new — is dispatchable as
    above, then run `{lock_command} --issue <n>` on it from your worktree. The fleet works that
    issue first while the lock stands. A defect confined to the train raises no lock.
+   A defect belonging to another repo of this host follows the cross-repo blocker procedure below.
 4. <park>
 ";
 
@@ -275,7 +276,7 @@ body:
 - **`blocked`** — the issue needs something that belongs to another issue and does not exist yet. Do
   not create it yourself — unless it is a defect outside your issue that you discovered, which no
   issue covers yet (above). Name every blocking issue in `blocked_by=` (e.g. `blocked_by=41,42`) and
-  say what is missing.
+  say what is missing. For another repo of this host, follow the cross-repo blocker procedure below.
 - **`escalate`** — after a genuine effort you cannot complete the work or make the gate pass, or
   the issue as written cannot be done. Say where you are stuck, or the decision that has to be made,
   so that a human can act on it in one reply.
@@ -313,7 +314,7 @@ reads this terminal: never wait for an answer.
 ## Stage records
 
 {records}
-<rework><gate><split>
+<rework><gate><split><cross_repo>
 ## Before an `escalate`
 
 <precedents_first>
@@ -341,6 +342,7 @@ in this order:
    {intake_command} --issue <n> --workflow <workflow> [--blocked-by <n,…>]
    ```
 3. Declare `blocked` with the command below, with every issue you opened in `--blocked-by`.
+   A piece belonging to another repo of this host follows the cross-repo blocker procedure below.
 
 The issue is then parked on them, and when they have all closed this stage runs again, to judge the
 whole.
@@ -1445,7 +1447,17 @@ pub(crate) fn in_tracker(template: &str, tracker: &Tracker) -> String {
             String::new(),
         ),
     };
+    // Worker and defect templates reach this shared procedure by a pointer;
+    // every path uses the target checkout's own workflow and intake.
+    let template = if template.contains("cross-repo blocker procedure below")
+        && !template.contains("<cross_repo>")
+    {
+        format!("{template}\n<cross_repo>")
+    } else {
+        template.to_string()
+    };
     template
+        .replace("<cross_repo>", "\n## Cross-repo blockers\n\nFor a blocker, defect or split piece belonging to another repo of this host, open it on the tracker `<issues>`, with that repo's `repo:<owner>/<repo>` label. In that repo's checkout run `afkconvoy flows` and use its `line` (the matching workflow's in a bound repo), with a title and body file. Take it in there with `afkconvoy intake --issue <n> --workflow <workflow>` and your worker identity when that repo is bound; keep the line's ready label when it is unbound. Record the tracker issue as the blocker, then declare `blocked` on it.\n")
         .replace("<tracker>", &flag)
         .replace("<issues>", &path)
         .replace("<labelled>", &labelled)

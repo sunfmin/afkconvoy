@@ -411,7 +411,22 @@ fn start(
             DispatchStep::Claim => {
                 // A tick's rebuild can be minutes older than this: a blocker
                 // added since holds the issue back all the same.
-                let mut blockers = fleet.gh.open_blockers(number)?;
+                let edges = fleet.gh.blocked_by(number)?;
+                let mut blockers: Vec<_> = edges
+                    .iter()
+                    .filter(|edge| edge.state.eq_ignore_ascii_case("open"))
+                    .map(|edge| edge.number)
+                    .collect();
+                if staged.as_ref().is_some_and(Staged::is_consult) || consult.is_some() {
+                    let unworked = crate::blockers::unworked(
+                        &fleet.repo,
+                        &fleet.gh.tracker,
+                        &[(number, edges.clone())],
+                    )?;
+                    if crate::blockers::can_hand_on(number, &edges, &unworked) {
+                        blockers.clear()
+                    }
+                }
                 if !blockers.is_empty() {
                     blockers.sort_unstable();
                     return Ok(json!({"issue": number, "started": false, "skipped": "blocked",
@@ -663,8 +678,10 @@ fn write_stock_brief(
     title: &str,
     asked: &str,
 ) -> Result<PathBuf> {
+    let unworked = crate::blockers::for_issue(&fleet.repo, &fleet.gh, number)?;
+    let asked = format!("{asked}\n\n{}", crate::blockers::evidence(&unworked));
     let stock = StockFields {
-        asked,
+        asked: &asked,
         escalate_label: &fleet.config.escalate_label,
         doctor: &crate::own_command().fixed(" doctor").own(),
         plan: &crate::own_command().fixed(" plan").own(),

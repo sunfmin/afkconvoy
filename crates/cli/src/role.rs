@@ -112,6 +112,9 @@ fn handed_said(history: &History, records: &[StageRecord], urls: &[String]) -> O
 }
 
 impl Staged {
+    pub fn is_consult(&self) -> bool {
+        self.consult
+    }
     /// The stage issue `issue`, carrying `labels`, is at by its stage
     /// records as they stand now — or the consult its `escalate` goes to, or,
     /// its last stage having passed to the landing train, the join of its
@@ -384,10 +387,14 @@ impl Staged {
             gate: self.writes.then_some(Gate { train: &gate, alone: &gate_alone }),
         };
         let prompt = if self.consult {
+            let unworked = crate::blockers::for_issue(&fleet.repo, &fleet.gh, self.issue)?;
+            let handed =
+                [self.handed.clone().unwrap_or_default(), crate::blockers::evidence(&unworked)]
+                    .join("\n\n");
             let issue = own().fixed(" show --issue ").number(self.issue).own();
             let consulting = Consulting {
                 rule: &declare(" rule"),
-                handed: self.handed.as_deref(),
+                handed: (!handed.trim().is_empty()).then_some(handed.as_str()),
                 show: &issue,
                 gate: &own().fixed(" gate").own(),
                 doctor: &own().fixed(" doctor").own(),

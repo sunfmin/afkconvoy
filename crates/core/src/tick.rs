@@ -845,6 +845,7 @@ mod tests {
 
     fn set(frontier: &[u64], mine: &[(u64, Status)]) -> WorkingSet {
         WorkingSet {
+            unworked_blockers: vec![],
             frontier: frontier
                 .iter()
                 .map(|&number| Dispatchable {
