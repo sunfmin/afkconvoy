@@ -70,7 +70,15 @@ fn a_dsh_profile_links_only_credentials_and_opted_in_skills_and_rules() {
     write(&home, ".agents/skills/common/SKILL.md", "common-skill");
     write(&home, ".agents/AGENTS.md", "common-rules");
     for host_user in [true, false] {
-        let kept = keep_under(&cache, Some(&home), Harness::Dsh, host_user).unwrap();
+        let kept = afkconvoy::kept::keep_under_with_dsh_homes(
+            &cache,
+            Some(&home),
+            Harness::Dsh,
+            host_user,
+            None,
+            None,
+        )
+        .unwrap();
         assert!(kept.join(".credentials.yaml").is_symlink());
         assert_eq!(kept.join("AGENTS.md").exists(), host_user);
         assert_eq!(kept.join("host-skills").exists(), host_user);
@@ -121,6 +129,10 @@ fn the_plugin_refuses_through_the_real_guard_and_reports_running_and_interrupted
         .env("AFKCONVOY_ESCALATE_LABEL", "stuck")
         .env("AFKCONVOY_LOCK_LABEL", "halt")
         .env("AFKCONVOY_DSH_MODEL", "stage-model")
+        .env_remove("AFKCONVOY_WATCH")
+        .env_remove("DSH_AGENTS_HOME")
+        .env_remove("DSH_PROFILE")
+        .env_remove("DSH_PROFILE_DIR")
         .env_remove("ORCA_AGENT_HOOK_ENDPOINT")
         .env_remove("ORCA_PANE_KEY")
         .env_remove("ORCA_AGENT_LAUNCH_TOKEN")

@@ -243,6 +243,16 @@ impl World {
     /// git or GitHub setup leaking in.
     pub fn command(&self, program: impl AsRef<std::ffi::OsStr>, cwd: &Path) -> Command {
         let mut cmd = Command::new(program);
+        for name in [
+            "AFKCONVOY_WATCH",
+            "AFKCONVOY_DSH_MODEL",
+            "DSH_HOME",
+            "DSH_AGENTS_HOME",
+            "DSH_PROFILE",
+            "DSH_PROFILE_DIR",
+        ] {
+            cmd.env_remove(name);
+        }
         cmd.current_dir(cwd)
             .envs(self.login_env())
             .env("SHELL", self.bin.join("shell"))
