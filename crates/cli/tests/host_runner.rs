@@ -817,7 +817,7 @@ fn a_run_older_than_the_host_runner_changes_nothing_and_says_so() {
 /// An afkconvoy installed in `world` as Homebrew installs one: a link,
 /// `installed/afkconvoy`, to the one built → the link, which a `run` is
 /// started as (`World::afk_as`).
-fn installed(world: &World) -> PathBuf {
+pub(crate) fn installed(world: &World) -> PathBuf {
     let link = world.root.join("installed/afkconvoy");
     std::fs::create_dir_all(link.parent().unwrap()).unwrap();
     std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_afkconvoy"), &link).unwrap();
@@ -827,7 +827,7 @@ fn installed(world: &World) -> PathBuf {
 /// Installs another afkconvoy at `link`, as `brew upgrade` does: the link is
 /// pointed at a file of its own, which says `version` to `--version`, and
 /// runs `otherwise` for anything else.
-fn upgraded(link: &Path, version: &str, otherwise: &str) {
+pub(crate) fn upgraded(link: &Path, version: &str, otherwise: &str) {
     let file = link.parent().unwrap().join(format!("../cellar/{version}/afkconvoy"));
     std::fs::create_dir_all(file.parent().unwrap()).unwrap();
     let script = format!(
@@ -842,7 +842,7 @@ fn upgraded(link: &Path, version: &str, otherwise: &str) {
 }
 
 /// What the afkconvoy built is, for anything but `--version`.
-fn as_built() -> String {
+pub(crate) fn as_built() -> String {
     format!("exec {} \"$@\"", env!("CARGO_BIN_EXE_afkconvoy"))
 }
 
@@ -894,7 +894,7 @@ fn the_host_runner_moves_onto_a_newer_afkconvoy_installed_where_it_was_started_f
     let at_line = |start: &str| log.iter().position(|said| said.starts_with(start));
     let found = format!(
         "afkconvoy 999.0.0 is installed at {at}, newer than this host runner's, {version}: it \
-         moves onto it once its fleets are idle"
+         moves onto it between ticks, once no exclusive command runs"
     );
     let started = format!("host runner started: afkconvoy {version}, pid {new}, 2 checkouts");
     let lines = [found.as_str(), "host runner moving: nothing holds it back", &started];
@@ -1026,23 +1026,18 @@ fn the_host_runner_never_moves_onto_an_older_afkconvoy_nor_one_that_does_not_say
 }
 
 #[test]
-fn the_host_runner_does_not_move_while_a_claim_is_held_or_a_command_is_queued() {
+fn the_host_runner_moves_with_claims_and_a_pr_on_the_train_after_only_the_running_command_ends() {
     let world = World::new();
+    world.set_gate("true");
     world.issue(7, &["ready-for-agent"]);
+    world.issue(8, &["ready-for-agent"]);
     let link = installed(&world);
     let first = world.afk_as(&link, &world.clone, &RUN).ok();
     let old = first["host_runner"]["pid"].as_u64().unwrap();
-    assert!(ticked(&first, "dispatched #7").contains("holding 1/"));
+    assert!(ticked(&first, "dispatched #7").contains("holding 2/"));
 
-    upgraded(&link, "999.0.0", &as_built());
-    let claimed =
-        format!("{} holds a claim or has something on the landing train", shown(&world.clone));
-    until("claim holding the move back", || {
-        (installed_said(&world)["held_back"] == json!([claimed])).then_some(())
-    });
-
-    // an exclusive command holds it back as long as it runs, with the claim
-    // settled
+    // Keep the runner here while a worker joins its PR and another command
+    // queues. The queued command must run only after the replacement starts.
     let go = world.root.join("go");
     let script = format!("while [ ! -e '{}' ]; do sleep 0.05; done", go.display());
     let mut exclusive = world
@@ -1052,10 +1047,49 @@ fn the_host_runner_does_not_move_while_a_claim_is_held_or_a_command_is_queued() 
         .stderr(std::process::Stdio::null())
         .spawn()
         .unwrap();
-    world.close(7, "completed");
+    until("exclusive command started", || {
+        let said = world.afk(&["doctor", "--host", "h1"]).json;
+        said["host"]["exclusive"]["running"]["ran"].is_u64().then_some(())
+    });
+    let worker = world
+        .worktrees()
+        .into_iter()
+        .find(|path| {
+            world.orca()["worktrees"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| row["path"] == json!(path) && row["linkedIssue"] == 7)
+        })
+        .unwrap();
+    commit(&worker, "finished.txt", "done\n");
+    git(&worker, &["push", "-q", "origin", "HEAD"]);
+    world.pr(70, 7, &git(&worker, &["symbolic-ref", "--short", "HEAD"]));
+    assert_eq!(world.afk_in(&worker, &["land", "--issue", "7"]).ok()["outcome"], "joined");
+    let train = world.remote(&["rev-parse", "refs/convoy/train/line/main"]);
+    let terminals = world.orca()["terminals"].clone();
+    let ran = world.root.join("queued-ran");
+    let queued_script = format!(
+        "cp '{}' '{}'",
+        world.cache().join("afkconvoy/host-runner.lock").display(),
+        ran.display()
+    );
+    let mut queued = world
+        .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
+        .args(["exclusive", "--", "sh", "-c", &queued_script])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    until("queued command", || {
+        let said = world.afk(&["doctor", "--host", "h1"]).json;
+        (said["host"]["exclusive"]["waiting"].as_array().is_some_and(|queue| queue.len() == 1))
+            .then_some(())
+    });
+    upgraded(&link, "999.0.0", &as_built());
     until("exclusive command holding the move back alone", || {
         let held = installed_said(&world)["held_back"].clone();
-        (held == json!(["1 command(s) in the exclusive queue"])).then_some(())
+        (held == json!(["1 exclusive command(s) running"])).then_some(())
     });
     assert_eq!(world.host_runner().map(u64::from), Some(old));
     let log = world.runner_log();
@@ -1065,6 +1099,36 @@ fn the_host_runner_does_not_move_while_a_claim_is_held_or_a_command_is_queued() 
     assert!(exclusive.wait().unwrap().success());
     logged(&world, "host runner moved: ");
     assert_ne!(world.host_runner().map(u64::from), Some(old));
+    assert!(queued.wait().unwrap().success());
+    let ran_under: Value = serde_json::from_str(&std::fs::read_to_string(&ran).unwrap()).unwrap();
+    assert_eq!(
+        ran_under["pid"].as_u64(),
+        world.host_runner().map(u64::from),
+        "the waiter runs under the replacement: {ran_under}"
+    );
+    until("replacement first tick", || {
+        (of_kind(&tick_log(&first), "start").len() == 2
+            && of_kind(&tick_log(&first), "tick").len() >= 2)
+            .then_some(())
+    });
+    let claims = world.afk(&["takeover", "--list", "--host", "h1"]).ok();
+    let instances = claims["instances"].as_array().unwrap();
+    let held: Vec<_> =
+        instances.iter().flat_map(|instance| instance["claims"].as_array().unwrap()).collect();
+    assert!(held.contains(&&json!(8)), "{claims}");
+    assert_eq!(world.remote(&["rev-parse", "refs/convoy/train/line/main"]), train);
+    for terminal in terminals.as_array().unwrap() {
+        assert!(
+            world.orca()["terminals"].as_array().unwrap().contains(terminal),
+            "worker terminal changed"
+        );
+    }
+    let moved = of_kind(&tick_log(&first), "moved");
+    let carried = moved[0]["moved"]["carried"].to_string();
+    assert!(
+        carried.contains("claim #8 and its worker") && carried.contains("landing train PR #70"),
+        "{moved:#?}"
+    );
 }
 
 /// Waits up to 30 seconds for the host runner's log to hold `count` lines

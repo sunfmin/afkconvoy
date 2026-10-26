@@ -154,8 +154,7 @@ pub fn tick(
         let _ = agent.discover_casting(&issue.labels);
     }
     let (mut set, mut flows) = fleet.rebuild(&open, Some(&me.instance))?;
-    let _health_events =
-        crate::health::reconcile(&mut fleet, me, agent, &open, &flows, &set.locks)?;
+    let _health_events = crate::health::reconcile(&mut fleet, me, agent, &open, &flows, &set)?;
     fleet.invalidate_selection();
     // A roster entry that names no model the host kit holds is the team's to
     // correct: one issue is opened for it in the team's repo. One that cannot
@@ -1209,6 +1208,7 @@ pub fn run(
     let watching = shared.blockers.watch(me.instance.as_str(), &wakes);
     let hot = Hot::default();
     let mut inspector = Inspector::new(repo, &shared.turn);
+    inspector.resume()?;
     {
         let hears: Arc<dyn hot::Hears> = Arc::clone(&said) as _;
         let (second, clock, hot) = (pacing.second, Arc::clone(&clock), Arc::clone(&hot));
@@ -1228,6 +1228,10 @@ pub fn run(
     };
     let mut host = HostSleep::open(standing, &wakes, &shared.standings, pacing.host_sleep_after);
     loop {
+        if !host.begins_unless_stopped(&stop) {
+            said.keep(clock(), log::What::Stop { line: stop_line(repo, me) });
+            return Ok(json!({"stopped": true, "ticks": count, "instance": me.instance.as_str()}));
+        }
         // A tracker made public ends this fleet instance before it works
         // anything more — within the hour a check that found it private
         // stands, and at once of one said anew — as a start's probe refuses
@@ -1239,7 +1243,6 @@ pub fn run(
             return Err(See::Troubleshooting.refusal(why));
         }
         count += 1;
-        host.begins();
         said.keep(clock(), log::What::TickStarted { count, cause, by: by.take() });
         me.now = clock();
         // Once: a start takes every claim stamped with this host (docs/adr/0003).
@@ -1282,7 +1285,6 @@ pub fn run(
         );
         wakes.ended();
         let idle = ticked.as_ref().ok().map(|(ticked, _)| ticked.idle());
-        host.ticked(clock(), idle);
         let mut cut_said = vec![];
         let (line, sleep, logged) = match ticked {
             Ok((ticked, panel)) => {
@@ -1335,6 +1337,9 @@ pub fn run(
         }
         let tick = log::Tick { count, sleep, line, bound, answer, error };
         said.keep(clock(), log::What::Tick(tick));
+        // Inspection work and the tick's log are part of the tick too: a
+        // release move must not race an inspection starting or ending.
+        host.ticked(clock(), idle);
         if pacing.panic_at == Some(count) {
             panic!("told to panic as tick {count} ended (--panic-at-tick)");
         }

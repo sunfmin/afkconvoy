@@ -9,7 +9,7 @@ One repo's fleet in its host's host runner, and everything it owns: the workers 
 _Avoid_: launcher, coordinator, node, process (the host runner is the process)
 
 **Host runner**:
-A host's one long-running process of the fleet, holding a fleet instance for each checkout on its host's checkout list. `run` starts it in the background where none runs, and adds its checkout to it either way. `stop` takes one checkout off its list, and `stop --all`, or SIGTERM, stops it and keeps the list. Once a newer release is installed where it was started from, it moves onto it by itself as soon as its fleets are idle, on the same list.
+A host's one long-running process of the fleet, holding a fleet instance for each checkout on its host's checkout list. `run` starts it in the background where none runs, and adds its checkout to it either way. `stop` takes one checkout off its list, and `stop --all`, or SIGTERM, stops it and keeps the list. Once a newer release is installed where it was started from, it moves onto it by itself between ticks once no exclusive command runs, on the same list, with its workers and work carried over (docs/adr/0032).
 _Avoid_: daemon (a process outside the fleet), server (an MCP server, a model provider's), supervisor
 
 **Checkout list**:
@@ -349,7 +349,7 @@ Putting a finished PR on the landing train. In an unbound repo the worker that w
 _Avoid_: merge (what git does to two branches, and a human to a proposal's PR), enqueue
 
 **Train worker**:
-The one worker per repo that gates the landing train's tip and pushes it to the base branch as a fast-forward. It holds no claim and wrote none of the PRs it lands.
+The one worker per repo that gates the landing train's tip and pushes it to the base branch as a fast-forward, on its host kit's first eligible harness. It holds no claim and wrote none of the PRs it lands.
 _Avoid_: merger, integrator, batch worker
 
 **Abandon**:
