@@ -143,6 +143,9 @@ fn a_watch_can_fix_a_fleet_fault_and_hand_it_back_while_a_human_decision_stays()
     world.with_orca(|orca| orca["trust_prompt"] = json!(true));
     let fault = world.afk(&["dispatch", "--issue", "7", "--instance", "alpha", "--host", "h1"]);
     assert!(fault.error().contains("worktree trust gap"));
+    // Register both checkouts before enabling watches: a setting is in
+    // force before run's first tick puts a new checkout on the list.
+    world.afk(&["run", "--host", "h1"]).ok();
     // A watch is independent of the issue worker's trust gap: its launch is
     // non-interactive and already trusted. The fake's gap affects dispatch.
     run(&world, &dir);
@@ -164,7 +167,7 @@ fn a_watch_can_fix_a_fleet_fault_and_hand_it_back_while_a_human_decision_stays()
         assert!(told.contains(required), "brief lacks {required}: {told}");
     }
     assert!(told.contains(other.to_str().unwrap()), "the look includes the other repo");
-    assert!(told.contains("customer's data"), "the human's question is given whole");
+    assert!(told.contains("customer's data"), "the human's question is given whole: {told}");
 
     let doctor = world.afk(&["doctor"]).json;
     let waiting = doctor["waiting_on_human"].as_array().unwrap();
