@@ -2814,13 +2814,15 @@ enum Command {
     ///
     /// ## When to run it
     ///
-    /// To send a worker its nudge by hand. A tick does this on its own only when worker health asks the worker to carry on; silence alone starts observation, and what no rule classes goes to Jev, where the host settings name a key command, or else to the operator. Do it yourself when you have checked the worker’s scene and want it to carry on.
+    /// To send a worker its nudge by hand. A tick does this on its own only when worker health or the capacity rule asks the worker to carry on; silence alone starts observation, and what no rule classes goes to Jev, where the host settings name a key command, or else to the operator. Do it yourself when you have checked the worker’s scene and want it to carry on.
     ///
     /// ## What counts as silent
     ///
     /// A stopped worker with no verdict or progress is observed over at least 300 seconds. Actual terminal output, git progress, runtime reports and process activity are evidence, never proof of quota exhaustion by themselves. Structured error codes and a harness's explicit usage-limit and task-refusal messages are classed by rule: Codex's `Usage limit reached … Increase your limits to continue using codex` is an account quota fault, with no observation delay. Codex's `We take extra care with some cybersecurity requests. If you're doing authorized security work, apply for Daybreak to get broader access.` is a refusal of this task by rule, also with no observation delay. This issue continues on the next harness in host kit order that can start for its role. The issue remembers each refusing harness on GitHub and skips it at every later stage and start; the harness stays healthy for other issues. With none left, the issue escalates at once with the refusal line as evidence and no consult. What no rule classes is judged by one Jev request on the worker's latest screen where the host settings name a key command; without one, or where the key command, TypeSafe or Jev's answers settle nothing, the worker waits for the operator and its scene is preserved.
     ///
     /// Account quota with no reset time continues on the next harness in host kit order that can start for the worker's role. A reset within the one-hour recovery window may be waited for; a later reset continues instead. Repeated waits on unchanged evidence never restart that window. After one hour the fleet acts on the fault class or escalates the issue to a human with its evidence. Doctor names the worker, its class and its next check, and a worker waiting for the operator with the reason and a line of its screen.
+    ///
+    /// Codex's `Selected model is at capacity. Please try a different model.` is a capacity stop by rule, also with no diagnosis or observation delay. The first stop waits {{CAPACITY_WAIT_SECONDS}} seconds before nudging the same session; the next waits {{CAPACITY_SECOND_WAIT_SECONDS}} seconds. After {{MAX_CAPACITY_STOPS}} stops in the episode, the worker continues on the next eligible harness in host kit order, keeping its worktree, branch, stage, claim and PR. The episode survives brief working turns and runner restarts, ending after {{CAPACITY_HEALTHY_SECONDS}} seconds observed healthy or a different session. Capacity faults no harness for other workers. Tick-log worker-health lines name the rule, waits and nudges; doctor's host kit reports capacity_stops per harness, retained after episodes end.
     ///
     /// Confirmed background work, waiting for a human or dependency and completed idle sessions are left alone. A worker's gate waiting in the exclusive queue is background work too. The tick does not turn a long wait into permission for another writer. Continuation closes the old agent and confirms its terminal, runtime and process tree are gone before starting the successor in the same worktree, branch, stage, claim and PR. Structured transient rate limits respect Retry-After and get two retries before session fallback. Account and model recovery probes run hourly; successful recovery affects new starts without moving healthy successors back.
     ///
@@ -3527,6 +3529,10 @@ pub fn manual() -> agent_help::Help {
         .constant("CONCURRENCY", afkconvoy_core::config::CONCURRENCY)
         .constant("GATE_SECONDS", afkconvoy_core::config::GATE_SECONDS)
         .constant("RECOVERY_SECONDS", crate::health::RECOVERY_SECONDS)
+        .constant("CAPACITY_WAIT_SECONDS", health::CAPACITY_WAIT_SECONDS)
+        .constant("CAPACITY_SECOND_WAIT_SECONDS", health::CAPACITY_WAIT_SECONDS * 2)
+        .constant("MAX_CAPACITY_STOPS", health::MAX_CAPACITY_STOPS)
+        .constant("CAPACITY_HEALTHY_SECONDS", health::CAPACITY_HEALTHY_SECONDS)
         .constant("INTAKE_LIMIT", afkconvoy_core::config::INTAKE_LIMIT)
         .constant("MAX_REWORK", afkconvoy_core::team::MAX_REWORK)
         .constant("MAX_CONSECUTIVE_REWORK", afkconvoy_core::team::MAX_CONSECUTIVE_REWORK)

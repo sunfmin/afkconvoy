@@ -783,6 +783,227 @@ fn codex_usage_limit(world: &World) {
 // The refusal reported on hostvitals' sunfmin/control#98, 2026-10-26.
 const CODEX_REFUSAL: &str = include_str!("screens/codex-task-refusal-control-98.txt");
 
+// Codex's capacity screen reported on sunfmin/control#104, 2026-10-26.
+const CODEX_CAPACITY: &str = include_str!("screens/codex-capacity-control-104.txt");
+
+fn capacity_turn(world: &World, dir: &Path, state: &str, at: u64) {
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            if terminal["worktreePath"] == dir.to_str().unwrap() && terminal["open"] == true {
+                terminal["screen"] = json!(CODEX_CAPACITY.lines().collect::<Vec<_>>());
+                terminal["agent"] = json!({
+                    "state":state, "outcome":"failure", "stateStartedAt":at * 1000,
+                });
+            }
+        }
+    });
+}
+
+fn health_book(world: &World) -> Value {
+    serde_json::from_slice(
+        &std::fs::read(world.cache().join("afkconvoy/worker-health.json")).unwrap(),
+    )
+    .unwrap()
+}
+
+fn capacity_nudges(world: &World, dir: &Path) -> usize {
+    world.orca()["terminals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|t| t["worktreePath"] == dir.to_str().unwrap())
+        .flat_map(|t| t["sent"].as_array().unwrap())
+        .filter(|sent| {
+            sent["text"].as_str().unwrap().starts_with("The selected model was at capacity.")
+        })
+        .count()
+}
+
+#[test]
+fn the_capacity_rule_requires_codexs_observed_words_and_tolerates_wrapping() {
+    use afkconvoy_core::harness::Harness;
+    let screen =
+        vec!["Selected model is at capacity. Please try a".into(), "different model.".into()];
+    assert_eq!(Harness::Codex.capacity_stop(&screen).as_deref(), Some(CODEX_CAPACITY.trim()));
+    assert!(Harness::Codex.capacity_stop(&["Selected model is at capacity.".into()]).is_none());
+    assert!(Harness::ClaudeCode.capacity_stop(&screen).is_none());
+}
+
+#[test]
+fn capacity_waits_and_nudges_twice_then_continues_without_faulting_the_harness() {
+    let world = blocked();
+    world.jev_key_command("printf unused-key");
+    let dir = worktree(&world, 7);
+    switch(&world, "750", &["7", "--harness", "codex"]).ok();
+    let head = git(&dir, &["rev-parse", "HEAD"]);
+    let branch = git(&dir, &["symbolic-ref", "--short", "HEAD"]);
+    let claims = world.claims();
+    let kit = std::fs::read(world.kit_path()).unwrap();
+    std::fs::write(dir.join("unfinished.txt"), "keep me").unwrap();
+    capacity_turn(&world, &dir, "done", 790);
+    tick(&world, 800);
+    let book = health_book(&world);
+    let worker = &book["workers"][0];
+    assert_eq!(worker["source"], "capacity rule");
+    assert_eq!(worker["diagnosis"]["class"], "capacity");
+    assert_eq!(worker["diagnosis"]["scope"], "worker");
+    assert_eq!(worker["judgment"], Value::Null);
+    assert_eq!(worker["next_check"], 860);
+    assert_eq!(worker["capacity"]["stops"], 1);
+    assert_eq!(capacity_nudges(&world, &dir), 0);
+    // Changed evidence during the wait must neither count again nor defer it.
+    std::fs::write(dir.join("unfinished.txt"), "still keep me").unwrap();
+    tick(&world, 859);
+    assert_eq!(health_book(&world)["capacity_stops"]["codex"], 1);
+    assert_eq!(capacity_nudges(&world, &dir), 0);
+    tick(&world, 860);
+    assert_eq!(capacity_nudges(&world, &dir), 1);
+    assert_eq!(open_commands(&world, &dir), [codex_line(&world, &dir)]);
+    // One working turn must not erase the episode's first stop.
+    capacity_turn(&world, &dir, "working", 860);
+    tick(&world, 861);
+    capacity_turn(&world, &dir, "done", 862);
+    tick(&world, 862);
+    assert_eq!(health_book(&world)["workers"][0]["next_check"], 982);
+    tick(&world, 981);
+    assert_eq!(capacity_nudges(&world, &dir), 1);
+    tick(&world, 982);
+    assert_eq!(capacity_nudges(&world, &dir), 2);
+    capacity_turn(&world, &dir, "done", 983);
+    tick(&world, 983);
+    let book = health_book(&world);
+    assert_eq!(book["workers"][0]["action"], "continued");
+    assert_eq!(book["workers"][0]["successor"], "claude-code");
+    assert_eq!(book["capacity_stops"]["codex"], 3);
+    assert_eq!(book["faults"], json!([]));
+    assert!(!world.root.join("typesafe-request").exists());
+    assert_eq!(git(&dir, &["rev-parse", "HEAD"]), head);
+    assert_eq!(git(&dir, &["symbolic-ref", "--short", "HEAD"]), branch);
+    assert_eq!(std::fs::read_to_string(dir.join("unfinished.txt")).unwrap(), "still keep me");
+    assert_eq!(world.claims(), claims);
+    assert_eq!(std::fs::read(world.kit_path()).unwrap(), kit);
+    assert!(brief(&dir).contains("#70 is open"));
+    let doctor = world.afk(&["doctor", "--now", "984"]);
+    assert_eq!(doctor.json["host"]["host_kit"]["worker_health"]["capacity_stops"]["codex"], 3);
+    let logs = std::fs::read_dir(world.cache().join("afkconvoy/runs"))
+        .unwrap()
+        .map(|file| std::fs::read_to_string(file.unwrap().path()).unwrap())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(logs.contains("capacity rule"));
+    assert!(logs.contains("waiting 60 seconds for capacity"));
+    assert!(logs.contains("waiting 120 seconds for capacity"));
+    assert!(logs.contains("capacity nudged"));
+    world.issue(8, &["ready-for-agent"]);
+    tick(&world, 984);
+    assert_eq!(open_commands(&world, &worktree(&world, 8)).len(), 1);
+    let plan = world.afk(&["plan", "--now", "985"]).ok();
+    assert_eq!(plan["selection"]["refusals"]["7"], json!([]));
+    assert!(open_commands(&world, &worktree(&world, 8))[0].contains("codex"));
+}
+
+#[test]
+fn capacity_episode_ends_after_sustained_healthy_work_and_keeps_its_total() {
+    let world = blocked();
+    let dir = worktree(&world, 7);
+    switch(&world, "750", &["7", "--harness", "codex"]).ok();
+    capacity_turn(&world, &dir, "done", 790);
+    tick(&world, 800);
+    tick(&world, 860);
+    capacity_turn(&world, &dir, "working", 860);
+    tick(&world, 861);
+    tick(&world, 1161);
+    assert!(health_book(&world)["workers"][0]["capacity"].is_null());
+    capacity_turn(&world, &dir, "done", 1162);
+    tick(&world, 1162);
+    let book = health_book(&world);
+    assert_eq!(book["workers"][0]["capacity"]["stops"], 1);
+    assert_eq!(book["workers"][0]["next_check"], 1222);
+    assert_eq!(book["capacity_stops"]["codex"], 2);
+}
+
+#[test]
+fn capacity_never_spends_a_stop_on_an_input_that_started_no_turn() {
+    let world = blocked();
+    let dir = worktree(&world, 7);
+    switch(&world, "750", &["7", "--harness", "codex"]).ok();
+    capacity_turn(&world, &dir, "done", 790);
+    tick(&world, 800);
+    world.with_orca(|orca| orca["prompt_stages"] = json!(["input_accepted"]));
+    tick(&world, 860);
+    tick(&world, 861);
+    let book = health_book(&world);
+    assert_eq!(book["workers"][0]["capacity"]["stops"], 1);
+    assert_eq!(book["capacity_stops"]["codex"], 1);
+    assert_eq!(book["workers"][0]["capacity"]["retry_at"], 860);
+    assert_eq!(open_commands(&world, &dir), [codex_line(&world, &dir)]);
+}
+
+#[test]
+fn capacity_continuation_preserves_the_stage_and_skips_harnesses_without_role_limits() {
+    let world = World::new();
+    hold_every_harness(&world);
+    world.repo(
+        "acme/dev",
+        &[
+            (
+                ".claude/skills/implement/SKILL.md",
+                "---\nname: implement\ndescription: build\n---\n",
+            ),
+            (".codex/hooks.json", r#"{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[]}]}}"#),
+            (".pi/extensions/limits.js", "export default () => {};\n"),
+        ],
+    );
+    world.repo("acme/team", &[
+        ("team.md", "```yaml\nroles:\n  dev: acme/dev\n```\n"),
+        ("workflows/feature.md", "```yaml\nstages:\n  - name: build\n    by: dev\n    do: implement\n    on: { pass: done }\n```\n"),
+    ]);
+    common::write(
+        &world.clone,
+        "docs/agents/afkconvoy.md",
+        "```yaml\nbase_branch: main\ngate_command: ./gate.sh\nteam: acme/team\n```\n",
+    );
+    git(&world.clone, &["commit", "-qam", "bind the repo"]);
+    git(&world.clone, &["push", "-q", "origin", "main"]);
+    world.afk(&["switch", "--harness", "codex"]).ok();
+    world.issue(7, &["flow:feature"]);
+    tick(&world, 700);
+    let dir = worktree(&world, 7);
+    let claims = world.claims();
+    capacity_turn(&world, &dir, "done", 790);
+    for at in [800, 860, 861, 981, 982] {
+        tick(&world, at);
+    }
+    assert_eq!(health_book(&world)["workers"][0]["successor"], "pi");
+    assert_eq!(world.afk(&["show", "--issue", "7"]).ok()["position"]["stage"], "build");
+    assert_eq!(world.claims(), claims);
+    assert_eq!(open_commands(&world, &dir).len(), 1);
+    assert!(open_commands(&world, &dir)[0].contains("pi"));
+}
+
+#[test]
+fn capacity_continuation_never_starts_a_second_writer_before_termination_is_confirmed() {
+    let world = blocked();
+    let dir = worktree(&world, 7);
+    switch(&world, "750", &["7", "--harness", "codex"]).ok();
+    capacity_turn(&world, &dir, "done", 790);
+    for at in [800, 860, 861, 981] {
+        tick(&world, at);
+    }
+    let commands = open_commands(&world, &dir);
+    world.with_orca(|orca| orca["close_keeps_terminal"] = json!(true));
+    tick(&world, 982);
+    assert_eq!(open_commands(&world, &dir), commands);
+    assert_eq!(world.claims().len(), 1);
+    assert!(
+        health_book(&world)["workers"][0]["error"]
+            .as_str()
+            .unwrap()
+            .contains("termination is unconfirmed")
+    );
+    assert_eq!(health_book(&world)["faults"], json!([]));
+}
+
 fn codex_refusal(world: &World, dir: &Path) {
     world.with_orca(|orca| {
         for terminal in orca["terminals"].as_array_mut().unwrap() {
