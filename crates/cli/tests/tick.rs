@@ -125,12 +125,25 @@ fn a_ready_terminal_waiting_for_its_brief_is_not_reused_under_a_later_claim() {
     let world = backlog(&[3]);
     world.with_orca(|orca| orca["timeout_on_waits"] = json!([2]));
     tick(&world, "1000");
-    let before = world.open_terminals()[0].clone();
+    let before = world.orca()["terminals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|terminal| terminal["open"] == true)
+        .unwrap()["handle"]
+        .clone();
     world.afk(&["release", "--issue", "3", "--instance", "alpha"]).ok();
     world.with_orca(|orca| orca["timeout_on_waits"] = json!([]));
     let again = tick(&world, "1090");
     assert_eq!(again["errors"], json!([]), "{again}");
-    assert_ne!(world.open_terminals()[0], before);
+    let after = world.orca();
+    let worker = after["terminals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|terminal| terminal["open"] == true)
+        .unwrap();
+    assert_ne!(worker["handle"], before);
 }
 
 #[test]

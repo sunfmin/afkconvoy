@@ -75,12 +75,26 @@ fn a_ready_stage_worker_takes_its_pending_brief_in_the_same_terminal() {
     world.issue(7, &["flow:feature"]);
     world.with_orca(|orca| orca["timeout_on_waits"] = json!([2, 3]));
     assert_eq!(tick(&world, 1000)["errors"], json!([]));
-    let terminal = world.open_terminals()[0].clone();
+    let terminal = world.orca()["terminals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|worker| worker["open"] == true)
+        .unwrap()["handle"]
+        .clone();
     world.orca_calls();
     for now in [1090, 1180] {
         let continued = tick(&world, now);
         assert_eq!(continued["errors"], json!([]), "{continued}");
-        assert_eq!(world.open_terminals(), [terminal.clone()]);
+        let orca = world.orca();
+        let open: Vec<_> = orca["terminals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|worker| worker["open"] == true)
+            .map(|worker| worker["handle"].clone())
+            .collect();
+        assert_eq!(open, [terminal.clone()]);
         assert!(!world.orca_calls().iter().any(|call| common::asked(call) == "terminal create"));
     }
     let orca = world.orca();
