@@ -474,7 +474,14 @@ impl Watcher {
                 );
             } else {
                 let grace = afkconvoy_core::worker::GRACE;
-                if matches!(worker, afkconvoy_core::worker::WorkerState::Idle { .. })
+                let stopped = match worker {
+                    afkconvoy_core::worker::WorkerState::Idle { quiet: Some(quiet) } => {
+                        quiet >= grace
+                    }
+                    afkconvoy_core::worker::WorkerState::Idle { quiet: None } => true,
+                    _ => false,
+                };
+                if stopped
                     && watch.nudged.is_none()
                     && now.saturating_sub(watch.session_started.max(watch.started)) >= grace
                 {
@@ -1084,6 +1091,51 @@ pub const INSTANCE: &str = "host-watch";
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ending_a_session_keeps_its_terminal_shell_and_the_operators_process() {
+        use afkconvoy_core::line::Line;
+        let dir = tempfile::tempdir().unwrap();
+        let ready = dir.path().join("ready");
+        let kept = dir.path().join("kept");
+        let exited = dir.path().join("exited");
+        let identity = format!("test-{}", crate::unique());
+        let harness = Line::new()
+            .fixed("printf ready > ")
+            .word(ready.to_str().unwrap())
+            .fixed("; exec sleep 30")
+            .own();
+        let line = host_watch::session(&harness, exited.to_str().unwrap(), &identity);
+        let line = format!(
+            "{line}; {}",
+            Line::new()
+                .fixed("printf kept > ")
+                .word(kept.to_str().unwrap())
+                .fixed("; exec sleep 30")
+                .own()
+        );
+        let mut terminal = Command::new("sh").args(["-c", &line]).spawn().unwrap();
+        let mut operator = Command::new("sleep").arg("30").current_dir(dir.path()).spawn().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !ready.exists() {
+            assert!(Instant::now() < deadline, "harness never started");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let stopped = stop_marked(&identity);
+        while !kept.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let terminal_alive = terminal.try_wait().unwrap().is_none();
+        let operator_alive = operator.try_wait().unwrap().is_none();
+        let _ = terminal.kill();
+        let _ = operator.kill();
+        let _ = terminal.wait();
+        let _ = operator.wait();
+        stopped.unwrap();
+        assert!(kept.exists(), "terminal shell did not continue");
+        assert!(terminal_alive && operator_alive, "ended an unrelated process");
+        assert!(host_watch::exited(&std::fs::read_to_string(exited).unwrap()).is_some());
+    }
 
     #[test]
     fn each_waiting_issue_gets_answering_commands_for_its_own_tracker() {

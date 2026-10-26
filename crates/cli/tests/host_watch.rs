@@ -586,6 +586,8 @@ fn a_watch_is_ended_at_its_hour_and_one_no_harness_can_start_is_a_finding() {
 #[test]
 fn a_report_is_complete_durable_and_carried_into_the_next_brief() {
     let world = World::new();
+    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_afkconvoy"), world.root.join("bin/afkconvoy"))
+        .unwrap();
     let dir = operator(&world);
     paused(&world, "pi", "a fault");
     run(&world, &dir);
