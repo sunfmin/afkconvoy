@@ -175,9 +175,10 @@ fn run_command(
         if started.elapsed() >= limit {
             if let Some(candidate) = candidate {
                 candidate.failed(TIMED_OUT_CODE, true, started.elapsed().as_secs(), None)?;
+            } else {
+                let group = format!("-{}", child.id());
+                let _ = crate::process::status(Command::new("kill").args(["-KILL", "--", &group]));
             }
-            let group = format!("-{}", child.id());
-            let _ = crate::process::status(Command::new("kill").args(["-KILL", "--", &group]));
             let _ = child.wait();
             eprintln!("[afkconvoy] the gate reached the gate limit of {}s", limit.as_secs());
             break (TIMED_OUT_CODE, true, None);
