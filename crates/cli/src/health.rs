@@ -991,6 +991,9 @@ fn observe(
         book.workers.push(observed);
         return Ok(());
     }
+    if let Some(capacity) = &mut observed.capacity {
+        capacity.healthy_since = None;
+    }
     let changed =
         observed.snapshots.last().is_some_and(|s| s.output != output || s.progress != progress);
     if changed {
@@ -1010,8 +1013,7 @@ fn observe(
     if observed.snapshots.len() > 3 {
         observed.snapshots.remove(1);
     }
-    let previous =
-        (observed.action.clone(), observed.attempts, observed.continuations, observed.next_check);
+    let previous = (observed.action.clone(), observed.attempts, observed.continuations);
     let result = decide(
         book,
         &mut observed,
@@ -1030,9 +1032,7 @@ fn observe(
         observed.action = "waiting".into();
         observed.next_check = fleet.now.saturating_add(CHECK_SECONDS);
     }
-    if previous
-        != (observed.action.clone(), observed.attempts, observed.continuations, observed.next_check)
-    {
+    if previous != (observed.action.clone(), observed.attempts, observed.continuations) {
         crate::log::Log::of(&fleet.repo)?.append(&crate::log::Entry {
             at: fleet.now,
             instance: me.instance.as_str().into(),
@@ -1106,7 +1106,6 @@ fn capacity_wait(
     now: u64,
 ) -> Result<bool> {
     let capacity = observed.capacity.get_or_insert_with(Capacity::default);
-    capacity.healthy_since = None;
     if capacity.stops >= MAX_CAPACITY_STOPS {
         return Ok(false);
     }

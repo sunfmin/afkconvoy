@@ -1012,9 +1012,10 @@ fn capacity_continuation_never_starts_a_second_writer_before_termination_is_conf
     for at in [800, 860, 861, 981] {
         tick(&world, at);
     }
+    let commands = open_commands(&world, &dir);
     world.with_orca(|orca| orca["close_reports_ended"] = json!(true));
     tick(&world, 982);
-    assert_eq!(open_commands(&world, &dir), [codex_line(&world, &dir)]);
+    assert_eq!(open_commands(&world, &dir), commands);
     assert_eq!(world.claims().len(), 1);
     assert!(
         health_book(&world)["workers"][0]["error"]
