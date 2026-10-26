@@ -120,15 +120,110 @@ fn printed(world: &World, watch: &Value, lines: &[&str], status: Option<i32>) {
 }
 
 #[test]
-fn a_look_with_nothing_to_act_on_starts_no_model_and_moves_its_until_on() {
+fn a_host_with_no_operator_directory_runs_the_stock_watch_and_records_what_stays_human() {
+    let world = World::new();
+    let dir = world.cache().join("afkconvoy/stock-watch");
+    // doctor resolves the directory without making or registering it.
+    let doctor = world.afk(&["doctor"]).json;
+    assert_eq!(doctor["host"]["watch"]["directory"], json!(dir));
+    assert_eq!(doctor["host"]["watch"]["stock"], true);
+    assert!(!dir.exists());
+    paused(&world, "pi", "it refused every prompt");
+    world.afk(&["run", "--host", "h1", "--second-ms", "100", "--watch-every", "1"]).ok();
+    let watch = until(&world, "the stock watch", || running(&world));
+    assert_eq!(watch["directory"], json!(dir));
+    assert_eq!(watch["stock"], true);
+    let rules = std::fs::read_to_string(dir.join("CLAUDE.md")).unwrap();
+    assert_eq!(std::fs::read_to_string(dir.join("AGENTS.md")).unwrap(), rules);
+    for required in [
+        "Find what holds",
+        "fix it with the watch's authority",
+        "check that the work goes on",
+        "say what you did",
+        "spending money, or needing an account, a credential or a person's hands",
+        "what cannot be undone",
+        "taking a secret or private data off the host",
+        "changing what a product is for, or who it is for",
+        "never act on them",
+        "list each in your printed record",
+    ] {
+        assert!(rules.contains(required), "stock instruction lacks {required}: {rules}");
+    }
+    assert_eq!(open(&world, &dir), [watch["terminal"].as_str().unwrap()]);
+    let doctor = world.afk(&["doctor", "--all"]).json;
+    assert_eq!(doctor["host"]["watch"]["running"]["stock"], true);
+    let settings = &doctor["checkouts"][0]["doctor"]["host"]["settings"];
+    assert_eq!(settings["said"]["watch_dir"], Value::Null);
+    assert_eq!(settings["in_force"]["watch_dir"], json!(dir));
+
+    let left = [
+        "left with a human: spending money to create an account and supply a credential",
+        "left with a human: an action that cannot be undone",
+        "left with a human: taking private data off the host",
+        "left with a human: changing who the product is for",
+    ];
+    printed(&world, &watch, &left, Some(0));
+    until(&world, "the stock watch's record", || ended(&world, "ended"));
+    let doctor = world.afk(&["doctor", "--all"]).json;
+    assert_eq!(doctor["host"]["watch"]["last"]["did"], json!(left));
+    assert_eq!(doctor["host"]["watch"]["last"]["stock"], true);
+    assert_eq!(starts(&world).len(), 1, "one stock watch per episode");
+    let adds = world.orca_called_with().into_iter().filter(|(call, _)| asked(call) == "repo add");
+    assert_eq!(adds.count(), 1, "the stock directory is registered by the fleet");
+    let help = world
+        .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
+        .args(["run", "--help"])
+        .output()
+        .unwrap();
+    let help = String::from_utf8(help.stdout).unwrap();
+    assert!(help.contains("stock watch"), "{help}");
+    assert!(help.contains("stock-watch"), "{help}");
+}
+
+#[test]
+fn the_operator_directory_wins_and_default_returns_to_the_stock_watch() {
     let world = World::new();
     let dir = operator(&world);
+    let rules = "# This operator\nKeep the operator's rules as written.\n";
+    std::fs::write(dir.join("CLAUDE.md"), rules).unwrap();
+    paused(&world, "pi", "it refused every prompt");
     run(&world, &dir);
+    let watch = until(&world, "the operator's watch", || running(&world));
+    assert_eq!(watch["directory"], json!(dir));
+    assert_eq!(watch["stock"], false);
+    assert_eq!(std::fs::read_to_string(dir.join("CLAUDE.md")).unwrap(), rules);
+    assert!(!dir.join("AGENTS.md").exists());
+    assert!(!world.cache().join("afkconvoy/stock-watch").exists());
+    assert!(!brief(&starts(&world)[0]).contains("# The stock watch"));
+    let doctor = world.afk(&["doctor", "--all"]).json;
+    assert_eq!(doctor["host"]["watch"]["directory"], json!(dir));
+    assert_eq!(doctor["host"]["watch"]["stock"], false);
+
+    // The running watch keeps its own directory and rules. The next watch
+    // uses the new setting, and the stock directory needs no registration.
+    world.afk(&["run", "--host", "h1", "--watch-dir", "default"]).ok();
+    let doctor = world.afk(&["doctor", "--all"]).json;
+    assert_eq!(doctor["host"]["watch"]["stock"], true);
+    assert_eq!(doctor["host"]["watch"]["running"]["stock"], false);
+    printed(&world, &watch, &["checked pi"], Some(0));
+    paused(&world, "dsh", "another episode");
+    let stock = until(&world, "the next stock watch", || {
+        running(&world).filter(|watch| watch["stock"] == true)
+    });
+    assert_eq!(stock["directory"], json!(world.cache().join("afkconvoy/stock-watch")));
+    assert_eq!(std::fs::read_to_string(dir.join("CLAUDE.md")).unwrap(), rules);
+    assert!(open(&world, &dir).contains(&OPERATORS.to_string()));
+}
+
+#[test]
+fn a_look_with_nothing_to_act_on_starts_no_model_and_moves_its_until_on() {
+    let world = World::new();
+    world.afk(&["run", "--host", "h1", "--second-ms", "100", "--watch-every", "1"]).ok();
     let first = until(&world, "first look", || state(&world)["until"].as_u64());
     until(&world, "later look", || state(&world)["until"].as_u64().filter(|until| *until > first));
     assert!(starts(&world).is_empty(), "{:?}", starts(&world));
     assert!(state(&world)["running"].is_null() && state(&world)["last"].is_null());
-    assert_eq!(open(&world, &dir), [OPERATORS]);
+    assert!(!world.cache().join("afkconvoy/stock-watch").exists());
 }
 
 #[test]
@@ -137,15 +232,20 @@ fn a_watch_can_fix_a_fleet_fault_and_hand_it_back_while_a_human_decision_stays()
     let dir = operator(&world);
     world.set_gate_config("gate_command: ./gate.sh\nescalate_to: human");
     let other = world.second_repo();
-    world.afk_in(&other, &["run", "--host", "h1"]).ok();
+    world
+        .afk_in(
+            &other,
+            &["run", "--host", "h1", "--watch-dir", dir.to_str().unwrap(), "--watch-every", "1"],
+        )
+        .ok();
     world.issue(7, &["ready-for-agent"]);
     world.issue(8, &["ready-for-human"]);
     world.comment(8, "<!--convoy:escalation claim=old-->\nShould we migrate the customer's data now or wait for approval?");
     world.with_orca(|orca| orca["trust_prompt"] = json!(true));
     let fault = world.afk(&["dispatch", "--issue", "7", "--instance", "alpha", "--host", "h1"]);
     assert!(fault.error().contains("worktree trust gap"));
-    // Register both checkouts before enabling watches: a setting is in
-    // force before run's first tick puts a new checkout on the list.
+    // Register both checkouts before waiting for their look: every host
+    // watches now, with its settings in force before the first tick.
     world.afk(&["run", "--host", "h1"]).ok();
     // A watch is independent of the issue worker's trust gap: its launch is
     // non-interactive and already trusted. The fake's gap affects dispatch.
