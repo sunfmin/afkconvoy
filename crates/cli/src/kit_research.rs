@@ -59,7 +59,7 @@ pub struct Applied {
 /// Checks the entire research file against the current kit, then answers
 /// awaiting identities across their harnesses, in file order after established
 /// priority. Omitted identities stay as held. Existing research is retained.
-/// Refuses an answer settling or placing nothing, without mutation.
+/// Refuses a file answering no awaiting identity, without mutation.
 pub fn apply(kit: &mut Kit, text: &str, now: u64) -> Result<Applied> {
     let research: Research = serde_json::from_str(text)
         .context("research must be one JSON object with a `models` array")?;

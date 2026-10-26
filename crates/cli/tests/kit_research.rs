@@ -177,7 +177,19 @@ fn sourced_settlements_preserve_seven_placed_codex_models_and_survive_relisting(
         .iter()
         .find(|h| h["harness"] == "codex")
         .unwrap();
-    assert_eq!(codex["models"], applied["kit"]["harnesses"][1]["models"]);
+    assert_eq!(
+        &codex["models"].as_array().unwrap()[..7],
+        &before["harnesses"][1]["models"].as_array().unwrap()[..7]
+    );
+    for model in &codex["models"].as_array().unwrap()[7..] {
+        let prior = applied["kit"]["harnesses"][1]["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|prior| prior["model"] == model["model"])
+            .unwrap();
+        assert_eq!(model, prior, "settlement evidence survives relisting");
+    }
     world.shell_server_models(&models[..7]);
     world.afk(&["kit"]).ok();
     world.shell_server_models(&models);

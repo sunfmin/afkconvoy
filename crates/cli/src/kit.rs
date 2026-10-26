@@ -73,7 +73,7 @@ pub struct Seen {
     /// Retained while listed, just like a placement; never a coding model.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub settled: Option<String>,
-    /// The dated URLs supporting good_at, absent before sourced research.
+    /// The dated URLs supporting the placement or settlement.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sources: Vec<crate::kit_research::Source>,
     /// When the research succeeded, in epoch seconds; never refreshed by age.
@@ -84,7 +84,7 @@ pub struct Seen {
 impl Seen {
     /// Whether a worker may be started on it: research placed it with a dated
     /// source, or a human or an older release named it, with no research yet.
-    /// One `research pending` or `not researched` is never started on.
+    /// Pending, not researched and settled models are never started on.
     pub fn placed(&self) -> bool {
         use crate::kit_research::{PENDING, UNKNOWN};
         self.settled.is_none() && !matches!(self.good_at.as_deref(), Some(PENDING | UNKNOWN))
@@ -319,7 +319,7 @@ pub fn write(now: u64) -> Result<Value> {
     Ok(json!({"path": file, "written": true, "kit": kit, "left_out": left_out}))
 }
 
-/// Places the watch's research against the latest kit under both write locks,
+/// Applies the watch's research against the latest kit under both write locks,
 /// so listing, casting and a switch cannot lose each other's changes. A bad
 /// file never reaches the atomic write, nor changes the kit's refresh time.
 pub fn apply_research(research: &Path, now: u64) -> Result<Value> {
