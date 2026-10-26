@@ -93,7 +93,14 @@ impl Slot {
                     let owner = Owner {
                         process: crate::candidates::identity(std::process::id())?
                             .ok_or_else(|| anyhow::anyhow!("cannot identify slot owner"))?,
-                        dir: ticket.dir.clone(),
+                        dir: ticket
+                            .repo
+                            .as_deref()
+                            .and_then(|path| std::path::Path::new(path).parent())
+                            .map_or_else(
+                                || ticket.dir.clone(),
+                                |path| path.to_string_lossy().into_owned(),
+                            ),
                         candidate: ticket.candidate,
                     };
                     serde_json::to_writer(&mut file, &owner)?;

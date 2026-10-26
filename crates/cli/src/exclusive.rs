@@ -430,7 +430,14 @@ impl Queue {
         let candidate =
             self.joined().tickets.iter().find(|t| t.number == number && t.candidate).cloned();
         if let Some(ticket) = candidate
-            && let Err(error) = crate::candidates::abandoned(&ticket.dir)
+            && let Err(error) = crate::candidates::abandoned(
+                ticket
+                    .repo
+                    .as_deref()
+                    .and_then(|path| Path::new(path).parent())
+                    .and_then(Path::to_str)
+                    .unwrap_or(&ticket.dir),
+            )
         {
             eprintln!("[afkconvoy] candidate cleanup unconfirmed; lane retained: {error}");
             return;
