@@ -6,6 +6,158 @@ use afkconvoy_core::gate::{GateCommand, RECORD_TTL, Tree};
 use common::{World, git};
 use serde_json::json;
 
+use std::os::unix::net::UnixListener;
+use std::process::{Child, Output, Stdio};
+use std::sync::mpsc;
+use std::time::Duration;
+
+use afkconvoy::runner_socket::{self, Kept, Reply, Request, SOCKET};
+
+const GATE_BINARY: &str = env!("CARGO_BIN_EXE_afkconvoy");
+
+/// A gate held by an isolated runner until the test explicitly grants it.
+/// Drop cleans up even when an assertion fails before the grant.
+struct QueuedGate {
+    _socket: tempfile::TempDir,
+    child: Option<Child>,
+    group: i32,
+    place: Kept,
+}
+
+impl QueuedGate {
+    fn start(world: &World) -> Self {
+        let dir = world.cache().join("afkconvoy");
+        std::fs::create_dir_all(&dir).unwrap();
+        let socket = tempfile::tempdir_in("/tmp").unwrap();
+        let path = socket.path().join(SOCKET);
+        let listener = UnixListener::bind(&path).unwrap();
+        std::os::unix::fs::symlink(path, dir.join(SOCKET)).unwrap();
+        let (send, receive) = mpsc::channel();
+        runner_socket::serve(listener, json!({}), move |request| match request {
+            Request::Exclusive { ticket } => {
+                let send = send.clone();
+                Reply::Kept(
+                    json!({"ahead": 7}),
+                    Box::new(move |kept| {
+                        let _ = send.send((ticket.pid, kept));
+                    }),
+                )
+            }
+            _ => Reply::Line(json!({"woke": false})),
+        });
+        let child = world
+            .command(GATE_BINARY, &world.clone)
+            .env("EXECUTED", world.root.join("executed"))
+            .args(["gate"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let (pid, place) = receive.recv_timeout(Duration::from_secs(5)).unwrap();
+        // SAFETY: pid is this gate's exclusive child in the isolated runner.
+        let group = unsafe { libc::getpgid(pid as i32) };
+        assert!(group > 0);
+        Self { _socket: socket, child: Some(child), group, place }
+    }
+
+    fn observe(&mut self, world: &World) {
+        for interval in 0..3 {
+            // Exercise the real socket read between the gate's child polls;
+            // only an explicit runs message grants the command its turn.
+            assert!(self.place.say(json!({"observation": interval})));
+            std::thread::sleep(Duration::from_millis(100));
+            assert!(
+                self.child.as_mut().unwrap().try_wait().unwrap().is_none(),
+                "gate ended while queued"
+            );
+            assert!(!world.root.join("executed").exists());
+            assert!(records(world).is_empty());
+        }
+    }
+
+    fn interrupt(&self) {
+        // SAFETY: this is the gate child's own process group, never ours.
+        assert_eq!(unsafe { libc::kill(-self.group, libc::SIGKILL) }, 0);
+    }
+
+    fn finish(&mut self) -> Output {
+        self.child.take().unwrap().wait_with_output().unwrap()
+    }
+}
+
+impl Drop for QueuedGate {
+    fn drop(&mut self) {
+        self.place.close();
+        if let Some(child) = self.child.as_mut()
+            && child.try_wait().is_ok_and(|status| status.is_none())
+        {
+            // SAFETY: group belongs to the child this test still owns.
+            unsafe { libc::kill(-self.group, libc::SIGKILL) };
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+fn queue_command(world: &World) {
+    let command = afkconvoy_core::line::Line::new()
+        .fixed("exec ")
+        .program(GATE_BINARY)
+        .fixed(" exclusive -- sh -c ")
+        .word("echo executed >> \"$EXECUTED\"; exit 3")
+        .own();
+    // The marker is outside the committed tree, so an interrupted run can
+    // invalidate an earlier green record for the very same tree and command.
+    world.set_gate_config(&format!("gate_command: {command}\ngate_seconds: 10"));
+}
+
+#[test]
+fn a_queued_gate_survives_observation_and_runs_exactly_once_when_granted() {
+    let world = World::new();
+    queue_command(&world);
+    let mut gate = QueuedGate::start(&world);
+    gate.observe(&world);
+    assert!(gate.place.say(json!({"runs": 5000})));
+    let out = gate.finish();
+    let answer: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(answer["exit_code"], 3, "{answer}");
+    assert_eq!(answer["timed_out"], false);
+    assert_eq!(answer["recorded"], false);
+    assert_eq!(std::fs::read_to_string(world.root.join("executed")).unwrap(), "executed\n");
+}
+
+#[test]
+fn a_signalled_queued_gate_keeps_termination_evidence_without_claiming_checks_ran() {
+    let world = World::new();
+    queue_command(&world);
+    let mut gate = QueuedGate::start(&world);
+    gate.observe(&world);
+    gate.interrupt();
+    let out = gate.finish();
+    let answer: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(answer["status"], "red");
+    assert_eq!(answer["exit_code"], -1, "preserve the existing exit-code contract");
+    assert_eq!(answer["timed_out"], false);
+    assert_eq!(answer["termination"]["signal"], libc::SIGKILL, "{answer}");
+    assert_eq!(answer["termination"]["pid"], gate.group, "{answer}");
+    assert_eq!(answer["termination"]["core_dumped"], false);
+    assert_eq!(answer["recorded"], false);
+    assert!(!world.root.join("executed").exists());
+    assert!(records(&world).is_empty());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("signal 9"), "{stderr}");
+    assert!(answer["detail"].as_str().unwrap().contains("checks may not have started"), "{answer}");
+    let runs = world.cache().join("afkconvoy/runs");
+    let log = std::fs::read_dir(runs)
+        .unwrap()
+        .flatten()
+        .map(|entry| std::fs::read_to_string(entry.path()).unwrap())
+        .collect::<String>();
+    assert!(log.contains("signal 9"), "{log}");
+}
+
 /// A world whose gate is red exactly while the file `red` exists beside it.
 fn gated() -> (World, String) {
     let world = World::new();
