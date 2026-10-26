@@ -186,7 +186,10 @@ fn missing_issue(repo: &Repo, gh: &GitHub, number: u64, error: anyhow::Error) ->
     if !crate::gh::gone(&error).is_some_and(|gone| !gone.deleted) {
         return error;
     }
-    let own = crate::checkout_list::repo_of(repo).unwrap_or_else(|_| "<its repo>".to_string());
+    let own = crate::checkout_list::named_repo(repo)
+        .map(|name| name.to_string())
+        .or_else(|_| crate::checkout_list::repo_of(repo))
+        .unwrap_or_else(|_| "<its repo>".to_string());
     let tracker = gh.tracker.named().map_or(own.as_str(), |name| name.as_str());
     let found = gh
         .read(&["issue", "view", &number.to_string(), "--repo", &own, "--json", "url"])

@@ -8,7 +8,7 @@ use afkconvoy_core::plan::UnworkedBlocker;
 use afkconvoy_core::tracker::{Tracker, repo_labels};
 use anyhow::Result;
 
-use crate::checkout_list::{List, repo_of};
+use crate::checkout_list::{List, named_repo, repo_of};
 use crate::gh::{BlockedBy, GitHub, OpenIssues};
 use crate::git::Repo;
 
@@ -17,13 +17,17 @@ struct Checkout {
     path: PathBuf,
 }
 
+fn name(repo: &Repo) -> Result<String> {
+    named_repo(repo).map(|name| name.to_string()).or_else(|_| repo_of(repo))
+}
+
 /// The checkouts serving this tracker, including the checkout being asked
 /// about even before its first tick has put it on the checkout list.
 fn serving(repo: &Repo, tracker: &str) -> Result<Vec<Checkout>> {
-    let mut found = vec![Checkout { repo: repo_of(repo)?, path: repo.dir.clone() }];
+    let mut found = vec![Checkout { repo: name(repo)?, path: repo.dir.clone() }];
     for entry in List::of_host()?.read()?.checkouts {
         let Ok(other) = Repo::at(&entry.checkout) else { continue };
-        let Ok(name) = repo_of(&other) else { continue };
+        let Ok(name) = name(&other) else { continue };
         let uses = entry.tracker.as_ref().map_or(name.as_str(), |name| name.as_str());
         if uses.eq_ignore_ascii_case(tracker) && !found.iter().any(|row| row.repo == name) {
             found.push(Checkout { repo: name, path: entry.checkout });
@@ -42,7 +46,7 @@ pub fn unworked(
     if edges.iter().all(|(_, edges)| edges.is_empty()) {
         return Ok(vec![]);
     }
-    let own = repo_of(repo)?;
+    let own = name(repo)?;
     let named = tracker.named().map_or(own.as_str(), |name| name.as_str());
     let checkouts = serving(repo, named)?;
     let mut found = vec![];

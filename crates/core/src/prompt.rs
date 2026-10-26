@@ -1579,6 +1579,13 @@ mod tests {
             }
         }
         let fresh = &briefs[0];
+        for brief in [fresh, &briefs[1], &briefs[3], &briefs[5]] {
+            assert!(brief.contains("open it on the tracker\n`acme/tracker`"), "{brief}");
+            assert!(brief.contains("that repo's `repo:<owner>/<repo>` label"), "{brief}");
+            assert!(brief.contains("run `afkconvoy flows`"), "{brief}");
+            assert!(brief.contains("omit the line's flow label while opening"), "{brief}");
+            assert_eq!(brief.matches("## Cross-repo blockers").count(), 1, "{brief}");
+        }
         assert!(fresh.contains("**Your issue:** acme/tracker#7 — Add {branch} support"));
         assert!(fresh.contains("\n   Closes acme/tracker#7\""), "{fresh}");
         // An issue a worker opens is the repo's in the tracker.
@@ -1748,6 +1755,8 @@ mod tests {
             assert!(brief.contains("- **Issue:** acme/tracker#7 — Add support\n"), "{brief}");
         }
         assert!(stage.contains("(`gh issue create --repo acme/tracker --label repo:acme/dev`)"));
+        assert!(stage.contains("open it on the tracker\n`acme/tracker`"), "{stage}");
+        assert!(stage.contains("afkconvoy intake --issue <n> --workflow <workflow>"), "{stage}");
         assert!(stage.contains(
             "Put no label of a workflow on it yourself, only the repo label `repo:acme/dev` \
              (`--label repo:acme/dev`): take it in"
