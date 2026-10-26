@@ -88,6 +88,15 @@ impl serde::Serialize for Harness {
 }
 
 impl Harness {
+    /// The harness's fixed capacity-stop words, allowing terminal wrapping.
+    /// A rule belongs only to a harness whose screen has been observed.
+    pub fn capacity_stop(self, output: &[String]) -> Option<String> {
+        match self {
+            Harness::Codex => codex::capacity_stop(output),
+            _ => None,
+        }
+    }
+
     /// The harness's fixed task-refusal words on its screen. Whitespace may
     /// wrap in a terminal; other prose alone establishes no refusal rule.
     pub fn task_refusal(self, output: &[String]) -> Option<String> {

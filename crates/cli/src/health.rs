@@ -24,6 +24,9 @@ pub const CHECK_SECONDS: u64 = 300;
 pub const DIAGNOSIS_SECONDS: u64 = 30;
 pub const MAX_DIAGNOSES: u32 = 3;
 pub const MAX_RATE_RETRIES: u32 = 2;
+pub const CAPACITY_WAIT_SECONDS: u64 = 60;
+pub const MAX_CAPACITY_STOPS: u32 = 3;
+pub const CAPACITY_HEALTHY_SECONDS: u64 = 300;
 pub const MAX_CONTINUATIONS: u32 = 3;
 pub const RECOVERY_SECONDS: u64 = 3600;
 pub const MAX_QUOTA_WAIT_SECONDS: u64 = RECOVERY_SECONDS;
@@ -63,6 +66,8 @@ struct Book {
     workers: Vec<Observed>,
     faults: Vec<Fault>,
     #[serde(default)]
+    capacity_stops: std::collections::BTreeMap<String, u64>,
+    #[serde(default)]
     observations_failed: Vec<(PathBuf, String, u64)>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -84,6 +89,15 @@ struct Snapshot {
     output: Vec<String>,
     progress: String,
 }
+
+/// One session's capacity episode. A pending wait is counted once; only a
+/// nudge whose receipt proves a new turn allows another stop to count.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct Capacity {
+    stops: u32,
+    retry_at: Option<u64>,
+    healthy_since: Option<u64>,
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Observed {
     path: PathBuf,
@@ -103,6 +117,8 @@ struct Observed {
     next_check: u64,
     attempts: u32,
     rate_retries: u32,
+    #[serde(default)]
+    capacity: Option<Capacity>,
     #[serde(default)]
     continuations: u32,
     #[serde(default)]
@@ -155,6 +171,10 @@ pub fn show() -> Value {
             "observe_seconds": OBSERVE_SECONDS, "check_seconds": CHECK_SECONDS,
             "diagnosis_seconds": DIAGNOSIS_SECONDS, "max_diagnoses": MAX_DIAGNOSES,
             "max_rate_retries": MAX_RATE_RETRIES,
+            "capacity_stops": book.capacity_stops,
+            "capacity_wait_seconds": CAPACITY_WAIT_SECONDS,
+            "max_capacity_stops": MAX_CAPACITY_STOPS,
+            "capacity_healthy_seconds": CAPACITY_HEALTHY_SECONDS,
             "max_quota_wait_seconds": MAX_QUOTA_WAIT_SECONDS})
         }
         Err(e) => json!({"error": format!("{e:#}")}),
@@ -325,6 +345,17 @@ fn terminal_rule(harness: Harness, output: &[String]) -> Option<Diagnosis> {
             scope: Scope::Worker,
             evidence: vec![evidence],
             action: Action::Continue,
+            missing: vec![],
+            retry_after: None,
+        });
+    }
+    if let Some(evidence) = harness.capacity_stop(output) {
+        return Some(Diagnosis {
+            status: "stopped".into(),
+            class: "capacity".into(),
+            scope: Scope::Worker,
+            evidence: vec![evidence],
+            action: Action::Retry,
             missing: vec![],
             retry_after: None,
         });
@@ -717,7 +748,9 @@ pub fn reconcile(
             && state == WorkerState::Busy
             && classified(&worktree.health_report()?).is_none()
             && error_of(&worktree)?.is_empty();
-        if state == WorkerState::Gone || busy_without_fault {
+        let capacity_episode =
+            book.workers.iter().any(|o| o.path == worktree.path && o.capacity.is_some());
+        if state == WorkerState::Gone || (busy_without_fault && !capacity_episode) {
             book.workers.retain(|o| o.path != worktree.path);
             book.observations_failed.retain(|(path, _, _)| *path != worktree.path);
             continue;
@@ -833,7 +866,8 @@ fn observe(
     let signal = error_of(worktree)?;
     // A delivery that failed after the runtime reported working still
     // belongs to classification; it cannot be cleared by that old report.
-    let working = orca["state"] == "working" && signal.is_empty();
+    let working = (orca["state"] == "working" || (orca.is_null() && state == WorkerState::Busy))
+        && signal.is_empty();
     let harness = worktree.harness()?.unwrap_or(Harness::DEFAULT);
     let recorded = worktree.recorded_harness()?;
     let mismatch = recorded.is_some_and(|h| h != harness);
@@ -887,6 +921,7 @@ fn observe(
             next_check: fleet.now,
             attempts: 0,
             rate_retries: 0,
+            capacity: None,
             continuations: 0,
             failed_candidates: vec![],
             background: None,
@@ -912,6 +947,7 @@ fn observe(
         observed.snapshots.clear();
         observed.attempts = 0;
         observed.rate_retries = 0;
+        observed.capacity = None;
         observed.next_check = fleet.now;
         observed.diagnosis = None;
         observed.diagnosis_failures.clear();
@@ -937,6 +973,12 @@ fn observe(
     observed.harness_mismatch = mismatch;
     observed.orca = orca;
     if working {
+        if let Some(capacity) = &mut observed.capacity {
+            let since = *capacity.healthy_since.get_or_insert(fleet.now);
+            if fleet.now.saturating_sub(since) >= CAPACITY_HEALTHY_SECONDS {
+                observed.capacity = None;
+            }
+        }
         observed.action = "healthy".into();
         observed.source = "orca worktree ps".into();
         observed.error = None;
@@ -968,7 +1010,8 @@ fn observe(
     if observed.snapshots.len() > 3 {
         observed.snapshots.remove(1);
     }
-    let previous = (observed.action.clone(), observed.attempts, observed.continuations);
+    let previous =
+        (observed.action.clone(), observed.attempts, observed.continuations, observed.next_check);
     let result = decide(
         book,
         &mut observed,
@@ -987,7 +1030,9 @@ fn observe(
         observed.action = "waiting".into();
         observed.next_check = fleet.now.saturating_add(CHECK_SECONDS);
     }
-    if previous != (observed.action.clone(), observed.attempts, observed.continuations) {
+    if previous
+        != (observed.action.clone(), observed.attempts, observed.continuations, observed.next_check)
+    {
         crate::log::Log::of(&fleet.repo)?.append(&crate::log::Entry {
             at: fleet.now,
             instance: me.instance.as_str().into(),
@@ -1052,6 +1097,56 @@ fn escalate_observed(
     Ok(())
 }
 
+/// Returns true while the capacity rule is waiting or has nudged this
+/// session. False hands the bounded episode to ordinary continuation.
+fn capacity_wait(
+    book: &mut Book,
+    observed: &mut Observed,
+    worktree: &Worktree,
+    now: u64,
+) -> Result<bool> {
+    let capacity = observed.capacity.get_or_insert_with(Capacity::default);
+    capacity.healthy_since = None;
+    if capacity.stops >= MAX_CAPACITY_STOPS {
+        return Ok(false);
+    }
+    if let Some(at) = capacity.retry_at {
+        observed.next_check = at;
+        if now < at {
+            observed.action = format!(
+                "waiting {} seconds for capacity",
+                CAPACITY_WAIT_SECONDS * u64::from(capacity.stops),
+            );
+            return Ok(true);
+        }
+        // Leave the wait pending on a failed submission. An accepted input
+        // without a turn-start receipt must not spend another capacity stop.
+        worktree.tell_at(
+            &observed.terminal,
+            "The selected model was at capacity. Continue the existing task from your current work.",
+            now,
+        )?;
+        capacity.retry_at = None;
+        observed.next_check = now;
+        observed.action = "capacity nudged".into();
+        return Ok(true);
+    }
+    capacity.stops = capacity.stops.saturating_add(1);
+    let total = book.capacity_stops.entry(observed.harness.key().into()).or_default();
+    *total = total.saturating_add(1);
+    if capacity.stops >= MAX_CAPACITY_STOPS {
+        return Ok(false);
+    }
+    let at = now.saturating_add(CAPACITY_WAIT_SECONDS * u64::from(capacity.stops));
+    capacity.retry_at = Some(at);
+    observed.next_check = at;
+    observed.action = format!(
+        "waiting {} seconds for capacity",
+        CAPACITY_WAIT_SECONDS * u64::from(capacity.stops),
+    );
+    Ok(true)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn decide(
     book: &mut Book,
@@ -1097,7 +1192,7 @@ fn decide(
         observed.action = if state == WorkerState::Busy { "healthy" } else { "observing" }.into();
         return Ok(());
     }
-    let diagnosis = if let Some((source, rule)) = rule {
+    let mut diagnosis = if let Some((source, rule)) = rule {
         observed.source = source.into();
         rule
     } else {
@@ -1144,6 +1239,15 @@ fn decide(
         answer.with_context(|| format!("waiting for diagnosis: {}", failure.join("; ")))?
     };
     observed.diagnosis = Some(diagnosis.clone());
+    if diagnosis.class == "capacity" {
+        observed.source = "capacity rule".into();
+        observed.error = None;
+        if capacity_wait(book, observed, worktree, fleet.now)? {
+            return Ok(());
+        }
+        diagnosis.action = Action::Continue;
+        observed.diagnosis = Some(diagnosis.clone());
+    }
     let refusal = diagnosis.class == "refusal";
     if refusal && let Some(issue) = issue {
         fleet.remember_refusal(
