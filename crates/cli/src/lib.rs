@@ -47,6 +47,7 @@ pub mod draft;
 pub mod evidence;
 pub mod exclusive;
 pub mod fleet;
+pub mod first_start;
 pub mod flows;
 pub mod forget;
 pub mod gate;
@@ -154,6 +155,8 @@ const SKILL: &str = include_str!("../../../skills/afkconvoy/SKILL.md");
 /// ## What it needs
 ///
 /// - A config on the base branch: the first yaml block of {const:CONFIG_FILE}. A repo whose config names a team is a bound repo: the team's workflows say how its issues are worked. One whose config names none is unbound: each issue is worked by one worker, then the landing train.
+/// - A tracker: the private repo the fleet reads and writes its issues in. The checkout's own repo can be its tracker only when private; anyone who can comment on its issues writes what workers read. Settle which repo with the user before its first `run`: [`afkconvoy help first-start`](help:first-start).
+/// - {const:FIRST_START_SETTINGS}
 /// - `gh` logged in as a user who may push to the repo.
 /// - `orca` on the PATH: every worker is started through it. It is running (`orca open`) and was given this checkout, once (`orca repo add --path "$PWD"`).
 /// - `claude` on the PATH and logged in, when it is what starts a worker.
@@ -163,9 +166,10 @@ const SKILL: &str = include_str!("../../../skills/afkconvoy/SKILL.md");
 ///
 /// ## What to run first, in a checkout of the repo
 ///
-/// 1. `afkconvoy config`: read the config, what the fleet goes by. Its `--help` shows one whole. Then `afkconvoy check`, only in a bound repo: does the team load? A team is designed first: see designing a team, below.
-/// 2. `afkconvoy plan`: what a tick would act on. It changes no fleet state, but may push and delete a startup probe on the remote. To read without writing anything, run `afkconvoy doctor`.
-/// 3. `afkconvoy run`: the checkout's fleet instance, held by the host runner until it is stopped. It answers once the first tick ended.
+/// 1. `afkconvoy checkouts`: if it lists no checkout, or this checkout is not on its list, read [`afkconvoy help first-start`](help:first-start) and settle the first start with the user before `run`.
+/// 2. `afkconvoy config`: read the config, what the fleet goes by. Its `--help` shows one whole. Then `afkconvoy check`, only in a bound repo: does the team load? A team is designed first: see designing a team, below.
+/// 3. `afkconvoy plan`: what a tick would act on. It changes no fleet state, but may push and delete a startup probe on the remote. To read without writing anything, run `afkconvoy doctor`.
+/// 4. `afkconvoy run`: the checkout's fleet instance, held by the host runner until it is stopped. It answers once the first tick ended.
 ///
 /// To watch a running fleet, checking on it every few minutes, run `afkconvoy doctor --all --since <until of your last look>`. A first look runs `afkconvoy doctor --all` without `--since`; its `until` is where the next look starts.
 ///
@@ -1197,6 +1201,8 @@ enum Command {
     ///
     /// ## What it answers
     ///
+    /// Before a first start: a checkout off the checkout list must name `--tracker <owner>/<repo>` or `--tracker default` (its own repo, which must be private). A host with no saved host settings must name `--host-sleep`, `--no-host-sleep` or `--host-sleep-hours`. Missing answers refuse with a non-zero exit and write nothing: {"error", "asks", "see"}. Each `asks` item has `setting`, `question`, `default`, `recommend`, and `options`, each with `option` and `line`; `see` prints [`afkconvoy help first-start`](help:first-start). Settle these questions with the user before running the chosen lines. Existing checkouts and saved host settings run as before.
+    ///
     /// Once its checkout's fleet instance has ended its first tick, with exit 0:
     ///
     /// ```json
@@ -1323,9 +1329,9 @@ enum Command {
         /// and never pushed; `default` changes it back [default: {const:CONCURRENCY}]
         #[arg(long, value_name = "CLAIMS", value_parser = concurrency::claims_or_default)]
         concurrency: Option<To<NonZeroUsize>>,
-        /// The repo this checkout's fleet reads and writes its issues in, from its next tick:
-        /// the checkout's own, kept with it on the checkout list and never pushed; `default`
-        /// changes it back [default: the checkout's own repo]
+        /// The private repo this checkout's fleet reads and writes its issues in: required
+        /// on its first `run`; kept on this host and never pushed. `default` says its own repo
+        /// explicitly, which must be private; omitted on later runs, its saved choice holds
         #[arg(long, value_name = "OWNER/REPO", value_parser = tracker::repo_or_default)]
         tracker: Option<To<RepoName>>,
         #[command(flatten)]
@@ -3441,6 +3447,7 @@ fn checkout_help(name: &str, positional: bool) -> String {
 pub fn manual() -> agent_help::Help {
     use topic::*;
     let mut help = agent_help::Help::new(cli())
+        .topic::<FirstStart>()
         .topic::<Concepts>()
         .topic::<Team>()
         .topic::<Roles>()
@@ -3462,6 +3469,8 @@ pub fn manual() -> agent_help::Help {
         .table::<claim_status::ClaimStatus>("claim_status")
         .constant("CONFIG_FILE", config::FILE)
         .constant("PANEL_PORT", host_settings::PANEL_PORT)
+        .constant("FIRST_START_SETTINGS", first_start::settings_help())
+        .constant("FIRST_START_QUESTIONS", first_start::help())
         .constant("TEAM_FILE", afkconvoy_core::team::TEAM_FILE)
         .constant("ESCALATE_LABEL", afkconvoy_core::config::ESCALATE_LABEL)
         .constant("CONCURRENCY", afkconvoy_core::config::CONCURRENCY)
@@ -3966,6 +3975,8 @@ pub fn main(args: impl IntoIterator<Item = OsString>) -> ExitCode {
 pub(crate) fn error_json(e: &anyhow::Error) -> Value {
     if let Some(refused) = e.downcast_ref::<team::Refused>() {
         json!({ "error": refused.to_string(), "faults": refused.json() })
+    } else if let Some(refused) = e.downcast_ref::<first_start::Refused>() {
+        json!({ "error": format!("{e:#}"), "asks": refused.asks, "see": topic::See::FirstStart })
     } else if let Some(see) = topic::explains(e) {
         json!({ "error": format!("{e:#}"), "see": see })
     } else {
@@ -4215,9 +4226,11 @@ fn run(
             let Some((foreground, start, settings)) = start_of(command, fixed_now) else {
                 unreachable!()
             };
+            let checkout = checkout?;
+            first_start::check(&checkout, &start, &settings)?;
             match foreground {
-                true => host_runner::foreground(&checkout?, &start, settings),
-                false => host_runner::run(&checkout?, start, &settings, now),
+                true => host_runner::foreground(&checkout, &start, settings),
+                false => host_runner::run(&checkout, start, &settings, now),
             }
         }
         Command::Stop { all: true, .. } => host_runner::stop_all(),
