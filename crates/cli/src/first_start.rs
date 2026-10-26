@@ -161,16 +161,16 @@ pub fn settled(
     let tracker = new_checkout && start.tracker.is_none();
     let sleep =
         !has_settings && settings.no_host_sleep.is_none() && settings.host_sleep_hours.is_none();
-    let asks: Vec<_> = questions()
-        .into_iter()
-        .filter(|ask| match ask.setting {
-            Setting::Tracker => tracker,
-            Setting::HostSleep => sleep,
-            Setting::Concurrency => false,
-            Setting::WatchDir => false,
-        })
-        .collect();
-    if !asks.is_empty() {
+    if tracker || sleep {
+        let asks = questions()
+            .into_iter()
+            .filter(|ask| match ask.setting {
+                Setting::Tracker => tracker,
+                Setting::HostSleep => sleep,
+                Setting::Concurrency => new_checkout && start.concurrency.is_none(),
+                Setting::WatchDir => !has_settings && settings.watch_dir.is_none(),
+            })
+            .collect();
         return Err(Refused { asks }.into());
     }
     if new_checkout && matches!(start.tracker, Some(host_settings::To::Default)) {

@@ -70,26 +70,32 @@ fn a_new_checkout_asks_for_its_tracker_before_any_startup_writes() {
         &world,
         &world.clone,
         &["--no-host-sleep", "--hot-cores", "2", "--concurrency", "1", "--panel", "7123"],
-        &["tracker"],
+        &["tracker", "watch-dir"],
     );
     world.say_host_settings(json!({}));
-    refused(&world, &world.clone, &[], &["tracker"]);
+    refused(&world, &world.clone, &[], &["tracker", "concurrency"]);
     // A saved host does not waive the tracker choice for another checkout.
     let second = world.second_repo();
-    refused(&world, &second, &[], &["tracker"]);
+    refused(&world, &second, &[], &["tracker", "concurrency"]);
 }
 
 #[test]
 fn a_new_host_asks_for_sleep_even_when_its_tracker_was_given() {
     let world = World::new();
-    refused(&world, &world.clone, &["--tracker", "default", "--hot-memory", "2"], &["host-sleep"]);
-    refused(&world, &world.clone, &[], &["tracker", "host-sleep"]);
-    refused(&world, &world.clone, &["--foreground"], &["tracker", "host-sleep"]);
+    refused(
+        &world,
+        &world.clone,
+        &["--tracker", "default", "--hot-memory", "2"],
+        &["host-sleep", "concurrency", "watch-dir"],
+    );
+    let all = ["tracker", "host-sleep", "concurrency", "watch-dir"];
+    refused(&world, &world.clone, &[], &all);
+    refused(&world, &world.clone, &["--foreground"], &all);
     // A list of checkouts without a settings object has no host settings.
     let file = world.cache().join("afkconvoy/checkouts.json");
     std::fs::create_dir_all(file.parent().unwrap()).unwrap();
     std::fs::write(file, json!({"checkouts": [{"checkout": world.clone}]}).to_string()).unwrap();
-    refused(&world, &world.clone, &[], &["host-sleep"]);
+    refused(&world, &world.clone, &[], &["host-sleep", "watch-dir"]);
 }
 
 #[test]
@@ -111,7 +117,8 @@ fn explicit_choices_start_and_existing_checkouts_and_host_defaults_need_no_flags
 #[test]
 fn every_first_start_question_and_option_is_shared_by_the_topic_and_json_asks() {
     let world = World::new();
-    let answer = refused(&world, &world.clone, &[], &["tracker", "host-sleep"]);
+    let all = ["tracker", "host-sleep", "concurrency", "watch-dir"];
+    let answer = refused(&world, &world.clone, &[], &all);
     let out = world
         .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
         .args(["help", "first-start"])
@@ -124,12 +131,7 @@ fn every_first_start_question_and_option_is_shared_by_the_topic_and_json_asks() 
     }
     let questions = serde_json::to_value(afkconvoy::first_start::questions()).unwrap();
     let questions = questions.as_array().unwrap();
-    let expected: Vec<_> = questions
-        .iter()
-        .filter(|q| q["setting"] == "tracker" || q["setting"] == "host-sleep")
-        .cloned()
-        .collect();
-    assert_eq!(answer["asks"], json!(expected));
+    assert_eq!(answer["asks"], json!(questions), "every shared question is in the refusal");
     let headings: BTreeSet<_> =
         topic.lines().filter_map(|line| line.strip_prefix("### ")).collect();
     let settings: BTreeSet<_> = questions.iter().map(|q| q["setting"].as_str().unwrap()).collect();
