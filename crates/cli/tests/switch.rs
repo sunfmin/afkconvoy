@@ -925,3 +925,94 @@ fn invalid_diagnosis_json_falls_through_to_the_next_harness_and_is_logged() {
         "{failure}"
     );
 }
+
+/// The fields of the failed Codex agent reported in sunfmin/control#83.
+/// Pane identity and times are fixed here; mainAgent owns the outcome.
+fn failed_agent() -> Value {
+    serde_json::from_str(include_str!("fixtures/orca-failed-agent.json")).unwrap()
+}
+
+#[test]
+fn orcas_failed_turn_is_classified_on_its_first_observation() {
+    for failure in [false, true] {
+        let world = blocked();
+        world.with_orca(|orca| {
+            for terminal in orca["terminals"].as_array_mut().unwrap() {
+                terminal["agent"] = failed_agent();
+                if !failure {
+                    terminal["agent"]["mainAgent"]["outcome"] = json!("success");
+                }
+                terminal["screen"] = json!(["The session ended unexpectedly"]);
+            }
+        });
+        diagnosis(&world, "unknown", "unknown", "worker", &[]);
+        tick(&world, 800);
+        assert_eq!(world.root.join("diagnosis-asked").exists(), failure);
+        let health = world.afk(&["plan", "--now", "801"]).ok();
+        let worker = &health["host_kit"]["worker_health"]["workers"][0];
+        assert_eq!(worker["attempts"], u32::from(failure));
+        assert_eq!(worker["orca"]["state"], "done");
+        assert_eq!(worker["orca"]["agentType"], "codex");
+        assert_eq!(worker["orca"]["stateStartedAt"], 799000);
+    }
+}
+
+#[test]
+fn working_agents_are_healthy_without_screen_judgment_and_share_one_tick_read() {
+    let world = fleet_with_two_workers();
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            terminal["agent"] = json!({"agentType":"claude", "state":"working",
+                "stateStartedAt":799000, "mainAgent":{"state":"working"}});
+            terminal["lastOutputAt"] = json!(799000);
+            terminal["screen"] = json!(["Old error: Usage limit reached"]);
+        }
+    });
+    world.orca_calls();
+    tick(&world, 800);
+    let calls = world.orca_calls();
+    assert_eq!(calls.iter().filter(|c| common::asked(c) == "worktree ps").count(), 1);
+    assert!(!calls.iter().any(|c| common::asked(c) == "terminal read"), "{calls:?}");
+    let health = world.afk(&["plan", "--now", "801"]).ok();
+    let workers = health["host_kit"]["worker_health"]["workers"].as_array().unwrap();
+    assert_eq!(workers.len(), 2);
+    assert!(workers.iter().all(|w| w["action"] == "healthy" && w["orca"]["state"] == "working"));
+    assert!(!world.root.join("diagnosis-asked").exists());
+}
+
+fn fleet_with_two_workers() -> World {
+    let world = World::new();
+    world.issue(7, &["ready-for-agent"]);
+    world.issue(8, &["ready-for-agent"]);
+    world.say_concurrency(&world.clone, 2);
+    tick(&world, 700);
+    world
+}
+
+#[test]
+fn orcas_harness_overrules_a_wrong_record_for_quota_recovery_and_is_shown() {
+    let world = blocked();
+    let dir = worktree(&world, 7);
+    switch(&world, "750", &["7", "--harness", "codex"]).ok();
+    codex_usage_limit(&world);
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            terminal["agent"] = failed_agent();
+        }
+    });
+    let git_dir = PathBuf::from(git(&dir, &["rev-parse", "--absolute-git-dir"]));
+    std::fs::write(git_dir.join("convoy-harness"), "claude-code").unwrap();
+    tick(&world, 800);
+    assert_eq!(open_commands(&world, &dir), [common::trusted("agent")]);
+    assert!(!world.root.join("diagnosis-asked").exists());
+    let health = world.afk(&["doctor", "--now", "801"]).ok();
+    let health = &health["host_kit"]["worker_health"];
+    assert_eq!(health["workers"][0]["harness"], "codex");
+    assert_eq!(health["workers"][0]["recorded_harness"], "claude-code");
+    assert_eq!(health["workers"][0]["harness_mismatch"], true);
+    assert_eq!(health["faults"][0]["harness"], "codex");
+    let panel = world.afk(&["panel", "--html", "--now", "801"]).ok();
+    let html = panel["html"].as_str().unwrap();
+    assert!(html.contains("failure") && html.contains("codex") && html.contains("799000"));
+    assert!(html.contains("recorded claude-code"));
+}
