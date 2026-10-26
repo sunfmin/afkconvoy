@@ -380,7 +380,8 @@ fn terminal_read(st: &State) -> ! {
         fail(st, "terminal_not_readable");
     }
     let tail = if terminal["screen"].is_array() { terminal["screen"].clone() } else { json!([]) };
-    done(st, json!({"terminal": {"handle": terminal["handle"], "tail": tail, "source": "screen"}}))
+    let source = st.doc["screen_source"].as_str().unwrap_or("screen");
+    done(st, json!({"terminal": {"handle": terminal["handle"], "tail": tail, "source": source}}))
 }
 
 fn terminal_close(st: &mut State) -> ! {

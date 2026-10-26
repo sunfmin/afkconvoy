@@ -606,6 +606,12 @@ fn the_guide_carries_what_an_agent_needs_before_its_first_command() {
         "One fleet instance per host per repo",
         "`run` returns once its checkout's first tick ended",
         "--worker-command",
+        "A watch is the operator for every repo on the host's checkout list",
+        "hands the escalated issue back with the line `doctor` names",
+        "join that repo's landing train with `land --inspection`",
+        "has that repo's fleet cut a version after landing",
+        "checks the fault on the new version",
+        "Human decisions stay with the human, untouched and listed",
     ] {
         assert!(guide.contains(needed), "the guide lost {needed:?}");
     }
