@@ -188,7 +188,7 @@ fn a_consult_that_lets_the_issue_through_leaves_it_with_a_human() {
 }
 
 #[test]
-fn an_unclassified_silent_stock_consult_keeps_its_claim_for_diagnosis() {
+fn an_unclassified_silent_stock_consult_keeps_its_claim_for_the_operator() {
     let world = asked();
     report(&world, "done", 1200);
     assert_eq!(did(&tick(&world, 1500)), ["judge 7 nothing"]);
