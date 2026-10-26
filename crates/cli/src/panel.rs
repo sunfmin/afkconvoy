@@ -1157,12 +1157,24 @@ fn kit(out: &mut String, host: &Host) {
         );
     }
     if let Some(workers) = host.worker_health["workers"].as_array().filter(|w| !w.is_empty()) {
-        out.push_str("<section data-worker-health><h2>Worker recovery</h2><table><tr><th>Worker</th><th>Action / successor</th><th>Evidence source</th><th>Next check</th><th>Evidence / failure</th></tr>");
+        out.push_str("<section data-worker-health><h2>Worker recovery</h2><table><tr><th>Worker</th><th>Orca state / outcome / agent type / since (epoch ms)</th><th>Action / successor</th><th>Evidence source</th><th>Next check</th><th>Evidence / failure</th></tr>");
         for worker in workers {
             let _ = write!(
                 out,
-                "<tr><td>{}</td><td>{} {}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+                "<tr><td>{}</td><td>{} / {} / {} / {}{}</td><td>{} {}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
                 esc(worker["path"].as_str().unwrap_or("")),
+                esc(worker["orca"]["state"].as_str().unwrap_or("unknown")),
+                esc(worker["orca"]["outcome"].as_str().unwrap_or("none")),
+                esc(worker["orca"]["agentType"].as_str().unwrap_or("unknown")),
+                worker["orca"]["stateStartedAt"],
+                if worker["harness_mismatch"] == true {
+                    format!(
+                        " (recorded {}; Orca's harness is used)",
+                        esc(worker["recorded_harness"].as_str().unwrap_or("unknown"))
+                    )
+                } else {
+                    String::new()
+                },
                 esc(worker["action"].as_str().unwrap_or("")),
                 esc(worker["successor"].as_str().unwrap_or("")),
                 esc(worker["source"].as_str().unwrap_or("")),
@@ -1517,13 +1529,14 @@ fn repo(out: &mut String, at: usize, panel: &Panel) {
                 .map(|n| format!("#{n}"))
                 .unwrap_or_else(|| worker["worktree"].as_str().unwrap_or("worker").to_string());
             let text = |key: &str| esc(worker[key].as_str().unwrap_or(""));
+            let model = worker["model"].as_str().unwrap_or("Codex default");
             let effort = worker["effort"].as_str().unwrap_or("Codex default");
             let _ = write!(
                 out,
                 "<li data-codex-worker=\"{}\"><b>{}</b>: model {} ({}); effort {} ({})</li>",
                 esc(&label),
                 esc(&label),
-                text("model"),
+                esc(model),
                 text("model_source"),
                 esc(effort),
                 text("effort_source")

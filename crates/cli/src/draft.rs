@@ -42,10 +42,13 @@ pub fn draft(dir: PathBuf, team: Option<RepoDir>, yes: bool) -> Result<Value> {
         .harnesses
         .iter()
         .flat_map(|held| {
-            held.models.iter().map(|seen| Strength {
+            held.placed().map(|seen| Strength {
                 harness: held.harness.key().into(),
                 model: Some(seen.model.clone()),
-                good_at: seen.good_at.clone().unwrap_or_else(|| "not researched".into()),
+                good_at: seen
+                    .good_at
+                    .clone()
+                    .unwrap_or_else(|| crate::kit_research::UNKNOWN.into()),
             })
         })
         .collect();

@@ -93,6 +93,7 @@ pub fn forget(root: &Path) {
 }
 
 /// A host's checkout list: its file, and the lock beside it.
+#[derive(Clone)]
 pub struct List {
     file: PathBuf,
 }
@@ -337,7 +338,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().canonicalize().unwrap();
         let git = |args: &[&str]| {
-            let ran = Command::new("git").args(args).current_dir(&root).output().unwrap();
+            let ran =
+                crate::process::output(Command::new("git").args(args).current_dir(&root)).unwrap();
             assert!(ran.status.success(), "{ran:?}");
         };
         git(&["init", "--quiet", "w"]);
@@ -380,7 +382,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let checkout = dir.path().join("w");
         let git = |args: &[&str]| {
-            let ran = Command::new("git").args(args).current_dir(dir.path()).output().unwrap();
+            let ran =
+                crate::process::output(Command::new("git").args(args).current_dir(dir.path()))
+                    .unwrap();
             assert!(ran.status.success(), "{ran:?}");
         };
         git(&["init", "--quiet", "--bare", "remote.git"]);

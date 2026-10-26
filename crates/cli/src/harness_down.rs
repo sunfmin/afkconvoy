@@ -11,7 +11,7 @@ pub fn tell(
 ) -> Result<()> {
     match send() {
         Ok(()) => {
-            let file = worktree.note("convoy-worker-error.json")?;
+            let file = worktree.note(crate::health::SIGNAL_FILE)?;
             if file.exists() {
                 std::fs::remove_file(file)?;
             }

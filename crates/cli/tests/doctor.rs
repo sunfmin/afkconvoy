@@ -460,6 +460,37 @@ fn a_worker_that_fails_to_start_is_a_finding_after_one_tick() {
 }
 
 #[test]
+fn a_brief_that_starts_no_turn_is_named_with_its_screen_in_doctor_and_on_the_issue() {
+    for screen in
+        [include_str!("screens/kimi-migration.txt"), include_str!("screens/kimi-empty-input.txt")]
+    {
+        let world = World::new();
+        world.set_gate_config("gate_command: ./gate.sh\nescalate_to: human");
+        world.issue(3, &["ready-for-agent"]);
+        world.with_orca(|orca| {
+            orca["prompt_stages"] = json!(["input_accepted"]);
+            orca["send_screen"] = json!(screen.lines().collect::<Vec<_>>());
+        });
+        run(&world, &["--instance", "alpha", "--ticks", "1", "--now", "1000"]);
+        let answer = doctor(&world, "1000").json;
+        let failures = found(&answer, "`dispatch #3` failed");
+        assert_eq!(failures.len(), 1, "{answer}");
+        let evidence = failures[0]["evidence"].as_str().unwrap();
+        assert!(
+            evidence.contains("started no turn") && evidence.contains(screen.trim()),
+            "{evidence}"
+        );
+        run(&world, &["--instance", "alpha", "--ticks", "1", "--now", "1090"]);
+        let comments = world.comments(3).join("\n");
+        assert!(
+            comments.contains("worker start failed again") && comments.contains(screen.trim()),
+            "{comments}"
+        );
+        assert!(world.labels(3).contains(&"ready-for-human".into()));
+    }
+}
+
+#[test]
 fn a_train_worker_s_failed_start_is_a_finding_until_it_starts() {
     let world = World::new();
     world.set_gate("true");
@@ -577,7 +608,8 @@ fn a_live_run_is_seen_alive_and_a_claim_whose_worker_is_gone_is_a_finding() {
     let answer = doctor(&world, &now).ok();
     assert_eq!(
         answer["claims"][0]["worker"],
-        json!({"state": "stopped", "quiet": 400, "harness": "claude-code"})
+        json!({"state": "stopped", "quiet": 400, "harness": "claude-code",
+            "orca":null, "recorded_harness":"claude-code", "harness_mismatch":false})
     );
 
     // its worker's terminal is closed under it

@@ -22,9 +22,8 @@ pub struct Held {
     pub models: Vec<Model>,
 }
 
-/// One model a harness holds: its id — the model its probe answered as,
-/// which a worker is started on — and the other names it goes by on that
-/// harness, each of which answered as it, its display names among them.
+/// One model a harness holds: the id its harness lists, which a worker is
+/// started on, and the display and sourced research names that match it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Model {
     pub id: String,

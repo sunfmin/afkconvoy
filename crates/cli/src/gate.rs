@@ -59,16 +59,17 @@ fn run_command(
     command: &str,
     limit: Duration,
 ) -> Result<(i32, bool, u64, Vec<String>)> {
-    let mut child = Command::new("sh")
-        // one stream, so the log reads in the order it was written
-        .args(["-c", &format!("exec 2>&1\n{command}")])
-        .current_dir(&repo.dir)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .process_group(0)
-        .spawn()
-        .context("the gate command could not be started")?;
+    let mut child = crate::process::spawn(
+        Command::new("sh")
+            // one stream, so the log reads in the order it was written
+            .args(["-c", &format!("exec 2>&1\n{command}")])
+            .current_dir(&repo.dir)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .process_group(0),
+    )
+    .context("the gate command could not be started")?;
     let log = child.stdout.take().context("the gate command has no log")?;
     let (lines, read) = mpsc::channel();
     std::thread::spawn(move || {
@@ -97,7 +98,7 @@ fn run_command(
         }
         if started.elapsed() >= limit {
             let group = format!("-{}", child.id());
-            let _ = Command::new("kill").args(["-KILL", "--", &group]).status();
+            let _ = crate::process::status(Command::new("kill").args(["-KILL", "--", &group]));
             let _ = child.wait();
             eprintln!("[afkconvoy] the gate reached the gate limit of {}s", limit.as_secs());
             break (TIMED_OUT_CODE, true);

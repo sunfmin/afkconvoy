@@ -49,6 +49,7 @@ pub fn shown(at: &str, language: &str) -> Vec<String> {
 
 pub struct World {
     _root: TempDir,
+    tmp_links: TempDir,
     pub root: PathBuf,
     /// The remote: every clone's `origin`.
     pub bare: PathBuf,
@@ -113,6 +114,7 @@ impl World {
             write_script(&bin.join(name), script);
         }
         let world = World {
+            tmp_links: tempfile::tempdir_in("/tmp").unwrap(),
             gh_file: root.join("gh.json"),
             orca_file: root.join("orca.json"),
             _root: dir,
@@ -188,18 +190,6 @@ impl World {
         std::fs::write(self.root.join("probes-answer"), "").unwrap();
     }
 
-    /// Has the probe of each model listed by `name` print `said`, which says
-    /// which model answered — with, where Codex's names the thread `t-<name>`,
-    /// the session file `session` written for it under its user directory.
-    pub fn probes_answer_as(&self, answers: &[(&str, &str, Option<&str>)]) {
-        let lines: Vec<String> = answers
-            .iter()
-            .map(|(name, said, session)| format!("{name}\t{said}\t{}", session.unwrap_or("")))
-            .collect();
-        std::fs::write(self.root.join("probes-answered-as"), lines.join("\n") + "\n").unwrap();
-        self.probes_answer();
-    }
-
     /// Where this host keeps the harnesses paused on it.
     pub fn paused_path(&self) -> PathBuf {
         self.cache().join("afkconvoy/paused.json")
@@ -259,6 +249,7 @@ impl World {
             ("PATH".to_string(), path),
             ("CONVOY_FAKE_GH".to_string(), shown(&self.gh_file)),
             ("CONVOY_FAKE_ORCA".to_string(), shown(&self.orca_file)),
+            ("AFKCONVOY_TMP_LINKS".to_string(), shown(&self.tmp_links.path().join("links"))),
         ];
         env.extend(GIT_ENV.iter().map(|(name, value)| (name.to_string(), value.to_string())));
         // No checkout above the world is one of its: a test's directory
@@ -274,6 +265,13 @@ impl World {
     /// of a team and its roles are under it.
     pub fn cache(&self) -> PathBuf {
         self.root.join("cache")
+    }
+
+    /// This world's worker link for `worktree`, with the production key but
+    /// in its own short directory, never among the host's real links.
+    pub fn tmp(&self, worktree: &Path) -> PathBuf {
+        let link = afkconvoy::worker_tmp::of(worktree);
+        self.tmp_links.path().join("links").join(link.file_name().unwrap())
     }
 
     /// The home of this world's host user: nothing of the home of whoever
@@ -309,6 +307,24 @@ impl World {
         listed["settings"]["jev_key_command"] = json!(command);
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();
         std::fs::write(file, serde_json::to_vec(&listed).unwrap()).unwrap();
+    }
+
+    /// Has the host name a Jev key command, and Jev answer the next check: no
+    /// to every judgment but those `said`, and `evidence` selected from the
+    /// screen.
+    pub fn jev_judges(&self, said: &[(&str, f64)], evidence: &str) {
+        self.jev_key_command("printf test-key");
+        let mut answers = serde_json::Map::new();
+        for id in afkconvoy_core::worker_health::judgments() {
+            let noul = said.iter().find(|(said, _)| *said == id).map_or(0.01, |(_, noul)| *noul);
+            answers.insert(id.into(), json!({"type": "noul", "noul": noul}));
+        }
+        answers.insert(
+            "evidence".into(),
+            json!({"type": "choice", "choice": evidence, "confidence": 0.99,
+                "probabilities": {evidence: 0.99}}),
+        );
+        self.jev_answers(Value::Object(answers));
     }
 
     /// Give the TypeSafe stand-in one response body, with these answers.
@@ -1177,25 +1193,8 @@ case "$2" in
     if [ -f "$root/drafter-answer" ]; then cat "$root/drafter-answer"; exit 0; fi
     exit 1 ;;
   *"Reply with the single word OK."*)
-    # A model's probe: answered once `probes-answer` is there — as
-    # `probes-answered-as` says, where it names the model, with the session
-    # file it says of it written under CODEX_HOME.
-    if [ -f "$root/probes-wait" ]; then
-      while [ ! -f "$root/probes-release" ]; do sleep 1; done
-    fi
+    # A recovery probe: answered once `probes-answer` is there.
     if [ -f "$root/probes-answer" ]; then
-      if [ -f "$root/probes-answered-as" ]; then
-        home=$(printf '%s' "$2" | sed -n "s/^export CODEX_HOME='\\([^']*\\)'.*/\\1/p")
-        while IFS='	' read -r name said session; do
-          case "$2" in *"--model '$name'"*)
-            if [ -n "$session" ]; then
-              mkdir -p "$home/sessions/2026"
-              printf '%s\n' "$session" > "$home/sessions/2026/rollout-t-$name.jsonl"
-            fi
-            echo "$said"; exit 0 ;;
-          esac
-        done < "$root/probes-answered-as"
-      fi
       echo OK; exit 0
     fi
     exit 1 ;;
@@ -1644,8 +1643,8 @@ pub fn asked(call: &[String]) -> String {
 
 /// What the fleet hands orca to start a worker in the worktree `dir` whose
 /// own line is `line`: that line under `nice`, with the worktree's `TMPDIR`.
-pub fn niced(dir: &Path, line: &str) -> String {
-    afkconvoy_core::line::niced(&afkconvoy::worker_tmp::of(dir).display().to_string(), line)
+pub fn niced(world: &World, dir: &Path, line: &str) -> String {
+    afkconvoy_core::line::niced(&world.tmp(dir).display().to_string(), line)
 }
 
 /// The worker's own line in `command`, what orca was handed to start it:

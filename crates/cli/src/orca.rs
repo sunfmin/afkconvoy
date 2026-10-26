@@ -1,6 +1,7 @@
 //! orca, as a subprocess: it owns every worktree, branch and terminal a worker
 //! lives in. Nothing here creates or removes one any other way.
 
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
@@ -68,6 +69,84 @@ const CUT_LOG_FILE: &str = "convoy-cut.log";
 const PS_LIMIT: &str = "1000";
 /// What orca says holds up a worker asking whether its folder is trusted.
 const TRUST_PROMPT: &str = "agent-trust-workspace";
+/// How long each accepted line is observed for a turn start. Orca observes
+/// the same request throughout this bound and never resends it.
+const SUBMIT_SECONDS: u64 = 30;
+
+thread_local! {
+    /// One read-only view per tick, dropped even when the tick fails. Each
+    /// fleet runs on its own thread, so another checkout never shares it.
+    static OBSERVATION: RefCell<Option<Result<Value, String>>> = const { RefCell::new(None) };
+}
+
+/// Holds a host-wide runtime observation for one tick or read-only command.
+/// Errors are shared too: an unreachable Orca never becomes an empty host.
+pub(crate) struct Observation(bool);
+
+impl Observation {
+    pub(crate) fn begin() -> Self {
+        if OBSERVATION.with(|slot| slot.borrow().is_some()) {
+            return Self(false);
+        }
+        let observed = runtime_live().map_err(|e| format!("{e:#}"));
+        OBSERVATION.with(|slot| slot.replace(Some(observed)));
+        Self(true)
+    }
+}
+
+impl Drop for Observation {
+    fn drop(&mut self) {
+        if self.0 {
+            OBSERVATION.with(|slot| slot.borrow_mut().take());
+        }
+    }
+}
+
+fn runtime_live() -> Result<Value> {
+    let ps = orca(&["worktree", "ps", "--limit", PS_LIMIT])?;
+    if ps["truncated"] == true {
+        bail!("orca worktree ps was cut short at {PS_LIMIT} rows");
+    }
+    ps["worktrees"].as_array().context("orca worktree ps returned no rows")?;
+    Ok(ps)
+}
+
+fn runtime() -> Result<Value> {
+    match OBSERVATION.with(|slot| slot.borrow().clone()) {
+        Some(observed) => observed.map_err(|e| anyhow!(e)),
+        None => runtime_live(),
+    }
+}
+
+fn runtime_row(ps: &Value, path: &Path) -> Value {
+    ps["worktrees"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|row| row["path"].as_str().is_some_and(|p| same_dir(Path::new(p), path)))
+        .cloned()
+        .unwrap_or(Value::Null)
+}
+
+/// The newest top-level agent speaks for a worktree, as `worker::lead`
+/// does. Child panes cannot change the worker's harness or outcome.
+fn main_agent(row: &Value) -> Value {
+    row["agents"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|a| a["state"].is_string() && a["parentPaneKey"].is_null())
+        .max_by_key(|a| a["stateStartedAt"].as_u64().unwrap_or(0))
+        .cloned()
+        .unwrap_or(Value::Null)
+}
+
+pub(crate) fn agent_harness(agent: &Value) -> Option<Harness> {
+    match agent["agentType"].as_str()? {
+        "claude" => Some(Harness::ClaudeCode),
+        key => Harness::read(key),
+    }
+}
 
 /// One `orca … --json` call → its `result` object. An error when orca cannot
 /// be run, exits non-zero, or answers `ok: false` — never an empty answer.
@@ -102,12 +181,10 @@ impl std::error::Error for PromptBlocked {}
 impl Asked {
     fn of(args: &[&str]) -> Result<Asked> {
         let what = args.iter().take(2).copied().collect::<Vec<_>>().join(" ");
-        let out = Command::new("orca")
-            .args(args)
-            .arg("--json")
-            .current_dir(asked_from())
-            .output()
-            .with_context(|| format!("orca {what} could not run"))?;
+        let out = crate::process::output(
+            Command::new("orca").args(args).arg("--json").current_dir(asked_from()),
+        )
+        .with_context(|| format!("orca {what} could not run"))?;
         Ok(Asked {
             what,
             exited_ok: out.status.success(),
@@ -452,7 +529,7 @@ impl Worktree {
     pub fn on_host() -> Result<Vec<OnHost>> {
         let repos = orca(&["repo", "list"])?;
         let listed = orca(&["worktree", "list"])?;
-        let ps = orca(&["worktree", "ps", "--limit", PS_LIMIT])?;
+        let ps = runtime()?;
         Ok(on_host(&repos, &listed, &ps))
     }
 
@@ -532,15 +609,10 @@ impl Worktree {
     /// page of `ps` that was cut short is an error: an orca that cannot say is
     /// never "no worker there".
     pub fn state(&self, now: u64) -> Result<WorkerState> {
-        let ps = orca(&["worktree", "ps", "--limit", PS_LIMIT])?;
-        if ps["truncated"] == true {
-            bail!("orca worktree ps was cut short at {PS_LIMIT} rows");
+        let row = self.health_report()?;
+        if row["liveTerminalCount"].as_u64().unwrap_or(0) > 0 && crate::health::has_signal(self)? {
+            return Ok(WorkerState::Idle { quiet: None });
         }
-        let rows = ps["worktrees"].as_array().cloned().unwrap_or_default();
-        let row = rows.iter().find(|row| {
-            row["path"].as_str().is_some_and(|path| same_dir(Path::new(path), &self.path))
-        });
-        let Some(row) = row else { return Ok(WorkerState::Gone) };
         // orca's clocks are epoch milliseconds
         let seconds = |stamp: &Value| stamp.as_u64().map(|ms| ms / 1000);
         let agents: Vec<AgentReport> = row["agents"]
@@ -560,16 +632,41 @@ impl Worktree {
     /// Actual structured runtime observations for diagnosis. A transport
     /// failure is an error, never evidence that an agent has stopped.
     pub fn health_report(&self) -> Result<Value> {
-        let ps = orca(&["worktree", "ps", "--limit", PS_LIMIT])?;
-        if ps["truncated"] == true {
-            bail!("cannot diagnose from truncated worktree ps");
+        Ok(runtime_row(&runtime()?, &self.path))
+    }
+
+    /// Orca's state, outcome, agent type and timestamps for this worker.
+    pub fn agent_report(&self) -> Result<Value> {
+        let agent = main_agent(&self.health_report()?);
+        if agent.is_null() {
+            return Ok(Value::Null);
         }
-        let rows = ps["worktrees"].as_array().context("orca worktree ps returned no rows")?;
-        Ok(rows
-            .iter()
-            .find(|row| row["path"].as_str().is_some_and(|p| same_dir(Path::new(p), &self.path)))
-            .cloned()
-            .unwrap_or(Value::Null))
+        Ok(serde_json::json!({"state": agent["state"],
+            "outcome": agent["mainAgent"]["outcome"], "agentType": agent["agentType"],
+            "stateStartedAt": agent["stateStartedAt"], "programStatus": agent["programStatus"]}))
+    }
+
+    /// A terminal just created or confirmed closed supersedes this tick's
+    /// old row. Keep no agent or output from the session it replaced. A
+    /// newly created terminal is present, with its start time kept by start,
+    /// so later steps cannot mistake the continuation for a gone worker.
+    fn observed_terminals(&self, count: u64) {
+        OBSERVATION.with(|slot| {
+            if let Some(Ok(ps)) = slot.borrow_mut().as_mut()
+                && let Some(rows) = ps["worktrees"].as_array_mut()
+            {
+                let at = rows.iter().position(|row| {
+                    row["path"].as_str().is_some_and(|p| same_dir(Path::new(p), &self.path))
+                });
+                let at = at.unwrap_or_else(|| {
+                    rows.push(serde_json::json!({"path": self.path}));
+                    rows.len() - 1
+                });
+                rows[at]["agents"] = serde_json::json!([]);
+                rows[at]["lastOutputAt"] = Value::Null;
+                rows[at]["liveTerminalCount"] = serde_json::json!(count);
+            }
+        });
     }
 
     /// The terminal a worker here would be in: the one that wrote last.
@@ -645,6 +742,11 @@ impl Worktree {
             return Ok(());
         }
         orca(&["terminal", "close", "--worktree", &self.selector(), "--all"])?;
+        if OBSERVATION.with(|slot| slot.borrow().is_some()) && self.terminal()?.is_none() {
+            // A closed worker's old identity cannot override the replacement
+            // that starts later in this tick. Other workers keep their view.
+            self.observed_terminals(0);
+        }
         Ok(())
     }
 
@@ -659,7 +761,9 @@ impl Worktree {
             let processes = crate::hot::listed_checked()?;
             let writers = crate::hot::tree(&processes, &self.path);
             let old_alive = processes.iter().any(|p| pids.contains(&p.pid));
-            let report = self.health_report()?;
+            // Termination must be confirmed after close, never against the
+            // tick's earlier observation of the running agent.
+            let report = runtime_row(&runtime_live()?, &self.path);
             let agents = report["agents"].as_array();
             let agent_alive = agents.is_some_and(|agents| {
                 agents.iter().any(|a| {
@@ -845,10 +949,16 @@ impl Worktree {
             .with_context(|| format!("cannot write {}", file.display()))
     }
 
-    /// The harness the worker here was last started on, where a start kept it.
-    pub fn harness(&self) -> Result<Option<Harness>> {
+    /// The harness the start recorded. Kept separately so doctor can name
+    /// a disagreement without rewriting the evidence.
+    pub fn recorded_harness(&self) -> Result<Option<Harness>> {
         let kept = std::fs::read_to_string(self.note(HARNESS_FILE)?).unwrap_or_default();
         Ok(Harness::read(kept.trim()))
+    }
+
+    /// The harness actually running: Orca's agent type wins over the record.
+    pub fn harness(&self) -> Result<Option<Harness>> {
+        Ok(agent_harness(&self.agent_report()?).or(self.recorded_harness()?))
     }
 
     /// Keeps the harness the worker here is started on.
@@ -920,7 +1030,7 @@ impl Worktree {
         // Check again even after an acknowledged close: Orca may still be
         // ending the previous terminal. Leave the worker's progress markers
         // intact until its replacement can actually be started.
-        if self.harness()?.is_some() {
+        if self.recorded_harness()?.is_some() {
             self.stop_for_continuation()?;
         } else {
             self.close_terminals()?;
@@ -940,10 +1050,45 @@ impl Worktree {
         let handle = made["terminal"]["handle"].as_str();
         let handle =
             handle.ok_or_else(|| anyhow!("orca terminal create returned no terminal handle"))?;
+        self.observed_terminals(1);
+        self.forget(crate::health::SIGNAL_FILE)?;
         let file = self.note(START_FILE)?;
         std::fs::write(&file, now.to_string())
             .with_context(|| format!("cannot write {}", file.display()))?;
         Ok(handle.to_string())
+    }
+
+    /// Starts a watch's terminal here, titled `title`, running `line`: beside
+    /// whatever terminals are here already, the operator's own among them.
+    pub fn start_watch(&self, line: &str, title: &str) -> Result<String> {
+        let command = niced(&worker_tmp::make(&self.path)?.display().to_string(), line);
+        let made = orca(&[
+            "terminal",
+            "create",
+            "--worktree",
+            &self.selector(),
+            "--title",
+            title,
+            "--command",
+            &command,
+        ])?;
+        made["terminal"]["handle"]
+            .as_str()
+            .map(str::to_string)
+            .ok_or_else(|| anyhow!("orca terminal create returned no terminal handle"))
+    }
+
+    /// Whether `terminal`, of the terminals here, is live.
+    pub fn live(&self, terminal: &str) -> Result<bool> {
+        let listed = orca(&["terminal", "list", "--worktree", &self.selector()])?;
+        let rows = listed["terminals"].as_array().cloned().unwrap_or_default();
+        Ok(rows.iter().any(|row| row["handle"] == terminal))
+    }
+
+    /// Closes `terminal` alone, of the terminals here.
+    pub fn close_terminal(&self, terminal: &str) -> Result<()> {
+        orca(&["terminal", "close", "--terminal", terminal])?;
+        Ok(())
     }
 
     /// When the worker here was last handed its work by the fleet
@@ -964,7 +1109,10 @@ impl Worktree {
         harness: Harness,
         command: &str,
     ) -> Result<()> {
-        match self.wait(terminal, timeout_seconds)? {
+        let ready = self.wait(terminal, timeout_seconds).with_context(|| {
+            self.prompt_context(terminal, "cannot confirm the worker is ready for its brief")
+        })?;
+        match ready {
             Waited::Ready => Ok(()),
             Waited::AtTrustPrompt => Err(TrustGap {
                 harness,
@@ -974,10 +1122,10 @@ impl Worktree {
                 seconds: timeout_seconds,
             }
             .into()),
-            Waited::NotReady => bail!(
-                "the worker in {} was not ready for a prompt within {timeout_seconds}s (terminal {terminal})",
-                self.path.display()
-            ),
+            Waited::NotReady => Err(self.prompt_failure(
+                terminal,
+                &format!("the worker was not ready for a prompt within {timeout_seconds}s"),
+            )),
         }
     }
 
@@ -999,30 +1147,35 @@ impl Worktree {
         if asked.answer["ok"] != true || !wait.is_object() {
             return Err(asked.failure());
         }
-        Ok(if wait["satisfied"] == true {
-            Waited::Ready
-        } else if wait["blockedReason"] == TRUST_PROMPT {
+        Ok(if wait["blockedReason"] == TRUST_PROMPT {
             Waited::AtTrustPrompt
+        } else if wait["satisfied"] == true && wait["blockedReason"].is_null() {
+            Waited::Ready
         } else {
             Waited::NotReady
         })
     }
 
-    /// A terminal may have fallen back to its shell since the worker was
-    /// read. Require the harness's prompt immediately before a nudge; never
-    /// answer a trust question or type a nudge into a shell.
-    pub(crate) fn ready_for_nudge(&self, terminal: &str) -> Result<()> {
-        let ready = self.wait(terminal, 1).with_context(|| {
-            format!("no running worker harness confirmed in terminal {terminal}; no nudge was sent")
-        })?;
-        if ready != Waited::Ready {
-            bail!("no running worker harness ready in terminal {terminal}; no nudge was sent");
-        }
-        Ok(())
+    /// A failed delivery includes the current screen, even when no known
+    /// rule names its menu. An unreadable screen cannot hide the failure.
+    fn prompt_failure(&self, terminal: &str, reason: &str) -> anyhow::Error {
+        PromptBlocked(self.prompt_context(terminal, reason)).into()
     }
 
-    /// Types one line at the worker and submits it. Typed but unsubmitted, a
-    /// worker sits idle forever, indistinguishable from one that finished.
+    fn prompt_context(&self, terminal: &str, reason: &str) -> String {
+        let screen = match self.screen(terminal, 20) {
+            Ok(lines) => lines.join("\n"),
+            Err(error) => format!("screen unavailable: {error:#}"),
+        };
+        format!(
+            "{reason}; worktree {} (terminal {terminal})\nScreen's last lines:\n{screen}",
+            self.path.display()
+        )
+    }
+
+    /// Types one line only at the harness's input, then requires Orca's
+    /// receipt to prove that this submission started a turn. Input acceptance
+    /// alone is no delivery. A failed line is kept for worker health.
     pub fn tell(&self, terminal: &str, line: &str) -> Result<()> {
         self.tell_at(terminal, line, crate::clock())
     }
@@ -1032,7 +1185,27 @@ impl Worktree {
     }
 
     fn tell_unchecked(&self, terminal: &str, line: &str) -> Result<()> {
-        let sent = orca(&["terminal", "send", "--terminal", terminal, "--text", line, "--enter"])?;
+        let ready = self.wait(terminal, 1).with_context(|| {
+            self.prompt_context(terminal, "no running worker harness confirmed; no line was sent")
+        })?;
+        if ready != Waited::Ready {
+            return Err(self.prompt_failure(
+                terminal,
+                "no running worker harness at its input; no line was sent",
+            ));
+        }
+        let timeout = SUBMIT_SECONDS.to_string();
+        let sent = orca(&[
+            "terminal",
+            "send",
+            "--terminal",
+            terminal,
+            "--text",
+            line,
+            "--enter",
+            "--wait-submit",
+            &timeout,
+        ])?;
         if sent["send"]["accepted"] != true {
             return Err(PromptBlocked(
                 sent["send"]["blockedReason"]
@@ -1042,12 +1215,28 @@ impl Worktree {
             )
             .into());
         }
+        let prompt = &sent["send"]["prompt"];
+        if !prompt["stages"]
+            .as_array()
+            .is_some_and(|stages| stages.iter().any(|stage| stage == "turn_started"))
+        {
+            return Err(self.prompt_failure(
+                terminal,
+                &format!(
+                    "the line started no turn within {SUBMIT_SECONDS}s; delivery receipt: {prompt}"
+                ),
+            ));
+        }
         Ok(())
     }
 
     /// Hands the worker in `terminal` the brief at `brief`.
     pub fn deliver(&self, terminal: &str, brief: &Path) -> Result<()> {
-        self.tell(terminal, &brief_pointer(&brief.display().to_string()))
+        self.tell(terminal, &brief_pointer(&brief.display().to_string()))?;
+        // What a watch starts on first; a record it cannot keep loses no
+        // worker its brief.
+        let _ = crate::health::delivered(self);
+        Ok(())
     }
 }
 

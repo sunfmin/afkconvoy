@@ -345,6 +345,32 @@ fn a_nudge_is_never_sent_to_a_terminal_whose_harness_has_exited() {
 }
 
 #[test]
+fn a_nudge_that_starts_no_turn_is_not_recorded_and_goes_to_worker_health() {
+    let world = fleet(1000);
+    report(&world, "done", 1000, 1000);
+    world.with_orca(|orca| {
+        orca["prompt_stages"] = json!(["input_accepted"]);
+        orca["send_screen"] =
+            json!(include_str!("screens/kimi-empty-input.txt").lines().collect::<Vec<_>>());
+    });
+    let refused = world.afk(&["nudge", "7", "--instance", "alpha", "--now", "1400"]).error();
+    assert!(refused.contains("started no turn"), "{refused}");
+    assert!(!nudge_record(&world).exists());
+    world.orca_calls();
+    tick(&world, 1490);
+    assert!(!world.orca_calls().iter().any(|call| common::asked(call) == "terminal send"));
+    let doctor = world.afk(&["doctor", "--now", "1490"]).json;
+    assert!(
+        doctor["host"]["host_kit"]["worker_health"]["workers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|worker| worker["path"] == json!(worktree(&world))),
+        "{doctor}"
+    );
+}
+
+#[test]
 fn unclassified_silence_without_a_key_waits_for_the_operator_and_preserves_unpushed_work() {
     let world = fleet(1000);
     let dir = worktree(&world);
@@ -582,7 +608,13 @@ fn a_worker_waiting_in_the_exclusive_queue_is_busy_until_the_gate_limit() {
     assert_eq!(typed(&world).len(), 1, "never nudged for it");
 
     // A live background command remains a wait past the observation interval.
-    assert_eq!(did(&tick(&world, 1250 + 600))[0], "judge 7 waiting");
+    let ticked = tick(&world, 1250 + 600);
+    assert_eq!(
+        did(&ticked)[0],
+        "judge 7 waiting",
+        "{ticked}; health: {}",
+        std::fs::read_to_string(world.cache().join("afkconvoy/worker-health.json")).unwrap()
+    );
     assert_eq!(typed(&world).len(), 1, "no nudge");
     assert_eq!(world.claims().len(), 1);
     assert!(!world.labels(7).contains(&"ready-for-human".to_string()));

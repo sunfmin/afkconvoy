@@ -376,13 +376,24 @@ const PROBE_PROMPT: &str = "Reply with the single word OK.";
 /// How long a model is given to answer its probe.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// What a worker-health recovery probe came to.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Answer {
+    /// It answered, in this many seconds, as this model where the answer says.
+    Answered(f64, Option<String>),
+    /// It said nothing within the time limit, or failed.
+    Silent,
+    /// It was never asked, for this reason.
+    Unasked(String),
+}
+
 /// Sends `model` of `harness` the one-line probe (`Harness::probe_question`)
 /// through the worker launch command `command`, with what this host keeps for
 /// it, in an orca terminal — the shell a worker gets (`orca::ask`) → whether
 /// it answered within the time limit, how fast, and which model answered
-/// (`answered_as`); why it could not be asked, when it could not.
-pub fn probe(harness: Harness, command: &str, model: Option<&str>) -> crate::kit::Answer {
-    use crate::kit::Answer;
+/// (`answered_as`); why it could not be asked, when it could not. Kit writes
+/// never call this: only worker health and recovery do.
+pub fn probe(harness: Harness, command: &str, model: Option<&str>) -> Answer {
     let kept = match crate::kept::keep(harness, false) {
         Ok(kept) => kept,
         Err(error) => return Answer::Unasked(format!("{error:#}")),
@@ -483,8 +494,10 @@ fn ask_shell(
     if let Some(env) = env {
         shell.env_clear().envs(env.iter().map(|(name, value)| (name, value)));
     }
-    let mut child =
-        shell.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
+    let mut child = crate::process::spawn(
+        shell.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()),
+    )
+    .ok()?;
     let mut printed = child.stdout.take()?;
     let reader = std::thread::spawn(move || {
         let mut bytes = Vec::new();

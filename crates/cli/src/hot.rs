@@ -70,7 +70,7 @@ pub fn limits(said: Said, dir: &Path) -> Limits {
 /// The bytes free on the disk `dir` is on, as `df` says them; `None` where
 /// they cannot be read.
 fn free_disk(dir: &Path) -> Option<u64> {
-    let out = Command::new("df").arg("-Pk").arg(dir).output().ok()?;
+    let out = crate::process::output(Command::new("df").arg("-Pk").arg(dir)).ok()?;
     let out = String::from_utf8_lossy(&out.stdout).into_owned();
     let kib: u64 = out.lines().nth(1)?.split_whitespace().nth(3)?.parse().ok()?;
     Some(kib.saturating_mul(1024))
@@ -147,7 +147,7 @@ fn memory() -> Option<u64> {
 }
 
 fn sysctl(name: &str) -> Option<u64> {
-    let out = Command::new("sysctl").args(["-n", name]).output().ok()?;
+    let out = crate::process::output(Command::new("sysctl").args(["-n", name])).ok()?;
     String::from_utf8_lossy(&out.stdout).trim().parse().ok()
 }
 
@@ -217,8 +217,11 @@ pub(crate) fn listed() -> Vec<Proc> {
 
 /// A failed observation must never certify that an old writer is gone.
 pub(crate) fn listed_checked() -> anyhow::Result<Vec<Proc>> {
-    let out =
-        Command::new("ps").args(["axeww", "-o", "pid=,ppid=,rss=,time=,command="]).output()?;
+    let out = crate::process::output(Command::new("ps").args([
+        "axeww",
+        "-o",
+        "pid=,ppid=,rss=,time=,command=",
+    ]))?;
     anyhow::ensure!(out.status.success(), "cannot confirm worker termination: ps failed");
     let rows: Vec<_> = String::from_utf8_lossy(&out.stdout).lines().filter_map(parse).collect();
     anyhow::ensure!(
@@ -893,7 +896,8 @@ mod tests {
     fn a_worktree_is_measured_only_once_its_fresh_build_is_on_record() {
         let dir = tempfile::tempdir().unwrap();
         let git = |args: &[&str]| {
-            let ok = Command::new("git").args(args).current_dir(dir.path()).output().unwrap();
+            let ok = crate::process::output(Command::new("git").args(args).current_dir(dir.path()))
+                .unwrap();
             assert!(ok.status.success(), "{ok:?}");
         };
         git(&["init", "--quiet"]);

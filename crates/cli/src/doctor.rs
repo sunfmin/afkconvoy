@@ -156,6 +156,7 @@ kinds! {
     StepUnrecovered: Warning, "failed in tick";
     HarnessDown: Critical, "harness is down";
     HarnessPaused: Warning, "is paused on this host";
+    WatchUnavailable: Critical, "no harness can start this host's watch";
     NotMoved: Warning, "the host runner did not move onto";
     RosterModelUnmatched: Warning, "names no model the host kit holds";
     TeamUnread: Critical, "the team this repo names cannot be read";
@@ -198,6 +199,7 @@ impl Kind {
                 | Kind::NoProvider
                 | Kind::OrcaNotRunning
                 | Kind::HarnessPaused
+                | Kind::WatchUnavailable
                 | Kind::NotMoved
                 | Kind::WorkerHealth
         )
@@ -1656,6 +1658,11 @@ fn held_json(held: &Held) -> Value {
         && let Ok(Some(harness)) = Worktree::at(path.clone(), String::new()).harness()
     {
         worker["harness"] = json!(harness);
+        let worktree = Worktree::at(path.clone(), String::new());
+        worker["orca"] = worktree.agent_report().unwrap_or(Value::Null);
+        let recorded = worktree.recorded_harness().ok().flatten();
+        worker["recorded_harness"] = json!(recorded);
+        worker["harness_mismatch"] = json!(recorded.is_some_and(|h| h != harness));
         if let Some(settings) =
             crate::codex_launch::recorded(&Worktree::at(path.clone(), String::new()))
         {
@@ -1733,6 +1740,7 @@ type Examined = (Value, Vec<Finding>);
 /// What `doctor` reads of the fleet of `host` in the checkout `repo`, under
 /// the network settings `proxy` names.
 fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String]) -> Result<Examined> {
+    let _observation = crate::orca::Observation::begin();
     let launches = Launches::foreseen(repo).with_no_proxy(proxy)?;
 
     let log = Log::of(repo).ok();
@@ -1771,6 +1779,7 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String]) -> Result<Exami
     found.extend(crate::tracker::findings(repo));
     found.extend(crate::paused::findings(now));
     found.extend(host_runner::findings());
+    found.extend(crate::host_watch::finding());
     found.sort_by_key(|finding| finding.severity);
     let (claims, issues, waiting) = match &state {
         Ok(state) => (
@@ -1820,12 +1829,12 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String]) -> Result<Exami
 /// its key: `doctor --all` says it once. All but the host kit are as the
 /// host runner says them, asked once.
 fn host_once(now: u64) -> Map<String, Value> {
-    let (exclusive, inspection, installed) = match host_runner::shared() {
+    let (exclusive, inspection, installed, watch) = match host_runner::shared() {
         Ok(said) => {
             let said = said.unwrap_or_default();
-            (Ok(said.exclusive), said.inspection, said.installed)
+            (Ok(said.exclusive), said.inspection, said.installed, said.watch)
         }
-        Err(error) => (Err(error), None, None),
+        Err(error) => (Err(error), None, None, None),
     };
     Map::from_iter([
         ("host_kit".to_string(), crate::kit::show(now)),
@@ -1835,6 +1844,7 @@ fn host_once(now: u64) -> Map<String, Value> {
             inspection.map_or(Value::Null, |running| crate::inspection::json(&running)),
         ),
         ("installed".to_string(), serde_json::to_value(installed).unwrap_or_default()),
+        ("watch".to_string(), crate::host_watch::json(watch.as_ref())),
     ])
 }
 

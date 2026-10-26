@@ -60,8 +60,8 @@ fn a_tick_never_waits_for_the_workers_it_started() {
     let calls: Vec<String> = world.orca_calls().iter().map(|call| common::asked(call)).collect();
     assert_eq!(
         calls.iter().filter(|call| *call == "terminal wait").count(),
-        1,
-        "only for readiness"
+        2,
+        "only for readiness at start and immediately before the brief"
     );
 }
 
@@ -70,7 +70,7 @@ fn a_claim_whose_issue_is_closed_is_settled_and_its_slot_refilled() {
     let world = backlog(&[3, 5, 9]);
     tick(&world, "1000");
     let worktree = world.orca()["worktrees"][0]["path"].as_str().unwrap().to_string();
-    let tmp = afkconvoy::worker_tmp::of(std::path::Path::new(&worktree));
+    let tmp = world.tmp(std::path::Path::new(&worktree));
     assert!(tmp.is_dir(), "its worker's TMPDIR");
     world.close_issue(3);
     world.watch_pushes(None);
@@ -166,7 +166,6 @@ fn a_worker_that_never_took_its_brief_is_started_again_in_the_same_worktree() {
 #[test]
 fn a_worktree_trust_gap_is_reported_once_not_as_a_failed_dispatch_every_tick() {
     let world = backlog(&[3]);
-    world.set_gate_config("gate_command: ./gate.sh\nescalate_to: human");
     world.with_orca(|orca| orca["trust_prompt"] = json!(true));
     let first = tick(&world, "1000");
     assert!(first["errors"][0]["error"].as_str().unwrap().contains("worktree trust gap"));
@@ -178,6 +177,9 @@ fn a_worktree_trust_gap_is_reported_once_not_as_a_failed_dispatch_every_tick() {
     assert_eq!(again["errors"], json!([]), "{again}");
     assert!(!again.to_string().contains("dispatch 3"), "{again}");
     assert_eq!(world.comments(3), comments);
+    let doctor = world.afk(&["doctor", "--now", "1100"]).json;
+    let why = doctor["waiting_on_human"][0]["why"].as_str().unwrap();
+    assert!(why.contains("Fleet fault:") && why.contains("the fix is on the host"), "{doctor}");
     let calls = world.orca_calls();
     assert!(
         !calls.iter().any(|call| common::asked(call) == "terminal create"),
@@ -189,7 +191,6 @@ fn a_worktree_trust_gap_is_reported_once_not_as_a_failed_dispatch_every_tick() {
 fn a_worker_start_that_fails_again_escalates_with_the_start_errors() {
     for knob in ["create_fails", "never_ready", "send_refused"] {
         let world = backlog(&[3]);
-        world.set_gate_config("gate_command: ./gate.sh\nescalate_to: human");
         world.with_orca(|orca| {
             orca[knob] = if knob == "create_fails" { json!([3]) } else { json!(true) };
         });
@@ -205,12 +206,19 @@ fn a_worker_start_that_fails_again_escalates_with_the_start_errors() {
         assert!(escalation.contains(error), "the exact original error: {escalation}");
         assert!(escalation.contains("Failed start:"), "{escalation}");
         assert!(!escalation.contains("went silent"), "{escalation}");
+        assert!(
+            escalation.contains("Fleet fault:") && escalation.contains("the fix is on the host")
+        );
         assert!(world.open_terminals().is_empty());
         for terminal in world.orca()["terminals"].as_array().unwrap() {
             assert_eq!(terminal["sent"], json!([]), "no nudge or brief reached this shell");
         }
         tick(&world, "1600");
         assert_eq!(world.claims(), []);
+        assert!(!world.comments(3).iter().any(|body| body.contains("convoy:consult")));
+        let doctor = world.afk(&["doctor", "--now", "1610"]).json;
+        let why = doctor["waiting_on_human"][0]["why"].as_str().unwrap();
+        assert!(why.contains("Fleet fault:") && why.contains("the fix is on the host"), "{doctor}");
     }
 }
 

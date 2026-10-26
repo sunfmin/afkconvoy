@@ -10,7 +10,7 @@
 //! by the variable of its environment that stands for that flag; nothing
 //! else reads those variables.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use afkconvoy_core::admission::SHARES;
@@ -59,6 +59,10 @@ pub struct Settings {
     /// `--panel`: the port the host runner serves the panel on; `PANEL_PORT`
     /// where the host says none.
     pub panel: Option<u16>,
+    /// `--watch-dir`: the operator's directory; none starts no watch.
+    pub watch_dir: Option<PathBuf>,
+    /// `--watch-every`: seconds between the host runner's looks.
+    pub watch_every: Option<u64>,
     /// `--jev-key-command`: a shell command whose stdout is the TypeSafe key.
     pub jev_key_command: Option<String>,
     /// What another afkconvoy says beside them, kept as it is.
@@ -69,6 +73,8 @@ pub struct Settings {
 /// The port the host runner serves the panel on where the host settings say
 /// none.
 pub const PANEL_PORT: u16 = 7070;
+/// How often the host runner looks at its host where it says no interval.
+pub const WATCH_EVERY: u64 = 300;
 
 /// What a `run` named of the host settings; each it left unnamed is `None`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -84,6 +90,8 @@ pub struct Named {
     pub admit_disk: Option<To<u64>>,
     pub admit_inspect_after: Option<To<u64>>,
     pub panel: Option<To<u16>>,
+    pub watch_dir: Option<To<PathBuf>>,
+    pub watch_every: Option<To<u64>>,
     pub jev_key_command: Option<To<String>>,
 }
 
@@ -141,6 +149,27 @@ pub fn port_or_default(said: &str) -> Result<To<u16>, String> {
     To::parse(said, |said| said.parse().map_err(|_| format!("`{said}` is no port, nor `default`")))
 }
 
+/// `--watch-dir` as said: the operator's directory, an existing one, kept by
+/// its whole path, or `default` for none.
+pub fn watch_dir_or_default(said: &str) -> Result<To<PathBuf>, String> {
+    To::parse(said, |said| {
+        std::fs::canonicalize(said)
+            .ok()
+            .filter(|dir| dir.is_dir())
+            .ok_or_else(|| format!("`{said}` is no directory, nor `default`"))
+    })
+}
+
+/// `--watch-every` as said: seconds above zero, or `default`.
+pub fn watch_every_or_default(said: &str) -> Result<To<u64>, String> {
+    To::parse(said, |said| {
+        said.parse::<u64>()
+            .ok()
+            .filter(|seconds| *seconds > 0)
+            .ok_or_else(|| format!("`{said}` is not a whole number of at least 1, nor `default`"))
+    })
+}
+
 /// `--jev-key-command` as said: a nonempty shell command, or `default`.
 pub fn jev_key_command_or_default(said: &str) -> Result<To<String>, String> {
     To::parse(said, |said| {
@@ -162,7 +191,7 @@ impl Named {
 impl Settings {
     /// These, with what `named` names laid over them.
     pub fn with(mut self, named: &Named) -> Settings {
-        fn lay<T: Clone>(kept: &mut Option<T>, named: &Option<To<T>>) {
+        fn lay<T: Clone>(kept: &mut Option<T>, named: Option<&To<T>>) {
             if let Some(to) = named {
                 *kept = to.clone().kept();
             }
@@ -170,16 +199,18 @@ impl Settings {
         if let Some(no_host_sleep) = named.no_host_sleep {
             self.no_host_sleep = no_host_sleep;
         }
-        lay(&mut self.host_sleep_hours, &named.host_sleep_hours);
-        lay(&mut self.hot_cores, &named.hot_cores);
-        lay(&mut self.hot_memory, &named.hot_memory);
-        lay(&mut self.hot_written, &named.hot_written);
-        lay(&mut self.admit_load, &named.admit_load);
-        lay(&mut self.admit_memory, &named.admit_memory);
-        lay(&mut self.admit_disk, &named.admit_disk);
-        lay(&mut self.admit_inspect_after, &named.admit_inspect_after);
-        lay(&mut self.panel, &named.panel);
-        lay(&mut self.jev_key_command, &named.jev_key_command);
+        lay(&mut self.host_sleep_hours, named.host_sleep_hours.as_ref());
+        lay(&mut self.hot_cores, named.hot_cores.as_ref());
+        lay(&mut self.hot_memory, named.hot_memory.as_ref());
+        lay(&mut self.hot_written, named.hot_written.as_ref());
+        lay(&mut self.admit_load, named.admit_load.as_ref());
+        lay(&mut self.admit_memory, named.admit_memory.as_ref());
+        lay(&mut self.admit_disk, named.admit_disk.as_ref());
+        lay(&mut self.admit_inspect_after, named.admit_inspect_after.as_ref());
+        lay(&mut self.panel, named.panel.as_ref());
+        lay(&mut self.watch_dir, named.watch_dir.as_ref());
+        lay(&mut self.watch_every, named.watch_every.as_ref());
+        lay(&mut self.jev_key_command, named.jev_key_command.as_ref());
         self
     }
 
@@ -213,6 +244,11 @@ impl Settings {
         self.host_sleep_hours.unwrap_or(SLEEP_HOURS)
     }
 
+    /// The seconds between looks at the host.
+    pub fn watch_every(&self) -> u64 {
+        self.watch_every.unwrap_or(WATCH_EVERY)
+    }
+
     /// The hot limits it says, as the sampler takes them.
     pub fn hot(&self) -> hot::Said {
         let bytes = |thousandths: u64| thousandths.saturating_mul(1 << 30) / 1000;
@@ -240,6 +276,8 @@ impl Settings {
             "admit_disk": self.admit_disk.unwrap_or(SHARES.disk),
             "admit_inspect_after": self.admit_inspect_after.unwrap_or(SPAN),
             "panel": self.panel_port(),
+            "watch_dir": self.watch_dir,
+            "watch_every": self.watch_every(),
             "jev_key_command": self.jev_key_command,
         });
         match in_force {
@@ -330,6 +368,8 @@ pub const ADMIT_LOAD_ENV: &str = "AFKCONVOY_ADMIT_LOAD";
 pub const ADMIT_MEMORY_ENV: &str = "AFKCONVOY_ADMIT_MEMORY";
 pub const ADMIT_DISK_ENV: &str = "AFKCONVOY_ADMIT_DISK";
 pub const ADMIT_INSPECT_AFTER_ENV: &str = "AFKCONVOY_ADMIT_INSPECT_AFTER";
+pub const WATCH_DIR_ENV: &str = "AFKCONVOY_WATCH_DIR";
+pub const WATCH_EVERY_ENV: &str = "AFKCONVOY_WATCH_EVERY";
 pub const JEV_KEY_COMMAND_ENV: &str = "AFKCONVOY_JEV_KEY_COMMAND";
 
 /// Sleep hours as the file keeps them: as they are said, `22:00-06:00`.

@@ -65,6 +65,103 @@ fn train_worktree(world: &World) -> PathBuf {
 }
 
 #[test]
+fn a_failed_train_agent_is_judged_on_the_first_tick_and_keeps_its_train() {
+    let world = fleet(&[7]);
+    let joined = finish(&world, 7);
+    tick(&world, "1090");
+    world.hold_every_harness();
+    let train = train_worktree(&world);
+    let mut agent: Value =
+        serde_json::from_str(include_str!("fixtures/orca-failed-agent.json")).unwrap();
+    agent["stateStartedAt"] = json!(1099000);
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            if terminal["worktreePath"] == json!(train) {
+                terminal["agent"] = agent.clone();
+                terminal["screen"] = json!(["The train session failed"]);
+            }
+        }
+    });
+    world.jev_judges(&[], "The train session failed");
+    tick(&world, "1100");
+    assert!(world.root.join("typesafe-request").exists());
+    assert_eq!(world.remote(&["rev-parse", LINE]), joined);
+    // There is no live host runner in this world; doctor still reports the
+    // train's evidence alongside that independent critical finding.
+    let health = world.afk(&["doctor", "--now", "1101", "--host", "h1"]).json;
+    let workers = health["host"]["host_kit"]["worker_health"]["workers"].as_array().unwrap();
+    let worker = workers.iter().find(|w| w["path"] == json!(train)).unwrap();
+    assert_eq!(worker["source"], "jev");
+    assert_eq!(worker["action"], "waiting for operator");
+    assert_eq!(worker["orca"]["outcome"], "failure");
+    assert_eq!(worker["harness"], "codex");
+    assert_eq!(worker["recorded_harness"], "claude-code");
+
+    // programStatus gets fresh observation times without a new failed turn.
+    // It must not ask Jev again before the existing next check.
+    std::fs::remove_file(world.root.join("typesafe-request")).unwrap();
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            if terminal["worktreePath"] == json!(train) {
+                terminal["agent"]["programStatus"]["observedAt"] = json!(1102000);
+            }
+        }
+    });
+    tick(&world, "1102");
+    let health = world.afk(&["plan", "--now", "1103"]).ok();
+    let workers = health["host_kit"]["worker_health"]["workers"].as_array().unwrap();
+    let worker = workers.iter().find(|w| w["path"] == json!(train)).unwrap();
+    assert!(!world.root.join("typesafe-request").exists());
+    assert_eq!(worker["action"], "waiting for operator");
+    assert_eq!(worker["orca"]["programStatus"]["observedAt"], 1102000);
+}
+
+#[test]
+fn a_train_pointer_requires_input_readiness_and_a_started_turn_before_recording_told() {
+    for menu in [true, false] {
+        let world = fleet(&[7, 8]);
+        let first = finish(&world, 7);
+        tick(&world, "1090");
+        let train = train_worktree(&world);
+        let notes = PathBuf::from(git(&train, &["rev-parse", "--absolute-git-dir"]));
+        finish(&world, 8);
+        world.with_orca(|orca| {
+            for terminal in orca["terminals"].as_array_mut().unwrap() {
+                if terminal["worktreePath"] == train.to_str().unwrap() {
+                    terminal["agent"] = json!({"state":"idle", "stateStartedAt":1_100_000});
+                    terminal["menu"] = json!(menu);
+                    terminal["screen"] = json!(
+                        include_str!("screens/codex-model-menu.txt").lines().collect::<Vec<_>>()
+                    );
+                    terminal["prompt_stages"] = json!(["input_accepted"]);
+                }
+            }
+        });
+        world.orca_calls();
+        let ticked = tick(&world, "1180");
+        assert!(
+            ticked["errors"].as_array().unwrap().iter().any(|e| e["do"] == "tend_train"),
+            "{ticked}"
+        );
+        let told = std::fs::read_to_string(notes.join("convoy-train-told")).unwrap();
+        assert!(told.starts_with(&first), "an unproven pointer changed told: {told}");
+        let sends =
+            world.orca_calls().iter().filter(|call| common::asked(call) == "terminal send").count();
+        assert_eq!(sends, usize::from(!menu), "no pointer is typed into a menu");
+        assert!(
+            notes.join("convoy-worker-error.json").exists(),
+            "worker health must see failed delivery on its next tick"
+        );
+        world.orca_calls();
+        tick(&world, "1270");
+        assert!(
+            !world.orca_calls().iter().any(|call| common::asked(call) == "terminal send"),
+            "the next tick leaves the stopped worker to health instead of resending"
+        );
+    }
+}
+
+#[test]
 fn a_codex_train_session_has_model_and_effort_evidence_in_plan_and_doctor() {
     let world = fleet(&[7]);
     finish(&world, 7);

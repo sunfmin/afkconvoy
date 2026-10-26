@@ -272,11 +272,14 @@ fn start_failed(
     keep_starting(fleet, number, &failed)?;
     let trust_gap = error.is::<afkconvoy_core::launch::TrustGap>();
     let why = if trust_gap {
-        crate::judge::Handed::new("its harness's worktree trust gap", failed.clone())
+        crate::judge::Handed::fleet_fault(
+            afkconvoy_core::transition::FleetFault::WorktreeTrust,
+            failed.clone(),
+        )
     } else {
         let Some(previous) = previous else { return Err(error) };
-        crate::judge::Handed::new(
-            "its worker start failed again",
+        crate::judge::Handed::fleet_fault(
+            afkconvoy_core::transition::FleetFault::WorkerStart,
             format!(
                 "The worker start failed again before it could take its brief.\n\n\
                  Previous start: {}\n\nFailed start: {failed}",
@@ -307,21 +310,13 @@ pub(crate) struct Continuing {
 /// Validate the successor before ending the old worker.
 pub(crate) fn continuation_harness(fleet: &Fleet, agent: &Agent, number: u64) -> Result<Harness> {
     let issue = fleet.gh.issue(number)?;
-    let (harness, model) = match &fleet.config.bound {
-        Some(bound) => {
-            let staged = Staged::enter(fleet, bound, number, &issue.labels)?;
-            (staged.harness(), staged.model().map(str::to_string))
-        }
+    let harness = match &fleet.config.bound {
+        Some(bound) => Staged::enter(fleet, bound, number, &issue.labels)?.harness(),
         None if issue.labels.contains(&fleet.config.escalate_label) => {
-            let cast = fleet.stock_consult()?;
-            (cast.harness, cast.model)
+            fleet.stock_consult()?.harness
         }
-        None => {
-            let cast = fleet.cast(&issue.labels)?.map_err(|e| anyhow!(e))?;
-            (cast.harness, cast.model)
-        }
+        None => fleet.cast(&issue.labels)?.map_err(|e| anyhow!(e))?.harness,
     };
-    crate::codex_launch::selected(harness, model.as_deref())?;
     crate::role::startable(&agent.launches, harness, "worker continuation")?;
     Ok(harness)
 }

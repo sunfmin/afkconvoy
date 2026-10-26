@@ -178,6 +178,63 @@ pub fn escalation_comment(claim: &str, flow: Option<&str>, reason: &str) -> Stri
     format!("{marker}\n**afkconvoy: escalated to a human.**\n\n{}\n", reason.trim())
 }
 
+/// A hand-off caused by the fleet, its harness or its host, before a worker
+/// took its brief or after the landing machinery stopped. These go straight
+/// to a human: a consult may not fix the host (docs/adr/0030).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FleetFault {
+    WorkerStart,
+    WorktreeTrust,
+    TrainAbandoned,
+}
+
+impl FleetFault {
+    fn word(self) -> &'static str {
+        match self {
+            FleetFault::WorkerStart => "worker-start",
+            FleetFault::WorktreeTrust => "worktree-trust",
+            FleetFault::TrainAbandoned => "train-abandoned",
+        }
+    }
+
+    /// The fault in the few words a tick's line has room for.
+    pub fn brief(self) -> &'static str {
+        match self {
+            FleetFault::WorkerStart => "its worker start failed again",
+            FleetFault::WorktreeTrust => "its harness's worktree trust gap",
+            FleetFault::TrainAbandoned => "its landing train was given up twice",
+        }
+    }
+
+    /// An escalation whose marker keeps later ticks from asking a consult.
+    /// Its first sentence tells the operator where to fix it, also in the
+    /// `waiting_on_human` reason that `doctor` reads from this comment.
+    pub fn comment(self, claim: &str, flow: Option<&str>, reason: &str) -> String {
+        let marker = record::marker(
+            ESCALATION,
+            &[("claim", claim), ("flow", flow.unwrap_or("")), ("fault", self.word())],
+        );
+        format!(
+            "{marker}\n**afkconvoy: escalated to a human.**\n\n\
+             Fleet fault: {}; the fix is on the host.\n\n{}\n",
+            self.brief(),
+            reason.trim()
+        )
+    }
+
+    /// The fault recorded by this escalation, or none for a hand-off about
+    /// the work. Only the fleet's marker is read, never its quoted evidence.
+    pub fn read(body: &str) -> Option<FleetFault> {
+        let fields = record::read_marker(ESCALATION, body)?;
+        match fields.get("fault")? {
+            "worker-start" => Some(FleetFault::WorkerStart),
+            "worktree-trust" => Some(FleetFault::WorktreeTrust),
+            "train-abandoned" => Some(FleetFault::TrainAbandoned),
+            _ => None,
+        }
+    }
+}
+
 /// The workflow an issue followed when it was last escalated, by its comments
 /// (oldest first); `None` when it never was, or its last escalation names none.
 pub fn escalated_from<'a>(bodies: impl IntoIterator<Item = &'a str>) -> Option<String> {

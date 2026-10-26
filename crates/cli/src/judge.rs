@@ -20,8 +20,8 @@ use afkconvoy_core::stopped::{
 use afkconvoy_core::tick::Outcome;
 use afkconvoy_core::transition;
 use afkconvoy_core::transition::{
-    CloseStep, EscalateStep, Escalation, HandOnStep, Relabel, Released, escalation_begun,
-    escalation_comment,
+    CloseStep, EscalateStep, Escalation, FleetFault, HandOnStep, Relabel, Released,
+    escalation_begun, escalation_comment,
 };
 use afkconvoy_core::verdict::{Verdict, latest_verdict};
 use afkconvoy_core::waiting::{Back, Waits, back};
@@ -182,7 +182,7 @@ pub fn escalate(fleet: &mut Fleet, me: &Me, issue: u64, reason: &str) -> Result<
     let Some(claim) = mine(fleet, me, issue)? else { return Ok(nothing_held(issue)) };
     let worktree = worktree_of(fleet, issue)?;
     let pr = closing_pr(&fleet.gh.open_prs()?, issue).map(|pr| pr.number);
-    let why = Handed { brief: "by hand".to_string(), reason: reason.to_string() };
+    let why = Handed::new("by hand", reason.to_string());
     let left = escalate_claim(fleet, &claim, &why, pr, worktree.as_ref())?;
     let answer = json!({"issue": issue, "action": "escalated", "released": true});
     Ok(with_left(answer, left.as_ref()))
@@ -194,17 +194,23 @@ pub(crate) struct Handed {
     pub brief: String,
     /// As the comment on the issue opens.
     pub reason: String,
+    /// A host fix is needed: no consult is asked on a later tick.
+    fault: Option<FleetFault>,
 }
 
 impl Handed {
     pub(crate) fn new(brief: &str, reason: String) -> Handed {
-        Handed { brief: brief.to_string(), reason }
+        Handed { brief: brief.to_string(), reason, fault: None }
+    }
+
+    pub(crate) fn fleet_fault(fault: FleetFault, reason: String) -> Handed {
+        Handed { brief: fault.brief().to_string(), reason, fault: Some(fault) }
     }
 
     /// The same of a claim at the stage `stage`, which the brief opens with.
     pub(crate) fn at(stage: Option<&str>, brief: &str, reason: String) -> Handed {
         match stage {
-            Some(stage) => Handed { brief: format!("{stage}: {brief}"), reason },
+            Some(stage) => Handed::new(&format!("{stage}: {brief}"), reason),
             None => Handed::new(brief, reason),
         }
     }
@@ -271,7 +277,11 @@ pub(crate) fn escalate_claim(
                     Some(only_here) => format!("{}\n\n{only_here}\n\n{answer}", why.reason.trim()),
                     None => format!("{}\n\n{answer}", why.reason.trim()),
                 };
-                fleet.gh.comment(issue, &escalation_comment(&claim.id, flow.as_deref(), &reason))?
+                let comment = match why.fault {
+                    Some(fault) => fault.comment(&claim.id, flow.as_deref(), &reason),
+                    None => escalation_comment(&claim.id, flow.as_deref(), &reason),
+                };
+                fleet.gh.comment(issue, &comment)?
             }
             EscalateStep::Relabel => {
                 if let Some(label) = &swap.add {
@@ -514,7 +524,6 @@ pub(crate) fn nudge_worker(
     let Some(terminal) = worktree.terminal()? else {
         bail!("no live terminal in {} to take the nudge", worktree.path.display());
     };
-    worktree.ready_for_nudge(&terminal)?;
     let brief = worktree.brief()?.display().to_string();
     afkconvoy_core::stopped::nudge(unnudged, |step| match step {
         NudgeStep::Tell => worktree.tell_at(&terminal, &line(&brief), now),

@@ -224,15 +224,13 @@ fn a_switch_moves_the_worker_onto_the_harness_in_the_same_worktree_and_records_i
 }
 
 #[test]
-fn a_missing_harness_starts_before_its_targeted_probe_and_research_finish() {
+fn a_missing_harness_starts_on_its_default_before_its_listing_is_researched() {
     let world = blocked();
     world.with_kit(|kit| {
         kit["harnesses"].as_array_mut().unwrap().retain(|held| held["harness"] != "kimi")
     });
     std::fs::write(world.root.join("shell-kimi-models"), r#"{"models":{"kimi-code/k3":{}}}"#)
         .unwrap();
-    world.probes_answer();
-    std::fs::write(world.root.join("probes-wait"), "").unwrap();
     let dir = worktree(&world, 7);
 
     let started = std::time::Instant::now();
@@ -250,10 +248,6 @@ fn a_missing_harness_starts_before_its_targeted_probe_and_research_finish() {
             ""
         )]
     );
-    let kit: Value = serde_json::from_slice(&std::fs::read(world.kit_path()).unwrap()).unwrap();
-    assert_eq!(kit["harnesses"][0]["models"], json!([]));
-
-    std::fs::write(world.root.join("probes-release"), "").unwrap();
     let until = std::time::Instant::now() + std::time::Duration::from_secs(15);
     while std::time::Instant::now() < until {
         let kit: Value = serde_json::from_slice(&std::fs::read(world.kit_path()).unwrap()).unwrap();
@@ -262,12 +256,13 @@ fn a_missing_harness_starts_before_its_targeted_probe_and_research_finish() {
         {
             assert_eq!(kit["harnesses"][0]["harness"], "kimi");
             assert_eq!(kit["harnesses"][0]["models"][0]["model"], "kimi-code/k3");
-            let probes: Vec<_> = world
-                .shell_asked()
-                .into_iter()
-                .filter(|asked| asked.contains("Reply with the single word OK."))
-                .collect();
-            assert!(probes.iter().all(|asked| asked.contains("kimi")), "{probes:?}");
+            assert_eq!(kit["harnesses"][0]["models"][0]["good_at"], "research pending");
+            assert!(
+                !world
+                    .shell_asked()
+                    .iter()
+                    .any(|asked| asked.contains("Reply with the single word OK."))
+            );
             return;
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
@@ -367,14 +362,15 @@ fn a_switch_names_every_skipped_harness_and_its_fix_in_the_answer_and_tick_log()
 }
 
 #[test]
-fn a_codex_successor_without_a_selected_model_does_not_end_the_existing_worker() {
+fn a_codex_successor_with_no_placed_model_starts_on_its_own_default() {
     let world = blocked();
     world.kit_models("codex", &[]);
     let dir = worktree(&world, 7);
     let answer = switch(&world, "800", &["7", "--harness", "codex"]).ok();
-    let why = answer["failed"][0]["error"].as_str().unwrap();
-    assert!(why.contains("no selected Codex model"), "{why}");
-    assert_eq!(open_commands(&world, &dir), [common::trusted("agent")]);
+    assert_eq!(answer["switched"][0]["to"], "codex", "{answer}");
+    let opened = open_commands(&world, &dir);
+    assert_eq!(opened.len(), 1, "{opened:?}");
+    assert!(opened[0].contains("codex") && !opened[0].contains("--model"), "{opened:?}");
     assert_eq!(world.claims().len(), 1);
 }
 
@@ -468,23 +464,6 @@ fn an_acknowledged_close_that_leaves_the_terminal_is_no_permission_for_a_second_
     assert_eq!(world.claims().len(), 1);
 }
 
-/// Has the host name a Jev key command, and Jev answer the next check: no to
-/// every judgment but those `said`, and `evidence` selected from the screen.
-fn jev_judges(world: &World, said: &[(&str, f64)], evidence: &str) {
-    world.jev_key_command("printf test-key");
-    let mut answers = serde_json::Map::new();
-    for id in afkconvoy_core::worker_health::judgments() {
-        let noul = said.iter().find(|(said, _)| *said == id).map_or(0.01, |(_, noul)| *noul);
-        answers.insert(id.into(), json!({"type": "noul", "noul": noul}));
-    }
-    answers.insert(
-        "evidence".into(),
-        json!({"type": "choice", "choice": evidence, "confidence": 0.99,
-            "probabilities": {evidence: 0.99}}),
-    );
-    world.jev_answers(Value::Object(answers));
-}
-
 /// What `blocked()`'s worker shows.
 const DISABLED: &str = "Your organization has disabled Claude Code access";
 
@@ -495,7 +474,7 @@ fn screen_faults_are_judged_before_automatic_continuation_and_keep_the_scene() {
     let head = git(&dir, &["rev-parse", "HEAD"]);
     std::fs::write(dir.join("unfinished.txt"), "keep me").unwrap();
     let before = std::fs::read(world.kit_path()).unwrap();
-    jev_judges(&world, &[("login_refused", 0.99)], DISABLED);
+    world.jev_judges(&[("login_refused", 0.99)], DISABLED);
     tick(&world, 800);
     assert_eq!(open_commands(&world, &dir), [common::trusted("agent")]);
     assert!(!world.root.join("typesafe-request").exists());
@@ -540,7 +519,7 @@ fn ambiguous_normal_work_and_failed_judgments_never_authorize_a_switch() {
         let world = blocked();
         let dir = worktree(&world, 7);
         let said = if class == "unsettled" { ("busy", 0.5) } else { (class, 0.99) };
-        jev_judges(&world, &[said], DISABLED);
+        world.jev_judges(&[said], DISABLED);
         tick(&world, 800);
         tick(&world, 1100);
         assert_eq!(open_commands(&world, &dir), [common::trusted("agent")], "{class}");
@@ -551,7 +530,7 @@ fn ambiguous_normal_work_and_failed_judgments_never_authorize_a_switch() {
     for answer in ["not JSON", "{}"] {
         let world = blocked();
         let dir = worktree(&world, 7);
-        jev_judges(&world, &[], DISABLED);
+        world.jev_judges(&[], DISABLED);
         std::fs::write(world.root.join("typesafe-answer"), answer).unwrap();
         tick(&world, 800);
         tick(&world, 1100);
@@ -722,7 +701,7 @@ fn an_unclassed_stuck_session_waits_for_the_operator_without_pausing_its_harness
             ]);
         }
     });
-    jev_judges(&world, &[], "Agent session stopped accepting requests");
+    world.jev_judges(&[], "Agent session stopped accepting requests");
     tick(&world, 800);
     tick(&world, 1100);
     assert_eq!(open_commands(&world, &dir), [common::trusted("agent")]);
@@ -860,8 +839,7 @@ fn an_account_quota_jev_judges_without_a_reset_continues_at_once() {
             terminal["screen"] = json!(["Usage limit reached. Increase your limits to continue."]);
         }
     });
-    jev_judges(
-        &world,
+    world.jev_judges(
         &[("usage_limit", 0.99)],
         "Usage limit reached. Increase your limits to continue.",
     );
@@ -888,7 +866,7 @@ fn an_account_quota_jev_judges_without_a_reset_continues_at_once() {
 fn a_failed_typesafe_call_waits_for_the_operator_and_is_logged() {
     let world = blocked();
     let dir = worktree(&world, 7);
-    jev_judges(&world, &[("usage_limit", 0.99)], DISABLED);
+    world.jev_judges(&[("usage_limit", 0.99)], DISABLED);
     std::fs::write(world.root.join("typesafe-fail"), "refused by the recorded endpoint").unwrap();
 
     tick(&world, 800);
@@ -908,4 +886,164 @@ fn a_failed_typesafe_call_waits_for_the_operator_and_is_logged() {
         .collect::<Vec<_>>()
         .join("\n");
     assert!(logs.contains("TypeSafe request failed") && logs.contains("\"failed\":true"), "{logs}");
+}
+
+/// The fields of the failed Codex agent reported in sunfmin/control#83.
+/// Pane identity and times are fixed here; mainAgent owns the outcome.
+fn failed_agent() -> Value {
+    serde_json::from_str(include_str!("fixtures/orca-failed-agent.json")).unwrap()
+}
+
+#[test]
+fn orcas_failed_turn_is_classified_on_its_first_observation() {
+    for failure in [false, true] {
+        let world = blocked();
+        world.with_orca(|orca| {
+            for terminal in orca["terminals"].as_array_mut().unwrap() {
+                terminal["agent"] = failed_agent();
+                if !failure {
+                    terminal["agent"]["mainAgent"]["outcome"] = json!("success");
+                }
+                terminal["screen"] = json!(["The session ended unexpectedly"]);
+            }
+        });
+        world.jev_judges(&[], "The session ended unexpectedly");
+        tick(&world, 800);
+        assert_eq!(world.root.join("typesafe-request").exists(), failure);
+        let health = world.afk(&["plan", "--now", "801"]).ok();
+        let worker = &health["host_kit"]["worker_health"]["workers"][0];
+        assert_eq!(worker["source"] == "jev", failure, "{worker}");
+        assert_eq!(worker["orca"]["state"], "done");
+        assert_eq!(worker["orca"]["agentType"], "codex");
+        assert_eq!(worker["orca"]["stateStartedAt"], 799000);
+    }
+}
+
+#[test]
+fn working_agents_are_healthy_without_screen_judgment_and_share_one_tick_read() {
+    let world = fleet_with_two_workers();
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            terminal["agent"] = json!({"agentType":"claude", "state":"working",
+                "stateStartedAt":799000, "mainAgent":{"state":"working"}});
+            terminal["lastOutputAt"] = json!(799000);
+            terminal["screen"] = json!(["Old error: Usage limit reached"]);
+        }
+    });
+    world.jev_key_command("printf test-key");
+    world.orca_calls();
+    tick(&world, 800);
+    let calls = world.orca_calls();
+    assert_eq!(calls.iter().filter(|c| common::asked(c) == "worktree ps").count(), 1);
+    assert!(!calls.iter().any(|c| common::asked(c) == "terminal read"), "{calls:?}");
+    let health = world.afk(&["plan", "--now", "801"]).ok();
+    let workers = health["host_kit"]["worker_health"]["workers"].as_array().unwrap();
+    assert_eq!(workers.len(), 2);
+    assert!(workers.iter().all(|w| w["action"] == "healthy" && w["orca"]["state"] == "working"));
+    assert!(!world.root.join("typesafe-request").exists());
+}
+
+fn fleet_with_two_workers() -> World {
+    let world = World::new();
+    world.issue(7, &["ready-for-agent"]);
+    world.issue(8, &["ready-for-agent"]);
+    world.say_concurrency(&world.clone, 2);
+    tick(&world, 700);
+    world
+}
+
+#[test]
+fn the_live_runners_tick_and_served_panel_share_one_orca_observation() {
+    let world = fleet_with_two_workers();
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            terminal["agent"] = json!({"state":"working", "agentType":"claude",
+                "stateStartedAt":799000});
+            terminal["lastOutputAt"] = json!(799000);
+        }
+    });
+    world.orca_calls();
+    let (_, ended) = world.afk_lines(&[
+        "run",
+        "--foreground",
+        "--instance",
+        "alpha",
+        "--host",
+        "h1",
+        "--now",
+        "800",
+        "--ticks",
+        "1",
+        "--second-ms",
+        "0",
+    ]);
+    assert!(ended.get("error").is_none(), "{ended}");
+    let calls = world.orca_calls();
+    assert_eq!(calls.iter().filter(|c| common::asked(c) == "worktree ps").count(), 1, "{calls:?}");
+}
+
+#[test]
+fn a_failed_delivery_is_classified_even_if_orcas_last_report_was_working() {
+    let world = fleet_with_two_workers();
+    let dir = worktree(&world, 7);
+    let notes = PathBuf::from(git(&dir, &["rev-parse", "--absolute-git-dir"]));
+    std::fs::write(
+        notes.join("convoy-worker-error.json"),
+        json!({
+            "source":"orca terminal send", "error":{"code":"insufficient_quota"}, "at":799
+        })
+        .to_string(),
+    )
+    .unwrap();
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            terminal["agent"] = json!({"state":"working", "agentType":"claude",
+                "stateStartedAt":700000});
+            terminal["lastOutputAt"] = json!(799000);
+        }
+    });
+    world.jev_key_command("printf test-key");
+    tick(&world, 800);
+    let health = world.afk(&["plan", "--now", "801"]).ok();
+    let workers = health["host_kit"]["worker_health"]["workers"].as_array().unwrap();
+    let worker = workers.iter().find(|w| w["path"] == json!(dir)).unwrap();
+    assert_eq!(worker["orca"]["state"], "working");
+    assert_eq!(worker["diagnosis"]["class"], "quota");
+    assert_eq!(worker["source"], "structured rule");
+    assert_ne!(worker["action"], "healthy");
+    assert!(!world.root.join("typesafe-request").exists());
+}
+
+#[test]
+fn orcas_harness_overrules_a_wrong_record_for_quota_recovery_and_is_shown() {
+    let world = blocked();
+    let dir = worktree(&world, 7);
+    switch(&world, "750", &["7", "--harness", "codex"]).ok();
+    codex_usage_limit(&world);
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            terminal["agent"] = failed_agent();
+        }
+    });
+    let git_dir = PathBuf::from(git(&dir, &["rev-parse", "--absolute-git-dir"]));
+    std::fs::write(git_dir.join("convoy-harness"), "claude-code").unwrap();
+    world.jev_key_command("printf test-key");
+    tick(&world, 800);
+    assert_eq!(open_commands(&world, &dir), [common::trusted("agent")]);
+    assert!(!world.root.join("typesafe-request").exists());
+    let health = world.afk(&["doctor", "--now", "801"]).ok();
+    let health = &health["host"]["host_kit"]["worker_health"];
+    assert_eq!(health["workers"][0]["harness"], "codex");
+    assert_eq!(health["workers"][0]["recorded_harness"], "claude-code");
+    assert_eq!(health["workers"][0]["harness_mismatch"], true);
+    assert_eq!(health["faults"][0]["harness"], "codex");
+    let panel = world
+        .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
+        .args(["panel", "--host", "h1", "--now", "801"])
+        .output()
+        .unwrap();
+    assert!(panel.status.success());
+    let html = String::from_utf8(panel.stdout).unwrap();
+    assert!(html.contains("failure") && html.contains("codex") && html.contains("799000"));
+    assert!(html.contains("recorded claude-code"));
 }
