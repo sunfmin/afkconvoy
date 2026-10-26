@@ -217,12 +217,13 @@ fn sizes_said(dirs: &[PathBuf], inside: &[(PathBuf, u64)], deadline: Instant) ->
 /// and what is in them, measured until `deadline`: what `du` had not reached
 /// by then is said not to be listed.
 fn largest_said(home: &Path, worktrees: &[PathBuf], deadline: Instant) -> String {
-    let child = Command::new("du")
-        .args(["-xk", "-d", DEPTH])
-        .arg(home)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn();
+    let child = crate::process::spawn(
+        Command::new("du")
+            .args(["-xk", "-d", DEPTH])
+            .arg(home)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null()),
+    );
     let Ok(mut child) = child else { return "(du could not be run)\n".to_string() };
     let Some(stdout) = child.stdout.take() else { return "(du said nothing)\n".to_string() };
     // Read beside, for `du` says each directory once it is measured: what it
@@ -282,13 +283,10 @@ pub(crate) fn du(dir: &Path, deadline: Instant) -> Option<u64> {
     if Instant::now() >= deadline {
         return None;
     }
-    let mut child = Command::new("du")
-        .arg("-sxk")
-        .arg(dir)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
+    let mut child = crate::process::spawn(
+        Command::new("du").arg("-sxk").arg(dir).stdout(Stdio::piped()).stderr(Stdio::null()),
+    )
+    .ok()?;
     loop {
         if child.try_wait().ok()?.is_some() {
             break;

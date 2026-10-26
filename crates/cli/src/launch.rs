@@ -483,8 +483,10 @@ fn ask_shell(
     if let Some(env) = env {
         shell.env_clear().envs(env.iter().map(|(name, value)| (name, value)));
     }
-    let mut child =
-        shell.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
+    let mut child = crate::process::spawn(
+        shell.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()),
+    )
+    .ok()?;
     let mut printed = child.stdout.take()?;
     let reader = std::thread::spawn(move || {
         let mut bytes = Vec::new();
