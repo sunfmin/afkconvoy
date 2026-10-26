@@ -612,3 +612,47 @@ fn a_verified_account_fault_holds_new_work_when_no_successor_is_available() {
     assert_eq!(world.claims().len(), 1);
     assert_eq!(world.paused(), json!([]), "health does not rewrite the kit pause list");
 }
+
+#[test]
+fn repeated_waits_keep_one_window_and_escalate_with_evidence_after_an_hour() {
+    let world = fleet(1000);
+    report(&world, "done", 1000, 1000);
+    std::fs::write(
+        world.root.join("diagnosis-answer"),
+        json!({
+            "status": "observed", "class": "long_command", "scope": "worker",
+            "evidence": [], "action": "wait", "missing": ["whether the command ended"],
+            "retry_after": null
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    for now in [1300, 1600, 1900] {
+        tick(&world, now);
+    }
+    tick(&world, 2200);
+    let doctor = world.afk(&["doctor", "--host", "h1", "--now", "2201"]).json;
+    let worker = &doctor["host"]["host_kit"]["worker_health"]["workers"][0];
+    assert_eq!(worker["action"], "waiting for new evidence");
+    assert_eq!(worker["window_started"], 1000);
+    assert_eq!(worker["next_check"], 4600);
+    assert_eq!(worker["attempts"], 3);
+    assert_eq!(worker["diagnosis"]["class"], "long_command");
+    assert_eq!(worker["path"], json!(worktree(&world)));
+    assert_eq!(world.claims().len(), 1);
+
+    tick(&world, 4600);
+
+    assert_eq!(world.claims(), []);
+    assert!(world.labels(7).contains(&"ready-for-human".to_string()));
+    assert_eq!(escalations(&world), 1);
+    let comment = world.comments(7).last().unwrap().clone();
+    assert!(comment.contains("one hour on unchanged evidence"), "{comment}");
+    assert!(
+        comment.contains("long_command") && comment.contains("whether the command ended"),
+        "{comment}"
+    );
+    let doctor = world.afk(&["doctor", "--host", "h1", "--now", "4601"]).json;
+    assert_eq!(doctor["waiting_on_human"][0]["issue"], 7);
+}
