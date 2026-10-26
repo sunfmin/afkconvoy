@@ -277,7 +277,7 @@ pub(crate) fn abandoned(dir: &str) -> Result<()> {
     let repo = Repo::new(dir.into());
     let config = crate::config::load(&crate::config::file_of(&repo))?;
     let chain = read(&repo, &config)?.chain;
-    for c in chain.candidates.iter().filter(|c| c.active() && !c.stopped) {
+    for c in chain.candidates.iter().filter(|c| c.active()) {
         if !alive(&c.owner)? {
             invalidate(&repo, &config, &c.id, "owner_died")?;
         }
@@ -356,8 +356,27 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
     let owner =
         identity(std::process::id())?.ok_or_else(|| anyhow!("cannot identify turn owner"))?;
     let locks = crate::lock::standing_locks(&gh, config)?;
+    if issue.map_or(!locks.is_empty(), |n| keeps_off(&locks, n)) {
+        return Ok(crate::turn::locked(answer, &locks));
+    }
+    if let Some(n) = issue {
+        let blockers = gh.open_blockers(n)?;
+        if !blockers.is_empty() {
+            answer["outcome"] = json!("blocked");
+            answer["blocked_by"] = json!(blockers);
+            return Ok(answer);
+        }
+    }
     let barrier = !locks.is_empty() || !matches!(of, Of::Issue(_));
-    let heavy = crate::config::heavy_gate(&config.gate_command);
+    let starting = read(repo, config)?;
+    let base_config = crate::turn::tip_config(repo, &starting.base)?;
+    let heavy = crate::config::heavy_gate(&config.gate_command)
+        || crate::config::heavy_gate(&base_config.gate_command)
+        || starting
+            .chain
+            .candidates
+            .iter()
+            .any(|c| c.valid() && crate::config::heavy_gate(&c.command));
     let limit = if heavy { crate::host_settings::of_host()?.gate_lanes() } else { 1 };
     // Do not reserve a host lane while waiting for a barrier/window or for
     // another invocation of this PR. Dead owners are reconciled first.
@@ -393,8 +412,27 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
     let id = crate::unique();
     let path = repo.common_dir()?.join("convoy-candidates").join(&id);
     let candidate = loop {
-        let current = crate::turn::base(repo, config)?;
         let mut snapshot = read(repo, config)?;
+        let current = snapshot.base.clone();
+        if snapshot.chain.candidates.iter().any(|c| c.pr == pr.number && c.active()) {
+            answer["outcome"] = json!("waiting_for_predecessor");
+            answer["detail"] = json!(
+                "this PR already has an active candidate; its owner alone may validate and publish it"
+            );
+            return Ok(answer);
+        }
+        let declared = crate::turn::tip_config(repo, &current)?;
+        let base_command = GateCommand::new(&declared.gate_command);
+        let base_tree = Tree::named(&repo.git(&["rev-parse", &format!("{current}^{{tree}}")])?);
+        if locks.is_empty()
+            && crate::gate::recorded(repo, &base_tree, &base_command, now)?.is_none()
+        {
+            answer["outcome"] = json!("target_moved");
+            answer["detail"] = json!(
+                "the base changed before assignment and needs certification; ask for another turn"
+            );
+            return Ok(answer);
+        }
         // A competitor may have used the last window place while we queued.
         if !snapshot.chain.can_assign(limit, barrier) {
             drop(permit);
@@ -424,6 +462,13 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
             return Ok(answer);
         };
         let declared = crate::turn::tip_config(repo, &commit)?;
+        if crate::config::heavy_gate(&declared.gate_command) && !heavy {
+            answer["outcome"] = json!("waiting_for_predecessor");
+            answer["detail"] = json!(
+                "the predecessor changed the gate to a worker lane; request a new turn after it lands"
+            );
+            return Ok(answer);
+        }
         let tree = repo.git(&["rev-parse", &format!("{commit}^{{tree}}")])?;
         let seconds = declared.gate_seconds();
         let c = Candidate {

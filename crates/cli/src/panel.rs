@@ -175,6 +175,8 @@ pub struct Panel {
     pub nothing_safe: Vec<(String, String)>,
     /// What each Codex session was actually started with, including sources.
     pub codex_workers: Vec<serde_json::Value>,
+    /// The same authoritative candidate interpretation doctor reads.
+    pub candidates: Vec<serde_json::Value>,
 }
 
 /// A worker that is hot, as the page shows it.
@@ -424,6 +426,7 @@ impl Panel {
             casting: vec![],
             nothing_safe: vec![],
             codex_workers: vec![],
+            candidates: vec![],
         }
     }
 
@@ -621,6 +624,10 @@ pub fn read(
     };
     let mut panel = Panel::empty(fleet, me).show(&seen);
     panel.codex_workers = crate::codex_launch::workers(&fleet.repo);
+    panel.candidates = crate::candidates::view(&fleet.repo, &fleet.config)
+        .ok()
+        .and_then(|rows| rows.as_array().cloned())
+        .unwrap_or_default();
     panel.declared = set.declared();
     panel.held = set.mine.len() - panel.declared;
     panel.bound = set.bound(fleet.config.concurrency()) - panel.declared;
@@ -1405,6 +1412,23 @@ fn repo(out: &mut String, at: usize, panel: &Panel) {
     gauge(out, "Queued", panel.queued(), None);
     gauge(out, "With a human", panel.with_a_human(), None);
     out.push_str("</dl></header>\n");
+    if !panel.candidates.is_empty() {
+        out.push_str("<section class=\"candidates\"><h3>Candidate validation</h3><ul>");
+        for candidate in &panel.candidates {
+            let text = |key: &str| candidate[key].as_str().unwrap_or("");
+            let _ = write!(
+                out,
+                "<li>PR {} · <code>{}</code> · predecessor <code>{}</code> · {} · {} {}</li>",
+                candidate["pr"],
+                esc(text("id")),
+                esc(text("predecessor")),
+                esc(text("waiting")),
+                esc(text("cause")),
+                esc(text("cancelled_by"))
+            );
+        }
+        out.push_str("</ul></section>");
+    }
 
     match &panel.tick {
         Some(tick) => {
@@ -1603,6 +1627,7 @@ mod tests {
             casting: vec![],
             nothing_safe: vec![],
             codex_workers: vec![],
+            candidates: vec![],
         }
     }
 

@@ -1711,7 +1711,9 @@ fn issues_json(set: &WorkingSet) -> Result<Value> {
 fn exclusive_json(standing: Result<Vec<Ticket>>) -> Value {
     let ticket = |ticket: &Ticket| {
         json!({"command": ticket.command, "dir": ticket.dir, "issue": ticket.issue,
-            "pid": ticket.pid, "asked": ticket.asked, "ran": ticket.ran})
+            "pid": ticket.pid, "asked": ticket.asked, "ran": ticket.ran,
+            "candidate": ticket.candidate,
+            "waiting": if ticket.ran.is_none() { "waiting_for_capacity" } else { "running" }})
     };
     match standing {
         Ok(live) => {

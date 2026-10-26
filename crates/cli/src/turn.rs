@@ -231,6 +231,19 @@ pub fn land(
 ) -> Result<Value> {
     let prs = gh.open_prs()?;
     let Some(pr) = closing_pr(&prs, issue) else {
+        let tip = base(repo, config)?;
+        if let Some(landed) = crate::landing::joins_in(repo, &gh.tracker, &[&tip])?
+            .iter()
+            .rev()
+            .find(|pr| pr.issue() == Some(issue))
+        {
+            if !gh.issue(issue)?.is_closed() {
+                gh.close_issue(issue)?;
+            }
+            return Ok(
+                json!({"issue": issue, "pr": landed.pr, "outcome": "merged", "commit": landed.commit, "detail": "recovered landing from base history; issue settled"}),
+            );
+        }
         bail!("no open PR closes issue #{issue} — if it has already merged, stop");
     };
     join(
