@@ -21,6 +21,7 @@
 //! `stale_base` (a ref worktrees are cut at instead of the one asked for),
 //! `ps_truncated`, `ps_fails`, `close_fails` [worktree paths…],
 //! `close_keeps_terminal` (acknowledges close without ending its terminal),
+//! `timeout_on_waits` (the numbered waits of each terminal that time out),
 //! `start_screen`, `send_screen`, `prompt_stages` (a receipt without a turn
 //! start); each terminal can also have `menu` and its own `prompt_stages`.
 //! `raw_answers` maps a call's first two words to its stdout, after its effects.
@@ -62,7 +63,7 @@ fn main() {
         ["worktree", "ps", ..] => worktree_ps(&mut st),
         ["worktree", "rm", ..] => worktree_rm(&mut st),
         ["terminal", "create", ..] => terminal_create(&mut st),
-        ["terminal", "wait", ..] => terminal_wait(&st),
+        ["terminal", "wait", ..] => terminal_wait(&mut st),
         ["terminal", "send", ..] => terminal_send(&mut st),
         ["terminal", "list", ..] => terminal_list(&st),
         ["terminal", "read", ..] => terminal_read(&st),
@@ -302,10 +303,15 @@ fn asked(st: &mut State, script: String) -> ! {
     done(st, json!({"terminal": {"handle": handle, "worktreePath": path}}))
 }
 
-fn terminal_wait(st: &State) -> ! {
+fn terminal_wait(st: &mut State) -> ! {
     assert_eq!(st.opt("--for"), Some("tui-idle"), "{:?}", st.argv);
     assert!(st.opt("--timeout-ms").is_some_and(|ms| ms.parse::<u64>().unwrap() > 0));
     let Some(at) = terminal_at(st) else { fail(st, "terminal_handle_stale") };
+    let count = st.doc["terminals"][at]["wait_count"].as_u64().unwrap_or(0) + 1;
+    st.doc["terminals"][at]["wait_count"] = json!(count);
+    if st.doc["timeout_on_waits"].as_array().is_some_and(|waits| waits.contains(&json!(count))) {
+        fail(st, "timeout");
+    }
     if st.doc["terminals"][at]["bare_shell"] == true {
         fail(st, "timeout"); // a live shell never satisfies tui-idle
     }

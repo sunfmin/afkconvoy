@@ -307,6 +307,17 @@ impl std::fmt::Display for PromptBlocked {
 }
 impl std::error::Error for PromptBlocked {}
 
+/// The idle check timed out before any line was sent. Readiness at start
+/// still fails on this; a ready worker can be handed its brief later.
+#[derive(Debug)]
+pub(crate) struct IdleTimeout;
+impl std::fmt::Display for IdleTimeout {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "orca terminal wait failed: timeout")
+    }
+}
+impl std::error::Error for IdleTimeout {}
+
 impl Asked {
     fn of(args: &[&str]) -> Result<Asked> {
         let what = args.iter().take(2).copied().collect::<Vec<_>>().join(" ");
@@ -1310,6 +1321,9 @@ impl Worktree {
         ])?;
         let wait = &asked.answer["result"]["wait"];
         if asked.answer["ok"] != true || !wait.is_object() {
+            if asked.answer["error"]["code"] == "timeout" {
+                return Err(IdleTimeout.into());
+            }
             return Err(asked.failure());
         }
         let ready = if wait["blockedReason"] == TRUST_PROMPT {
