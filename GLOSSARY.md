@@ -263,7 +263,7 @@ A watch for host load or memory receives the fleet's worker process trees and, w
 _Avoid_: patrol (a role run on a schedule that writes no code), supervisor (the host runner is the process)
 
 **Exclusive queue**:
-The host runner's FIFO queue for heavy commands across its fleets. Commands run in worker lanes, as many as the host settings allow. A turn holds its lane through landing; one repo holds at most one turn at once. A light gate takes a turn in its repo's own lane.
+The host runner's FIFO queue for heavy commands across its fleets. Commands run in worker lanes, as many as the host settings allow; independently owned candidate worktrees of one repo may validate together. A light gate takes a turn in its repo's own lane.
 _Avoid_: gate queue
 
 **Nudge**:
@@ -353,11 +353,19 @@ Bringing a branch up to date by merging into it. Nothing is ever rebased.
 _Avoid_: rebase, update branch
 
 **Turn**:
-One command's uninterrupted merge, gate, recording and landing of an open PR, starting on the base branch's current tip. Red, a conflict or a rejected push ends it with nothing landed.
+One command's construction, validation and ordered landing of an open PR's candidate. Red, a conflict, invalidation or a rejected push ends it with nothing landed.
 _Avoid_: landing slot, merge queue
 
+**Candidate**:
+An immutable merge of a PR's original head onto its assigned predecessor, validated in its own worktree. Its predecessor is the certified base tip or the preceding candidate.
+_Avoid_: speculative branch, train tip
+
+**Candidate chain**:
+The ordered candidates of one repo, each depending on its predecessor. A failed or invalid candidate cancels its dependent suffix; already landed predecessors remain landed.
+_Avoid_: landing train, speculative queue
+
 **Land**:
-Pushing the merge commit a turn gated and recorded green onto the base branch as a fast-forward, and closing the issue it completes. Issue workers, a workflow's landing worker, watches and cuts all land in a turn.
+Pushing the exact candidate a turn recorded green onto the base branch as a fast-forward after its predecessor has landed, and closing the issue it completes. Issue workers, a workflow's landing worker, watches and cuts all land in a turn.
 _Avoid_: join, enqueue
 
 **Repair**:

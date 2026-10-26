@@ -75,6 +75,9 @@ pub enum Request {
     /// runner is replaced asks the next one the same, whichever afkconvoy
     /// that is: this line changes by fields with a default alone.
     Exclusive { ticket: Ticket },
+    /// A display copy of a turn's authoritative remote candidate, no grant
+    /// or fleet state changed. Older runners may ignore this question.
+    Candidate { pid: u32, validation: afkconvoy_core::candidate::Validation },
     /// What the host's fleets share: answered at once with the `exclusive`
     /// queue, in the order it runs, and the `watch` running, or null.
     Shared,
@@ -551,6 +554,8 @@ mod tests {
             repo_lane: None,
             repo: None,
             is_turn: false,
+            candidate: false,
+            validation: None,
             command: "cargo test".into(),
             asked: 1000,
             ran: None,
@@ -597,7 +602,11 @@ mod tests {
                     | Request::Wake { checkout, .. }
                     | Request::Holds { checkout } => json!({"checkout": checkout}),
                     Request::Exclusive { ticket } => json!({"checkout": ticket.dir}),
-                    Request::Version | Request::StopAll | Request::Checkouts | Request::Shared => {
+                    Request::Version
+                    | Request::StopAll
+                    | Request::Checkouts
+                    | Request::Shared
+                    | Request::Candidate { .. } => {
                         json!({})
                     }
                 })
