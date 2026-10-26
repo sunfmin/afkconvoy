@@ -437,3 +437,89 @@ fn a_reparented_descendant_is_still_owned_and_terminated() {
     let status = String::from_utf8_lossy(&ps.stdout);
     assert!(status.trim().is_empty() || status.trim().starts_with('Z'), "{status}");
 }
+
+#[test]
+fn restart_after_durable_cancellation_finishes_cleanup_before_rebuilding() {
+    use std::os::unix::fs::PermissionsExt;
+    let world = world(2);
+    let (a, _) = worker(&world, 1, "a");
+    let (b, _) = worker(&world, 2, "b");
+    let runner = world.host_held();
+    let mut aa = start(&world, &a, &world.cache(), 1);
+    began(&world, "a");
+    let bb = start(&world, &b, &world.cache(), 2);
+    began(&world, "b");
+    std::fs::write(world.root.join("owner"), aa.id().to_string()).unwrap();
+    let hook = world.bare.join("hooks/post-receive");
+    let script = format!(
+        r#"#!/bin/sh
+root={}
+while read old new ref; do
+  case "$ref" in refs/convoy/candidates/main)
+    text=$(git show -s --format=%B "$new")
+    case "$text" in *'"phase":"cancelling"'*)
+      if mkdir "$root/cancellation-checkpoint" 2>/dev/null; then
+        kill -STOP "$(cat "$root/owner")"
+        touch "$root/cancellation-durable"
+      fi;;
+    esac;;
+  esac
+done
+"#,
+        quote(&world.root)
+    );
+    std::fs::write(&hook, script).unwrap();
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    release(&world, "a", true);
+    until(|| world.root.join("cancellation-durable").exists());
+    aa.kill().unwrap();
+    let _ = aa.wait();
+    world.kill_host_runner("KILL");
+    drop(runner);
+    let _replacement = world.host_held();
+    assert_eq!(finish(bb)["outcome"], "cancelled");
+    gone(&world, "a");
+    gone(&world, "b");
+    let state = chain(&world);
+    assert_eq!(state["candidates"][0]["phase"], "red");
+    assert_eq!(state["candidates"][0]["result"]["status"], "red");
+    release(&world, "b", false);
+    let rebuilt = finish(start(&world, &b, &world.cache(), 2));
+    assert_eq!(rebuilt["outcome"], "merged", "{rebuilt}");
+    assert!(
+        !world.remote(&["ls-tree", "--name-only", "refs/heads/main"]).lines().any(|f| f == "a.txt")
+    );
+}
+
+#[test]
+#[ignore = "controlled timing experiment; run explicitly through afkconvoy exclusive"]
+fn measure_serial_and_parallel_batches() {
+    let mut batches = vec![];
+    for lanes in [1, 3] {
+        let world = world(lanes);
+        let gate=std::fs::read_to_string(world.clone.join("gate.sh")).unwrap().replace(
+            "while test -d \"$root\" && test ! -f \"$root/release-$name\"; do sleep 0.02; done",
+            "awk 'BEGIN { n=500000; for(i=0;i<n;i++)a[i]=i; for(j=0;j<40;j++)for(i=0;i<n;i++)s+=a[i]; print s }' >/dev/null");
+        commit(&world.clone, "gate.sh", &gate);
+        git(&world.clone, &["push", "-q", "origin", "HEAD"]);
+        assert_eq!(world.afk(&["gate"]).ok()["recorded"], true);
+        let workers: Vec<_> = [(1, "a"), (2, "b"), (3, "c")]
+            .into_iter()
+            .map(|(n, name)| worker(&world, n, name))
+            .collect();
+        let _runner = world.host_held();
+        let began = Instant::now();
+        let mut children = vec![];
+        for (i, (dir, _)) in workers.iter().enumerate() {
+            children.push(start(&world, dir, &world.cache(), i as u64 + 1));
+        }
+        let mut seconds = vec![];
+        for child in children {
+            let answer = finish(child);
+            assert_eq!(answer["outcome"], "merged", "{answer}");
+            seconds.push(answer["seconds"].clone());
+        }
+        batches.push(json!({"lanes":lanes,"batch_seconds":began.elapsed().as_secs_f64(),"gate_seconds":seconds,"discarded_gate_seconds":0}));
+    }
+    eprintln!("CANDIDATE_BATCH_MEASUREMENT={}", json!(batches));
+}
