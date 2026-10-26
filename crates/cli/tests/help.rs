@@ -982,6 +982,13 @@ fn the_guide_and_each_subcommand_agree_on_who_runs_it_and_why() {
     );
     for command in &workers {
         let who = who(command);
+        if *command == "watched" {
+            assert!(
+                who.trim_start().starts_with("The host's watch, in its watch directory"),
+                "{who}"
+            );
+            continue;
+        }
         assert!(who.contains("worker") && who.contains("in its own worktree"), "{command}: {who}");
     }
     // The guard is nobody's to run: it is a hook of Claude Code's.

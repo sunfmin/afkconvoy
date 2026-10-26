@@ -1775,7 +1775,7 @@ Write a JSON object with all five keys: `held_back`, `did`, `verified` and `pend
 
 ##### Who runs it
 
-The host's watch, as the last step of its interactive session. An issue's worker does not report a watch's work. The operator may repeat the watch's exact command if its receipt was lost.
+The host's watch, in its watch directory, as the last step of its interactive session. The operator may repeat the watch's exact command if its receipt was lost.
 
 ##### What it reads and writes
 
