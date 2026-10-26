@@ -115,7 +115,7 @@ fn a_pr_joining_after_the_train_worker_returned_idle_keeps_the_train_responsible
 }
 
 #[test]
-fn a_failed_train_agent_is_diagnosed_on_the_first_tick_and_keeps_its_train() {
+fn a_failed_train_agent_is_judged_on_the_first_tick_and_keeps_its_train() {
     let world = fleet(&[7]);
     let joined = finish(&world, 7);
     tick(&world, "1090");
@@ -132,30 +132,24 @@ fn a_failed_train_agent_is_diagnosed_on_the_first_tick_and_keeps_its_train() {
             }
         }
     });
-    std::fs::write(
-        world.root.join("diagnosis-answer"),
-        json!({
-            "status":"unknown", "class":"unknown", "scope":"worker", "action":"unknown",
-            "evidence":[], "missing":["fault cause"], "retry_after":null
-        })
-        .to_string(),
-    )
-    .unwrap();
+    world.jev_judges(&[], "The train session failed");
     tick(&world, "1100");
-    assert!(world.root.join("diagnosis-asked").exists());
+    assert!(world.root.join("typesafe-request").exists());
     assert_eq!(world.remote(&["rev-parse", LINE]), joined);
     // There is no live host runner in this world; doctor still reports the
     // train's evidence alongside that independent critical finding.
     let health = world.afk(&["doctor", "--now", "1101", "--host", "h1"]).json;
     let workers = health["host"]["host_kit"]["worker_health"]["workers"].as_array().unwrap();
     let worker = workers.iter().find(|w| w["path"] == json!(train)).unwrap();
-    assert_eq!(worker["attempts"], 1);
+    assert_eq!(worker["source"], "jev");
+    assert_eq!(worker["action"], "waiting for operator");
     assert_eq!(worker["orca"]["outcome"], "failure");
     assert_eq!(worker["harness"], "codex");
     assert_eq!(worker["recorded_harness"], "claude-code");
 
     // programStatus gets fresh observation times without a new failed turn.
-    // It must not consume another attempt before the existing next check.
+    // It must not ask Jev again before the existing next check.
+    std::fs::remove_file(world.root.join("typesafe-request")).unwrap();
     world.with_orca(|orca| {
         for terminal in orca["terminals"].as_array_mut().unwrap() {
             if terminal["worktreePath"] == json!(train) {
@@ -167,7 +161,8 @@ fn a_failed_train_agent_is_diagnosed_on_the_first_tick_and_keeps_its_train() {
     let health = world.afk(&["plan", "--now", "1103"]).ok();
     let workers = health["host_kit"]["worker_health"]["workers"].as_array().unwrap();
     let worker = workers.iter().find(|w| w["path"] == json!(train)).unwrap();
-    assert_eq!(worker["attempts"], 1);
+    assert!(!world.root.join("typesafe-request").exists());
+    assert_eq!(worker["action"], "waiting for operator");
     assert_eq!(worker["orca"]["programStatus"]["observedAt"], 1102000);
 
     let handle = terminals(&world, &train)[0]["handle"].clone();

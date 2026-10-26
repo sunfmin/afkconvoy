@@ -49,7 +49,7 @@ pub struct Staged {
     /// `escalate`, and writes no code whatever the stage may.
     consult: bool,
     /// The harness the worker is a session of: what its role's range makes
-    /// of the issue's casting (`Fleet::cast_in`), or the stock inspector's.
+    /// of the issue's casting (`Fleet::cast_in`).
     harness: Harness,
     model: Option<String>,
     /// The name the issue was given that matches nothing held, with what
@@ -69,7 +69,7 @@ pub struct Staged {
     /// The team rules, in the team's copy, of a team that has them.
     team_rules: Option<String>,
     /// Whether the worker is given the host user's skills and rules: its
-    /// role's say (`Role::host_user`), or the team's for the stock inspector.
+    /// role's say (`Role::host_user`).
     host_user: bool,
     dsh_profile: afkconvoy_core::team::DshProfile,
     /// Whether the team offers splitting in stage briefs.

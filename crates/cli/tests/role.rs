@@ -611,7 +611,7 @@ fn a_worker_in_its_role_is_observed_before_any_recovery_action() {
     assert_eq!(terminals[0]["sent"].as_array().unwrap().len(), 1);
     assert_eq!(world.claims().len(), 1);
     let plan = world.afk(&["plan", "--now", "1801"]).ok();
-    assert_eq!(plan["host_kit"]["worker_health"]["workers"][0]["action"], "waiting");
+    assert_eq!(plan["host_kit"]["worker_health"]["workers"][0]["action"], "waiting for operator");
     assert!(
         plan["host_kit"]["worker_health"]["workers"][0]["snapshots"]
             .to_string()

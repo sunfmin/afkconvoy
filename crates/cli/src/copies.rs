@@ -121,7 +121,7 @@ impl Copies {
         }
     }
 
-    /// The directory the stock inspector's worker starts in (docs/adr/0018):
+    /// The directory the stock inspector's worker starts in (docs/adr/0035):
     /// its instruction as the rules file and a native discovery boundary.
     /// It is kept once for each text of the instruction, which its commit names.
     pub fn inspector(&self) -> Result<Copy> {
