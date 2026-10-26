@@ -133,7 +133,7 @@ pub fn intake(repo: &Repo, taking: Taking) -> Result<Value> {
             bound.team
         );
     }
-    let issue = gh.issue(number)?;
+    let issue = gh.issue(number).map_err(|error| missing_issue(repo, &gh, number, error))?;
     if issue.pull_request {
         bail!("#{number} is a pull request: only an issue is taken in");
     }
@@ -177,4 +177,49 @@ pub fn intake(repo: &Repo, taking: Taking) -> Result<Value> {
     let taken = json!({"issue": number, "workflow": record.workflow, "taken": true,
         "blocked_by": blocked_by, "open": open + 1, "limit": limit});
     Ok(with(taken, who(&record.by)))
+}
+
+/// A number in the checkout's repo is often mistaken for one in its tracker.
+/// Ask `gh` for its URL (following transfers); a failed lookup is not a claim
+/// that the issue is anywhere in particular.
+fn missing_issue(repo: &Repo, gh: &GitHub, number: u64, error: anyhow::Error) -> anyhow::Error {
+    if !crate::gh::gone(&error).is_some_and(|gone| !gone.deleted) {
+        return error;
+    }
+    let own = crate::checkout_list::named_repo(repo)
+        .map(|name| name.to_string())
+        .or_else(|_| crate::checkout_list::repo_of(repo))
+        .unwrap_or_else(|_| "<its repo>".to_string());
+    let tracker = gh.tracker.named().map_or(own.as_str(), |name| name.as_str());
+    let found = gh
+        .read(&["issue", "view", &number.to_string(), "--repo", &own, "--json", "url"])
+        .ok()
+        .and_then(|out| serde_json::from_str::<Value>(&out).ok())
+        .and_then(|out| out["url"].as_str().map(str::to_string));
+    let location = found.as_deref().and_then(|url| {
+        let parts: Vec<_> = url.trim_end_matches('/').rsplit('/').take(4).collect();
+        match parts.as_slice() {
+            [number, "issues", repo, owner] => {
+                Some((format!("{owner}/{repo}"), number.to_string()))
+            }
+            _ => None,
+        }
+    });
+    let (source, source_number) =
+        location.clone().unwrap_or_else(|| ("<its repo>".to_string(), number.to_string()));
+    let transfer = afkconvoy_core::line::Line::new()
+        .fixed("gh issue transfer ")
+        .number(source_number.parse().unwrap_or(number))
+        .fixed(" ")
+        .word(tracker)
+        .fixed(" --repo ")
+        .word(&source)
+        .own();
+    let where_found = location.map_or_else(
+        || "gh could not locate it in the checkout's repo".to_string(),
+        |(repo, n)| format!("gh found it in {repo} as #{n}"),
+    );
+    anyhow!(
+        "issue #{number} was not found in tracker {tracker}; {where_found}. Transfer it: {transfer}; then run afkconvoy flows in the target repo's checkout and take the transferred issue in there"
+    )
 }

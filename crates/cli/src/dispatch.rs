@@ -396,7 +396,18 @@ fn start(
             DispatchStep::Claim => {
                 // A tick's rebuild can be minutes older than this: a blocker
                 // added since holds the issue back all the same.
-                let mut blockers = fleet.gh.open_blockers(number)?;
+                let edges = fleet.gh.blocked_by(number)?;
+                let mut blockers = fleet.gh.blockers(edges.clone());
+                if staged.as_ref().is_some_and(Staged::is_consult) {
+                    let unworked = crate::blockers::unworked(
+                        &fleet.repo,
+                        &fleet.gh.tracker,
+                        &[(number, edges.clone())],
+                    )?;
+                    if crate::blockers::can_hand_on(number, &edges, &unworked) {
+                        blockers.clear()
+                    }
+                }
                 if !blockers.is_empty() {
                     blockers.sort_unstable();
                     return Ok(json!({"issue": number, "started": false, "skipped": "blocked",

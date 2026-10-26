@@ -28,6 +28,7 @@ use serde_json::{Value, json};
 pub mod acting;
 pub mod admission;
 pub mod advance;
+pub mod blockers;
 pub mod board;
 pub mod caster;
 pub mod checkout;
@@ -599,7 +600,7 @@ enum Command {
     ///
     /// ## Who runs it
     ///
-    /// Whoever hands the fleet work: a human, or the agent a human is talking to, with work decided on and issues to open for it. In a checkout of the repo the issues go to, bound or unbound. A worker does not: it takes an issue in with `afkconvoy intake`.
+    /// Whoever hands the fleet work: a human, or the agent a human is talking to, with work decided on and issues to open for it. In a checkout of the repo the issues go to, bound or unbound. A worker opening a blocker for another repo of the host names that repo's main checkout: `afkconvoy flows <target-checkout>`. It takes the issue in there with `afkconvoy intake`.
     ///
     /// ## What it reads and writes
     ///
@@ -1103,6 +1104,7 @@ enum Command {
     /// - `worker_no_proxy`: every harness, with {harness, addition, no_proxy, NO_PROXY}: the host list added and the resulting login shell values, with this command's --worker-no-proxy flags. A null addition leaves the inherited spellings alone
     /// - `held_back`: while admission holds: each threshold the host is past, as data: {by: "load", load, limit} in hundredths, {by: "memory", free, floor} in percent, {by: "disk", free, floor} in bytes. The frontier is still what a tick would dispatch once it admits
     /// - `intake`: in a bound repo: {"open", "limit"} — the open issues taken in by workers, counted from their intake records, against the repo's `intake_limit`. With `open` at `limit`, `afkconvoy intake` refuses. An issue a human labelled is not among them
+    /// - `findings`: open blockers no fleet works, each {severity, what, evidence, fix, see}: the waiting issue, the blocker's repo and number, why no checkout serving the tracker works it, and the transfer and label lines. A consult or declared hand-off proceeds if these are its only blockers; build work waits
     /// - `patrols`: in a bound repo that names patrols: each, in the order the config names them: {name, standing, every, last_run, open, max_open} — `every` in seconds, `last_run` when its last recorded run started (null: it never ran), `open` the open issues it opened. A patrol whose file says `max_runs_a_day` has it too, and `runs_in_day`: how many of its runs started in the last 24 hours. A patrol with `max_landed_a_day` reports it and `landed_in_day`: the issues it opened that closed as completed in the last rolling 24 hours. One a human asked to run now (`afkconvoy patrol-now --help`) has `asked`: when the ask was made, until a tick starts the run. standing says what a tick does about it:
     ///
     ///   - `due`: its interval has passed, or a human asked for it: a tick runs it
@@ -2129,6 +2131,7 @@ enum Command {
     /// It reads the config of the checkout, the team it names, the issue, and — to count — the comments of every open issue that carries a flow label. It writes on the issue, in this order: a blocked-by edge to each issue `--blocked-by` names that GitHub does not record yet; one comment, the intake record, whose marker carries the workflow, the role and the issue the worker was on — or the patrol it ran, or, of the repair worker's, `by=repair` and nothing else; then, where the checkout's tracker is another repo (`afkconvoy run --tracker`) and the issue lacks it, this repo's repo label, `repo:<owner>/<repo>`; then the workflow's flow label, `flow:<workflow>`. Nothing but this command writes that format. Then it wakes the fleet, as `afkconvoy wake` does: the issue is on the frontier at the next tick — or, with an open issue to wait for, once that has closed. The edges go first, so the issue is never on the frontier ahead of what blocks it.
     ///
     /// The issue, the issues it waits for and every issue it counts are the tracker's: the checkout's own repo, or the one its host says, where it counts only the issues that carry this repo's repo label.
+    /// An issue not found there is refused naming the tracker, where `gh` finds it in the checkout's repo (following a transfer), and `gh issue transfer <n> <tracker> --repo <its repo>`. Use the number GitHub assigns after transfer. For another repo's blocker, run `afkconvoy flows` in that repo's checkout, open it on the tracker with that repo's repo label using its line (omit the flow label until intake), and take it in there.
     ///
     /// The limit. Before it writes anything it counts the open issues taken in by workers: those that carry a flow label and an intake record for it. With that count at the repo's `intake_limit` (see `afkconvoy config --help`) it refuses and writes nothing. The count is taken from the records each time and stored nowhere, so closing such an issue makes room. An issue a human labelled has no record: it is never counted, and nothing here refuses a human's label.
     ///
@@ -4125,7 +4128,9 @@ fn run(
             let (mut set, flows) = fleet.rebuild(&open, instance.as_ref())?;
             let admission = admission::Admission::read(&fleet.repo.dir)?;
             set.held_back = admission.holds();
+            let findings = blockers::findings(&set.unworked_blockers);
             let mut plan = serde_json::to_value(set)?;
+            plan["findings"] = serde_json::to_value(findings)?;
             if let Some(bound) = &fleet.config.bound {
                 plan["intake"] = json!({"open": flows.taken_in(), "limit": bound.intake_limit});
                 // What each role's range on this host leaves out, and why.
