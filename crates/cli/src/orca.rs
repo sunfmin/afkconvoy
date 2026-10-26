@@ -211,6 +211,22 @@ fn runtime_row(ps: &Value, path: &Path) -> Value {
 
 /// The newest top-level agent speaks for a worktree, as `worker::lead`
 /// does. Child panes cannot change the worker's harness or outcome.
+/// The top-level runtime observation belonging to exactly this terminal.
+fn pane_agent(row: &Value, terminal: &Value) -> Value {
+    let pane = format!(
+        "{}:{}",
+        terminal["tabId"].as_str().unwrap_or(""),
+        terminal["leafId"].as_str().unwrap_or("")
+    );
+    row["agents"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|agent| agent["paneKey"] == pane && agent["parentPaneKey"].is_null())
+        .cloned()
+        .unwrap_or(Value::Null)
+}
+
 fn main_agent(row: &Value) -> Value {
     row["agents"]
         .as_array()
@@ -1247,25 +1263,13 @@ impl Worktree {
     pub(crate) fn terminal_health(&self, terminal: &str, now: u64) -> Result<(WorkerState, Value)> {
         let shown = orca(&["terminal", "show", "--terminal", terminal])?;
         let shown = &shown["terminal"];
-        let pane = format!(
-            "{}:{}",
-            shown["tabId"].as_str().unwrap_or(""),
-            shown["leafId"].as_str().unwrap_or("")
-        );
         let row = self.health_report()?;
-        let agent = row["agents"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .find(|agent| agent["paneKey"] == pane && agent["parentPaneKey"].is_null());
-        let lead = agent.map(|agent| AgentReport {
+        let agent = pane_agent(&row, shown);
+        let lead = (!agent.is_null()).then(|| AgentReport {
             working: agent["state"] == "working",
             since: agent["stateStartedAt"].as_u64().map(|at| at / 1000),
         });
-        Ok((
-            worker_state(1, shown["lastOutputAt"].as_u64().map(|at| at / 1000), lead, now),
-            agent.cloned().unwrap_or(Value::Null),
-        ))
+        Ok((worker_state(1, shown["lastOutputAt"].as_u64().map(|at| at / 1000), lead, now), agent))
     }
 
     /// Delivers to a watch with the same input check and turn receipt as a
@@ -1383,7 +1387,15 @@ impl Worktree {
             if ready != Waited::Ready {
                 return Ok(ready);
             }
-            let agent = main_agent(&runtime_row(&runtime_live()?, &self.path));
+            let row = runtime_row(&runtime_live()?, &self.path);
+            let agent = if row["liveTerminalCount"].as_u64().unwrap_or(0) > 1 {
+                // A watch shares its directory with the operator. A busy
+                // session beside it cannot hold back this terminal's input.
+                let shown = orca(&["terminal", "show", "--terminal", terminal])?;
+                pane_agent(&row, &shown["terminal"])
+            } else {
+                main_agent(&row)
+            };
             let state = agent["programStatus"]["state"].as_str().or(agent["state"].as_str());
             if state != Some("working") {
                 return Ok(Waited::Ready);
