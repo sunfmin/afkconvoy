@@ -252,7 +252,7 @@ fn a_flow_labelled_issue_is_dispatched_to_its_first_stage_with_the_worker_in_its
         host_user = host_user(&world).display(),
     );
     assert_eq!(terminals[0]["command"], command);
-    assert_eq!(created[4..], ["--command".to_string(), common::niced(&dir, &command)]);
+    assert_eq!(created[4..], ["--command".to_string(), common::niced(&world, &dir, &command)]);
 
     // The brief is a fixed form, and the worker is pointed at it.
     let brief = brief(&dir);

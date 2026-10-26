@@ -19,7 +19,9 @@
 //! fails), `create_fails` [issue…], `rm_fails`, `never_ready`, `send_refused`,
 //! `stale_base` (a ref worktrees are cut at instead of the one asked for),
 //! `ps_truncated`, `ps_fails`, `close_fails` [worktree paths…],
-//! `close_keeps_terminal` (acknowledges close without ending its terminal).
+//! `close_keeps_terminal` (acknowledges close without ending its terminal),
+//! `start_screen`, `send_screen`, `prompt_stages` (a receipt without a turn
+//! start); each terminal can also have `menu` and its own `prompt_stages`.
 
 mod fake;
 
@@ -229,9 +231,10 @@ fn terminal_create(st: &mut State) -> ! {
     let command = command.to_string();
     let handle = format!("term-{}", st.list("terminals").len() + 1);
     let title = st.opt("--title").map(str::to_string);
+    let screen = st.doc["start_screen"].clone();
     st.list("terminals")
         .push(json!({"handle": handle, "worktreePath": path, "command": command, "line": given,
-        "title": title, "sent": [], "open": true}));
+        "title": title, "sent": [], "open": true, "screen": screen}));
     done(st, json!({"terminal": {"handle": handle, "worktreePath": path}}))
 }
 
@@ -275,7 +278,7 @@ fn terminal_wait(st: &State) -> ! {
         let answer = json!({"id": "x", "ok": true, "result": {"wait": wait}});
         st.finish(&answer.to_string(), 1, "")
     }
-    let ready = st.doc["never_ready"] != true;
+    let ready = st.doc["never_ready"] != true && st.doc["terminals"][at]["menu"] != true;
     let status = if ready { "idle" } else { "timeout" };
     done(st, json!({"wait": {"satisfied": ready, "status": status}}))
 }
@@ -320,7 +323,26 @@ fn terminal_send(st: &mut State) -> ! {
     }
     let sent = json!({"text": st.opt("--text").expect("--text"), "enter": st.has("--enter")});
     st.doc["terminals"][at]["sent"].as_array_mut().unwrap().push(sent);
-    done(st, json!({"send": {"accepted": true}}))
+    if st.doc["send_screen"].is_array() {
+        st.doc["terminals"][at]["screen"] = st.doc["send_screen"].clone();
+    }
+    let stages = st.doc["terminals"][at]["prompt_stages"]
+        .as_array()
+        .or_else(|| st.doc["prompt_stages"].as_array())
+        .cloned()
+        .unwrap_or_else(|| {
+            if st.opt("--wait-submit").is_some() {
+                vec![json!("input_accepted"), json!("turn_started")]
+            } else {
+                vec![json!("input_accepted")]
+            }
+        });
+    done(
+        st,
+        json!({"send": {"accepted": true, "prompt": {
+            "requestId": "request-1", "stages": stages, "observation": "observed"
+        }}}),
+    )
 }
 
 fn terminal_list(st: &State) -> ! {
