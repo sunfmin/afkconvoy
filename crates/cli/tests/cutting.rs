@@ -402,6 +402,23 @@ fn the_initial_cut_obeys_admission_and_a_fleet_lock() {
 }
 
 #[test]
+fn a_busy_fleet_cuts_at_the_age_bound_with_claims_and_a_frontier_left() {
+    let world = cutting();
+    let landed: u64 = git(&world.clone, &["log", "-1", "--format=%ct"]).trim().parse().unwrap();
+    for issue in 1..=4 {
+        world.issue(issue, &["ready-for-agent"]);
+    }
+    let before = tick_as(&world, "alpha", landed + 3599);
+    assert!(cut(&before).is_empty(), "{before}");
+    assert!(!claimed(&world));
+    let at_bound = tick_as(&world, "alpha", landed + 3600);
+    assert_eq!(cut(&at_bound), ["cut done"], "{at_bound}");
+    assert!(claimed(&world));
+    assert_eq!(standing(&world, "beta", landed + 3601), "peer_running");
+    assert!(cut(&tick_as(&world, "beta", landed + 3601)).is_empty());
+}
+
+#[test]
 fn an_idle_tick_starts_one_cut_of_the_next_patch_and_a_peer_starts_none() {
     let world = cutting();
     assert_eq!(cut(&tick_as(&world, "alpha", 10_000)), ["cut done"]);
