@@ -332,7 +332,7 @@ what it takes. Then stop.
 const CROSS_REPO_BLOCKER: &str = "
 ## Cross-repo blockers
 
-For a blocker, defect or split piece belonging to another repo of this host, open it on the tracker
+For a blocker or defect belonging to another repo of this host, open it on the tracker
 `<blocker_tracker>`, with that repo's `repo:<owner>/<repo>` label. In that repo's checkout run `afkconvoy flows`
 and use its `line` (the matching workflow's in a bound repo), with a title and body file. In a bound
 repo omit the line's flow label while opening, then take it in there with
@@ -1464,7 +1464,7 @@ pub(crate) fn in_tracker(template: &str, tracker: &Tracker) -> String {
         .replace("<cross_repo>", CROSS_REPO_BLOCKER)
         .replace(
             "<blocker_tracker>",
-            tracker.named().map_or("<owner>/<tracker>", |name| name.as_str()),
+            tracker.named().map_or("<owner>/<tracker-name>", |name| name.as_str()),
         )
         .replace("<tracker>", &flag)
         .replace("<issues>", &path)
