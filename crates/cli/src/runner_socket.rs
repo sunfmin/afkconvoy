@@ -294,6 +294,12 @@ pub fn ask(request: &Request, within: Duration) -> Result<Reached> {
     ask_in(&cache()?, request, within)
 }
 
+/// A bounded observation: never removes a stale socket or asks the runner
+/// to change anything. Temporary path links, where required, are removed.
+pub fn observe(request: &Request, within: Duration) -> Result<Reached> {
+    Ok(conversation_in(&cache()?, request, within, false)?.0)
+}
+
 /// `ask`, the asker staying on the line once answered: what the host runner
 /// says after its answer, as a `Conversation`, there with an answer alone.
 pub fn keep_asking(request: &Request, within: Duration) -> Result<(Reached, Option<Conversation>)> {
@@ -356,11 +362,23 @@ fn keep_asking_in(
     request: &Request,
     within: Duration,
 ) -> Result<(Reached, Option<Conversation>)> {
+    conversation_in(dir, request, within, true)
+}
+
+fn conversation_in(
+    dir: &Path,
+    request: &Request,
+    within: Duration,
+    clean_stale: bool,
+) -> Result<(Reached, Option<Conversation>)> {
     let stream = match reached(dir, SOCKET, |path| UnixStream::connect(path)) {
         Ok(stream) => stream,
         Err(error) => {
             let kind = error.downcast_ref::<std::io::Error>().map(std::io::Error::kind);
-            if kind == Some(ErrorKind::ConnectionRefused) && !crate::host_runner::held_in(dir) {
+            if clean_stale
+                && kind == Some(ErrorKind::ConnectionRefused)
+                && !crate::host_runner::held_in(dir)
+            {
                 // What a host runner that ended with no goodbye left.
                 let _ = std::fs::remove_file(dir.join(SOCKET));
             }
@@ -374,6 +392,7 @@ fn keep_asking_in(
     // before the timeout is set leaves a line that refuses it (EINVAL on
     // macOS). One it closed already reads its end at once.
     let _ = stream.set_read_timeout(Some(within));
+    let _ = stream.set_write_timeout(Some(within));
     let asked = serde_json::to_string(request)?;
     match writeln!(&stream, "{asked}") {
         Err(error) if closed(&error) => return Ok((Reached::Closed, None)),
@@ -381,7 +400,7 @@ fn keep_asking_in(
     }
     let mut lines = BufReader::new(stream);
     let mut line = String::new();
-    match lines.read_line(&mut line) {
+    match read_line_within(&mut lines, &mut line, within) {
         Ok(0) => Ok((Reached::Closed, None)),
         Ok(_) => {
             let answer = serde_json::from_str(line.trim())
@@ -394,6 +413,38 @@ fn keep_asking_in(
         Err(error) if closed(&error) => Ok((Reached::Closed, None)),
         Err(error) => Err(error).context("the host runner's answer could not be read"),
     }
+}
+
+/// A total deadline, including a peer that dribbles part of a line forever.
+/// Retain bytes after the newline for exclusive's continuing conversation.
+fn read_line_within(
+    lines: &mut BufReader<UnixStream>,
+    line: &mut String,
+    within: Duration,
+) -> std::io::Result<usize> {
+    let began = Instant::now();
+    let mut bytes = vec![];
+    loop {
+        let left = within.saturating_sub(began.elapsed());
+        if left.is_zero() {
+            return Err(ErrorKind::TimedOut.into());
+        }
+        let _ = lines.get_ref().set_read_timeout(Some(left));
+        let buffer = lines.fill_buf()?;
+        if buffer.is_empty() {
+            break;
+        }
+        let length = buffer.iter().position(|byte| *byte == b'\n').map(|at| at + 1);
+        let take = length.unwrap_or(buffer.len());
+        bytes.extend_from_slice(&buffer[..take]);
+        lines.consume(take);
+        if length.is_some() {
+            break;
+        }
+    }
+    *line = String::from_utf8(bytes)
+        .map_err(|error| std::io::Error::new(ErrorKind::InvalidData, error))?;
+    Ok(line.len())
 }
 
 #[cfg(test)]
