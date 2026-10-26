@@ -4504,6 +4504,7 @@ mod tests {
         &["tick", "--instance", "a-h1-1"],
         &["gate"],
         &["land", "7"],
+        &["watched", "--watch", "watch-1", "--text-file", "report.json"],
         &["verdict", "pass", "7", "--stage", "build", "--text", "x"],
         &["rule", "7", "--text", "x"],
         &["send", "7", "--stage", "build", "--text", "x"],
@@ -4576,8 +4577,8 @@ mod tests {
         assert_eq!(named(&["land", "--train"]), "land");
     }
 
-    /// The commands a worker's worktree is taken for are commands about one
-    /// repo, and among them every one the manual says a worker runs.
+    /// Repo commands a worker runs accept its worktree. A watch's host-wide
+    /// report needs no repo and must stay usable in an operator's directory.
     #[test]
     fn a_workers_worktree_is_taken_for_every_command_a_worker_runs() {
         let cli = Cli::command();
@@ -4592,6 +4593,10 @@ mod tests {
         let workers: Vec<&str> = workers.map(clap::Command::get_name).collect();
         assert!(workers.len() >= 8, "{workers:?}");
         for name in workers {
+            if name == "watched" {
+                assert!(!about(cli.find_subcommand(name).unwrap()));
+                continue;
+            }
             assert!(IN_ITS_WORKTREE.contains(&name), "a worker runs `{name}`");
         }
         // `wake` is in the group of whoever hands the fleet work, and still a
