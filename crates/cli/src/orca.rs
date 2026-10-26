@@ -209,8 +209,6 @@ fn runtime_row(ps: &Value, path: &Path) -> Value {
         .unwrap_or(Value::Null)
 }
 
-/// The newest top-level agent speaks for a worktree, as `worker::lead`
-/// does. Child panes cannot change the worker's harness or outcome.
 /// The top-level runtime observation belonging to exactly this terminal.
 fn pane_agent(row: &Value, terminal: &Value) -> Value {
     let pane = format!(
@@ -227,6 +225,8 @@ fn pane_agent(row: &Value, terminal: &Value) -> Value {
         .unwrap_or(Value::Null)
 }
 
+/// The newest top-level agent speaks for a worktree, as `worker::lead`
+/// does. Child panes cannot change the worker's harness or outcome.
 fn main_agent(row: &Value) -> Value {
     row["agents"]
         .as_array()
