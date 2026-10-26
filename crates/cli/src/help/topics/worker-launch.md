@@ -29,6 +29,8 @@ The role's rules, skills and hooks load because it starts there. The repo's own 
 
 With `host_user: false`, the fleet's settings also exclude ~/.claude/CLAUDE.md and ~/.claude/rules/** through `claudeMdExcludes`. Claude Code can otherwise load those files as project rules while walking above a role's copy under your home, even with user settings disabled. Your login stays accessible in its usual location.
 
+The fleet's Claude Code role copy also holds an empty `.git` directory. It bounds native project skill discovery at the role, so a host profile above the cache cannot supply skills through ancestry when `host_user: false`. It holds no Git metadata or hooks. Opted-in host skills still load from the added directory, and the role's skill keeps its unprefixed name when names collide. Run the opt-in `smoke_claude_skills` test after upgrading Claude Code to verify this native discovery behavior.
+
 ## pi
 
 A pi worker — of a role whose range runs it pi — starts in its role's directory like any other, with what pi does not load from there added:

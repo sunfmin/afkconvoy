@@ -441,6 +441,7 @@ fn a_stage_that_names_no_harness_starts_its_worker_as_before() {
     assert_eq!(did(&ticked)[0], "dispatch 7 done", "{ticked}");
     let line = started(&world, &worktree(&world, 7));
     let (role, team) = (copy(&world, "acme/reviewer"), copy(&world, "acme/team"));
+    let role = role.with_file_name(format!("{}-role+claude-code-", head(&world, "acme/reviewer")));
     let begins = format!(
         "cd '{}' && export CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1 \
          CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 CLAUDE_CODE_SANDBOXED=1 \
