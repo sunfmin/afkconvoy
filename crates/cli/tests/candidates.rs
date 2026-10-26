@@ -10,7 +10,7 @@ fn quote(path: &Path) -> String {
     afkconvoy_core::line::Line::new().word(&path.to_string_lossy()).own()
 }
 
-fn until(done: impl Fn() -> bool) {
+fn until(mut done: impl FnMut() -> bool) {
     let start = Instant::now();
     while !done() {
         assert!(start.elapsed() < Duration::from_secs(30), "candidate transition never happened");
@@ -54,7 +54,7 @@ fn start(world: &World, dir: &Path, cache: &Path, n: u64) -> Child {
         .env("XDG_CACHE_HOME", cache)
         .args(["land", "--issue", &n.to_string()])
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::inherit())
         .spawn()
         .unwrap()
 }
@@ -73,6 +73,7 @@ fn release(world: &World, name: &str, red: bool) {
 }
 
 fn began(world: &World, name: &str) {
+    eprintln!("waiting for gate {name} in {}", world.root.display());
     until(|| world.root.join(format!("start-{name}")).exists());
 }
 
@@ -122,8 +123,11 @@ fn three_candidates_overlap_finish_out_of_order_and_publish_exact_commits_once()
         .collect();
     let base = world.remote(&["rev-parse", "refs/heads/main"]);
     let _runner = world.host_held();
-    let a = start(&world, &workers[0].0, &world.cache(), 1);
-    began(&world, "a");
+    let mut a = start(&world, &workers[0].0, &world.cache(), 1);
+    until(|| world.root.join("start-a").exists() || a.try_wait().unwrap().is_some());
+    if a.try_wait().unwrap().is_some() {
+        panic!("first turn exited: {}", finish(a));
+    }
     let b = start(&world, &workers[1].0, &world.cache(), 2);
     began(&world, "b");
     let c = start(&world, &workers[2].0, &world.cache(), 3);
