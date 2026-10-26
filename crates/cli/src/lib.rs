@@ -1616,6 +1616,10 @@ enum Command {
     ///
     /// Run `afkconvoy queue` from any directory on the host, as the host runner's user, to see who occupies its worker lanes and why each request waits. No checkout, login or running fleet is required. It accepts no checkout or host selector: it observes this user's local host runner across all its repos.
     ///
+    /// ## Who runs it
+    ///
+    /// The operator, or their agent, on the host whose exclusive queue they want to read.
+    ///
     /// ## What it reads and writes
     ///
     /// It reads the host settings once and asks the host runner once on its local socket, allowing {const:QUEUE_SECONDS}s for its response, including partial lines. Settings absent use the defaults; unreadable settings fail. It reads no GitHub, git, harness, tick log or gate history, makes no probe or full diagnosis, sends no wake and changes no fleet, queue or settings. A stale socket is left in place. A temporary link used to reach a long socket path is removed afterwards. The runner's lock is checked only if its socket is absent or refuses the connection.
