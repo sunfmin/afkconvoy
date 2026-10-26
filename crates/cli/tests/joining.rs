@@ -73,9 +73,14 @@ fn pr_is_open(world: &World) -> bool {
 
 #[test]
 fn a_joined_worker_leaves_health_while_the_train_waits_to_land() {
-    let world = joining();
+    let world = World::new();
     world.set_gate("true");
+    world.issue(7, &["ready-for-agent", "bug"]);
+    tick(&world, 700);
     let dir = worktree(&world);
+    commit(&dir, "seven.txt", "7\n");
+    git(&dir, &["push", "-q", "origin", "HEAD"]);
+    world.pr(70, 7, &git(&dir, &["symbolic-ref", "--short", "HEAD"]));
     let gate = world.afk_in(&dir, &["gate", "--train", "--now", "1040"]).ok();
     assert_eq!((&gate["status"], &gate["recorded"]), (&json!("green"), &json!(true)));
     let joined = world.afk_in(&dir, &["land", "--issue", "7", "--now", "1050"]).ok();
