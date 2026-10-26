@@ -24,7 +24,7 @@ fn name(repo: &Repo) -> Result<String> {
 /// The checkouts serving this tracker, including the checkout being asked
 /// about even before its first tick has put it on the checkout list.
 fn serving(repo: &Repo, tracker: &str) -> Result<Vec<Checkout>> {
-    let mut found = vec![Checkout { repo: name(repo)?, path: repo.dir.clone() }];
+    let mut found = vec![Checkout { repo: name(repo)?, path: repo.main_checkout()? }];
     for entry in List::of_host()?.read()?.checkouts {
         let Ok(other) = Repo::at(&entry.checkout) else { continue };
         let Ok(name) = name(&other) else { continue };
