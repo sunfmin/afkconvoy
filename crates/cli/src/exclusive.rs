@@ -79,8 +79,7 @@ impl Default for Joined {
 impl Joined {
     /// Account for the interval before any queue change, so short waits,
     /// gaps without waiters and a changing set of waiters count correctly.
-    fn count(&mut self) {
-        let now = Instant::now();
+    fn count(&mut self, now: Instant) {
         if self.tickets.len() > 1 && self.tickets.iter().any(|ticket| ticket.ran.is_some()) {
             self.waited = self.waited.saturating_add(now.duration_since(self.counted_at));
         }
@@ -101,7 +100,7 @@ impl Queue {
     pub fn answer(&self, ticket: Ticket) -> Reply {
         let (number, ahead) = {
             let mut joined = self.joined();
-            joined.count();
+            joined.count(Instant::now());
             joined.next = joined.next.saturating_add(1);
             let number = joined.next;
             joined.tickets.push(Ticket { number, ran: None, ..ticket });
@@ -144,7 +143,7 @@ impl Queue {
             if !joined.tickets.iter().any(|ticket| ticket.number == number) {
                 return;
             }
-            joined.count();
+            joined.count(Instant::now());
             // A changed host setting applies to the command already running.
             // An unreadable file leaves the default in force.
             let bound = crate::host_settings::of_host().unwrap_or_default().exclusive_seconds();
@@ -164,7 +163,7 @@ impl Queue {
     /// the one that ran.
     fn leave(&self, number: u64) {
         let mut joined = self.joined();
-        joined.count();
+        joined.count(Instant::now());
         joined.tickets.retain(|ticket| ticket.number != number);
         drop(joined);
         self.held.1.notify_all();
@@ -472,6 +471,25 @@ mod tests {
             asked,
             ran: None,
         }
+    }
+
+    #[test]
+    fn contention_pauses_without_waiters_and_changing_waiters_does_not_reset_it() {
+        let start = Instant::now();
+        let mut running = ticket("running", 0);
+        running.ran = Some(0);
+        let mut joined = Joined { tickets: vec![running], counted_at: start, ..Joined::default() };
+        joined.count(start + Duration::from_secs(20));
+        assert_eq!(joined.waited, Duration::ZERO, "time alone does not count");
+        joined.tickets.push(ticket("waiting", 20));
+        joined.count(start + Duration::from_secs(23));
+        assert_eq!(joined.waited, Duration::from_secs(3));
+        joined.tickets.pop();
+        joined.count(start + Duration::from_secs(50));
+        assert_eq!(joined.waited, Duration::from_secs(3), "nobody waits in the gap");
+        joined.tickets.push(ticket("another waiter", 50));
+        joined.count(start + Duration::from_secs(54));
+        assert_eq!(joined.waited, Duration::from_secs(7), "another waiter resumes the count");
     }
 
     /// An asker on the queue's line: what it was told first, and the line.

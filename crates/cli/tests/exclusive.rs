@@ -20,7 +20,7 @@ fn a_command_is_ended_after_contended_time_and_the_next_runs_after_its_descendan
         &world,
         &cache,
         11,
-        "trap '' TERM; (while :; do sleep 0.02; done) & echo $! > \"$CACHE/descendant\"; wait",
+        "trap '' TERM; sleep 10 & echo $! > \"$CACHE/descendant\"; wait",
     );
     until(|| cache.join("descendant").exists());
     // A late waiter must receive the whole bound: time alone did not count.
@@ -88,6 +88,28 @@ fn a_long_command_with_nothing_waiting_finishes_and_a_live_setting_changes_the_b
     assert!(next.wait_with_output().unwrap().status.success());
     let child_code = exclusive(&world, &cache, 14, "exit 124").wait_with_output().unwrap();
     assert_eq!(child_code.status.code(), Some(1), "124 is reserved for the bound");
+}
+
+#[test]
+fn a_gate_timeout_still_ends_a_nested_exclusive_command_and_its_descendants() {
+    let world = World::new();
+    let cache = world.cache();
+    let line = afkconvoy_core::line::Line::new()
+        .program(env!("CARGO_BIN_EXE_afkconvoy"))
+        .fixed(" exclusive -- sh -c ")
+        .word("sleep 30 & echo $! > descendant; wait")
+        .own();
+    world.set_gate_config(&format!("gate_command: {line}\ngate_seconds: 1"));
+    let _host_runner = world.host_held();
+    let answer = world.afk(&["gate"]).ok();
+    assert_eq!(answer["timed_out"], true, "{answer}");
+    let pid = std::fs::read_to_string(world.clone.join("descendant")).unwrap();
+    let state = Command::new("ps").args(["-p", pid.trim(), "-o", "stat="]).output().unwrap();
+    let state = text(&state.stdout);
+    assert!(state.trim().is_empty() || state.trim().starts_with('Z'), "{state}");
+    assert!(
+        exclusive(&world, &cache, 15, "echo next").wait_with_output().unwrap().status.success()
+    );
 }
 
 /// `afkconvoy exclusive -- sh -c <script>`, started in `world`'s checkout on
