@@ -328,6 +328,7 @@ fn an_unlabelled_tracker_blocker_does_not_hold_its_consult() {
 #[test]
 fn an_unbound_stock_consult_is_started_with_its_unworked_blocker() {
     let world = World::new();
+    world.name_origin(&world.clone, "acme/app");
     world.issue(7, &["ready-for-agent"]);
     let first = tick(&world, 1000);
     assert_eq!(did(&first), ["dispatch 7 done"], "{first}");
@@ -338,10 +339,11 @@ fn an_unbound_stock_consult_is_started_with_its_unworked_blocker() {
             {"number": 931, "state": "open", "repo": "acme/kernel", "labels": []}
         ])
     });
-    tick(&world, 1090);
+    let handed = tick(&world, 1180);
+    assert_eq!(did(&handed), ["judge 7 done"], "{handed}");
     let plan = world.afk(&["plan"]).ok();
     assert_eq!(plan["frontier"][0]["number"], 7, "{plan}");
-    assert_eq!(did(&tick(&world, 1180)), ["dispatch 7 done"]);
+    assert_eq!(did(&tick(&world, 1270)), ["dispatch 7 done"]);
     let told = brief(&worktree(&world));
     assert!(told.contains("acme/kernel#931"), "{told}");
     assert!(told.contains("outside the tracker"), "{told}");
