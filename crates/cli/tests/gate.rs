@@ -78,7 +78,7 @@ impl QueuedGate {
 
     fn interrupt(&self) {
         // SAFETY: this is the gate child's own process group, never ours.
-        assert_eq!(unsafe { libc::kill(-self.group, libc::SIGKILL) }, 0);
+        assert_eq!(unsafe { libc::kill(-self.group, libc::SIGTERM) }, 0);
     }
 
     fn finish(&mut self) -> Output {
@@ -157,14 +157,14 @@ fn a_signalled_queued_gate_keeps_termination_evidence_without_claiming_checks_ra
     assert_eq!(answer["status"], "red");
     assert_eq!(answer["exit_code"], -1, "preserve the existing exit-code contract");
     assert_eq!(answer["timed_out"], false);
-    assert_eq!(answer["termination"]["signal"], libc::SIGKILL, "{answer}");
+    assert_eq!(answer["termination"]["signal"], libc::SIGTERM, "{answer}");
     assert_eq!(answer["termination"]["pid"], gate.group, "{answer}");
     assert_eq!(answer["termination"]["core_dumped"], false);
     assert_eq!(answer["recorded"], false);
     assert!(!world.root.join("executed").exists());
     assert!(records(&world).is_empty());
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("signal 9"), "{stderr}");
+    assert!(stderr.contains("signal 15"), "{stderr}");
     assert!(answer["detail"].as_str().unwrap().contains("checks may not have started"), "{answer}");
     let runs = world.cache().join("afkconvoy/runs");
     let log = std::fs::read_dir(runs)
@@ -172,7 +172,7 @@ fn a_signalled_queued_gate_keeps_termination_evidence_without_claiming_checks_ra
         .flatten()
         .map(|entry| std::fs::read_to_string(entry.path()).unwrap())
         .collect::<String>();
-    assert!(log.contains("signal 9"), "{log}");
+    assert!(log.contains("signal 15"), "{log}");
 }
 
 /// A world whose gate is red exactly while the file `red` exists beside it.
@@ -271,6 +271,13 @@ fn a_signal_is_distinct_from_an_ordinary_shell_exit_and_a_gate_timeout() {
     world.set_gate("kill -TERM $$");
     let answer = world.afk(&["gate"]).ok();
     assert_eq!(answer["termination"]["signal"], libc::SIGTERM, "{answer}");
+    assert_eq!(answer["exit_code"], -1);
+    assert_eq!(answer["timed_out"], false);
+    assert_eq!(answer["recorded"], false);
+
+    world.set_gate("kill -KILL $$");
+    let answer = world.afk(&["gate"]).ok();
+    assert_eq!(answer["termination"]["signal"], libc::SIGKILL, "{answer}");
     assert_eq!(answer["exit_code"], -1);
     assert_eq!(answer["timed_out"], false);
     assert_eq!(answer["recorded"], false);
