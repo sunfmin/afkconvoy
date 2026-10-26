@@ -139,7 +139,25 @@ fn already_satisfied_with_nothing_on_the_branch_closes_the_issue() {
 }
 
 #[test]
-fn already_satisfied_with_commits_ahead_and_an_equal_tree_closes_the_issue() {
+fn already_satisfied_on_a_branch_only_behind_the_base_closes_the_issue() {
+    let world = fleet(1000);
+    let dir = worktree(&world);
+    commit(&world.clone, "landed.txt", "landed while the worker checked\n");
+    git(&world.clone, &["push", "-q", "origin", "main"]);
+    assert_eq!(git(&dir, &["rev-list", "--count", "origin/main..HEAD"]), "0");
+    assert_ne!(git(&dir, &["rev-list", "--count", "HEAD..origin/main"]), "0");
+    assert_eq!(git(&dir, &["status", "--porcelain"]), "");
+    declare(&world, "already-satisfied");
+
+    assert_eq!(did(&tick(&world, 1090)), ["judge 7 done"]);
+    assert_eq!(world.state(7), "closed");
+    assert_eq!(world.claims(), []);
+    assert!(!dir.exists());
+    assert_eq!(escalations(&world), 0);
+}
+
+#[test]
+fn already_satisfied_with_commits_ahead_and_an_equal_tree_escalates() {
     for reverted in [false, true] {
         let world = fleet(1000);
         let dir = worktree(&world);
@@ -154,10 +172,11 @@ fn already_satisfied_with_commits_ahead_and_an_equal_tree_closes_the_issue() {
         declare(&world, "already-satisfied");
 
         assert_eq!(did(&tick(&world, 1090)), ["judge 7 done"]);
-        assert_eq!(world.state(7), "closed");
+        assert_eq!(world.state(7), "open");
         assert_eq!(world.claims(), []);
-        assert!(!dir.exists());
-        assert_eq!(escalations(&world), 0);
+        assert!(dir.exists(), "commits past the merge base are evidence even with an equal tree");
+        assert_eq!(escalations(&world), 1);
+        assert!(world.comments(7).last().unwrap().contains("commits past the merge base"));
     }
 }
 
@@ -171,6 +190,8 @@ fn already_satisfied_over_work_on_the_branch_escalates_and_keeps_the_worktree() 
         } else {
             commit(&dir, "work.txt", "x\n");
         }
+        commit(&world.clone, "landed.txt", "only on the base branch\n");
+        git(&world.clone, &["push", "-q", "origin", "main"]);
         let said = declare(&world, "already-satisfied");
 
         assert_eq!(did(&tick(&world, 1090)), ["judge 7 done"]);
@@ -187,6 +208,7 @@ fn already_satisfied_over_work_on_the_branch_escalates_and_keeps_the_worktree() 
         assert!(comments[2].contains("its branch holds work") && comments[2].contains(&said));
         let file = if dirty { "scratch.txt" } else { "work.txt" };
         assert!(comments[2].contains(file), "{}", comments[2]);
+        assert!(!comments[2].contains("landed.txt"), "{}", comments[2]);
     }
 }
 

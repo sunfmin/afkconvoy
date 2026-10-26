@@ -7,13 +7,13 @@ use crate::lease::stamp_age;
 use crate::verdict::{Phase, Verdict};
 use crate::worker::{GRACE, WorkerState};
 
-/// One worktree's git progress against the base branch as the REMOTE has it.
+/// One worktree's git progress since its merge base with the remote base branch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Progress {
-    /// Commits on the branch past the base; `None` when the count could not be
-    /// read at all — unreadable is not zero.
+    /// Commits on the branch past the merge base; `None` when the count could
+    /// not be read at all — unreadable is not zero.
     pub commits_ahead: Option<u64>,
-    /// Whether the committed tree equals the base's; `None` when unreadable.
+    /// Whether the committed tree equals the merge base's; `None` when unreadable.
     pub trees_equal: Option<bool>,
     /// Anything uncommitted or untracked.
     pub dirty: bool,
@@ -22,16 +22,18 @@ pub struct Progress {
     pub touched: Option<u64>,
 }
 
-/// The proof that a worktree's branch holds no work: its tree equals the base's
-/// and nothing uncommitted. `Workless::of` is the only way to one, so what
-/// asks for one — closing an issue as needing no change — cannot be done over
-/// work, or over a branch nobody could read.
+/// The proof that a worktree's branch holds no work: no commits past the merge
+/// base, a tree equal to it and nothing uncommitted. `Workless::of` is the only
+/// way to one, so what asks for one — closing an issue as needing no change —
+/// cannot be done over work, or over a branch nobody could read.
 #[derive(Debug, PartialEq, Eq)]
-#[refined_by(equal: bool, dirty: bool)]
-#[invariant(equal && !dirty)]
+#[refined_by(ahead: int, equal: bool, dirty: bool)]
+#[invariant(ahead == 0 && equal && !dirty)]
 // The fields are what the invariant is stated on: nothing reads them back.
 #[allow(dead_code)]
 pub struct Workless {
+    #[field(u64[ahead])]
+    ahead: u64,
     #[field(bool[equal])]
     equal: bool,
     #[field(bool[dirty])]
@@ -40,15 +42,15 @@ pub struct Workless {
 
 impl Workless {
     pub fn of(progress: &Progress) -> Option<Workless> {
-        match progress.trees_equal {
-            Some(equal) => {
-                if equal && !progress.dirty {
-                    Some(Workless { equal, dirty: progress.dirty })
+        match (progress.commits_ahead, progress.trees_equal) {
+            (Some(ahead), Some(equal)) => {
+                if ahead == 0 && equal && !progress.dirty {
+                    Some(Workless { ahead, equal, dirty: progress.dirty })
                 } else {
                     None
                 }
             }
-            None => None,
+            _ => None,
         }
     }
 }
@@ -80,8 +82,9 @@ impl Why {
         match self {
             Why::Escalate => format!("The worker declared `escalate`: {said}"),
             Why::Refuted => format!(
-                "The worker declared `already-satisfied`, but its branch holds work (a tree \
-                 different from the base, or uncommitted files), or could not be read: {said}"
+                "The worker declared `already-satisfied`, but its branch holds work (commits \
+                 past the merge base, a tree different from it, or uncommitted files), or \
+                 could not be read: {said}"
             ),
             Why::UnknownPhase => {
                 format!("The worker declared a verdict the fleet cannot read: {said}")
@@ -531,16 +534,22 @@ pub fn route(
 mod rejected {
     use super::*;
 
-    /// An issue closed as needing no change over a tree different from the base.
+    /// An issue closed as needing no change over a tree different from the merge base.
     #[should_fail]
     fn a_different_tree_called_workless(equal: bool) -> Workless {
-        Workless { equal, dirty: false }
+        Workless { ahead: 0, equal, dirty: false }
     }
 
     /// …or over uncommitted files.
     #[should_fail]
     fn a_dirty_tree_called_workless(dirty: bool) -> Workless {
-        Workless { equal: true, dirty }
+        Workless { ahead: 0, equal: true, dirty }
+    }
+
+    /// …or with commits past the merge base, even when the trees are equal.
+    #[should_fail]
+    fn commits_ahead_called_workless(ahead: u64) -> Workless {
+        Workless { ahead, equal: true, dirty: false }
     }
 
     /// A worker that declared a verdict, taken for silent: its screen read, a
@@ -656,23 +665,19 @@ mod tests {
             route(idle, &progress(0, false), Some(&satisfied), Nudged::Never, (None, None), NOW),
             Route::Close(_)
         ));
-        for refuted in [progress(1, false), progress(0, true)] {
+        for refuted in [
+            progress(1, false),
+            progress(0, true),
+            Progress { trees_equal: Some(true), ..progress(9, false) },
+            Progress { trees_equal: Some(false), ..progress(0, false) },
+            Progress { trees_equal: None, ..progress(0, false) },
+            Progress { commits_ahead: None, ..progress(0, false) },
+        ] {
             assert_eq!(
                 route(idle, &refuted, Some(&satisfied), Nudged::Never, (None, None), NOW),
                 Route::Escalate(Why::Refuted)
             );
         }
-        let equal = Progress { trees_equal: Some(true), ..progress(9, false) };
-        assert!(matches!(
-            route(idle, &equal, Some(&satisfied), Nudged::Never, (None, None), NOW),
-            Route::Close(_)
-        ));
-        let unreadable = Progress { trees_equal: None, ..progress(0, false) };
-        assert_eq!(
-            route(idle, &unreadable, Some(&satisfied), Nudged::Never, (None, None), NOW),
-            Route::Escalate(Why::Refuted),
-            "unreadable is not zero"
-        );
         assert_eq!(
             route(idle, &progress(0, false), Some(&said(None)), Nudged::Never, (None, None), NOW),
             Route::Escalate(Why::UnknownPhase)
