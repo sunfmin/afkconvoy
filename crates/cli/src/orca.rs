@@ -64,9 +64,11 @@ const TRUST_PROMPT: &str = "agent-trust-workspace";
 /// the same request throughout this bound and never resends it.
 const SUBMIT_SECONDS: u64 = 30;
 /// How long a brief handed to a worker that just started waits for its
-/// prompt to settle: a harness ready once may redraw on, longer on a busy
-/// host. Any other line checks the input once, for a second.
+/// prompt to settle and its harness to leave a startup working episode.
+/// Any other line checks the input within a second.
 const BRIEF_SETTLE_SECONDS: u64 = 20;
+/// How often a quiet screen's harness state is read during that bound.
+const INPUT_POLL: Duration = Duration::from_millis(200);
 
 /// A process left after terminal close, and the bounded effort to end it.
 /// The command is read without its environment: the process-tree listing
@@ -972,15 +974,20 @@ impl Worktree {
     /// What the cut in this checkout is and did so far, where it says; `None`
     /// where nothing does, or what does cannot be read.
     pub fn cut_record(&self) -> Result<Option<cut::Record>> {
-        let said = std::fs::read_to_string(self.note(CUT_FILE)?).unwrap_or_default();
+        let said = std::fs::read_to_string(self.cut_record_file()?).unwrap_or_default();
         Ok(serde_json::from_str(&said).ok())
+    }
+
+    /// The file that keeps this cut's record, in its checkout's own git dir.
+    pub fn cut_record_file(&self) -> Result<PathBuf> {
+        self.note(CUT_FILE)
     }
 
     /// Keeps what the cut in this checkout is and did so far: the last it
     /// said stands. It is written whole, then put in place: a tick reading it
     /// meanwhile reads the one before, never half of this one.
     pub fn record_cut(&self, record: &cut::Record) -> Result<()> {
-        let file = self.note(CUT_FILE)?;
+        let file = self.cut_record_file()?;
         let written = self.note(&format!("{CUT_FILE}.new"))?;
         std::fs::write(&written, serde_json::to_string(record)?)
             .with_context(|| format!("cannot write {}", written.display()))?;
@@ -1111,7 +1118,8 @@ impl Worktree {
     /// one worktree would fight, and orca opens a bare shell in every worktree
     /// it cuts. A new worker was never nudged, and waits on no background
     /// work, whatever the one before it did, and was started `now`.
-    pub fn start(&self, command: &str, now: u64) -> Result<String> {
+    /// Where `title` is given, orca shows it as the terminal's title.
+    pub fn start(&self, command: &str, title: Option<&str>, now: u64) -> Result<String> {
         // A failed close must not turn a continuation into a second writer.
         // Check again even after an acknowledged close: Orca may still be
         // ending the previous terminal. Leave the worker's progress markers
@@ -1131,8 +1139,12 @@ impl Worktree {
         self.forget(NUDGE_FILE)?;
         self.forget(BACKGROUND_FILE)?;
         let command = niced(&worker_tmp::make(&self.path)?.display().to_string(), command);
-        let made =
-            orca(&["terminal", "create", "--worktree", &self.selector(), "--command", &command])?;
+        let selector = self.selector();
+        let mut args = vec!["terminal", "create", "--worktree", &selector, "--command", &command];
+        if let Some(title) = title {
+            args.extend(["--title", title]);
+        }
+        let made = orca(&args)?;
         let handle = made["terminal"]["handle"].as_str();
         let handle =
             handle.ok_or_else(|| anyhow!("orca terminal create returned no terminal handle"))?;
@@ -1197,9 +1209,10 @@ impl Worktree {
         harness: Harness,
         command: &str,
     ) -> Result<()> {
-        let (ready, waited) = self.wait(terminal, timeout_seconds).with_context(|| {
-            self.prompt_context(terminal, "cannot confirm the worker is ready for its brief")
-        })?;
+        let (ready, waited) =
+            self.wait(terminal, Duration::from_secs(timeout_seconds)).with_context(|| {
+                self.prompt_context(terminal, "cannot confirm the worker is ready for its brief")
+            })?;
         match ready {
             Waited::Ready => Ok(()),
             Waited::AtTrustPrompt => Err(TrustGap {
@@ -1235,8 +1248,8 @@ impl Worktree {
 
     /// One wait for the agent in `terminal`. orca exits non-zero on a wait it
     /// answered but that was not satisfied: what it answered is still read.
-    fn wait(&self, terminal: &str, timeout_seconds: u64) -> Result<(Waited, Asked)> {
-        let timeout = (timeout_seconds * 1000).to_string();
+    fn wait(&self, terminal: &str, within: Duration) -> Result<(Waited, Asked)> {
+        let timeout = within.as_millis().max(1).to_string();
         let asked = Asked::of(&[
             "terminal",
             "wait",
@@ -1259,6 +1272,30 @@ impl Worktree {
             Waited::NotReady
         };
         Ok((ready, asked))
+    }
+
+    /// A quiet screen can belong to a working harness: Codex reports a
+    /// startup episode even with its animations off. Read its state afresh,
+    /// outside the tick's cached observation, until it leaves that episode.
+    /// Both checks share one bound; a harness with no report uses tui-idle.
+    fn wait_for_input(&self, terminal: &str, within: Duration) -> Result<Waited> {
+        let began = Instant::now();
+        loop {
+            let remaining = within.saturating_sub(began.elapsed());
+            if remaining.is_zero() {
+                return Ok(Waited::NotReady);
+            }
+            let (ready, _) = self.wait(terminal, remaining)?;
+            if ready != Waited::Ready {
+                return Ok(ready);
+            }
+            let agent = main_agent(&runtime_row(&runtime_live()?, &self.path));
+            let state = agent["programStatus"]["state"].as_str().or(agent["state"].as_str());
+            if state != Some("working") {
+                return Ok(Waited::Ready);
+            }
+            std::thread::sleep(INPUT_POLL.min(within.saturating_sub(began.elapsed())));
+        }
     }
 
     /// A failed delivery includes the current screen, even when no known
@@ -1290,9 +1327,14 @@ impl Worktree {
     }
 
     fn tell_unchecked(&self, terminal: &str, line: &str, settle_seconds: u64) -> Result<()> {
-        let (ready, _) = self.wait(terminal, settle_seconds).with_context(|| {
-            self.prompt_context(terminal, "no running worker harness confirmed; no line was sent")
-        })?;
+        let ready = self
+            .wait_for_input(terminal, Duration::from_secs(settle_seconds))
+            .with_context(|| {
+                self.prompt_context(
+                    terminal,
+                    "no running worker harness confirmed; no line was sent",
+                )
+            })?;
         if ready != Waited::Ready {
             return Err(self.prompt_failure(
                 terminal,

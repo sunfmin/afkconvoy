@@ -2421,6 +2421,8 @@ A cut's worker, in its own worktree: the checkout (`afkconvoy-cut`) the tick tha
 
 A cut is a worker in no role, started the way a watch is: its own checkout, the bounds of any unattended worker, a time limit. It is this command, not a model session: its steps are known, each is timed, and a failure names its step. It takes no slot of the concurrency, and keeps the host awake while it runs (`afkconvoy run --help`, host sleep).
 
+The fleet titles its terminal `afkconvoy cut v<version>`. Before its first step, including when continued with `--from <step>`, it prints one line naming the version, the tag it is cut past (or the initial version), the PRs it holds, the steps it will take, and the paths to `convoy-cut.log` and `convoy-cut.json`. Each step prints a start line and an end line with its seconds and whether it passed or failed; its commands' output stays between those lines. These lines and the commands' output go to stderr; stdout holds the JSON answer.
+
 ##### Turning it on
 
 A repo turns cutting on by naming its cut steps in its config file, docs/agents/afkconvoy.md, in a block of their own opened by the line ```yaml cut — never in the ```yaml block of the config, which a version older than this one reads with every key known to it, refusing a key it does not know. Older versions read only that first block, and read past this one.
@@ -2443,7 +2445,7 @@ busy_after_seconds: 3600
 
 Optional `busy_after_seconds` bounds how long the oldest landing past the newest tag waits for an idle fleet. Leaving it out means 3600s; zero permits a busy cut at the next tick. Its clock uses the landing commit's time on the base branch, rather than the age of commits on a side branch. Put this key in a second cut block as above: older versions that know cut steps read only the first cut block and skip the addition. All cut blocks form one mapping, and a key declared twice is refused. `plan`'s `cut` row gives `oldest_landing_age_seconds` and `busy_in_seconds`: zero means a busy cut may start now; null means no landing past a version tag.
 
-Each step is run by `sh -e` in the cut's checkout with the version, `0.5.17`, in `$VERSION`; what it prints goes to the cut's log, in the checkout's git dir (`convoy-cut.log`). Its lines run in order, and the first that fails fails the step: the lines after it are not run. Above, a publish that fails is not followed by the upgrade, which would find nothing newer and succeed. A line `set -e` changes nothing of that, and `set -ex` adds each line to the log as it runs. A repo whose file has no such block turns cutting off: nothing is cut. `afkconvoy config` answers the steps as `cut`, and `afkconvoy plan` says where the cut stands, including `initial` while there is no version tag.
+Each step is run by `sh -e` in the cut's checkout with the version, `0.5.17`, in `$VERSION`; what it prints goes to the terminal and the cut's log, in the checkout's git dir (`convoy-cut.log`). Its lines run in order, and the first that fails fails the step: the lines after it are not run. Above, a publish that fails is not followed by the upgrade, which would find nothing newer and succeed. A line `set -e` changes nothing of that, and `set -ex` adds each line to the log as it runs. A repo whose file has no such block turns cutting off: nothing is cut. `afkconvoy config` answers the steps as `cut`, and `afkconvoy plan` says where the cut stands, including `initial` while there is no version tag.
 
 ##### What it does
 

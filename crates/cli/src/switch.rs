@@ -267,7 +267,7 @@ pub(crate) fn auxiliary(
         cast.command(agent.command(cast.harness)?.as_str())
     };
     let terminal = if caster {
-        agent.start(worktree, cast.harness, &command, fleet.now)?
+        agent.start(worktree, cast.harness, &command, None, fleet.now)?
     } else {
         agent.start_worker(
             worktree,
