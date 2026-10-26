@@ -2,13 +2,15 @@
 
 # `afkconvoy`
 
-afkconvoy works a repo's ready GitHub-issue backlog unattended. A fleet instance — one per repo, held by the host's one host runner, which `afkconvoy run` starts — dispatches one worker per issue, a coding agent isolated in its own git worktree, and lands each finished PR on the base branch through the landing train, behind the gate. Fleet state lives entirely in GitHub and the repo's remote: no process holds it.
+afkconvoy works a repo's ready GitHub issues unattended. One host runner, started by `afkconvoy run`, holds one fleet instance per repo. Each dispatches a worker per issue — a coding agent in its own git worktree — and lands finished PRs on the base branch through the gate and landing train. Fleet state lives in GitHub and the repo's remote; no process holds it.
 
-`afkconvoy --help` answers the index: this guide, the way in; then every command by its one line, under who runs it; then every topic by its first sentence, what belongs to no one command. `afkconvoy help all` answers the whole manual: this guide, then every command and every topic in full. `afkconvoy -h` lists the commands on one screen.
+`afkconvoy --help` answers the index: this guide, then each command's one line under who runs it, then each topic's first sentence. `afkconvoy help all` answers the whole manual: guide, commands and topics in full. `afkconvoy -h` lists commands on one screen.
 
 ## What it needs
 
-- A config on the base branch: the first yaml block of docs/agents/afkconvoy.md. A repo whose config names a team is a bound repo: the team's workflows say how its issues are worked. One whose config names none is unbound: each issue is worked by one worker, then the landing train.
+- A config on the base branch: the first yaml block of docs/agents/afkconvoy.md. A repo whose config names a team is a bound repo: its workflows say how issues are worked. One whose config names none is unbound: one worker per issue, then the landing train.
+- A private tracker for the issues the fleet reads and writes. Only a private repo can be its own tracker: anyone who can comment writes what workers read. Settle it with the user: [`afkconvoy help first-start`](help:first-start).
+- Host settings apply to every fleet; `run` changes those named. Defaults: host sleep 00:00-06:00 local time after host and fleets idle 10 minutes (`--no-host-sleep` required off macOS); inspect workers above half the cores (at least one) for two minutes, a quarter of memory resident, or a tenth of free disk written in ten minutes (at least one GiB); admission holds starts above 200% load per core or below 10% memory or 1% disk free, inspecting after 600 seconds held for one reason or memory pressure; end exclusive commands after 1200 seconds holding others up; panel port 7070 (a free port if taken); the host runner looks every 300 seconds with an operator directory, none by default so no watch. Concurrency: 3 claims at work per checkout. Flags: `afkconvoy run --help`.
 - `gh` logged in as a user who may push to the repo.
 - `orca` on the PATH: every worker is started through it. It is running (`orca open`) and was given this checkout, once (`orca repo add --path "$PWD"`).
 - `claude` on the PATH and logged in, when it is what starts a worker.
@@ -18,9 +20,10 @@ afkconvoy works a repo's ready GitHub-issue backlog unattended. A fleet instance
 
 ## What to run first, in a checkout of the repo
 
-1. `afkconvoy config`: read the config, what the fleet goes by. Its `--help` shows one whole. Then `afkconvoy check`, only in a bound repo: does the team load? A team is designed first: see designing a team, below.
-2. `afkconvoy plan`: what a tick would act on. It changes no fleet state, but may push and delete a startup probe on the remote. To read without writing anything, run `afkconvoy doctor`.
-3. `afkconvoy run`: the checkout's fleet instance, held by the host runner until it is stopped. It answers once the first tick ended.
+1. `afkconvoy checkouts`: if this checkout is absent, read [`afkconvoy help first-start`](help:first-start) and settle the first start with the user before `run`.
+2. `afkconvoy config`: read the config, what the fleet goes by. Its `--help` shows one whole. Then `afkconvoy check`, only in a bound repo: does the team load? A team is designed first: see designing a team, below.
+3. `afkconvoy plan`: what a tick would act on. It changes no fleet state, but may push and delete a startup probe on the remote. To read without writing anything, run `afkconvoy doctor`.
+4. `afkconvoy run`: the checkout's fleet instance, held by the host runner until it is stopped. It answers once the first tick ended.
 
 To watch a running fleet, checking on it every few minutes, run `afkconvoy doctor --all --since <until of your last look>`. A first look runs `afkconvoy doctor --all` without `--since`; its `until` is where the next look starts.
 
@@ -38,21 +41,21 @@ Every command prints exactly one JSON object on stdout. A failure is {"error": �
 
 ## The commands, by who runs them
 
-Read `afkconvoy <command> --help` before the first time you run one. The commands below are grouped by who runs them:
+Read `afkconvoy <command> --help` before first running it. Commands are grouped by who runs them:
 
-- **Run by the operator** — starting, watching or stopping a fleet. Read these first: `config`, `check` and `plan` before it starts, `run` to start it, `tick` for one pass of it and `stop` to stop it, `doctor --all --since <until of your last look>`, `checkouts` and `panel` to watch it, `kit`, `cast` and `switch` for the harness and model each worker runs, `patrol-now` to have a patrol run now and `takeover` to take another fleet instance's claims. `doctor` also says what is wrong, each finding with the line that fixes it.
+- **Run by the operator** — `config`, `check`, `plan` before `run`; `tick` for one pass, `stop` to stop; `doctor --all --since <until of your last look>`, `checkouts`, `panel` to watch (`doctor` names each fix); `kit`, `cast`, `switch` for workers' harnesses and models; `patrol-now` to run a patrol now; `takeover` to take another fleet instance's claims.
 - **Run by whoever designs a team** — `scaffold` to start one or a role of it from a skeleton, `draft` to draft its roster from the host kit, then, once `check` accepts it, `show` to review a workflow or to ask where an issue is in it, and `rehearse` to try one out.
-- **Run by whoever hands the fleet work** — a human, or the agent a human is talking to, with work decided on and issues to open for it. Read `flows` before opening the first issue: it says which workflow takes which issue and the line that opens one, and creates the labels. `wake`, after the last, has the fleet take them up now.
+- **Run by whoever hands the fleet work** — a human or their agent opening decided work. `flows` names the workflow, gives the issue-create line and makes labels. After opening issues, `wake` has the fleet take them up now.
 - **Run by whoever sets an agent up** — `skill` prints the skill file that sends their agent to `afkconvoy --help`.
 - **Run by a worker** — `gate`, `land`, `verdict`, `intake`, `lock`, `over`, `exclusive` and `inspected`: its prompt names each one as it is needed, and `wake`, above, as its last; `cut` is what a cut's terminal runs, and what you run to go on with a cut that failed. Read them only when you are a worker, or are finding out why one stopped (`rule` is a consult's too).
 - **Run by a human an issue waits for** — in a bound repo: `rule` to answer an escalated issue, `send` to put an issue at a stage of your choosing. A `by: human` stage waits for your `verdict`, a worker's command too. [`afkconvoy help humans`](help:humans) says what each case asks of you.
-- **Run by a worker's hook** — `guard`, which the harness of a bound repo's worker asks before each thing the worker does. Nobody runs it by hand. Read its help to learn what a worker is refused, and why one was.
+- **Run by a worker's hook** — `guard`, called before each action of a bound repo's worker. Nobody runs it by hand. Its help explains what the worker is refused and why.
 - **One transition by hand** — `dispatch`, `close`, `escalate`, `park`, `nudge`, `restart` and `abandon`: each is something a tick does on its own, and `recovery` shows what `dispatch` would continue an issue from. Read one when a plan shows a transition the fleet is not making, or you are told to make it yourself.
 - **The claim plumbing** — `scan`, `claim`, `release` and `heartbeat`: what the transitions are built on. Read these only to inspect or repair claims and heartbeats on the remote.
 
 ## The topics
 
-Read `afkconvoy help <topic>` when this guide or a command's help names the topic: it prints that topic, Markdown, as `--help` itself is, and no JSON object. The topics below are what belongs to no one command, each opening with the sentence that says what it is for.
+Read `afkconvoy help <topic>` when this guide or a command's help names it: it prints that topic, Markdown, as `--help` does.
 
 ## Rules to know before you start
 
@@ -60,7 +63,6 @@ Read `afkconvoy help <topic>` when this guide or a command's help names the topi
 - `run` returns once its checkout's first tick ended: the host runner ticks on, in the background, until `afkconvoy stop --all` stops it, keeping the checkout list. `afkconvoy stop` takes one checkout off the list. `tick` is one pass that exits.
 - Between ticks a fleet instance sleeps 90 seconds while it has work, or 25 minutes after 3 empty ticks. Commands that change fleet state wake it sooner, including a worker's last `afkconvoy wake`. When a fleet on this host closes an issue or sees it closed, it also wakes every other fleet on the same tracker whose open issues it blocked. That next tick reads GitHub and takes up an issue whose last open blocker closed; its tick log names the closed issue and the fleet instance that saw it. After changing issues with `gh`, run `afkconvoy wake <checkout>` on the fleet's host: `gh` sends no wake.
 - Each harness's worker launch command comes from this host's host kit, kept outside the repo. `run` writes it on a host that has none, and `afkconvoy kit` writes it again; neither asks anything. `--worker-command` is gone. A known harness with no entry or command is discovered in the worker login shell, checked, and appended to the latest kit without model probes; an explicit command always wins. A running fleet reads command edits at its next worker launch.
-- A host whose fleets are all idle is put to sleep, but only within its sleep hours: 00:00-06:00 of its local time, unless it says others. `afkconvoy run --host-sleep-hours 22:00-06:00` says others for every fleet on the host, `--host-sleep-hours default` changes them back, and `--no-host-sleep` keeps the host awake at any hour.
 - In a bound repo the worker launch command must end in its harness — Claude Code, pi, Codex, DSH or Kimi Code — taking flags: the fleet adds to it what starts each worker in its role and under the guard ([`afkconvoy help worker-launch`](help:worker-launch) says what, for each harness), and a start refuses a command whose `--help` does not name those flags. Every harness the team could ask for is checked first, and none is ever started in another's place.
 
 ## Designing a team, for a bound repo
@@ -690,6 +692,8 @@ Each fleet instance also keeps a log on this host, its tick log, in a file under
 
 ##### What it answers
 
+Before a first start: a checkout off the checkout list must name `--tracker <owner>/<repo>` or `--tracker default` (its own repo, which must be private). A host with no saved host settings must name `--host-sleep`, `--no-host-sleep` or `--host-sleep-hours`. Missing answers refuse with a non-zero exit and write nothing: {"error", "asks", "see"}. Each `asks` item has `setting`, `question`, `default`, `recommend`, and `options`, each with `option` and `line`; `see` prints [`afkconvoy help first-start`](help:first-start). Settle these questions with the user before running the chosen lines. Existing checkouts and saved host settings run as before.
+
 Once its checkout's fleet instance has ended its first tick, with exit 0:
 
 ```json
@@ -821,7 +825,7 @@ afkconvoy run [OPTIONS] [CHECKOUT]
 - `--instance <INSTANCE>`: The fleet instance to run as [default: a new one, named for this host]
 - `--host <HOST>`
 - `--concurrency <CLAIMS>`: How many claims this checkout's fleet instance holds at work at once on this host, from its next tick: the checkout's own, kept with it on the checkout list and never pushed; `default` changes it back [default: 3]
-- `--tracker <OWNER/REPO>`: The repo this checkout's fleet reads and writes its issues in, from its next tick: the checkout's own, kept with it on the checkout list and never pushed; `default` changes it back [default: the checkout's own repo]
+- `--tracker <OWNER/REPO>`: The private repo this checkout's fleet reads and writes its issues in: required on its first `run`; kept on this host and never pushed. `default` says its own repo explicitly, which must be private; omitted on later runs, its saved choice holds
 - `--worker-no-proxy <[HARNESS=]HOSTS>`: Hosts reached directly, comma-separated, for the default harness or HARNESS; repeat for each harness. DSH defaults to api.deepseek.com. An empty list disables the stock addition. Extends no_proxy and NO_PROXY
 - `--panel <PORT>`: The port the host runner serves the panel on, from its next start: a host setting; `default` changes it back [default: 7070, or any free port where it is taken]
 - `--watch-dir <DIR>`: The operator's directory this host starts a watch in, when a look finds something to act on: a host setting; `default` names none, and the host watches nothing [default: none]
@@ -3458,6 +3462,68 @@ afkconvoy send [OPTIONS] --stage <STAGE> <ISSUE|--issue <ISSUE>>
 
 ## Topics
 
+### `afkconvoy help first-start`
+
+A first start settles a new checkout's tracker and a new host's host settings with the user before its fleets start.
+
+#### Tell the user
+
+Explain these briefly, in the user's words. A tracker is the private repo the fleet reads and writes its issues in. Anyone who can comment on its issues writes what workers read, so a public repo cannot be its own tracker. Two people working one repo need their own trackers; those choices stay on their hosts and are never pushed. `afkconvoy checkouts` shows the trackers other checkouts on this host already use.
+
+Host settings apply to every fleet; `run` changes those named. Defaults: host sleep 00:00-06:00 local time after host and fleets idle 10 minutes (`--no-host-sleep` required off macOS); inspect workers above half the cores (at least one) for two minutes, a quarter of memory resident, or a tenth of free disk written in ten minutes (at least one GiB); admission holds starts above 200% load per core or below 10% memory or 1% disk free, inspecting after 600 seconds held for one reason or memory pressure; end exclusive commands after 1200 seconds holding others up; panel port 7070 (a free port if taken); the host runner looks every 300 seconds with an operator directory, none by default so no watch. Concurrency: 3 claims at work per checkout. Flags: `afkconvoy run --help`.
+
+#### Set up without asking
+
+Do what requires no user decision: give Orca this checkout with `orca repo add --path "$PWD"`, read `afkconvoy config`, and run `afkconvoy check` in a bound repo. Read `afkconvoy plan` once the tracker is settled: a plan uses the tracker the checkout already says, or this repo until a first `run` records the choice, and refuses a public one. Do not start a fleet just to get a plan before the user answers. A plan may push and delete its startup probe; `afkconvoy doctor` reads without writing.
+
+Leave the host kit to `run`, which writes one where none exists, without asking. Leave the tracker labels to `run --tracker`, and the flow labels to `afkconvoy flows`, which makes them. Do not ask the user to perform those steps or pick their contents. Install nothing and log nobody in: a missing command or login names the line the user must run.
+
+#### Ask the user
+
+Ask every applicable question below in one message, recommending an answer for each. Settle the tracker and concurrency for a checkout not on `afkconvoy checkouts`; settle host sleep and the operator's watch directory on a host with no host settings yet. Existing choices stand unless the user asks to change them. Create a new private repo only on the user's yes to its owner and name. Run the lines only after the user answers. Replace placeholders with their answers and combine the selected flags in one `afkconvoy run <checkout>`; separate `run` lines may still lack another required answer.
+
+##### tracker
+
+Which private repo should hold this checkout's fleet issues?
+
+Default: the checkout's own repo, only when private. Recommendation: Use a private tracker already used by your other checkouts, listed by `afkconvoy checkouts`; otherwise use this repo when private. Two people working one repo need their own trackers.
+
+- This repo itself, only when private: `afkconvoy run <checkout> --tracker default`
+- An existing private repo, starting with the trackers other checkouts use: `afkconvoy run <checkout> --tracker <owner>/<tracker>`
+- A new private repo, created only on the user's yes to its owner and name: `gh repo create <owner>/<name> --private && afkconvoy run <checkout> --tracker <owner>/<name>`
+
+##### host-sleep
+
+May the fleets put this host to sleep, and during which hours?
+
+Default: 00:00-06:00. Recommendation: On macOS, use the default hours unless this host must stay awake; on any other host, choose never (`--no-host-sleep`).
+
+- Default hours on macOS: `afkconvoy run <checkout> --host-sleep --host-sleep-hours default`
+- Other hours on macOS, in the host's local time: `afkconvoy run <checkout> --host-sleep --host-sleep-hours <HH:MM-HH:MM>`
+- Never; required on a host that is not macOS: `afkconvoy run <checkout> --no-host-sleep`
+
+##### concurrency
+
+How many claims should this checkout's fleet hold at work at once on this host?
+
+Default: 3. Recommendation: Start with the default, then change it to what this host can carry.
+
+- The default: `afkconvoy run <checkout> --concurrency default`
+- Another whole number of claims, at least one: `afkconvoy run <checkout> --concurrency <N>`
+
+##### watch-dir
+
+Which operator directory should a watch start in, or should watches stay off?
+
+Default: none; no looks or watches. Recommendation: Use an existing operator directory holding the rules for looking after this host's projects; leave watches off until the user names one.
+
+- An existing operator directory chosen by the user: `afkconvoy run <checkout> --watch-dir '<operator-directory>'`
+- No watch: `afkconvoy run <checkout> --watch-dir default`
+
+
+
+A first `run` without `--tracker` for a checkout off the list, or without `--host-sleep`, `--no-host-sleep` or `--host-sleep-hours` for a host with no host settings, refuses before writing anything. Its JSON has `error`, `asks` (each unanswered setting, question, default, recommendation as `recommend`, and every option with its `line`) and `see`, the command that prints this topic. A flag's environment variable counts as saying it. Concurrency and the watch directory keep their defaults if no flag names them. A checkout already on the list and host settings already kept run as before.
+
 ### `afkconvoy help concepts`
 
 What becomes of one issue, from the moment it is the fleet's to the moment it lands, and the four things that carry it there. Each term has its one definition in [`afkconvoy help glossary`](help:glossary); each paragraph ends with what says more.
@@ -4487,6 +4553,10 @@ _Avoid_: parallelism, workers (the processes it bounds), the repo's concurrency
 **Tracker**:
 The repo a fleet reads and writes its issues in: its checkout's own, until the checkout says another on the checkout list of its host (`run --tracker`), never pushed. Everything about an issue is the tracker's — its labels, its comments, its blockers, its escalation, its closing, and every issue the fleet opens — and every PR, branch, worktree, gate run and the landing train are the repo's. `#<n>` alone is the repo's own issue: the repo names a tracker's `<owner>/<tracker>#<n>` (`docs/adr/0027`). A public one is refused — the checkout's own repo too, where it says none — by every start's startup probe and by `run --tracker`, and a fleet instance whose tracker is made public is broken at its next check, within the hour one that found it private stands: anyone can comment on a public repo's issues, and so write what the fleet reads as its state and what its workers read as their task.
 _Avoid_: issue repo, backlog (all the issues a repo has open), project (a GitHub Project)
+
+**First start**:
+The start of a checkout not yet on its host's checkout list, whose tracker and concurrency are settled with the user; on a host with no host settings yet, its host sleep is settled too. The agent explains the choices, sets up what needs no decision, and asks the user together for what does.
+_Avoid_: onboarding, setup wizard
 
 **Repo label**:
 `repo:<owner>/<repo>`: what makes an issue of a tracker one of that repo's. A fleet whose tracker is another repo works only the issues there that carry its repo's, and gives it to every issue it opens, takes in or locks there; one carrying two is no fleet's. In a repo that is its own tracker, an issue carrying one is the repo's it names.

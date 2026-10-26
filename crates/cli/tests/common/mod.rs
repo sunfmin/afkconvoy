@@ -393,7 +393,7 @@ impl World {
 
     /// `afk_in`, as the afkconvoy at `program`: one installed elsewhere.
     pub fn afk_as(&self, program: &Path, cwd: &Path, args: &[&str]) -> Answer {
-        let out = self.command(program, cwd).args(args).output().unwrap();
+        let out = self.command(program, cwd).args(self.settled_args(cwd, args)).output().unwrap();
         let stdout = String::from_utf8_lossy(&out.stdout);
         let json = serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
             panic!(
@@ -403,6 +403,24 @@ impl World {
         });
         let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
         Answer { json, code: out.status.code().unwrap(), stderr }
+    }
+
+    /// Running-fleet tests choose their own private repo on a first start
+    /// unless they name another tracker. Existing choices stand. Tests of
+    /// unanswered first starts use `command` directly, without this choice.
+    fn settled_args<'a>(&self, cwd: &Path, args: &[&'a str]) -> Vec<&'a str> {
+        let mut args = args.to_vec();
+        let listed = self.checkout_list();
+        let known = listed["checkouts"].as_array().unwrap().iter().any(|entry| {
+            entry["checkout"].as_str().is_some_and(|checkout| cwd.starts_with(checkout))
+        });
+        if args.first() == Some(&"run")
+            && !known
+            && !args.iter().any(|arg| *arg == "--tracker" || arg.starts_with("--tracker="))
+        {
+            args.extend(["--tracker", "default"]);
+        }
+        args
     }
 
     /// Sets the repo's gate command: committed on the base branch and pushed,
@@ -429,8 +447,11 @@ impl World {
 
     /// Runs a command that prints lines before its answer → (every line, the answer).
     pub fn afk_every_line(&self, args: &[&str]) -> (Vec<String>, Value) {
-        let out =
-            self.command(env!("CARGO_BIN_EXE_afkconvoy"), &self.clone).args(args).output().unwrap();
+        let out = self
+            .command(env!("CARGO_BIN_EXE_afkconvoy"), &self.clone)
+            .args(self.settled_args(&self.clone, args))
+            .output()
+            .unwrap();
         let stdout = String::from_utf8_lossy(&out.stdout);
         let mut lines: Vec<String> = stdout.lines().map(str::to_string).collect();
         let last = lines.pop().unwrap_or_default();
@@ -1401,10 +1422,10 @@ impl World {
 
     /// `running`, of the checkout `dir`.
     pub fn running_in(&self, dir: &Path, args: &[&str]) -> Running {
+        let args = [&["run", "--foreground"][..], args].concat();
         let mut child = self
             .command(env!("CARGO_BIN_EXE_afkconvoy"), dir)
-            .args(["run", "--foreground"])
-            .args(args)
+            .args(self.settled_args(dir, &args))
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
