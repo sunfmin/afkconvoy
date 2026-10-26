@@ -369,6 +369,8 @@ fn json_text(text: &str) -> String {
 /// added to the role's own, so a role's hooks run beside them and no role is
 /// without the guard (docs/adr/0012) — or unheard of by the worker backend,
 /// which would read a worker it has no report of off its terminal alone.
+/// `excluded` keeps host-user rule paths out of native ancestor discovery
+/// when the role has turned host-user rules off.
 fn added_settings(guard: &str, report: &str, excluded: &[String]) -> String {
     let guard = format!("{{\"type\":\"command\",\"command\":{}}}", json_text(guard));
     let report = format!(

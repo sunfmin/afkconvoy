@@ -4105,6 +4105,8 @@ cd <the role's copy> && export <the stage's facts> && <worker launch command>
 
 The role's rules, skills and hooks load because it starts there. The repo's own rules load from the added worktree, and its hooks do not; the team rules load from the team's copy. Your own skills and rules load too, unless the team file says `host_user: false` ([`afkconvoy help team`](help:team)): the third directory added is the fleet's own (harness/claude-code-host-user under the cache directory), and holds links to your ~/.claude/skills and ~/.claude/CLAUDE.md and nothing else. A skill of the role's wins over one of yours of the same name. Nothing of your settings, hooks, MCP servers or plugins is loaded either way. The settings added hold the guard and orca's status report, as hooks, and the answer to the bypass warning. Outside a role, `--dangerously-skip-permissions` trusts the worktree and `--settings '{"skipDangerousModePermissionPrompt":true}'` answers the unattended warning; both are added when the command does not already carry them. A command you give must take `--add-dir`, `--setting-sources`, `--settings` and `--model`.
 
+With `host_user: false`, the fleet's settings also exclude ~/.claude/CLAUDE.md and ~/.claude/rules/** through `claudeMdExcludes`. Claude Code can otherwise load those files as project rules while walking above a role's copy under your home, even with user settings disabled. Your login stays accessible in its usual location.
+
 #### pi
 
 A pi worker — of a role whose range runs it pi — starts in its role's directory like any other, with what pi does not load from there added:
