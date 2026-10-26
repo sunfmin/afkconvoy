@@ -61,16 +61,30 @@ pub fn held() -> bool {
 }
 
 /// Pass the command's lease only into the gate it owns.
-pub fn inherit(command: &mut Command) {
+pub fn inherit(command: &mut Command, repo: &Repo) -> Result<()> {
     if held() {
-        command.env(OWNER_ENV, std::process::id().to_string());
+        let scope = lease_scope(repo)?;
+        command.env(OWNER_ENV, format!("{}:{scope}", std::process::id()));
     }
+    Ok(())
 }
 
-fn inherited() -> bool {
-    let Some(owner) = std::env::var(OWNER_ENV).ok().and_then(|v| v.parse::<u32>().ok()) else {
+fn lease_scope(repo: &Repo) -> Result<String> {
+    let repo = afkconvoy_core::gate::key(&canonical(repo.common_dir()?));
+    let cache = afkconvoy_core::gate::key(&canonical(&crate::copies::cache()?));
+    Ok(format!("{repo:016x}:{cache:016x}"))
+}
+
+fn inherited(checkout: Option<&Repo>) -> bool {
+    let Some((owner, scope)) = std::env::var(OWNER_ENV).ok().and_then(|v| {
+        let (owner, scope) = v.split_once(':')?;
+        Some((owner.parse::<u32>().ok()?, scope.to_string()))
+    }) else {
         return false;
     };
+    if checkout.and_then(|repo| lease_scope(repo).ok()).as_deref() != Some(&scope) {
+        return false;
+    }
     let processes = crate::hot::listed();
     let mut pid = std::process::id();
     for _ in 0..processes.len() {
@@ -537,7 +551,7 @@ pub fn exclusive(
     checkout: Option<Repo>,
     now: impl Fn() -> u64,
 ) -> ExitCode {
-    if inherited() {
+    if inherited(checkout.as_ref()) {
         return match crate::process::status(
             Command::new(&command[0]).args(&command[1..]).current_dir(dir),
         ) {

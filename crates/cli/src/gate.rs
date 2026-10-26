@@ -60,7 +60,7 @@ fn run_command(
     limit: Duration,
 ) -> Result<(i32, bool, u64, Vec<String>)> {
     let mut shell = Command::new("sh");
-    crate::exclusive::inherit(&mut shell);
+    crate::exclusive::inherit(&mut shell, repo)?;
     let mut child = crate::process::spawn(
         shell
             // one stream, so the log reads in the order it was written

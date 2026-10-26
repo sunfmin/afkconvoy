@@ -160,7 +160,7 @@ fn a_landing_answered_by_a_run_on_record_says_that_runs_time_and_writes_no_recor
     let train = train(&world);
     let before = gate_records(&world);
     assert!(
-        before.ends_with(&format!(" seconds={} host=workers-host", gate["seconds"])),
+        tip_record(&world).ends_with(&format!(" seconds={} host=workers-host", gate["seconds"])),
         "{before}"
     );
 
@@ -380,9 +380,24 @@ fn prs_that_joined_during_a_gate_run_land_behind_the_next_one() {
     let first = join(&world, &seven, 7);
     forget_tip_run(&world);
     let train = train(&world);
+    let head = git(&eight, &["rev-parse", "HEAD"]);
+    let tree = git(&eight, &["merge-tree", "--write-tree", &first, &head]);
+    let later = git(
+        &eight,
+        &[
+            "commit-tree",
+            tree.split_whitespace().next().unwrap(),
+            "-p",
+            &first,
+            "-p",
+            &head,
+            "-m",
+            "pr 80 (#80)\n\nCloses #8",
+        ],
+    );
     std::fs::write(
         world.root.join("during"),
-        format!("cd {} && {} land --issue 8\n", eight.display(), env!("CARGO_BIN_EXE_afkconvoy")),
+        format!("git --git-dir={} update-ref {LINE} {later}\n", world.bare.display()),
     )
     .unwrap();
 
@@ -495,6 +510,8 @@ fn tracked_bytes(dir: &Path) -> u64 {
 fn land_one(world: &World, dir: &Path, issue: u64) -> Value {
     let worker = world.worker(issue, &format!("{issue}.txt"), &format!("{issue}\n"));
     join(world, &worker, issue);
+    // These scenarios measure a train build, so remove its joiner's record.
+    forget_tip_run(world);
     let (answer, _) = land_train(world, dir);
     assert_eq!(answer["outcome"], "landed", "{answer}");
     answer
