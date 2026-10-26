@@ -98,7 +98,6 @@ pub fn tend_train(fleet: &mut Fleet, me: &Me, agent: &Agent) -> Result<Outcome> 
                 None,
                 fleet.now,
             )?;
-            worktree.await_ready(&terminal, agent.ready_timeout)?;
             worktree.tell(&terminal, &brief_pointer(&brief))?;
         }
     }

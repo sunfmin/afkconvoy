@@ -138,7 +138,7 @@ fn a_joined_pr_gets_a_train_worker_that_holds_no_claim_and_no_slot() {
     assert_eq!(row.expect("the train's worktree")["linkedIssue"], Value::Null);
     let open = terminals(&world, &train);
     assert_eq!(open.len(), 1, "the worker's is the only terminal there");
-    assert_eq!(open[0]["command"], "agent");
+    assert_eq!(open[0]["command"], common::trusted("agent"));
     let brief = PathBuf::from(git(&train, &["rev-parse", "--absolute-git-dir"]))
         .join("convoy-worker-prompt.md");
     let sent = open[0]["sent"].as_array().unwrap();

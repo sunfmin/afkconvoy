@@ -444,14 +444,11 @@ fn a_step_that_fails_tick_after_tick_is_critical() {
 
 #[test]
 fn a_worker_that_fails_to_start_is_a_finding_after_one_tick() {
-    for knob in ["create_fails", "never_ready", "trust_sticks"] {
+    for knob in ["create_fails", "never_ready"] {
         let world = World::new();
         world.issue(3, &["ready-for-agent"]);
         world.with_orca(|orca| {
             orca[knob] = if knob == "create_fails" { json!([3]) } else { json!(true) };
-            if knob == "trust_sticks" {
-                orca["trust_prompt"] = json!(true);
-            }
         });
         run(&world, &["--instance", "alpha", "--ticks", "1", "--now", "1000"]);
         let answer = doctor(&world, "1000").json;

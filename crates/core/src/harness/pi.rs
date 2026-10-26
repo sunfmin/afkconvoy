@@ -28,6 +28,13 @@ pub(super) const STOCK: &str = "pi";
 /// form among it. Asked at the terminal, the question would take the
 /// worker's brief for its answer.
 const APPROVE: &str = "--approve";
+pub(super) const TRUST: &str = APPROVE;
+
+/// Answers pi's worktree approval question on the launch line.
+pub(super) fn in_worktree(command: &str) -> String {
+    if command.contains(APPROVE) { command.to_string() } else { format!("{command} {APPROVE}") }
+}
+
 /// pi's flag that leaves out every skill it would find by itself: those of
 /// the host user's home among them, which it reads wherever its user
 /// directory is. The host user's own are named, where a worker is given

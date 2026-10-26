@@ -89,9 +89,10 @@ pub struct Agent {
 
 impl Agent {
     /// Starts an interactive worker with the fleet's selected model and
-    /// freshly read host-user effort. Shell-only auxiliaries use `start`.
-    /// An issue given here is exported for every command that worker runs;
-    /// the train and inspections carry no issue context.
+    /// freshly read host-user effort, and waits until it can take its brief.
+    /// Outside a role it starts already trusting its worktree. Shell-only
+    /// auxiliaries use `start`. An issue given here is exported for every
+    /// command that worker runs; the train and inspections carry no issue context.
     pub fn start_worker(
         &self,
         worktree: &Worktree,
@@ -107,7 +108,16 @@ impl Agent {
         } else {
             None
         };
-        let command = prepared.as_ref().map_or(command, |(line, _)| line.as_str());
+        let command = prepared.as_ref().map_or_else(
+            || {
+                if in_role {
+                    command.to_string()
+                } else {
+                    harness.in_worktree(command, &worktree.path.display().to_string(), "")
+                }
+            },
+            |(line, _)| line.clone(),
+        );
         let command = match issue {
             Some(issue) => Line::new()
                 .fixed("export ")
@@ -115,15 +125,16 @@ impl Agent {
                 .fixed("=")
                 .number(issue)
                 .fixed(" && ")
-                .launch(command)
+                .launch(&command)
                 .done(),
-            None => command.to_string(),
+            None => command,
         };
         let terminal = self.start(worktree, harness, &command, now)?;
         std::fs::write(worktree.note("convoy-worker-model")?, model.unwrap_or_default())?;
         if let Some((_, settings)) = prepared {
             crate::codex_launch::record(worktree, &settings)?;
         }
+        worktree.await_ready(&terminal, self.ready_timeout, harness, &command)?;
         Ok(terminal)
     }
 
@@ -242,8 +253,9 @@ pub(crate) fn dispatch_continuing(
     Ok(json!({"issue": number, "started": false, "gone": said, "released": released}))
 }
 
-/// One failed start keeps the claim for continuation; another hands it on
-/// with the startup errors, never with a judgment of worker silence.
+/// A trust gap hands the claim on at once: restarting the same command would
+/// only report the same launch defect. Another failed start keeps the claim
+/// for continuation; a second hands it on with both startup errors.
 fn start_failed(
     fleet: &mut Fleet,
     me: &Me,
@@ -258,20 +270,30 @@ fn start_failed(
     };
     let failed = format!("{error:#}");
     keep_starting(fleet, number, &failed)?;
-    let Some(previous) = previous else { return Err(error) };
-    let why = crate::judge::Handed::new(
-        "its worker start failed again",
-        format!(
-            "The worker start failed again before it could take its brief.\n\n\
-             Previous start: {}\n\nFailed start: {failed}",
-            previous.error
-        ),
-    );
+    let trust_gap = error.is::<afkconvoy_core::launch::TrustGap>();
+    let why = if trust_gap {
+        crate::judge::Handed::new("its harness's worktree trust gap", failed.clone())
+    } else {
+        let Some(previous) = previous else { return Err(error) };
+        crate::judge::Handed::new(
+            "its worker start failed again",
+            format!(
+                "The worker start failed again before it could take its brief.\n\n\
+                 Previous start: {}\n\nFailed start: {failed}",
+                previous.error
+            ),
+        )
+    };
     let pr = closing_pr(&fleet.gh.open_prs()?, number).map(|pr| pr.number);
     let worktree = Worktree::of_issue(&Source::of(&fleet.repo)?, number)?;
     crate::judge::escalate_claim(fleet, &claim, &why, pr, worktree.as_ref())?;
     forget_starting(fleet, number)?;
-    Err(error.context("worker start failed again; the claim was escalated"))
+    let context = if trust_gap {
+        "worker start found a worktree trust gap; the claim was escalated"
+    } else {
+        "worker start failed again; the claim was escalated"
+    };
+    Err(error.context(context))
 }
 
 /// What the brief of a worker that continues one ended mid-way says of it.
@@ -493,11 +515,8 @@ fn start(
                     }
                 });
             }
-            DispatchStep::AwaitReady => {
-                let (cut, handle) =
-                    worktree.as_ref().zip(terminal.as_ref()).ok_or_else(undecided)?;
-                cut.await_ready(handle, agent.ready_timeout)?;
-            }
+            // `Agent::start_worker` returns only once its worker is ready.
+            DispatchStep::AwaitReady => {}
             DispatchStep::Deliver => {
                 let (cut, handle) =
                     worktree.as_ref().zip(terminal.as_ref()).ok_or_else(undecided)?;

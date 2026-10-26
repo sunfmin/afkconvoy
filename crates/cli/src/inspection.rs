@@ -751,7 +751,6 @@ impl Inspector {
                 None,
                 now,
             )?;
-            checkout.await_ready(&handle, agent.ready_timeout)?;
             checkout.deliver(&handle, &brief)?;
             Ok(true)
         })();
@@ -861,7 +860,6 @@ impl Inspector {
                 None,
                 now,
             )?;
-            checkout.await_ready(&handle, agent.ready_timeout)?;
             checkout.deliver(&handle, &brief)?;
             Ok(true)
         })();

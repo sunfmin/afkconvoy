@@ -12,7 +12,7 @@ _Amended by ADR-0017:_ a worker is now given the host user's own skills and rule
 
 ## Consequences
 
-- In a bound repo the worker launch command is no longer opaque (ADR-0001): the fleet adds the role directory, the worktree, the exclusion of user settings and the guard to it. The command must take what the fleet adds for its harness, and a start probes that; Claude Code was the only harness when this was decided, and ADR-0013 says what is added for another. An unbound repo's command stays opaque, except for Codex's trust and user-directory setup described in ADR-0013.
+- In a bound repo the worker launch command is no longer opaque (ADR-0001): the fleet adds the role directory, the worktree, the exclusion of user settings and the guard to it. The command must take what the fleet adds for its harness, and a start probes that; Claude Code was the only harness when this was decided, and ADR-0013 says what is added for another. An unbound repo's command stays opaque, except for the model and every harness's worktree-trust setup, and Codex's user-directory setup, described in ADR-0013.
 - The role directory a worker starts in is the fleet's own copy, kept per commit and read-only, and holding that directory alone when the role is a subdirectory of a repo (ADR-0014); the checkout a human edits is another. A push is the only way a change to a role reaches a worker.
 - The repo's own rules are loaded from the added directory; its hooks are not. What a repo must enforce belongs in its gate.
 - The orca terminal is still opened on the worktree, so reading the screen, the nudge and the restart are unchanged. The command it runs changes directory first.

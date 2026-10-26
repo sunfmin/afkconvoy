@@ -455,13 +455,27 @@ impl Harness {
         }
     }
 
-    /// Starts a worker in its worktree, outside a role. Codex still needs
-    /// its own user directory and the worktree trusted before it starts;
-    /// the other harnesses keep their opaque launch commands.
+    /// The launch configuration that trusts a worker's worktree. Every
+    /// harness names one, and the worker-launch help names this same marker.
+    pub const fn worktree_trust(self) -> &'static str {
+        match self {
+            Harness::ClaudeCode => claude_code::TRUST,
+            Harness::Pi => pi::TRUST,
+            Harness::Codex => codex::TRUST,
+            Harness::Dsh => dsh::TRUST,
+            Harness::Kimi => kimi::TRUST,
+        }
+    }
+
+    /// Starts a worker in its worktree, outside a role, already trusting it
+    /// in this harness's own way. Codex also gets its own user directory.
     pub fn in_worktree(self, command: &str, worktree: &str, kept: &str) -> String {
         match self {
+            Harness::ClaudeCode => claude_code::in_worktree(command),
+            Harness::Pi => pi::in_worktree(command),
             Harness::Codex => codex::in_worktree(command, worktree, kept),
-            _ => command.to_string(),
+            Harness::Dsh => dsh::in_worktree(command),
+            Harness::Kimi => kimi::in_worktree(command),
         }
     }
 
@@ -674,6 +688,15 @@ mod tests {
         assert_eq!(Harness::Dsh.answered_as(dsh), AnsweredAs::Said("deepseek-v4-pro".into()));
         for harness in Harness::ALL {
             assert_eq!(harness.answered_as("OK\n"), AnsweredAs::Unsaid, "{}", harness.key());
+        }
+    }
+
+    #[test]
+    fn every_harness_adds_its_own_worktree_trust_outside_a_role() {
+        for harness in Harness::ALL {
+            let line = harness.in_worktree("agent", "/wt", "/kept");
+            assert!(line.contains(harness.worktree_trust()), "{}: {line}", harness.key());
+            assert!(line.contains("agent"), "{}: {line}", harness.key());
         }
     }
 

@@ -12,7 +12,13 @@ pub(super) const KEY: &str = "dsh";
 pub(super) const NAME: &str = "DeepSeek Harness";
 pub(super) const PROGRAM: &str = "dsh-tui";
 pub(super) const STOCK: &str = "dsh-tui";
+pub(super) const TRUST: &str = "DSH_PERMISSION_MODE=danger-full-access";
 pub(super) const FLAGS: [&str; 1] = ["--patch"];
+
+/// Starts DSH without an approval question for its worktree.
+pub(super) fn in_worktree(command: &str) -> String {
+    format!("export {TRUST} && {command}")
+}
 pub(super) const LIMITS: &str = ".dsh/cordis.patch.yml";
 pub(super) const REFUSED: u8 = 2;
 pub(super) const KEPT: Kept = Kept {

@@ -247,7 +247,6 @@ pub fn propose(
         None,
         me.now,
     )?;
-    checkout.await_ready(&terminal, agent.ready_timeout)?;
     checkout.deliver(&terminal, &brief)?;
     Ok(Outcome::Done)
 }

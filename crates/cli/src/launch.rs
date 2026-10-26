@@ -261,9 +261,9 @@ impl Launches {
     }
 
     /// Whether this launch adds harness flags: every worker in a role, and
-    /// Codex outside a role too, for its worktree's trust and user directory.
+    /// outside one wherever worktree trust is launch configuration.
     pub fn adds_flags(&self, harness: Harness) -> bool {
-        self.bound || harness == Harness::Codex
+        self.bound || matches!(harness, Harness::ClaudeCode | Harness::Pi | Harness::Codex)
     }
 
     /// `fault`, of the command of `harness`, as a human is told it: in a

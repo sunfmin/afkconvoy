@@ -32,9 +32,15 @@ const PROMPT: &str = " --prompt";
 const AS_JSON: &str = " --output-format stream-json";
 
 const USER_DIR: &str = "KIMI_CODE_HOME";
+pub(super) const TRUST: &str = "KIMI_CODE_TRUST_WORKSPACE=1";
 pub(super) const ENVIRONMENT: [&str; 3] =
     ["KIMI_CODE_TRUST_WORKSPACE", "KIMI_CODE_NO_AUTO_UPDATE", "KIMI_DISABLE_TELEMETRY"];
 const HOST_SKILLS: [&str; 2] = ["kimi-skills", "agent-skills"];
+
+/// Starts Kimi with its worktree trusted before it reads that directory.
+pub(super) fn in_worktree(command: &str) -> String {
+    format!("export {TRUST} && {command}")
+}
 
 pub(super) const KEPT: Kept = Kept {
     links: &[Link { home: ".kimi-code/credentials", kept: "credentials" }],

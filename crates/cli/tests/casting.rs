@@ -53,7 +53,10 @@ fn casting_defaults_off_and_manual_model_labels_still_select_within_the_harness(
     assert!(world.caster_asked().is_empty());
     world.afk(&TICK).ok();
     assert_eq!(casters(&world), 0);
-    assert_eq!(started(&world), ["agent --model 'haiku'", "agent --model 'opus'"]);
+    assert_eq!(
+        started(&world),
+        [common::trusted("agent --model 'haiku'"), common::trusted("agent --model 'opus'")]
+    );
     let doctor = world.afk(&["doctor", "--now", "1000"]).json;
     assert_eq!(doctor["host"]["host_kit"]["cast"], false);
     assert_eq!(doctor["issues"]["casting"][0]["running"]["model"], "haiku");
@@ -78,7 +81,7 @@ fn enabled_casting_has_no_choice_on_a_model_less_harness_and_reuses_labels_after
     assert!(planned["casting"][0]["why"].as_str().unwrap().contains("no model choice"));
     world.afk(&TICK).ok();
     let commands = started(&world);
-    assert_eq!(commands, [Harness::Pi.stock()]);
+    assert_eq!(commands, [Harness::Pi.in_worktree(Harness::Pi.stock(), "", "")]);
     assert!(!commands[0].contains("--model"), "pi must not inherit Claude Code's model");
     world.afk(&["switch", "--harness", "claude-code"]).ok();
     world.issue(8, &["ready-for-agent", "model:haiku"]);
@@ -105,7 +108,10 @@ fn fallback_adds_a_model_for_the_new_harness_without_removing_the_previous_casti
     let asked = world.caster_asked();
     assert!(!asked.contains("- claude-code ") && asked.contains("- pi a/fast\n"), "{asked}");
     world.afk(&TICK).ok();
-    assert_eq!(started(&world), [Harness::Pi.with_model(Harness::Pi.stock(), "a/slow")]);
+    assert_eq!(
+        started(&world),
+        [Harness::Pi.in_worktree(&Harness::Pi.with_model(Harness::Pi.stock(), "a/slow"), "", "")]
+    );
     std::fs::remove_file(world.paused_path()).unwrap();
     let planned = world.afk(&PLAN).ok();
     assert_eq!(planned["caster"], Value::Null);
@@ -140,7 +146,11 @@ fn disabling_cast_releases_waiting_issues_and_a_changed_candidate_set_gets_a_new
     assert_eq!(casters(&world), 2);
     assert_eq!(
         started(&world).last(),
-        Some(&Harness::Pi.with_model(Harness::Pi.stock(), "a/fast"))
+        Some(&Harness::Pi.in_worktree(
+            &Harness::Pi.with_model(Harness::Pi.stock(), "a/fast"),
+            "",
+            ""
+        ))
     );
 }
 
@@ -153,10 +163,16 @@ fn casting_selects_a_model_only_within_the_first_eligible_kit_harness() {
         json!({"harness":"claude-code", "model":"opus", "why":"first"})
     );
     world.afk(&TICK).ok();
-    assert_eq!(started(&world), [Harness::ClaudeCode.with_model("agent", "opus")]);
+    assert_eq!(
+        started(&world),
+        [common::trusted(&Harness::ClaudeCode.with_model("agent", "opus"))]
+    );
     let world = cast(&["harness:claude-code", "model:haiku"]);
     world.afk(&TICK).ok();
-    assert_eq!(started(&world), [Harness::ClaudeCode.with_model("agent", "haiku")]);
+    assert_eq!(
+        started(&world),
+        [common::trusted(&Harness::ClaudeCode.with_model("agent", "haiku"))]
+    );
 }
 
 #[test]
@@ -172,7 +188,7 @@ fn an_issue_with_no_casting_and_no_choice_to_make_runs_the_host_kit_s_first() {
     );
     assert_eq!(planned["caster"], Value::Null);
     world.afk(&TICK).ok();
-    assert_eq!(started(&world), ["agent --model 'opus'"]);
+    assert_eq!(started(&world), [common::trusted("agent --model 'opus'")]);
 }
 
 #[test]
@@ -190,7 +206,10 @@ fn unheld_casting_preserves_labels_and_runs_the_kit_first_without_carrying_model
             json!({"harness":"claude-code", "model":"opus", "why":"first"})
         );
         world.afk(&TICK).ok();
-        assert_eq!(started(&world), [Harness::ClaudeCode.with_model("agent", "opus")]);
+        assert_eq!(
+            started(&world),
+            [common::trusted(&Harness::ClaudeCode.with_model("agent", "opus"))]
+        );
         assert!(world.labels(7).iter().any(|label| label == labels[0]));
         assert!(!world.comments(7).iter().any(|c| c.starts_with("<!--convoy:unmatched-->")));
     }
@@ -236,7 +255,10 @@ fn a_tick_starts_one_caster_and_holds_the_issues_it_casts_back_for_ten_minutes_a
     let ticked = tick_at(&world, 1000);
     assert_eq!(casters(&world), 1, "{ticked}");
     assert_eq!(started(&world).len(), 2, "the caster and the worker on 9: {ticked}");
-    assert!(started(&world).contains(&Harness::ClaudeCode.with_model("agent", "opus")));
+    assert!(
+        started(&world)
+            .contains(&common::trusted(&Harness::ClaudeCode.with_model("agent", "opus")))
+    );
     assert_eq!(ticked["did"][0], json!({"do": "cast", "issue": null, "outcome": "done"}));
 
     let planned = world.afk(&["plan", "--now", "1100"]).ok();
@@ -266,7 +288,10 @@ fn a_tick_starts_one_caster_and_holds_the_issues_it_casts_back_for_ten_minutes_a
     let panel = world.render_panel("caster-late", &["--now", "1600"], (1440, 1000)).html;
     assert!(panel.contains("the caster did not cast it in ten minutes"), "{panel}");
     tick_at(&world, 1600);
-    let opus = started(&world).iter().filter(|c| *c == "agent --model 'opus'").count();
+    let opus = started(&world)
+        .iter()
+        .filter(|command| command.as_str() == common::trusted("agent --model 'opus'"))
+        .count();
     assert_eq!((casters(&world), opus), (1, 3));
 }
 
@@ -275,7 +300,7 @@ fn an_issue_with_no_choice_to_make_or_a_casting_starts_no_caster() {
     let world = World::new();
     world.issue(7, &["ready-for-agent"]);
     tick_at(&world, 1000);
-    assert_eq!((casters(&world), started(&world)), (0, vec!["agent".to_string()]));
+    assert_eq!((casters(&world), started(&world)), (0, vec![common::trusted("agent")]));
 
     let world = cast(&["harness:pi"]);
     tick_at(&world, 1000);
@@ -320,7 +345,7 @@ fn cast_labels_each_issue_only_with_a_model_of_its_selected_harness() {
     assert_eq!(world.labels(9), ["ready-for-agent", "harness:pi"]);
     assert_eq!(world.comments(7)[0], "Cast `model:haiku`: A one-line fix.");
     world.afk(&TICK).ok();
-    assert!(started(&world).contains(&"agent --model 'haiku'".to_string()));
+    assert!(started(&world).contains(&common::trusted("agent --model 'haiku'")));
 }
 
 #[test]
@@ -337,7 +362,11 @@ fn switching_again_changes_the_kit_without_a_separate_clearable_choice() {
     assert_eq!(moved["switched"][0]["to"], "pi");
     assert_eq!(
         started(&world).last(),
-        Some(&Harness::Pi.with_model(Harness::Pi.stock(), "a/slow"))
+        Some(&Harness::Pi.in_worktree(
+            &Harness::Pi.with_model(Harness::Pi.stock(), "a/slow"),
+            "",
+            ""
+        ))
     );
     assert!(world.afk(&["switch", "--clear"]).error().contains("--clear"));
     world.issue(8, &["ready-for-agent", "harness:claude-code", "model:haiku"]);
@@ -355,7 +384,10 @@ fn a_paused_candidate_is_skipped_without_holding_its_ticket_or_reordering_the_ki
     assert_eq!(planned["frontier"][0]["cast"]["harness"], "claude-code");
     assert_eq!(planned["host_kit"]["paused"][0]["harness"], "pi");
     world.afk(&TICK).ok();
-    assert_eq!(started(&world), [Harness::ClaudeCode.with_model("agent", "opus")]);
+    assert_eq!(
+        started(&world),
+        [common::trusted(&Harness::ClaudeCode.with_model("agent", "opus"))]
+    );
     assert_eq!(world.labels(7), ["ready-for-agent", "harness:pi", "model:a/slow"]);
     assert_eq!(std::fs::read(world.kit_path()).unwrap(), kit);
 }
@@ -385,7 +417,10 @@ fn a_temporary_pause_never_rewrites_a_casters_or_a_humans_ticket_labels() {
     assert_eq!(casters(&world), 0);
     assert_eq!(world.labels(7), ["ready-for-agent", "harness:pi", "model:a/slow"]);
     assert_eq!(world.labels(8), ["ready-for-agent", "harness:pi"]);
-    assert_eq!(started(&world), vec![Harness::ClaudeCode.with_model("agent", "opus"); 2]);
+    assert_eq!(
+        started(&world),
+        vec![common::trusted(&Harness::ClaudeCode.with_model("agent", "opus")); 2]
+    );
 }
 
 #[test]
@@ -402,14 +437,20 @@ fn each_paused_harness_is_probed_every_hour_and_one_that_answers_is_back() {
         questions.iter().filter(|(asked, _)| asked.contains("single word OK")).collect();
     assert_eq!(probes.len(), 1, "{questions:?}");
     assert!(!probes[0].1, "its terminal is closed");
-    assert_eq!(started(&world), [Harness::ClaudeCode.with_model("agent", "opus")]);
+    assert_eq!(
+        started(&world),
+        [common::trusted(&Harness::ClaudeCode.with_model("agent", "opus"))]
+    );
 
     world.probes_answer();
     tick_at(&world, 7199);
     assert_eq!(world.paused().as_array().unwrap().len(), 1, "an hour after its last probe");
     tick_at(&world, 7200);
     assert_eq!(world.paused(), json!([]), "it answered");
-    assert_eq!(started(&world), [Harness::ClaudeCode.with_model("agent", "opus")]);
+    assert_eq!(
+        started(&world),
+        [common::trusted(&Harness::ClaudeCode.with_model("agent", "opus"))]
+    );
 }
 
 #[test]

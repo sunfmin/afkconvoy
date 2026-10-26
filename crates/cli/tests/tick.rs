@@ -118,12 +118,9 @@ fn a_start_that_failed_holds_its_claim_and_its_slot() {
 
 #[test]
 fn a_worker_that_never_took_its_brief_is_started_again_in_the_same_worktree() {
-    for knob in ["never_ready", "trust_sticks", "send_refused"] {
+    for knob in ["never_ready", "send_refused"] {
         let world = backlog(&[3]);
-        world.with_orca(|orca| {
-            orca[knob] = json!(true);
-            orca["trust_prompt"] = json!(knob == "trust_sticks");
-        });
+        world.with_orca(|orca| orca[knob] = json!(true));
         let failed = tick(&world, "1000");
         assert_eq!(did(&failed), ["dispatch 3 failed", "heartbeat done"]);
         let before = world.orca();
@@ -164,6 +161,28 @@ fn a_worker_that_never_took_its_brief_is_started_again_in_the_same_worktree() {
         tick(&world, "1180");
         assert!(!world.orca_calls().iter().any(|call| common::asked(call) == "terminal create"));
     }
+}
+
+#[test]
+fn a_worktree_trust_gap_is_reported_once_not_as_a_failed_dispatch_every_tick() {
+    let world = backlog(&[3]);
+    world.set_gate_config("gate_command: ./gate.sh\nescalate_to: human");
+    world.with_orca(|orca| orca["trust_prompt"] = json!(true));
+    let first = tick(&world, "1000");
+    assert!(first["errors"][0]["error"].as_str().unwrap().contains("worktree trust gap"));
+    assert!(world.labels(3).contains(&"ready-for-human".to_string()));
+    assert_eq!(world.claims(), []);
+    let comments = world.comments(3);
+    world.orca_calls();
+    let again = tick(&world, "1090");
+    assert_eq!(again["errors"], json!([]), "{again}");
+    assert!(!again.to_string().contains("dispatch 3"), "{again}");
+    assert_eq!(world.comments(3), comments);
+    let calls = world.orca_calls();
+    assert!(
+        !calls.iter().any(|call| common::asked(call) == "terminal create"),
+        "no repeated start: {calls:?}"
+    );
 }
 
 #[test]

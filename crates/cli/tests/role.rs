@@ -494,18 +494,16 @@ fn a_start_checks_every_harness_it_could_be_asked_for_and_names_what_calls_for_e
 }
 
 #[test]
-fn an_unbound_repo_s_launch_command_is_still_passed_to_orca_exactly_as_given() {
+fn an_unbound_repo_s_launch_command_is_preserved_apart_from_worktree_trust() {
     let world = World::new();
     world.issue(7, &["ready-for-agent"]);
-    // It need take no flag at all: it is never asked.
-    world.shell_help(None);
-    let passed = "agent  --fast ; true ";
+    let passed = "agent  --fast ";
     world.kit_command("claude-code", passed);
     let now = ["--now", "1000"];
     world.afk(&[&["tick", "--instance", "alpha", "--host", "h1"][..], &now].concat()).ok();
-    assert_eq!(open_terminals(&world, &worktree(&world, 7))[0]["command"], passed);
+    assert_eq!(open_terminals(&world, &worktree(&world, 7))[0]["command"], common::trusted(passed));
     let asked = world.shell_asked();
-    assert!(!asked.iter().any(|script| script.ends_with("--help")), "{asked:?}");
+    assert!(asked.iter().any(|script| script.ends_with("--help")), "{asked:?}");
     let copies = world.cache().join("afkconvoy/copies");
     assert!(!copies.exists(), "an unbound repo keeps no copy");
     assert!(brief(&worktree(&world, 7)).contains("**Implement**"));
@@ -654,6 +652,11 @@ fn the_worker_launch_topic_names_what_a_bound_repo_requires_of_each_launch_comma
             let named = section.contains(&format!("`{flag}`"));
             assert!(named, "the topic does not name {flag} under {}", harness.name());
         }
+        assert!(
+            section.contains(harness.worktree_trust()),
+            "the topic does not name worktree trust under {}",
+            harness.name()
+        );
     }
     let facts = Facts {
         on: On::Stage { issue: 7, flow: "f", stage: "s" },

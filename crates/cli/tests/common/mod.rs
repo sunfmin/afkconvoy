@@ -32,6 +32,11 @@ pub fn codex_line(_world: &World, dir: &Path) -> String {
     )
 }
 
+/// A Claude Code launch as an unbound worker receives it, with worktree trust.
+pub fn trusted(command: &str) -> String {
+    afkconvoy_core::harness::Harness::ClaudeCode.in_worktree(command, "", "")
+}
+
 /// The code blocks of `language` the manual shows at `at` — a command as
 /// `` `afkconvoy config` ``, a topic as `` topic `example` `` — each as its
 /// reader sees it: a test runs what the help shows, so the two cannot drift.
