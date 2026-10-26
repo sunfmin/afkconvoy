@@ -185,19 +185,9 @@ impl Chain {
 
     /// An ordinary advance to a known candidate preserves its successors.
     /// An external base move invalidates all candidates rooted elsewhere.
-    /// This also recognizes a push whose process died before settlement.
+    /// Atomic publication already records the landed prefix before issue
+    /// settlement. An external move never promotes an unfinished candidate.
     pub fn observe_base(&mut self, base: &str) {
-        let landed = self
-            .candidates
-            .iter()
-            .position(|c| c.commit == base && c.phase == Phase::Green && c.stopped);
-        if let Some(last) = landed {
-            for c in self.candidates.iter_mut().take(last.saturating_add(1)) {
-                if c.valid() {
-                    c.phase = Phase::Landed;
-                }
-            }
-        }
         let first = self.candidates.iter().find(|c| c.valid());
         if let Some(c) = first
             && c.predecessor != base
