@@ -156,6 +156,7 @@ kinds! {
     StepUnrecovered: Warning, "failed in tick";
     HarnessDown: Critical, "harness is down";
     HarnessPaused: Warning, "is paused on this host";
+    WatchUnavailable: Critical, "no harness can start this host's watch";
     NotMoved: Warning, "the host runner did not move onto";
     RosterModelUnmatched: Warning, "names no model the host kit holds";
     TeamUnread: Critical, "the team this repo names cannot be read";
@@ -178,6 +179,7 @@ kinds! {
     NotOurs: Warning, "is held off by a PR not the fleet's";
     ClaimOnGone: Warning, "is claimed but GitHub has it no more";
     SlowGate: Warning, "the gate is slow";
+    ExclusiveBound: Warning, "ended at the exclusive bound";
     Moved: Info, "moved since the stage";
     RetiredConcurrency: Info, "which nothing reads any more";
     KeptWorktree: Info, "is kept with no claim";
@@ -197,6 +199,7 @@ impl Kind {
                 | Kind::NoProvider
                 | Kind::OrcaNotRunning
                 | Kind::HarnessPaused
+                | Kind::WatchUnavailable
                 | Kind::NotMoved
         )
     }
@@ -1625,6 +1628,11 @@ fn held_json(held: &Held) -> Value {
         && let Ok(Some(harness)) = Worktree::at(path.clone(), String::new()).harness()
     {
         worker["harness"] = json!(harness);
+        let worktree = Worktree::at(path.clone(), String::new());
+        worker["orca"] = worktree.agent_report().unwrap_or(Value::Null);
+        let recorded = worktree.recorded_harness().ok().flatten();
+        worker["recorded_harness"] = json!(recorded);
+        worker["harness_mismatch"] = json!(recorded.is_some_and(|h| h != harness));
         if let Some(settings) =
             crate::codex_launch::recorded(&Worktree::at(path.clone(), String::new()))
         {
@@ -1702,10 +1710,12 @@ type Examined = (Value, Vec<Finding>);
 /// What `doctor` reads of the fleet of `host` in the checkout `repo`, under
 /// the network settings `proxy` names.
 fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String]) -> Result<Examined> {
+    let _observation = crate::orca::Observation::begin();
     let launches = Launches::foreseen(repo).with_no_proxy(proxy)?;
 
     let log = Log::of(repo).ok();
     let entries = log.as_ref().and_then(Log::read);
+    let bounded = exclusive_findings(entries.as_deref().unwrap_or_default(), now);
     let (instance, _started_with, ticks) = read_log(entries.as_deref().unwrap_or_default(), host);
     let mut run = Run {
         alive: host_runner::holds(repo),
@@ -1737,9 +1747,11 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String]) -> Result<Exami
         state: state.as_ref().map_err(String::as_str),
     };
     let mut found = findings(&seen);
+    found.extend(bounded);
     found.extend(crate::tracker::findings(repo));
     found.extend(crate::paused::findings(now));
     found.extend(host_runner::findings());
+    found.extend(crate::host_watch::finding());
     found.sort_by_key(|finding| finding.severity);
     let (claims, issues, waiting) = match &state {
         Ok(state) => (
@@ -1783,18 +1795,44 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String]) -> Result<Exami
     Ok((answer, found))
 }
 
+/// Each recent bound outcome is evidence for splitting the work or checking
+/// the host setting. Read commands too: they need no live fleet instance.
+fn exclusive_findings(entries: &[Entry], now: u64) -> Vec<Finding> {
+    entries
+        .iter()
+        .filter_map(|entry| {
+            let What::Command { command, outcome, .. } = &entry.what else { return None };
+            if command != "exclusive"
+                || !outcome.starts_with("ended at the exclusive bound")
+                || now.saturating_sub(entry.at) > log::KEPT_FOR
+            {
+                return None;
+            }
+            Some(finding(
+                Kind::ExclusiveBound,
+                format!("an exclusive command ended at the exclusive bound at {}", entry.at),
+                format!(
+                    "{}: {outcome}; check `afkconvoy run --exclusive-seconds` if this was one step",
+                    entry.host
+                ),
+                "afkconvoy exclusive -- <one step of the work>".into(),
+            ))
+        })
+        .collect()
+}
+
 /// What of `doctor`'s `host` is the host's alone, the same whichever
 /// checkout it is asked in — the host kit, the queue of `exclusive`, the
 /// inspection running, the newer afkconvoy the host runner moves onto — by
 /// its key: `doctor --all` says it once. All but the host kit are as the
 /// host runner says them, asked once.
 fn host_once(now: u64) -> Map<String, Value> {
-    let (exclusive, inspection, installed) = match host_runner::shared() {
+    let (exclusive, inspection, installed, watch) = match host_runner::shared() {
         Ok(said) => {
             let said = said.unwrap_or_default();
-            (Ok(said.exclusive), said.inspection, said.installed)
+            (Ok(said.exclusive), said.inspection, said.installed, said.watch)
         }
-        Err(error) => (Err(error), None, None),
+        Err(error) => (Err(error), None, None, None),
     };
     Map::from_iter([
         ("host_kit".to_string(), crate::kit::show(now)),
@@ -1804,6 +1842,7 @@ fn host_once(now: u64) -> Map<String, Value> {
             inspection.map_or(Value::Null, |running| crate::inspection::json(&running)),
         ),
         ("installed".to_string(), serde_json::to_value(installed).unwrap_or_default()),
+        ("watch".to_string(), crate::host_watch::json(watch.as_ref())),
     ])
 }
 

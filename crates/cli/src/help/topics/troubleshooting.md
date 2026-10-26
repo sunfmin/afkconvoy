@@ -24,6 +24,8 @@ Start with `afkconvoy doctor`, in the checkout the fleet runs in: it reads every
 
 A warning may be the fleet mid-step: run `doctor` again after a tick before you act on one.
 
+- `ended at the exclusive bound`: A command held others up for the host's bound. Each occurrence in the last day has the command, runtime and number waiting in `evidence`. Run each step of a long measurement as its own `afkconvoy exclusive`. If a single gate or release build reaches it, check the host setting with `afkconvoy doctor` and change it with `afkconvoy run --exclusive-seconds N`, or `--exclusive-seconds default` to restore {const:EXCLUSIVE_SECONDS}s.
+
 - `failed in tick`: A step failed, including a worker that could not start or take its brief. `evidence` is the error and `fix` is the line to try after correcting it: a failed dispatch can be run again, and a failed train worker start uses `afkconvoy tick`. It stays visible across unrelated ticks until the step succeeds or the issue's work continues or ends. Three consecutive failed ticks make it critical instead.
 - `has no worker`: A claim's worker is gone; a tick starts one. `fix` is for a claim it leaves so.
 - `has been stopped for`: A worker stopped half an hour ago and its claim is still at work. Read its terminal; `fix` follows its verdict and progress. A `blocked` verdict whose blockers all closed names `dispatch`, which continues its worktree; open blockers name `park`. Only a worker eligible for a nudge names `nudge`; other cases name `tick`.
@@ -31,6 +33,7 @@ A warning may be the fleet mid-step: run `doctor` again after a tick before you 
 - `follows no workflow of the team`: An issue's flow label names no workflow, or it has two. `afkconvoy flows` lists all.
 - `longer than any stage before it took`: Nothing is wrong yet: an issue has been at one stage for long. `fix` shows it.
 - `is one rework from a breaker`: The next `reject` escalates the issue. Nothing to do yet: [`afkconvoy help humans`](help:humans).
+- `no harness can start this host's watch`: A look of the host runner called for a watch, and no harness of the host kit could start it or go on with it: each paused, with a fault on record, or failing to start, as `evidence` says. Nothing watches the host until one can: `afkconvoy kit` shows the host kit, and its `worker_health` the faults. The next look tries again (`afkconvoy run --help`, WATCH).
 - `is paused on this host`: It refused every prompt: no worker starts on it till an hourly probe answers.
 - `names no model the host kit holds`: A team's roster names a model by a name that matches no model the host kit holds for its harness, by its id or any other name; `evidence` gives the nearest names. The fleet never changes a roster: a tick opens one issue for it in the team's repo, which the team's own fleet works. `fix` is the file and key to correct.
 - `has no harness on this host it holds limits for`: A role holds limits for no harness the host kit holds, so no worker of it starts and its stages wait; the rest go on. They go on by themselves once the host kit holds one: `afkconvoy kit`, or write the role's limits for one it holds.

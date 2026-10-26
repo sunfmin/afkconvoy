@@ -138,6 +138,7 @@ pub fn tick(
     stop: &Stop,
     before: Option<&Before>,
 ) -> Result<(Ticked, Fleet)> {
+    let _observation = crate::orca::Observation::begin();
     // Each harness paused on this host is probed every hour (docs/adr/0020):
     // one that answers is back in the host kit for this tick's rebuild. A
     // probe that cannot be made leaves it paused, and costs the tick nothing.
@@ -1260,6 +1261,8 @@ pub fn run(
         let ticked = turn(
             || wakes.forget(count),
             || {
+                // The served panel belongs to this same tick's view.
+                let _observation = crate::orca::Observation::begin();
                 let (ticked, fleet) = tick(repo, me, agent, &stop, before.as_ref())?;
                 let tracker = match fleet.gh.tracker.named() {
                     Some(named) => Ok(named.to_string()),

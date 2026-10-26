@@ -597,7 +597,13 @@ fn a_worker_waiting_in_the_exclusive_queue_is_busy_until_the_gate_limit() {
     assert_eq!(typed(&world).len(), 1, "never nudged for it");
 
     // A live background command remains a wait past the observation interval.
-    assert_eq!(did(&tick(&world, 1250 + 600))[0], "judge 7 waiting");
+    let ticked = tick(&world, 1250 + 600);
+    assert_eq!(
+        did(&ticked)[0],
+        "judge 7 waiting",
+        "{ticked}; health: {}",
+        std::fs::read_to_string(world.cache().join("afkconvoy/worker-health.json")).unwrap()
+    );
     assert_eq!(typed(&world).len(), 1, "no nudge");
     assert_eq!(world.claims().len(), 1);
     assert!(!world.labels(7).contains(&"ready-for-human".to_string()));
