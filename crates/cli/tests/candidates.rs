@@ -1,0 +1,285 @@
+//! Real binary, real remotes and kernel processes. Gates wait on controlled
+//! release files; assertions inspect refs, original heads and child exit.
+use crate::common::{World, commit, git};
+use serde_json::{Value, json};
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::time::{Duration, Instant};
+
+fn quote(path: &Path) -> String {
+    afkconvoy_core::line::Line::new().word(&path.to_string_lossy()).own()
+}
+
+fn until(done: impl Fn() -> bool) {
+    let start = Instant::now();
+    while !done() {
+        assert!(start.elapsed() < Duration::from_secs(30), "candidate transition never happened");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn world(lanes: u64) -> World {
+    let world = World::new();
+    let root = quote(&world.root);
+    let script = format!(
+        r#"#!/bin/sh
+set -e
+root={root}
+name=
+for n in a b c d; do if test -f "$n.txt"; then name=$n; fi; done
+test -n "$name" || exit 0
+echo $$ > "$root/gate-$name"
+sleep 120 &
+echo $! > "$root/child-$name"
+touch "$root/start-$name"
+while test -d "$root" && test ! -f "$root/release-$name"; do sleep 0.02; done
+test ! -f "$root/fail-$name"
+"#
+    );
+    commit(&world.clone, "gate.sh", &script);
+    git(&world.clone, &["push", "-q", "origin", "HEAD"]);
+    let command = afkconvoy_core::line::Line::new()
+        .program(env!("CARGO_BIN_EXE_afkconvoy"))
+        .fixed(" exclusive -- sh ./gate.sh")
+        .own();
+    world.set_gate(&command);
+    assert_eq!(world.afk(&["gate"]).ok()["recorded"], true);
+    world.say_host_settings(json!({"gate_lanes": lanes}));
+    world
+}
+
+fn start(world: &World, dir: &Path, cache: &Path, n: u64) -> Child {
+    world
+        .command(env!("CARGO_BIN_EXE_afkconvoy"), dir)
+        .env("XDG_CACHE_HOME", cache)
+        .args(["land", "--issue", &n.to_string()])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap()
+}
+
+fn finish(child: Child) -> Value {
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    serde_json::from_slice(&out.stdout).unwrap()
+}
+
+fn release(world: &World, name: &str, red: bool) {
+    if red {
+        std::fs::write(world.root.join(format!("fail-{name}")), "").unwrap();
+    }
+    std::fs::write(world.root.join(format!("release-{name}")), "").unwrap();
+}
+
+fn began(world: &World, name: &str) {
+    until(|| world.root.join(format!("start-{name}")).exists());
+}
+
+fn chain(world: &World) -> Value {
+    serde_json::from_str(&world.remote(&[
+        "show",
+        "-s",
+        "--format=%B",
+        "refs/convoy/candidates/main",
+    ]))
+    .unwrap()
+}
+
+fn green(world: &World, issue: u64) {
+    until(|| {
+        chain(world)["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["issue"] == issue && c["phase"] == "green")
+    });
+}
+
+fn gone(world: &World, name: &str) {
+    for kind in ["gate", "child"] {
+        let pid = std::fs::read_to_string(world.root.join(format!("{kind}-{name}"))).unwrap();
+        until(|| {
+            let ps = Command::new("ps").args(["-p", pid.trim(), "-o", "stat="]).output().unwrap();
+            let status = String::from_utf8_lossy(&ps.stdout);
+            status.trim().is_empty() || status.trim().starts_with('Z')
+        });
+    }
+}
+
+fn worker(world: &World, n: u64, name: &str) -> (PathBuf, String) {
+    let dir = world.worker(n, &format!("{name}.txt"), name);
+    let head = git(&dir, &["rev-parse", "HEAD"]);
+    (dir, head)
+}
+
+#[test]
+fn three_candidates_overlap_finish_out_of_order_and_publish_exact_commits_once() {
+    let world = world(3);
+    let workers: Vec<_> = [(1, "a"), (2, "b"), (3, "c")]
+        .into_iter()
+        .map(|(n, name)| worker(&world, n, name))
+        .collect();
+    let base = world.remote(&["rev-parse", "refs/heads/main"]);
+    let _runner = world.host_held();
+    let a = start(&world, &workers[0].0, &world.cache(), 1);
+    began(&world, "a");
+    let b = start(&world, &workers[1].0, &world.cache(), 2);
+    began(&world, "b");
+    let c = start(&world, &workers[2].0, &world.cache(), 3);
+    began(&world, "c");
+    release(&world, "c", false);
+    green(&world, 3);
+    release(&world, "b", false);
+    green(&world, 2);
+    assert_eq!(world.remote(&["rev-parse", "refs/heads/main"]), base);
+    let before = chain(&world);
+    release(&world, "a", false);
+    let answers = [finish(a), finish(b), finish(c)];
+    for (i, answer) in answers.iter().enumerate() {
+        assert_eq!(answer["outcome"], "merged", "{answer}");
+        assert_eq!(answer["commit"], before["candidates"][i]["commit"]);
+        assert_eq!(git(&workers[i].0, &["rev-parse", "HEAD"]), workers[i].1);
+        assert_eq!(
+            world.remote(&["rev-parse", &format!("refs/heads/issue-{}", i + 1)]),
+            workers[i].1
+        );
+        if i > 0 {
+            assert_eq!(answer["merged"], answers[i - 1]["commit"]);
+        }
+    }
+    assert_eq!(
+        world.remote(&["rev-parse", "refs/heads/main"]),
+        answers[2]["commit"].as_str().unwrap()
+    );
+    assert_eq!(
+        chain(&world)["candidates"].as_array().unwrap().len(),
+        3,
+        "no duplicate aggregate gate"
+    );
+    assert_eq!(world.afk(&["doctor"]).json["candidates"][2]["waiting"], "landed");
+}
+
+#[test]
+fn first_failure_invalidates_running_suffix_kills_children_and_rebuilds_from_original_heads() {
+    let world = world(3);
+    let (a, _) = worker(&world, 1, "a");
+    let (b, bh) = worker(&world, 2, "b");
+    let (c, ch) = worker(&world, 3, "c");
+    let base = world.remote(&["rev-parse", "refs/heads/main"]);
+    let _runner = world.host_held();
+    let aa = start(&world, &a, &world.cache(), 1);
+    began(&world, "a");
+    let bb = start(&world, &b, &world.cache(), 2);
+    began(&world, "b");
+    let cc = start(&world, &c, &world.cache(), 3);
+    began(&world, "c");
+    release(&world, "a", true);
+    let answers = [finish(aa), finish(bb), finish(cc)];
+    assert_eq!(answers[0]["outcome"], "gate_red", "{:?}", answers);
+    for answer in &answers[1..] {
+        assert_eq!(answer["outcome"], "cancelled", "{answer}");
+        assert_eq!(answer["cause"], "predecessor_failed");
+        assert_eq!(answer["cancelled_by"], answers[0]["candidate"]);
+    }
+    for name in ["a", "b", "c"] {
+        gone(&world, name);
+    }
+    assert_eq!(world.remote(&["rev-parse", "refs/heads/main"]), base);
+    assert_eq!(git(&b, &["rev-parse", "HEAD"]), bh);
+    assert_eq!(git(&c, &["rev-parse", "HEAD"]), ch);
+    release(&world, "b", false);
+    let rebuilt = finish(start(&world, &b, &world.cache(), 2));
+    assert_eq!(rebuilt["outcome"], "merged", "{rebuilt}");
+    assert_eq!(rebuilt["merged"], base);
+    assert!(
+        !world.remote(&["ls-tree", "--name-only", "refs/heads/main"]).lines().any(|f| f == "a.txt")
+    );
+    assert_eq!(world.remote(&["show", "refs/heads/main:b.txt"]), "b");
+}
+
+#[test]
+fn middle_failure_preserves_landed_prefix_and_a_green_descendant_is_ineligible() {
+    let world = world(3);
+    let (a, _) = worker(&world, 1, "a");
+    let (b, _) = worker(&world, 2, "b");
+    let (c, _) = worker(&world, 3, "c");
+    let _runner = world.host_held();
+    let aa = start(&world, &a, &world.cache(), 1);
+    began(&world, "a");
+    let bb = start(&world, &b, &world.cache(), 2);
+    began(&world, "b");
+    let cc = start(&world, &c, &world.cache(), 3);
+    began(&world, "c");
+    release(&world, "c", false);
+    green(&world, 3);
+    release(&world, "a", false);
+    let landed = finish(aa);
+    assert_eq!(landed["outcome"], "merged");
+    release(&world, "b", true);
+    let failed = finish(bb);
+    let cancelled = finish(cc);
+    assert_eq!(failed["outcome"], "gate_red", "{failed}");
+    assert_eq!(cancelled["outcome"], "cancelled", "{cancelled}");
+    assert_eq!(world.remote(&["rev-parse", "refs/heads/main"]), landed["commit"].as_str().unwrap());
+    release(&world, "c", false);
+    let rebuilt = finish(start(&world, &c, &world.cache(), 3));
+    assert_eq!(rebuilt["outcome"], "merged", "{rebuilt}");
+    let files = world.remote(&["ls-tree", "--name-only", "refs/heads/main"]);
+    assert!(files.lines().any(|f| f == "a.txt"));
+    assert!(files.lines().any(|f| f == "c.txt"));
+    assert!(!files.lines().any(|f| f == "b.txt"));
+}
+
+#[test]
+fn a_changed_head_cancels_its_suffix_and_an_external_base_move_invalidates_the_chain() {
+    for head_change in [true, false] {
+        let world = world(2);
+        let (a, _) = worker(&world, 1, "a");
+        let (b, bh) = worker(&world, 2, "b");
+        let _runner = world.host_held();
+        let aa = start(&world, &a, &world.cache(), 1);
+        began(&world, "a");
+        let bb = start(&world, &b, &world.cache(), 2);
+        began(&world, "b");
+        if head_change {
+            commit(&a, "changed.txt", "new head");
+            git(&a, &["push", "-q", "origin", "HEAD"]);
+        } else {
+            commit(&world.clone, "outside.txt", "outside");
+            git(&world.clone, &["push", "-q", "origin", "HEAD"]);
+        }
+        let answers = [finish(aa), finish(bb)];
+        assert!(
+            answers
+                .iter()
+                .all(|a| a["outcome"] == if head_change { "cancelled" } else { "target_moved" }),
+            "{:?}",
+            answers
+        );
+        for name in ["a", "b"] {
+            gone(&world, name);
+        }
+        assert_eq!(git(&b, &["rev-parse", "HEAD"]), bh);
+        assert_eq!(world.state(2), "open");
+    }
+}
+
+#[test]
+fn dead_owner_is_cancelled_before_replacement_and_duplicate_requests_never_start_two_gates() {
+    let world = world(2);
+    let (a, head) = worker(&world, 1, "a");
+    let _runner = world.host_held();
+    let mut first = start(&world, &a, &world.cache(), 1);
+    began(&world, "a");
+    let duplicate = start(&world, &a, &world.cache(), 1);
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(chain(&world)["candidates"].as_array().unwrap().len(), 1);
+    first.kill().unwrap();
+    let _ = first.wait();
+    until(|| chain(&world)["candidates"][0]["stopped"] == true);
+    gone(&world, "a");
+    release(&world, "a", false);
+    assert_eq!(finish(duplicate)["outcome"], "merged");
+    assert_eq!(git(&a, &["rev-parse", "HEAD"]), head);
+}
