@@ -208,6 +208,36 @@ impl Publication {
     }
 }
 
+#[cfg(flux)]
+#[allow(dead_code)]
+mod rejected {
+    use super::*;
+
+    #[should_fail]
+    fn unconfirmed_exit_cannot_authorize_publication() -> Publication {
+        Publication {
+            _valid: true,
+            _green: true,
+            _predecessor: true,
+            _unlocked: true,
+            _head: true,
+            _stopped: false,
+        }
+    }
+
+    #[should_fail]
+    fn invalidated_green_cannot_authorize_publication() -> Publication {
+        Publication {
+            _valid: false,
+            _green: true,
+            _predecessor: true,
+            _unlocked: true,
+            _head: true,
+            _stopped: true,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -236,6 +266,20 @@ mod tests {
             stopped: false,
             result: None,
         }
+    }
+
+    #[test]
+    fn late_completion_never_resurrects_an_invalidated_suffix_or_erases_the_root_failure() {
+        let mut chain = Chain { candidates: (0..3).map(candidate).collect() };
+        chain.finish("c0", false, serde_json::json!({"exit_code": 9}));
+        let invalidated = chain.clone();
+        for c in ["c1", "c2"] {
+            chain.finish(c, true, serde_json::json!({"late": "green"}));
+            chain.finish(c, false, serde_json::json!({"late": "red"}));
+        }
+        assert_eq!(chain, invalidated);
+        assert_eq!(chain.candidates[0].phase, Phase::Red);
+        assert!(!chain.can_assign(3, false), "unconfirmed cancellation keeps the window occupied");
     }
 
     #[test]
