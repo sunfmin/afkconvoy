@@ -26,6 +26,7 @@ use crate::git::Repo;
 use crate::health::Diagnosis;
 use crate::log::{Entry, What};
 use crate::orca::Worktree;
+use crate::watch_report::Report;
 
 const STATE: &str = "watch/state.json";
 /// How often a running watch's terminal and transcript are read.
@@ -55,7 +56,7 @@ fn stock_instruction() -> String {
 
 Find what holds this host's fleets and their work back, fix it with the watch's authority,
 check that the work goes on, and say what you did.
-Leave these with a human, never act on them, and list each in your printed record:
+Leave these with a human, never act on them, and list each in your report:
 {HUMAN_KINDS}
 "
     )
@@ -96,6 +97,12 @@ pub struct Watch {
     /// What its sessions did, each line one thing.
     #[serde(default)]
     pub did: Vec<String>,
+    #[serde(default)]
+    pub report: Option<Report>,
+    #[serde(default)]
+    pub nudged: Option<u64>,
+    #[serde(default)]
+    pub session_started: u64,
     /// Each session whose harness gave out, in order.
     #[serde(default)]
     pub attempts: Vec<Attempt>,
@@ -115,6 +122,9 @@ pub struct Attempt {
     pub why: String,
     #[serde(default)]
     pub did: Vec<String>,
+    /// Terminal evidence for continuation, never a report of actions taken.
+    #[serde(default)]
+    pub screen: Vec<String>,
 }
 
 /// A watch as `doctor` says it: all but the look, which is the watch's own.
@@ -122,6 +132,7 @@ pub fn watch_json(watch: &Watch) -> Value {
     json!({"id": watch.id, "directory": watch.directory, "stock": watch.stock, "items": watch.items,
         "started": watch.started, "harness": watch.harness, "model": watch.model,
         "terminal": watch.terminal, "transcript": watch.transcript, "did": watch.did,
+        "reported": watch.report.is_some(), "report": watch.report,
         "attempts": watch.attempts, "ended": watch.ended, "outcome": watch.outcome})
 }
 
@@ -149,6 +160,10 @@ fn read() -> Result<State> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(State::default()),
         Err(error) => Err(error.into()),
     }
+}
+
+pub(crate) fn running() -> Result<Option<Watch>> {
+    Ok(read()?.running)
 }
 
 /// The running watch, shared with what the host runner answers.
@@ -339,7 +354,11 @@ impl Watcher {
                     crate::log::utc(watch.started),
                     watch.outcome.as_deref().unwrap_or("unknown")
                 );
-                std::iter::once(ended).chain(watch.did.iter().map(|did| format!("- {did}")))
+                let report = match &watch.report {
+                    Some(report) => serde_json::to_string_pretty(report).unwrap_or_default(),
+                    None => "It did not report.".into(),
+                };
+                [ended, report]
             })
             .collect();
         let now = crate::clock();
@@ -356,10 +375,25 @@ impl Watcher {
             transcript: PathBuf::new(),
             earlier,
             did: vec![],
+            report: None,
+            nudged: None,
+            session_started: now,
             attempts: vec![],
             ended: None,
             outcome: None,
         };
+        // Keep a finished watch's screen until its replacement actually starts
+        // in that directory. Never close the operator's other terminals.
+        let mut closed = BTreeSet::new();
+        for last in
+            state.history.iter().chain(state.last.iter()).filter(|last| last.directory == directory)
+        {
+            if !closed.insert(last.terminal.clone()) {
+                continue;
+            }
+            let worktree = Worktree::at(last.directory.clone(), String::new());
+            close(&worktree, &last.terminal, worktree.live(&last.terminal)?)?;
+        }
         let mut failures = vec![];
         for candidate in crate::health::watch_candidates()? {
             watch.harness = candidate.harness;
@@ -395,7 +429,7 @@ impl Watcher {
     /// is over, its harness gave out or its hour is up.
     fn check(&self) -> Result<()> {
         let mut state = read()?;
-        let Some(watch) = state.running.take() else {
+        let Some(mut watch) = state.running.take() else {
             self.shared.set(None);
             return Ok(());
         };
@@ -404,41 +438,79 @@ impl Watcher {
         let exited = host_watch::exited(&transcript);
         let live = worktree.live(&watch.terminal)?;
         let now = crate::clock();
-        if host_watch::expired(watch.started, now) {
-            close(&worktree, &watch.terminal, live)?;
-            self.finish(&mut state, watch, "time_limit", "it reached its hour, and was ended");
-        } else if let Some(fault) = gave_out(watch.harness, &transcript, exited) {
-            close(&worktree, &watch.terminal, live)?;
-            self.go_on(&mut state, watch, fault, now)?;
-        } else if exited.is_some() {
-            self.finish(&mut state, watch, "ended", "its harness answered and exited");
+        if let Some(report) = crate::watch_report::read(&watch.id)? {
+            stop_session(&watch)?;
+            for did in &report.did {
+                (self.say)(What::WatchDid { id: watch.id.clone(), did: did.clone() });
+            }
+            watch.did = report.did.clone();
+            watch.report = Some(report);
+            self.finish_said(&mut state, watch, "ended", "it reported; its harness was ended");
+        } else if host_watch::expired(watch.started, now) {
+            stop_session(&watch)?;
+            self.finish_said(
+                &mut state,
+                watch,
+                "time_limit",
+                "it reached its hour and did not report",
+            );
+        } else if !live && let Some(fault) = gave_out(watch.harness, &transcript, exited) {
+            stop_session(&watch)?;
+            self.go_on(&mut state, watch, fault, now, vec![])?;
         } else if !live {
-            let said = "its terminal closed before its harness exited";
-            self.finish(&mut state, watch, "closed", said);
+            stop_session(&watch)?;
+            self.finish_said(&mut state, watch, "closed", "its terminal closed; it did not report");
         } else {
-            state.running = Some(watch);
-            self.shared.set(state.running.clone());
-            return Ok(());
+            let screen = worktree.screen(&watch.terminal, host_watch::EVIDENCE_LINES)?;
+            let (worker, runtime) = worktree.terminal_health(&watch.terminal, now)?;
+            let fault = crate::health::watch_diagnosis(watch.harness, &screen, &runtime)
+                .or_else(|| gave_out(watch.harness, &transcript, exited));
+            if let Some(fault) = fault {
+                stop_session(&watch)?;
+                close(&worktree, &watch.terminal, live)?;
+                self.go_on(&mut state, watch, fault, now, screen)?;
+            } else if exited.is_some() {
+                stop_session(&watch)?;
+                self.finish_said(
+                    &mut state,
+                    watch,
+                    "not_reported",
+                    "its harness exited; it did not report",
+                );
+            } else {
+                let grace = afkconvoy_core::worker::GRACE;
+                let stopped = match worker {
+                    afkconvoy_core::worker::WorkerState::Idle { quiet: Some(quiet) } => {
+                        quiet >= grace
+                    }
+                    afkconvoy_core::worker::WorkerState::Idle { quiet: None } => true,
+                    _ => false,
+                };
+                if stopped
+                    && watch.nudged.is_none()
+                    && now.saturating_sub(watch.session_started.max(watch.started)) >= grace
+                {
+                    worktree.tell_watch(&watch.terminal,
+                    "Continue this watch. You have not reported; finish the work and run the exact afkconvoy watched line at the end of your brief.")?;
+                    watch.nudged = Some(now);
+                }
+                state.running = Some(watch);
+            }
         }
         self.save(&state)
     }
 
-    /// What the session of `watch` printed, said as what it did.
-    fn did(&self, watch: &mut Watch) -> Vec<String> {
-        let transcript = std::fs::read_to_string(&watch.transcript).unwrap_or_default();
-        let did = host_watch::did(&transcript);
-        for line in &did {
-            (self.say)(What::WatchDid { id: watch.id.clone(), did: line.clone() });
-        }
-        watch.did.extend(did.iter().cloned());
-        did
-    }
-
     /// Continues `watch`, whose harness gave out, on the next harness that
     /// can start it, with the same look and what it did so far.
-    fn go_on(&self, state: &mut State, mut watch: Watch, fault: Diagnosis, now: u64) -> Result<()> {
+    fn go_on(
+        &self,
+        state: &mut State,
+        mut watch: Watch,
+        fault: Diagnosis,
+        now: u64,
+        screen: Vec<String>,
+    ) -> Result<()> {
         let why = fault.evidence.join("; ");
-        let did = self.did(&mut watch);
         crate::health::watch_fault(watch.harness, &fault, now)?;
         let from = watch.harness;
         watch.attempts.push(Attempt {
@@ -446,8 +518,11 @@ impl Watcher {
             model: watch.model.clone(),
             terminal: watch.terminal.clone(),
             why: why.clone(),
-            did,
+            did: vec![],
+            screen,
         });
+        watch.nudged = None;
+        watch.session_started = now;
         let mut failures = vec![];
         for candidate in crate::health::watch_candidates()? {
             if watch.attempts.iter().any(|attempt| attempt.harness == candidate.harness) {
@@ -474,11 +549,6 @@ impl Watcher {
         let said = format!("{} gave out ({why}), and no harness can go on with it", from.key());
         self.finish_said(state, watch, "no_harness", &said);
         Ok(())
-    }
-
-    fn finish(&self, state: &mut State, mut watch: Watch, outcome: &str, said: &str) {
-        self.did(&mut watch);
-        self.finish_said(state, watch, outcome, said);
     }
 
     fn finish_said(&self, state: &mut State, mut watch: Watch, outcome: &str, said: &str) {
@@ -517,13 +587,67 @@ fn close(worktree: &Worktree, terminal: &str, live: bool) -> Result<()> {
     Ok(())
 }
 
+fn session_identity(watch: &Watch) -> String {
+    format!("{}-{}", watch.id, watch.attempts.len() + 1)
+}
+
+/// Ends the session's uniquely named wrapper and its descendants. Its
+/// terminal shell is above that wrapper and keeps its screen and input.
+fn stop_session(watch: &Watch) -> Result<()> {
+    // A pre-upgrade, headless session carried no marker and its terminal
+    // was disposable. Keep its former termination behavior until it ends.
+    if watch.session_started == 0 {
+        let worktree = Worktree::at(watch.directory.clone(), String::new());
+        return close(&worktree, &watch.terminal, worktree.live(&watch.terminal)?);
+    }
+    stop_marked(&session_identity(watch))
+}
+
+fn stop_marked(identity: &str) -> Result<()> {
+    let marker = format!("{}{identity}", host_watch::SESSION_PROCESS);
+    let began = Instant::now();
+    let mut pids = BTreeSet::new();
+    loop {
+        let processes = crate::hot::listed_checked()?;
+        pids.retain(|pid| processes.iter().any(|proc| proc.pid == *pid));
+        pids.extend(
+            processes
+                .iter()
+                .filter(|proc| proc.line.split_whitespace().any(|word| word == marker))
+                .map(|proc| proc.pid),
+        );
+        loop {
+            let before = pids.len();
+            for proc in &processes {
+                if pids.contains(&proc.ppid) {
+                    pids.insert(proc.pid);
+                }
+            }
+            if before == pids.len() {
+                break;
+            }
+        }
+        if pids.is_empty() {
+            return Ok(());
+        }
+        if began.elapsed() >= Duration::from_secs(5) {
+            bail!("watch session {identity} still has processes; no replacement started");
+        }
+        let signal = if began.elapsed() >= Duration::from_secs(1) { "-KILL" } else { "-TERM" };
+        for pid in &pids {
+            let _ = crate::process::output(Command::new("kill").args([signal, &pid.to_string()]));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
 /// Whether the harness of a session gave out: its own words for a fault it
 /// cannot go on past, or an exit with a failure.
 fn gave_out(harness: Harness, transcript: &str, exited: Option<i32>) -> Option<Diagnosis> {
     let lines: Vec<String> = transcript.lines().map(str::to_string).collect();
     crate::health::terminal_fault(harness, &lines).or_else(|| {
         let status = exited.filter(|status| *status != 0)?;
-        let mut evidence = host_watch::did(transcript);
+        let mut evidence = host_watch::evidence(transcript);
         evidence.drain(..evidence.len().saturating_sub(3));
         evidence.push(format!("{} exited with status {status}", harness.key()));
         Some(crate::health::failed(evidence))
@@ -555,24 +679,39 @@ fn start_session(watch: &Watch) -> Result<(String, PathBuf)> {
     // A watch is started as a worker of an unbound repo is: the operator's
     // directory holds no config, and no role.
     let repo = Repo::new(watch.directory.clone());
-    let command = crate::launch::Launches::new(&repo, true)?.command(watch.harness)?;
+    let launches = crate::launch::Launches::new(&repo, true)?;
+    let command = launches.command(watch.harness)?;
     let command = if watch.harness == Harness::Codex {
         format!("{} --search", command.as_str())
     } else {
         command.as_str().to_string()
     };
     let kept = crate::kept::keep(watch.harness, true)?;
-    let line = watch.harness.watch(
-        command.as_str(),
-        &watch.directory.display().to_string(),
-        &kept.display().to_string(),
-        watch.model.as_deref(),
-        &brief_pointer(&brief_file.display().to_string()),
-    );
+    let line = if watch.harness == Harness::Codex {
+        crate::codex_launch::watch(&watch.directory, watch.model.as_deref(), &command)?
+    } else {
+        watch.harness.watch(
+            command.as_str(),
+            &watch.directory.display().to_string(),
+            &kept.display().to_string(),
+            watch.model.as_deref(),
+        )
+    };
+    let line = launches.worker_line(watch.harness, &line);
     let line = format!("export {}=host; {line}", host_watch::WATCH_ENV);
-    let line = host_watch::session(&line, &transcript.display().to_string());
+    let line =
+        host_watch::session(&line, &transcript.display().to_string(), &session_identity(watch));
     let worktree = Worktree::at(watch.directory.clone(), String::new());
-    Ok((worktree.start_watch(&line, TITLE)?, transcript))
+    let terminal = worktree.start_watch(&line, TITLE)?;
+    let delivered = worktree.await_ready(&terminal, 60, watch.harness, &line).and_then(|()| {
+        worktree.tell_watch(&terminal, &brief_pointer(&brief_file.display().to_string()))
+    });
+    if let Err(error) = delivered {
+        stop_session(watch)?;
+        close(&worktree, &terminal, worktree.live(&terminal)?)?;
+        return Err(error);
+    }
+    Ok((terminal, transcript))
 }
 
 /// What a session of `watch` is told.
@@ -588,18 +727,27 @@ fn brief(watch: &Watch) -> String {
         .iter()
         .flat_map(|attempt| {
             let gave_out = format!(
-                "A session on {} began this watch, and its harness gave out: {}. It printed:",
+                "A session on {} began this watch, and its harness gave out: {}. Its terminal evidence (not a report):",
                 attempt.harness.key(),
                 attempt.why
             );
-            std::iter::once(gave_out).chain(attempt.did.iter().map(|did| format!("    {did}")))
+            std::iter::once(gave_out).chain(attempt.screen.iter().map(|line| format!("    {line}")))
         })
         .collect();
+    let report_file =
+        crate::watch_report::directory(&watch.id).unwrap_or_default().join("report.json");
+    let report_line = afkconvoy_core::line::Line::new()
+        .fixed("afkconvoy watched --watch ")
+        .word(&watch.id)
+        .fixed(" --text-file ")
+        .word(&report_file.display().to_string())
+        .own();
     format!(
         "# A watch of this host\n\n\
          You are an afkconvoy **watch**: the operator on this host, started in the watch's \
          directory by the host runner, because its look found something an operator would act \
-         on. Nobody reads this terminal: never wait for an answer, and ask nothing.\n\n\
+         on. This is an interactive session: a human may see and type to you. Carry on \
+         without waiting for a human, and finish with your reporting command.\n\n\
          Find what holds this host's fleets and their work back, fix it — whatever that takes — \
          and check that the work goes on. You have what the operator at this host's keyboard \
          has, within these bounds (`afkconvoy run --help`): only what the fleets \
@@ -642,7 +790,7 @@ fn brief(watch: &Watch) -> String {
          position and that work which can proceed does proceed. You may fix the cause on \
          the host or in a repo under the bounds above.\n\n\
          Leave only these four kinds with a human; never act on them, and list each with \
-         its repo, issue, question and answer line in your printed record, which `doctor` \
+         its repo, issue, question and answer line in your report, which `doctor` \
          lists as what you did:\n\n\
          {HUMAN_KINDS}\n\n\
          ## Research the host kit's unplaced models\n\n\
@@ -688,20 +836,29 @@ fn brief(watch: &Watch) -> String {
          whether the fault is gone or still present; an upgrade alone proves nothing.\n\n\
          This watch has one hour from {}, its sessions together; at the hour it is ended. End \
          with what held the work back, each thing you did and its evidence, each PR and cut, \
-         and what you left — including every human decision — a line each: what you print \
-         is its record. If landing, cutting or the move has not finished, say what is still \
+         and what you left — including every human decision — in your report. If landing, \
+         cutting or the move has not finished, say what is still \
          pending; never report the fix verified before checking it.\n\n\
          ## Why it was started\n\n{}\n\n\
          ## What earlier watches on the same items did\n\n{}\n\n\
          ## What this watch did before this session\n\n{}\n\n\
          ## What the look answered\n\n`afkconvoy doctor --all --since <until of the look \
-         before>` answered:\n\n```json\n{}\n```\n",
+         before>` answered:\n\n```json\n{}\n```\n\n\
+         ## Report, then stop\n\n\
+         Write `{}` as a JSON object with all five keys: `held_back`, `did`, `verified`, \
+         `human`, `pending`. The first three and `pending` are lists of nonempty strings; \
+         `human` is a list of objects with nonempty `question` and `answer` strings, the \
+         exact question left alone and its answer command. Use [] for an empty part. \
+         Printed output is not a report. Your last step is this exact command; once it \
+         records, the host runner ends your harness and keeps this terminal open:\n\n{}\n",
         answering(&watch.look),
         crate::log::utc(watch.started),
         why.join("\n"),
         said(&watch.earlier),
         said(&sessions),
         serde_json::to_string_pretty(&watch.look).unwrap_or_default(),
+        report_file.display(),
+        report_line,
     )
 }
 
@@ -948,6 +1105,51 @@ pub const INSTANCE: &str = "host-watch";
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ending_a_session_keeps_its_terminal_shell_and_the_operators_process() {
+        use afkconvoy_core::line::Line;
+        let dir = tempfile::tempdir().unwrap();
+        let ready = dir.path().join("ready");
+        let kept = dir.path().join("kept");
+        let exited = dir.path().join("exited");
+        let identity = format!("test-{}", crate::unique());
+        let harness = Line::new()
+            .fixed("printf ready > ")
+            .word(ready.to_str().unwrap())
+            .fixed("; exec sleep 30")
+            .own();
+        let line = host_watch::session(&harness, exited.to_str().unwrap(), &identity);
+        let line = format!(
+            "{line}; {}",
+            Line::new()
+                .fixed("printf kept > ")
+                .word(kept.to_str().unwrap())
+                .fixed("; exec sleep 30")
+                .own()
+        );
+        let mut terminal = Command::new("sh").args(["-c", &line]).spawn().unwrap();
+        let mut operator = Command::new("sleep").arg("30").current_dir(dir.path()).spawn().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !ready.exists() {
+            assert!(Instant::now() < deadline, "harness never started");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let stopped = stop_marked(&identity);
+        while !kept.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let terminal_alive = terminal.try_wait().unwrap().is_none();
+        let operator_alive = operator.try_wait().unwrap().is_none();
+        let _ = terminal.kill();
+        let _ = operator.kill();
+        let _ = terminal.wait();
+        let _ = operator.wait();
+        stopped.unwrap();
+        assert!(kept.exists(), "terminal shell did not continue");
+        assert!(terminal_alive && operator_alive, "ended an unrelated process");
+        assert!(host_watch::exited(&std::fs::read_to_string(exited).unwrap()).is_some());
+    }
 
     #[test]
     fn each_waiting_issue_gets_answering_commands_for_its_own_tracker() {

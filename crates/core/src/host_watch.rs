@@ -16,10 +16,10 @@ pub const RESEARCH_EVERY: u64 = 24 * 60 * 60;
 /// Research item identities, distinct from findings that hold work up.
 pub const RESEARCH_ITEM: &str = "kit-research:";
 
-/// What of a session's transcript is kept as what it did: its last lines,
+/// Bounded terminal evidence retained to continue a session: its last lines,
 /// each cut to a length a log line can hold.
-pub const DID_LINES: usize = 80;
-const DID_CHARS: usize = 1000;
+pub const EVIDENCE_LINES: usize = 80;
+const EVIDENCE_CHARS: usize = 1000;
 
 /// What a watch's session prints once its harness exited, with the exit status
 /// after it, on a line of its own.
@@ -93,19 +93,41 @@ pub fn expired(started: u64, now: u64) -> bool {
     now.saturating_sub(started) >= TIME_LIMIT
 }
 
-/// The line a watch's terminal runs: `line`, a harness's watch, with all it
-/// prints kept in `transcript` too, then how it exited; then the terminal's
-/// shell exits, and the terminal with it.
-pub fn session(line: &str, transcript: &str) -> String {
-    Line::new()
-        .fixed("{ ")
+/// A marker present only in this watch session's processes, never in the
+/// terminal's shell or a human's other sessions in the same directory.
+pub const SESSION_ENV: &str = "AFKCONVOY_WATCH_SESSION";
+/// The watch's wrapper shell has this unique argument even on hosts where
+/// `ps` cannot read a process's environment. It stays until the harness ends.
+pub const SESSION_PROCESS: &str = "afkconvoy-watch-session-";
+
+/// Runs the interactive harness on the terminal's own input and output.
+/// Only its exit status goes to `transcript`; its shell and screen stay.
+pub fn session(line: &str, transcript: &str, identity: &str) -> String {
+    let child = Line::new()
+        .fixed("export ")
+        .fixed(SESSION_ENV)
+        .fixed("=")
+        .word(identity)
+        .fixed(" && ")
         .launch(line)
+        .done();
+    // A launch command may itself say `exec`. Keep it in its own shell so
+    // it cannot replace the named wrapper that owns this session's tree.
+    let wrapper = Line::new()
+        .fixed("sh -c ")
+        .word(&child)
+        .fixed("; afkconvoy_status=$?; exit \"$afkconvoy_status\"")
+        .own();
+    Line::new()
+        .fixed("sh -c ")
+        .word(&wrapper)
+        .fixed(" ")
+        .word(&format!("{SESSION_PROCESS}{identity}"))
         .fixed("; printf '%s %s\\n' '")
         .fixed(EXITED)
-        .fixed("' \"$?\"; } 2>&1 | tee -a ")
+        .fixed("' \"$?\" > ")
         .word(transcript)
-        .fixed("; exit")
-        .done()
+        .own()
 }
 
 /// How the harness of a session whose transcript is `transcript` exited:
@@ -115,17 +137,16 @@ pub fn exited(transcript: &str) -> Option<i32> {
     Some(status.trim().parse().unwrap_or(-1))
 }
 
-/// What a session printed, as what it did: its transcript's last lines, but
-/// for the line that says how it exited.
-pub fn did(transcript: &str) -> Vec<String> {
+/// The last lines of terminal evidence, excluding the exit-status line.
+pub fn evidence(transcript: &str) -> Vec<String> {
     let mut did: Vec<String> = vec![];
     for line in transcript.lines().rev() {
-        if did.len() >= DID_LINES {
+        if did.len() >= EVIDENCE_LINES {
             break;
         }
         let line = line.trim();
         if !line.is_empty() && !line.starts_with(EXITED) {
-            did.push(line.chars().take(DID_CHARS).collect());
+            did.push(line.chars().take(EVIDENCE_CHARS).collect());
         }
     }
     did.reverse();
@@ -223,24 +244,26 @@ mod tests {
     }
 
     #[test]
-    fn a_session_keeps_what_it_printed_and_says_how_its_harness_exited() {
-        let line = session("claude --print 'look'", "/cache/watch/it's.log");
-        assert!(line.starts_with("{ claude --print 'look'; printf "), "{line}");
-        assert!(line.ends_with(" 2>&1 | tee -a '/cache/watch/it'\\''s.log'; exit"), "{line}");
+    fn a_session_keeps_its_terminal_and_records_only_how_its_harness_exited() {
+        let line = session("claude", "/cache/watch/it's.log", "watch-1");
+        assert!(line.starts_with("sh -c "), "{line}");
+        assert!(line.contains(SESSION_ENV), "{line}");
+        assert!(!line.contains("tee") && !line.ends_with("; exit"), "{line}");
+        assert!(line.ends_with(" > '/cache/watch/it'\\''s.log'"), "{line}");
 
         assert_eq!(exited("started\nchecked #7\n"), None);
         let printed = format!("checked #7\n\nanswered #7\n{EXITED} 0\n");
         assert_eq!(exited(&printed), Some(0));
-        assert_eq!(did(&printed), ["checked #7", "answered #7"]);
+        assert_eq!(evidence(&printed), ["checked #7", "answered #7"]);
         assert_eq!(exited(&format!("Usage limit reached\n{EXITED} 1\n")), Some(1));
     }
 
     #[test]
-    fn what_a_session_did_is_its_last_lines() {
-        let long: String = (0..DID_LINES + 5).map(|n| format!("line {n}\n")).collect();
-        let did = did(&long);
-        assert_eq!(did.len(), DID_LINES);
+    fn terminal_evidence_is_bounded_to_its_last_lines() {
+        let long: String = (0..EVIDENCE_LINES + 5).map(|n| format!("line {n}\n")).collect();
+        let did = evidence(&long);
+        assert_eq!(did.len(), EVIDENCE_LINES);
         assert_eq!(did[0], "line 5");
-        assert_eq!(super::did(&"x".repeat(DID_CHARS * 2))[0].len(), DID_CHARS);
+        assert_eq!(super::evidence(&"x".repeat(EVIDENCE_CHARS * 2))[0].len(), EVIDENCE_CHARS);
     }
 }

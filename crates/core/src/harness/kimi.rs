@@ -42,8 +42,8 @@ pub(super) fn in_worktree(command: &str) -> String {
     format!("export {TRUST} && {command}")
 }
 
-/// Starts one watch non-interactively, with Kimi's trust and isolated home.
-pub(super) fn watch(command: &str, kept: &str, model: Option<&str>, prompt: &str) -> String {
+/// Starts one watch interactively, with Kimi's trust and isolated home.
+pub(super) fn watch(command: &str, kept: &str, model: Option<&str>) -> String {
     let line = Line::new()
         .fixed("export ")
         .fixed(TRUST)
@@ -52,12 +52,12 @@ pub(super) fn watch(command: &str, kept: &str, model: Option<&str>, prompt: &str
         .fixed("=")
         .word(kept)
         .fixed(" && ")
-        .launch(headless(command));
+        .launch(command);
     let line = match model {
         Some(model) => line.fixed(" ").fixed(MODEL).fixed(" ").word(model),
         None => line,
     };
-    line.fixed(PROMPT).fixed(" ").word(prompt).done()
+    line.done()
 }
 
 pub(super) const KEPT: Kept = Kept {
