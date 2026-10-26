@@ -138,6 +138,7 @@ impl Standings {
     pub fn held_still<T>(&self, with: impl FnOnce(&BTreeMap<String, Stands>) -> T) -> T {
         let held = self.held();
         let stands = |one: &One| match one {
+            One { began: 0, .. } => Stands::Starting,
             One { began, ended, .. } if began > ended => Stands::Ticking,
             One { at_work: true, .. } => Stands::AtWork,
             One { at_work: false, .. } => Stands::Quiet,
@@ -213,7 +214,8 @@ impl HostSleep {
         }
     }
 
-    /// Says that this instance begins a tick.
+    /// Says that this instance begins a tick, without a release move's pause.
+    #[cfg(test)]
     pub fn begins(&self) {
         self.standings.change(self.key, |one| one.began += 1);
     }
@@ -222,7 +224,12 @@ impl HostSleep {
     /// pauses here, then stops the instance without entering another tick.
     pub fn begins_unless_stopped(&self, stop: &Stop) -> bool {
         let mut held = self.standings.held();
-        while held.paused && !stop.told() {
+        // A checkout is put on the list by its first tick. Let that finish
+        // even when a move is pending, so the replacement finds it there.
+        while held.paused
+            && held.each.get(&self.key).is_some_and(|one| one.began > 0)
+            && !stop.told()
+        {
             held = self
                 .standings
                 .held
