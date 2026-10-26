@@ -317,7 +317,7 @@ impl Staged {
         let path = worktree.path.display().to_string();
         // A worker starts in its role's copy: its commands are run from the worktree.
         let own = || crate::own_command_in(&path);
-        let gate = own().fixed(" gate --train").own();
+        let gate = own().fixed(" gate --land").own();
         // Another checkout is gated from inside it.
         let gate_alone = crate::own_command().fixed(" gate").own();
         if let Some(pr) = self.joins {
@@ -367,7 +367,7 @@ impl Staged {
             intake_command: &own().fixed(" intake").own(),
             split: self.split,
             workflows: &self.workflows,
-            gate: self.writes.then_some(Gate { train: &stage_gate, alone: &gate_alone }),
+            gate: self.writes.then_some(Gate { standalone: &stage_gate, alone: &gate_alone }),
         };
         let prompt = if self.consult {
             let issue = own().fixed(" show --issue ").number(self.issue).own();

@@ -186,9 +186,9 @@ fn a_switch_moves_the_worker_onto_the_harness_in_the_same_worktree_and_records_i
 
     // the PR records the switch, which is no restart
     let records: Vec<String> =
-        world.comments(70).into_iter().filter(|body| body.contains("convoy:join")).collect();
+        world.comments(70).into_iter().filter(|body| body.contains("convoy:landing")).collect();
     assert_eq!(records.len(), 1);
-    assert!(records[0].starts_with("<!--convoy:join switched=800/claude-code/codex/alpha-->"));
+    assert!(records[0].starts_with("<!--convoy:landing switched=800/claude-code/codex/alpha-->"));
     assert!(records[0].contains("switched from `claude-code` to `codex` by `alpha`"));
 
     // every worker this host starts for the repo from now on is a codex one
@@ -212,7 +212,7 @@ fn a_switch_moves_the_worker_onto_the_harness_in_the_same_worktree_and_records_i
     assert_eq!(back["pr"], 80);
     assert_eq!(open_commands(&world, &eight), [common::trusted("agent")]);
     let records: Vec<String> =
-        world.comments(80).into_iter().filter(|body| body.contains("convoy:join")).collect();
+        world.comments(80).into_iter().filter(|body| body.contains("convoy:landing")).collect();
     assert_eq!(records.len(), 1);
     assert!(records[0].contains("switched from `codex` to `claude-code` by `alpha`"));
     let said = switch(&world, "1000", &["--harness", "config"]).error();
@@ -1395,7 +1395,39 @@ fn working_agents_are_healthy_without_screen_judgment_and_share_one_tick_read() 
     let workers = health["host_kit"]["worker_health"]["workers"].as_array().unwrap();
     assert_eq!(workers.len(), 2);
     assert!(workers.iter().all(|w| w["action"] == "healthy" && w["orca"]["state"] == "working"));
+    assert!(
+        workers.iter().all(|w| w["next_check"].as_u64().unwrap() > 801),
+        "a just-observed healthy worker must not immediately look overdue to the watch: {workers:?}"
+    );
     assert!(!world.root.join("typesafe-request").exists());
+}
+
+#[test]
+fn a_worker_that_stops_is_observed_before_its_healthy_check_deadline() {
+    let world = fleet_with_two_workers();
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            terminal["agent"] = json!({"agentType":"claude", "state":"working",
+                "stateStartedAt":799000});
+        }
+    });
+    tick(&world, 800);
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            terminal["agent"] = json!({"agentType":"claude", "state":"done",
+                "stateStartedAt":809000, "mainAgent":{"outcome":"success"}});
+            terminal["lastOutputAt"] = json!(809000);
+            terminal["screen"] = json!(["finished the work"]);
+        }
+    });
+    tick(&world, 810);
+    let health = world.afk(&["plan", "--now", "811"]).ok();
+    let workers = health["host_kit"]["worker_health"]["workers"].as_array().unwrap();
+    assert_eq!(workers.len(), 2);
+    assert!(
+        workers.iter().all(|w| w["action"] == "observing" && w["orca"]["state"] == "done"),
+        "{workers:?}"
+    );
 }
 
 fn fleet_with_two_workers() -> World {
@@ -1454,6 +1486,13 @@ fn the_live_runners_tick_and_served_panel_share_one_orca_observation() {
 #[test]
 fn a_failed_delivery_is_classified_even_if_orcas_last_report_was_working() {
     let world = fleet_with_two_workers();
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            terminal["agent"] = json!({"state":"working", "agentType":"claude",
+                "stateStartedAt":700000});
+        }
+    });
+    tick(&world, 750);
     let dir = worktree(&world, 7);
     let notes = PathBuf::from(git(&dir, &["rev-parse", "--absolute-git-dir"]));
     std::fs::write(

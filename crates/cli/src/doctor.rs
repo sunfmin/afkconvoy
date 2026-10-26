@@ -398,7 +398,7 @@ impl Held {
     /// Whether a worker is still owed on it: it is not on the train, landed
     /// or closed.
     fn at_work(&self) -> bool {
-        matches!(self.status, Status::NoPr | Status::Joining | Status::AtStage)
+        matches!(self.status, Status::NoPr | Status::Landing | Status::AtStage)
     }
 }
 
@@ -655,7 +655,7 @@ fn claim_findings(run: &Run, held: &[Held]) -> Vec<Finding> {
             Some(WorkerState::Gone) if run.alive => {
                 let (evidence, fix) = match (&claim.worktree, claim.status) {
                     (None, _) => (format!("orca links no worktree to #{issue}"), "dispatch"),
-                    (Some(_), Status::Joining) => {
+                    (Some(_), Status::Landing) => {
                         (format!("orca has no live terminal in {place}"), "restart")
                     }
                     (Some(_), _) => (format!("orca has no live terminal in {place}"), "dispatch"),
@@ -712,7 +712,7 @@ fn claim_findings(run: &Run, held: &[Held]) -> Vec<Finding> {
 fn fix_of(failed: &Failed, instance: &str) -> String {
     named_line(&failed.error).unwrap_or_else(|| match (failed.step.as_str(), failed.issue) {
         ("dispatch", Some(issue)) => on("dispatch", issue, instance),
-        ("tend_train", _) => format!("afkconvoy tick --instance {instance}"),
+        ("slow_gate", _) => format!("afkconvoy tick --instance {instance}"),
         _ => format!("afkconvoy plan --instance {instance}"),
     })
 }
@@ -759,6 +759,9 @@ fn log_findings(run: &Run) -> Vec<Finding> {
                 || did.into_iter().flatten().any(|step| recovered(failed, step)))
         });
         for failed in tick.failed() {
+            if matches!(failed.step.as_str(), "tend_train" | "cut_train") {
+                continue;
+            }
             pending.retain(|(_, previous)| !previous.same_step(&failed));
             pending.push((tick.count, failed));
         }
@@ -1710,24 +1713,21 @@ fn exclusive_json(standing: Result<Vec<Ticket>>) -> Value {
     };
     match standing {
         Ok(live) => {
-            let lane = |train: bool, repo: Option<&str>| {
-                let each: Vec<_> = live
-                    .iter()
-                    .filter(|t| t.train == train && t.repo_lane.as_deref() == repo)
-                    .collect();
+            let lane = |repo: Option<&str>| {
+                let each: Vec<_> = live.iter().filter(|t| t.repo_lane.as_deref() == repo).collect();
                 json!({"running": each.iter().find(|t| t.ran.is_some()).map(|t| ticket(t)),
                     "running_all": each.iter().filter(|t| t.ran.is_some()).map(|t| ticket(t)).collect::<Vec<_>>(),
                     "waiting": each.iter().filter(|t| t.ran.is_none()).map(|t| ticket(t)).collect::<Vec<_>>()})
             };
-            let worker = lane(false, None);
+            let worker = lane(None);
             let repos: std::collections::BTreeSet<_> =
                 live.iter().filter_map(|t| t.repo_lane.as_deref()).collect();
             let repos: Vec<_> = repos
                 .into_iter()
-                .map(|repo| json!({"repo": repo, "queue": lane(false, Some(repo))}))
+                .map(|repo| json!({"repo": repo, "queue": lane(Some(repo))}))
                 .collect();
             json!({"running": worker["running"], "waiting": worker["waiting"],
-                "lanes": {"worker": worker, "train": lane(true, None), "repos": repos}})
+                "lanes": {"worker": worker, "repos": repos}})
         }
         Err(error) => json!({"error": format!("{error:#}")}),
     }
@@ -2092,8 +2092,6 @@ mod tests {
             patrols: vec![],
             proposals: vec![],
             slow_gate: None,
-            outgrown_train: None,
-            watches_on_train: vec![],
             held_back: vec![],
             caster: None,
             casting: vec![],
@@ -2327,7 +2325,7 @@ mod tests {
     fn a_claim_with_no_worker_names_the_start_to_make_by_hand() {
         let mut state = state();
         let gone = Held { worker: Some(WorkerState::Gone), ..held(3) };
-        let joining = Held { status: Status::Joining, pr: Some(30), ..gone.clone() };
+        let joining = Held { status: Status::Landing, pr: Some(30), ..gone.clone() };
         let never_cut = Held { worktree: None, ..Held { issue: 7, ..gone.clone() } };
         state.held = vec![gone.clone(), Held { issue: 5, ..joining }, never_cut];
         let found = found(&host(), &run(vec![]), &state);
@@ -2341,10 +2339,7 @@ mod tests {
         );
         assert!(found.iter().all(|finding| finding.severity == Severity::Warning));
         // one whose work is on the train or landed is owed no worker…
-        state.held = vec![
-            Held { status: Status::Joined, ..gone.clone() },
-            Held { status: Status::Closed, ..gone },
-        ];
+        state.held = vec![Held { status: Status::Closed, ..gone }];
         assert_eq!(self::found(&host(), &run(vec![]), &state), []);
         // …and one orca could not speak of is not said to have none
         state.held = vec![Held { worker: None, ..held(3) }];
@@ -2420,17 +2415,29 @@ mod tests {
     }
 
     #[test]
+    fn retired_train_steps_do_not_leave_an_actionable_failure_after_upgrade() {
+        let failed = tick(
+            4,
+            json!([
+                {"do": "tend_train", "error": "not ready"},
+                {"do": "cut_train", "error": "no checkout"}
+            ]),
+        );
+        assert_eq!(log_findings(&run(vec![failed, tick(5, json!([]))])), []);
+    }
+
+    #[test]
     fn failures_stay_visible_across_unrelated_ticks_and_clear_when_work_recovers() {
-        let failed = tick(4, json!([{"do": "tend_train", "error": "not ready"}]));
+        let failed = tick(4, json!([{"do": "slow_gate", "error": "not ready"}]));
         let unrelated = tick(5, json!([]));
         let mut ticks = vec![failed, unrelated];
         let found = log_findings(&run(ticks.clone()));
         assert_eq!(found.len(), 1);
-        assert_eq!(found[0].what, "`tend_train` failed in tick 4 and has not recovered");
+        assert_eq!(found[0].what, "`slow_gate` failed in tick 4 and has not recovered");
         assert_eq!(found[0].fix, "afkconvoy tick --instance alpha");
         let mut recovered = tick(6, json!([]));
         recovered.1.answer.as_mut().unwrap()["did"] =
-            json!([{"do": "tend_train", "outcome": "done"}]);
+            json!([{"do": "slow_gate", "outcome": "done"}]);
         ticks.push(recovered);
         assert_eq!(log_findings(&run(ticks)), []);
 

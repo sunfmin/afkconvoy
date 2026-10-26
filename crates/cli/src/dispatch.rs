@@ -310,7 +310,12 @@ pub(crate) struct Continuing {
 /// Validate the successor before ending the old worker.
 pub(crate) fn continuation_harness(fleet: &Fleet, agent: &Agent, number: u64) -> Result<Harness> {
     let issue = fleet.gh.issue(number)?;
-    let harness = match &fleet.config.bound {
+    let harness = match fleet
+        .config
+        .bound
+        .as_ref()
+        .filter(|_| !afkconvoy_core::plan::is_repair(&issue.labels))
+    {
         Some(bound) => Staged::enter(fleet, bound, number, &issue.labels)?.harness(),
         None => fleet.cast(&issue.labels, Some(number))?.map_err(|e| anyhow!(e))?.harness,
     };
@@ -336,7 +341,12 @@ fn start(
     // In a bound repo the worker performs a stage, or the join that follows
     // the last, in its role. Read before the claim: an issue no worker can
     // be started on is never locked.
-    let staged = match &fleet.config.bound {
+    let staged = match fleet
+        .config
+        .bound
+        .as_ref()
+        .filter(|_| !afkconvoy_core::plan::is_repair(&issue.labels))
+    {
         Some(bound) => Some(Staged::enter(fleet, bound, number, &issue.labels)?),
         None => None,
     };
@@ -607,7 +617,7 @@ fn brief_with(
         branch: &worktree.branch,
         worktree: &path,
         base_branch: &fleet.config.base_branch,
-        gate_command: &crate::own_command().fixed(" gate --train").own(),
+        gate_command: &crate::own_command().fixed(" gate --land").own(),
         gate_alone_command: &crate::own_command().fixed(" gate").own(),
         lock_command: &crate::own_command().fixed(" lock").own(),
         ready_label: &fleet.config.ready_label,
@@ -615,25 +625,6 @@ fn brief_with(
         wake_command: &crate::own_command().fixed(" wake").own(),
     };
     worktree.write_brief(&prompt(&fields).map_err(|e| anyhow!(e))?)
-}
-
-/// Writes into `worktree` the join-only brief of the worker that joins `pr`,
-/// which closes issue `number`, read as `issue` → the file. In a bound repo
-/// that worker is one in the landing role of the issue's workflow.
-pub(crate) fn write_join_brief(
-    fleet: &Fleet,
-    worktree: &Worktree,
-    (number, issue): (u64, &IssueRead),
-    pr: u64,
-) -> Result<PathBuf> {
-    match &fleet.config.bound {
-        Some(bound) => Staged::enter(fleet, bound, number, &issue.labels)?.write_brief(
-            fleet,
-            worktree,
-            &issue.title,
-        ),
-        None => write_brief(fleet, worktree, number, &issue.title, Variant::Join { pr }),
-    }
 }
 
 /// Has orca cut a worktree for issue `number` at the tip the remote has for

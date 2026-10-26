@@ -111,13 +111,7 @@ pub struct Permit {
 }
 
 impl Permit {
-    pub fn take(
-        repo: &Repo,
-        command: &str,
-        train: bool,
-        heavy: bool,
-        is_turn: bool,
-    ) -> Result<Self> {
+    pub fn take(repo: &Repo, command: &str, heavy: bool, is_turn: bool) -> Result<Self> {
         if held() {
             bail!("this command already holds a turn");
         }
@@ -127,8 +121,7 @@ impl Permit {
             command: command.into(),
             dir: canonical(&repo.dir),
             issue: std::env::var(ISSUE_ENV).ok().and_then(|v| v.parse().ok()),
-            train,
-            repo_lane: if train || heavy { None } else { Some(canonical(repo.common_dir()?)) },
+            repo_lane: if heavy { None } else { Some(canonical(repo.common_dir()?)) },
             repo: Some(canonical(repo.common_dir()?)),
             is_turn,
             asked: crate::clock(),
@@ -215,7 +208,7 @@ struct Bound {
     waiting: usize,
 }
 
-/// The host's exclusive queue, as its host runner holds it: worker and train lanes run independently, up to the counts the host says, and
+/// The host's exclusive queue, as its host runner holds it: worker lanes run, up to the counts the host says, and
 /// at most one command of each repo in each lane. Requests keep their order. Each leaves as its asker's line closes. A clone is the same.
 #[derive(Clone, Default)]
 pub struct Queue {
@@ -256,13 +249,7 @@ impl Joined {
         else {
             return 0;
         };
-        let limit = if running.repo_lane.is_some() {
-            1
-        } else if running.train {
-            settings.train_lanes()
-        } else {
-            settings.gate_lanes()
-        };
+        let limit = if running.repo_lane.is_some() { 1 } else { settings.gate_lanes() };
         let occupied =
             self.tickets.iter().filter(|t| t.ran.is_some() && same_lane(t, running)).count() as u64;
         self.tickets
@@ -366,12 +353,7 @@ impl Queue {
                 Some(_)
                     if !joined.paused && {
                         let settings = crate::host_settings::of_host().unwrap_or_default();
-                        ready(
-                            &joined.tickets,
-                            number,
-                            settings.gate_lanes(),
-                            settings.train_lanes(),
-                        )
+                        ready(&joined.tickets, number, settings.gate_lanes())
                     } =>
                 {
                     break;
@@ -564,8 +546,8 @@ fn turn(ticket: &Ticket, acting: &Acting, now: &dyn Fn() -> u64) -> Result<Turn>
 
 /// `afkconvoy exclusive -- <command>`: runs `command` in the directory `dir`
 /// once a worker lane is available on this host, waiting in the host runner's
-/// queue until then → its exit status. Only a gate can take a train lane;
-/// other commands use worker lanes even in a train checkout. `checkout` is the
+/// queue until then → its exit status. Heavy commands use worker lanes;
+/// light gates use a lane of their repo. `checkout` is the
 /// checkout `dir` is in, where it is in one: its ticket names it, and its tick
 /// log is where the queue's own words go, as well as to stderr. What it prints
 /// is the command's. With no host runner, or one that cannot hold it, it runs
@@ -594,7 +576,6 @@ pub fn exclusive(
         command: shown.join(" "),
         dir: canonical(checkout.as_ref().map_or(dir, |repo| &repo.dir)),
         issue: std::env::var(ISSUE_ENV).ok().and_then(|issue| issue.parse().ok()),
-        train: false,
         repo_lane: None,
         repo: checkout.as_ref().and_then(|repo| repo.common_dir().ok()).map(canonical),
         is_turn: false,
@@ -749,7 +730,6 @@ mod tests {
             command: command.into(),
             dir: "/w/issue-7".into(),
             issue: Some(7),
-            train: false,
             repo_lane: None,
             repo: None,
             is_turn: false,
@@ -886,32 +866,6 @@ mod tests {
         drop(second);
         assert!(third.next().unwrap()["runs"].is_u64());
         drop(third);
-        holds(&queue, &[]);
-    }
-
-    #[test]
-    fn a_train_starts_beside_a_worker_and_trains_wait_in_request_order() {
-        let dir = tempfile::tempdir().unwrap();
-        let queue = Queue::default();
-        served(dir.path(), &queue);
-        let (mut worker, _) = Asker::joins(dir.path(), ticket("worker", 100));
-        assert!(worker.next().unwrap()["runs"].is_u64());
-        let mut train = ticket("train", 101);
-        train.train = true;
-        let (mut first, said) = Asker::joins(dir.path(), train.clone());
-        assert_eq!(said["ahead"], 0);
-        assert!(first.next().unwrap()["runs"].is_u64(), "does not wait for the worker");
-        let (mut second, said) =
-            Asker::joins(dir.path(), Ticket { command: "later train".into(), asked: 102, ..train });
-        assert_eq!(said["ahead"], 1);
-        assert_eq!(queue.pause(), 2, "a release move waits for both lanes");
-        queue.resume();
-        assert_eq!(second.next(), None);
-        drop(first);
-        assert!(second.next().unwrap()["runs"].is_u64());
-        assert!(queue.standing().iter().any(|t| t.command == "worker" && t.ran.is_some()));
-        drop(worker);
-        drop(second);
         holds(&queue, &[]);
     }
 

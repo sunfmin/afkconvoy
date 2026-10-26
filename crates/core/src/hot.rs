@@ -7,7 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::train::Built;
+use crate::landing::Built;
 
 /// How often, in seconds, `run` samples each worker's processes.
 pub const SAMPLE_EVERY: u64 = 10;
@@ -87,8 +87,7 @@ pub enum Why {
     Memory,
     /// They wrote more to disk than the limit, within `WRITTEN_WITHIN`.
     Written,
-    /// Its worktree has outgrown its fresh build: the train worktree's rule
-    /// (`train::outgrown`).
+    /// Its worktree has outgrown its fresh build (`landing::outgrown`).
     Held,
 }
 

@@ -109,15 +109,6 @@ fn did(ticked: &Value) -> Vec<String> {
         .collect()
 }
 
-/// The train's own worktree.
-fn train(world: &World) -> PathBuf {
-    let dir = world.root.join("train");
-    git(&world.clone, &["fetch", "-q", "origin"]);
-    let at = dir.to_str().unwrap();
-    git(&world.clone, &["worktree", "add", "-q", "-b", "convoy-train", at, "origin/main"]);
-    dir
-}
-
 /// The repo a call names, and what of it: an endpoint's path after the repo,
 /// empty of the repo itself. The tracker is named by name, and the checkout's repo by `{owner}/{repo}`,
 /// which `gh` fills in from the checkout: a query names its repo by its
@@ -238,17 +229,14 @@ fn every_issue_is_the_trackers_and_every_pr_branch_and_ref_the_checkouts() {
     commit(&worktree, "seven.txt", "7\n");
     git(&worktree, &["push", "-q", "origin", "HEAD"]);
     world.pr_closing(70, "acme/tracker#7", &branch);
-    let gated = world.afk_in(&worktree, &["gate", "--train"]).ok();
+    let gated = world.afk_in(&worktree, &["gate"]).ok();
     assert_eq!(
         (gated["status"].as_str(), gated["recorded"].as_bool()),
         (Some("green"), Some(true))
     );
     let joined = world.afk_in(&worktree, &["land", "--issue", "7", "--now", "1050"]).ok();
-    assert_eq!(joined["outcome"], "joined", "{joined}");
+    assert_eq!(joined["outcome"], "merged", "{joined}");
 
-    // The train lands the PR and closes the issue: the tracker's.
-    let landed = world.afk_in(&train(&world), &["land", "--train", "--merged-timeout", "5"]).ok();
-    assert_eq!(landed["outcome"], "landed", "{landed}");
     assert_eq!(issue_of(&world.tracker(), 7)["state"], "closed");
     assert_eq!(did(&tick(&world, "1090")), ["settle 7 done"]);
     assert_eq!(world.claims(), []);
@@ -376,7 +364,7 @@ stages:
     on: { pass: done }
 ```
 ";
-/// `build`, then `review`, then the landing train.
+/// `build`, then `review`, then a turn that lands its PR.
 const SHIP: &str = "\
 ```yaml
 stages:
@@ -538,17 +526,14 @@ fn two_fleets_of_one_repo_working_two_trackers_each_claim_land_and_close_only_th
         git(&worktree, &["push", "-q", "origin", "HEAD"]);
         let pr = if file == "a" { 70 } else { 71 };
         world.pr_closing(pr, closes, &branch);
-        let gated = world.afk_in(&worktree, &["gate", "--train"]).ok();
+        let gated = world.afk_in(&worktree, &["gate"]).ok();
         assert_eq!(gated["status"], "green", "{gated}");
         let joined = world.afk_in(&worktree, &["land", "--issue", "7", "--now", "1050"]).ok();
-        assert_eq!((&joined["outcome"], &joined["pr"]), (&json!("joined"), &json!(pr)), "{joined}");
+        assert_eq!((&joined["outcome"], &joined["pr"]), (&json!("merged"), &json!(pr)), "{joined}");
     }
 
-    // The train lands both; each fleet closes its own tracker's #7 alone.
-    let landed = world.afk_in(&train(&world), &["land", "--train", "--merged-timeout", "5"]).ok();
-    assert_eq!(landed["outcome"], "landed", "{landed}");
     assert_eq!(issue_of(&world.tracker_of(TRACKER), 7)["state"], "closed");
-    assert_eq!(issue_of(&world.tracker_of(OTHER), 7)["state"], "open", "the other fleet's");
+    assert_eq!(issue_of(&world.tracker_of(OTHER), 7)["state"], "closed", "its own turn closed it");
     assert_eq!(did(&tick_of(&world.clone, "alpha", "1090")), ["settle 7 done"]);
     let settled = tick_of(&other, "beta", "1090");
     assert_eq!(did(&settled), ["settle 7 done"], "{settled}");
@@ -627,7 +612,7 @@ fn worktree_of_7(world: &World) -> PathBuf {
 }
 
 #[test]
-fn a_bound_repos_tracker_issue_goes_through_its_stages_to_the_landing_train_and_closes() {
+fn a_bound_repos_tracker_issue_goes_through_its_stages_and_lands_in_a_turn() {
     let world = bound();
     tracker_issue(&world, 7, &["flow:ship", MINE]);
     world.issue(7, &["flow:ship"]);
@@ -659,20 +644,15 @@ fn a_bound_repos_tracker_issue_goes_through_its_stages_to_the_landing_train_and_
     assert_eq!(walked(&tick_at_work(&world, 1180)), ["advance 7 done"]);
     assert_eq!(issue_of(&world.tracker(), 7)["labels"], json!(["flow:ship", MINE, "stage:land"]));
 
-    // The landing worker gates the PR and joins the train.
+    // The landing worker gates the PR and lands it in one turn.
     assert_eq!(walked(&tick_at_work(&world, 1270)), ["dispatch 7 done"]);
     assert_eq!(worktree_of_7(&world), dir);
     let told = brief(&dir);
     assert!(told.contains("PR #70 is open for it"), "{told}");
-    let gated = world.afk_in(&dir, &["gate", "--train"]).ok();
+    let gated = world.afk_in(&dir, &["gate"]).ok();
     assert_eq!(gated["status"], "green", "{gated}");
     let joined = world.afk_in(&dir, &["land", "--issue", "7", "--now", "1300"]).ok();
-    assert_eq!(joined["outcome"], "joined", "{joined}");
-    assert_eq!(walked(&tick_at_work(&world, 1360)), ["tend_train done"]);
-
-    // The train lands it and the tracker's issue closes: the workflow has ended.
-    let landed = world.afk_in(&world.root.join("wt/convoy-train"), &["land", "--train"]).ok();
-    assert_eq!(landed["outcome"], "landed", "{landed}");
+    assert_eq!(joined["outcome"], "merged", "{joined}");
     assert_eq!(world.remote(&["show", "refs/heads/main:seven.txt"]), "7");
     let joined = world.remote(&["log", "--format=%s%n%b", "--merges", "-1", "main"]);
     assert_eq!(joined, "pr 70 (#70)\nCloses acme/tracker#7");

@@ -426,26 +426,17 @@ fn a_start_sweeps_gate_records_past_their_day_and_probes_left_behind() {
 }
 
 #[test]
-fn under_the_branch_layout_a_pr_still_joins_the_train_and_lands() {
+fn under_the_branch_layout_a_pr_lands_in_one_recorded_turn_without_a_train_ref() {
     let world = World::new();
     world.set_gate("true");
     world.remote_rejects("refs/convoy/");
     assert_eq!(warnings(&plan(&world)).len(), 1);
-    let line = "refs/heads/convoy-train/line/main";
-
     let seven = world.worker(7, "seven.txt", "7\n");
-    assert_eq!(world.afk_in(&seven, &["gate", "--train"]).ok()["recorded"], true);
-    let joined = world.afk_in(&seven, &["land", "--issue", "7"]).ok();
-    assert_eq!(joined["outcome"], "joined", "{joined}");
-    assert_eq!(world.remote(&["rev-parse", line]), joined["commit"].as_str().unwrap());
-
-    let train = world.root.join("train");
-    git(&world.clone, &["fetch", "-q", "origin"]);
-    let at = train.to_str().unwrap();
-    git(&world.clone, &["worktree", "add", "-q", "-b", "the-train", at, "origin/main"]);
-    let landed = world.afk_in(&train, &["land", "--train", "--merged-timeout", "5"]).ok();
-    assert_eq!(landed["outcome"], "landed", "{landed}");
-    assert_eq!(landed["gate"]["source"], "recorded", "the worker's run was read back: {landed}");
-    assert_eq!(world.remote(&["rev-parse", "refs/heads/main"]), joined["commit"].as_str().unwrap());
+    // The retired flag remains a compatibility alias for the complete turn.
+    let landed = world.afk_in(&seven, &["gate", "--train"]).ok();
+    assert_eq!(landed["outcome"], "merged", "{landed}");
+    assert_eq!(landed["recorded"], true, "{landed}");
+    assert_eq!(world.remote(&["rev-parse", "refs/heads/main"]), landed["commit"].as_str().unwrap());
+    assert_eq!(refs(&world, "refs/heads/convoy-train"), [] as [String; 0]);
     assert_eq!(refs(&world, "refs/convoy"), [] as [String; 0]);
 }

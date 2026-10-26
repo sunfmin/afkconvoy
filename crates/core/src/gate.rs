@@ -300,7 +300,7 @@ pub fn red_comment(
         if ran.timed_out { reached(gate_seconds) } else { format!("exited {}", ran.exit_code) };
     let log = if excerpt.is_empty() { "(no output)".to_string() } else { excerpt.join("\n") };
     format!(
-        "The gate is red on the landing train with this PR on it: `{}` {ended}. Nothing landed; \
+        "The gate is red on the base branch with this PR on it: `{}` {ended}. Nothing landed; \
          the train's worker is fixing the train.\n\n```\n{log}\n```\n",
         command.text
     )

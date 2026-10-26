@@ -617,9 +617,9 @@ impl Left {
                 carried.push(format!("run {} and its worker", run.key));
             }
         }
-        let train = crate::train::Train::read(&repo, &fleet.config)?;
+        let train = crate::legacy::Legacy::read(&repo, &fleet.config)?;
         for join in train.joins(&repo, &fleet.gh.tracker)? {
-            carried.push(format!("landing train PR #{}", join.pr));
+            carried.push(format!("legacy PR awaiting migration #{}", join.pr));
         }
         let source = crate::orca::Source::of(&repo)?;
         if let Some(checkout) =

@@ -14,7 +14,6 @@ use afkconvoy_core::plan::{Excluded, Observed, WorkingSet, assemble, closing_pr}
 use afkconvoy_core::position::Position;
 use afkconvoy_core::stopped::standing_verdict;
 use afkconvoy_core::team::{Role, Team, Workflow};
-use afkconvoy_core::train::{Built, on_train};
 use afkconvoy_core::verdict::latest_verdict;
 use afkconvoy_core::worker::recorded_branches;
 use anyhow::{Context, Result, anyhow};
@@ -23,14 +22,12 @@ use std::thread;
 use crate::claims::Scan;
 use crate::gh::{GitHub, Gone, Open, OpenIssues, beside, gone};
 use crate::git::{Listing, Repo};
-use crate::measure;
 use crate::orca::{Source, Worktree};
 use crate::patrol;
 use crate::precedent;
 use crate::settle::cut_landing_of;
 use crate::slow_gate;
 use crate::stage::Flows;
-use crate::train::Train;
 
 struct Runnable {
     kit: crate::kit::Kit,
@@ -68,9 +65,6 @@ pub struct Fleet {
     /// The closed claimed issues the last rebuild read, each with the login of
     /// whoever closed it, where GitHub says: what a tick's line names.
     pub closers: Vec<(u64, String)>,
-    /// What this machine's train's worktree held when this view cut it again:
-    /// what a tick's line says of it.
-    pub cut_train: Option<Built>,
     /// What this view's start and end of a cut said: what a tick's line says
     /// of them, and its log keeps.
     pub cut_said: Vec<crate::log::What>,
@@ -121,7 +115,6 @@ impl Fleet {
             forgotten: vec![],
             unread: vec![],
             closers: vec![],
-            cut_train: None,
             cut_said: vec![],
             proposals: None,
         })
@@ -364,9 +357,13 @@ impl Fleet {
     /// The base branch's tip on the remote, its commits in this repo.
     pub fn base_tip(&self) -> Result<String> {
         let branch = &self.config.base_branch;
-        self.repo
-            .fetched(&format!("refs/heads/{branch}"))?
-            .ok_or_else(|| anyhow!("the remote has no branch {branch:?}"))
+        let tip = self
+            .listing
+            .base
+            .as_ref()
+            .ok_or_else(|| anyhow!("the remote has no branch {branch:?}"))?;
+        self.repo.bring(tip, &self.listing.base_ref)?;
+        Ok(tip.clone())
     }
 
     /// Rebuilds the working set of `me` from `open` and the remote as this
@@ -404,23 +401,16 @@ impl Fleet {
                 Err(error) => self.unread.push((claim.number, error)),
             }
         }
-        // What is on the train is read off the train's own commits.
-        let train = Train::listed(&self.repo, &self.config, &self.listing)?;
-        let joins = train.joins(&self.repo, &self.gh.tracker)?;
-        // …and what a cut landing left open, off the base branch.
+        let base = self.base_tip()?;
         let mut landed = vec![];
         for claim in &self.scan.claims {
             if me.is_some_and(|me| claim.is_held_by(me))
                 && !closed.contains(&claim.number)
-                && cut_landing_of(&self.repo, &self.gh.tracker, &train.base, claim, prs)?.is_some()
+                && cut_landing_of(&self.repo, &self.gh.tracker, &base, claim, prs)?.is_some()
             {
                 landed.push(claim.number);
             }
         }
-        let riding = on_train(&joins, prs);
-        let joined: Vec<u64> = riding.iter().filter_map(|join| join.issue()).collect();
-        let watches: Vec<u64> =
-            riding.iter().filter(|join| join.is_watch()).map(|join| join.pr).collect();
         // A PR is the fleet's own when its branch is one recorded on the issue.
         let mut kept = vec![];
         for issue in issues {
@@ -436,16 +426,23 @@ impl Fleet {
             self.scan.claims.iter().filter(|claim| me.is_some_and(|me| claim.is_held_by(me)))
         {
             let under = match &self.config.bound {
-                Some(_) => stages.declared(claim.number, &claim.id),
-                None => self.declared_since(open, claim),
+                Some(_)
+                    if !issues.iter().any(|issue| {
+                        issue.number == claim.number
+                            && afkconvoy_core::plan::is_repair(&issue.labels)
+                    }) =>
+                {
+                    stages.declared(claim.number, &claim.id)
+                }
+                _ => self.declared_since(open, claim),
             };
             if under {
                 declared.push(claim.number);
             }
         }
         let heartbeats = self.scan.beats();
-        let (landings, slow_gate) = slow_gate::seen(self, &self.listing.records, &train.base)?;
-        let cut = crate::cut::seen(self, &stages, issues, &riding, &train.base)?;
+        let (landings, slow_gate) = slow_gate::seen(self, &self.listing.records, &base)?;
+        let cut = crate::cut::seen(self, &stages, issues, &base)?;
         self.proposals = precedent::open(self, &stages)?;
         let seen = Observed {
             issues,
@@ -454,7 +451,6 @@ impl Fleet {
             heartbeats: &heartbeats,
             closed: &closed,
             gone: &deleted,
-            joined: &joined,
             kept: &kept,
             landed: &landed,
             declared: &declared,
@@ -467,8 +463,6 @@ impl Fleet {
             waiting: &stages.waiting(self, open),
             landings: &landings,
             slow_gate: &slow_gate,
-            idle_train: if train.tip == train.base { self.train_built() } else { None },
-            watches: &watches,
             tracker: &self.gh.tracker,
             cut: cut.as_ref(),
         };
@@ -653,13 +647,6 @@ impl Fleet {
         }
     }
 
-    /// What the last landing measured of this machine's train's worktree;
-    /// `None` when there is none here, no landing measured it, or orca or the
-    /// worktree cannot be read — nothing is cut on what is not known.
-    fn train_built(&self) -> Option<Built> {
-        let worktree = Worktree::of_train(&Source::of(&self.repo).ok()?).ok()??;
-        measure::measured(&Repo::new(worktree.path)).ok()?
-    }
     /// Whether the worker of `claim`, in an unbound repo, declared a verdict
     /// that stands: the latest on the issue, written since the claim was
     /// created — one from an earlier claim is not its own — and not answered

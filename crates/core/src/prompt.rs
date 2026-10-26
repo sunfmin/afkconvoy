@@ -22,7 +22,7 @@ pub struct WorkerFields<'a> {
     pub branch: &'a str,
     pub worktree: &'a str,
     pub base_branch: &'a str,
-    /// The line the worker runs the gate with: `afkconvoy gate --train`.
+    /// The line the worker runs the gate with: `afkconvoy gate`.
     pub gate_command: &'a str,
     /// The line the worker gates another checkout with, in that checkout:
     /// `afkconvoy gate`.
@@ -32,7 +32,7 @@ pub struct WorkerFields<'a> {
     /// The label that makes an issue dispatchable: what an issue a worker
     /// opens for a defect it found carries.
     pub ready_label: &'a str,
-    /// The line the worker joins the landing train with: `afkconvoy land --issue <n>`.
+    /// The line the worker lands in a turn with: `afkconvoy land --issue <n>`.
     pub land_command: &'a str,
     /// The line the worker wakes the fleet with: `afkconvoy wake`.
     pub wake_command: &'a str,
@@ -60,18 +60,9 @@ const STEP1_CONTINUE: &str = "\
 /// The gate and the join, as every worker that has them is told them. `<g>` and
 /// `<j>` are the numbers the two steps carry in the prompt they are put in.
 const GATE_STEP: &str = "\
-<g>. **Gate.** The PR must already be open. Commit everything, then run this in your worktree:
-   ```bash
-   {gate_command}
-   ```
-   This command asks for a turn. In that turn it merges the train's current green tip (or
-   `{base_branch}` when the train is empty), runs the gate, records green and joins your PR before
-   releasing the turn. Nobody waits on your agent between the merge and join. It ends with one
-   JSON object. On `\"outcome\": \"joined\"` or `\"merged\"`, wake the fleet and stop.
-   On `\"status\": \"conflict\"` no gate ran: resolve every file, `git add` it, commit the merge,
-   and run it again. Red: fix your change, commit and ask again. The tip you merged was green.
-   On `\"outcome\": \"locked\"`, stop until told to carry on. Any further commit needs another
-   turn. Never rebase.";
+<g>. **Prepare to land.** The PR must already be open. Commit everything and push your branch.
+   The next command holds one turn through merge, gate, recording green and landing.
+   Never rebase.";
 
 const STAGE_GATE_STEP: &str = "\
 1. **Gate.** Commit everything, then run this in your worktree:
@@ -80,18 +71,22 @@ const STAGE_GATE_STEP: &str = "\
    ```
    This checks the committed change before review. Red: fix, commit and run it again until
    `\"status\": \"green\"` and `\"recorded\": true`. Declare `pass` only then. The landing
-   worker takes the merge, gate and join turn after the workflow's last stage has passed.";
+   worker takes the merge, gate and land turn after the workflow's last stage has passed.";
 
 const JOIN_STEP: &str = "\
-<j>. **Join the landing train.** Run this in your worktree:
+<j>. **Land.** Run this in your worktree:
    ```bash
    {land_command}
    ```
-   It ends with one JSON object. `\"outcome\": \"joined\"` (or `\"merged\"`): you are done — wake the
-   fleet (below) and stop. On `\"conflict\"` the train was merged into your branch and left in
-   progress: resolve every file it lists, `git add` it, commit the merge,
-   go back to step <g>, and run this again. On `\"locked\"` a fleet lock stands and nothing but its
-   own PR joins: stop here, waking nobody, and run this again when you are told to carry on.";
+   It asks for a turn, makes your PR's merge commit on the current `{base_branch}` tip,
+   gates that commit, records green, and pushes that same commit as a fast-forward.
+   On `\"outcome\": \"merged\"`, wake the fleet and stop.
+   On `\"conflict\"`, resolve every listed file, `git add` it, commit the merge and run this again.
+   On `\"gate_red\"`, fix your change, commit and run this again.
+   On `\"target_moved\"`, nothing landed: ask for a turn again on the new base tip.
+   On `\"locked\"`, stop without waking anyone until told to carry on.
+   An unrecorded base tip is gated alone first. Ordinary turns wait while it is red;
+   the fleet dispatches a repair whose own turn must still gate green before landing.";
 
 /// The wake, as every worker with an outcome of its own is told it.
 const WAKE: &str = "\
@@ -103,59 +98,9 @@ fails, ignore it:
 {wake_command}
 ```";
 
-/// What every worker that runs the gate and can park its issue on another is
-/// told of a red gate its own work did not cause: the defect it found is
-/// opened as an issue the fleet works, and never left to a human. `<proof>`
-/// is what is gated alone, `<open>` how the issue enters the fleet's work and
-/// `<park>` what the worker does once it is recorded and, for a red base
-/// branch, locked.
-const DEFECT: &str = "\
-## A red gate that is not yours
-
-A red gate is yours to deal with, as above, unless you prove that it is not. The proof is that
-<proof> is red the same way on its own. Gate it alone, in a clean checkout outside your worktree,
-and remove that checkout after:
-```bash
-git worktree add --detach <a new directory> <that commit>
-cd <that directory> && {gate_alone_command}
-```
-A red gate you have not shown this way stays yours. A fleet lock standing is the issue of a fault
-every issue shares already: do as you are told of the lock, and nothing of this.
-
-Once you have shown it, the failure is a defect outside your work, which you discovered. No human
-writes its issue: you do.
-
-1. **Look before opening.** Other workers hit the same red `{base_branch}`: search the open issues
-   for one that already records this defect (`gh issue list<tracker><labelled> --state open --search \"<words of the
-   failure>\"`). If one does, comment your evidence there — another occurrence, and when — and
-   open none.
-2. **Otherwise open one** that a fresh worker can pick up (`gh issue create<tracker>`): the symptom; how to
-   reproduce it on `{base_branch}`; what the logs show; what is guessed and what is verified; and
-   acceptance criteria that require the cause to be found with evidence, and a test that reproduces
-   it. <open> Name no blocker unless it has a real one.
-3. **Raise the fleet lock for a red base branch.** If you proved only the landing train's tip
-   red, gate `origin/{base_branch}` alone in a clean checkout too, as above. Only when the base
-   branch is red the same way, make sure the fix's issue — existing or new — is dispatchable as
-   above, then run `{lock_command} --issue <n>` on it from your worktree. The fleet works that
-   issue first while the lock stands. A defect confined to the train raises no lock.
-4. <park>
-";
-
-/// How an issue a worker opens for a defect is put before the fleet: with the
-/// ready label, in an unbound repo, by every worker that opens one.
-const DEFECT_READY: &str =
-    "Put the label `{ready_label}` on it (`--label {ready_label}`)<repo_label>, so
-   the fleet works it like any other issue.";
-
-/// `DEFECT`, of a worker that gates alone `proof`, puts an issue it opens
-/// before the fleet as `open` says and then does `park`.
-fn defect(proof: &str, open: &str, park: &str) -> String {
-    DEFECT.replace("<proof>", proof).replace("<open>", open).replace("<park>", park)
-}
-
 const JOINER: &str = "\
 You are an afkconvoy worker taking over an issue whose work is finished: PR #{pr} is open for it, and
-is not on the landing train yet. Your ONLY job is to get that PR on the train. Write no feature and
+has not landed yet. Your ONLY job is to land that PR in a turn. Write no feature and
 open no other PR. Nobody reads this terminal: never wait for an answer.
 
 **Your issue:** {issue} — {title}
@@ -174,7 +119,7 @@ open no other PR. Nobody reads this terminal: never wait for an answer.
 
 ## Hard rules
 
-- End with your PR on the landing train — never just stop.
+- End with your PR landed on the base branch — never just stop.
 - Never close the PR, never open another, never rebase.
 - Never edit files outside your worktree, and never push to `{base_branch}`.
 ";
@@ -184,7 +129,7 @@ open no other PR. Nobody reads this terminal: never wait for an answer.
 const TAKER: &str = "\
 You are an afkconvoy worker taking up an issue that is the fleet's again: PR #{pr} is open for it,
 kept when an earlier worker's claim was released — the issue was escalated or parked — and is not
-on the landing train. The PR already exists: your job is to finish it and get it on the train. Open
+on the base branch. The PR already exists: finish it and land it in a turn. Open
 no other PR. Nobody reads this terminal: never wait for an answer.
 
 **Your issue:** {issue} — {title}
@@ -218,7 +163,7 @@ with `phase=blocked` and every existing blocking issue in `blocked_by=`:
 
 ## Hard rules
 
-- End with your PR on the landing train, or with that comment — never just stop.
+- End with your PR landed on the base branch, or with that comment — never just stop.
 - Never close the PR, never open another, never rebase.
 - Never edit files outside your worktree, and never push to `{base_branch}`.
 ";
@@ -274,7 +219,7 @@ body:
 
 ## Hard rules
 
-- End with your PR on the landing train, or with that comment — never just stop.
+- End with your PR landed on the base branch, or with that comment — never just stop.
 - Never edit files outside your worktree, and never push to `{base_branch}`.
 ";
 
@@ -571,8 +516,8 @@ pub struct StageFields<'a> {
 /// The two lines a worker that may commit runs the gate with.
 #[derive(Debug, Clone, Copy)]
 pub struct Gate<'a> {
-    /// In its worktree: `afkconvoy gate --train`.
-    pub train: &'a str,
+    /// In its worktree: `afkconvoy gate`.
+    pub standalone: &'a str,
     /// In another checkout, gated alone: `afkconvoy gate`.
     pub alone: &'a str,
 }
@@ -673,7 +618,7 @@ pub fn stage_prompt(fields: &StageFields) -> Result<String, String> {
             ("team_rules", fields.team_rules.unwrap_or_default()),
             ("verdict_command", fields.verdict_command),
             ("lock_command", fields.lock_command),
-            ("gate_command", fields.gate.map_or("", |gate| gate.train)),
+            ("gate_command", fields.gate.map_or("", |gate| gate.standalone)),
             ("gate_alone_command", fields.gate.map_or("", |gate| gate.alone)),
         ],
     )
@@ -956,159 +901,6 @@ pub fn consult_prompt(fields: &StageFields, consulting: &Consulting) -> Result<S
     )
 }
 
-const TRAIN: &str = "\
-You are the afkconvoy **train worker**. You own no issue and you write no feature. Finished PRs join
-the **landing train**: a line of commits ahead of `{base_branch}`, one merge commit per PR. Your job
-is to run one command, which gates the train as it stands and lands it on `{base_branch}`, and to act
-on what it says — again and again, until the train is empty. Nobody reads this terminal: never wait
-for an answer.
-
-**Your worktree:** `{worktree_path}` — work only here, on the branch it is on: never check out a
-commit or another branch.
-
-**This command is the only way the train lands.** Run it in your worktree, exactly as written:
-```bash
-{land_command}
-```
-It takes the train's tip (your own commits are kept on top), merges `{base_branch}` in if it moved,
-runs the gate once on that commit, and pushes the commit to `{base_branch}` as a fast-forward. It
-ends with one JSON object. An `\"error\"` saying the worktree is **not the commit that would land**
-means the gate could not prove the train: there were uncommitted or untracked files here, or the
-gate's run changed the worktree. Nothing landed — commit what belongs to a fix, discard the rest
-(`git status` shows nothing when you are done), and run the command again. Otherwise act on its
-`outcome`:
-
-- **`landed`** — the train is on `{base_branch}`, up to `commit`. Run the command again: more PRs
-  may have joined meanwhile.
-- **`idle`** — nothing is on the train. Stop. You are told when a PR joins.
-- **`gate_red`** — the gate is red on the train's tip; `gate.excerpt` is the end of its log. Nothing
-  landed. Fix the **train**: read the failure, change what makes it green, and **commit** — one more
-  commit on top, here. Do not hunt for the PR at fault, do not drop or revert a PR, never rewrite a
-  commit. Then run the command again. When `{base_branch}` may be what is red, and not the train,
-  see below first.
-- **`conflict`** — what joined, or `{base_branch}`, conflicts with what this worktree holds. The
-  merge is **left in progress** here, with `files` unmerged. Resolve every file so both sides' intent
-  survives, `git add` it, **commit the merge**, and run the command again. Never rebase, never abort
-  the merge.
-- **`target_moved`** — `{base_branch}` moved while the gate ran, so the push was refused. Nothing
-  landed. Run the command again: it merges the new tip in and gates that.
-
-Keep going until the command says `idle`, or a proven red base branch has you raise a lock below;
-nothing counts your attempts.
-
-<defect>
-## Hard rules
-
-- Never land anything any other way — no `gh pr merge`, no push to `{base_branch}` of your own.
-- Never push to a PR's branch, never comment on, close or reopen a PR or an issue: the command does
-  all of that. The one exception is the issue of a defect of `{base_branch}`, above.
-- Commit only here, and only to turn a red train green or to finish a merge the command left.
-";
-
-/// What the train worker's prompt is filled with.
-#[derive(Debug, Clone)]
-pub struct TrainFields<'a> {
-    pub worktree: &'a str,
-    pub base_branch: &'a str,
-    /// The line the train worker lands the train with: `afkconvoy land --train`.
-    pub land_command: &'a str,
-    /// The line the train worker gates another checkout with, in that
-    /// checkout: `afkconvoy gate`.
-    pub gate_alone_command: &'a str,
-    /// The line that raises a fleet lock on the base branch's defect.
-    pub lock_command: &'a str,
-    /// How an issue the train worker opens for a defect of the base branch
-    /// enters the fleet's work.
-    pub enters: Enters<'a>,
-    /// The fleet's tracker, where that issue is opened.
-    pub tracker: &'a Tracker,
-}
-
-/// How an issue the train worker opens for a defect enters the fleet's work.
-#[derive(Debug, Clone, Copy)]
-pub enum Enters<'a> {
-    /// In an unbound repo: with the label that makes an issue dispatchable.
-    Ready(&'a str),
-    /// In a bound repo, where only a flow label dispatches: taken in, with
-    /// the line `afkconvoy intake --train`, to one of the team's workflows —
-    /// the first, unless another fits it better.
-    Intake { command: &'a str, workflows: &'a [String] },
-}
-
-/// How the train worker of a bound repo puts an issue it opens for a defect
-/// before the fleet: it takes it in, by default to the team's first workflow.
-const DEFECT_TRAIN_INTAKE: &str =
-    "Put no label of a workflow on it yourself<only_repo_label>: take it in with
-   `{intake_command} --issue <n> --workflow <workflow>`, to the team's first workflow,
-   `{first_workflow}`, unless another of its workflows fits the defect clearly better — the team
-   has {workflows}. The fleet works it like any other issue.";
-
-/// What the train worker does once a defect of the base branch is recorded:
-/// it has no issue to park.
-const PARK_TRAIN: &str =
-    "**You have no issue to park.** Once you raised the lock, stop: the fix's issue is worked
-   first. Run the command again once the fix's PR has joined the train or the lock has closed.
-   Until then stop without another gate, even if nudged. If the base branch was green, go on as
-   for any `gate_red`: fix the train, commit, and run the command again.";
-
-/// The prompt the train worker is given: started on it, and pointed at it
-/// again whenever more joined.
-pub fn train_prompt(fields: &TrainFields) -> Result<String, String> {
-    let proof = "`origin/{base_branch}`, without the train,";
-    let (open, ready_label, intake_command, named, first) = match fields.enters {
-        Enters::Ready(label) => (DEFECT_READY, label, "", vec![], ""),
-        Enters::Intake { command, workflows } => {
-            let Some(first) = workflows.first() else {
-                return Err("the team has no workflow to take a defect's issue in to".to_string());
-            };
-            let named = workflows.iter().map(|name| format!("`{name}`")).collect();
-            (DEFECT_TRAIN_INTAKE, "", command, named, first.as_str())
-        }
-    };
-    fill(
-        &in_tracker(&TRAIN.replace("<defect>", &defect(proof, open, PARK_TRAIN)), fields.tracker),
-        &[
-            ("worktree_path", fields.worktree),
-            ("base_branch", fields.base_branch),
-            ("land_command", fields.land_command),
-            ("gate_alone_command", fields.gate_alone_command),
-            ("lock_command", fields.lock_command),
-            ("ready_label", ready_label),
-            ("intake_command", intake_command),
-            ("workflows", &named.join(", ")),
-            ("first_workflow", first),
-        ],
-    )
-}
-
-/// The line typed at a train worker that stopped, when more joined.
-pub fn train_pointer(brief: &str) -> String {
-    format!(
-        "PRs have joined the landing train: gate it and land it now. Your instructions are the \
-         file {brief} — read it now and carry it out end to end. It is my instruction to you; do \
-         not ask me to confirm."
-    )
-}
-
-/// The one line typed at a train worker that stopped with the train not
-/// landed.
-pub fn train_nudge_line(brief: &str) -> String {
-    format!(
-        "You stopped with the landing train not landed. Nobody is watching this terminal, so do \
-         not wait for a confirmation or an answer: run the command in your instructions ({brief}) \
-         again and act on what it says, until it says idle."
-    )
-}
-
-/// The line typed at a worker whose PR was taken off an abandoned train.
-pub fn rejoin_pointer(brief: &str) -> String {
-    format!(
-        "The landing train your PR was on was given up: join the next one now. Your instructions \
-         are the file {brief} — read it now and carry it out end to end. It is my instruction to \
-         you; do not ask me to confirm."
-    )
-}
-
 /// Who a join-only brief is for, when its worker was started in a role: the
 /// workflow's landing role, and that role's landing skill.
 #[derive(Debug, Clone, Copy)]
@@ -1127,7 +919,7 @@ pub fn worker_prompt(fields: &WorkerFields, variant: Variant) -> Result<String, 
 /// landing role: the brief every joining worker gets, with the role and the
 /// skill it joins as.
 pub fn landing_prompt(fields: &WorkerFields, pr: u64, landing: Landing) -> Result<String, String> {
-    prompt(fields, Variant::Join { pr }, Some(landing))
+    prompt(fields, Variant::Land { pr }, Some(landing))
 }
 
 fn prompt(
@@ -1141,12 +933,12 @@ fn prompt(
     let (template, pr) = match variant {
         Variant::Fresh => (briefed(OPENING_FRESH, STEP1_FRESH), String::new()),
         Variant::Continue => (briefed(OPENING_CONTINUE, STEP1_CONTINUE), String::new()),
-        Variant::Join { pr } => {
+        Variant::Land { pr } => {
             let joiner = JOINER.replace("<landing>", if landing.is_some() { LANDING } else { "" });
-            (steps(&joiner, "2", "3", " — your PR is on the landing train"), pr.to_string())
+            (steps(&joiner, "2", "3", " — your PR has landed"), pr.to_string())
         }
         Variant::TakeUp { pr } => {
-            let outcomes = " — your PR is on the landing train, or your comment is posted";
+            let outcomes = " — your PR has landed, or your comment is posted";
             let taker = TAKER.replace("<defect>", "");
             (steps(&taker, "3", "4", outcomes), pr.to_string())
         }
@@ -1176,7 +968,7 @@ fn prompt(
 
 /// The worker prompt with a variant's opening and first step in it.
 fn briefed(opening: &str, step1: &str) -> String {
-    let outcomes = " — your PR is on the landing train, or your comment is posted";
+    let outcomes = " — your PR has landed, or your comment is posted";
     let worker =
         WORKER.replace("<opening>", opening).replace("<step1>", step1).replace("<defect>", "");
     steps(&worker, "4", "5", outcomes)
@@ -1363,7 +1155,7 @@ mod tests {
             branch: "tester/issue-7-add",
             worktree: "/wt/issue-7",
             base_branch: "develop",
-            gate_command: "/opt/bin/afkconvoy gate --train",
+            gate_command: "/opt/bin/afkconvoy gate",
             gate_alone_command: "/opt/bin/afkconvoy gate",
             lock_command: "/opt/bin/afkconvoy lock",
             ready_label: "agent-ready",
@@ -1379,26 +1171,15 @@ mod tests {
             repo: crate::config::RepoName::read("acme/dev").unwrap(),
         };
         let fields = WorkerFields { tracker: &tracker, ..fields() };
-        let train = train_prompt(&TrainFields {
-            worktree: "/wt/convoy-train",
-            base_branch: "develop",
-            land_command: "/opt/bin/afkconvoy land --train",
-            gate_alone_command: "/opt/bin/afkconvoy gate",
-            lock_command: "/opt/bin/afkconvoy lock",
-            enters: Enters::Ready("agent-ready"),
-            tracker: &tracker,
-        })
-        .unwrap();
-        let mut briefs: Vec<String> = [
+        let briefs: Vec<String> = [
             Variant::Fresh,
             Variant::Continue,
-            Variant::Join { pr: 70 },
+            Variant::Land { pr: 70 },
             Variant::TakeUp { pr: 70 },
         ]
         .into_iter()
         .map(|variant| worker_prompt(&fields, variant).unwrap())
         .collect();
-        briefs.push(train);
         for brief in &briefs {
             for mark in ["<tracker>", "<issues>", "<labelled>", "<repo_label>", "{owner}"] {
                 assert!(!brief.contains(mark), "{mark}: {brief}");
@@ -1418,18 +1199,6 @@ mod tests {
         let fresh = &briefs[0];
         assert!(fresh.contains("**Your issue:** acme/tracker#7 — Add {branch} support"));
         assert!(fresh.contains("\n   Closes acme/tracker#7\""), "{fresh}");
-        // An issue a worker opens is the repo's in the tracker.
-        {
-            let brief = briefs.last().unwrap();
-            assert!(
-                brief.contains("`gh issue create --repo acme/tracker`): the symptom")
-                    && brief.contains(
-                        "(`--label agent-ready`), and the repo label `repo:acme/dev` (`--label \
-                     repo:acme/dev`), so"
-                    ),
-                "{brief}"
-            );
-        }
     }
 
     /// Each issue command of `brief` names the tracker `acme/tracker`, every
@@ -1507,7 +1276,7 @@ mod tests {
             intake_command: "/opt/bin/afkconvoy intake",
             split: true,
             workflows: &workflows,
-            gate: Some(Gate { train: "afkconvoy gate --train", alone: "afkconvoy gate" }),
+            gate: Some(Gate { standalone: "afkconvoy gate", alone: "afkconvoy gate" }),
         };
         let consulting = Consulting {
             rule: "/opt/bin/afkconvoy rule --issue 7 --stage build",
@@ -1552,18 +1321,6 @@ mod tests {
             over_command: "/opt/bin/afkconvoy over --run precedent-7-c2001",
         };
         let landing = Landing { role: "dev", skill: "land" };
-        let train = TrainFields {
-            worktree: "/wt/convoy-train",
-            base_branch: "develop",
-            land_command: "/opt/bin/afkconvoy land --train",
-            gate_alone_command: "/opt/bin/afkconvoy gate",
-            lock_command: "/opt/bin/afkconvoy lock",
-            enters: Enters::Intake {
-                command: "/opt/bin/afkconvoy intake --train",
-                workflows: &workflows,
-            },
-            tracker: &tracker,
-        };
         let worker = WorkerFields { tracker: &tracker, ..fields() };
         let briefs = [
             ("stage", stage_prompt(&stage).unwrap()),
@@ -1572,7 +1329,6 @@ mod tests {
             ("patrol", patrol_prompt(&patrol).unwrap()),
             ("proposal", proposal_prompt(&proposal).unwrap()),
             ("landing", landing_prompt(&worker, 70, landing).unwrap()),
-            ("train", train_prompt(&train).unwrap()),
         ];
         for (_, brief) in &briefs {
             names_the_tracker(brief);
@@ -1606,7 +1362,7 @@ mod tests {
         );
         assert!(prompt.contains("**Your branch:** `tester/issue-7-add`"));
         assert!(prompt.contains("**Your worktree:** `/wt/issue-7`"));
-        assert!(prompt.contains("   /opt/bin/afkconvoy gate --train\n"));
+        assert!(prompt.contains("four") || prompt.contains("holds one turn"));
         assert!(prompt.contains("   /opt/bin/afkconvoy land --issue 7\n"));
         assert!(prompt.contains("gh pr create --base develop --head tester/issue-7-add"));
         assert!(prompt.contains("Closes #7"));
@@ -1629,25 +1385,6 @@ mod tests {
     }
 
     #[test]
-    fn a_joining_worker_is_briefed_only_to_join_the_train() {
-        let prompt = worker_prompt(&fields(), Variant::Join { pr: 70 }).unwrap();
-        assert!(prompt.contains("PR #70 is open for it"));
-        assert!(prompt.contains("**Your PR:** #70, from the branch `tester/issue-7-add`"));
-        assert!(prompt.contains("\n2. **Gate.**") && prompt.contains("\n3. **Join the landing"));
-        assert!(prompt.contains("   /opt/bin/afkconvoy gate --train\n"));
-        assert!(prompt.contains("   /opt/bin/afkconvoy land --issue 7\n"));
-        assert!(prompt.contains("go back to step 2, and run this again"));
-        for absent in ["**Implement**", "gh pr create", "convoy:verdict", "<g>", "<j>", "_step>"] {
-            assert!(!prompt.contains(absent), "{absent}");
-        }
-        // the same two steps the whole brief gives, under its own numbers
-        let whole = worker_prompt(&fields(), Variant::Fresh).unwrap();
-        assert!(whole.contains("\n4. **Gate.**") && whole.contains("\n5. **Join the landing"));
-        assert!(whole.contains("go back to step 4, and run this again"));
-        assert!(!whole.contains("<g>") && !whole.contains("_step>"));
-    }
-
-    #[test]
     fn a_worker_taking_up_a_pr_is_told_its_pr_exists_and_to_merge_the_base_gate_and_land() {
         let prompt = worker_prompt(&fields(), Variant::TakeUp { pr: 70 }).unwrap();
         assert!(prompt.contains("PR #70 is open for it"));
@@ -1657,9 +1394,9 @@ mod tests {
         assert!(prompt.contains(
             "\n2. **Merge the base branch.** `git fetch origin && git merge origin/develop`"
         ));
-        assert!(prompt.contains("\n3. **Gate.**") && prompt.contains("\n4. **Join the landing"));
+        assert!(prompt.contains("\n3. **Prepare to land.**") && prompt.contains("\n4. **Land.**"));
         assert!(prompt.contains("   /opt/bin/afkconvoy land --issue 7\n"));
-        assert!(prompt.contains("go back to step 3, and run this again"));
+        assert!(prompt.contains("commit the merge and run this again"));
         assert!(prompt.contains("never open another"));
         assert!(prompt.contains(&verdict::marker_format()));
         for absent in ["**Implement**", "gh pr create", "<g>", "<j>", "_step>"] {
@@ -1674,17 +1411,15 @@ mod tests {
         for variant in [Variant::Fresh, Variant::Continue] {
             let prompt = worker_prompt(&fields(), variant).unwrap();
             assert!(prompt.contains(line), "{prompt}");
-            assert!(prompt.contains("your PR is on the landing train, or your comment is posted"));
-            assert!(prompt.contains("you are done — wake the\n   fleet (below) and stop"));
+            assert!(prompt.contains("your PR has landed, or your comment is posted"));
+            assert!(prompt.contains("wake the fleet and stop"));
             assert!(prompt.contains("wake the fleet (below)\nand stop. Its **first line**"));
             assert_eq!(prompt.matches("afkconvoy wake").count(), 1, "said in one place");
             assert!(!prompt.contains("<wake>") && !prompt.contains("<outcomes>"));
         }
-        let joiner = worker_prompt(&fields(), Variant::Join { pr: 70 }).unwrap();
+        let joiner = worker_prompt(&fields(), Variant::Land { pr: 70 }).unwrap();
         assert!(joiner.contains(line), "{joiner}");
-        assert!(
-            joiner.contains("Once your outcome is on GitHub — your PR is on the landing train,")
-        );
+        assert!(joiner.contains("Once your outcome is on GitHub — your PR has landed,"));
         assert!(!joiner.contains("comment is posted") && !joiner.contains("<wake>"));
     }
 
@@ -2003,7 +1738,7 @@ mod tests {
             split: true,
             workflows: &["feature".to_string()],
             gate: Some(Gate {
-                train: "cd '/wt/issue-7' && /opt/bin/afkconvoy gate --train",
+                standalone: "cd '/wt/issue-7' && /opt/bin/afkconvoy gate",
                 alone: "/opt/bin/afkconvoy gate",
             }),
         };
@@ -2016,8 +1751,8 @@ mod tests {
             "{prompt}"
         );
         assert!(prompt.contains("turn the gate green before you declare `pass`:\n\n1. **Gate.**"));
-        assert!(prompt.contains("   cd '/wt/issue-7' && /opt/bin/afkconvoy gate --train\n"));
-        assert!(prompt.contains("landing\n   worker takes the merge, gate and join turn"));
+        assert!(prompt.contains("   cd '/wt/issue-7' && /opt/bin/afkconvoy gate\n"));
+        assert!(prompt.contains("landing\n   worker takes the merge, gate and land turn"));
         let gate = prompt.find("## The gate").unwrap();
         assert!(gate < prompt.find("## Declare a verdict").unwrap(), "before the verdict");
         assert!(!prompt.contains("<gate") && !prompt.contains("<g>"), "{prompt}");
@@ -2038,7 +1773,7 @@ mod tests {
             "{prompt}"
         );
         // But for those lines it is the brief every joining worker gets.
-        let joiner = worker_prompt(&fields(), Variant::Join { pr: 70 }).unwrap();
+        let joiner = worker_prompt(&fields(), Variant::Land { pr: 70 }).unwrap();
         let role = prompt.find("**Your role:**").unwrap();
         let steps = prompt.find("\n## Steps").unwrap();
         assert_eq!(format!("{}{}", &prompt[..role], &prompt[steps..]), joiner);
@@ -2046,90 +1781,20 @@ mod tests {
     }
 
     #[test]
-    fn the_train_prompt_hands_over_the_one_command() {
-        let prompt = train_prompt(&TrainFields {
-            worktree: "/wt/convoy-train",
-            base_branch: "develop",
-            land_command: "/opt/bin/afkconvoy land --train",
-            gate_alone_command: "/opt/bin/afkconvoy gate",
-            lock_command: "/opt/bin/afkconvoy lock",
-            enters: Enters::Ready("agent-ready"),
-            tracker: &Tracker::Own,
-        })
-        .unwrap();
-        assert!(prompt.contains("\n/opt/bin/afkconvoy land --train\n"));
-        assert!(prompt.contains("**Your worktree:** `/wt/convoy-train`"));
-        assert!(prompt.contains("lands it on `develop`"));
-        for outcome in ["landed", "idle", "gate_red", "conflict", "target_moved"] {
-            assert!(prompt.contains(&format!("**`{outcome}`**")), "{outcome}");
-        }
-        assert!(train_pointer("/b.md").contains("/b.md"));
-    }
-
-    #[test]
     fn workers_open_the_pr_before_the_turn_and_do_not_gate_the_tip_alone() {
         let fresh = worker_prompt(&fields(), Variant::Fresh).unwrap();
-        assert!(
-            fresh.find("gh pr create").unwrap()
-                < fresh.find("This command asks for a turn").unwrap()
-        );
+        assert!(fresh.find("gh pr create").unwrap() < fresh.find("It asks for a turn").unwrap());
         for variant in [
             Variant::Fresh,
             Variant::Continue,
             Variant::TakeUp { pr: 70 },
-            Variant::Join { pr: 70 },
+            Variant::Land { pr: 70 },
         ] {
             let prompt = worker_prompt(&fields(), variant).unwrap();
-            assert!(prompt.contains("joins your PR before"), "{prompt}");
+            assert!(prompt.contains("pushes that same commit as a fast-forward"), "{prompt}");
             assert!(!prompt.contains("A red gate that is not yours"), "{prompt}");
             assert!(!prompt.contains("git worktree add --detach"), "{prompt}");
         }
-    }
-
-    #[test]
-    fn in_a_bound_repo_the_train_worker_takes_a_defect_s_issue_in_the_first_workflow_by_default() {
-        let workflows = ["feature".to_string(), "fix".to_string()];
-        let fields = TrainFields {
-            worktree: "/wt/convoy-train",
-            base_branch: "develop",
-            land_command: "/opt/bin/afkconvoy land --train",
-            gate_alone_command: "/opt/bin/afkconvoy gate",
-            lock_command: "/opt/bin/afkconvoy lock",
-            enters: Enters::Intake {
-                command: "/opt/bin/afkconvoy intake --train",
-                workflows: &workflows,
-            },
-            tracker: &Tracker::Own,
-        };
-        let bound = train_prompt(&fields).unwrap();
-        assert!(bound.contains("`/opt/bin/afkconvoy lock --issue <n>`"), "{bound}");
-        assert!(
-            bound.contains(
-                "Put no label of a workflow on it yourself: take it in with\n   \
-                 `/opt/bin/afkconvoy intake --train --issue <n> --workflow <workflow>`, to the \
-                 team's first workflow,\n   `feature`, unless another of its workflows fits the \
-                 defect clearly better — the team\n   has `feature`, `fix`. The fleet works it like \
-                 any other issue. Name no blocker"
-            ),
-            "{bound}"
-        );
-        assert!(!bound.contains("--label") && !bound.contains("agent-ready"), "{bound}");
-        // Only how the issue enters differs: the rest is the unbound repo's.
-        let unbound =
-            train_prompt(&TrainFields { enters: Enters::Ready("agent-ready"), ..fields }).unwrap();
-        let open = |brief: &str| {
-            let from = brief.find("   it. ").unwrap() + "   it. ".len();
-            let to = brief.find(" Name no blocker").unwrap();
-            format!("{}{}", &brief[..from], &brief[to..])
-        };
-        assert_eq!(open(&bound), open(&unbound));
-        assert!(unbound.contains("Put the label `agent-ready` on it (`--label agent-ready`)"));
-        // A team with no workflow has nothing to take it in to.
-        let none = TrainFields {
-            enters: Enters::Intake { command: "/opt/bin/afkconvoy intake --train", workflows: &[] },
-            ..fields
-        };
-        assert!(train_prompt(&none).unwrap_err().contains("no workflow"));
     }
 
     #[test]

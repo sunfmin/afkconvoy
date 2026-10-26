@@ -25,7 +25,7 @@ use std::time::{Duration, Instant};
 use afkconvoy_core::hot::{
     CPU_HELD, Episode, Limits, SAMPLE_EVERY, Sample, Turned, WRITTEN_WITHIN, Watch, Why, millicores,
 };
-use afkconvoy_core::train::{Built, OUTGROWN_FLOOR, OUTGROWN_TIMES};
+use afkconvoy_core::landing::{Built, OUTGROWN_FLOOR, OUTGROWN_TIMES};
 use serde::{Deserialize, Serialize};
 
 use crate::evidence::{self, Taken};

@@ -1,6 +1,6 @@
-//! A watch joins its own change on the landing train, on no issue.
+//! A watch lands its own change in a turn, on no issue.
 use crate::{gh::GitHub, git::Repo, host_watch::CHECKOUT, orca::Worktree};
-use afkconvoy_core::{config::Config, train::Of};
+use afkconvoy_core::{config::Config, landing::Of};
 use anyhow::Result;
 use serde_json::{Value, json};
 
@@ -33,8 +33,8 @@ pub fn land(repo: &Repo, config: &Config, gh: &GitHub, host: &str, now: u64) -> 
     let answer = json!({"watch": host, "pr": pr.number});
     let locks = crate::lock::standing_locks(gh, config)?;
     if !locks.is_empty() {
-        return Ok(crate::train::locked(answer, &locks));
+        return Ok(crate::turn::locked(answer, &locks));
     }
     let of = Of::Watch(host.to_string());
-    crate::train::join(repo, config, &gh.tracker, pr, &of, answer, (host, now))
+    crate::turn::join(repo, config, &gh.tracker, pr, &of, answer, (host, now))
 }

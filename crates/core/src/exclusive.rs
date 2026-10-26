@@ -20,9 +20,6 @@ pub struct Ticket {
     pub dir: String,
     /// The issue of the worker that ran it, where its environment says one.
     pub issue: Option<u64>,
-    /// Whether it runs in the host's train lane, independently of workers.
-    #[serde(default)]
-    pub train: bool,
     /// A light gate's repo lane, independent of both host lanes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repo_lane: Option<String>,
@@ -54,7 +51,7 @@ pub fn ahead(queue: &[Ticket], number: u64) -> Option<usize> {
 
 /// Commands contend only with others in the same lane.
 pub fn same_lane(a: &Ticket, b: &Ticket) -> bool {
-    a.train == b.train && a.repo_lane == b.repo_lane
+    a.repo_lane == b.repo_lane
 }
 
 /// A repo has one identity across its worktrees. Older tickets identify
@@ -66,17 +63,11 @@ pub fn same_repo(a: &Ticket, b: &Ticket) -> bool {
 /// Whether this ticket can start with the host's lane counts. Earlier
 /// requests reserve available lanes in order, but a second request of a
 /// running repo waits without holding another repo back from a free lane.
-pub fn ready(queue: &[Ticket], number: u64, worker_lanes: u64, train_lanes: u64) -> bool {
+pub fn ready(queue: &[Ticket], number: u64, worker_lanes: u64) -> bool {
     let ordered = in_order(queue.to_vec());
     let mut admitted: Vec<&Ticket> = ordered.iter().filter(|t| t.ran.is_some()).collect();
     for ticket in ordered.iter().filter(|t| t.ran.is_none()) {
-        let limit = if ticket.repo_lane.is_some() {
-            1
-        } else if ticket.train {
-            train_lanes
-        } else {
-            worker_lanes
-        };
+        let limit = if ticket.repo_lane.is_some() { 1 } else { worker_lanes };
         let occupied = admitted.iter().filter(|t| same_lane(t, ticket)).count() as u64;
         let own = admitted.iter().any(|t| {
             (same_lane(t, ticket) || (t.is_turn && ticket.is_turn)) && same_repo(t, ticket)
@@ -95,7 +86,6 @@ pub fn ready(queue: &[Ticket], number: u64, worker_lanes: u64, train_lanes: u64)
 pub fn lane(ticket: &Ticket) -> String {
     match &ticket.repo_lane {
         Some(repo) => format!("repo {repo}"),
-        None if ticket.train => "train".to_string(),
         None => "worker".to_string(),
     }
 }
@@ -108,8 +98,8 @@ pub fn in_order(mut queue: Vec<Ticket>) -> Vec<Ticket> {
 }
 
 /// Stable display order: running first, then lane, ask time and ticket.
-fn place(ticket: &Ticket) -> (bool, bool, u64, u64) {
-    (ticket.ran.is_none(), !ticket.train, ticket.asked, ticket.number)
+fn place(ticket: &Ticket) -> (bool, u64, u64) {
+    (ticket.ran.is_none(), ticket.asked, ticket.number)
 }
 
 /// Since when a worker in the worktree `dir` has waited in the queue — or run
@@ -168,9 +158,6 @@ pub fn rejoins_line(ticket: &Ticket) -> String {
 pub fn runs_line(ticket: &Ticket, now: u64, ahead_of: usize) -> String {
     let waited = now.saturating_sub(ticket.asked);
     let _ = ahead_of;
-    if ticket.train {
-        return format!("runs in the train lane: `{}`, after waiting {waited}s", ticket.command);
-    }
     format!("runs `{}` in the {} lane, after waiting {waited}s", ticket.command, lane(ticket))
 }
 
@@ -192,7 +179,6 @@ mod tests {
             command: "cargo test".into(),
             dir: dir.into(),
             issue: Some(7),
-            train: false,
             repo_lane: None,
             repo: None,
             is_turn: false,
@@ -226,25 +212,6 @@ mod tests {
     }
 
     #[test]
-    fn train_and_worker_lanes_keep_their_own_request_order() {
-        let mut running = ticket(1, "/a", 100);
-        running.ran = Some(100);
-        let worker = ticket(2, "/b", 101);
-        let mut train = ticket(3, "/a/convoy-train", 102);
-        train.train = true;
-        let mut later_train = ticket(4, "/b/convoy-train", 103);
-        later_train.train = true;
-        let queue = [running, worker, train.clone(), later_train];
-        assert_eq!(ahead(&queue, 3), Some(0), "a running worker holds no train up");
-        assert_eq!(ahead(&queue, 4), Some(1), "trains keep request order");
-        assert_eq!(ahead(&queue, 2), Some(1), "workers keep request order");
-        assert_eq!(
-            runs_line(&train, 130, 0),
-            "runs in the train lane: `cargo test`, after waiting 28s"
-        );
-    }
-
-    #[test]
     fn light_repos_have_independent_turns() {
         let mut a = ticket(1, "/a", 100);
         a.repo_lane = Some("a".into());
@@ -268,22 +235,16 @@ mod tests {
         let mut b = ticket(3, "/b/one", 102);
         b.repo = Some("b".into());
         let queue = [a, another_a, b];
-        assert!(!ready(&queue, 2, 2, 1));
-        assert!(ready(&queue, 3, 2, 1));
-        assert!(!ready(&queue, 3, 1, 1));
-        let mut trains = queue.to_vec();
-        for ticket in &mut trains {
-            ticket.train = true;
-        }
-        assert!(!ready(&trains, 2, 1, 2));
-        assert!(ready(&trains, 3, 1, 2));
+        assert!(!ready(&queue, 2, 2));
+        assert!(ready(&queue, 3, 2));
+        assert!(!ready(&queue, 3, 1));
     }
 
     #[test]
     fn an_older_ticket_has_no_train_priority() {
         let older = r#"{"number":1,"pid":2,"command":"cargo test","dir":"/a","issue":null,"asked":100,"ran":null}"#;
         let ticket: Ticket = serde_json::from_str(older).unwrap();
-        assert!(!ticket.train);
+        assert_eq!(lane(&ticket), "worker");
     }
 
     #[test]

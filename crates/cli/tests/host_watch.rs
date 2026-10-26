@@ -352,7 +352,7 @@ fn a_watch_answers_escalations_and_leaves_only_the_four_human_kinds() {
         "taking a secret or private data off the host",
         "changing what a product is for, or who it is for",
         "afkconvoy-watch-<digits>",
-        "it takes a turn to merge, gate and join",
+        "merge commit",
         "afkconvoy land --watch",
         "the next idle tick starts a due cut",
         "On the new version repeat the check",

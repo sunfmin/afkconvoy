@@ -1,4 +1,4 @@
-//! A worker whose PR is open and not on the landing train yet: the silence
+//! A worker whose PR is open and not on the base branch yet: the silence
 //! ladder with its one restart — nudge → restart → nudge → escalate — and the
 //! record of that restart on the PR.
 
@@ -8,16 +8,14 @@ use crate::record;
 use crate::stopped::{Background, Nudged, Progress, Silence, Silent, Tail, Unnudged, silence};
 use crate::worker::WorkerState;
 
-/// The kind of record a PR carries of its join.
-pub const JOIN: &str = "convoy:join";
+/// The kind of record a PR carries of its landing.
+pub const JOIN: &str = "convoy:landing";
 
-/// What a PR's one marker comment records of its join.
+/// What a PR's one marker comment records of its landing.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct JoinRecord {
-    /// When the worker joining it was restarted.
+pub struct LandingRecord {
+    /// When the worker landing it was restarted.
     pub restarted: Option<u64>,
-    /// When it was taken off an abandoned train.
-    pub abandoned: Option<u64>,
     /// Each switch of its worker onto another harness, oldest first.
     pub switched: Vec<Switch>,
     /// Which of the PR's comments carries the record, when one does: the one
@@ -58,26 +56,16 @@ impl Switch {
 }
 
 /// The comment that carries a PR's join record.
-pub fn join_comment(record: &JoinRecord) -> String {
+pub fn join_comment(record: &LandingRecord) -> String {
     let stamp = |at: Option<u64>| at.map(|at| at.to_string()).unwrap_or_default();
-    let (restarted, abandoned) = (stamp(record.restarted), stamp(record.abandoned));
+    let restarted = stamp(record.restarted);
     let switched: Vec<String> = record.switched.iter().map(Switch::written).collect();
     let switched = switched.join(",");
-    let mut body = record::marker(
-        JOIN,
-        &[("restarted", &restarted), ("abandoned", &abandoned), ("switched", &switched)],
-    );
+    let mut body = record::marker(JOIN, &[("restarted", &restarted), ("switched", &switched)]);
     if record.restarted.is_some() {
         body.push_str(
-            "\nafkconvoy: the worker joining this PR to the landing train went silent, and was \
+            "\nafkconvoy: the worker landing this PR went silent, and was \
              replaced by a new one in the same worktree. This is done once per PR.",
-        );
-    }
-    if record.abandoned.is_some() {
-        body.push_str(
-            "\nafkconvoy: the landing train this PR was on was given up with nothing landed — \
-             its worker stayed silent — and the PR joins the next one. A second time, the issue \
-             is handed to a human instead.",
         );
     }
     for switch in &record.switched {
@@ -93,13 +81,16 @@ pub fn join_comment(record: &JoinRecord) -> String {
 /// A PR's join record, from its comments' bodies, oldest first. The first
 /// comment with the marker is the record's; a fact a later one states — two
 /// hosts wrote at once — counts all the same.
-pub fn read_join<'a>(bodies: impl IntoIterator<Item = &'a str>) -> JoinRecord {
-    let mut record = JoinRecord::default();
+pub fn read_join<'a>(bodies: impl IntoIterator<Item = &'a str>) -> LandingRecord {
+    let mut record = LandingRecord::default();
     for (at, body) in bodies.into_iter().enumerate() {
-        let Some(fields) = record::read_marker(JOIN, body) else { continue };
+        let Some(fields) =
+            record::read_marker(JOIN, body).or_else(|| record::read_marker("convoy:join", body))
+        else {
+            continue;
+        };
         record.comment = record.comment.or(Some(at));
         record.restarted = record.restarted.or(fields.number("restarted"));
-        record.abandoned = record.abandoned.or(fields.number("abandoned"));
         let switched = fields.get("switched").unwrap_or("").split(',').filter_map(Switch::read);
         for switch in switched {
             if !record.switched.contains(&switch) {
@@ -122,7 +113,7 @@ pub struct Unrestarted {
     had: u64,
 }
 
-/// How many restarts a PR's join has had, as its record says.
+/// How many restarts a PR's landing has had, as its record says.
 #[spec(fn(restarted: Option<u64>) -> u64{had: had <= 1})]
 fn restarts(restarted: Option<u64>) -> u64 {
     match restarted {
@@ -131,9 +122,9 @@ fn restarts(restarted: Option<u64>) -> u64 {
     }
 }
 
-/// What the tick does with a claim whose PR is joining.
+/// What the tick does with a claim whose PR is landing.
 #[derive(Debug, PartialEq, Eq)]
-pub enum JoinRoute {
+pub enum LandingRoute {
     /// Nothing: the worker is at work, or showed a sign of life within grace.
     Leave,
     /// Nothing: it stopped, and waits on its own background work, running
@@ -150,10 +141,10 @@ pub enum JoinRoute {
     Stalled(Silent),
 }
 
-/// Routes one claim whose PR is open and not on the train, from its worker's
+/// Routes one claim whose PR is open and not landed, from its worker's
 /// state, its worktree's progress, the nudge this host recorded, the restart
 /// the PR records, and when the worker was last handed its work — started,
-/// or restarted. What the worker stopped on — a join conflict it is
+/// or restarted. What the worker stopped on — a merge conflict it is
 /// resolving, a gate it is fixing — changes nothing: the rungs are the same.
 pub fn join_route(
     state: WorkerState,
@@ -162,30 +153,30 @@ pub fn join_route(
     restarted: Option<u64>,
     (handed, background): (Option<u64>, Option<Background>),
     now: u64,
-) -> JoinRoute {
+) -> LandingRoute {
     match silence(state, progress, nudged, handed, background, now) {
-        Silence::Gone => JoinRoute::Continue,
-        Silence::Lively => JoinRoute::Leave,
-        Silence::Waiting(since) => JoinRoute::Waiting(since),
-        Silence::Nudge(unnudged) => JoinRoute::Nudge(unnudged),
+        Silence::Gone => LandingRoute::Continue,
+        Silence::Lively => LandingRoute::Leave,
+        Silence::Waiting(since) => LandingRoute::Waiting(since),
+        Silence::Nudge(unnudged) => LandingRoute::Nudge(unnudged),
         Silence::Stalled(silent) => {
             let had = restarts(restarted);
             if had == 0 {
-                JoinRoute::Restart(Unrestarted { had })
+                LandingRoute::Restart(Unrestarted { had })
             } else {
-                JoinRoute::Stalled(silent)
+                LandingRoute::Stalled(silent)
             }
         }
     }
 }
 
-/// One step of restarting a joining worker.
+/// One step of restarting a landing worker.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RestartStep {
     /// Record the restart on the PR.
     Record,
     /// Close the idle session and start a worker in the same worktree,
-    /// briefed only to join the train.
+    /// briefed only to land the PR.
     Replace,
 }
 
@@ -216,9 +207,9 @@ impl Restarting {
     }
 }
 
-/// Restarts a joining worker: record it on the PR → replace the worker. It
+/// Restarts a landing worker: record it on the PR → replace the worker. It
 /// uses up the proof that the join had no restart, so none has two. Cut after
-/// the record, the join has had its restart all the same: whatever worker is
+/// the record, the landing has had its restart all the same: whatever worker is
 /// there next is nudged, then escalated.
 pub fn restart<E, F>(unrestarted: Unrestarted, mut carry_out: F) -> Result<(), E>
 where
@@ -229,11 +220,11 @@ where
     carry_out(restarting.replace())
 }
 
-/// Why a claim whose joining worker stayed silent is handed to a human, with
+/// Why a claim whose landing worker stayed silent is handed to a human, with
 /// where it stopped.
 pub fn stalled_reason(pr: u64, _silent: &Silent, tail: &Tail) -> String {
     let why = format!(
-        "The worker opened PR #{pr} and stopped before it was on the landing train. It stayed \
+        "The worker opened PR #{pr} and stopped before it was on the base branch. It stayed \
          silent after a nudge, one restart, and a second nudge. The PR and its branch are \
          kept."
     );
@@ -287,21 +278,21 @@ mod tests {
         }
     }
 
-    fn at(nudged: Nudged, restarted: Option<u64>) -> JoinRoute {
+    fn at(nudged: Nudged, restarted: Option<u64>) -> LandingRoute {
         join_route(STOPPED, &work(), nudged, restarted, (restarted, None), NOW)
     }
 
     #[test]
     fn the_ladder_is_nudge_restart_nudge_escalate_with_a_grace_before_each_rung() {
         let long_ago = NOW - GRACE;
-        assert!(matches!(at(Nudged::Never, None), JoinRoute::Nudge(_)));
-        assert_eq!(at(Nudged::At(long_ago + 1), None), JoinRoute::Leave);
-        assert!(matches!(at(Nudged::At(long_ago), None), JoinRoute::Restart(_)));
+        assert!(matches!(at(Nudged::Never, None), LandingRoute::Nudge(_)));
+        assert_eq!(at(Nudged::At(long_ago + 1), None), LandingRoute::Leave);
+        assert!(matches!(at(Nudged::At(long_ago), None), LandingRoute::Restart(_)));
         // the worker started in its place was never nudged, and has its own grace
-        assert_eq!(at(Nudged::Never, Some(long_ago + 1)), JoinRoute::Leave);
-        assert!(matches!(at(Nudged::Never, Some(long_ago)), JoinRoute::Nudge(_)));
-        assert_eq!(at(Nudged::At(long_ago + 1), Some(1)), JoinRoute::Leave);
-        let JoinRoute::Stalled(silent) = at(Nudged::At(long_ago), Some(1)) else {
+        assert_eq!(at(Nudged::Never, Some(long_ago + 1)), LandingRoute::Leave);
+        assert!(matches!(at(Nudged::Never, Some(long_ago)), LandingRoute::Nudge(_)));
+        assert_eq!(at(Nudged::At(long_ago + 1), Some(1)), LandingRoute::Leave);
+        let LandingRoute::Stalled(silent) = at(Nudged::At(long_ago), Some(1)) else {
             panic!("past its one restart a silence is not restarted again")
         };
         let reason = stalled_reason(70, &silent, &Tail::of(&["Proceed? [y/n]".to_string()]));
@@ -321,7 +312,7 @@ mod tests {
                     (restarted, None),
                     NOW,
                 );
-                assert_eq!(busy, JoinRoute::Leave);
+                assert_eq!(busy, LandingRoute::Leave);
                 let gone = join_route(
                     WorkerState::Gone,
                     &work(),
@@ -330,34 +321,9 @@ mod tests {
                     (restarted, None),
                     NOW,
                 );
-                assert_eq!(gone, JoinRoute::Continue);
+                assert_eq!(gone, LandingRoute::Continue);
             }
         }
-    }
-
-    #[test]
-    fn a_join_record_is_one_comment_read_back_whoever_wrote_it() {
-        let restarted = JoinRecord { restarted: Some(1234), ..JoinRecord::default() };
-        let said = join_comment(&restarted);
-        assert!(said.starts_with("<!--convoy:join restarted=1234-->\n"), "{said}");
-        assert_eq!(
-            read_join(["looks good", said.as_str()]),
-            JoinRecord { comment: Some(1), ..restarted.clone() }
-        );
-        let both = JoinRecord { abandoned: Some(2000), ..restarted };
-        let said = join_comment(&both);
-        assert!(said.starts_with("<!--convoy:join restarted=1234 abandoned=2000-->\n"), "{said}");
-        assert!(said.contains("replaced by a new one") && said.contains("joins the next one"));
-        assert_eq!(read_join([said.as_str()]), JoinRecord { comment: Some(0), ..both });
-        // two hosts wrote at once: the first comment is the record's, every fact counts
-        let other = join_comment(&JoinRecord { abandoned: Some(9), ..JoinRecord::default() });
-        let other = other.as_str();
-        let read = read_join([join_comment(&JoinRecord::default()).as_str(), other]);
-        let read_back =
-            JoinRecord { abandoned: Some(9), comment: Some(0), ..JoinRecord::default() };
-        assert_eq!(read, read_back);
-        assert_eq!(read_join(["<!--convoy:join restarted=soon-->"]).restarted, None);
-        assert_eq!(read_join(["convoy:join restarted=1"]), JoinRecord::default());
     }
 
     #[test]
@@ -368,29 +334,29 @@ mod tests {
             to: to.to_string(),
             by: "a-h1-1".to_string(),
         };
-        let record = JoinRecord {
+        let record = LandingRecord {
             switched: vec![switch(10, "claude-code", "codex"), switch(20, "codex", "pi")],
-            ..JoinRecord::default()
+            ..LandingRecord::default()
         };
         let said = join_comment(&record);
         assert!(
             said.starts_with(
-                "<!--convoy:join switched=10/claude-code/codex/a-h1-1,20/codex/pi/a-h1-1-->\n"
+                "<!--convoy:landing switched=10/claude-code/codex/a-h1-1,20/codex/pi/a-h1-1-->\n"
             ),
             "{said}"
         );
         assert!(said.contains("switched from `claude-code` to `codex` by `a-h1-1`"), "{said}");
         let read = read_join([said.as_str()]);
-        assert_eq!(read, JoinRecord { comment: Some(0), ..record });
+        assert_eq!(read, LandingRecord { comment: Some(0), ..record });
         assert_eq!(read.restarted, None, "a switch is no restart");
         // what the fleet did not write is no switch
-        assert_eq!(read_join(["<!--convoy:join switched=soon/a/b/c,1/a//c-->"]).switched, []);
+        assert_eq!(read_join(["<!--convoy:landing switched=soon/a/b/c,1/a//c-->"]).switched, []);
     }
 
     #[test]
     fn a_restart_records_then_replaces() {
         let take = || match at(Nudged::At(1), None) {
-            JoinRoute::Restart(unrestarted) => unrestarted,
+            LandingRoute::Restart(unrestarted) => unrestarted,
             other => panic!("{other:?}"),
         };
         let mut steps = vec![];

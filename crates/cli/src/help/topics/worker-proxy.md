@@ -10,7 +10,7 @@ Which hosts a worker reaches past the proxy: a setting of one start on one host,
 
 ## What a worker is given
 
-The worker's login shell extends its exported no_proxy and NO_PROXY with this list and exports the joined list under both names before it starts the worker. Every other proxy variable stays as it was. Without a list, both spellings stay untouched, except DSH's stock api.deepseek.com addition. Say `--worker-no-proxy dsh=` to turn that stock addition off. These settings apply to every worker, including patrols, consults and the train worker.
+The worker's login shell extends its exported no_proxy and NO_PROXY with this list and exports the joined list under both names before it starts the worker. Every other proxy variable stays as it was. Without a list, both spellings stay untouched, except DSH's stock api.deepseek.com addition. Say `--worker-no-proxy dsh=` to turn that stock addition off. These settings apply to every worker, including patrols, consults and landing workers.
 
 ## What `plan` and `doctor` show
 

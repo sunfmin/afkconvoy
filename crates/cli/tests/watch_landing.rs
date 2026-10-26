@@ -1,6 +1,6 @@
-//! A watch's change lands on no issue, through the landing train.
+//! A watch's change lands on no issue, through its own turn.
 use crate::common::{World, commit, git};
-use serde_json::{Value, json};
+use serde_json::json;
 use std::path::{Path, PathBuf};
 
 /// The branch orca names for a watch's checkout.
@@ -33,15 +33,6 @@ fn change(world: &World, checkout: &Path) -> String {
     head
 }
 
-/// The train's own worktree.
-fn train(world: &World) -> PathBuf {
-    let dir = world.root.join("train");
-    git(&world.clone, &["fetch", "-q", "origin"]);
-    let at = dir.to_str().unwrap();
-    git(&world.clone, &["worktree", "add", "-q", "-b", "convoy-train", at, "origin/main"]);
-    dir
-}
-
 /// The `gh` calls since the last look that write an issue: none of an
 /// watch's.
 fn issue_writes(world: &World) -> Vec<Vec<String>> {
@@ -50,42 +41,30 @@ fn issue_writes(world: &World) -> Vec<Vec<String>> {
     calls.filter(|call| call[0] == "issue" && writes.contains(&call[1].as_str())).collect()
 }
 
-/// A watch in `world` makes a change of the repo, gates it and puts it
-/// on the landing train; the train lands it on the base branch, and no issue
+/// A watch in `world` makes a change and lands its merge in a gated turn.
+/// No issue
 /// is opened, closed or labelled for it.
 fn lands_on_no_issue(world: &World, name: &str) {
     let checkout = operator_on_branch(world, name);
     let head = change(world, &checkout);
     world.gh_calls();
 
+    let base = world.remote(&["rev-parse", "refs/heads/main"]);
     let joined = world.afk_in(&checkout, &["land", "--watch", "--host", "h1"]).ok();
     assert_eq!(joined["status"], "green");
     assert_eq!(joined["recorded"], true);
-    assert_eq!(joined["outcome"], "joined", "{joined}");
+    assert_eq!(joined["outcome"], "merged", "{joined}");
     assert_eq!((joined["watch"].as_str(), joined["pr"].as_u64()), (Some("h1"), Some(90)));
     let commit = joined["commit"].as_str().unwrap().to_string();
     let message = world.remote(&["log", "-1", "--format=%B", &commit]);
     assert_eq!(message, "Queue the gates (#90)\n\nBy a watch on h1");
-    let base = world.remote(&["rev-parse", "refs/heads/main"]);
     assert_eq!(world.remote(&["log", "-1", "--format=%P", &commit]), format!("{base} {head}"));
-    let again = world.afk_in(&checkout, &["land", "--watch", "--host", "h1"]).ok();
-    assert_eq!((again["outcome"].as_str(), again["again"].as_bool()), (Some("joined"), Some(true)));
-
-    // A fleet with nothing of its own on the train tends it for the watch's PR.
-    let plan = world.afk(&["plan", "--instance", "me", "--now", "10000"]).ok();
-    assert_eq!(plan["watches_on_train"], json!([90]), "{plan}");
-    let train = train(world);
-    let landed: Value = world.afk_in(&train, &["land", "--train", "--merged-timeout", "5"]).ok();
-    assert_eq!(landed["outcome"], "landed", "{landed}");
-    assert_eq!(landed["landed"], json!([{"watch": "h1", "pr": 90, "commit": commit}]));
     assert_eq!(world.remote(&["rev-parse", "refs/heads/main"]), commit, "on the base branch");
-    assert_eq!(landed["unmerged"], json!([]), "GitHub shows the PR merged");
-    let branches = world.remote(&["for-each-ref", "--format=%(refname:short)", "refs/heads"]);
-    assert_eq!(branches, "main", "the landed PR's branch is deleted");
+    assert!(world.remote(&["for-each-ref", "refs/convoy/train"]).is_empty());
     assert_eq!(issue_writes(world), [] as [Vec<String>; 0], "no issue of the change");
     assert_eq!(world.gh()["issues"], json!([]), "no issue was opened");
     let plan = world.afk(&["plan", "--instance", "me", "--now", "10100"]).ok();
-    assert!(plan.get("watches_on_train").is_none(), "landed, off the train: {plan}");
+    assert!(plan.get("watches_on_train").is_none(), "no train: {plan}");
 }
 
 #[test]

@@ -13,10 +13,10 @@ use afkconvoy_core::config::Config;
 use afkconvoy_core::cut::{
     self, CHECKOUT, CLAIM_KEY, Failure, MINOR_LABEL, Record, Row, Seen, Standing, Step, Tag, Took,
 };
+use afkconvoy_core::landing::{LandedPr, Of};
 use afkconvoy_core::line::Line;
 use afkconvoy_core::plan::Issue;
 use afkconvoy_core::tick::Outcome;
-use afkconvoy_core::train::{Joined, Of};
 use afkconvoy_core::worker::WorkerState;
 use anyhow::{Context, Result, anyhow, bail};
 use serde_json::{Value, json};
@@ -26,32 +26,21 @@ use crate::dispatch::Agent;
 use crate::fleet::Fleet;
 use crate::gh::GitHub;
 use crate::git::{REMOTE, Repo};
+use crate::landing::joins_in;
 use crate::log::What;
 use crate::orca::{Source, Worktree};
 use crate::stage::Flows;
-use crate::train::{Train, joins_in};
 
-/// How many seconds the step `land` waits between two looks at the landing
-/// train.
+/// How many seconds the step `land` waits between two looks at the base branch.
 const LAND_POLL: u32 = 30;
 
-/// What the remote and GitHub say of the repo's cut, as a rebuild reads it:
-/// the version tags it listed (`Fleet::version_tags`) and the base branch at
-/// `base`, the open `issues`, and the PRs `riding` the landing train. A repo
-/// that names no cut steps reads nothing past a cut still going — its claim,
-/// its PR on the train — and has none where nothing is.
-pub fn seen(
-    fleet: &Fleet,
-    read: &Flows,
-    issues: &[Issue],
-    riding: &[&Joined],
-    base: &str,
-) -> Result<Option<Seen>> {
+/// What a rebuild reads of the cut: version tags, base tip, open issues
+/// and a running cut's claim. Without declared steps only its claim remains.
+pub fn seen(fleet: &Fleet, read: &Flows, issues: &[Issue], base: &str) -> Result<Option<Seen>> {
     let claim = fleet.scan.runs.iter().find(|run| run.key == CLAIM_KEY).cloned();
-    let on_train = riding.iter().find(|join| matches!(join.of, Of::Cut(_))).map(|join| join.pr);
     let Some(steps) = &fleet.config.cut else {
-        let going = claim.is_some() || on_train.is_some();
-        return Ok(going.then(|| Seen { claim, on_train, ..Seen::default() }));
+        let going = claim.is_some();
+        return Ok(going.then(|| Seen { claim, ..Seen::default() }));
     };
     let newest = cut::newest(fleet.version_tags());
     let past = match &newest {
@@ -60,7 +49,7 @@ pub fn seen(
     };
     let failure = cut::failure_of(issues, &escalate_label(fleet, read));
     let initial = steps.initial_version();
-    Ok(Some(Seen { on: true, newest, initial, past, claim, failure, on_train }))
+    Ok(Some(Seen { on: true, newest, initial, past, claim, failure }))
 }
 
 /// How many commits the base branch at `base` holds past the tag `tag`, its
@@ -433,7 +422,7 @@ impl Cutting<'_> {
     /// change nothing find the version set already: by a cut whose end was
     /// cut short after its PR landed. Where that landing is on the base
     /// branch, it is the one this cut tags. An initial version already set
-    /// still gets its own commit, gate and landing through the landing train.
+    /// still gets its own commit, gate and landing through a landing turn.
     fn set(&self, record: &mut Record) -> Result<()> {
         self.sh(Step::Set, &self.steps.set, &record.version)?;
         self.repo.git(&["add", "-A"])?;
@@ -458,14 +447,14 @@ impl Cutting<'_> {
 
     /// The landings on `base` past the previous tag, or all landings for an
     /// initial cut. Every step reads the same history of the cut's origin.
-    fn landings(&self, from: Option<&str>, base: &str) -> Result<Vec<Joined>> {
+    fn landings(&self, from: Option<&str>, base: &str) -> Result<Vec<LandedPr>> {
         let tag = from.map(|tag| self.tag_commit(tag)).transpose()?;
         joins_in(self.repo, &self.gh.tracker, &[&history(tag.as_deref(), base)])
     }
 
     /// The landing of a cut's PR titled `title` the base branch holds past
     /// the tag `from`, or anywhere on it for an initial cut, where one is.
-    fn landed_titled(&self, from: Option<&str>, title: &str) -> Result<Option<Joined>> {
+    fn landed_titled(&self, from: Option<&str>, title: &str) -> Result<Option<LandedPr>> {
         let base = self.base()?;
         let joins = self.landings(from, &base)?;
         let ends = format!("{title} (#");
@@ -514,10 +503,8 @@ impl Cutting<'_> {
         Ok(())
     }
 
-    /// Joins its PR to the landing train, on no issue, and waits for it to
-    /// land, joining it again whenever it is off the train and not landed: a
-    /// train given up and its PRs joined again without it. A fleet lock
-    /// standing, or a conflict with the train, fails it.
+    /// Recovers the cut's merge from the base branch after its landing turn.
+    /// An interrupted cut can take another turn if its PR has not landed.
     fn land(&self, record: &mut Record, clock: &impl Fn() -> u64) -> Result<()> {
         if record.landed.is_some() {
             return Ok(());
@@ -525,38 +512,38 @@ impl Cutting<'_> {
         let number = record.pr.ok_or_else(|| anyhow!("the cut opened no PR"))?;
         let head = self.repo.git(&["rev-parse", "HEAD"])?;
         loop {
-            let train = Train::read(self.repo, self.config)?;
-            if self.repo.within(&head, &train.base)? {
-                let joins = self.landings(record.from.as_deref(), &train.base)?;
+            let base = self.base()?;
+            if self.repo.within(&head, &base)? {
+                let joins = self.landings(record.from.as_deref(), &base)?;
                 let Some(join) = joins.into_iter().rev().find(|join| join.pr == number) else {
                     bail!(
-                        "PR #{number} is on {} with no landing of the landing train's: it was \
-                         merged outside it, and is no landing a cut tags",
+                        "PR #{number} is on {} without a recorded landing commit: it was \
+                         merged outside a turn, and is no landing a cut tags",
                         self.config.base_branch
                     );
                 };
                 record.landed = Some(join.commit);
                 return Ok(());
             }
-            if !train.joins(self.repo, &self.gh.tracker)?.iter().any(|join| join.pr == number) {
+            {
                 self.join(number, clock())?;
             }
             std::thread::sleep(self.second * LAND_POLL);
         }
     }
 
-    /// Puts PR `number` on the landing train, as the cut's on `host`.
+    /// Puts PR `number` on the base branch, as the cut's on `host`.
     fn join(&self, number: u64, now: u64) -> Result<()> {
         let locks = crate::lock::standing_locks(self.gh, self.config)?;
         if !locks.is_empty() {
-            let answer = crate::train::locked(json!({}), &locks);
+            let answer = crate::turn::locked(json!({}), &locks);
             bail!("{}", answer["detail"].as_str().unwrap_or("a fleet lock stands"));
         }
         let open = self.gh.open_prs()?;
         let pr = open.iter().find(|pr| pr.number == number);
         let pr = pr.ok_or_else(|| anyhow!("PR #{number} is not open: it joins nothing"))?;
         let of = Of::Cut(self.host.to_string());
-        let answer = crate::train::join(
+        let answer = crate::turn::join(
             self.repo,
             self.config,
             &self.gh.tracker,
@@ -566,10 +553,10 @@ impl Cutting<'_> {
             (self.host, now),
         )?;
         match answer["outcome"].as_str() {
-            Some("joined" | "merged") => Ok(()),
+            Some("merged") => Ok(()),
             _ => bail!(
                 "{} — go on from the step `gate` once it is committed",
-                answer["detail"].as_str().unwrap_or("it could not join the landing train")
+                answer["detail"].as_str().unwrap_or("it could not land in a turn")
             ),
         }
     }

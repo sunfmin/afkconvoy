@@ -208,7 +208,7 @@ fn the_worker_brief_and_the_join_brief_carry_the_wake_line() {
     git(Path::new(&dir), &["push", "-q", "origin", "HEAD"]);
     world.pr(70, 7, &git(Path::new(&dir), &["symbolic-ref", "--short", "HEAD"]));
     let joining = brief(&dispatch("7"));
-    assert!(joining.contains("Your ONLY job is to get that PR on the train"), "{joining}");
+    assert!(joining.contains("Your ONLY job is to land that PR in a turn"), "{joining}");
     assert!(joining.contains(&line), "{joining}");
     assert!(!joining.contains("your comment is posted"), "a joiner posts no verdict");
 }

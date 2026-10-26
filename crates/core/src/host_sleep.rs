@@ -126,15 +126,15 @@ pub struct Standing {
 
 /// Whether an instance with nothing held — no claim on an issue, a patrol's
 /// run or a proposal — and `frontier` issues left on its frontier, `on_train`
-/// saying whether anything of its is on the landing train, is idle.
-pub fn idle(held: usize, frontier: usize, on_train: bool) -> bool {
-    held == 0 && frontier == 0 && !on_train
+/// saying whether anything of its is on the base branch, is idle.
+pub fn idle(held: usize, frontier: usize) -> bool {
+    held == 0 && frontier == 0
 }
 
 /// Whether an instance whose last tick held `held` and had `on_train` worked
 /// in it.
-pub fn worked(held: usize, on_train: bool) -> bool {
-    held > 0 || on_train
+pub fn worked(held: usize) -> bool {
+    held > 0
 }
 
 /// One thing that keeps the host awake.
@@ -388,10 +388,10 @@ mod tests {
     }
 
     #[test]
-    fn idle_is_nothing_held_nothing_on_the_train_and_an_empty_frontier() {
-        assert!(idle(0, 0, false));
-        assert!(!idle(1, 0, false) && !idle(0, 2, false) && !idle(0, 0, true));
-        assert!(worked(1, false) && worked(0, true) && !worked(0, false));
+    fn idle_is_nothing_held_and_an_empty_frontier() {
+        assert!(idle(0, 0));
+        assert!(!idle(1, 0) && !idle(0, 2));
+        assert!(worked(1) && !worked(0));
     }
 
     #[test]

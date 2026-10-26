@@ -13,12 +13,12 @@ use afkconvoy_core::cut;
 use afkconvoy_core::guard::WritesNothing;
 use afkconvoy_core::harness::Harness;
 use afkconvoy_core::launch::{TrustGap, Waited};
+use afkconvoy_core::legacy::TRAIN_WORKTREE;
 use afkconvoy_core::line::niced;
 use afkconvoy_core::prompt::brief_pointer;
 use afkconvoy_core::question;
 use afkconvoy_core::stopped::Nudged;
 use afkconvoy_core::tools::{Found, add_checkout};
-use afkconvoy_core::train::TRAIN_WORKTREE;
 use afkconvoy_core::worker::{
     AgentReport, WorkerState, is_worktree_named, lead, short_branch, worker_state,
 };
@@ -32,8 +32,6 @@ use crate::worker_tmp;
 /// The worker's instructions, kept in the worktree's own git dir: never staged
 /// by the worker's `git add -A`, gone when the worktree is.
 const BRIEF_FILE: &str = "convoy-worker-prompt.md";
-/// The train's tip its worker was last told about, and when, beside the brief.
-const TOLD_FILE: &str = "convoy-train-told";
 /// When the caster here was started (epoch seconds), and the issues it was
 /// given, beside the brief.
 const CASTER_FILE: &str = "convoy-caster";
@@ -461,13 +459,6 @@ pub fn watch_directory(directory: &Path) -> Result<()> {
     Ok(())
 }
 
-/// What a train worker was last told.
-pub struct Told {
-    pub tip: String,
-    /// `None` for a note written before the time was kept.
-    pub at: Option<u64>,
-}
-
 /// What a bound repo's worker was started as, and under which commits of its
 /// role's repo and of the team's: what `doctor` holds against their heads.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -814,25 +805,6 @@ impl Worktree {
         Ok(self.git_dir.get().expect("set above").join(name))
     }
 
-    /// What the train worker here was last told: the train's tip, and when.
-    pub fn told(&self) -> Result<Option<Told>> {
-        let told = std::fs::read_to_string(self.note(TOLD_FILE)?).unwrap_or_default();
-        let mut words = told.split_whitespace();
-        Ok(words.next().map(|tip| Told {
-            tip: tip.to_string(),
-            at: words.next().and_then(|at| at.parse().ok()),
-        }))
-    }
-
-    /// Records what the train worker here was told at `at`. It is at work on
-    /// something new: whatever nudge it had is no longer about this.
-    pub fn record_told(&self, tip: &str, at: u64) -> Result<()> {
-        self.forget(NUDGE_FILE)?;
-        let file = self.note(TOLD_FILE)?;
-        std::fs::write(&file, format!("{tip} {at}"))
-            .with_context(|| format!("cannot write {}", file.display()))
-    }
-
     /// When the caster here was started, and the issues it was given.
     pub fn caster(&self) -> Result<Option<(u64, Vec<u64>, String)>> {
         let kept = std::fs::read_to_string(self.note(CASTER_FILE)?).unwrap_or_default();
@@ -954,7 +926,6 @@ impl Worktree {
         let repo = Repo::new(self.path.clone());
         repo.git(&["reset", "--quiet", "--hard", sha])?;
         repo.git(&["clean", "--quiet", "-fd"])?;
-        self.forget(TOLD_FILE)?;
         self.forget(START_FILE)?;
         self.forget(BACKGROUND_FILE)?;
         self.forget(NUDGE_FILE)

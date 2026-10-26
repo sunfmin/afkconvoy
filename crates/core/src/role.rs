@@ -111,7 +111,7 @@ pub enum Due<'t> {
     /// its `escalate`.
     Consult(Entry<'t>),
     /// A worker is to be started in the workflow's landing role, to gate the
-    /// issue's PR and join the landing train.
+    /// issue's PR and land in a turn.
     Lander(Lander<'t>),
     /// The issue is to be handed to a human, for this reason.
     Human(String),

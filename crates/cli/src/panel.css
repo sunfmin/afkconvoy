@@ -58,7 +58,7 @@ h1 { font-size: 34px; line-height: 1.1; font-weight: 600; letter-spacing: -0.02e
 .hot { margin-top: 12px; padding: 10px 14px; border-radius: 3px; border: 1px solid var(--wait); }
 .hot ul { margin: 4px 0 0 18px; }
 
-.lane, .train, .patrols, .exclusive, .human, .kit { margin-top: 32px; }
+.lane, .patrols, .exclusive, .human, .kit { margin-top: 32px; }
 
 /* The host first, once; then what waits for a human; then each repo. */
 .admission, .sleep { margin-top: 12px; }
@@ -91,7 +91,7 @@ h2 { font-size: 20px; font-weight: 600; letter-spacing: -0.01em; }
   content: ""; position: absolute; top: 15px; left: 0; right: 0; height: 4px; background: var(--ink);
 }
 .node:last-child::before { right: 30px; }
-/* The last stage's rail runs on to the landing train. */
+/* The last stage leads to its landing turn. */
 .node:last-child::after {
   content: ""; position: absolute; top: 7px; right: 14px;
   border: 10px solid transparent; border-left: 18px solid var(--ink); border-right: 0;
@@ -143,17 +143,6 @@ h4 span { font-weight: 400; }
 }
 .held .card, .left .card { border-left-color: var(--soft); }
 
-/* The train: a rail of its own that ends at the base branch, one car a PR. */
-.rail { position: relative; height: 34px; margin-top: 14px; }
-.rail::before {
-  content: ""; position: absolute; top: 15px; left: 0; right: 0; height: 4px; background: var(--ink);
-}
-.base {
-  position: absolute; top: 3px; right: 0; padding: 3px 12px;
-  background: var(--ink); color: var(--ground); font-weight: 600; border-radius: 3px;
-}
-.cars { display: flex; flex-wrap: wrap; gap: 8px 14px; }
-.cars .card { flex: 0 1 280px; margin-top: 4px; border-left-color: var(--ink); }
 .asked .card { border-left-color: var(--ask); max-width: 720px; }
 
 .off { margin-top: 32px; color: var(--soft); }

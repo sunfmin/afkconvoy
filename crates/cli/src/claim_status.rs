@@ -13,11 +13,9 @@ use afkconvoy_core::plan::Status;
 pub enum ClaimStatus {
     /// No open PR closes the issue: its worker is still at it, or stopped.
     NoPr,
-    /// An open PR closes it, and that PR is not on the landing train yet. In a bound repo, only under a landing worker's claim.
-    Joining,
-    /// Its open PR is on the landing train, at the head the PR has now.
-    Joined,
-    /// The landing train put its work on the base branch, and the landing was cut short before the issue was closed: a tick closes it, then settles the claim.
+    /// An open PR closes it, and that PR is not on the base branch yet. In a bound repo, only under a landing worker's claim.
+    Landing,
+    /// Its turn put the work on the base branch, and the landing was cut short before the issue was closed: a tick closes it, then settles the claim.
     Landed,
     /// The issue is closed: a tick settles the claim and releases it.
     Closed,
@@ -31,8 +29,7 @@ impl From<Status> for ClaimStatus {
     fn from(status: Status) -> Self {
         match status {
             Status::NoPr => Self::NoPr,
-            Status::Joining => Self::Joining,
-            Status::Joined => Self::Joined,
+            Status::Landing => Self::Landing,
             Status::Landed => Self::Landed,
             Status::Closed => Self::Closed,
             Status::Gone => Self::Gone,
@@ -45,8 +42,7 @@ impl From<ClaimStatus> for Status {
     fn from(status: ClaimStatus) -> Self {
         match status {
             ClaimStatus::NoPr => Self::NoPr,
-            ClaimStatus::Joining => Self::Joining,
-            ClaimStatus::Joined => Self::Joined,
+            ClaimStatus::Landing => Self::Landing,
             ClaimStatus::Landed => Self::Landed,
             ClaimStatus::Closed => Self::Closed,
             ClaimStatus::Gone => Self::Gone,
@@ -68,8 +64,7 @@ mod tests {
     fn each_entry_is_named_as_plan_prints_its_status() {
         let statuses = [
             Status::NoPr,
-            Status::Joining,
-            Status::Joined,
+            Status::Landing,
             Status::Landed,
             Status::Closed,
             Status::Gone,

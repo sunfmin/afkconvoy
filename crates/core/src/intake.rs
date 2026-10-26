@@ -10,8 +10,8 @@ use crate::team::Team;
 /// The kind of record an intake record's comment opens with.
 pub const INTAKE_RECORD: &str = "convoy:intake";
 
-/// What the `by` field of the train worker's intake record says.
-const TRAIN: &str = "train";
+/// What the `by` field of the repair worker's intake record says.
+const REPAIR: &str = "repair";
 
 /// What the worker that took an issue in was on.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -27,9 +27,9 @@ pub enum On {
 pub enum By {
     /// A worker in this role, on this.
     Role { role: String, on: On },
-    /// The train worker, for a defect of the base branch: it has no role and
+    /// The repair worker, for a defect of the base branch: it has no role and
     /// is on no issue and no patrol.
-    Train,
+    Repair,
 }
 
 /// What a worker's intake left on the issue it took in.
@@ -59,12 +59,12 @@ impl IntakeRecord {
                 "",
                 format!("a worker in the role `{role}`, on the patrol `{patrol}`,"),
             ),
-            By::Train => (
+            By::Repair => (
                 "",
                 String::new(),
                 "",
-                TRAIN,
-                "the train worker, for a defect of the base branch it found,".to_string(),
+                REPAIR,
+                "the repair worker, for a defect of the base branch it found,".to_string(),
             ),
         };
         let marker = record::marker(
@@ -97,7 +97,7 @@ impl IntakeRecord {
         };
         let by = match (fields.get("role"), on, fields.get("by")) {
             (Some(role), Some(on), None) => By::Role { role: role.to_string(), on },
-            (None, None, Some(TRAIN)) => By::Train,
+            (None, None, Some(REPAIR | "train")) => By::Repair,
             _ => return None,
         };
         Some(IntakeRecord { workflow: fields.get("workflow")?.to_string(), by })
@@ -113,7 +113,7 @@ pub fn opened_by<'a>(bodies: impl IntoIterator<Item = &'a str>) -> Option<String
         if let Some(record) = IntakeRecord::read(body) {
             found = match record.by {
                 By::Role { on: On::Patrol(patrol), .. } => Some(patrol),
-                By::Role { on: On::Issue(_), .. } | By::Train => None,
+                By::Role { on: On::Issue(_), .. } | By::Repair => None,
             };
         }
     }
@@ -197,23 +197,23 @@ mod tests {
     }
 
     #[test]
-    fn the_train_worker_s_record_names_the_train_and_no_role_issue_or_patrol() {
-        let written = IntakeRecord { workflow: "small fix".to_string(), by: By::Train };
+    fn the_repair_record_names_no_role_issue_or_patrol() {
+        let written = IntakeRecord { workflow: "small fix".to_string(), by: By::Repair };
         let comment = written.comment();
         assert!(
-            comment.starts_with("<!--convoy:intake workflow=small%20fix by=train-->\n"),
+            comment.starts_with("<!--convoy:intake workflow=small%20fix by=repair-->\n"),
             "{comment}"
         );
         assert!(
-            comment.contains("the train worker, for a defect of the base branch it found, took")
+            comment.contains("the repair worker, for a defect of the base branch it found, took")
         );
         assert_eq!(IntakeRecord::read(&comment), Some(written));
         // The train has no role, and is on nothing: a record that says so is none.
         for odd in [
-            "<!--convoy:intake workflow=a by=train role=dev-->",
-            "<!--convoy:intake workflow=a by=train from=7-->",
-            "<!--convoy:intake workflow=a by=train patrol=triage-->",
-            "<!--convoy:intake workflow=a role=dev from=7 by=train-->",
+            "<!--convoy:intake workflow=a by=repair role=dev-->",
+            "<!--convoy:intake workflow=a by=repair from=7-->",
+            "<!--convoy:intake workflow=a by=repair patrol=triage-->",
+            "<!--convoy:intake workflow=a role=dev from=7 by=repair-->",
             "<!--convoy:intake workflow=a by=someone-->",
             "<!--convoy:intake workflow=a role=dev-->",
         ] {

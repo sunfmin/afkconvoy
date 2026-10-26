@@ -296,7 +296,7 @@ impl Limits {
             if let Some(pushed) = every.or(to_base) {
                 return Some(format!(
                     "`git push … {pushed}` pushes the base branch `{}`: nothing reaches it \
-                     except through the landing train. Push your own branch only",
+                     except through a landing turn. Push your own branch only",
                     self.base_branch
                 ));
             }
@@ -419,6 +419,11 @@ impl Limits {
 
     /// Why `label` is not a worker's to add or remove, when it is the fleet's.
     fn fleets(&self, label: &str) -> Option<String> {
+        if label.eq_ignore_ascii_case(crate::plan::REPAIR_LABEL) {
+            return Some(format!(
+                "`{label}` is the fleet repair label; only the fleet assigns repair workers"
+            ));
+        }
         if label.eq_ignore_ascii_case(&self.lock_label) {
             return Some(format!(
                 "`{label}` is the lock label, and a worker neither adds nor removes it by hand: \
@@ -586,7 +591,7 @@ fn host_change(what: &str) -> String {
 }
 
 fn merging() -> String {
-    "merging a PR is refused: a finished PR reaches the base branch through the landing train, \
+    "merging a PR is refused: a finished PR reaches the base branch through a landing turn, \
      and a worker never merges one"
         .to_string()
 }

@@ -18,8 +18,6 @@ pub enum Stage {
     Claimed,
     /// Its PR is open, and joining the landing train.
     Joining,
-    /// Its PR is on the landing train.
-    Joined,
     /// Its work is on the base branch.
     Merged,
     /// The issue was closed with nothing landed: it needed no change, or
@@ -36,10 +34,9 @@ pub enum Stage {
 }
 
 impl Stage {
-    pub const ALL: [Stage; 8] = [
+    pub const ALL: [Stage; 7] = [
         Stage::Claimed,
         Stage::Joining,
-        Stage::Joined,
         Stage::Merged,
         Stage::Closed,
         Stage::Escalated,
@@ -52,8 +49,7 @@ impl Stage {
     pub fn held(status: Status) -> Option<Stage> {
         match status {
             Status::NoPr | Status::AtStage => Some(Stage::Claimed),
-            Status::Joining => Some(Stage::Joining),
-            Status::Joined => Some(Stage::Joined),
+            Status::Landing => Some(Stage::Joining),
             Status::Landed | Status::Closed | Status::Gone => None,
         }
     }
@@ -61,7 +57,7 @@ impl Stage {
     /// Whether the claim ends in this stage: the board is its last.
     pub fn ends(self) -> bool {
         match self {
-            Stage::Claimed | Stage::Joining | Stage::Joined => false,
+            Stage::Claimed | Stage::Joining => false,
             Stage::Merged | Stage::Closed | Stage::Escalated | Stage::Parked | Stage::Declared => {
                 true
             }
@@ -93,18 +89,16 @@ pub struct Board<'a> {
 }
 
 /// The steps of the board's task list, in order.
-const STEPS: [&str; 5] =
-    ["Claimed", "PR open", "Joining the landing train", "On the landing train", "Merged"];
+const STEPS: [&str; 4] = ["Claimed", "PR open", "Taking a turn", "Merged"];
 
 /// How many of the steps are done in `stage`. An off-ramp keeps what was
 /// reached: with a PR, as far as joining.
-#[spec(fn(stage: Stage, has_pr: bool) -> usize{done: 1 <= done && done <= 5})]
+#[spec(fn(stage: Stage, has_pr: bool) -> usize{done: 1 <= done && done <= 4})]
 fn steps_done(stage: Stage, has_pr: bool) -> usize {
     match stage {
         Stage::Claimed => 1,
         Stage::Joining => 3,
-        Stage::Joined => 4,
-        Stage::Merged => 5,
+        Stage::Merged => 4,
         Stage::Closed | Stage::Escalated | Stage::Parked | Stage::Declared => {
             if has_pr {
                 3
@@ -116,7 +110,7 @@ fn steps_done(stage: Stage, has_pr: bool) -> usize {
 }
 
 /// One line of the task list. Only a step the claim reached is ticked.
-#[spec(fn(at: usize, done: usize{done <= 5}, pr: Option<u64>) -> String requires at < 5)]
+#[spec(fn(at: usize, done: usize{done <= 4}, pr: Option<u64>) -> String requires at < 4)]
 fn step_line(at: usize, done: usize, pr: Option<u64>) -> String {
     let tick = if at < done { "x" } else { " " };
     let pr = match pr {
@@ -129,7 +123,7 @@ fn step_line(at: usize, done: usize, pr: Option<u64>) -> String {
 /// How the claim ended, when it did by anything but landing.
 fn off_ramp(board: &Board) -> Option<String> {
     match board.stage {
-        Stage::Claimed | Stage::Joining | Stage::Joined | Stage::Merged => None,
+        Stage::Claimed | Stage::Joining | Stage::Merged => None,
         Stage::Closed => Some(
             "**Closed with nothing landed** — the issue needed no change, or somebody closed it."
                 .to_string(),
@@ -193,7 +187,6 @@ pub fn render(board: &Board) -> String {
     lines.push(step_line(1, done, board.pr));
     lines.push(step_line(2, done, board.pr));
     lines.push(step_line(3, done, board.pr));
-    lines.push(step_line(4, done, board.pr));
     if let Some(ended) = off_ramp(board) {
         lines.push(String::new());
         lines.push(ended);
@@ -220,13 +213,13 @@ mod rejected {
     /// A step past the end of the task list.
     #[should_fail]
     fn a_step_the_list_does_not_have(pr: Option<u64>) -> String {
-        step_line(5, 5, pr)
+        step_line(4, 4, pr)
     }
 
     /// More steps ticked than the list has.
     #[should_fail]
     fn more_steps_done_than_there_are(pr: Option<u64>) -> String {
-        step_line(0, 6, pr)
+        step_line(0, 5, pr)
     }
 }
 
@@ -258,23 +251,23 @@ mod tests {
         for stage in Stage::ALL {
             let text = render(&board(stage, Some(70)));
             assert!(text.starts_with("<!--convoy:status-->\n**afkconvoy** — "), "{text}");
-            assert_eq!(text.lines().filter(|line| line.starts_with("- [")).count(), 5, "{text}");
+            assert_eq!(text.lines().filter(|line| line.starts_with("- [")).count(), 4, "{text}");
             assert!(text.contains("fleet instance `alpha`, afkconvoy `0.2.0+11.g9f58035`."));
             assert!(!seen.contains(&text), "{stage:?} renders as another stage does");
             seen.push(text);
         }
-        assert_eq!(seen.len(), 8);
+        assert_eq!(seen.len(), 7);
     }
 
     #[test]
     fn every_status_a_tick_finds_a_claim_in_is_shown_or_settled() {
         use Status::*;
         let shown: Vec<Option<Stage>> =
-            [NoPr, Joining, Joined, Landed, Closed].into_iter().map(Stage::held).collect();
-        let (c, j, on) = (Stage::Claimed, Stage::Joining, Stage::Joined);
-        assert_eq!(shown, [Some(c), Some(j), Some(on), None, None]);
+            [NoPr, Landing, Landed, Closed].into_iter().map(Stage::held).collect();
+        let (c, j) = (Stage::Claimed, Stage::Joining);
+        assert_eq!(shown, [Some(c), Some(j), None, None]);
         for stage in Stage::ALL {
-            assert_eq!(stage.ends(), ![c, j, on].contains(&stage), "{stage:?}");
+            assert_eq!(stage.ends(), ![c, j].contains(&stage), "{stage:?}");
         }
     }
 
@@ -282,13 +275,13 @@ mod tests {
     fn the_task_list_ticks_what_was_reached() {
         let claimed = render(&board(Stage::Claimed, None));
         assert_eq!(ticked(&claimed), 1);
-        assert!(claimed.contains("- [x] Claimed\n- [ ] PR open\n- [ ] Joining the landing train"));
+        assert!(claimed.contains("- [x] Claimed\n- [ ] PR open\n- [ ] Taking a turn"));
         assert!(claimed.contains("is being worked by"));
         let joining = render(&board(Stage::Joining, Some(70)));
-        assert!(joining.contains("- [x] PR open (#70)\n- [x] Joining the landing train\n- [ ] On"));
-        assert_eq!(ticked(&render(&board(Stage::Joined, Some(70)))), 4);
+        assert!(joining.contains("- [x] PR open (#70)\n- [x] Taking a turn\n- [ ] Merged"));
+        assert_eq!(ticked(&render(&board(Stage::Merged, Some(70)))), 4);
         let merged = render(&board(Stage::Merged, Some(70)));
-        assert_eq!(ticked(&merged), 5);
+        assert_eq!(ticked(&merged), 4);
         assert!(merged.contains("was worked by") && merged.ends_with("- [x] Merged"));
     }
 
