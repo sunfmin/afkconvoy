@@ -288,7 +288,7 @@ pub(super) fn models_question(command: &str, kept: &str) -> String {
         .done()
 }
 
-pub(super) fn prompt_question(command: &str, kept: &str, model: Option<&str>) -> String {
+pub(super) fn prompt_question(command: &str, kept: &str, model: Option<&str>, prompt: &str) -> String {
     probe(command, kept, model, prompt, false)
 }
 
