@@ -211,7 +211,7 @@ A session of one harness, started in one role to perform one stage of one issue 
 _Avoid_: agent (whoever reads the help; and a worker, to whoever has not met the term), subagent, child (an issue a split opened)
 
 **Switch**:
-Moving an existing harness, or one of its models and that model's harness, to the first position in this machine's host kit while retaining the other entries' relative order and contents. Every checkout follows these orders; existing workers continue only when explicitly targeted, preserving their scene and claims and starting no replacement until the old writer is confirmed ended.
+Moving a harness, or one of its models and that model's harness, to the first position in this machine's host kit while retaining the other entries' relative order and contents. A known installed harness it does not hold is added on its stock worker launch command with no model, and listed, probed and researched only after the switch answers. Every checkout follows these orders; existing workers continue only when explicitly targeted, preserving their scene and claims and starting no replacement until the old writer is confirmed ended.
 _Avoid_: harness change (what a new casting makes)
 
 **Worker launch command**:

@@ -56,6 +56,8 @@ pub struct Staged {
     /// The name the issue was given that matches nothing held, with what
     /// the worker runs instead.
     unmatched: Option<(String, casting::Cast)>,
+    /// Every kit candidate before `harness` that its range excluded.
+    skipped: Vec<Value>,
     /// What the guard holds every worker to: the repo's base branch, the
     /// team's escalate label and the repo's lock label.
     base_branch: String,
@@ -180,6 +182,7 @@ impl Staged {
                 kept.team.dsh_profile,
             ),
         };
+        let skipped = fleet.skipped_before(harness, by.map(|(_, role)| role));
         Ok(Staged {
             verdicts: verdicts
                 .filter(|(_, reading)| {
@@ -201,6 +204,7 @@ impl Staged {
             harness,
             model,
             unmatched: cast.unmatched.clone().map(|name| (name, cast)),
+            skipped,
             base_branch: fleet.config.base_branch.clone(),
             escalate_label: kept.team.escalate_label.clone(),
             lock_label: fleet.config.lock_label.clone(),
@@ -399,7 +403,7 @@ impl Staged {
     pub fn json(&self) -> Value {
         json!({"flow": self.flow, "name": self.stage, "role": self.role, "skill": self.skill,
             "writes": self.writes, "consult": self.consult, "harness": self.harness,
-            "model": self.model,
+            "model": self.model, "skipped": self.skipped,
             "role_commit": self.role_copy.commit, "role_dir": self.role_copy.dir,
             "team_commit": self.team_copy.commit, "team_dir": self.team_copy.dir})
     }
