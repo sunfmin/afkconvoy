@@ -348,7 +348,7 @@ fn a_stage_that_names_no_consult_escalates_for_the_watch() {
     world.afk(&["rule", "--issue", "7", "--text", "Use the existing v2 schema."]).ok();
     assert_eq!(did(&tick(&world, 1360)), ["dispatch 7 done"]);
     assert_eq!(shown(&world)["position"]["stage"], "review");
-    assert_eq!(shown(&world)["rework"], 0);
+    assert_eq!(shown(&world)["rework"]["had"], 0);
 }
 
 #[test]

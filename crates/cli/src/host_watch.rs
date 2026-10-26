@@ -41,18 +41,26 @@ const TITLE: &str = "afkconvoy watch";
 /// inspection's: starting an inspection must never reuse a watch's checkout.
 pub const CHECKOUT: &str = "afkconvoy-watch";
 
+/// The four kinds every watch leaves with a human, in either directory.
+const HUMAN_KINDS: &str = "\
+- spending money, or needing an account, a credential or a person's hands;\n\
+- what cannot be undone;\n\
+- taking a secret or private data off the host;\n\
+- changing what a product is for, or who it is for.";
+
 /// The stock watch's whole instruction, kept as its directory's rules.
-const STOCK_INSTRUCTION: &str = "\
+fn stock_instruction() -> String {
+    format!(
+        "\
 # The stock watch
 
 Find what holds this host's fleets and their work back, fix it with the watch's authority,
 check that the work goes on, and say what you did.
 Leave these with a human, never act on them, and list each in your printed record:
-- spending money, or needing an account, a credential or a person's hands;
-- what cannot be undone;
-- taking a secret or private data off the host;
-- changing what a product is for, or who it is for.
-";
+{HUMAN_KINDS}
+"
+    )
+}
 
 /// Where the host's watch runs. Resolving the stock directory writes nothing:
 /// only starting a stock watch makes it and puts its instruction there.
@@ -501,7 +509,7 @@ fn start_session(watch: &Watch) -> Result<(String, PathBuf)> {
         // Each harness finds the same instruction by its own rules filename.
         // Refresh it at each start, including after moving onto a new release.
         for file in [afkconvoy_core::team::RULES, "AGENTS.md"] {
-            std::fs::write(watch.directory.join(file), STOCK_INSTRUCTION)?;
+            std::fs::write(watch.directory.join(file), stock_instruction())?;
         }
         crate::orca::watch_directory(&watch.directory)?;
     }
@@ -591,10 +599,7 @@ fn brief(watch: &Watch) -> String {
          Leave only these four kinds with a human; never act on them, and list each with \
          its repo, issue, question and answer line in your printed record, which `doctor` \
          lists as what you did:\n\n\
-         - spending money, or needing an account, a credential or a person's hands;\n\
-         - what cannot be undone;\n\
-         - taking a secret or private data off the host;\n\
-         - changing what a product is for, or who it is for.\n\n\
+         {HUMAN_KINDS}\n\n\
          ## Change any repo on the checkout list\n\n\
          When a lasting fix needs code, make it yourself, even if that repo's fleet cannot \
          start a worker. In the affected repo create a linked worktree on a branch of your \
