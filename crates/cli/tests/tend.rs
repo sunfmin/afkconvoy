@@ -65,6 +65,63 @@ fn train_worktree(world: &World) -> PathBuf {
 }
 
 #[test]
+fn a_failed_train_agent_is_diagnosed_on_the_first_tick_and_keeps_its_train() {
+    let world = fleet(&[7]);
+    let joined = finish(&world, 7);
+    tick(&world, "1090");
+    world.hold_every_harness();
+    let train = train_worktree(&world);
+    let mut agent: Value =
+        serde_json::from_str(include_str!("fixtures/orca-failed-agent.json")).unwrap();
+    agent["stateStartedAt"] = json!(1099000);
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            if terminal["worktreePath"] == json!(train) {
+                terminal["agent"] = agent.clone();
+                terminal["screen"] = json!(["The train session failed"]);
+            }
+        }
+    });
+    std::fs::write(
+        world.root.join("diagnosis-answer"),
+        json!({
+            "status":"unknown", "class":"unknown", "scope":"worker", "action":"unknown",
+            "evidence":[], "missing":["fault cause"], "retry_after":null
+        })
+        .to_string(),
+    )
+    .unwrap();
+    tick(&world, "1100");
+    assert!(world.root.join("diagnosis-asked").exists());
+    assert_eq!(world.remote(&["rev-parse", LINE]), joined);
+    // There is no live host runner in this world; doctor still reports the
+    // train's evidence alongside that independent critical finding.
+    let health = world.afk(&["doctor", "--now", "1101", "--host", "h1"]).json;
+    let workers = health["host"]["host_kit"]["worker_health"]["workers"].as_array().unwrap();
+    let worker = workers.iter().find(|w| w["path"] == json!(train)).unwrap();
+    assert_eq!(worker["attempts"], 1);
+    assert_eq!(worker["orca"]["outcome"], "failure");
+    assert_eq!(worker["harness"], "codex");
+    assert_eq!(worker["recorded_harness"], "claude-code");
+
+    // programStatus gets fresh observation times without a new failed turn.
+    // It must not consume another attempt before the existing next check.
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            if terminal["worktreePath"] == json!(train) {
+                terminal["agent"]["programStatus"]["observedAt"] = json!(1102000);
+            }
+        }
+    });
+    tick(&world, "1102");
+    let health = world.afk(&["plan", "--now", "1103"]).ok();
+    let workers = health["host_kit"]["worker_health"]["workers"].as_array().unwrap();
+    let worker = workers.iter().find(|w| w["path"] == json!(train)).unwrap();
+    assert_eq!(worker["attempts"], 1);
+    assert_eq!(worker["orca"]["programStatus"]["observedAt"], 1102000);
+}
+
+#[test]
 fn a_train_pointer_requires_input_readiness_and_a_started_turn_before_recording_told() {
     for menu in [true, false] {
         let world = fleet(&[7, 8]);

@@ -608,7 +608,8 @@ fn a_live_run_is_seen_alive_and_a_claim_whose_worker_is_gone_is_a_finding() {
     let answer = doctor(&world, &now).ok();
     assert_eq!(
         answer["claims"][0]["worker"],
-        json!({"state": "stopped", "quiet": 400, "harness": "claude-code"})
+        json!({"state": "stopped", "quiet": 400, "harness": "claude-code",
+            "orca":null, "recorded_harness":"claude-code", "harness_mismatch":false})
     );
 
     // its worker's terminal is closed under it
