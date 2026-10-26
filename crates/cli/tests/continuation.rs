@@ -133,7 +133,9 @@ impl Drop for Escaped {
         if let Some(reaper) = self.reaper.take() {
             // SAFETY: this pid belongs to the test's helper, which this
             // guard owns until the reaper has observed its exit.
-            unsafe { libc::kill(self.pid as libc::pid_t, libc::SIGKILL) };
+            if !reaper.is_finished() {
+                unsafe { libc::kill(self.pid as libc::pid_t, libc::SIGKILL) };
+            }
             reaper.join().unwrap();
         }
     }
@@ -229,7 +231,12 @@ fn a_process_that_survives_kill_is_named_when_the_repeated_start_escalates() {
     let signals = std::fs::read_to_string(world.root.join("signals")).unwrap();
     assert_eq!(
         signals.lines().collect::<Vec<_>>(),
-        [format!("-TERM {}", escaped.pid), format!("-KILL {}", escaped.pid)].repeat(2)
+        vec![
+            format!("-TERM {}", escaped.pid),
+            format!("-KILL {}", escaped.pid),
+            format!("-TERM {}", escaped.pid),
+            format!("-KILL {}", escaped.pid),
+        ]
     );
     // The helper really remains alive until the guard ends it.
     assert!(!escaped.reaper.as_mut().unwrap().is_finished());
