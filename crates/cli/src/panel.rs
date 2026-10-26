@@ -1875,4 +1875,25 @@ mod tests {
         assert_eq!([lasted(40), lasted(725), lasted(11_100)], ["40s", "12m", "3h 5m"]);
         assert_eq!([count(1, "PR"), count(0, "PR")], ["1 PR", "0 PRs"]);
     }
+
+    #[test]
+    fn the_host_shows_its_watch_and_what_the_last_one_did() {
+        let mut host = host_of(1000);
+        host.watch = serde_json::json!({
+            "running": {"id": "watch-1", "harness": "codex",
+                "items": [{"reason": "hot worker <7>"}]},
+            "last": {"id": "watch-0", "harness": "claude-code",
+                "did": ["ended pid <4242>"]}
+        });
+        let page = render(&page_of(host, vec![]));
+        for expected in [
+            "data-watch=\"running\"",
+            "data-watch=\"last\"",
+            "hot worker &lt;7&gt;",
+            "Did: ended pid &lt;4242&gt;",
+        ] {
+            assert!(page.contains(expected), "{page}");
+        }
+        assert!(!page.to_lowercase().contains("inspection"));
+    }
 }

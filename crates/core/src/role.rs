@@ -188,8 +188,7 @@ pub enum On<'a> {
     /// The proposal, as a precedent, of a ruling a human gave this issue: no
     /// stage, and the issue is not its worker's.
     Proposal { issue: u64 },
-    /// A watch of the hot worker so named (docs/adr/0019): no stage,
-    /// and held as a consult whatever its role.
+    /// The host watch: no issue or stage; its commands have operator authority.
     Watch(&'a str),
 }
 

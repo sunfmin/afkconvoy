@@ -134,7 +134,7 @@ pub enum Turned {
 }
 
 /// What is known of one worker from its samples so far.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Watch {
     /// Since when its CPU has been past the limit, sample after sample.
     cpu_since: Option<u64>,

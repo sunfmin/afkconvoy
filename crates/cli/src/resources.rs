@@ -27,6 +27,8 @@ struct State {
     admission: BTreeMap<PathBuf, Observed>,
     pressure: Holding,
     hot: BTreeMap<PathBuf, Vec<HotNow>>,
+    #[serde(default)]
+    samples: BTreeMap<PathBuf, BTreeMap<PathBuf, afkconvoy_core::hot::Watch>>,
 }
 
 fn read() -> Result<State> {
@@ -88,8 +90,14 @@ impl Shared {
         })
     }
 
-    pub fn hot(&self, repo: PathBuf, hot: Vec<HotNow>) -> Result<()> {
+    pub fn hot(
+        &self,
+        repo: PathBuf,
+        hot: Vec<HotNow>,
+        samples: BTreeMap<PathBuf, afkconvoy_core::hot::Watch>,
+    ) -> Result<()> {
         self.change(|state| {
+            state.samples.insert(repo.clone(), samples);
             state.hot.insert(repo, hot);
         })
     }
@@ -105,6 +113,11 @@ impl Shared {
         std::fs::rename(temporary, file)?;
         Ok(())
     }
+}
+
+/// Sampler state carried through a host runner replacement.
+pub fn samples(repo: &std::path::Path) -> Result<BTreeMap<PathBuf, afkconvoy_core::hot::Watch>> {
+    Ok(read()?.samples.remove(repo).unwrap_or_default())
 }
 
 /// Current conditions, with stable episode identities. Inactive episodes are

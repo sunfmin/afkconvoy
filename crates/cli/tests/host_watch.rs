@@ -475,6 +475,14 @@ fn resource_worker(world: &World, issue: u64, mib: u64) -> PathBuf {
     let started =
         world.afk(&["dispatch", &issue.to_string(), "--instance", "alpha", "--host", "h1"]).ok();
     let path = PathBuf::from(started["worktree"].as_str().unwrap());
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            if terminal["worktreePath"] == json!(path) {
+                terminal["agent"] = json!({"state": "working", "stateStartedAt": now * 1000});
+            }
+        }
+    });
     let tmp = world.tmp(&path);
     std::fs::write(world.root.join("host-processes"), format!(
         "999990 2 10485760 0:00.00 outside-memory-holder\n999980 2 {} 0:00.00 worker TMPDIR={}\n",
@@ -486,7 +494,7 @@ fn resource_worker(world: &World, issue: u64, mib: u64) -> PathBuf {
 fn a_hot_worker_starts_the_host_watch_with_its_reading_and_evidence() {
     let world = World::new();
     resource_host(&world);
-    let path = resource_worker(&world, 7, 620);
+    let path = resource_worker(&world, 7, 1536);
     world.say_host_settings(json!({"hot_memory": 1}));
     let dir = operator(&world);
     run(&world, &dir);
@@ -511,6 +519,10 @@ fn a_hot_worker_starts_the_host_watch_with_its_reading_and_evidence() {
     until(&world, "watch record", || ended(&world, "ended"));
     std::thread::sleep(Duration::from_secs(3));
     assert_eq!(starts(&world).len(), 1, "the same hot episode starts nothing again");
+    world.kill_host_runner("KILL");
+    run(&world, &dir);
+    std::thread::sleep(Duration::from_secs(3));
+    assert_eq!(starts(&world).len(), 1, "a runner replacement keeps the hot episode");
     let doctor = world.afk(&["doctor", "--all"]).json;
     assert!(
         doctor["findings"]
@@ -564,6 +576,10 @@ fn admission_held_ten_minutes_starts_a_watch_with_the_host_reading() {
     }
     printed(&world, &watch, &["moved the heavy work through exclusive"], Some(0));
     until(&world, "watch end", || ended(&world, "ended"));
+    let second = world.second_repo();
+    world.afk_in(&second, &["run", "--host", "h1", "--second-ms", "100"]).ok();
+    std::thread::sleep(Duration::from_secs(3));
+    assert_eq!(starts(&world).len(), 1, "a new fleet shares the host's admission episode");
     world.kill_host_runner("KILL");
     run(&world, &dir);
     std::thread::sleep(Duration::from_secs(3));
@@ -593,7 +609,7 @@ fn pressure_starts_one_watch_across_fleets_and_no_worker_turns_hot() {
     assert_eq!(starts(&world).len(), 1, "one pressure episode across fleets");
     let doctor = world.afk(&["doctor", "--all"]).json;
     for checkout in doctor["checkouts"].as_array().unwrap() {
-        assert_eq!(checkout["doctor"]["fleet"]["hot"], json!([]));
+        assert_eq!(checkout["doctor"]["fleet"]["hot_workers"], json!([]));
     }
 }
 
@@ -606,7 +622,7 @@ fn a_resource_trigger_while_a_watch_runs_waits_for_its_next_look() {
     run(&world, &dir);
     let first = until(&world, "first watch", || running(&world));
     world.say_host_settings(json!({"hot_memory": 1, "watch_dir": dir, "watch_every": 1}));
-    resource_worker(&world, 7, 620);
+    resource_worker(&world, 7, 1536);
     until(&world, "hot reading", || {
         let file = world.cache().join("afkconvoy/watch/resources.json");
         let saved = std::fs::read_to_string(file).unwrap_or_default();

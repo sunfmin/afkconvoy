@@ -463,6 +463,8 @@ struct Sampler {
     samples: u32,
     /// The workers watched, by their worktrees.
     watched: BTreeMap<PathBuf, Watched>,
+    /// Samples carried over from the preceding host runner.
+    resumed: BTreeMap<PathBuf, Watch>,
 }
 
 impl Sampler {
@@ -511,10 +513,13 @@ impl Sampler {
         let mut taken = vec![];
         let mut hot_now = vec![];
         for (path, worker, worktree, issue) in &self.listed {
-            let watched = self
-                .watched
-                .entry(path.clone())
-                .or_insert_with(|| Watched::new(worker.clone(), worktree.clone(), *issue));
+            let watched = self.watched.entry(path.clone()).or_insert_with(|| {
+                let mut watched = Watched::new(worker.clone(), worktree.clone(), *issue);
+                if let Some(previous) = self.resumed.remove(path) {
+                    watched.watch = previous;
+                }
+                watched
+            });
             let took = took(watched, &tree(&procs, path));
             watched.resident.push_back((at, took.resident));
             if watched.resident.len() > RESIDENT_KEPT {
@@ -650,6 +655,10 @@ pub fn watch(
         listed: vec![],
         samples: 0,
         watched: BTreeMap::new(),
+        resumed: crate::resources::samples(
+            &repo.main_checkout().unwrap_or_else(|_| repo.dir.clone()),
+        )
+        .unwrap_or_default(),
     };
     std::thread::spawn(move || {
         let started = (clock(), Instant::now());
@@ -695,9 +704,16 @@ pub fn watch(
                 });
             }
             let current = sampler.hot();
-            if let Err(error) = resources
-                .hot(repo.main_checkout().unwrap_or_else(|_| repo.dir.clone()), current.clone())
-            {
+            let samples = sampler
+                .watched
+                .iter()
+                .map(|(path, worker)| (path.clone(), worker.watch.clone()))
+                .collect();
+            if let Err(error) = resources.hot(
+                repo.main_checkout().unwrap_or_else(|_| repo.dir.clone()),
+                current.clone(),
+                samples,
+            ) {
                 hears.warn(&format!("resource episodes were not kept: {error:#}"));
             }
             *hot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = current;

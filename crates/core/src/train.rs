@@ -342,7 +342,7 @@ pub const OUTGROWN_FLOOR: u64 = 1_073_741_824;
 
 /// What the last landing in the train's worktree measured of it, in bytes:
 /// everything git ignores there, and its fresh build when one is on record.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Built {
     pub built: u64,
     pub fresh: Option<u64>,
@@ -554,6 +554,19 @@ mod tests {
         let joins = read_joins(&commits, &Tracker::Own);
         assert_eq!(joins.len(), 1, "a line that names no host names no watch");
         assert_eq!(joins[0], Joined { of: host, pr: 45, commit: "m1".into(), head: "h45".into() });
+        assert_eq!(joins[0].issue(), None);
+    }
+
+    #[test]
+    fn an_older_operator_join_is_still_tended_after_an_upgrade() {
+        let commits = [Logged {
+            sha: "m1",
+            parents: "t0 h45",
+            message: "Queue the gates (#45)\n\nBy an inspection on h1\n",
+        }];
+        let joins = read_joins(&commits, &Tracker::Own);
+        assert_eq!(joins[0].of, Of::Watch("h1".into()));
+        assert!(joins[0].rejoined_by_the_fleet());
         assert_eq!(joins[0].issue(), None);
     }
 
