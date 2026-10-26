@@ -1033,7 +1033,7 @@ fn the_host_runner_moves_with_claims_and_a_pr_on_the_train_after_only_the_runnin
         .unwrap();
     until("exclusive command started", || {
         let said = world.afk(&["doctor", "--host", "h1"]).json;
-        said["host"]["exclusive"][0]["ran"].is_u64().then_some(())
+        said["host"]["exclusive"]["running"]["ran"].is_u64().then_some(())
     });
     let worker = world
         .worktrees()
@@ -1067,7 +1067,8 @@ fn the_host_runner_moves_with_claims_and_a_pr_on_the_train_after_only_the_runnin
         .unwrap();
     until("queued command", || {
         let said = world.afk(&["doctor", "--host", "h1"]).json;
-        (said["host"]["exclusive"].as_array().is_some_and(|queue| queue.len() == 2)).then_some(())
+        (said["host"]["exclusive"]["waiting"].as_array().is_some_and(|queue| queue.len() == 1))
+            .then_some(())
     });
     upgraded(&link, "999.0.0", &as_built());
     until("exclusive command holding the move back alone", || {
