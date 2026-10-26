@@ -237,6 +237,60 @@ fn train_worktree(world: &World) -> PathBuf {
 }
 
 #[test]
+fn a_bound_joined_worker_leaves_health_even_with_an_expired_observation() {
+    let world = bound();
+    let now = through_the_stages(&world);
+    tick(&world, now);
+    let dir = worktree(&world);
+    stopped(&world, now);
+    tick(&world, now + 300);
+    let path = world.cache().join("afkconvoy/worker-health.json");
+    let mut book: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(book["workers"][0]["path"], json!(dir), "{book}");
+    book["workers"][0]["attempts"] = json!(3);
+    std::fs::write(&path, serde_json::to_vec(&book).unwrap()).unwrap();
+    join(&world, now + 350);
+
+    assert_eq!(did(&tick(&world, now + 4000)), ["tend_train done"]);
+    assert_eq!(did(&tick(&world, now + 8000)), [] as [&str; 0]);
+    assert_eq!(status(&world), "joined");
+    assert_eq!(world.labels(7), ["flow:feature", "stage:land"]);
+    assert_eq!(world.claims(), [(7, "alpha".into())]);
+    let book: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert!(book["workers"].as_array().unwrap().iter().all(|w| w["path"] != json!(dir)), "{book}");
+    assert!(!world.root.join("diagnosis-asked").exists());
+    let landed = world.afk_in(&train_worktree(&world), &["land", "--train"]).ok();
+    assert_eq!(landed["outcome"], "landed", "{landed}");
+    tick(&world, now + 8090);
+    assert_eq!(world.state(7), "closed");
+}
+
+#[test]
+fn a_builder_with_an_open_pr_still_needs_its_workflow_and_worker_health() {
+    let world = bound();
+    world.issue(7, &["flow:feature"]);
+    tick(&world, 1000);
+    pass(&world, "plan");
+    tick(&world, 1090);
+    pass(&world, "plan-review");
+    tick(&world, 1180);
+    let dir = worktree(&world);
+    commit(&dir, "seven.txt", "7\n");
+    git(&dir, &["push", "-q", "origin", "HEAD"]);
+    world.pr(70, 7, &git(&dir, &["symbolic-ref", "--short", "HEAD"]));
+    stopped(&world, 1180);
+
+    tick(&world, 1480);
+    assert_eq!(status(&world), "at_stage");
+    assert_eq!(world.labels(7), ["flow:feature", "stage:build"]);
+    assert_eq!(world.claims(), [(7, "alpha".into())]);
+    let path = world.cache().join("afkconvoy/worker-health.json");
+    let book: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    assert_eq!(book["workers"][0]["path"], json!(dir), "{book}");
+    assert_eq!(book["workers"][0]["action"], "observing", "{book}");
+}
+
+#[test]
 fn a_bound_issues_train_given_up_twice_is_a_fleet_fault_with_no_consult() {
     let world = bound();
     let now = through_the_stages(&world);

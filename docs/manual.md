@@ -1081,6 +1081,8 @@ A known harness that is installed but absent is added first on its stock worker 
 
 --all continues workers across every checkout on this host's checkout list. ISSUE or --patrol addresses a claim in the current checkout; --instance may identify its owner. Each continuation keeps its claim, stage, worktree, branch, uncommitted work, PR and breaker counts. Its brief includes the previous output. A failure is reported and other workers continue. An old worker that cannot be confirmed stopped is never given a second writer. Every moved worker's answer and tick-log line name every harness ahead of its actual successor, why it was skipped, and what would make it eligible.
 
+The landing train's worker runs on the host kit's first eligible harness, skipping paused or faulted harnesses. With no target, the next PR to join replaces a train worker on another harness, even one at work. A failed train worker is replaced too; a live worker on the first eligible harness whose agent has not failed is told about the join once it stops. --all moves a train worker at work immediately and lists its worktree, from and to in switched, even though it holds no claim. Replacement keeps the train's worktree and everything on the train. Worker health can hold the train worker for at most 3600 seconds before replacement.
+
 ##### What it answers
 
 {harness, model, path, order_before, order, changed, added, start_fault, switched, failed}. model is the promoted id, or null for a harness-only switch; added says whether a missing harness was inserted. Each moved worker has {from, to, skipped}, where skipped holds {harness, why, fix} for every earlier candidate. Each failure names its checkout and worker. A successful fallback reports the actual harness.
@@ -2028,6 +2030,8 @@ Put this worktree's PR on the landing train (a worker's command, and an inspecti
 `--inspection`: an inspection, in the checkout it was started in (`afkconvoy-inspection`), or a watch, in its own linked worktree of the affected listed repo (`afkconvoy-watch`, with an optional numeric suffix), on whose branch it committed the change. Run anywhere else it is refused.
 
 `--train`: the train worker, in the train's worktree — never anybody else, anywhere else.
+
+The train worker runs on the host kit's first eligible harness, skipping paused or faulted harnesses. When a PR joins, a live worker on that harness whose agent has not failed is told about it once it stops. A failed worker or one on another harness is ended and replaced with the train's brief, keeping the worktree, its repairs and everything on the train. A continuous worker-health hold lasting 3600 seconds also replaces the worker, even with no new PR, and the tick log says why. `afkconvoy switch --harness X` takes effect at the next join; `switch --all` moves a train worker at work immediately.
 
 ##### What it reads and writes
 
@@ -3456,6 +3460,8 @@ What becomes of one issue, from the moment it is the fleet's to the moment it la
 - **The landing train**: The one line of merge commits ahead of the base branch that finished PRs join, one merge commit each. One worker gates its tip and pushes it to the base branch as a fast-forward: what lands is a tree the gate passed. `afkconvoy land --help`.
 - **The gate limit**: How long the gate may run: `gate_seconds` in the repo's config, 3600 where it sets none. A run that reaches it is ended and is red, a worker's and the train's alike. `afkconvoy config --help`.
 
+The train worker runs on the host kit's first eligible harness, skipping paused or faulted harnesses. When a PR joins, a live worker on that harness whose agent has not failed is told once it stops; a failed worker or one on another harness is ended and replaced with the train's brief in the same worktree, with everything on the train kept. A continuous worker-health hold of 3600 seconds also replaces it, without waiting for another join, and the tick log says why. `afkconvoy switch --harness X` reaches the train at the next join; `switch --all` moves a train worker at work immediately and lists it in the answer. `afkconvoy switch --help`, `afkconvoy land --help`.
+
 #### One issue, in an unbound repo
 
 An unbound repo's config names no team: every issue takes the same path, with one worker from start to landing. It is where to start when issues turned into PRs is all you want; bind the repo to a team once the work is to be judged by another than the worker that wrote it before it lands.
@@ -4795,7 +4801,7 @@ Putting a finished PR on the landing train. In an unbound repo the worker that w
 _Avoid_: merge (what git does to two branches, and a human to a proposal's PR), enqueue
 
 **Train worker**:
-The one worker per repo that gates the landing train's tip and pushes it to the base branch as a fast-forward. It holds no claim and wrote none of the PRs it lands.
+The one worker per repo that gates the landing train's tip and pushes it to the base branch as a fast-forward, on its host kit's first eligible harness. It holds no claim and wrote none of the PRs it lands.
 _Avoid_: merger, integrator, batch worker
 
 **Abandon**:

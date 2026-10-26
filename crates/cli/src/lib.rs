@@ -1789,6 +1789,8 @@ enum Command {
     ///
     /// `--train`: the train worker, in the train's worktree — never anybody else, anywhere else.
     ///
+    /// The train worker runs on the host kit's first eligible harness, skipping paused or faulted harnesses. When a PR joins, a live worker on that harness whose agent has not failed is told about it once it stops. A failed worker or one on another harness is ended and replaced with the train's brief, keeping the worktree, its repairs and everything on the train. A continuous worker-health hold lasting {const:RECOVERY_SECONDS} seconds also replaces the worker, even with no new PR, and the tick log says why. `afkconvoy switch --harness X` takes effect at the next join; `switch --all` moves a train worker at work immediately.
+    ///
     /// ## What it reads and writes
     ///
     /// `--issue` reads the open issues, the open PRs and the train. With a fleet lock standing it joins the PR of a lock issue only, and for any other changes nothing. Otherwise it pushes this branch when it is ahead of the remote's, then pushes one merge commit — the PR's head joined onto the train's tip — as the train's new tip. Its message names the PR and the issue it closes (`Closes #<n>`), which is how the train knows what is on it. No gate runs, and nothing on GitHub changes. A PR that conflicts with the train gets the train's tip merged into this worktree, left in progress.
@@ -2886,6 +2888,8 @@ enum Command {
     ///
     /// --all continues workers across every checkout on this host's checkout list. ISSUE or --patrol addresses a claim in the current checkout; --instance may identify its owner. Each continuation keeps its claim, stage, worktree, branch, uncommitted work, PR and breaker counts. Its brief includes the previous output. A failure is reported and other workers continue. An old worker that cannot be confirmed stopped is never given a second writer. Every moved worker's answer and tick-log line name every harness ahead of its actual successor, why it was skipped, and what would make it eligible.
     ///
+    /// The landing train's worker runs on the host kit's first eligible harness, skipping paused or faulted harnesses. With no target, the next PR to join replaces a train worker on another harness, even one at work. A failed train worker is replaced too; a live worker on the first eligible harness whose agent has not failed is told about the join once it stops. --all moves a train worker at work immediately and lists its worktree, from and to in switched, even though it holds no claim. Replacement keeps the train's worktree and everything on the train. Worker health can hold the train worker for at most {const:RECOVERY_SECONDS} seconds before replacement.
+    ///
     /// ## What it answers
     ///
     /// {harness, model, path, order_before, order, changed, added, start_fault, switched, failed}. model is the promoted id, or null for a harness-only switch; added says whether a missing harness was inserted. Each moved worker has {from, to, skipped}, where skipped holds {harness, why, fix} for every earlier candidate. Each failure names its checkout and worker. A successful fallback reports the actual harness.
@@ -3504,6 +3508,7 @@ pub fn manual() -> agent_help::Help {
         .constant("ESCALATE_LABEL", afkconvoy_core::config::ESCALATE_LABEL)
         .constant("CONCURRENCY", afkconvoy_core::config::CONCURRENCY)
         .constant("GATE_SECONDS", afkconvoy_core::config::GATE_SECONDS)
+        .constant("RECOVERY_SECONDS", crate::health::RECOVERY_SECONDS)
         .constant("INTAKE_LIMIT", afkconvoy_core::config::INTAKE_LIMIT)
         .constant("MAX_REWORK", afkconvoy_core::team::MAX_REWORK)
         .constant("MAX_CONSECUTIVE_REWORK", afkconvoy_core::team::MAX_CONSECUTIVE_REWORK)

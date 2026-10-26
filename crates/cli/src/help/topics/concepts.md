@@ -8,6 +8,8 @@ What becomes of one issue, from the moment it is the fleet's to the moment it la
 - **The landing train**: The one line of merge commits ahead of the base branch that finished PRs join, one merge commit each. One worker gates its tip and pushes it to the base branch as a fast-forward: what lands is a tree the gate passed. `afkconvoy land --help`.
 - **The gate limit**: How long the gate may run: `gate_seconds` in the repo's config, {const:GATE_SECONDS} where it sets none. A run that reaches it is ended and is red, a worker's and the train's alike. `afkconvoy config --help`.
 
+The train worker runs on the host kit's first eligible harness, skipping paused or faulted harnesses. When a PR joins, a live worker on that harness whose agent has not failed is told once it stops; a failed worker or one on another harness is ended and replaced with the train's brief in the same worktree, with everything on the train kept. A continuous worker-health hold of {const:RECOVERY_SECONDS} seconds also replaces it, without waiting for another join, and the tick log says why. `afkconvoy switch --harness X` reaches the train at the next join; `switch --all` moves a train worker at work immediately and lists it in the answer. `afkconvoy switch --help`, `afkconvoy land --help`.
+
 ## One issue, in an unbound repo
 
 An unbound repo's config names no team: every issue takes the same path, with one worker from start to landing. It is where to start when issues turned into PRs is all you want; bind the repo to a team once the work is to be judged by another than the worker that wrote it before it lands.

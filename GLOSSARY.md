@@ -350,7 +350,7 @@ Putting a finished PR on the landing train. In an unbound repo the worker that w
 _Avoid_: merge (what git does to two branches, and a human to a proposal's PR), enqueue
 
 **Train worker**:
-The one worker per repo that gates the landing train's tip and pushes it to the base branch as a fast-forward. It holds no claim and wrote none of the PRs it lands.
+The one worker per repo that gates the landing train's tip and pushes it to the base branch as a fast-forward, on its host kit's first eligible harness. It holds no claim and wrote none of the PRs it lands.
 _Avoid_: merger, integrator, batch worker
 
 **Abandon**:
