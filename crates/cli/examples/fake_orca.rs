@@ -376,7 +376,8 @@ fn terminal_send(st: &mut State) -> ! {
         .cloned()
         .unwrap_or_else(|| {
             if st.opt("--wait-submit").is_some()
-                && st.doc["terminals"][at]["agent"]["state"] != "working"
+                && !(st.doc["terminals"][at]["startup_working_reports_left"].is_number()
+                    && st.doc["terminals"][at]["agent"]["state"] == "working")
             {
                 vec![json!("input_accepted"), json!("turn_started")]
             } else {
