@@ -250,6 +250,14 @@ pub(super) fn shown(answer: &str) -> Vec<(String, String)> {
 /// role's — and nothing of the host user's: no hook, no MCP server, no
 /// permission of theirs.
 const SOURCES: &str = "project";
+
+/// Claude Code also walks `.claude` directories above its role as project
+/// rules: `--setting-sources project` alone does not exclude the host user's
+/// rules when the role's copy is under their home (sunfmin/control#107).
+pub(super) fn host_rule_excludes(home: &str) -> Vec<String> {
+    let home = home.trim_end_matches('/');
+    vec![format!("{home}/.claude/CLAUDE.md"), format!("{home}/.claude/rules/**")]
+}
 /// The event of Claude Code before each tool call: where the guard is asked.
 const BEFORE_A_CALL: &str = "PreToolUse";
 /// The events of Claude Code at which a worker's state changes: what the
@@ -369,7 +377,9 @@ fn json_text(text: &str) -> String {
 /// added to the role's own, so a role's hooks run beside them and no role is
 /// without the guard (docs/adr/0012) — or unheard of by the worker backend,
 /// which would read a worker it has no report of off its terminal alone.
-fn added_settings(guard: &str, report: &str) -> String {
+/// `excluded` keeps host-user rule paths out of native ancestor discovery
+/// when the role has turned host-user rules off.
+fn added_settings(guard: &str, report: &str, excluded: &[String]) -> String {
     let guard = format!("{{\"type\":\"command\",\"command\":{}}}", json_text(guard));
     let report = format!(
         "{{\"type\":\"command\",\"command\":{},\"timeout\":{REPORT_TIMEOUT}}}",
@@ -380,7 +390,12 @@ fn added_settings(guard: &str, report: &str) -> String {
     for event in STATE_EVENTS {
         settings.push_str(&format!(",\"{event}\":[{{\"hooks\":[{report}]}}]"));
     }
-    settings.push_str(concat!("},", warning_accepted!(), "}"));
+    settings.push_str(concat!("},", warning_accepted!()));
+    if !excluded.is_empty() {
+        let paths = excluded.iter().map(|path| json_text(path)).collect::<Vec<_>>().join(",");
+        settings.push_str(&format!(",\"claudeMdExcludes\":[{paths}]"));
+    }
+    settings.push('}');
     settings
 }
 
@@ -390,6 +405,7 @@ fn added_settings(guard: &str, report: &str) -> String {
 /// settings left out, the guard and the report added, and the stage's model.
 #[spec(fn(Line[@l], &Start) -> Line[l])]
 pub(super) fn added(line: Line, start: &Start) -> Line {
+    let excluded = if start.host_user { &[][..] } else { start.host_rules };
     let line = line
         .fixed(" ")
         .fixed(ADD_DIR)
@@ -412,7 +428,7 @@ pub(super) fn added(line: Line, start: &Start) -> Line {
         .fixed(" ")
         .fixed(SETTINGS)
         .fixed(" ")
-        .word(&added_settings(start.guard, REPORT));
+        .word(&added_settings(start.guard, REPORT, excluded));
     match start.model {
         Some(model) => line.fixed(" ").fixed(MODEL).fixed(" ").word(model),
         None => line,
@@ -545,6 +561,7 @@ mod tests {
             kept: "/cache/harness/claude-code",
             host_user: false,
             dsh_profile: crate::team::DshProfile::Fleet,
+            host_rules: &[],
             shadowed: &[],
             told: Told::default(),
             facts: Facts {
@@ -620,10 +637,10 @@ mod tests {
         assert!(line.ends_with("--model 'a b;c'"), "{line}");
         // Nor by Claude Code, of the line that runs the guard.
         let odd = Start { guard: "/it's \"here\"/afk\\convoy guard", ..start(None) };
-        let settings = added_settings(odd.guard, r#"tell "$HOME""#);
+        let settings = added_settings(odd.guard, r#"tell "$HOME""#, &[]);
         assert!(settings.contains(r#""command":"/it's \"here\"/afk\\convoy guard""#), "{settings}");
         assert!(settings.contains(r#""command":"tell \"$HOME\"","timeout":10"#), "{settings}");
-        let settings = added_settings(odd.guard, REPORT);
+        let settings = added_settings(odd.guard, REPORT, &[]);
         assert!(in_role("claude", &odd).ends_with(&format!("{SETTINGS} {}", quoted(&settings))));
     }
 
