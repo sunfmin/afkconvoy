@@ -274,8 +274,11 @@ enum Command {
     #[command(next_help_heading = OPERATOR, verbatim_doc_comment)]
     Kit {
         /// Enable or disable automatic model casting on this host, without probing
-        #[arg(long, value_parser = ["on", "off"])]
+        #[arg(long, value_parser = ["on", "off"], conflicts_with = "harness")]
         cast: Option<String>,
+        /// Refresh only this harness after a switch has answered
+        #[arg(long, hide = true, value_parser = kit_harness)]
+        harness: Option<Harness>,
     },
     /// Choose a model within each issue's selected harness and add its `model:` label, in one session when enabled on this host
     ///
@@ -2840,20 +2843,22 @@ enum Command {
     ///
     /// ## What it reads and writes
     ///
-    /// `afkconvoy switch --model sonnet` accepts any name of an existing model, moves it first within its harness and moves that harness first. A name matching several harnesses or models is refused with candidates; an unknown name is refused with nearest names, leaving the kit unchanged. Repeating a switch is idempotent. Only this machine's kit order changes. Commands, model contents, probe evidence and the relative order of other models and harnesses stay intact. Rebuilds, daily refresh and new-model research preserve these orders; new discoveries follow established models. Unknown, logged-out or unstartable harnesses are refused. Ticket labels and team rosters are untouched. Role limits still constrain candidates. Paused candidates are skipped without reordering the kit, and become eligible again after a successful recovery probe. A switch with no target leaves running workers alone.
+    /// A known harness that is installed but absent is added first on its stock worker launch command, with no model, so workers start on its login's default at once. The answer comes within seconds, before that harness is listed, probed or researched. Only after the answer does a background refresh fill in its models and research, preserving the order this switch set. If the added harness cannot start a worker, the answer's start_fault says why and doctor names the same fault. Unknown or uninstalled harnesses, and existing entries that cannot start, are refused before the kit changes.
     ///
-    /// --all continues workers across every checkout on this host's checkout list. ISSUE or --patrol addresses a claim in the current checkout; --instance may identify its owner. Each continuation keeps its claim, stage, worktree, branch, uncommitted work, PR and breaker counts. Its brief includes the previous output. A failure is reported and other workers continue. An old worker that cannot be confirmed stopped is never given a second writer.
+    /// `afkconvoy switch --model sonnet` accepts any name of an existing model, moves it first within its harness and moves that harness first. A name matching several harnesses or models is refused with candidates; an unknown name is refused with nearest names, leaving the kit unchanged. Repeating a switch is idempotent. Commands, model contents, probe evidence and the relative order of other models and harnesses stay intact. Rebuilds, daily refresh and new-model research preserve these orders; new discoveries follow established models. Ticket labels and team rosters are untouched. Role limits still constrain candidates. Paused candidates are skipped without reordering the kit, and become eligible again after a successful recovery probe. A switch with no target leaves running workers alone.
+    ///
+    /// --all continues workers across every checkout on this host's checkout list. ISSUE or --patrol addresses a claim in the current checkout; --instance may identify its owner. Each continuation keeps its claim, stage, worktree, branch, uncommitted work, PR and breaker counts. Its brief includes the previous output. A failure is reported and other workers continue. An old worker that cannot be confirmed stopped is never given a second writer. Every moved worker's answer and tick-log line name every harness ahead of its actual successor, why it was skipped, and what would make it eligible.
     ///
     /// ## What it answers
     ///
-    /// {harness, model, path, order_before, order, changed, switched, failed}. model is the promoted id, or null for a harness-only switch. Each failure names its checkout and worker. A successful fallback reports the actual harness.
+    /// {harness, model, path, order_before, order, changed, added, start_fault, switched, failed}. model is the promoted id, or null for a harness-only switch; added says whether a missing harness was inserted. Each moved worker has {from, to, skipped}, where skipped holds {harness, why, fix} for every earlier candidate. Each failure names its checkout and worker. A successful fallback reports the actual harness.
     ///
     /// ## What trips you up
     ///
     /// --all is machine-wide, even when --instance is supplied. --clear is removed: switch to the harness you want first instead. Old repository choice files are ignored.
     #[command(next_help_heading = OPERATOR, verbatim_doc_comment)]
     Switch {
-        /// The existing kit harness to put first
+        /// The known installed harness to put first, adding it when the kit does not hold it
         #[arg(long, value_parser = kit_harness, required_unless_present = "model", conflicts_with = "model")]
         harness: Option<Harness>,
         /// Put this model first within its harness, and that harness first in the kit
@@ -3928,6 +3933,14 @@ pub fn main(args: impl IntoIterator<Item = OsString>) -> ExitCode {
         }
         Ok(answer) => {
             println!("{answer}");
+            if answer["added"] == true
+                && let Some(harness) = answer["harness"].as_str().and_then(Harness::read)
+                && let Err(error) = kit::refresh_after_answer(harness)
+            {
+                eprintln!(
+                    "warning: the added harness could not be refreshed in the background: {error:#}"
+                );
+            }
             ExitCode::SUCCESS
         }
         Err(e) => {
@@ -4077,8 +4090,9 @@ fn run(
 ) -> anyhow::Result<Value> {
     let now = fixed_now.unwrap_or_else(clock);
     match command {
-        Command::Kit { cast: Some(cast) } => kit::set_cast(cast == "on"),
-        Command::Kit { cast: None } => kit::write(now),
+        Command::Kit { cast: Some(cast), .. } => kit::set_cast(cast == "on"),
+        Command::Kit { cast: None, harness: Some(harness) } => kit::write_one(harness, now),
+        Command::Kit { cast: None, harness: None } => kit::write(now),
         Command::Cast { .. } => caster::cast(&checkout?, now),
         Command::Config { file, .. } => {
             let file = match file {

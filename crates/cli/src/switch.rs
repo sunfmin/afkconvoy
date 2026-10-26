@@ -31,9 +31,24 @@ pub fn on_host(
     let here = repo
         .clone()
         .unwrap_or_else(|| crate::git::Repo::new(std::env::current_dir().unwrap_or_default()));
+    let held = crate::kit::load()?.harnesses.iter().any(|held| held.harness == harness);
     let launches = crate::launch::Launches::new(&here, true)?;
-    crate::role::startable(&launches, harness, PRIORITY_BY)?;
+    let start_fault = match crate::role::startable(&launches, harness, PRIORITY_BY) {
+        Ok(()) => None,
+        Err(error) if !held => {
+            let installed = crate::launch::Launches::foreseen(&here)
+                .of(harness)?
+                .is_some_and(|proposed| proposed.resolves());
+            if !installed {
+                return Err(error);
+            }
+            Some(format!("{error:#}"))
+        }
+        Err(error) => return Err(error),
+    };
     let mut result = crate::kit::prefer(harness, target.model.as_deref())?;
+    result["added"] = json!(!held);
+    result["start_fault"] = json!(start_fault);
     let mut switched = vec![];
     let mut failed = vec![];
     let mut paths: Vec<_> = match &which {
@@ -275,9 +290,8 @@ pub(crate) fn auxiliary(
     if !caster {
         worktree.deliver(&terminal, &worktree.brief()?)?;
     }
-    Ok(
-        json!({"worktree": worktree.path, "from": continued.from, "to": cast.harness, "terminal": terminal}),
-    )
+    Ok(json!({"worktree": worktree.path, "from": continued.from, "to": cast.harness,
+            "terminal": terminal, "skipped": fleet.skipped_before(cast.harness, None)}))
 }
 
 /// Moves the worker of my claim on `issue` onto what it runs now — this host's
@@ -320,5 +334,5 @@ pub(crate) fn switch_issue(
     }
     Ok(json!({"issue": issue, "from": from, "to": to, "worktree": started["worktree"],
         "branch": started["branch"], "terminal": started["terminal"], "pr": pr,
-        "stage": started.get("stage")}))
+        "stage": started.get("stage"), "skipped": started["skipped"]}))
 }

@@ -1097,6 +1097,9 @@ case "$2" in
     # A model's probe: answered once `probes-answer` is there — as
     # `probes-answered-as` says, where it names the model, with the session
     # file it says of it written under CODEX_HOME.
+    if [ -f "$root/probes-wait" ]; then
+      while [ ! -f "$root/probes-release" ]; do sleep 1; done
+    fi
     if [ -f "$root/probes-answer" ]; then
       if [ -f "$root/probes-answered-as" ]; then
         home=$(printf '%s' "$2" | sed -n "s/^export CODEX_HOME='\\([^']*\\)'.*/\\1/p")
