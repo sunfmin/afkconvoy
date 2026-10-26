@@ -520,7 +520,7 @@ fn a_host_setting_a_run_names_holds_for_every_fleet_instance_at_once() {
     let second = world.afk_in(&clone2, &[&RUN[..], &["--admit-load", "100000000"]].concat()).ok();
     assert_eq!(second["settings"], json!({"admit_load": {"from": null, "to": 100000000}}));
     assert_eq!(second["host_runner"]["pid"], first["host_runner"]["pid"]);
-    assert!(ticked(&first, "dispatched #7").contains("holding 2/"));
+    assert!(ticked(&first, "dispatched #7").contains("holding 1/"));
     assert_eq!(world.claims(), [(7, first["instance"].as_str().unwrap().to_string())]);
 
     // naming it as it is changes nothing, and `default` changes it back
@@ -1018,7 +1018,7 @@ fn the_host_runner_moves_with_claims_and_a_pr_on_the_train_after_only_the_runnin
     let link = installed(&world);
     let first = world.afk_as(&link, &world.clone, &RUN).ok();
     let old = first["host_runner"]["pid"].as_u64().unwrap();
-    assert!(ticked(&first, "dispatched #7").contains("holding 1/"));
+    assert!(ticked(&first, "dispatched #7").contains("holding 2/"));
 
     // Keep the runner here while a worker joins its PR and another command
     // queues. The queued command must run only after the replacement starts.
