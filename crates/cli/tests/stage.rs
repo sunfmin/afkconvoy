@@ -69,6 +69,47 @@ fn an_incomplete_dispatch_starts_its_stage_again_without_a_silence_verdict() {
     assert!(!world.comments(7).iter().any(|body| body.contains("verdict=failed")));
 }
 
+#[test]
+fn a_ready_stage_worker_takes_its_pending_brief_in_the_same_terminal() {
+    let world = bound();
+    world.issue(7, &["flow:feature"]);
+    world.with_orca(|orca| orca["timeout_on_waits"] = json!([2, 3]));
+    assert_eq!(tick(&world, 1000)["errors"], json!([]));
+    let terminal = world.orca()["terminals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|worker| worker["open"] == true)
+        .unwrap()["handle"]
+        .clone();
+    world.orca_calls();
+    for now in [1090, 1180] {
+        let continued = tick(&world, now);
+        assert_eq!(continued["errors"], json!([]), "{continued}");
+        let orca = world.orca();
+        let open: Vec<_> = orca["terminals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|worker| worker["open"] == true)
+            .map(|worker| worker["handle"].clone())
+            .collect();
+        assert_eq!(open, [terminal.clone()]);
+        assert!(!world.orca_calls().iter().any(|call| common::asked(call) == "terminal create"));
+    }
+    let orca = world.orca();
+    let worker = orca["terminals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|worker| worker["handle"] == terminal)
+        .unwrap();
+    let sent = worker["sent"].as_array().unwrap();
+    assert_eq!(sent.len(), 1);
+    assert!(sent[0]["text"].as_str().unwrap().contains("convoy-worker-prompt.md"));
+    assert!(!world.comments(7).iter().any(|body| body.contains("verdict=failed")));
+}
+
 fn tick(world: &World, now: u64) -> Value {
     let now = now.to_string();
     world.afk(&["tick", "--instance", "alpha", "--host", "h1", "--now", &now]).ok()

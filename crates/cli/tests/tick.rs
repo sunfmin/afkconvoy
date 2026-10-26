@@ -77,6 +77,108 @@ fn a_brief_waits_for_a_started_harness_whose_prompt_settles_late() {
 }
 
 #[test]
+fn a_brief_whose_idle_check_times_out_follows_in_the_same_terminal_on_a_later_tick() {
+    for timeouts in [json!([2]), json!([2, 3])] {
+        let world = backlog(&[3]);
+        world.with_orca(|orca| orca["timeout_on_waits"] = timeouts.clone());
+        let first = tick(&world, "1000");
+        assert_eq!(first["errors"], json!([]), "{first}");
+        assert_eq!(world.claims(), alpha(&[3]));
+        let before = world.orca();
+        let worker = before["terminals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|terminal| terminal["open"] == true)
+            .unwrap();
+        let handle = worker["handle"].clone();
+        assert_eq!(worker["sent"], json!([]), "no line before its prompt settles");
+        let calls = world.orca_calls();
+        assert_eq!(calls.iter().filter(|call| common::asked(call) == "terminal wait").count(), 2);
+
+        for (i, _) in timeouts.as_array().unwrap().iter().enumerate() {
+            let again = tick(&world, &(1090 + i * 90).to_string());
+            assert_eq!(again["errors"], json!([]), "{again}");
+            assert_eq!(world.claims(), alpha(&[3]));
+            assert!(!world.comments(3).iter().any(|body| body.contains("convoy:escalation")));
+            assert!(
+                !world.orca_calls().iter().any(|call| common::asked(call) == "terminal create")
+            );
+        }
+        let after = world.orca();
+        let worker = after["terminals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|terminal| terminal["handle"] == handle)
+            .unwrap();
+        let sent = worker["sent"].as_array().unwrap();
+        assert_eq!(sent.len(), 1);
+        assert!(sent[0]["text"].as_str().unwrap().contains("convoy-worker-prompt.md"));
+        tick(&world, "1270");
+        assert!(!world.orca_calls().iter().any(|call| common::asked(call) == "terminal create"));
+    }
+}
+
+#[test]
+fn a_ready_terminal_waiting_for_its_brief_is_not_reused_under_a_later_claim() {
+    let world = backlog(&[3]);
+    world.with_orca(|orca| orca["timeout_on_waits"] = json!([2]));
+    tick(&world, "1000");
+    let before = world.orca()["terminals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|terminal| terminal["open"] == true)
+        .unwrap()["handle"]
+        .clone();
+    world.afk(&["release", "--issue", "3", "--instance", "alpha"]).ok();
+    world.with_orca(|orca| orca["timeout_on_waits"] = json!([]));
+    let again = tick(&world, "1090");
+    assert_eq!(again["errors"], json!([]), "{again}");
+    let after = world.orca();
+    let worker = after["terminals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|terminal| terminal["open"] == true)
+        .unwrap();
+    assert_ne!(worker["handle"], before);
+}
+
+#[test]
+fn a_missing_ready_terminal_is_replaced_without_counting_its_pending_brief_as_a_failed_start() {
+    let world = backlog(&[3]);
+    world.with_orca(|orca| orca["timeout_on_waits"] = json!([2]));
+    tick(&world, "1000");
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            terminal["open"] = json!(false);
+        }
+        orca["never_ready"] = json!(true);
+    });
+    let failed = tick(&world, "1090");
+    assert_eq!(failed["errors"][0]["do"], "judge", "{failed}");
+    assert_eq!(world.claims(), alpha(&[3]));
+    assert!(!world.comments(3).iter().any(|body| body.contains("convoy:escalation")));
+    tick(&world, "1180");
+    assert_eq!(world.claims(), [], "two genuine readiness failures still escalate");
+    assert!(world.comments(3).iter().any(|body| body.contains("worker start failed again")));
+}
+
+#[test]
+fn a_readiness_wait_timeout_is_still_a_failed_start() {
+    let world = backlog(&[3]);
+    world.with_orca(|orca| orca["timeout_on_waits"] = json!([1]));
+    let failed = tick(&world, "1000");
+    assert!(failed["errors"][0]["error"].as_str().unwrap().contains("timeout"), "{failed}");
+    assert_eq!(world.claims(), alpha(&[3]));
+    tick(&world, "1090");
+    assert_eq!(world.claims(), []);
+    assert!(world.comments(3).iter().any(|body| body.contains("worker start failed again")));
+}
+
+#[test]
 fn a_claim_whose_issue_is_closed_is_settled_and_its_slot_refilled() {
     let world = backlog(&[3, 5, 9]);
     tick(&world, "1000");
