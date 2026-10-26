@@ -499,6 +499,7 @@ mod tests {
             train: false,
             repo_lane: None,
             repo: None,
+            is_turn: false,
             command: "cargo test".into(),
             asked: 1000,
             ran: None,

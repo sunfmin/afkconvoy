@@ -160,6 +160,7 @@ pub fn run_and_record(
             command.text(),
             train,
             crate::config::heavy_gate(command.text()),
+            false,
         )?)
     };
     let head = repo.git(&["rev-parse", "HEAD"])?;
@@ -246,7 +247,7 @@ pub fn gated(
     if let Some(run) = recorded(repo, &tree, command, now)? {
         return Ok(Gated::Green { run, source: "recorded" });
     }
-    let _train_lane = crate::exclusive::Permit::take(repo, command.text(), true, true)?;
+    let _train_lane = crate::exclusive::Permit::take(repo, command.text(), true, true, false)?;
     let not_the_commit = |why: &str, strays: &[String]| {
         let listed: Vec<&str> = strays.iter().take(20).map(String::as_str).collect();
         anyhow!(

@@ -23,7 +23,7 @@ use crate::lock::standing_locks;
 /// is empty: the base branch needs evidence too.
 fn certify_tip(repo: &Repo, config: &Config, tip: &str, now: u64) -> Result<bool> {
     let command = GateCommand::new(&config.gate_command);
-    let _lane = Permit::take(repo, "gate the train's tip", true, true)?;
+    let _lane = Permit::take(repo, "gate the train's tip", true, true, false)?;
     let tree = Tree::named(&repo.git(&["rev-parse", &format!("{tip}^{{tree}}")])?);
     if crate::gate::recorded(repo, &tree, &command, now)?.is_some() {
         return Ok(true);
@@ -86,6 +86,7 @@ fn turn(repo: &Repo, config: &Config, issue: Option<u64>, now: u64) -> Result<(P
             "turn: merge, gate, join",
             false,
             crate::config::heavy_gate(&config.gate_command),
+            true,
         )?;
         let current = Train::read(repo, config)?;
         let current_tree =

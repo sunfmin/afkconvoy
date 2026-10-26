@@ -29,6 +29,10 @@ pub struct Ticket {
     /// The shared git directory, identifying a repo across its worktrees.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repo: Option<String>,
+    /// A joining turn, which excludes another turn of its repo even when
+    /// the two branches configure different kinds of gate.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_turn: bool,
     /// When it asked to run, in epoch seconds: within each priority the one
     /// that asked first runs first, including in the next host runner.
     pub asked: u64,
@@ -69,9 +73,10 @@ pub fn ready(queue: &[Ticket], number: u64, worker_lanes: u64, train_lanes: u64)
         };
         let occupied = admitted.iter().filter(|t| same_lane(t, ticket)).count() as u64;
         let repo = ticket.repo.as_deref().unwrap_or(&ticket.dir);
-        let own = admitted
-            .iter()
-            .any(|t| t.train == ticket.train && t.repo.as_deref().unwrap_or(&t.dir) == repo);
+        let own = admitted.iter().any(|t| {
+            (same_lane(t, ticket) || (t.is_turn && ticket.is_turn))
+                && t.repo.as_deref().unwrap_or(&t.dir) == repo
+        });
         if occupied < limit && !own {
             if ticket.number == number {
                 return true;
@@ -186,6 +191,7 @@ mod tests {
             train: false,
             repo_lane: None,
             repo: None,
+            is_turn: false,
             asked,
             ran: None,
         }

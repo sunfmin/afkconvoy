@@ -545,7 +545,7 @@ fn the_exclusive_queue_its_host_runner_holds_is_on_the_page_printed_and_the_page
 
     // printed: `panel` asks the host runner on its socket
     let page = printed_with("waits behind 1");
-    assert!(page.html.contains("<h2>Run alone on this host</h2>"), "{}", page.html);
+    assert!(page.html.contains("<h2>Command lanes</h2>"), "{}", page.html);
     assert!(page.html.contains("runs alone, for "), "{}", page.html);
     assert!(page.html.contains(" · #12 in "), "{}", page.html);
 
@@ -553,14 +553,18 @@ fn the_exclusive_queue_its_host_runner_holds_is_on_the_page_printed_and_the_page
     world.afk(&["wake"]).ok();
     let answer = world.afk_in(&world.root, &["panel", "--open"]).ok();
     let page = page_with(port_in(&answer["panel"]), "waits behind 1");
-    assert!(page.html.contains("<h2>Run alone on this host</h2>"), "{}", page.html);
+    assert!(page.html.contains("<h2>Command lanes</h2>"), "{}", page.html);
 
     write(&world.cache(), "done", "");
     for command in [alone, after] {
         assert!(command.wait_with_output().unwrap().status.success());
     }
     let page = printed(&world, &world.clone, &[]);
-    assert!(!page.html.contains("Run alone on this host"), "the queue is empty: {}", page.html);
+    assert!(
+        page.html.contains("1 worker lanes · 1 train lanes"),
+        "the idle page keeps the counts: {}",
+        page.html
+    );
 }
 
 /// Has the remote lose the base branch the config names: a start of the

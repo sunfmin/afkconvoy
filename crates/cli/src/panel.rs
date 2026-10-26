@@ -1783,6 +1783,7 @@ mod tests {
             train: false,
             repo_lane: None,
             repo: None,
+            is_turn: false,
             asked: 700,
             ran,
         };

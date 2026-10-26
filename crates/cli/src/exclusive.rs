@@ -112,7 +112,13 @@ pub struct Permit {
 }
 
 impl Permit {
-    pub fn take(repo: &Repo, command: &str, train: bool, heavy: bool) -> Result<Self> {
+    pub fn take(
+        repo: &Repo,
+        command: &str,
+        train: bool,
+        heavy: bool,
+        is_turn: bool,
+    ) -> Result<Self> {
         if held() {
             bail!("this command already holds a turn");
         }
@@ -125,6 +131,7 @@ impl Permit {
             train,
             repo_lane: if train || heavy { None } else { Some(canonical(repo.common_dir()?)) },
             repo: Some(canonical(repo.common_dir()?)),
+            is_turn,
             asked: crate::clock(),
             ran: None,
         };
@@ -574,6 +581,7 @@ pub fn exclusive(
             .is_some_and(is_train_worktree),
         repo_lane: None,
         repo: checkout.as_ref().and_then(|repo| repo.common_dir().ok()).map(canonical),
+        is_turn: false,
         asked: now(),
         ran: None,
     };
@@ -728,6 +736,7 @@ mod tests {
             train: false,
             repo_lane: None,
             repo: None,
+            is_turn: false,
             asked,
             ran: None,
         }
