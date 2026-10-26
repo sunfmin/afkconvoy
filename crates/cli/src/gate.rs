@@ -166,6 +166,10 @@ pub fn run_and_record(
     let tree = head_tree(repo)?;
     let before = off_commit(repo, None)?;
     let (exit_code, timed_out, seconds, excerpt) = run_command(repo, command.text(), limit)?;
+    crate::acting::Acting::new("exclusive")
+        .on_own_issue()
+        .in_checkout(Some(repo.clone()))
+        .say(crate::clock(), format!("gate command ended (exit {exit_code}) after {seconds}s"));
     let after = if before.is_empty() { off_commit(repo, Some(&head))? } else { vec![] };
     let ran = Ran {
         exit_code,
