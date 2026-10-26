@@ -1072,7 +1072,12 @@ case "$2" in
     . "$HOME/.profile"; eval "$2"; exit 0 ;;
   *"AFKCONVOY_DIAGNOSIS"*)
     printf '%s\n' "$2" >> "$root/diagnosis-asked"
-    if [ -f "$root/diagnosis-answer" ]; then cat "$root/diagnosis-answer"; exit 0; fi
+    answer="$root/diagnosis-answer"
+    case "$2" in
+      *"codex exec"*) [ ! -f "$root/diagnosis-answer-codex" ] || answer="$root/diagnosis-answer-codex" ;;
+      *"pi --print"*) [ ! -f "$root/diagnosis-answer-pi" ] || answer="$root/diagnosis-answer-pi" ;;
+    esac
+    if [ -f "$answer" ]; then cat "$answer"; exit 0; fi
     exit 1 ;;
   *"You are the caster of a fleet"*)
     # A caster's prompt: answered with what `caster-answer` holds.
