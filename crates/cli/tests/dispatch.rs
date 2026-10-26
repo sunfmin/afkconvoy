@@ -177,9 +177,14 @@ fn the_steps_run_in_order() {
             "terminal create",
             "terminal wait",
             "terminal wait",
-            "terminal send"
+            "terminal send",
+            // The successful delivery records Orca's harness for the host watch.
+            "worktree ps"
         ]
     );
+    let delivered =
+        std::fs::read_to_string(world.cache().join("afkconvoy/watch/delivered.json")).unwrap();
+    assert_eq!(serde_json::from_str::<Value>(&delivered).unwrap(), json!(["claude-code"]));
 }
 
 #[test]
