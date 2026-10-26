@@ -205,3 +205,22 @@ fn a_light_gate_takes_its_repo_turn_while_the_worker_lane_is_occupied() {
     std::fs::write(release, "").unwrap();
     assert!(heavy.wait_with_output().unwrap().status.success());
 }
+
+#[test]
+fn the_exclusive_bound_ends_the_whole_turn_and_releases_the_next_one() {
+    let world = World::new();
+    heavy(&world);
+    world.say_host_settings(json!({"exclusive_seconds": 1}));
+    let one = world.worker(1, "held.txt", "one");
+    let two = world.worker(2, "second.txt", "two");
+    let _runner = world.host_held();
+    let first = start(&world, &one, &world.cache(), 1);
+    until(|| world.root.join("started").exists());
+    let next = start(&world, &two, &world.cache(), 2);
+    let ended = first.wait_with_output().unwrap();
+    assert_eq!(ended.status.code(), Some(124), "{}", String::from_utf8_lossy(&ended.stderr));
+    let answer: Value = serde_json::from_slice(&ended.stdout).unwrap();
+    assert!(answer["error"].as_str().unwrap().contains("exclusive bound of 1s"), "{answer}");
+    assert_eq!(finish(next)["outcome"], "joined");
+    assert!(!two.join("held.txt").exists(), "the red turn joined nothing");
+}

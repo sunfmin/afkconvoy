@@ -144,8 +144,13 @@ impl Permit {
                 let stopping = stop.clone();
                 (
                     Some(std::thread::spawn(move || {
+                        let began = Instant::now();
                         while !stopping.load(Ordering::Acquire) {
-                            if let Ok(bound) = watch.read.recv_timeout(CHECK_EVERY) {
+                            let heard = watch.read.recv_timeout(CHECK_EVERY);
+                            if matches!(heard, Err(mpsc::RecvTimeoutError::Disconnected)) {
+                                std::thread::sleep(CHECK_EVERY);
+                            }
+                            if let Ok(bound) = heard {
                                 // Freeze each child before walking below it. The
                                 // owning CLI remains able to reap and exit.
                                 for child in crate::hot::listed()
@@ -155,8 +160,11 @@ impl Permit {
                                     end_descendants(child.pid);
                                 }
                                 let line = format!(
-                                    "ended at the exclusive bound of {}s with {} commands waiting: `{}`",
-                                    bound.bound, bound.waiting, ticket.command
+                                    "ended at the exclusive bound of {}s after {}s with {} commands waiting: `{}`",
+                                    bound.bound,
+                                    began.elapsed().as_secs(),
+                                    bound.waiting,
+                                    ticket.command
                                 );
                                 acting.say(crate::clock(), line.clone());
                                 eprintln!("[afkconvoy] exclusive: {line}");
