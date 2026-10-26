@@ -39,15 +39,30 @@ impl Item {
 /// are returned. Items already watched stay covered until a later look no
 /// longer contains them.
 pub fn pending(current: &[Item], watched: &[String], running: bool) -> Vec<Item> {
+    let mut due = vec![];
     if running {
-        return vec![];
+        return due;
     }
-    current.iter().filter(|item| !watched.contains(&item.id)).cloned().collect()
+    for item in current {
+        if !watched.contains(&item.id) {
+            due.push(item.clone());
+        }
+    }
+    due
 }
 
 /// The watched identities that are still in their episodes after a look.
 pub fn covered(watched: &[String], current: &[Item]) -> Vec<String> {
-    watched.iter().filter(|id| current.iter().any(|item| &item.id == *id)).cloned().collect()
+    let mut covered = vec![];
+    for id in watched {
+        for item in current {
+            if &item.id == id {
+                covered.push(id.clone());
+                break;
+            }
+        }
+    }
+    covered
 }
 
 /// Whether a watch started at `started` has used its whole hour by `now`.
@@ -81,14 +96,18 @@ pub fn exited(transcript: &str) -> Option<i32> {
 /// What a session printed, as what it did: its transcript's last lines, but
 /// for the line that says how it exited.
 pub fn did(transcript: &str) -> Vec<String> {
-    let printed: Vec<String> = transcript
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty() && !line.starts_with(EXITED))
-        .map(|line| line.chars().take(DID_CHARS).collect())
-        .collect();
-    let skip = printed.len().saturating_sub(DID_LINES);
-    printed.into_iter().skip(skip).collect()
+    let mut did: Vec<String> = vec![];
+    for line in transcript.lines().rev() {
+        if did.len() >= DID_LINES {
+            break;
+        }
+        let line = line.trim();
+        if !line.is_empty() && !line.starts_with(EXITED) {
+            did.push(line.chars().take(DID_CHARS).collect());
+        }
+    }
+    did.reverse();
+    did
 }
 
 #[cfg(test)]
