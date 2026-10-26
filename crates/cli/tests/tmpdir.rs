@@ -101,6 +101,32 @@ fn retiring_a_link_outlives_the_callers_temporary_directory() {
     can_compile(&tmp);
 }
 
+/// What a test killed in a worker's worktree leaves in its `TMPDIR`: a
+/// fleet's copies, read-only, directories included. git cannot remove a
+/// worktree holding them, and orca with it. The fleet opens them first — but
+/// never a directory outside the worktree that a link in it names.
+#[test]
+fn settling_removes_a_worktree_its_worker_left_read_only_directories_in() {
+    let world = World::new();
+    let worktree = dispatch(&world, 7);
+    let left = worktree.join(".afkconvoy-tmp/a-killed-test/copies/acme/team");
+    std::fs::create_dir_all(&left).unwrap();
+    std::fs::write(left.join("CLAUDE.md"), "rules\n").unwrap();
+    let outside = world.root.join("the-host-users-skills");
+    std::fs::create_dir(&outside).unwrap();
+    std::os::unix::fs::symlink(&outside, worktree.join(".afkconvoy-tmp/skills")).unwrap();
+    for dir in [&left, left.parent().unwrap(), &outside] {
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+    }
+    world.close_issue(7);
+
+    let tick = world.afk(&["tick", "--instance", "alpha", "--host", "h1"]).ok();
+    assert_eq!(tick["errors"], serde_json::json!([]));
+    assert!(!worktree.exists(), "settling removed the worktree");
+    let mode = std::fs::metadata(&outside).unwrap().permissions().mode();
+    assert_eq!(mode & 0o777, 0o555, "a directory a link names is left as it was");
+}
+
 #[test]
 fn a_test_reclaims_only_its_own_links_and_repairs_to_durable_storage() {
     let other = World::new();

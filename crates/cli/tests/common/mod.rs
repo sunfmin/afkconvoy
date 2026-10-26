@@ -49,6 +49,9 @@ pub fn shown(at: &str, language: &str) -> Vec<String> {
 
 pub struct World {
     _root: TempDir,
+    /// Held as long as this world's test runs, and let go however it ends
+    /// (`reclaim_left`). Let go after the world's directory is removed.
+    _owner: std::fs::File,
     tmp_links: TempDir,
     pub root: PathBuf,
     /// The remote: every clone's `origin`.
@@ -87,7 +90,9 @@ impl World {
     /// Claude Code alone, on no model: it leaves no choice to make, so no
     /// caster is started (`hold_every_harness` holds the others).
     pub fn new() -> World {
-        let dir = TempDir::new().unwrap();
+        reclaim_left();
+        let dir = tempfile::Builder::new().prefix(WORLD).tempdir().unwrap();
+        let owner = owned(dir.path());
         let root = dir.path().canonicalize().unwrap();
         let (bare, clone, bin) = (root.join("remote.git"), root.join("clone"), root.join("bin"));
         git(&root, &["init", "-q", "--bare", "-b", BASE, bare.to_str().unwrap()]);
@@ -118,6 +123,7 @@ impl World {
             gh_file: root.join("gh.json"),
             orca_file: root.join("orca.json"),
             _root: dir,
+            _owner: owner,
             root,
             bare,
             clone,
@@ -285,7 +291,7 @@ impl World {
     /// Where this world's fleet keeps what it caches on its host: the copies
     /// of a team and its roles are under it.
     pub fn cache(&self) -> PathBuf {
-        self.root.join("cache")
+        cache_of(&self.root)
     }
 
     /// This world's worker link for `worktree`, with the production key but
@@ -946,23 +952,89 @@ impl World {
     }
 }
 
-/// A host runner this world started ends with it: killed, so that none is
-/// left ticking against a world that is gone. The copies a fleet kept are
-/// read-only, directories included: they are opened again so that the world's
-/// directory can be removed.
 impl Drop for World {
     fn drop(&mut self) {
-        let until = Instant::now() + Duration::from_secs(5);
-        while self.runner_lock_held() && Instant::now() < until {
-            if let Some(pid) = self.host_runner() {
-                let _ = Command::new("kill").args(["-KILL", &pid.to_string()]).status();
-            }
-            std::thread::sleep(Duration::from_millis(50));
+        ended(&self.root);
+    }
+}
+
+/// What a world's directory is named for, in the temporary directory its test
+/// runs in, so that a later world finds one its test left (`reclaim_left`).
+const WORLD: &str = "afkconvoy-world-";
+
+/// The lock a world's test holds in the world's directory as long as it runs.
+const OWNER: &str = "owner.lock";
+
+/// The cache directory of the world at `root`.
+fn cache_of(root: &Path) -> PathBuf {
+    root.join("cache")
+}
+
+/// Takes the lock of the world at `root` for its test: taken under another
+/// name and then moved to its own, so that no later world finds it there
+/// before it is held.
+fn owned(root: &Path) -> std::fs::File {
+    let taking = root.join(format!(".{OWNER}"));
+    let lock = std::fs::File::create(&taking).unwrap();
+    lock.lock().unwrap();
+    std::fs::rename(&taking, root.join(OWNER)).unwrap();
+    lock
+}
+
+/// Removes each world a test left where this one runs: a test killed before
+/// it ends never drops its world — nextest ends one past its limit, and
+/// whoever stops a run ends every test in it. Its lock is free, and it is
+/// ended as a dropped world is. One whose lock is not there yet is being
+/// made.
+fn reclaim_left() {
+    let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else { return };
+    for entry in entries.flatten() {
+        let root = entry.path();
+        if !entry.file_name().to_string_lossy().starts_with(WORLD) {
+            continue;
         }
-        if self.cache().exists() {
-            let _ = Command::new("chmod").arg("-R").arg("u+w").arg(self.cache()).status();
+        let Ok(owner) = std::fs::File::open(root.join(OWNER)) else { continue };
+        if owner.try_lock().is_ok() {
+            ended(&root);
+            let _ = std::fs::remove_dir_all(&root);
         }
     }
+}
+
+/// Ends what the world at `root` left running, and opens what it left
+/// closed: a host runner it started is killed, so that none is left ticking
+/// against a world that is gone, and the copies a fleet kept there are
+/// read-only, directories included — they are opened, so that the world's
+/// directory can be removed.
+fn ended(root: &Path) {
+    let cache = cache_of(root);
+    let until = Instant::now() + Duration::from_secs(5);
+    while runner_lock_held(&cache) && Instant::now() < until {
+        if let Some(pid) = runner_of(&cache) {
+            let _ = Command::new("kill").args(["-KILL", &pid.to_string()]).status();
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    afkconvoy::copies::removable(root);
+}
+
+/// The pid of the host runner of the cache directory `cache`: the one its
+/// lock says, while that lock is held.
+fn runner_of(cache: &Path) -> Option<u32> {
+    if !runner_lock_held(cache) {
+        return None;
+    }
+    let text = std::fs::read_to_string(cache.join("afkconvoy/host-runner.lock"));
+    let holder: Value = serde_json::from_str(&text.ok()?).ok()?;
+    holder["pid"].as_u64().map(|pid| pid as u32)
+}
+
+/// Whether a process holds the host runner's lock of the cache directory
+/// `cache`.
+fn runner_lock_held(cache: &Path) -> bool {
+    let file = cache.join("afkconvoy/host-runner.lock");
+    let Ok(lock) = std::fs::File::open(file) else { return false };
+    matches!(lock.try_lock(), Err(std::fs::TryLockError::WouldBlock))
 }
 
 /// The calls of a stand-in's `state`, each with the names of a session's
@@ -1137,19 +1209,7 @@ impl World {
     /// The pid of this world's host runner: the one its lock says, while
     /// that lock is held.
     pub fn host_runner(&self) -> Option<u32> {
-        if !self.runner_lock_held() {
-            return None;
-        }
-        let text = std::fs::read_to_string(self.cache().join("afkconvoy/host-runner.lock"));
-        let holder: Value = serde_json::from_str(&text.ok()?).ok()?;
-        holder["pid"].as_u64().map(|pid| pid as u32)
-    }
-
-    /// Whether a process holds this world's host runner's lock.
-    fn runner_lock_held(&self) -> bool {
-        let file = self.cache().join("afkconvoy/host-runner.lock");
-        let Ok(lock) = std::fs::File::open(file) else { return false };
-        matches!(lock.try_lock(), Err(std::fs::TryLockError::WouldBlock))
+        runner_of(&self.cache())
     }
 
     /// Starts a host runner of the afkconvoy `version` on this world's host
@@ -1180,7 +1240,7 @@ impl World {
         let sent = Command::new("kill").arg(format!("-{signal}")).arg(pid.to_string()).status();
         assert!(sent.unwrap().success(), "kill -{signal} {pid}");
         let until = Instant::now() + Duration::from_secs(30);
-        while self.runner_lock_held() {
+        while runner_lock_held(&self.cache()) {
             assert!(
                 Instant::now() < until,
                 "host runner {pid} still holds the host 30s after {signal}"
