@@ -178,10 +178,12 @@ fn a_fleet_with_no_fault_answers_its_keys_and_no_finding_and_writes_nothing() {
             "host",
             "issues",
             "proposals",
+            "refusals",
             "waiting_on_human"
         ]
     );
     assert_eq!(answer["proposals"], Value::Null);
+    assert_eq!(answer["refusals"], json!({"3": [], "5": []}));
     assert_eq!(answer["waiting_on_human"], json!([]));
 
     // nothing on the remote, probes included, and nothing on GitHub

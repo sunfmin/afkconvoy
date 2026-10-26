@@ -27,11 +27,16 @@ const ANSWER_TIMEOUT: Duration = Duration::from_secs(540);
 
 /// Each stage's eligible range in kit order. Permissions are cut against the
 /// whole kit before temporary health exclusions, exactly as at dispatch.
-fn ranges(fleet: &Fleet, team: Option<&Team>, labels: &[String]) -> Vec<(String, Vec<Held>)> {
+fn ranges(
+    fleet: &Fleet,
+    team: Option<&Team>,
+    labels: &[String],
+    number: u64,
+) -> Vec<(String, Vec<Held>)> {
     let Some(team) = team else {
         return vec![(
             "worker".into(),
-            fleet.runnable().map(|kit| kit.range()).unwrap_or_default(),
+            fleet.runnable_for(Some(number)).map(|kit| kit.range()).unwrap_or_default(),
         )];
     };
     let Ok(workflow) = workflow_of(team, labels) else { return vec![] };
@@ -43,7 +48,7 @@ fn ranges(fleet: &Fleet, team: Option<&Team>, labels: &[String]) -> Vec<(String,
             let role = team.role_of(work);
             Some((
                 format!("{} ({})", stage.name, role.name),
-                fleet.range_in(role).unwrap_or_default(),
+                fleet.range_in(role, Some(number)).unwrap_or_default(),
             ))
         })
         .collect()
@@ -74,7 +79,7 @@ pub fn status(fleet: &Fleet, open: &OpenIssues, team: Option<&Team>) -> Vec<Mode
     let source = Source::of(&fleet.repo).ok();
     let mut statuses: Vec<ModelStatus> = open.rows.iter().map(|issue| {
         let labels = &issue.labels;
-        let ranges = ranges(fleet, team, labels);
+        let ranges = ranges(fleet, team, labels, issue.number);
         let bodies = bodies(open, issue.number);
         let ready = !labels.iter().any(|label| fleet.config.epic_labels.contains(label))
             && match team {
@@ -278,7 +283,7 @@ pub fn cast(repo: &Repo, now: u64) -> Result<Value> {
     for number in numbers {
         let read = fleet.gh.issue(number)?;
         let bodies = bodies(&open.issues, number);
-        let eligible = ranges(&fleet, team.as_ref(), &read.labels);
+        let eligible = ranges(&fleet, team.as_ref(), &read.labels, number);
         if !casting::needs_model(&read.labels, &bodies, &eligible) {
             continue;
         }
@@ -343,7 +348,7 @@ pub fn cast(repo: &Repo, now: u64) -> Result<Value> {
             let now_labels = current.gh.issue(number)?.labels;
             let comments = current.gh.comments(number)?;
             let bodies: Vec<_> = comments.iter().map(|c| c.body.as_str()).collect();
-            let live = missing(&ranges(&current, team.as_ref(), &now_labels), &now_labels);
+            let live = missing(&ranges(&current, team.as_ref(), &now_labels, number), &now_labels);
             let allowed = union(&live);
             let asked = union(requested);
             let checked = (|| -> Result<Vec<String>> {

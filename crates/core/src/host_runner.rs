@@ -89,11 +89,9 @@ pub enum Stands {
 pub enum HeldBack {
     /// The fleet instance of the checkout `checkout` stands so.
     Instance { checkout: String, stands: Stands },
-    /// This many commands are in the host's exclusive queue, running or
-    /// waiting.
+    /// This many exclusive commands are running. Waiting commands carry on
+    /// in the next host runner's queue.
     Exclusive { commands: usize },
-    /// An inspection runs on the host.
-    Inspection,
 }
 
 impl HeldBack {
@@ -113,32 +111,25 @@ impl HeldBack {
                 format!("{checkout} holds nothing back")
             }
             HeldBack::Exclusive { commands } => {
-                format!("{commands} command(s) in the exclusive queue")
+                format!("{commands} exclusive command(s) running")
             }
-            HeldBack::Inspection => "an inspection runs".to_string(),
         }
     }
 }
 
 /// What holds back a host runner's move onto a newer afkconvoy now: each of
-/// its fleet instances `each`, by its checkout, that is neither quiet nor
-/// broken; the `exclusive` commands in the host's exclusive queue; and the
-/// inspection that runs, where one does (`inspecting`). Nothing: it moves
-/// now. Its fleets are idle for it once nothing is held, nothing is on a
-/// landing train, nothing is in the exclusive queue and no inspection runs —
-/// a frontier left is no work yet, and its next tick is on the newer one.
-pub fn held_back(each: &[(String, Stands)], exclusive: usize, inspecting: bool) -> Vec<HeldBack> {
+/// its fleet instances `each`, by checkout, still starting or in a tick,
+/// and the `exclusive` commands running. Claims, workers, the landing train,
+/// cuts, inspections and commands waiting carry on across a move.
+pub fn held_back(each: &[(String, Stands)], exclusive: usize) -> Vec<HeldBack> {
     let mut held = vec![];
     for (checkout, stands) in each {
-        if !matches!(stands, Stands::Quiet | Stands::Broken) {
+        if matches!(stands, Stands::Starting | Stands::Ticking) {
             held.push(HeldBack::Instance { checkout: checkout.clone(), stands: *stands });
         }
     }
     if exclusive > 0 {
         held.push(HeldBack::Exclusive { commands: exclusive });
-    }
-    if inspecting {
-        held.push(HeldBack::Inspection);
     }
     held
 }
@@ -198,30 +189,22 @@ mod tests {
     }
 
     #[test]
-    fn a_host_runner_moves_once_nothing_is_held_on_the_train_queued_or_inspected() {
+    fn a_host_runner_moves_between_ticks_with_work_held_but_no_exclusive_command_running() {
         let each = |stands: &[Stands]| -> Vec<(String, Stands)> {
             stands.iter().enumerate().map(|(at, stands)| (format!("/c{at}"), *stands)).collect()
         };
         // a frontier left, or a fleet instance broken, holds nothing back
-        assert_eq!(held_back(&each(&[Stands::Quiet, Stands::Broken]), 0, false), vec![]);
-        assert_eq!(held_back(&[], 0, false), vec![], "no fleet instance at all");
-        for stands in [Stands::Starting, Stands::Ticking, Stands::AtWork] {
-            let held = held_back(&each(&[Stands::Quiet, stands]), 0, false);
+        assert_eq!(held_back(&each(&[Stands::Quiet, Stands::Broken, Stands::AtWork]), 0), vec![]);
+        assert_eq!(held_back(&[], 0), vec![], "no fleet instance at all");
+        for stands in [Stands::Starting, Stands::Ticking] {
+            let held = held_back(&each(&[Stands::Quiet, stands]), 0);
             let instance = HeldBack::Instance { checkout: "/c1".to_string(), stands };
             assert_eq!(held, vec![instance], "{stands:?}");
         }
-        let held = held_back(&each(&[Stands::AtWork]), 2, true);
+        let held = held_back(&each(&[Stands::Ticking, Stands::AtWork]), 1);
         let said: Vec<String> = held.iter().map(HeldBack::said).collect();
-        assert_eq!(
-            said,
-            [
-                "/c0 holds a claim or has something on the landing train",
-                "2 command(s) in the exclusive queue",
-                "an inspection runs"
-            ]
-        );
-        assert_eq!(held_back(&each(&[Stands::Quiet]), 1, false).len(), 1, "a command alone");
-        assert_eq!(held_back(&each(&[Stands::Quiet]), 0, true).len(), 1, "an inspection alone");
+        assert_eq!(said, ["/c0 is in a tick", "1 exclusive command(s) running"]);
+        assert_eq!(held_back(&each(&[Stands::Quiet]), 1).len(), 1, "a command alone");
     }
 
     #[test]

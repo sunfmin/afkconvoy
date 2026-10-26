@@ -24,6 +24,8 @@ Start with `afkconvoy doctor`, in the checkout the fleet runs in: it reads every
 
 A warning may be the fleet mid-step: run `doctor` again after a tick before you act on one.
 
+- `ended at the exclusive bound`: A command held others up for the host's bound. Each occurrence in the last day has the command, runtime and number waiting in `evidence`. Run each step of a long measurement as its own `afkconvoy exclusive`. If a single gate or release build reaches it, check the host setting with `afkconvoy doctor` and change it with `afkconvoy run --exclusive-seconds N`, or `--exclusive-seconds default` to restore {const:EXCLUSIVE_SECONDS}s.
+
 - `failed in tick`: A step failed, including a worker that could not start or take its brief. `evidence` is the error and `fix` is the line to try after correcting it: a failed dispatch can be run again, and a failed train worker start uses `afkconvoy tick`. It stays visible across unrelated ticks until the step succeeds or the issue's work continues or ends. Three consecutive failed ticks make it critical instead.
 - `has no worker`: A claim's worker is gone; a tick starts one. `fix` is for a claim it leaves so.
 - `has been stopped for`: A worker stopped half an hour ago and its claim is still at work. Read its terminal; `fix` follows its verdict and progress. A `blocked` verdict whose blockers all closed names `dispatch`, which continues its worktree; open blockers name `park`. Only a worker eligible for a nudge names `nudge`; other cases name `tick`.
@@ -45,7 +47,7 @@ A warning may be the fleet mid-step: run `doctor` again after a tick before you 
 - `is held off by a PR not the fleet's`: No worker starts: it would open a second PR. `fix` closes it, or merge it yourself.
 - `is claimed but GitHub has it no more`: Deleted or transferred: its fleet's next tick releases it. `fix` is for one stopped.
 - `the gate is slow`: On one host, the last {const:SLOW_GATE_LANDINGS} landings with a recorded gate run all took more than {const:SLOW_GATE_PERCENT}% of the gate limit. A tick opens one issue for the fleet to make the gate faster: `fix` shows it. Raising `gate_seconds` is no fix, nor is deleting or skipping tests.
-- `the host runner did not move onto`: A newer release is installed where the host runner was started from, and it did not start, or does not say its version: `evidence` is why, with what it said as it ended. The host runner works on, on its own release, and tries that file again once it changes: install it again (`brew reinstall afkconvoy`), and `fix` shows whether it now says its version.
+- `the host runner did not move onto`: A newer release is installed where the host runner was started from, and it did not start, does not say its version, or the wait for ticks and a running exclusive command to end exceeded ten minutes: `evidence` says why, including which ticks or command held it. The host runner works on, on its own release, and tries that file again once it changes: install it again (`brew reinstall afkconvoy`), and `fix` shows whether it now says its version.
 
 ## What `doctor` finds — info: nothing is held up
 

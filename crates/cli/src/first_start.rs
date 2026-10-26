@@ -17,13 +17,14 @@ use crate::instance::Start;
 pub fn settings_help() -> String {
     use afkconvoy_core::{admission::SHARES, host_inspection::SPAN, host_sleep};
     format!(
-        "Host settings apply to every fleet here. Fleets put this host to sleep from {} local time by default, once all fleets and the host have been idle {} minutes; off macOS, say `--no-host-sleep`. Hot limits inspect a worker past half the host's cores (at least one) held two minutes, a quarter of its memory resident, or a tenth of the disk free written in ten minutes (at least one GiB). Admission holds back new workers past {}% load per core, under {}% memory free, or under {}% disk free; held for one reason {} seconds, it starts an inspection. Memory pressure held that long starts one too. The panel's port defaults to {}, or any free port if taken. The host runner looks every {} seconds when an operator directory is set; none is set by default, so no watch starts. Each checkout's concurrency defaults to {} claims at work at once. `afkconvoy run --help` gives each flag.",
+        "Host settings apply to every fleet here. Fleets put this host to sleep from {} local time by default, once all fleets and the host have been idle {} minutes; off macOS, say `--no-host-sleep`. Hot limits inspect a worker past half the host's cores (at least one) held two minutes, a quarter of its memory resident, or a tenth of the disk free written in ten minutes (at least one GiB). Admission holds back new workers past {}% load per core, under {}% memory free, or under {}% disk free; held for one reason {} seconds, it starts an inspection. Memory pressure held that long starts one too. An exclusive command holding others up is ended after {} seconds of that wait by default. The panel's port defaults to {}, or any free port if taken. The host runner looks every {} seconds when an operator directory is set; none is set by default, so no watch starts. Each checkout's concurrency defaults to {} claims at work at once. `afkconvoy run --help` gives each flag.",
         host_sleep::SLEEP_HOURS,
         host_sleep::IDLE_WAIT / 60,
         SHARES.load,
         SHARES.memory,
         SHARES.disk,
         SPAN,
+        crate::exclusive::SECONDS,
         host_settings::PANEL_PORT,
         host_settings::WATCH_EVERY,
         afkconvoy_core::config::CONCURRENCY,

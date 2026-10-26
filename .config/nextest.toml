@@ -1,6 +1,7 @@
 # The limit for one test, which ./gate.sh runs the tests under: a test still
-# running after 240 seconds is ended and fails as TIMEOUT, by name. From 60
-# seconds on it is reported SLOW.
+# running after 240 seconds is ended and fails as TIMEOUT, by name. From 20
+# seconds on it is reported SLOW, and the gate names it as it ends: a test
+# that slows the gate is seen the day it lands.
 #
 # Measured on one host, 14 cores, warm build: the slowest test takes 24s with
 # the host to itself and 79s with other gates' tests running beside it, as they
@@ -10,7 +11,9 @@
 # CLI starts processes by the dozen (the CLI itself, and the `git`, `gh` and
 # `orca` it runs). This repo's gates run one at a time on a host, through
 # `afkconvoy exclusive` (docs/agents/afkconvoy.md), but beside whatever else
-# runs there outside that queue: other fleets' work, and the human's.
+# runs there outside that queue: other fleets' work, and the human's. Six at a
+# time, the suite takes about the sum of its tests' times over six: a second
+# taken off any test is a sixth of a second off the gate.
 [profile.default]
-slow-timeout = { period = "60s", terminate-after = 4 }
+slow-timeout = { period = "20s", terminate-after = 12 }
 test-threads = 6

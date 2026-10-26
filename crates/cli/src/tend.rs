@@ -5,6 +5,7 @@ use afkconvoy_core::tick::Outcome;
 use afkconvoy_core::train::{Built, TRAIN_WORKTREE, Tend, tend};
 use afkconvoy_core::worker::WorkerState;
 use anyhow::{Result, anyhow};
+use serde_json::json;
 
 use crate::abandon::{StoppedOn, stopped_train};
 use crate::claims::Me;
@@ -16,8 +17,9 @@ use crate::team::keep;
 use crate::train::Train;
 
 /// Keeps the train worker on the train: starts one in the train's worktree —
-/// cut first when this machine has none — or tells the one that stopped that
-/// the train holds something it was not told about.
+/// cut first when this machine has none — or tells a healthy worker on the
+/// first eligible harness that the train holds something new. A failed or
+/// outdated worker is replaced, as is one held past the health bound.
 ///
 /// The train's worktree is the repo's, not a run's: it is found by its name,
 /// kept when the fleet stops, and used again, with what its gate runs built,
@@ -32,19 +34,40 @@ pub fn tend_train(fleet: &mut Fleet, me: &Me, agent: &Agent) -> Result<Outcome> 
     }
     let source = Source::of(&fleet.repo)?;
     let found = Worktree::of_train(&source)?;
-    if found.as_ref().is_some_and(|w| {
-        w.state(fleet.now).ok() != Some(WorkerState::Gone)
-            && (crate::health::has_signal(w).unwrap_or(true)
-                || (crate::health::holding(w)
-                    && w.told().ok().flatten().is_some_and(|told| told.tip == train.tip)))
-    }) {
-        return Ok(Outcome::Nothing);
-    }
     let (state, told) = match &found {
         Some(worktree) => (worktree.state(fleet.now)?, worktree.told()?),
         None => (WorkerState::Gone, None),
     };
-    let decided = tend(state, told.as_ref().map(|told| told.tip.as_str()), &train.tip);
+    let new_tip = told.as_ref().is_none_or(|told| told.tip != train.tip);
+    let mut replacement = None;
+    if let Some(worktree) = &found {
+        if crate::health::train_hold_expired(worktree, fleet.now)? {
+            replacement = Some(format!(
+                "worker health held the train worker for {} seconds",
+                crate::health::RECOVERY_SECONDS
+            ));
+        } else if new_tip && state != WorkerState::Gone {
+            let report = worktree.agent_report()?;
+            if report["state"] == "done" && report["outcome"] == "failure" {
+                replacement = Some("orca reports that the train worker's agent failed".into());
+            } else if worktree.harness()? != Some(fleet.first()?.harness) {
+                replacement =
+                    Some("the train worker is not on the host kit's first eligible harness".into());
+            }
+        }
+        if replacement.is_none()
+            && state != WorkerState::Gone
+            && (crate::health::has_signal(worktree)?
+                || (crate::health::holding(worktree) && !new_tip))
+        {
+            return Ok(Outcome::Nothing);
+        }
+    }
+    let decided = if replacement.is_some() {
+        Tend::Start
+    } else {
+        tend(state, told.as_ref().map(|told| told.tip.as_str()), &train.tip)
+    };
     let worktree = match (decided, found) {
         (Tend::Leave, _) => return Ok(Outcome::Nothing),
         (Tend::Stopped, Some(worktree)) => {
@@ -80,6 +103,14 @@ pub fn tend_train(fleet: &mut Fleet, me: &Me, agent: &Agent) -> Result<Outcome> 
         tracker: &fleet.gh.tracker,
     })
     .map_err(|e| anyhow!(e))?;
+    // Validate the successor before ending the old writer. End it before
+    // rewriting its brief, with its worktree and the train kept intact.
+    let start = if decided == Tend::Tell { None } else { Some(fleet.first()?) };
+    let previous = worktree.harness()?;
+    if let Some(first) = &start {
+        crate::role::startable(&agent.launches, first.harness, "train worker")?;
+        worktree.stop_for_continuation()?;
+    }
     let brief = worktree.write_brief(&prompt)?;
     let brief = brief.display().to_string();
     // The worker that stopped is told; with none to tell, one is started.
@@ -89,7 +120,7 @@ pub fn tend_train(fleet: &mut Fleet, me: &Me, agent: &Agent) -> Result<Outcome> 
         None => {
             // The train worker is in no role, and nothing casts it: it runs
             // the host kit's first.
-            let first = fleet.first()?;
+            let first = start.unwrap_or(fleet.first()?);
             let launch = agent.command(first.harness)?;
             let terminal = agent.start_worker(
                 &worktree,
@@ -104,6 +135,22 @@ pub fn tend_train(fleet: &mut Fleet, me: &Me, agent: &Agent) -> Result<Outcome> 
     }
     // Last: a delivery that failed leaves a worker nobody told, and the next tick starts over.
     worktree.record_told(&train.tip, fleet.now)?;
+    if let Some(reason) = replacement {
+        crate::log::Log::of(&fleet.repo)?.append(&crate::log::Entry {
+            at: fleet.now,
+            instance: me.instance.as_str().into(),
+            host: me.host.clone(),
+            what: crate::log::What::Command {
+                command: "train_worker".into(),
+                on: None,
+                by: reason,
+                outcome: json!({"action": "replaced", "from": previous,
+                    "to": worktree.harness()?, "worktree": worktree.path, "tip": train.tip})
+                .to_string(),
+                failed: false,
+            },
+        })?;
+    }
     Ok(Outcome::Done)
 }
 

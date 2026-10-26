@@ -88,6 +88,15 @@ impl serde::Serialize for Harness {
 }
 
 impl Harness {
+    /// The harness's fixed task-refusal words on its screen. Whitespace may
+    /// wrap in a terminal; other prose alone establishes no refusal rule.
+    pub fn task_refusal(self, output: &[String]) -> Option<String> {
+        match self {
+            Harness::Codex => codex::task_refusal(output),
+            _ => None,
+        }
+    }
+
     /// The harness of a worker nothing names one for.
     pub const DEFAULT: Harness = Harness::ClaudeCode;
 
@@ -191,6 +200,16 @@ impl Harness {
             Harness::Codex => codex::KEPT,
             Harness::Dsh => dsh::KEPT,
             Harness::Kimi => kimi::KEPT,
+        }
+    }
+
+    /// Native rule paths under the host user's home which can also be found
+    /// by project discovery. These must stay out of a worker whose role
+    /// turns host-user rules off, even if its copy is under that home.
+    pub fn host_rule_excludes(self, home: &str) -> Vec<String> {
+        match self {
+            Harness::ClaudeCode => claude_code::host_rule_excludes(home),
+            _ => vec![],
         }
     }
 

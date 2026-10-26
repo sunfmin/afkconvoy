@@ -7,7 +7,110 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
-use common::World;
+use common::{World, git};
+use serde_json::json;
+
+#[test]
+fn a_command_is_ended_after_contended_time_and_the_next_runs_after_its_descendants_end() {
+    let world = World::new();
+    world.say_host_settings(json!({"exclusive_seconds": 1}));
+    let _host_runner = world.host_held();
+    let cache = world.cache();
+    let held = exclusive(
+        &world,
+        &cache,
+        11,
+        "trap '' TERM\nsleep 10 & echo $! > \"$CACHE/descendant\"; wait",
+    );
+    until(|| cache.join("descendant").exists());
+    // A late waiter must receive the whole bound: time alone did not count.
+    std::thread::sleep(Duration::from_millis(1200));
+    let asked = Instant::now();
+    let waiting = exclusive(&world, &cache, 22, "echo next");
+    let held = held.wait_with_output().unwrap();
+    let waiting = waiting.wait_with_output().unwrap();
+    assert!(asked.elapsed() >= Duration::from_secs(1));
+    assert_eq!(held.status.code(), Some(124));
+    let stderr = text(&held.stderr);
+    assert_eq!(stderr.lines().count(), 1, "{stderr}");
+    assert!(stderr.starts_with("[afkconvoy] exclusive: ended at the exclusive bound"), "{stderr}");
+    assert!(
+        stderr.contains("run each step of the work as its own `afkconvoy exclusive`"),
+        "{stderr}"
+    );
+    assert!(waiting.status.success(), "{}", text(&waiting.stderr));
+    assert_eq!(waiting.stdout, b"next\n");
+    let pid = std::fs::read_to_string(cache.join("descendant")).unwrap();
+    let state = Command::new("ps").args(["-p", pid.trim(), "-o", "stat="]).output().unwrap();
+    let state = text(&state.stdout);
+    assert!(
+        state.trim().is_empty() || state.trim().starts_with('Z'),
+        "descendant still runs: {state}"
+    );
+    until(|| tickets(&world) == 0);
+    let said = logged(&cache);
+    let bounded: Vec<_> =
+        said.iter().filter(|line| line.contains("ended at the exclusive bound")).collect();
+    assert_eq!(bounded.len(), 1, "{said:?}");
+    assert!(bounded[0].contains("with 1 commands waiting"), "{bounded:?}");
+    let doctor = world.afk(&["doctor", "--host", "h1"]).json;
+    let found: Vec<_> = doctor["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|finding| {
+            finding["what"].as_str().unwrap().contains("ended at the exclusive bound")
+        })
+        .collect();
+    assert_eq!(found.len(), 1, "{doctor}");
+    assert_eq!(found[0]["severity"], "warning");
+    assert!(found[0]["evidence"].as_str().unwrap().contains("with 1 commands waiting"));
+}
+
+#[test]
+fn a_long_command_with_nothing_waiting_finishes_and_a_live_setting_changes_the_bound() {
+    let world = World::new();
+    world.say_host_settings(json!({"exclusive_seconds": 0}));
+    let _host_runner = world.host_held();
+    let cache = world.cache();
+    let alone = exclusive(&world, &cache, 11, "sleep 1.2; echo finished");
+    let out = alone.wait_with_output().unwrap();
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert_eq!(out.stdout, b"finished\n");
+    assert!(out.stderr.is_empty());
+    world.say_host_settings(json!({"exclusive_seconds": 60}));
+    let held = exclusive(&world, &cache, 12, "touch \"$CACHE/held\"; sleep 30");
+    until(|| cache.join("held").exists());
+    let next = exclusive(&world, &cache, 13, "echo next");
+    until(|| tickets(&world) == 2);
+    world.say_host_settings(json!({"exclusive_seconds": 0}));
+    assert_eq!(held.wait_with_output().unwrap().status.code(), Some(124));
+    assert!(next.wait_with_output().unwrap().status.success());
+    let child_code = exclusive(&world, &cache, 14, "exit 124").wait_with_output().unwrap();
+    assert_eq!(child_code.status.code(), Some(1), "124 is reserved for the bound");
+}
+
+#[test]
+fn a_gate_timeout_still_ends_a_nested_exclusive_command_and_its_descendants() {
+    let world = World::new();
+    let cache = world.cache();
+    let line = afkconvoy_core::line::Line::new()
+        .program(env!("CARGO_BIN_EXE_afkconvoy"))
+        .fixed(" exclusive -- sh -c ")
+        .word("sleep 30 & echo $! > descendant; wait")
+        .own();
+    world.set_gate_config(&format!("gate_command: {line}\ngate_seconds: 1"));
+    let _host_runner = world.host_held();
+    let answer = world.afk(&["gate"]).ok();
+    assert_eq!(answer["timed_out"], true, "{answer}");
+    let pid = std::fs::read_to_string(world.clone.join("descendant")).unwrap();
+    let state = Command::new("ps").args(["-p", pid.trim(), "-o", "stat="]).output().unwrap();
+    let state = text(&state.stdout);
+    assert!(state.trim().is_empty() || state.trim().starts_with('Z'), "{state}");
+    assert!(
+        exclusive(&world, &cache, 15, "echo next").wait_with_output().unwrap().status.success()
+    );
+}
 
 /// `afkconvoy exclusive -- sh -c <script>`, started in `world`'s checkout on
 /// the host whose cache is `cache`, as the worker of `issue`. The script
@@ -218,6 +321,95 @@ fn two_commands_of_two_repos_fleets_run_one_after_the_other_in_the_order_they_as
         let ended = said.iter().any(|line| line.starts_with(issue) && line.contains("(exit 0)"));
         assert!(ended, "{said:?}");
     }
+}
+
+#[test]
+fn two_repos_trains_gate_ahead_of_waiting_workers_without_interrupting_what_runs() {
+    let (first, second) = (World::new(), World::new());
+    let binary = env!("CARGO_BIN_EXE_afkconvoy");
+    let gate = afkconvoy_core::line::Line::new()
+        .program(binary)
+        .fixed(" exclusive -- sh -c ")
+        .word("echo \"$MARK\" >> \"$CACHE/order\"")
+        .own();
+    first.set_gate(&gate);
+    second.set_gate(&gate);
+    let worker = second.worker(7, "seven.txt", "7\n");
+    assert_eq!(second.afk_in(&worker, &["land", "--issue", "7"]).ok()["outcome"], "joined");
+    let train = |world: &World, name: &str| {
+        let dir = world.root.join(name);
+        git(
+            &world.clone,
+            &["worktree", "add", "-q", "--detach", dir.to_str().unwrap(), "origin/main"],
+        );
+        dir
+    };
+    let train_a = train(&first, "convoy-train-2");
+    let train_b = train(&second, "convoy-train");
+    let cache = first.cache();
+    let _host_runner = first.host_held();
+    let order = cache.join("order");
+    let held = exclusive(
+        &first,
+        &cache,
+        11,
+        "echo holder-start >> \"$CACHE/order\"; \
+         while test -d \"$CACHE\" && test ! -f \"$CACHE/release\"; do sleep 0.02; done; \
+         echo holder-end >> \"$CACHE/order\"",
+    );
+    until(|| lines(&order) == ["holder-start"]);
+    let run = |world: &World, dir: &Path, mark: &str, args: &[&str]| {
+        world
+            .command(binary, dir)
+            .env("XDG_CACHE_HOME", &cache)
+            .env("CACHE", &cache)
+            .env("MARK", mark)
+            .args(args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap()
+    };
+    // --train on an issue worker's gate only merges what it lands behind;
+    // it must not confer the train worker's priority.
+    let worker_a = run(&first, &first.clone, "worker-a", &["gate", "--train"]);
+    until(|| tickets(&first) == 2);
+    let worker_b = exclusive(&second, &cache, 22, "echo worker-b >> \"$CACHE/order\"");
+    until(|| tickets(&first) == 3);
+    let first_train = run(&first, &train_a, "train-a", &["gate", "--train"]);
+    until(|| tickets(&first) == 4);
+    let second_train = run(&second, &train_b, "train-b", &["land", "--train"]);
+    until(|| tickets(&first) == 5);
+    let shown = first.afk(&["doctor", "--host", "h1"]).json;
+    let queue = &shown["host"]["exclusive"];
+    assert_eq!(queue["running"]["issue"], 11, "{queue}");
+    let dirs: Vec<_> = queue["waiting"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| Path::new(t["dir"].as_str().unwrap()).file_name().unwrap().to_str().unwrap())
+        .collect();
+    assert_eq!(dirs, ["convoy-train-2", "convoy-train", "clone", "clone"]);
+    assert_eq!(lines(&order), ["holder-start"], "priority never interrupts the holder");
+    std::fs::write(cache.join("release"), "").unwrap();
+    for child in [held, first_train, second_train, worker_a, worker_b] {
+        let out = child.wait_with_output().unwrap();
+        assert!(out.status.success(), "{}", text(&out.stderr));
+    }
+    assert_eq!(
+        lines(&order),
+        ["holder-start", "holder-end", "train-a", "train-b", "worker-a", "worker-b"]
+    );
+    until(|| tickets(&first) == 0);
+    let passed: Vec<_> =
+        logged(&cache).into_iter().filter(|line| line.contains("runs ahead of")).collect();
+    assert_eq!(passed.len(), 2, "{passed:?}");
+    assert!(
+        passed
+            .iter()
+            .all(|line| line.contains("runs ahead of 2 waiting commands, as the landing train's")),
+        "{passed:?}"
+    );
 }
 
 #[test]

@@ -126,6 +126,9 @@ const VERSION_SAID_WITHIN: Duration = Duration::from_secs(10);
 /// long as `run` waits for one, the new one's wait for the host among it.
 pub(crate) const MOVED_WITHIN: Duration = Duration::from_secs(UP_WITHIN.as_secs() + 5);
 
+/// The maximum wait for ticks and a running exclusive command to end.
+pub(crate) const MOVE_WAIT_WITHIN: Duration = Duration::from_secs(10 * 60);
+
 /// The host runner as it holds its checkouts.
 struct Runner {
     list: List,
@@ -208,6 +211,17 @@ pub struct Installed {
     pub version: Option<String>,
     /// The host runner's own.
     pub from: String,
+    /// When this installed file answered, in epoch seconds.
+    #[serde(default)]
+    pub since: u64,
+    /// The safe moment did not arrive within `MOVE_WAIT_WITHIN`: the old
+    /// host runner works on between bounded attempts, and keeps trying.
+    #[serde(default)]
+    pub wait_expired: bool,
+    /// The current bounded attempt's start, or the next one's earliest
+    /// start after an expired wait. Process-local; the finding keeps `since`.
+    #[serde(skip)]
+    attempt_since: u64,
     /// What holds the move back now, each in words; empty as it moves, and
     /// where it failed.
     pub held_back: Vec<String>,
@@ -250,6 +264,21 @@ pub fn findings() -> Vec<Finding> {
 
 /// The finding of `installed`, where the host runner did not move onto it.
 fn not_moved(installed: &Installed) -> Option<Finding> {
+    if installed.wait_expired {
+        let what = format!(
+            "the host runner did not move onto afkconvoy {}, installed at {}: the wait for a \
+             moment between ticks with no exclusive command running exceeded {}s",
+            installed.version.as_deref().unwrap_or_default(),
+            installed.path.display(),
+            MOVE_WAIT_WITHIN.as_secs()
+        );
+        return Some(finding(
+            Kind::NotMoved,
+            what,
+            installed.held_back.join("; "),
+            format!("{} --version", installed.path.display()),
+        ));
+    }
     let why = installed.failed.clone()?;
     let at = installed.path.display();
     let what = match &installed.version {
@@ -503,7 +532,7 @@ pub fn serve() -> Result<Value> {
             return Ok(json!({"started": false, "holder": holder}));
         };
         let stop = stop.get_or_insert_with(Stop::listen);
-        let (lock, left) = match held_host(&dir, &log, (lock, &before), stop, &mut watched)? {
+        let (lock, mut left) = match held_host(&dir, &log, (lock, &before), stop, &mut watched)? {
             Hold::Stopped(stopped) => return Ok(stopped),
             Hold::Moving { lock, left } => (lock, left),
         };
@@ -512,6 +541,13 @@ pub fn serve() -> Result<Value> {
         let to = watched.installed().as_ref().and_then(|installed| installed.version.clone());
         let to = to.unwrap_or_default();
         let at = path.display();
+        // Read the durable work after every instance stopped, before the
+        // replacement can advance it. This is evidence, never a move gate.
+        for left in &mut left {
+            left.carried = left
+                .carrying()
+                .unwrap_or_else(|why| vec![format!("could not list what carries over: {why:#}")]);
+        }
         match handed_over(&path, lock) {
             Ok(about) => {
                 let (moved_to, new) = (about["version"].as_str().unwrap_or(&to), &about["pid"]);
@@ -520,8 +556,17 @@ pub fn serve() -> Result<Value> {
                      {moved_to} (pid {new}), installed at {at}"
                 ));
                 let (from, to) = (VERSION.to_string(), moved_to.to_string());
-                let moved = What::Moved { from, to, path: path.clone() };
-                left.iter().for_each(|left| left.told(&log, moved.clone()));
+                for left in &left {
+                    left.told(
+                        &log,
+                        What::Moved {
+                            from: from.clone(),
+                            to: to.clone(),
+                            path: path.clone(),
+                            carried: left.carried.clone(),
+                        },
+                    );
+                }
                 return Ok(json!({"moved": true, "pid": pid, "to": about}));
             }
             Err(why) => {
@@ -558,9 +603,40 @@ struct Left {
     /// its tick log as of it.
     instance: String,
     host: String,
+    carried: Vec<String>,
 }
 
 impl Left {
+    fn carrying(&self) -> Result<Vec<String>> {
+        let repo = Repo::at(&self.root)?;
+        let fleet = crate::fleet::Fleet::open(&repo, crate::clock())?;
+        let mut carried = vec![];
+        for claim in &fleet.scan.claims {
+            if claim.owner.as_ref().is_some_and(|owner| owner.host == self.host) {
+                carried.push(format!("claim #{} and its worker", claim.number));
+            }
+        }
+        for run in &fleet.scan.runs {
+            if run.owner.as_ref().is_some_and(|owner| owner.host == self.host) {
+                carried.push(format!("run {} and its worker", run.key));
+            }
+        }
+        let train = crate::train::Train::read(&repo, &fleet.config)?;
+        for join in train.joins(&repo, &fleet.gh.tracker)? {
+            carried.push(format!("landing train PR #{}", join.pr));
+        }
+        let source = crate::orca::Source::of(&repo)?;
+        for (name, what) in [
+            (afkconvoy_core::cut::CHECKOUT, "cut"),
+            (afkconvoy_core::inspection::CHECKOUT, "inspection"),
+        ] {
+            if let Some(checkout) = crate::orca::Worktree::named(&source, name)? {
+                carried.push(format!("{what} in {}", checkout.path.display()));
+            }
+        }
+        Ok(carried)
+    }
+
     /// Keeps `what`, of the host runner's move, in its tick log, now.
     fn told(&self, log: &RunnerLog, what: What) {
         let (instance, host) = (self.instance.clone(), self.host.clone());
@@ -604,6 +680,16 @@ fn held_host(
     }
     let held = Mutex::default();
     let shared = Shared { installed: Arc::clone(&watched.installed), ..Shared::default() };
+    for entry in &listed.checkouts {
+        let restored = Repo::at(&entry.checkout)
+            .and_then(|repo| crate::inspection::Inspector::reserve(&repo, &shared.turn));
+        if let Err(why) = restored {
+            log.say(&format!(
+                "{}: its inspection could not reserve the host's turn: {why:#}",
+                entry.checkout.display()
+            ));
+        }
+    }
     let panel = HostPanel::new(shared.clone());
     // Read once: a port the host settings change to holds from the next start.
     let port = host_settings::of_host().map_or(host_settings::PANEL_PORT, |said| said.panel_port());
@@ -646,6 +732,9 @@ fn held_host(
         }
         if !stop.told() && watched.looked(&runner.log) {
             left = runner.stopped_for_move();
+        } else {
+            runner.shared.standings.resume();
+            runner.shared.queue.resume();
         }
     }
     if still_ours() {
@@ -665,6 +754,7 @@ fn held_host(
     }
     drop(watching);
     // `stop --all` among them, which is answered once they all stopped.
+    runner.shared.queue.close();
     answering.settled(ANSWERED_WITHIN);
     let kept = runner.list.read().map_or(0, |listed| listed.checkouts.len());
     // Before the host is let go: the host runner that takes it next serves on the port.
@@ -770,7 +860,15 @@ impl Watched {
                 }
             }
         }
-        matches!(&*self.installed(), Some(Installed { version: Some(_), failed: None, .. }))
+        self.moves_at(crate::clock())
+    }
+
+    fn moves_at(&self, now: u64) -> bool {
+        self.installed().as_ref().is_some_and(|installed| {
+            installed.version.is_some()
+                && installed.failed.is_none()
+                && now >= installed.attempt_since
+        })
     }
 
     /// The move onto what it found failed, `why`: the host runner works on,
@@ -778,6 +876,7 @@ impl Watched {
     fn failed(&mut self, why: String) {
         if let Some(installed) = self.installed().as_mut() {
             (installed.failed, installed.held_back) = (Some(why), vec![]);
+            installed.wait_expired = false;
         }
     }
 }
@@ -799,6 +898,9 @@ fn found_at(path: &Path, log: &RunnerLog) -> Option<Installed> {
         path: path.to_path_buf(),
         version,
         from: VERSION.to_string(),
+        since: crate::clock(),
+        attempt_since: crate::clock(),
+        wait_expired: false,
         held_back: vec![],
         failed,
     };
@@ -818,7 +920,7 @@ fn found_at(path: &Path, log: &RunnerLog) -> Option<Installed> {
         Found::Newer => {
             log.say(&format!(
                 "afkconvoy {version} is installed at {at}, newer than this host runner's, \
-                 {VERSION}: it moves onto it once its fleets are idle"
+                 {VERSION}: it moves onto it between ticks, once no exclusive command runs"
             ));
             Some(installed(Some(version), None))
         }
@@ -920,10 +1022,15 @@ impl Runner {
     /// stands still between two ticks — none begins one meanwhile — and none
     /// is started or added.
     fn stopped_for_move(&self) -> Option<Vec<Left>> {
+        self.stopped_for_move_at(crate::clock())
+    }
+
+    fn stopped_for_move_at(&self, now: u64) -> Option<Vec<Left>> {
         let holding = self.holding();
-        // Read before every instance is held still: none of them waits on it.
-        let (exclusive, inspecting) =
-            (self.shared.queue.standing().len(), self.shared.turn.running().is_some());
+        // Prevent a fresh tick or queue grant from racing the safe moment.
+        // Existing ticks and the running command finish as ever.
+        self.shared.standings.pause();
+        let exclusive = self.shared.queue.pause();
         let each: Vec<(String, Option<String>, Option<Stands>)> = holding
             .iter()
             .map(|(root, held)| {
@@ -942,10 +1049,10 @@ impl Runner {
                 .map(|(root, instance, stands)| {
                     // One whose loop ended stands no more: it is ending.
                     let ticked = instance.as_ref().and_then(|instance| stand.get(instance));
-                    (root.clone(), stands.or(ticked.copied()).unwrap_or(Stands::Starting))
+                    (root.clone(), ticked.copied().or(*stands).unwrap_or(Stands::Starting))
                 })
                 .collect();
-            let held = held_back(&each, exclusive, inspecting);
+            let held = held_back(&each, exclusive);
             if held.is_empty() {
                 self.moving.store(true, Ordering::Relaxed);
                 holding.values().for_each(|held| held.stop.tell());
@@ -954,6 +1061,15 @@ impl Runner {
         });
         if let Some(installed) = self.shared.installed().as_mut() {
             installed.held_back = held.iter().map(HeldBack::said).collect();
+            if !held.is_empty()
+                && now.saturating_sub(installed.attempt_since) >= MOVE_WAIT_WITHIN.as_secs()
+            {
+                installed.wait_expired = true;
+                installed.attempt_since = now.saturating_add(INSTALLED_LOOKED_EVERY.as_secs());
+                self.log.say(&format!("host runner not moved: wait exceeded {}s: {} — it lets ticks and the queue run again, and keeps trying the move", MOVE_WAIT_WITHIN.as_secs(), installed.held_back.join("; ")));
+                self.shared.standings.resume();
+                self.shared.queue.resume();
+            }
         }
         if !held.is_empty() {
             return None;
@@ -962,6 +1078,7 @@ impl Runner {
             root: root.clone(),
             instance: held.seen.stage().instance.clone().unwrap_or_default(),
             host: held.host.clone(),
+            carried: vec![],
         });
         Some(left.collect())
     }
@@ -2298,6 +2415,95 @@ fn last_lines(file: &Path, from: u64, count: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_expired_move_names_the_ticks_and_running_command_that_held_it() {
+        let installed = Installed {
+            path: PathBuf::from("/bin/afkconvoy"),
+            version: Some("999.0.0".into()),
+            from: VERSION.into(),
+            since: 1000,
+            wait_expired: true,
+            attempt_since: 1000,
+            held_back: vec![
+                "/checkout is in a tick".into(),
+                "1 exclusive command(s) running".into(),
+            ],
+            failed: None,
+        };
+        let finding = serde_json::to_value(not_moved(&installed).unwrap()).unwrap();
+        assert!(finding["what"].as_str().unwrap().contains("exceeded 600s"), "{finding}");
+        assert_eq!(finding["evidence"], "/checkout is in a tick; 1 exclusive command(s) running");
+        assert_eq!(finding["severity"], "warning");
+    }
+
+    #[test]
+    fn a_move_waits_at_most_ten_minutes_then_resumes_the_old_runner() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = Shared::default();
+        *shared.installed() = Some(Installed {
+            path: "/bin/afkconvoy".into(),
+            version: Some("999.0.0".into()),
+            from: VERSION.into(),
+            since: 1000,
+            wait_expired: false,
+            attempt_since: 1000,
+            held_back: vec![],
+            failed: None,
+        });
+        let seen = Arc::new(Seen::default());
+        seen.stage().instance = Some("alpha".into());
+        let stop = Stop::never();
+        let runner = Runner {
+            list: List::at(dir.path().join("checkouts.json")),
+            log: Arc::default(),
+            stop: stop.clone(),
+            moving: AtomicBool::new(false),
+            panel: HostPanel::new(shared.clone()),
+            shared: shared.clone(),
+            held: Mutex::new(BTreeMap::from([(
+                PathBuf::from("/checkout"),
+                Held {
+                    repo: "repo".into(),
+                    host: "h1".into(),
+                    seen,
+                    stop: stop.clone(),
+                    reach: Reach::default(),
+                },
+            )])),
+        };
+        let standing = afkconvoy_core::host_sleep::Standing {
+            instance: "alpha".into(),
+            no_host_sleep: true,
+            idle: false,
+            since: 1000,
+            worked: None,
+        };
+        let host =
+            crate::host_sleep::HostSleep::open(standing, &Wakes::default(), &shared.standings, 600);
+        host.begins();
+        assert!(runner.stopped_for_move_at(1599).is_none());
+        assert!(!shared.installed().as_ref().unwrap().wait_expired);
+        assert!(runner.stopped_for_move_at(1600).is_none());
+        let installed = shared.installed().clone().unwrap();
+        assert!(installed.wait_expired);
+        assert_eq!(installed.held_back, ["/checkout is in a tick"]);
+        assert!(not_moved(&installed).is_some());
+        assert!(!runner.moved() && !stop.told());
+        host.ticked(1600, Some((false, true)));
+        assert!(host.begins_unless_stopped(&stop), "new ticks resume after expiry");
+        let watched = Watched {
+            path: None,
+            seen: None,
+            looked: Instant::now(),
+            installed: Arc::clone(&shared.installed),
+        };
+        assert!(!watched.moves_at(1600), "the old runner gets time to work");
+        assert!(watched.moves_at(1601), "the same installed file is tried again");
+        host.ticked(1601, Some((false, true)));
+        assert!(runner.stopped_for_move_at(1601).is_some());
+        assert!(runner.moved() && stop.told(), "it moves once the long tick ended");
+    }
 
     #[test]
     fn the_host_runner_keeps_the_cache_and_config_directories_of_the_run_that_started_it() {
