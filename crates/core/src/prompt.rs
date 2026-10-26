@@ -333,10 +333,11 @@ const CROSS_REPO_BLOCKER: &str = "
 ## Cross-repo blockers
 
 For a blocker or defect belonging to another repo of this host, open it on the tracker
-`<blocker_tracker>`, with that repo's `repo:<owner>/<repo>` label. In that repo's checkout run `afkconvoy flows`
+`<blocker_tracker>`, with that repo's `repo:<owner>/<repo>` label. Name that repo's main checkout as
+`<target-checkout>` and run `afkconvoy flows -C <target-checkout>`
 and use its `line` (the matching workflow's in a bound repo), with a title and body file. In a bound
 repo omit the line's flow label while opening, then take it in there with
-`afkconvoy intake --issue <n> --workflow <workflow>` and your worker identity; keep the line's ready
+`afkconvoy intake -C <target-checkout> --issue <n> --workflow <workflow>` and your worker identity; keep the line's ready
 label when it is unbound. Record the tracker issue as the blocker, then declare `blocked` on it.
 ";
 
@@ -1582,7 +1583,7 @@ mod tests {
         for brief in [fresh, &briefs[1], &briefs[3], &briefs[5]] {
             assert!(brief.contains("open it on the tracker\n`acme/tracker`"), "{brief}");
             assert!(brief.contains("that repo's `repo:<owner>/<repo>` label"), "{brief}");
-            assert!(brief.contains("run `afkconvoy flows`"), "{brief}");
+            assert!(brief.contains("run `afkconvoy flows -C <target-checkout>`"), "{brief}");
             assert!(brief.contains("omit the line's flow label while opening"), "{brief}");
             assert_eq!(brief.matches("## Cross-repo blockers").count(), 1, "{brief}");
         }
@@ -1756,7 +1757,12 @@ mod tests {
         }
         assert!(stage.contains("(`gh issue create --repo acme/tracker --label repo:acme/dev`)"));
         assert!(stage.contains("open it on the tracker\n`acme/tracker`"), "{stage}");
-        assert!(stage.contains("afkconvoy intake --issue <n> --workflow <workflow>"), "{stage}");
+        assert!(
+            stage.contains(
+                "afkconvoy intake -C <target-checkout> --issue <n> --workflow <workflow>"
+            ),
+            "{stage}"
+        );
         assert!(stage.contains(
             "Put no label of a workflow on it yourself, only the repo label `repo:acme/dev` \
              (`--label repo:acme/dev`): take it in"

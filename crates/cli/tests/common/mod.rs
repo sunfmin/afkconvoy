@@ -1395,14 +1395,17 @@ pub fn git(cwd: &Path, args: &[&str]) -> String {
 
 /// The commands `brief` gives a worker that refuse a worker's worktree as
 /// their checkout, as each one's help says: of every word after `afkconvoy `
-/// in it that is a command. A worker runs each in its worktree, so none
-/// should.
+/// in it that is a command, unless it explicitly names a target checkout.
+/// The remaining commands run in the worker's worktree, so none should refuse it.
 pub fn refusing_a_workers_worktree(brief: &str) -> Vec<String> {
     let word = |after: &str| {
         let end = after.find(|c: char| !(c.is_ascii_lowercase() || c == '-'));
         after[..end.unwrap_or(after.len())].to_string()
     };
-    let named = brief.split("afkconvoy ").skip(1).map(word);
+    let named = brief.split("afkconvoy ").skip(1).filter_map(|after| {
+        let command = after.split(['`', '\n']).next().unwrap_or_default();
+        (!command.contains(" -C <target-checkout>")).then(|| word(after))
+    });
     let mut named: Vec<String> = named.filter(|name| !name.is_empty()).collect();
     named.sort();
     named.dedup();

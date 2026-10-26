@@ -211,6 +211,11 @@ fn every_command_a_workers_brief_gives_it_takes_its_worktree() {
     // …as a command that would refuse it is found
     let said = "an afkconvoy worker runs `afkconvoy claim -C . 3` and `afkconvoy scan`";
     assert_eq!(common::refusing_a_workers_worktree(said), ["claim"]);
+    assert_eq!(common::refusing_a_workers_worktree("run `afkconvoy flows`"), ["flows"]);
+    assert_eq!(
+        common::refusing_a_workers_worktree("run `afkconvoy flows -C <target-checkout>`"),
+        [] as [String; 0]
+    );
 }
 
 #[test]
