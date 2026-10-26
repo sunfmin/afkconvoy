@@ -974,15 +974,20 @@ impl Worktree {
     /// What the cut in this checkout is and did so far, where it says; `None`
     /// where nothing does, or what does cannot be read.
     pub fn cut_record(&self) -> Result<Option<cut::Record>> {
-        let said = std::fs::read_to_string(self.note(CUT_FILE)?).unwrap_or_default();
+        let said = std::fs::read_to_string(self.cut_record_file()?).unwrap_or_default();
         Ok(serde_json::from_str(&said).ok())
+    }
+
+    /// The file that keeps this cut's record, in its checkout's own git dir.
+    pub fn cut_record_file(&self) -> Result<PathBuf> {
+        self.note(CUT_FILE)
     }
 
     /// Keeps what the cut in this checkout is and did so far: the last it
     /// said stands. It is written whole, then put in place: a tick reading it
     /// meanwhile reads the one before, never half of this one.
     pub fn record_cut(&self, record: &cut::Record) -> Result<()> {
-        let file = self.note(CUT_FILE)?;
+        let file = self.cut_record_file()?;
         let written = self.note(&format!("{CUT_FILE}.new"))?;
         std::fs::write(&written, serde_json::to_string(record)?)
             .with_context(|| format!("cannot write {}", written.display()))?;
@@ -1113,7 +1118,8 @@ impl Worktree {
     /// one worktree would fight, and orca opens a bare shell in every worktree
     /// it cuts. A new worker was never nudged, and waits on no background
     /// work, whatever the one before it did, and was started `now`.
-    pub fn start(&self, command: &str, now: u64) -> Result<String> {
+    /// Where `title` is given, orca shows it as the terminal's title.
+    pub fn start(&self, command: &str, title: Option<&str>, now: u64) -> Result<String> {
         // A failed close must not turn a continuation into a second writer.
         // Check again even after an acknowledged close: Orca may still be
         // ending the previous terminal. Leave the worker's progress markers
@@ -1133,8 +1139,12 @@ impl Worktree {
         self.forget(NUDGE_FILE)?;
         self.forget(BACKGROUND_FILE)?;
         let command = niced(&worker_tmp::make(&self.path)?.display().to_string(), command);
-        let made =
-            orca(&["terminal", "create", "--worktree", &self.selector(), "--command", &command])?;
+        let selector = self.selector();
+        let mut args = vec!["terminal", "create", "--worktree", &selector, "--command", &command];
+        if let Some(title) = title {
+            args.extend(["--title", title]);
+        }
+        let made = orca(&args)?;
         let handle = made["terminal"]["handle"].as_str();
         let handle =
             handle.ok_or_else(|| anyhow!("orca terminal create returned no terminal handle"))?;
