@@ -151,14 +151,11 @@ fn issue_writes(world: &World) -> Vec<Vec<String>> {
 fn lands_on_no_issue(world: &World) {
     let checkout = inspection_on_branch(world);
     let head = change(world, &checkout);
-    let gated = world.afk_in(&checkout, &["gate", "--train"]).ok();
-    assert_eq!(
-        (gated["status"].as_str(), gated["recorded"].as_bool()),
-        (Some("green"), Some(true))
-    );
     world.gh_calls();
 
     let joined = world.afk_in(&checkout, &["land", "--inspection", "--host", "h1"]).ok();
+    assert_eq!(joined["status"], "green");
+    assert_eq!(joined["recorded"], true);
     assert_eq!(joined["outcome"], "joined", "{joined}");
     assert_eq!((joined["inspection"].as_str(), joined["pr"].as_u64()), (Some("h1"), Some(90)));
     let commit = joined["commit"].as_str().unwrap().to_string();
