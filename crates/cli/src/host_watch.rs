@@ -549,9 +549,9 @@ fn brief(watch: &Watch) -> String {
          inspection's or another worker's checkout. Work only in your own checkout of that \
          repo. Commit and push each completed piece before a long operation. Open its PR \
          against that repo's base branch, on no issue: no intake or flow label is needed, in \
-         a bound repo too. Run `afkconvoy gate --train` there until it answers `status: green` \
-         and `recorded: true`, then `afkconvoy land --inspection`. Resolve conflicts by \
-         merging, committing and gating again; never rebase. This is the inspection's \
+         a bound repo too. Run `afkconvoy land --inspection` there: it takes a turn to merge, \
+         gate and join on the train's green tip, recording green before releasing the turn. \
+         Resolve conflicts by merging, committing and asking again; never rebase. This is the inspection's \
          landing path: its join names an inspection on this host and closes no issue. A \
          fleet lock standing joins nothing: record what holds it back. Keep the branch and \
          PR, and name the repo and PR in your record.\n\n\

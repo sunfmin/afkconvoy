@@ -363,7 +363,9 @@ pub fn gate(repo: &Repo, config: &Config, train: bool, host: &str, now: u64) -> 
         )
     } else if let Some(why) = &run.not_recorded {
         answer["not_recorded"] = json!(why);
-        format!("green on {head}, but the record could not be written — push it and go on")
+        format!(
+            "green on {head}, but the record could not be written — run this again before joining"
+        )
     } else {
         answer["recorded"] = json!(true);
         format!("green on {head} and on record — push it; any further commit needs another run")

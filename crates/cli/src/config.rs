@@ -36,12 +36,10 @@ pub fn parse(markdown: &str) -> Result<Config> {
     let config = Config::new(settings)?.cutting(steps);
     // An outer gate/land would ask for the lane a second time before it
     // could even reach the inherited gate wrapper.
-    if config
-        .gate_command
-        .split_whitespace()
-        .any(|word| word.trim_matches(['\'', '"']).ends_with("afkconvoy"))
-        && config.gate_command.split_whitespace().any(|word| matches!(word, "gate" | "land"))
-    {
+    if config.gate_command.split_whitespace().collect::<Vec<_>>().windows(2).any(|pair| {
+        pair[0].trim_matches(['\'', '"']).ends_with("afkconvoy")
+            && matches!(pair[1].trim_matches(['\'', '"']), "gate" | "land")
+    }) {
         return Err(anyhow!(
             "gate_command must name the build-and-test command, never `afkconvoy gate` or `land`; set `gate_command: afkconvoy exclusive -- ./gate.sh` for a heavy gate, or `gate_command: ./gate.sh` for a light gate"
         ));
@@ -121,7 +119,8 @@ mod tests {
         for command in [
             "afkconvoy exclusive -- ./gate.sh",
             "/opt/homebrew/bin/afkconvoy exclusive -- ./gate.sh",
-            "'/opt/homebrew/bin/afkconvoy' -C . exclusive -- make test",
+            "'/opt/homebrew/bin/afkconvoy' exclusive -C . -- make test",
+            "afkconvoy exclusive -- make gate",
         ] {
             let config = parse(&format!(
                 "```yaml\nbase_branch: main\ngate_command: {}\n```\n",

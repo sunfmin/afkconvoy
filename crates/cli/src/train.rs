@@ -49,6 +49,14 @@ fn certify_tip(repo: &Repo, config: &Config, tip: &str, now: u64) -> Result<bool
     let removed = repo.git(&["worktree", "remove", "--force", &path.to_string_lossy()]);
     let run = run?;
     removed?;
+    if run.ran.green() && (run.green.is_none() || run.not_recorded.is_some()) {
+        let why = run.not_recorded.unwrap_or_else(|| {
+            format!("the gate left uncommitted files: {}", run.strays.join(", "))
+        });
+        bail!(
+            "the train's tip {tip} gated green, but has no record: {why}; run this again — no worker gate ran and nothing joined"
+        );
+    }
     Ok(run.green.is_some() && run.not_recorded.is_none())
 }
 
@@ -365,6 +373,9 @@ pub fn join(
             format!("turn gate {}", gated["status"].as_str().unwrap_or("unknown")),
         );
         if gated["status"] != "green" || gated["recorded"] != true {
+            for (key, value) in answer.as_object().into_iter().flatten() {
+                gated[key] = value.clone();
+            }
             gated["outcome"] = json!("gate_red");
             return Ok(gated);
         }

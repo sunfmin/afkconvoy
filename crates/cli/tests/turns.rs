@@ -251,3 +251,33 @@ fn the_tip_uses_its_own_gate_command_and_each_turn_uses_the_merged_config() {
     let landed = world.afk_in(&train, &["land", "--train", "--merged-timeout", "0"]).ok();
     assert_eq!(landed["gate"]["source"], "recorded", "{landed}");
 }
+
+#[test]
+fn a_green_run_without_a_written_record_joins_nothing_and_keeps_the_pr_in_its_answer() {
+    let world = World::new();
+    world.set_gate("true");
+    seed(&world);
+    let worker = world.worker(1, "one.txt", "one");
+    world.watch_pushes(Some("convoy/gate"));
+    let answer = world.afk_in(&worker, &["gate", "--train"]).ok();
+    assert_eq!(answer["status"], "green");
+    assert_eq!(answer["recorded"], false);
+    assert_eq!(answer["outcome"], "gate_red");
+    assert_eq!(answer["issue"], 1);
+    assert_eq!(answer["pr"], 10);
+    assert!(world.remote(&["for-each-ref", "--format=%(refname)", LINE]).is_empty());
+    world.watch_pushes(None);
+    assert_eq!(world.afk_in(&worker, &["gate", "--train"]).ok()["outcome"], "joined");
+}
+
+#[test]
+fn a_green_tip_whose_record_cannot_be_written_returns_a_retryable_error() {
+    let world = World::new();
+    world.set_gate("true");
+    let worker = world.worker(1, "one.txt", "one");
+    world.watch_pushes(Some("convoy/gate"));
+    let error = world.afk_in(&worker, &["gate", "--train"]).error();
+    assert!(error.contains("gated green, but has no record"), "{error}");
+    world.watch_pushes(None);
+    assert_eq!(world.afk_in(&worker, &["gate", "--train"]).ok()["outcome"], "joined");
+}
