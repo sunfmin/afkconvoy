@@ -69,7 +69,11 @@ pub struct Seen {
     /// with no research.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub good_at: Option<String>,
-    /// The dated URLs supporting good_at, absent before sourced research.
+    /// Research's sourced reason this listed identity is unsuited to workers.
+    /// Retained while listed, just like a placement; never a coding model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settled: Option<String>,
+    /// The dated URLs supporting the placement or settlement.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sources: Vec<crate::kit_research::Source>,
     /// When the research succeeded, in epoch seconds; never refreshed by age.
@@ -80,19 +84,21 @@ pub struct Seen {
 impl Seen {
     /// Whether a worker may be started on it: research placed it with a dated
     /// source, or a human or an older release named it, with no research yet.
-    /// One `research pending` or `not researched` is never started on.
+    /// Pending, not researched and settled models are never started on.
     pub fn placed(&self) -> bool {
         use crate::kit_research::{PENDING, UNKNOWN};
-        !matches!(self.good_at.as_deref(), Some(PENDING | UNKNOWN))
+        self.settled.is_none() && !matches!(self.good_at.as_deref(), Some(PENDING | UNKNOWN))
     }
 
     /// Whether research has yet to answer for it: it is `research pending`,
     /// or held with no dated research. The watch supplies its research.
     pub fn awaits_research(&self) -> bool {
+        if self.settled.is_some() {
+            return false;
+        }
         let sourced = !self.sources.is_empty() && self.researched_at.is_some();
         match self.good_at.as_deref() {
-            Some(crate::kit_research::UNKNOWN) => false,
-            Some(crate::kit_research::PENDING) | None => true,
+            Some(crate::kit_research::UNKNOWN | crate::kit_research::PENDING) | None => true,
             Some(good_at) => good_at.trim().is_empty() || !sourced,
         }
     }
@@ -313,7 +319,7 @@ pub fn write(now: u64) -> Result<Value> {
     Ok(json!({"path": file, "written": true, "kit": kit, "left_out": left_out}))
 }
 
-/// Places the watch's research against the latest kit under both write locks,
+/// Applies the watch's research against the latest kit under both write locks,
 /// so listing, casting and a switch cannot lose each other's changes. A bad
 /// file never reaches the atomic write, nor changes the kit's refresh time.
 pub fn apply_research(research: &Path, now: u64) -> Result<Value> {
@@ -323,7 +329,7 @@ pub fn apply_research(research: &Path, now: u64) -> Result<Value> {
     let _writing = writing(&file)?;
     let _mutation = mutation_lock(&file)?;
     let mut kit = load_at(&file)?;
-    let placed = crate::kit_research::place(&mut kit, &text, now).with_context(|| {
+    let applied = crate::kit_research::apply(&mut kit, &text, now).with_context(|| {
         format!(
             "invalid research file {}; correct it and run `afkconvoy kit --research <file>`",
             research.display()
@@ -331,7 +337,8 @@ pub fn apply_research(research: &Path, now: u64) -> Result<Value> {
     })?;
     let refreshed = written(&file).unwrap_or(now);
     store_unlocked(&file, &kit, refreshed)?;
-    Ok(json!({"path": file, "written": true, "placed": placed, "kit": kit}))
+    Ok(json!({"path": file, "written": true, "placed": applied.placed,
+        "settled": applied.settled, "kit": kit}))
 }
 
 /// Lists only `harness`, merging the result into the latest
@@ -874,6 +881,7 @@ fn compose(current: &Kit, host: &Host, writing: Writing) -> (Kit, Vec<LeftOut>) 
                         seen.good_at.clone()
                     }
                 }),
+                settled: researched.and_then(|seen| seen.settled.clone()),
                 sources: researched.map(|seen| seen.sources.clone()).unwrap_or_default(),
                 researched_at: researched.and_then(|seen| seen.researched_at),
             };
@@ -941,6 +949,10 @@ fn report(path: &str, kit: &Kit, left_out: &[LeftOut]) -> String {
             if !these.is_empty() {
                 line.push_str(&format!("; {said}: {}", these.join(" ")));
             }
+        }
+        let settled = models(&|seen| seen.settled.is_some());
+        if !settled.is_empty() {
+            line.push_str(&format!("; settled: {}", settled.join(" ")));
         }
         said.push_str(&format!("  {} `{}`: {line}\n", held.harness.key(), held.command));
     }
@@ -1150,6 +1162,7 @@ mod tests {
                 names: vec![],
                 probed: None,
                 good_at: None,
+                settled: None,
                 sources: vec![],
                 researched_at: None,
             })

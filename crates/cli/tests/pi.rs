@@ -79,7 +79,7 @@ fn bound_to(team: &[(&str, &str)]) -> World {
     let world = World::new();
     world.hold_every_harness();
     world.kit_command("claude-code", afkconvoy_core::harness::Harness::ClaudeCode.stock());
-    world.kit_models("pi", &["openai/gpt-5.5"]);
+    world.kit_researched_models("pi", &["openai/gpt-5.5"]);
     world.with_kit(|kit| {
         let entries = kit["harnesses"].as_array_mut().unwrap();
         let at = entries.iter().position(|h| h["harness"] == "pi").unwrap();

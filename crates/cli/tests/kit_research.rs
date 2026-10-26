@@ -59,6 +59,197 @@ fn sourced_research_places_models_in_file_order_without_calling_a_model() {
 }
 
 #[test]
+fn legacy_not_researched_models_named_by_doctor_accept_dated_research() {
+    let world = World::new();
+    world.kit_command("codex", "codex");
+    world.kit_models("codex", &["gpt-6-sol"]);
+    world.with_kit(|kit| {
+        let codex = kit["harnesses"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|h| h["harness"] == "codex")
+            .unwrap();
+        codex["models"][0]["good_at"] = json!("not researched");
+        codex["models"][0]["probed"] = json!(1);
+    });
+    let doctor = world.afk(&["doctor", "--all"]).ok();
+    assert!(
+        doctor["findings"].as_array().unwrap().iter().any(|f| f["what"]
+            .as_str()
+            .unwrap()
+            .contains("unplaced models")
+            && f["evidence"].to_string().contains("gpt-6-sol")),
+        "{doctor}"
+    );
+    let mut research = finding("gpt-6-sol");
+    research["harness"] = json!("codex");
+    let applied = apply(&world, &json!({"models":[research]})).ok();
+    assert_eq!(applied["placed"], json!([{"harness":"codex", "model":"gpt-6-sol"}]));
+    let doctor = world.afk(&["doctor", "--all"]).ok();
+    assert!(
+        !doctor["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f["what"].as_str().unwrap().contains("unplaced models")),
+        "{doctor}"
+    );
+}
+
+#[test]
+fn sourced_settlements_preserve_seven_placed_codex_models_and_survive_relisting() {
+    let world = World::new();
+    world.kit_command("codex", "codex");
+    let models = [
+        "gpt-first",
+        "gpt-second",
+        "gpt-third",
+        "gpt-fourth",
+        "gpt-fifth",
+        "gpt-sixth",
+        "gpt-seventh",
+        "gpt-reserve",
+        "codex-auto-review",
+    ];
+    world.kit_models("codex", &models);
+    world.with_kit(|kit| {
+        for (i, model) in
+            kit["harnesses"][1]["models"].as_array_mut().unwrap().iter_mut().enumerate()
+        {
+            model["good_at"] = json!(if i < 7 { "coding strengths" } else { "not researched" });
+            if i < 7 {
+                model["sources"] = finding("unused")["sources"].clone();
+                model["researched_at"] = json!(900);
+            }
+        }
+        kit["cast"] = json!(true);
+    });
+    let before = world.afk(&["doctor", "--all"]).ok()["host"]["host_kit"].clone();
+    let settlement = |model, reason| {
+        json!({"harness":"codex", "model":model,
+        "settled":reason, "sources":finding("unused")["sources"]})
+    };
+    let applied = apply(
+        &world,
+        &json!({"models":[
+            settlement("codex-auto-review", "approval reviewer, not a worker model"),
+            settlement("gpt-reserve", "quota meter, not a worker model")
+        ]}),
+    )
+    .ok();
+    assert_eq!(applied["placed"], json!([]));
+    assert_eq!(
+        applied["settled"],
+        json!([
+            {"harness":"codex", "model":"gpt-reserve"},
+            {"harness":"codex", "model":"codex-auto-review"}
+        ])
+    );
+    assert_eq!(applied["kit"]["cast"], true);
+    assert_eq!(
+        &applied["kit"]["harnesses"][1]["models"].as_array().unwrap()[..7],
+        &before["harnesses"][1]["models"].as_array().unwrap()[..7]
+    );
+    let settled = &applied["kit"]["harnesses"][1]["models"][8];
+    assert!(settled["settled"].as_str().unwrap().contains("quota meter"));
+    assert!(settled.get("good_at").is_none());
+    assert_eq!(settled["sources"], finding("unused")["sources"]);
+    assert_eq!(settled["researched_at"], 1000);
+    let doctor = world.afk(&["doctor", "--all"]).ok();
+    assert_eq!(doctor["host"]["host_kit"]["refreshed"], before["refreshed"]);
+    assert_eq!(doctor["host"]["host_kit"]["harnesses"][1]["research_pending"], false);
+    assert!(
+        !doctor["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f["what"].as_str().unwrap().contains("unplaced models")),
+        "{doctor}"
+    );
+    // Ordinary listings retain both outcomes; disappearance and rediscovery
+    // make a model await research again.
+    world.shell_server_models(&models);
+    let again = world.afk(&["kit"]).ok();
+    let codex = again["kit"]["harnesses"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|h| h["harness"] == "codex")
+        .unwrap();
+    assert_eq!(
+        &codex["models"].as_array().unwrap()[..7],
+        &before["harnesses"][1]["models"].as_array().unwrap()[..7]
+    );
+    for model in &codex["models"].as_array().unwrap()[7..] {
+        let prior = applied["kit"]["harnesses"][1]["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|prior| prior["model"] == model["model"])
+            .unwrap();
+        assert_eq!(model, prior, "settlement evidence survives relisting");
+    }
+    world.shell_server_models(&models[..7]);
+    world.afk(&["kit"]).ok();
+    world.shell_server_models(&models);
+    let rediscovered = world.afk(&["kit"]).ok();
+    let codex = rediscovered["kit"]["harnesses"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|h| h["harness"] == "codex")
+        .unwrap();
+    assert_eq!(codex["models"][7]["good_at"], "research pending");
+    assert!(codex["models"][7].get("settled").is_none());
+    assert_eq!(
+        &codex["models"].as_array().unwrap()[..7],
+        &before["harnesses"][1]["models"].as_array().unwrap()[..7]
+    );
+}
+
+#[test]
+fn settlement_and_placement_share_identities_and_invalid_settlement_writes_nothing() {
+    let world = pending();
+    world.kit_command("pi", "pi");
+    world.kit_models("pi", &["provider/unknown"]);
+    world.with_kit(|kit| kit["harnesses"][1]["models"][0]["good_at"] = json!("not researched"));
+    let settled = json!({"harness":"claude-code", "model":"unknown",
+        "settled":"not a worker model", "sources":finding("unused")["sources"]});
+    let before = std::fs::read(world.kit_path()).unwrap();
+    for (key, value) in [
+        ("settled", json!(" ")),
+        ("sources", json!([])),
+        ("sources", json!([{"url":"https://vendor.example/card", "date":"2026-02-30"}])),
+        ("good_at", json!("also coding")),
+        ("names", json!(["alias"])),
+    ] {
+        let mut bad = settled.clone();
+        bad[key] = value;
+        apply(&world, &json!({"models":[finding("fast"), bad]})).error();
+        assert_eq!(std::fs::read(world.kit_path()).unwrap(), before, "{key}");
+    }
+    let answer = apply(&world, &json!({"models":[settled, finding("deep")]})).ok();
+    assert_eq!(answer["placed"], json!([{"harness":"claude-code", "model":"deep"}]));
+    assert_eq!(
+        answer["settled"],
+        json!([
+            {"harness":"claude-code", "model":"unknown"}, {"harness":"pi", "model":"provider/unknown"}
+        ])
+    );
+    assert_eq!(answer["kit"]["harnesses"][1]["models"][0]["settled"], "not a worker model");
+    assert_eq!(
+        world.afk(&["doctor", "--all"]).ok()["host"]["host_kit"]["harnesses"][1]["default_model"],
+        true
+    );
+    let before = std::fs::read(world.kit_path()).unwrap();
+    assert!(
+        apply(&world, &json!({"models":[finding("unknown")]})).error().contains("settles no model")
+    );
+    assert_eq!(std::fs::read(world.kit_path()).unwrap(), before);
+}
+
+#[test]
 fn malformed_or_inapplicable_research_changes_neither_the_kit_nor_its_time() {
     let world = pending();
     let before = std::fs::read(world.kit_path()).unwrap();

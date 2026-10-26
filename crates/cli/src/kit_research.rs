@@ -7,10 +7,18 @@ use serde::{Deserialize, Serialize};
 
 use crate::kit::Kit;
 
-/// Older research settled models without evidence here; they never start.
+/// Older research supplied no dated answer here; it still awaits research.
 pub(crate) const UNKNOWN: &str = "not researched";
 /// A listed model awaiting the watch's research; it never starts.
 pub(crate) const PENDING: &str = "research pending";
+
+/// The glossary owns the research-state definitions printed in command help.
+pub fn states_help() -> &'static str {
+    include_str!("../../../GLOSSARY.md")
+        .lines()
+        .find(|line| line.starts_with("Research states: "))
+        .expect("the host kit's glossary entry defines its research states")
+}
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -35,17 +43,24 @@ struct Research {
 struct Finding {
     harness: String,
     model: String,
-    good_at: String,
+    good_at: Option<String>,
+    settled: Option<String>,
     #[serde(default)]
     names: Vec<String>,
     sources: Vec<Source>,
 }
 
-/// Checks the entire research file against the current kit, then places
+/// The identities answered by this file, including shared harness listings.
+pub struct Applied {
+    pub placed: Vec<serde_json::Value>,
+    pub settled: Vec<serde_json::Value>,
+}
+
+/// Checks the entire research file against the current kit, then answers
 /// awaiting identities across their harnesses, in file order after established
 /// priority. Omitted identities stay as held. Existing research is retained.
-/// Refuses an answer placing nothing, with no mutation, like every bad file.
-pub fn place(kit: &mut Kit, text: &str, now: u64) -> Result<Vec<serde_json::Value>> {
+/// Refuses a file answering no awaiting identity, without mutation.
+pub fn apply(kit: &mut Kit, text: &str, now: u64) -> Result<Applied> {
     let research: Research = serde_json::from_str(text)
         .context("research must be one JSON object with a `models` array")?;
     let mut seen = BTreeSet::new();
@@ -63,10 +78,13 @@ pub fn place(kit: &mut Kit, text: &str, now: u64) -> Result<Vec<serde_json::Valu
                 "research names an identity twice: {at}; name each identity once across harnesses"
             );
         }
-        if finding.good_at.trim().is_empty()
-            || matches!(finding.good_at.as_str(), PENDING | UNKNOWN)
-        {
-            bail!("research {at}: good_at must describe strengths and weaknesses for coding work");
+        match (&finding.good_at, &finding.settled) {
+            (Some(good_at), None)
+                if !good_at.trim().is_empty() && !matches!(good_at.trim(), PENDING | UNKNOWN) => {}
+            (None, Some(reason)) if !reason.trim().is_empty() && finding.names.is_empty() => {}
+            _ => bail!(
+                "research {at}: supply either good_at describing coding strengths and weaknesses, or a nonempty settled reason with no names"
+            ),
         }
         if finding.names.iter().any(|name| name.trim().is_empty()) {
             bail!("research {at}: names must contain only nonempty model names");
@@ -92,7 +110,7 @@ pub fn place(kit: &mut Kit, text: &str, now: u64) -> Result<Vec<serde_json::Valu
         }
     }
     let mut after = kit.clone();
-    let mut placed = vec![];
+    let mut applied = Applied { placed: vec![], settled: vec![] };
     for held in &mut after.harnesses {
         for model in &mut held.models {
             if !model.awaits_research() {
@@ -103,7 +121,8 @@ pub fn place(kit: &mut Kit, text: &str, now: u64) -> Result<Vec<serde_json::Valu
                 .iter()
                 .find(|finding| identity(&finding.model) == identity(&model.model))
             {
-                model.good_at = Some(finding.good_at.clone());
+                model.good_at = finding.good_at.clone();
+                model.settled = finding.settled.clone();
                 model.sources = finding.sources.clone();
                 model.researched_at = Some(now);
                 for name in &finding.names {
@@ -111,7 +130,12 @@ pub fn place(kit: &mut Kit, text: &str, now: u64) -> Result<Vec<serde_json::Valu
                         model.names.push(name.clone());
                     }
                 }
-                placed.push(serde_json::json!({"harness": held.harness, "model": model.model}));
+                let answered = serde_json::json!({"harness": held.harness, "model": model.model});
+                if finding.settled.is_some() {
+                    applied.settled.push(answered);
+                } else {
+                    applied.placed.push(answered);
+                }
             }
         }
         held.models.sort_by_key(|model| {
@@ -122,14 +146,14 @@ pub fn place(kit: &mut Kit, text: &str, now: u64) -> Result<Vec<serde_json::Valu
                 .unwrap_or(usize::MAX)
         });
     }
-    if placed.is_empty() {
+    if applied.placed.is_empty() && applied.settled.is_empty() {
         bail!(
-            "research places no model awaiting research in the current host kit; read `afkconvoy doctor --all`, then correct the file and run `afkconvoy kit --research <file>`"
+            "research places no model and settles no model awaiting research in the current host kit; read `afkconvoy doctor --all`, then correct the file and run `afkconvoy kit --research <file>`"
         );
     }
     crate::kit::retain_model_order(kit, &mut after);
     *kit = after;
-    Ok(placed)
+    Ok(applied)
 }
 
 fn date(text: &str) -> bool {
@@ -166,7 +190,7 @@ pub fn findings() -> Vec<crate::doctor::Finding> {
             let unplaced: Vec<&str> = held
                 .models
                 .iter()
-                .filter(|model| !model.placed())
+                .filter(|model| model.awaits_research())
                 .map(|model| model.model.as_str())
                 .collect();
             if unplaced.is_empty() {
