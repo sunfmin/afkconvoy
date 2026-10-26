@@ -395,6 +395,7 @@ fn prs_that_joined_during_a_gate_run_land_behind_the_next_one() {
             "pr 80 (#80)\n\nCloses #8",
         ],
     );
+    git(&eight, &["push", "-q", "origin", &format!("{later}:refs/convoy/test/later")]);
     std::fs::write(
         world.root.join("during"),
         format!("git --git-dir={} update-ref {LINE} {later}\n", world.bare.display()),

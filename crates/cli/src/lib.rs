@@ -1338,7 +1338,7 @@ enum Command {
         #[arg(long, value_name = "OWNER/REPO", value_parser = tracker::repo_or_default)]
         tracker: Option<To<RepoName>>,
         #[command(flatten)]
-        agent: AgentArgs,
+        agent: Box<AgentArgs>,
         /// The port the host runner serves the panel on, from its next start: a host setting;
         /// `default` changes it back [default: 7070, or any free port where it is taken]
         #[arg(long, value_name = "PORT", value_parser = port_or_default)]
