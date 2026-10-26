@@ -67,6 +67,7 @@ fn main() {
         ["terminal", "send", ..] => terminal_send(&mut st),
         ["terminal", "list", ..] => terminal_list(&st),
         ["terminal", "read", ..] => terminal_read(&st),
+        ["terminal", "show", ..] => terminal_show(&st),
         ["terminal", "close", ..] => terminal_close(&mut st),
         _ => fail(&st, &format!("fake orca: unsupported call {:?}", st.argv)),
     }
@@ -208,8 +209,20 @@ fn worktree_ps(st: &mut State) -> ! {
         .map(|row| {
             let terminals = open_terminals(st, row["path"].as_str().unwrap());
             let last = terminals.iter().filter_map(|t| t["lastOutputAt"].as_u64()).max();
-            let agents: Vec<&Value> =
-                terminals.iter().map(|t| &t["agent"]).filter(|agent| !agent.is_null()).collect();
+            let agents: Vec<Value> = terminals
+                .iter()
+                .filter_map(|terminal| {
+                    let mut agent = terminal["agent"].clone();
+                    if agent.is_null() {
+                        return None;
+                    }
+                    if agent["paneKey"].is_null() {
+                        agent["paneKey"] =
+                            json!(format!("{}:pane", terminal["handle"].as_str().unwrap()));
+                    }
+                    Some(agent)
+                })
+                .collect();
             json!({"path": row["path"], "linkedIssue": row["linkedIssue"], "repoId": row["repoId"],
                 "liveTerminalCount": terminals.len(), "lastOutputAt": last, "agents": agents})
         })
@@ -448,6 +461,16 @@ fn terminal_read(st: &State) -> ! {
     let tail = if terminal["screen"].is_array() { terminal["screen"].clone() } else { json!([]) };
     let source = st.doc["screen_source"].as_str().unwrap_or("screen");
     done(st, json!({"terminal": {"handle": terminal["handle"], "tail": tail, "source": source}}))
+}
+
+fn terminal_show(st: &State) -> ! {
+    let Some(at) = terminal_at(st) else { fail(st, "terminal_handle_stale") };
+    let terminal = &st.doc["terminals"][at];
+    done(
+        st,
+        json!({"terminal": {"handle": terminal["handle"],
+        "tabId": terminal["handle"], "leafId": "pane", "lastOutputAt": terminal["lastOutputAt"]}}),
+    )
 }
 
 fn terminal_close(st: &mut State) -> ! {

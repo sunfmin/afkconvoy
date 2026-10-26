@@ -968,7 +968,17 @@ fn the_guide_and_each_subcommand_agree_on_who_runs_it_and_why() {
     let workers = group(&long, "Run by a worker");
     assert_eq!(
         workers.iter().copied().collect::<BTreeSet<_>>(),
-        BTreeSet::from(["gate", "land", "verdict", "intake", "lock", "over", "exclusive", "cut"])
+        BTreeSet::from([
+            "gate",
+            "land",
+            "verdict",
+            "intake",
+            "lock",
+            "over",
+            "exclusive",
+            "cut",
+            "watched"
+        ])
     );
     for command in &workers {
         let who = who(command);
