@@ -228,6 +228,10 @@ fn the_operator_directory_wins_and_default_returns_to_the_stock_watch() {
 fn a_look_reads_a_terminal_preview_ending_in_a_lone_surrogate() {
     let world = World::new();
     let dir = operator(&world);
+    paused(&world, "pi", "it refused every prompt");
+    run(&world, &dir);
+    let watch = until(&world, "the host watch", || running(&world));
+    let first = state(&world)["until"].as_u64().unwrap();
     let answer = json!({"ok": true, "result": {"terminals": [{
         "handle": OPERATORS, "worktreePath": dir, "connected": true, "writable": true,
         "preview": "⏺SURROGATE"
@@ -235,14 +239,14 @@ fn a_look_reads_a_terminal_preview_ending_in_a_lone_surrogate() {
     .to_string()
     .replace("SURROGATE", r"\udf13");
     world.with_orca(|orca| orca["raw_answers"] = json!({"terminal list": answer}));
-    run(&world, &dir);
+    printed(&world, &watch, &["checked the host"], Some(0));
     until(&world, "a successful look", || {
         let log = world.runner_log().join("\n");
         assert!(!log.contains("watch_failed"), "{log}");
-        state(&world)["until"].as_u64()
+        state(&world)["until"].as_u64().filter(|until| *until > first)
     });
     assert!(world.orca_calls().iter().any(|call| asked(call) == "terminal list"));
-    assert!(starts(&world).is_empty());
+    assert_eq!(state(&world)["last"]["outcome"], "ended");
     assert!(!world.runner_log().join("\n").contains("watch_failed"));
 }
 
