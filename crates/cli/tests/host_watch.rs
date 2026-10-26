@@ -722,7 +722,12 @@ fn a_watch_at_capacity_continues_interactively_with_the_same_look() {
     run(&world, &dir);
     let watch = until(&world, "Codex watch", || running(&world));
     assert_eq!(watch["harness"], "codex");
-    session(&world, &watch, &["The selected model is at capacity. Please try again later."], None);
+    session(
+        &world,
+        &watch,
+        &["Selected model is at capacity. Please try a different model."],
+        None,
+    );
     let next = until(&world, "continued watch", || {
         running(&world).filter(|w| w["harness"] == "claude-code")
     });
