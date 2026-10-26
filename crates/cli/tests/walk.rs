@@ -396,7 +396,22 @@ fn already_satisfied_closes_the_issue() {
 }
 
 #[test]
-fn already_satisfied_closes_an_equal_tree_with_commits_ahead() {
+fn already_satisfied_closes_a_branch_only_behind_the_base() {
+    let world = bound(2);
+    world.issue(7, &["flow:feature"]);
+    tick(&world, 1000);
+    let dir = worktree(&world, 7);
+    commit(&world.clone, "landed.txt", "landed while the stage checked\n");
+    git(&world.clone, &["push", "-q", "origin", "main"]);
+    declare(&world, 7, "build", "already-satisfied", &["--text", "main already does this."]);
+    assert_eq!(did(&tick(&world, 1090)), ["advance 7 done"]);
+    assert_eq!(world.state(7), "closed");
+    assert_eq!(world.claims(), []);
+    assert!(!dir.exists());
+}
+
+#[test]
+fn already_satisfied_refuses_an_equal_tree_with_commits_ahead() {
     let world = bound(2);
     world.issue(7, &["flow:feature"]);
     tick(&world, 1000);
@@ -405,9 +420,11 @@ fn already_satisfied_closes_an_equal_tree_with_commits_ahead() {
     git(&dir, &["revert", "--no-edit", "HEAD"]);
     declare(&world, 7, "build", "already-satisfied", &["--text", "main already does this."]);
     assert_eq!(did(&tick(&world, 1090)), ["advance 7 done"]);
-    assert_eq!(world.state(7), "closed");
+    assert_eq!(world.state(7), "open");
     assert_eq!(world.claims(), []);
-    assert!(!dir.exists());
+    assert!(dir.exists());
+    assert!(world.labels(7).contains(&"ready-for-human".to_string()));
+    assert!(world.comments(7).last().unwrap().contains("commits past the merge base"));
 }
 
 #[test]
