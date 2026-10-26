@@ -70,6 +70,26 @@ fn unworked_blockers_are_named_with_repairs_in_plan_and_doctor() {
 }
 
 #[test]
+fn a_blocker_repair_read_in_a_workers_worktree_uses_the_main_checkout_for_flows() {
+    let world = world();
+    tracker_issue(&world, 7, &[MINE, "ready-for-agent"]);
+    assert_eq!(did(&tick(&world, "1000")), ["dispatch 7 done"]);
+    let worktree = world.worktrees()[0].clone();
+    world.with_tracker(|gh| {
+        gh["edges"]["7"] = json!([
+            {"number": 931, "state": "open", "repo": "acme/dev", "labels": []}
+        ])
+    });
+    let plan = world.afk_in(&worktree, &["plan", "--now", "1090"]).ok();
+    let fix = plan["findings"][0]["fix"].as_str().unwrap();
+    let flows = fix.lines().find(|line| line.contains("afkconvoy flows")).unwrap();
+    let out = world.command("sh", &worktree).args(["-c", flows]).output().unwrap();
+    assert!(out.status.success(), "{flows}: {}", String::from_utf8_lossy(&out.stdout));
+    let answer: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(answer["line"].as_str().unwrap().contains("--repo 'acme/tracker'"), "{answer}");
+}
+
+#[test]
 fn a_blocker_of_another_checkout_serving_the_tracker_is_worked() {
     let world = world();
     let other = world.second_repo();
