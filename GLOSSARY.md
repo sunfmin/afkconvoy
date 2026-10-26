@@ -157,8 +157,12 @@ A limit on rework — in total for an issue, or as rejections in a row by one st
 _Avoid_: retry limit, circuit
 
 **Consult**:
-A worker in a more senior role, asked before a human is whenever its stage would hand the issue to a human — an `escalate` verdict, a failure, a tripped breaker, a workflow changed under the issue. It stands where that human stands: told what the human would be, and free to run what a human answering runs. It rules, sends the issue to a stage, closes it, or lets it through; it commits, pushes and changes the host never. The same hand-off again, and its own failure, go to a human. Where a stage names none, and in an unbound repo, the **stock consult** stands in: afkconvoy's own, in no role of a team, whose one instruction is to decide as the human would. A stage that says `escalate: { to: human }`, or an unbound repo whose config says `escalate_to: human`, has no consult.
+A worker in a more senior role, asked before a human is whenever its stage would hand the issue to a human about the work — an `escalate` verdict, a failure, a tripped breaker, a workflow changed under the issue. A fleet fault goes straight to a human: a consult cannot change the host. It stands where that human stands: told what the human would be, and free to run what a human answering runs. It rules, sends the issue to a stage, closes it, or lets it through; it commits, pushes and changes the host never. The same hand-off again, and its own failure, go to a human. Where a stage names none, and in an unbound repo, the **stock consult** stands in: afkconvoy's own, in no role of a team, whose one instruction is to decide as the human would. A stage that says `escalate: { to: human }`, or an unbound repo whose config says `escalate_to: human`, has no consult.
 _Avoid_: review (a stage may be named it), second opinion, handoff, default consult
+
+**Fleet fault**:
+A hand-off caused by the fleet, its harness or its host: a worker start that failed again, a worktree trust gap, or a landing train given up twice. It escalates at once, in a bound repo and an unbound one alike, because the fix is on the host; a worker gone silent had its brief, so its hand-off is about the work.
+_Avoid_: infrastructure failure, system fault
 
 **Ruling**:
 What a consult or a human decides on an issue handed on. The stage runs again under it; a human's also hands the issue back to the fleet and starts the rework counts over, a consult's starts none over.
@@ -291,7 +295,7 @@ Recording a dependency a worker discovered as a blocker on its issue and releasi
 _Avoid_: defer, snooze, hold (a fleet instance holds its claims)
 
 **Escalate**:
-Handing an issue to a human: the reason is commented, with the line that answers it, the flow label is swapped for the escalate label, and the claim is released. Every hand-off — a failure, a tripped breaker, an `escalate` verdict, a changed workflow — goes first to the consult where the stage names one, and escalates when the consult lets it through or where none is named; nothing is retried. The issue then waits for a human, with every other open issue only one can move: `plan`, `doctor` and the panel list them, each with its line.
+Handing an issue to a human: the reason is commented, with the line that answers it, the flow label is swapped for the escalate label, and the claim is released. A fleet fault escalates at once and says the fix is on the host; every hand-off about the work — a failure, a tripped breaker, an `escalate` verdict, a changed workflow — goes first to the stage's consult, the stock consult where none is named and in an unbound repo, unless the stage or repo explicitly hands it to a human. Nothing new retries: the operator fixes the host and hands the issue back, and another fleet fault escalates at once again. The issue then waits for a human, with every other open issue only one can move: `plan`, `doctor` and the panel list them, each with its line.
 _Avoid_: fail (what a command, a gate or one thing a tick does may), retry, give up (a landing train is given up: Abandon)
 
 **Status board**:
