@@ -3,8 +3,8 @@
 //! When a cut is due, which version it makes and how it ended are the core's
 //! (`afkconvoy_core::cut`).
 
-use std::fs::OpenOptions;
-use std::io::Write;
+use std::fs::{File, OpenOptions};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -172,7 +172,8 @@ fn started(fleet: &Fleet, me: &Me, agent: &Agent, first: &Cast) -> Result<Option
     checkout.record_cut(&record)?;
     let path = checkout.path.display().to_string();
     let command = crate::own_command_in(&path).fixed(" cut; exit").own();
-    agent.start(&checkout, first.harness, &command, me.now)?;
+    let title = format!("afkconvoy cut v{}", record.version);
+    agent.start(&checkout, first.harness, &command, Some(&title), me.now)?;
     Ok(Some(record))
 }
 
@@ -347,22 +348,39 @@ pub fn run(
     let mut cutting =
         Cutting { repo, config, steps: &steps, gh: &gh, host, checkout: &checkout, second };
     let first = from.unwrap_or_else(|| record.step());
+    let taking = first.from();
+    let names: Vec<_> = taking.iter().map(|step| step.word()).collect();
+    let mut summary = record.line();
+    if record.prs.is_empty() {
+        summary.push_str(" · holding no PRs");
+    }
+    eprintln!(
+        "[afkconvoy] cut: {summary}; steps: {}; log: {}; record: {}",
+        names.join(", "),
+        checkout.cut_log()?.display(),
+        checkout.cut_record_file()?.display()
+    );
     record.failed = None;
-    for step in first.from() {
+    for step in taking {
         record.at = Some(step);
         checkout.record_cut(&record)?;
         let began = Instant::now();
-        if let Err(error) = cutting.take(step, &mut record, &clock) {
+        eprintln!("[afkconvoy] cut: {} started", step.word());
+        let taken = cutting.take(step, &mut record, &clock);
+        let seconds = began.elapsed().as_secs();
+        if let Err(error) = taken {
             let why = format!("{error:#}");
+            eprintln!("[afkconvoy] cut: {} failed after {seconds}s: {why}", step.word());
             record.failed = Some(Failure { step, why: why.clone() });
             checkout.record_cut(&record)?;
             return Ok(json!({"version": record.version, "failed": step.word(), "why": why,
                 "said": record.line(), "log": checkout.cut_log()?}));
         }
         record.took.retain(|took| took.step != step);
-        record.took.push(Took { step, seconds: began.elapsed().as_secs() });
+        record.took.push(Took { step, seconds });
         record.at = None;
         checkout.record_cut(&record)?;
+        eprintln!("[afkconvoy] cut: {} passed after {seconds}s", step.word());
     }
     let title = cut::failure_title(&record.version);
     let open = gh.open_issues()?;
@@ -610,8 +628,9 @@ impl Cutting<'_> {
     }
 
     /// Runs `lines` by `sh -e` in the checkout with the version in
-    /// `cut::VERSION_ENV`, what they print added to the cut's log under the
-    /// step's name. The first line that fails ends them, its status theirs:
+    /// `cut::VERSION_ENV`, both output streams kept in order in the cut's log
+    /// and streamed to stderr before the step ends. The first line that fails
+    /// ends them, its status theirs:
     /// by `sh` alone the lines after it would run, and the last one's would
     /// stand for them all.
     fn sh(&self, step: Step, lines: &str, version: &str) -> Result<()> {
@@ -622,7 +641,9 @@ impl Cutting<'_> {
             .open(&file)
             .with_context(|| format!("cannot write {}", file.display()))?;
         writeln!(log, "== {} (VERSION={version})", step.word())?;
-        let status = crate::process::status(
+        let mut output = File::open(&file)?;
+        output.seek(SeekFrom::End(0))?;
+        let mut child = crate::process::spawn(
             Command::new("sh")
                 .args(["-e", "-c", lines])
                 .current_dir(&self.repo.dir)
@@ -632,6 +653,41 @@ impl Cutting<'_> {
                 .stderr(log),
         )
         .context("sh could not run")?;
+        // Follow the same file the commands have always written. A child
+        // left in the background can keep that file open without keeping
+        // this step waiting on an output pipe after its shell exits.
+        let streamed = (|| -> std::io::Result<_> {
+            let mut buffer = [0; 8192];
+            let mut terminal = std::io::stderr().lock();
+            let mut newline = true;
+            loop {
+                let status = child.try_wait()?;
+                loop {
+                    let read = match output.read(&mut buffer) {
+                        Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                        read => read?,
+                    };
+                    if read == 0 {
+                        break;
+                    }
+                    terminal.write_all(&buffer[..read])?;
+                    newline = buffer[read - 1] == b'\n';
+                }
+                terminal.flush()?;
+                if let Some(status) = status {
+                    if !newline {
+                        writeln!(terminal)?;
+                    }
+                    return Ok(status);
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        })();
+        if streamed.is_err() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        let status = streamed.context("cannot stream the cut step's output")?;
         if !status.success() {
             let code = status.code().map_or("a signal".to_string(), |code| code.to_string());
             bail!("its lines exited {code}; what they printed is in {}", file.display());

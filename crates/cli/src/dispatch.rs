@@ -139,7 +139,7 @@ impl Agent {
                 .done(),
             None => command,
         };
-        let terminal = self.start(worktree, harness, &command, now)?;
+        let terminal = self.start(worktree, harness, &command, None, now)?;
         std::fs::write(worktree.note("convoy-worker-model")?, model.unwrap_or_default())?;
         if let Some((_, settings)) = prepared {
             crate::codex_launch::record(worktree, &settings)?;
@@ -153,15 +153,17 @@ impl Agent {
         Ok(terminal)
     }
 
-    /// Starts every kind of worker with its harness's host network settings.
+    /// Starts every kind of worker with its harness's host network settings
+    /// and, when given, its terminal title.
     pub fn start(
         &self,
         worktree: &Worktree,
         harness: Harness,
         command: &str,
+        title: Option<&str>,
         now: u64,
     ) -> Result<String> {
-        let terminal = worktree.start(&self.launches.worker_line(harness, command), now)?;
+        let terminal = worktree.start(&self.launches.worker_line(harness, command), title, now)?;
         // Record what actually started, never a replacement whose old
         // terminal could not be ended.
         worktree.keep_harness(harness)?;
