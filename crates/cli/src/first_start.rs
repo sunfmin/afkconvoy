@@ -18,9 +18,14 @@ pub fn settings_help() -> String {
     use afkconvoy_core::{admission::SHARES, host_inspection::SPAN, host_sleep};
     format!(
         "Host settings apply to every fleet on this host. Host sleep defaults to {} of its local time, once every fleet has been idle {} minutes and the host has been unused that long; a host that is not macOS must say `--no-host-sleep`. Hot limits inspect a worker past half the host's cores (at least one) held two minutes, a quarter of its memory resident, or a tenth of the disk free written in ten minutes (at least one GiB). Admission holds back new workers past a load of {}% of the host's cores, under {}% memory free, or under {}% disk free; held for one reason {} seconds, it starts an inspection. Memory pressure held that long starts one too. The panel's port defaults to {}, or any free port if taken. Each checkout's concurrency defaults to {} claims at work at once on this host. `afkconvoy run --help` gives the flags for changing each.",
-        host_sleep::SLEEP_HOURS, host_sleep::IDLE_WAIT / 60,
-        SHARES.load, SHARES.memory, SHARES.disk, SPAN,
-        host_settings::PANEL_PORT, afkconvoy_core::config::CONCURRENCY,
+        host_sleep::SLEEP_HOURS,
+        host_sleep::IDLE_WAIT / 60,
+        SHARES.load,
+        SHARES.memory,
+        SHARES.disk,
+        SPAN,
+        host_settings::PANEL_PORT,
+        afkconvoy_core::config::CONCURRENCY,
     )
 }
 
@@ -94,7 +99,12 @@ pub fn questions() -> Vec<Ask> {
 pub fn help() -> String {
     let mut text = String::new();
     for ask in questions() {
-        writeln!(text, "### {}\n\n{}\n\nDefault: {}. Recommendation: {}\n", ask.setting, ask.question, ask.default, ask.recommend).unwrap();
+        writeln!(
+            text,
+            "### {}\n\n{}\n\nDefault: {}. Recommendation: {}\n",
+            ask.setting, ask.question, ask.default, ask.recommend
+        )
+        .unwrap();
         for option in ask.options {
             writeln!(text, "- {}: `{}`", option.option, option.line).unwrap();
         }
@@ -110,9 +120,8 @@ pub fn check(checkout: &Repo, start: &Start, settings: &host_settings::Named) ->
     let (listed, has_settings) = List::of_host()?.read_with_settings()?;
     let new_checkout = !listed.checkouts.iter().any(|entry| entry.checkout == checkout.dir);
     let tracker = new_checkout && start.tracker.is_none();
-    let sleep = !has_settings
-        && settings.no_host_sleep.is_none()
-        && settings.host_sleep_hours.is_none();
+    let sleep =
+        !has_settings && settings.no_host_sleep.is_none() && settings.host_sleep_hours.is_none();
     let asks: Vec<_> = questions()
         .into_iter()
         .filter(|ask| match ask.setting {

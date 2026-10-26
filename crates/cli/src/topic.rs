@@ -125,8 +125,14 @@ pub enum See {
 
 impl See {
     /// Every topic a `see` can name.
-    pub const ALL: &[See] =
-        &[See::FirstStart, See::Team, See::Workflows, See::Patrols, See::Humans, See::Troubleshooting];
+    pub const ALL: &[See] = &[
+        See::FirstStart,
+        See::Team,
+        See::Workflows,
+        See::Patrols,
+        See::Humans,
+        See::Troubleshooting,
+    ];
 
     /// The command that prints the topic.
     pub fn reference(self) -> TopicRef {
