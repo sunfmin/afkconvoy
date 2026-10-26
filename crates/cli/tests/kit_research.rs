@@ -59,6 +59,44 @@ fn sourced_research_places_models_in_file_order_without_calling_a_model() {
 }
 
 #[test]
+fn legacy_not_researched_models_named_by_doctor_accept_dated_research() {
+    let world = World::new();
+    world.kit_models("codex", &["gpt-6-sol"]);
+    world.with_kit(|kit| {
+        let codex = kit["harnesses"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|h| h["harness"] == "codex")
+            .unwrap();
+        codex["models"][0]["good_at"] = json!("not researched");
+        codex["models"][0]["probed"] = json!(1);
+    });
+    let doctor = world.afk(&["doctor", "--all"]).ok();
+    assert!(
+        doctor["findings"].as_array().unwrap().iter().any(|f| f["what"]
+            .as_str()
+            .unwrap()
+            .contains("unplaced models")
+            && f["evidence"].to_string().contains("gpt-6-sol")),
+        "{doctor}"
+    );
+    let mut research = finding("gpt-6-sol");
+    research["harness"] = json!("codex");
+    let applied = apply(&world, &json!({"models":[research]})).ok();
+    assert_eq!(applied["placed"], json!([{"harness":"codex", "model":"gpt-6-sol"}]));
+    let doctor = world.afk(&["doctor", "--all"]).ok();
+    assert!(
+        !doctor["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f["what"].as_str().unwrap().contains("unplaced models")),
+        "{doctor}"
+    );
+}
+
+#[test]
 fn malformed_or_inapplicable_research_changes_neither_the_kit_nor_its_time() {
     let world = pending();
     let before = std::fs::read(world.kit_path()).unwrap();
