@@ -133,9 +133,10 @@ impl List {
             }
         };
         let read = || -> serde_json::Result<(Listed, bool)> {
+            let listed = serde_json::from_slice(&bytes)?;
             let value: Value = serde_json::from_slice(&bytes)?;
             let settings = value.get("settings").is_some();
-            Ok((serde_json::from_value(value)?, settings))
+            Ok((listed, settings))
         };
         read().with_context(|| {
             format!(
