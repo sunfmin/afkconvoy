@@ -305,6 +305,31 @@ fn a_trust_gap_keeps_the_screen_read_failure_and_the_wait_that_classified_it() {
 }
 
 #[test]
+fn a_trust_gap_keeps_screen_unavailability_and_redacts_echoed_credentials() {
+    let world = ready_world();
+    world.set_gate_config("gate_command: ./gate.sh\nescalate_to: human");
+    world.kit_command("claude-code", COMMAND);
+    let secret = "startup-secret-103";
+    world.with_orca(|orca| {
+        orca["trust_prompt"] = json!(true);
+        orca["screen_source"] = json!("screen-unavailable");
+        orca["start_screen"] = json!([format!("provider credential: {secret}")]);
+    });
+    let out = world
+        .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
+        .env("ANTHROPIC_AUTH_TOKEN", secret)
+        .args(["dispatch", "--issue", "7", "--instance", "alpha", "--host", "h1"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let comments = world.comments(7).join("\n");
+    assert!(comments.contains("screen-unavailable"), "{comments}");
+    assert!(comments.contains("provider credential: [redacted]"), "{comments}");
+    assert!(!comments.contains(secret), "{comments}");
+    assert!(!String::from_utf8_lossy(&out.stdout).contains(secret));
+}
+
+#[test]
 fn an_orca_that_does_not_know_the_repo_is_an_error() {
     let world = ready_world();
     world.with_orca(|orca| orca["repos"] = json!([]));

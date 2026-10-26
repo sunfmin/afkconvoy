@@ -237,7 +237,7 @@ fn startup_redacted(text: &str) -> String {
         .flat_map(|(_, value)| {
             let json = serde_json::to_string(&value).unwrap_or_default();
             let escaped = json.trim_matches('"').to_string();
-            [value.clone(), escaped, afkconvoy_core::line::quoted(&value)]
+            [value.clone(), escaped, afkconvoy_core::line::Line::new().word(&value).done()]
         })
         .collect();
     secrets.sort_by_key(|secret| std::cmp::Reverse(secret.len()));

@@ -92,9 +92,7 @@ fn on_stock_claude_the_stock_command_is_used_and_nobody_is_asked() {
     assert_eq!(ran.ok()["stopped"], true);
     assert_eq!(
         started(&world),
-        [
-            r#"claude --dangerously-skip-permissions --settings '{"skipDangerousModePermissionPrompt":true}'"#
-        ]
+        [common::trusted(afkconvoy_core::harness::Harness::ClaudeCode.stock())]
     );
     // Resolution, authentication and the trust flags are checked, with no model discovery.
     let asked = world.shell_asked();
@@ -204,7 +202,10 @@ fn an_empty_command_discovers_the_harness_default() {
     world.kit_command("claude-code", "  ");
     let ran = wrapped(&world, &TICK);
     assert_eq!(ran.json["errors"], json!([]));
-    assert!(started(&world)[0].starts_with("claude --dangerously-skip-permissions"));
+    assert_eq!(
+        started(&world),
+        [common::trusted(afkconvoy_core::harness::Harness::ClaudeCode.stock())]
+    );
     assert!(ran.stderr.contains("discovered claude-code"), "{}", ran.stderr);
 }
 
