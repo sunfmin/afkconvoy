@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: accepted, its worker-health diagnosis by another harness superseded by ADR-0030
 ---
 
 # An issue is cast within its role's range on the host
