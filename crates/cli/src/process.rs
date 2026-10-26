@@ -27,15 +27,65 @@ pub(crate) fn status(command: &mut Command) -> io::Result<ExitStatus> {
 }
 
 fn starting<T>(start: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
+    // macOS has no pipe2(O_CLOEXEC): cover pipe creation and flag setting
+    // against every other start, including one capturing no output itself.
+    #[cfg(target_os = "macos")]
+    let _starting = {
+        static STARTING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        STARTING.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    };
     start()
 }
 
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
+    use std::ffi::CString;
+    use std::io::Write;
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
     use std::sync::mpsc;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn waiting_for_one_child_does_not_hold_back_another_start() {
+        let dir = tempfile::tempdir().unwrap();
+        let fifo = dir.path().join("release");
+        let ready = dir.path().join("ready");
+        let name = CString::new(fifo.as_os_str().as_encoded_bytes()).unwrap();
+        // SAFETY: name is a nul-terminated path in this test's directory.
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        std::thread::scope(|scope| {
+            let first = scope.spawn(|| {
+                output(Command::new("sh").args([
+                    "-c",
+                    "printf ready > \"$1\"; read -r line < \"$2\"; printf first",
+                    "sh",
+                    ready.to_str().unwrap(),
+                    fifo.to_str().unwrap(),
+                ]))
+                .unwrap()
+            });
+            let until = Instant::now() + Duration::from_secs(10);
+            while !ready.exists() {
+                assert!(Instant::now() < until, "the first child never started");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let (sent, received) = mpsc::channel();
+            scope.spawn(move || {
+                let second = output(Command::new("sh").args(["-c", "printf second"]));
+                let _ = sent.send(second);
+            });
+            let second = received.recv_timeout(Duration::from_secs(5));
+            // Release the first even if the second was held back: a wrong
+            // lock scope fails this test instead of hanging its cleanup.
+            std::fs::File::create(&fifo).unwrap().write_all(b"go\n").unwrap();
+            let first = first.join().unwrap();
+            let second = second.expect("waiting for output held back another start").unwrap();
+            assert!(first.status.success() && second.status.success());
+            assert_eq!(first.stdout, b"first");
+            assert_eq!(second.stdout, b"second");
+        });
+    }
 
     #[test]
     fn a_child_cannot_inherit_a_pipe_while_its_close_on_exec_flags_are_being_set() {
@@ -54,7 +104,10 @@ mod tests {
                 let child = scope.spawn(move || {
                     attempting.send(()).unwrap();
                     let ran = status(Command::new("sh").args([
-                        "-c", "test ! -e /dev/fd/\"$1\"", "sh", &fd,
+                        "-c",
+                        "test ! -e /dev/fd/\"$1\"",
+                        "sh",
+                        &fd,
                     ]));
                     let _ = finished.send(());
                     ran
@@ -66,12 +119,19 @@ mod tests {
                 let _ = finishing.recv_timeout(Duration::from_millis(250));
                 for pipe in &pipes {
                     // SAFETY: each descriptor is still owned by pipes.
-                    assert_eq!(unsafe { libc::fcntl(pipe.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) }, 0);
+                    assert_eq!(
+                        unsafe { libc::fcntl(pipe.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) },
+                        0
+                    );
                 }
                 Ok((pipes, child))
-            }).unwrap();
+            })
+            .unwrap();
             let (_pipes, child) = child;
-            assert!(child.join().unwrap().unwrap().success(), "the child inherited another command's pipe");
+            assert!(
+                child.join().unwrap().unwrap().success(),
+                "the child inherited another command's pipe"
+            );
         });
     }
 }
