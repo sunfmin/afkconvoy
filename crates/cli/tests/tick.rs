@@ -77,6 +77,45 @@ fn a_brief_waits_for_a_started_harness_whose_prompt_settles_late() {
 }
 
 #[test]
+fn a_brief_waits_for_the_harness_to_end_its_quiet_startup_working_episode() {
+    let world = backlog(&[3]);
+    world.with_kit(|kit| {
+        kit["harnesses"] = json!([{"harness": "codex",
+            "command": "codex --dangerously-bypass-approvals-and-sandbox --config tui.animations=false"}]);
+    });
+    // Every tui-idle wait is satisfied immediately. Only fresh runtime
+    // observations see Codex's startup working episode end.
+    world.with_orca(|orca| orca["startup_working_reports"] = json!(2));
+    let ticked = tick(&world, "1000");
+    assert_eq!(did(&ticked), ["dispatch 3 done", "heartbeat done"], "{ticked}");
+    assert_eq!(ticked["errors"], json!([]), "{ticked}");
+    let orca = world.orca();
+    let terminal =
+        orca["terminals"].as_array().unwrap().iter().find(|t| t["open"] == true).unwrap();
+    assert_eq!(terminal["startup_observations"], json!(["working", "working", "idle"]));
+    assert_eq!(terminal["last_prompt_stages"], json!(["input_accepted", "turn_started"]));
+    assert_eq!(terminal["sent"].as_array().unwrap().len(), 1);
+    let handle = terminal["handle"].clone();
+    world.orca_calls();
+
+    let again = tick(&world, "1090");
+    assert_eq!(again["errors"], json!([]), "{again}");
+    assert_eq!(world.claims(), alpha(&[3]));
+    assert!(
+        !world.orca_calls().iter().any(|call| matches!(
+            common::asked(call).as_str(),
+            "terminal create" | "terminal close" | "terminal send"
+        )),
+        "the worker that took its brief is never closed, replaced or briefed twice"
+    );
+    let orca = world.orca();
+    let open: Vec<_> =
+        orca["terminals"].as_array().unwrap().iter().filter(|t| t["open"] == true).collect();
+    assert_eq!(open.len(), 1);
+    assert_eq!(open[0]["handle"], handle);
+}
+
+#[test]
 fn a_claim_whose_issue_is_closed_is_settled_and_its_slot_refilled() {
     let world = backlog(&[3, 5, 9]);
     tick(&world, "1000");
