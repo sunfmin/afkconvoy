@@ -185,6 +185,7 @@ fn real_pi_started_in_a_role_sees_the_role_and_the_project_and_nothing_of_the_us
         kept: &text(&kept),
         host_user: false,
         dsh_profile: afkconvoy_core::team::DshProfile::Fleet,
+        host_rules: &[],
         shadowed: &[],
         told: Told::default(),
         facts: Facts {

@@ -119,6 +119,7 @@ fn a_real_codex_worker_is_shown_its_role_s_rules_and_skills_the_repo_s_own_and_t
         kept: &text(&kept),
         host_user: false,
         dsh_profile: afkconvoy_core::team::DshProfile::Fleet,
+        host_rules: &[],
         shadowed: &[],
         told: Told {
             repo: Some(Rules { file: &text(&held), text: &own }),
@@ -332,6 +333,7 @@ fn a_real_codex_worker_starts_on_its_brief_and_makes_no_call_its_role_or_the_gua
         kept: &text(&kept),
         host_user: false,
         dsh_profile: afkconvoy_core::team::DshProfile::Fleet,
+        host_rules: &[],
         shadowed: &[],
         told: Told {
             repo: Some(Rules { file: &text(&project.join("AGENTS.md")), text: &own }),

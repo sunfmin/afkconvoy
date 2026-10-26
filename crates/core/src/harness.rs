@@ -203,6 +203,16 @@ impl Harness {
         }
     }
 
+    /// Native rule paths under the host user's home which can also be found
+    /// by project discovery. These must stay out of a worker whose role
+    /// turns host-user rules off, even if its copy is under that home.
+    pub fn host_rule_excludes(self, home: &str) -> Vec<String> {
+        match self {
+            Harness::ClaudeCode => claude_code::host_rule_excludes(home),
+            _ => vec![],
+        }
+    }
+
     /// The generated configuration this harness's kept home needs, if any.
     pub fn kept_configuration(
         self,

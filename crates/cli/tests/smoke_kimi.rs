@@ -198,6 +198,7 @@ fn a_real_kimi_worker_loads_its_role_and_refuses_what_the_role_and_guard_refuse(
         kept: &kept,
         host_user: false,
         dsh_profile: afkconvoy_core::team::DshProfile::Fleet,
+        host_rules: &[],
         shadowed: &[],
         told,
         facts: Facts {

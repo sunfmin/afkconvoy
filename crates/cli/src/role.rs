@@ -257,6 +257,7 @@ impl Staged {
             kept: &kept,
             host_user: self.host_user,
             dsh_profile: self.dsh_profile,
+            host_rules: &crate::kept::host_rules(self.harness),
             shadowed: &shadowed,
             told: told.told(),
             facts: Facts {
