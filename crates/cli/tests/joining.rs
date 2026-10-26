@@ -94,7 +94,7 @@ fn gated() -> World {
     commit(&dir, "seven.txt", "7\n");
     git(&dir, &["push", "-q", "origin", "HEAD"]);
     world.pr(70, 7, &git(&dir, &["symbolic-ref", "--short", "HEAD"]));
-    let gate = world.afk_in(&dir, &["gate", "--train", "--now", "1040"]).ok();
+    let gate = world.afk_in(&dir, &["gate", "--now", "1040"]).ok();
     assert_eq!((&gate["status"], &gate["recorded"]), (&json!("green"), &json!(true)));
     world.with_orca(|orca| {
         for terminal in orca["terminals"].as_array_mut().unwrap() {

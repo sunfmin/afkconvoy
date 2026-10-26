@@ -1,7 +1,7 @@
 //! The host runner's watch of its host (docs/adr/0030). A look is the fleet's
 //! own `doctor --all --since`, and starts no model; a look holding something
 //! an operator would act on starts one bounded watch in the operator's
-//! directory, continued on another harness where its own gives out. The
+//! directory, or afkconvoy's own, continued where its harness gives out. The
 //! process holds nothing of it: the watch, its terminal and its transcript are
 //! read back from the host's cache after every restart.
 
@@ -41,11 +41,37 @@ const TITLE: &str = "afkconvoy watch";
 /// inspection's: starting an inspection must never reuse a watch's checkout.
 pub const CHECKOUT: &str = "afkconvoy-watch";
 
+/// The stock watch's whole instruction, kept as its directory's rules.
+const STOCK_INSTRUCTION: &str = "\
+# The stock watch
+
+Find what holds this host's fleets and their work back, fix it with the watch's authority,
+check that the work goes on, and say what you did.
+Leave these with a human, never act on them, and list each in your printed record:
+- spending money, or needing an account, a credential or a person's hands;
+- what cannot be undone;
+- taking a secret or private data off the host;
+- changing what a product is for, or who it is for.
+";
+
+/// Where the host's watch runs. Resolving the stock directory writes nothing:
+/// only starting a stock watch makes it and puts its instruction there.
+pub fn directory(settings: &crate::host_settings::Settings) -> Result<PathBuf> {
+    match &settings.watch_dir {
+        Some(directory) => Ok(directory.clone()),
+        None => Ok(cache()?.join("stock-watch")),
+    }
+}
+
 /// A watch as the host keeps it: what a continuation of it needs too.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Watch {
     pub id: String,
     pub directory: PathBuf,
+    /// Whether it started under afkconvoy's own instruction. Kept with the
+    /// watch so a later host-setting change cannot change a continuation.
+    #[serde(default)]
+    pub stock: bool,
     /// What the look that started it answered.
     pub look: Value,
     /// Why it was started.
@@ -86,7 +112,7 @@ pub struct Attempt {
 
 /// A watch as `doctor` says it: all but the look, which is the watch's own.
 pub fn watch_json(watch: &Watch) -> Value {
-    json!({"id": watch.id, "directory": watch.directory, "items": watch.items,
+    json!({"id": watch.id, "directory": watch.directory, "stock": watch.stock, "items": watch.items,
         "started": watch.started, "harness": watch.harness, "model": watch.model,
         "terminal": watch.terminal, "transcript": watch.transcript, "did": watch.did,
         "attempts": watch.attempts, "ended": watch.ended, "outcome": watch.outcome})
@@ -207,15 +233,12 @@ impl Watcher {
             // A look is taken only while no watch runs: what it would find
             // waits for the first look after the watch ends.
             if now >= next_look && self.shared.running().is_none() {
-                let settings = crate::host_settings::of_host().unwrap_or_default();
-                next_look = match &settings.watch_dir {
-                    Some(directory) => {
-                        let looked = self.look(directory);
-                        self.looking.said(looked, &self.say);
-                        now + Duration::from_secs(settings.watch_every())
-                    }
-                    None => now + CHECK_EVERY,
-                };
+                next_look = now + CHECK_EVERY;
+                let looked = crate::host_settings::of_host().and_then(|settings| {
+                    next_look = now + Duration::from_secs(settings.watch_every());
+                    self.look(&settings)
+                });
+                self.looking.said(looked, &self.say);
             }
             std::thread::sleep(Duration::from_millis(250));
         }
@@ -234,12 +257,13 @@ impl Watcher {
     }
 
     /// One look at the host, and the watch it calls for.
-    fn look(&self, directory: &Path) -> Result<()> {
+    fn look(&self, settings: &crate::host_settings::Settings) -> Result<()> {
         let mut state = read()?;
         if state.running.is_some() {
             return Ok(());
         }
-        if !directory.is_dir() {
+        let directory = directory(settings)?;
+        if settings.watch_dir.is_some() && !directory.is_dir() {
             bail!(
                 "the watch directory {} is not a directory: `afkconvoy run --watch-dir <dir>` \
                  names the operator's",
@@ -254,7 +278,7 @@ impl Watcher {
         if pending.is_empty() {
             state.unavailable = None;
         } else {
-            self.start(&mut state, directory, look, pending)?;
+            self.start(&mut state, &directory, settings.watch_dir.is_none(), look, pending)?;
         }
         self.save(&state)
     }
@@ -264,6 +288,7 @@ impl Watcher {
         &self,
         state: &mut State,
         directory: &Path,
+        stock: bool,
         look: Value,
         items: Vec<Item>,
     ) -> Result<()> {
@@ -286,6 +311,7 @@ impl Watcher {
         let mut watch = Watch {
             id: format!("{now}-{}", crate::unique()),
             directory: directory.to_path_buf(),
+            stock,
             look,
             items,
             started: now,
@@ -468,6 +494,17 @@ fn gave_out(harness: Harness, transcript: &str, exited: Option<i32>) -> Option<D
 /// Starts a session of `watch` on its harness: its brief written beside its
 /// transcript, in the host's cache. Answers its terminal and transcript.
 fn start_session(watch: &Watch) -> Result<(String, PathBuf)> {
+    if watch.stock {
+        std::fs::create_dir_all(&watch.directory).with_context(|| {
+            format!("cannot make the stock watch's directory {}", watch.directory.display())
+        })?;
+        // Each harness finds the same instruction by its own rules filename.
+        // Refresh it at each start, including after moving onto a new release.
+        for file in [afkconvoy_core::team::RULES, "AGENTS.md"] {
+            std::fs::write(watch.directory.join(file), STOCK_INSTRUCTION)?;
+        }
+        crate::orca::watch_directory(&watch.directory)?;
+    }
     let session = watch.attempts.len() + 1;
     let dir = cache()?.join("watch").join(&watch.id);
     std::fs::create_dir_all(&dir)
@@ -515,7 +552,7 @@ fn brief(watch: &Watch) -> String {
         .collect();
     format!(
         "# A watch of this host\n\n\
-         You are an afkconvoy **watch**: the operator on this host, started in the operator's \
+         You are an afkconvoy **watch**: the operator on this host, started in the watch's \
          directory by the host runner, because its look found something an operator would act \
          on. Nobody reads this terminal: never wait for an answer, and ask nothing.\n\n\
          Find what holds this host's fleets and their work back, fix it — whatever that takes — \
@@ -549,9 +586,9 @@ fn brief(watch: &Watch) -> String {
          inspection's or another worker's checkout. Work only in your own checkout of that \
          repo. Commit and push each completed piece before a long operation. Open its PR \
          against that repo's base branch, on no issue: no intake or flow label is needed, in \
-         a bound repo too. Run `afkconvoy gate --train` there until it answers `status: green` \
-         and `recorded: true`, then `afkconvoy land --inspection`. Resolve conflicts by \
-         merging, committing and gating again; never rebase. This is the inspection's \
+         a bound repo too. Run `afkconvoy land --inspection` there: it takes a turn to merge, \
+         gate and join on the train's green tip, recording green before releasing the turn. \
+         Resolve conflicts by merging, committing and asking again; never rebase. This is the inspection's \
          landing path: its join names an inspection on this host and closes no issue. A \
          fleet lock standing joins nothing: record what holds it back. Keep the branch and \
          PR, and name the repo and PR in your record.\n\n\
@@ -732,7 +769,18 @@ pub fn json(running: Option<&Watch>) -> Value {
         Ok(state) => (json!(state.last.as_ref().map(watch_json)), json!(state.unavailable)),
         Err(error) => (Value::Null, json!(format!("{error:#}"))),
     };
-    json!({"running": running.map(watch_json), "last": last, "unavailable": unavailable})
+    let mut answer =
+        json!({"running": running.map(watch_json), "last": last, "unavailable": unavailable});
+    match crate::host_settings::of_host()
+        .and_then(|settings| Ok((directory(&settings)?, settings.watch_dir.is_none())))
+    {
+        Ok((directory, stock)) => {
+            answer["directory"] = json!(directory);
+            answer["stock"] = json!(stock);
+        }
+        Err(error) => answer["error"] = json!(format!("{error:#}")),
+    }
+    answer
 }
 
 /// The host's finding where a look called for a watch no harness could start.

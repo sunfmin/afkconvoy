@@ -370,6 +370,16 @@ fn same_dir(a: &Path, b: &Path) -> bool {
     }
 }
 
+/// Keeps the stock watch's own directory known to orca, so its terminal can
+/// start there without the operator registering it. An operator's directory
+/// is never added or changed here.
+pub fn watch_directory(directory: &Path) -> Result<()> {
+    if Source::at(directory)?.is_none() {
+        orca(&["repo", "add", "--path", &directory.display().to_string()])?;
+    }
+    Ok(())
+}
+
 /// What a train worker was last told.
 pub struct Told {
     pub tip: String,

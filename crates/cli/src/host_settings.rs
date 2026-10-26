@@ -58,10 +58,14 @@ pub struct Settings {
     pub admit_inspect_after: Option<u64>,
     /// `--exclusive-seconds`: seconds a running command may hold others up.
     pub exclusive_seconds: Option<u64>,
+    /// `--gate-lanes`: worker commands that may run across different repos.
+    pub gate_lanes: Option<u64>,
+    /// `--train-lanes`: train gates that may run across different repos.
+    pub train_lanes: Option<u64>,
     /// `--panel`: the port the host runner serves the panel on; `PANEL_PORT`
     /// where the host says none.
     pub panel: Option<u16>,
-    /// `--watch-dir`: the operator's directory; none starts no watch.
+    /// `--watch-dir`: the operator's directory; none uses the stock watch's.
     pub watch_dir: Option<PathBuf>,
     /// `--watch-every`: seconds between the host runner's looks.
     pub watch_every: Option<u64>,
@@ -77,6 +81,10 @@ pub struct Settings {
 pub const PANEL_PORT: u16 = 7070;
 /// How often the host runner looks at its host where it says no interval.
 pub const WATCH_EVERY: u64 = 300;
+/// The default number of worker lanes on a host.
+pub const GATE_LANES: u64 = 1;
+/// The default number of train lanes on a host.
+pub const TRAIN_LANES: u64 = 1;
 
 /// What a `run` named of the host settings; each it left unnamed is `None`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -92,6 +100,8 @@ pub struct Named {
     pub admit_disk: Option<To<u64>>,
     pub admit_inspect_after: Option<To<u64>>,
     pub exclusive_seconds: Option<To<u64>>,
+    pub gate_lanes: Option<To<u64>>,
+    pub train_lanes: Option<To<u64>>,
     pub panel: Option<To<u16>>,
     pub watch_dir: Option<To<PathBuf>>,
     pub watch_every: Option<To<u64>>,
@@ -153,7 +163,7 @@ pub fn port_or_default(said: &str) -> Result<To<u16>, String> {
 }
 
 /// `--watch-dir` as said: the operator's directory, an existing one, kept by
-/// its whole path, or `default` for none.
+/// its whole path, or `default` for the stock watch's own directory.
 pub fn watch_dir_or_default(said: &str) -> Result<To<PathBuf>, String> {
     To::parse(said, |said| {
         std::fs::canonicalize(said)
@@ -211,6 +221,8 @@ impl Settings {
         lay(&mut self.admit_disk, named.admit_disk.as_ref());
         lay(&mut self.admit_inspect_after, named.admit_inspect_after.as_ref());
         lay(&mut self.exclusive_seconds, named.exclusive_seconds.as_ref());
+        lay(&mut self.gate_lanes, named.gate_lanes.as_ref());
+        lay(&mut self.train_lanes, named.train_lanes.as_ref());
         lay(&mut self.panel, named.panel.as_ref());
         lay(&mut self.watch_dir, named.watch_dir.as_ref());
         lay(&mut self.watch_every, named.watch_every.as_ref());
@@ -246,6 +258,13 @@ impl Settings {
     /// The exclusive bound, counting only time with another command waiting.
     pub fn exclusive_seconds(&self) -> u64 {
         self.exclusive_seconds.unwrap_or(crate::exclusive::SECONDS)
+    }
+
+    pub fn gate_lanes(&self) -> u64 {
+        self.gate_lanes.unwrap_or(GATE_LANES).max(1)
+    }
+    pub fn train_lanes(&self) -> u64 {
+        self.train_lanes.unwrap_or(TRAIN_LANES).max(1)
     }
 
     /// The sleep hours it says, else the default.
@@ -285,8 +304,10 @@ impl Settings {
             "admit_disk": self.admit_disk.unwrap_or(SHARES.disk),
             "admit_inspect_after": self.admit_inspect_after.unwrap_or(SPAN),
             "exclusive_seconds": self.exclusive_seconds(),
+            "gate_lanes": self.gate_lanes(),
+            "train_lanes": self.train_lanes(),
             "panel": self.panel_port(),
-            "watch_dir": self.watch_dir,
+            "watch_dir": crate::host_watch::directory(self).ok(),
             "watch_every": self.watch_every(),
             "jev_key_command": self.jev_key_command,
         });

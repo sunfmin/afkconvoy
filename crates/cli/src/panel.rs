@@ -285,6 +285,8 @@ pub struct Host {
     /// The host's `exclusive` queue, whatever its repo: the first runs alone,
     /// and the rest wait their turn, next first.
     pub exclusive: Vec<Ticket>,
+    pub gate_lanes: u64,
+    pub train_lanes: u64,
     /// The hours of its local time a fleet may put it to sleep in; `None`
     /// where its host settings keep it awake.
     pub sleep_hours: Option<Hours>,
@@ -301,6 +303,7 @@ impl Host {
     /// so, or shows nothing. Admission reads the disk under `dir`; `shared`
     /// is what its host runner holds for its fleets.
     pub fn read(dir: &Path, now: u64, shared: SharedNow) -> Host {
+        let settings = host_settings::of_host().unwrap_or_default();
         Host {
             name: crate::this_host(),
             now,
@@ -308,6 +311,8 @@ impl Host {
             inspection: shared.inspection,
             host_inspected: inspection::last_on_host(),
             exclusive: shared.exclusive,
+            gate_lanes: settings.gate_lanes(),
+            train_lanes: settings.train_lanes(),
             sleep_hours: host_settings::host_sleep(),
             kit: crate::kit::load().map_err(|error| format!("{error:#}")),
             worker_health: crate::health::show(),
@@ -1047,21 +1052,35 @@ fn host_part(out: &mut String, page: &Page) {
         );
     }
 
-    if !host.exclusive.is_empty() {
-        out.push_str(
-            "<section class=\"exclusive\"><h2>Run alone on this host</h2><ul class=\"cards\">",
+    {
+        let lanes: std::collections::BTreeSet<_> =
+            host.exclusive.iter().map(afkconvoy_core::exclusive::lane).collect();
+        out.push_str("<section class=\"exclusive\"><h2>Command lanes</h2>");
+        let _ = write!(
+            out,
+            "<p>{} worker lanes · {} train lanes</p>",
+            host.gate_lanes, host.train_lanes
         );
-        for (place, ticket) in host.exclusive.iter().enumerate() {
-            let class = if place == 0 { "busy" } else { "queued" };
-            let _ = write!(
-                out,
-                "<li class=\"card {class}\"><span class=\"title\"><code>{}</code></span>\
+        for lane in lanes {
+            let _ = write!(out, "<h3>{} lane</h3><ul class=\"cards\">", esc(&lane));
+            for (place, ticket) in host
+                .exclusive
+                .iter()
+                .filter(|ticket| afkconvoy_core::exclusive::lane(ticket) == lane)
+                .enumerate()
+            {
+                let class = if ticket.ran.is_some() { "busy" } else { "queued" };
+                let _ = write!(
+                    out,
+                    "<li class=\"card {class}\"><span class=\"title\"><code>{}</code></span>\
                  <span class=\"meta\"><span class=\"note\">{}</span></span></li>",
-                esc(&ticket.command),
-                esc(&exclusive_says(ticket, place, host.now)),
-            );
+                    esc(&ticket.command),
+                    esc(&exclusive_says(ticket, place, host.now)),
+                );
+            }
+            out.push_str("</ul>");
         }
-        out.push_str("</ul></section>\n");
+        out.push_str("</section>\n");
     }
 
     let sleep = match host.sleep_hours {
@@ -1666,6 +1685,8 @@ mod tests {
             inspection: None,
             host_inspected: None,
             exclusive: vec![],
+            gate_lanes: 1,
+            train_lanes: 1,
             sleep_hours: Some(SLEEP_HOURS),
             kit: Ok(Kit::default()),
             worker_health: serde_json::json!({}),
@@ -1763,6 +1784,9 @@ mod tests {
             dir: "/w/acme".into(),
             issue,
             train: false,
+            repo_lane: None,
+            repo: None,
+            is_turn: false,
             asked: 700,
             ran,
         };
@@ -1779,10 +1803,15 @@ mod tests {
         train.asked = 900;
         host.exclusive = afkconvoy_core::exclusive::in_order(vec![running, waiting, train]);
         let page = render(&page_of(host, vec![]));
-        assert!(page.contains("<h2>Run alone on this host</h2>"), "{page}");
+        assert!(
+            page.contains("<h2>Command lanes</h2>")
+                && page.contains("<h3>train lane</h3>")
+                && page.contains("<h3>worker lane</h3>"),
+            "{page}"
+        );
         assert!(page.contains("<code>cargo test &lt;all&gt;</code>"), "{page}");
         assert!(page.find("cargo test").unwrap() < page.find("make bench").unwrap());
-        assert!(page.find("cargo test").unwrap() < page.find("train gate").unwrap());
+        assert!(page.find("train gate").unwrap() < page.find("cargo test").unwrap());
         assert!(page.find("train gate").unwrap() < page.find("make bench").unwrap());
     }
 

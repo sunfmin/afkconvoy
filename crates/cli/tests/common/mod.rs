@@ -439,7 +439,7 @@ impl World {
 
     /// Runs a command that prints lines before its answer → (the lines, the
     /// answer), but for the lines a `run` says of itself whatever it does: its
-    /// start, and each tick's (`bookkeeping`).
+    /// start, each tick's, and the host's independent watch (`bookkeeping`).
     pub fn afk_lines(&self, args: &[&str]) -> (Vec<String>, Value) {
         let (lines, answer) = self.afk_every_line(args);
         (lines.into_iter().filter(|line| !bookkeeping(line)).collect(), answer)
@@ -692,6 +692,7 @@ impl World {
         self.with_orca(|orca| {
             orca["calls"] = json!([]);
             orca["envs"] = json!([]);
+            orca["parents"] = json!([]);
         });
         calls
     }
@@ -1495,12 +1496,13 @@ impl Drop for Running {
 }
 
 /// Whether `line` is one a `run` prints whatever its ticks do: the line of
-/// its start (`start: run as …`), or of a tick's (`tick N: started (…)`).
+/// its start (`start: run as …`), a tick's (`tick N: started (…)`), or the
+/// host's independent watch. Watch events are checked by `host_watch`.
 pub fn bookkeeping(line: &str) -> bool {
     let tick_started = line.strip_prefix("tick ").is_some_and(|rest| {
         rest.split_once(": started (").is_some_and(|(count, _)| count.parse::<u64>().is_ok())
     });
-    tick_started || line.starts_with("start: run as ")
+    tick_started || line.starts_with("start: run as ") || line.starts_with("watch: ")
 }
 
 /// Runs git in `cwd` and returns its trimmed stdout; a failure fails the test.

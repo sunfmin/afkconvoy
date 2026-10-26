@@ -420,7 +420,9 @@ impl Cutting<'_> {
             Step::Set => self.set(record),
             Step::Pr => self.pr(record),
             Step::Gate if record.landed.is_some() => Ok(()),
-            Step::Gate => self.gate(clock()),
+            Step::Gate => {
+                self.join(record.pr.ok_or_else(|| anyhow!("the cut opened no PR"))?, clock())
+            }
             Step::Land => self.land(record, clock),
             Step::Tag => self.tag(record),
             Step::Publish => self.publish(record),
@@ -512,22 +514,6 @@ impl Cutting<'_> {
         Ok(())
     }
 
-    /// Gates it, the landing train merged in: green, and on record.
-    fn gate(&self, now: u64) -> Result<()> {
-        let gated = crate::gate::gate(self.repo, self.config, true, self.host, now)?;
-        if gated["status"] == "green" && gated["recorded"] == true {
-            return Ok(());
-        }
-        let detail = gated["detail"].as_str().unwrap_or("the gate said nothing");
-        match gated["files"].as_array() {
-            Some(files) => bail!(
-                "{detail} — the files: {}",
-                files.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", ")
-            ),
-            None => bail!("{detail}"),
-        }
-    }
-
     /// Joins its PR to the landing train, on no issue, and waits for it to
     /// land, joining it again whenever it is off the train and not landed: a
     /// train given up and its PRs joined again without it. A fleet lock
@@ -570,8 +556,15 @@ impl Cutting<'_> {
         let pr = open.iter().find(|pr| pr.number == number);
         let pr = pr.ok_or_else(|| anyhow!("PR #{number} is not open: it joins nothing"))?;
         let of = Of::Cut(self.host.to_string());
-        let answer =
-            crate::train::join(self.repo, self.config, &self.gh.tracker, pr, &of, json!({}), now)?;
+        let answer = crate::train::join(
+            self.repo,
+            self.config,
+            &self.gh.tracker,
+            pr,
+            &of,
+            json!({}),
+            (self.host, now),
+        )?;
         match answer["outcome"].as_str() {
             Some("joined" | "merged") => Ok(()),
             _ => bail!(

@@ -1,6 +1,7 @@
 use crate::common;
 
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 
 use common::{World, codex_line, commit, git};
 use serde_json::{Value, json};
@@ -1418,7 +1419,8 @@ fn the_live_runners_tick_and_served_panel_share_one_orca_observation() {
         }
     });
     world.orca_calls();
-    let (_, ended) = world.afk_lines(&[
+    let mut command = world.command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone);
+    command.args([
         "run",
         "--foreground",
         "--instance",
@@ -1432,9 +1434,22 @@ fn the_live_runners_tick_and_served_panel_share_one_orca_observation() {
         "--second-ms",
         "0",
     ]);
-    assert!(ended.get("error").is_none(), "{ended}");
-    let calls = world.orca_calls();
-    assert_eq!(calls.iter().filter(|c| common::asked(c) == "worktree ps").count(), 1, "{calls:?}");
+    let child = command.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let runner = child.id();
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stdout));
+    let orca = world.orca();
+    let calls: Vec<Vec<String>> = serde_json::from_value(orca["calls"].clone()).unwrap();
+    let parents: Vec<u32> = serde_json::from_value(orca["parents"].clone()).unwrap();
+    assert_eq!(calls.len(), parents.len());
+    // The stock watch's look has its own doctor process and observation.
+    // This fleet's tick and panel must still share exactly one of their own.
+    let observations = calls
+        .iter()
+        .zip(parents)
+        .filter(|(call, parent)| *parent == runner && common::asked(call) == "worktree ps")
+        .count();
+    assert_eq!(observations, 1, "{calls:?}");
 }
 
 #[test]

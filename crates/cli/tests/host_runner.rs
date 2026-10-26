@@ -550,6 +550,10 @@ fn the_host_settings_outlive_the_host_runner_and_doctor_says_those_in_force() {
         "0",
         "--exclusive-seconds",
         "1500",
+        "--gate-lanes",
+        "2",
+        "--train-lanes",
+        "3",
     ];
     let hours = ["--host-sleep-hours", "22:00-06:00"];
     let first = world.afk(&[&RUN[..], &named[..], &hours[..]].concat()).ok();
@@ -560,6 +564,8 @@ fn the_host_settings_outlive_the_host_runner_and_doctor_says_those_in_force() {
     assert_eq!(changed["hot_memory"], json!({"from": null, "to": 8.0}), "{first}");
     assert_eq!(changed["admit_disk"], json!({"from": null, "to": 0}), "{first}");
     assert_eq!(changed["exclusive_seconds"], json!({"from": null, "to": 1500}), "{first}");
+    assert_eq!(changed["gate_lanes"], json!({"from": null, "to": 2}));
+    assert_eq!(changed["train_lanes"], json!({"from": null, "to": 3}));
     world.kill_host_runner("KILL");
 
     // a host runner started again keeps them, and a `run` that names none
@@ -575,6 +581,12 @@ fn the_host_settings_outlive_the_host_runner_and_doctor_says_those_in_force() {
     assert_eq!(in_force["hot_memory"], 8.0);
     assert_eq!(said["exclusive_seconds"], 1500);
     assert_eq!(in_force["exclusive_seconds"], 1500);
+    assert_eq!(in_force["gate_lanes"], 2);
+    assert_eq!(in_force["train_lanes"], 3);
+    let before = again["instance"].clone();
+    let changed_live = world.afk(&["run", "--gate-lanes", "4", "--train-lanes", "2"]).ok();
+    assert_eq!(changed_live["instance"], before, "settings change no fleet instance");
+    assert_eq!(changed_live["host_runner"]["started"], false);
     let back = world.afk(&["run", "--exclusive-seconds", "default"]).ok();
     assert_eq!(back["settings"]["exclusive_seconds"], json!({"from": 1500, "to": null}));
     let defaulted = world.afk(&["doctor", "--host", "h1"]).json;

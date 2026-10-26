@@ -134,8 +134,14 @@ fn exclusive(world: &World, cache: &Path, issue: u64, script: &str) -> Child {
 fn tickets(world: &World) -> usize {
     let doctor = world.afk(&["doctor", "--host", "h1"]).json;
     let exclusive = &doctor["host"]["exclusive"];
-    let waiting = exclusive["waiting"].as_array().map_or(0, Vec::len);
-    waiting + usize::from(!exclusive["running"].is_null())
+    let count = |lane: &serde_json::Value| {
+        lane["waiting"].as_array().map_or(0, Vec::len) + usize::from(!lane["running"].is_null())
+    };
+    count(&exclusive["lanes"]["worker"])
+        + count(&exclusive["lanes"]["train"])
+        + exclusive["lanes"]["repos"]
+            .as_array()
+            .map_or(0, |repos| repos.iter().map(|r| count(&r["queue"])).sum::<usize>())
 }
 
 /// Waits, five seconds at most, until `done`.
@@ -324,92 +330,83 @@ fn two_commands_of_two_repos_fleets_run_one_after_the_other_in_the_order_they_as
 }
 
 #[test]
-fn two_repos_trains_gate_ahead_of_waiting_workers_without_interrupting_what_runs() {
+fn train_gates_have_their_own_fifo_lane_but_other_train_commands_use_worker_lanes() {
     let (first, second) = (World::new(), World::new());
     let binary = env!("CARGO_BIN_EXE_afkconvoy");
-    let gate = afkconvoy_core::line::Line::new()
-        .program(binary)
+    let gate = afkconvoy_core::line::Line::new().program(binary)
         .fixed(" exclusive -- sh -c ")
-        .word("echo \"$MARK\" >> \"$CACHE/order\"")
+        .word("echo \"$MARK-start\" >> \"$CACHE/order\"; while test -d \"$CACHE\" && test ! -f \"$CACHE/release-trains\"; do sleep 0.02; done; echo \"$MARK-end\" >> \"$CACHE/order\"")
         .own();
     first.set_gate(&gate);
     second.set_gate(&gate);
-    let worker = second.worker(7, "seven.txt", "7\n");
-    assert_eq!(second.afk_in(&worker, &["land", "--issue", "7"]).ok()["outcome"], "joined");
-    let train = |world: &World, name: &str| {
-        let dir = world.root.join(name);
-        git(
-            &world.clone,
-            &["worktree", "add", "-q", "--detach", dir.to_str().unwrap(), "origin/main"],
-        );
+    let train = |world: &World| {
+        let dir = world.root.join("convoy-train");
+        git(&world.clone, &["worktree", "add", "-q", "--detach", dir.to_str().unwrap(), "HEAD"]);
         dir
     };
-    let train_a = train(&first, "convoy-train-2");
-    let train_b = train(&second, "convoy-train");
+    let (train_a, train_b) = (train(&first), train(&second));
     let cache = first.cache();
     let _host_runner = first.host_held();
     let order = cache.join("order");
-    let held = exclusive(
+    let worker = exclusive(
         &first,
         &cache,
         11,
-        "echo holder-start >> \"$CACHE/order\"; \
-         while test -d \"$CACHE\" && test ! -f \"$CACHE/release\"; do sleep 0.02; done; \
-         echo holder-end >> \"$CACHE/order\"",
+        "echo worker-start >> \"$CACHE/order\"; while test -d \"$CACHE\" && test ! -f \"$CACHE/release-worker\"; do sleep 0.02; done; echo worker-end >> \"$CACHE/order\"",
     );
-    until(|| lines(&order) == ["holder-start"]);
-    let run = |world: &World, dir: &Path, mark: &str, args: &[&str]| {
+    until(|| lines(&order) == ["worker-start"]);
+    let run = |world: &World, dir: &Path, mark: &str| {
         world
             .command(binary, dir)
             .env("XDG_CACHE_HOME", &cache)
             .env("CACHE", &cache)
             .env("MARK", mark)
-            .args(args)
+            .args(["gate"])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
             .unwrap()
     };
-    // --train on an issue worker's gate only merges what it lands behind;
-    // it must not confer the train worker's priority.
-    let worker_a = run(&first, &first.clone, "worker-a", &["gate", "--train"]);
-    until(|| tickets(&first) == 2);
-    let worker_b = exclusive(&second, &cache, 22, "echo worker-b >> \"$CACHE/order\"");
+    let first_train = run(&first, &train_a, "train-a");
+    until(|| lines(&order) == ["worker-start", "train-a-start"]);
+    let second_train = run(&second, &train_b, "train-b");
     until(|| tickets(&first) == 3);
-    let first_train = run(&first, &train_a, "train-a", &["gate", "--train"]);
-    until(|| tickets(&first) == 4);
-    let second_train = run(&second, &train_b, "train-b", &["land", "--train"]);
-    until(|| tickets(&first) == 5);
     let shown = first.afk(&["doctor", "--host", "h1"]).json;
-    let queue = &shown["host"]["exclusive"];
-    assert_eq!(queue["running"]["issue"], 11, "{queue}");
-    let dirs: Vec<_> = queue["waiting"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|t| Path::new(t["dir"].as_str().unwrap()).file_name().unwrap().to_str().unwrap())
-        .collect();
-    assert_eq!(dirs, ["convoy-train-2", "convoy-train", "clone", "clone"]);
-    assert_eq!(lines(&order), ["holder-start"], "priority never interrupts the holder");
-    std::fs::write(cache.join("release"), "").unwrap();
-    for child in [held, first_train, second_train, worker_a, worker_b] {
+    let lanes = &shown["host"]["exclusive"]["lanes"];
+    assert_eq!(lanes["worker"]["running"]["issue"], 11, "{lanes}");
+    assert!(!lanes["train"]["running"].is_null(), "{lanes}");
+    assert_eq!(lanes["train"]["waiting"].as_array().unwrap().len(), 1);
+    std::fs::write(cache.join("release-trains"), "").unwrap();
+    for child in [first_train, second_train] {
         let out = child.wait_with_output().unwrap();
         assert!(out.status.success(), "{}", text(&out.stderr));
     }
     assert_eq!(
         lines(&order),
-        ["holder-start", "holder-end", "train-a", "train-b", "worker-a", "worker-b"]
+        ["worker-start", "train-a-start", "train-a-end", "train-b-start", "train-b-end"]
     );
+    // A repair's heavy test or benchmark is an ordinary worker command,
+    // even when its current directory is the train checkout.
+    let repair = first
+        .command(binary, &train_a)
+        .env("XDG_CACHE_HOME", &cache)
+        .env("CACHE", &cache)
+        .args(["exclusive", "--", "sh", "-c", "echo repair >> \"$CACHE/order\""])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    until(|| tickets(&first) == 2);
+    let shown = first.afk(&["doctor", "--host", "h1"]).json;
+    let lanes = &shown["host"]["exclusive"]["lanes"];
+    assert_eq!(lanes["worker"]["waiting"].as_array().unwrap().len(), 1, "{lanes}");
+    assert!(lanes["train"]["running"].is_null(), "{lanes}");
+    std::fs::write(cache.join("release-worker"), "").unwrap();
+    assert!(worker.wait_with_output().unwrap().status.success());
+    assert!(repair.wait_with_output().unwrap().status.success());
+    assert_eq!(&lines(&order)[5..], ["worker-end", "repair"]);
     until(|| tickets(&first) == 0);
-    let passed: Vec<_> =
-        logged(&cache).into_iter().filter(|line| line.contains("runs ahead of")).collect();
-    assert_eq!(passed.len(), 2, "{passed:?}");
-    assert!(
-        passed
-            .iter()
-            .all(|line| line.contains("runs ahead of 2 waiting commands, as the landing train's")),
-        "{passed:?}"
-    );
+    assert!(logged(&cache).iter().any(|line| line.contains("in the train lane")));
 }
 
 #[test]
