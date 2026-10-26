@@ -1737,7 +1737,7 @@ fn exclusive_json(standing: Result<(Vec<Ticket>, bool)>, now: u64) -> Value {
                 .map(|repo| json!({"repo": repo.repo, "queue": lane(Some(&repo.repo))}))
                 .collect();
             json!({"running": worker["running"], "waiting": worker["waiting"],
-                "lanes": {"worker": worker, "repos": repos}, "observation": observation})
+                "lanes": {"worker": worker, "repos": repos}, "observation": crate::queue::observation_json(&observation)})
         }
         Err(error) => json!({"error": format!("{error:#}")}),
     }

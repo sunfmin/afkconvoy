@@ -4,7 +4,7 @@
 
 use std::time::Duration;
 
-use afkconvoy_core::exclusive::{Ticket, snapshot};
+use afkconvoy_core::exclusive::{Snapshot, Ticket, snapshot};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -66,10 +66,17 @@ fn observe(fixed_now: Option<u64>) -> Result<Value> {
         }
         None => ("no_runner", Value::Null, vec![], false),
     };
-    let mut answer = serde_json::to_value(snapshot(&tickets, settings.gate_lanes(), paused, now))?;
+    let mut answer = observation_json(&snapshot(&tickets, settings.gate_lanes(), paused, now));
     answer["observed_at"] = json!(now);
     answer["status"] = json!(status);
     answer["host_runner"] = runner;
+    Ok(answer)
+}
+
+/// The operator and doctor's common display of optional ticket metadata.
+/// Keep the private ticket protocol unchanged for older runners.
+pub(crate) fn observation_json(snapshot: &Snapshot) -> Value {
+    let mut answer = json!(snapshot);
     // Old ticket metadata may omit these keys on the wire. An operator
     // observation says explicitly that the identity or lane is unknown.
     for group in ["running", "waiting"] {
@@ -81,5 +88,5 @@ fn observe(fixed_now: Option<u64>) -> Result<Value> {
             }
         }
     }
-    Ok(answer)
+    answer
 }

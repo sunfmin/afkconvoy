@@ -317,6 +317,12 @@ fn failed_or_unsupported_observations_never_fabricate_an_empty_queue() {
     let local = Local::new();
     std::fs::create_dir(local.cache().join("host-runner.sock")).unwrap();
     assert_ne!(local.query().0, 0, "an inaccessible socket is not an absent runner");
+    let local = Local::new();
+    let lock = std::fs::File::create(local.cache().join("host-runner.lock")).unwrap();
+    lock.lock().unwrap();
+    let (code, answer) = local.query();
+    assert_ne!(code, 0, "a runner holding the host but not listening is unavailable");
+    assert!(answer["error"].as_str().unwrap().contains("holds the host"));
 }
 
 #[test]
@@ -372,7 +378,7 @@ fn the_real_scheduler_admits_another_repo_while_a_same_repo_waits_with_two_free_
     let doctor = world.afk(&["--now", "200", "doctor"]).json;
     let common = &doctor["host"]["exclusive"]["observation"];
     for field in ["worker", "repos", "paused", "running", "waiting"] {
-        assert_eq!(common[field], after[field], "doctor and queue disagree on {field}");
+        assert_eq!(common[field], after[field], "doctor and queue disagree on {field}: {doctor}");
     }
     assert_eq!(
         doctor["host"]["exclusive"]["lanes"]["worker"]["running_all"].as_array().unwrap().len(),
@@ -390,7 +396,8 @@ fn queue_is_discoverable_in_operator_help_and_its_contract_is_complete() {
     };
     assert!(help(&["--help"]).contains("queue"));
     let manual = help(&["help", "all"]);
-    let operators = manual.split("### Operator").nth(1).unwrap().split("### ").next().unwrap();
+    let operators =
+        manual.split("### Run by the operator").nth(1).unwrap().split("\n### ").next().unwrap();
     assert!(operators.contains("`afkconvoy queue`"));
     let own = help(&["queue", "--help"]);
     for required in [
