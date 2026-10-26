@@ -357,10 +357,9 @@ fn a_watch_answers_escalations_and_leaves_only_the_four_human_kinds() {
     // Register both checkouts before waiting for their look: every host
     // watches now, with its settings in force before the first tick.
     world.afk(&["run", "--host", "h1"]).ok();
-    // A watch is independent of the issue worker's trust gap: its launch is
-    // non-interactive and already trusted. The fake's gap affects dispatch.
-    run(&world, &dir);
+    // The watch takes its brief once the stand-in host fault is corrected.
     world.with_orca(|orca| orca["trust_prompt"] = json!(false));
+    run(&world, &dir);
     let watch = until(&world, "the watch of the fleet fault", || running(&world));
     let told = brief(&world, &starts(&world)[0]);
     for required in [

@@ -16,10 +16,10 @@ pub const RESEARCH_EVERY: u64 = 24 * 60 * 60;
 /// Research item identities, distinct from findings that hold work up.
 pub const RESEARCH_ITEM: &str = "kit-research:";
 
-/// What of a session's transcript is kept as what it did: its last lines,
+/// Bounded terminal evidence retained to continue a session: its last lines,
 /// each cut to a length a log line can hold.
-pub const DID_LINES: usize = 80;
-const DID_CHARS: usize = 1000;
+pub const EVIDENCE_LINES: usize = 80;
+const EVIDENCE_CHARS: usize = 1000;
 
 /// What a watch's session prints once its harness exited, with the exit status
 /// after it, on a line of its own.
@@ -125,17 +125,17 @@ pub fn exited(transcript: &str) -> Option<i32> {
     Some(status.trim().parse().unwrap_or(-1))
 }
 
-/// What a session printed, as what it did: its transcript's last lines, but
+/// The last lines of terminal evidence, excluding
 /// for the line that says how it exited.
-pub fn did(transcript: &str) -> Vec<String> {
+pub fn evidence(transcript: &str) -> Vec<String> {
     let mut did: Vec<String> = vec![];
     for line in transcript.lines().rev() {
-        if did.len() >= DID_LINES {
+        if did.len() >= EVIDENCE_LINES {
             break;
         }
         let line = line.trim();
         if !line.is_empty() && !line.starts_with(EXITED) {
-            did.push(line.chars().take(DID_CHARS).collect());
+            did.push(line.chars().take(EVIDENCE_CHARS).collect());
         }
     }
     did.reverse();
@@ -243,16 +243,16 @@ mod tests {
         assert_eq!(exited("started\nchecked #7\n"), None);
         let printed = format!("checked #7\n\nanswered #7\n{EXITED} 0\n");
         assert_eq!(exited(&printed), Some(0));
-        assert_eq!(did(&printed), ["checked #7", "answered #7"]);
+        assert_eq!(evidence(&printed), ["checked #7", "answered #7"]);
         assert_eq!(exited(&format!("Usage limit reached\n{EXITED} 1\n")), Some(1));
     }
 
     #[test]
-    fn what_a_session_did_is_its_last_lines() {
-        let long: String = (0..DID_LINES + 5).map(|n| format!("line {n}\n")).collect();
-        let did = did(&long);
-        assert_eq!(did.len(), DID_LINES);
+    fn terminal_evidence_is_bounded_to_its_last_lines() {
+        let long: String = (0..EVIDENCE_LINES + 5).map(|n| format!("line {n}\n")).collect();
+        let did = evidence(&long);
+        assert_eq!(did.len(), EVIDENCE_LINES);
         assert_eq!(did[0], "line 5");
-        assert_eq!(super::did(&"x".repeat(DID_CHARS * 2))[0].len(), DID_CHARS);
+        assert_eq!(super::evidence(&"x".repeat(EVIDENCE_CHARS * 2))[0].len(), EVIDENCE_CHARS);
     }
 }

@@ -384,9 +384,13 @@ impl Watcher {
         };
         // Keep a finished watch's screen until its replacement actually starts
         // in that directory. Never close the operator's other terminals.
-        if let Some(last) = &state.last
-            && last.directory == directory
+        let mut closed = BTreeSet::new();
+        for last in
+            state.history.iter().chain(state.last.iter()).filter(|last| last.directory == directory)
         {
+            if !closed.insert(last.terminal.clone()) {
+                continue;
+            }
             let worktree = Worktree::at(last.directory.clone(), String::new());
             close(&worktree, &last.terminal, worktree.live(&last.terminal)?)?;
         }
@@ -457,7 +461,7 @@ impl Watcher {
             stop_session(&watch)?;
             self.finish_said(&mut state, watch, "closed", "its terminal closed; it did not report");
         } else {
-            let screen = worktree.screen(&watch.terminal, host_watch::DID_LINES)?;
+            let screen = worktree.screen(&watch.terminal, host_watch::EVIDENCE_LINES)?;
             let (worker, runtime) = worktree.terminal_health(&watch.terminal, now)?;
             let fault = crate::health::watch_diagnosis(watch.harness, &screen, &runtime)
                 .or_else(|| gave_out(watch.harness, &transcript, exited));
@@ -466,6 +470,7 @@ impl Watcher {
                 close(&worktree, &watch.terminal, live)?;
                 self.go_on(&mut state, watch, fault, now, screen)?;
             } else if exited.is_some() {
+                stop_session(&watch)?;
                 self.finish_said(
                     &mut state,
                     watch,
@@ -589,6 +594,12 @@ fn session_identity(watch: &Watch) -> String {
 /// Ends only processes carrying this session's marker, and their children.
 /// The terminal shell never carries it, so its screen and input stay open.
 fn stop_session(watch: &Watch) -> Result<()> {
+    // A pre-upgrade, headless session carried no marker and its terminal
+    // was disposable. Keep its former termination behavior until it ends.
+    if watch.session_started == 0 {
+        let worktree = Worktree::at(watch.directory.clone(), String::new());
+        return close(&worktree, &watch.terminal, worktree.live(&watch.terminal)?);
+    }
     stop_marked(&session_identity(watch))
 }
 
@@ -633,7 +644,7 @@ fn gave_out(harness: Harness, transcript: &str, exited: Option<i32>) -> Option<D
     let lines: Vec<String> = transcript.lines().map(str::to_string).collect();
     crate::health::terminal_fault(harness, &lines).or_else(|| {
         let status = exited.filter(|status| *status != 0)?;
-        let mut evidence = host_watch::did(transcript);
+        let mut evidence = host_watch::evidence(transcript);
         evidence.drain(..evidence.len().saturating_sub(3));
         evidence.push(format!("{} exited with status {status}", harness.key()));
         Some(crate::health::failed(evidence))
