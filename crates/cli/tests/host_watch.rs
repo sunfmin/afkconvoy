@@ -265,7 +265,7 @@ fn a_look_reads_a_terminal_preview_ending_in_a_lone_surrogate() {
     .to_string()
     .replace("SURROGATE", r"\udf13");
     world.with_orca(|orca| orca["raw_answers"] = json!({"terminal list": answer}));
-    printed(&world, &watch, &["checked the host"], Some(0));
+    session(&world, &watch, &["checked the host"], Some(0));
     let no_failures = || {
         for file in std::fs::read_dir(world.cache().join("afkconvoy/runs")).unwrap() {
             let text = std::fs::read_to_string(file.unwrap().path()).unwrap();
