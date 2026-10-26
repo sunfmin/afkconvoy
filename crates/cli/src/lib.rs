@@ -4531,6 +4531,7 @@ mod tests {
         &["run"],
         &["stop"],
         &["checkouts"],
+        &["queue"],
         &["host-runner"],
         &["panel"],
         &["tick", "--instance", "a-h1-1"],
