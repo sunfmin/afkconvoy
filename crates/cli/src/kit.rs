@@ -1301,7 +1301,7 @@ mod tests {
     fn a_host_kit_written_again_keeps_its_order_commands_good_at_and_stock_consult() {
         let mut claude = held(Harness::ClaudeCode, "old", &["bad", "default", "gone"]);
         claude.models[1].names = vec!["claude-opus-5-5".into()];
-        claude.models[1].good_at = Some("hard work".into());
+        claude.models[1] = sourced(claude.models[1].clone());
         let current = Kit {
             cast: false,
             harnesses: vec![held(Harness::Codex, "mycodex --yolo", &["gpt-a"]), claude],
@@ -1319,6 +1319,8 @@ mod tests {
             ]
         );
         assert_eq!(kit.harnesses[1].models[0].good_at.as_deref(), Some("hard work"));
+        assert_eq!(kit.harnesses[1].models[0].sources, current.harnesses[1].models[1].sources);
+        assert_eq!(kit.harnesses[1].models[0].researched_at, Some(1));
         assert_eq!(kit.harnesses[1].models[0].names, ["claude-opus-5-5", "Default"]);
         assert_eq!(kit.stock_consult, current.stock_consult);
         let stock = Named { harness: Harness::Codex, model: Some("gpt-a".into()) };
@@ -1361,7 +1363,7 @@ mod tests {
     #[test]
     fn a_refresh_adds_new_listings_drops_missing_ids_and_keeps_failed_listings() {
         let mut claude = held(Harness::ClaudeCode, "claude", &["default", "gone"]);
-        claude.models[0].good_at = Some("hard work".into());
+        claude.models[0] = sourced(claude.models[0].clone());
         let current = Kit {
             cast: false,
             harnesses: vec![
