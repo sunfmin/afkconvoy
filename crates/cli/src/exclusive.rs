@@ -8,6 +8,7 @@
 //! line closes — its command ended, or its process did. Which ticket runs is
 //! the core's to say (`afkconvoy_core::exclusive`).
 
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
@@ -17,7 +18,7 @@ use std::time::{Duration, Instant};
 
 use afkconvoy_core::exclusive::{
     Ticket, ahead, at_once_line, ended_line, in_order, queued_since, rejoins_line, runs_ahead_of,
-    runs_line, waits_line,
+    runs_line, same_lane, waits_line,
 };
 use afkconvoy_core::role::ISSUE_ENV;
 use afkconvoy_core::train::is_train_worktree;
@@ -70,7 +71,7 @@ struct Joined {
     /// A release move lets the running command end before any other starts.
     paused: bool,
     closed: bool,
-    waited: Duration,
+    waited: BTreeMap<u64, Duration>,
     counted_at: Instant,
 }
 
@@ -81,7 +82,7 @@ impl Default for Joined {
             next: 0,
             paused: false,
             closed: false,
-            waited: Duration::ZERO,
+            waited: BTreeMap::new(),
             counted_at: Instant::now(),
         }
     }
@@ -91,8 +92,11 @@ impl Joined {
     /// Account for the interval before any queue change, so short waits,
     /// gaps without waiters and a changing set of waiters count correctly.
     fn count(&mut self, now: Instant) {
-        if self.tickets.len() > 1 && self.tickets.iter().any(|ticket| ticket.ran.is_some()) {
-            self.waited = self.waited.saturating_add(now.duration_since(self.counted_at));
+        for running in self.tickets.iter().filter(|ticket| ticket.ran.is_some()) {
+            if self.tickets.iter().any(|other| other.ran.is_none() && same_lane(running, other)) {
+                let waited = self.waited.entry(running.number).or_default();
+                *waited = waited.saturating_add(now.duration_since(self.counted_at));
+            }
         }
         self.counted_at = now;
     }
@@ -170,7 +174,8 @@ impl Queue {
             .iter()
             .find(|ticket| ticket.number == number)
             .map_or(0, |ticket| runs_ahead_of(ticket, &joined.tickets));
-        joined.waited = Duration::ZERO;
+        joined.count(Instant::now());
+        joined.waited.insert(number, Duration::ZERO);
         joined.counted_at = Instant::now();
         for ticket in joined.tickets.iter_mut().filter(|ticket| ticket.number == number) {
             ticket.ran = Some(ran);
@@ -189,8 +194,16 @@ impl Queue {
             // A changed host setting applies to the command already running.
             // An unreadable file leaves the default in force.
             let bound = crate::host_settings::of_host().unwrap_or_default().exclusive_seconds();
-            let waiting = joined.tickets.len().saturating_sub(1);
-            if waiting > 0 && joined.waited >= Duration::from_secs(bound) {
+            let mine = joined.tickets.iter().find(|ticket| ticket.number == number).unwrap();
+            let waiting = joined
+                .tickets
+                .iter()
+                .filter(|ticket| ticket.number != number && same_lane(ticket, mine))
+                .count();
+            if waiting > 0
+                && joined.waited.get(&number).copied().unwrap_or_default()
+                    >= Duration::from_secs(bound)
+            {
                 drop(joined);
                 kept.say(json!(Bound { bound, waiting }));
                 // Do not give the next command its turn before cleanup.
@@ -207,6 +220,7 @@ impl Queue {
         let mut joined = self.joined();
         joined.count(Instant::now());
         joined.tickets.retain(|ticket| ticket.number != number);
+        joined.waited.remove(&number);
         drop(joined);
         self.held.1.notify_all();
     }
@@ -369,6 +383,7 @@ pub fn exclusive(
             .and_then(|repo| repo.dir.file_name())
             .and_then(|name| name.to_str())
             .is_some_and(is_train_worktree),
+        repo_lane: None,
         asked: now(),
         ran: None,
     };
@@ -521,6 +536,7 @@ mod tests {
             dir: "/w/issue-7".into(),
             issue: Some(7),
             train: false,
+            repo_lane: None,
             asked,
             ran: None,
         }
@@ -533,16 +549,28 @@ mod tests {
         running.ran = Some(0);
         let mut joined = Joined { tickets: vec![running], counted_at: start, ..Joined::default() };
         joined.count(start + Duration::from_secs(20));
-        assert_eq!(joined.waited, Duration::ZERO, "time alone does not count");
+        assert_eq!(
+            joined.waited.get(&0).copied().unwrap_or_default(),
+            Duration::ZERO,
+            "time alone does not count"
+        );
         joined.tickets.push(ticket("waiting", 20));
         joined.count(start + Duration::from_secs(23));
-        assert_eq!(joined.waited, Duration::from_secs(3));
+        assert_eq!(joined.waited.get(&0).copied().unwrap_or_default(), Duration::from_secs(3));
         joined.tickets.pop();
         joined.count(start + Duration::from_secs(50));
-        assert_eq!(joined.waited, Duration::from_secs(3), "nobody waits in the gap");
+        assert_eq!(
+            joined.waited.get(&0).copied().unwrap_or_default(),
+            Duration::from_secs(3),
+            "nobody waits in the gap"
+        );
         joined.tickets.push(ticket("another waiter", 50));
         joined.count(start + Duration::from_secs(54));
-        assert_eq!(joined.waited, Duration::from_secs(7), "another waiter resumes the count");
+        assert_eq!(
+            joined.waited.get(&0).copied().unwrap_or_default(),
+            Duration::from_secs(7),
+            "another waiter resumes the count"
+        );
     }
 
     /// An asker on the queue's line: what it was told first, and the line.
@@ -624,30 +652,28 @@ mod tests {
     }
 
     #[test]
-    fn a_train_runs_next_and_reports_how_many_earlier_workers_still_wait() {
+    fn a_train_starts_beside_a_worker_and_trains_wait_in_request_order() {
         let dir = tempfile::tempdir().unwrap();
         let queue = Queue::default();
         served(dir.path(), &queue);
-        let (mut running, _) = Asker::joins(dir.path(), ticket("running", 100));
-        assert!(running.next().unwrap()["runs"].is_u64());
-        let (mut worker, _) = Asker::joins(dir.path(), ticket("worker", 101));
-        let (mut inspection, _) = Asker::joins(dir.path(), ticket("inspection", 102));
-        let mut train = ticket("train", 103);
-        train.train = true;
-        let (mut train, said) = Asker::joins(dir.path(), train);
-        assert_eq!(said["ahead"], 1);
-        assert_eq!(commands(&queue), ["running", "train", "worker", "inspection"]);
-        assert!(queue.standing()[0].ran.is_some());
-        assert!(queue.standing()[1].ran.is_none(), "the running command keeps its turn");
-        drop(running);
-        let said = train.next().unwrap();
-        assert!(said["runs"].is_u64());
-        assert_eq!(said["ahead_of"], 2);
-        drop(train);
+        let (mut worker, _) = Asker::joins(dir.path(), ticket("worker", 100));
         assert!(worker.next().unwrap()["runs"].is_u64());
+        let mut train = ticket("train", 101);
+        train.train = true;
+        let (mut first, said) = Asker::joins(dir.path(), train.clone());
+        assert_eq!(said["ahead"], 0);
+        assert!(first.next().unwrap()["runs"].is_u64(), "does not wait for the worker");
+        let (mut second, said) =
+            Asker::joins(dir.path(), Ticket { command: "later train".into(), asked: 102, ..train });
+        assert_eq!(said["ahead"], 1);
+        assert_eq!(queue.pause(), 2, "a release move waits for both lanes");
+        queue.resume();
+        assert_eq!(second.next(), None);
+        drop(first);
+        assert!(second.next().unwrap()["runs"].is_u64());
+        assert!(queue.standing().iter().any(|t| t.command == "worker" && t.ran.is_some()));
         drop(worker);
-        assert!(inspection.next().unwrap()["runs"].is_u64());
-        drop(inspection);
+        drop(second);
         holds(&queue, &[]);
     }
 

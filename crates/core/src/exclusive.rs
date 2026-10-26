@@ -20,10 +20,12 @@ pub struct Ticket {
     pub dir: String,
     /// The issue of the worker that ran it, where its environment says one.
     pub issue: Option<u64>,
-    /// Whether it is the landing train's: ahead of other waiting commands.
-    /// Older askers name no priority and remain ordinary commands.
+    /// Whether it runs in the host's train lane, independently of workers.
     #[serde(default)]
     pub train: bool,
+    /// A light gate's repo lane, independent of both host lanes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo_lane: Option<String>,
     /// When it asked to run, in epoch seconds: within each priority the one
     /// that asked first runs first, including in the next host runner.
     pub asked: u64,
@@ -35,7 +37,26 @@ pub struct Ticket {
 /// is. `None`: `number` is in it no more.
 pub fn ahead(queue: &[Ticket], number: u64) -> Option<usize> {
     let mine = queue.iter().find(|ticket| ticket.number == number)?;
-    Some(queue.iter().filter(|ticket| place(ticket) < place(mine)).count())
+    Some(
+        queue
+            .iter()
+            .filter(|ticket| same_lane(ticket, mine) && place(ticket) < place(mine))
+            .count(),
+    )
+}
+
+/// Commands contend only with others in the same lane.
+pub fn same_lane(a: &Ticket, b: &Ticket) -> bool {
+    a.train == b.train && a.repo_lane == b.repo_lane
+}
+
+/// The lane a ticket names in the log, doctor and the panel.
+pub fn lane(ticket: &Ticket) -> String {
+    match &ticket.repo_lane {
+        Some(repo) => format!("repo {repo}"),
+        None if ticket.train => "train".to_string(),
+        None => "worker".to_string(),
+    }
 }
 
 /// `queue` in the order it runs: the first runs — or is about to — and the
@@ -55,17 +76,8 @@ fn place(ticket: &Ticket) -> (bool, bool, u64, u64) {
 /// How many earlier ordinary commands `ticket` runs ahead of as a train's
 /// command gets its turn. Commands already running are never passed.
 pub fn runs_ahead_of(ticket: &Ticket, queue: &[Ticket]) -> usize {
-    if !ticket.train {
-        return 0;
-    }
-    queue
-        .iter()
-        .filter(|other| {
-            other.ran.is_none()
-                && !other.train
-                && (other.asked, other.number) < (ticket.asked, ticket.number)
-        })
-        .count()
+    let _ = (ticket, queue);
+    0
 }
 
 /// Since when a worker in the worktree `dir` has waited in the queue — or run
@@ -123,13 +135,8 @@ pub fn rejoins_line(ticket: &Ticket) -> String {
 /// What the log says of a ticket that runs its command at `now`.
 pub fn runs_line(ticket: &Ticket, now: u64, ahead_of: usize) -> String {
     let waited = now.saturating_sub(ticket.asked);
-    let line = format!("runs `{}` alone on this host, after waiting {waited}s", ticket.command);
-    if ticket.train {
-        return format!(
-            "runs ahead of {ahead_of} waiting commands, as the landing train's; {line}"
-        );
-    }
-    line
+    let _ = ahead_of;
+    format!("runs `{}` in the {} lane, after waiting {waited}s", ticket.command, lane(ticket))
 }
 
 /// What the log says of a ticket whose command ended at `now`, as `ended`
@@ -151,6 +158,7 @@ mod tests {
             dir: dir.into(),
             issue: Some(7),
             train: false,
+            repo_lane: None,
             asked,
             ran: None,
         }
@@ -181,31 +189,36 @@ mod tests {
     }
 
     #[test]
-    fn trains_pass_waiting_workers_in_request_order_and_never_the_running_command() {
+    fn train_and_worker_lanes_keep_their_own_request_order() {
         let mut running = ticket(1, "/a", 100);
         running.ran = Some(100);
         let worker = ticket(2, "/b", 101);
-        let mut train = ticket(4, "/a/convoy-train", 102);
+        let mut train = ticket(3, "/a/convoy-train", 102);
         train.train = true;
-        let mut later_train = ticket(5, "/b/convoy-train-2", 102);
+        let mut later_train = ticket(4, "/b/convoy-train", 103);
         later_train.train = true;
-        let queue = [running, worker, ticket(3, "/c", 101), train.clone()];
-        assert_eq!(ahead(&queue, 4), Some(1));
-        assert_eq!(runs_ahead_of(&train, &queue), 2);
-        assert_eq!(runs_ahead_of(&queue[1], &queue), 0);
-        let mut queue = queue.to_vec();
-        queue.push(later_train.clone());
-        // A worker that asks after the trains is not one they passed.
-        queue.push(ticket(6, "/d", 103));
-        assert_eq!(ahead(&queue, 5), Some(2));
-        assert_eq!(runs_ahead_of(&later_train, &queue), 2);
-        let order: Vec<_> = in_order(queue).iter().map(|ticket| ticket.number).collect();
-        assert_eq!(order, [1, 4, 5, 2, 3, 6]);
+        let queue = [running, worker, train.clone(), later_train];
+        assert_eq!(ahead(&queue, 3), Some(0), "a running worker holds no train up");
+        assert_eq!(ahead(&queue, 4), Some(1), "trains keep request order");
+        assert_eq!(ahead(&queue, 2), Some(1), "workers keep request order");
         assert_eq!(
-            runs_line(&train, 130, 2),
-            "runs ahead of 2 waiting commands, as the landing train's; \
-             runs `cargo test` alone on this host, after waiting 28s"
+            runs_line(&train, 130, 0),
+            "runs `cargo test` in the train lane, after waiting 28s"
         );
+    }
+
+    #[test]
+    fn light_repos_have_independent_turns() {
+        let mut a = ticket(1, "/a", 100);
+        a.repo_lane = Some("a".into());
+        let mut b = ticket(2, "/b", 101);
+        b.repo_lane = Some("b".into());
+        let mut another_a = ticket(3, "/a", 102);
+        another_a.repo_lane = Some("a".into());
+        let queue = [a, b, another_a, ticket(4, "/c", 103)];
+        assert_eq!(ahead(&queue, 2), Some(0));
+        assert_eq!(ahead(&queue, 3), Some(1));
+        assert_eq!(ahead(&queue, 4), Some(0));
     }
 
     #[test]
@@ -237,7 +250,7 @@ mod tests {
         );
         assert_eq!(
             runs_line(&waits, 130, 0),
-            "runs `cargo test` alone on this host, after waiting 30s"
+            "runs `cargo test` in the worker lane, after waiting 30s"
         );
         assert_eq!(
             at_once_line(&waits, "no host runner runs on this host"),

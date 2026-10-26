@@ -1760,6 +1760,7 @@ mod tests {
             dir: "/w/acme".into(),
             issue,
             train: false,
+            repo_lane: None,
             asked: 700,
             ran,
         };
