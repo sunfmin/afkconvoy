@@ -23,6 +23,7 @@
 //! `close_keeps_terminal` (acknowledges close without ending its terminal),
 //! `start_screen`, `send_screen`, `prompt_stages` (a receipt without a turn
 //! start); each terminal can also have `menu` and its own `prompt_stages`.
+//! `raw_answers` maps a call's first two words to its stdout, after its effects.
 
 mod fake;
 
@@ -69,7 +70,9 @@ fn main() {
 }
 
 fn done(st: &State, result: Value) -> ! {
-    st.finish(&json!({"id": "x", "ok": true, "result": result}).to_string(), 0, "")
+    let what = st.argv.iter().take(2).cloned().collect::<Vec<_>>().join(" ");
+    let answer = json!({"id": "x", "ok": true, "result": result}).to_string();
+    st.finish(st.doc["raw_answers"][&what].as_str().unwrap_or(&answer), 0, "")
 }
 
 /// As real orca: asked while it is not running, it answers, and not `ready`.

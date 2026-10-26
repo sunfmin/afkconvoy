@@ -225,6 +225,28 @@ fn the_operator_directory_wins_and_default_returns_to_the_stock_watch() {
 }
 
 #[test]
+fn a_look_reads_a_terminal_preview_ending_in_a_lone_surrogate() {
+    let world = World::new();
+    let dir = operator(&world);
+    let answer = json!({"ok": true, "result": {"terminals": [{
+        "handle": OPERATORS, "worktreePath": dir, "connected": true, "writable": true,
+        "preview": "⏺SURROGATE"
+    }]}})
+    .to_string()
+    .replace("SURROGATE", r"\udf13");
+    world.with_orca(|orca| orca["raw_answers"] = json!({"terminal list": answer}));
+    run(&world, &dir);
+    until(&world, "a successful look", || {
+        let log = world.runner_log().join("\n");
+        assert!(!log.contains("watch_failed"), "{log}");
+        state(&world)["until"].as_u64()
+    });
+    assert!(world.orca_calls().iter().any(|call| asked(call) == "terminal list"));
+    assert!(starts(&world).is_empty());
+    assert!(!world.runner_log().join("\n").contains("watch_failed"));
+}
+
+#[test]
 fn a_look_with_nothing_to_act_on_starts_no_model_and_moves_its_until_on() {
     let world = World::new();
     world.afk(&["run", "--host", "h1", "--second-ms", "100", "--watch-every", "1"]).ok();
