@@ -461,10 +461,7 @@ impl GitHub {
     /// One `gh` call → its stdout, or what it is named by and what `gh` said
     /// of its failing.
     fn call(&self, args: &[&str]) -> Result<Result<String, (String, String)>> {
-        let out = Command::new("gh")
-            .current_dir(&self.dir)
-            .args(args)
-            .output()
+        let out = crate::process::output(Command::new("gh").current_dir(&self.dir).args(args))
             .context("gh could not run")?;
         if !out.status.success() {
             let what = args.iter().take(2).copied().collect::<Vec<_>>().join(" ");
@@ -551,8 +548,9 @@ impl GitHub {
     /// nobody can parse, is unreadable.
     pub fn protection(&self, branch: &str) -> Guard {
         let endpoint = format!("repos/{OWN}/branches/{branch}/protection");
-        let out = match Command::new("gh").current_dir(&self.dir).args(["api", &endpoint]).output()
-        {
+        let out = match crate::process::output(
+            Command::new("gh").current_dir(&self.dir).args(["api", &endpoint]),
+        ) {
             Ok(out) => out,
             Err(error) => return Guard::Unreadable(format!("gh could not run: {error}")),
         };
