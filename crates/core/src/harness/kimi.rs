@@ -52,7 +52,7 @@ pub(super) fn watch(command: &str, kept: &str, model: Option<&str>) -> String {
         .fixed("=")
         .word(kept)
         .fixed(" && ")
-        .launch(&in_worktree(command));
+        .launch(command);
     let line = match model {
         Some(model) => line.fixed(" ").fixed(MODEL).fixed(" ").word(model),
         None => line,

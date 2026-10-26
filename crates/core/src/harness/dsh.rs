@@ -73,14 +73,28 @@ pub(super) fn prompt_question(kept: &str, model: Option<&str>, prompt: &str) -> 
 }
 
 /// Starts one watch interactively on the worker profile.
-pub(super) fn watch(command: &str, kept: &str, model: Option<&str>) -> String {
+pub(super) fn watch(command: &str, worktree: &str, kept: &str, model: Option<&str>) -> String {
     let line = Line::new()
         .fixed("export DSH_HOME=")
         .word(kept)
+        .fixed(" DSH_AGENTS_HOME=")
+        .word(&format!("{kept}/agents"))
         .fixed(" AFKCONVOY_DSH_MODEL=")
         .word(model.unwrap_or_default())
+        .fixed(" AFKCONVOY_DSH_KEPT=")
+        .word(kept)
+        .fixed(" AFKCONVOY_HARNESS=dsh AFKCONVOY_GUARD='afkconvoy guard' AFKCONVOY_WORKTREE=")
+        .word(worktree)
+        .fixed(" AFKCONVOY_TEAM_DIR=")
+        .word(worktree)
         .fixed(" && ")
-        .launch(&in_worktree(command));
+        .launch(&in_worktree(command))
+        .fixed(" --patch ")
+        .word(&format!("{kept}/fleet.patch.yml"))
+        .fixed(" --patch ")
+        .word(&format!("{kept}/afkconvoy.patch.yml"))
+        .fixed(" ")
+        .word(worktree);
     line.done()
 }
 

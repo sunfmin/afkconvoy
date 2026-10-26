@@ -108,8 +108,8 @@ fn brief(world: &World, line: &str) -> String {
     std::fs::read_to_string(file).unwrap()
 }
 
-/// Has the session of `watch` print `lines`, and its harness exit with
-/// `status` where it says one: the shell then exits, and its terminal closes.
+/// A successful session reports by command; a stopped or failed one leaves
+/// terminal evidence and, if it exited, its shell-written exit status.
 fn session(world: &World, watch: &Value, lines: &[&str], status: Option<i32>) {
     if status == Some(0) {
         let file = world.root.join("watch-report.json");

@@ -514,7 +514,7 @@ impl Harness {
             Harness::ClaudeCode => claude_code::watch(command, model),
             Harness::Pi => pi::watch(command, kept, model),
             Harness::Codex => codex::watch(command, worktree, kept, model),
-            Harness::Dsh => dsh::watch(command, kept, model),
+            Harness::Dsh => dsh::watch(command, worktree, kept, model),
             Harness::Kimi => kimi::watch(command, kept, model),
         }
     }

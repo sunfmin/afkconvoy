@@ -137,8 +137,7 @@ pub fn exited(transcript: &str) -> Option<i32> {
     Some(status.trim().parse().unwrap_or(-1))
 }
 
-/// The last lines of terminal evidence, excluding
-/// for the line that says how it exited.
+/// The last lines of terminal evidence, excluding the exit-status line.
 pub fn evidence(transcript: &str) -> Vec<String> {
     let mut did: Vec<String> = vec![];
     for line in transcript.lines().rev() {
