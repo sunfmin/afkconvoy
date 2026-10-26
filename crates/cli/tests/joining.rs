@@ -135,7 +135,7 @@ fn a_joined_worker_leaves_health_while_the_train_waits_to_land() {
         assert!(pr_is_open(&world));
         assert_eq!(world.remote(&["rev-parse", "refs/convoy/train/line/main"]), joined["commit"]);
     }
-    assert!(!world.root.join("diagnosis-asked").exists());
+    assert!(!world.root.join("typesafe-request").exists());
     let landed = world.afk_in(&train, &["land", "--train", "--now", "8600"]).ok();
     assert_eq!(landed["outcome"], "landed", "{landed}");
     tick(&world, 8700);
@@ -145,8 +145,8 @@ fn a_joined_worker_leaves_health_while_the_train_waits_to_land() {
 
 #[test]
 fn joining_retires_existing_health_even_when_its_recovery_window_has_expired() {
-    for (attempts, next_tick, broken_gitdir) in
-        [(0, 1400, false), (3, 2200, false), (3, 5000, true)]
+    for (waiting, next_tick, broken_gitdir) in
+        [(false, 1400, false), (true, 2200, false), (true, 5000, true)]
     {
         let world = gated();
         let dir = worktree(&world);
@@ -154,7 +154,10 @@ fn joining_retires_existing_health_even_when_its_recovery_window_has_expired() {
         let path = world.cache().join("afkconvoy/worker-health.json");
         let mut book: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(book["workers"][0]["path"], json!(dir), "{book}");
-        book["workers"][0]["attempts"] = json!(attempts);
+        if waiting {
+            book["workers"][0]["action"] = json!("waiting for operator");
+            book["workers"][0]["operator_reason"] = json!("no Jev key command is set");
+        }
         book["observations_failed"] = json!([[dir, "old diagnosis failure", 1600]]);
         std::fs::write(&path, serde_json::to_vec(&book).unwrap()).unwrap();
         let joined = world.afk_in(&dir, &["land", "--issue", "7", "--now", "1350"]).ok();
@@ -168,7 +171,7 @@ fn joining_retires_existing_health_even_when_its_recovery_window_has_expired() {
         let book: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(book["workers"], json!([]), "{book}");
         assert_eq!(book["observations_failed"], json!([]), "{book}");
-        assert!(!world.root.join("diagnosis-asked").exists());
+        assert!(!world.root.join("typesafe-request").exists());
         assert_eq!(world.claims(), [(7, "alpha".into())]);
         assert_eq!(world.labels(7), ["ready-for-agent", "bug"]);
         assert!(pr_is_open(&world));
@@ -182,7 +185,7 @@ fn a_landing_pushed_before_closing_the_issue_also_retires_expired_health() {
     tick(&world, 1300);
     let path = world.cache().join("afkconvoy/worker-health.json");
     let mut book: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-    book["workers"][0]["attempts"] = json!(3);
+    book["workers"][0]["action"] = json!("waiting for operator");
     std::fs::write(&path, serde_json::to_vec(&book).unwrap()).unwrap();
     let joined = world.afk_in(&dir, &["land", "--issue", "7", "--now", "1350"]).ok();
     assert_eq!(joined["outcome"], "joined", "{joined}");
@@ -201,7 +204,7 @@ fn a_landing_pushed_before_closing_the_issue_also_retires_expired_health() {
     assert_eq!(world.labels(7), ["ready-for-agent", "bug"]);
     let book: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     assert_eq!(book["workers"], json!([]), "{book}");
-    assert!(!world.root.join("diagnosis-asked").exists());
+    assert!(!world.root.join("typesafe-request").exists());
 }
 
 #[test]
@@ -226,12 +229,12 @@ fn a_landing_that_closed_the_issue_before_the_next_tick_also_retires_health() {
     let path = world.cache().join("afkconvoy/worker-health.json");
     let book: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
     assert_eq!(book["workers"], json!([]), "{book}");
-    assert!(!world.root.join("diagnosis-asked").exists());
+    assert!(!world.root.join("typesafe-request").exists());
     assert_eq!(world.claims(), []);
 }
 
 #[test]
-fn a_stopped_screen_and_a_complete_diagnosis_do_not_exempt_unfinished_work() {
+fn a_stopped_screen_and_a_complete_judgment_do_not_exempt_unfinished_work() {
     for outcome in ["open", "advanced", "none"] {
         let world = gated();
         let dir = worktree(&world);
@@ -244,13 +247,15 @@ fn a_stopped_screen_and_a_complete_diagnosis_do_not_exempt_unfinished_work() {
             world.with_gh(|gh| gh["prs"] = json!([]));
         }
         world.hold_every_harness();
-        std::fs::write(
-            world.root.join("diagnosis-answer"),
-            json!({"status": "observed", "class": "complete", "scope": "worker",
-                "evidence": [], "action": "complete", "missing": [], "retry_after": null})
-            .to_string(),
-        )
-        .unwrap();
+        world.jev_key_command("printf key");
+        let (screen, _) = world.jev_recorded("finished screen");
+        world.with_orca(|orca| {
+            for terminal in orca["terminals"].as_array_mut().unwrap() {
+                if terminal["worktreePath"] == json!(dir) {
+                    terminal["screen"] = json!(screen);
+                }
+            }
+        });
         for now in [1300, 1600, 1900, 2200, 2500] {
             tick(&world, now);
         }
@@ -259,8 +264,8 @@ fn a_stopped_screen_and_a_complete_diagnosis_do_not_exempt_unfinished_work() {
         let worker =
             book["workers"].as_array().unwrap().iter().find(|w| w["path"] == json!(dir)).unwrap();
         assert_eq!(worker["diagnosis"]["class"], "complete", "{book}");
-        assert_eq!(worker["attempts"], 3, "{book}");
-        assert_eq!(worker["action"], "waiting for new evidence", "{book}");
+        assert_eq!(worker["source"], "jev", "{book}");
+        assert_eq!(worker["action"], "complete", "{book}");
         assert_eq!(world.claims(), [(7, "alpha".into())]);
     }
 }
@@ -275,7 +280,7 @@ fn manual_nudge(world: &World, now: &str) {
 }
 
 #[test]
-fn a_silent_joining_worker_waits_for_diagnosis_without_consuming_its_restart() {
+fn a_silent_joining_worker_waits_for_the_operator_without_consuming_its_restart() {
     let world = joining();
     let dir = worktree(&world);
     let head = git(&dir, &["rev-parse", "HEAD"]);
@@ -293,7 +298,7 @@ fn a_silent_joining_worker_waits_for_diagnosis_without_consuming_its_restart() {
 }
 
 #[test]
-fn the_loop_keeps_the_joining_claim_while_diagnosis_is_unavailable() {
+fn the_loop_keeps_the_joining_claim_while_waiting_for_the_operator() {
     let world = joining();
     world.say_concurrency(&world.clone, 2);
     tick(&world, 1090);

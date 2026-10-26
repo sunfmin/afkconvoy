@@ -247,7 +247,7 @@ fn a_bound_joined_worker_leaves_health_even_with_an_expired_observation() {
     let path = world.cache().join("afkconvoy/worker-health.json");
     let mut book: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     assert_eq!(book["workers"][0]["path"], json!(dir), "{book}");
-    book["workers"][0]["attempts"] = json!(3);
+    book["workers"][0]["action"] = json!("waiting for operator");
     std::fs::write(&path, serde_json::to_vec(&book).unwrap()).unwrap();
     join(&world, now + 350);
 
@@ -258,7 +258,7 @@ fn a_bound_joined_worker_leaves_health_even_with_an_expired_observation() {
     assert_eq!(world.claims(), [(7, "alpha".into())]);
     let book: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     assert!(book["workers"].as_array().unwrap().iter().all(|w| w["path"] != json!(dir)), "{book}");
-    assert!(!world.root.join("diagnosis-asked").exists());
+    assert!(!world.root.join("typesafe-request").exists());
     let landed = world.afk_in(&train_worktree(&world), &["land", "--train"]).ok();
     assert_eq!(landed["outcome"], "landed", "{landed}");
     tick(&world, now + 8090);
@@ -300,7 +300,7 @@ fn a_bound_issues_train_given_up_twice_is_a_fleet_fault_with_no_consult() {
     for at in [now + 690, now + 1380] {
         let dir = train_worktree(&world);
         // Historical nudge evidence lets an operator abandon the stopped
-        // train. New unclassified silence waits for diagnosis instead.
+        // train. New unclassified silence waits for the operator instead.
         stopped(&world, at - 590);
         let notes = PathBuf::from(git(&dir, &["rev-parse", "--absolute-git-dir"]));
         std::fs::write(notes.join("convoy-nudged"), (at - 300).to_string()).unwrap();
