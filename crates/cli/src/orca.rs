@@ -209,6 +209,22 @@ fn runtime_row(ps: &Value, path: &Path) -> Value {
         .unwrap_or(Value::Null)
 }
 
+/// The top-level runtime observation belonging to exactly this terminal.
+fn pane_agent(row: &Value, terminal: &Value) -> Value {
+    let pane = format!(
+        "{}:{}",
+        terminal["tabId"].as_str().unwrap_or(""),
+        terminal["leafId"].as_str().unwrap_or("")
+    );
+    row["agents"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|agent| agent["paneKey"] == pane && agent["parentPaneKey"].is_null())
+        .cloned()
+        .unwrap_or(Value::Null)
+}
+
 /// The newest top-level agent speaks for a worktree, as `worker::lead`
 /// does. Child panes cannot change the worker's harness or outcome.
 fn main_agent(row: &Value) -> Value {
@@ -1242,6 +1258,26 @@ impl Worktree {
         Ok(rows.iter().any(|row| row["handle"] == terminal))
     }
 
+    /// A session sharing a directory with the operator uses only its own
+    /// pane's runtime report and output, never the directory's lead agent.
+    pub(crate) fn terminal_health(&self, terminal: &str, now: u64) -> Result<(WorkerState, Value)> {
+        let shown = orca(&["terminal", "show", "--terminal", terminal])?;
+        let shown = &shown["terminal"];
+        let row = self.health_report()?;
+        let agent = pane_agent(&row, shown);
+        let lead = (!agent.is_null()).then(|| AgentReport {
+            working: agent["state"] == "working",
+            since: agent["stateStartedAt"].as_u64().map(|at| at / 1000),
+        });
+        Ok((worker_state(1, shown["lastOutputAt"].as_u64().map(|at| at / 1000), lead, now), agent))
+    }
+
+    /// Delivers to a watch with the same input check and turn receipt as a
+    /// worker. Its directory need not be git, so it keeps no worktree notes.
+    pub(crate) fn tell_watch(&self, terminal: &str, line: &str) -> Result<()> {
+        self.tell_unchecked(terminal, line, BRIEF_SETTLE_SECONDS)
+    }
+
     /// Closes `terminal` alone, of the terminals here.
     pub fn close_terminal(&self, terminal: &str) -> Result<()> {
         orca(&["terminal", "close", "--terminal", terminal])?;
@@ -1351,7 +1387,15 @@ impl Worktree {
             if ready != Waited::Ready {
                 return Ok(ready);
             }
-            let agent = main_agent(&runtime_row(&runtime_live()?, &self.path));
+            let row = runtime_row(&runtime_live()?, &self.path);
+            let agent = if row["liveTerminalCount"].as_u64().unwrap_or(0) > 1 {
+                // A watch shares its directory with the operator. A busy
+                // session beside it cannot hold back this terminal's input.
+                let shown = orca(&["terminal", "show", "--terminal", terminal])?;
+                pane_agent(&row, &shown["terminal"])
+            } else {
+                main_agent(&row)
+            };
             let state = agent["programStatus"]["state"].as_str().or(agent["state"].as_str());
             if state != Some("working") {
                 return Ok(Waited::Ready);

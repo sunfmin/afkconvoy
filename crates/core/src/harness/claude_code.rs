@@ -61,14 +61,14 @@ pub(super) fn in_worktree(command: &str) -> String {
     }
 }
 
-/// Starts one watch non-interactively, with the same unattended trust setup.
-pub(super) fn watch(command: &str, model: Option<&str>, prompt: &str) -> String {
+/// Starts one watch interactively, with the same unattended trust setup.
+pub(super) fn watch(command: &str, model: Option<&str>) -> String {
     let line = Line::new().launch(&in_worktree(command));
     let line = match model {
         Some(model) => line.fixed(" ").fixed(MODEL).fixed(" ").word(model),
         None => line,
     };
-    line.fixed(" --print ").word(prompt).done()
+    line.done()
 }
 
 /// Claude Code's flag for a directory added to the one it was started in.
