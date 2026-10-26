@@ -321,6 +321,23 @@ pub(super) fn in_worktree(command: &str, worktree: &str, kept: &str) -> String {
     isolated(line).done()
 }
 
+/// Starts one watch non-interactively, with Codex's trust and session isolation.
+pub(super) fn watch(
+    command: &str,
+    worktree: &str,
+    kept: &str,
+    model: Option<&str>,
+    prompt: &str,
+) -> String {
+    let line = Line::new().launch(&in_worktree(command, worktree, kept));
+    let line = line.fixed(" exec --skip-git-repo-check --ephemeral");
+    let line = match model {
+        Some(model) => line.fixed(" ").fixed(MODEL).fixed(" ").word(model),
+        None => line,
+    };
+    line.fixed(" ").word(prompt).done()
+}
+
 /// Answers both questions Codex would otherwise ask before loading the
 /// directory's own configuration. Adding this never adds a launch command.
 #[spec(fn(Line[@l], &str) -> Line[l])]

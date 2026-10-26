@@ -946,6 +946,25 @@ impl Worktree {
         Ok(handle.to_string())
     }
 
+    /// Starts a watch in the operator's directory, which need not be a git
+    /// checkout. Its launch is non-interactive and exits with the harness.
+    pub fn start_watch(&self, command: &str) -> Result<String> {
+        self.close_terminals()?;
+        if self.terminal()?.is_some() {
+            bail!(
+                "the previous watch in {} still has a terminal after close; none was started",
+                self.path.display()
+            );
+        }
+        let command = niced(&worker_tmp::make(&self.path)?.display().to_string(), command);
+        let made =
+            orca(&["terminal", "create", "--worktree", &self.selector(), "--command", &command])?;
+        made["terminal"]["handle"]
+            .as_str()
+            .map(str::to_string)
+            .ok_or_else(|| anyhow!("orca terminal create returned no terminal handle"))
+    }
+
     /// When the worker here was last handed its work by the fleet
     /// (`stopped::silence`): started, or — `since` — whatever it was handed
     /// after that.
@@ -1047,7 +1066,8 @@ impl Worktree {
 
     /// Hands the worker in `terminal` the brief at `brief`.
     pub fn deliver(&self, terminal: &str, brief: &Path) -> Result<()> {
-        self.tell(terminal, &brief_pointer(&brief.display().to_string()))
+        self.tell(terminal, &brief_pointer(&brief.display().to_string()))?;
+        crate::health::delivered(self)
     }
 }
 

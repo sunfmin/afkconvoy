@@ -175,6 +175,81 @@ pub fn available(mut kit: Kit) -> Result<Kit> {
     Ok(kit)
 }
 
+/// The harnesses whose workers took their briefs, most recent first.
+fn delivered_file() -> Result<PathBuf> {
+    Ok(crate::copies::cache()?.join("watch/delivered.json"))
+}
+
+/// Records a worker's successful brief delivery, never merely its start.
+pub fn delivered(worktree: &Worktree) -> Result<()> {
+    let Some(harness) = worktree.harness()? else { return Ok(()) };
+    let file = delivered_file()?;
+    let mut delivered: Vec<String> = std::fs::read(&file)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default();
+    delivered.retain(|held| held != harness.key());
+    delivered.insert(0, harness.key().to_string());
+    if let Some(dir) = file.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let temporary = file.with_extension(format!("{}.tmp", crate::unique()));
+    std::fs::write(&temporary, serde_json::to_vec(&delivered)?)?;
+    Ok(std::fs::rename(temporary, file)?)
+}
+
+/// The harnesses a watch may start, most recently successful first, then host
+/// kit order, with all recorded faults left out.
+pub fn watch_candidates() -> Result<Vec<crate::kit::Named>> {
+    let available = available(crate::kit::running()?.0)?;
+    let delivered: Vec<String> = std::fs::read(delivered_file()?)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default();
+    let delivered = delivered.iter().filter_map(|key| Harness::read(key));
+    let mut candidates = vec![];
+    for harness in delivered.chain(available.harnesses.iter().map(|held| held.harness)) {
+        if candidates.iter().any(|held: &crate::kit::Named| held.harness == harness) {
+            continue;
+        }
+        if let Some(held) = available.harnesses.iter().find(|held| held.harness == harness) {
+            candidates.push(crate::kit::Named {
+                harness,
+                model: held.models.first().map(|model| model.model.clone()),
+            });
+        }
+    }
+    Ok(candidates)
+}
+
+/// Records a fault a watch proved on `harness`; a later successful health
+/// probe makes it eligible again through `available`.
+pub fn watch_fault(harness: Harness, evidence: Vec<String>, now: u64) -> Result<()> {
+    let mut book = read()?;
+    let command = crate::kit::load()?.command(harness).unwrap_or_default().to_string();
+    book.faults.retain(|fault| fault.harness != harness || fault.scope != Scope::Account);
+    book.faults.push(Fault {
+        harness,
+        command_key: Some(command_key(&command)),
+        model: None,
+        scope: Scope::Account,
+        since: now,
+        next_check: now.saturating_add(RECOVERY_SECONDS),
+        evidence,
+    });
+    store(&book)
+}
+
+/// A fault the watch can act on without another model: structured evidence or
+/// the harness's own explicit terminal words.
+pub fn terminal_fault(
+    harness: Harness,
+    output: &[String],
+    structured: &Value,
+) -> Option<Diagnosis> {
+    classified(structured).or_else(|| terminal_rule(harness, output))
+}
+
 /// Transport refusal is evidence for this worker first. Classification or
 /// diagnosis determines its scope, never a count of arbitrary refused sends.
 pub fn signal(worktree: &Worktree, reason: &str) -> Result<()> {
