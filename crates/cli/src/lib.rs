@@ -4196,10 +4196,8 @@ fn run(
             plan["selection"] = fleet.selection();
             plan["codex_workers"] = json!(codex_launch::workers(&fleet.repo));
             for issue in plan["frontier"].as_array_mut().into_iter().flatten() {
-                if issue["cast"]["harness"] == "codex"
-                    && let Some(model) = issue["cast"]["model"].as_str()
-                {
-                    issue["codex"] = codex_launch::planned(model);
+                if issue["cast"]["harness"] == "codex" {
+                    issue["codex"] = codex_launch::planned(issue["cast"]["model"].as_str());
                 }
             }
             if let Ok(team) = flows.team() {

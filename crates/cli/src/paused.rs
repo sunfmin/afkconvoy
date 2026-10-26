@@ -131,7 +131,7 @@ impl Pauses {
                 probe(
                     held.harness,
                     &held.command,
-                    held.models.first().map(|seen| seen.model.as_str()),
+                    held.placed().next().map(|seen| seen.model.as_str()),
                 )
             });
             let resumed = matches!(answer, None | Some(Answer::Answered(..)));

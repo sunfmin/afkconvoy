@@ -283,7 +283,9 @@ fn no_host_kit_has_run_write_it_and_start_its_first_tick_while_a_tick_refuses() 
     let workers = started(&world);
     assert_eq!(workers.len(), 1, "its first tick started a worker");
     assert!(!workers[0].contains("--model"), "the default model starts with no flag");
-    assert!(!world.shell_asked().iter().any(|asked| asked.contains("Reply with the single word OK.")));
+    assert!(
+        !world.shell_asked().iter().any(|asked| asked.contains("Reply with the single word OK."))
+    );
 }
 
 /// What the run log of `world`'s repo says of the host kit's refreshes, as
@@ -351,7 +353,9 @@ fn a_tick_a_day_later_writes_the_host_kit_again_once_for_every_fleet_of_the_host
     // The rest of that day, no tick writes it again.
     tick_at(&world, "beta", 1000 + 2 * day - 1).wait().unwrap();
     assert_eq!(refreshes(&world).len(), 1);
-    assert!(!world.shell_asked().iter().any(|asked| asked.contains("Reply with the single word OK.")));
+    assert!(
+        !world.shell_asked().iter().any(|asked| asked.contains("Reply with the single word OK."))
+    );
 }
 
 #[test]
@@ -397,7 +401,9 @@ fn kit_with_no_terminal_writes_what_this_host_can_start_and_says_what_it_left_ou
     // Written again with nothing changed, it is exactly the same.
     assert_eq!(world.afk(&["kit"]).json["written"], true);
     assert_eq!(kit_on_disk(&world), kit);
-    assert!(!world.shell_asked().iter().any(|asked| asked.contains("Reply with the single word OK.")));
+    assert!(
+        !world.shell_asked().iter().any(|asked| asked.contains("Reply with the single word OK."))
+    );
 }
 
 #[test]
@@ -500,7 +506,9 @@ fn kit_holds_each_listed_id_with_its_display_name_and_never_probes() {
     assert_eq!(planned["frontier"][0]["cast"]["model"], Value::Null);
     assert_eq!(planned["host_kit"]["harnesses"][0]["default_model"], true);
     assert_eq!(planned["host_kit"]["harnesses"][0]["research_pending"], true);
-    assert!(!world.shell_asked().iter().any(|asked| asked.contains("Reply with the single word OK.")));
+    assert!(
+        !world.shell_asked().iter().any(|asked| asked.contains("Reply with the single word OK."))
+    );
 }
 
 #[test]

@@ -257,7 +257,12 @@ fn a_missing_harness_starts_on_its_default_before_its_listing_is_researched() {
             assert_eq!(kit["harnesses"][0]["harness"], "kimi");
             assert_eq!(kit["harnesses"][0]["models"][0]["model"], "kimi-code/k3");
             assert_eq!(kit["harnesses"][0]["models"][0]["good_at"], "not researched");
-            assert!(!world.shell_asked().iter().any(|asked| asked.contains("Reply with the single word OK.")));
+            assert!(
+                !world
+                    .shell_asked()
+                    .iter()
+                    .any(|asked| asked.contains("Reply with the single word OK."))
+            );
             return;
         }
         std::thread::sleep(std::time::Duration::from_millis(50));

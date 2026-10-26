@@ -44,7 +44,15 @@ pub struct Held {
     pub models: Vec<Seen>,
 }
 
-/// A model one harness lists and research has placed.
+impl Held {
+    /// The models a worker may be started on, in order (`Seen::placed`).
+    /// With none, a worker runs its login's default model, with no model flag.
+    pub fn placed(&self) -> impl Iterator<Item = &Seen> {
+        self.models.iter().filter(|seen| seen.placed())
+    }
+}
+
+/// A model one harness lists, or a human named, and what research says of it.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Seen {
@@ -57,8 +65,9 @@ pub struct Seen {
     /// Older kits recorded probe evidence here. It is read and forgotten.
     #[serde(default, skip_serializing)]
     probed: Option<Value>,
-    /// What the sourced research says it is good at, or `not researched`:
-    /// what a caster is told of it.
+    /// What the sourced research says it is good at — what a caster is told
+    /// of it — or `research pending` or `not researched`; none of one named
+    /// with no research.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub good_at: Option<String>,
     /// The dated URLs supporting good_at, absent before sourced research.
@@ -70,9 +79,23 @@ pub struct Seen {
 }
 
 impl Seen {
-    /// Whether research has left this model out of worker selection.
-    pub fn not_researched(&self) -> bool {
-        self.good_at.as_deref() == Some(crate::kit_research::UNKNOWN)
+    /// Whether a worker may be started on it: research placed it with a dated
+    /// source, or a human or an older release named it, with no research yet.
+    /// One `research pending` or `not researched` is never started on.
+    pub fn placed(&self) -> bool {
+        use crate::kit_research::{PENDING, UNKNOWN};
+        !matches!(self.good_at.as_deref(), Some(PENDING | UNKNOWN))
+    }
+
+    /// Whether research has yet to answer for it: it is `research pending`,
+    /// or held with no dated research. The next kit write researches it.
+    pub fn awaits_research(&self) -> bool {
+        let sourced = !self.sources.is_empty() && self.researched_at.is_some();
+        match self.good_at.as_deref() {
+            Some(crate::kit_research::UNKNOWN) => false,
+            Some(crate::kit_research::PENDING) | None => true,
+            Some(good_at) => good_at.trim().is_empty() || !sourced,
+        }
     }
 
     /// It as a range holds it: its id and its other names.
@@ -111,20 +134,20 @@ impl Kit {
         self.harnesses.iter().find(|held| held.harness == harness)
     }
 
-    /// The host kit's first: its first harness, with its first researched
-    /// model, or no model while research is pending.
+    /// The host kit's first: its first harness, with that harness's first
+    /// placed model — none, its default, while it has none placed. `None` of
+    /// a host kit that holds no harness.
     pub fn first(&self) -> Option<Named> {
         let held = self.harnesses.first()?;
-        let model = held.models.iter().find(|seen| !seen.not_researched()).map(|m| m.model.clone());
-        Some(Named { harness: held.harness, model })
+        Some(Named { harness: held.harness, model: held.placed().next().map(|m| m.model.clone()) })
     }
 
     /// The host kit as a range (docs/adr/0020): each harness in order, with
-    /// only the models research has placed. An empty range uses the default.
+    /// its placed models in order — none, its default, while none is placed.
     pub fn range(&self) -> Vec<afkconvoy_core::casting::Held> {
         let held = |held: &Held| afkconvoy_core::casting::Held {
             harness: held.harness,
-            models: held.models.iter().filter(|seen| !seen.not_researched()).map(Seen::as_model).collect(),
+            models: held.placed().map(Seen::as_model).collect(),
         };
         self.harnesses.iter().map(held).collect()
     }
@@ -293,9 +316,10 @@ pub fn show(now: u64) -> Value {
                 .iter()
                 .map(|held| {
                     let mut shown = serde_json::to_value(held).expect("a held harness serializes");
-                    let object = shown.as_object_mut().expect("a held harness is an object");
-                    object.insert("default_model".into(), json!(held.models.iter().all(Seen::not_researched)));
-                    object.insert("research_pending".into(), json!(held.models.iter().any(Seen::not_researched)));
+                    shown["default_model"] = json!(held.placed().next().is_none());
+                    shown["research_pending"] = json!(
+                        held.models.is_empty() || held.models.iter().any(Seen::awaits_research)
+                    );
                     shown
                 })
                 .collect();
@@ -536,13 +560,14 @@ fn store(file: &Path, kit: &Kit, now: u64) -> Result<()> {
     store_unlocked(file, &kit, now)
 }
 
-/// Established model order is user priority, whether researched or switched.
-/// New discoveries follow the models still held, never displacing the first.
+/// Established model order is user priority, whether researched or switched:
+/// the order of the models placed before. New discoveries, and models only
+/// now placed, follow them in the order they come, never displacing the first.
 pub(super) fn retain_model_order(before: &Kit, kit: &mut Kit) {
     for held in &mut kit.harnesses {
         if let Some(old) = before.held(held.harness) {
             held.models.sort_by_key(|model| {
-                old.models.iter().position(|seen| seen.model == model.model).unwrap_or(usize::MAX)
+                old.placed().position(|seen| seen.model == model.model).unwrap_or(usize::MAX)
             });
         }
     }
@@ -717,9 +742,8 @@ fn refresh_at<'a>(
 /// line to the run log of `repo` where that changed it, naming what was added
 /// and dropped, or where it failed. No model is sent a prompt.
 pub fn refresh(repo: &crate::git::Repo, instance: &str, host: &str, now: u64) -> Result<()> {
-    let refreshed = refresh_at(&path()?, now, || Host::here(now)).map(|refreshed| {
-        refreshed.map(|(before, after)| Changed::between(&before, &after))
-    });
+    let refreshed = refresh_at(&path()?, now, || Host::here(now))
+        .map(|refreshed| refreshed.map(|(before, after)| Changed::between(&before, &after)));
     let (outcome, failed) = match refreshed {
         Ok(None) => return Ok(()),
         Ok(Some(changed)) if changed.is_empty() => return Ok(()),
@@ -878,12 +902,15 @@ fn compose(current: &Kit, host: &Host, writing: Writing) -> (Kit, Vec<LeftOut>) 
             let before = current
                 .held(harness)
                 .and_then(|held| held.models.iter().find(|seen| seen.model == each.name));
+            // Research answered for its identity is kept, from any harness;
+            // else it is as held here, or `research pending` where it is new.
             let researched = previous(current, &each.name);
+            let pending = || Some(crate::kit_research::PENDING.to_string());
             let mut seen = Seen {
                 model: each.name,
                 names: before.map(|seen| seen.names.clone()).unwrap_or_default(),
                 probed: None,
-                good_at: researched.and_then(|seen| seen.good_at.clone()),
+                good_at: researched.or(before).map_or_else(pending, |seen| seen.good_at.clone()),
                 sources: researched.map(|seen| seen.sources.clone()).unwrap_or_default(),
                 researched_at: researched.and_then(|seen| seen.researched_at),
             };
@@ -911,15 +938,16 @@ fn compose(current: &Kit, host: &Host, writing: Writing) -> (Kit, Vec<LeftOut>) 
     (kit, left_out)
 }
 
-/// The same listed identity held before, including on another harness.
-/// Aliases are excluded: research ties them to a listed id instead.
+/// The same listed identity held before that research answered for,
+/// including on another harness, sourced research first. Aliases are
+/// excluded: research ties them to a listed id instead.
 fn previous<'a>(current: &'a Kit, id: &str) -> Option<&'a Seen> {
     use crate::kit_research::identity;
     current
         .harnesses
         .iter()
         .flat_map(|held| &held.models)
-        .filter(|before| identity(&before.model) == identity(id))
+        .filter(|before| identity(&before.model) == identity(id) && !before.awaits_research())
         .max_by_key(|before| (before.researched_at.is_some(), !before.sources.is_empty()))
 }
 
@@ -937,13 +965,24 @@ fn push_new<T: PartialEq>(into: &mut Vec<T>, items: impl IntoIterator<Item = T>)
 fn report(path: &str, kit: &Kit, left_out: &[LeftOut]) -> String {
     let mut said = format!("afkconvoy: wrote the host kit at {path}\n");
     for held in &kit.harnesses {
-        let models: Vec<&str> = held.models.iter().map(|seen| seen.model.as_str()).collect();
-        said.push_str(&format!(
-            "  {} `{}`: {}\n",
-            held.harness.key(),
-            held.command,
-            models.join(" ")
-        ));
+        let models = |of: &dyn Fn(&Seen) -> bool| -> Vec<&str> {
+            held.models.iter().filter(|seen| of(seen)).map(|seen| seen.model.as_str()).collect()
+        };
+        let placed = models(&Seen::placed);
+        let mut line = match placed.is_empty() {
+            true => "its default model".to_string(),
+            false => placed.join(" "),
+        };
+        for (said, good_at) in [
+            ("research pending", crate::kit_research::PENDING),
+            ("not researched", crate::kit_research::UNKNOWN),
+        ] {
+            let these = models(&|seen| seen.good_at.as_deref() == Some(good_at));
+            if !these.is_empty() {
+                line.push_str(&format!("; {said}: {}", these.join(" ")));
+            }
+        }
+        said.push_str(&format!("  {} `{}`: {line}\n", held.harness.key(), held.command));
     }
     match kit.stock_consult() {
         Some(named) => said.push_str(&format!("  the stock consult runs {}\n", named_said(&named))),
@@ -1126,6 +1165,17 @@ mod tests {
         Listed { name: name.into(), shown: shown.map(str::to_string) }
     }
 
+    /// `seen` as research places it, with a dated source.
+    fn sourced(seen: Seen) -> Seen {
+        let url = format!("https://vendor.example/{}", seen.model);
+        Seen {
+            good_at: Some("hard work".into()),
+            sources: vec![crate::kit_research::Source { url, date: "2026-10-24".into() }],
+            researched_at: Some(1),
+            ..seen
+        }
+    }
+
     fn held(harness: Harness, command: &str, models: &[&str]) -> Held {
         let models = models
             .iter()
@@ -1204,11 +1254,20 @@ mod tests {
             [vec!["Default"], vec!["Opus 5.5"], vec!["Sonnet 5.5"]]
         );
         assert_eq!(names(&kit.harnesses[1]), [vec![], vec![], vec![]] as [Vec<String>; 3]);
-        for name in ["DEFAULT", "default"] {
-            assert_eq!(kit.range()[0].model(name).map(|model| model.id.as_str()), Ok("default"));
+        // Every listed id waits for research, and no worker starts on it:
+        // each harness runs its default model meanwhile.
+        for seen in kit.harnesses.iter().flat_map(|held| &held.models) {
+            assert_eq!(seen.good_at.as_deref(), Some(crate::kit_research::PENDING));
         }
+        assert!(kit.range().iter().all(|held| held.models.is_empty()));
+        assert_eq!(kit.first(), Some(Named { harness: Harness::ClaudeCode, model: None }));
         assert!(!serde_json::to_string(&kit).unwrap().contains("probed"));
         assert_eq!(kit.stock_consult, None);
+        let said = report("/kit.json", &kit, &left_out);
+        assert!(
+            said.contains("its default model; research pending: default opus sonnet"),
+            "{said}"
+        );
         let said: Vec<(Harness, Option<&str>, &str)> = left_out
             .iter()
             .map(|out| (out.harness, out.model.as_deref(), out.why.as_str()))
@@ -1235,7 +1294,10 @@ mod tests {
         let current = Kit {
             cast: false,
             harnesses: vec![held(Harness::Codex, "mycodex --yolo", &["gpt-a"]), claude],
-            stock_consult: Some(Named { harness: Harness::ClaudeCode, model: Some("default".into()) }),
+            stock_consult: Some(Named {
+                harness: Harness::ClaudeCode,
+                model: Some("default".into()),
+            }),
         };
         let (kit, left_out) = composed(&current);
         assert_eq!(
@@ -1281,7 +1343,8 @@ mod tests {
         assert_eq!(kit.stock_consult, None);
         assert!(left_out.iter().any(|out| out.harness == Harness::Pi));
         let said = report("/kit.json", &kit, &left_out);
-        assert!(said.contains("the stock consult runs codex listed"), "{said}");
+        assert!(said.contains("the stock consult runs codex\n"), "{said}");
+        assert!(said.contains("its default model; research pending: listed"), "{said}");
         assert!(!said.contains("probe"), "{said}");
     }
 
@@ -1357,10 +1420,13 @@ mod tests {
             if writing == Writing::Refresh {
                 expected.push((Harness::Pi, "pi", vec![]));
             } else {
-                assert!(left_out.iter().any(|out| out.harness == Harness::Pi && out.model.is_none()));
+                assert!(
+                    left_out.iter().any(|out| out.harness == Harness::Pi && out.model.is_none())
+                );
             }
             assert_eq!(summary(&kit), expected, "{writing:?}");
-            let stock = Named { harness: Harness::ClaudeCode, model: Some("default".into()) };
+            // Listed, its models wait for research: it runs its default.
+            let stock = Named { harness: Harness::ClaudeCode, model: None };
             assert_eq!(kit.stock_consult(), Some(stock), "{writing:?}");
         }
     }
@@ -1381,11 +1447,16 @@ mod tests {
             found: &found,
             listed: &listed,
         };
-        let (kit, _) = compose(&current, &host, Writing::Refresh);
+        let (mut kit, _) = compose(&current, &host, Writing::Refresh);
+        assert_eq!(kit.harnesses[0].models.len(), 2);
+        assert_eq!(kit.matched(Harness::ClaudeCode, "old-id").unwrap(), "old-id");
+        // A newly listed id matches nothing until research places it.
+        assert!(kit.matched(Harness::ClaudeCode, "Opus").is_err());
+        let opus = kit.harnesses[0].models.iter_mut().find(|seen| seen.model == "opus").unwrap();
+        assert_eq!(opus.names, ["Opus"]);
+        *opus = sourced(opus.clone());
         assert_eq!(kit.matched(Harness::ClaudeCode, "opus").unwrap(), "opus");
         assert_eq!(kit.matched(Harness::ClaudeCode, "Opus").unwrap(), "opus");
-        assert_eq!(kit.matched(Harness::ClaudeCode, "old-id").unwrap(), "old-id");
-        assert_eq!(kit.harnesses[0].models.len(), 2);
     }
 
     #[test]
@@ -1411,13 +1482,8 @@ mod tests {
         store(&file, &current, 1000).unwrap();
         let found = |harness| if harness == Harness::Codex { Ok(()) } else { Err("absent".into()) };
         let listed = |_: Harness, _: &str| Ok(vec![listed("gpt-first", None)]);
-        let host = || {
-            Ok(Host {
-                found: &found,
-                listed: &listed,
-                research: &|_, _| bail!("no research"),
-            })
-        };
+        let host =
+            || Ok(Host { found: &found, listed: &listed, research: &|_, _| bail!("no research") });
         let (_, after) = refresh_at(&file, 1001, host).unwrap().unwrap();
         assert!(after.cast);
         assert_eq!(after.harnesses[0].models[0].model, "gpt-first");
@@ -1454,16 +1520,15 @@ mod tests {
     fn one_process_refreshes_the_host_kit_and_the_others_read_it() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("afkconvoy/kit.json");
-        let current = Kit {
-            cast: false,
-            harnesses: vec![held(Harness::Pi, "pi", &["a/b"])],
-            stock_consult: None,
-        };
+        let mut pi = held(Harness::Pi, "pi", &["a/b"]);
+        pi.models[0] = sourced(pi.models[0].clone());
+        let current = Kit { cast: false, harnesses: vec![pi], stock_consult: None };
         store(&file, &current, 1000).unwrap();
         assert_eq!(written(&file), Some(1000));
         let sessions = std::sync::atomic::AtomicUsize::new(0);
+        // The first session fails; the next answers.
         let research = |_: &Kit, prompt: &str| {
-            sessions.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let session = sessions.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             let targets = prompt
                 .split("one entry per identity): ")
                 .nth(1)
@@ -1475,7 +1540,13 @@ mod tests {
                 serde_json::from_str::<Value>(targets).unwrap(),
                 json!([{"harness":"pi", "model":"c/d"}])
             );
-            bail!("fake session gave no answer")
+            if session == 0 {
+                bail!("fake session gave no answer")
+            }
+            Ok(json!({"harness_order":["pi"],"model_order":[{"harness":"pi","models":["a/b","c/d"]}],
+                "models":[{"harness":"pi","model":"c/d","good_at":"small fixes",
+                    "sources":[{"url":"https://vendor.example/c","date":"2026-10-24"}]}]})
+            .to_string())
         };
         let listed = |_: Harness, _: &str| Ok(vec![listed("a/b", None), listed("c/d", None)]);
         let found = |harness: Harness| match harness {
@@ -1503,6 +1574,9 @@ mod tests {
             let (before, after) = first.join().unwrap().unwrap().unwrap();
             assert_eq!(before, current);
             assert_eq!(summary(&after), [(Harness::Pi, "pi", vec!["a/b", "c/d"])]);
+            // Research failed: c/d waits for the next write.
+            assert_eq!(after.first().unwrap().model.as_deref(), Some("a/b"));
+            assert!(after.harnesses[0].models[1].awaits_research());
         });
         // Once written, it is not due again for a day, in any process.
         assert_eq!(written(&file), Some(now));
@@ -1512,12 +1586,15 @@ mod tests {
         let later = now + REFRESHED_EVERY;
         assert!(refresh_at(&file, later, || bail!("orca is not running")).is_err());
         assert!(refresh_at(&file, later + 60, || panic!("tried a minute ago")).unwrap().is_none());
-        let again = refresh_at(&file, later + 3600, || Ok(host())).unwrap();
-        assert!(again.is_some());
+        let (_, again) = refresh_at(&file, later + 3600, || Ok(host())).unwrap().unwrap();
+        assert_eq!(sessions.load(std::sync::atomic::Ordering::SeqCst), 2, "c/d asked again");
+        assert_eq!(again.range()[0].models.len(), 2, "c/d placed");
+        let last = later + 3600 + REFRESHED_EVERY;
+        assert!(refresh_at(&file, last, || Ok(host())).unwrap().is_some());
         assert_eq!(
             sessions.load(std::sync::atomic::Ordering::SeqCst),
-            1,
-            "no new identity: no session on the next refresh"
+            2,
+            "nothing awaits research: no session on the next refresh"
         );
     }
 
