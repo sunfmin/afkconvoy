@@ -8,11 +8,15 @@
 //! line closes — its command ended, or its process did. Which ticket runs is
 //! the core's to say (`afkconvoy_core::exclusive`).
 
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::ffi::OsString;
+use std::fs::{File, OpenOptions};
+use std::os::fd::AsRawFd;
 use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
 use std::process::{Command, ExitCode, ExitStatus};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, mpsc};
 use std::time::{Duration, Instant};
 
@@ -22,7 +26,7 @@ use afkconvoy_core::exclusive::{
 };
 use afkconvoy_core::role::ISSUE_ENV;
 use afkconvoy_core::train::is_train_worktree;
-use anyhow::Result;
+use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -46,6 +50,133 @@ pub const SECONDS: u64 = 1200;
 /// of it is reported as exit 1, so this outcome is unambiguous.
 pub const BOUND_CODE: u8 = 124;
 const CHECK_EVERY: Duration = Duration::from_millis(100);
+
+/// Only the gate's descendants inherit this lease. Nested `exclusive`
+/// wrappers use the already held lane instead of waiting on their parent.
+const OWNER_ENV: &str = "AFKCONVOY_EXCLUSIVE_OWNER";
+thread_local! { static HELD: Cell<bool> = const { Cell::new(false) }; }
+
+pub fn held() -> bool {
+    HELD.get()
+}
+
+/// Pass the command's lease only into the gate it owns.
+pub fn inherit(command: &mut Command) {
+    if held() {
+        command.env(OWNER_ENV, std::process::id().to_string());
+    }
+}
+
+fn inherited() -> bool {
+    let Some(owner) = std::env::var(OWNER_ENV).ok().and_then(|v| v.parse::<u32>().ok()) else {
+        return false;
+    };
+    let processes = crate::hot::listed();
+    let mut pid = std::process::id();
+    for _ in 0..processes.len() {
+        let Some(parent) = processes.iter().find(|p| p.pid == pid).map(|p| p.ppid) else {
+            return false;
+        };
+        if parent == owner {
+            return true;
+        }
+        if parent <= 1 || parent == pid {
+            return false;
+        }
+        pid = parent;
+    }
+    false
+}
+
+/// A command owns its lane until this value drops, including merge, gate,
+/// recording and join. The socket frees it on process death. Without a
+/// runner, the OS holds the same lane across local processes.
+pub struct Permit {
+    stop: Arc<AtomicBool>,
+    monitor: Option<std::thread::JoinHandle<()>>,
+    _file: Option<File>,
+}
+
+impl Permit {
+    pub fn take(repo: &Repo, command: &str, train: bool, heavy: bool) -> Result<Self> {
+        if held() {
+            bail!("this command already holds a turn");
+        }
+        let ticket = Ticket {
+            number: 0,
+            pid: std::process::id(),
+            command: command.into(),
+            dir: canonical(&repo.dir),
+            issue: std::env::var(ISSUE_ENV).ok().and_then(|v| v.parse().ok()),
+            train,
+            repo_lane: if train || heavy { None } else { Some(canonical(repo.common_dir()?)) },
+            asked: crate::clock(),
+            ran: None,
+        };
+        let acting = Acting::new("exclusive").on_own_issue().in_checkout(Some(repo.clone()));
+        let stop = Arc::new(AtomicBool::new(false));
+        let (monitor, file) = match turn(&ticket, &acting, &crate::clock)? {
+            Turn::Queued(place, _) => {
+                acting.say(crate::clock(), runs_line(&ticket, crate::clock(), 0));
+                let watch = Watch::new(place)?;
+                let stopping = stop.clone();
+                (
+                    Some(std::thread::spawn(move || {
+                        while !stopping.load(Ordering::Acquire) {
+                            if let Ok(bound) = watch.read.recv_timeout(CHECK_EVERY) {
+                                // Freeze each child before walking below it. The
+                                // owning CLI remains able to reap and exit.
+                                for child in crate::hot::listed()
+                                    .iter()
+                                    .filter(|p| p.ppid == std::process::id())
+                                {
+                                    end_descendants(child.pid);
+                                }
+                                let line = format!(
+                                    "ended at the exclusive bound of {}s with {} commands waiting: `{}`",
+                                    bound.bound, bound.waiting, ticket.command
+                                );
+                                acting.say(crate::clock(), line.clone());
+                                eprintln!("[afkconvoy] exclusive: {line}");
+                                println!("{}", json!({"error": line}));
+                                std::process::exit(i32::from(BOUND_CODE));
+                            }
+                        }
+                    })),
+                    None,
+                )
+            }
+            Turn::AtOnce(_) => {
+                let dir = crate::copies::cache()?;
+                std::fs::create_dir_all(&dir)?;
+                let key = afkconvoy_core::gate::key(&afkconvoy_core::exclusive::lane(&ticket));
+                let file = OpenOptions::new()
+                    .create(true)
+                    .truncate(false)
+                    .read(true)
+                    .write(true)
+                    .open(dir.join(format!("exclusive-{key:016x}.lock")))?;
+                // SAFETY: a live descriptor is locked until File drops.
+                if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
+                    return Err(std::io::Error::last_os_error().into());
+                }
+                (None, Some(file))
+            }
+        };
+        HELD.set(true);
+        Ok(Self { stop, monitor, _file: file })
+    }
+}
+
+impl Drop for Permit {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(monitor) = self.monitor.take() {
+            let _ = monitor.join();
+        }
+        HELD.set(false);
+    }
+}
 
 /// What the host runner tells a command that reached the bound. It keeps
 /// its place until the command has ended and reaped its descendants.
@@ -370,6 +501,14 @@ pub fn exclusive(
     checkout: Option<Repo>,
     now: impl Fn() -> u64,
 ) -> ExitCode {
+    if inherited() {
+        return match crate::process::status(
+            Command::new(&command[0]).args(&command[1..]).current_dir(dir),
+        ) {
+            Ok(status) => ExitCode::from(ended(status).0),
+            Err(error) => failed(&format!("the nested command could not start: {error}")),
+        };
+    }
     let shown: Vec<String> =
         command.iter().map(|word| word.to_string_lossy().into_owned()).collect();
     let ticket = Ticket {

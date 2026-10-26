@@ -2,6 +2,7 @@
 //! its PR to it.
 
 use afkconvoy_core::config::Config;
+use afkconvoy_core::gate::{GateCommand, Tree};
 use afkconvoy_core::lock::{keeps_off, named};
 use afkconvoy_core::plan::{PullRequest, closing_pr};
 use afkconvoy_core::train::{
@@ -11,9 +12,93 @@ use afkconvoy_core::train::{
 use anyhow::{Result, anyhow, bail};
 use serde_json::{Value, json};
 
+use crate::acting::Acting;
+use crate::exclusive::Permit;
 use crate::gh::{GitHub, Tracker};
 use crate::git::{Listing, REMOTE, Repo};
 use crate::lock::standing_locks;
+
+/// A missing tip record is established in the train lane, never on a
+/// worker's changed tree. Keep the checkout separate even when the train
+/// is empty: the base branch needs evidence too.
+fn certify_tip(repo: &Repo, config: &Config, tip: &str, now: u64) -> Result<bool> {
+    let command = GateCommand::new(&config.gate_command);
+    let _lane = Permit::take(repo, "gate the train's tip", true, true)?;
+    let tree = Tree::named(&repo.git(&["rev-parse", &format!("{tip}^{{tree}}")])?);
+    if crate::gate::recorded(repo, &tree, &command, now)?.is_some() {
+        return Ok(true);
+    }
+    let path = std::env::temp_dir().join(format!("afkconvoy-tip-{}", crate::unique()));
+    repo.git(&["worktree", "add", "--quiet", "--detach", &path.to_string_lossy(), tip])?;
+    let checkout = Repo::new(path.clone());
+    let run = crate::gate::run_and_record(
+        &checkout,
+        &command,
+        &crate::this_host(),
+        now,
+        std::time::Duration::from_secs(config.gate_seconds()),
+    );
+    // Remove our own detached checkout on red and on errors as on green.
+    let removed = repo.git(&["worktree", "remove", "--force", &path.to_string_lossy()]);
+    let run = run?;
+    removed?;
+    Ok(run.green.is_some() && run.not_recorded.is_none())
+}
+
+/// Wait outside the worker lane while the train has no green tip. A train
+/// lane run can establish a missing record; a red tip is the train worker's
+/// to repair. Re-read after acquiring the worker lane, since it can move
+/// while we wait there.
+fn turn(repo: &Repo, config: &Config, issue: Option<u64>, now: u64) -> Result<(Permit, Train)> {
+    let command = GateCommand::new(&config.gate_command);
+    let mut tried = None;
+    loop {
+        let gh = GitHub::of(repo)?;
+        let locks = standing_locks(&gh, config)?;
+        if !locks.is_empty() && issue.is_none_or(|issue| keeps_off(&locks, issue)) {
+            bail!(
+                "a fleet lock stands ({}): this command takes no turn; run this again when told to carry on",
+                named(&locks)
+            );
+        }
+        let train = Train::read(repo, config)?;
+        let tree = Tree::named(&repo.git(&["rev-parse", &format!("{}^{{tree}}", train.tip)])?);
+        if crate::gate::recorded(repo, &tree, &command, now)?.is_none() {
+            if tried.as_deref() != Some(train.tip.as_str()) {
+                let green = certify_tip(repo, config, &train.tip, now)?;
+                tried = Some(train.tip.clone());
+                if green {
+                    continue;
+                }
+                let acting = Acting::new("gate").on_own_issue().in_checkout(Some(repo.clone()));
+                let line = format!(
+                    "waits for a green recorded gate run of train tip {}; no turn starts",
+                    train.tip
+                );
+                eprintln!("[afkconvoy] {line}");
+                acting.say(crate::clock(), line);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(250));
+            continue;
+        }
+        let permit = Permit::take(
+            repo,
+            "turn: merge, gate, join",
+            false,
+            crate::config::heavy_gate(&config.gate_command),
+        )?;
+        let current = Train::read(repo, config)?;
+        if current.tip != train.tip {
+            drop(permit);
+            continue;
+        }
+        if crate::gate::recorded(repo, &tree, &command, now)?.is_none() {
+            drop(permit);
+            continue;
+        }
+        return Ok((permit, current));
+    }
+}
 
 /// The landing train as one read of the remote saw it, its commits in the
 /// repo that asked.
@@ -217,6 +302,77 @@ pub fn join(
     tracker: &Tracker,
     pr: &PullRequest,
     of: &Of,
+    answer: Value,
+    now: u64,
+) -> Result<Value> {
+    own_head(repo, &pr.head_branch)?;
+    let head = repo.git(&["rev-parse", "HEAD"])?;
+    let train = Train::read(repo, config)?;
+    if repo.within(&head, &train.base)?
+        || !on_train(&train.joins(repo, tracker)?, &[pr.at_head(&head)]).is_empty()
+    {
+        return join_committed(repo, config, tracker, pr, of, answer, now);
+    }
+    let issue = match of {
+        Of::Issue(issue) => Some(*issue),
+        _ => None,
+    };
+    let acting = Acting::new("gate").on_issue(issue).in_checkout(Some(repo.clone()));
+    loop {
+        let (_permit, train) = turn(repo, config, issue, now)?;
+        let locks = standing_locks(&GitHub::of(repo)?, config)?;
+        if issue.map_or(!locks.is_empty(), |issue| keeps_off(&locks, issue)) {
+            return Ok(locked(answer, &locks));
+        }
+        let files = merge_in(repo, &train.tip, "the train's green tip")?;
+        if !files.is_empty() {
+            let mut answer = answer;
+            answer["status"] = json!("conflict");
+            answer["outcome"] = json!("conflict");
+            answer["recorded"] = json!(false);
+            answer["files"] = json!(files);
+            answer["detail"] =
+                json!(format!("merging the train's green tip conflicted; no gate ran — {RESOLVE}"));
+            acting.say(
+                crate::clock(),
+                format!("turn merged {}: conflict; nothing joined", train.tip),
+            );
+            return Ok(answer);
+        }
+        acting.say(crate::clock(), format!("turn merged {}", train.tip));
+        let mut gated = crate::gate::gate(repo, config, false, &crate::this_host(), now)?;
+        gated["merged"] = json!(train.tip);
+        acting.say(
+            crate::clock(),
+            format!("turn gate {}", gated["status"].as_str().unwrap_or("unknown")),
+        );
+        if gated["status"] != "green" || gated["recorded"] != true {
+            gated["outcome"] = json!("gate_red");
+            return Ok(gated);
+        }
+        let mut joined = join_committed(repo, config, tracker, pr, of, answer.clone(), now)?;
+        if joined["outcome"] == "tip_moved" {
+            continue;
+        }
+        for (key, value) in gated.as_object().into_iter().flatten() {
+            if key != "detail" {
+                joined[key] = value.clone();
+            }
+        }
+        acting.say(
+            crate::clock(),
+            format!("turn join {}", joined["outcome"].as_str().unwrap_or("unknown")),
+        );
+        return Ok(joined);
+    }
+}
+
+fn join_committed(
+    repo: &Repo,
+    config: &Config,
+    tracker: &Tracker,
+    pr: &PullRequest,
+    of: &Of,
     mut answer: Value,
     now: u64,
 ) -> Result<Value> {
@@ -263,6 +419,17 @@ pub fn join(
                     }
                     let message = join_message(&pr.title, pr.number, of, tracker);
                     commit = merged_onto(repo, &train.tip, &head, &message, now)?;
+                    if let Some(commit) = &commit {
+                        let joined_tree =
+                            repo.git(&["rev-parse", &format!("{commit}^{{tree}}")])?;
+                        let tested_tree = repo.git(&["rev-parse", "HEAD^{tree}"])?;
+                        if joined_tree != tested_tree {
+                            return Ok(stop(
+                                "tip_moved",
+                                json!({"detail": "the train moved; take another turn on its new green tip"}),
+                            ));
+                        }
+                    }
                     if commit.is_none() {
                         let files = merge_in(repo, &train.tip, "the landing train")?;
                         if !files.is_empty() {

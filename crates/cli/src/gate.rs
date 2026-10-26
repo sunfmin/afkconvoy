@@ -59,8 +59,10 @@ fn run_command(
     command: &str,
     limit: Duration,
 ) -> Result<(i32, bool, u64, Vec<String>)> {
+    let mut shell = Command::new("sh");
+    crate::exclusive::inherit(&mut shell);
     let mut child = crate::process::spawn(
-        Command::new("sh")
+        shell
             // one stream, so the log reads in the order it was written
             .args(["-c", &format!("exec 2>&1\n{command}")])
             .current_dir(&repo.dir)
@@ -145,6 +147,21 @@ pub fn run_and_record(
     now: u64,
     limit: Duration,
 ) -> Result<GateRun> {
+    let _permit = if crate::exclusive::held() {
+        None
+    } else {
+        let train = repo
+            .dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(afkconvoy_core::train::is_train_worktree);
+        Some(crate::exclusive::Permit::take(
+            repo,
+            command.text(),
+            train,
+            crate::config::heavy_gate(command.text()),
+        )?)
+    };
     let head = repo.git(&["rev-parse", "HEAD"])?;
     let tree = head_tree(repo)?;
     let before = off_commit(repo, None)?;
@@ -306,6 +323,22 @@ fn lands_behind(
 /// A red run with a fleet lock standing says which: the base branch may be
 /// what is red, and the worker is to declare nothing of it.
 pub fn gate(repo: &Repo, config: &Config, train: bool, host: &str, now: u64) -> Result<Value> {
+    let train_worktree = repo
+        .dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(afkconvoy_core::train::is_train_worktree);
+    if train && !train_worktree && !crate::exclusive::held() {
+        let gh = GitHub::of(repo)?;
+        let branch = repo.git(&["symbolic-ref", "--short", "HEAD"])?;
+        let prs = gh.open_prs()?;
+        let pr = prs.iter().find(|pr| pr.head_branch == branch)
+            .ok_or_else(|| anyhow!("no open PR has branch {branch:?} for its head — push it and open its PR before asking for a turn (`gh pr create --base {} --head {branch}`)", config.base_branch))?;
+        let issue = pr.closes.first().ok_or_else(|| {
+            anyhow!("this PR closes no issue — use `land --inspection` for an inspection's PR")
+        })?;
+        return crate::train::land(repo, config, &gh, *issue, now);
+    }
     let command = GateCommand::new(&config.gate_command);
     let mut merged = None;
     if train {

@@ -33,7 +33,25 @@ pub fn parse(markdown: &str) -> Result<Config> {
         Some(yaml) => Some(cut_steps(&yaml).context("its ```yaml cut block")?),
         None => None,
     };
-    Ok(Config::new(settings)?.cutting(steps))
+    let config = Config::new(settings)?.cutting(steps);
+    // An outer gate/land would ask for the lane a second time before it
+    // could even reach the inherited gate wrapper.
+    if config.gate_command.split_whitespace().any(|word| word.ends_with("afkconvoy"))
+        && config.gate_command.split_whitespace().any(|word| matches!(word, "gate" | "land"))
+    {
+        return Err(anyhow!(
+            "gate_command must name the build-and-test command, never `afkconvoy gate` or `land`; set `gate_command: afkconvoy exclusive -- ./gate.sh` for a heavy gate, or `gate_command: ./gate.sh` for a light gate"
+        ));
+    }
+    Ok(config)
+}
+
+/// Whether the repo puts its gate in the host's worker lane. The wrapper
+/// may use an absolute executable path or pass a directory with `-C`.
+pub fn heavy_gate(command: &str) -> bool {
+    let words: Vec<_> = command.split_whitespace().collect();
+    words.iter().any(|word| word.trim_matches(['\'', '"']).ends_with("afkconvoy"))
+        && words.contains(&"exclusive")
 }
 
 /// The cut steps a ```` ```yaml cut ```` block says: `set` and `publish`,

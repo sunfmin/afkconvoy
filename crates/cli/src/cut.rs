@@ -420,7 +420,9 @@ impl Cutting<'_> {
             Step::Set => self.set(record),
             Step::Pr => self.pr(record),
             Step::Gate if record.landed.is_some() => Ok(()),
-            Step::Gate => self.gate(clock()),
+            Step::Gate => {
+                self.join(record.pr.ok_or_else(|| anyhow!("the cut opened no PR"))?, clock())
+            }
             Step::Land => self.land(record, clock),
             Step::Tag => self.tag(record),
             Step::Publish => self.publish(record),
@@ -510,22 +512,6 @@ impl Cutting<'_> {
         let body = cut::pr_body(record, self.host);
         record.pr = Some(self.gh.open_pr(&self.config.base_branch, &branch, &title, &body)?);
         Ok(())
-    }
-
-    /// Gates it, the landing train merged in: green, and on record.
-    fn gate(&self, now: u64) -> Result<()> {
-        let gated = crate::gate::gate(self.repo, self.config, true, self.host, now)?;
-        if gated["status"] == "green" && gated["recorded"] == true {
-            return Ok(());
-        }
-        let detail = gated["detail"].as_str().unwrap_or("the gate said nothing");
-        match gated["files"].as_array() {
-            Some(files) => bail!(
-                "{detail} — the files: {}",
-                files.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", ")
-            ),
-            None => bail!("{detail}"),
-        }
     }
 
     /// Joins its PR to the landing train, on no issue, and waits for it to

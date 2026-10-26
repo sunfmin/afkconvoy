@@ -381,7 +381,9 @@ impl Staged {
             intake_command: &own().fixed(" intake").own(),
             split: self.split,
             workflows: &self.workflows,
-            gate: self.writes.then_some(Gate { train: &gate, alone: &gate_alone }),
+            gate: self
+                .writes
+                .then_some(Gate { train: &own().fixed(" gate").own(), alone: &gate_alone }),
         };
         let prompt = if self.consult {
             let issue = own().fixed(" show --issue ").number(self.issue).own();
