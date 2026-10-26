@@ -373,7 +373,8 @@ fn a_cut_gates_ahead_of_waiting_workers_and_its_queue_wait_does_not_end_its_gate
     let shown = world.afk(&["doctor", "--host", "h1"]).json;
     let queue = &shown["host"]["exclusive"]["lanes"]["worker"];
     assert_eq!(queue["running"]["issue"], 11, "{queue}");
-    assert_eq!(queue["waiting"][0]["cut"], true, "{queue}");
+    let first = Path::new(queue["waiting"][0]["dir"].as_str().unwrap());
+    assert_eq!(first.file_name().unwrap(), "afkconvoy-cut-2", "{queue}");
     assert_eq!(lines(&order), ["holder-start"], "priority never interrupts the holder");
     // Longer than the gate limit: the gate starts its clock after the grant.
     std::thread::sleep(Duration::from_millis(1200));
