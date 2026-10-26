@@ -446,16 +446,20 @@ fn a_cut_shows_its_plan_and_each_step_around_the_commands_output() {
         )
     });
     let file = world.clone.join("docs/agents/afkconvoy.md");
-    let config = std::fs::read_to_string(file).unwrap().replacen(
-        "set: |\n",
-        "set: |\n  printf 'set stdout\\n'\n  printf 'set stderr\\n' >&2\n",
-        1,
-    );
+    let config = std::fs::read_to_string(file)
+        .unwrap()
+        .replace("gate_command: ./gate.sh", "gate_command: sh ./gate.sh")
+        .replacen(
+            "set: |\n",
+            "set: |\n  printf 'set stdout\\n'\n  printf 'set stderr\\n' >&2\n",
+            1,
+        );
     std::fs::write(
         world.clone.join("gate.sh"),
         "#!/bin/sh\nprintf 'gate stdout\\n'\nprintf 'gate stderr\\n' >&2\n",
     )
     .unwrap();
+    git(&world.clone, &["add", "gate.sh"]);
     commit_config(&world, &config, "Make the steps visible");
     assert_eq!(cut(&tick_as(&world, "alpha", 10_000)), ["cut done"]);
     let checkout = checkout(&world);
