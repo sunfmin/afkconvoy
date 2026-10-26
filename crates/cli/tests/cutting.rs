@@ -5,7 +5,6 @@ use afkconvoy_core::{cut::CHECKOUT, worker::is_worktree_named};
 use common::{BASE, CONFIG, World, git};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 /// The `publish` line that says, in the world, what it published with which
@@ -250,51 +249,18 @@ fn initial(preset: bool) -> World {
     world
 }
 
-/// Runs the real cut command while the real train command lands its PR.
-/// Only `gh` and `orca` are stood in for; no cut record is edited by the test.
-/// A second of the cut's sleeps takes 10ms: it looks at the train every 0.3s.
-fn finish_on_train(world: &World, checkout: &Path) -> Value {
-    let train = world.root.join("train");
-    git(
-        &world.clone,
-        &["worktree", "add", "-q", "-b", "convoy-train", train.to_str().unwrap(), "HEAD"],
+/// The real cut command takes its own landing turn; no auxiliary worker runs.
+fn finish_in_turn(world: &World, checkout: &Path) -> Value {
+    let answer = world.afk_in(checkout, &["cut", "--host", "h1", "--second-ms", "10"]).ok();
+    let landed = answer["landed"].as_str().unwrap();
+    assert_eq!(world.remote(&["rev-parse", "refs/heads/main"]), landed);
+    let tree = world.remote(&["rev-parse", &format!("{landed}^{{tree}}")]);
+    assert!(
+        !world
+            .remote(&["for-each-ref", "--format=%(refname)", &format!("refs/convoy/gate/{tree}-*")])
+            .is_empty()
     );
-    let answer = world.root.join("cut-answer");
-    let errors = world.root.join("cut-errors");
-    let mut child = world
-        .command(env!("CARGO_BIN_EXE_afkconvoy"), checkout)
-        .args(["cut", "--host", "h1", "--second-ms", "10"])
-        .stdout(std::fs::File::create(&answer).unwrap())
-        .stderr(Stdio::from(std::fs::File::create(&errors).unwrap()))
-        .spawn()
-        .unwrap();
-    let until = Instant::now() + Duration::from_secs(60);
-    let line = "refs/convoy/train/line/main";
-    let base = world.remote(&["rev-parse", "refs/heads/main"]);
-    let joined = loop {
-        let tip = world.remote(&["for-each-ref", "--format=%(objectname)", line]);
-        if !tip.is_empty() && tip != base {
-            break tip;
-        }
-        if child.try_wait().unwrap().is_some() || Instant::now() >= until {
-            let _ = child.kill();
-            let _ = child.wait();
-            panic!(
-                "cut did not join: {} {}",
-                std::fs::read_to_string(&answer).unwrap(),
-                std::fs::read_to_string(&errors).unwrap()
-            );
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    };
-    assert!(!world.root.join("published").exists(), "publish waits for landing and tag");
-    assert!(world.remote(&["tag", "--list"]).is_empty(), "nothing tagged before landing");
-    let landed = world.afk_in(&train, &["land", "--train", "--merged-timeout", "5"]).ok();
-    assert_eq!(landed["outcome"], "landed", "{landed}");
-    assert_eq!(landed["commit"], joined);
-    assert!(child.wait().unwrap().success(), "{}", std::fs::read_to_string(errors).unwrap());
-    let answer: Value = serde_json::from_str(&std::fs::read_to_string(answer).unwrap()).unwrap();
-    assert_eq!(answer["landed"], joined);
+    assert!(world.remote(&["for-each-ref", "--format=%(refname)", "refs/convoy/train"]).is_empty());
     answer
 }
 
@@ -316,22 +282,13 @@ fn a_watch_s_landed_fix_reaches_the_published_version_through_a_cut() {
     });
     let joined = world.afk_in(&checkout, &["land", "--inspection", "--host", "h1"]).ok();
     assert_eq!(joined["recorded"], true);
-    assert_eq!(joined["outcome"], "joined");
+    assert_eq!(joined["outcome"], "merged");
     assert!(!world.root.join("published").exists(), "joining has installed nothing");
-
-    let train = world.root.join("watch-train");
-    git(
-        &world.clone,
-        &["worktree", "add", "-q", "-b", "watch-train", train.to_str().unwrap(), "HEAD"],
-    );
-    let landed = world.afk_in(&train, &["land", "--train", "--merged-timeout", "5"]).ok();
-    assert_eq!(landed["outcome"], "landed");
-    assert!(!world.root.join("published").exists(), "landing has installed nothing");
 
     world.afk(&["wake"]).ok();
     assert_eq!(cut(&tick_as(&world, "alpha", 10_000)), ["cut done"]);
     let cut_checkout = self::checkout(&world);
-    let released = finish_on_train(&world, &cut_checkout);
+    let released = finish_in_turn(&world, &cut_checkout);
     assert_eq!(released["version"], "1.2.3");
     assert!(released["prs"].as_array().unwrap().contains(&json!(90)));
     let published = std::fs::read_to_string(world.root.join("published")).unwrap();
@@ -377,7 +334,7 @@ fn first_cut(preset: bool) {
     assert_eq!(cut(&tick_as(&world, "beta", 10_110)), Vec::<String>::new());
     std::fs::remove_file(world.root.join("red")).unwrap();
 
-    let answer = finish_on_train(&world, &checkout);
+    let answer = finish_in_turn(&world, &checkout);
     assert_eq!(answer["tag"], "v1.2.3", "{answer}");
     assert_eq!(answer["pr"], pr);
     assert_eq!(answer["prs"], json!([7]), "the cut's own PR is excluded");

@@ -143,12 +143,6 @@ fn worker(world: &World, dir: &Path) -> String {
     open[0]["command"].as_str().unwrap().to_string()
 }
 
-/// The last line typed at the worker in `dir`.
-fn last_told(world: &World, dir: &Path) -> String {
-    let open = terminals(world, dir);
-    open[0]["sent"].as_array().unwrap().last().unwrap()["text"].as_str().unwrap().to_string()
-}
-
 fn brief(dir: &Path) -> String {
     let git_dir = PathBuf::from(git(dir, &["rev-parse", "--absolute-git-dir"]));
     std::fs::read_to_string(git_dir.join("convoy-worker-prompt.md")).unwrap()
@@ -222,49 +216,6 @@ fn through_the_stages(world: &World) -> u64 {
     now
 }
 
-/// The landing worker of issue 7 gates its PR and joins the train, with the
-/// commands its brief gives.
-fn join(world: &World, now: u64) {
-    let dir = worktree(world);
-    let gate = world.afk_in(&dir, &["gate", "--train"]).ok();
-    assert_eq!((&gate["status"], &gate["recorded"]), (&json!("green"), &json!(true)), "{gate}");
-    let joined = world.afk_in(&dir, &["land", "--issue", "7", "--now", &now.to_string()]).ok();
-    assert_eq!(joined["outcome"], "joined", "{joined}");
-}
-
-fn train_worktree(world: &World) -> PathBuf {
-    world.root.join("wt/convoy-train")
-}
-
-#[test]
-fn a_bound_joined_worker_leaves_health_even_with_an_expired_observation() {
-    let world = bound();
-    let now = through_the_stages(&world);
-    tick(&world, now);
-    let dir = worktree(&world);
-    stopped(&world, now);
-    tick(&world, now + 300);
-    let path = world.cache().join("afkconvoy/worker-health.json");
-    let mut book: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-    assert_eq!(book["workers"][0]["path"], json!(dir), "{book}");
-    book["workers"][0]["attempts"] = json!(3);
-    std::fs::write(&path, serde_json::to_vec(&book).unwrap()).unwrap();
-    join(&world, now + 350);
-
-    assert_eq!(did(&tick(&world, now + 4000)), ["tend_train done"]);
-    assert_eq!(did(&tick(&world, now + 8000)), [] as [&str; 0]);
-    assert_eq!(status(&world), "joined");
-    assert_eq!(world.labels(7), ["flow:feature", "stage:land"]);
-    assert_eq!(world.claims(), [(7, "alpha".into())]);
-    let book: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-    assert!(book["workers"].as_array().unwrap().iter().all(|w| w["path"] != json!(dir)), "{book}");
-    assert!(!world.root.join("diagnosis-asked").exists());
-    let landed = world.afk_in(&train_worktree(&world), &["land", "--train"]).ok();
-    assert_eq!(landed["outcome"], "landed", "{landed}");
-    tick(&world, now + 8090);
-    assert_eq!(world.state(7), "closed");
-}
-
 #[test]
 fn a_builder_with_an_open_pr_still_needs_its_workflow_and_worker_health() {
     let world = bound();
@@ -291,119 +242,30 @@ fn a_builder_with_an_open_pr_still_needs_its_workflow_and_worker_health() {
 }
 
 #[test]
-fn a_bound_issues_train_given_up_twice_is_a_fleet_fault_with_no_consult() {
-    let world = bound();
-    let now = through_the_stages(&world);
-    assert_eq!(did(&tick(&world, now)), ["dispatch 7 done"]);
-    join(&world, now + 60);
-    assert_eq!(did(&tick(&world, now + 90)), ["tend_train done"]);
-    for at in [now + 690, now + 1380] {
-        let dir = train_worktree(&world);
-        // Historical nudge evidence lets an operator abandon the stopped
-        // train. New unclassified silence waits for diagnosis instead.
-        stopped(&world, at - 590);
-        let notes = PathBuf::from(git(&dir, &["rev-parse", "--absolute-git-dir"]));
-        std::fs::write(notes.join("convoy-nudged"), (at - 300).to_string()).unwrap();
-        let abandoned = world
-            .afk(&["abandon", "--instance", "alpha", "--host", "h1", "--now", &at.to_string()])
-            .ok();
-        assert_eq!(abandoned["action"], "abandoned");
-        if at == now + 690 {
-            join(&world, at + 10);
-            assert_eq!(did(&tick(&world, at + 90)), ["tend_train done"]);
-        }
-    }
-    assert_eq!(world.claims(), []);
-    assert!(world.labels(7).contains(&"ready-for-human".to_string()));
-    let comments = world.comments(7);
-    let escalation = comments.iter().find(|body| body.contains("convoy:escalation")).unwrap();
-    assert!(escalation.contains("Fleet fault:") && escalation.contains("the fix is on the host"));
-    world.orca_calls();
-    assert_eq!(did(&tick(&world, now + 1470)), [] as [&str; 0]);
-    assert_eq!(world.claims(), [], "no consult claim is taken");
-    assert_eq!(world.comments(7), comments);
-    assert!(!world.orca_calls().iter().any(|call| common::asked(call) == "terminal create"));
-    let doctor = world.afk(&["doctor", "--now", &(now + 1500).to_string()]).json;
-    let why = doctor["waiting_on_human"][0]["why"].as_str().unwrap();
-    assert!(why.contains("Fleet fault:") && why.contains("the fix is on the host"), "{doctor}");
-}
-
-#[test]
-fn an_issue_walks_a_four_stage_workflow_to_the_base_branch() {
+fn an_issue_walks_a_four_stage_workflow_and_its_landing_worker_lands_in_a_turn() {
     let world = bound();
     let now = through_the_stages(&world);
     let dir = worktree(&world);
     let base = world.remote(&["rev-parse", "refs/heads/main"]);
-
-    // The last `pass` led to `land`: the issue is on the frontier for its join.
-    assert_eq!(world.labels(7), ["flow:feature", "stage:land"]);
-    assert_eq!(frontier(&world), [(7, "land".to_string())]);
-
-    // The next tick starts a worker in the workflow's landing role, where the
-    // stages worked, with the join-only brief and that role's landing skill.
-    let ticked = tick(&world, now);
-    assert_eq!(did(&ticked), ["dispatch 7 done"]);
-    assert_eq!(ticked["held"], 1, "a landing worker takes a slot");
-    assert_eq!(worktree(&world), dir);
+    assert_eq!(frontier(&world), [(7, "land".into())]);
+    assert_eq!(did(&tick(&world, now)), ["dispatch 7 done"]);
     let started = worker(&world, &dir);
-    let role_dir = world.cache().join("afkconvoy/copies/acme/lander");
-    assert!(started.starts_with(&format!("cd '{}/", role_dir.display())), "{started}");
-    assert!(started.contains(" AFKCONVOY_STAGE='land' AFKCONVOY_ROLE='lander' "), "{started}");
-    assert!(started.contains(" AFKCONVOY_SKILL='join' AFKCONVOY_WRITES='true' "), "{started}");
-    let told = brief(&dir);
-    let own = format!("cd '{}' && {}", dir.display(), env!("CARGO_BIN_EXE_afkconvoy"));
-    for said in [
-        "PR #70 is open for it".to_string(),
-        "Your ONLY job is to get that PR on the train.".to_string(),
-        "**Your role:** `lander`, which you were started in. Perform its skill `join`".to_string(),
-        // It gates and joins with the commands every worker does…
-        format!("   {own} gate --land\n"),
-        format!("   {own} land --issue 7\n"),
-        format!("```bash\n{own} wake\n```"),
-        // …and a conflict on joining is its own to resolve.
-        "On `\"conflict\"` the train was merged into your branch and left in\n   progress: \
-         resolve every file it lists"
-            .to_string(),
-    ] {
-        assert!(told.contains(&said), "{said}\n{told}");
-    }
-    assert!(!told.contains("Declare a verdict"), "{told}");
-    assert_eq!(status(&world), "joining");
-    assert_eq!(did(&tick(&world, now + 30)), [] as [&str; 0]);
-
-    // It joins: the train is tended as any train is.
-    join(&world, now + 60);
-    assert_eq!(status(&world), "joined");
-    assert_eq!(did(&tick(&world, now + 90)), ["tend_train done"]);
-    let train = worker(&world, &train_worktree(&world));
-    assert!(!train.contains("AFKCONVOY_ROLE"), "the train worker has no role: {train}");
-    // A defect of the base branch it finds is taken in to the team's workflow: in a
-    // bound repo the ready label dispatches nothing.
-    let told = brief(&train_worktree(&world));
-    let intake = format!("`{} intake --train --issue <n>", env!("CARGO_BIN_EXE_afkconvoy"));
-    assert!(told.contains(&intake), "{told}");
-    assert!(told.contains("to the team's first workflow,\n   `feature`"), "{told}");
-    assert!(!told.contains("--label ready-for-agent"), "{told}");
-    assert_eq!(world.remote(&["rev-parse", "refs/heads/main"]), base, "nothing landed yet");
-
-    // The train worker lands it: the issue closes, and the workflow has ended.
-    let landed = world.afk_in(&train_worktree(&world), &["land", "--train"]).ok();
-    assert_eq!(landed["outcome"], "landed", "{landed}");
-    assert_eq!(world.remote(&["show", "refs/heads/main:seven.txt"]), "7");
-    assert_eq!(did(&tick(&world, now + 180)), ["settle 7 done"]);
+    assert!(started.contains("AFKCONVOY_STAGE='land' AFKCONVOY_ROLE='lander'"), "{started}");
+    let brief = brief(&dir);
+    assert!(brief.contains("Your ONLY job is to land that PR in a turn."), "{brief}");
+    assert!(brief.contains("land --issue 7"));
+    assert!(!brief.contains("landing train"));
+    assert_eq!(status(&world), "landing");
+    let answer = world.afk_in(&dir, &["land", "--issue", "7"]).ok();
+    assert_eq!(answer["outcome"], "merged", "{answer}");
+    assert_eq!(answer["recorded"], true);
+    assert_eq!(answer["merged"], base);
     assert_eq!(world.state(7), "closed");
-    assert_eq!(world.gh()["prs"][0]["state"], "merged");
-    assert_eq!(world.claims(), []);
-    assert!(world.boards(7)[0].contains("#70"), "{:?}", world.boards(7));
-    let orca = world.orca();
-    let left: Vec<&Value> =
-        orca["worktrees"].as_array().unwrap().iter().filter(|w| w["linkedIssue"] == 7).collect();
-    assert_eq!(left, [] as [&Value; 0], "its worktree goes with it");
-
-    // Nothing is left to do, and a tick over the unchanged world does nothing.
-    let after = tick(&world, now + 270);
-    assert_eq!(did(&after), [] as [&str; 0]);
-    assert_eq!((&after["held"], &after["frontier_remaining"]), (&json!(0), &json!(0)));
+    assert_eq!(world.remote(&["show", "refs/heads/main:seven.txt"]), "7");
+    assert!(world.remote(&["for-each-ref", "--format=%(refname)", "refs/convoy/train"]).is_empty());
+    assert_eq!(did(&tick(&world, now + 90)), ["settle 7 done"]);
+    assert!(world.claims().is_empty());
+    assert_eq!(tick(&world, now + 180)["idle"], true);
 }
 
 #[test]
@@ -431,59 +293,11 @@ fn a_faulted_landing_worker_continues_in_its_role_without_consuming_a_restart() 
     assert_eq!(world.claims(), claims);
     assert_eq!(git(&dir, &["rev-parse", "HEAD"]), head);
     assert_eq!(std::fs::read_to_string(dir.join("unfinished.txt")).unwrap(), "landing work");
-    assert_eq!(status(&world), "joining");
+    assert_eq!(status(&world), "landing");
     assert!(brief(&dir).contains("**Your role:** `lander`"));
     let record = world.comments(70).into_iter().find(|c| c.starts_with("<!--convoy:join")).unwrap();
     assert!(record.contains("restarted=1040"));
     assert!(record.contains("switched="));
-}
-#[test]
-fn a_pr_taken_off_an_abandoned_train_is_joined_again_by_a_worker_in_the_same_role() {
-    let world = bound();
-    let now = through_the_stages(&world);
-    assert_eq!(did(&tick(&world, now)), ["dispatch 7 done"]);
-    let dir = worktree(&world);
-    join(&world, now + 50);
-    stopped(&world, now + 50);
-    assert_eq!(did(&tick(&world, now + 90)), ["tend_train done"]);
-
-    // The train worker stays silent: nudged once, then the train is given up.
-    stopped(&world, now + 90);
-    assert_eq!(did(&tick(&world, now + 390)), [] as [&str; 0]);
-    let train_dir = world.root.join("wt/convoy-train");
-    let train_git = PathBuf::from(git(&train_dir, &["rev-parse", "--absolute-git-dir"]));
-    std::fs::write(train_git.join("convoy-nudged"), (now + 390).to_string()).unwrap();
-    std::fs::remove_file(
-        PathBuf::from(git(&dir, &["rev-parse", "--absolute-git-dir"]))
-            .join("convoy-worker-prompt.md"),
-    )
-    .unwrap();
-    let abandoned = world
-        .afk(&["abandon", "--instance", "alpha", "--host", "h1", "--now", &(now + 690).to_string()])
-        .ok();
-    assert_eq!(abandoned["action"], "abandoned");
-    assert_eq!(status(&world), "joining");
-    assert_eq!(world.gh()["prs"][0]["state"], "open");
-
-    // Its landing worker is told to join the next train, on its role's brief.
-    assert!(last_told(&world, &dir).contains("join the next one now"));
-    let told = brief(&dir);
-    assert!(told.contains("PR #70 is open for it"), "{told}");
-    assert!(told.contains("**Your role:** `lander`"), "{told}");
-
-    // With no worker left there to tell, the next tick starts one — in the same role.
-    world.with_orca(|orca| {
-        for terminal in orca["terminals"].as_array_mut().unwrap() {
-            if terminal["worktreePath"] == dir.to_str().unwrap() {
-                terminal["open"] = json!(false);
-            }
-        }
-    });
-    assert_eq!(did(&tick(&world, now + 780)), ["watch 7 continued"]);
-    let started = worker(&world, &dir);
-    assert!(started.contains(" AFKCONVOY_STAGE='land' AFKCONVOY_ROLE='lander' "), "{started}");
-    join(&world, now + 800);
-    assert_eq!(status(&world), "joined");
 }
 
 #[test]
@@ -498,25 +312,4 @@ fn a_pass_to_land_with_no_open_pr_hands_the_issue_to_a_human() {
     assert_eq!(world.labels(7), ["stage:land", "ready-for-human"]);
     assert_eq!(world.claims(), []);
     assert_eq!(did(&tick(&world, now + 90)), [] as [&str; 0]);
-}
-
-#[test]
-fn a_join_made_before_its_claim_is_taken_over_is_still_the_claim_s() {
-    let world = bound();
-    let now = through_the_stages(&world);
-    assert_eq!(did(&tick(&world, now)), ["dispatch 7 done"]);
-    join(&world, now + 60);
-    assert_eq!(did(&tick(&world, now + 90)), ["tend_train done"]);
-    let landed = world.afk_in(&train_worktree(&world), &["land", "--train"]).ok();
-    assert_eq!(landed["outcome"], "landed", "{landed}");
-
-    // The claim changes hands after the landing, by a clock past the one the
-    // landing was made by: it is still the claim the PR was joined under.
-    let later = 4_000_000_000u64;
-    let from = ["takeover", "--from", "alpha", "--instance", "beta", "--host", "h1", "--now"];
-    let taken = world.afk(&[&from[..], &[&later.to_string()]].concat()).ok();
-    assert_eq!(taken["taken"], json!([7]), "{taken}");
-    assert_eq!(did(&tick_as(&world, "beta", later + 60)), ["settle 7 done"]);
-    assert_eq!(world.state(7), "closed");
-    assert_eq!(world.claims(), []);
 }

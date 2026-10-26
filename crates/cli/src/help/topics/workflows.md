@@ -1,4 +1,4 @@
-A workflow is the stages one issue passes through and where each verdict leads, ending in the landing train or in nothing more to do. Read this to write a file of a team's `workflows/`, or to tell why an issue went where it did.
+A workflow is the stages one issue passes through and where each verdict leads, ending in a landed PR or in nothing more to do. Read this to write a file of a team's `workflows/`, or to tell why an issue went where it did.
 
 ## A workflow's file
 

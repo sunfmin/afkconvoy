@@ -98,7 +98,7 @@ pub struct Finding {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub did: Vec<String>,
     /// The PRs it put on the base branch (`afkconvoy land --inspection`),
-    /// which the train lands as any other.
+    /// which lands in the same turn.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub prs: Vec<u64>,
 }
@@ -261,18 +261,17 @@ Make it yourself, in your checkout, and land it as any worker's change lands —
 1. Commit it on your checkout's branch, `{branch}`, and push that: `git push origin HEAD`.
 2. Open its PR against `{base_branch}`, saying what it changes and why, and closing no issue:
    `gh pr create --base {base_branch} --head {branch} --title '<title>' --body '<what and why>'`.
-3. Put it on the base branch: `{afkconvoy} land --inspection`. It takes a turn: merges the
-   train's green tip, gates, records green and joins before releasing the turn. On `joined` or
-   `merged` it is done: the train lands on that record, and you need not wait for it. On
-   `conflict`, resolve every file, commit the merge and ask again. Red: fix your change, commit
-   and ask again. On `locked`, a fleet lock stands: the PR stays open off the train, and you say so.
-
+3. Land it: `{afkconvoy} land --inspection`. It takes a turn: makes the PR's merge commit
+   on the current base tip, gates that commit, records green and pushes that same commit as
+   a fast-forward. On `merged`, it has landed. On `conflict`, resolve every file and commit
+   the merge before asking again. On `gate_red`, fix the change and commit before asking
+   again. On `target_moved`, ask for another turn on the new base tip. On `locked`, stop:
+   the PR stays open while the fleet repairs its base branch.
 ## A red base branch in an unbound repo
 
 If a gate is red, first read which locks stand (`{afkconvoy} plan`): a lock already standing
 needs no second issue. Otherwise prove the base branch is red the same way by gating
-`origin/{base_branch}` alone in a clean temporary checkout with `afkconvoy gate`, without
-`--train`, and remove that checkout after. A failure confined to your change raises no lock.
+`origin/{base_branch}` alone in a clean temporary checkout with `afkconvoy gate`, and remove that checkout after. A failure confined to your change raises no lock.
 In an unbound repo, search the open issues for the fix before opening one: `{afkconvoy} flows`
 gives the tracker, repo label and ready label in its issue-opening `line`. Comment your evidence
 on the existing issue, or open one with the symptom, reproduction, evidence and acceptance
@@ -286,10 +285,10 @@ They are those of any unattended worker, and the guard holds you to them where i
 
 - Only what the fleets of this host started or own. Never the user's own: their programs and files,
   other apps, the host runner, orca. End a process by its pid, `kill <pid>`, and only one the
-  fleet started: a worker's, the landing train's, an inspection's, or one they left behind.
+  fleet started: a worker's or an inspection's, or one they left behind.
 - Never delete what cannot be rebuilt: model weights, downloads, media ({kept}), a user's files, a
   change no commit holds.
-- No force push, no push to the base branch, no merge outside the landing train.
+- No force push, no push to the base branch, no merge outside a landing turn.
 - Hand nothing to a human. Apart from the proven red base branch above, open no issue: what
   should be changed, change.
 

@@ -351,3 +351,42 @@ fn an_outside_red_base_is_certified_alone_and_its_fleet_repair_lands_in_a_turn()
     assert!(worker_gated.exists());
     assert!(world.remote(&["for-each-ref", "--format=%(refname)", LINE]).is_empty());
 }
+
+#[test]
+fn a_rejected_push_ends_the_turn_and_another_turn_gates_the_new_base() {
+    let world = World::new();
+    let started = world.root.join("started");
+    let release = world.root.join("release");
+    world.set_gate(&format!("if test -f worker.txt; then touch {}; while test -d {} && test ! -f {}; do sleep 0.02; done; fi", quote(&started), quote(&world.root), quote(&release)));
+    seed(&world);
+    let worker = world.worker(1, "worker.txt", "work");
+    let child = start(&world, &worker, &world.cache(), 1);
+    until(|| started.exists());
+    crate::common::commit(&world.clone, "outside.txt", "another host");
+    git(&world.clone, &["push", "-q", "origin", "HEAD"]);
+    let outside = world.remote(&["rev-parse", "refs/heads/main"]);
+    std::fs::write(&release, "").unwrap();
+    let rejected = finish(child);
+    assert_eq!(rejected["outcome"], "target_moved", "{rejected}");
+    assert_eq!(world.remote(&["rev-parse", "refs/heads/main"]), outside);
+    assert_eq!(world.state(1), "open");
+    let landed = world.afk_in(&worker, &["land", "--issue", "1"]).ok();
+    assert_eq!(landed["outcome"], "merged", "{landed}");
+    assert_eq!(landed["merged"], outside);
+    assert_eq!(landed["recorded"], true);
+    assert_eq!(world.remote(&["show", "refs/heads/main:outside.txt"]), "another host");
+    assert!(world.remote(&["for-each-ref", "--format=%(refname)", LINE]).is_empty());
+}
+
+#[test]
+fn an_old_stored_train_lane_count_is_ignored_and_the_runner_starts() {
+    let world = World::new();
+    world.say_host_settings(json!({"train_lanes": 0, "gate_lanes": 2}));
+    let _runner = world.host_held();
+    let doctor = world.afk(&["doctor"]).json;
+    let settings = &doctor["host"]["settings"]["in_force"];
+    assert_eq!(settings["gate_lanes"], 2);
+    assert!(settings.get("train_lanes").is_none());
+    assert!(settings["ignored"].as_str().unwrap().contains("train_lanes is ignored"));
+    assert!(doctor["host"]["exclusive"]["lanes"].get("train").is_none());
+}

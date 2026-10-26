@@ -92,9 +92,10 @@ fn take(
         let declared = tip_config(repo, &tip)?;
         let command = GateCommand::new(&declared.gate_command);
         let tree = Tree::named(&repo.git(&["rev-parse", &format!("{tip}^{{tree}}")])?);
-        let repairing = issue.is_some_and(|n| locks.contains(&n))
-            && repo.remote_sha(&crate::repair::red_ref(repo, &config.base_branch))?.as_deref()
-                == Some(&tip);
+        let repairing = match issue.filter(|n| locks.contains(n)) {
+            Some(n) => crate::repair::is_for(&gh, n, &tip)?,
+            None => false,
+        };
         if !repairing && crate::gate::recorded(repo, &tree, &command, now)?.is_none() {
             if tried.as_deref() != Some(tip.as_str()) {
                 let green = certify(repo, &declared, &tip, host, now)?;
@@ -111,6 +112,10 @@ fn take(
             || crate::config::heavy_gate(command.text());
         let permit = Permit::take(repo, "turn: merge, gate, record, land", heavy, true)?;
         if base(repo, config)? != tip {
+            drop(permit);
+            continue;
+        }
+        if !repairing && crate::gate::recorded(repo, &tree, &command, now)?.is_none() {
             drop(permit);
             continue;
         }
@@ -259,6 +264,16 @@ pub fn join(
     let locks = standing_locks(&gh, config)?;
     if issue.map_or(!locks.is_empty(), |n| keeps_off(&locks, n)) {
         return Ok(locked(answer, &locks));
+    }
+    let files = unmerged(repo)?;
+    if !files.is_empty() {
+        answer["outcome"] = json!("conflict");
+        answer["status"] = json!("conflict");
+        answer["recorded"] = json!(false);
+        answer["files"] = json!(files);
+        answer["worktree"] = json!(repo.dir);
+        answer["detail"] = json!(format!("a merge remains in progress — {RESOLVE}"));
+        return Ok(answer);
     }
     own_head(repo, &pr.head_branch)?;
     require_committed(repo)?;

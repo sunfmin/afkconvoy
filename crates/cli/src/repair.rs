@@ -11,6 +11,13 @@ pub fn red_ref(repo: &Repo, branch: &str) -> String {
     repo.layout().under(&format!("base/red/{branch}"))
 }
 
+/// Only the repair opened for this red tip may bypass its missing green
+/// record. Another lock issue still waits for the base to be repaired.
+pub fn is_for(gh: &crate::gh::GitHub, issue: u64, tip: &str) -> Result<bool> {
+    let marker = format!("<!--convoy:base-repair tip={tip}-->");
+    Ok(gh.issue(issue)?.body.is_some_and(|body| body.starts_with(&marker)))
+}
+
 pub fn tend(fleet: &mut Fleet, me: &Me) -> Result<Outcome> {
     let base = fleet.base_tip()?;
     if fleet.repo.remote_sha(&red_ref(&fleet.repo, &fleet.config.base_branch))?.as_deref()
@@ -29,8 +36,10 @@ pub fn tend(fleet: &mut Fleet, me: &Me) -> Result<Outcome> {
         return Ok(Outcome::Lost);
     };
     let opened = (|| {
-        if !crate::lock::standing_locks(&fleet.gh, &fleet.config)?.is_empty() {
-            return Ok(Outcome::Nothing);
+        for issue in crate::lock::standing_locks(&fleet.gh, &fleet.config)? {
+            if is_for(&fleet.gh, issue, &base)? {
+                return Ok(Outcome::Nothing);
+            }
         }
         let config = &fleet.config;
         let label = match &config.bound {

@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use common::{World, commit, git};
-use serde_json::{Value, json};
+use serde_json::json;
 
 /// A checkout of `world`'s repo named as an inspection's is.
 fn inspection_checkout(world: &World) -> std::path::PathBuf {
@@ -132,15 +132,6 @@ fn change(world: &World, checkout: &Path) -> String {
     head
 }
 
-/// The train's own worktree.
-fn train(world: &World) -> PathBuf {
-    let dir = world.root.join("train");
-    git(&world.clone, &["fetch", "-q", "origin"]);
-    let at = dir.to_str().unwrap();
-    git(&world.clone, &["worktree", "add", "-q", "-b", "convoy-train", at, "origin/main"]);
-    dir
-}
-
 /// The `gh` calls since the last look that write an issue: none of an
 /// inspection's.
 fn issue_writes(world: &World) -> Vec<Vec<String>> {
@@ -154,50 +145,31 @@ fn issue_writes(world: &World) -> Vec<Vec<String>> {
 /// is opened, closed or labelled for it.
 fn lands_on_no_issue(world: &World, name: &str) {
     let checkout = operator_on_branch(world, name);
+    let base = world.remote(&["rev-parse", "refs/heads/main"]);
     let head = change(world, &checkout);
     world.gh_calls();
-
-    let joined = world.afk_in(&checkout, &["land", "--inspection", "--host", "h1"]).ok();
-    assert_eq!(joined["status"], "green");
-    assert_eq!(joined["recorded"], true);
-    assert_eq!(joined["outcome"], "joined", "{joined}");
-    assert_eq!((joined["inspection"].as_str(), joined["pr"].as_u64()), (Some("h1"), Some(90)));
-    let commit = joined["commit"].as_str().unwrap().to_string();
-    let message = world.remote(&["log", "-1", "--format=%B", &commit]);
-    assert_eq!(message, "Queue the gates (#90)\n\nBy an inspection on h1");
-    let base = world.remote(&["rev-parse", "refs/heads/main"]);
-    assert_eq!(world.remote(&["log", "-1", "--format=%P", &commit]), format!("{base} {head}"));
-    let again = world.afk_in(&checkout, &["land", "--inspection", "--host", "h1"]).ok();
-    assert_eq!((again["outcome"].as_str(), again["again"].as_bool()), (Some("joined"), Some(true)));
-
-    // A fleet with nothing of its own on the train tends it for the inspection's PR.
-    let plan = world.afk(&["plan", "--instance", "me", "--now", "10000"]).ok();
-    assert_eq!(plan["inspections_on_train"], json!([90]), "{plan}");
-    // What the inspection says names the PR.
-    if name.starts_with("afkconvoy-watch") {
-        let said = world.afk_in(&checkout, &["inspected", "--text", "four gates at once"]).error();
-        assert!(said.contains("is no inspection's checkout"), "a watch prints its record");
-    } else {
+    let answer = world.afk_in(&checkout, &["land", "--inspection", "--host", "h1"]).ok();
+    assert_eq!(answer["status"], "green");
+    assert_eq!(answer["recorded"], true);
+    assert_eq!(answer["outcome"], "merged", "{answer}");
+    let commit = answer["commit"].as_str().unwrap();
+    assert_eq!(world.remote(&["rev-parse", "refs/heads/main"]), commit);
+    assert_eq!(world.remote(&["log", "-1", "--format=%P", commit]), format!("{base} {head}"));
+    assert_eq!(
+        world.remote(&["log", "-1", "--format=%B", commit]),
+        "Queue the gates (#90)\n\nBy an inspection on h1"
+    );
+    assert!(world.remote(&["for-each-ref", "--format=%(refname)", "refs/convoy/train"]).is_empty());
+    if !name.starts_with("afkconvoy-watch") {
         let said = world.afk_in(&checkout, &["inspected", "--text", "four gates at once"]).ok();
-        assert_eq!(said["prs"], json!([90]), "{said}");
+        assert_eq!(said["prs"], json!([90]));
     }
-
-    let train = train(world);
-    let landed: Value = world.afk_in(&train, &["land", "--train", "--merged-timeout", "5"]).ok();
-    assert_eq!(landed["outcome"], "landed", "{landed}");
-    assert_eq!(landed["landed"], json!([{"inspection": "h1", "pr": 90, "commit": commit}]));
-    assert_eq!(world.remote(&["rev-parse", "refs/heads/main"]), commit, "on the base branch");
-    assert_eq!(landed["unmerged"], json!([]), "GitHub shows the PR merged");
-    let branches = world.remote(&["for-each-ref", "--format=%(refname:short)", "refs/heads"]);
-    assert_eq!(branches, "main", "the landed PR's branch is deleted");
-    assert_eq!(issue_writes(world), [] as [Vec<String>; 0], "no issue of the change");
-    assert_eq!(world.gh()["issues"], json!([]), "no issue was opened");
-    let plan = world.afk(&["plan", "--instance", "me", "--now", "10100"]).ok();
-    assert!(plan.get("inspections_on_train").is_none(), "landed, off the train: {plan}");
+    assert!(issue_writes(world).is_empty());
+    assert_eq!(world.gh()["issues"], json!([]));
 }
 
 #[test]
-fn an_inspection_s_change_lands_through_the_landing_train_on_no_issue() {
+fn an_inspection_s_change_lands_in_a_turn_on_no_issue() {
     let world = World::new();
     world.set_gate("true");
     lands_on_no_issue(&world, "afkconvoy-inspection");

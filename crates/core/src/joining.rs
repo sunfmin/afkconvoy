@@ -64,7 +64,7 @@ pub fn join_comment(record: &JoinRecord) -> String {
     let mut body = record::marker(JOIN, &[("restarted", &restarted), ("switched", &switched)]);
     if record.restarted.is_some() {
         body.push_str(
-            "\nafkconvoy: the worker joining this PR to the landing train went silent, and was \
+            "\nafkconvoy: the worker landing this PR went silent, and was \
              replaced by a new one in the same worktree. This is done once per PR.",
         );
     }
@@ -172,7 +172,7 @@ pub enum RestartStep {
     /// Record the restart on the PR.
     Record,
     /// Close the idle session and start a worker in the same worktree,
-    /// briefed only to join the train.
+    /// briefed only to land the PR.
     Replace,
 }
 

@@ -98,7 +98,7 @@ pub(crate) fn record_join(
 
 /// Replaces the silent worker joining `pr`: the restart is recorded on the PR,
 /// then a worker is started in the same worktree — which closes the idle
-/// session — briefed only to join the train.
+/// session — briefed only to land the PR.
 fn restart_worker(
     fleet: &mut Fleet,
     me: &Me,
@@ -124,7 +124,7 @@ fn restart_worker(
 }
 
 /// `afkconvoy restart`: replace the silent worker of one of my claims whose
-/// PR is joining the train. Refused for any worker the tick would not restart
+/// PR is waiting to land. Refused for any worker the tick would not restart
 /// — at work, heard from within grace, not nudged yet — and for a PR whose
 /// join already had its restart.
 pub fn restart(fleet: &mut Fleet, me: &Me, agent: &Agent, issue: u64) -> Result<Value> {
@@ -188,7 +188,7 @@ pub fn watch(fleet: &mut Fleet, me: &Me, agent: &Agent, issue: u64) -> Result<Ou
         JoinRoute::Stalled(silent) => {
             let tail = where_it_stopped(&found.worktree, &silent);
             let reason = stalled_reason(found.pr, &silent, &tail);
-            let reason = Handed::new("its worker went silent joining the train", reason);
+            let reason = Handed::new("its worker went silent waiting to land", reason);
             let pr = Some(found.pr);
             escalate_claim(fleet, &found.claim, &reason, pr, Some(&found.worktree))?;
             Ok(Outcome::Done)

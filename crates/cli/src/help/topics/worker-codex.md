@@ -33,13 +33,13 @@ The fleet selects the model by host kit order, role eligibility and casting, and
 
 Reasoning effort has a different source: every launch reads `model_reasoning_effort` from your own `~/.codex/config.toml` and passes it with `--config`. Changing that file changes the next worker without restarting the fleet. With no setting, Codex uses its selected model's default. This applies even with `host_user: false`. The fleet keeps no effort setting of its own. An unbound worker's fresh user directory holds the same allowed login, skill and rule links, and no other user settings; its `/model` writes change neither your configuration nor another worker's. Existing workers keep the settings they started with.
 
-The same model and effort rules hold for a train worker, a patrol, a consult, an inspection and the caster's headless Codex call. The caster uses a fresh login-only directory and reads the user's effort when it makes that call. Model listing, model research and recovery probes remain host capability checks rather than worker sessions.
+The same model and effort rules hold for a patrol, a consult, an inspection and the caster's headless Codex call. The caster uses a fresh login-only directory and reads the user's effort when it makes that call. Model listing, model research and recovery probes remain host capability checks rather than worker sessions.
 
 `plan` and `doctor` list started sessions under `codex_workers`: issue, worktree, model, effort, model_source (`fleet_selection`) and effort_source (your config file and key, or `codex_default`). Each row also names its harness and codex_home, the private session directory. A later edit of your own config does not relabel an existing worker. If `/model` saves a different choice, it is shown with that session's private config as the source. `plan` also gives a Codex frontier issue's next-launch settings under `codex`. The panel shows each Codex worker's model and effort with the same sources. A malformed Codex configuration file or a non-string effort refuses the start and names the file to fix.
 
-## An unbound repo or the train worker
+## An unbound repo 
 
-A Codex train worker, or any Codex worker of an unbound repo, starts in its worktree with the same allowed user links in a fresh directory, and the same trust and session setup. Nothing is written to your Codex configuration, even when Codex has never seen the worktree:
+A Codex worker of an unbound repo, starts in its worktree with the same allowed user links in a fresh directory, and the same trust and session setup. Nothing is written to your Codex configuration, even when Codex has never seen the worktree:
 
 ```
 export CODEX_HOME=<this session's directory> && <worker launch command> --model <the fleet's selected model>

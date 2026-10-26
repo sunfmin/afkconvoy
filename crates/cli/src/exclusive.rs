@@ -208,7 +208,7 @@ struct Bound {
     waiting: usize,
 }
 
-/// The host's exclusive queue, as its host runner holds it: worker and train lanes run independently, up to the counts the host says, and
+/// The host's exclusive queue, as its host runner holds it: worker lanes run, up to the counts the host says, and
 /// at most one command of each repo in each lane. Requests keep their order. Each leaves as its asker's line closes. A clone is the same.
 #[derive(Clone, Default)]
 pub struct Queue {
@@ -546,8 +546,8 @@ fn turn(ticket: &Ticket, acting: &Acting, now: &dyn Fn() -> u64) -> Result<Turn>
 
 /// `afkconvoy exclusive -- <command>`: runs `command` in the directory `dir`
 /// once a worker lane is available on this host, waiting in the host runner's
-/// queue until then → its exit status. Only a gate can take a train lane;
-/// other commands use worker lanes even in a train checkout. `checkout` is the
+/// queue until then → its exit status. Heavy commands use worker lanes;
+/// light gates use a lane of their repo. `checkout` is the
 /// checkout `dir` is in, where it is in one: its ticket names it, and its tick
 /// log is where the queue's own words go, as well as to stderr. What it prints
 /// is the command's. With no host runner, or one that cannot hold it, it runs

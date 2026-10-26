@@ -560,7 +560,7 @@ fn brief(watch: &Watch) -> String {
          has, under the bounds of an inspection (`afkconvoy run --help`): only what the fleets \
          of this host started or own; never the host runner, the user's programs, other apps \
          or orca; never delete what cannot be rebuilt, nor a change no commit holds; no force \
-         push, no push to a base branch, no merge outside the landing train. Follow this \
+         push, no push to a base branch, no merge outside a landing turn. Follow this \
          directory's own rules for looking after the host's projects.\n\n\
          Your authority covers every repo on this host's checkout list, not just the repo of \
          the fault or this directory. `afkconvoy checkouts` gives the current list; the look \
@@ -587,18 +587,18 @@ fn brief(watch: &Watch) -> String {
          repo. Commit and push each completed piece before a long operation. Open its PR \
          against that repo's base branch, on no issue: no intake or flow label is needed, in \
          a bound repo too. Run `afkconvoy land --inspection` there: it takes a turn to merge, \
-         gate and join on the train's green tip, recording green before releasing the turn. \
+         gate, record green and land its merge commit on the current base tip. \
          Resolve conflicts by merging, committing and asking again; never rebase. This is the inspection's \
-         landing path: its join names an inspection on this host and closes no issue. A \
+         landing path: its merge names an inspection on this host and closes no issue. A \
          fleet lock standing joins nothing: record what holds it back. Keep the branch and \
          PR, and name the repo and PR in your record.\n\n\
          ## Cut an installed fix, then check it\n\n\
-         Joining is not landing, and landing code is not fixing an installed tool. When the \
+         Landing code does not update an installed tool. When the \
          fix must reach an installed tool — afkconvoy itself, for example — wait until the \
          change lands, then have that repo's fleet cut a version through its declared cut \
          steps (`afkconvoy cut --help`). Wake its checkout and read `afkconvoy plan`'s `cut`: \
          the next idle tick starts a due cut. Fix what holds that work back; do not bypass \
-         the gate or train, tag by hand, or manufacture a cut record. If a cut failed for a \
+         the landing turn, tag by hand, or manufacture a cut record. If a cut failed for a \
          mechanical cause, fix it and continue with the `cut --from <step>` line its report \
          gives. If cutting is off or a human decision holds it back, say so.\n\n\
          Check that the cut published and installed the version containing your change. \
