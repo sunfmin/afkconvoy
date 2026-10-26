@@ -236,7 +236,7 @@ _Avoid_: account fault, model fault, failed task
 
 **Capacity stop**:
 A worker stopped by its harness's fixed message that its selected model is at capacity. It is transient and belongs to that worker: the harness remains available to other workers.
-_Avoid_: quota fault, task refusal
+_Avoid_: quota fault (an account's usage limit), task refusal (a harness refusing this issue)
 
 **Verdict**:
 What ends a stage, declared on the issue by whoever performed it: `pass`, `reject`, `blocked`, `already-satisfied`, or `escalate`. Opening a PR declares nothing.
