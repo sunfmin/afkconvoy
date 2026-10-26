@@ -83,8 +83,8 @@ fn real_claude_code_started_in_a_role_keeps_host_rules_opt_in_and_enforces_both_
     // all fixtures there, and canonicalize paths as Claude Code reports them.
     let scratch = tempfile::TempDir::new().unwrap();
     let root = scratch.path().canonicalize().unwrap();
-    let (role, project, team) = (root.join("role"), root.join("project"), root.join("team"));
     let home = root.join("host");
+    let (role, project, team) = (home.join("role"), home.join("project"), home.join("team"));
     let config = home.join(".claude");
     let user_log = root.join("user-hook.log");
     write(&config, "CLAUDE.md", &format!("The user word is {USER_WORD}.\n"));
@@ -217,7 +217,7 @@ fn real_claude_code_started_in_a_role_keeps_host_rules_opt_in_and_enforces_both_
             .collect();
         let shown_once = |what: &str| shown.iter().filter(|text| text.contains(what)).count() == 1;
         assert!(
-            shown.iter().any(|text| text == r#""smoke\n""#),
+            shown.iter().any(|text| text == r#""smoke""#),
             "the allowed Bash command did not run: {shown:?}"
         );
         assert!(shown_once(ROLE_SAYS), "the role's hook refused nothing: {shown:?}");
