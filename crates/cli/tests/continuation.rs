@@ -155,6 +155,7 @@ fn escaped_helper() {
 
 #[test]
 #[ignore = "the orphan regression starts this as the helper's short-lived parent"]
+#[allow(clippy::zombie_processes, reason = "the regression requires this parent to exit first")]
 fn orphan_launcher() {
     Command::new(std::env::current_exe().unwrap())
         .args(["--exact", "continuation::escaped_helper", "--ignored"])
@@ -310,7 +311,9 @@ fn a_process_that_survives_kill_is_named_when_the_repeated_start_escalates() {
     let first = tick(&world, 1090);
     assert_eq!(did(&first)[0], "judge 7 failed", "{first}");
     let second = tick(&world, 1180);
-    assert_eq!(did(&second)[0], "judge 7 escalated", "{second}");
+    assert_eq!(did(&second)[0], "judge 7 failed", "{second}");
+    assert!(second["errors"][0]["error"].as_str().unwrap().contains("the claim was escalated"));
+    assert!(world.labels(7).iter().any(|label| label == "ready-for-human"));
     let comments = world.comments(7).join("\n");
     assert!(comments.contains("survived SIGKILL"), "{comments}");
     assert!(comments.contains(&format!("pid {}", escaped.pid)), "{comments}");
