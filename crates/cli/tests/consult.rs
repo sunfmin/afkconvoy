@@ -327,34 +327,6 @@ fn an_unlabelled_tracker_blocker_does_not_hold_its_consult() {
 }
 
 #[test]
-fn an_unbound_stock_consult_is_started_with_its_unworked_blocker() {
-    let world = World::new();
-    world.name_origin(&world.clone, "acme/app");
-    world.issue(7, &["ready-for-agent"]);
-    let first = tick(&world, 1000);
-    assert_eq!(did(&first), ["dispatch 7 done"], "{first}");
-    world.comment(7, "<!--convoy:verdict phase=escalate-->\nWho will work the kernel blocker?");
-    stop(&world, 1010);
-    world.with_orca(|orca| {
-        orca["terminals"].as_array_mut().unwrap().last_mut().unwrap()["lastOutputAt"] =
-            json!(1010 * 1000)
-    });
-    world.with_gh(|gh| {
-        gh["edges"]["7"] = json!([
-            {"number": 931, "state": "open", "repo": "acme/kernel", "labels": []}
-        ])
-    });
-    let handed = tick(&world, 1180);
-    assert_eq!(did(&handed), ["judge 7 done"], "{handed}");
-    let plan = world.afk(&["plan"]).ok();
-    assert_eq!(plan["frontier"][0]["number"], 7, "{plan}");
-    assert_eq!(did(&tick(&world, 1270)), ["dispatch 7 done"]);
-    let told = brief(&worktree(&world));
-    assert!(told.contains("acme/kernel#931"), "{told}");
-    assert!(told.contains("outside the tracker"), "{told}");
-}
-
-#[test]
 fn a_consult_s_ruling_is_a_stage_record_and_the_stage_that_asked_runs_again_under_it() {
     let world = bound(FEATURE, 2);
     asked(&world);

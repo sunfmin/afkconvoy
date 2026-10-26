@@ -81,6 +81,24 @@ fn asked() -> World {
 }
 
 #[test]
+fn an_unbound_stock_consult_is_started_with_its_unworked_blocker() {
+    let world = escalated("");
+    world.name_origin(&world.clone, "acme/app");
+    world.with_gh(|gh| {
+        gh["edges"]["7"] = json!([
+            {"number": 931, "state": "open", "repo": "acme/kernel", "labels": []}
+        ])
+    });
+    let plan = world.afk(&["plan", "--now", "1100"]).ok();
+    assert_eq!(plan["frontier"][0]["number"], 7, "{plan}");
+    assert_eq!(did(&tick(&world, 1180)), ["dispatch 7 done"]);
+    let told = brief(&world);
+    assert!(told.contains("acme/kernel#931"), "{told}");
+    assert!(told.contains("outside the tracker"), "{told}");
+    assert!(told.contains("The schema is ambiguous."), "{told}");
+}
+
+#[test]
 fn an_escalated_issue_goes_to_the_stock_consult_first() {
     let world = asked();
     let claims = world.claims();
