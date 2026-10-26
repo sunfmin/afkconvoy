@@ -40,6 +40,8 @@ Only `pass` and `reject` are keys of `on`: the other three mean the same at ever
 
 A stage may split its issue: open issues, take each in, then declare `blocked` on them. When they close, it judges the whole. The team file's `split` key may be false to omit this procedure from briefs ([`afkconvoy help team`](help:team)); true is the default.
 
+A blocker, defect or split piece for another repo of the host goes on the tracker, with that repo's `repo:<owner>/<repo>` label. Run `afkconvoy flows` in that repo's checkout and use its opening line. In a bound repo omit the flow label while opening, then take it in there with `afkconvoy intake`. A blocker outside the tracker, or carrying no single repo label of a checkout serving it, is one no fleet works: `plan` and `doctor` name it with transfer and label lines. Only such blockers never hold a named consult or a declared hand-off back; a build worker still waits. The consult's brief names them.
+
 A stage that finds a defect outside its issue records the evidence on an existing issue or opens one, takes it in, and declares `blocked` on it. An unrecorded base tip is also certified before any landing turn. If it is red, the fleet dispatches an operator repair outside product workflows, with a fleet lock. Its own turn alone may start on that red tip, and still must gate green before landing.
 
 ## Rework and its breakers

@@ -50,6 +50,13 @@ pub const SECONDS: u64 = 1200;
 pub const BOUND_CODE: u8 = 124;
 const CHECK_EVERY: Duration = Duration::from_millis(100);
 
+/// The worktree, rather than a caller flag, identifies a cut's commands.
+fn is_cut(repo: &Repo) -> bool {
+    repo.dir.file_name().and_then(|name| name.to_str()).is_some_and(|name| {
+        afkconvoy_core::worker::is_worktree_named(name, afkconvoy_core::cut::CHECKOUT)
+    })
+}
+
 /// Only the gate's descendants inherit this lease. Nested `exclusive`
 /// wrappers use the already held lane instead of waiting on their parent.
 const OWNER_ENV: &str = "AFKCONVOY_EXCLUSIVE_OWNER";
@@ -121,6 +128,7 @@ impl Permit {
             command: command.into(),
             dir: canonical(&repo.dir),
             issue: std::env::var(ISSUE_ENV).ok().and_then(|v| v.parse().ok()),
+            cut: is_cut(repo),
             repo_lane: if heavy { None } else { Some(canonical(repo.common_dir()?)) },
             repo: Some(canonical(repo.common_dir()?)),
             is_turn,
@@ -581,6 +589,7 @@ pub fn exclusive(
         command: shown.join(" "),
         dir: canonical(checkout.as_ref().map_or(dir, |repo| &repo.dir)),
         issue: std::env::var(ISSUE_ENV).ok().and_then(|issue| issue.parse().ok()),
+        cut: checkout.as_ref().is_some_and(is_cut),
         repo_lane: None,
         repo: checkout.as_ref().and_then(|repo| repo.common_dir().ok()).map(canonical),
         is_turn: false,
@@ -735,6 +744,7 @@ mod tests {
             command: command.into(),
             dir: "/w/issue-7".into(),
             issue: Some(7),
+            cut: false,
             repo_lane: None,
             repo: None,
             is_turn: false,

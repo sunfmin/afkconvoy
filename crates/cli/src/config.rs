@@ -23,15 +23,16 @@ pub fn load(file: &Path) -> Result<Config> {
 }
 
 /// The config in a markdown text: its first ```` ```yaml ```` block, and the
-/// cut steps of its first ```` ```yaml cut ```` block (`cut::BLOCK`), which
-/// turn cutting on. An afkconvoy that reads only the first block reads past
-/// the second, and refuses nothing for it.
+/// cut settings across its ```` ```yaml cut ```` blocks (`cut::BLOCK`). New
+/// settings can follow the first cut block: older versions read only that
+/// first block and skip additions, while duplicate keys still fail here.
 pub fn parse(markdown: &str) -> Result<Config> {
     let yaml = yaml_block(markdown).ok_or_else(|| anyhow!("has no ```yaml block"))?;
     let settings: Settings = serde_yaml::from_str(&yaml)?;
-    let steps = match fenced(markdown, cut::BLOCK) {
-        Some(yaml) => Some(cut_steps(&yaml).context("its ```yaml cut block")?),
-        None => None,
+    let blocks = fenced_all(markdown, cut::BLOCK);
+    let steps = match blocks.is_empty() {
+        false => Some(cut_steps(&blocks.join("\n")).context("its ```yaml cut blocks")?),
+        true => None,
     };
     let config = Config::new(settings)?.cutting(steps);
     // An outer gate/land would ask for the lane a second time before it
@@ -74,17 +75,26 @@ pub fn yaml_block(markdown: &str) -> Option<String> {
 /// The text of the first fenced block of a markdown text whose opening line
 /// is `opening`, and nothing else but trailing space.
 fn fenced(markdown: &str, opening: &str) -> Option<String> {
-    let mut lines = markdown.lines().skip_while(|line| line.trim_end() != opening);
-    lines.next()?;
-    let mut block = String::new();
-    for line in lines {
-        if line.trim_end() == "```" {
-            return Some(block);
+    fenced_all(markdown, opening).into_iter().next()
+}
+
+/// Complete blocks with this opening, in their document order. The bodies
+/// form one YAML mapping, so each setting still has exactly one home.
+fn fenced_all(markdown: &str, opening: &str) -> Vec<String> {
+    let mut lines = markdown.lines();
+    let mut blocks = Vec::new();
+    while lines.by_ref().any(|line| line.trim_end() == opening) {
+        let mut block = String::new();
+        for line in lines.by_ref() {
+            if line.trim_end() == "```" {
+                blocks.push(block);
+                break;
+            }
+            block.push_str(line);
+            block.push('\n');
         }
-        block.push_str(line);
-        block.push('\n');
     }
-    None
+    blocks
 }
 
 /// What a markdown text says above its first ```` ```yaml ```` block, with no
@@ -193,9 +203,26 @@ mod tests {
         let cut = parse(&format!("{config}\nTo cut:\n\n{steps}")).unwrap().cut.unwrap();
         assert_eq!(cut.set, "./bump \"$VERSION\"");
         assert_eq!(cut.publish, "./ship\nbrew upgrade x\n");
+        assert_eq!(cut.busy_after_seconds, cut::BUSY_AFTER_SECONDS);
+        let steps = format!("{steps}\n```yaml cut\nbusy_after_seconds: 120\n```\n");
+        assert_eq!(
+            parse(&format!("{config}{steps}")).unwrap().cut.unwrap().busy_after_seconds,
+            120
+        );
         // An afkconvoy that reads the first block alone reads none of it.
         let both = format!("{config}{steps}");
         assert_eq!(yaml_block(&both).unwrap(), "base_branch: main\ngate_command: make\n");
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct OlderCut {
+            set: String,
+            publish: String,
+        }
+        let older: OlderCut = serde_yaml::from_str(&fenced(&both, cut::BLOCK).unwrap()).unwrap();
+        assert_eq!(older.set, cut.set);
+        assert_eq!(older.publish, cut.publish);
+        let duplicate = format!("{both}\n```yaml cut\nbusy_after_seconds: 240\n```\n");
+        assert!(format!("{:#}", parse(&duplicate).unwrap_err()).contains("duplicate field"));
         assert!(prose(&format!("{steps}{config}")).starts_with("```yaml cut"));
         let wrong = |steps: &str| {
             format!("{:#}", parse(&format!("{config}```yaml cut\n{steps}\n```\n")).unwrap_err())

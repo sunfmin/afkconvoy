@@ -240,6 +240,32 @@ fn one_local_observation_explains_free_capacity_reservations_repo_lanes_and_elap
 }
 
 #[test]
+fn cuts_reserve_capacity_ahead_of_older_waiters_without_interrupting_running_requests() {
+    let local = Local::new();
+    local.settings(1);
+    let mut cut = ticket(3, "/repos/cut/.git", 900, None, false);
+    cut["cut"] = json!(true);
+    let received = local.answer(response(vec![
+        ticket(2, "/repos/worker/.git", 200, None, false),
+        cut,
+        ticket(1, "/repos/light/.git", 100, Some(110), true),
+    ]));
+    let (code, answer) = local.query();
+    received.recv().unwrap();
+    assert_eq!(code, 0, "{answer}");
+    assert_eq!(answer["running"][0]["number"], 1);
+    assert_eq!(answer["waiting"][0]["number"], 3);
+    assert_eq!(answer["waiting"][0]["cut"], true);
+    assert_eq!(answer["waiting"][0]["scheduling"]["state"], "eligible");
+    assert_eq!(answer["waiting"][1]["number"], 2);
+    assert_eq!(answer["waiting"][1]["cut"], false);
+    assert_eq!(
+        answer["waiting"][1]["scheduling"]["reasons"][0]["requests"],
+        json!([{"number": 3, "state": "eligible"}])
+    );
+}
+
+#[test]
 fn empty_queue_missing_runner_and_stale_socket_are_distinct_successful_observations() {
     let local = Local::new();
     // No settings and no socket: no files or locks may be created.

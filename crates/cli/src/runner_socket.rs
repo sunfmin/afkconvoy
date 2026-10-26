@@ -547,6 +547,7 @@ mod tests {
             pid: 7,
             dir: "/w".into(),
             issue: Some(46),
+            cut: false,
             repo_lane: None,
             repo: None,
             is_turn: false,

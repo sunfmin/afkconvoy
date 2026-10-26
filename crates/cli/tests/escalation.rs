@@ -57,6 +57,34 @@ fn an_unbound_escalation_never_starts_a_consult_and_stays_visible_to_the_watch()
 }
 
 #[test]
+fn an_unbound_escalation_with_an_outside_blocker_stays_visible_to_the_watch() {
+    let world = World::new();
+    world.name_origin(&world.clone, "acme/app");
+    world.issue(7, &["ready-for-agent"]);
+    tick(&world, 1000);
+    world.with_gh(|gh| {
+        gh["edges"]["7"] = json!([
+            {"number": 931, "state": "open", "repo": "acme/kernel", "labels": []}
+        ])
+    });
+    world.comment(7, "<!--convoy:verdict phase=escalate-->\nWho works the kernel blocker?");
+    tick(&world, 1090);
+    assert!(world.claims().is_empty());
+    assert_eq!(world.labels(7), ["ready-for-human"]);
+    let plan = world.afk(&["plan", "--now", "1180"]).ok();
+    assert_eq!(plan["frontier"], json!([]));
+    assert_eq!(plan["waiting_on_human"][0]["issue"], 7);
+    assert!(
+        plan["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| { row["what"].as_str().unwrap().contains("acme/kernel#931") }),
+        "{plan}"
+    );
+}
+
+#[test]
 fn a_watch_handing_an_unbound_issue_back_moves_it_as_a_humans_answer_would() {
     let world = escalated("");
     let waiting = world.afk(&["plan", "--now", "1180"]).ok();

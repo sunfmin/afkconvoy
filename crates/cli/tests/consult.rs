@@ -35,7 +35,7 @@ stages:
 /// and runs `concurrency` workers at once.
 fn bound(feature: &str, concurrency: u64) -> World {
     let world = World::new();
-    world.kit_models("claude-code", &["opus", "sonnet"]);
+    world.kit_researched_models("claude-code", &["opus", "sonnet"]);
     world.repo(
         "acme/dev",
         &[(".claude/skills/implement/SKILL.md", "---\nname: implement\ndescription: build\n---\n")],
@@ -101,7 +101,8 @@ fn reads(world: &World) -> Vec<String> {
 /// `escalate` and stopped — and no tick having read that.
 fn declared_unread(world: &World) {
     world.issue(7, &["flow:feature"]);
-    assert_eq!(did(&tick(world, 1000)), ["dispatch 7 done"]);
+    let first = tick(world, 1000);
+    assert_eq!(did(&first), ["dispatch 7 done"], "{first}");
     declare(world, "build", "escalate", "Which schema: v1 or v2?");
     stop(world, 1010);
 }
@@ -239,6 +240,90 @@ fn an_escalate_starts_the_consult_its_stage_names_with_the_history_and_the_reaso
     // A second tick over an unchanged world does nothing.
     assert_eq!(did(&tick(&world, 1270)), [] as [&str; 0]);
     assert_eq!(started(&world).len(), 2);
+}
+
+#[test]
+fn an_escalate_with_an_outside_blocker_starts_its_consult_and_names_the_blocker() {
+    let world = bound(FEATURE, 2);
+    declared_unread(&world);
+    world.with_gh(|gh| {
+        gh["edges"]["7"] = json!([
+            {"number": 931, "state": "open", "repo": "acme/kernel", "labels": []}
+        ])
+    });
+    assert_eq!(did(&tick(&world, 1090)), ["advance 7 done"]);
+    let plan = world.afk(&["plan"]).ok();
+    assert_eq!(plan["frontier"][0]["number"], 7, "{plan}");
+    assert_eq!(plan["findings"].as_array().unwrap().len(), 1);
+    assert_eq!(did(&tick(&world, 1180)), ["dispatch 7 done"]);
+    let told = brief(&worktree(&world));
+    assert!(told.contains("acme/kernel#931"), "{told}");
+    assert!(told.contains("outside the tracker"), "{told}");
+    assert!(told.contains("gh issue transfer 931"), "{told}");
+    assert!(told.contains("Which schema: v1 or v2?"), "{told}");
+}
+
+#[test]
+fn a_worked_blocker_holds_a_consult_even_when_an_outside_blocker_has_the_same_number() {
+    let world = bound(FEATURE, 2);
+    declared_unread(&world);
+    world.with_gh(|gh| {
+        gh["edges"]["7"] = json!([
+            {"number": 41, "state": "open", "labels": []},
+            {"number": 41, "state": "open", "repo": "acme/kernel", "labels": []}
+        ])
+    });
+    assert_eq!(did(&tick(&world, 1090)), ["advance 7 done"]);
+    let plan = world.afk(&["plan"]).ok();
+    assert_eq!(plan["frontier"], json!([]), "{plan}");
+    assert_eq!(did(&tick(&world, 1180)), [] as [&str; 0]);
+    assert_eq!(started(&world).len(), 1);
+}
+
+#[test]
+fn a_declared_human_hand_off_with_an_outside_blocker_escalates() {
+    let feature =
+        FEATURE.replace("escalate: { to: reviewer, do: rule }", "escalate: { to: human }");
+    let world = bound(&feature, 2);
+    declared_unread(&world);
+    world.with_gh(|gh| {
+        gh["edges"]["7"] = json!([
+            {"number": 931, "state": "open", "repo": "acme/kernel", "labels": []}
+        ])
+    });
+    tick(&world, 1090);
+    assert!(with_a_human(&world));
+    assert_eq!(world.claims(), []);
+}
+
+#[test]
+fn an_unlabelled_tracker_blocker_does_not_hold_its_consult() {
+    let world = bound(FEATURE, 2);
+    world.name_origin(&world.clone, "acme/app");
+    world.say_tracker(&world.clone, "acme/tracker");
+    world.with_tracker(|gh| {
+        gh["issues"].as_array_mut().unwrap().push(json!({
+            "number": 7, "title": "needs a capability", "state": "open",
+            "labels": ["repo:acme/app", "flow:feature"]
+        }))
+    });
+    let first = tick(&world, 1000);
+    assert_eq!(did(&first), ["dispatch 7 done"], "{first}");
+    declare(&world, "build", "escalate", "Who will work the kernel blocker?");
+    stop(&world, 1010);
+    world.with_tracker(|gh| {
+        gh["edges"]["7"] = json!([
+            {"number": 91, "state": "open", "repo": "acme/tracker", "labels": []}
+        ])
+    });
+    assert_eq!(did(&tick(&world, 1090)), ["advance 7 done"]);
+    let plan = world.afk(&["plan"]).ok();
+    assert_eq!(plan["frontier"][0]["number"], 7, "{plan}");
+    assert!(plan["findings"][0]["what"].as_str().unwrap().contains("acme/tracker#91"));
+    assert_eq!(did(&tick(&world, 1180)), ["dispatch 7 done"]);
+    let told = brief(&worktree(&world));
+    assert!(told.contains("acme/tracker#91"), "{told}");
+    assert!(told.contains("no single repo: label"), "{told}");
 }
 
 #[test]

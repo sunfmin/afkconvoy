@@ -20,6 +20,10 @@ pub struct Ticket {
     pub dir: String,
     /// The issue of the worker that ran it, where its environment says one.
     pub issue: Option<u64>,
+    /// A cut goes ahead of waiting worker commands so their queue cannot
+    /// consume its time limit. Running commands keep their lanes.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cut: bool,
     /// A light gate's repo lane, independent of both host lanes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repo_lane: Option<String>,
@@ -70,7 +74,7 @@ pub fn ready(queue: &[Ticket], number: u64, worker_lanes: u64) -> bool {
 }
 
 /// The scheduler's decision for a request at this observation. Eligible
-/// requests reserve lanes in FIFO order; this is no future start order.
+/// requests reserve lanes in scheduler order; this is no future start order.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum State {
@@ -112,7 +116,7 @@ pub struct Scheduling {
 }
 
 /// Interpret every request with the very same reservations used to grant a
-/// lane. A same-repo waiter reserves nothing. Turns exclude each other
+/// lane, with cuts before ordinary waiters. A same-repo waiter reserves nothing. Turns exclude each other
 /// across worker and repo lanes too. Pausing prevents every new grant.
 pub fn scheduling(queue: &[Ticket], worker_lanes: u64, paused: bool) -> Vec<Scheduling> {
     let ordered = in_order(queue.to_vec());
@@ -217,7 +221,7 @@ pub struct Snapshot {
 }
 
 /// Common queue facts for operator output, doctor and the panel. Running
-/// and waiting arrays each follow ask time, then request number. Repo lanes
+/// and waiting arrays each put cuts first, then follow ask time and request number. Repo lanes
 /// are separate from worker capacity and sorted by their whole identity.
 pub fn snapshot(queue: &[Ticket], worker_lanes: u64, paused: bool, now: u64) -> Snapshot {
     let ordered = in_order(queue.to_vec());
@@ -268,16 +272,18 @@ pub fn lane(ticket: &Ticket) -> String {
     }
 }
 
-/// Stable scheduler order: running first, then waiting; each by ask time and
-/// request number. Position alone never predicts which request starts next.
+/// Stable scheduler order: running first, then waiting; within each group,
+/// cuts first, then ask time and request number. Position alone never
+/// predicts which request starts next.
 pub fn in_order(mut queue: Vec<Ticket>) -> Vec<Ticket> {
     queue.sort_by_key(place);
     queue
 }
 
-/// Stable display order: running first, then ask time and ticket.
-fn place(ticket: &Ticket) -> (bool, u64, u64) {
-    (ticket.ran.is_none(), ticket.asked, ticket.number)
+/// Running commands first, then waiting cuts, then other waiters; each
+/// group keeps ask time and ticket order within its lanes.
+fn place(ticket: &Ticket) -> (bool, bool, u64, u64) {
+    (ticket.ran.is_none(), !ticket.cut, ticket.asked, ticket.number)
 }
 
 /// Since when a worker in the worktree `dir` has waited in the queue — or run
@@ -336,7 +342,13 @@ pub fn rejoins_line(ticket: &Ticket) -> String {
 pub fn runs_line(ticket: &Ticket, now: u64, ahead_of: usize) -> String {
     let waited = now.saturating_sub(ticket.asked);
     let _ = ahead_of;
-    format!("runs `{}` in the {} lane, after waiting {waited}s", ticket.command, lane(ticket))
+    let line =
+        format!("runs `{}` in the {} lane, after waiting {waited}s", ticket.command, lane(ticket));
+    if ticket.cut {
+        format!("runs as a cut, ahead of waiting worker commands; {line}")
+    } else {
+        line
+    }
 }
 
 /// What the log says of a ticket whose command ended at `now`, as `ended`
@@ -357,6 +369,7 @@ mod tests {
             command: "cargo test".into(),
             dir: dir.into(),
             issue: Some(7),
+            cut: false,
             repo_lane: None,
             repo: None,
             is_turn: false,

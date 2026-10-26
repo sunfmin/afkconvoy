@@ -148,7 +148,7 @@ no other PR. Nobody reads this terminal: never wait for an answer.
 <gate_step>
 <join_step>
 
-<defect>
+<defect><cross_repo>
 ## If you cannot finish it
 
 After a genuine effort, post a comment on the issue instead (`gh issue comment {n}<tracker> --body \"...\"`),
@@ -198,7 +198,7 @@ git add -A && git commit -m \"<what this step did>\" && git push origin HEAD
 <gate_step>
 <join_step>
 
-<defect>
+<defect><cross_repo>
 ## If you will not open a PR
 
 Post a comment on the issue instead (`gh issue comment {n}<tracker> --body \"...\"`), wake the fleet (below)
@@ -208,9 +208,10 @@ body:
 {verdict_marker}
 ```
 - **`already-satisfied`** — the issue is already implemented in `{base_branch}`: you changed nothing.
-- **`blocked`** — the issue needs something that belongs to another issue and does not exist yet. Do
-  not create it yourself. Name every blocking issue in `blocked_by=` (e.g. `blocked_by=41,42`) and
-  say what is missing.
+- **`blocked`** — the issue needs something that belongs to another issue and does not exist yet.
+  Reuse its issue, or open one for another repo of this host following the cross-repo blocker
+  procedure above. Name every blocking issue in `blocked_by=` (e.g. `blocked_by=41,42`) and say
+  what is missing.
 - **`escalate`** — after a genuine effort you cannot complete the work or make the gate pass, or
   the issue as written cannot be done. Say where you are stuck, or the decision that has to be made,
   so that a human can act on it in one reply.
@@ -248,7 +249,7 @@ reads this terminal: never wait for an answer.
 ## Stage records
 
 {records}
-<rework><gate><split>
+<rework><gate><split><cross_repo>
 ## Before an `escalate`
 
 <precedents_first>
@@ -259,6 +260,20 @@ what it takes. Then stop.
 ```bash
 {verdict_command}
 ```
+";
+
+/// Where another checkout's missing work enters the fleet, shared by the
+/// blocked, defect and split paths.
+const CROSS_REPO_BLOCKER: &str = "
+## Cross-repo blockers
+
+For a blocker or defect belonging to another repo of this host, open it on the tracker
+`<blocker_tracker>`, with that repo's `repo:<owner>/<repo>` label. Name that repo's main checkout as
+`<target-checkout>` and run `afkconvoy flows <target-checkout>`
+and use its `line` (the matching workflow's in a bound repo), with a title and body file. In a bound
+repo omit the line's flow label while opening, then take it in there with
+`afkconvoy intake -C <target-checkout> --issue <n> --workflow <workflow>` and your worker identity; keep the line's ready
+label when it is unbound. Record the tracker issue as the blocker, then declare `blocked` on it.
 ";
 
 /// The procedure offered only by teams that allow splitting.
@@ -276,6 +291,7 @@ in this order:
    {intake_command} --issue <n> --workflow <workflow> [--blocked-by <n,…>]
    ```
 3. Declare `blocked` with the command below, with every issue you opened in `--blocked-by`.
+   A piece belonging to another repo of this host follows the cross-repo blocker procedure below.
 
 The issue is then parked on them, and when they have all closed this stage runs again, to judge the
 whole.
@@ -1101,6 +1117,11 @@ pub(crate) fn in_tracker(template: &str, tracker: &Tracker) -> String {
         ),
     };
     template
+        .replace("<cross_repo>", CROSS_REPO_BLOCKER)
+        .replace(
+            "<blocker_tracker>",
+            tracker.named().map_or("<owner>/<tracker-name>", |name| name.as_str()),
+        )
         .replace("<tracker>", &flag)
         .replace("<issues>", &path)
         .replace("<labelled>", &labelled)
@@ -1197,6 +1218,13 @@ mod tests {
             }
         }
         let fresh = &briefs[0];
+        for brief in [fresh, &briefs[1], &briefs[3]] {
+            assert!(brief.contains("open it on the tracker\n`acme/tracker`"), "{brief}");
+            assert!(brief.contains("that repo's `repo:<owner>/<repo>` label"), "{brief}");
+            assert!(brief.contains("run `afkconvoy flows <target-checkout>`"), "{brief}");
+            assert!(brief.contains("omit the line's flow label while opening"), "{brief}");
+            assert_eq!(brief.matches("## Cross-repo blockers").count(), 1, "{brief}");
+        }
         assert!(fresh.contains("**Your issue:** acme/tracker#7 — Add {branch} support"));
         assert!(fresh.contains("\n   Closes acme/tracker#7\""), "{fresh}");
     }
@@ -1339,6 +1367,13 @@ mod tests {
         }
         assert!(stage.contains("(`gh issue create --repo acme/tracker --label repo:acme/dev`)"));
         assert!(!stage.contains("A red gate that is not yours"));
+        assert!(stage.contains("open it on the tracker\n`acme/tracker`"), "{stage}");
+        assert!(
+            stage.contains(
+                "afkconvoy intake -C <target-checkout> --issue <n> --workflow <workflow>"
+            ),
+            "{stage}"
+        );
         assert!(parked.contains("(acme/tracker#11, acme/tracker#12)"), "{parked}");
         assert!(consult.contains("    gh issue close 7 --repo acme/tracker --comment <why>\n"));
         assert!(patrol.contains(

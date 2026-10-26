@@ -85,6 +85,7 @@ pub(crate) fn observation_json(snapshot: &Snapshot) -> Value {
                 request.entry("repo").or_insert(Value::Null);
                 request.entry("repo_lane").or_insert(Value::Null);
                 request.entry("is_turn").or_insert(json!(false));
+                request.entry("cut").or_insert(json!(false));
             }
         }
     }

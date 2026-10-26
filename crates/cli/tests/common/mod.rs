@@ -162,6 +162,27 @@ impl World {
         });
     }
 
+    /// Holds dated model research for scenarios about workflows and worker
+    /// starts, so pending research does not start an unrelated host watch.
+    pub fn kit_researched_models(&self, harness: &str, models: &[&str]) {
+        self.kit_models(harness, models);
+        self.with_kit(|kit| {
+            let held = kit["harnesses"]
+                .as_array_mut()
+                .unwrap()
+                .iter_mut()
+                .find(|held| held["harness"] == harness)
+                .unwrap();
+            for model in held["models"].as_array_mut().unwrap() {
+                model["good_at"] = json!("coding and review");
+                model["sources"] = json!([
+                    {"url":"https://vendor.example/model-card", "date":"2026-10-24"}
+                ]);
+                model["researched_at"] = json!(900);
+            }
+        });
+    }
+
     /// Changes the host kit in place.
     pub fn with_kit(&self, change: impl FnOnce(&mut Value)) {
         let mut kit: Value =
@@ -1514,14 +1535,19 @@ pub fn git(cwd: &Path, args: &[&str]) -> String {
 
 /// The commands `brief` gives a worker that refuse a worker's worktree as
 /// their checkout, as each one's help says: of every word after `afkconvoy `
-/// in it that is a command. A worker runs each in its worktree, so none
-/// should.
+/// in it that is a command, unless it explicitly names a target checkout.
+/// The remaining commands run in the worker's worktree, so none should refuse it.
 pub fn refusing_a_workers_worktree(brief: &str) -> Vec<String> {
     let word = |after: &str| {
         let end = after.find(|c: char| !(c.is_ascii_lowercase() || c == '-'));
         after[..end.unwrap_or(after.len())].to_string()
     };
-    let named = brief.split("afkconvoy ").skip(1).map(word);
+    let named = brief.split("afkconvoy ").skip(1).filter_map(|after| {
+        let command = after.split(['`', '\n']).next().unwrap_or_default();
+        let target = command.contains(" -C <target-checkout>")
+            || command.starts_with("flows <target-checkout>");
+        (!target).then(|| word(after))
+    });
     let mut named: Vec<String> = named.filter(|name| !name.is_empty()).collect();
     named.sort();
     named.dedup();

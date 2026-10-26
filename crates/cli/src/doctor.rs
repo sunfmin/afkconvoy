@@ -177,6 +177,7 @@ kinds! {
     WorkerHealth: Warning, "worker health is waiting for the operator";
     NothingStarted: Warning, "the last tick started no worker";
     NoWorkflow: Warning, "follows no workflow of the team";
+    BlockerUnworked: Warning, "waits on a blocker no fleet works";
     LongAtStage: Warning, "longer than any stage before it took";
     NearBreaker: Warning, "is one rework from a breaker";
     PatrolFailed: Warning, "does not run: its last run failed";
@@ -1247,6 +1248,7 @@ pub fn findings(seen: &Seen) -> Vec<Finding> {
             found.extend(claim_findings(seen.run, &state.held));
             found.extend(issue_findings(&state.stood, &state.team, seen.now));
             found.extend(waiting_findings(&state.set, seen.now));
+            found.extend(crate::blockers::findings(&state.set.unworked_blockers));
             found.extend(state.proposals.as_ref().and_then(crate::precedent::Open::finding));
             found.extend(state.unclaimed.iter().map(unclaimed_finding));
             found.extend(state.not_ours.iter().map(not_ours_finding));
@@ -2086,6 +2088,7 @@ mod tests {
 
     fn set() -> WorkingSet {
         WorkingSet {
+            unworked_blockers: vec![],
             frontier: vec![],
             escalating: vec![],
             excluded: vec![],
