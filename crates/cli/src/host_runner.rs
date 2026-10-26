@@ -164,13 +164,17 @@ impl Shared {
     /// What it holds now: what `shared` is answered, and the panel the host
     /// runner serves shows.
     pub fn now(&self) -> SharedNow {
-        let (exclusive, exclusive_paused) = self.queue.observation();
-        SharedNow {
+        self.checked_now().unwrap_or_default()
+    }
+
+    fn checked_now(&self) -> Result<SharedNow> {
+        let (exclusive, exclusive_paused) = self.queue.observation()?;
+        Ok(SharedNow {
             exclusive,
             exclusive_paused,
             installed: self.installed().clone(),
             watch: self.watch.running(),
-        }
+        })
     }
 
     fn installed(&self) -> MutexGuard<'_, Option<Installed>> {
@@ -179,7 +183,10 @@ impl Shared {
 
     /// What `shared` is answered.
     fn said(&self) -> Value {
-        serde_json::to_value(self.now()).unwrap_or_default()
+        match self.checked_now() {
+            Ok(now) => serde_json::to_value(now).unwrap_or_default(),
+            Err(error) => crate::error_json(&error),
+        }
     }
 }
 

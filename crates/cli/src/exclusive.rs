@@ -238,6 +238,7 @@ struct Joined {
     closed: bool,
     waited: BTreeMap<u64, Duration>,
     counted_at: Instant,
+    validations: BTreeMap<u32, afkconvoy_core::candidate::Validation>,
 }
 
 impl Default for Joined {
@@ -249,6 +250,7 @@ impl Default for Joined {
             closed: false,
             waited: BTreeMap::new(),
             counted_at: Instant::now(),
+            validations: BTreeMap::new(),
         }
     }
 }
@@ -305,7 +307,9 @@ impl Joined {
 impl Queue {
     /// Display copies never authorize a grant, invalidation or publication.
     pub fn validation(&self, pid: u32, validation: afkconvoy_core::candidate::Validation) {
-        for ticket in &mut self.joined().tickets {
+        let mut joined = self.joined();
+        joined.validations.insert(pid, validation.clone());
+        for ticket in &mut joined.tickets {
             if ticket.pid == pid && ticket.is_turn {
                 ticket.validation = Some(validation.clone());
             }
@@ -334,14 +338,28 @@ impl Queue {
     }
 
     /// Tickets and whether new grants are paused, under the same lock.
-    pub fn observation(&self) -> (Vec<Ticket>, bool) {
+    pub fn observation(&self) -> Result<(Vec<Ticket>, bool)> {
         let joined = self.joined();
-        (in_order(joined.tickets.clone()), joined.paused || joined.closed)
+        Ok((in_order(self.with_leases(&joined)?), joined.paused || joined.closed))
+    }
+
+    fn with_leases(&self, joined: &Joined) -> Result<Vec<Ticket>> {
+        let mut tickets = joined.tickets.clone();
+        for mut inherited in crate::slots::standing()? {
+            if tickets.iter().any(|t| t.pid == inherited.pid && t.ran.is_some()) {
+                continue;
+            }
+            if let Some(validation) = joined.validations.get(&inherited.pid) {
+                inherited.validation = Some(validation.clone());
+            }
+            tickets.push(inherited);
+        }
+        Ok(tickets)
     }
 
     /// Running tickets first, then waiters, each by ask time and number.
     pub fn standing(&self) -> Vec<Ticket> {
-        self.observation().0
+        self.observation().expect("test queue is readable").0
     }
 
     /// Answers `exclusive` asking for `ticket`: it joins the queue, and its
@@ -385,13 +403,13 @@ impl Queue {
                 Some(_)
                     if !joined.paused && {
                         let settings = crate::host_settings::of_host().unwrap_or_default();
-                        let eligible: Vec<_> = joined
-                            .tickets
-                            .iter()
+                        let eligible: Vec<_> = self
+                            .with_leases(&joined)
+                            .unwrap_or_default()
+                            .into_iter()
                             .filter(|t| {
                                 t.ran.is_some() || crate::slots::repo_available(t).unwrap_or(false)
                             })
-                            .cloned()
                             .collect();
                         ready(&eligible, number, settings.gate_lanes())
                     } =>

@@ -18,6 +18,42 @@ struct Owner {
     process: afkconvoy_core::candidate::Process,
     dir: String,
     candidate: bool,
+    #[serde(default)]
+    ticket: Option<Ticket>,
+}
+
+/// Kernel-held slots are visible after runner restart, including green
+/// candidates waiting to publish. No file or process is changed by this read.
+pub(crate) fn standing() -> Result<Vec<Ticket>> {
+    let cache = crate::copies::cache()?.join("worker-slots");
+    if !cache.exists() {
+        return Ok(vec![]);
+    }
+    let mut tickets = vec![];
+    for entry in std::fs::read_dir(cache)? {
+        let entry = entry?;
+        if entry.file_name().to_string_lossy().starts_with("repo-") {
+            continue;
+        }
+        let file = OpenOptions::new().read(true).write(true).open(entry.path())?;
+        // SAFETY: nonblocking inspection; success means no inherited owner.
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+            continue;
+        }
+        ensure!(
+            std::io::Error::last_os_error().kind() == std::io::ErrorKind::WouldBlock,
+            "cannot observe inherited worker lease"
+        );
+        let owner: Owner = serde_json::from_slice(&std::fs::read(entry.path())?)?;
+        let mut ticket = owner.ticket.ok_or_else(|| {
+            anyhow::anyhow!(
+                "an inherited lease has no queue metadata; wait for its owning command to end"
+            )
+        })?;
+        ticket.number = u64::MAX - u64::from(owner.process.pid);
+        tickets.push(ticket);
+    }
+    Ok(tickets)
 }
 
 pub(crate) struct Slot(File, Option<File>);
@@ -62,7 +98,8 @@ fn repo_file(ticket: &Ticket) -> Result<Option<File>> {
     };
     let cache = crate::copies::cache()?.join("worker-slots");
     std::fs::create_dir_all(&cache)?;
-    let key = afkconvoy_core::gate::key(repo);
+    let key =
+        afkconvoy_core::gate::key(&format!("{repo}:{}", afkconvoy_core::exclusive::lane(ticket)));
     Ok(Some(
         OpenOptions::new()
             .create(true)
@@ -108,6 +145,18 @@ impl Slot {
         let cache = crate::copies::cache()?.join("worker-slots");
         std::fs::create_dir_all(&cache)?;
         let lane = afkconvoy_core::gate::key(&afkconvoy_core::exclusive::lane(ticket));
+        let owner = Owner {
+            process: crate::candidates::identity(std::process::id())?
+                .ok_or_else(|| anyhow::anyhow!("cannot identify slot owner"))?,
+            dir: ticket
+                .repo
+                .as_deref()
+                .and_then(|path| std::path::Path::new(path).parent())
+                .map_or_else(|| ticket.dir.clone(), |path| path.to_string_lossy().into_owned()),
+            candidate: ticket.candidate,
+            ticket: Some(Ticket { ran: Some(crate::clock()), ..ticket.clone() }),
+        };
+        let owner_bytes = serde_json::to_vec(&owner)?;
         loop {
             let count = if ticket.repo_lane.is_some() {
                 1
@@ -124,22 +173,9 @@ impl Slot {
                     .open(&path)?;
                 // SAFETY: a live descriptor; a nonblocking kernel lease.
                 if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
-                    file.set_len(0)?;
                     file.seek(SeekFrom::Start(0))?;
-                    let owner = Owner {
-                        process: crate::candidates::identity(std::process::id())?
-                            .ok_or_else(|| anyhow::anyhow!("cannot identify slot owner"))?,
-                        dir: ticket
-                            .repo
-                            .as_deref()
-                            .and_then(|path| std::path::Path::new(path).parent())
-                            .map_or_else(
-                                || ticket.dir.clone(),
-                                |path| path.to_string_lossy().into_owned(),
-                            ),
-                        candidate: ticket.candidate,
-                    };
-                    serde_json::to_writer(&mut file, &owner)?;
+                    file.write_all(&owner_bytes)?;
+                    file.set_len(owner_bytes.len() as u64)?;
                     file.flush()?;
                     return Ok(Self(file, repo));
                 }
