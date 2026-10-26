@@ -19,6 +19,12 @@ use serde_json::{Value, json};
 /// A `run` of the first repo on the host `h1`, its sleeps short.
 const RUN: [&str; 5] = ["run", "--host", "h1", "--second-ms", "100"];
 
+/// A `run` as `RUN`, for a test that waits for the next tick of a fleet
+/// instance that holds claims: a second of its sleeps takes 10ms, so each tick
+/// comes 0.9s after the last, not 9s. Not for an idle one: its empty ticks come
+/// as fast, and after three it sleeps its idle wait, 15s.
+const TICKING: [&str; 5] = ["run", "--host", "h1", "--second-ms", "10"];
+
 /// Every line of the tick log `answer` names, each as it is kept.
 fn tick_log(answer: &Value) -> Vec<Value> {
     let text = std::fs::read_to_string(answer["tick_log"].as_str().unwrap()).unwrap();
@@ -507,6 +513,7 @@ fn ticked(answer: &Value, said: &str) -> String {
 
 #[test]
 fn a_host_setting_a_run_names_holds_for_every_fleet_instance_at_once() {
+    const RUN: [&str; 5] = TICKING;
     let world = World::new();
     world.issue(7, &["ready-for-agent"]);
     world.busy(PAST_ANY);
@@ -1014,7 +1021,7 @@ fn the_host_runner_does_not_move_while_a_claim_is_held_or_a_command_is_queued() 
     let world = World::new();
     world.issue(7, &["ready-for-agent"]);
     let link = installed(&world);
-    let first = world.afk_as(&link, &world.clone, &RUN).ok();
+    let first = world.afk_as(&link, &world.clone, &TICKING).ok();
     let old = first["host_runner"]["pid"].as_u64().unwrap();
     assert!(ticked(&first, "dispatched #7").contains("holding 1/"));
 
@@ -1036,10 +1043,15 @@ fn the_host_runner_does_not_move_while_a_claim_is_held_or_a_command_is_queued() 
         .stderr(std::process::Stdio::null())
         .spawn()
         .unwrap();
+    let queued = json!("1 command(s) in the exclusive queue");
+    until("exclusive command holding the move back too", || {
+        let held = installed_said(&world)["held_back"].clone();
+        held.as_array().unwrap().contains(&queued).then_some(())
+    });
     world.close(7, "completed");
     until("exclusive command holding the move back alone", || {
         let held = installed_said(&world)["held_back"].clone();
-        (held == json!(["1 command(s) in the exclusive queue"])).then_some(())
+        (held == json!([queued])).then_some(())
     });
     assert_eq!(world.host_runner().map(u64::from), Some(old));
     let log = world.runner_log();
@@ -1250,7 +1262,7 @@ fn a_concurrency_the_repo_config_names_changes_nothing_and_doctor_gives_the_line
         world.issue(issue, &["ready-for-agent"]);
     }
     // the checkout names none: its fleet instance holds the default, not 5
-    let first = world.afk(&RUN).ok();
+    let first = world.afk(&TICKING).ok();
     let first_tick = first["first_tick"].as_str().unwrap();
     assert!(first_tick.contains("holding 3/3 · frontier 1"), "{first}");
 
@@ -1299,9 +1311,7 @@ fn tick_lines(answer: &Value) -> Vec<String> {
 
 #[test]
 fn a_checkouts_concurrency_a_run_says_holds_at_its_next_tick_and_nothing_is_started_again() {
-    // It waits for four ticks of a fleet instance that holds claims: a second
-    // of its sleeps takes 10ms, so each comes 0.9s after the last, not 9s.
-    const RUN: [&str; 5] = ["run", "--host", "h1", "--second-ms", "10"];
+    const RUN: [&str; 5] = TICKING;
     let world = World::new();
     for issue in [7, 8, 9, 10] {
         world.issue(issue, &["ready-for-agent"]);
