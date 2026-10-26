@@ -83,6 +83,7 @@ pub mod paused;
 pub mod precedent;
 pub mod probe;
 mod process;
+pub mod queue;
 pub mod recovery;
 mod repair;
 pub mod resources;
@@ -1597,6 +1598,39 @@ enum Command {
     /// - `host_runner.panel` is where the host runner serves the panel: the address `afkconvoy panel --open` answers, with no need to ask it. Where no host runner runs it is null, as `host_runner` is whole; where the host runner serves none, it alone is null, and `panel --open` says why. `afkconvoy panel --help` says what the page shows.
     #[command(next_help_heading = OPERATOR, verbatim_doc_comment)]
     Checkouts,
+    /// Read this host's exclusive queue and explain each wait
+    ///
+    /// ## When to run it
+    ///
+    /// Run `afkconvoy queue` from any directory on the host, as the host runner's user, to see who occupies its worker lanes and why each request waits. No checkout, login or running fleet is required. It accepts no checkout or host selector: it observes this user's local host runner across all its repos.
+    ///
+    /// ## What it reads and writes
+    ///
+    /// It reads the host settings once and asks the host runner once on its local socket, allowing {const:QUEUE_SECONDS}s for its response, including partial lines. Settings absent use the defaults; unreadable settings fail. It reads no GitHub, git, harness, tick log or gate history, makes no probe or full diagnosis, sends no wake and changes no fleet, queue or settings. A stale socket is left in place. A temporary link used to reach a long socket path is removed afterwards. The runner's lock is checked only if its socket is absent or refuses the connection.
+    ///
+    /// ## What it answers
+    ///
+    /// Exactly one JSON object, exit 0:
+    ///
+    /// - `observed_at`: epoch seconds captured after the local response. Every duration uses this one time; clock differences clamp negative durations to zero. Settings and the queue are a bounded observation, not an atomic snapshot of both files and process.
+    /// - `status`: `available` when the runner answered, including a healthy empty queue; `no_runner` when no runner listens or holds the host. No runner is a successful observation with empty arrays and `host_runner: null`, not evidence of commands running outside the queue.
+    /// - `host_runner`: the answering runner's `pid` and `version`, plus the identity fields it supplies: `log` (whole path), `panel` (address or null), and `foreground` where applicable. Null with no runner.
+    /// - `paused`: whether the runner has paused new grants for a release move; false with no runner.
+    /// - `worker`: `{capacity, used, free}`. Capacity is the host setting `gate_lanes`, {const:GATE_LANES} by default; used counts running worker requests, free is capacity minus used, clamped to zero. Eligible reservations do not count as used.
+    /// - `repos`: each repo lane with a running or waiting request, sorted by its whole identity, as `{repo, capacity, used, free}`. Each has capacity 1, independent of worker capacity. `repo` is the shared git directory supplied by the ticket, never inferred from a worktree's name.
+    /// - `running`, `waiting`: requests in scheduler order within each array: ascending `asked`, then `number` to break ties. There is no priority by lane or repo. A request identifies `number` (runner-local ticket), `pid` (asking process), `command` (one line), `dir` (whole worktree or outside directory), `issue` (number or null; no lookup), `repo` (shared git directory or null for older/outside tickets), `repo_lane` (repo lane identity or null for worker), `is_turn` (whether this is a landing turn), `asked` (request epoch seconds), `ran` (start epoch seconds or null), and `lane` (`worker` or `repo <identity>`).
+    /// - Each request adds `elapsed_seconds` (time since `ran`, null while waiting), `waiting_seconds` (time from `asked` to `ran` when running, otherwise to `observed_at`), and `scheduling`: `{number, state, reasons}`. State is `running`, `eligible`, or `waiting`; reasons is empty for running or eligible requests.
+    /// - Each reason has `kind`, `requests`, `capacity` and `explanation`. Kind `same_repo` means a running or earlier eligible request of this repo excludes this request in its lane, or across lanes when both are turns. `worker_capacity` or `repo_capacity` means all places in that lane are occupied or reserved, with the limit in `capacity`. `paused` means new grants are paused. Other reasons have `capacity: null`. `requests` names each relevant `{number, state}`: `running` holds a place now, `eligible` reserves one earlier in FIFO order; it is empty for a pause. `explanation` states the constraint in words.
+    ///
+    /// Earlier eligible requests reserve capacity in FIFO order. Blocked requests reserve nothing: with three worker lanes, a running repo can leave two free while its other requests wait, and a different repo can be eligible. Turns of one repo exclude each other across worker and repo lanes. Older tickets lacking `repo` use their whole `dir` as the scheduler's fallback identity. `eligible` means allowed by this observation, not guaranteed to start next. Ordering is no fixed future start order or ETA; requests can leave and settings can change.
+    ///
+    /// Errors: unreadable host settings, an inaccessible socket, a runner holding the host but not listening, a closed connection, no response within the bound, a runner error, or an unsupported or unreadable response (including missing queue, pause or runner identity fields). These print `{"error": ...}` with exit 1 and a next action: inspect the host runner log and retry; `afkconvoy doctor --all` provides a full diagnosis. An unsupported response needs a host runner of this release. A failed observation never becomes an empty queue.
+    ///
+    /// ## What trips you up
+    ///
+    /// It reports current queued commands only. For historical gate outcomes, use `afkconvoy doctor --all --since <time>`; `afkconvoy doctor --help` explains its interval boundaries. Commands that bypass the exclusive queue are absent. Request numbers belong to this runner and may change after it is replaced.
+    #[command(next_help_heading = OPERATOR, verbatim_doc_comment)]
+    Queue,
     /// Hold every checkout on this host's checkout list, as `run` starts it in the background
     #[command(hide = true)]
     HostRunner,
@@ -3445,6 +3479,7 @@ pub fn manual() -> agent_help::Help {
         .constant("BACKOFF_FIRST_MINUTES", afkconvoy_core::host_runner::BACKOFF_FIRST / 60)
         .constant("BACKOFF_MOST_MINUTES", afkconvoy_core::host_runner::BACKOFF_MOST / 60)
         .constant("INSTALLED_LOOKED_SECONDS", host_runner::INSTALLED_LOOKED_EVERY.as_secs())
+        .constant("QUEUE_SECONDS", queue::WITHIN.as_secs())
         .constant("MOVED_WITHIN_SECONDS", host_runner::MOVED_WITHIN.as_secs())
         .constant("MOVE_WAIT_SECONDS", host_runner::MOVE_WAIT_WITHIN.as_secs())
         .constant("OUTGROWN_TIMES", afkconvoy_core::landing::OUTGROWN_TIMES)
@@ -4041,6 +4076,7 @@ impl Command {
             | Command::Stop { .. }
             | Command::HostRunner
             | Command::Checkouts
+            | Command::Queue
             | Command::Panel { .. }
             | Command::Guard
             | Command::Exclusive { .. }
@@ -4193,6 +4229,7 @@ fn run(
         Command::Stop { .. } => host_runner::stop(&checkout?),
         Command::HostRunner => host_runner::serve(),
         Command::Checkouts => checkouts::checkouts(),
+        Command::Queue => queue::queue(fixed_now),
         Command::Panel { open: true, .. } => host_runner::panel(),
         Command::Panel { instance, host, at, .. } => {
             let host = host.unwrap_or_else(this_host);

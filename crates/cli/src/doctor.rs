@@ -1704,30 +1704,40 @@ fn issues_json(set: &WorkingSet) -> Result<Value> {
     Ok(issues)
 }
 
-/// The host's `exclusive` queue: the command that runs alone, and those that
-/// wait their turn, in order — or why it could not be read.
-fn exclusive_json(standing: Result<Vec<Ticket>>) -> Value {
+/// Keep the legacy lane projections and add the common queue observation.
+fn exclusive_json(standing: Result<(Vec<Ticket>, bool)>, now: u64) -> Value {
     let ticket = |ticket: &Ticket| {
         json!({"command": ticket.command, "dir": ticket.dir, "issue": ticket.issue,
             "pid": ticket.pid, "asked": ticket.asked, "ran": ticket.ran})
     };
     match standing {
-        Ok(live) => {
+        Ok((live, paused)) => {
+            let settings = match crate::host_settings::of_host() {
+                Ok(settings) => settings,
+                Err(error) => return json!({"error": format!("{error:#}")}),
+            };
+            let observation =
+                afkconvoy_core::exclusive::snapshot(&live, settings.gate_lanes(), paused, now);
             let lane = |repo: Option<&str>| {
-                let each: Vec<_> = live.iter().filter(|t| t.repo_lane.as_deref() == repo).collect();
+                let each: Vec<_> = observation
+                    .running
+                    .iter()
+                    .chain(&observation.waiting)
+                    .map(|request| &request.ticket)
+                    .filter(|t| t.repo_lane.as_deref() == repo)
+                    .collect();
                 json!({"running": each.iter().find(|t| t.ran.is_some()).map(|t| ticket(t)),
                     "running_all": each.iter().filter(|t| t.ran.is_some()).map(|t| ticket(t)).collect::<Vec<_>>(),
                     "waiting": each.iter().filter(|t| t.ran.is_none()).map(|t| ticket(t)).collect::<Vec<_>>()})
             };
             let worker = lane(None);
-            let repos: std::collections::BTreeSet<_> =
-                live.iter().filter_map(|t| t.repo_lane.as_deref()).collect();
-            let repos: Vec<_> = repos
-                .into_iter()
-                .map(|repo| json!({"repo": repo, "queue": lane(Some(repo))}))
+            let repos: Vec<_> = observation
+                .repos
+                .iter()
+                .map(|repo| json!({"repo": repo.repo, "queue": lane(Some(&repo.repo))}))
                 .collect();
             json!({"running": worker["running"], "waiting": worker["waiting"],
-                "lanes": {"worker": worker, "repos": repos}})
+                "lanes": {"worker": worker, "repos": repos}, "observation": observation})
         }
         Err(error) => json!({"error": format!("{error:#}")}),
     }
@@ -1891,7 +1901,7 @@ fn host_once(now: u64) -> Map<String, Value> {
     let (exclusive, installed, watch) = match host_runner::shared() {
         Ok(said) => {
             let said = said.unwrap_or_default();
-            (Ok(said.exclusive), said.installed, said.watch)
+            (Ok((said.exclusive, said.exclusive_paused)), said.installed, said.watch)
         }
         Err(error) => (Err(error), None, None),
     };
@@ -1901,7 +1911,7 @@ fn host_once(now: u64) -> Map<String, Value> {
             "resources".to_string(),
             crate::resources::json(now).unwrap_or_else(|e| json!({"error": format!("{e:#}")})),
         ),
-        ("exclusive".to_string(), exclusive_json(exclusive)),
+        ("exclusive".to_string(), exclusive_json(exclusive, now)),
         ("installed".to_string(), serde_json::to_value(installed).unwrap_or_default()),
         ("watch".to_string(), crate::host_watch::json(watch.as_ref())),
     ])
