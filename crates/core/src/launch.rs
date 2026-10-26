@@ -130,19 +130,25 @@ pub struct TrustGap {
     pub worktree: String,
     pub terminal: String,
     pub seconds: u64,
+    /// Raw Orca response and exit status, captured before terminal cleanup.
+    pub startup_wait: String,
+    /// Raw screen-read response, including an unavailable source or failure.
+    pub startup_screen: String,
 }
 
 impl std::fmt::Display for TrustGap {
     fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             out,
-            "{} worktree trust gap: the worker still asks whether to trust the folder within {}s; harness `{}`; worker launch command `{}`; worktree `{}` (terminal {})",
+            "{} worktree trust gap: Orca reported a workspace trust prompt within {}s; harness `{}`; worker launch command `{}`; worktree `{}` (terminal {})\n\nStartup wait (raw):\n{}\n\nStartup screen read (raw):\n{}",
             self.harness.name(),
             self.seconds,
             self.harness.key(),
             self.command,
             self.worktree,
             self.terminal,
+            self.startup_wait,
+            self.startup_screen,
         )
     }
 }

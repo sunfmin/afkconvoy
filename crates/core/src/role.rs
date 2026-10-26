@@ -266,6 +266,10 @@ pub struct Start<'a> {
     /// (`Team::host_user`): the directory `kept` is then the one kept with
     /// them (`Kept::host_user`).
     pub host_user: bool,
+    /// Native rule paths of the host user's which this harness must exclude
+    /// when `host_user` is false, including ones found as project ancestors
+    /// (`Harness::host_rule_excludes`).
+    pub host_rules: &'a [String],
     /// The DSH profile selected by the team or role.
     pub dsh_profile: crate::team::DshProfile,
     /// The files of the host user's skills that a role's skill of the same
