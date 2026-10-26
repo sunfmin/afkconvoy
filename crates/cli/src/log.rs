@@ -160,8 +160,11 @@ pub enum What {
     WatchContinued { id: String, from: String, to: String, why: String },
     /// A watch did one thing, in its own words.
     WatchDid { id: String, did: String },
-    /// A watch ended, or its look or monitoring failed.
+    /// A watch ended: `outcome` says how — `ended`, `closed`, `time_limit` or
+    /// `no_harness` — and `said` in words.
     WatchEnded { id: String, outcome: String, said: String },
+    /// The host runner could not look at its host, or read its watch.
+    WatchFailed { said: String },
     /// A tick started a cut of `version` (docs/adr/0028): `said` is the
     /// version, the tag it is cut past and the PRs it holds.
     CutStarted { version: String, said: String },
@@ -300,6 +303,7 @@ impl Entry {
             What::WatchEnded { id, outcome, said } => {
                 format!("watch: {id}: {outcome} · {said}")
             }
+            What::WatchFailed { said } => format!("watch: {said}"),
             What::CutStarted { .. } | What::CutEnded { .. } => {
                 format!("cut: {}", cut_said(&self.what).unwrap_or_default())
             }
@@ -352,6 +356,7 @@ impl Entry {
             What::WatchEnded { outcome, said, .. } => {
                 Some(("watch", format!("{outcome} · {said}")))
             }
+            What::WatchFailed { said } => Some(("watch", said.clone())),
             What::CutStarted { .. } | What::CutEnded { .. } => Some(("cut", cut_said(&self.what)?)),
             What::TickStarted { .. }
             | What::Tick(_)
@@ -380,6 +385,7 @@ impl Entry {
                 | What::WatchContinued { .. }
                 | What::WatchDid { .. }
                 | What::WatchEnded { .. }
+                | What::WatchFailed { .. }
         )
     }
 }

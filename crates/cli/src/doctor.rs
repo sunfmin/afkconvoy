@@ -1754,7 +1754,6 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String]) -> Result<Exami
     };
     let mut host = host_json(&seen_host);
     host["worker_no_proxy"] = launches.proxy_json();
-    host["worker_health"] = crate::health::show();
     host["admission"] = match Admission::read(&repo.dir) {
         Ok(admission) => admission.json(),
         Err(error) => json!({"error": format!("{error:#}")}),
@@ -1808,14 +1807,7 @@ fn host_once(now: u64) -> Map<String, Value> {
             inspection.map_or(Value::Null, |running| crate::inspection::json(&running)),
         ),
         ("installed".to_string(), serde_json::to_value(installed).unwrap_or_default()),
-        (
-            "watch".to_string(),
-            json!({
-                "running": watch.as_ref().map(crate::host_watch::watch_json),
-                "last": crate::host_watch::last().as_ref().map(crate::host_watch::watch_json),
-                "unavailable": crate::host_watch::unavailable(),
-            }),
-        ),
+        ("watch".to_string(), crate::host_watch::json(watch.as_ref())),
     ])
 }
 

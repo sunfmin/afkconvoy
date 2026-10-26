@@ -438,6 +438,17 @@ impl std::fmt::Display for Answered {
 
 impl std::error::Error for Answered {}
 
+/// A line of the host's watch, as the host runner's log says it.
+fn watch_said(what: &log::What) -> String {
+    let entry = log::Entry {
+        at: crate::clock(),
+        instance: crate::host_watch::INSTANCE.into(),
+        host: crate::this_host(),
+        what: what.clone(),
+    };
+    entry.said()
+}
+
 /// The pid of this host's runner, as its lock says the last one to hold it;
 /// `None` where none ever did, or the cache directory is not known.
 pub fn pid() -> Option<u32> {
@@ -609,21 +620,15 @@ fn held_host(
     };
     let (log, stop, moving) = (Arc::clone(log), stop.clone(), AtomicBool::new(false));
     let runner = Arc::new(Runner { list, log, stop: stop.clone(), moving, held, panel, shared });
+    // The host runner watches its host where a watch directory is set.
     let watching = {
         let (list, log) = (runner.list.clone(), Arc::clone(&runner.log));
         crate::host_watch::HostWatch::start(
-            runner.list.clone(),
             runner.stop.clone(),
             runner.shared.watch.clone(),
             move |what| {
-                let entry = log::Entry {
-                    at: crate::clock(),
-                    instance: "host-watch".into(),
-                    host: crate::this_host(),
-                    what: what.clone(),
-                };
-                log.say(&entry.said());
-                crate::host_watch::append_to_tick_logs(&list, what);
+                log.say(&watch_said(&what));
+                crate::host_watch::append_to_tick_logs(&list, &what);
             },
         )
     };
@@ -2141,21 +2146,10 @@ pub fn foreground(checkout: &Repo, start: &Start, settings: host_settings::Named
     let Reach { wakes } = reach;
     let watching = {
         let list = List::of_host()?;
-        crate::host_watch::HostWatch::start(
-            list.clone(),
-            stop.clone(),
-            shared.watch.clone(),
-            move |what| {
-                let entry = log::Entry {
-                    at: crate::clock(),
-                    instance: "host-watch".into(),
-                    host: crate::this_host(),
-                    what: what.clone(),
-                };
-                println!("{}", entry.said());
-                crate::host_watch::append_to_tick_logs(&list, what);
-            },
-        )
+        crate::host_watch::HostWatch::start(stop.clone(), shared.watch.clone(), move |what| {
+            println!("{}", watch_said(&what));
+            crate::host_watch::append_to_tick_logs(&list, &what);
+        })
     };
     let holder = Holder { stop: stop.instance(), echo, wakes, shared, show: Some(show) };
     let held = instance::hold(checkout, start, holder);

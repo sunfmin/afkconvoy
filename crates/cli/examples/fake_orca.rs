@@ -3,7 +3,7 @@
 //!
 //! State: `repos` [{id, path}], `root` (where worktrees are made), `worktrees`
 //! [{path, branch, linkedIssue, repoId, lastActivityAt}], `terminals` [{handle,
-//! worktreePath, command, sent, open, agent?, lastOutputAt?, screen?}], `calls`,
+//! worktreePath, command, title?, sent, open, agent?, lastOutputAt?, screen?}], `calls`,
 //! `envs`: beside each of `calls`, the names of the session's environment it
 //! ran in (`fake::State`), and `from`: the directory each call was run from,
 //! which real orca takes the current worktree from where a call names none.
@@ -228,9 +228,10 @@ fn terminal_create(st: &mut State) -> ! {
         .map_or(command, |(_, command)| command);
     let command = command.to_string();
     let handle = format!("term-{}", st.list("terminals").len() + 1);
+    let title = st.opt("--title").map(str::to_string);
     st.list("terminals")
         .push(json!({"handle": handle, "worktreePath": path, "command": command, "line": given,
-        "sent": [], "open": true}));
+        "title": title, "sent": [], "open": true}));
     done(st, json!({"terminal": {"handle": handle, "worktreePath": path}}))
 }
 
@@ -362,8 +363,12 @@ fn terminal_read(st: &State) -> ! {
 
 fn terminal_close(st: &mut State) -> ! {
     if st.opt("--terminal").is_some() {
-        let Some(at) = question_at(st) else { fail(st, "terminal_handle_stale") };
-        st.doc["questions"][at]["open"] = json!(false);
+        if let Some(at) = question_at(st) {
+            st.doc["questions"][at]["open"] = json!(false);
+            done(st, json!({"close": {"ptyKilled": true}}))
+        }
+        let Some(at) = terminal_at(st) else { fail(st, "terminal_handle_stale") };
+        st.doc["terminals"][at]["open"] = json!(false);
         done(st, json!({"close": {"ptyKilled": true}}))
     }
     let path = selected(st);
