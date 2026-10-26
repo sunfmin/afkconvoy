@@ -81,6 +81,8 @@ fn real_claude_skills_keep_host_ancestors_opt_in() {
     for layout in ["role-ancestor", "project-ancestor", "fleet-cache"] {
         let fixture = root.join(layout);
         let home = fixture.join("host");
+        let mut host_rules = afkconvoy::kept::host_rules(Harness::ClaudeCode);
+        host_rules.extend(Harness::ClaudeCode.host_rule_excludes(&text(&home)));
         let role = match layout {
             "role-ancestor" => home.join("role"),
             "fleet-cache" => home.join(".cache/afkconvoy/copies/acme/dev/abc"),
@@ -144,6 +146,7 @@ fn real_claude_skills_keep_host_ancestors_opt_in() {
                 guard: &format!("{} guard", quoted(env!("CARGO_BIN_EXE_afkconvoy"))),
                 kept: &text(&kept),
                 host_user,
+                host_rules: &host_rules,
                 dsh_profile: afkconvoy_core::team::DshProfile::Fleet,
                 shadowed: &[],
                 told: Told::default(),
