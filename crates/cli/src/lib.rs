@@ -1766,6 +1766,7 @@ enum Command {
     /// - `recorded`: true only when the run is on record as a pass of the commit's tree
     /// - `detail`: what to do next, in words
     /// - `exit_code`, `timed_out`, `command`, `head`: the run: the gate command, its exit code, and the commit it ran on. A run ended at the gate limit is red, with exit_code {const:TIMED_OUT_CODE} and timed_out true, and `detail` says so, and what the limit is
+    /// - `termination`: null unless the gate command ended by a signal outside the gate limit; then {pid, signal, core_dumped} from its wait status. Its pid also names its process group. `exit_code` stays -1 for compatibility and `timed_out` is false. The detail, stderr and tick log retain the evidence: the sender is unknown and repository checks may not have started. Inspect harness/tool cancellation and host process logs with that pid and signal before running the gate again. An ordinary shell exit such as 137 is an exit code, not proof of a signal
     /// - `seconds`: how long the whole gate command ran, in whole seconds, as this command measured it. The fleet does not know the gate's steps: which of them is slow is for the gate to print. A green run's record keeps it; a red run leaves no record, and so no time
     /// - `locks`: on a red run with a fleet lock standing: the locks. The base branch may be what is red: declare nothing of it, stop, and run this again when told to carry on
     /// - `merged`: with `--train`: the commit that was merged in
@@ -1838,7 +1839,7 @@ enum Command {
     ///
     /// - `idle`: nothing is on the train
     /// - `conflict`: with "files" and "worktree": resolve, commit the merge, run it again
-    /// - `gate_red`: with "commit", "prs" and "gate" {status, exit_code, timed_out, seconds, command, excerpt}: fix the train with one more commit here, run it again. A run ended at the gate limit has exit_code {const:TIMED_OUT_CODE} and timed_out true, and "detail" says so, and what the limit is
+    /// - `gate_red`: with "commit", "prs" and "gate" {status, exit_code, timed_out, seconds, command, excerpt, termination}: fix the train with one more commit here, run it again. A run ended at the gate limit has exit_code {const:TIMED_OUT_CODE} and timed_out true, and "detail" says so, and what the limit is. `termination` is null unless a signal ended the gate command outside its limit; then {pid, signal, core_dumped}, as `afkconvoy gate --help` describes, also retained in the excerpt and PR comment
     /// - `target_moved`: the base branch moved while the gate ran; nothing landed — run it again
     /// - `landed`: with "commit", "prs", "gate" {status, source, command, at, seconds, host}, "landed" [{issue, pr, commit}] — an inspection's PR with "inspection" (its host) for "issue" — "unmerged" (PRs GitHub still shows open) and "more": true when the train grew meanwhile. "seconds" and "host" are how long the gate command ran and where, as the run that answered says — the one on record ("source": "recorded") or the one made now ("run"); a run recorded with no time has neither
     ///
