@@ -29,7 +29,8 @@ fn run(world: &World, ticks: &str) -> Vec<String> {
 fn run_with(world: &World, ticks: &str, more: impl Fn(&mut Command)) -> Vec<String> {
     let mut command = world.command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone);
     world.host_sleeps(&mut command);
-    let args = ["run", "--foreground", "--instance", "alpha", "--host", "h1"];
+    let args =
+        ["run", "--tracker", "default", "--foreground", "--instance", "alpha", "--host", "h1"];
     let pacing = ["--second-ms", "0", "--ticks", ticks, "--host-sleep-after", "0"];
     command.args(args).args(pacing);
     more(&mut command);
@@ -51,7 +52,8 @@ fn last_check(world: &World) -> Value {
 fn hold(world: &World, dir: &Path, args: &[&str]) -> Value {
     let mut command = world.command(env!("CARGO_BIN_EXE_afkconvoy"), dir);
     world.host_sleeps(&mut command);
-    let out = command.args(["run", "--host", "h1"]).args(args).output().unwrap();
+    let out =
+        command.args(["run", "--tracker", "default", "--host", "h1"]).args(args).output().unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(out.status.success(), "{stdout}\n{}", String::from_utf8_lossy(&out.stderr));
     serde_json::from_str(stdout.lines().last().unwrap()).unwrap()
@@ -176,7 +178,8 @@ fn an_instance_idle_less_than_ten_minutes_makes_no_check() {
     let world = worked();
     let mut command = world.command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone);
     world.host_sleeps(&mut command);
-    let args = ["run", "--foreground", "--instance", "alpha", "--host", "h1"];
+    let args =
+        ["run", "--tracker", "default", "--foreground", "--instance", "alpha", "--host", "h1"];
     let pacing = ["--second-ms", "0", "--ticks", "3", "--host-sleep-hours", "default"];
     let out = command.args(args).args(pacing).output().unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);

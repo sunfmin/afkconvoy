@@ -42,11 +42,31 @@ pub struct OptionLine {
 /// all its options. `setting` is the corresponding flag's name.
 #[derive(Debug, Serialize)]
 pub struct Ask {
-    pub setting: &'static str,
+    setting: Setting,
     question: &'static str,
     default: String,
     recommend: &'static str,
     options: Vec<OptionLine>,
+}
+
+/// A question's setting. Adding one requires deciding whether an unanswered
+/// value refuses `run`, as well as supplying its shared question.
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum Setting {
+    Tracker,
+    HostSleep,
+    Concurrency,
+}
+
+impl std::fmt::Display for Setting {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Setting::Tracker => "tracker",
+            Setting::HostSleep => "host-sleep",
+            Setting::Concurrency => "concurrency",
+        })
+    }
 }
 
 /// Every first-start question, including concurrency, whose default may
@@ -58,7 +78,7 @@ pub fn questions() -> Vec<Ask> {
     };
     vec![
         Ask {
-            setting: "tracker",
+            setting: Setting::Tracker,
             question: "Which private repo should hold this checkout's fleet issues?",
             default: "the checkout's own repo, only when private".into(),
             recommend: "Use a private tracker already used by your other checkouts, listed by `afkconvoy checkouts`; otherwise use this repo when private. Two people working one repo need their own trackers.",
@@ -72,7 +92,7 @@ pub fn questions() -> Vec<Ask> {
             ],
         },
         Ask {
-            setting: "host-sleep",
+            setting: Setting::HostSleep,
             question: "May the fleets put this host to sleep, and during which hours?",
             default: afkconvoy_core::host_sleep::SLEEP_HOURS.to_string(),
             recommend: "On macOS, use the default hours unless this host must stay awake; on any other host, choose never (`--no-host-sleep`).",
@@ -83,7 +103,7 @@ pub fn questions() -> Vec<Ask> {
             ],
         },
         Ask {
-            setting: "concurrency",
+            setting: Setting::Concurrency,
             question: "How many claims should this checkout's fleet hold at work at once on this host?",
             default: afkconvoy_core::config::CONCURRENCY.to_string(),
             recommend: "Start with the default, then change it to what this host can carry.",
@@ -125,9 +145,9 @@ pub fn check(checkout: &Repo, start: &Start, settings: &host_settings::Named) ->
     let asks: Vec<_> = questions()
         .into_iter()
         .filter(|ask| match ask.setting {
-            "tracker" => tracker,
-            "host-sleep" => sleep,
-            _ => false,
+            Setting::Tracker => tracker,
+            Setting::HostSleep => sleep,
+            Setting::Concurrency => false,
         })
         .collect();
     if !asks.is_empty() {
