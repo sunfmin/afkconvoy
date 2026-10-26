@@ -434,7 +434,9 @@ pub struct Record {
 impl Record {
     /// Whether it took every step: the version is published and installed.
     pub fn done(&self) -> bool {
-        self.failed.is_none() && self.took.last().is_some_and(|took| took.step == Step::Publish)
+        self.failed.is_none()
+            && self.superseded.is_none()
+            && self.took.last().is_some_and(|took| took.step == Step::Publish)
     }
 
     /// The step it is at, or was last: where a cut that ended short of its
@@ -781,6 +783,29 @@ mod tests {
         assert!(!starts(&due, 0, 0, false, true), "admission holds back");
         let tagged = row(&Seen { past: 0, ..seen() }, None, &[], 1000, false);
         assert!(!starts(&tagged, 0, 0, false, false));
+    }
+
+    #[test]
+    fn the_age_bound_starts_a_busy_cut_but_cannot_bypass_its_claim_failure_or_lock() {
+        let seen = Seen { oldest_landing: Some(1000), ..seen() };
+        let before = row(&seen, None, &[], 4599, false);
+        assert_eq!(before.oldest_landing_age_seconds, Some(3599));
+        assert_eq!(before.busy_in_seconds, Some(1));
+        assert!(!starts(&before, 8, 4, true, true));
+        let due = row(&seen, None, &[], 4600, false);
+        assert!(starts(&due, 8, 4, true, true));
+        let locked = row(&seen, None, &[], 4600, true);
+        assert!(!starts(&locked, 8, 4, true, false));
+        let failed = row(&Seen { failure: Some(9), ..seen.clone() }, None, &[], 4600, false);
+        assert!(!starts(&failed, 8, 4, true, false));
+        let running = row(
+            &Seen { claim: Some(claim("peer")), ..seen },
+            None,
+            &[("peer".into(), 4600)],
+            4600,
+            false,
+        );
+        assert!(!starts(&running, 8, 4, true, false));
     }
 
     #[test]

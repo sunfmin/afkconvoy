@@ -369,6 +369,13 @@ pub fn exclusive(
             .and_then(|repo| repo.dir.file_name())
             .and_then(|name| name.to_str())
             .is_some_and(is_train_worktree),
+        cut: checkout
+            .as_ref()
+            .and_then(|repo| repo.dir.file_name())
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| {
+                afkconvoy_core::worker::is_worktree_named(name, afkconvoy_core::cut::CHECKOUT)
+            }),
         asked: now(),
         ran: None,
     };
@@ -521,6 +528,7 @@ mod tests {
             dir: "/w/issue-7".into(),
             issue: Some(7),
             train: false,
+            cut: false,
             asked,
             ran: None,
         }

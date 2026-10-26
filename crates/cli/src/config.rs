@@ -145,6 +145,12 @@ mod tests {
         let cut = parse(&format!("{config}\nTo cut:\n\n{steps}")).unwrap().cut.unwrap();
         assert_eq!(cut.set, "./bump \"$VERSION\"");
         assert_eq!(cut.publish, "./ship\nbrew upgrade x\n");
+        assert_eq!(cut.busy_after_seconds, cut::BUSY_AFTER_SECONDS);
+        let steps = steps.replace("set:", "busy_after_seconds: 120\nset:");
+        assert_eq!(
+            parse(&format!("{config}{steps}")).unwrap().cut.unwrap().busy_after_seconds,
+            120
+        );
         // An afkconvoy that reads the first block alone reads none of it.
         let both = format!("{config}{steps}");
         assert_eq!(yaml_block(&both).unwrap(), "base_branch: main\ngate_command: make\n");

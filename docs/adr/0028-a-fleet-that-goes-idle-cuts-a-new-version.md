@@ -2,7 +2,7 @@
 status: accepted
 ---
 
-# A fleet that goes idle cuts a new version
+# A fleet cuts landed work when idle or past an age bound
 
 A repo whose work the fleet lands is cut by hand: someone notices that `main` is past the newest `v*` tag, bumps the version on a branch, lands it, tags it, publishes it and installs it. On this repo that was a rule in one human's notes, run in their session once the fleet had gone idle: who cut, when, and whether a cut was due were known only there. Work that landed waited for that session to come back.
 
@@ -10,11 +10,17 @@ The fleet cuts a version itself (#466). A **cut** is the run that makes a new ve
 
 ## When
 
-A tick whose pass ends idle — no claim held, nothing on the landing train, an empty frontier, admission holding nothing back — in a repo that turns cutting on, whose base branch holds landed commits past its newest version tag (`v` and three numbers), or whose remote has no version tag and whose cut block declares `initial: X.Y.Z`. Nothing else starts one: no command, no flag, no schedule. Idle is when the work that will be in the version has all landed; a cut started earlier would cut a version the next landing makes stale. `plan` says where a cut stands — due, tagged, untagged, failed, locked, running — so whoever reads it knows whether the next idle tick starts one.
+In a repo that turns cutting on, a tick whose pass ends idle — no claim held, nothing on the landing train, an empty frontier, admission holding nothing back — starts a cut when its base branch holds landed commits past its newest version tag (`v` and three numbers), or its remote has no version tag and its cut block declares `initial: X.Y.Z`.
+
+Landed work also starts a cut at the first tick at or after the oldest landing past the newest tag reaches the repo's age bound: `busy_after_seconds` in the cut block, 3600 seconds (60 minutes) by default (sunfmin/control#106). Its age is measured from the committer time of the first first-parent commit past that tag, the time it landed, rather than a side branch's earlier commits. Claims, the landing train, the frontier and admission holding workers back do not hold this cut back. A fleet lock, an open cut failure and a live cut claim still do. An untagged initial cut remains idle-only.
+
+At concurrency eight the fleet went 158 ticks without an idle end on 26 October 2026, leaving fixes already landed uninstalled for hours. Waiting for every claim makes the slowest worker set the release time. A version that the next landing makes stale is acceptable: the next cut picks that work up, and the age bound prevents indefinite waiting without stopping admission. The cut starts from the base branch as it stands; work still in flight goes into a later version. No command, flag or fixed schedule starts one.
+
+`plan` says where a cut stands — due, tagged, untagged, failed, locked, running — and gives `oldest_landing_age_seconds` and `busy_in_seconds` (zero once the bound is reached, null without a landing past a tag). The tick line that starts a cut says `fleet idle` or `fleet busy`, after the pass has admitted work.
 
 ## Once
 
-A cut is claimed on the remote as a patrol's run is (`refs/convoy/claim/cut`): of the fleets of a repo, on whichever hosts, one wins; the rest say `lost`. The tick that wins reads the version tags again before it picks the version: a peer may have cut since the rebuild. One cut runs at a time; the next starts when the fleet next goes idle with commits past the tag the last one pushed.
+A cut is claimed on the remote as a patrol's run is (`refs/convoy/claim/cut`): of the fleets of a repo, on whichever hosts, one wins; the rest say `lost`. The tick that wins reads the version tags again before it picks the version: a peer may have cut since the rebuild. One cut runs at a time; the next starts when the fleet next goes idle with commits past the tag the last one pushed, or their oldest landing reaches the age bound.
 
 ## Who
 
@@ -34,13 +40,19 @@ It merges nothing outside the landing train and pushes nothing to the base branc
 
 ## Failure
 
-A cut that failed at a step, ran out of time, or whose terminal is gone with nothing said opens one issue under the escalate label, `afkconvoy: the cut of v<version> failed`: which step failed, why, what it did before, and the line that goes on from there — `afkconvoy cut --from <step>`, in its checkout, which is kept. No cut starts while that issue is open, as no patrol runs while its failed run's is (ADR-0008). Going on from the step closes it; closing it by hand has the fleet cut again from the start — but for a cut that failed at `publish`, whose tag is pushed: that version stays unpublished, and the next cut is of the version after it. A PR labelled `release:minor` that lands while a cut runs fails it at `tag`, before the tag: the version it set is a patch, and the cut that starts once the issue is closed picks the minor.
+A cut that failed at a step, ran out of time, or whose terminal is gone with nothing said opens one issue under the escalate label, `afkconvoy: the cut of v<version> failed`: which step failed, why, what it did before, and the line that goes on from there — `afkconvoy cut --from <step>`, in its checkout, which is kept. No cut starts while that issue is open, as no patrol runs while its failed run's is (ADR-0008). Going on from the step closes it; closing it by hand has the fleet cut again from the start — but for a cut that failed at `publish`, whose tag is pushed: that version stays unpublished, and the next cut is of the version after it.
+
+A PR labelled `release:minor` that lands while a patch cut runs is an expected stop at `tag`: it tags and publishes nothing, records why it was superseded and opens no failure issue. The tag step checks landings up to the current base branch, including a minor that landed after the version's own PR. The next tick ends that cut, releases its remote claim, removes its checkout, and starts the minor cut in the same pass, unless a fleet lock stands. A declared initial version remains exact.
 
 Its time: two gate limits — its own gate and the train's — and an hour beside, three hours at the default `gate_seconds`. A cut out of time at `land` leaves its PR on the train, which may still land it; the next cut finds the version set by lines that change nothing, finds that landing past the tag, and tags it.
+
+A cut's exclusive commands have the landing train's priority (ADR-0019, sunfmin/control#104), determined by its cut worktree, and preserved when the host runner is replaced. Trains and cuts keep request order among themselves, ahead of waiting worker and inspection commands. Neither interrupts a running command; ADR-0031's contention bound still applies. Thus an arbitrary queue of workers' gates cannot consume the cut's time limit, nor its own gate limit or the train gate's. Queue waits still count toward those limits; this changes priority rather than suspending the cut's clock.
 
 ## Turning it on
 
 The repo names its cut steps in its config file, in a block of their own opened by ```` ```yaml cut ````: `set` and `publish`, each run by `sh -e` in the cut's checkout with the version in `$VERSION`: the first line that fails fails the step, as a release script's would. By `sh` alone the lines after it would run, and the last one's status would stand for them all — a publish that failed, followed by an install that found nothing newer, would pass. The config's own ```` ```yaml ```` block refuses a key it does not know, so a key there would make every afkconvoy older than this one refuse the repo's config once the change lands on the base branch — every fleet of the repo, on every host not yet upgraded. An older afkconvoy reads only the first block whose line is ```` ```yaml ```` alone, and reads past this one.
+
+The optional `busy_after_seconds` key belongs beside `set` and `publish` in that cut block, not in the config's first block. Leaving it out means 3600 seconds; zero means the next tick may cut while busy. Older versions that read only the first yaml block still read the config unchanged.
 
 ## The first cut (sunfmin/control#67)
 
@@ -53,14 +65,15 @@ Choosing an explicit version instead of inferring it from files keeps the versio
 ## Considered options
 
 - **A model session in a role, as an inspection is.** Refused: the steps are known, and a model adds only a way to do them differently each time. What needs judgement — a step that failed — is a human's, through the issue.
-- **Cut on a schedule, or by a command a human runs.** Refused: a schedule cuts in the middle of work, and a command is the human session this replaces.
+- **Cut on a schedule.** Refused in favor of the oldest landing's age bound: a fixed schedule can cut moments after one landing and make another wait a whole interval. The bound follows actual landed work, while idle still cuts promptly. Cutting in the middle of work is acceptable; unbounded delay is not.
+- **Cut by a command a human runs.** Refused: it is the human session this replaces, and ordinary landings would still wait.
 - **Cut after every landing.** Refused: a version per PR, each published and installed, while the next PR is a gate away.
 - **Cut steps as keys of the config.** Refused for the older afkconvoy that refuses an unknown key (above).
 - **Tag the base branch's tip, and push the version commit to it.** Refused: the fleet pushes nothing to the base branch but through the landing train; the tag goes on the commit that landed the version.
 
 ## Consequences
 
-- A repo that turns cutting on is cut whenever its fleet goes idle with landed work: its published version follows its base branch without a human session.
+- A repo that turns cutting on is cut whenever its fleet goes idle with landed work, or the oldest landing reaches its age bound while busy: its published version follows its base branch without a human session.
 - A join commit names the issue its PR closes, the inspection that made it, or the cut and its host; what reads the train reads any, and a cut's PR closes no issue.
 - A fleet that gives the train up joins a cut's PR again itself, as it does an inspection's.
 - `plan` has a `cut` row in a repo that turns cutting on; `doctor` warns while a failed cut's issue is open.

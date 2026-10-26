@@ -221,6 +221,7 @@ impl Pass {
             ) && matches!(
                 outcome,
                 Outcome::Done
+                    | Outcome::Superseded
                     | Outcome::HandedOn
                     | Outcome::Nudged
                     | Outcome::Continued
@@ -306,7 +307,7 @@ fn dispatched(did: &[(TickStep, Outcome)], issue: u64) -> bool {
 /// claims, then the due patrols, then frontier issues into the free slots,
 /// lowest number first, then the due proposals of precedents — none of
 /// these while admission holds (`WorkingSet::held_back`) —
-/// start the repo's cut where it is due and the pass ends idle
+/// start the repo's cut where it is due and the pass ends idle or the age bound is reached
 /// (`cut::starts`), having ended one of mine that is over beside the patrols,
 /// open the issue for a slow gate that has none, bring the status boards and the `stage:` labels up to date, then refresh
 /// the heartbeat — while a claim is held, a cut's among them. `carry_out` performs one
@@ -360,7 +361,7 @@ where
         did.push((step, carry_out(step)));
     }
     let held = admit(set, concurrency, held, &mut did, &mut carry_out);
-    // Once the pass has taken every slot it takes: a cut starts from an idle end.
+    // After admission, so a cut's start names how the fleet actually ends.
     let left = set.frontier.iter().filter(|issue| !dispatched(&did, issue.number)).count();
     let held_back = !set.held_back.is_empty();
     let superseded = did.contains(&(TickStep::EndCut, Outcome::Superseded)) && set.locks.is_empty();
@@ -1711,6 +1712,26 @@ mod tests {
             quiet.cut = cut(not_due);
             assert_eq!(steps(&run_pass(&quiet, 3, 0, |_| Done)), [], "{not_due:?}");
         }
+    }
+
+    #[test]
+    fn an_overdue_cut_starts_with_a_full_fleet_and_a_superseded_patch_cuts_again() {
+        use crate::cut::Standing as Cutting;
+        let mut busy = set(&[9], &[(5, Status::Joined)]);
+        busy.cut = cut(Cutting::Due);
+        busy.cut.as_mut().unwrap().busy_in_seconds = Some(0);
+        let pass = run_pass(&busy, 1, 1, |step| {
+            if matches!(step, TickStep::Cut { busy: true }) { Done } else { Nothing }
+        });
+        assert!(steps(&pass).contains(&TickStep::Cut { busy: true }));
+        assert_eq!((pass.held, pass.frontier_remaining), (1, 1));
+        assert!(pass.cutting(&busy));
+
+        busy.cut = cut(Cutting::Running);
+        let perform = |step| if step == EndCut { Superseded } else { Done };
+        assert!(steps(&run_pass(&busy, 1, 1, perform)).contains(&TickStep::Cut { busy: true }));
+        busy.locks = vec![5];
+        assert!(!steps(&run_pass(&busy, 1, 1, perform)).contains(&TickStep::Cut { busy: true }));
     }
 
     #[test]

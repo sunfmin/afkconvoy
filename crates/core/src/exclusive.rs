@@ -24,6 +24,10 @@ pub struct Ticket {
     /// Older askers name no priority and remain ordinary commands.
     #[serde(default)]
     pub train: bool,
+    /// A cut's command has the same priority as a train's, so workers'
+    /// queued gates cannot run out its gate or cut limit.
+    #[serde(default)]
+    pub cut: bool,
     /// When it asked to run, in epoch seconds: within each priority the one
     /// that asked first runs first, including in the next host runner.
     pub asked: u64,
@@ -49,13 +53,13 @@ pub fn in_order(mut queue: Vec<Ticket>) -> Vec<Ticket> {
 /// every one that waits, then trains before other waiters, then the one
 /// that asked first, then the one that joined first.
 fn place(ticket: &Ticket) -> (bool, bool, u64, u64) {
-    (ticket.ran.is_none(), !ticket.train, ticket.asked, ticket.number)
+    (ticket.ran.is_none(), !(ticket.train || ticket.cut), ticket.asked, ticket.number)
 }
 
 /// How many earlier ordinary commands `ticket` runs ahead of as a train's
 /// command gets its turn. Commands already running are never passed.
 pub fn runs_ahead_of(ticket: &Ticket, queue: &[Ticket]) -> usize {
-    if !ticket.train {
+    if !ticket.train && !ticket.cut {
         return 0;
     }
     queue
@@ -63,6 +67,7 @@ pub fn runs_ahead_of(ticket: &Ticket, queue: &[Ticket]) -> usize {
         .filter(|other| {
             other.ran.is_none()
                 && !other.train
+                && !other.cut
                 && (other.asked, other.number) < (ticket.asked, ticket.number)
         })
         .count()
@@ -129,6 +134,9 @@ pub fn runs_line(ticket: &Ticket, now: u64, ahead_of: usize) -> String {
             "runs ahead of {ahead_of} waiting commands, as the landing train's; {line}"
         );
     }
+    if ticket.cut {
+        return format!("runs ahead of {ahead_of} waiting commands, as a cut's; {line}");
+    }
     line
 }
 
@@ -151,6 +159,7 @@ mod tests {
             dir: dir.into(),
             issue: Some(7),
             train: false,
+            cut: false,
             asked,
             ran: None,
         }

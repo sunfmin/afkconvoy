@@ -497,6 +497,7 @@ mod tests {
             dir: "/w".into(),
             issue: Some(46),
             train: false,
+            cut: false,
             command: "cargo test".into(),
             asked: 1000,
             ran: None,

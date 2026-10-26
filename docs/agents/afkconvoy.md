@@ -67,7 +67,8 @@ bounds only the heavy step.
 ## Cutting a version
 
 The fleet cuts each version of afkconvoy itself, once it goes idle with landed
-work past the newest `v*` tag: it sets the version, lands it through the
+work past the newest `v*` tag, or the oldest landing has waited 60 minutes
+while busy: it sets the version, lands it through the
 landing train, tags it, and publishes and installs it on its host
 (`afkconvoy cut --help`, `docs/adr/0028`). These are its steps, and the one
 place they are written. Each is run by `sh` in the cut's checkout, with the
@@ -82,6 +83,7 @@ patch/minor selection applies and the declaration is ignored. `plan` shows
 the declaration as `cut.initial` while there is no version tag.
 
 ```yaml cut
+busy_after_seconds: 3600
 set: |
   set -ex
   packaging/release.sh set "$VERSION"

@@ -324,7 +324,7 @@ fn two_commands_of_two_repos_fleets_run_one_after_the_other_in_the_order_they_as
 }
 
 #[test]
-fn two_repos_trains_gate_ahead_of_waiting_workers_without_interrupting_what_runs() {
+fn trains_and_cuts_gate_ahead_of_waiting_workers_without_interrupting_what_runs() {
     let (first, second) = (World::new(), World::new());
     let binary = env!("CARGO_BIN_EXE_afkconvoy");
     let gate = afkconvoy_core::line::Line::new()
@@ -332,7 +332,7 @@ fn two_repos_trains_gate_ahead_of_waiting_workers_without_interrupting_what_runs
         .fixed(" exclusive -- sh -c ")
         .word("echo \"$MARK\" >> \"$CACHE/order\"")
         .own();
-    first.set_gate(&gate);
+    first.set_gate_config(&format!("gate_command: {gate}\ngate_seconds: 2"));
     second.set_gate(&gate);
     let worker = second.worker(7, "seven.txt", "7\n");
     assert_eq!(second.afk_in(&worker, &["land", "--issue", "7"]).ok()["outcome"], "joined");
@@ -346,6 +346,7 @@ fn two_repos_trains_gate_ahead_of_waiting_workers_without_interrupting_what_runs
     };
     let train_a = train(&first, "convoy-train-2");
     let train_b = train(&second, "convoy-train");
+    let cut = train(&first, "afkconvoy-cut-2");
     let cache = first.cache();
     let _host_runner = first.host_held();
     let order = cache.join("order");
@@ -374,12 +375,16 @@ fn two_repos_trains_gate_ahead_of_waiting_workers_without_interrupting_what_runs
     // it must not confer the train worker's priority.
     let worker_a = run(&first, &first.clone, "worker-a", &["gate", "--train"]);
     until(|| tickets(&first) == 2);
-    let worker_b = exclusive(&second, &cache, 22, "echo worker-b >> \"$CACHE/order\"");
+    let worker_b = exclusive(&second, &cache, 22, "sleep 3; echo worker-b >> \"$CACHE/order\"");
     until(|| tickets(&first) == 3);
     let first_train = run(&first, &train_a, "train-a", &["gate", "--train"]);
     until(|| tickets(&first) == 4);
     let second_train = run(&second, &train_b, "train-b", &["land", "--train"]);
     until(|| tickets(&first) == 5);
+    // A cut's gate has only two seconds, less than the three-second worker
+    // already queued. It must get the same priority as the train to pass.
+    let cutting = run(&first, &cut, "cut", &["gate", "--train"]);
+    until(|| tickets(&first) == 6);
     let shown = first.afk(&["doctor", "--host", "h1"]).json;
     let queue = &shown["host"]["exclusive"];
     assert_eq!(queue["running"]["issue"], 11, "{queue}");
@@ -389,27 +394,32 @@ fn two_repos_trains_gate_ahead_of_waiting_workers_without_interrupting_what_runs
         .iter()
         .map(|t| Path::new(t["dir"].as_str().unwrap()).file_name().unwrap().to_str().unwrap())
         .collect();
-    assert_eq!(dirs, ["convoy-train-2", "convoy-train", "clone", "clone"]);
+    assert_eq!(dirs, ["convoy-train-2", "convoy-train", "afkconvoy-cut-2", "clone", "clone"]);
     assert_eq!(lines(&order), ["holder-start"], "priority never interrupts the holder");
     std::fs::write(cache.join("release"), "").unwrap();
-    for child in [held, first_train, second_train, worker_a, worker_b] {
+    for child in [held, first_train, second_train, cutting, worker_a, worker_b] {
         let out = child.wait_with_output().unwrap();
         assert!(out.status.success(), "{}", text(&out.stderr));
+        if let Ok(answer) = serde_json::from_slice::<serde_json::Value>(&out.stdout) {
+            if answer.get("status").is_some() {
+                assert_eq!(answer["status"], "green", "{answer}");
+                assert_eq!(answer["recorded"], true, "{answer}");
+            }
+        }
     }
     assert_eq!(
         lines(&order),
-        ["holder-start", "holder-end", "train-a", "train-b", "worker-a", "worker-b"]
+        ["holder-start", "holder-end", "train-a", "train-b", "cut", "worker-a", "worker-b"]
     );
     until(|| tickets(&first) == 0);
     let passed: Vec<_> =
         logged(&cache).into_iter().filter(|line| line.contains("runs ahead of")).collect();
-    assert_eq!(passed.len(), 2, "{passed:?}");
+    assert_eq!(passed.len(), 3, "{passed:?}");
     assert!(
-        passed
-            .iter()
-            .all(|line| line.contains("runs ahead of 2 waiting commands, as the landing train's")),
+        passed.iter().all(|line| line.contains("runs ahead of 2 waiting commands")),
         "{passed:?}"
     );
+    assert!(passed.iter().any(|line| line.contains("as a cut's")), "{passed:?}");
 }
 
 #[test]

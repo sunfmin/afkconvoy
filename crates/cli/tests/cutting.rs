@@ -411,11 +411,36 @@ fn a_busy_fleet_cuts_at_the_age_bound_with_claims_and_a_frontier_left() {
     let before = tick_as(&world, "alpha", landed + 3599);
     assert!(cut(&before).is_empty(), "{before}");
     assert!(!claimed(&world));
+    let plan = planned(&world, "alpha", landed + 3599);
+    assert_eq!(plan["cut"]["oldest_landing_age_seconds"], 3599, "{plan}");
+    assert_eq!(plan["cut"]["busy_in_seconds"], 1, "{plan}");
     let at_bound = tick_as(&world, "alpha", landed + 3600);
     assert_eq!(cut(&at_bound), ["cut done"], "{at_bound}");
+    assert_eq!(at_bound["held"], 3, "the cut takes no slot: {at_bound}");
+    assert_eq!(at_bound["frontier_remaining"], 1, "{at_bound}");
+    assert!(logged(&world).iter().any(|line| line.contains("fleet busy")));
     assert!(claimed(&world));
     assert_eq!(standing(&world, "beta", landed + 3601), "peer_running");
     assert!(cut(&tick_as(&world, "beta", landed + 3601)).is_empty());
+}
+
+#[test]
+fn a_repo_can_shorten_the_busy_bound_and_admission_does_not_hold_an_overdue_cut() {
+    let world = World::new();
+    commit_config(
+        &world,
+        &format!(
+            "{CONFIG}\n{}",
+            cut_block(&says_published(&world)).replace("set:", "busy_after_seconds: 120\nset:")
+        ),
+        "Turn cutting on",
+    );
+    tag(&world, "v0.1.0");
+    land(&world, "Add a widget (#9)");
+    let landed: u64 = git(&world.clone, &["log", "-1", "--format=%ct"]).trim().parse().unwrap();
+    world.busy("1000");
+    assert!(cut(&tick_as(&world, "alpha", landed + 119)).is_empty());
+    assert_eq!(cut(&tick_as(&world, "alpha", landed + 120)), ["cut done"]);
 }
 
 #[test]
@@ -427,6 +452,7 @@ fn an_idle_tick_starts_one_cut_of_the_next_patch_and_a_peer_starts_none() {
     assert_eq!(record["version"], "0.1.1", "{record}");
     assert_eq!(record["prs"], json!([7]), "{record}");
     assert!(claimed(&world));
+    assert!(logged(&world).iter().any(|line| line.contains("fleet idle")));
     // The cut is this command, in a terminal of its checkout.
     let created =
         world.orca_calls().into_iter().filter(|call| common::asked(call) == "terminal create");
