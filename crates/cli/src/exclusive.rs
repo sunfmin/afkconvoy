@@ -334,7 +334,8 @@ impl Queue {
     pub fn pause(&self) -> usize {
         let mut joined = self.joined();
         joined.paused = true;
-        joined.tickets.iter().filter(|ticket| ticket.ran.is_some()).count()
+        self.with_leases(&joined)
+            .map_or(1, |tickets| tickets.iter().filter(|ticket| ticket.ran.is_some()).count())
     }
 
     /// Lets commands start again if the installed release changed before

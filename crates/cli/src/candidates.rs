@@ -746,21 +746,9 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
             .ok_or_else(|| anyhow!("candidate green record expired"))?;
         let landed = c.commit.clone();
         c.phase = Phase::Landed;
+        let publishing = c.clone();
         let next = commit(repo, &snapshot)?;
-        let pushed = publish(
-            repo,
-            config,
-            (
-                &landed,
-                &candidate.original_head,
-                &candidate.branch,
-                &base,
-                snapshot.sha.as_deref().context("candidate record disappeared")?,
-            ),
-            &next,
-            &proof,
-            &publication,
-        )?;
+        let pushed = publish(repo, config, &publishing, &snapshot, &next, &proof, &publication)?;
         if !pushed {
             if crate::turn::base(repo, config)? != base {
                 continue;
@@ -795,17 +783,23 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
 fn publish(
     repo: &Repo,
     config: &Config,
-    (candidate, head, branch, base, old_state): (&str, &str, &str, &str, &str),
+    candidate: &Candidate,
+    snapshot: &Snapshot,
     state: &str,
     proven: &Proven,
     _publication: &Publication,
 ) -> Result<bool> {
+    let commit = &candidate.commit;
+    let head = &candidate.original_head;
+    let branch = &candidate.branch;
+    let base = &candidate.predecessor;
+    let old_state = snapshot.sha.as_deref().context("candidate record disappeared")?;
     ensure!(
-        repo.git(&["rev-parse", &format!("{candidate}^{{tree}}")])? == proven.tree(),
+        repo.git(&["rev-parse", &format!("{commit}^{{tree}}")])? == proven.tree(),
         "candidate tree differs from recorded proof"
     );
     ensure!(
-        repo.git(&["rev-parse", &format!("{candidate}^1")])? == base,
+        repo.git(&["rev-parse", &format!("{commit}^1")])? == *base,
         "candidate does not fast-forward its expected predecessor"
     );
     ensure!(
@@ -820,7 +814,7 @@ fn publish(
         &[
             crate::publication::Update { name: &source_ref, old: head, new: head },
             crate::publication::Update { name: &state_ref, old: old_state, new: state },
-            crate::publication::Update { name: &base_ref, old: base, new: candidate },
+            crate::publication::Update { name: &base_ref, old: base, new: commit },
         ],
     )
 }
