@@ -790,3 +790,124 @@ fn successful_recovery_restores_priority_for_new_work_without_moving_the_success
     tick(&world, 4402);
     assert_eq!(open_commands(&world, &worktree(&world, 8)), [common::trusted("agent")]);
 }
+
+fn codex_usage_limit(world: &World) {
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            terminal["screen"] = json!([
+                "■ Usage limit reached. You've reached your usage limit. Increase your limits to continue using codex.",
+                "  Approaching rate limits",
+                "  Switch to gpt-6-luna for lower credit usage?",
+                "› 1. Switch to gpt-6-luna"
+            ]);
+            terminal["agent"] = json!({
+                "state": "done", "outcome": "failure", "programStatus": {"state": "error"}
+            });
+        }
+    });
+}
+
+#[test]
+fn codex_explicit_usage_limit_continues_by_rule_without_a_diagnosis() {
+    let world = blocked();
+    let dir = worktree(&world, 7);
+    let head = git(&dir, &["rev-parse", "HEAD"]);
+    std::fs::write(dir.join("unfinished.txt"), "keep me").unwrap();
+    switch(&world, "750", &["7", "--harness", "codex"]).ok();
+    codex_usage_limit(&world);
+
+    tick(&world, 800);
+
+    assert_eq!(open_commands(&world, &dir), ["agent"]);
+    assert_eq!(git(&dir, &["rev-parse", "HEAD"]), head);
+    assert_eq!(std::fs::read_to_string(dir.join("unfinished.txt")).unwrap(), "keep me");
+    assert_eq!(world.claims().len(), 1);
+    assert!(!world.root.join("diagnosis-asked").exists());
+    let health = world.afk(&["plan", "--now", "801"]).ok();
+    let worker = &health["host_kit"]["worker_health"]["workers"][0];
+    assert_eq!(worker["source"], "terminal rule");
+    assert_eq!(worker["diagnosis"]["class"], "quota");
+    assert_eq!(worker["diagnosis"]["scope"], "account");
+    assert_eq!(worker["action"], "continued");
+    assert!(
+        world
+            .comments(70)
+            .iter()
+            .any(|body| body.contains("codex") && body.contains("claude-code"))
+    );
+}
+
+#[test]
+fn explicit_usage_limit_starts_nothing_until_the_failed_codex_agent_is_gone() {
+    let world = blocked();
+    let dir = worktree(&world, 7);
+    switch(&world, "750", &["7", "--harness", "codex"]).ok();
+    codex_usage_limit(&world);
+    world.with_orca(|orca| orca["close_keeps_terminal"] = json!(true));
+
+    tick(&world, 800);
+
+    assert_eq!(open_commands(&world, &dir), [codex_line(&world, &dir)]);
+    let health = world.afk(&["plan", "--now", "801"]).ok();
+    let worker = &health["host_kit"]["worker_health"]["workers"][0];
+    assert!(worker["error"].as_str().unwrap().contains("termination is unconfirmed"), "{worker}");
+    assert_eq!(worker["successor"], Value::Null);
+    assert_eq!(world.claims().len(), 1);
+}
+
+#[test]
+fn account_quota_wait_without_a_reset_continues_instead_of_diagnosing_again() {
+    let world = blocked();
+    let dir = worktree(&world, 7);
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            terminal["screen"] = json!(["Usage limit reached. Increase your limits to continue."]);
+        }
+    });
+    diagnosis(&world, "quota", "wait", "account", &["Usage limit reached"]);
+
+    tick(&world, 800);
+    tick(&world, 1100);
+
+    assert_eq!(open_commands(&world, &dir), [afkconvoy_core::harness::Harness::Pi.stock()]);
+    let health = world.afk(&["plan", "--now", "1101"]).ok();
+    let worker = &health["host_kit"]["worker_health"]["workers"][0];
+    assert_eq!(worker["action"], "continued");
+    assert_eq!(worker["attempts"], 1);
+    assert_eq!(worker["diagnosis"]["retry_after"], Value::Null);
+    let asked = std::fs::read_to_string(world.root.join("diagnosis-asked")).unwrap();
+    tick(&world, 1400);
+    assert_eq!(std::fs::read_to_string(world.root.join("diagnosis-asked")).unwrap(), asked);
+}
+
+#[test]
+fn invalid_diagnosis_json_falls_through_to_the_next_harness_and_is_logged() {
+    let world = blocked();
+    let dir = worktree(&world, 7);
+    world.kit_command("codex", "codex");
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            terminal["screen"] = json!(["Usage limit reached. Increase your limits to continue."]);
+        }
+    });
+    std::fs::write(world.root.join("diagnosis-answer-pi"), "not JSON").unwrap();
+    diagnosis(&world, "quota", "wait", "account", &["Usage limit reached"]);
+    std::fs::copy(world.root.join("diagnosis-answer"), world.root.join("diagnosis-answer-codex"))
+        .unwrap();
+
+    tick(&world, 800);
+    tick(&world, 1100);
+
+    assert_eq!(open_commands(&world, &dir), [afkconvoy_core::harness::Harness::Pi.stock()]);
+    let path = world.cache().join("afkconvoy/worker-health.json");
+    let book: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    let worker = &book["workers"][0];
+    assert_eq!(worker["source"], "diagnosis:codex");
+    let failure = worker["diagnosis_failures"][0].as_str().unwrap();
+    assert!(
+        failure.contains("pi:")
+            && failure.contains("invalid diagnosis JSON")
+            && failure.contains("not JSON"),
+        "{failure}"
+    );
+}

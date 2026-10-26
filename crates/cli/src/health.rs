@@ -25,6 +25,7 @@ pub const MAX_DIAGNOSES: u32 = 3;
 pub const MAX_RATE_RETRIES: u32 = 2;
 pub const MAX_CONTINUATIONS: u32 = 3;
 pub const RECOVERY_SECONDS: u64 = 3600;
+pub const MAX_QUOTA_WAIT_SECONDS: u64 = RECOVERY_SECONDS;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -104,6 +105,8 @@ struct Observed {
     #[serde(default)]
     window_started: u64,
     diagnosis: Option<Diagnosis>,
+    #[serde(default)]
+    diagnosis_failures: Vec<String>,
     source: String,
     action: String,
     successor: Option<String>,
@@ -144,7 +147,8 @@ pub fn show() -> Value {
             json!({"workers": book.workers, "faults": book.faults, "observations_failed":book.observations_failed,
             "observe_seconds": OBSERVE_SECONDS, "check_seconds": CHECK_SECONDS,
             "diagnosis_seconds": DIAGNOSIS_SECONDS, "max_diagnoses": MAX_DIAGNOSES,
-            "max_rate_retries": MAX_RATE_RETRIES})
+            "max_rate_retries": MAX_RATE_RETRIES,
+            "max_quota_wait_seconds": MAX_QUOTA_WAIT_SECONDS})
         }
         Err(e) => json!({"error": format!("{e:#}")}),
     }
@@ -189,8 +193,35 @@ fn error_of(worktree: &Worktree) -> Result<String> {
     Ok(std::fs::read_to_string(file).unwrap_or_default())
 }
 
+fn terminal_rule(harness: Harness, output: &[String]) -> Option<Diagnosis> {
+    if harness != Harness::Codex {
+        return None;
+    }
+    let screen = output.join("\n");
+    let lower = screen.to_lowercase();
+    if !lower.contains("usage limit reached")
+        || !lower.contains("increase your limits to continue using codex")
+    {
+        return None;
+    }
+    let evidence = output
+        .iter()
+        .find(|line| line.to_lowercase().contains("usage limit reached"))
+        .cloned()
+        .unwrap_or(screen);
+    Some(Diagnosis {
+        status: "fault".into(),
+        class: "quota".into(),
+        scope: Scope::Account,
+        evidence: vec![evidence],
+        action: Action::Continue,
+        missing: vec![],
+        retry_after: None,
+    })
+}
+
 /// Conservative structured/error classification. Plain terminal text is sent
-/// through diagnosis first, even when it appears to name a known fault.
+/// through diagnosis unless the harness's own explicit words decide the fault.
 fn classified(value: &Value) -> Option<Diagnosis> {
     let retry = value
         .get("retry_after")
@@ -670,6 +701,7 @@ fn observe(
             background: None,
             window_started: fleet.now,
             diagnosis: None,
+            diagnosis_failures: vec![],
             source: "observation".into(),
             action: "observing".into(),
             successor: None,
@@ -691,6 +723,7 @@ fn observe(
         observed.rate_retries = 0;
         observed.next_check = fleet.now;
         observed.diagnosis = None;
+        observed.diagnosis_failures.clear();
         observed.action = "observing".into();
     }
     let changed =
@@ -699,6 +732,7 @@ fn observe(
         observed.snapshots.clear();
         observed.attempts = 0;
         observed.diagnosis = None;
+        observed.diagnosis_failures.clear();
         observed.next_check = fleet.now;
         observed.window_started = fleet.now;
     }
@@ -748,6 +782,35 @@ fn observe(
     result
 }
 
+fn escalate_observed(
+    observed: &mut Observed,
+    fleet: &mut Fleet,
+    me: &Me,
+    issue: Option<u64>,
+) -> Result<()> {
+    let Some(issue) = issue else {
+        observed.action = "waiting for new evidence".into();
+        observed.next_check = fleet.now.saturating_add(CHECK_SECONDS);
+        return Ok(());
+    };
+    let evidence = serde_json::to_string_pretty(&json!({
+        "worker": observed.path,
+        "harness": observed.harness,
+        "diagnosis": observed.diagnosis,
+        "diagnosis_failures": observed.diagnosis_failures,
+        "error": observed.error,
+        "snapshots": observed.snapshots,
+    }))?;
+    let reason = format!(
+        "The worker's fault remained unresolved for one hour on unchanged evidence. \
+         The fleet preserved its work and handed the issue to a human with this evidence:\n\
+         ```json\n{evidence}\n```"
+    );
+    crate::judge::escalate(fleet, me, issue, &reason)?;
+    observed.action = "escalated".into();
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn decide(
     book: &mut Book,
@@ -765,15 +828,18 @@ fn decide(
     if fleet.now < observed.next_check {
         return Ok(());
     }
-    if fleet.now.saturating_sub(observed.window_started) >= RECOVERY_SECONDS {
-        observed.attempts = 0;
-        observed.continuations = 0;
-        observed.failed_candidates.clear();
-        observed.window_started = fleet.now;
+    let expired = fleet.now.saturating_sub(observed.window_started) >= RECOVERY_SECONDS;
+    if expired && (observed.error.is_some() || observed.continuations >= MAX_CONTINUATIONS) {
+        return escalate_observed(observed, fleet, me, issue);
     }
     let raw_error = structured.get("error").unwrap_or(structured);
-    let rule = classified(raw_error);
-    if let Some(background) = crate::judge::own_background(fleet, worktree, true)? {
+    let output = observed.snapshots.last().map(|s| s.output.as_slice()).unwrap_or_default();
+    let rule = classified(raw_error)
+        .map(|rule| ("structured rule", rule))
+        .or_else(|| terminal_rule(observed.harness, output).map(|rule| ("terminal rule", rule)));
+    if rule.is_none()
+        && let Some(background) = crate::judge::own_background(fleet, worktree, true)?
+    {
         observed.action = "waiting for background work".into();
         observed.background = Some(background.since);
         return Ok(());
@@ -784,12 +850,16 @@ fn decide(
         observed.action = if state == WorkerState::Busy { "healthy" } else { "observing" }.into();
         return Ok(());
     }
-    let diagnosis = if let Some(rule) = rule {
-        observed.source = "structured rule".into();
+    let diagnosis = if let Some((source, rule)) = rule {
+        observed.source = source.into();
         rule
     } else {
         if observed.attempts >= MAX_DIAGNOSES {
+            if expired {
+                return escalate_observed(observed, fleet, me, issue);
+            }
             observed.action = "waiting for new evidence".into();
+            observed.next_check = observed.window_started.saturating_add(RECOVERY_SECONDS);
             return Ok(());
         }
         observed.attempts += 1;
@@ -808,17 +878,22 @@ fn decide(
         let mut answer = None;
         for held in candidates.harnesses.clone() {
             let candidate = Kit { cast: false, harnesses: vec![held], stock_consult: None };
-            match diagnose(&candidate, &evidence)
-                .and_then(|(h, answer)| Ok((h, checked(&answer, observed, structured)?)))
-            {
-                Ok((h, diagnosis)) => {
-                    answer = Some(diagnosis);
-                    observed.source = format!("diagnosis:{}", h.key());
-                    break;
-                }
+            match diagnose(&candidate, &evidence) {
+                Ok((h, diagnosis_answer)) => match checked(&diagnosis_answer, observed, structured)
+                {
+                    Ok(diagnosis) => {
+                        answer = Some(diagnosis);
+                        observed.source = format!("diagnosis:{}", h.key());
+                        break;
+                    }
+                    Err(e) => {
+                        failure.push(format!("{}: {e:#}; answer: {diagnosis_answer}", h.key()))
+                    }
+                },
                 Err(e) => failure.push(format!("{e:#}")),
             }
         }
+        observed.diagnosis_failures.extend(failure.iter().cloned());
         answer.with_context(|| format!("waiting for diagnosis: {}", failure.join("; ")))?
     };
     observed.diagnosis = Some(diagnosis.clone());
@@ -831,8 +906,26 @@ fn decide(
             return Ok(());
         }
         Action::Wait | Action::Unknown => {
-            observed.action = "waiting".into();
-            return Ok(());
+            let quota = diagnosis.class == "quota" && diagnosis.scope == Scope::Account;
+            let within_reset = diagnosis.retry_after.is_some_and(|delay| {
+                delay <= MAX_QUOTA_WAIT_SECONDS
+                    && fleet.now.saturating_add(delay)
+                        <= observed.window_started.saturating_add(MAX_QUOTA_WAIT_SECONDS)
+            });
+            if quota && within_reset {
+                observed.action = "waiting for quota reset".into();
+                return Ok(());
+            }
+            if !quota {
+                if expired {
+                    return escalate_observed(observed, fleet, me, issue);
+                }
+                observed.next_check = observed
+                    .next_check
+                    .min(observed.window_started.saturating_add(RECOVERY_SECONDS));
+                observed.action = "waiting".into();
+                return Ok(());
+            }
         }
         Action::Retry if observed.rate_retries < MAX_RATE_RETRIES => {
             observed.rate_retries += 1;
@@ -949,6 +1042,10 @@ fn decide(
     }
     fleet.avoiding.clear();
     if observed.action != "continued" {
+        if expired {
+            observed.error = Some(format!("no successor started: {}", failures.join("; ")));
+            return escalate_observed(observed, fleet, me, issue);
+        }
         bail!("no successor started; preserving claim and work: {}", failures.join("; "));
     }
     let entry = crate::log::Entry {
