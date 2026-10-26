@@ -632,7 +632,7 @@ fn a_patrol_moved_along_the_base_branch_leaves_no_commit() {
             tick(&world, 10_000);
             let patrol = checkout(&world);
             let started = git(&patrol, &["rev-parse", "HEAD"]);
-            let repair = commit(&world.clone, "repair.txt", "an inspection's repair\n");
+            let repair = commit(&world.clone, "repair.txt", "a watch's repair\n");
             let later = commit(&world.clone, "later.txt", "more landed work\n");
             git(&world.clone, &["push", "-q", "origin", "main"]);
             // A remote-tracking ref is no evidence of what the base branch

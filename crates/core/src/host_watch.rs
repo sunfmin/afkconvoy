@@ -164,3 +164,38 @@ mod tests {
         assert_eq!(super::did(&"x".repeat(DID_CHARS * 2))[0].len(), DID_CHARS);
     }
 }
+
+/// The watch's identity in a guarded command's environment.
+pub const WATCH_ENV: &str = "AFKCONVOY_WATCH";
+
+/// What under the home folder cannot be rebuilt, or is expensive to fetch
+/// again — model weights, downloads, media, Docker's images, the user's own
+/// files: a watch never deletes it, and the guard refuses a deletion
+/// it reads there.
+pub const KEPT: [&str; 13] = [
+    ".cache/huggingface",
+    ".cache/modelscope",
+    ".ollama",
+    ".lmstudio",
+    ".docker",
+    "Library/Containers/com.docker.docker",
+    "Downloads",
+    "Movies",
+    "Music",
+    "Pictures",
+    "Documents",
+    "Desktop",
+    "Library/Mobile Documents",
+];
+
+/// Whether `relative` — a path under the home folder, relative to it, its
+/// parts parted by `/` — is in what is kept (`KEPT`), or holds some of it. A
+/// part a shell pattern stands in (`*`, `?`, `[`) may be any.
+pub fn kept(relative: &str) -> bool {
+    let parts: Vec<&str> = relative.split('/').filter(|part| !part.is_empty()).collect();
+    let pattern = |part: &str| part.contains(['*', '?', '[']);
+    KEPT.iter().any(|root| {
+        let root: Vec<&str> = root.split('/').collect();
+        parts.iter().zip(root.iter()).all(|(part, root)| part == root || pattern(part))
+    })
+}

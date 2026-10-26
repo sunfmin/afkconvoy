@@ -30,7 +30,6 @@ use crate::host_runner::Shared;
 use crate::host_settings;
 use crate::host_sleep::{Checked, HostSleep};
 use crate::hot::{self, Hot};
-use crate::inspection::Inspector;
 use crate::judge::judge;
 use crate::log::{self, Cause, Log};
 use crate::measure;
@@ -532,7 +531,7 @@ impl Ticked {
         format!("{word}{issue}{patrol}")
     }
 
-    /// Each issue the tick read with where it stands, as a host inspection
+    /// Each issue the tick read with where it stands, as a host watch
     /// lists the worktrees of this fleet: in a bound repo the position its
     /// stage records give it, in an unbound one how far its claim is.
     pub fn stages(&self) -> Vec<(u64, String)> {
@@ -979,10 +978,6 @@ fn start_line(took: &Value) -> Option<String> {
 /// stop.
 const HEARS_WITHIN: Duration = Duration::from_millis(250);
 
-/// The longest, in seconds, a `run` sleeps while its inspection runs or a
-/// hot worker waits for one: an inspection's time limit is kept to within it.
-const INSPECTING_EVERY: u64 = 30;
-
 /// How many seconds past its length a rest takes before the host is taken to
 /// have slept through it.
 const SLEPT_PAST: u64 = 60;
@@ -1063,7 +1058,7 @@ pub type Show = Arc<dyn Fn(Panel) + Send + Sync>;
 /// What holds a fleet instance's loop — the host runner: the stop it obeys,
 /// where its lines go, the wakes heard for it through the host runner
 /// (docs/adr/0023), what the host runner holds for all its fleet instances
-/// (how each stands for host sleep, the inspection running, the exclusive
+/// (how each stands for host sleep, the watch running, the exclusive
 /// queue), and where its part of the panel goes: `None` where none is
 /// shown, and none is made.
 pub struct Holder {
@@ -1173,7 +1168,7 @@ fn check_host(host: &mut HostSleep, said: &Said, stop: &Stop, clock: &Clock) -> 
 /// written (`Said`); nothing here ever reads the log. It watches what each
 /// worker's processes take, and says as one turns hot and as it stops being
 /// hot (`hot::watch`, docs/adr/0019); after each tick its inspector ends the
-/// inspection that is over and starts the next a hot worker waits for, and
+/// watch that is over and starts the next a hot worker waits for, and
 /// it looks again within `INSPECTING_EVERY` while either is so
 /// (`Inspector`). Unless the host settings keep the host awake, it puts the
 /// host to sleep once every fleet on it has been idle long enough, within
@@ -1207,12 +1202,19 @@ pub fn run(
     wakes.telling(during);
     let watching = shared.blockers.watch(me.instance.as_str(), &wakes);
     let hot = Hot::default();
-    let mut inspector = Inspector::new(repo, &shared.turn);
-    inspector.resume()?;
     {
         let hears: Arc<dyn hot::Hears> = Arc::clone(&said) as _;
         let (second, clock, hot) = (pacing.second, Arc::clone(&clock), Arc::clone(&hot));
-        hot::watch(repo, second, clock, hears, hot, wakes.waker(), stop.clone());
+        hot::watch(
+            repo,
+            second,
+            clock,
+            hears,
+            hot,
+            shared.resources.clone(),
+            wakes.waker(),
+            stop.clone(),
+        );
     }
     let mut cause = Cause::Start;
     let mut by = None;
@@ -1293,7 +1295,7 @@ pub fn run(
                     shown = panel;
                 }
                 let main = repo.main_checkout().unwrap_or_else(|_| repo.dir.clone());
-                inspector.ticked(clock(), ticked.admission(), main, ticked.stages());
+                shared.resources.ticked(clock(), ticked.admission(), main, ticked.stages())?;
                 before = Some(ticked.saw(count));
                 let pass = &ticked.pass;
                 // A tick GitHub could not be reached in was not an empty one:
@@ -1313,9 +1315,6 @@ pub fn run(
                 (format!("FAILED: {error}"), sleep, (None, None, Some(error)))
             }
         };
-        for what in inspector.step(agent, &hot, clock()) {
-            said.keep(clock(), what);
-        }
         let hot_now = hot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
         for what in cut_said {
             said.keep(clock(), what);
@@ -1324,8 +1323,6 @@ pub fn run(
         for warning in agent.launches.warned() {
             said.warn(&warning);
         }
-        let busy = inspector.busy(&hot_now, clock());
-        let sleep = if busy { sleep.min(INSPECTING_EVERY) } else { sleep };
         let (bound, answer, error) = logged;
         // Shown before its line is kept: whoever that line answers finds it on the page.
         if let Some(show) = &show {
@@ -1337,8 +1334,8 @@ pub fn run(
         }
         let tick = log::Tick { count, sleep, line, bound, answer, error };
         said.keep(clock(), log::What::Tick(tick));
-        // Inspection work and the tick's log are part of the tick too: a
-        // release move must not race an inspection starting or ending.
+        // Watch work and the tick's log are part of the tick too: a
+        // release move must not race a watch starting or ending.
         host.ticked(clock(), idle);
         if pacing.panic_at == Some(count) {
             panic!("told to panic as tick {count} ended (--panic-at-tick)");

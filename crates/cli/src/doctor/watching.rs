@@ -83,7 +83,7 @@ struct Ticks {
 }
 
 /// An issue is identified by the subject a line names, never a number buried
-/// in its prose (a gate's queue count, or an inspection's PR, for example).
+/// in its prose (a gate's queue count, or a watch's PR, for example).
 fn issue(on: &str) -> Option<u64> {
     on.split_whitespace().next()?.strip_prefix('#')?.parse().ok()
 }
@@ -107,7 +107,6 @@ fn record(comment: &Comment) -> Option<Step> {
         (afkconvoy_core::stage_record::STAGE_RECORD, "stage_record"),
         (afkconvoy_core::verdict::VERDICT, "verdict"),
         (afkconvoy_core::intake::INTAKE_RECORD, "intake"),
-        ("convoy:inspection", "inspected"),
     ] {
         if read_marker(marker, &comment.body).is_some() {
             return Some(Step {
@@ -273,9 +272,6 @@ fn interval(
                     What::Command { on, command, .. } => (on.as_deref(), command.as_str()),
                     What::Hot { worker, .. } => (Some(worker.as_str()), "hot"),
                     What::Cooled { worker, .. } => (Some(worker.as_str()), "cooled"),
-                    What::Inspecting { worker, .. } => (Some(worker.as_str()), "inspecting"),
-                    What::Inspected { worker, .. } => (Some(worker.as_str()), "inspected"),
-                    What::InspectionDid { worker, .. } => (Some(worker.as_str()), "inspection_did"),
                     _ => (None, "event"),
                 };
                 if let Some(number) = on.and_then(issue) {

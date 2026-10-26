@@ -191,7 +191,7 @@ fn doctor_all_answers_each_checkouts_doctor_and_the_hosts_findings_once() {
     assert_eq!(
         keys(&answer["host"]),
         BTreeSet::from(
-            ["exclusive", "host_kit", "inspection", "installed", "watch"].map(String::from)
+            ["exclusive", "host_kit", "installed", "resources", "watch"].map(String::from)
         )
     );
 
@@ -209,7 +209,7 @@ fn doctor_all_answers_each_checkouts_doctor_and_the_hosts_findings_once() {
         let doctor = &row["doctor"];
         assert_eq!(keys(doctor), keys(&alone), "{doctor}");
         assert!(doctor["waiting_on_human"].is_array(), "{doctor}");
-        for key in ["host_kit", "exclusive", "inspection", "installed", "watch"] {
+        for key in ["host_kit", "exclusive", "installed", "resources", "watch"] {
             assert!(doctor["host"].get(key).is_none(), "{key} is said once: {doctor}");
         }
         for key in ["tools", "settings", "admission"] {

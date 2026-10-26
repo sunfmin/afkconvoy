@@ -1,7 +1,7 @@
 //! The landing train: an append-only line of commits ahead of the base branch.
 //! Each PR on it is one merge commit whose message names the PR and the issue
 //! it closes, as the repo names an issue of the joining fleet's tracker — or,
-//! of an inspection's change of the repo, the inspection that made it.
+//! of a watch's change of the repo, the watch that made it.
 //! Everything asked about a train — what is on it, what it landed — is read
 //! off that line and the base branch, and nothing off a marker.
 
@@ -56,16 +56,16 @@ pub enum Of {
     /// fleet of the repo that works another tracker, whose issue this fleet
     /// leaves alone (docs/adr/0027).
     Elsewhere(String),
-    /// The inspection on the host so named, which made a change of the repo
+    /// The watch on the host so named, which made a change of the repo
     /// itself, on no issue (docs/adr/0026).
-    Inspection(String),
+    Watch(String),
     /// The cut on the host so named, whose PR sets the version it makes, on
     /// no issue (docs/adr/0028).
     Cut(String),
 }
 
-/// The line of a join commit that names an inspection's PR, the host after it.
-const BY_INSPECTION: &str = "By an inspection on ";
+/// The line of a join commit that names a watch's PR, the host after it.
+const BY_WATCH: &str = "By a watch on ";
 /// The line of a join commit that names a cut's PR, the host after it.
 const BY_CUT: &str = "By a cut on ";
 
@@ -82,23 +82,23 @@ pub struct Joined {
 
 impl Joined {
     /// The issue of the fleet's tracker the PR closes: none of an
-    /// inspection's or a cut's, nor of another tracker's issue.
+    /// watch's or a cut's, nor of another tracker's issue.
     pub fn issue(&self) -> Option<u64> {
         match self.of {
             Of::Issue(issue) => Some(issue),
-            Of::Elsewhere(_) | Of::Inspection(_) | Of::Cut(_) => None,
+            Of::Elsewhere(_) | Of::Watch(_) | Of::Cut(_) => None,
         }
     }
 
-    /// Whether it is an inspection's PR.
-    pub fn is_inspection(&self) -> bool {
-        matches!(self.of, Of::Inspection(_))
+    /// Whether it is a watch's PR.
+    pub fn is_watch(&self) -> bool {
+        matches!(self.of, Of::Watch(_))
     }
 
     /// Whether the fleet joins it again itself where a train is given up: an
-    /// inspection's PR or a cut's, which no worker of an issue holds.
+    /// watch's PR or a cut's, which no worker of an issue holds.
     pub fn rejoined_by_the_fleet(&self) -> bool {
-        matches!(self.of, Of::Inspection(_) | Of::Cut(_))
+        matches!(self.of, Of::Watch(_) | Of::Cut(_))
     }
 }
 
@@ -115,7 +115,7 @@ pub fn join_message(title: &str, pr: u64, of: &Of, tracker: &Tracker) -> String 
     match of {
         Of::Issue(issue) => format!("{title} (#{pr})\n\n{CLOSES}{}\n", tracker.issue(*issue)),
         Of::Elsewhere(named) => format!("{title} (#{pr})\n\n{CLOSES}{named}\n"),
-        Of::Inspection(host) => format!("{title} (#{pr})\n\n{BY_INSPECTION}{host}\n"),
+        Of::Watch(host) => format!("{title} (#{pr})\n\n{BY_WATCH}{host}\n"),
         Of::Cut(host) => format!("{title} (#{pr})\n\n{BY_CUT}{host}\n"),
     }
 }
@@ -145,7 +145,7 @@ pub struct Logged<'a> {
 /// tracker is `tracker` reads them. A joining is a merge commit whose subject
 /// ends ` (#<pr>)` and whose message has a line `Closes <issue>` — of an
 /// issue of `tracker`'s, `Of::Issue`, and of any other, `Of::Elsewhere` — or,
-/// of an inspection's PR, `By an inspection on <host>`, and of a cut's,
+/// of a watch's PR, `By a watch on <host>`, and of a cut's,
 /// `By a cut on <host>`. A commit with one parent is never one, whatever its
 /// message says — a fix titled `… (#12)` is a fix.
 pub fn read_joins(commits: &[Logged], tracker: &Tracker) -> Vec<Joined> {
@@ -168,7 +168,8 @@ pub fn read_joins(commits: &[Logged], tracker: &Tracker) -> Vec<Joined> {
             host.map(str::trim).filter(|host| !host.is_empty()).map(str::to_string)
         };
         let of = issue
-            .or_else(|| by(BY_INSPECTION).map(Of::Inspection))
+            .or_else(|| by(BY_WATCH).map(Of::Watch))
+            .or_else(|| by("By an inspection on ").map(Of::Watch))
             .or_else(|| by(BY_CUT).map(Of::Cut));
         if let (Some(pr), Some(of)) = (pr, of) {
             joins.push(Joined { of, pr, commit: commit.sha.to_string(), head: head.to_string() });
@@ -542,16 +543,16 @@ mod tests {
     }
 
     #[test]
-    fn an_inspection_s_pr_joins_on_no_issue_and_reads_back_by_its_host() {
-        let host = Of::Inspection("felixmbp14".into());
+    fn an_watch_s_pr_joins_on_no_issue_and_reads_back_by_its_host() {
+        let host = Of::Watch("felixmbp14".into());
         let message = join_message("Queue the gates", 45, &host, &Tracker::Own);
-        assert_eq!(message, "Queue the gates (#45)\n\nBy an inspection on felixmbp14\n");
+        assert_eq!(message, "Queue the gates (#45)\n\nBy a watch on felixmbp14\n");
         let commits = [
             Logged { sha: "m1", parents: "t0 h45", message: &message },
-            Logged { sha: "m2", parents: "m1 h46", message: "Odd (#46)\n\nBy an inspection on \n" },
+            Logged { sha: "m2", parents: "m1 h46", message: "Odd (#46)\n\nBy a watch on \n" },
         ];
         let joins = read_joins(&commits, &Tracker::Own);
-        assert_eq!(joins.len(), 1, "a line that names no host names no inspection");
+        assert_eq!(joins.len(), 1, "a line that names no host names no watch");
         assert_eq!(joins[0], Joined { of: host, pr: 45, commit: "m1".into(), head: "h45".into() });
         assert_eq!(joins[0].issue(), None);
     }
@@ -565,8 +566,8 @@ mod tests {
         let joins = read_joins(&commits, &Tracker::Own);
         assert_eq!(joins, [Joined { of: cut, pr: 470, commit: "m1".into(), head: "h470".into() }]);
         assert_eq!(joins[0].issue(), None);
-        // A train given up, the fleet joins it again, as an inspection's.
-        assert!(joins[0].rejoined_by_the_fleet() && !joins[0].is_inspection());
+        // A train given up, the fleet joins it again, as a watch's.
+        assert!(joins[0].rejoined_by_the_fleet() && !joins[0].is_watch());
     }
 
     #[test]

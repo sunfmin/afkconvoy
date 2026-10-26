@@ -6,7 +6,7 @@
 use std::path::Path;
 
 use afkconvoy_core::admission::{Disk, Hold, Reading, SHARES, Shares, holds, thresholds};
-use afkconvoy_core::host_inspection::{Reason, SPAN};
+use afkconvoy_core::resources::{Reason, SPAN};
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
 

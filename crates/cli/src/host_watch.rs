@@ -38,7 +38,7 @@ const HISTORY: usize = 20;
 /// What a watch's terminal is titled in orca.
 const TITLE: &str = "afkconvoy watch";
 /// A checkout a watch makes for a change of a listed repo. Distinct from an
-/// inspection's: starting an inspection must never reuse a watch's checkout.
+/// watch's: starting a watch must never reuse a watch's checkout.
 pub const CHECKOUT: &str = "afkconvoy-watch";
 
 /// The stock watch's whole instruction, kept as its directory's rules.
@@ -270,14 +270,21 @@ impl Watcher {
                 directory.display()
             );
         }
-        let look = doctor_look(state.until, &self.ended)?;
+        let mut look = doctor_look(state.until, &self.ended)?;
         state.until = look["until"].as_u64().or(state.until);
         let current = actionable(&look, look["until"].as_u64().unwrap_or_else(crate::clock));
-        state.watched = host_watch::covered(&state.watched, &current);
+        let mut episodes = current.clone();
+        for resource in look["host"]["resources"].as_array().into_iter().flatten() {
+            if let Some(id) = resource["id"].as_str() {
+                episodes.push(Item::new(id, "resource episode recovering"));
+            }
+        }
+        state.watched = host_watch::covered(&state.watched, &episodes);
         let pending = host_watch::pending(&current, &state.watched, false);
         if pending.is_empty() {
             state.unavailable = None;
         } else {
+            crate::resources::evidence(&mut look, &pending)?;
             self.start(&mut state, &directory, settings.watch_dir.is_none(), look, pending)?;
         }
         self.save(&state)
@@ -525,6 +532,7 @@ fn start_session(watch: &Watch) -> Result<(String, PathBuf)> {
         watch.model.as_deref(),
         &brief_pointer(&brief_file.display().to_string()),
     );
+    let line = format!("export {}=host; {line}", host_watch::WATCH_ENV);
     let line = host_watch::session(&line, &transcript.display().to_string());
     let worktree = Worktree::at(watch.directory.clone(), String::new());
     Ok((worktree.start_watch(&line, TITLE)?, transcript))
@@ -557,7 +565,7 @@ fn brief(watch: &Watch) -> String {
          on. Nobody reads this terminal: never wait for an answer, and ask nothing.\n\n\
          Find what holds this host's fleets and their work back, fix it — whatever that takes — \
          and check that the work goes on. You have what the operator at this host's keyboard \
-         has, under the bounds of an inspection (`afkconvoy run --help`): only what the fleets \
+         has, within these bounds (`afkconvoy run --help`): only what the fleets \
          of this host started or own; never the host runner, the user's programs, other apps \
          or orca; never delete what cannot be rebuilt, nor a change no commit holds; no force \
          push, no push to a base branch, no merge outside the landing train. Follow this \
@@ -582,14 +590,14 @@ fn brief(watch: &Watch) -> String {
          When a lasting fix needs code, make it yourself, even if that repo's fleet cannot \
          start a worker. In the affected repo create a linked worktree on a branch of your \
          own from its configured base branch. Name its directory `{CHECKOUT}` or \
-         `{CHECKOUT}-<digits>` so `afkconvoy land --inspection` accepts it; never reuse an \
-         inspection's or another worker's checkout. Work only in your own checkout of that \
+         `{CHECKOUT}-<digits>` so `afkconvoy land --watch` accepts it; never reuse an \
+         another worker's checkout. Work only in your own checkout of that \
          repo. Commit and push each completed piece before a long operation. Open its PR \
          against that repo's base branch, on no issue: no intake or flow label is needed, in \
-         a bound repo too. Run `afkconvoy land --inspection` there: it takes a turn to merge, \
+         a bound repo too. Run `afkconvoy land --watch` there: it takes a turn to merge, \
          gate and join on the train's green tip, recording green before releasing the turn. \
-         Resolve conflicts by merging, committing and asking again; never rebase. This is the inspection's \
-         landing path: its join names an inspection on this host and closes no issue. A \
+         Resolve conflicts by merging, committing and asking again; never rebase. This is the watch's \
+         landing path: its join names a watch on this host and closes no issue. A \
          fleet lock standing joins nothing: record what holds it back. Keep the branch and \
          PR, and name the repo and PR in your record.\n\n\
          ## Cut an installed fix, then check it\n\n\
@@ -680,7 +688,11 @@ fn findings(items: &mut Vec<Item>, at: &str, findings: &Value) {
             continue;
         }
         let reason = format!("{what}; evidence: {}; fix: {}", finding["evidence"], finding["fix"]);
-        push(items, format!("finding:{at}:{what}"), reason);
+        let id = finding["watch_id"]
+            .as_str()
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("finding:{at}:{what}"));
+        push(items, id, reason);
     }
 }
 

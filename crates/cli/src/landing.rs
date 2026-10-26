@@ -230,7 +230,7 @@ pub fn land_train(
     }
 
     // On the base branch: landed. The claims and the PRs' worktrees are the
-    // tick's; an inspection's PR, and a cut's, close no issue.
+    // tick's; a watch's PR, and a cut's, close no issue.
     let landed = finished(&joins, &open);
     for issue in landed.iter().filter_map(|join| join.issue()) {
         if !gh.issue(issue)?.is_closed() {
@@ -259,8 +259,8 @@ pub fn land_train(
             Of::Elsewhere(named) => {
                 json!({"elsewhere": named, "pr": join.pr, "commit": join.commit})
             }
-            Of::Inspection(host) => {
-                json!({"inspection": host, "pr": join.pr, "commit": join.commit})
+            Of::Watch(host) => {
+                json!({"watch": host, "pr": join.pr, "commit": join.commit})
             }
             Of::Cut(host) => json!({"cut": host, "pr": join.pr, "commit": join.commit}),
         })

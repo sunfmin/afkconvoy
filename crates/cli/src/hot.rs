@@ -14,7 +14,7 @@
 //!
 //! As a worker turns hot, what shows it is taken down there and then, on a
 //! thread of its own (`evidence`), and the `run` is woken: its inspector
-//! starts the worker's inspection (`crate::inspection`).
+//! starts the worker's watch (`crate::watch`).
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -152,21 +152,17 @@ fn sysctl(name: &str) -> Option<u64> {
 }
 
 /// A worker that is hot now, as the panel shows it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HotNow {
     /// `#7`, or the name of its worktree where it is linked to no issue.
     pub worker: String,
     pub episode: Episode,
-    /// Its worktree, and the issue orca links it to: what its inspection is
+    /// Its worktree, and the issue orca links it to: what its watch is
     /// started on.
-    #[serde(skip)]
     pub path: PathBuf,
-    #[serde(skip)]
     pub branch: String,
-    #[serde(skip)]
     pub issue: Option<u64>,
     /// Why it turned hot, in words, under the limits in force as it did.
-    #[serde(skip)]
     pub why: String,
 }
 
@@ -638,6 +634,7 @@ pub fn watch(
     clock: Arc<dyn Fn() -> u64 + Send + Sync>,
     hears: Arc<dyn Hears>,
     hot: Hot,
+    resources: crate::resources::Shared,
     waker: Waker,
     stop: Stop,
 ) {
@@ -697,7 +694,13 @@ pub fn watch(
                     waker.wake();
                 });
             }
-            *hot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = sampler.hot();
+            let current = sampler.hot();
+            if let Err(error) = resources
+                .hot(repo.main_checkout().unwrap_or_else(|_| repo.dir.clone()), current.clone())
+            {
+                hears.warn(&format!("resource episodes were not kept: {error:#}"));
+            }
+            *hot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = current;
         }
     });
 }

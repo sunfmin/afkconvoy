@@ -11,7 +11,6 @@ use afkconvoy_core::casting::CASTER_WORKTREE;
 use afkconvoy_core::cut;
 use afkconvoy_core::guard::WritesNothing;
 use afkconvoy_core::harness::Harness;
-use afkconvoy_core::inspection::{self, Finding, Kind};
 use afkconvoy_core::launch::{TrustGap, Waited};
 use afkconvoy_core::line::niced;
 use afkconvoy_core::prompt::brief_pointer;
@@ -54,13 +53,6 @@ const UNDER_FILE: &str = "convoy-started-under";
 const HARNESS_FILE: &str = "convoy-harness";
 /// What was taken down as the worker here turned hot (`evidence`).
 const EVIDENCE_DIR: &str = "convoy-hot";
-/// What the inspection in this checkout found, as it said it.
-const INSPECTED_FILE: &str = "convoy-inspected.json";
-/// What the inspection in this checkout was started on: a hot worker, or the
-/// host.
-const INSPECTION_KIND_FILE: &str = "convoy-inspection-kind";
-/// The PRs the inspection in this checkout put on the landing train.
-const INSPECTION_PRS_FILE: &str = "convoy-inspection-prs";
 /// What the cut in a checkout is, and what it did so far (`cut::Record`).
 const CUT_FILE: &str = "convoy-cut.json";
 /// What each step of the cut in a checkout printed, one after another.
@@ -404,7 +396,7 @@ pub struct OnHost {
     /// The main checkout of its repo, where orca says one.
     pub repo: Option<PathBuf>,
     pub issue: Option<u64>,
-    /// The landing train's, the caster's, an inspection's or a cut's: the fleet's own.
+    /// The landing train's, the caster's, a watch's or a cut's: the fleet's own.
     pub fleets: bool,
     /// A worker holds it: a terminal of it is live.
     pub held: bool,
@@ -433,7 +425,6 @@ fn on_host(repos: &Value, listed: &Value, ps: &Value) -> Vec<OnHost> {
             let name = path.file_name().and_then(|name| name.to_str()).unwrap_or("");
             let fleets = is_worktree_named(name, TRAIN_WORKTREE)
                 || is_worktree_named(name, CASTER_WORKTREE)
-                || is_worktree_named(name, inspection::CHECKOUT)
                 || is_worktree_named(name, crate::host_watch::CHECKOUT)
                 || is_worktree_named(name, cut::CHECKOUT);
             Some(OnHost { issue: row["linkedIssue"].as_u64(), path, repo, fleets, held })
@@ -548,7 +539,7 @@ impl Worktree {
     }
 
     /// Every session worktree, including the fleet's train, caster and
-    /// inspection: launch evidence applies to those sessions too.
+    /// watch: launch evidence applies to those sessions too.
     pub fn of_sessions(source: &Source) -> Result<Vec<(Option<u64>, Worktree)>> {
         let listed = orca(&["worktree", "list"])?;
         let rows = listed["worktrees"].as_array().cloned().unwrap_or_default();
@@ -580,12 +571,11 @@ impl Worktree {
     }
 
     /// Whether this is the landing train's worktree, the caster's, an
-    /// inspection's or a cut's: the fleet's own, and no worker's.
+    /// watch's or a cut's: the fleet's own, and no worker's.
     fn is_fleets(&self) -> bool {
         let name = self.path.file_name().and_then(|name| name.to_str()).unwrap_or("");
         is_worktree_named(name, TRAIN_WORKTREE)
             || is_worktree_named(name, CASTER_WORKTREE)
-            || is_worktree_named(name, inspection::CHECKOUT)
             || is_worktree_named(name, crate::host_watch::CHECKOUT)
             || is_worktree_named(name, cut::CHECKOUT)
     }
@@ -881,53 +871,6 @@ impl Worktree {
     /// The directory what shows the worker here hot is taken down in.
     pub fn evidence_dir(&self) -> Result<PathBuf> {
         self.note(EVIDENCE_DIR)
-    }
-
-    /// What the inspection in this checkout found, when it said.
-    pub fn inspected(&self) -> Result<Option<Finding>> {
-        let said = std::fs::read_to_string(self.note(INSPECTED_FILE)?).unwrap_or_default();
-        Ok(serde_json::from_str(&said).ok())
-    }
-
-    /// What the inspection in this checkout was started on; a hot worker
-    /// where nothing says.
-    pub fn inspection_kind(&self) -> Result<Kind> {
-        let said = std::fs::read_to_string(self.note(INSPECTION_KIND_FILE)?).unwrap_or_default();
-        Ok(if said.trim() == Kind::Host.word() { Kind::Host } else { Kind::Worker })
-    }
-
-    /// Records what the inspection in this checkout is started on.
-    pub fn record_inspection_kind(&self, kind: Kind) -> Result<()> {
-        let file = self.note(INSPECTION_KIND_FILE)?;
-        std::fs::write(&file, kind.word())
-            .with_context(|| format!("cannot write {}", file.display()))
-    }
-
-    /// The PRs the inspection in this checkout put on the landing train,
-    /// oldest first.
-    pub fn inspection_prs(&self) -> Result<Vec<u64>> {
-        let kept = std::fs::read_to_string(self.note(INSPECTION_PRS_FILE)?).unwrap_or_default();
-        Ok(kept.split_whitespace().filter_map(|pr| pr.parse().ok()).collect())
-    }
-
-    /// Records that the inspection in this checkout put `pr` on the landing
-    /// train.
-    pub fn record_inspection_pr(&self, pr: u64) -> Result<()> {
-        let mut prs = self.inspection_prs()?;
-        if !prs.contains(&pr) {
-            prs.push(pr);
-        }
-        let file = self.note(INSPECTION_PRS_FILE)?;
-        let kept: Vec<String> = prs.iter().map(u64::to_string).collect();
-        std::fs::write(&file, kept.join("\n"))
-            .with_context(|| format!("cannot write {}", file.display()))
-    }
-
-    /// Keeps what the inspection in this checkout found: the last it said stands.
-    pub fn record_inspected(&self, finding: &Finding) -> Result<()> {
-        let file = self.note(INSPECTED_FILE)?;
-        std::fs::write(&file, serde_json::to_string(finding)?)
-            .with_context(|| format!("cannot write {}", file.display()))
     }
 
     /// What the cut in this checkout is and did so far, where it says; `None`

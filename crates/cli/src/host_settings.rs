@@ -14,8 +14,8 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use afkconvoy_core::admission::SHARES;
-use afkconvoy_core::host_inspection::SPAN;
 use afkconvoy_core::host_sleep::{Hours, SLEEP_HOURS};
+use afkconvoy_core::resources::SPAN;
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};

@@ -33,12 +33,11 @@ use crate::fleet::Fleet;
 use crate::git::Repo;
 use crate::host_runner::SharedNow;
 use crate::hot::{HotNow, held_said};
-use crate::inspection::{Last, Running};
 use crate::kit::Kit;
 use crate::log::Log;
 use crate::orca::{Source, Worktree};
 use crate::stage::Flows;
-use crate::{doctor, host_runner, host_settings, inspection};
+use crate::{doctor, host_runner, host_settings};
 
 /// The stage of an unbound repo's one lane a worker writes its PR at.
 const WORK: &str = "work";
@@ -277,11 +276,6 @@ pub struct Host {
     pub now: u64,
     /// Admission's reading of the host now; why it cannot be read.
     pub admission: Result<Admission, String>,
-    /// The inspection running on the host, whichever of its fleets started it.
-    pub inspection: Option<Running>,
-    /// What the last host inspection of the host found, whichever of its
-    /// fleets started it.
-    pub host_inspected: Option<Last>,
     /// The host's `exclusive` queue, whatever its repo: the first runs alone,
     /// and the rest wait their turn, next first.
     pub exclusive: Vec<Ticket>,
@@ -293,6 +287,7 @@ pub struct Host {
     /// Its host kit, every harness in it; why it cannot be read.
     pub kit: Result<Kit, String>,
     pub worker_health: serde_json::Value,
+    pub watch: serde_json::Value,
     /// The harnesses paused on this host, since when and why: no worker is
     /// started on one until a probe finds it working.
     pub paused: Vec<afkconvoy_core::casting::Paused>,
@@ -308,14 +303,13 @@ impl Host {
             name: crate::this_host(),
             now,
             admission: Admission::read(dir).map_err(|error| format!("{error:#}")),
-            inspection: shared.inspection,
-            host_inspected: inspection::last_on_host(),
             exclusive: shared.exclusive,
             gate_lanes: settings.gate_lanes(),
             train_lanes: settings.train_lanes(),
             sleep_hours: host_settings::host_sleep(),
             kit: crate::kit::load().map_err(|error| format!("{error:#}")),
             worker_health: crate::health::show(),
+            watch: crate::host_watch::json(shared.watch.as_ref()),
             paused: crate::paused::read(),
         }
     }
@@ -958,7 +952,7 @@ pub fn render(page: &Page) -> String {
 }
 
 /// The host, once: who made the page, admission's reading, the hot workers
-/// of every repo, the inspection running and what the last host inspection
+/// of every repo, the watch running and what the last host watch
 /// found, the exclusive queue, host sleep and the host kit.
 fn host_part(out: &mut String, page: &Page) {
     let host = &page.host;
@@ -1011,45 +1005,25 @@ fn host_part(out: &mut String, page: &Page) {
         );
     }
 
-    if let Some(reason) = host.inspection.as_ref().and_then(|running| running.held_back_by) {
-        let running = host.inspection.as_ref().expect("held back by above");
-        let _ = writeln!(
+    for (key, title) in [("running", "Watch"), ("last", "Last watch")] {
+        let watch = &host.watch[key];
+        if watch.is_null() {
+            continue;
+        }
+        let _ = write!(
             out,
-            "<section class=\"hot\" data-inspection=\"host\"><b>Host inspection</b>: \
-             {} past its span; <b>the host</b> is inspected by \
-             <code>{by}</code>, for {} so far, for {}.</section>",
-            reason.word(),
-            lasted(host.now.saturating_sub(running.since)),
-            esc(&running.repo),
-            by = esc(&running.by),
+            "<section class=\"hot\" data-watch=\"{}\"><b>{title}</b>: {} on {}<ul>",
+            esc(key),
+            esc(watch["id"].as_str().unwrap_or("")),
+            esc(watch["harness"].as_str().unwrap_or(""))
         );
-    } else if let Some(running) = &host.inspection {
-        let issue = running.issue.map(|issue| format!(" on #{issue}")).unwrap_or_default();
-        let _ = writeln!(
-            out,
-            "<section class=\"hot\" data-inspection=\"{worker}\"><b>Inspection</b>: \
-             <b>{worker}</b>{issue} is inspected by <code>{by}</code>, for {} so far, in {}.\
-             </section>",
-            lasted(host.now.saturating_sub(running.since)),
-            esc(&running.repo),
-            worker = esc(&running.worker),
-            by = esc(&running.by),
-        );
-    }
-
-    if let Some(last) = &host.host_inspected {
-        let _ = writeln!(
-            out,
-            "<section class=\"hot\" data-host-inspected=\"{found}\"><b>Host inspection</b>, \
-             {} ago: {} ({}); <code>{by}</code>, as the operator on \
-             this host: <b>{found}</b> · {}</section>",
-            lasted(host.now.saturating_sub(last.ended)),
-            last.reason.word(),
-            esc(&last.reading),
-            esc(&last.line()),
-            found = esc(&last.found),
-            by = esc(&last.by),
-        );
+        for item in watch["items"].as_array().into_iter().flatten() {
+            let _ = write!(out, "<li>{}</li>", esc(item["reason"].as_str().unwrap_or("")));
+        }
+        for did in watch["did"].as_array().into_iter().flatten() {
+            let _ = write!(out, "<li>Did: {}</li>", esc(did.as_str().unwrap_or("")));
+        }
+        out.push_str("</ul></section>");
     }
 
     {
@@ -1679,14 +1653,13 @@ mod tests {
             name: "h1".into(),
             now,
             admission: Ok(Admission { shares: SHARES, said: vec![], reading, span: 600 }),
-            inspection: None,
-            host_inspected: None,
             exclusive: vec![],
             gate_lanes: 1,
             train_lanes: 1,
             sleep_hours: Some(SLEEP_HOURS),
             kit: Ok(Kit::default()),
             worker_health: serde_json::json!({}),
+            watch: serde_json::json!({}),
             paused: vec![],
         }
     }
@@ -1872,7 +1845,7 @@ mod tests {
     }
 
     #[test]
-    fn the_hot_workers_and_the_inspection_of_every_repo_are_the_host_s() {
+    fn the_hot_workers_and_the_watch_of_every_repo_are_the_host_s() {
         let episode = afkconvoy_core::hot::Episode {
             since: 280,
             why: afkconvoy_core::hot::Why::Held,
@@ -1890,61 +1863,11 @@ mod tests {
             issue: Some(7),
             why: "it holds 5.0 GiB in its worktree, past <4.0 GiB>".into(),
         })];
-        let mut page = page_of(host_of(1000), vec![part]);
+        let page = page_of(host_of(1000), vec![part]);
         let hot = render(&page);
         assert!(hot.contains("<li data-hot=\"#7\"><b>#7</b> in acme, hot for 12m — it holds 5.0 GiB in its worktree, past &lt;4.0 GiB&gt;; holding at most 6.2 cores, 1.5 GiB resident, 0 B written in 10 minutes, 5.0 GiB held in its worktree</li>"), "{hot}");
         assert!(hot.find("Hot workers").unwrap() < hot.find("<nav").unwrap(), "{hot}");
-        assert!(!hot.contains("Inspection"), "{hot}");
-        page.host.inspection = Some(Running {
-            repo: "/src/widgets".into(),
-            worker: "#7".into(),
-            issue: Some(7),
-            by: "stock-consult".into(),
-            since: 700,
-            held_back_by: None,
-        });
-        let inspecting = render(&page);
-        assert!(
-            inspecting.contains("<b>#7</b> on #7 is inspected by <code>stock-consult</code>, for 5m so far, in /src/widgets."),
-            "{inspecting}"
-        );
-    }
-
-    #[test]
-    fn a_host_inspection_is_shown_as_it_runs_and_what_it_did_beside_admission() {
-        use afkconvoy_core::host_inspection::Reason;
-        let mut host = host_of(1000);
-        host.inspection = Some(Running {
-            repo: "/src/widgets".into(),
-            worker: "the host".into(),
-            issue: None,
-            by: "stock-consult".into(),
-            since: 700,
-            held_back_by: Some(Reason::Disk),
-        });
-        let running = render(&page_of(host.clone(), vec![]));
-        assert!(running.contains("disk past its span; <b>the host</b> is inspected by <code>stock-consult</code>, for 5m so far"), "{running}");
-        for (found, prs) in [("said", vec![]), ("said", vec![451])] {
-            host.inspection = None;
-            host.host_inspected = Some(Last {
-                repo: "/src/widgets".into(),
-                reason: Reason::Disk,
-                reading: "22.9 GiB of the checkout's disk is free, under 46.3 GiB, 5% of it".into(),
-                by: "stock-consult".into(),
-                started: 100,
-                ended: 400,
-                found: found.into(),
-                said: "five worktrees of 14 GiB".into(),
-                did: vec!["removed /w/a/target".into()],
-                prs,
-            });
-            let page = render(&page_of(host.clone(), vec![]));
-            assert!(page.contains(&format!("data-host-inspected=\"{found}\"")), "{page}");
-            assert!(page.contains("disk (22.9 GiB of the checkout's disk is free"), "{page}");
-            assert!(page.contains(&format!("as the operator on this host: <b>{found}</b> · five worktrees of 14 GiB · did: removed /w/a/target")), "{page}");
-        }
-        let page = render(&page_of(host, vec![]));
-        assert!(page.contains("did: removed /w/a/target · on the landing train: #451"), "{page}");
+        assert!(!hot.contains("Watch"), "{hot}");
     }
 
     #[test]

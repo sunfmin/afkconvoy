@@ -1,4 +1,4 @@
-//! The landing train on the remote, and a worker — or an inspection — joining
+//! The landing train on the remote, and a worker — or a watch — joining
 //! its PR to it.
 
 use afkconvoy_core::config::Config;
@@ -494,8 +494,8 @@ fn join_committed(
 }
 
 /// Joins `pr`, at its branch's head on the remote, onto the train as it
-/// stands, from no worktree: an inspection's PR taken off a train that was
-/// given up, whose inspection is gone and joins nothing again itself →
+/// stands, from no worktree: a watch's PR taken off a train that was
+/// given up, whose watch is gone and joins nothing again itself →
 /// whether it is on the train, or on the base branch, now; false where it
 /// conflicts with the train, and nothing was pushed.
 pub fn join_again(

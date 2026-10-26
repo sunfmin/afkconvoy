@@ -82,12 +82,12 @@ fn abandon_train(fleet: &mut Fleet, me: &Me, stopped: &StoppedOn, silent: Silent
     let joins = train.joins(&fleet.repo, &fleet.gh.tracker)?;
     let mut riders = vec![];
     let mut riding = vec![];
-    let mut inspections = vec![];
+    let mut watches = vec![];
     for join in on_train(&joins, &prs) {
-        // An inspection's PR, or a cut's, has nobody to join it again: the
+        // A watch's PR, or a cut's, has nobody to join it again: the
         // fleet does, below.
         if join.rejoined_by_the_fleet() {
-            inspections.push(join);
+            watches.push(join);
             continue;
         }
         // A PR of another tracker's issue is its own fleet's, as a peer's is.
@@ -135,14 +135,14 @@ fn abandon_train(fleet: &mut Fleet, me: &Me, stopped: &StoppedOn, silent: Silent
     // Onto the train as it stands now, the one given up gone: what conflicts
     // with it is said, and left open.
     let mut rejoined = vec![];
-    for join in inspections {
+    for join in watches {
         let Some(pr) = prs.iter().find(|pr| pr.number == join.pr) else { continue };
         let tracker = &fleet.gh.tracker;
         let again = join_again(&fleet.repo, &fleet.config, tracker, pr, &join.of, fleet.now)?;
         rejoined.push(json!({"pr": join.pr, "joined": again}));
     }
     Ok(json!({"action": "abandoned", "train": train.tip, "issues": done.again,
-        "escalated": done.escalated, "inspections": rejoined,
+        "escalated": done.escalated, "watches": rejoined,
         "worktree": stopped.worktree.path}))
 }
 

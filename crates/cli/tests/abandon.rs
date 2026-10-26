@@ -189,13 +189,13 @@ fn an_explicit_abandon_of_a_historically_nudged_train_keeps_prs_and_builds() {
 }
 
 #[test]
-fn an_inspection_s_pr_alone_on_a_train_given_up_is_joined_again_by_the_fleet() {
+fn an_watch_s_pr_alone_on_a_train_given_up_is_joined_again_by_the_fleet() {
     let world = World::new();
     world.set_gate("true");
-    // An inspection's change of the repo on the train, and nothing of the fleet's own.
+    // A watch's change of the repo on the train, and nothing of the fleet's own.
     git(&world.clone, &["fetch", "-q", "origin"]);
-    let checkout = world.root.join("wt/afkconvoy-inspection");
-    let (branch, at) = ("tester/afkconvoy-inspection", checkout.to_str().unwrap());
+    let checkout = world.root.join("wt/afkconvoy-watch");
+    let (branch, at) = ("tester/afkconvoy-watch", checkout.to_str().unwrap());
     git(&world.clone, &["worktree", "add", "-q", "-b", branch, at, "origin/main"]);
     let head = commit(&checkout, "gate.sh", "afkconvoy exclusive -- cargo test\n");
     git(&checkout, &["push", "-q", "origin", "HEAD"]);
@@ -204,7 +204,7 @@ fn an_inspection_s_pr_alone_on_a_train_given_up_is_joined_again_by_the_fleet() {
             "headRefOid": "", "body": "Run the gate through the host's queue.\n", "state": "open"});
         gh["prs"].as_array_mut().unwrap().push(pr);
     });
-    let land = ["land", "--inspection", "--host", "h1", "--now", "1050"];
+    let land = ["land", "--watch", "--host", "h1", "--now", "1050"];
     let joined = world.afk_in(&checkout, &land).ok();
     assert_eq!(joined["outcome"], "joined", "{joined}");
 
@@ -220,7 +220,7 @@ fn an_inspection_s_pr_alone_on_a_train_given_up_is_joined_again_by_the_fleet() {
     assert_ne!(json!(tip), joined["commit"]);
     assert_eq!(world.remote(&["log", "-1", "--format=%P", &tip]), format!("{base} {head}"));
     let message = world.remote(&["log", "-1", "--format=%B", &tip]);
-    assert_eq!(message, "Queue the gates (#90)\n\nBy an inspection on h1");
+    assert_eq!(message, "Queue the gates (#90)\n\nBy a watch on h1");
     assert_eq!(pr_state(&world, 90), "open");
     assert_eq!(did(&tick(&world, 1780)), ["tend_train done"], "a new train worker");
 }

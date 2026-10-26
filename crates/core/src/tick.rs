@@ -23,7 +23,7 @@ pub enum TickStep {
     /// transferred: release it, and end its worker.
     Forget { issue: u64 },
     /// Keep a train worker on the landing train while a PR of mine, or an
-    /// inspection's, is on it. The train worker holds no claim and takes no
+    /// watch's, is on it. The train worker holds no claim and takes no
     /// slot.
     TendTrain,
     /// Remove this machine's train's worktree and cut it again, once it has
@@ -880,7 +880,7 @@ mod tests {
             proposals: vec![],
             slow_gate: None,
             outgrown_train: None,
-            inspections_on_train: vec![],
+            watches_on_train: vec![],
             held_back: vec![],
             caster: None,
             casting: vec![],
