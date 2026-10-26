@@ -123,9 +123,11 @@ mod tests {
             "/opt/homebrew/bin/afkconvoy exclusive -- ./gate.sh",
             "'/opt/homebrew/bin/afkconvoy' -C . exclusive -- make test",
         ] {
-            let config =
-                parse(&format!("```yaml\nbase_branch: main\ngate_command: {command}\n```\n"))
-                    .unwrap();
+            let config = parse(&format!(
+                "```yaml\nbase_branch: main\ngate_command: {}\n```\n",
+                serde_json::to_string(command).unwrap()
+            ))
+            .unwrap();
             assert!(heavy_gate(&config.gate_command), "{command}");
         }
         assert!(!heavy_gate("./gate.sh"));
