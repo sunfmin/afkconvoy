@@ -175,6 +175,7 @@ fn a_fleet_with_no_fault_answers_its_keys_and_no_finding_and_writes_nothing() {
     assert_eq!(
         keys,
         [
+            "candidates",
             "claims",
             "codex_workers",
             "findings",
@@ -186,6 +187,7 @@ fn a_fleet_with_no_fault_answers_its_keys_and_no_finding_and_writes_nothing() {
             "waiting_on_human"
         ]
     );
+    assert_eq!(answer["candidates"], json!([]));
     assert_eq!(answer["proposals"], Value::Null);
     assert_eq!(answer["refusals"], json!({"3": [], "5": []}));
     assert_eq!(answer["waiting_on_human"], json!([]));

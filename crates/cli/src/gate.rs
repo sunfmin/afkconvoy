@@ -1,6 +1,7 @@
 //! Running the gate in a worktree, and its records on the remote.
 
 use std::collections::VecDeque;
+use std::io::Write;
 use std::io::{BufRead, BufReader};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::process::{Command, Stdio};
@@ -74,27 +75,49 @@ struct CommandRun {
     seconds: u64,
     excerpt: Vec<String>,
     termination: Option<Termination>,
+    cancelled: bool,
 }
 
 /// Runs the gate command in a worktree, its log going line by line to this
 /// process's stderr, keeping its status, signal evidence and the end of its
 /// log. A run that reaches the gate limit, `limit`, is killed, with everything
 /// it started, and is reported as a timeout rather than an outside signal.
-fn run_command(repo: &Repo, command: &str, limit: Duration) -> Result<CommandRun> {
+fn run_command(
+    repo: &Repo,
+    command: &str,
+    limit: Duration,
+    candidate: Option<&crate::candidates::Gate<'_>>,
+) -> Result<CommandRun> {
     let mut shell = Command::new("sh");
     crate::exclusive::inherit(&mut shell, repo)?;
+    if let Some(candidate) = candidate {
+        shell.env(crate::candidates::PROCESS_ENV, candidate.process_marker());
+    }
+    let scope = candidate
+        .map(|c| c.scope().and_then(|path| crate::process_scope::create(&path, &mut shell)))
+        .transpose()?;
+    let prefix = if candidate.is_some() { "read -r convoy_ready || exit 125\n" } else { "" };
     let mut child = crate::process::spawn(
         shell
             // one stream, so the log reads in the order it was written
-            .args(["-c", &format!("exec 2>&1\n{command}")])
+            .args(["-c", &format!("{prefix}exec 2>&1\n{command}")])
             .current_dir(&repo.dir)
-            .stdin(Stdio::null())
+            .stdin(if candidate.is_some() { Stdio::piped() } else { Stdio::null() })
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .process_group(0),
     )
     .context("the gate command could not be started")?;
+    drop(scope); // only descendants retain the shared process-ownership lease.
     let pid = child.id();
+    if let Some(candidate) = candidate {
+        if let Err(error) = candidate.started(pid) {
+            drop(child.stdin.take());
+            let _ = child.wait();
+            return Err(error);
+        }
+        child.stdin.take().context("candidate gate has no start barrier")?.write_all(b"go\n")?;
+    }
     eprintln!(
         "[afkconvoy] gate: command pid {pid} (process group {pid}) started; gate limit {}s",
         limit.as_secs()
@@ -118,9 +141,18 @@ fn run_command(repo: &Repo, command: &str, limit: Duration) -> Result<CommandRun
         tail.push_back(line);
     };
     let started = Instant::now();
+    let mut cancelled = false;
     let (exit_code, timed_out, termination) = loop {
         while let Ok(line) = read.try_recv() {
             keep(line);
+        }
+        if let Some(candidate) = candidate
+            && candidate.cancelled()?
+        {
+            cancelled = true;
+            candidate.stop()?;
+            let _ = child.wait();
+            break (-1, false, None);
         }
         if let Some(status) = child.try_wait()? {
             let termination = status.signal().map(|signal| Termination {
@@ -128,11 +160,25 @@ fn run_command(repo: &Repo, command: &str, limit: Duration) -> Result<CommandRun
                 signal,
                 core_dumped: status.core_dumped(),
             });
+            if !status.success()
+                && let Some(candidate) = candidate
+            {
+                candidate.failed(
+                    status.code().unwrap_or(-1),
+                    false,
+                    started.elapsed().as_secs(),
+                    termination,
+                )?;
+            }
             break (status.code().unwrap_or(-1), false, termination);
         }
         if started.elapsed() >= limit {
-            let group = format!("-{}", child.id());
-            let _ = crate::process::status(Command::new("kill").args(["-KILL", "--", &group]));
+            if let Some(candidate) = candidate {
+                candidate.failed(TIMED_OUT_CODE, true, started.elapsed().as_secs(), None)?;
+            } else {
+                let group = format!("-{}", child.id());
+                let _ = crate::process::status(Command::new("kill").args(["-KILL", "--", &group]));
+            }
             let _ = child.wait();
             eprintln!("[afkconvoy] the gate reached the gate limit of {}s", limit.as_secs());
             break (TIMED_OUT_CODE, true, None);
@@ -150,7 +196,7 @@ fn run_command(repo: &Repo, command: &str, limit: Duration) -> Result<CommandRun
         eprintln!("{line}");
         keep(line);
     }
-    Ok(CommandRun { exit_code, timed_out, seconds, excerpt: tail.into(), termination })
+    Ok(CommandRun { exit_code, timed_out, seconds, excerpt: tail.into(), termination, cancelled })
 }
 
 /// One run of the gate in a worktree, and what became of its record.
@@ -168,6 +214,7 @@ pub struct GateRun {
     pub excerpt: Vec<String>,
     /// Present only when wait status reported a signal, outside our timeout.
     pub termination: Option<Termination>,
+    pub cancelled: bool,
 }
 
 /// The tree the worktree's commit holds.
@@ -186,6 +233,17 @@ pub fn run_and_record(
     now: u64,
     limit: Duration,
 ) -> Result<GateRun> {
+    controlled_run(repo, command, host, now, limit, None)
+}
+
+fn controlled_run(
+    repo: &Repo,
+    command: &GateCommand,
+    host: &str,
+    now: u64,
+    limit: Duration,
+    candidate: Option<&crate::candidates::Gate<'_>>,
+) -> Result<GateRun> {
     let _permit = if crate::exclusive::held() {
         None
     } else {
@@ -199,7 +257,7 @@ pub fn run_and_record(
     let head = repo.git(&["rev-parse", "HEAD"])?;
     let tree = head_tree(repo)?;
     let before = off_commit(repo, None)?;
-    let command_run = run_command(repo, command.text(), limit)?;
+    let command_run = run_command(repo, command.text(), limit, candidate)?;
     let ended = match command_run.termination {
         Some(termination) => termination.description(),
         None => format!("gate command ended (exit {})", command_run.exit_code),
@@ -226,7 +284,11 @@ pub fn run_and_record(
         not_recorded: None,
         excerpt: command_run.excerpt,
         termination: command_run.termination,
+        cancelled: command_run.cancelled,
     };
+    if run.cancelled {
+        return Ok(run);
+    }
     match after_run(&tree, command, ran, host, now) {
         Recording::Write(green) => {
             // The record is a parentless commit OF the tested tree.
@@ -246,6 +308,27 @@ pub fn run_and_record(
         Recording::Leave => {}
     }
     Ok(run)
+}
+
+/// Every newly assigned candidate runs its gate, including a cut whose tree
+/// matches the certified base. Its own green result survives predecessor
+/// landing; another candidate's record does not replace this run.
+pub(crate) fn candidate_gate(
+    repo: &Repo,
+    command: &GateCommand,
+    host: &str,
+    now: u64,
+    limit: Duration,
+    candidate: &crate::candidates::Gate<'_>,
+) -> Result<Value> {
+    let run = controlled_run(repo, command, host, now, limit, Some(candidate))?;
+    Ok(
+        json!({"status": if run.cancelled { "cancelled" } else if run.ran.green() { "green" } else { "red" },
+        "recorded": run.green.is_some() && run.not_recorded.is_none(), "head": run.head,
+        "command": command.text(), "seconds": run.ran.seconds, "exit_code": run.ran.exit_code,
+        "timed_out": run.ran.timed_out, "termination": run.termination, "excerpt": run.excerpt,
+        "not_recorded": run.not_recorded, "uncommitted": run.strays}),
+    )
 }
 
 /// The green run of `command` on `tree` the remote has on record and still

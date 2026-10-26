@@ -253,9 +253,10 @@ Exactly one JSON object, exit 0:
 - `repos`: each repo lane with a running or waiting request, sorted by its whole identity, as `{repo, capacity, used, free}`. Each has capacity 1, independent of worker capacity. `repo` is the shared git directory supplied by the ticket, never inferred from a worktree's name.
 - `running`, `waiting`: requests in scheduler order within each array: cuts first, then ordinary commands; within each group ascending `asked`, then `number` to break ties. Cut priority never interrupts running commands. There is no priority by lane or repo. A request identifies `number` (runner-local ticket), `pid` (asking process), `command` (one line), `dir` (whole worktree or outside directory), `issue` (number or null; no lookup), `repo` (shared git directory or null for older/outside tickets), `repo_lane` (repo lane identity or null for worker), `is_turn` (whether this is a landing turn), `cut` (whether it has cut priority, false for older tickets), `asked` (request epoch seconds), `ran` (start epoch seconds or null), and `lane` (`worker` or `repo <identity>`).
 - Each request adds `elapsed_seconds` (time since `ran`, null while waiting), `waiting_seconds` (time from `asked` to `ran` when running, otherwise to `observed_at`), and `scheduling`: `{number, state, reasons}`. State is `running`, `eligible`, or `waiting`; reasons is empty for running or eligible requests.
+- `candidate` is true for independent candidate validation. `validation`, null for ordinary or unreported requests, is the turn's display copy of its remote candidate: {id, predecessor, commit, phase, waiting, cancelled_by, cause}. Phase follows building, validating, green, landed, red, cancelling or cancelled. Waiting distinguishes constructing_worktree, validating, waiting_for_predecessor and confirming_process_exit; a waiting queue request without a candidate awaits capacity. Cancellation names its invalidating predecessor and cause. These copies explain current work and authorize no publication; reading queue makes no remote lookup.
 - Each reason has `kind`, `requests`, `capacity` and `explanation`. Kind `same_repo` means a running or earlier eligible request of this repo excludes this request in its lane, or across lanes when both are turns. `worker_capacity` or `repo_capacity` means all places in that lane are occupied or reserved, with the limit in `capacity`. `paused` means new grants are paused. Other reasons have `capacity: null`. `requests` names each relevant `{number, state}`: `running` holds a place now, `eligible` reserves one earlier in FIFO order; it is empty for a pause. `explanation` states the constraint in words.
 
-Earlier eligible requests reserve capacity in scheduler order, with cuts before ordinary waiters and FIFO within each group. Blocked requests reserve nothing: with three worker lanes, a running repo can leave two free while its other requests wait, and a different repo can be eligible. Turns of one repo exclude each other across worker and repo lanes. Older tickets lacking `repo` use their whole `dir` as the scheduler's fallback identity. `eligible` means allowed by this observation, not guaranteed to start next. Ordering is no fixed future start order or ETA; requests can leave and settings can change.
+Earlier eligible requests reserve capacity in scheduler order, with cuts before ordinary waiters and FIFO within each group. Blocked requests reserve nothing: with three worker lanes, ordinary requests of a running repo can leave two free while waiting, and a different repo can be eligible. Independently owned candidate worktrees of the same repo may validate together; ordinary heavy commands and serial barriers retain same-repo exclusion across worker and repo lanes. Older tickets lacking `repo` use their whole `dir` as the scheduler's fallback identity. `eligible` means allowed by this observation, not guaranteed to start next. Ordering is no fixed future start order or ETA; requests can leave and settings can change.
 
 Errors: unreadable host settings, an inaccessible socket, a runner holding the host but not listening, a closed connection, no response within the bound, a runner error, or an unsupported or unreadable response (including missing queue, pause or runner identity fields). These print `{"error": ...}` with exit 1 and a next action: inspect the host runner log and run the command again; `afkconvoy doctor --all` provides a full diagnosis. An unsupported response needs a host runner of this release. A failed observation never becomes an empty queue.
 
@@ -921,7 +922,7 @@ afkconvoy run [OPTIONS] [CHECKOUT]
   - Environment: `AFKCONVOY_EXCLUSIVE_SECONDS`
 - `--jev-key-command <COMMAND>`: The shell command whose stdout is the TypeSafe key Jev is asked with when it judges a stopped worker's screen, such as one that reads the key from a keychain: a host setting, run afresh for each check. The key is sent only to TypeSafe, and is in no file, answer or log line; a command that fails or prints nothing is an error, and the worker waits for the operator as with none. `default` removes it [default: none]
   - Environment: `AFKCONVOY_JEV_KEY_COMMAND`
-- `--gate-lanes <GATE_LANES>`: Worker lanes on this host, above zero, or `default` (1). A repo holds at most one turn at a time, regardless of this count
+- `--gate-lanes <GATE_LANES>`: Worker lanes on this host, above zero, or `default` (1). Independent candidate worktrees of one repo may validate together within this bound
   - Environment: `AFKCONVOY_GATE_LANES`
 
 #### `afkconvoy stop`
@@ -1868,7 +1869,7 @@ A worker, in its own worktree. Anyone else on the host may too: the queue is the
 
 ##### What it reads and writes
 
-Commands use worker lanes, 1 by default. `run --gate-lanes N` sets the count live across the host, and `default` restores it. N must be above zero. One repo holds at most one turn, regardless of the count. Heavy gates, tests, benchmarks and builds use these lanes in FIFO order; a light gate takes its repo's own lane. A turn holds its lane through merge, gate, recording and landing. A process that dies frees it.
+Commands use worker lanes, 1 by default. `run --gate-lanes N` sets the count live across the host, and `default` restores it. N must be above zero. Independent candidate worktrees of one repo may validate together; ordinary heavy commands retain same-repo exclusion. Heavy gates, tests, benchmarks and builds use these lanes in FIFO order; a light gate takes its repo's own lane. A candidate holds its lane through ordered landing or confirmed cancellation. Inherited kernel leases keep a dead owner's still-running descendants from being replaced.
 
 A cut's turn and exclusive commands go ahead of waiting worker commands, known by the cut's own worktree. Cuts keep request order among themselves, and ordinary commands keep theirs. Priority never interrupts a running command or adds a lane. A worker may therefore wait behind a cut's gate or publish step. Its runs line says "runs as a cut, ahead of waiting worker commands".
 
@@ -1926,7 +1927,13 @@ An issue's worker in its own worktree; in a bound workflow its landing worker af
 
 ##### What it reads and writes
 
-A turn holds one command through four steps: make the PR's merge commit on the current base tip; gate that exact commit; record green; push that commit to the base branch as a fast-forward. It pushes committed worker changes to the PR's branch first. The merge message names the PR and its issue, watch or cut. A landed issue is closed; the tick settles its claim and worktree. The tree that lands is always the tree that passed the gate.
+A turn preserves the PR's original head and atomically assigns a candidate merged onto the certified base or its preceding candidate. Each candidate gates in its own worktree. With free worker lanes, candidates of the same repo validate concurrently; green successors wait for their exact predecessors and land without another gate. The window, including green waiters and unconfirmed cancellation, is bounded by the host's live worker-lane count. A light gate keeps its repo lane. Committed source changes are pushed to the PR first; candidate merges never move that source branch. The merge message names the PR and issue, watch or cut. Landing closes the issue; the tick settles its claim and source worktree.
+
+The remote candidate record holds original head, predecessor, commit, tree, gate declaration, owner, process group, validation and cancellation. Publication rechecks validity, head, predecessor landing, issue blockers, fleet locks and the green record, then atomically fast-forwards the exact tested candidate and its state. No force push, extra merge or aggregate gate is used. Known candidate advances preserve successors; an outside base move or changed PR head invalidates the affected suffix. Cuts, watches, fleet-lock repairs and base certification drain the candidate window and run as serial barriers.
+
+Failure invalidates the dependent suffix before terminating its running gates and children. Their lanes remain occupied until exit is confirmed. Cancellation never consumes a dependent worker's gate failure or rework budget. A later turn rebuilds from preserved original heads and the last landed base, respecting issue blockers. Gate startup waits until its group is recorded; inherited kernel lane leases prevent duplicate capacity after runner or owner death. Interrupted cancellation is completed on the owning host; unconfirmed remote processes are not replaced. A successful base push records its landed prefix atomically, and merge history recovers issue settlement after a crash.
+
+Publication uses an explicit atomic Git receive-pack transaction so an unchanged source head is verified alongside the base and candidate record. Normal git push omits that unchanged-ref condition. Local remotes use git; SSH origins use their existing SSH login. A GitHub HTTPS origin publishes to the same repository through Git SSH: verify `ssh -T git@github.com` before starting the fleet. No token is read or handled. Other HTTP transports require an SSH origin. Failed authentication or missing atomic capability refuses before any ref update is sent.
 
 A watch finds its branch's PR through REST, and every turn checks fleet locks through REST. Exhausted GraphQL quota alone therefore does not prevent a watch from landing its repair; an unreadable lock listing still refuses the turn.
 
@@ -1934,12 +1941,15 @@ An unrecorded base tip is gated alone in a separate checkout using its own gate 
 
 ##### What it answers
 
-{"outcome", "pr", "commit", "merged", "status", "recorded", "detail", …}. issue or watch identifies whose PR it is. merged is the base tip read when the turn starts; commit is the merge commit that landed. status and recorded describe the gate, with its head, command, exit_code, timed_out and seconds.
+{"outcome", "pr", "commit", "merged", "candidate", "predecessor", "status", "recorded", "detail", …}. issue or watch identifies whose PR it is. merged and predecessor name the assigned predecessor; commit is the exact candidate landed. status and recorded describe the gate, with head, command, exit_code, timed_out, seconds and excerpt. doctor and the panel expose the same candidate lifecycle with validation, predecessor, waiting and cancellation cause.
 
 - merged: landed on the base branch, or already present there; stop.
 - gate_red: nothing landed. Fix the change, commit and ask for a turn again. Green without a written record also lands nothing; detail says what prevented recording.
 - conflict: no gate ran and nothing landed. files lists the conflicts and worktree names where the merge remains in progress. Resolve every file, git add it, commit the merge and ask again.
 - target_moved: the fast-forward push was rejected. Nothing landed. Ask for another turn, which reads the new base tip and gates a new merge commit.
+- cancelled: this candidate's predecessor or other evidence was invalidated. cancelled_by identifies the root candidate and cause says predecessor_failed, head_changed, base_moved, owner_died or another cancellation cause. Source work is intact. This is not this worker's red gate; request another turn when its issue blockers permit.
+- waiting_for_capacity or waiting_for_predecessor: a window place or a predecessor is unavailable, or this PR already has an owning turn. Ask again; no gate failure or rework occurred.
+- blocked: blocked_by lists open issue dependencies. Ask again after they close.
 - locked: locks names the fleet locks standing. Stop without waking anyone until told to carry on.
 
 Errors are {"error": …} with non-zero exit: no open PR, unreadable config or remote, uncommitted tracked changes, an invalid watch checkout or a green base record that could not be written. detail names what to fix.
@@ -4758,7 +4768,7 @@ A watch for host load or memory receives the fleet's worker process trees and, w
 _Avoid_: patrol (a role run on a schedule that writes no code), supervisor (the host runner is the process)
 
 **Exclusive queue**:
-The host runner's FIFO queue for heavy commands across its fleets. Commands run in worker lanes, as many as the host settings allow. A turn holds its lane through landing; one repo holds at most one turn at once. A light gate takes a turn in its repo's own lane.
+The host runner's FIFO queue for heavy commands across its fleets. Commands run in worker lanes, as many as the host settings allow; independently owned candidate worktrees of one repo may validate together. A light gate takes a turn in its repo's own lane.
 _Avoid_: gate queue
 
 **Nudge**:
@@ -4848,11 +4858,19 @@ Bringing a branch up to date by merging into it. Nothing is ever rebased.
 _Avoid_: rebase, update branch
 
 **Turn**:
-One command's uninterrupted merge, gate, recording and landing of an open PR, starting on the base branch's current tip. Red, a conflict or a rejected push ends it with nothing landed.
+One command's construction, validation and ordered landing of an open PR's candidate. Red, a conflict, invalidation or a rejected push ends it with nothing landed.
 _Avoid_: landing slot, merge queue
 
+**Candidate**:
+An immutable merge of a PR's original head onto its assigned predecessor, validated in its own worktree. Its predecessor is the certified base tip or the preceding candidate.
+_Avoid_: speculative branch, train tip
+
+**Candidate chain**:
+The ordered candidates of one repo, each depending on its predecessor. A failed or invalid candidate cancels its dependent suffix; already landed predecessors remain landed.
+_Avoid_: landing train, speculative queue
+
 **Land**:
-Pushing the merge commit a turn gated and recorded green onto the base branch as a fast-forward, and closing the issue it completes. Issue workers, a workflow's landing worker, watches and cuts all land in a turn.
+Pushing the exact candidate a turn recorded green onto the base branch as a fast-forward after its predecessor has landed, and closing the issue it completes. Issue workers, a workflow's landing worker, watches and cuts all land in a turn.
 _Avoid_: join, enqueue
 
 **Repair**:
