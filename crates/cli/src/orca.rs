@@ -992,10 +992,13 @@ impl Worktree {
     /// which orca deletes unless it holds changes nothing has merged — and
     /// its worker's `TMPDIR` with it (`worker_tmp`): turned away first, for a
     /// server the worker started, and reclaimed once nothing runs with it.
+    /// Whatever the worker left read-only in it is opened first, or git
+    /// could not remove it (`copies::removable`).
     pub fn remove(&self) -> Result<()> {
         // One that cannot be turned costs a server the worker started its
         // directory, and no worktree is kept for that.
         let _ = worker_tmp::retire(&self.path);
+        crate::copies::removable(&self.path);
         orca(&["worktree", "rm", "--worktree", &self.selector(), "--force"])?;
         let _ = worker_tmp::reclaim();
         Ok(())
