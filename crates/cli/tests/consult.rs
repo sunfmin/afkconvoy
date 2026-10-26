@@ -496,7 +496,7 @@ fn a_consult_takes_one_slot_of_concurrency() {
 }
 
 #[test]
-fn a_silent_consult_waits_for_diagnosis_without_handing_its_claim_to_a_human() {
+fn a_silent_consult_waits_for_the_operator_without_handing_its_claim_to_a_human() {
     let world = bound(FEATURE, 2);
     asked(&world);
     tick(&world, 1180);
@@ -507,7 +507,7 @@ fn a_silent_consult_waits_for_diagnosis_without_handing_its_claim_to_a_human() {
     assert!(!world.labels(7).contains(&"ready-for-human".to_string()));
     assert!(!world.comments(7).join("\n").contains("stopped with no ruling"));
     let plan = world.afk(&["plan", "--now", "3100"]).ok();
-    assert_eq!(plan["host_kit"]["worker_health"]["workers"][0]["action"], "waiting");
+    assert_eq!(plan["host_kit"]["worker_health"]["workers"][0]["action"], "waiting for operator");
 }
 
 #[test]

@@ -59,6 +59,8 @@ pub struct Settings {
     /// `--panel`: the port the host runner serves the panel on; `PANEL_PORT`
     /// where the host says none.
     pub panel: Option<u16>,
+    /// `--jev-key-command`: a shell command whose stdout is the TypeSafe key.
+    pub jev_key_command: Option<String>,
     /// What another afkconvoy says beside them, kept as it is.
     #[serde(flatten)]
     rest: Map<String, Value>,
@@ -69,7 +71,7 @@ pub struct Settings {
 pub const PANEL_PORT: u16 = 7070;
 
 /// What a `run` named of the host settings; each it left unnamed is `None`.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Named {
     /// `--no-host-sleep` (true) or `--host-sleep` (false).
     pub no_host_sleep: Option<bool>,
@@ -82,6 +84,7 @@ pub struct Named {
     pub admit_disk: Option<To<u64>>,
     pub admit_inspect_after: Option<To<u64>>,
     pub panel: Option<To<u16>>,
+    pub jev_key_command: Option<To<String>>,
 }
 
 /// What a `run` sets one setting to: a value of its own, or back to its
@@ -138,6 +141,17 @@ pub fn port_or_default(said: &str) -> Result<To<u16>, String> {
     To::parse(said, |said| said.parse().map_err(|_| format!("`{said}` is no port, nor `default`")))
 }
 
+/// `--jev-key-command` as said: a nonempty shell command, or `default`.
+pub fn jev_key_command_or_default(said: &str) -> Result<To<String>, String> {
+    To::parse(said, |said| {
+        if said.trim().is_empty() {
+            Err("the Jev key command is empty; name a command, or `default`".into())
+        } else {
+            Ok(said.to_string())
+        }
+    })
+}
+
 impl Named {
     /// Whether it names none.
     pub fn is_empty(&self) -> bool {
@@ -148,23 +162,24 @@ impl Named {
 impl Settings {
     /// These, with what `named` names laid over them.
     pub fn with(mut self, named: &Named) -> Settings {
-        fn lay<T>(kept: &mut Option<T>, named: Option<To<T>>) {
+        fn lay<T: Clone>(kept: &mut Option<T>, named: &Option<To<T>>) {
             if let Some(to) = named {
-                *kept = to.kept();
+                *kept = to.clone().kept();
             }
         }
         if let Some(no_host_sleep) = named.no_host_sleep {
             self.no_host_sleep = no_host_sleep;
         }
-        lay(&mut self.host_sleep_hours, named.host_sleep_hours);
-        lay(&mut self.hot_cores, named.hot_cores);
-        lay(&mut self.hot_memory, named.hot_memory);
-        lay(&mut self.hot_written, named.hot_written);
-        lay(&mut self.admit_load, named.admit_load);
-        lay(&mut self.admit_memory, named.admit_memory);
-        lay(&mut self.admit_disk, named.admit_disk);
-        lay(&mut self.admit_inspect_after, named.admit_inspect_after);
-        lay(&mut self.panel, named.panel);
+        lay(&mut self.host_sleep_hours, &named.host_sleep_hours);
+        lay(&mut self.hot_cores, &named.hot_cores);
+        lay(&mut self.hot_memory, &named.hot_memory);
+        lay(&mut self.hot_written, &named.hot_written);
+        lay(&mut self.admit_load, &named.admit_load);
+        lay(&mut self.admit_memory, &named.admit_memory);
+        lay(&mut self.admit_disk, &named.admit_disk);
+        lay(&mut self.admit_inspect_after, &named.admit_inspect_after);
+        lay(&mut self.panel, &named.panel);
+        lay(&mut self.jev_key_command, &named.jev_key_command);
         self
     }
 
@@ -225,6 +240,7 @@ impl Settings {
             "admit_disk": self.admit_disk.unwrap_or(SHARES.disk),
             "admit_inspect_after": self.admit_inspect_after.unwrap_or(SPAN),
             "panel": self.panel_port(),
+            "jev_key_command": self.jev_key_command,
         });
         match in_force {
             Value::Object(in_force) => in_force,
@@ -314,6 +330,7 @@ pub const ADMIT_LOAD_ENV: &str = "AFKCONVOY_ADMIT_LOAD";
 pub const ADMIT_MEMORY_ENV: &str = "AFKCONVOY_ADMIT_MEMORY";
 pub const ADMIT_DISK_ENV: &str = "AFKCONVOY_ADMIT_DISK";
 pub const ADMIT_INSPECT_AFTER_ENV: &str = "AFKCONVOY_ADMIT_INSPECT_AFTER";
+pub const JEV_KEY_COMMAND_ENV: &str = "AFKCONVOY_JEV_KEY_COMMAND";
 
 /// Sleep hours as the file keeps them: as they are said, `22:00-06:00`.
 mod hours {

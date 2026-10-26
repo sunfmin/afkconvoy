@@ -107,6 +107,7 @@ impl World {
             std::os::unix::fs::symlink(built.join(example), bin.join(name)).unwrap();
         }
         write_script(&bin.join("shell"), SHELL);
+        write_script(&bin.join("curl"), CURL);
         // The host a fleet would put to sleep: nothing of the one the tests run on.
         for (name, script) in [("pmset", PMSET), ("sysctl", SYSCTL), ("ioreg", IOREG), ("df", DF)] {
             write_script(&bin.join(name), script);
@@ -299,6 +300,26 @@ impl World {
         }
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();
         std::fs::write(file, serde_json::to_vec(&kit).unwrap()).unwrap();
+    }
+
+    /// Set the Jev key command directly in the host's checkout-list settings.
+    pub fn jev_key_command(&self, command: &str) {
+        let file = self.cache().join("afkconvoy/checkouts.json");
+        let mut listed = self.checkout_list();
+        listed["settings"]["jev_key_command"] = json!(command);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(file, serde_json::to_vec(&listed).unwrap()).unwrap();
+    }
+
+    /// Give the TypeSafe stand-in one recorded response body.
+    pub fn jev_answers(&self, answers: Value) {
+        std::fs::write(
+            self.root.join("typesafe-answer"),
+            json!({"model": "jev-recorded", "answers": answers,
+                "usage": {"input_tokens": 100, "output_tokens": 7}})
+            .to_string(),
+        )
+        .unwrap();
     }
 
     /// Runs the real CLI in the fleet's checkout.
@@ -1054,6 +1075,16 @@ impl World {
         }
     }
 }
+
+/// TypeSafe's HTTP endpoint, with the request and Authorization header kept as
+/// the evidence a test asserts against. No real network call is made.
+const CURL: &str = r#"#!/bin/sh
+root=${0%/*}/..
+printf '%s\n' "$*" > "$root/typesafe-request"
+cat > "$root/typesafe-payload"
+if [ -f "$root/typesafe-fail" ]; then cat "$root/typesafe-fail" >&2; exit 22; fi
+cat "$root/typesafe-answer"
+"#;
 
 /// The login shell a worker would get, as far as the fleet asks it anything:
 /// `shell -lic 'alias'`, `shell -lic "type -- '<word>'"`, `shell -lic '<command> --help'` —

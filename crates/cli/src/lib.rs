@@ -64,6 +64,7 @@ pub mod hot;
 pub mod inspection;
 pub mod instance;
 pub mod intake;
+pub mod jev;
 pub mod judge;
 pub mod kept;
 mod kit;
@@ -112,8 +113,9 @@ use fleet::Fleet;
 use git::Repo;
 use host_settings::{
     ADMIT_DISK_ENV, ADMIT_INSPECT_AFTER_ENV, ADMIT_LOAD_ENV, ADMIT_MEMORY_ENV,
-    HOST_SLEEP_HOURS_ENV, HOT_CORES_ENV, HOT_MEMORY_ENV, HOT_WRITTEN_ENV, NO_HOST_SLEEP_ENV, To,
-    hours_or_default, port_or_default, thousandths_or_default, whole_or_default,
+    HOST_SLEEP_HOURS_ENV, HOT_CORES_ENV, HOT_MEMORY_ENV, HOT_WRITTEN_ENV, JEV_KEY_COMMAND_ENV,
+    NO_HOST_SLEEP_ENV, To, hours_or_default, jev_key_command_or_default, port_or_default,
+    thousandths_or_default, whole_or_default,
 };
 use launch::Launches;
 
@@ -169,6 +171,8 @@ const SKILL: &str = include_str!("../../../skills/afkconvoy/SKILL.md");
 /// To watch a running fleet, checking on it every few minutes, run `afkconvoy doctor --all --since <until of your last look>`. A first look runs `afkconvoy doctor --all` without `--since`; its `until` is where the next look starts.
 ///
 /// And whenever something looks wrong: `afkconvoy doctor` — it changes nothing, and names each fix.
+///
+/// Worker health is classed by rule first. Where the host settings name a Jev key command (`afkconvoy run --jev-key-command`), Jev judges what the rules cannot class, and the worker's latest screen is sent to TypeSafe; no harness is started for that check. Without a key, or where the command, TypeSafe or its answers do not settle the check, it waits for the operator and is named in `doctor` for the watch.
 ///
 /// ## What a command answers
 ///
@@ -1392,6 +1396,11 @@ enum Command {
             value_parser = whole_or_default
         )]
         admit_inspect_after: Option<To<u64>>,
+        /// The shell command whose stdout is the TypeSafe key used when Jev judges a stopped
+        /// worker's screen: a host setting, run afresh for each check. The key is sent only to
+        /// TypeSafe and is never shown; `default` removes the command [default: none]
+        #[arg(long, env = JEV_KEY_COMMAND_ENV, value_name = "COMMAND", value_parser = jev_key_command_or_default)]
+        jev_key_command: Option<To<String>>,
         /// Stop after this many ticks
         #[arg(long, hide = true)]
         ticks: Option<u64>,
@@ -3710,6 +3719,7 @@ fn start_of(
         admit_memory,
         admit_disk,
         admit_inspect_after,
+        jev_key_command,
         ticks,
         second_ms,
         panic_at_tick,
@@ -3741,6 +3751,7 @@ fn start_of(
         admit_disk,
         admit_inspect_after,
         panel,
+        jev_key_command,
     };
     let ready_timeout = agent.ready_timeout;
     let panic_at = panic_at_tick;

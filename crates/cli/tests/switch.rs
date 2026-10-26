@@ -468,16 +468,29 @@ fn an_acknowledged_close_that_leaves_the_terminal_is_no_permission_for_a_second_
     assert_eq!(world.claims().len(), 1);
 }
 
-fn diagnosis(world: &World, class: &str, action: &str, scope: &str, evidence: &[&str]) {
-    std::fs::write(
-        world.root.join("diagnosis-answer"),
-        json!({
-            "status": "observed", "class": class, "scope": scope, "evidence": evidence,
-            "action": action, "missing": [], "retry_after": null
-        })
-        .to_string(),
-    )
-    .unwrap();
+fn diagnosis(world: &World, class: &str, _action: &str, _scope: &str, evidence: &[&str]) {
+    world.jev_key_command("printf test-key");
+    let mut answers = json!({
+        "usage_limit": {"type": "noul", "noul": 0.01},
+        "busy": {"type": "noul", "noul": 0.01},
+        "finished": {"type": "noul", "noul": 0.01},
+        "waiting_for_person": {"type": "noul", "noul": 0.01},
+        "trust_prompt": {"type": "noul", "noul": 0.01},
+        "login_refused": {"type": "noul", "noul": 0.01},
+        "evidence": {"type": "choice", "choice": evidence.first().copied().unwrap_or("Your organization has disabled Claude Code access"),
+            "confidence": 0.99, "probabilities": {}}
+    });
+    let (id, probability) = match class {
+        "quota" => ("usage_limit", 0.99),
+        "disabled" | "authentication" => ("login_refused", 0.99),
+        "long_command" => ("busy", 0.99),
+        "waiting_human" | "waiting_dependency" => ("waiting_for_person", 0.99),
+        "complete" => ("finished", 0.99),
+        "unknown" => ("busy", 0.5),
+        _ => ("busy", 0.01),
+    };
+    answers[id]["noul"] = json!(probability);
+    world.jev_answers(answers);
 }
 
 #[test]
@@ -489,19 +502,21 @@ fn screen_faults_are_diagnosed_before_automatic_continuation_and_keep_the_scene(
     let before = std::fs::read(world.kit_path()).unwrap();
     diagnosis(
         &world,
-        "disabled",
+        "authentication",
         "continue",
         "account",
         &["Your organization has disabled Claude Code access"],
     );
     tick(&world, 800);
     assert_eq!(open_commands(&world, &dir), [common::trusted("agent")]);
-    assert!(!world.root.join("diagnosis-asked").exists());
+    assert!(!world.root.join("typesafe-request").exists());
     tick(&world, 1100);
-    let asked = std::fs::read_to_string(world.root.join("diagnosis-asked")).unwrap();
-    assert!(asked.contains("Your organization has disabled Claude Code access"));
-    assert!(asked.contains("orca terminal read --screen"));
-    assert!(asked.contains("--no-tools"));
+    let asked = std::fs::read_to_string(world.root.join("typesafe-request")).unwrap();
+    let payload = std::fs::read_to_string(world.root.join("typesafe-payload")).unwrap();
+    assert!(asked.contains("https://api.typesafe.ai/v1/systemone"));
+    assert!(payload.contains("Your organization has disabled Claude Code access"));
+    assert!(payload.contains("usage_limit") && payload.contains("login_refused"));
+    assert!(!world.root.join("diagnosis-asked").exists());
     assert_eq!(
         open_commands(&world, &dir),
         [afkconvoy_core::harness::Harness::Pi.in_worktree(
@@ -522,11 +537,11 @@ fn screen_faults_are_diagnosed_before_automatic_continuation_and_keep_the_scene(
     assert_eq!(plan["host_kit"]["worker_health"]["workers"][0]["action"], "continued");
     assert_eq!(plan["host_kit"]["worker_health"]["workers"][0]["successor"], "pi");
     tick(&world, 1101);
-    assert_eq!(std::fs::read_to_string(world.root.join("diagnosis-asked")).unwrap(), asked);
+    assert_eq!(std::fs::read_to_string(world.root.join("typesafe-request")).unwrap(), asked);
 }
 
 #[test]
-fn ambiguous_normal_work_and_invalid_diagnoses_never_authorize_a_switch() {
+fn ambiguous_normal_work_and_failed_judgments_never_authorize_a_switch() {
     for (class, action) in [
         ("long_command", "wait"),
         ("waiting_human", "wait"),
@@ -541,29 +556,33 @@ fn ambiguous_normal_work_and_invalid_diagnoses_never_authorize_a_switch() {
         tick(&world, 1100);
         assert_eq!(open_commands(&world, &dir), [common::trusted("agent")], "{class}");
         assert_eq!(world.claims().len(), 1);
-        assert!(world.root.join("diagnosis-asked").exists(), "{class}");
+        assert!(world.root.join("typesafe-request").exists(), "{class}");
+        assert!(!world.root.join("diagnosis-asked").exists(), "{class}");
     }
-    for answer in [
-        "not JSON",
-        r#"{"status":"fault","class":"stalled","scope":"model","evidence":["Your organization has disabled Claude Code access"],"action":"continue","missing":[],"retry_after":null}"#,
-        r#"{"status":"fault","class":"quota","scope":"account","evidence":["invented"],"action":"continue","missing":[],"retry_after":null}"#,
-    ] {
+    for answer in ["not JSON", "{}"] {
         let world = blocked();
         let dir = worktree(&world, 7);
-        std::fs::write(world.root.join("diagnosis-answer"), answer).unwrap();
+        diagnosis(&world, "unknown", "unknown", "worker", &[]);
+        std::fs::write(world.root.join("typesafe-answer"), answer).unwrap();
         tick(&world, 800);
         tick(&world, 1100);
-        let asked = std::fs::read_to_string(world.root.join("diagnosis-asked")).unwrap();
+        let asked = std::fs::read_to_string(world.root.join("typesafe-request")).unwrap();
         tick(&world, 1101);
-        assert_eq!(std::fs::read_to_string(world.root.join("diagnosis-asked")).unwrap(), asked);
+        assert_eq!(std::fs::read_to_string(world.root.join("typesafe-request")).unwrap(), asked);
         assert_eq!(open_commands(&world, &dir), [common::trusted("agent")]);
         assert_eq!(world.claims().len(), 1);
+        let health = world.afk(&["plan", "--now", "1101"]).ok();
+        assert_eq!(
+            health["host_kit"]["worker_health"]["workers"][0]["action"],
+            "waiting for operator"
+        );
     }
 }
 
 #[test]
 fn structured_rate_limits_wait_for_retry_after_before_a_bounded_session_fallback() {
     let world = blocked();
+    world.jev_key_command("printf unused-key");
     let dir = worktree(&world, 7);
     world.with_orca(|orca| {
         for terminal in orca["terminals"].as_array_mut().unwrap() {
@@ -706,7 +725,7 @@ fn switching_models_leaves_healthy_workers_alone_until_all_continues_them() {
 }
 
 #[test]
-fn a_diagnosed_stuck_session_is_continued_without_pausing_its_harness() {
+fn an_unclassed_stuck_session_waits_for_the_operator_without_pausing_its_harness() {
     let world = blocked();
     let dir = worktree(&world, 7);
     world.with_orca(|orca| {
@@ -725,17 +744,11 @@ fn a_diagnosed_stuck_session_is_continued_without_pausing_its_harness() {
     );
     tick(&world, 800);
     tick(&world, 1100);
-    assert_eq!(
-        open_commands(&world, &dir),
-        [afkconvoy_core::harness::Harness::Pi.in_worktree(
-            afkconvoy_core::harness::Harness::Pi.stock(),
-            "",
-            ""
-        )]
-    );
+    assert_eq!(open_commands(&world, &dir), [common::trusted("agent")]);
     let plan = world.afk(&["plan", "--now", "1101"]).ok();
     assert_eq!(plan["selection"]["health"]["faults"], json!([]));
     assert_eq!(plan["selection"]["eligible"][0], "claude-code");
+    assert_eq!(plan["host_kit"]["worker_health"]["workers"][0]["action"], "waiting for operator");
 }
 
 #[test]
@@ -810,6 +823,7 @@ fn codex_usage_limit(world: &World) {
 #[test]
 fn codex_explicit_usage_limit_continues_by_rule_without_a_diagnosis() {
     let world = blocked();
+    world.jev_key_command("printf unused-key");
     let dir = worktree(&world, 7);
     let head = git(&dir, &["rev-parse", "HEAD"]);
     std::fs::write(dir.join("unfinished.txt"), "keep me").unwrap();
@@ -823,6 +837,7 @@ fn codex_explicit_usage_limit_continues_by_rule_without_a_diagnosis() {
     assert_eq!(std::fs::read_to_string(dir.join("unfinished.txt")).unwrap(), "keep me");
     assert_eq!(world.claims().len(), 1);
     assert!(!world.root.join("diagnosis-asked").exists());
+    assert!(!world.root.join("typesafe-request").exists(), "the terminal rule runs first");
     let health = world.afk(&["plan", "--now", "801"]).ok();
     let worker = &health["host_kit"]["worker_health"]["workers"][0];
     assert_eq!(worker["source"], "terminal rule");
@@ -864,7 +879,13 @@ fn account_quota_wait_without_a_reset_continues_instead_of_diagnosing_again() {
             terminal["screen"] = json!(["Usage limit reached. Increase your limits to continue."]);
         }
     });
-    diagnosis(&world, "quota", "wait", "account", &["Usage limit reached"]);
+    diagnosis(
+        &world,
+        "quota",
+        "wait",
+        "account",
+        &["Usage limit reached. Increase your limits to continue."],
+    );
 
     tick(&world, 800);
     tick(&world, 1100);
@@ -880,48 +901,33 @@ fn account_quota_wait_without_a_reset_continues_instead_of_diagnosing_again() {
     let health = world.afk(&["plan", "--now", "1101"]).ok();
     let worker = &health["host_kit"]["worker_health"]["workers"][0];
     assert_eq!(worker["action"], "continued");
-    assert_eq!(worker["attempts"], 1);
+    assert_eq!(worker["attempts"], 0);
+    assert_eq!(worker["source"], "jev");
     assert_eq!(worker["diagnosis"]["retry_after"], Value::Null);
-    let asked = std::fs::read_to_string(world.root.join("diagnosis-asked")).unwrap();
-    tick(&world, 1400);
-    assert_eq!(std::fs::read_to_string(world.root.join("diagnosis-asked")).unwrap(), asked);
 }
 
 #[test]
-fn invalid_diagnosis_json_falls_through_to_the_next_harness_and_is_logged() {
+fn a_failed_typesafe_call_waits_for_the_operator_and_is_logged() {
     let world = blocked();
     let dir = worktree(&world, 7);
-    world.kit_command("codex", "codex");
-    world.with_orca(|orca| {
-        for terminal in orca["terminals"].as_array_mut().unwrap() {
-            terminal["screen"] = json!(["Usage limit reached. Increase your limits to continue."]);
-        }
-    });
-    std::fs::write(world.root.join("diagnosis-answer-pi"), "not JSON").unwrap();
-    diagnosis(&world, "quota", "wait", "account", &["Usage limit reached"]);
-    std::fs::copy(world.root.join("diagnosis-answer"), world.root.join("diagnosis-answer-codex"))
-        .unwrap();
+    diagnosis(&world, "quota", "continue", "account", &["Usage limit reached"]);
+    std::fs::write(world.root.join("typesafe-fail"), "refused by the recorded endpoint").unwrap();
 
     tick(&world, 800);
     tick(&world, 1100);
 
-    assert_eq!(
-        open_commands(&world, &dir),
-        [afkconvoy_core::harness::Harness::Pi.in_worktree(
-            afkconvoy_core::harness::Harness::Pi.stock(),
-            "",
-            ""
-        )]
-    );
+    assert_eq!(open_commands(&world, &dir), [common::trusted("agent")]);
+    assert!(!world.root.join("diagnosis-asked").exists());
     let path = world.cache().join("afkconvoy/worker-health.json");
     let book: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
     let worker = &book["workers"][0];
-    assert_eq!(worker["source"], "diagnosis:codex");
-    let failure = worker["diagnosis_failures"][0].as_str().unwrap();
-    assert!(
-        failure.contains("pi:")
-            && failure.contains("invalid diagnosis JSON")
-            && failure.contains("not JSON"),
-        "{failure}"
-    );
+    assert_eq!(worker["action"], "waiting for operator");
+    assert!(worker["error"].as_str().unwrap().contains("TypeSafe request failed"));
+    assert_eq!(worker["judgment"]["request"]["model"], "jev-latest");
+    let logs = std::fs::read_dir(world.cache().join("afkconvoy/runs"))
+        .unwrap()
+        .map(|entry| std::fs::read_to_string(entry.unwrap().path()).unwrap())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(logs.contains("TypeSafe request failed") && logs.contains("\"failed\":true"), "{logs}");
 }
