@@ -76,7 +76,20 @@ fn gated() -> World {
     let world = World::new();
     world.set_gate("true");
     world.issue(7, &["ready-for-agent", "bug"]);
-    tick(&world, 700);
+    world.afk_lines(&[
+        "run",
+        "--foreground",
+        "--host",
+        "h1",
+        "--instance",
+        "alpha",
+        "--second-ms",
+        "0",
+        "--ticks",
+        "1",
+        "--now",
+        "700",
+    ]);
     let dir = worktree(&world);
     commit(&dir, "seven.txt", "7\n");
     git(&dir, &["push", "-q", "origin", "HEAD"]);
@@ -110,7 +123,7 @@ fn a_joined_worker_leaves_health_while_the_train_waits_to_land() {
         });
         let ticked = tick(&world, now);
         assert_eq!(ticked["errors"], json!([]), "{ticked}");
-        let doctor = world.afk(&["doctor", "--now", &now.to_string()]).json;
+        let doctor = world.afk(&["doctor", "--host", "h1", "--now", &now.to_string()]).json;
         let health = &doctor["host"]["host_kit"]["worker_health"];
         assert!(
             health["workers"].as_array().unwrap().iter().all(|w| w["path"] != json!(dir)),
