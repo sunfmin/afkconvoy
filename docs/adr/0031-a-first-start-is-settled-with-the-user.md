@@ -8,7 +8,7 @@ A private tracker decides whose issues a fleet works, and host sleep decides whe
 
 This amends ADR-0027: a checkout not on the host's checkout list must explicitly say `--tracker <owner>/<repo>` or `--tracker default` on its first `run`. `default` still means its own repo, and the private-tracker checks still apply. A host with no saved host settings must say `--host-sleep`, `--no-host-sleep`, or `--host-sleep-hours`. Saved settings, even defaults, and existing checkout entries retain their meaning; there is no new migration or acknowledgment record. Concurrency is asked about in the help but may retain its default of three.
 
-An unanswered first start refuses before any writes or host-runner request, including the host kit, labels, checkout list and logs. Its one JSON object contains `error`, `asks` with every missing decision and its options and lines, and `see` pointing to `afkconvoy help first-start`. One question list generates both the topic and these asks. Future host settings requiring a user decision add their question there when those settings exist.
+An unanswered first start refuses before any writes or host-runner request, including the host kit, labels, checkout list and logs. Its one JSON object contains `error`, `asks` with every missing decision and its options and lines, and `see` pointing to `afkconvoy help first-start`. One question list generates both the topic and these asks. The operator's watch directory is asked about too, and defaults to none: a directory is chosen only by the user. Future host settings requiring a user decision add their question there when those settings exist.
 
 ## Considered
 

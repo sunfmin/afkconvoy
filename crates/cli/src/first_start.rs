@@ -17,7 +17,7 @@ use crate::instance::Start;
 pub fn settings_help() -> String {
     use afkconvoy_core::{admission::SHARES, host_inspection::SPAN, host_sleep};
     format!(
-        "Host settings apply to every fleet on this host. Host sleep defaults to {} of its local time, once every fleet has been idle {} minutes and the host has been unused that long; a host that is not macOS must say `--no-host-sleep`. Hot limits inspect a worker past half the host's cores (at least one) held two minutes, a quarter of its memory resident, or a tenth of the disk free written in ten minutes (at least one GiB). Admission holds back new workers past a load of {}% of the host's cores, under {}% memory free, or under {}% disk free; held for one reason {} seconds, it starts an inspection. Memory pressure held that long starts one too. The panel's port defaults to {}, or any free port if taken. Each checkout's concurrency defaults to {} claims at work at once on this host. `afkconvoy run --help` gives the flags for changing each.",
+        "Host settings apply to every fleet here. Fleets put this host to sleep from {} local time by default, once all fleets and the host have been idle {} minutes; off macOS, say `--no-host-sleep`. Hot limits inspect a worker past half the host's cores (at least one) held two minutes, a quarter of its memory resident, or a tenth of the disk free written in ten minutes (at least one GiB). Admission holds back new workers past {}% load per core, under {}% memory free, or under {}% disk free; held for one reason {} seconds, it starts an inspection. Memory pressure held that long starts one too. The panel's port defaults to {}, or any free port if taken. A watch looks every {} seconds when an operator directory is set; none is set by default, so no watch starts. Each checkout's concurrency defaults to {} claims at work at once. `afkconvoy run --help` gives each flag.",
         host_sleep::SLEEP_HOURS,
         host_sleep::IDLE_WAIT / 60,
         SHARES.load,
@@ -25,6 +25,7 @@ pub fn settings_help() -> String {
         SHARES.disk,
         SPAN,
         host_settings::PANEL_PORT,
+        host_settings::WATCH_EVERY,
         afkconvoy_core::config::CONCURRENCY,
     )
 }
@@ -57,6 +58,7 @@ enum Setting {
     Tracker,
     HostSleep,
     Concurrency,
+    WatchDir,
 }
 
 impl std::fmt::Display for Setting {
@@ -65,6 +67,7 @@ impl std::fmt::Display for Setting {
             Setting::Tracker => "tracker",
             Setting::HostSleep => "host-sleep",
             Setting::Concurrency => "concurrency",
+            Setting::WatchDir => "watch-dir",
         })
     }
 }
@@ -112,6 +115,16 @@ pub fn questions() -> Vec<Ask> {
                 line("Another whole number of claims, at least one", "--concurrency <N>"),
             ],
         },
+        Ask {
+            setting: Setting::WatchDir,
+            question: "Which operator directory should a watch start in, or should watches stay off?",
+            default: "none; no looks or watches".into(),
+            recommend: "Use an existing operator directory holding the rules for looking after this host's projects; leave watches off until the user names one.",
+            options: vec![
+                line("An existing operator directory chosen by the user", "--watch-dir '<operator-directory>'"),
+                line("No watch", "--watch-dir default"),
+            ],
+        },
     ]
 }
 
@@ -154,6 +167,7 @@ pub fn settled(
             Setting::Tracker => tracker,
             Setting::HostSleep => sleep,
             Setting::Concurrency => false,
+            Setting::WatchDir => false,
         })
         .collect();
     if !asks.is_empty() {

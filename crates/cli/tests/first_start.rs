@@ -124,13 +124,17 @@ fn every_first_start_question_and_option_is_shared_by_the_topic_and_json_asks() 
     }
     let questions = serde_json::to_value(afkconvoy::first_start::questions()).unwrap();
     let questions = questions.as_array().unwrap();
-    let expected: Vec<_> =
-        questions.iter().filter(|q| q["setting"] != "concurrency").cloned().collect();
+    let expected: Vec<_> = questions
+        .iter()
+        .filter(|q| q["setting"] == "tracker" || q["setting"] == "host-sleep")
+        .cloned()
+        .collect();
     assert_eq!(answer["asks"], json!(expected));
     let headings: BTreeSet<_> =
         topic.lines().filter_map(|line| line.strip_prefix("### ")).collect();
     let settings: BTreeSet<_> = questions.iter().map(|q| q["setting"].as_str().unwrap()).collect();
     assert_eq!(headings, settings, "no question appears in only one interface");
+    assert!(settings.contains("watch-dir"), "the operator's directory is a first-start question");
     for question in questions {
         for key in ["question", "default", "recommend"] {
             assert!(topic.contains(question[key].as_str().unwrap()), "{key}: {question}");
