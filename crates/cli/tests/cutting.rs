@@ -445,11 +445,8 @@ fn a_repo_can_shorten_the_busy_bound_and_admission_does_not_hold_an_overdue_cut(
     commit_config(
         &world,
         &format!(
-            "{CONFIG}\n{}",
-            format!(
-                "{}\n```yaml cut\nbusy_after_seconds: 120\n```\n",
-                cut_block(&says_published(&world))
-            )
+            "{CONFIG}\n{}\n```yaml cut\nbusy_after_seconds: 120\n```\n",
+            cut_block(&says_published(&world))
         ),
         "Turn cutting on",
     );

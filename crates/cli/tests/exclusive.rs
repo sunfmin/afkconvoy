@@ -400,11 +400,11 @@ fn trains_and_cuts_gate_ahead_of_waiting_workers_without_interrupting_what_runs(
     for child in [held, first_train, second_train, cutting, worker_a, worker_b] {
         let out = child.wait_with_output().unwrap();
         assert!(out.status.success(), "{}", text(&out.stderr));
-        if let Ok(answer) = serde_json::from_slice::<serde_json::Value>(&out.stdout) {
-            if answer.get("status").is_some() {
-                assert_eq!(answer["status"], "green", "{answer}");
-                assert_eq!(answer["recorded"], true, "{answer}");
-            }
+        if let Ok(answer) = serde_json::from_slice::<serde_json::Value>(&out.stdout)
+            && answer.get("status").is_some()
+        {
+            assert_eq!(answer["status"], "green", "{answer}");
+            assert_eq!(answer["recorded"], true, "{answer}");
         }
     }
     assert_eq!(
