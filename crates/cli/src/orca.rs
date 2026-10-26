@@ -72,6 +72,10 @@ const TRUST_PROMPT: &str = "agent-trust-workspace";
 /// How long each accepted line is observed for a turn start. Orca observes
 /// the same request throughout this bound and never resends it.
 const SUBMIT_SECONDS: u64 = 30;
+/// How long a brief handed to a worker that just started waits for its
+/// prompt to settle: a harness ready once may redraw on, longer on a busy
+/// host. Any other line checks the input once, for a second.
+const BRIEF_SETTLE_SECONDS: u64 = 20;
 
 thread_local! {
     /// One read-only view per tick, dropped even when the tick fails. Each
@@ -1247,11 +1251,11 @@ impl Worktree {
     }
 
     pub fn tell_at(&self, terminal: &str, line: &str, now: u64) -> Result<()> {
-        crate::harness_down::tell(self, terminal, now, || self.tell_unchecked(terminal, line))
+        crate::harness_down::tell(self, terminal, now, || self.tell_unchecked(terminal, line, 1))
     }
 
-    fn tell_unchecked(&self, terminal: &str, line: &str) -> Result<()> {
-        let (ready, _) = self.wait(terminal, 1).with_context(|| {
+    fn tell_unchecked(&self, terminal: &str, line: &str, settle_seconds: u64) -> Result<()> {
+        let (ready, _) = self.wait(terminal, settle_seconds).with_context(|| {
             self.prompt_context(terminal, "no running worker harness confirmed; no line was sent")
         })?;
         if ready != Waited::Ready {
@@ -1298,7 +1302,10 @@ impl Worktree {
 
     /// Hands the worker in `terminal` the brief at `brief`.
     pub fn deliver(&self, terminal: &str, brief: &Path) -> Result<()> {
-        self.tell(terminal, &brief_pointer(&brief.display().to_string()))?;
+        let line = brief_pointer(&brief.display().to_string());
+        crate::harness_down::tell(self, terminal, crate::clock(), || {
+            self.tell_unchecked(terminal, &line, BRIEF_SETTLE_SECONDS)
+        })?;
         // What a watch starts on first; a record it cannot keep loses no
         // worker its brief.
         let _ = crate::health::delivered(self);
