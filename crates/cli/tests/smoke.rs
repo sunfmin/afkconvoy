@@ -275,7 +275,7 @@ fn real_interactive_claude_takes_its_brief_without_persisting_workspace_trust() 
                 worktree: &text(&project),
                 team_dir: &text(&team),
                 kept: &text(&kept),
-                model: Some("haiku"),
+                model: Some("claude-opus-5-5"),
                 guard: &format!("{} guard", env!("CARGO_BIN_EXE_afkconvoy")),
                 host_user: context == "role-host-user",
                 dsh_profile: afkconvoy_core::team::DshProfile::Fleet,
