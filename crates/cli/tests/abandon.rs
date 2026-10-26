@@ -361,14 +361,7 @@ fn the_loop_says_when_it_nudged_the_train_worker_and_abandoned_the_train() {
     let run = |now: &str| {
         let args = ["run", "--foreground", "--host", "h1", "--second-ms", "0"];
         let more = ["--instance", "alpha", "--ticks", "1", "--now", now];
-        // Its historical worker-health observation also starts a stock
-        // watch now. This assertion is of the train's loop output.
-        world
-            .afk_lines(&[&args[..], &more[..]].concat())
-            .0
-            .into_iter()
-            .filter(|line| !line.starts_with("watch: "))
-            .collect::<Vec<_>>()
+        world.afk_lines(&[&args[..], &more[..]].concat()).0
     };
     let stands = "holding 1/2 · frontier 0 · next in 90s";
     assert_eq!(run("1390"), [format!("tick 1: nothing to do · {stands}")]);
