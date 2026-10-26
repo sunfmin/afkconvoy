@@ -701,7 +701,7 @@ fn claim_findings(run: &Run, held: &[Held]) -> Vec<Finding> {
 fn fix_of(failed: &Failed, instance: &str) -> String {
     named_line(&failed.error).unwrap_or_else(|| match (failed.step.as_str(), failed.issue) {
         ("dispatch", Some(issue)) => on("dispatch", issue, instance),
-        ("tend_train", _) => format!("afkconvoy tick --instance {instance}"),
+        ("slow_gate", _) => format!("afkconvoy tick --instance {instance}"),
         _ => format!("afkconvoy plan --instance {instance}"),
     })
 }
@@ -748,6 +748,9 @@ fn log_findings(run: &Run) -> Vec<Finding> {
                 || did.into_iter().flatten().any(|step| recovered(failed, step)))
         });
         for failed in tick.failed() {
+            if matches!(failed.step.as_str(), "tend_train" | "cut_train") {
+                continue;
+            }
             pending.retain(|(_, previous)| !previous.same_step(&failed));
             pending.push((tick.count, failed));
         }
@@ -2402,16 +2405,16 @@ mod tests {
 
     #[test]
     fn failures_stay_visible_across_unrelated_ticks_and_clear_when_work_recovers() {
-        let failed = tick(4, json!([{"do": "tend_train", "error": "not ready"}]));
+        let failed = tick(4, json!([{"do": "slow_gate", "error": "not ready"}]));
         let unrelated = tick(5, json!([]));
         let mut ticks = vec![failed, unrelated];
         let found = log_findings(&run(ticks.clone()));
         assert_eq!(found.len(), 1);
-        assert_eq!(found[0].what, "`tend_train` failed in tick 4 and has not recovered");
+        assert_eq!(found[0].what, "`slow_gate` failed in tick 4 and has not recovered");
         assert_eq!(found[0].fix, "afkconvoy tick --instance alpha");
         let mut recovered = tick(6, json!([]));
         recovered.1.answer.as_mut().unwrap()["did"] =
-            json!([{"do": "tend_train", "outcome": "done"}]);
+            json!([{"do": "slow_gate", "outcome": "done"}]);
         ticks.push(recovered);
         assert_eq!(log_findings(&run(ticks)), []);
 

@@ -139,7 +139,7 @@ fn a_missing_base_record_is_gated_alone_before_any_worker_turn() {
 }
 
 #[test]
-fn a_lock_issue_takes_its_turn_on_a_red_tip_and_its_fix_joins_first() {
+fn a_lock_issue_from_an_older_fleet_lands_its_fix_on_a_red_tip() {
     let world = World::new();
     // The base branch is red: its gate needs the file only the fix adds.
     world.set_gate("test -f fixed.txt");
@@ -155,15 +155,10 @@ fn a_lock_issue_takes_its_turn_on_a_red_tip_and_its_fix_joins_first() {
         std::thread::sleep(Duration::from_millis(50));
     }
     let answer = finish(child);
-    assert_eq!(answer["outcome"], "joined", "{answer}");
-    let train = world.root.join("convoy-train");
-    git(
-        &world.clone,
-        &["worktree", "add", "-q", "--detach", train.to_str().unwrap(), "origin/main"],
-    );
-    let landed = world.afk_in(&train, &["land", "--train", "--merged-timeout", "0"]).ok();
-    assert_eq!(landed["gate"]["source"], "recorded", "{landed}");
-    assert_eq!(landed["commit"], answer["commit"]);
+    assert_eq!(answer["outcome"], "merged", "{answer}");
+    assert_eq!(answer["recorded"], true);
+    assert_eq!(world.remote(&["rev-parse", "refs/heads/main"]), answer["commit"].as_str().unwrap());
+    assert!(world.remote(&["for-each-ref", "--format=%(refname)", LINE]).is_empty());
 }
 
 fn heavy(world: &World) {

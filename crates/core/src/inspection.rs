@@ -571,7 +571,7 @@ stages:
             said.contains("gh pr create --base main --head tester/afkconvoy-inspection"),
             "{said}"
         );
-        assert!(said.contains("takes a turn: merges"), "{said}");
+        assert!(said.contains("takes a turn: makes"), "{said}");
         assert!(said.contains("`cd '/w/inspection' && afkconvoy land --inspection`"), "{said}");
         assert!(said.contains("open no issue"), "{said}");
         assert!(said.contains("## A red base branch in an unbound repo"), "{said}");
