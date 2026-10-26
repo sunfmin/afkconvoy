@@ -818,7 +818,7 @@ fn codex_explicit_usage_limit_continues_by_rule_without_a_diagnosis() {
 
     tick(&world, 800);
 
-    assert_eq!(open_commands(&world, &dir), ["agent"]);
+    assert_eq!(open_commands(&world, &dir), [common::trusted("agent")]);
     assert_eq!(git(&dir, &["rev-parse", "HEAD"]), head);
     assert_eq!(std::fs::read_to_string(dir.join("unfinished.txt")).unwrap(), "keep me");
     assert_eq!(world.claims().len(), 1);
