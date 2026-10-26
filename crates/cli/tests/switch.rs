@@ -869,7 +869,14 @@ fn account_quota_wait_without_a_reset_continues_instead_of_diagnosing_again() {
     tick(&world, 800);
     tick(&world, 1100);
 
-    assert_eq!(open_commands(&world, &dir), [afkconvoy_core::harness::Harness::Pi.stock()]);
+    assert_eq!(
+        open_commands(&world, &dir),
+        [afkconvoy_core::harness::Harness::Pi.in_worktree(
+            afkconvoy_core::harness::Harness::Pi.stock(),
+            "",
+            ""
+        )]
+    );
     let health = world.afk(&["plan", "--now", "1101"]).ok();
     let worker = &health["host_kit"]["worker_health"]["workers"][0];
     assert_eq!(worker["action"], "continued");
@@ -898,7 +905,14 @@ fn invalid_diagnosis_json_falls_through_to_the_next_harness_and_is_logged() {
     tick(&world, 800);
     tick(&world, 1100);
 
-    assert_eq!(open_commands(&world, &dir), [afkconvoy_core::harness::Harness::Pi.stock()]);
+    assert_eq!(
+        open_commands(&world, &dir),
+        [afkconvoy_core::harness::Harness::Pi.in_worktree(
+            afkconvoy_core::harness::Harness::Pi.stock(),
+            "",
+            ""
+        )]
+    );
     let path = world.cache().join("afkconvoy/worker-health.json");
     let book: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
     let worker = &book["workers"][0];
