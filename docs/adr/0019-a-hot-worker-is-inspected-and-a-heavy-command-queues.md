@@ -102,6 +102,6 @@ A host inspection frees what it found reclaimable, for nothing else ends the dea
 
 Tracked as #308–#313.
 
-## Amended by ADR-0033
+## Amended by ADR-0034
 
-A command holds a turn through merge, gate and join, and train gates use an independent lane. ADR-0033 replaces the earlier queue ordering and explains how one-at-a-time turns now feed the landing train.
+A command holds a turn through merge, gate and join, and train gates use an independent lane. ADR-0034 replaces the earlier queue ordering and explains how one-at-a-time turns now feed the landing train.

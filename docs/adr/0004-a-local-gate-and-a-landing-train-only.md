@@ -16,6 +16,6 @@ GitHub checks are never read, and there is no adversarial verify. That removes t
 
 The worker that wrote a PR no longer joins the train when it is done, since stages follow it. A workflow that lands names the role whose worker gates and joins after its last stage passes. What that worker changes to resolve a conflict on joining is not reviewed again; the gate alone covers it, as it already does for the train worker's repairs.
 
-## Amended by ADR-0033
+## Amended by ADR-0034
 
-A command holds a turn through merge, gate and join, and train gates use an independent lane. ADR-0033 replaces the earlier queue ordering and explains how one-at-a-time turns now feed the landing train.
+A command holds a turn through merge, gate and join, and train gates use an independent lane. ADR-0034 replaces the earlier queue ordering and explains how one-at-a-time turns now feed the landing train.
