@@ -803,7 +803,7 @@ fn open_issues(st: &State) -> ! {
                 "url": format!("https://gh/i/{number}"), "at": issue["at"],
                 "labels": issue["labels"],
                 "blockers": issue["blockers_at_rebuild"].as_array().unwrap_or(&edges),
-                "blockers_more": false,
+                "blockers_more": issue["blockers_more"].as_bool().unwrap_or(false),
                 "more": more, "comments": with})
             .to_string()
         })

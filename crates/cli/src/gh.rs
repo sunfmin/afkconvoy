@@ -28,8 +28,9 @@ use crate::git::Repo;
 /// however many of the issues have comments to read. `$owner` and `$repo`
 /// name the tracker (`GitHub::query`), `$labels` — where it is given — the
 /// repo label every issue read carries, and `gh api graphql` fills
-/// `$endCursor` in page after page. Forty issues keep the nested blocker
-/// labels and comments below GitHub's 500,000-node limit per query.
+/// `$endCursor` in page after page. Ten embedded blockers keep the nested
+/// label connections at five GraphQL points per page instead of forty-one.
+/// A longer blocker list is read in full through the paginated REST endpoint.
 pub const OPEN_ISSUES_QUERY: &str = "query($owner: String!, $repo: String!, $labels: [String!], \
     $endCursor: String) { \
     repository(owner: $owner, name: $repo) { \
@@ -37,7 +38,7 @@ pub const OPEN_ISSUES_QUERY: &str = "query($owner: String!, $repo: String!, $lab
     orderBy: {field: CREATED_AT, direction: DESC}) { \
     pageInfo { hasNextPage endCursor } \
     nodes { number title body url createdAt labels(first: 100) { nodes { name } } \
-    blockedBy(first: 100) { pageInfo { hasNextPage } nodes { number state \
+    blockedBy(first: 10) { pageInfo { hasNextPage } nodes { number state \
     repository { nameWithOwner } labels(first: 100) { nodes { name } } } } \
     comments(first: 100) { pageInfo { hasNextPage } \
     nodes { fullDatabaseId body url createdAt } } } } } }";
@@ -613,8 +614,8 @@ impl GitHub {
 
     /// Every open issue with its comments — all of them, page after page:
     /// the number of calls does not grow with the issues that have comments.
-    /// Only an issue with more than `COMMENTS_WITH` comments is asked about
-    /// again, for all of them.
+    /// An issue whose comments or blockers go past the embedded page is
+    /// asked about again, for all of that connection.
     pub fn open_issues(&self) -> Result<OpenIssues> {
         #[derive(Deserialize)]
         struct Row {
@@ -637,29 +638,25 @@ impl GitHub {
         for line in out.lines().filter(|line| !line.trim().is_empty()) {
             let row: Row =
                 serde_json::from_str(line).context("gh api graphql: unexpected answer")?;
-            // Native dependencies are capped below this page size. Refuse a
-            // truncated answer if GitHub ever raises that limit; never infer
-            // an unblocked issue from an incomplete read.
-            if row.blockers_more {
-                bail!(
-                    "GitHub returned more than 100 blockers for #{}; cannot rebuild a complete frontier",
-                    row.number
-                );
-            }
             // Another repo's issue in the tracker is none of the fleet's.
             if !self.tracker.holds(&row.labels) {
                 continue;
             }
+            // Never infer an unblocked issue from the embedded page alone
+            // when GitHub says another page follows. A failed full read
+            // fails the rebuild instead of dispatching through a blocker.
+            let blockers =
+                if row.blockers_more { self.blocked_by(row.number)? } else { row.blockers };
             let comments = if row.more { self.comments(row.number)? } else { row.comments };
             open.comments.insert(row.number, comments);
-            open.blockers.insert(row.number, row.blockers.clone());
+            open.blockers.insert(row.number, blockers.clone());
             open.reports
                 .insert(row.number, Comment { id: 0, body: row.body, url: row.url, at: row.at });
             open.rows.push(Issue {
                 number: row.number,
                 title: row.title,
                 labels: row.labels,
-                open_blockers: self.blockers(row.blockers),
+                open_blockers: self.blockers(blockers),
             });
         }
         Ok(open)
