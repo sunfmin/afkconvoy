@@ -19,7 +19,8 @@ const EFFORT: &str = "model_reasoning_effort";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Settings {
-    pub model: String,
+    /// None means Codex's own default: the host kit places no Codex model yet.
+    pub model: Option<String>,
     pub model_source: String,
     /// None means the model's own Codex default, not a fleet default.
     pub effort: Option<String>,
@@ -41,7 +42,7 @@ fn config(file: &Path) -> Result<toml::Table> {
     text.parse().with_context(|| format!("cannot parse {}; fix its TOML", file.display()))
 }
 
-fn settings(model: &str, config: &toml::Table, file: &Path) -> Result<Settings> {
+fn settings(model: Option<&str>, config: &toml::Table, file: &Path) -> Result<Settings> {
     let effort = match config.get(EFFORT) {
         Some(toml::Value::String(effort)) if !effort.trim().is_empty() => Some(effort.clone()),
         None => None,
@@ -55,27 +56,26 @@ fn settings(model: &str, config: &toml::Table, file: &Path) -> Result<Settings> 
         None => "codex_default".into(),
     };
     Ok(Settings {
-        model: model.into(),
-        model_source: "fleet_selection".into(),
+        model: model.map(str::to_string),
+        model_source: model_source(model).into(),
         effort,
         effort_source,
         codex_home: None,
     })
 }
 
+/// Where a launch's model comes from: the fleet's selection, or Codex's own
+/// default while the host kit places no Codex model.
+fn model_source(model: Option<&str>) -> &'static str {
+    match model {
+        Some(_) => "fleet_selection",
+        None => "codex_default",
+    }
+}
+
 /// A fresh launch's directory, under the worktree so it goes with the work.
 pub(crate) fn directory(worktree: &Path) -> PathBuf {
     worktree.join(crate::worker_tmp::TMP_DIR).join(format!("codex-{}", crate::unique()))
-}
-
-/// Validate before ending a worker that a continuation would replace.
-pub(crate) fn selected(harness: Harness, model: Option<&str>) -> Result<()> {
-    if harness == Harness::Codex && model.is_none_or(str::is_empty) {
-        bail!(
-            "the host kit holds no selected Codex model: run `afkconvoy kit`; no Codex worker was started"
-        );
-    }
-    Ok(())
 }
 
 /// Adds authoritative effort at the last point before a Codex session
@@ -88,8 +88,6 @@ pub(crate) fn prepare(
     command: &str,
     in_role: bool,
 ) -> Result<(String, Settings)> {
-    selected(Harness::Codex, model)?;
-    let model = model.context("selected Codex model")?;
     let file = user_config();
     let config = config(&file)?;
     let mut settings = settings(model, &config, &file)?;
@@ -162,7 +160,7 @@ pub(crate) fn recorded(worktree: &Worktree) -> Option<Settings> {
         let file = home.join("config.toml");
         if let Ok(saved) = config(&file) {
             if let Some(model) = saved.get("model").and_then(toml::Value::as_str) {
-                settings.model = model.into();
+                settings.model = Some(model.into());
                 settings.model_source = format!("session:{}:model", file.display());
             }
             if let Some(effort) = saved.get(EFFORT).and_then(toml::Value::as_str) {
@@ -174,12 +172,12 @@ pub(crate) fn recorded(worktree: &Worktree) -> Option<Settings> {
     Some(settings)
 }
 
-pub(crate) fn planned(model: &str) -> Value {
+pub(crate) fn planned(model: Option<&str>) -> Value {
     let file = user_config();
     match config(&file).and_then(|config| settings(model, &config, &file)) {
         Ok(settings) => json!(settings),
         Err(error) => {
-            json!({"model":model,"model_source":"fleet_selection","error":format!("{error:#}")})
+            json!({"model":model,"model_source":model_source(model),"error":format!("{error:#}")})
         }
     }
 }

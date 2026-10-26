@@ -359,7 +359,8 @@ fn a_role_s_range_leaves_out_a_harness_it_holds_no_limits_for_and_plan_and_check
 }
 
 /// What the model a roster's draft is asked of answers: a strength for each
-/// model of the host kit but pi's a/slow, and guidance for `dev`.
+/// model the host kit places — pi's a/slow is `not researched` — and
+/// guidance for `dev`.
 const DRAFTED: &str = concat!(
     "Here is the draft:\n",
     "{\"harness\": \"claude-code\", \"model\": \"opus\", \"good_at\": \"hard, wide work\"}\n",
@@ -410,7 +411,7 @@ fn a_team_s_roster_is_drafted_from_the_host_kit_into_its_working_tree_and_commit
     // The host kit's first was asked, of every role and every model in order.
     let asked = world.drafter_asked();
     for given in [
-        "- claude-code opus\n- claude-code haiku\n- pi a/fast\n- pi a/slow\n- codex\n- dsh\n- kimi\n",
+        "- claude-code opus\n- claude-code haiku\n- pi a/fast\n- codex\n- dsh\n- kimi\n",
         "- reviewer: the stage `look` of the workflow `audit`, performing the skill `review`; \
          the stage `review` of the workflow `feature`, performing the skill `review`. It may \
          run: claude-code opus, claude-code haiku.\n",
@@ -432,7 +433,6 @@ fn a_team_s_roster_is_drafted_from_the_host_kit_into_its_working_tree_and_commit
         "      - { harness: claude-code, model: \"opus\", good_at: \"hard, wide work\" }\n",
         "      - { harness: claude-code, model: \"haiku\", good_at: \"reviews\" }\n",
         "      - { harness: pi, model: \"a/fast\", good_at: \"small fixes\" }\n",
-        "      - { harness: pi, model: \"a/slow\", good_at: \"not researched\" }\n",
         "      - { harness: codex }\n",
         "      - { harness: dsh }\n",
         "      - { harness: kimi }\n",
@@ -453,7 +453,7 @@ fn a_team_s_roster_is_drafted_from_the_host_kit_into_its_working_tree_and_commit
 
     // The draft passes `check` as written.
     let checked = world.afk(&["check", "--dir", dir, "--team", "acme/team"]).ok();
-    assert_eq!(checked["roles"][0]["roster"]["run"].as_array().unwrap().len(), 7, "{checked}");
+    assert_eq!(checked["roles"][0]["roster"]["run"].as_array().unwrap().len(), 6, "{checked}");
     assert_eq!(checked["roles"][1]["roster"]["run"].as_array().unwrap().len(), 2, "{checked}");
 
     // Where a roster is, it says what it would change and writes nothing

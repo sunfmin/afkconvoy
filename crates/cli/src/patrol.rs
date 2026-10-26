@@ -331,7 +331,6 @@ pub(crate) fn switch(
     let launch = agent.command(harness)?;
     let line = in_role(fleet, &kept, name, &cast, launch.as_str(), &checkout)?;
     let continuing = said(&checkout);
-    crate::codex_launch::selected(harness, cast.model.as_deref())?;
     checkout.stop_for_continuation()?;
     crate::dispatch::continue_brief(fleet, &checkout, None, &continuing)?;
     let terminal = agent.start_worker(

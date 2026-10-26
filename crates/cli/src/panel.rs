@@ -1514,13 +1514,14 @@ fn repo(out: &mut String, at: usize, panel: &Panel) {
                 .map(|n| format!("#{n}"))
                 .unwrap_or_else(|| worker["worktree"].as_str().unwrap_or("worker").to_string());
             let text = |key: &str| esc(worker[key].as_str().unwrap_or(""));
+            let model = worker["model"].as_str().unwrap_or("Codex default");
             let effort = worker["effort"].as_str().unwrap_or("Codex default");
             let _ = write!(
                 out,
                 "<li data-codex-worker=\"{}\"><b>{}</b>: model {} ({}); effort {} ({})</li>",
                 esc(&label),
                 esc(&label),
-                text("model"),
+                esc(model),
                 text("model_source"),
                 esc(effort),
                 text("effort_source")

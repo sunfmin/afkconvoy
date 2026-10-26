@@ -10,7 +10,7 @@ npx skills add <source> --skill <name> --agent claude-code
 
 Until then `skills-loaded.sh` refuses every `pass` and `reject` of those two roles, and the attending's `limits.ts` does under pi. The hooks call `jq`: every host of the fleet needs it.
 
-The roster lets the attending run pi first, so a host whose host kit holds pi needs `pi`, logged in to the provider of its model: `openai-codex/gpt-5.5`, as written — `afkconvoy kit` adds it to the host kit, and probes it. Write another model pi lists — or take pi out of the attending's entry, and it runs Claude Code as the others do. A host kit holding pi on a host without it starts nothing: `plan`, `tick` and `run` refuse, `doctor` finds the same, and each names the range that calls for it and the line that installs it:
+The roster lets the attending run pi first, so a host whose host kit holds pi needs `pi`, logged in to the provider of its model: `openai-codex/gpt-5.5`, as written — `afkconvoy kit` adds it to the host kit as pi lists it, and research places it; until then pi runs its default model. Write another model pi lists — or take pi out of the attending's entry, and it runs Claude Code as the others do. A host kit holding pi on a host without it starts nothing: `plan`, `tick` and `run` refuse, `doctor` finds the same, and each names the range that calls for it and the line that installs it:
 
 ```text
 pi is not installed, called for by the range of the role `attending`
