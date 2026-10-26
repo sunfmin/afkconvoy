@@ -15,7 +15,9 @@ pub fn red_ref(repo: &Repo, branch: &str) -> String {
 /// record. Another lock issue still waits for the base to be repaired.
 pub fn is_for(gh: &crate::gh::GitHub, issue: u64, tip: &str) -> Result<bool> {
     let marker = format!("<!--convoy:base-repair tip={tip}-->");
-    Ok(gh.issue(issue)?.body.is_some_and(|body| body.starts_with(&marker)))
+    let read = gh.issue(issue)?;
+    Ok(afkconvoy_core::plan::is_repair(&read.labels)
+        && read.body.is_some_and(|body| body.starts_with(&marker)))
 }
 
 pub fn tend(fleet: &mut Fleet, me: &Me) -> Result<Outcome> {
@@ -42,25 +44,10 @@ pub fn tend(fleet: &mut Fleet, me: &Me) -> Result<Outcome> {
             }
         }
         let config = &fleet.config;
-        let label = match &config.bound {
-            None => config.ready_label.clone(),
-            Some(bound) => {
-                let kept = crate::team::keep(
-                    &fleet.gh,
-                    &crate::copies::Copies::of_host()?,
-                    &bound.team,
-                    &config.labels(),
-                )?;
-                kept.team
-                    .workflows
-                    .first()
-                    .map(|w| w.flow_label().to_string())
-                    .unwrap_or_else(|| config.ready_label.clone())
-            }
-        };
+        let label = config.ready_label.clone();
         let labels = fleet.gh.labels()?;
-        for label in [&label, &config.lock_label] {
-            if !labels.contains(label) {
+        for label in [label.as_str(), &config.lock_label, afkconvoy_core::plan::REPAIR_LABEL] {
+            if !labels.iter().any(|known| known == label) {
                 fleet.gh.create_label(label, "afkconvoy: repair the red base branch")?;
             }
         }
@@ -71,7 +58,7 @@ pub fn tend(fleet: &mut Fleet, me: &Me) -> Result<Outcome> {
         fleet.gh.open_issue(
             &format!("Repair the red {} tip {}", config.base_branch, &base[..12.min(base.len())]),
             &body,
-            &[&label, &config.lock_label],
+            &[&label, &config.lock_label, afkconvoy_core::plan::REPAIR_LABEL],
         )?;
         Ok(Outcome::Done)
     })();

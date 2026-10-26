@@ -142,7 +142,30 @@ pub fn tick(
     let _ = crate::paused::probe(repo, me.instance.as_str(), &me.host, me.now);
     let _ = crate::kit::refresh(repo, me.instance.as_str(), &me.host, me.now);
     let (mut fleet, mut open) = Fleet::read(repo, me.now)?;
-    let _ = crate::legacy::migrate(repo, &fleet.config, &fleet.gh, &me.host, me.now)?;
+    let migration = crate::legacy::migrate(repo, &fleet.config, &fleet.gh, &me.host, me.now);
+    if !matches!(&migration, Ok(answer) if answer["outcome"] == "idle") {
+        let (outcome, failed) = match migration {
+            Ok(answer) => (answer.to_string(), false),
+            Err(error) => (format!("{error:#}"), true),
+        };
+        let _ = crate::log::Log::of(repo).and_then(|log| {
+            log.append(&crate::log::Entry {
+                at: me.now,
+                instance: me.instance.as_str().into(),
+                host: me.host.clone(),
+                what: crate::log::What::Command {
+                    command: "migrate".into(),
+                    on: None,
+                    by: "fleet".into(),
+                    outcome,
+                    failed,
+                },
+            })
+        });
+        // Migration can open or close issues. Its partial failure must not
+        // prevent ordinary worker recovery or the fleet's heartbeat.
+        (fleet, open) = Fleet::read(repo, me.now)?;
+    }
     if crate::repair::tend(&mut fleet, me)? == Outcome::Done {
         (fleet, open) = Fleet::read(repo, me.now)?;
     }

@@ -43,11 +43,11 @@ pub enum Variant {
     /// The worktree or branch carries an earlier worker's progress: inspect
     /// it first, as partial work toward the same criteria.
     Continue,
-    /// The issue's PR is open: nothing is left but joining it to the train.
-    Join { pr: u64 },
+    /// The issue's PR is open: nothing is left but landing it in a turn.
+    Land { pr: u64 },
     /// The issue's PR is open and no claim held it: a released claim kept
     /// it. What it was released for is to be read, the base merged, and the
-    /// PR joined to the train.
+    /// PR landed in a turn.
     TakeUp { pr: u64 },
 }
 
@@ -56,7 +56,7 @@ impl Variant {
         match self {
             Variant::Fresh => "fresh",
             Variant::Continue => "continue",
-            Variant::Join { .. } => "join",
+            Variant::Land { .. } => "land",
             Variant::TakeUp { .. } => "take_up",
         }
     }
@@ -83,7 +83,7 @@ impl Recovery {
     /// only join was kept by a released claim, and is taken up instead.
     pub fn taken_up(self) -> Recovery {
         match self.variant {
-            Variant::Join { pr } => Recovery {
+            Variant::Land { pr } => Recovery {
                 variant: Variant::TakeUp { pr },
                 reason: format!("{}; no claim held it — take it up", self.reason),
                 ..self
@@ -114,8 +114,8 @@ pub fn select_recovery(
     match joining {
         Some(pr) if survived.tier != Tier::Fresh => Recovery {
             tier: survived.tier,
-            variant: Variant::Join { pr },
-            reason: format!("{}; PR #{pr} is open — brief only to join the train", survived.reason),
+            variant: Variant::Land { pr },
+            reason: format!("{}; PR #{pr} is open — brief only to land the PR", survived.reason),
         },
         _ => survived,
     }
@@ -277,14 +277,14 @@ mod tests {
     fn with_its_pr_open_what_survived_is_briefed_only_to_join() {
         let branch = pushed("u/a", Some(2));
         let here = select_recovery(Some(&worktree(Some(2), false)), Some(&branch), Some(70));
-        assert_eq!((here.tier, here.variant), (Tier::Reuse, Variant::Join { pr: 70 }));
-        assert!(here.reason.ends_with("PR #70 is open — brief only to join the train"));
+        assert_eq!((here.tier, here.variant), (Tier::Reuse, Variant::Land { pr: 70 }));
+        assert!(here.reason.ends_with("PR #70 is open — brief only to land the PR"));
         let gone = select_recovery(None, Some(&branch), Some(70));
-        assert_eq!((gone.tier, gone.variant), (Tier::Recreate, Variant::Join { pr: 70 }));
+        assert_eq!((gone.tier, gone.variant), (Tier::Recreate, Variant::Land { pr: 70 }));
         // nothing of the PR's survived: the start is the whole issue again
         let nothing = select_recovery(None, None, Some(70));
         assert_eq!((nothing.tier, nothing.variant), (Tier::Fresh, Variant::Fresh));
-        assert_eq!(Variant::Join { pr: 70 }.word(), "join");
+        assert_eq!(Variant::Land { pr: 70 }.word(), "land");
     }
 
     #[test]

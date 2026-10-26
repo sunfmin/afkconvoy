@@ -1,6 +1,6 @@
 # afkconvoy
 
-A fleet of AFK coding agents that works a GitHub backlog. `afkconvoy run` takes the issues a repo marks ready, starts one agent per issue in its own worktree, and lands each finished PR through a landing train — unattended, until you stop it. Everything the fleet knows lives on GitHub and the repo's remote: no process holds state, so a fleet can be stopped and started at will, and several hosts can work one repo.
+A fleet of AFK coding agents that works a GitHub backlog. `afkconvoy run` takes the issues a repo marks ready, starts one agent per issue in its own worktree, and lands each finished PR in a merge, gate, record and landing turn — unattended, until you stop it. Everything the fleet knows lives on GitHub and the repo's remote: no process holds state, so a fleet can be stopped and started at will, and several hosts can work one repo.
 
 ## Install
 
@@ -61,7 +61,7 @@ The decisions live in `crates/core` as pure functions checked by [Flux](https://
 
 **The manual** is generated, and never edited: after changing the help — the guide, a command's, a topic, or `GLOSSARY.md` — run `cargo run -p afkconvoy --example manual` and commit what it wrote to [`docs/manual.md`](docs/manual.md). The gate fails while the page is not what that command writes.
 
-**Cutting a release** is the fleet's: once it goes idle with landed work past the newest `v*` tag, it cuts the next version itself — sets it, lands it through the landing train, tags it, and publishes and installs it on its host (`afkconvoy cut --help`). `afkconvoy plan` says when the next cut starts. Its steps are the ```` ```yaml cut ```` block of [`docs/agents/afkconvoy.md`](docs/agents/afkconvoy.md), the one place they are written: steps of [`packaging/release.sh`](packaging/release.sh), then Homebrew's. They run on a Mac, and on nothing of GitHub Actions: this repository is private and its Actions has no budget. The archives and the formula go to [`sunfmin/homebrew-tap`](https://github.com/sunfmin/homebrew-tap), which Homebrew downloads from because this repository is private.
+**Cutting a release** is the fleet's: once it goes idle with landed work past the newest `v*` tag, it cuts the next version itself — sets it, lands it through a landing turn, tags it, and publishes and installs it on its host (`afkconvoy cut --help`). `afkconvoy plan` says when the next cut starts. Its steps are the ```` ```yaml cut ```` block of [`docs/agents/afkconvoy.md`](docs/agents/afkconvoy.md), the one place they are written: steps of [`packaging/release.sh`](packaging/release.sh), then Homebrew's. They run on a Mac, and on nothing of GitHub Actions: this repository is private and its Actions has no budget. The archives and the formula go to [`sunfmin/homebrew-tap`](https://github.com/sunfmin/homebrew-tap), which Homebrew downloads from because this repository is private.
 
 `build` uses rustup's stable toolchain whatever `cargo` is first on `PATH`, and names the line that installs it when it, or the Intel target, is missing.
 
@@ -73,4 +73,4 @@ On each other host that runs a fleet, the upgrade is all there is to it:
 brew update && brew upgrade sunfmin/tap/afkconvoy
 ```
 
-The host runner finds the newer afkconvoy installed where it was started from, and moves onto it between ticks once the running exclusive command ends, on the same checkout list. Claims, workers, the landing train, a cut and an inspection carry over; queued commands rejoin the replacement. It waits at most ten minutes for that moment, then lets work go on under the old release, gives a `doctor` finding naming what held it, and keeps trying the move. `afkconvoy checkouts` answers the runner's version under `host_runner`; `doctor` says how the move stands as `host.installed`, including where the replacement did not start.
+The host runner finds the newer afkconvoy installed where it was started from, and moves onto it between ticks once the running exclusive command ends, on the same checkout list. Claims, workers, PRs waiting to land, a cut and an inspection carry over; queued commands rejoin the replacement. It waits at most ten minutes for that moment, then lets work go on under the old release, gives a `doctor` finding naming what held it, and keeps trying the move. `afkconvoy checkouts` answers the runner's version under `host_runner`; `doctor` says how the move stands as `host.installed`, including where the replacement did not start.

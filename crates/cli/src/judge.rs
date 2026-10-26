@@ -252,12 +252,13 @@ pub(crate) fn escalate_claim(
     let bodies = || comments.iter().map(|c| c.body.as_str());
     let said = escalation_begun(bodies(), &claim.id);
     // A bound repo's escalate label is its team's to name.
-    let kept = match &fleet.config.bound {
-        Some(bound) => {
-            Some(keep(&fleet.gh, &Copies::of_host()?, &bound.team, &fleet.config.labels())?)
-        }
-        None => None,
-    };
+    let kept =
+        match fleet.config.bound.as_ref().filter(|_| !afkconvoy_core::plan::is_repair(&labels)) {
+            Some(bound) => {
+                Some(keep(&fleet.gh, &Copies::of_host()?, &bound.team, &fleet.config.labels())?)
+            }
+            None => None,
+        };
     let team = kept.as_ref().map(|kept| &kept.team);
     let swap = Relabel::of(&labels, &fleet.config, team);
     // The one workflow a bound repo's issue follows: a ruling puts its label back.

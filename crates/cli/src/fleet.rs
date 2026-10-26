@@ -443,8 +443,15 @@ impl Fleet {
             self.scan.claims.iter().filter(|claim| me.is_some_and(|me| claim.is_held_by(me)))
         {
             let under = match &self.config.bound {
-                Some(_) => stages.declared(claim.number, &claim.id),
-                None => self.declared_since(open, claim),
+                Some(_)
+                    if !issues.iter().any(|issue| {
+                        issue.number == claim.number
+                            && afkconvoy_core::plan::is_repair(&issue.labels)
+                    }) =>
+                {
+                    stages.declared(claim.number, &claim.id)
+                }
+                _ => self.declared_since(open, claim),
             };
             if under {
                 declared.push(claim.number);

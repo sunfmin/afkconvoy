@@ -71,13 +71,20 @@ pub fn certify(repo: &Repo, config: &Config, tip: &str, host: &str, now: u64) ->
 
 /// Acquires one repo's turn on its current certified base tip. A repair
 /// issue carrying the fleet lock alone may take a turn on a red base tip.
+#[derive(Clone, Copy)]
+enum OnRedBase {
+    Wait,
+    Return,
+}
+
 fn take(
     repo: &Repo,
     config: &Config,
     issue: Option<u64>,
     host: &str,
     now: u64,
-) -> Result<(Permit, String)> {
+    on_red: OnRedBase,
+) -> Result<Option<(Permit, String)>> {
     let mut tried = None;
     loop {
         let gh = GitHub::of(repo)?;
@@ -105,6 +112,9 @@ fn take(
                 }
                 let _ = crate::wake::wake(repo, "red base tip");
             }
+            if matches!(on_red, OnRedBase::Return) {
+                return Ok(None);
+            }
             std::thread::sleep(Duration::from_secs(2));
             continue;
         }
@@ -119,7 +129,7 @@ fn take(
             drop(permit);
             continue;
         }
-        return Ok((permit, tip));
+        return Ok(Some((permit, tip)));
     }
 }
 /// The files a merge in progress in a worktree has left conflicted.
@@ -253,8 +263,34 @@ pub fn join(
     tracker: &Tracker,
     pr: &PullRequest,
     of: &Of,
-    mut answer: Value,
+    answer: Value,
     (host, now): (&str, u64),
+) -> Result<Value> {
+    run(repo, config, tracker, pr, of, answer, (host, now, OnRedBase::Wait))
+}
+
+/// A reconciliation pass must remain able to dispatch a red-base repair.
+/// It leaves the PR pending instead of waiting inside that same pass.
+pub fn try_join(
+    repo: &Repo,
+    config: &Config,
+    tracker: &Tracker,
+    pr: &PullRequest,
+    of: &Of,
+    answer: Value,
+    (host, now): (&str, u64),
+) -> Result<Value> {
+    run(repo, config, tracker, pr, of, answer, (host, now, OnRedBase::Return))
+}
+
+fn run(
+    repo: &Repo,
+    config: &Config,
+    tracker: &Tracker,
+    pr: &PullRequest,
+    of: &Of,
+    mut answer: Value,
+    (host, now, on_red): (&str, u64, OnRedBase),
 ) -> Result<Value> {
     let gh = GitHub::of(repo)?;
     let issue = match of {
@@ -289,7 +325,12 @@ pub fn join(
         answer["commit"] = json!(current);
         return Ok(answer);
     }
-    let (_permit, tip) = take(repo, config, issue, host, now)?;
+    let Some((_permit, tip)) = take(repo, config, issue, host, now, on_red)? else {
+        answer["outcome"] = json!("base_red");
+        answer["detail"] =
+            json!("the base tip is red; its repair must land before another turn starts");
+        return Ok(answer);
+    };
     let locks = standing_locks(&gh, config)?;
     if issue.map_or(!locks.is_empty(), |n| keeps_off(&locks, n)) {
         return Ok(locked(answer, &locks));

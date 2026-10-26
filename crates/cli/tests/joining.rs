@@ -64,7 +64,7 @@ fn open_terminals(world: &World, dir: &Path) -> Vec<String> {
 
 /// The records of a restart PR #70 carries.
 fn restarts(world: &World) -> Vec<String> {
-    world.comments(70).into_iter().filter(|body| body.contains("convoy:join")).collect()
+    world.comments(70).into_iter().filter(|body| body.contains("convoy:landing")).collect()
 }
 
 fn pr_is_open(world: &World) -> bool {
@@ -328,7 +328,7 @@ fn a_second_restart_is_refused_by_hand_and_by_any_host_that_reads_the_pr() {
 
     let restarted = restart(&world, "1390").ok();
     assert_eq!((&restarted["action"], &restarted["pr"]), (&json!("restarted"), &json!(70)));
-    assert_eq!(restarted["prompt"], "join");
+    assert_eq!(restarted["prompt"], "land");
     assert_eq!(restarts(&world).len(), 1);
 
     // the new worker goes silent too: nudged, and past that there is no second restart

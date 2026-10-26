@@ -286,14 +286,28 @@ fn a_green_tip_whose_record_cannot_be_written_returns_a_retryable_error() {
     assert_eq!(world.afk_in(&worker, &["gate", "--land"]).ok()["outcome"], "merged");
 }
 
-#[test]
-fn an_outside_red_base_is_certified_alone_and_its_fleet_repair_lands_in_a_turn() {
+fn red_base_repair(bound: bool) {
     let world = World::new();
     let certified = world.root.join("certified-red");
     let worker_gated = world.root.join("worker-gated");
     world.set_gate(&format!(
         "if test -f broken.txt && test ! -f repaired.txt; then pwd > {}; exit 1; fi; if test -f worker.txt; then touch {}; fi",
         quote(&certified), quote(&worker_gated)));
+    if bound {
+        world.repo(
+            "acme/dev",
+            &[(".claude/skills/fix/SKILL.md", "---\nname: fix\ndescription: fix\n---\n")],
+        );
+        world.repo("acme/team", &[
+            ("team.md", "```yaml\nroles: {dev: acme/dev}\n```\n"),
+            ("workflows/decision.md", "```yaml\nstages:\n  - name: decision\n    by: human\n    on: {pass: done}\n```\n"),
+        ]);
+        let config = std::fs::read_to_string(world.clone.join("docs/agents/afkconvoy.md"))
+            .unwrap()
+            .replace("base_branch: main\n", "base_branch: main\nteam: acme/team\n");
+        crate::common::commit(&world.clone, "docs/agents/afkconvoy.md", &config);
+        git(&world.clone, &["push", "-q", "origin", "HEAD"]);
+    }
     seed(&world);
     let worker = world.worker(1, "worker.txt", "normal work");
     crate::common::commit(&world.clone, "broken.txt", "outside change");
@@ -389,4 +403,14 @@ fn an_old_stored_train_lane_count_is_ignored_and_the_runner_starts() {
     assert!(settings.get("train_lanes").is_none());
     assert!(settings["ignored"].as_str().unwrap().contains("train_lanes is ignored"));
     assert!(doctor["host"]["exclusive"]["lanes"].get("train").is_none());
+}
+
+#[test]
+fn an_outside_red_base_is_certified_alone_and_its_fleet_repair_lands_in_a_turn() {
+    red_base_repair(false);
+}
+
+#[test]
+fn a_bound_repo_repairs_its_base_without_entering_its_human_workflow() {
+    red_base_repair(true);
 }

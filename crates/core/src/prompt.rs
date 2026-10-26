@@ -1030,7 +1030,7 @@ pub fn worker_prompt(fields: &WorkerFields, variant: Variant) -> Result<String, 
 /// landing role: the brief every joining worker gets, with the role and the
 /// skill it joins as.
 pub fn landing_prompt(fields: &WorkerFields, pr: u64, landing: Landing) -> Result<String, String> {
-    prompt(fields, Variant::Join { pr }, Some(landing))
+    prompt(fields, Variant::Land { pr }, Some(landing))
 }
 
 fn prompt(
@@ -1044,7 +1044,7 @@ fn prompt(
     let (template, pr) = match variant {
         Variant::Fresh => (briefed(OPENING_FRESH, STEP1_FRESH), String::new()),
         Variant::Continue => (briefed(OPENING_CONTINUE, STEP1_CONTINUE), String::new()),
-        Variant::Join { pr } => {
+        Variant::Land { pr } => {
             let joiner = JOINER.replace("<landing>", if landing.is_some() { LANDING } else { "" });
             (steps(&joiner, "2", "3", " — your PR has landed"), pr.to_string())
         }
@@ -1291,7 +1291,7 @@ mod tests {
         let mut briefs: Vec<String> = [
             Variant::Fresh,
             Variant::Continue,
-            Variant::Join { pr: 70 },
+            Variant::Land { pr: 70 },
             Variant::TakeUp { pr: 70 },
         ]
         .into_iter()
@@ -1563,7 +1563,7 @@ mod tests {
             assert_eq!(prompt.matches("afkconvoy wake").count(), 1, "said in one place");
             assert!(!prompt.contains("<wake>") && !prompt.contains("<outcomes>"));
         }
-        let joiner = worker_prompt(&fields(), Variant::Join { pr: 70 }).unwrap();
+        let joiner = worker_prompt(&fields(), Variant::Land { pr: 70 }).unwrap();
         assert!(joiner.contains(line), "{joiner}");
         assert!(joiner.contains("Once your outcome is on GitHub — your PR has landed,"));
         assert!(!joiner.contains("comment is posted") && !joiner.contains("<wake>"));
@@ -1919,7 +1919,7 @@ mod tests {
             "{prompt}"
         );
         // But for those lines it is the brief every joining worker gets.
-        let joiner = worker_prompt(&fields(), Variant::Join { pr: 70 }).unwrap();
+        let joiner = worker_prompt(&fields(), Variant::Land { pr: 70 }).unwrap();
         let role = prompt.find("**Your role:**").unwrap();
         let steps = prompt.find("\n## Steps").unwrap();
         assert_eq!(format!("{}{}", &prompt[..role], &prompt[steps..]), joiner);
@@ -1934,7 +1934,7 @@ mod tests {
             Variant::Fresh,
             Variant::Continue,
             Variant::TakeUp { pr: 70 },
-            Variant::Join { pr: 70 },
+            Variant::Land { pr: 70 },
         ] {
             let prompt = worker_prompt(&fields(), variant).unwrap();
             assert!(prompt.contains("pushes that same commit as a fast-forward"), "{prompt}");

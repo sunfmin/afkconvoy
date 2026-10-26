@@ -2,7 +2,7 @@
 
 use afkconvoy_core::claims::Claim;
 use afkconvoy_core::harness::Harness;
-use afkconvoy_core::joining::Switch;
+use afkconvoy_core::landing_worker::Switch;
 use afkconvoy_core::patrol::claimed;
 use afkconvoy_core::plan::closing_pr;
 use anyhow::{Context, Result, anyhow, bail};

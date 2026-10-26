@@ -361,6 +361,10 @@ _Avoid_: landing slot, merge queue
 Pushing the merge commit a turn gated and recorded green onto the base branch as a fast-forward, and closing the issue it completes. Issue workers, a workflow's landing worker, inspections and cuts all land in a turn.
 _Avoid_: join, enqueue
 
+**Repair**:
+A change the fleet starts to restore a red base tip or finish retained work from an older release. Its operator worker owns an issue and a worktree, works outside product workflows and human stages, and lands through the same recorded turn as every other change.
+_Avoid_: manual repair
+
 **Cut**:
 The run that makes a new version of a repo from its base branch: it sets the version, lands it, tags it, and publishes and installs it. An idle fleet starts one when landed work is past the newest version tag, or when the repo declares its initial version and the remote has no version tag; each cut belongs to one host, and a failed cut holds later cuts back until its failure is answered.
 _Avoid_: release (a claim's last step, and `afkconvoy release`), publish (a heartbeat's), deploy

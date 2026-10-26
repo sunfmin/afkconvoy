@@ -2092,11 +2092,7 @@ enum Command {
     /// afkconvoy intake --issue 13 --workflow fix --blocked-by 11,12
     /// ```
     ///
-    /// The repair worker runs it with `--repair` for the issue it opened for a defect of the base branch — the base branch gated red alone. Its prompt names the team's workflows: the first by default, another when it fits the defect clearly better.
-    ///
-    /// ```
-    /// afkconvoy intake --repair --issue 14 --workflow fix
-    /// ```
+    /// Fleet repairs are dispatched automatically outside product workflows; no intake is needed.
     ///
     /// ## Who runs it
     ///
@@ -2156,7 +2152,7 @@ enum Command {
         #[arg(long, env = PATROL_ENV)]
         patrol: Option<String>,
         /// Taken in by the repair worker, for a defect of the base branch: no role, issue or patrol
-        #[arg(long, alias = "train")]
+        #[arg(long, hide = true, alias = "train")]
         repair: bool,
         /// The issues it is to wait for, as numbers separated by commas
         #[arg(long, value_delimiter = ',')]

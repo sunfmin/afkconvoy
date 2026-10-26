@@ -63,6 +63,14 @@ pub fn closing_pr(prs: &[PullRequest], number: u64) -> Option<&PullRequest> {
 /// is closed by is not the fleet's: a worker would open a second one.
 pub const NOT_OURS: &str = "has an open linked PR";
 
+/// Fleet repairs run as operator workers, outside product workflows. The
+/// ready label still controls whether a repair may be dispatched.
+pub const REPAIR_LABEL: &str = "convoy-repair";
+
+pub fn is_repair(labels: &[String]) -> bool {
+    labels.iter().any(|label| label == REPAIR_LABEL)
+}
+
 /// Why an issue's labels keep a fleet from dispatching it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LabelBar {
@@ -106,6 +114,13 @@ pub fn label_bar(labels: &[String], config: &Config, flows: &FlowLabels) -> Opti
     }
     // The ready label means something only in an unbound repo.
     match &config.bound {
+        Some(_) if is_repair(labels) => {
+            if labels.contains(&config.ready_label) {
+                None
+            } else {
+                Some(LabelBar::NotReady(config.ready_label.clone()))
+            }
+        }
         Some(_) if flows.among(labels).is_empty() => Some(LabelBar::NoFlow),
         None if !labels.contains(&config.ready_label) => {
             Some(LabelBar::NotReady(config.ready_label.clone()))
@@ -119,8 +134,8 @@ pub fn label_bar(labels: &[String], config: &Config, flows: &FlowLabels) -> Opti
 /// label; `None` when it carries none.
 pub fn handed_by(labels: &[String], config: &Config, flows: &FlowLabels) -> Option<String> {
     match &config.bound {
-        Some(_) => flows.among(labels).first().map(|flow| flow.to_string()),
-        None => labels.contains(&config.ready_label).then(|| config.ready_label.clone()),
+        Some(_) if !is_repair(labels) => flows.among(labels).first().map(|flow| flow.to_string()),
+        _ => labels.contains(&config.ready_label).then(|| config.ready_label.clone()),
     }
 }
 
@@ -571,7 +586,7 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
             said.filter(|_| !matches!(bar, LabelBar::Epic(_))).unwrap_or_else(|| bar.reason())
         } else if claimed {
             "already claimed".to_string()
-        } else if config.bound.is_some() {
+        } else if config.bound.is_some() && !is_repair(&issue.labels) {
             match call(issue, seen.due) {
                 Call::Human(reason) => {
                     set.escalating.push(Excluded { number, title, reason });
@@ -612,6 +627,9 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
             } else if seen.landed.contains(&claim.number) {
                 Status::Landed
             } else if config.bound.is_some()
+                && !issues
+                    .iter()
+                    .any(|issue| issue.number == claim.number && is_repair(&issue.labels))
                 && !(pr.is_some() && seen.landing.contains(&claim.number))
             {
                 // A landing worker's claim with no PR left to join has

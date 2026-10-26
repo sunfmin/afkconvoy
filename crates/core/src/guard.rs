@@ -419,6 +419,11 @@ impl Limits {
 
     /// Why `label` is not a worker's to add or remove, when it is the fleet's.
     fn fleets(&self, label: &str) -> Option<String> {
+        if label.eq_ignore_ascii_case(crate::plan::REPAIR_LABEL) {
+            return Some(format!(
+                "`{label}` is the fleet repair label; only the fleet assigns repair workers"
+            ));
+        }
         if label.eq_ignore_ascii_case(&self.lock_label) {
             return Some(format!(
                 "`{label}` is the lock label, and a worker neither adds nor removes it by hand: \

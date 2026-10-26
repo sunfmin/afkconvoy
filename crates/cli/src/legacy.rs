@@ -51,9 +51,119 @@ impl Legacy {
     }
 }
 
-/// Finishes a line left by an old release. Its green recorded tip lands by
-/// fast-forward. Otherwise its PRs take ordinary turns, oldest first. The
-/// line stays until every head is on the base; a conflict loses no PR.
+/// A retained workspace is linked to the issue that owns its resolution.
+/// The next tick and worker find it through the same Orca lookup as any
+/// other continuation, including after this process dies.
+fn workspace(
+    repo: &Repo,
+    gh: &crate::gh::GitHub,
+    issue: u64,
+    head: &str,
+) -> Result<crate::orca::Worktree> {
+    let source = crate::orca::Source::of(repo)?;
+    if let Some(worktree) = crate::orca::Worktree::of_issue(&source, issue)? {
+        return Ok(worktree);
+    }
+    let read = gh.issue(issue)?;
+    let name = gh.tracker.worktree_name(issue, &read.title);
+    let worktree = crate::orca::Worktree::cut(&source, &name, head, Some(issue))?;
+    gh.comment(issue, &afkconvoy_core::worker::branch_comment(&worktree.branch))?;
+    Ok(worktree)
+}
+
+/// Gives legacy work without a live issue an ordinary repair issue and PR.
+/// It is outside product workflows, so no human stage can strand migration.
+fn recovery(
+    repo: &Repo,
+    config: &Config,
+    gh: &crate::gh::GitHub,
+    old: &str,
+    key: &str,
+    head: &str,
+) -> Result<(u64, afkconvoy_core::plan::PullRequest)> {
+    use afkconvoy_core::plan::{REPAIR_LABEL, closing_pr};
+    let marker = format!("<!--convoy:migration tip={old} part={key}-->");
+    let mut issue = None;
+    for (number, _) in gh.carrying(REPAIR_LABEL)? {
+        if gh.issue(number)?.body.is_some_and(|body| body.starts_with(&marker)) {
+            issue = Some(number);
+            break;
+        }
+    }
+    let labels = gh.labels()?;
+    for label in [REPAIR_LABEL, &config.ready_label] {
+        if !labels.iter().any(|known| known == label) {
+            gh.create_label(label, "afkconvoy: fleet repair")?;
+        }
+    }
+    let issue = match issue {
+        Some(issue) => issue,
+        None => gh.open_issue(&format!("Finish legacy landing {key}"), &format!("{marker}\nPreserve the work of an older release at {head}. Continue the existing PR and worktree; resolve its merge or red gate, commit, and land with `afkconvoy land --issue <n>`. Preserve both sides of a conflict. The legacy line stays until its history is on the base branch."), &[REPAIR_LABEL, &config.ready_label])?,
+    };
+    let worktree = workspace(repo, gh, issue, head)?;
+    let open = gh.open_prs()?;
+    if let Some(pr) = closing_pr(&open, issue) {
+        return Ok((issue, pr.clone()));
+    }
+    let checkout = Repo::new(worktree.path);
+    let head = checkout.git(&["rev-parse", "HEAD"])?;
+    checkout.git(&[
+        "push",
+        "--quiet",
+        crate::git::REMOTE,
+        &format!("{head}:refs/heads/{}", worktree.branch),
+    ])?;
+    let title = format!("Preserve legacy landing {key}");
+    let body =
+        format!("Preserve work left by an older release.\n\nCloses {}", gh.tracker.issue(issue));
+    let number = gh.open_pr(&config.base_branch, &worktree.branch, &title, &body)?;
+    Ok((
+        issue,
+        afkconvoy_core::plan::PullRequest {
+            number,
+            title,
+            head_branch: worktree.branch,
+            head_sha: head,
+            closes: vec![issue],
+        },
+    ))
+}
+
+fn attempt(
+    repo: &Repo,
+    config: &Config,
+    gh: &crate::gh::GitHub,
+    issue: u64,
+    pr: &afkconvoy_core::plan::PullRequest,
+    (host, now): (&str, u64),
+) -> Result<serde_json::Value> {
+    use serde_json::json;
+    let worktree = workspace(repo, gh, issue, &pr.head_sha)?;
+    if (worktree.terminal()?.is_some() && worktree.recorded_harness()?.is_some())
+        || crate::claims::Scan::read(repo)?.claim_of(issue).is_some()
+    {
+        return Ok(json!({"outcome":"pending", "issue":issue, "worktree":worktree.path}));
+    }
+    let checkout = Repo::new(worktree.path.clone());
+    if !checkout.git_raw(&["status", "--porcelain", "--untracked-files=no"])?.trim().is_empty() {
+        return Ok(json!({"outcome":"pending", "issue":issue, "worktree":worktree.path,
+            "detail":"the retained workspace has unfinished work; its worker continues it"}));
+    }
+    crate::turn::try_join(
+        &checkout,
+        config,
+        &gh.tracker,
+        pr,
+        &afkconvoy_core::landing::Of::Issue(issue),
+        json!({"issue":issue, "worktree":worktree.path}),
+        (host, now),
+    )
+}
+
+/// Finishes a read-only legacy line. A certified tip fast-forwards directly;
+/// otherwise PRs take turns in discoverable issue workspaces. Missing PRs,
+/// rewritten heads and commits made by the old worker are all preserved by
+/// a final recovery PR. A conflict or red gate keeps its issue and workspace.
 pub fn migrate(
     repo: &Repo,
     config: &Config,
@@ -61,7 +171,6 @@ pub fn migrate(
     host: &str,
     now: u64,
 ) -> Result<serde_json::Value> {
-    use crate::exclusive::Permit;
     use crate::git::REMOTE;
     use afkconvoy_core::gate::{GateCommand, Proven, Tree};
     use serde_json::json;
@@ -70,19 +179,31 @@ pub fn migrate(
         return Ok(json!({"outcome":"idle"}));
     };
     let legacy = Legacy::read(repo, config)?;
-    // An older worker cannot keep writing this host's obsolete line.
     let source = crate::orca::Source::of(repo)?;
     if let Some(worktree) = crate::orca::Worktree::of_train(&source)? {
         worktree.stop_for_continuation()?;
     }
-    if legacy.tip == legacy.base {
-        let _ = repo.try_git(&[
+    let retire = || -> Result<()> {
+        repo.git(&[
             "push",
             "--quiet",
             &format!("--force-with-lease={}:{}", refs.line, old),
             REMOTE,
             &format!(":{}", refs.line),
-        ]);
+        ])?;
+        if let Some(red) = repo.remote_sha(&refs.red)? {
+            let _ = repo.try_git(&[
+                "push",
+                "--quiet",
+                &format!("--force-with-lease={}:{}", refs.red, red),
+                REMOTE,
+                &format!(":{}", refs.red),
+            ]);
+        }
+        Ok(())
+    };
+    if legacy.tip == legacy.base {
+        retire()?;
         return Ok(json!({"outcome":"merged", "legacy":old}));
     }
     let declared = crate::config::parse(
@@ -91,131 +212,48 @@ pub fn migrate(
     let command = GateCommand::new(&declared.gate_command);
     let tree = Tree::named(&repo.git(&["rev-parse", &format!("{}^{{tree}}", legacy.tip)])?);
     let joins = legacy.joins(repo, &gh.tracker)?;
-    let permit = Permit::take(repo, "migrate recorded legacy work", false, true)?;
-    if let Some(run) = crate::gate::recorded(repo, &tree, &command, now)?
-        && let Some(proven) = Proven::by(&tree, &command, &run, now)
-        && crate::landing::push_base(repo, &config.base_branch, &legacy.tip, &proven)?
     {
-        for issue in joins.iter().filter_map(|join| join.issue()) {
-            if !gh.issue(issue)?.is_closed() {
-                gh.close_issue(issue)?;
+        let _permit =
+            crate::exclusive::Permit::take(repo, "migrate recorded legacy work", false, true)?;
+        if let Some(run) = crate::gate::recorded(repo, &tree, &command, now)?
+            && let Some(proven) = Proven::by(&tree, &command, &run, now)
+            && crate::landing::push_base(repo, &config.base_branch, &legacy.tip, &proven)?
+        {
+            for issue in joins.iter().filter_map(|join| join.issue()) {
+                if !gh.issue(issue)?.is_closed() {
+                    gh.close_issue(issue)?;
+                }
             }
+            retire()?;
+            return Ok(
+                json!({"outcome":"merged", "commit":legacy.tip, "source":"recorded", "legacy":old}),
+            );
         }
-        let _ = repo.try_git(&[
-            "push",
-            "--quiet",
-            &format!("--force-with-lease={}:{}", refs.line, old),
-            REMOTE,
-            &format!(":{}", refs.line),
-        ]);
-        return Ok(
-            json!({"outcome":"merged", "commit":legacy.tip, "source":"recorded", "legacy":old}),
-        );
-    }
-    drop(permit);
-    // Certification must not wait inside the tick that dispatches repairs.
-    let base_config = crate::config::parse(
-        &repo.git_raw(&["show", &format!("{}:{}", legacy.base, crate::config::FILE)])?,
-    )?;
-    if !crate::turn::certify(repo, &base_config, &legacy.base, host, now)? {
-        return Ok(json!({"outcome":"base_red", "legacy":old}));
     }
     for join in &joins {
         let open = gh.open_prs()?;
         let Some(pr) = open.iter().find(|pr| pr.number == join.pr) else {
             continue;
         };
+        repo.bring(&pr.head_sha, &format!("refs/heads/{}", pr.head_branch))?;
         if repo.within(&pr.head_sha, &crate::turn::base(repo, config)?)? {
             continue;
         }
-        let path = std::env::temp_dir().join(format!("afkconvoy-migrate-{}", crate::unique()));
-        repo.bring(&pr.head_sha, &format!("refs/heads/{}", pr.head_branch))?;
-        repo.git(&[
-            "worktree",
-            "add",
-            "--quiet",
-            "--detach",
-            &path.to_string_lossy(),
-            &pr.head_sha,
-        ])?;
-        let checkout = Repo::new(path.clone());
-        let landed =
-            crate::turn::join(&checkout, config, &gh.tracker, pr, &join.of, json!({}), (host, now));
-        // A conflict is retained for its worker, never discarded on migration.
-        if let Ok(answer) = &landed
-            && answer["outcome"] == "conflict"
-        {
-            return Ok(
-                json!({"outcome":"conflict", "pr":pr.number, "worktree":path, "legacy":old}),
-            );
-        }
-        let removed = repo.git(&["worktree", "remove", "--force", &path.to_string_lossy()]);
-        let answer = landed?;
-        removed?;
+        let (issue, pr) = match join.issue() {
+            Some(issue) if !gh.issue(issue)?.is_closed() => (issue, pr.clone()),
+            _ => recovery(repo, config, gh, &old, &pr.number.to_string(), &pr.head_sha)?,
+        };
+        let answer = attempt(repo, config, gh, issue, &pr, (host, now))?;
         if answer["outcome"] != "merged" {
             return Ok(answer);
         }
     }
-    let base = crate::turn::base(repo, config)?;
-    if joins.iter().all(|join| repo.within(&join.head, &base).unwrap_or(false)) {
-        // A train worker could have committed a repair on top of its merges.
-        // Preserve that history too, through one final ordinary turn, rather
-        // than dropping commits that did not belong to an issue PR.
-        let branch = format!("convoy-migrate-{}", &old[..12.min(old.len())]);
-        let path = std::env::temp_dir().join(format!("afkconvoy-migrate-{}", crate::unique()));
-        repo.git(&["push", "--quiet", REMOTE, &format!("{}:refs/heads/{branch}", legacy.tip)])?;
-        let open = gh.open_prs()?;
-        let pr = match open.iter().find(|pr| pr.head_branch == branch) {
-            Some(pr) => pr.clone(),
-            None => {
-                let number = gh.open_pr(
-                    &config.base_branch,
-                    &branch,
-                    "Preserve legacy landing history",
-                    "Preserves work left by an older release through a recorded landing turn.",
-                )?;
-                afkconvoy_core::plan::PullRequest {
-                    number,
-                    title: "Preserve legacy landing history".into(),
-                    head_branch: branch,
-                    head_sha: legacy.tip.clone(),
-                    closes: vec![],
-                }
-            }
-        };
-        repo.git(&[
-            "worktree",
-            "add",
-            "--quiet",
-            "--detach",
-            &path.to_string_lossy(),
-            &legacy.tip,
-        ])?;
-        let checkout = Repo::new(path.clone());
-        let landed = crate::turn::join(
-            &checkout,
-            config,
-            &gh.tracker,
-            &pr,
-            &afkconvoy_core::landing::Of::Inspection(host.into()),
-            json!({}),
-            (host, now),
-        );
-        let removed = repo.git(&["worktree", "remove", "--force", &path.to_string_lossy()]);
-        let answer = landed?;
-        removed?;
-        if answer["outcome"] == "merged" {
-            let _ = repo.try_git(&[
-                "push",
-                "--quiet",
-                &format!("--force-with-lease={}:{}", refs.line, old),
-                REMOTE,
-                &format!(":{}", refs.line),
-            ]);
-        }
-        return Ok(answer);
+    // Always preserve the recorded history, including closed PR heads and
+    // old repairs that no current open PR can represent.
+    let (issue, pr) = recovery(repo, config, gh, &old, "history", &legacy.tip)?;
+    let answer = attempt(repo, config, gh, issue, &pr, (host, now))?;
+    if answer["outcome"] == "merged" {
+        retire()?;
     }
-    Ok(
-        json!({"outcome":"pending", "legacy":old, "detail":"legacy work remains available for its PRs' turns"}),
-    )
+    Ok(answer)
 }
