@@ -305,6 +305,44 @@ fn unplaced_models_start_a_daily_watch_that_places_research_and_keeps_its_bound_
     assert_eq!(daily["items"].as_array().unwrap().len(), 1, "{daily}");
     assert!(daily["items"][0]["id"].as_str().unwrap().starts_with("kit-research:"));
     assert_eq!(daily["model"], "fast", "the next watch uses the placed model");
+
+    std::fs::write(
+        &file,
+        json!({"models":[{"harness":"claude-code", "model":"deep",
+        "settled":"approval reviewer, unsuited to workers",
+        "sources":[{"url":"https://vendor.example/reviewer", "date":"2026-10-24"}]}]})
+        .to_string(),
+    )
+    .unwrap();
+    let settled = world.afk(&["kit", "--research", file.to_str().unwrap()]).ok();
+    assert_eq!(settled["placed"], json!([]));
+    assert_eq!(settled["settled"], json!([{"harness":"claude-code", "model":"deep"}]));
+    printed(&world, &daily, &["settled deep with dated evidence"], Some(0));
+    until(&world, "settling watch ended", || {
+        ended(&world, "ended").filter(|last| last["id"] == daily["id"])
+    });
+    world.kill_host_runner("KILL");
+    let mut kept = state(&world);
+    kept["research_started"] = json!(
+        kept["research_started"].as_u64().unwrap() - afkconvoy_core::host_watch::RESEARCH_EVERY
+    );
+    let before = kept["until"].as_u64().unwrap();
+    std::fs::write(world.cache().join("afkconvoy/watch/state.json"), kept.to_string()).unwrap();
+    run(&world, &dir);
+    until(&world, "look after settlement, restart and daily bound", || {
+        state(&world)["until"].as_u64().filter(|at| *at > before)
+    });
+    assert_eq!(starts(&world).len(), 3, "settled models start no further watch");
+    assert!(state(&world)["running"].is_null());
+    let doctor = world.afk(&["doctor", "--all"]).ok();
+    assert!(
+        !doctor["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f["what"].as_str().unwrap().contains("unplaced models")),
+        "{doctor}"
+    );
 }
 
 #[test]

@@ -654,9 +654,11 @@ fn brief(watch: &Watch) -> String {
          use dated sources for its coding strengths, weaknesses and other names. Write a \
          JSON research file in preference order and run `afkconvoy kit --research <file>`. \
          A refusal names the fault: correct the file and run it again. Place what the \
-         evidence supports; omitted models stay unplaced, and a harness with none placed \
-         stays on its default model. Check the command's `placed` and the updated doctor \
-         answer; record what you placed and what remains unplaced.\n\n\
+         evidence supports, or settle an unsuitable listed identity with a reason and \
+         dated sources in the format the help gives. Omitted models still await research, \
+         and a harness with none placed stays on its default model. Check the command's \
+         `placed`, `settled` and updated doctor answer; record what you placed or settled \
+         and what remains unplaced.\n\n\
          ## Change any repo on the checkout list\n\n\
          When a lasting fix needs code, make it yourself, even if that repo's fleet cannot \
          start a worker. In the affected repo create a linked worktree on a branch of your \
