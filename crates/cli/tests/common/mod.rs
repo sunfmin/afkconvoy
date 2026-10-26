@@ -243,6 +243,11 @@ impl World {
     /// git or GitHub setup leaking in.
     pub fn command(&self, program: impl AsRef<std::ffi::OsStr>, cwd: &Path) -> Command {
         let mut cmd = Command::new(program);
+        for (name, _) in std::env::vars_os() {
+            if name.to_str().is_some_and(|name| name.starts_with("AFKCONVOY_") || name.starts_with("DSH_")) {
+                cmd.env_remove(name);
+            }
+        }
         cmd.current_dir(cwd)
             .envs(self.login_env())
             .env("SHELL", self.bin.join("shell"))

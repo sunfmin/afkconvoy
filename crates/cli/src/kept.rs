@@ -60,18 +60,57 @@ pub fn keep_under(
     harness: Harness,
     host_user: bool,
 ) -> Result<PathBuf> {
+    keep_under_with_dsh_homes(
+        cache,
+        home,
+        harness,
+        host_user,
+        std::env::var_os("DSH_HOME").filter(|dir| !dir.is_empty()).map(PathBuf::from),
+        std::env::var_os("DSH_AGENTS_HOME").filter(|dir| !dir.is_empty()).map(PathBuf::from),
+    )
+}
+
+/// `keep_under` with the DSH homes supplied by its caller rather than the
+/// process environment. This keeps callers that construct an isolated world
+/// from accidentally reading the invoking session's DSH profile.
+pub fn keep_under_with_dsh_homes(
+    cache: &Path,
+    home: Option<&Path>,
+    harness: Harness,
+    host_user: bool,
+    dsh_home: Option<PathBuf>,
+    dsh_agents_home: Option<PathBuf>,
+) -> Result<PathBuf> {
     let name = match host_user {
         true => format!("{}-host-user", harness.key()),
         false => harness.key().to_string(),
     };
     let dir = cache.join("harness").join(name);
-    keep_at(&dir, home, harness, host_user)?;
+    keep_at_with_dsh_homes(&dir, home, harness, host_user, dsh_home, dsh_agents_home)?;
     configure(&dir, home, harness, None, None, None)?;
     Ok(dir)
 }
 
 /// Materializes one kept directory and its current links.
 fn keep_at(dir: &Path, home: Option<&Path>, harness: Harness, host_user: bool) -> Result<()> {
+    keep_at_with_dsh_homes(
+        dir,
+        home,
+        harness,
+        host_user,
+        std::env::var_os("DSH_HOME").filter(|dir| !dir.is_empty()).map(PathBuf::from),
+        std::env::var_os("DSH_AGENTS_HOME").filter(|dir| !dir.is_empty()).map(PathBuf::from),
+    )
+}
+
+fn keep_at_with_dsh_homes(
+    dir: &Path,
+    home: Option<&Path>,
+    harness: Harness,
+    host_user: bool,
+    dsh_home: Option<PathBuf>,
+    dsh_agents_home: Option<PathBuf>,
+) -> Result<()> {
     let kept = harness.kept();
     let theirs = if host_user { kept.host_user } else { &[][..] };
     let put =
@@ -95,9 +134,12 @@ fn keep_at(dir: &Path, home: Option<&Path>, harness: Harness, host_user: bool) -
                 });
             custom
                 .and_then(|(variable, path)| {
-                    std::env::var_os(variable)
-                        .filter(|dir| !dir.is_empty())
-                        .map(|dir| PathBuf::from(dir).join(path))
+                    let dir = match variable {
+                        "DSH_HOME" => dsh_home.as_ref(),
+                        "DSH_AGENTS_HOME" => dsh_agents_home.as_ref(),
+                        _ => None,
+                    }?;
+                    Some(dir.join(path))
                 })
                 .or_else(|| home.map(|home| home.join(link.home)))
         } else {
