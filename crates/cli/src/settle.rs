@@ -3,11 +3,11 @@
 
 use afkconvoy_core::board::Stage;
 use afkconvoy_core::claims::Claim;
+use afkconvoy_core::landing::{LandedPr, closes_grep};
 use afkconvoy_core::plan::{PullRequest, closing_pr};
 use afkconvoy_core::settle::{
     Follow, SettleStep, cut_landing, follow, landed_comment, settle_steps,
 };
-use afkconvoy_core::train::{Joined, closes_grep};
 use anyhow::{Result, bail};
 
 use crate::board::last_word;
@@ -15,9 +15,9 @@ use crate::claims::{Me, release};
 use crate::fleet::Fleet;
 use crate::gh::Tracker;
 use crate::git::{REMOTE, Repo};
+use crate::landing::joins_in;
 use crate::orca::{Source, Worktree};
 use crate::recovery::own_heads;
-use crate::train::joins_in;
 
 /// The joining on the base branch that landed `issue` of `tracker` — the
 /// newest merge commit there a PR joined a train with that closes it — and
@@ -27,7 +27,7 @@ fn landing_of(
     tracker: &Tracker,
     base_tip: &str,
     issue: u64,
-) -> Result<Option<(Joined, u64)>> {
+) -> Result<Option<(LandedPr, u64)>> {
     let grep = format!("--grep={}", closes_grep(tracker, issue));
     let joins = joins_in(repo, tracker, &["-E", "-i", &grep, base_tip])?;
     let Some(join) = joins.into_iter().rfind(|join| join.issue() == Some(issue)) else {
@@ -46,7 +46,7 @@ pub fn cut_landing_of(
     base_tip: &str,
     claim: &Claim,
     open: &[PullRequest],
-) -> Result<Option<Joined>> {
+) -> Result<Option<LandedPr>> {
     let Some((join, at)) = landing_of(repo, tracker, base_tip, claim.number)? else {
         return Ok(None);
     };

@@ -33,12 +33,11 @@ use crate::fleet::Fleet;
 use crate::git::Repo;
 use crate::host_runner::SharedNow;
 use crate::hot::{HotNow, held_said};
-use crate::inspection::{Last, Running};
 use crate::kit::Kit;
 use crate::log::Log;
 use crate::orca::{Source, Worktree};
 use crate::stage::Flows;
-use crate::{doctor, host_runner, host_settings, inspection};
+use crate::{doctor, host_runner, host_settings};
 
 /// The stage of an unbound repo's one lane a worker writes its PR at.
 const WORK: &str = "work";
@@ -148,8 +147,6 @@ pub struct Panel {
     pub idle: bool,
     pub locks: Vec<u64>,
     pub lanes: Vec<Lane>,
-    /// The issues whose PR is on the landing train.
-    pub train: Vec<Card>,
     /// The issues that wait for a human, each with why and the line that
     /// answers it: the working set's `waiting_on_human`, as `doctor` gives it.
     /// The page lists them across every repo.
@@ -277,20 +274,17 @@ pub struct Host {
     pub now: u64,
     /// Admission's reading of the host now; why it cannot be read.
     pub admission: Result<Admission, String>,
-    /// The inspection running on the host, whichever of its fleets started it.
-    pub inspection: Option<Running>,
-    /// What the last host inspection of the host found, whichever of its
-    /// fleets started it.
-    pub host_inspected: Option<Last>,
     /// The host's `exclusive` queue, whatever its repo: the first runs alone,
     /// and the rest wait their turn, next first.
     pub exclusive: Vec<Ticket>,
+    pub gate_lanes: u64,
     /// The hours of its local time a fleet may put it to sleep in; `None`
     /// where its host settings keep it awake.
     pub sleep_hours: Option<Hours>,
     /// Its host kit, every harness in it; why it cannot be read.
     pub kit: Result<Kit, String>,
     pub worker_health: serde_json::Value,
+    pub watch: serde_json::Value,
     /// The harnesses paused on this host, since when and why: no worker is
     /// started on one until a probe finds it working.
     pub paused: Vec<afkconvoy_core::casting::Paused>,
@@ -301,16 +295,17 @@ impl Host {
     /// so, or shows nothing. Admission reads the disk under `dir`; `shared`
     /// is what its host runner holds for its fleets.
     pub fn read(dir: &Path, now: u64, shared: SharedNow) -> Host {
+        let settings = host_settings::of_host().unwrap_or_default();
         Host {
             name: crate::this_host(),
             now,
             admission: Admission::read(dir).map_err(|error| format!("{error:#}")),
-            inspection: shared.inspection,
-            host_inspected: inspection::last_on_host(),
             exclusive: shared.exclusive,
+            gate_lanes: settings.gate_lanes(),
             sleep_hours: host_settings::host_sleep(),
             kit: crate::kit::load().map_err(|error| format!("{error:#}")),
             worker_health: crate::health::show(),
+            watch: crate::host_watch::json(shared.watch.as_ref()),
             paused: crate::paused::read(),
         }
     }
@@ -354,7 +349,7 @@ fn lanes(seen: &Seen) -> Vec<Lane> {
     }
     let nodes = vec![
         Node::new(WORK, "one worker writes the PR".to_string()),
-        Node::new(LAND, "the same worker joins the train".to_string()),
+        Node::new(LAND, "the same worker lands in a turn".to_string()),
     ];
     vec![Lane { name: BACKLOG.to_string(), nodes }]
 }
@@ -418,7 +413,6 @@ impl Panel {
             idle: false,
             locks: vec![],
             lanes: vec![],
-            train: vec![],
             to_human: vec![],
             proposals: fleet.proposals.clone(),
             off: vec![],
@@ -453,8 +447,7 @@ impl Panel {
             match mine.status {
                 // Settled or let go by the same tick: there is nothing left of them to show.
                 Status::Landed | Status::Closed | Status::Gone => {}
-                Status::Joined => put.panel.train.push(card),
-                Status::Joining => put.at(Some(LAND), card, List::AtWork),
+                Status::Landing => put.at(Some(LAND), card, List::AtWork),
                 Status::NoPr | Status::AtStage => put.at(None, card, List::AtWork),
             }
         }
@@ -611,7 +604,7 @@ pub fn read(
     let state = |issue: u64| {
         Worktree::worker_of(source.as_ref()?, issue, fleet.now).ok().map(|(_, state)| state)
     };
-    let at_work = |status| matches!(status, Status::NoPr | Status::AtStage | Status::Joining);
+    let at_work = |status| matches!(status, Status::NoPr | Status::AtStage | Status::Landing);
     let mut workers = vec![];
     for mine in set.mine.iter().filter(|mine| at_work(mine.status)) {
         if let Some(state) = state(mine.number) {
@@ -632,9 +625,7 @@ pub fn read(
     panel.held = set.mine.len() - panel.declared;
     panel.bound = set.bound(fleet.config.concurrency()) - panel.declared;
     panel.frontier = set.frontier.len();
-    let on_train = set.on_train();
-    panel.idle = afkconvoy_core::host_sleep::idle(set.held(), panel.frontier, on_train)
-        && !set.cut_running();
+    panel.idle = afkconvoy_core::host_sleep::idle(set.held(), panel.frontier) && !set.cut_running();
     panel.cut = set.cut.as_ref().and_then(|row| crate::cut::says(&fleet.repo, row));
     // Soft: a team or a host kit that cannot be read names no role.
     if let (Ok(team), Ok((kit, _))) = (flows.team(), crate::kit::running()) {
@@ -953,7 +944,7 @@ pub fn render(page: &Page) -> String {
 }
 
 /// The host, once: who made the page, admission's reading, the hot workers
-/// of every repo, the inspection running and what the last host inspection
+/// of every repo, the watch running and what the last host watch
 /// found, the exclusive queue, host sleep and the host kit.
 fn host_part(out: &mut String, page: &Page) {
     let host = &page.host;
@@ -1006,62 +997,52 @@ fn host_part(out: &mut String, page: &Page) {
         );
     }
 
-    if let Some(reason) = host.inspection.as_ref().and_then(|running| running.held_back_by) {
-        let running = host.inspection.as_ref().expect("held back by above");
-        let _ = writeln!(
-            out,
-            "<section class=\"hot\" data-inspection=\"host\"><b>Host inspection</b>: \
-             {} past its span; <b>the host</b> is inspected by \
-             <code>{by}</code>, for {} so far, for {}.</section>",
-            reason.word(),
-            lasted(host.now.saturating_sub(running.since)),
-            esc(&running.repo),
-            by = esc(&running.by),
-        );
-    } else if let Some(running) = &host.inspection {
-        let issue = running.issue.map(|issue| format!(" on #{issue}")).unwrap_or_default();
-        let _ = writeln!(
-            out,
-            "<section class=\"hot\" data-inspection=\"{worker}\"><b>Inspection</b>: \
-             <b>{worker}</b>{issue} is inspected by <code>{by}</code>, for {} so far, in {}.\
-             </section>",
-            lasted(host.now.saturating_sub(running.since)),
-            esc(&running.repo),
-            worker = esc(&running.worker),
-            by = esc(&running.by),
-        );
-    }
-
-    if let Some(last) = &host.host_inspected {
-        let _ = writeln!(
-            out,
-            "<section class=\"hot\" data-host-inspected=\"{found}\"><b>Host inspection</b>, \
-             {} ago: {} ({}); <code>{by}</code>, as the operator on \
-             this host: <b>{found}</b> · {}</section>",
-            lasted(host.now.saturating_sub(last.ended)),
-            last.reason.word(),
-            esc(&last.reading),
-            esc(&last.line()),
-            found = esc(&last.found),
-            by = esc(&last.by),
-        );
-    }
-
-    if !host.exclusive.is_empty() {
-        out.push_str(
-            "<section class=\"exclusive\"><h2>Run alone on this host</h2><ul class=\"cards\">",
-        );
-        for (place, ticket) in host.exclusive.iter().enumerate() {
-            let class = if place == 0 { "busy" } else { "queued" };
-            let _ = write!(
-                out,
-                "<li class=\"card {class}\"><span class=\"title\"><code>{}</code></span>\
-                 <span class=\"meta\"><span class=\"note\">{}</span></span></li>",
-                esc(&ticket.command),
-                esc(&exclusive_says(ticket, place, host.now)),
-            );
+    for (key, title) in [("running", "Watch"), ("last", "Last watch")] {
+        let watch = &host.watch[key];
+        if watch.is_null() {
+            continue;
         }
-        out.push_str("</ul></section>\n");
+        let _ = write!(
+            out,
+            "<section class=\"hot\" data-watch=\"{}\"><b>{title}</b>: {} on {}<ul>",
+            esc(key),
+            esc(watch["id"].as_str().unwrap_or("")),
+            esc(watch["harness"].as_str().unwrap_or(""))
+        );
+        for item in watch["items"].as_array().into_iter().flatten() {
+            let _ = write!(out, "<li>{}</li>", esc(item["reason"].as_str().unwrap_or("")));
+        }
+        for did in watch["did"].as_array().into_iter().flatten() {
+            let _ = write!(out, "<li>Did: {}</li>", esc(did.as_str().unwrap_or("")));
+        }
+        out.push_str("</ul></section>");
+    }
+
+    {
+        let lanes: std::collections::BTreeSet<_> =
+            host.exclusive.iter().map(afkconvoy_core::exclusive::lane).collect();
+        out.push_str("<section class=\"exclusive\"><h2>Command lanes</h2>");
+        let _ = write!(out, "<p>{} worker lanes</p>", host.gate_lanes);
+        for lane in lanes {
+            let _ = write!(out, "<h3>{} lane</h3><ul class=\"cards\">", esc(&lane));
+            for (place, ticket) in host
+                .exclusive
+                .iter()
+                .filter(|ticket| afkconvoy_core::exclusive::lane(ticket) == lane)
+                .enumerate()
+            {
+                let class = if ticket.ran.is_some() { "busy" } else { "queued" };
+                let _ = write!(
+                    out,
+                    "<li class=\"card {class}\"><span class=\"title\"><code>{}</code></span>\
+                 <span class=\"meta\"><span class=\"note\">{}</span></span></li>",
+                    esc(&ticket.command),
+                    esc(&exclusive_says(ticket, place, host.now)),
+                );
+            }
+            out.push_str("</ul>");
+        }
+        out.push_str("</section>\n");
     }
 
     let sleep = match host.sleep_hours {
@@ -1130,7 +1111,7 @@ fn admission(out: &mut String, host: &Host) {
 }
 
 /// The host kit: every harness in it, in order, with its models in order,
-/// and what the stock consult runs; each harness paused, since when and why.
+/// each harness paused, since when and why.
 fn kit(out: &mut String, host: &Host) {
     if let Some(faults) = host.worker_health["faults"].as_array().filter(|v| !v.is_empty()) {
         out.push_str("<section data-health-faults><h2>Unavailable candidates</h2><ul>");
@@ -1179,7 +1160,10 @@ fn kit(out: &mut String, host: &Host) {
                 esc(worker["successor"].as_str().unwrap_or("")),
                 esc(worker["source"].as_str().unwrap_or("")),
                 worker["next_check"],
-                esc(&format!("{} {}", worker["diagnosis"], worker["error"]))
+                esc(&match worker["operator_reason"].as_str() {
+                    Some(reason) => format!("waiting for the operator: {reason}"),
+                    None => format!("{} {}", worker["diagnosis"], worker["error"]),
+                })
             );
         }
         out.push_str("</table></section>");
@@ -1222,17 +1206,10 @@ fn kit(out: &mut String, host: &Host) {
             )
         })
         .collect();
-    let consult = kit.without(&host.paused).stock_consult().map_or_else(
-        || "no harness: <code>afkconvoy kit</code> writes one".to_string(),
-        |named| match named.model {
-            Some(model) => format!("{} on {}", esc(named.harness.key()), esc(&model)),
-            None => esc(named.harness.key()),
-        },
-    );
     let _ = writeln!(
         out,
         "<section class=\"kit\"><h2>Host kit</h2><p class=\"by\">The harnesses and models this \
-         host can start, in order of preference; the stock consult runs {consult}. Automatic model casting is {}</p>\
+         host can start, in order of preference. Automatic model casting is {}</p>\
          <ul class=\"harnesses\">{}</ul></section>",
         if kit.cast { "on" } else { "off" },
         harnesses.concat(),
@@ -1426,7 +1403,6 @@ fn repo(out: &mut String, at: usize, panel: &Panel) {
         gauge(out, "Declared", panel.declared, None);
     }
     gauge(out, "Queued", panel.queued(), None);
-    gauge(out, "On the train", panel.train.len(), None);
     gauge(out, "With a human", panel.with_a_human(), None);
     out.push_str("</dl></header>\n");
 
@@ -1560,24 +1536,6 @@ fn repo(out: &mut String, at: usize, panel: &Panel) {
         );
     }
 
-    let _ = write!(
-        out,
-        "<section class=\"train\"><h2>Landing train</h2><p class=\"by\">{}, gated, then landed \
-         on {} together</p>",
-        count(panel.train.len(), "PR"),
-        esc(&panel.base_branch),
-    );
-    let _ = write!(
-        out,
-        "<div class=\"rail\"><span class=\"base\">{}</span></div>",
-        esc(&panel.base_branch)
-    );
-    cards(out, "cars", None, &panel.train);
-    if panel.train.is_empty() {
-        out.push_str("<p class=\"none\">No PR is on the train.</p>");
-    }
-    out.push_str("</section>\n");
-
     if !panel.patrols.is_empty() {
         out.push_str("<section class=\"patrols\"><h2>Patrols</h2><ul class=\"cards\">");
         for row in &panel.patrols {
@@ -1634,7 +1592,6 @@ mod tests {
             idle: true,
             locks: vec![],
             lanes: vec![],
-            train: vec![],
             to_human: vec![],
             proposals: None,
             off: vec![],
@@ -1660,12 +1617,12 @@ mod tests {
             name: "h1".into(),
             now,
             admission: Ok(Admission { shares: SHARES, said: vec![], reading, span: 600 }),
-            inspection: None,
-            host_inspected: None,
             exclusive: vec![],
+            gate_lanes: 1,
             sleep_hours: Some(SLEEP_HOURS),
             kit: Ok(Kit::default()),
             worker_health: serde_json::json!({}),
+            watch: serde_json::json!({}),
             paused: vec![],
         }
     }
@@ -1752,39 +1709,6 @@ mod tests {
     }
 
     #[test]
-    fn the_host_s_exclusive_queue_shows_what_runs_alone_and_what_waits() {
-        let ticket = |command: &str, issue, ran| Ticket {
-            number: 1,
-            pid: 1,
-            command: command.into(),
-            dir: "/w/acme".into(),
-            issue,
-            train: false,
-            cut: false,
-            asked: 700,
-            ran,
-        };
-        let running = ticket("cargo test <all>", Some(12), Some(820));
-        let waiting = ticket("make bench", None, None);
-        assert_eq!(exclusive_says(&running, 0, 1000), "runs alone, for 3m · #12 in acme");
-        assert_eq!(exclusive_says(&waiting, 1, 1000), "waits behind 1, for 5m · in acme");
-        assert_eq!(exclusive_says(&ticket("x", None, None), 0, 1000), "about to run · in acme");
-        let mut host = host_of(1000);
-        assert!(!render(&page_of(host.clone(), vec![])).contains("Run alone on this host"));
-        let mut train = ticket("train gate", None, None);
-        train.train = true;
-        train.number = 2;
-        train.asked = 900;
-        host.exclusive = afkconvoy_core::exclusive::in_order(vec![running, waiting, train]);
-        let page = render(&page_of(host, vec![]));
-        assert!(page.contains("<h2>Run alone on this host</h2>"), "{page}");
-        assert!(page.contains("<code>cargo test &lt;all&gt;</code>"), "{page}");
-        assert!(page.find("cargo test").unwrap() < page.find("make bench").unwrap());
-        assert!(page.find("cargo test").unwrap() < page.find("train gate").unwrap());
-        assert!(page.find("train gate").unwrap() < page.find("make bench").unwrap());
-    }
-
-    #[test]
     fn a_paused_harness_is_shown_with_since_when_and_why() {
         let mut host = host_of(1000 + 7200);
         host.paused = vec![afkconvoy_core::casting::Paused {
@@ -1825,7 +1749,7 @@ mod tests {
     fn a_title_is_never_read_as_markup() {
         let mut part = part_of("r", 1000);
         part.who = Some(("alpha".into(), "h1".into()));
-        part.train = vec![Card::new(7, "<script>alert(\"x\")</script> & more")];
+        part.off = vec![Card::new(7, "<script>alert(\"x\")</script> & more")];
         let mut page = page_of(host_of(1000), vec![part]);
         let html = render(&page);
         assert!(html.contains("&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt; &amp; more"));
@@ -1844,7 +1768,7 @@ mod tests {
     }
 
     #[test]
-    fn the_hot_workers_and_the_inspection_of_every_repo_are_the_host_s() {
+    fn the_hot_workers_and_the_watch_of_every_repo_are_the_host_s() {
         let episode = afkconvoy_core::hot::Episode {
             since: 280,
             why: afkconvoy_core::hot::Why::Held,
@@ -1862,66 +1786,37 @@ mod tests {
             issue: Some(7),
             why: "it holds 5.0 GiB in its worktree, past <4.0 GiB>".into(),
         })];
-        let mut page = page_of(host_of(1000), vec![part]);
+        let page = page_of(host_of(1000), vec![part]);
         let hot = render(&page);
         assert!(hot.contains("<li data-hot=\"#7\"><b>#7</b> in acme, hot for 12m — it holds 5.0 GiB in its worktree, past &lt;4.0 GiB&gt;; holding at most 6.2 cores, 1.5 GiB resident, 0 B written in 10 minutes, 5.0 GiB held in its worktree</li>"), "{hot}");
         assert!(hot.find("Hot workers").unwrap() < hot.find("<nav").unwrap(), "{hot}");
-        assert!(!hot.contains("Inspection"), "{hot}");
-        page.host.inspection = Some(Running {
-            repo: "/src/widgets".into(),
-            worker: "#7".into(),
-            issue: Some(7),
-            by: "stock-consult".into(),
-            since: 700,
-            held_back_by: None,
-        });
-        let inspecting = render(&page);
-        assert!(
-            inspecting.contains("<b>#7</b> on #7 is inspected by <code>stock-consult</code>, for 5m so far, in /src/widgets."),
-            "{inspecting}"
-        );
-    }
-
-    #[test]
-    fn a_host_inspection_is_shown_as_it_runs_and_what_it_did_beside_admission() {
-        use afkconvoy_core::host_inspection::Reason;
-        let mut host = host_of(1000);
-        host.inspection = Some(Running {
-            repo: "/src/widgets".into(),
-            worker: "the host".into(),
-            issue: None,
-            by: "stock-consult".into(),
-            since: 700,
-            held_back_by: Some(Reason::Disk),
-        });
-        let running = render(&page_of(host.clone(), vec![]));
-        assert!(running.contains("disk past its span; <b>the host</b> is inspected by <code>stock-consult</code>, for 5m so far"), "{running}");
-        for (found, prs) in [("said", vec![]), ("said", vec![451])] {
-            host.inspection = None;
-            host.host_inspected = Some(Last {
-                repo: "/src/widgets".into(),
-                reason: Reason::Disk,
-                reading: "22.9 GiB of the checkout's disk is free, under 46.3 GiB, 5% of it".into(),
-                by: "stock-consult".into(),
-                started: 100,
-                ended: 400,
-                found: found.into(),
-                said: "five worktrees of 14 GiB".into(),
-                did: vec!["removed /w/a/target".into()],
-                prs,
-            });
-            let page = render(&page_of(host.clone(), vec![]));
-            assert!(page.contains(&format!("data-host-inspected=\"{found}\"")), "{page}");
-            assert!(page.contains("disk (22.9 GiB of the checkout's disk is free"), "{page}");
-            assert!(page.contains(&format!("as the operator on this host: <b>{found}</b> · five worktrees of 14 GiB · did: removed /w/a/target")), "{page}");
-        }
-        let page = render(&page_of(host, vec![]));
-        assert!(page.contains("did: removed /w/a/target · on the landing train: #451"), "{page}");
+        assert!(!hot.contains("Watch"), "{hot}");
     }
 
     #[test]
     fn a_length_of_time_is_said_in_its_largest_units() {
         assert_eq!([lasted(40), lasted(725), lasted(11_100)], ["40s", "12m", "3h 5m"]);
         assert_eq!([count(1, "PR"), count(0, "PR")], ["1 PR", "0 PRs"]);
+    }
+
+    #[test]
+    fn the_host_shows_its_watch_and_what_the_last_one_did() {
+        let mut host = host_of(1000);
+        host.watch = serde_json::json!({
+            "running": {"id": "watch-1", "harness": "codex",
+                "items": [{"reason": "hot worker <7>"}]},
+            "last": {"id": "watch-0", "harness": "claude-code",
+                "did": ["ended pid <4242>"]}
+        });
+        let page = render(&page_of(host, vec![]));
+        for expected in [
+            "data-watch=\"running\"",
+            "data-watch=\"last\"",
+            "hot worker &lt;7&gt;",
+            "Did: ended pid &lt;4242&gt;",
+        ] {
+            assert!(page.contains(expected), "{page}");
+        }
+        assert!(!page.to_lowercase().contains("inspection"));
     }
 }

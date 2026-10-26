@@ -5,7 +5,8 @@
 //! [{path, branch, linkedIssue, repoId, lastActivityAt}], `terminals` [{handle,
 //! worktreePath, command, title?, sent, open, agent?, lastOutputAt?, screen?}], `calls`,
 //! `envs`: beside each of `calls`, the names of the session's environment it
-//! ran in (`fake::State`), and `from`: the directory each call was run from,
+//! ran in (`fake::State`), `parents`: the pid that made each call, and `from`:
+//! the directory each call was run from,
 //! which real orca takes the current worktree from where a call names none.
 //! A terminal's `line` is the whole line it was started with; `command` is
 //! behind the issue export and what starts every one under `nice` with the
@@ -36,6 +37,9 @@ use serde_json::{Value, json};
 
 fn main() {
     let mut st = State::open("CONVOY_FAKE_ORCA");
+    // A host look is a separate doctor process: it must not be counted as
+    // another observation by the fleet's tick and panel in their process.
+    st.list("parents").push(json!(unsafe { libc::getppid() }));
     assert_eq!(st.argv.last().map(String::as_str), Some("--json"), "{:?}", st.argv);
     let from = std::env::current_dir().map(|dir| dir.display().to_string()).unwrap_or_default();
     st.list("from").push(json!(from));
@@ -49,6 +53,7 @@ fn main() {
     let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
     match argv.as_slice() {
         ["repo", "list", ..] => done(&st, json!({"repos": st.doc["repos"]})),
+        ["repo", "add", ..] => repo_add(&mut st),
         ["worktree", "create", ..] => worktree_create(&mut st),
         ["worktree", "list", ..] => worktree_list(&st),
         ["worktree", "ps", ..] => worktree_ps(&st),
@@ -90,6 +95,18 @@ fn selected(st: &State) -> String {
 
 fn knows_worktree(st: &State, path: &str) -> bool {
     st.doc["worktrees"].as_array().is_some_and(|rows| rows.iter().any(|row| row["path"] == path))
+}
+
+/// As orca's folder projects: a non-git directory can hold terminals too.
+fn repo_add(st: &mut State) -> ! {
+    let path = st.opt("--path").expect("--path").to_string();
+    assert!(Path::new(&path).is_dir(), "no directory at {path}");
+    let id = format!("repo-{}", st.list("repos").len() + 1);
+    let repo = json!({"id": id, "path": path});
+    st.list("repos").push(repo.clone());
+    st.list("worktrees")
+        .push(json!({"path": path, "repoId": id, "isMainWorktree": true, "isArchived": false}));
+    done(st, json!({"repo": repo}))
 }
 
 fn open_terminals<'a>(st: &'a State, path: &str) -> Vec<&'a Value> {
@@ -270,6 +287,12 @@ fn terminal_wait(st: &State) -> ! {
     }
     if st.doc["terminals"][at]["tui_busy"] == true {
         fail(st, "timeout"); // as real orca: a timeout is an error
+    }
+    // A harness on a busy host whose prompt settles only this long after a
+    // wait begins: a shorter wait times out, as real orca's does.
+    let asked_ms = st.opt("--timeout-ms").unwrap().parse::<u64>().unwrap();
+    if st.doc["settles_after_ms"].as_u64().is_some_and(|ms| asked_ms < ms) {
+        fail(st, "timeout");
     }
     if asks_trust(st, at) {
         // as real orca: answered, and a non-zero exit

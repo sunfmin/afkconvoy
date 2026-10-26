@@ -12,7 +12,7 @@ use crate::common;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use common::{World, commit, git, write};
+use common::{World, git, write};
 use serde_json::{Value, json};
 
 /// A team whose `dev` runs Codex on one model, whose `auditor` runs Codex as
@@ -620,26 +620,6 @@ fn a_codex_command_outside_a_role_must_take_the_trust_flags_before_any_start() {
     assert!(world.worktrees().is_empty());
     let findings = doctor_finds(&world);
     assert!(findings.iter().any(|(_, fix)| fix == "afkconvoy kit"), "{findings:?}");
-}
-
-#[test]
-fn a_codex_train_worker_trusts_its_worktree_without_editing_the_user_s_config() {
-    let world = unbound_codex();
-    write(&world.home(), ".codex/auth.json", "{}\n");
-    world.set_gate("true");
-    world.issue(7, &["ready-for-agent"]);
-    assert_eq!(tick(&world, 1000).ok()["errors"], json!([]));
-    let dir = worktree(&world, 7);
-    commit(&dir, "built.txt", "built\n");
-    git(&dir, &["push", "-q", "origin", "HEAD"]);
-    world.pr(70, 7, &git(&dir, &["symbolic-ref", "--short", "HEAD"]));
-    assert_eq!(
-        world.afk_in(&dir, &["land", "--issue", "7", "--now", "1050"]).ok()["outcome"],
-        "joined"
-    );
-    assert_eq!(tick(&world, 1090).ok()["errors"], json!([]));
-    assert_worktree_trusted(&world, &world.root.join("wt/convoy-train"));
-    assert!(!world.home().join(".codex/config.toml").exists());
 }
 
 /// Runs `line`, the line a Codex worker was started with, with the stand-in

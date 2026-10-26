@@ -19,14 +19,15 @@ Each command reads the variable for itself, so two commands find the same copies
 
 ## What it holds
 
-- `copies/`: the fleet's copy of a team's repo and of each role's, one per commit, read-only: copies/<owner>/<repo>/<commit>. A worker of a bound repo starts in one; an unbound repo has none.
+- `copies/`: the fleet's copy of a team's repo and of each role's, one per commit, read-only: copies/<owner>/<repo>/<commit>. Derived copies name their kind and directory too. Claude Code's role copy is `<commit>-role+claude-code-<directory>` (the directory is empty for a whole repo), with an empty `.git` directory to bound native skill discovery. A worker of a bound repo starts in one; an unbound repo has none.
 - `harness/`: the user directory the fleet keeps for pi, Codex and Kimi Code, a worker's in place of yours: harness/pi, harness/codex, harness/kimi. A Kimi worker's role-specific home is under that directory, so concurrent roles do not share hooks or rules.
 - `runs/`: the tick log of each repo's fleet instance, one file per repo: what `doctor` reads. It keeps every line of the last {const:LOG_KEPT_HOURS} hours, and never fewer than {const:LOG_KEPT_LEAST} lines nor more than {const:LOG_KEPT_MOST}, the oldest dropped first.
 - `checkouts.json`: the checkout list, the checkouts the host runner works, each with the `--instance`, `--host` and `--worker-no-proxy` its `run` named, and beside them the host settings (`afkconvoy run --help`); `checkouts.lock`, held while it is changed.
 - `host-runner.lock`: held by the host runner as long as it runs, so a host has one; it says its pid, its version and when it started.
 - `host-runner.sock`: the host runner's socket, the one socket of the host: `run`, `stop`, `wake`, `panel --open`, `exclusive` and `doctor` speak to the host runner there, each naming its checkout. No fleet instance and no repo has a socket of its own. One nobody listens on — a host runner killed with no goodbye left it — is removed by whoever finds it.
 - `host-runner.log`: the host runner's log, moved aside to host-runner.log.1 once past a MiB: what it started, added, refused and stopped, each line stamped in UTC.
-- `host-inspection/`: what the last inspection of the host was given (evidence.md) and what it did (last.json), whichever fleet of the host started it: what `doctor` and the panel show beside admission's reading.
+- `stock-watch/`: the stock watch's directory, made and kept when the host names no operator directory. Its rules are the short instruction carried in the binary, refreshed when a stock watch starts.
+- `watch/`: the watch's state, briefs and transcripts, in either directory. Its record survives a host runner restart and includes what it left with a human. `resources.json` keeps observed resource episodes across runner moves, and `evidence/` holds the host readings and process or disk evidence.
 
 None of it is fleet state: that is in GitHub and on the repo's remote.
 

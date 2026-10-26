@@ -1,5 +1,5 @@
 //! Raising a fleet lock (docs/adr/0011), and the read of the locks standing
-//! that a join asks before it puts a PR on the landing train. What a lock is
+//! that a join asks before it puts a PR on the base branch. What a lock is
 //! and what it keeps the fleet off is the core's (`afkconvoy_core::lock`).
 
 use afkconvoy_core::config::Config;

@@ -22,14 +22,6 @@ pub enum TickStep {
     /// Let go of a claim of mine whose issue GitHub says was deleted or
     /// transferred: release it, and end its worker.
     Forget { issue: u64 },
-    /// Keep a train worker on the landing train while a PR of mine, or an
-    /// inspection's, is on it. The train worker holds no claim and takes no
-    /// slot.
-    TendTrain,
-    /// Remove this machine's train's worktree and cut it again, once it has
-    /// outgrown its build while the train is idle (`WorkingSet::outgrown_train`)
-    /// — unless the train worker is at work. It takes no slot.
-    CutTrain,
     /// Ask after the worker of a claim of mine with no PR, and settle what it
     /// declared when it stopped. `start`: whether a worker may be started
     /// under the claim again — false only for a claim whose worker declared,
@@ -113,9 +105,6 @@ pub enum Outcome {
     /// `Watch` replaced a silent joining worker, the once that is allowed: the
     /// claim is still held.
     Restarted,
-    /// `TendTrain` gave the train up, its worker silent past a nudge: nothing
-    /// landed, and its PRs join the next one.
-    Abandoned,
     /// There was nothing for it to do.
     Nothing,
     /// A peer holds the issue — it won the race, or its heartbeat came back:
@@ -226,7 +215,6 @@ impl Pass {
                     | Outcome::Nudged
                     | Outcome::Continued
                     | Outcome::Restarted
-                    | Outcome::Abandoned
                     | Outcome::Gone
             )
         })
@@ -298,7 +286,7 @@ fn dispatched(did: &[(TickStep, Outcome)], issue: u64) -> bool {
 /// Runs one pass over `set` under a bound of `concurrency` claims — what
 /// `WorkingSet::bound` makes of the config's — with `held` slots taken as it
 /// starts (`WorkingSet::held`): settle the
-/// claims whose work landed, tend the landing train, ask after the workers
+/// claims whose work landed, ask after the workers
 /// not on the train yet — starting, into the slot its claim freed, the worker
 /// of the stage a verdict led to — end the patrol runs and the proposals that are over, delete the stale
 /// locks on closed issues, hand to a
@@ -331,14 +319,6 @@ where
     let mut did = Vec::new();
     let slots = Slots::new(concurrency, held);
     let slots = end_claims(set, Sweep::Landed, slots, &mut did, &mut carry_out);
-    if set.on_train() {
-        let step = TickStep::TendTrain;
-        did.push((step, carry_out(step)));
-    }
-    if set.outgrown_train.is_some() {
-        let step = TickStep::CutTrain;
-        did.push((step, carry_out(step)));
-    }
     let slots = end_claims(set, Sweep::Stopped, slots, &mut did, &mut carry_out);
     let concurrency = slots.limit();
     let held = end_patrols(set, slots.held(), &mut did, &mut carry_out);
@@ -410,13 +390,8 @@ fn start_cut<F>(
     let left = set.frontier.iter().filter(|issue| !dispatched(did, issue.number)).count();
     let held_back = !set.held_back.is_empty();
     let superseded = did.contains(&(TickStep::EndCut, Outcome::Superseded)) && set.locks.is_empty();
-    if superseded
-        || set
-            .cut
-            .as_ref()
-            .is_some_and(|cut| cut::starts(cut, held, left, set.on_train(), held_back))
-    {
-        let busy = held > 0 || left > 0 || set.on_train() || held_back;
+    if superseded || set.cut.as_ref().is_some_and(|cut| cut::starts(cut, held, left, held_back)) {
+        let busy = held > 0 || left > 0 || held_back;
         let step = TickStep::Cut { busy };
         did.push((step, carry_out(step)));
     }
@@ -440,7 +415,7 @@ fn ending_step(sweep: Sweep, issue: u64, status: Status, start: bool) -> Option<
         (Sweep::Landed, Status::Closed | Status::Landed) => Some(TickStep::Settle { issue }),
         (Sweep::Landed, Status::Gone) => Some(TickStep::Forget { issue }),
         (Sweep::Stopped, Status::NoPr) => Some(TickStep::Judge { issue, start }),
-        (Sweep::Stopped, Status::Joining) => Some(TickStep::Watch { issue }),
+        (Sweep::Stopped, Status::Landing) => Some(TickStep::Watch { issue }),
         (Sweep::Stopped, Status::AtStage) => Some(TickStep::Advance { issue }),
         _ => None,
     }
@@ -921,8 +896,6 @@ mod tests {
             patrols: vec![],
             proposals: vec![],
             slow_gate: None,
-            outgrown_train: None,
-            inspections_on_train: vec![],
             held_back: vec![],
             caster: None,
             casting: vec![],
@@ -1236,56 +1209,6 @@ mod tests {
     }
 
     #[test]
-    fn with_a_lock_standing_a_pass_leaves_every_other_claim_at_work_alone() {
-        let mine = [
-            (1, Status::NoPr),
-            (2, Status::Joining),
-            (3, Status::AtStage),
-            (4, Status::Closed),
-            (5, Status::Joined),
-            (7, Status::NoPr),
-        ];
-        // #6, #7 and #8 are locks: a dead peer began #6, #7 is at work under
-        // my claim, #8 is on the frontier.
-        let mut locked = set(&[8], &mine);
-        locked.locks = vec![6, 7, 8];
-        locked.stale = peers(&[6, 9]);
-        let bound = locked.bound(4);
-        assert_eq!(bound, 7, "the three left alone take none of the four slots");
-        let pass = run_pass(&locked, bound, 6, |step| match step {
-            Judge { .. } | TendTrain => Nothing,
-            _ => Done,
-        });
-        assert_eq!(
-            steps(&pass),
-            [
-                Settle { issue: 4 },
-                TendTrain,
-                Judge { issue: 7, start: true },
-                Reclaim { issue: 6 },
-                Dispatch { issue: 8 },
-                Heartbeat
-            ],
-            "what landed is settled and the train tended; no stale claim but a lock's is taken"
-        );
-        assert_eq!((pass.held, pass.frontier_remaining), (7, 0));
-        // The lock ended: what the workers left alone declared is acted on.
-        locked.locks = vec![];
-        let after = run_pass(&locked, locked.bound(4), 6, |_| Done);
-        let acted: Vec<TickStep> = steps(&after).into_iter().take(5).collect();
-        assert_eq!(
-            acted,
-            [
-                Settle { issue: 4 },
-                TendTrain,
-                Judge { issue: 1, start: true },
-                Watch { issue: 2 },
-                Advance { issue: 3 }
-            ]
-        );
-    }
-
-    #[test]
     fn a_stale_claim_a_peer_took_first_costs_no_slot() {
         let mut set = set(&[2], &[]);
         set.stale = peers(&[3, 6]);
@@ -1328,7 +1251,7 @@ mod tests {
     }
 
     fn left_at_work(step: TickStep) -> Outcome {
-        if matches!(step, Judge { .. } | Watch { .. } | TendTrain) { Nothing } else { Done }
+        if matches!(step, Judge { .. } | Watch { .. }) { Nothing } else { Done }
     }
 
     #[test]
@@ -1438,39 +1361,8 @@ mod tests {
     }
 
     #[test]
-    fn a_stopped_claim_that_ends_frees_its_slot_and_the_train_takes_none() {
-        let set = set(&[5, 6], &[(1, Status::NoPr), (2, Status::Joined), (3, Status::Joining)]);
-        // #1's worker declared a verdict that ends its claim; #3's is at work on its join
-        let ended = |step| if matches!(step, Watch { .. }) { Nothing } else { Done };
-        let pass = run_pass(&set, 3, 3, ended);
-        let steps = steps(&pass);
-        assert_eq!(
-            steps,
-            [
-                TendTrain,
-                Judge { issue: 1, start: true },
-                Watch { issue: 3 },
-                Dispatch { issue: 5 },
-                Heartbeat
-            ]
-        );
-        assert_eq!(pass.held, 3);
-        let left = run_pass(&set, 3, 3, left_at_work);
-        assert_eq!(
-            acts(&left),
-            [
-                (TendTrain, Nothing),
-                (Judge { issue: 1, start: true }, Nothing),
-                (Watch { issue: 3 }, Nothing),
-                (Heartbeat, Done)
-            ]
-        );
-        assert!(!left.did_work());
-    }
-
-    #[test]
     fn a_joining_claim_is_watched_and_only_its_escalation_frees_the_slot() {
-        let set = set(&[5], &[(3, Status::Joining)]);
+        let set = set(&[5], &[(3, Status::Landing)]);
         for kept in [Nudged, Restarted, Continued] {
             let pass = run_pass(&set, 1, 1, |step| match step {
                 Watch { .. } => kept,
@@ -1482,46 +1374,6 @@ mod tests {
         let pass = run_pass(&set, 1, 1, |_| Done);
         let steps = steps(&pass);
         assert_eq!(steps, [Watch { issue: 3 }, Dispatch { issue: 5 }, Heartbeat]);
-    }
-
-    #[test]
-    fn the_boards_of_what_is_still_held_and_of_what_was_dispatched_are_brought_up_to_date() {
-        let mine =
-            [(1, Status::NoPr), (2, Status::Joined), (3, Status::Joining), (4, Status::Closed)];
-        let held = set(&[5, 6], &mine);
-        // #1 is escalated, #4 settled, #5 dispatched into the slot that frees, #6 lost to a peer
-        let pass = run_pass(&held, 4, 4, |step| match step {
-            Watch { .. } | TendTrain => Nothing,
-            Dispatch { issue: 6 } => Lost,
-            _ => Done,
-        });
-        let boards: Vec<TickStep> =
-            pass.did.iter().map(|(step, _)| *step).filter(|s| matches!(s, Board { .. })).collect();
-        use crate::board::Stage;
-        assert_eq!(
-            boards,
-            [
-                Board { issue: 2, stage: Stage::Joined, pr: None },
-                Board { issue: 3, stage: Stage::Joining, pr: None },
-                Board { issue: 5, stage: Stage::Claimed, pr: None },
-            ],
-            "never of a claim the pass ended: its last board is the ending's to write"
-        );
-        // …nor of one whose ending was cut: the last word may be written already
-        let cut = run_pass(&held, 4, 4, |step| match step {
-            Judge { .. } => Failed,
-            _ => Nothing,
-        });
-        assert!(!cut.did.iter().any(|(step, _)| matches!(step, Board { issue: 1, .. })));
-        let last = pass.did.len() - 1;
-        assert_eq!(pass.did[last].0, Heartbeat);
-        assert!(matches!(pass.did[last - 1].0, Board { .. }), "after everything else");
-        // a pass that only brought boards up to date did no work
-        let quiet = run_pass(&set(&[], &[(2, Status::Joined)]), 1, 1, |step| match step {
-            TendTrain => Nothing,
-            _ => Done,
-        });
-        assert!(!quiet.did_work());
     }
 
     #[test]
@@ -1608,60 +1460,6 @@ mod tests {
     }
 
     #[test]
-    fn a_pass_cuts_again_the_trains_worktree_that_outgrew_its_build_and_takes_no_slot() {
-        use crate::train::Built;
-        let mut outgrown = set(&[5], &[]);
-        outgrown.outgrown_train = Some(Built { built: 1 << 32, fresh: Some(1 << 30) });
-        let pass = run_pass(&outgrown, 1, 0, |_| Done);
-        assert_eq!(pass.did[..2], [(CutTrain, Done), (Dispatch { issue: 5 }, Done)]);
-        assert_eq!(pass.held, 1);
-        assert!(pass.did_work());
-        // its worker at work: nothing was cut
-        assert!(!run_pass(&outgrown, 0, 0, |_| Nothing).did_work());
-        assert_eq!(run_pass(&set(&[], &[]), 1, 0, |_| Done).did, []);
-    }
-
-    #[test]
-    fn a_busy_host_starts_no_new_worker_and_leaves_the_rest_of_the_pass_alone() {
-        use crate::admission::Hold;
-        let mine = [(1, Status::Joined), (4, Status::AtStage), (5, Status::NoPr)];
-        let mut busy = due_on(set(&[7, 8], &mine), &[4], "review");
-        busy.stale = peers(&[3]);
-        busy.patrols = patrols(&[Standing::Due]);
-        busy.proposals = proposals(&[precedent::Standing::Due]);
-        busy.held_back = vec![Hold::Load { load: 3000, limit: 2000 }];
-        let carry_out = |step| match step {
-            Advance { .. } => HandedOn,
-            Judge { .. } => Continued,
-            _ => Done,
-        };
-        let pass = run_pass(&busy, 8, 3, carry_out);
-        // The train is tended, the running worker continued, and the worker a
-        // declared verdict calls for started; nothing new is.
-        let acted: Vec<TickStep> =
-            steps(&pass).into_iter().filter(|step| !matches!(step, Board { .. })).collect();
-        assert_eq!(
-            acted,
-            [
-                TendTrain,
-                Advance { issue: 4 },
-                Dispatch { issue: 4 },
-                Judge { issue: 5, start: true },
-                Heartbeat
-            ]
-        );
-        assert!(pass.held_back(&busy), "slots were free, and there was something to start");
-        assert_eq!(pass.frontier_remaining, 2, "the frontier waits for the next tick");
-
-        // Admitted, the same pass fills its free slots.
-        busy.held_back = vec![];
-        let admitted = run_pass(&busy, 8, 3, carry_out);
-        assert!(admitted.did.contains(&(Reclaim { issue: 3 }, Done)));
-        assert!(admitted.did.contains(&(Dispatch { issue: 7 }, Done)));
-        assert!(!admitted.held_back(&busy));
-    }
-
-    #[test]
     fn a_caster_that_is_due_is_started_ahead_of_the_frontier_and_takes_no_slot() {
         use crate::admission::Hold;
         use crate::casting::Standing;
@@ -1688,7 +1486,6 @@ mod tests {
             oldest_landing_age_seconds: None,
             busy_in_seconds: None,
             failure: None,
-            on_train: None,
             claim: None,
         })
     }
@@ -1709,7 +1506,7 @@ mod tests {
         );
         assert_eq!(pass.held, 0, "no slot");
         assert!(pass.cutting(&idle));
-        // Not while a claim is held, the frontier is left, or the train holds anything.
+        // Not while a claim is held or the frontier is left.
         let mut working = set(&[], &[(5, Status::NoPr)]);
         working.cut = cut(Cutting::Due);
         assert!(!starts(&run_pass(&working, 3, 1, |_| Nothing)));
@@ -1723,9 +1520,6 @@ mod tests {
             if step == (TickStep::Cut { busy: false }) { Done } else { Lost }
         });
         assert_eq!(steps(&lost), [Dispatch { issue: 9 }, TickStep::Cut { busy: false }, Heartbeat]);
-        let mut riding = set(&[], &[(5, Status::Joined)]);
-        riding.cut = cut(Cutting::Due);
-        assert!(!starts(&run_pass(&riding, 3, 1, |_| Nothing)));
         // Nor while admission holds, nor where it is not due.
         idle.held_back = vec![Hold::Memory { free: 3, floor: 10 }];
         assert!(!starts(&run_pass(&idle, 3, 0, |_| Done)));
@@ -1741,7 +1535,7 @@ mod tests {
     #[test]
     fn an_overdue_cut_starts_with_a_full_fleet_and_a_superseded_patch_cuts_again() {
         use crate::cut::Standing as Cutting;
-        let mut busy = set(&[9], &[(5, Status::Joined)]);
+        let mut busy = set(&[9], &[(5, Status::Landing)]);
         busy.cut = cut(Cutting::Due);
         busy.cut.as_mut().unwrap().busy_in_seconds = Some(0);
         let pass = run_pass(&busy, 1, 1, |step| {
@@ -1776,11 +1570,6 @@ mod tests {
         let mut peer = set(&[], &[]);
         peer.cut = cut(Cutting::PeerRunning);
         assert_eq!(steps(&run_pass(&peer, 3, 0, |_| Done)), []);
-        // Its PR on the train has the train tended, as a PR of mine does.
-        let mut riding = set(&[], &[]);
-        riding.cut =
-            Some(crate::cut::Row { on_train: Some(470), ..cut(Cutting::Running).unwrap() });
-        assert_eq!(steps(&run_pass(&riding, 3, 0, |_| Nothing))[0], TendTrain);
     }
 
     #[test]

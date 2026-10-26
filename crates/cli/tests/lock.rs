@@ -131,7 +131,7 @@ fn the_line_of_a_tick_says_that_a_lock_stands_and_which_issue_it_is() {
 }
 
 #[test]
-fn with_a_lock_standing_no_pr_of_another_issue_joins_the_landing_train() {
+fn with_a_lock_standing_only_its_own_issue_can_land() {
     let world = World::new();
     world.set_gate("true");
     let seven = world.worker(7, "seven.txt", "7\n");
@@ -145,11 +145,11 @@ fn with_a_lock_standing_no_pr_of_another_issue_joins_the_landing_train() {
     assert!(refused["detail"].as_str().unwrap().contains("a fleet lock stands (#8)"));
     assert_eq!(world.pushes(), [] as [String; 0], "nothing joined, and nothing was pushed");
 
-    // The lock issue's own PR joins: it carries the fix.
-    assert_eq!(land(&world, &eight, 8)["outcome"], "joined");
+    // The lock issue's own PR lands and closes the issue: it carries the fix.
+    assert_eq!(land(&world, &eight, 8)["outcome"], "merged");
     // …and once it has closed, so does every other.
-    world.close_issue(8);
-    assert_eq!(land(&world, &seven, 7)["outcome"], "joined");
+    assert_eq!(world.state(8), "closed");
+    assert_eq!(land(&world, &seven, 7)["outcome"], "merged");
 }
 
 #[test]
@@ -417,12 +417,12 @@ fn a_red_gate_says_which_lock_stands_and_a_green_one_says_nothing_of_it() {
     let red = world.root.join("red");
     world.set_gate(&format!("test ! -f {}", red.display()));
     world.issue(8, &["fleet-lock"]);
-    let green = world.afk(&["gate", "--train"]).ok();
+    let green = world.afk(&["gate"]).ok();
     assert_eq!((&green["status"], &green["locks"]), (&json!("green"), &Value::Null));
     assert!(!green["detail"].as_str().unwrap().contains("lock"), "{green}");
 
     std::fs::write(&red, "").unwrap();
-    let answer = world.afk(&["gate", "--train"]).ok();
+    let answer = world.afk(&["gate"]).ok();
     assert_eq!((&answer["status"], &answer["locks"]), (&json!("red"), &json!([8])));
     let detail = answer["detail"].as_str().unwrap();
     assert!(detail.contains("A fleet lock stands (#8): the base branch may be what is red"));
@@ -430,7 +430,7 @@ fn a_red_gate_says_which_lock_stands_and_a_green_one_says_nothing_of_it() {
 
     // No lock stands: a red gate is the worker's own to fix.
     world.close_issue(8);
-    let own = world.afk(&["gate", "--train"]).ok();
+    let own = world.afk(&["gate"]).ok();
     assert_eq!((&own["status"], &own["locks"]), (&json!("red"), &Value::Null));
     assert!(own["detail"].as_str().unwrap().contains("fix it, commit, and run this again"));
 }

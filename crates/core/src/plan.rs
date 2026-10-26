@@ -17,7 +17,6 @@ use crate::role::Due;
 use crate::slow_gate::{Landing, Reported, SlowGate, slow};
 use crate::team::{FlowLabels, LAND};
 use crate::tracker::{Tracker, repo_labels};
-use crate::train::Built;
 use crate::waiting::{Waiting, Waits};
 
 /// One open issue.
@@ -64,9 +63,13 @@ pub fn closing_pr(prs: &[PullRequest], number: u64) -> Option<&PullRequest> {
 /// is closed by is not the fleet's: a worker would open a second one.
 pub const NOT_OURS: &str = "has an open linked PR";
 
-/// Why an unclaimed issue of an unbound repo is held off when its open PR is
-/// on the landing train: the train lands it.
-pub const ON_TRAIN: &str = "its open PR is on the landing train";
+/// Fleet repairs run as operator workers, outside product workflows. The
+/// ready label still controls whether a repair may be dispatched.
+pub const REPAIR_LABEL: &str = "convoy-repair";
+
+pub fn is_repair(labels: &[String]) -> bool {
+    labels.iter().any(|label| label == REPAIR_LABEL)
+}
 
 /// Why an issue's labels keep a fleet from dispatching it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -111,6 +114,13 @@ pub fn label_bar(labels: &[String], config: &Config, flows: &FlowLabels) -> Opti
     }
     // The ready label means something only in an unbound repo.
     match &config.bound {
+        Some(_) if is_repair(labels) => {
+            if labels.contains(&config.ready_label) {
+                None
+            } else {
+                Some(LabelBar::NotReady(config.ready_label.clone()))
+            }
+        }
         Some(_) if flows.among(labels).is_empty() => Some(LabelBar::NoFlow),
         None if !labels.contains(&config.ready_label) => {
             Some(LabelBar::NotReady(config.ready_label.clone()))
@@ -124,8 +134,8 @@ pub fn label_bar(labels: &[String], config: &Config, flows: &FlowLabels) -> Opti
 /// label; `None` when it carries none.
 pub fn handed_by(labels: &[String], config: &Config, flows: &FlowLabels) -> Option<String> {
     match &config.bound {
-        Some(_) => flows.among(labels).first().map(|flow| flow.to_string()),
-        None => labels.contains(&config.ready_label).then(|| config.ready_label.clone()),
+        Some(_) if !is_repair(labels) => flows.among(labels).first().map(|flow| flow.to_string()),
+        _ => labels.contains(&config.ready_label).then(|| config.ready_label.clone()),
     }
 }
 
@@ -158,11 +168,9 @@ pub struct Excluded {
 pub enum Status {
     /// No open PR closes the issue: its worker is still at it, or stopped.
     NoPr,
-    /// An open PR closes it, and that PR is not on the landing train yet. In
+    /// An open PR closes it, and that PR is not on the base branch yet. In
     /// a bound repo, only under a landing worker's claim.
-    Joining,
-    /// Its open PR is on the landing train, at the head the PR has now.
-    Joined,
+    Landing,
     /// The landing train put its work on the base branch, and the landing was
     /// cut short before the issue was closed: to be closed, then settled.
     Landed,
@@ -259,16 +267,6 @@ pub struct WorkingSet {
     /// a pass opens one while there is none.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub slow_gate: Option<SlowGate>,
-    /// The landing train is idle and this machine's train's worktree has
-    /// outgrown its build, by what the last landing measured: a pass cuts it
-    /// again.
-    #[serde(skip)]
-    pub outgrown_train: Option<Built>,
-    /// The PRs of inspections on the landing train at their current head,
-    /// changes of the repo made on no issue: the train is tended while one
-    /// is, as while a PR of mine is (`on_train`).
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub inspections_on_train: Vec<u64>,
     /// The thresholds of its host that admission is past (`admission::holds`):
     /// while there is one, a pass starts no new worker into a free slot. Read
     /// of the host, not of GitHub: what assembles the set leaves it empty,
@@ -291,14 +289,6 @@ pub struct WorkingSet {
 }
 
 impl WorkingSet {
-    /// Whether the landing train holds something of this fleet's to tend: a
-    /// PR of mine, an inspection's, or a cut's.
-    pub fn on_train(&self) -> bool {
-        self.mine.iter().any(|mine| mine.status == Status::Joined)
-            || !self.inspections_on_train.is_empty()
-            || self.cut.as_ref().is_some_and(|cut| cut.on_train.is_some())
-    }
-
     /// Whether a cut of mine is going, as this set was read: it takes no
     /// slot, and keeps the fleet instance from being idle.
     pub fn cut_running(&self) -> bool {
@@ -333,7 +323,7 @@ impl WorkingSet {
     pub fn left_alone(&self) -> usize {
         let mut left_alone: usize = 0;
         for mine in &self.mine {
-            let at_work = matches!(mine.status, Status::NoPr | Status::Joining | Status::AtStage);
+            let at_work = matches!(mine.status, Status::NoPr | Status::Landing | Status::AtStage);
             if at_work && self.locked_out(mine.number) {
                 left_alone = left_alone.saturating_add(1);
             }
@@ -405,8 +395,6 @@ pub struct Observed<'a> {
     pub closed: &'a [u64],
     /// The claimed issues GitHub says were deleted or transferred.
     pub gone: &'a [u64],
-    /// The issues whose open PR is on the landing train at its current head.
-    pub joined: &'a [u64],
     /// The open issues whose open PR is the fleet's own: its branch is one
     /// the fleet recorded on the issue. Unclaimed, it is a PR an escalation
     /// or a park kept, which a worker takes up.
@@ -443,18 +431,6 @@ pub struct Observed<'a> {
     pub landings: &'a [Landing],
     /// The issues the fleet opened for a slow gate.
     pub slow_gate: &'a Reported,
-    /// What the last landing measured of this machine's train's worktree,
-    /// while nothing is on the landing train: none while something is, or
-    /// where no landing here measured it.
-    pub idle_train: Option<Built>,
-    /// The open issues of an unbound repo that are the stock consult's
-    /// (docs/adr/0018): escalated and unclaimed, with the consult due
-    /// (`stock::due`), or claimed under a claim the consult was asked under.
-    /// Empty in a bound repo, and where `escalate_to` says `human`.
-    pub consults: &'a [u64],
-    /// The open PRs of inspections on the landing train at their current
-    /// head: changes of the repo an inspection made on no issue.
-    pub inspections: &'a [u64],
     /// The fleet's tracker, which holds `issues`: the lines that answer one
     /// that waits for a human name it (`Waiting::new`).
     pub tracker: &'a Tracker,
@@ -500,16 +476,11 @@ fn call<'d>(issue: &Issue, due: &'d [(u64, Due<'d>)]) -> Call<'d> {
         {
             Call::Nothing(blocker_reason(&issue.open_blockers))
         }
-        // Apart: Flux reads no pattern that joins it to those of an entry.
-        Some(Due::Stock(..)) if !issue.open_blockers.is_empty() => {
-            Call::Nothing(blocker_reason(&issue.open_blockers))
-        }
         Some(due @ Due::Lander(_)) => Call::Start(LAND.to_string(), due),
         // A consult is started at the stage that asked it.
         Some(due @ (Due::Worker(entry) | Due::Consult(entry))) => {
             Call::Start(entry.stage.name.clone(), due)
         }
-        Some(due @ Due::Stock(_, stage)) => Call::Start(stage.name.clone(), due),
         None => Call::Nothing("its position was not read".to_string()),
     }
 }
@@ -531,9 +502,7 @@ fn waiting(
     let cut_failed = cut.and_then(|cut| cut.failure).map(|issue| (issue, Waits::CutFailed, None));
     for (number, waits, since) in seen.waiting.iter().cloned().chain(failed).chain(cut_failed) {
         let open = issues.iter().find(|issue| issue.number == number);
-        // Neither does one the stock consult is asked of.
-        let held =
-            claims.iter().any(|claim| claim.number == number) || seen.consults.contains(&number);
+        let held = claims.iter().any(|claim| claim.number == number);
         let listed = rows.iter().any(|row| row.issue == number);
         if let Some(issue) = open.filter(|_| !held && !listed) {
             rows.push(Waiting::new(number, seen.tracker, &issue.title, waits, since));
@@ -572,8 +541,6 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
         patrols: vec![],
         proposals: vec![],
         slow_gate: slow(seen.landings, config.gate_seconds(), seen.slow_gate),
-        outgrown_train: seen.idle_train.filter(|built| built.outgrown()),
-        inspections_on_train: seen.inspections.to_vec(),
         held_back: vec![],
         caster: None,
         casting: vec![],
@@ -592,14 +559,6 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
         }
         let claimed = claims.iter().any(|claim| claim.number == issue.number);
         let (number, title) = (issue.number, issue.title.clone());
-        // An escalated issue the stock consult is due on is started as its
-        // consult, whatever PR it has: the escalation kept it.
-        let consult = seen.consults.contains(&number) && !claimed;
-        let epic = matches!(label_bar(&issue.labels, config, seen.flows), Some(LabelBar::Epic(_)));
-        if consult && !epic && issue.open_blockers.is_empty() {
-            set.frontier.push(Dispatchable { number, title, stage: None, cast: None });
-            continue;
-        }
         let reason = if let Some(bar) = label_bar(&issue.labels, config, seen.flows) {
             // An escalated issue lost the label that bars it to the escalation.
             let waits = set.waiting_on_human.iter().find(|waiting| waiting.issue == number);
@@ -607,7 +566,7 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
             said.filter(|_| !matches!(bar, LabelBar::Epic(_))).unwrap_or_else(|| bar.reason())
         } else if claimed {
             "already claimed".to_string()
-        } else if config.bound.is_some() {
+        } else if config.bound.is_some() && !is_repair(&issue.labels) {
             match call(issue, seen.due) {
                 Call::Human(reason) => {
                     set.escalating.push(Excluded { number, title, reason });
@@ -624,8 +583,6 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
                     continue;
                 }
             }
-        } else if closing_pr(seen.prs, number).is_some() && seen.joined.contains(&number) {
-            ON_TRAIN.to_string()
         } else if closing_pr(seen.prs, number).is_some() && !seen.kept.contains(&number) {
             NOT_OURS.to_string()
         } else if !issue.open_blockers.is_empty() {
@@ -649,19 +606,19 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
                 Status::Closed
             } else if seen.landed.contains(&claim.number) {
                 Status::Landed
-            } else if seen.joined.contains(&claim.number) && pr.is_some() {
-                Status::Joined
             } else if config.bound.is_some()
+                && !issues
+                    .iter()
+                    .any(|issue| issue.number == claim.number && is_repair(&issue.labels))
                 && !(pr.is_some() && seen.landing.contains(&claim.number))
             {
                 // A landing worker's claim with no PR left to join has
                 // nothing to do either, and is ended as a stage's is.
                 Status::AtStage
-            } else if pr.is_none() || seen.consults.contains(&claim.number) {
-                // The stock consult answers with no PR of its own.
+            } else if pr.is_none() {
                 Status::NoPr
             } else {
-                Status::Joining
+                Status::Landing
             };
             let issue = issues.iter().find(|issue| issue.number == claim.number);
             let title = issue.map(|issue| issue.title.clone());
@@ -786,7 +743,6 @@ mod tests {
             heartbeats: &[("peer".into(), 1000)],
             closed: &[],
             gone: &[],
-            joined: &[],
             kept: &[],
             landed: &[],
             declared: &[],
@@ -799,11 +755,8 @@ mod tests {
             waiting: &[],
             landings: &[],
             slow_gate: &Reported::NONE,
-            idle_train: None,
-            inspections: &[],
             tracker: &Tracker::Own,
             cut: None,
-            consults: &[],
         };
         let set = assemble(&seen, Some(&me()), 1000, &config(3));
         let frontier: Vec<u64> = set.frontier.iter().map(|d| d.number).collect();
@@ -833,7 +786,6 @@ mod tests {
             heartbeats: &[("peer".into(), 1000)],
             closed: &[],
             gone: &[],
-            joined: &[3],
             // #1's, #2's and #3's PRs are the fleet's; #4's is somebody else's.
             kept: &[1, 2, 3],
             landed: &[],
@@ -847,18 +799,15 @@ mod tests {
             waiting: &[],
             landings: &[],
             slow_gate: &Reported::NONE,
-            idle_train: None,
-            inspections: &[],
             tracker: &Tracker::Own,
             cut: None,
-            consults: &[],
         };
         let set = assemble(&seen, Some(&me()), 1000, &config(3));
         let frontier: Vec<u64> = set.frontier.iter().map(|d| d.number).collect();
-        assert_eq!(frontier, [1], "an escalation or a park kept its PR: it is taken up");
+        assert_eq!(frontier, [1, 3], "an escalation or a park kept its PR: it is taken up");
         let reasons: Vec<(u64, &str)> =
             set.excluded.iter().map(|e| (e.number, e.reason.as_str())).collect();
-        assert_eq!(reasons, [(2, "already claimed"), (3, ON_TRAIN), (4, NOT_OURS)]);
+        assert_eq!(reasons, [(2, "already claimed"), (4, NOT_OURS)]);
     }
 
     #[test]
@@ -874,7 +823,6 @@ mod tests {
             heartbeats: &[("peer".into(), 1000)],
             closed: &[],
             gone: &[],
-            joined: &[],
             kept: &[],
             landed: &[],
             declared: &[],
@@ -892,11 +840,8 @@ mod tests {
             ],
             landings: &[],
             slow_gate: &Reported::NONE,
-            idle_train: None,
-            inspections: &[],
             tracker: &Tracker::Own,
             cut: None,
-            consults: &[],
         };
         let set = assemble(&seen, Some(&me()), 1000, &config(3));
         let reasons: Vec<(u64, &str)> =
@@ -939,7 +884,6 @@ mod tests {
             heartbeats: &[],
             closed: &[],
             gone: &[],
-            joined: &[],
             kept: &[],
             landed: &[],
             declared: &[],
@@ -952,11 +896,8 @@ mod tests {
             waiting: &[],
             landings: &[],
             slow_gate: &Reported::NONE,
-            idle_train: None,
-            inspections: &[],
             tracker: &Tracker::Own,
             cut: None,
-            consults: &[],
         };
         let claims = [claim(5, "me"), claim(6, "me")];
         let set = assemble(&seen(&issues, &claims), Some(&me()), 1000, &config(2));
@@ -1023,7 +964,6 @@ mod tests {
             heartbeats: &[],
             closed: &[],
             gone: &[],
-            joined: &[],
             kept: &[],
             landed: &[],
             declared: &[],
@@ -1036,11 +976,8 @@ mod tests {
             waiting: &[],
             landings: &[],
             slow_gate: &Reported::NONE,
-            idle_train: None,
-            inspections: &[],
             tracker: &Tracker::Own,
             cut: None,
-            consults: &[],
         };
         let set = assemble(&seen, Some(&me()), 1000, &bound());
         let frontier: Vec<(u64, Option<&str>)> =
@@ -1141,7 +1078,6 @@ mod tests {
             heartbeats: &[("peer".into(), 1000)],
             closed: &[],
             gone: &[],
-            joined: &[],
             kept: &[],
             landed: &[],
             declared: &[],
@@ -1154,11 +1090,8 @@ mod tests {
             waiting: &[],
             landings: &[],
             slow_gate: &Reported::NONE,
-            idle_train: None,
-            inspections: &[],
             tracker: &Tracker::Own,
             cut: None,
-            consults: &[],
         };
         let set = assemble(&seen, Some(&me()), 1000, &bound());
         let frontier: Vec<(u64, Option<&str>)> =
@@ -1226,7 +1159,6 @@ mod tests {
             heartbeats: &[],
             closed: &[6],
             gone: &[],
-            joined: &[8],
             kept: &[],
             landed: &[],
             declared: &[],
@@ -1240,11 +1172,8 @@ mod tests {
             waiting: &[],
             landings: &[],
             slow_gate: &Reported::NONE,
-            idle_train: None,
-            inspections: &[],
             tracker: &Tracker::Own,
             cut: None,
-            consults: &[],
         };
         let set = assemble(&seen, Some(&me()), 1000, &bound());
         let mine: Vec<_> = set.mine.iter().map(|m| (m.number, m.status, m.pr)).collect();
@@ -1254,8 +1183,8 @@ mod tests {
                 (1, Status::AtStage, None),
                 (6, Status::Closed, None),
                 (7, Status::AtStage, Some(70)),
-                (8, Status::Joined, Some(80)),
-                (9, Status::Joining, Some(90)),
+                (8, Status::Landing, Some(80)),
+                (9, Status::Landing, Some(90)),
                 (10, Status::AtStage, None),
             ]
         );
@@ -1288,7 +1217,6 @@ mod tests {
             ],
             closed: &[4, 6],
             gone: &[],
-            joined: &[8],
             kept: &[],
             landed: &[9],
             declared: &[],
@@ -1301,11 +1229,8 @@ mod tests {
             waiting: &[],
             landings: &[],
             slow_gate: &Reported::NONE,
-            idle_train: None,
-            inspections: &[],
             tracker: &Tracker::Own,
             cut: None,
-            consults: &[],
         };
         let set = assemble(&seen, Some(&me()), 10_000, &config(5));
         let mine: Vec<_> = set.mine.iter().map(|m| (m.number, m.status, m.pr)).collect();
@@ -1314,8 +1239,8 @@ mod tests {
             [
                 (1, Status::NoPr, None),
                 (6, Status::Closed, None),
-                (7, Status::Joining, Some(70)),
-                (8, Status::Joined, Some(80)),
+                (7, Status::Landing, Some(70)),
+                (8, Status::Landing, Some(80)),
                 (9, Status::Landed, None),
             ]
         );
@@ -1341,7 +1266,6 @@ mod tests {
             heartbeats: &[("live".into(), 10_000), ("dead".into(), 9_999 - LEASE)],
             closed: &[4],
             gone: &[1, 2, 3],
-            joined: &[],
             kept: &[],
             landed: &[],
             declared: &[],
@@ -1354,11 +1278,8 @@ mod tests {
             waiting: &[],
             landings: &[],
             slow_gate: &Reported::NONE,
-            idle_train: None,
-            inspections: &[],
             tracker: &Tracker::Own,
             cut: None,
-            consults: &[],
         };
         let set = assemble(&seen, Some(&me()), 10_000, &config(5));
         let mine: Vec<_> = set.mine.iter().map(|m| (m.number, m.status, m.title.clone())).collect();
@@ -1377,7 +1298,6 @@ mod tests {
             heartbeats: &[("peer".into(), 5000)],
             closed: &[],
             gone: &[],
-            joined: &[],
             kept: &[],
             landed: &[],
             declared: &[],
@@ -1390,11 +1310,8 @@ mod tests {
             waiting: &[],
             landings: &[],
             slow_gate: &Reported::NONE,
-            idle_train: None,
-            inspections: &[],
             tracker: &Tracker::Own,
             cut: None,
-            consults: &[],
         };
         assert_eq!(assemble(&seen, None, 1000, &config(3)).stale.len(), 1);
     }
@@ -1422,7 +1339,6 @@ mod tests {
                     heartbeats: beats,
                     closed: &[9],
                     gone: &[],
-                    joined: &[],
                     kept: &[],
                     landed: &[],
                     declared: &[],
@@ -1435,11 +1351,8 @@ mod tests {
                     waiting: &[],
                     landings: &[],
                     slow_gate: &Reported::NONE,
-                    idle_train: None,
-                    inspections: &[],
                     tracker: &Tracker::Own,
                     cut: None,
-                    consults: &[],
                 };
                 assemble(&seen, Some(&me()), 1000, &config)
             };

@@ -30,12 +30,12 @@ impl Default for RepoLabels {
     }
 }
 
-/// Where an unbound repo's hand-off goes first: its `escalate_to`
-/// (docs/adr/0018).
+/// Legacy `escalate_to` values, accepted so existing configs still load.
+/// Both now escalate for the host's watch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum EscalateTo {
-    /// To the stock consult, and to a human where it lets the issue through.
+    /// Retired consult routing; resolves to `Human`.
     Consult,
     /// Straight to a human.
     Human,
@@ -237,10 +237,10 @@ impl Config {
         let escalate_to = match (&settings.team, settings.escalate_to.as_deref()) {
             (Some(_), Some(_)) => return Err(ConfigError::Unbound("escalate_to")),
             (Some(_), None) => None,
-            (None, None) => Some(EscalateTo::Consult),
+            (None, None) => Some(EscalateTo::Human),
             (None, Some(named)) => {
                 match EscalateTo::ALL.into_iter().find(|to| to.word() == named) {
-                    Some(to) => Some(to),
+                    Some(_) => Some(EscalateTo::Human),
                     None => return Err(ConfigError::NotAnEscalateTo(named.to_string())),
                 }
             }
@@ -274,13 +274,6 @@ impl Config {
             Some(config) => Ok(config),
             None => Err(ConfigError::ZeroGateSeconds),
         }
-    }
-
-    /// Whether an unbound repo's hand-off goes to the stock consult before a
-    /// human: unless its `escalate_to` says `human`. A bound repo's stages
-    /// say it each.
-    pub fn stock_consult(&self) -> bool {
-        self.escalate_to == Some(EscalateTo::Consult)
     }
 
     /// The labels a team's workflows are read against in this repo.
@@ -546,15 +539,15 @@ mod tests {
         assert_eq!((config.gate_seconds(), config.gate_limit_declared), (3600, false));
         assert_eq!(config.lock_label, "fleet-lock", "a fleet lock needs no team");
         assert_eq!(config.bound, None, "a repo that names no team is unbound");
-        assert!(config.stock_consult(), "a hand-off goes to the stock consult first");
+        assert_eq!(config.escalate_to, Some(EscalateTo::Human));
     }
 
     #[test]
     fn an_unbound_repo_sends_every_hand_off_to_a_human_with_one_key() {
         let human = Settings { escalate_to: Some("human".into()), ..minimal() };
-        assert!(!Config::new(human).unwrap().stock_consult());
+        assert_eq!(Config::new(human).unwrap().escalate_to, Some(EscalateTo::Human));
         let consult = Settings { escalate_to: Some("consult".into()), ..minimal() };
-        assert!(Config::new(consult).unwrap().stock_consult());
+        assert_eq!(Config::new(consult).unwrap().escalate_to, Some(EscalateTo::Human));
         let other = Settings { escalate_to: Some("boss".into()), ..minimal() };
         assert_eq!(Config::new(other), Err(ConfigError::NotAnEscalateTo("boss".into())));
         // A bound repo's stages say it each.

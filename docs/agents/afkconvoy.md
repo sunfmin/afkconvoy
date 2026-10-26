@@ -31,9 +31,9 @@ rustc job per core, and its tests run as many at a time as
 `orca` it runs. Two gates side by side already reach the
 load at which admission holds new workers back, twice the host's cores (#426).
 So the gate runs through the host's exclusive queue (ADR-0019), in every
-checkout — a worker's `afkconvoy gate` and `gate --train`, the landing train's
-gate, and a gate in a temporary checkout that shows a red base branch: one at a
-time on the host, across its fleets. The workers keep editing while their gates
+checkout — a worker's standalone gate or landing turn, and a gate in a
+temporary checkout that certifies the base branch: by default one command
+at a time across its fleets. The host's `gate_lanes` setting may allow more. The workers keep editing while their gates
 wait.
 
 - Run `afkconvoy gate` as it is. Never wrap it in another `afkconvoy exclusive`:
@@ -50,7 +50,7 @@ wait.
 The wait in the queue counts toward the gate limit, `gate_seconds`, as the run
 does, and so toward the time a recorded gate run keeps, by which the gate is
 judged slow. This repo's own gates fit in the hour: the most that can queue is
-every worker's and the train's, with six workers seven gates of about four and
+every worker's, with six workers six gates of about four and
 a half minutes each (the slowest green run on record took 273 seconds, beside
 other gates), about 32 minutes. Other fleets' commands in the queue add to the
 wait: bizkernel's gate goes through it too, and in this host's tick logs up to
@@ -69,7 +69,7 @@ bounds only the heavy step.
 The fleet cuts each version of afkconvoy itself, once it goes idle with landed
 work past the newest `v*` tag, or the oldest landing has waited 60 minutes
 while busy: it sets the version, lands it through the
-landing train, tags it, and publishes and installs it on its host
+landing turn, tags it, and publishes and installs it on its host
 (`afkconvoy cut --help`, `docs/adr/0028`). These are its steps, and the one
 place they are written. Each is run by `sh` in the cut's checkout, with the
 version in `$VERSION`: `set` on the base branch, `publish` with the new tag
@@ -77,7 +77,7 @@ checked out.
 
 An untagged repo can declare `initial: 0.1.0` beside `set` and `publish` in
 its cut block. The next idle tick cuts that exact first version through the
-same gate and landing train, even if `set` finds it already set. Without the
+same gate and landing turn, even if `set` finds it already set. Without the
 declaration it stays untagged; after the first version tag exists, the usual
 patch/minor selection applies and the declaration is ignored. `plan` shows
 the declaration as `cut.initial` while there is no version tag.

@@ -10,12 +10,10 @@ use afkconvoy_core::casting::{self, Cast, ForCaster, HELD_FOR_CASTER, Standing, 
 use afkconvoy_core::claims::{Claim, InstanceId};
 use afkconvoy_core::config::Config;
 use afkconvoy_core::harness::Harness;
-use afkconvoy_core::plan::{Excluded, Issue, Observed, WorkingSet, assemble, closing_pr};
+use afkconvoy_core::plan::{Excluded, Observed, WorkingSet, assemble, closing_pr};
 use afkconvoy_core::position::Position;
-use afkconvoy_core::stock;
 use afkconvoy_core::stopped::standing_verdict;
-use afkconvoy_core::team::{Consult, Role, Team, Workflow};
-use afkconvoy_core::train::{Built, on_train};
+use afkconvoy_core::team::{Role, Team, Workflow};
 use afkconvoy_core::verdict::latest_verdict;
 use afkconvoy_core::worker::recorded_branches;
 use anyhow::{Context, Result, anyhow};
@@ -24,14 +22,12 @@ use std::thread;
 use crate::claims::Scan;
 use crate::gh::{GitHub, Gone, Open, OpenIssues, beside, gone};
 use crate::git::{Listing, Repo};
-use crate::measure;
 use crate::orca::{Source, Worktree};
 use crate::patrol;
 use crate::precedent;
 use crate::settle::cut_landing_of;
 use crate::slow_gate;
 use crate::stage::Flows;
-use crate::train::Train;
 
 struct Runnable {
     kit: crate::kit::Kit,
@@ -69,9 +65,6 @@ pub struct Fleet {
     /// The closed claimed issues the last rebuild read, each with the login of
     /// whoever closed it, where GitHub says: what a tick's line names.
     pub closers: Vec<(u64, String)>,
-    /// What this machine's train's worktree held when this view cut it again:
-    /// what a tick's line says of it.
-    pub cut_train: Option<Built>,
     /// What this view's start and end of a cut said: what a tick's line says
     /// of them, and its log keeps.
     pub cut_said: Vec<crate::log::What>,
@@ -122,7 +115,6 @@ impl Fleet {
             forgotten: vec![],
             unread: vec![],
             closers: vec![],
-            cut_train: None,
             cut_said: vec![],
             proposals: None,
         })
@@ -176,26 +168,6 @@ impl Fleet {
             return Err(NothingSafe(format!("the role `{}` has no currently eligible harness in its range; waiting for recovery", role.name)).into());
         }
         Ok(range)
-    }
-
-    /// The stock consult follows the same kit order as every other worker.
-    pub fn stock_consult(&self, issue: Option<u64>) -> Result<Cast> {
-        let kit = self.runnable_for(issue)?;
-        let paused = crate::paused::read();
-        if kit.harnesses.is_empty() && !paused.is_empty() {
-            return Err(crate::paused::Held::every(&paused, self.now).into());
-        }
-        let named = kit.stock_consult();
-        let labels: Vec<String> = named
-            .into_iter()
-            .flat_map(|named| {
-                let mut labels = vec![format!("harness:{}", named.harness.key())];
-                labels.extend(named.model.map(|model| format!("model:{model}")));
-                labels
-            })
-            .collect();
-        let range = kit.range();
-        casting::preferred(&labels, &range, &range).map_err(|why| anyhow!("{why}"))
     }
 
     /// Kit order chooses the harness. Labels can only choose a model within it.
@@ -385,9 +357,13 @@ impl Fleet {
     /// The base branch's tip on the remote, its commits in this repo.
     pub fn base_tip(&self) -> Result<String> {
         let branch = &self.config.base_branch;
-        self.repo
-            .fetched(&format!("refs/heads/{branch}"))?
-            .ok_or_else(|| anyhow!("the remote has no branch {branch:?}"))
+        let tip = self
+            .listing
+            .base
+            .as_ref()
+            .ok_or_else(|| anyhow!("the remote has no branch {branch:?}"))?;
+        self.repo.bring(tip, &self.listing.base_ref)?;
+        Ok(tip.clone())
     }
 
     /// Rebuilds the working set of `me` from `open` and the remote as this
@@ -425,23 +401,16 @@ impl Fleet {
                 Err(error) => self.unread.push((claim.number, error)),
             }
         }
-        // What is on the train is read off the train's own commits.
-        let train = Train::listed(&self.repo, &self.config, &self.listing)?;
-        let joins = train.joins(&self.repo, &self.gh.tracker)?;
-        // …and what a cut landing left open, off the base branch.
+        let base = self.base_tip()?;
         let mut landed = vec![];
         for claim in &self.scan.claims {
             if me.is_some_and(|me| claim.is_held_by(me))
                 && !closed.contains(&claim.number)
-                && cut_landing_of(&self.repo, &self.gh.tracker, &train.base, claim, prs)?.is_some()
+                && cut_landing_of(&self.repo, &self.gh.tracker, &base, claim, prs)?.is_some()
             {
                 landed.push(claim.number);
             }
         }
-        let riding = on_train(&joins, prs);
-        let joined: Vec<u64> = riding.iter().filter_map(|join| join.issue()).collect();
-        let inspections: Vec<u64> =
-            riding.iter().filter(|join| join.is_inspection()).map(|join| join.pr).collect();
         // A PR is the fleet's own when its branch is one recorded on the issue.
         let mut kept = vec![];
         for issue in issues {
@@ -457,17 +426,23 @@ impl Fleet {
             self.scan.claims.iter().filter(|claim| me.is_some_and(|me| claim.is_held_by(me)))
         {
             let under = match &self.config.bound {
-                Some(_) => stages.declared(claim.number, &claim.id),
-                None => self.declared_since(open, claim),
+                Some(_)
+                    if !issues.iter().any(|issue| {
+                        issue.number == claim.number
+                            && afkconvoy_core::plan::is_repair(&issue.labels)
+                    }) =>
+                {
+                    stages.declared(claim.number, &claim.id)
+                }
+                _ => self.declared_since(open, claim),
             };
             if under {
                 declared.push(claim.number);
             }
         }
-        let consults = self.stock_consults(open);
         let heartbeats = self.scan.beats();
-        let (landings, slow_gate) = slow_gate::seen(self, &self.listing.records, &train.base)?;
-        let cut = crate::cut::seen(self, &stages, issues, &riding, &train.base)?;
+        let (landings, slow_gate) = slow_gate::seen(self, &self.listing.records, &base)?;
+        let cut = crate::cut::seen(self, &stages, issues, &base)?;
         self.proposals = precedent::open(self, &stages)?;
         let seen = Observed {
             issues,
@@ -476,7 +451,6 @@ impl Fleet {
             heartbeats: &heartbeats,
             closed: &closed,
             gone: &deleted,
-            joined: &joined,
             kept: &kept,
             landed: &landed,
             declared: &declared,
@@ -489,9 +463,6 @@ impl Fleet {
             waiting: &stages.waiting(self, open),
             landings: &landings,
             slow_gate: &slow_gate,
-            idle_train: if train.tip == train.base { self.train_built() } else { None },
-            consults: &consults,
-            inspections: &inspections,
             tracker: &self.gh.tracker,
             cut: cut.as_ref(),
         };
@@ -499,7 +470,7 @@ impl Fleet {
         open.issues.explain(&mut set.waiting_on_human);
         set.casting = crate::caster::status(self, &open.issues, stages.team().ok());
         match self.config.bound {
-            None => self.cast_frontier(&mut set, &open.issues, &consults),
+            None => self.cast_frontier(&mut set, &open.issues),
             Some(_) => self.cast_bound_frontier(&mut set, &open.issues, &stages),
         }
         Ok((set, stages))
@@ -508,7 +479,7 @@ impl Fleet {
     /// Apply host priority and the shared model-casting eligibility to the
     /// unbound frontier. Only an enabled, missing model choice waits, at most
     /// ten minutes; human labels and ineligible harnesses never hold it back.
-    fn cast_frontier(&self, set: &mut WorkingSet, open: &OpenIssues, consults: &[u64]) {
+    fn cast_frontier(&self, set: &mut WorkingSet, open: &OpenIssues) {
         let paused = crate::paused::read();
         let issues = &open.rows;
         let labels_of = |number: u64| -> Vec<String> {
@@ -542,10 +513,6 @@ impl Fleet {
                 }
             };
             let labels = labels_of(issue.number);
-            if consults.contains(&issue.number) {
-                set.frontier.push(issue);
-                continue;
-            }
             let paused_held = (range.is_empty() && !paused.is_empty())
                 .then(|| crate::paused::Held::every(&paused, self.now));
             if let Some(held) = paused_held {
@@ -623,7 +590,7 @@ impl Fleet {
                 set.frontier.push(issue);
                 continue;
             };
-            // The stock consult is no role's, and has no range.
+            // No worker due means no role to cast.
             let Some(role) = due_role(team, workflow, *position) else {
                 set.frontier.push(issue);
                 continue;
@@ -680,32 +647,6 @@ impl Fleet {
         }
     }
 
-    /// What the last landing measured of this machine's train's worktree;
-    /// `None` when there is none here, no landing measured it, or orca or the
-    /// worktree cannot be read — nothing is cut on what is not known.
-    fn train_built(&self) -> Option<Built> {
-        let worktree = Worktree::of_train(&Source::of(&self.repo).ok()?).ok()??;
-        measure::measured(&Repo::new(worktree.path)).ok()?
-    }
-
-    /// The open issues of an unbound repo that are the stock consult's
-    /// (`plan::Observed::consults`): escalated and unclaimed with the consult
-    /// due, or claimed under a claim it was asked under.
-    fn stock_consults(&self, open: &Open) -> Vec<u64> {
-        if !self.config.stock_consult() {
-            return vec![];
-        }
-        let consults = |issue: &&Issue| {
-            let bodies = || open.issues.comments(issue.number).iter().map(|c| c.body.as_str());
-            match self.scan.claim_of(issue.number) {
-                // Whatever labels its answer left.
-                Some(claim) => stock::asked_under(bodies(), &claim.id),
-                None => issue.labels.contains(&self.config.escalate_label) && stock::due(bodies()),
-            }
-        };
-        open.issues.rows.iter().filter(consults).map(|issue| issue.number).collect()
-    }
-
     /// Whether the worker of `claim`, in an unbound repo, declared a verdict
     /// that stands: the latest on the issue, written since the claim was
     /// created — one from an earlier claim is not its own — and not answered
@@ -732,8 +673,8 @@ impl Fleet {
 }
 
 /// The role of the worker due on an issue at `position` in `workflow`, one
-/// of `team`'s: the stage's, its consult's or its landing's. `None` of the
-/// stock consult, and where no worker is due.
+/// of `team`'s: the stage's, its consult's or its landing's.
+/// `None` where no worker is due.
 pub fn due_role<'t>(
     team: &'t Team,
     workflow: &'t Workflow,
@@ -741,7 +682,6 @@ pub fn due_role<'t>(
 ) -> Option<&'t Role> {
     let work = match position {
         Position::Landing => workflow.land.as_ref(),
-        Position::Consult(_, Consult::Stock, _) => None,
         at => at.worker(),
     };
     work.map(|work| team.role_of(work))

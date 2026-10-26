@@ -15,3 +15,11 @@ GitHub checks are never read, and there is no adversarial verify. That removes t
 "There is no adversarial verify" now holds for an unbound repo only. In a bound repo a review is a stage a workflow may have, before the PR joins the landing train. The gate is still the only machine check, the landing turn is still gone, and the train is unchanged.
 
 The worker that wrote a PR no longer joins the train when it is done, since stages follow it. A workflow that lands names the role whose worker gates and joins after its last stage passes. What that worker changes to resolve a conflict on joining is not reviewed again; the gate alone covers it, as it already does for the train worker's repairs.
+
+## Amended by ADR-0034
+
+A command holds a turn through merge, gate and join, and train gates use an independent lane. ADR-0034 replaces the earlier queue ordering and explains how one-at-a-time turns now feed the landing train.
+
+## Replaced by ADR-0037
+
+A turn now lands its gated merge commit directly on the base branch. The landing train, its worker and its lane have been removed; ADR-0037 describes certification, repair and migration of an older line.

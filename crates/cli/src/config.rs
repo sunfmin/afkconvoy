@@ -34,7 +34,26 @@ pub fn parse(markdown: &str) -> Result<Config> {
         false => Some(cut_steps(&blocks.join("\n")).context("its ```yaml cut blocks")?),
         true => None,
     };
-    Ok(Config::new(settings)?.cutting(steps))
+    let config = Config::new(settings)?.cutting(steps);
+    // An outer gate/land would ask for the lane a second time before it
+    // could even reach the inherited gate wrapper.
+    if config.gate_command.split_whitespace().collect::<Vec<_>>().windows(2).any(|pair| {
+        pair[0].trim_matches(['\'', '"']).ends_with("afkconvoy")
+            && matches!(pair[1].trim_matches(['\'', '"']), "gate" | "land")
+    }) {
+        return Err(anyhow!(
+            "gate_command must name the build-and-test command, never `afkconvoy gate` or `land`; set `gate_command: afkconvoy exclusive -- ./gate.sh` for a heavy gate, or `gate_command: ./gate.sh` for a light gate"
+        ));
+    }
+    Ok(config)
+}
+
+/// Whether the repo puts its gate in the host's worker lane. The wrapper
+/// may use an absolute executable path or pass a directory with `-C`.
+pub fn heavy_gate(command: &str) -> bool {
+    let words: Vec<_> = command.split_whitespace().collect();
+    words.iter().any(|word| word.trim_matches(['\'', '"']).ends_with("afkconvoy"))
+        && words.contains(&"exclusive")
 }
 
 /// The cut steps a ```` ```yaml cut ```` block says: `set` and `publish`,
@@ -103,6 +122,35 @@ mod tests {
         let config = parse(text).unwrap();
         assert_eq!(config.base_branch, "main");
         assert_eq!(config.gate_command, "make");
+    }
+
+    #[test]
+    fn existing_exclusive_gate_wrappers_use_the_worker_lanes_and_recursion_is_refused() {
+        for command in [
+            "afkconvoy exclusive -- ./gate.sh",
+            "/opt/homebrew/bin/afkconvoy exclusive -- ./gate.sh",
+            "'/opt/homebrew/bin/afkconvoy' exclusive -C . -- make test",
+            "afkconvoy exclusive -- make gate",
+        ] {
+            let config = parse(&format!(
+                "```yaml\nbase_branch: main\ngate_command: {}\n```\n",
+                serde_json::to_string(command).unwrap()
+            ))
+            .unwrap();
+            assert!(heavy_gate(&config.gate_command), "{command}");
+        }
+        assert!(!heavy_gate("./gate.sh"));
+        for command in
+            ["afkconvoy gate", "afkconvoy exclusive -- afkconvoy gate", "afkconvoy land --train"]
+        {
+            let why = error(&format!("base_branch: main\ngate_command: {command}"));
+            assert!(why.contains("gate_command: afkconvoy exclusive -- ./gate.sh"), "{why}");
+        }
+        for key in ["gate_lanes", "train_lanes"] {
+            assert!(
+                error(&format!("base_branch: main\ngate_command: make\n{key}: 2")).contains(key)
+            );
+        }
     }
 
     #[test]

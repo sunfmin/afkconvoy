@@ -76,7 +76,7 @@ pub enum Request {
     /// that is: this line changes by fields with a default alone.
     Exclusive { ticket: Ticket },
     /// What the host's fleets share: answered at once with the `exclusive`
-    /// queue, in the order it runs, and the `inspection` running, or null.
+    /// queue, in the order it runs, and the `watch` running, or null.
     Shared,
 }
 
@@ -496,8 +496,10 @@ mod tests {
             pid: 7,
             dir: "/w".into(),
             issue: Some(46),
-            train: false,
             cut: false,
+            repo_lane: None,
+            repo: None,
+            is_turn: false,
             command: "cargo test".into(),
             asked: 1000,
             ran: None,
@@ -505,7 +507,7 @@ mod tests {
         let exclusive = serde_json::to_string(&Request::Exclusive { ticket }).unwrap();
         assert_eq!(
             exclusive,
-            r#"{"op":"exclusive","ticket":{"number":0,"pid":7,"command":"cargo test","dir":"/w","issue":46,"train":false,"cut":false,"asked":1000,"ran":null}}"#
+            r#"{"op":"exclusive","ticket":{"number":0,"pid":7,"command":"cargo test","dir":"/w","issue":46,"asked":1000,"ran":null}}"#
         );
     }
 

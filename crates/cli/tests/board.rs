@@ -107,21 +107,15 @@ fn one_comment_follows_a_claim_from_claimed_to_merged() {
     world.pr(70, 7, &git(&dir, &["symbolic-ref", "--short", "HEAD"]));
     at_work(&world, 1090);
     assert_eq!(did(&tick(&world, 1090)), ["watch 7 nothing", "board 7 done", "heartbeat done"]);
-    assert_eq!(ticked(&board(&world)), ["Claimed", "PR open (#70)", "Joining the landing train"]);
+    assert_eq!(ticked(&board(&world)), ["Claimed", "PR open (#70)", "Taking a turn"]);
 
-    // …joins the train
-    world.afk_in(&dir, &["land", "--issue", "7", "--now", "1100"]).ok();
-    let on_train = did(&tick(&world, 1180));
-    assert_eq!(on_train, ["tend_train done", "board 7 done", "heartbeat done"]);
-    assert_eq!(ticked(&board(&world)).len(), 4);
-    assert!(board(&world).contains("- [x] On the landing train\n- [ ] Merged"));
-
-    // …and lands
-    let tip = world.remote(&["rev-parse", "refs/convoy/train/line/main"]);
-    world.remote(&["update-ref", "refs/heads/main", &tip]);
-    assert_eq!(did(&tick(&world, 1270)), ["settle 7 done"]);
+    // The worker's turn lands immediately; the next tick settles its claim.
+    let landed = world.afk_in(&dir, &["land", "--issue", "7", "--now", "1100"]).ok();
+    assert_eq!(landed["outcome"], "merged");
+    assert_eq!(landed["recorded"], true);
+    assert_eq!(did(&tick(&world, 1180)), ["settle 7 done"]);
     let merged = board(&world);
-    assert_eq!(ticked(&merged).len(), 5);
+    assert_eq!(ticked(&merged).len(), 4);
     assert!(merged.contains("was worked by fleet instance `alpha`"), "{merged}");
     assert_eq!(board_id(&world), id, "edited in place, start to finish");
     assert_eq!(world.claims(), []);
@@ -232,7 +226,7 @@ fn an_escalated_joining_claim_keeps_its_pr_on_the_board() {
     let escalate = ["escalate", "--issue", "7", "--instance", "alpha", "--now", "1100"];
     world.afk(&[&escalate[..], &["--reason", "by hand"]].concat()).ok();
     let last = board(&world);
-    assert_eq!(ticked(&last), ["Claimed", "PR open (#70)", "Joining the landing train"]);
+    assert_eq!(ticked(&last), ["Claimed", "PR open (#70)", "Taking a turn"]);
     assert!(last.contains("**Escalated to a human**"));
 }
 

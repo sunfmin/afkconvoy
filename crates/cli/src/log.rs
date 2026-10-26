@@ -21,7 +21,6 @@ use serde_json::Value;
 
 use crate::copies::cache;
 use crate::git::Repo;
-use crate::inspection::THE_HOST;
 
 /// How far back a log keeps every line, in seconds: a day.
 pub(crate) const KEPT_FOR: u64 = 86_400;
@@ -138,28 +137,6 @@ pub enum What {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         gone: bool,
     },
-    /// The inspection of a hot worker started (`crate::inspection`), `by`
-    /// the role it was started in.
-    Inspecting { worker: String, by: String },
-    /// An inspection did one thing, as the operator on its host: `worker` is
-    /// the hot worker it inspected, or `the host`; `did` is what it said it
-    /// did, in its words. One line each, as the inspection ends.
-    InspectionDid { worker: String, did: String },
-    /// The inspection of a hot worker ended, or none was started: `found` is
-    /// how it ended — `said`, `nothing` in time, or `none` where nobody
-    /// inspects it; `said` is what held the work back, what it did and the
-    /// PRs it put on the landing train, or why.
-    Inspected { worker: String, found: String, said: String },
-    /// Admission held back for `reason` past its span, and the host's
-    /// inspection started (`crate::inspection`), `by` the role it was
-    /// started in; `reading` is what admission read.
-    HostInspecting { reason: String, by: String, reading: String },
-    /// The host's inspection ended, or none was started: `found` is how it
-    /// ended — `said`, `nothing` in time, `failed` where it could not be
-    /// started, or `covered` where another fleet of the host inspected it in
-    /// the episode; `said` is what held the work back, what it did and the
-    /// PRs it put on the landing train, or why.
-    HostInspected { reason: String, found: String, said: String },
     /// A watch started in the operator's directory for these reasons.
     WatchStarted { id: String, directory: String, harness: String, reasons: Vec<String> },
     /// A watch continued on another harness after `why`.
@@ -300,20 +277,6 @@ impl Entry {
                     self.at.saturating_sub(*since)
                 )
             }
-            What::Inspecting { worker, by } => {
-                format!("inspection: {worker} is inspected by {by}")
-            }
-            What::InspectionDid { worker, did } => format!("inspection: {worker}: did {did}"),
-            What::Inspected { worker, found, said } => {
-                format!("inspection: {worker}: {found} · {said}")
-            }
-            What::HostInspecting { reason, by, reading } => format!(
-                "host inspection: {reason} past its span ({reading}): \
-                 the host is inspected by {by}"
-            ),
-            What::HostInspected { reason, found, said } => {
-                format!("host inspection: {reason}: {found} · {said}")
-            }
             What::WatchStarted { id, directory, harness, reasons } => {
                 format!("watch: {id} started on {harness} in {directory}: {}", reasons.join("; "))
             }
@@ -366,15 +329,6 @@ impl Entry {
             What::NotMoved { from, to, path, why } => {
                 Some(("not_moved", not_moved(from, to, path, why)))
             }
-            What::InspectionDid { worker, did } => {
-                Some(("inspection", format!("{worker}: did {did}")))
-            }
-            What::Inspected { worker, found, said } => {
-                Some(("inspection", format!("{worker}: {found} · {said}")))
-            }
-            What::HostInspected { reason, found, said } => {
-                Some(("inspection", format!("{THE_HOST}, {reason}: {found} · {said}")))
-            }
             What::WatchDid { did, .. } => Some(("watch", did.clone())),
             What::WatchEnded { outcome, said, .. } => {
                 Some(("watch", format!("{outcome} · {said}")))
@@ -387,8 +341,6 @@ impl Entry {
             | What::Command { .. }
             | What::Hot { .. }
             | What::Cooled { .. }
-            | What::Inspecting { .. }
-            | What::HostInspecting { .. }
             | What::WatchStarted { .. }
             | What::WatchContinued { .. } => None,
         }
@@ -993,28 +945,5 @@ mod tests {
         let line = serde_json::to_value(&moved).unwrap();
         assert_eq!(line["moved"]["to"], "0.6.1", "{line}");
         assert_eq!(serde_json::from_value::<Entry>(line).unwrap(), moved);
-    }
-
-    #[test]
-    fn what_an_inspection_did_and_how_it_ended_are_events() {
-        let did = Entry {
-            what: What::InspectionDid { worker: "#7".into(), did: "ended pid 4242".into() },
-            ..tick(1)
-        };
-        assert_eq!(did.said(), "inspection: #7: did ended pid 4242");
-        assert_eq!(did.event(), Some(("inspection", "#7: did ended pid 4242".to_string())));
-        let host = What::HostInspected {
-            reason: "disk".into(),
-            found: "said".into(),
-            said: "the gate built in /tmp · on the landing train: #451".into(),
-        };
-        let host = Entry { what: host, ..tick(1) }.event().unwrap();
-        assert_eq!(
-            host.1,
-            "the host, disk: said · the gate built in /tmp · on the landing train: #451"
-        );
-        let starts = What::Inspecting { worker: "#7".into(), by: "stock-consult".into() };
-        let starts = Entry { what: starts, ..tick(1) };
-        assert!(starts.event().is_none(), "an inspection starting is a line, not an event");
     }
 }

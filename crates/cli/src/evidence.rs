@@ -4,7 +4,7 @@
 //! process, the resident memory over the last minutes, the processes that
 //! wrote the most, and the largest directories of its worktree. It is written
 //! to a directory of the worker's worktree's own git dir, and handed to its
-//! inspection (`crate::inspection`).
+//! watch (`crate::watch`).
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};

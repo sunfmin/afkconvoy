@@ -8,20 +8,24 @@
 //! line closes — its command ended, or its process did. Which ticket runs is
 //! the core's to say (`afkconvoy_core::exclusive`).
 
+use std::cell::Cell;
+use std::collections::BTreeMap;
 use std::ffi::OsString;
+use std::fs::{File, OpenOptions};
+use std::os::fd::AsRawFd;
 use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
 use std::process::{Command, ExitCode, ExitStatus};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, mpsc};
 use std::time::{Duration, Instant};
 
 use afkconvoy_core::exclusive::{
-    Ticket, ahead, at_once_line, ended_line, in_order, queued_since, rejoins_line, runs_ahead_of,
-    runs_line, waits_line,
+    Ticket, ahead, at_once_line, ended_line, in_order, queued_since, ready, rejoins_line,
+    runs_line, same_lane, same_repo, waits_line,
 };
 use afkconvoy_core::role::ISSUE_ENV;
-use afkconvoy_core::train::is_train_worktree;
-use anyhow::Result;
+use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -46,6 +50,164 @@ pub const SECONDS: u64 = 1200;
 pub const BOUND_CODE: u8 = 124;
 const CHECK_EVERY: Duration = Duration::from_millis(100);
 
+/// The worktree, rather than a caller flag, identifies a cut's commands.
+fn is_cut(repo: &Repo) -> bool {
+    repo.dir.file_name().and_then(|name| name.to_str()).is_some_and(|name| {
+        afkconvoy_core::worker::is_worktree_named(name, afkconvoy_core::cut::CHECKOUT)
+    })
+}
+
+/// Only the gate's descendants inherit this lease. Nested `exclusive`
+/// wrappers use the already held lane instead of waiting on their parent.
+const OWNER_ENV: &str = "AFKCONVOY_EXCLUSIVE_OWNER";
+thread_local! { static HELD: Cell<bool> = const { Cell::new(false) }; }
+
+pub fn held() -> bool {
+    HELD.get()
+}
+
+/// Pass the command's lease only into the gate it owns.
+pub fn inherit(command: &mut Command, repo: &Repo) -> Result<()> {
+    if held() {
+        let scope = lease_scope(repo)?;
+        command.env(OWNER_ENV, format!("{}:{scope}", std::process::id()));
+    }
+    Ok(())
+}
+
+fn lease_scope(repo: &Repo) -> Result<String> {
+    let repo = afkconvoy_core::gate::key(&canonical(repo.common_dir()?));
+    let cache = afkconvoy_core::gate::key(&canonical(&crate::copies::cache()?));
+    Ok(format!("{repo:016x}:{cache:016x}"))
+}
+
+fn inherited(checkout: Option<&Repo>) -> bool {
+    let Some((owner, scope)) = std::env::var(OWNER_ENV).ok().and_then(|v| {
+        let (owner, scope) = v.split_once(':')?;
+        Some((owner.parse::<u32>().ok()?, scope.to_string()))
+    }) else {
+        return false;
+    };
+    if checkout.and_then(|repo| lease_scope(repo).ok()).as_deref() != Some(&scope) {
+        return false;
+    }
+    let processes = crate::hot::listed();
+    let mut pid = std::process::id();
+    for _ in 0..processes.len() {
+        let Some(parent) = processes.iter().find(|p| p.pid == pid).map(|p| p.ppid) else {
+            return false;
+        };
+        if parent == owner {
+            return true;
+        }
+        if parent <= 1 || parent == pid {
+            return false;
+        }
+        pid = parent;
+    }
+    false
+}
+
+/// A command owns its lane until this value drops, including merge, gate,
+/// recording and join. The socket frees it on process death. Without a
+/// runner, the OS holds the same lane across local processes.
+pub struct Permit {
+    stop: Arc<AtomicBool>,
+    monitor: Option<std::thread::JoinHandle<()>>,
+    _file: Option<File>,
+}
+
+impl Permit {
+    pub fn take(repo: &Repo, command: &str, heavy: bool, is_turn: bool) -> Result<Self> {
+        if held() {
+            bail!("this command already holds a turn");
+        }
+        let ticket = Ticket {
+            number: 0,
+            pid: std::process::id(),
+            command: command.into(),
+            dir: canonical(&repo.dir),
+            issue: std::env::var(ISSUE_ENV).ok().and_then(|v| v.parse().ok()),
+            cut: is_cut(repo),
+            repo_lane: if heavy { None } else { Some(canonical(repo.common_dir()?)) },
+            repo: Some(canonical(repo.common_dir()?)),
+            is_turn,
+            asked: crate::clock(),
+            ran: None,
+        };
+        let acting = Acting::new("exclusive").on_own_issue().in_checkout(Some(repo.clone()));
+        let stop = Arc::new(AtomicBool::new(false));
+        let (monitor, file) = match turn(&ticket, &acting, &crate::clock)? {
+            Turn::Queued(place, _) => {
+                acting.say(crate::clock(), runs_line(&ticket, crate::clock(), 0));
+                let watch = Watch::new(place)?;
+                let stopping = stop.clone();
+                (
+                    Some(std::thread::spawn(move || {
+                        let began = Instant::now();
+                        while !stopping.load(Ordering::Acquire) {
+                            let heard = watch.read.recv_timeout(CHECK_EVERY);
+                            if matches!(heard, Err(mpsc::RecvTimeoutError::Disconnected)) {
+                                std::thread::sleep(CHECK_EVERY);
+                            }
+                            if let Ok(bound) = heard {
+                                // Freeze each child before walking below it. The
+                                // owning CLI remains able to reap and exit.
+                                for child in crate::hot::listed()
+                                    .iter()
+                                    .filter(|p| p.ppid == std::process::id())
+                                {
+                                    end_descendants(child.pid);
+                                }
+                                let line = format!(
+                                    "ended at the exclusive bound of {}s after {}s with {} commands waiting: `{}`",
+                                    bound.bound,
+                                    began.elapsed().as_secs(),
+                                    bound.waiting,
+                                    ticket.command
+                                );
+                                acting.say(crate::clock(), line.clone());
+                                eprintln!("[afkconvoy] exclusive: {line}");
+                                println!("{}", json!({"error": line}));
+                                std::process::exit(i32::from(BOUND_CODE));
+                            }
+                        }
+                    })),
+                    None,
+                )
+            }
+            Turn::AtOnce(_) => {
+                let dir = crate::copies::cache()?;
+                std::fs::create_dir_all(&dir)?;
+                let key = afkconvoy_core::gate::key(&afkconvoy_core::exclusive::lane(&ticket));
+                let file = OpenOptions::new()
+                    .create(true)
+                    .truncate(false)
+                    .read(true)
+                    .write(true)
+                    .open(dir.join(format!("exclusive-{key:016x}.lock")))?;
+                // SAFETY: a live descriptor is locked until File drops.
+                if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
+                    return Err(std::io::Error::last_os_error().into());
+                }
+                (None, Some(file))
+            }
+        };
+        HELD.set(true);
+        Ok(Self { stop, monitor, _file: file })
+    }
+}
+
+impl Drop for Permit {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(monitor) = self.monitor.take() {
+            let _ = monitor.join();
+        }
+        HELD.set(false);
+    }
+}
+
 /// What the host runner tells a command that reached the bound. It keeps
 /// its place until the command has ended and reaped its descendants.
 #[derive(Debug, Deserialize, Serialize)]
@@ -54,9 +216,8 @@ struct Bound {
     waiting: usize,
 }
 
-/// The host's exclusive queue, as its host runner holds it: one command runs
-/// at a time, with trains ahead of other waiters, in request order within
-/// each priority. Each leaves as its asker's line closes. A clone is the same.
+/// The host's exclusive queue, as its host runner holds it: worker lanes run, up to the counts the host says, and
+/// at most one command of each repo in each lane. Requests keep their order. Each leaves as its asker's line closes. A clone is the same.
 #[derive(Clone, Default)]
 pub struct Queue {
     held: Arc<(Mutex<Joined>, Condvar)>,
@@ -70,7 +231,7 @@ struct Joined {
     /// A release move lets the running command end before any other starts.
     paused: bool,
     closed: bool,
-    waited: Duration,
+    waited: BTreeMap<u64, Duration>,
     counted_at: Instant,
 }
 
@@ -81,18 +242,55 @@ impl Default for Joined {
             next: 0,
             paused: false,
             closed: false,
-            waited: Duration::ZERO,
+            waited: BTreeMap::new(),
             counted_at: Instant::now(),
         }
     }
 }
 
 impl Joined {
+    /// The waiters this running command actually holds up: a free lane
+    /// means another repo need not wait, and a repo's second turn waits
+    /// only for its own first turn.
+    fn waiting_for(&self, number: u64, settings: &crate::host_settings::Settings) -> usize {
+        let Some(running) = self.tickets.iter().find(|t| t.number == number && t.ran.is_some())
+        else {
+            return 0;
+        };
+        let limit = if running.repo_lane.is_some() { 1 } else { settings.gate_lanes() };
+        let occupied =
+            self.tickets.iter().filter(|t| t.ran.is_some() && same_lane(t, running)).count() as u64;
+        self.tickets
+            .iter()
+            .filter(|waiting| {
+                if waiting.ran.is_some()
+                    || !(same_lane(running, waiting)
+                        || (running.is_turn && waiting.is_turn && same_repo(running, waiting)))
+                {
+                    return false;
+                }
+                let owner = self.tickets.iter().find(|t| {
+                    t.ran.is_some()
+                        && same_repo(t, waiting)
+                        && (same_lane(t, waiting) || (t.is_turn && waiting.is_turn))
+                });
+                match owner {
+                    Some(owner) => owner.number == number,
+                    None => occupied >= limit,
+                }
+            })
+            .count()
+    }
+
     /// Account for the interval before any queue change, so short waits,
     /// gaps without waiters and a changing set of waiters count correctly.
     fn count(&mut self, now: Instant) {
-        if self.tickets.len() > 1 && self.tickets.iter().any(|ticket| ticket.ran.is_some()) {
-            self.waited = self.waited.saturating_add(now.duration_since(self.counted_at));
+        let settings = crate::host_settings::of_host().unwrap_or_default();
+        for running in self.tickets.iter().filter(|ticket| ticket.ran.is_some()) {
+            if self.waiting_for(running.number, &settings) > 0 {
+                let waited = self.waited.entry(running.number).or_default();
+                *waited = waited.saturating_add(now.duration_since(self.counted_at));
+            }
         }
         self.counted_at = now;
     }
@@ -160,23 +358,31 @@ impl Queue {
             match ahead(&joined.tickets, number) {
                 // Its asker left as it waited.
                 None => return,
-                Some(0) if !joined.paused => break,
-                Some(_) => joined = turned.wait(joined).unwrap_or_else(PoisonError::into_inner),
+                Some(_)
+                    if !joined.paused && {
+                        let settings = crate::host_settings::of_host().unwrap_or_default();
+                        ready(&joined.tickets, number, settings.gate_lanes())
+                    } =>
+                {
+                    break;
+                }
+                Some(_) => {
+                    joined = turned
+                        .wait_timeout(joined, CHECK_EVERY)
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .0
+                }
             }
         }
         let ran = crate::clock();
-        let ahead_of = joined
-            .tickets
-            .iter()
-            .find(|ticket| ticket.number == number)
-            .map_or(0, |ticket| runs_ahead_of(ticket, &joined.tickets));
-        joined.waited = Duration::ZERO;
+        joined.count(Instant::now());
+        joined.waited.insert(number, Duration::ZERO);
         joined.counted_at = Instant::now();
         for ticket in joined.tickets.iter_mut().filter(|ticket| ticket.number == number) {
             ticket.ran = Some(ran);
         }
         drop(joined);
-        if !kept.say(json!({"runs": ran, "ahead_of": ahead_of})) {
+        if !kept.say(json!({"runs": ran, "ahead_of": 0})) {
             self.leave(number);
             return;
         }
@@ -188,9 +394,13 @@ impl Queue {
             joined.count(Instant::now());
             // A changed host setting applies to the command already running.
             // An unreadable file leaves the default in force.
-            let bound = crate::host_settings::of_host().unwrap_or_default().exclusive_seconds();
-            let waiting = joined.tickets.len().saturating_sub(1);
-            if waiting > 0 && joined.waited >= Duration::from_secs(bound) {
+            let settings = crate::host_settings::of_host().unwrap_or_default();
+            let bound = settings.exclusive_seconds();
+            let waiting = joined.waiting_for(number, &settings);
+            if waiting > 0
+                && joined.waited.get(&number).copied().unwrap_or_default()
+                    >= Duration::from_secs(bound)
+            {
                 drop(joined);
                 kept.say(json!(Bound { bound, waiting }));
                 // Do not give the next command its turn before cleanup.
@@ -207,6 +417,7 @@ impl Queue {
         let mut joined = self.joined();
         joined.count(Instant::now());
         joined.tickets.retain(|ticket| ticket.number != number);
+        joined.waited.remove(&number);
         drop(joined);
         self.held.1.notify_all();
     }
@@ -220,7 +431,7 @@ impl Queue {
 /// releases its ticket and unblocks the reader; no thread or socket remains.
 struct Watch {
     read: mpsc::Receiver<Bound>,
-    end: Option<Box<dyn FnOnce()>>,
+    end: Option<Box<dyn FnOnce() + Send>>,
     reader: Option<std::thread::JoinHandle<Conversation>>,
 }
 
@@ -342,8 +553,9 @@ fn turn(ticket: &Ticket, acting: &Acting, now: &dyn Fn() -> u64) -> Result<Turn>
 }
 
 /// `afkconvoy exclusive -- <command>`: runs `command` in the directory `dir`
-/// once no other `exclusive` command runs on this host, waiting its turn in
-/// the host runner's queue until then → its exit status. `checkout` is the
+/// once a worker lane is available on this host, waiting in the host runner's
+/// queue until then → its exit status. Heavy commands use worker lanes;
+/// light gates use a lane of their repo. `checkout` is the
 /// checkout `dir` is in, where it is in one: its ticket names it, and its tick
 /// log is where the queue's own words go, as well as to stderr. What it prints
 /// is the command's. With no host runner, or one that cannot hold it, it runs
@@ -356,6 +568,14 @@ pub fn exclusive(
     checkout: Option<Repo>,
     now: impl Fn() -> u64,
 ) -> ExitCode {
+    if inherited(checkout.as_ref()) {
+        return match crate::process::status(
+            Command::new(&command[0]).args(&command[1..]).current_dir(dir),
+        ) {
+            Ok(status) => ExitCode::from(ended(status).0),
+            Err(error) => failed(&format!("the nested command could not start: {error}")),
+        };
+    }
     let shown: Vec<String> =
         command.iter().map(|word| word.to_string_lossy().into_owned()).collect();
     let ticket = Ticket {
@@ -364,18 +584,10 @@ pub fn exclusive(
         command: shown.join(" "),
         dir: canonical(checkout.as_ref().map_or(dir, |repo| &repo.dir)),
         issue: std::env::var(ISSUE_ENV).ok().and_then(|issue| issue.parse().ok()),
-        train: checkout
-            .as_ref()
-            .and_then(|repo| repo.dir.file_name())
-            .and_then(|name| name.to_str())
-            .is_some_and(is_train_worktree),
-        cut: checkout
-            .as_ref()
-            .and_then(|repo| repo.dir.file_name())
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| {
-                afkconvoy_core::worker::is_worktree_named(name, afkconvoy_core::cut::CHECKOUT)
-            }),
+        cut: checkout.as_ref().is_some_and(is_cut),
+        repo_lane: None,
+        repo: checkout.as_ref().and_then(|repo| repo.common_dir().ok()).map(canonical),
+        is_turn: false,
         asked: now(),
         ran: None,
     };
@@ -527,8 +739,10 @@ mod tests {
             command: command.into(),
             dir: "/w/issue-7".into(),
             issue: Some(7),
-            train: false,
             cut: false,
+            repo_lane: None,
+            repo: None,
+            is_turn: false,
             asked,
             ran: None,
         }
@@ -541,16 +755,50 @@ mod tests {
         running.ran = Some(0);
         let mut joined = Joined { tickets: vec![running], counted_at: start, ..Joined::default() };
         joined.count(start + Duration::from_secs(20));
-        assert_eq!(joined.waited, Duration::ZERO, "time alone does not count");
+        assert_eq!(
+            joined.waited.get(&0).copied().unwrap_or_default(),
+            Duration::ZERO,
+            "time alone does not count"
+        );
         joined.tickets.push(ticket("waiting", 20));
         joined.count(start + Duration::from_secs(23));
-        assert_eq!(joined.waited, Duration::from_secs(3));
+        assert_eq!(joined.waited.get(&0).copied().unwrap_or_default(), Duration::from_secs(3));
         joined.tickets.pop();
         joined.count(start + Duration::from_secs(50));
-        assert_eq!(joined.waited, Duration::from_secs(3), "nobody waits in the gap");
+        assert_eq!(
+            joined.waited.get(&0).copied().unwrap_or_default(),
+            Duration::from_secs(3),
+            "nobody waits in the gap"
+        );
         joined.tickets.push(ticket("another waiter", 50));
         joined.count(start + Duration::from_secs(54));
-        assert_eq!(joined.waited, Duration::from_secs(7), "another waiter resumes the count");
+        assert_eq!(
+            joined.waited.get(&0).copied().unwrap_or_default(),
+            Duration::from_secs(7),
+            "another waiter resumes the count"
+        );
+    }
+
+    #[test]
+    fn a_free_lane_is_no_contention_and_a_repos_second_turn_waits_only_for_its_own() {
+        let settings: crate::host_settings::Settings =
+            serde_json::from_value(json!({"gate_lanes": 2})).unwrap();
+        let mut a = ticket("a", 100);
+        a.number = 1;
+        a.repo = Some("a".into());
+        a.ran = Some(100);
+        let mut b = ticket("b", 101);
+        b.number = 2;
+        b.repo = Some("b".into());
+        let mut joined = Joined { tickets: vec![a.clone(), b.clone()], ..Joined::default() };
+        assert_eq!(joined.waiting_for(1, &settings), 0, "b has a free lane, even at a zero bound");
+        b.ran = Some(101);
+        let mut another_a = a;
+        another_a.number = 3;
+        another_a.ran = None;
+        joined.tickets = vec![joined.tickets[0].clone(), b, another_a];
+        assert_eq!(joined.waiting_for(1, &settings), 1);
+        assert_eq!(joined.waiting_for(2, &settings), 0, "b does not hold a's second turn up");
     }
 
     /// An asker on the queue's line: what it was told first, and the line.
@@ -628,34 +876,6 @@ mod tests {
         drop(second);
         assert!(third.next().unwrap()["runs"].is_u64());
         drop(third);
-        holds(&queue, &[]);
-    }
-
-    #[test]
-    fn a_train_runs_next_and_reports_how_many_earlier_workers_still_wait() {
-        let dir = tempfile::tempdir().unwrap();
-        let queue = Queue::default();
-        served(dir.path(), &queue);
-        let (mut running, _) = Asker::joins(dir.path(), ticket("running", 100));
-        assert!(running.next().unwrap()["runs"].is_u64());
-        let (mut worker, _) = Asker::joins(dir.path(), ticket("worker", 101));
-        let (mut inspection, _) = Asker::joins(dir.path(), ticket("inspection", 102));
-        let mut train = ticket("train", 103);
-        train.train = true;
-        let (mut train, said) = Asker::joins(dir.path(), train);
-        assert_eq!(said["ahead"], 1);
-        assert_eq!(commands(&queue), ["running", "train", "worker", "inspection"]);
-        assert!(queue.standing()[0].ran.is_some());
-        assert!(queue.standing()[1].ran.is_none(), "the running command keeps its turn");
-        drop(running);
-        let said = train.next().unwrap();
-        assert!(said["runs"].is_u64());
-        assert_eq!(said["ahead_of"], 2);
-        drop(train);
-        assert!(worker.next().unwrap()["runs"].is_u64());
-        drop(worker);
-        assert!(inspection.next().unwrap()["runs"].is_u64());
-        drop(inspection);
         holds(&queue, &[]);
     }
 

@@ -327,8 +327,10 @@ fn a_patrol_by_a_role_in_a_subdirectory_starts_in_that_directory_alone() {
     let started = calls(&world, "terminal create");
     let command = common::unniced(option(&started[0], "--command").unwrap());
     let kept = world.cache().join("afkconvoy/copies/acme/team");
-    let (role_dir, team_dir) =
-        (kept.join(format!("{head}-role-roles%2Fdev")), kept.join(format!("{head}-team+rules-")));
+    let (role_dir, team_dir) = (
+        kept.join(format!("{head}-role+claude-code-roles%2Fdev")),
+        kept.join(format!("{head}-team+rules-")),
+    );
     assert!(command.starts_with(&format!("cd '{}' && ", role_dir.display())), "{command}");
     assert!(command.contains(&format!(" --add-dir '{}' ", team_dir.display())), "{command}");
     let commits = format!(" AFKCONVOY_ROLE_COMMIT='{head}' AFKCONVOY_TEAM_COMMIT='{head}' ");
@@ -630,7 +632,7 @@ fn a_patrol_moved_along_the_base_branch_leaves_no_commit() {
             tick(&world, 10_000);
             let patrol = checkout(&world);
             let started = git(&patrol, &["rev-parse", "HEAD"]);
-            let repair = commit(&world.clone, "repair.txt", "an inspection's repair\n");
+            let repair = commit(&world.clone, "repair.txt", "a watch's repair\n");
             let later = commit(&world.clone, "later.txt", "more landed work\n");
             git(&world.clone, &["push", "-q", "origin", "main"]);
             // A remote-tracking ref is no evidence of what the base branch

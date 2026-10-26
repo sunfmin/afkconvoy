@@ -2,6 +2,7 @@
 //! lives in. Nothing here creates or removes one any other way.
 
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
@@ -11,14 +12,13 @@ use afkconvoy_core::casting::CASTER_WORKTREE;
 use afkconvoy_core::cut;
 use afkconvoy_core::guard::WritesNothing;
 use afkconvoy_core::harness::Harness;
-use afkconvoy_core::inspection::{self, Finding, Kind};
 use afkconvoy_core::launch::{TrustGap, Waited};
+use afkconvoy_core::legacy::TRAIN_WORKTREE;
 use afkconvoy_core::line::niced;
 use afkconvoy_core::prompt::brief_pointer;
 use afkconvoy_core::question;
 use afkconvoy_core::stopped::Nudged;
 use afkconvoy_core::tools::{Found, add_checkout};
-use afkconvoy_core::train::TRAIN_WORKTREE;
 use afkconvoy_core::worker::{
     AgentReport, WorkerState, is_worktree_named, lead, short_branch, worker_state,
 };
@@ -32,8 +32,6 @@ use crate::worker_tmp;
 /// The worker's instructions, kept in the worktree's own git dir: never staged
 /// by the worker's `git add -A`, gone when the worktree is.
 const BRIEF_FILE: &str = "convoy-worker-prompt.md";
-/// The train's tip its worker was last told about, and when, beside the brief.
-const TOLD_FILE: &str = "convoy-train-told";
 /// When the caster here was started (epoch seconds), and the issues it was
 /// given, beside the brief.
 const CASTER_FILE: &str = "convoy-caster";
@@ -54,13 +52,6 @@ const UNDER_FILE: &str = "convoy-started-under";
 const HARNESS_FILE: &str = "convoy-harness";
 /// What was taken down as the worker here turned hot (`evidence`).
 const EVIDENCE_DIR: &str = "convoy-hot";
-/// What the inspection in this checkout found, as it said it.
-const INSPECTED_FILE: &str = "convoy-inspected.json";
-/// What the inspection in this checkout was started on: a hot worker, or the
-/// host.
-const INSPECTION_KIND_FILE: &str = "convoy-inspection-kind";
-/// The PRs the inspection in this checkout put on the landing train.
-const INSPECTION_PRS_FILE: &str = "convoy-inspection-prs";
 /// What the cut in a checkout is, and what it did so far (`cut::Record`).
 const CUT_FILE: &str = "convoy-cut.json";
 /// What each step of the cut in a checkout printed, one after another.
@@ -72,6 +63,94 @@ const TRUST_PROMPT: &str = "agent-trust-workspace";
 /// How long each accepted line is observed for a turn start. Orca observes
 /// the same request throughout this bound and never resends it.
 const SUBMIT_SECONDS: u64 = 30;
+/// How long a brief handed to a worker that just started waits for its
+/// prompt to settle: a harness ready once may redraw on, longer on a busy
+/// host. Any other line checks the input once, for a second.
+const BRIEF_SETTLE_SECONDS: u64 = 20;
+
+/// A process left after terminal close, and the bounded effort to end it.
+/// The command is read without its environment: the process-tree listing
+/// includes environment variables, which must never be copied to the log.
+struct Ending {
+    description: String,
+    since: Instant,
+    forced: bool,
+    sent: bool,
+    logged: bool,
+    error: Option<String>,
+}
+
+impl Ending {
+    fn observe(proc: &crate::hot::Proc) -> Self {
+        let pid = proc.pid.to_string();
+        let metadata = crate::process::output(Command::new("ps").args([
+            "-ww",
+            "-p",
+            &pid,
+            "-o",
+            "etime=,command=",
+        ]))
+        .ok()
+        .filter(|out| out.status.success())
+        .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string());
+        let description =
+            match metadata.as_deref().and_then(|row| row.split_once(char::is_whitespace)) {
+                Some((ran, command)) => format!("pid {pid}, command {}, ran {ran}", command.trim()),
+                None => format!(
+                    "pid {pid}, command {}, elapsed time unavailable",
+                    proc.line.split_whitespace().next().unwrap_or("unavailable")
+                ),
+            };
+        Self {
+            description,
+            since: Instant::now(),
+            forced: false,
+            sent: false,
+            logged: false,
+            error: None,
+        }
+    }
+
+    fn signal(&mut self, pid: u32, forced: bool) {
+        self.forced = forced;
+        let signal = if forced { "-KILL" } else { "-TERM" };
+        let sent = crate::process::output(Command::new("kill").args([signal, &pid.to_string()]));
+        match sent {
+            Ok(out) if out.status.success() => self.sent = true,
+            Ok(out) => {
+                self.error =
+                    Some(format!("{signal}: {}", String::from_utf8_lossy(&out.stderr).trim()))
+            }
+            Err(error) => self.error = Some(format!("{signal}: {error}")),
+        }
+    }
+
+    fn log_ended(&mut self, worktree: &Path) {
+        if !self.sent || self.logged {
+            return;
+        }
+        self.logged = true;
+        let signal = if self.forced { "SIGKILL" } else { "SIGTERM" };
+        let entry = crate::log::Entry {
+            at: crate::clock(),
+            instance: String::new(),
+            host: crate::this_host(),
+            what: crate::log::What::Command {
+                command: "start".to_string(),
+                on: Some(worktree.display().to_string()),
+                by: "fleet".to_string(),
+                outcome: format!("ended old worker {}, after {signal}", self.description),
+                failed: false,
+            },
+        };
+        // Logging is soft, as for every command that acts.
+        if let Err(error) = crate::log::Log::of(&Repo::new(worktree.to_path_buf()))
+            .and_then(|log| log.append(&entry))
+        {
+            eprintln!("warning: worker termination left no line in the tick log: {error:#}");
+        }
+    }
+}
 
 thread_local! {
     /// One read-only view per tick, dropped even when the tick fails. Each
@@ -370,11 +449,14 @@ fn same_dir(a: &Path, b: &Path) -> bool {
     }
 }
 
-/// What a train worker was last told.
-pub struct Told {
-    pub tip: String,
-    /// `None` for a note written before the time was kept.
-    pub at: Option<u64>,
+/// Keeps the stock watch's own directory known to orca, so its terminal can
+/// start there without the operator registering it. An operator's directory
+/// is never added or changed here.
+pub fn watch_directory(directory: &Path) -> Result<()> {
+    if Source::at(directory)?.is_none() {
+        orca(&["repo", "add", "--path", &directory.display().to_string()])?;
+    }
+    Ok(())
 }
 
 /// What a bound repo's worker was started as, and under which commits of its
@@ -394,7 +476,7 @@ pub struct OnHost {
     /// The main checkout of its repo, where orca says one.
     pub repo: Option<PathBuf>,
     pub issue: Option<u64>,
-    /// The landing train's, the caster's, an inspection's or a cut's: the fleet's own.
+    /// The landing train's, the caster's, a watch's or a cut's: the fleet's own.
     pub fleets: bool,
     /// A worker holds it: a terminal of it is live.
     pub held: bool,
@@ -423,7 +505,6 @@ fn on_host(repos: &Value, listed: &Value, ps: &Value) -> Vec<OnHost> {
             let name = path.file_name().and_then(|name| name.to_str()).unwrap_or("");
             let fleets = is_worktree_named(name, TRAIN_WORKTREE)
                 || is_worktree_named(name, CASTER_WORKTREE)
-                || is_worktree_named(name, inspection::CHECKOUT)
                 || is_worktree_named(name, crate::host_watch::CHECKOUT)
                 || is_worktree_named(name, cut::CHECKOUT);
             Some(OnHost { issue: row["linkedIssue"].as_u64(), path, repo, fleets, held })
@@ -538,7 +619,7 @@ impl Worktree {
     }
 
     /// Every session worktree, including the fleet's train, caster and
-    /// inspection: launch evidence applies to those sessions too.
+    /// watch: launch evidence applies to those sessions too.
     pub fn of_sessions(source: &Source) -> Result<Vec<(Option<u64>, Worktree)>> {
         let listed = orca(&["worktree", "list"])?;
         let rows = listed["worktrees"].as_array().cloned().unwrap_or_default();
@@ -570,12 +651,11 @@ impl Worktree {
     }
 
     /// Whether this is the landing train's worktree, the caster's, an
-    /// inspection's or a cut's: the fleet's own, and no worker's.
+    /// watch's or a cut's: the fleet's own, and no worker's.
     fn is_fleets(&self) -> bool {
         let name = self.path.file_name().and_then(|name| name.to_str()).unwrap_or("");
         is_worktree_named(name, TRAIN_WORKTREE)
             || is_worktree_named(name, CASTER_WORKTREE)
-            || is_worktree_named(name, inspection::CHECKOUT)
             || is_worktree_named(name, crate::host_watch::CHECKOUT)
             || is_worktree_named(name, cut::CHECKOUT)
     }
@@ -725,25 +805,6 @@ impl Worktree {
         Ok(self.git_dir.get().expect("set above").join(name))
     }
 
-    /// What the train worker here was last told: the train's tip, and when.
-    pub fn told(&self) -> Result<Option<Told>> {
-        let told = std::fs::read_to_string(self.note(TOLD_FILE)?).unwrap_or_default();
-        let mut words = told.split_whitespace();
-        Ok(words.next().map(|tip| Told {
-            tip: tip.to_string(),
-            at: words.next().and_then(|at| at.parse().ok()),
-        }))
-    }
-
-    /// Records what the train worker here was told at `at`. It is at work on
-    /// something new: whatever nudge it had is no longer about this.
-    pub fn record_told(&self, tip: &str, at: u64) -> Result<()> {
-        self.forget(NUDGE_FILE)?;
-        let file = self.note(TOLD_FILE)?;
-        std::fs::write(&file, format!("{tip} {at}"))
-            .with_context(|| format!("cannot write {}", file.display()))
-    }
-
     /// When the caster here was started, and the issues it was given.
     pub fn caster(&self) -> Result<Option<(u64, Vec<u64>, String)>> {
         let kept = std::fs::read_to_string(self.note(CASTER_FILE)?).unwrap_or_default();
@@ -794,10 +855,32 @@ impl Worktree {
         let pids: Vec<_> = crate::hot::tree(&before, &self.path).iter().map(|p| p.pid).collect();
         self.close_terminals()?;
         let until = Instant::now() + Duration::from_secs(5);
+        let mut ending = BTreeMap::<u32, Ending>::new();
         loop {
             let processes = crate::hot::listed_checked()?;
             let writers = crate::hot::tree(&processes, &self.path);
-            let old_alive = processes.iter().any(|p| pids.contains(&p.pid));
+            for proc in &processes {
+                if pids.contains(&proc.pid)
+                    || ending.contains_key(&proc.pid)
+                    || writers.iter().any(|writer| writer.pid == proc.pid)
+                {
+                    let record = ending.entry(proc.pid).or_insert_with(|| {
+                        let mut record = Ending::observe(proc);
+                        record.signal(proc.pid, false);
+                        record
+                    });
+                    if !record.forced && record.since.elapsed() >= Duration::from_secs(1) {
+                        record.signal(proc.pid, true);
+                    }
+                }
+            }
+            for (pid, record) in &mut ending {
+                if !processes.iter().any(|proc| proc.pid == *pid) {
+                    record.log_ended(&self.path);
+                }
+            }
+            let old_alive =
+                processes.iter().any(|p| pids.contains(&p.pid) || ending.contains_key(&p.pid));
             // Termination must be confirmed after close, never against the
             // tick's earlier observation of the running agent.
             let report = runtime_row(&runtime_live()?, &self.path);
@@ -811,9 +894,23 @@ impl Worktree {
                 return Ok(());
             }
             if Instant::now() >= until {
+                let survivors = ending
+                    .iter()
+                    .filter(|(pid, _)| processes.iter().any(|proc| proc.pid == **pid))
+                    .map(|(_, record)| match &record.error {
+                        Some(error) => format!("{} ({error})", record.description),
+                        None => record.description.clone(),
+                    })
+                    .collect::<Vec<_>>()
+                    .join("; ");
                 bail!(
-                    "old worker termination is unconfirmed in {}; no replacement was started",
-                    self.path.display()
+                    "old worker termination is unconfirmed in {}; no replacement was started{}",
+                    self.path.display(),
+                    if survivors.is_empty() {
+                        String::new()
+                    } else {
+                        format!("; survived SIGKILL: {survivors}")
+                    }
                 );
             }
             std::thread::sleep(Duration::from_millis(100));
@@ -829,7 +926,6 @@ impl Worktree {
         let repo = Repo::new(self.path.clone());
         repo.git(&["reset", "--quiet", "--hard", sha])?;
         repo.git(&["clean", "--quiet", "-fd"])?;
-        self.forget(TOLD_FILE)?;
         self.forget(START_FILE)?;
         self.forget(BACKGROUND_FILE)?;
         self.forget(NUDGE_FILE)
@@ -871,53 +967,6 @@ impl Worktree {
     /// The directory what shows the worker here hot is taken down in.
     pub fn evidence_dir(&self) -> Result<PathBuf> {
         self.note(EVIDENCE_DIR)
-    }
-
-    /// What the inspection in this checkout found, when it said.
-    pub fn inspected(&self) -> Result<Option<Finding>> {
-        let said = std::fs::read_to_string(self.note(INSPECTED_FILE)?).unwrap_or_default();
-        Ok(serde_json::from_str(&said).ok())
-    }
-
-    /// What the inspection in this checkout was started on; a hot worker
-    /// where nothing says.
-    pub fn inspection_kind(&self) -> Result<Kind> {
-        let said = std::fs::read_to_string(self.note(INSPECTION_KIND_FILE)?).unwrap_or_default();
-        Ok(if said.trim() == Kind::Host.word() { Kind::Host } else { Kind::Worker })
-    }
-
-    /// Records what the inspection in this checkout is started on.
-    pub fn record_inspection_kind(&self, kind: Kind) -> Result<()> {
-        let file = self.note(INSPECTION_KIND_FILE)?;
-        std::fs::write(&file, kind.word())
-            .with_context(|| format!("cannot write {}", file.display()))
-    }
-
-    /// The PRs the inspection in this checkout put on the landing train,
-    /// oldest first.
-    pub fn inspection_prs(&self) -> Result<Vec<u64>> {
-        let kept = std::fs::read_to_string(self.note(INSPECTION_PRS_FILE)?).unwrap_or_default();
-        Ok(kept.split_whitespace().filter_map(|pr| pr.parse().ok()).collect())
-    }
-
-    /// Records that the inspection in this checkout put `pr` on the landing
-    /// train.
-    pub fn record_inspection_pr(&self, pr: u64) -> Result<()> {
-        let mut prs = self.inspection_prs()?;
-        if !prs.contains(&pr) {
-            prs.push(pr);
-        }
-        let file = self.note(INSPECTION_PRS_FILE)?;
-        let kept: Vec<String> = prs.iter().map(u64::to_string).collect();
-        std::fs::write(&file, kept.join("\n"))
-            .with_context(|| format!("cannot write {}", file.display()))
-    }
-
-    /// Keeps what the inspection in this checkout found: the last it said stands.
-    pub fn record_inspected(&self, finding: &Finding) -> Result<()> {
-        let file = self.note(INSPECTED_FILE)?;
-        std::fs::write(&file, serde_json::to_string(finding)?)
-            .with_context(|| format!("cannot write {}", file.display()))
     }
 
     /// What the cut in this checkout is and did so far, where it says; `None`
@@ -1237,11 +1286,11 @@ impl Worktree {
     }
 
     pub fn tell_at(&self, terminal: &str, line: &str, now: u64) -> Result<()> {
-        crate::harness_down::tell(self, terminal, now, || self.tell_unchecked(terminal, line))
+        crate::harness_down::tell(self, terminal, now, || self.tell_unchecked(terminal, line, 1))
     }
 
-    fn tell_unchecked(&self, terminal: &str, line: &str) -> Result<()> {
-        let (ready, _) = self.wait(terminal, 1).with_context(|| {
+    fn tell_unchecked(&self, terminal: &str, line: &str, settle_seconds: u64) -> Result<()> {
+        let (ready, _) = self.wait(terminal, settle_seconds).with_context(|| {
             self.prompt_context(terminal, "no running worker harness confirmed; no line was sent")
         })?;
         if ready != Waited::Ready {
@@ -1288,7 +1337,10 @@ impl Worktree {
 
     /// Hands the worker in `terminal` the brief at `brief`.
     pub fn deliver(&self, terminal: &str, brief: &Path) -> Result<()> {
-        self.tell(terminal, &brief_pointer(&brief.display().to_string()))?;
+        let line = brief_pointer(&brief.display().to_string());
+        crate::harness_down::tell(self, terminal, crate::clock(), || {
+            self.tell_unchecked(terminal, &line, BRIEF_SETTLE_SECONDS)
+        })?;
         // What a watch starts on first; a record it cannot keep loses no
         // worker its brief.
         let _ = crate::health::delivered(self);

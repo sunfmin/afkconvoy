@@ -9,7 +9,7 @@ It is written as one repo holds a team: the team at the root, each role under `r
 
 ## What the team is for
 
-It is modelled on the one Cockroach Labs describes in "An experiment in running a hospital for code". An issue is a patient: routed, worked up into a plan, the plan reviewed, treated under it, the code reviewed, its record audited, and discharged — its PR joins the landing train. Each is a stage a new worker performs in one role: none reviews what it wrote, and none writes code before the plan passed. The Chief is a human: an issue reaches the Chief by escalating, and a consult is asked first.
+It is modelled on the one Cockroach Labs describes in "An experiment in running a hospital for code". An issue is a patient: routed, worked up into a plan, the plan reviewed, treated under it, the code reviewed, its record audited, and discharged — its PR lands in a turn. Each is a stage a new worker performs in one role: none reviews what it wrote, and none writes code before the plan passed. The Chief is a human: an issue reaches the Chief by escalating, and a consult is asked first.
 
 ## The team
 
@@ -26,7 +26,7 @@ The prose above each yaml block says what its workflow is for: `afkconvoy flows`
   - A role on another harness: the roster lets the attending run pi first, on pi's own name for its model, so `plan-review` has the plan reviewed by something other than what wrote it; the caster puts its code reviews on Claude Code.
   - A stage with a consult: `workup` and `treatment` carry `escalate: { to: attending, do: consult }`. Their `escalate` goes first to a worker in that role, which lets through to a human only what nobody decided.
   - Rework and its breakers: a `reject` leads back to an earlier stage, and past `max_rework: 3` or `max_consecutive_rework: 2` the issue escalates.
-  - `land: { by: discharge-nurse, do: land }`: the join is made in the role that audited the record, not by the worker that wrote the code.
+  - `land: { by: discharge-nurse, do: land }`: the landing turn is taken in the role that audited the record, not by the worker that wrote the code.
 - `workflows/chore.md`: Two stages, then the landing: the fewest of any that lands, so it is where the patrol `rounds` takes in the fix of a broken base branch.
 - `workflows/design.md`: A workflow that ends with a human: `proposal`, then `sign-off`, a stage `by: human` whose `pass` leads to `done`. Nothing lands. No human stands in a workflow unless its file says so: here the fleet waits for `afkconvoy rule`.
 

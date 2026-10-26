@@ -38,8 +38,7 @@ pub const VERSION_ENV: &str = "VERSION";
 /// The word of the marker of the issue a failed cut opens.
 pub const FAILED: &str = "convoy:cut-failed";
 
-/// What a cut is given beside two gate limits — its own gate and the
-/// landing train's — for the rest of its steps, publishing and installing
+/// What a cut is given beside two gate limits — base certification and its merge's gate — for the rest of its steps, publishing and installing
 /// among them, in seconds: an hour.
 pub const BESIDE_THE_GATES: u64 = 3600;
 
@@ -52,7 +51,7 @@ fn busy_after_seconds() -> u64 {
 }
 
 /// How long, in seconds, a cut is given in a repo whose gate limit is
-/// `gate_seconds`: the gate of its own change and the train's, each to the
+/// `gate_seconds`: base certification and the gate of its own merge, each to the
 /// limit, and `BESIDE_THE_GATES` for the rest. One still going then is ended,
 /// and has failed.
 pub fn time_limit(gate_seconds: u64) -> u64 {
@@ -74,7 +73,7 @@ pub struct Steps {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub initial: Option<String>,
     /// Run on the base branch as it stood: what it changes is the version's
-    /// commit, which lands through the landing train.
+    /// commit, which lands through a landing turn.
     pub set: String,
     /// Run with the version's tag checked out, once it is pushed.
     pub publish: String,
@@ -213,8 +212,6 @@ pub struct Seen {
     pub claim: Option<RunClaim>,
     /// The open issue that says a cut failed, while one is open.
     pub failure: Option<u64>,
-    /// The PR of a cut on the landing train, at its head, while one is.
-    pub on_train: Option<u64>,
 }
 
 /// How a repo's cut stands: what a tick does about it.
@@ -274,10 +271,6 @@ pub struct Row {
     pub busy_in_seconds: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub failure: Option<u64>,
-    /// The PR of a cut on the landing train: the train is tended while it
-    /// is, as while a PR of mine is.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub on_train: Option<u64>,
     /// The claim on a cut, while one stands.
     #[serde(skip)]
     pub claim: Option<RunClaim>,
@@ -318,20 +311,18 @@ pub fn row(
             .oldest_landing
             .map(|landed| landed.saturating_add(seen.busy_after_seconds).saturating_sub(now)),
         failure: seen.failure,
-        on_train: seen.on_train,
         claim: seen.claim.clone(),
     }
 }
 
 /// Whether a tick that ends with `held` claims held, `frontier` issues left
-/// on its frontier and something on the landing train or not (`on_train`)
+/// on its frontier
 /// starts the cut `row`: it is due and either the age bound has been reached,
 /// or the tick ends idle with admission open. An overdue cut starts even
 /// while admission holds workers back: its heavy steps use the exclusive queue.
-pub fn starts(row: &Row, held: usize, frontier: usize, on_train: bool, held_back: bool) -> bool {
+pub fn starts(row: &Row, held: usize, frontier: usize, held_back: bool) -> bool {
     row.standing == Standing::Due
-        && (row.busy_in_seconds == Some(0)
-            || (held == 0 && frontier == 0 && !on_train && !held_back))
+        && (row.busy_in_seconds == Some(0) || (held == 0 && frontier == 0 && !held_back))
 }
 
 /// One step of a cut, in the order it takes them.
@@ -342,9 +333,9 @@ pub enum Step {
     Set,
     /// Push the commit on the checkout's branch, and open its PR.
     Pr,
-    /// Gate it, the landing train merged in (`afkconvoy gate --train`).
+    /// Merge, gate, record green and land it in its cut's turn.
     Gate,
-    /// Join it to the landing train, on no issue, and wait for it to land.
+    /// Recover its landed merge commit on the base branch.
     Land,
     /// Tag the landed commit `v<version>`, and push the tag.
     Tag,
@@ -645,7 +636,7 @@ pub fn pr_body(record: &Record, host: &str) -> String {
     };
     format!(
         "A cut by the fleet on `{host}` (`afkconvoy cut --help`): v{}, {why}. {holds}\n\nIt \
-         lands through the landing train on no issue; the cut then tags the commit that landed \
+         lands through a landing turn on no issue; the cut then tags the commit that landed \
          it `v{}` and publishes and installs it as the repo's cut steps say.\n",
         record.version, record.version
     )
@@ -716,7 +707,6 @@ mod tests {
             busy_after_seconds: BUSY_AFTER_SECONDS,
             claim: None,
             failure: None,
-            on_train: None,
         }
     }
 
@@ -776,13 +766,12 @@ mod tests {
     #[test]
     fn only_a_tick_that_ends_idle_with_admission_open_starts_a_due_cut() {
         let due = row(&seen(), None, &[], 1000, false);
-        assert!(starts(&due, 0, 0, false, false));
-        assert!(!starts(&due, 1, 0, false, false), "a claim held");
-        assert!(!starts(&due, 0, 1, false, false), "the frontier left");
-        assert!(!starts(&due, 0, 0, true, false), "something on the landing train");
-        assert!(!starts(&due, 0, 0, false, true), "admission holds back");
+        assert!(starts(&due, 0, 0, false));
+        assert!(!starts(&due, 1, 0, false), "a claim held");
+        assert!(!starts(&due, 0, 1, false), "the frontier left");
+        assert!(!starts(&due, 0, 0, true), "admission holds back");
         let tagged = row(&Seen { past: 0, ..seen() }, None, &[], 1000, false);
-        assert!(!starts(&tagged, 0, 0, false, false));
+        assert!(!starts(&tagged, 0, 0, false));
     }
 
     #[test]
@@ -791,13 +780,13 @@ mod tests {
         let before = row(&seen, None, &[], 4599, false);
         assert_eq!(before.oldest_landing_age_seconds, Some(3599));
         assert_eq!(before.busy_in_seconds, Some(1));
-        assert!(!starts(&before, 8, 4, true, true));
+        assert!(!starts(&before, 8, 4, true));
         let due = row(&seen, None, &[], 4600, false);
-        assert!(starts(&due, 8, 4, true, true));
+        assert!(starts(&due, 8, 4, true));
         let locked = row(&seen, None, &[], 4600, true);
-        assert!(!starts(&locked, 8, 4, true, false));
+        assert!(!starts(&locked, 8, 4, false));
         let failed = row(&Seen { failure: Some(9), ..seen.clone() }, None, &[], 4600, false);
-        assert!(!starts(&failed, 8, 4, true, false));
+        assert!(!starts(&failed, 8, 4, false));
         let running = row(
             &Seen { claim: Some(claim("peer")), ..seen },
             None,
@@ -805,7 +794,7 @@ mod tests {
             4600,
             false,
         );
-        assert!(!starts(&running, 8, 4, true, false));
+        assert!(!starts(&running, 8, 4, false));
     }
 
     #[test]

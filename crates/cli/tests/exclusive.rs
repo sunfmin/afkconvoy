@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
-use common::{World, git};
+use common::World;
 use serde_json::json;
 
 #[test]
@@ -134,8 +134,14 @@ fn exclusive(world: &World, cache: &Path, issue: u64, script: &str) -> Child {
 fn tickets(world: &World) -> usize {
     let doctor = world.afk(&["doctor", "--host", "h1"]).json;
     let exclusive = &doctor["host"]["exclusive"];
-    let waiting = exclusive["waiting"].as_array().map_or(0, Vec::len);
-    waiting + usize::from(!exclusive["running"].is_null())
+    let count = |lane: &serde_json::Value| {
+        lane["waiting"].as_array().map_or(0, Vec::len) + usize::from(!lane["running"].is_null())
+    };
+    count(&exclusive["lanes"]["worker"])
+        + count(&exclusive["lanes"]["train"])
+        + exclusive["lanes"]["repos"]
+            .as_array()
+            .map_or(0, |repos| repos.iter().map(|r| count(&r["queue"])).sum::<usize>())
 }
 
 /// Waits, five seconds at most, until `done`.
@@ -324,34 +330,25 @@ fn two_commands_of_two_repos_fleets_run_one_after_the_other_in_the_order_they_as
 }
 
 #[test]
-fn trains_and_cuts_gate_ahead_of_waiting_workers_without_interrupting_what_runs() {
-    let (first, second) = (World::new(), World::new());
+fn a_cut_gates_ahead_of_waiting_workers_and_its_queue_wait_does_not_end_its_gate() {
+    let world = World::new();
     let binary = env!("CARGO_BIN_EXE_afkconvoy");
     let gate = afkconvoy_core::line::Line::new()
         .program(binary)
         .fixed(" exclusive -- sh -c ")
         .word("echo \"$MARK\" >> \"$CACHE/order\"")
         .own();
-    first.set_gate_config(&format!("gate_command: {gate}\ngate_seconds: 5"));
-    second.set_gate(&gate);
-    let worker = second.worker(7, "seven.txt", "7\n");
-    assert_eq!(second.afk_in(&worker, &["land", "--issue", "7"]).ok()["outcome"], "joined");
-    let train = |world: &World, name: &str| {
-        let dir = world.root.join(name);
-        git(
-            &world.clone,
-            &["worktree", "add", "-q", "--detach", dir.to_str().unwrap(), "origin/main"],
-        );
-        dir
-    };
-    let train_a = train(&first, "convoy-train-2");
-    let train_b = train(&second, "convoy-train");
-    let cut = train(&first, "afkconvoy-cut-2");
-    let cache = first.cache();
-    let _host_runner = first.host_held();
+    world.set_gate_config(&format!("gate_command: {gate}\ngate_seconds: 1"));
+    let cutting = world.root.join("afkconvoy-cut-2");
+    common::git(
+        &world.clone,
+        &["worktree", "add", "-q", "--detach", cutting.to_str().unwrap(), "origin/main"],
+    );
+    let cache = world.cache();
+    let _host_runner = world.host_held();
     let order = cache.join("order");
     let held = exclusive(
-        &first,
+        &world,
         &cache,
         11,
         "echo holder-start >> \"$CACHE/order\"; \
@@ -359,67 +356,40 @@ fn trains_and_cuts_gate_ahead_of_waiting_workers_without_interrupting_what_runs(
          echo holder-end >> \"$CACHE/order\"",
     );
     until(|| lines(&order) == ["holder-start"]);
-    let run = |world: &World, dir: &Path, mark: &str, args: &[&str]| {
-        world
-            .command(binary, dir)
-            .env("XDG_CACHE_HOME", &cache)
-            .env("CACHE", &cache)
-            .env("MARK", mark)
-            .args(args)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap()
-    };
-    // --train on an issue worker's gate only merges what it lands behind;
-    // it must not confer the train worker's priority.
-    let worker_a = run(&first, &first.clone, "worker-a", &["gate", "--train"]);
-    until(|| tickets(&first) == 2);
-    let worker_b = exclusive(&second, &cache, 22, "sleep 6; echo worker-b >> \"$CACHE/order\"");
-    until(|| tickets(&first) == 3);
-    let first_train = run(&first, &train_a, "train-a", &["gate", "--train"]);
-    until(|| tickets(&first) == 4);
-    let second_train = run(&second, &train_b, "train-b", &["land", "--train"]);
-    until(|| tickets(&first) == 5);
-    // A cut's gate has only five seconds, less than the six-second worker
-    // already queued. It must get the same priority as the train to pass.
-    let cutting = run(&first, &cut, "cut", &["gate", "--train"]);
-    until(|| tickets(&first) == 6);
-    let shown = first.afk(&["doctor", "--host", "h1"]).json;
-    let queue = &shown["host"]["exclusive"];
+    let worker_a = exclusive(&world, &cache, 21, "echo worker-a >> \"$CACHE/order\"");
+    until(|| tickets(&world) == 2);
+    let worker_b = exclusive(&world, &cache, 22, "echo worker-b >> \"$CACHE/order\"");
+    until(|| tickets(&world) == 3);
+    let cutting = world
+        .command(binary, &cutting)
+        .env("CACHE", &cache)
+        .env("MARK", "cut")
+        .args(["gate"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    until(|| tickets(&world) == 4);
+    let shown = world.afk(&["doctor", "--host", "h1"]).json;
+    let queue = &shown["host"]["exclusive"]["lanes"]["worker"];
     assert_eq!(queue["running"]["issue"], 11, "{queue}");
-    let dirs: Vec<_> = queue["waiting"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|t| Path::new(t["dir"].as_str().unwrap()).file_name().unwrap().to_str().unwrap())
-        .collect();
-    assert_eq!(dirs, ["convoy-train-2", "convoy-train", "afkconvoy-cut-2", "clone", "clone"]);
+    assert_eq!(queue["waiting"][0]["cut"], true, "{queue}");
     assert_eq!(lines(&order), ["holder-start"], "priority never interrupts the holder");
+    // Longer than the gate limit: the gate starts its clock after the grant.
+    std::thread::sleep(Duration::from_millis(1200));
     std::fs::write(cache.join("release"), "").unwrap();
-    for child in [held, first_train, second_train, cutting, worker_a, worker_b] {
+    let out = cutting.wait_with_output().unwrap();
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let answer: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(answer["status"], "green", "{answer}");
+    assert_eq!(answer["recorded"], true, "{answer}");
+    for child in [held, worker_a, worker_b] {
         let out = child.wait_with_output().unwrap();
         assert!(out.status.success(), "{}", text(&out.stderr));
-        if let Ok(answer) = serde_json::from_slice::<serde_json::Value>(&out.stdout)
-            && answer.get("status").is_some()
-        {
-            assert_eq!(answer["status"], "green", "{answer}");
-            assert_eq!(answer["recorded"], true, "{answer}");
-        }
     }
-    assert_eq!(
-        lines(&order),
-        ["holder-start", "holder-end", "train-a", "train-b", "cut", "worker-a", "worker-b"]
-    );
-    until(|| tickets(&first) == 0);
-    let passed: Vec<_> =
-        logged(&cache).into_iter().filter(|line| line.contains("runs ahead of")).collect();
-    assert_eq!(passed.len(), 3, "{passed:?}");
-    assert!(
-        passed.iter().all(|line| line.contains("runs ahead of 2 waiting commands")),
-        "{passed:?}"
-    );
-    assert!(passed.iter().any(|line| line.contains("as a cut's")), "{passed:?}");
+    assert_eq!(lines(&order), ["holder-start", "holder-end", "cut", "worker-a", "worker-b"]);
+    until(|| tickets(&world) == 0);
+    assert!(logged(&cache).iter().any(|line| line.contains("runs as a cut")));
 }
 
 #[test]

@@ -216,7 +216,7 @@ pub enum Position<'w> {
     #[variant((&Stage[@s]) -> Position[true, s.n, s.roles])]
     Waiting(&'w Stage),
     /// A worker is to rule on what the stage handed on, as this consult —
-    /// a skill of a role, or the stock consult: its `escalate`, or a
+    /// a skill of a named role: its `escalate`, or a
     /// hand-off that would have gone to a human.
     #[variant((&Stage[@s], &Consult{v: v.by_role => v.roles == s.roles}, ConsultOn) -> Position[true, s.n, s.roles])]
     Consult(&'w Stage, &'w Consult, ConsultOn),
@@ -281,7 +281,7 @@ impl<'w> Position<'w> {
     }
 
     /// Who a worker is to be started as, of a role; `None` where none is to
-    /// be, or it is the stock consult.
+    /// be.
     pub fn worker(self) -> Option<&'w Work> {
         match self {
             Position::Perform(_, work) | Position::Consult(_, Consult::Role(work), _) => Some(work),
@@ -697,9 +697,6 @@ mod tests {
                 let role = &team.role_of(work).name;
                 format!("consult on {} by {role}: {}", stage.name, work.skill)
             }
-            Position::Consult(stage, Consult::Stock, _) => {
-                format!("consult on {} by the stock consult", stage.name)
-            }
             Position::ParkedForEvidence(stage) => format!("parked for evidence at {}", stage.name),
             Position::Parked(stage) => format!("parked at {}", stage.name),
             Position::Landing => "landing".to_string(),
@@ -836,14 +833,14 @@ mod tests {
         let fourth = [&three[..], &[Reject]].concat();
         assert_eq!(after(&team, &fourth), (consult, 3, [0, 1]));
         // A breaker set to 0 allows no rework at all; a stage that goes to a
-        // human hands it to one, and one that names no consult to the stock one.
+        // human or names no consult escalates for the watch.
         let strict = one(&format!("max_rework: 0\n{FEATURE}"));
         assert_eq!(at(&strict, &[Pass, Pass, Reject]), "consult on build by reviewer: rule");
         let human = FEATURE.replace(CONSULT_OF_BUILD, "    escalate: { to: human }\n");
         let alone = one(&format!("max_rework: 0\n{human}"));
         assert_eq!(at(&alone, &[Pass, Pass, Reject]), "escalating at build: Breaker(Rework)");
         let stock = one(&format!("max_rework: 0\n{}", FEATURE.replace(CONSULT_OF_BUILD, "")));
-        assert_eq!(at(&stock, &[Pass, Pass, Reject]), "consult on build by the stock consult");
+        assert_eq!(at(&stock, &[Pass, Pass, Reject]), "escalating at build: Breaker(Rework)");
     }
 
     #[test]

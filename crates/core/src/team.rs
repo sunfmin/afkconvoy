@@ -374,7 +374,7 @@ pub struct Team {
     /// rules beside its role's (docs/adr/0017): `true` unless the team file
     /// says `host_user: false`, which keeps a role the same on every host.
     /// The default of every role, which a role may set for itself
-    /// (`Role::host_user`); the stock consult takes it.
+    /// (`Role::host_user`).
     pub host_user: bool,
     /// The team's default or the role's own DSH profile choice.
     pub dsh_profile: DshProfile,
@@ -734,9 +734,6 @@ pub struct Precedents {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[refined_by(by_role: bool, roles: int)]
 pub enum Consult {
-    /// afkconvoy's own (`stock`), where the stage names none.
-    #[variant(Consult[false, 0])]
-    Stock,
     #[variant((Work[@roles]) -> Consult[true, roles])]
     Role(Work),
 }
@@ -782,7 +779,7 @@ pub struct Stage {
     /// Whether it may commit. A stage that reviews does not.
     pub writes: bool,
     /// Who is asked before a human whenever the stage would hand the issue
-    /// to one: the role it names, or the stock consult where it names none.
+    /// to one: the role it names. With no named consult, it escalates for the watch.
     /// `None` where it says `escalate: { to: human }`, and of a stage a
     /// human performs.
     #[field(Option<Consult{v: v.by_role => v.roles == roles}>)]
@@ -845,7 +842,7 @@ pub struct Workflow {
     pub max_consecutive_rework: u64,
     #[field(Vec<Stage{v: v.n == n && v.roles == roles}>[n])]
     stages: Vec<Stage>,
-    /// Who gates the PR and joins the landing train.
+    /// Who gates the PR and lands in a turn.
     #[field(Option<Work[roles]>)]
     pub land: Option<Work>,
     /// How many roles its team has.
@@ -1807,7 +1804,7 @@ fn draft<'n>(report: &mut Report, roles: &Roles, key: String, node: &'n Node) ->
     };
     let consult = match get(entries, "escalate") {
         _ if human => Some(None),
-        None => Some(Some(Consult::Stock)),
+        None => Some(None),
         Some(node) => {
             let at = under(&key, "escalate");
             match map(report, &at, node, &ESCALATE_KEYS) {
@@ -2207,7 +2204,6 @@ fn stage(
     };
     let consult = match draft.consult? {
         Some(Consult::Role(work)) => Some(Consult::Role(among_roles(work, roles)?)),
-        Some(Consult::Stock) => Some(Consult::Stock),
         None => None,
     };
     Some(Stage {
@@ -2988,12 +2984,12 @@ land: { by: dev, do: land }
     }
 
     #[test]
-    fn a_stage_names_a_consult_or_a_human_or_has_the_stock_consult() {
+    fn a_stage_without_a_named_consult_escalates_for_the_watch() {
         let usual = "{ by: dev, do: land }";
         let consult = |rest: &str| {
             one(&landed(rest, usual)).workflow("feature").unwrap().stages()[1].consult.clone()
         };
-        assert_eq!(consult(""), Some(Consult::Stock));
+        assert_eq!(consult(""), None);
         assert_eq!(consult("    escalate: { to: human }\n"), None);
         assert!(matches!(consult("    escalate: { to: dev, do: plan }\n"), Some(Consult::Role(_))));
         // A human performs no skill.

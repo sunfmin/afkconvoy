@@ -118,7 +118,7 @@ fn a_well_formed_team_is_accepted_with_what_was_read() {
             "stages": [
                 {"name": "build", "by": "dev", "do": "implement", "writes": true,
                  "escalate": {"to": "reviewer", "do": "rule"}, "pass": "review", "reject": null},
-                {"name": "review", "by": "reviewer", "do": "review", "writes": false, "escalate": {"to": "stock-consult"}, "pass": "land", "reject": "build"},
+                {"name": "review", "by": "reviewer", "do": "review", "writes": false, "escalate": {"to": "human"}, "pass": "land", "reject": "build"},
             ],
             "land": {"by": "dev", "do": "land"},
         }])

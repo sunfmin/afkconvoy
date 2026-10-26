@@ -67,7 +67,7 @@ fn plan_assembles_the_working_set() {
         plan["mine"],
         json!([
             {"number": 1, "title": "issue 1", "status": "no_pr", "pr": null, "declared": false},
-            {"number": 4, "title": "issue 4", "status": "joining", "pr": 40, "declared": false},
+            {"number": 4, "title": "issue 4", "status": "landing", "pr": 40, "declared": false},
             {"number": 6, "title": null, "status": "closed", "pr": null, "declared": false},
         ])
     );
@@ -90,7 +90,7 @@ fn a_pr_from_a_fork_is_read_by_nothing() {
     let plan = world.afk(&["plan", "--instance", "me", "--now", "10000"]).ok();
     assert_eq!(
         plan["mine"][1],
-        json!({"number": 4, "title": "issue 4", "status": "joining", "pr": 40, "declared": false})
+        json!({"number": 4, "title": "issue 4", "status": "landing", "pr": 40, "declared": false})
     );
     assert_eq!(numbers(&plan["frontier"]), [11], "{plan}");
     assert!(!numbers(&plan["excluded"]).contains(&11), "{plan}");

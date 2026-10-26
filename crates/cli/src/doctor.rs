@@ -94,6 +94,9 @@ pub struct Finding {
     /// says once.
     #[serde(skip)]
     pub of_host: bool,
+    /// Stable identity of a resource episode watched once.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub watch_id: Option<String>,
 }
 
 /// Names each kind of finding there is, with how much it matters and its
@@ -156,6 +159,10 @@ kinds! {
     StepUnrecovered: Warning, "failed in tick";
     HarnessDown: Critical, "harness is down";
     HarnessPaused: Warning, "is paused on this host";
+    HotWorker: Warning, "hot worker is past its limits";
+    AdmissionHeld: Warning, "admission has held back new workers";
+    MemoryPressure: Warning, "the host has been under memory pressure";
+    KitUnplaced: Warning, "has unplaced models in the host kit";
     WatchUnavailable: Critical, "no harness can start this host's watch";
     NotMoved: Warning, "the host runner did not move onto";
     RosterModelUnmatched: Warning, "names no model the host kit holds";
@@ -167,6 +174,7 @@ kinds! {
     StateUnread: Critical, "the fleet's state cannot be read";
     NoWorker: Warning, "has no worker";
     WorkerStopped: Warning, "has been stopped for";
+    WorkerHealth: Warning, "worker health is waiting for the operator";
     NothingStarted: Warning, "the last tick started no worker";
     NoWorkflow: Warning, "follows no workflow of the team";
     LongAtStage: Warning, "longer than any stage before it took";
@@ -199,8 +207,13 @@ impl Kind {
                 | Kind::NoProvider
                 | Kind::OrcaNotRunning
                 | Kind::HarnessPaused
+                | Kind::HotWorker
+                | Kind::AdmissionHeld
+                | Kind::MemoryPressure
+                | Kind::KitUnplaced
                 | Kind::WatchUnavailable
                 | Kind::NotMoved
+                | Kind::WorkerHealth
         )
     }
 }
@@ -208,7 +221,7 @@ impl Kind {
 pub(crate) fn finding(kind: Kind, what: String, evidence: String, fix: String) -> Finding {
     debug_assert!(what.contains(kind.symptom()), "{kind:?} is not said in: {what}");
     let (severity, see, of_host) = (kind.severity(), kind.see(), kind.of_host());
-    Finding { severity, what, evidence, fix, see, of_host }
+    Finding { severity, what, evidence, fix, see, of_host, watch_id: None }
 }
 
 /// An answer with a finding of the highest severity: printed as it is, with
@@ -385,7 +398,7 @@ impl Held {
     /// Whether a worker is still owed on it: it is not on the train, landed
     /// or closed.
     fn at_work(&self) -> bool {
-        matches!(self.status, Status::NoPr | Status::Joining | Status::AtStage)
+        matches!(self.status, Status::NoPr | Status::Landing | Status::AtStage)
     }
 }
 
@@ -642,7 +655,7 @@ fn claim_findings(run: &Run, held: &[Held]) -> Vec<Finding> {
             Some(WorkerState::Gone) if run.alive => {
                 let (evidence, fix) = match (&claim.worktree, claim.status) {
                     (None, _) => (format!("orca links no worktree to #{issue}"), "dispatch"),
-                    (Some(_), Status::Joining) => {
+                    (Some(_), Status::Landing) => {
                         (format!("orca has no live terminal in {place}"), "restart")
                     }
                     (Some(_), _) => (format!("orca has no live terminal in {place}"), "dispatch"),
@@ -699,7 +712,7 @@ fn claim_findings(run: &Run, held: &[Held]) -> Vec<Finding> {
 fn fix_of(failed: &Failed, instance: &str) -> String {
     named_line(&failed.error).unwrap_or_else(|| match (failed.step.as_str(), failed.issue) {
         ("dispatch", Some(issue)) => on("dispatch", issue, instance),
-        ("tend_train", _) => format!("afkconvoy tick --instance {instance}"),
+        ("slow_gate", _) => format!("afkconvoy tick --instance {instance}"),
         _ => format!("afkconvoy plan --instance {instance}"),
     })
 }
@@ -746,6 +759,9 @@ fn log_findings(run: &Run) -> Vec<Finding> {
                 || did.into_iter().flatten().any(|step| recovered(failed, step)))
         });
         for failed in tick.failed() {
+            if matches!(failed.step.as_str(), "tend_train" | "cut_train") {
+                continue;
+            }
             pending.retain(|(_, previous)| !previous.same_step(&failed));
             pending.push((tick.count, failed));
         }
@@ -1187,9 +1203,38 @@ fn retired_concurrency_finding(checkout: &Path, config: &Config) -> Option<Findi
     ))
 }
 
+/// Each worker of the host whose worker health waits for the operator: past
+/// its bound, with no class a rule or Jev settled. Without a key command the
+/// fix names one; with it, the worker's screen is the operator's to read.
+fn health_findings() -> Vec<Finding> {
+    let keyed =
+        crate::host_settings::of_host().is_ok_and(|settings| settings.jev_key_command.is_some());
+    crate::health::waiting_for_operator()
+        .into_iter()
+        .map(|waiting| {
+            let worker = waiting["worker"].as_str().unwrap_or_default();
+            let reason = waiting["reason"].as_str().unwrap_or_default();
+            let screen = waiting["screen_line"].as_str().unwrap_or_default();
+            let fix = if keyed {
+                let terminal = waiting["terminal"].as_str().unwrap_or_default();
+                format!("orca terminal read --terminal {terminal} --screen")
+            } else {
+                "afkconvoy run --jev-key-command '<command>'".into()
+            };
+            finding(
+                Kind::WorkerHealth,
+                format!("the worker in {worker}: its worker health is waiting for the operator"),
+                format!("{reason}; its screen ends: {screen}"),
+                fix,
+            )
+        })
+        .collect()
+}
+
 /// Everything that is wrong in what `seen` holds, most severe first.
 pub fn findings(seen: &Seen) -> Vec<Finding> {
     let mut found = host_findings(seen.host);
+    found.extend(health_findings());
     found.extend(seen.config.and_then(config_finding));
     found.extend(seen.config.and_then(|config| retired_concurrency_finding(seen.checkout, config)));
     found.extend(log_findings(seen.run));
@@ -1667,10 +1712,23 @@ fn exclusive_json(standing: Result<Vec<Ticket>>) -> Value {
             "pid": ticket.pid, "asked": ticket.asked, "ran": ticket.ran})
     };
     match standing {
-        Ok(live) => json!({
-            "running": live.first().map(ticket),
-            "waiting": live.iter().skip(1).map(ticket).collect::<Vec<_>>(),
-        }),
+        Ok(live) => {
+            let lane = |repo: Option<&str>| {
+                let each: Vec<_> = live.iter().filter(|t| t.repo_lane.as_deref() == repo).collect();
+                json!({"running": each.iter().find(|t| t.ran.is_some()).map(|t| ticket(t)),
+                    "running_all": each.iter().filter(|t| t.ran.is_some()).map(|t| ticket(t)).collect::<Vec<_>>(),
+                    "waiting": each.iter().filter(|t| t.ran.is_none()).map(|t| ticket(t)).collect::<Vec<_>>()})
+            };
+            let worker = lane(None);
+            let repos: std::collections::BTreeSet<_> =
+                live.iter().filter_map(|t| t.repo_lane.as_deref()).collect();
+            let repos: Vec<_> = repos
+                .into_iter()
+                .map(|repo| json!({"repo": repo, "queue": lane(Some(repo))}))
+                .collect();
+            json!({"running": worker["running"], "waiting": worker["waiting"],
+                "lanes": {"worker": worker, "repos": repos}})
+        }
         Err(error) => json!({"error": format!("{error:#}")}),
     }
 }
@@ -1754,6 +1812,9 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String]) -> Result<Exami
     found.extend(crate::paused::findings(now));
     found.extend(host_runner::findings());
     found.extend(crate::host_watch::finding());
+    let resources = crate::resources::json(now)?;
+    found.extend(crate::resources::findings(&resources, now));
+    found.extend(crate::kit_research::findings());
     found.sort_by_key(|finding| finding.severity);
     let (claims, issues, waiting) = match &state {
         Ok(state) => (
@@ -1769,9 +1830,6 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String]) -> Result<Exami
         Ok(admission) => admission.json(),
         Err(error) => json!({"error": format!("{error:#}")}),
     };
-    // Beside admission's reading: what the last host inspection found of it.
-    host["admission"]["inspected"] = crate::inspection::last_on_host()
-        .map_or(Value::Null, |last| crate::inspection::last_json(&last));
     host["settings"] = match List::of_host() {
         Ok(list) => crate::host_settings::json(&list, &repo.dir),
         Err(error) => json!({"error": format!("{error:#}")}),
@@ -1826,24 +1884,24 @@ fn exclusive_findings(entries: &[Entry], now: u64) -> Vec<Finding> {
 
 /// What of `doctor`'s `host` is the host's alone, the same whichever
 /// checkout it is asked in — the host kit, the queue of `exclusive`, the
-/// inspection running, the newer afkconvoy the host runner moves onto — by
+/// watch running, the newer afkconvoy the host runner moves onto — by
 /// its key: `doctor --all` says it once. All but the host kit are as the
 /// host runner says them, asked once.
 fn host_once(now: u64) -> Map<String, Value> {
-    let (exclusive, inspection, installed, watch) = match host_runner::shared() {
+    let (exclusive, installed, watch) = match host_runner::shared() {
         Ok(said) => {
             let said = said.unwrap_or_default();
-            (Ok(said.exclusive), said.inspection, said.installed, said.watch)
+            (Ok(said.exclusive), said.installed, said.watch)
         }
-        Err(error) => (Err(error), None, None, None),
+        Err(error) => (Err(error), None, None),
     };
     Map::from_iter([
         ("host_kit".to_string(), crate::kit::show(now)),
-        ("exclusive".to_string(), exclusive_json(exclusive)),
         (
-            "inspection".to_string(),
-            inspection.map_or(Value::Null, |running| crate::inspection::json(&running)),
+            "resources".to_string(),
+            crate::resources::json(now).unwrap_or_else(|e| json!({"error": format!("{e:#}")})),
         ),
+        ("exclusive".to_string(), exclusive_json(exclusive)),
         ("installed".to_string(), serde_json::to_value(installed).unwrap_or_default()),
         ("watch".to_string(), crate::host_watch::json(watch.as_ref())),
     ])
@@ -1854,7 +1912,7 @@ fn host_once(now: u64) -> Map<String, Value> {
 /// fleet of `host` — else of the host its `run` named, else of this machine
 /// — under the network settings `proxy` names:
 ///
-///   {"host": {"host_kit", "exclusive", "inspection", "installed"}, "findings",
+///   {"host": {"host_kit", "exclusive", "watch", "installed"}, "findings",
 ///    "checkouts": [{"checkout", "repo", "doctor"}]}
 ///
 /// What is the host's is said once, at the top: the part of `host` that is
@@ -1909,7 +1967,7 @@ pub fn all_since(
         asking.into_iter().map(|asked| asked.join().unwrap_or_else(|_| panicked())).collect()
     });
     let once = host_once(now);
-    let mut of_host: Vec<Finding> = vec![];
+    let mut of_host = crate::kit_research::findings();
     let mut unwell = false;
     let mut complete = true;
     let mut checkouts = vec![];
@@ -2034,8 +2092,6 @@ mod tests {
             patrols: vec![],
             proposals: vec![],
             slow_gate: None,
-            outgrown_train: None,
-            inspections_on_train: vec![],
             held_back: vec![],
             caster: None,
             casting: vec![],
@@ -2269,7 +2325,7 @@ mod tests {
     fn a_claim_with_no_worker_names_the_start_to_make_by_hand() {
         let mut state = state();
         let gone = Held { worker: Some(WorkerState::Gone), ..held(3) };
-        let joining = Held { status: Status::Joining, pr: Some(30), ..gone.clone() };
+        let joining = Held { status: Status::Landing, pr: Some(30), ..gone.clone() };
         let never_cut = Held { worktree: None, ..Held { issue: 7, ..gone.clone() } };
         state.held = vec![gone.clone(), Held { issue: 5, ..joining }, never_cut];
         let found = found(&host(), &run(vec![]), &state);
@@ -2283,10 +2339,7 @@ mod tests {
         );
         assert!(found.iter().all(|finding| finding.severity == Severity::Warning));
         // one whose work is on the train or landed is owed no worker…
-        state.held = vec![
-            Held { status: Status::Joined, ..gone.clone() },
-            Held { status: Status::Closed, ..gone },
-        ];
+        state.held = vec![Held { status: Status::Closed, ..gone }];
         assert_eq!(self::found(&host(), &run(vec![]), &state), []);
         // …and one orca could not speak of is not said to have none
         state.held = vec![Held { worker: None, ..held(3) }];
@@ -2362,17 +2415,29 @@ mod tests {
     }
 
     #[test]
+    fn retired_train_steps_do_not_leave_an_actionable_failure_after_upgrade() {
+        let failed = tick(
+            4,
+            json!([
+                {"do": "tend_train", "error": "not ready"},
+                {"do": "cut_train", "error": "no checkout"}
+            ]),
+        );
+        assert_eq!(log_findings(&run(vec![failed, tick(5, json!([]))])), []);
+    }
+
+    #[test]
     fn failures_stay_visible_across_unrelated_ticks_and_clear_when_work_recovers() {
-        let failed = tick(4, json!([{"do": "tend_train", "error": "not ready"}]));
+        let failed = tick(4, json!([{"do": "slow_gate", "error": "not ready"}]));
         let unrelated = tick(5, json!([]));
         let mut ticks = vec![failed, unrelated];
         let found = log_findings(&run(ticks.clone()));
         assert_eq!(found.len(), 1);
-        assert_eq!(found[0].what, "`tend_train` failed in tick 4 and has not recovered");
+        assert_eq!(found[0].what, "`slow_gate` failed in tick 4 and has not recovered");
         assert_eq!(found[0].fix, "afkconvoy tick --instance alpha");
         let mut recovered = tick(6, json!([]));
         recovered.1.answer.as_mut().unwrap()["did"] =
-            json!([{"do": "tend_train", "outcome": "done"}]);
+            json!([{"do": "slow_gate", "outcome": "done"}]);
         ticks.push(recovered);
         assert_eq!(log_findings(&run(ticks)), []);
 

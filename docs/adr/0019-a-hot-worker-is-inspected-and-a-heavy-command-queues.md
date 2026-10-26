@@ -1,5 +1,5 @@
 ---
-status: accepted, its inspection sections superseded by ADR-0026, its memory-pressure clause superseded by ADR-0029
+status: accepted, operator lifecycle superseded by ADR-0035, its inspection sections superseded by ADR-0026, its memory-pressure clause superseded by ADR-0029
 ---
 
 # A hot worker is inspected, and a heavy command queues
@@ -56,13 +56,11 @@ Whatever it finds, it leaves a comment on the issue saying what and why, so late
 
 `afkconvoy exclusive -- <command>` runs a command once no other `exclusive` command runs on the host, across all its fleets, and queues it until then. A worker uses it for work it knows to be heavy — told so by an inspection, or by its role's rules. A worker waiting in the queue is busy, not silent; its wait counts toward the gate limit.
 
-### The landing train and cuts go first among the waiting
+### Cuts go first among the waiting
 
-The landing train's commands run before every waiting worker's or inspection's command (sunfmin/control#104). A landing unblocks every PR on the train, later conflicts and the next cut, while a worker's gate unblocks only that worker. Trains of different repos keep their request order between them, and ordinary commands keep theirs. Priority never interrupts a running command; the contention bound of ADR-0031 still applies.
+A cut's turn and exclusive commands run ahead of waiting worker commands (ADR-0028, sunfmin/control#106), so an arbitrary queue of worker gates cannot consume a busy cut's overall time limit. Cuts keep request order among themselves, as ordinary commands keep theirs. Its cut worktree determines its identity and its ticket preserves it across host runner replacement. Priority never interrupts a running command, never adds a lane, and never bypasses the one-turn-per-repo rule. ADR-0031's contention bound still applies. The gate's own limit starts after the turn is granted.
 
-A cut's commands share this priority (ADR-0028, sunfmin/control#106): an arbitrary queue of workers' gates must not run out a busy cut's time limit. Trains and cuts keep request order among themselves. The cut worktree supplies its identity, including a cut's gate and its publish steps that use the queue, and the ticket preserves it across a host runner replacement.
-
-A train asks once for each landing, so a worker waits behind at most one train gate per repo on the host, plus what runs now and ordinary commands already ahead of it. The train's existing worktree identity determines priority, including its worker's `gate --train` and the gate run by `land --train`; a worker's own `gate --train` gains none. Tickets carry that priority across a host runner replacement. The tick log's runs line counts the earlier ordinary commands still waiting when a train starts, and doctor and the panel show the same order the queue uses.
+This replaces the earlier train priority after ADR-0037 removed the train and its lane, and amends ADR-0034's FIFO rule for cuts. Doctor and the panel show the same order the queue uses.
 
 ## Admission, and priority
 
@@ -103,3 +101,7 @@ A host inspection frees what it found reclaimable, for nothing else ends the dea
 - The defaults for N, X and Y, and for the shares that hold admission back.
 
 Tracked as #308–#313.
+
+## Amended by ADR-0034
+
+A command holds a turn through merge, gate and join, and train gates use an independent lane. ADR-0034 replaces the earlier queue ordering and explains how one-at-a-time turns now feed the landing train.

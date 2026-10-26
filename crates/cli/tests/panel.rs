@@ -74,9 +74,8 @@ fn busy() -> World {
     let branch = world.orca()["worktrees"][1]["branch"].as_str().unwrap_or("issue-5").to_string();
     world.pr(50, 5, branch.trim_start_matches("refs/heads/"));
 
-    let joined = world.worker(7, "seven.txt", "seven\n");
+    world.worker(7, "seven.txt", "seven\n");
     afk(&world, &["claim", "--issue", "7", "--instance", "alpha", "--host", "h1"], NOW - 600);
-    world.afk_in(&joined, &["land", "--issue", "7", "--now", "9500"]).ok();
 
     for queued in [9, 12, 14] {
         world.issue(queued, &["ready-for-agent"]);
@@ -117,13 +116,10 @@ fn a_busy_fleet_shows_every_issue_once_where_it_is() {
     assert_eq!(three, "#3 Retry the gate once when the runner loses its network busy");
     assert_eq!(card(work, 30), "#30 Heartbeats survive a clock set back held by beta");
     let land = page.node("land");
-    assert_eq!(carded(land, "at-work"), [5]);
+    assert_eq!(carded(land, "at-work"), [5, 7]);
     assert_eq!(card(land, 5), "#5 Say which blocker holds an issue back stopped 12m ago PR #50");
 
-    // …the train they end on, and what the fleet leaves
-    let train = page.part("section", "train");
-    assert_eq!(carded(train, "cars"), [7]);
-    assert!(train.contains("1 PR, gated, then landed on main together"), "{train}");
+    assert!(!page.html.contains(r#"class="train""#));
     let off = page.part("details", "off");
     assert_eq!(carded(off, "left"), [20, 21]);
     assert_eq!(card(off, 20), "#20 Should a patrol ever write code? no ready-for-agent label");
@@ -135,7 +131,7 @@ fn a_busy_fleet_shows_every_issue_once_where_it_is() {
         assert_eq!(cards, 1, "#{issue}");
     }
     let gauges = page.part("dl", "gauges");
-    for said in ["Claims held</dt><dd>3 <small>of 3", "Queued</dt><dd>3<", "train</dt><dd>1<"] {
+    for said in ["Claims held</dt><dd>3 <small>of 3", "Queued</dt><dd>3<"] {
         assert!(gauges.contains(said), "{said}: {gauges}");
     }
     assert!(page.html.contains("Fleet instance <b>alpha</b> on h1, landing on <b>main</b>"));
@@ -161,7 +157,7 @@ fn a_fleet_with_nothing_to_do_says_so_at_every_stage() {
             "{node}"
         );
     }
-    assert!(page.part("section", "train").contains("No PR is on the train."));
+    assert!(!page.html.contains("class=\"train\""));
     assert!(page.part("dl", "gauges").contains("Claims held</dt><dd>0 <small>of 2"));
     assert!(!page.html.contains("class=\"off\"") && !page.html.contains("class=\"lock\""));
     // no host runner made it: it says what it is, and where the live one is
@@ -545,7 +541,7 @@ fn the_exclusive_queue_its_host_runner_holds_is_on_the_page_printed_and_the_page
 
     // printed: `panel` asks the host runner on its socket
     let page = printed_with("waits behind 1");
-    assert!(page.html.contains("<h2>Run alone on this host</h2>"), "{}", page.html);
+    assert!(page.html.contains("<h2>Command lanes</h2>"), "{}", page.html);
     assert!(page.html.contains("runs alone, for "), "{}", page.html);
     assert!(page.html.contains(" · #12 in "), "{}", page.html);
 
@@ -553,14 +549,14 @@ fn the_exclusive_queue_its_host_runner_holds_is_on_the_page_printed_and_the_page
     world.afk(&["wake"]).ok();
     let answer = world.afk_in(&world.root, &["panel", "--open"]).ok();
     let page = page_with(port_in(&answer["panel"]), "waits behind 1");
-    assert!(page.html.contains("<h2>Run alone on this host</h2>"), "{}", page.html);
+    assert!(page.html.contains("<h2>Command lanes</h2>"), "{}", page.html);
 
     write(&world.cache(), "done", "");
     for command in [alone, after] {
         assert!(command.wait_with_output().unwrap().status.success());
     }
     let page = printed(&world, &world.clone, &[]);
-    assert!(!page.html.contains("Run alone on this host"), "the queue is empty: {}", page.html);
+    assert!(page.html.contains("1 worker lanes"), "the idle page keeps the counts: {}", page.html);
 }
 
 /// Has the remote lose the base branch the config names: a start of the
@@ -576,12 +572,13 @@ fn a_broken_fleet_instance_waits_with_a_human_on_the_page_served_and_the_page_pr
     let world = World::new();
     world.afk(&RUN).ok();
     let clone2 = world.second_repo();
-    // an issue of the second repo waits for a human: parked for evidence
+    // An escalated issue of the second repo waits for an answer.
     let gh2 = world.root.join("gh2.json");
     let mut state: Value = serde_json::from_str(&std::fs::read_to_string(&gh2).unwrap()).unwrap();
-    let parked = json!({"number": 4, "title": "Pick a name", "labels": ["convoy:parked"],
+    let parked = json!({"number": 4, "title": "Pick a name", "labels": ["ready-for-human"],
         "state": "open"});
     state["issues"].as_array_mut().unwrap().push(parked);
+    state["comments"]["4"] = json!([{"id": 2000, "body": "<!--convoy:escalation claim=old-->\nPick a name.", "html_url": "https://gh/c/2000"}]);
     std::fs::write(&gh2, state.to_string()).unwrap();
     world.afk_in(&clone2, &RUN).ok();
     world.kill_host_runner("KILL");

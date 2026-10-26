@@ -27,7 +27,7 @@ fn did(ticked: &Value) -> Vec<String> {
 /// A world with a worker dispatched on issue 7 at `now`.
 fn fleet(now: u64) -> World {
     let world = World::new();
-    // Every hand-off to a human, as before the stock consult: what a worker
+    // Every hand-off escalates for the watch: what a worker
     // left is what is tried here.
     world.set_gate_config("gate_command: ./gate.sh\ngate_seconds: 600\nescalate_to: human");
     world.issue(7, &["ready-for-agent", "bug"]);
@@ -139,7 +139,25 @@ fn already_satisfied_with_nothing_on_the_branch_closes_the_issue() {
 }
 
 #[test]
-fn already_satisfied_with_commits_ahead_and_an_equal_tree_closes_the_issue() {
+fn already_satisfied_on_a_branch_only_behind_the_base_closes_the_issue() {
+    let world = fleet(1000);
+    let dir = worktree(&world);
+    commit(&world.clone, "landed.txt", "landed while the worker checked\n");
+    git(&world.clone, &["push", "-q", "origin", "main"]);
+    assert_eq!(git(&dir, &["rev-list", "--count", "origin/main..HEAD"]), "0");
+    assert_ne!(git(&dir, &["rev-list", "--count", "HEAD..origin/main"]), "0");
+    assert_eq!(git(&dir, &["status", "--porcelain"]), "");
+    declare(&world, "already-satisfied");
+
+    assert_eq!(did(&tick(&world, 1090)), ["judge 7 done"]);
+    assert_eq!(world.state(7), "closed");
+    assert_eq!(world.claims(), []);
+    assert!(!dir.exists());
+    assert_eq!(escalations(&world), 0);
+}
+
+#[test]
+fn already_satisfied_with_commits_ahead_and_an_equal_tree_escalates() {
     for reverted in [false, true] {
         let world = fleet(1000);
         let dir = worktree(&world);
@@ -154,10 +172,11 @@ fn already_satisfied_with_commits_ahead_and_an_equal_tree_closes_the_issue() {
         declare(&world, "already-satisfied");
 
         assert_eq!(did(&tick(&world, 1090)), ["judge 7 done"]);
-        assert_eq!(world.state(7), "closed");
+        assert_eq!(world.state(7), "open");
         assert_eq!(world.claims(), []);
-        assert!(!dir.exists());
-        assert_eq!(escalations(&world), 0);
+        assert!(dir.exists(), "commits past the merge base are evidence even with an equal tree");
+        assert_eq!(escalations(&world), 1);
+        assert!(world.comments(7).last().unwrap().contains("commits past the merge base"));
     }
 }
 
@@ -171,6 +190,8 @@ fn already_satisfied_over_work_on_the_branch_escalates_and_keeps_the_worktree() 
         } else {
             commit(&dir, "work.txt", "x\n");
         }
+        commit(&world.clone, "landed.txt", "only on the base branch\n");
+        git(&world.clone, &["push", "-q", "origin", "main"]);
         let said = declare(&world, "already-satisfied");
 
         assert_eq!(did(&tick(&world, 1090)), ["judge 7 done"]);
@@ -187,6 +208,7 @@ fn already_satisfied_over_work_on_the_branch_escalates_and_keeps_the_worktree() 
         assert!(comments[2].contains("its branch holds work") && comments[2].contains(&said));
         let file = if dirty { "scratch.txt" } else { "work.txt" };
         assert!(comments[2].contains(file), "{}", comments[2]);
+        assert!(!comments[2].contains("landed.txt"), "{}", comments[2]);
     }
 }
 
@@ -252,7 +274,7 @@ fn show(world: &World, screen: &[&str]) {
 /// What Claude Code's terminal shows as it waits on a gate it started in the
 /// background, with a monitor on it.
 const WAITING: [&str; 5] = [
-    "⏺ Monitor(gate --train finishing for #7)",
+    "⏺ Monitor(gate --land finishing for #7)",
     "✻ Worked for 14s · done 11:03 PM · 1 shell, 1 monitor still running",
     "❯ ",
     "─────",
@@ -367,7 +389,7 @@ fn a_nudge_that_starts_no_turn_is_not_recorded_and_goes_to_worker_health() {
 }
 
 #[test]
-fn unclassified_silence_waits_for_diagnosis_and_preserves_unpushed_work() {
+fn unclassified_silence_without_a_key_waits_for_the_operator_and_preserves_unpushed_work() {
     let world = fleet(1000);
     let dir = worktree(&world);
     commit(&dir, "work.txt", "x\n");
@@ -386,9 +408,20 @@ fn unclassified_silence_waits_for_diagnosis_and_preserves_unpushed_work() {
     assert_eq!(typed(&world).len(), 1, "no unapproved nudge or second writer");
     assert!(dir.exists());
     let plan = world.afk(&["plan", "--now", "1700"]).ok();
-    assert_eq!(plan["host_kit"]["worker_health"]["workers"][0]["action"], "waiting");
+    assert_eq!(plan["host_kit"]["worker_health"]["workers"][0]["action"], "waiting for operator");
     assert!(!world.labels(7).contains(&"ready-for-human".to_string()));
     assert!(screen_reads(&world).iter().all(|r| r.contains(&"--screen".to_string())));
+    assert!(!world.asked_a_harness_about("Shall I open the PR?"));
+
+    let doctor = world.afk(&["doctor", "--host", "h1", "--now", "1900"]).json;
+    let finding = doctor["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|finding| finding["what"].as_str().unwrap().contains("worker health is waiting"))
+        .expect("the watch can find the worker");
+    assert!(finding["evidence"].as_str().unwrap().contains("no Jev key command"));
+    assert!(finding["evidence"].as_str().unwrap().contains("Shall I open the PR?"));
 }
 
 #[test]
@@ -606,7 +639,7 @@ fn a_worker_waiting_in_the_exclusive_queue_is_busy_until_the_gate_limit() {
 }
 
 #[test]
-fn an_unclassified_refusal_waits_for_diagnosis_without_pausing_unrelated_work() {
+fn an_unclassified_refusal_waits_for_the_operator_without_pausing_unrelated_work() {
     let world = fleet(1000);
     report(&world, "done", 1000, 1000);
     world.with_orca(|orca| {
@@ -618,7 +651,10 @@ fn an_unclassified_refusal_waits_for_diagnosis_without_pausing_unrelated_work() 
     assert_eq!(world.claims().len(), 1);
     assert_eq!(world.paused(), json!([]));
     let doctor = world.afk(&["doctor", "--host", "h1", "--now", "1700"]).json;
-    assert_eq!(doctor["host"]["host_kit"]["worker_health"]["workers"][0]["action"], "waiting");
+    assert_eq!(
+        doctor["host"]["host_kit"]["worker_health"]["workers"][0]["action"],
+        "waiting for operator"
+    );
     assert!(
         !doctor["findings"]
             .as_array()
@@ -647,33 +683,31 @@ fn a_verified_account_fault_holds_new_work_when_no_successor_is_available() {
 }
 
 #[test]
-fn repeated_waits_keep_one_window_and_escalate_with_evidence_after_an_hour() {
+fn waiting_for_the_operator_is_named_in_doctor_and_escalates_after_an_hour_on_unchanged_evidence() {
     let world = fleet(1000);
     world.hold_every_harness();
     report(&world, "done", 1000, 1000);
-    std::fs::write(
-        world.root.join("diagnosis-answer"),
-        json!({
-            "status": "observed", "class": "long_command", "scope": "worker",
-            "evidence": [], "action": "wait", "missing": ["whether the command ended"],
-            "retry_after": null
-        })
-        .to_string(),
-    )
-    .unwrap();
+    show(&world, &["Ran the tests.", "Shall I open the PR? [y/n]"]);
 
     for now in [1300, 1600, 1900, 2200, 2500] {
         tick(&world, now);
     }
     let doctor = world.afk(&["doctor", "--host", "h1", "--now", "2501"]).json;
     let worker = &doctor["host"]["host_kit"]["worker_health"]["workers"][0];
-    assert_eq!(worker["action"], "waiting for new evidence");
+    assert_eq!(worker["action"], "waiting for operator");
     assert_eq!(worker["window_started"], 1300);
-    assert_eq!(worker["next_check"], 4900);
-    assert_eq!(worker["attempts"], 3);
-    assert_eq!(worker["diagnosis"]["class"], "long_command");
+    assert_eq!(worker["next_check"], 2800);
+    assert_eq!(worker["diagnosis"], Value::Null);
     assert_eq!(worker["path"], json!(worktree(&world)));
     assert_eq!(world.claims().len(), 1);
+    assert!(!world.asked_a_harness_about("Shall I open the PR?"), "no harness is asked");
+    let named = doctor["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|finding| finding["what"].as_str().unwrap().contains("worker health is waiting"))
+        .count();
+    assert_eq!(named, 1);
 
     tick(&world, 4900);
 
@@ -682,32 +716,178 @@ fn repeated_waits_keep_one_window_and_escalate_with_evidence_after_an_hour() {
     assert_eq!(escalations(&world), 1);
     let comment = world.comments(7).last().unwrap().clone();
     assert!(comment.contains("one hour on unchanged evidence"), "{comment}");
-    assert!(
-        comment.contains("long_command") && comment.contains("whether the command ended"),
-        "{comment}"
-    );
+    assert!(comment.contains("no Jev key command is set in the host settings"), "{comment}");
     let doctor = world.afk(&["doctor", "--host", "h1", "--now", "4901"]).json;
     assert_eq!(doctor["waiting_on_human"][0]["issue"], 7);
+}
 
+/// Every line of the tick logs of `world`.
+fn logs(world: &World) -> String {
+    std::fs::read_dir(world.cache().join("afkconvoy/runs"))
+        .unwrap()
+        .map(|entry| std::fs::read_to_string(entry.unwrap().path()).unwrap())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The `worker_health` lines of `logs`, each as its command's fields.
+fn health_lines(logs: &str) -> Vec<Value> {
+    logs.lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .map(|line| line["command"].clone())
+        .filter(|command| command["command"] == "worker_health")
+        .collect()
+}
+
+/// Whether a file under `dir`, but `allowed`, holds `marker`.
+fn leaked(dir: &std::path::Path, marker: &[u8], allowed: &std::path::Path) -> bool {
+    std::fs::read_dir(dir).unwrap().any(|entry| {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            leaked(&path, marker, allowed)
+        } else {
+            path != allowed
+                && std::fs::read(&path)
+                    .is_ok_and(|bytes| bytes.windows(marker.len()).any(|window| window == marker))
+        }
+    })
+}
+
+#[test]
+fn one_jev_request_classes_a_real_finished_screen_and_the_key_goes_nowhere_but_typesafe() {
     let world = fleet(1000);
-    world.hold_every_harness();
+    world.jev_key_command("printf 'jev-secret-%s' 'marker'");
+    let (screen, response) = world.jev_recorded("finished screen");
     report(&world, "done", 1000, 1000);
-    std::fs::write(
-        world.root.join("diagnosis-answer"),
-        json!({
-            "status": "observed", "class": "long_command", "scope": "worker",
-            "evidence": [], "action": "wait", "missing": [], "retry_after": 10000
-        })
-        .to_string(),
-    )
-    .unwrap();
+    show(&world, &screen.iter().map(String::as_str).collect::<Vec<_>>());
+
+    let ticked = [tick(&world, 1300), tick(&world, 1600)];
+
+    let plan = world.afk(&["plan", "--now", "1601"]).ok();
+    let doctor = world.afk(&["doctor", "--host", "h1", "--now", "1601"]).json;
+    for printed in ticked.iter().chain([&plan, &doctor]) {
+        assert!(!printed.to_string().contains("jev-secret-marker"), "the key is in no output");
+    }
+    let worker = &plan["host_kit"]["worker_health"]["workers"][0];
+    assert_eq!(worker["source"], "jev");
+    assert_eq!(worker["action"], "complete");
+    assert_eq!(worker["diagnosis"]["class"], "complete");
+    assert_eq!(worker["diagnosis"]["scope"], "worker");
+    assert_eq!(worker["diagnosis"]["action"], "complete");
+    let evidence = &response["answers"]["evidence"]["choice"];
+    assert_eq!(worker["diagnosis"]["evidence"], json!([evidence]));
+    assert_eq!(worker["judgment"]["response"], response);
+    assert!(!world.asked_a_harness_about(evidence.as_str().unwrap()), "no harness is asked");
+
+    let payload = world.typesafe_payload();
+    assert_eq!(payload["model"], "jev-latest");
+    assert_eq!(payload["state"], screen.join("\n"));
+    assert_eq!(payload["questions"].as_object().unwrap().len(), 7);
+    assert!(payload["questions"]["evidence"]["criteria"].get(evidence.as_str().unwrap()).is_some());
+    assert_eq!(worker["judgment"]["request"], payload, "the request is kept as it was sent");
+    let (arguments, config) = world.typesafe_sent();
+    assert!(config.contains("url = \"https://api.typesafe.ai/v1/systemone\""), "{config}");
+    assert!(config.contains("Authorization: Bearer jev-secret-marker"), "{config}");
+    assert!(!arguments.contains("jev-secret-marker"), "the key is in no argument: {arguments}");
+
+    let logs = logs(&world);
+    let logged = health_lines(&logs)
+        .into_iter()
+        .filter_map(|line| serde_json::from_str::<Value>(line["outcome"].as_str()?).ok())
+        .find(|outcome| outcome["source"] == "jev")
+        .expect("the tick log holds the judgment");
+    assert_eq!(logged["judgment"]["request"], payload);
+    assert_eq!(logged["judgment"]["response"], response);
+    assert!(!leaked(&world.root, b"jev-secret-marker", &world.root.join("typesafe-request")));
+    assert!(!logs.contains("jev-secret-marker"));
+}
+
+#[test]
+fn a_failed_or_silent_key_command_is_an_error_and_the_worker_waits_for_the_operator() {
+    for (command, error) in [
+        ("exit 3", "the Jev key command failed"),
+        ("printf ''", "the Jev key command printed no key"),
+    ] {
+        let world = fleet(1000);
+        world.jev_key_command(command);
+        report(&world, "done", 1000, 1000);
+        show(&world, &["Ran the tests.", "Shall I open the PR? [y/n]"]);
+        tick(&world, 1300);
+        tick(&world, 1600);
+
+        assert!(!world.root.join("typesafe-request").exists(), "{command}: nothing is sent");
+        assert!(!world.asked_a_harness_about("Shall I open the PR?"), "{command}");
+        let doctor = world.afk(&["doctor", "--host", "h1", "--now", "1601"]).json;
+        let worker = &doctor["host"]["host_kit"]["worker_health"]["workers"][0];
+        assert_eq!(worker["action"], "waiting for operator", "{command}");
+        assert!(worker["error"].as_str().unwrap().contains(error), "{command}: {worker}");
+        let finding = doctor["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|finding| finding["what"].as_str().unwrap().contains("worker health is waiting"))
+            .unwrap_or_else(|| panic!("{command}: the operator is told"));
+        assert!(finding["evidence"].as_str().unwrap().contains(error), "{command}: {finding}");
+        assert!(finding["fix"].as_str().unwrap().starts_with("orca terminal read"), "{finding}");
+        let failed = health_lines(&logs(&world)).iter().any(|line| {
+            line["failed"] == true && line["outcome"].as_str().unwrap().contains(error)
+        });
+        assert!(failed, "{command}: the tick log holds the error");
+    }
+}
+
+#[test]
+fn an_unsettled_judgment_waits_for_the_operator_with_the_screen_line_and_the_reason() {
+    let world = fleet(1000);
+    world.jev_key_command("printf key");
+    let (screen, mut response) = world.jev_recorded("working screen");
+    response["answers"]["usage_limit"]["noul"] = json!(0.5);
+    world.typesafe_answers(&response);
+    report(&world, "done", 1000, 1000);
+    show(&world, &screen.iter().map(String::as_str).collect::<Vec<_>>());
     tick(&world, 1300);
     tick(&world, 1600);
+
     let doctor = world.afk(&["doctor", "--host", "h1", "--now", "1601"]).json;
     let worker = &doctor["host"]["host_kit"]["worker_health"]["workers"][0];
-    assert_eq!(worker["action"], "waiting");
-    assert_eq!(worker["next_check"], 4900, "a diagnosis cannot extend the recovery window");
-    tick(&world, 4900);
-    assert_eq!(world.claims(), []);
-    assert_eq!(escalations(&world), 1);
+    assert_eq!(worker["action"], "waiting for operator");
+    assert_eq!(worker["error"], Value::Null, "an unsettled answer is no error");
+    assert_eq!(world.claims().len(), 1);
+    let finding = doctor["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|finding| finding["what"].as_str().unwrap().contains("worker health is waiting"))
+        .expect("the operator is told");
+    let evidence = finding["evidence"].as_str().unwrap();
+    assert!(evidence.contains("`usage_limit` unsettled, at 0.500"), "{evidence}");
+    let last = screen.iter().rev().find(|line| !line.trim().is_empty()).unwrap();
+    assert!(evidence.contains(last.as_str()), "{evidence}");
+}
+
+#[test]
+fn run_sets_the_jev_key_command_from_a_flag_or_the_environment_and_default_removes_it() {
+    let world = World::new();
+    let command = "printf 'jev-secret-%s' 'marker'";
+    let ran = world.afk(&["run", "--jev-key-command", command]).ok();
+    assert_eq!(ran["settings"]["jev_key_command"]["to"], command);
+    world.afk(&["stop", "--all"]).ok();
+    let doctor = world.afk(&["doctor"]).json;
+    assert_eq!(doctor["host"]["settings"]["said"]["jev_key_command"], command);
+    assert!(!doctor.to_string().contains("jev-secret-marker"));
+
+    let out = world
+        .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
+        .env("AFKCONVOY_JEV_KEY_COMMAND", command)
+        .args(["run"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    world.afk(&["stop", "--all"]).ok();
+    assert_eq!(world.checkout_list()["settings"]["jev_key_command"], command);
+
+    let removed = world.afk(&["run", "--jev-key-command", "default"]).ok();
+    assert_eq!(removed["settings"]["jev_key_command"]["to"], Value::Null);
+    world.afk(&["stop", "--all"]).ok();
+    assert_eq!(world.checkout_list()["settings"]["jev_key_command"], Value::Null);
 }
