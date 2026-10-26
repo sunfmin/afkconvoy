@@ -711,10 +711,13 @@ fn one_jev_request_classes_a_real_finished_screen_and_the_key_goes_nowhere_but_t
     report(&world, "done", 1000, 1000);
     show(&world, &screen.iter().map(String::as_str).collect::<Vec<_>>());
 
-    tick(&world, 1300);
-    tick(&world, 1600);
+    let ticked = [tick(&world, 1300), tick(&world, 1600)];
 
     let plan = world.afk(&["plan", "--now", "1601"]).ok();
+    let doctor = world.afk(&["doctor", "--host", "h1", "--now", "1601"]).json;
+    for printed in ticked.iter().chain([&plan, &doctor]) {
+        assert!(!printed.to_string().contains("jev-secret-marker"), "the key is in no output");
+    }
     let worker = &plan["host_kit"]["worker_health"]["workers"][0];
     assert_eq!(worker["source"], "jev");
     assert_eq!(worker["action"], "complete");
