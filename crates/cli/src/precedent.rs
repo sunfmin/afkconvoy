@@ -223,6 +223,7 @@ pub fn propose(
         kept: &kept_dir,
         host_user,
         dsh_profile: role.dsh_profile,
+        host_rules: &crate::kept::host_rules(harness),
         shadowed: &shadowed,
         told: told.told(),
         facts: Facts {

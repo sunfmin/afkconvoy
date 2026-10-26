@@ -46,6 +46,12 @@ fn home() -> Option<PathBuf> {
     std::env::var_os("HOME").filter(|home| !home.is_empty()).map(PathBuf::from)
 }
 
+/// The host's rule files which native project discovery can find even when
+/// the harness's user settings are disabled.
+pub fn host_rules(harness: Harness) -> Vec<String> {
+    home().map(|home| harness.host_rule_excludes(&home.display().to_string())).unwrap_or_default()
+}
+
 /// `keep`, on a host whose fleets keep what they keep under `cache` and whose
 /// user's home is `home`.
 pub fn keep_under(

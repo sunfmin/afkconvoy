@@ -238,6 +238,7 @@ process.stdin.once('data', input => {
         kept: kept.to_str().unwrap(),
         host_user: false,
         dsh_profile: afkconvoy_core::team::DshProfile::Fleet,
+        host_rules: &[],
         shadowed: &[],
         told: Told::default(),
         facts: Facts {
@@ -524,6 +525,7 @@ export function apply(ctx, config) {
         kept: kept.to_str().unwrap(),
         host_user: false,
         dsh_profile: DshProfile::HostUser,
+        host_rules: &[],
         shadowed: &[],
         told: Told::default(),
         facts: Facts {
