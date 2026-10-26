@@ -1,250 +1,387 @@
-//! Worker health after the rules: Jev judges the latest screen, and this
-//! table turns its typed answers into the class, scope and action the fleet
-//! carries out. The key command, HTTP call and worker transitions are effects.
+//! Worker health after the rules: Jev judges what a stopped worker's latest
+//! screen shows, and this table turns its typed answers into the class, scope
+//! and action the fleet carries out. Every question, criterion and threshold
+//! is here, and nowhere else. The key command, the call to TypeSafe and the
+//! worker's transitions are the effect layer's.
 
-use serde_json::{Map, Value, json};
+use serde_json::{Map, Value};
 
-pub const USAGE_LIMIT: &str = "usage_limit";
-pub const BUSY: &str = "busy";
-pub const FINISHED: &str = "finished";
-pub const WAITING_FOR_PERSON: &str = "waiting_for_person";
-pub const TRUST_PROMPT: &str = "trust_prompt";
-pub const LOGIN_REFUSED: &str = "login_refused";
+/// The System One model asked.
+pub const MODEL: &str = "jev-latest";
+
+/// The question that selects the evidence: the one Choice of a request.
 pub const EVIDENCE: &str = "evidence";
 
-pub const NOULS: [&str; 6] =
-    [USAGE_LIMIT, BUSY, FINISHED, WAITING_FOR_PERSON, TRUST_PROMPT, LOGIN_REFUSED];
+/// A Noul at or above it reads as yes, at or below `NO` as no, and between
+/// them the question is unsettled: thousandths of a probability.
+pub const YES: u64 = 700;
+pub const NO: u64 = 300;
 
-const YES: u64 = 700;
-const NO: u64 = 300;
+/// The most options TypeSafe takes for one Choice.
+const MOST_OPTIONS: usize = 255;
 
-/// The one System One request for a health check. Every evidence option is a
-/// line actually on the screen, so Jev selects evidence rather than writing it.
-pub fn request(screen: &[String]) -> Value {
-    let noul = |instructions: &str, yes: &str, no: &str| {
-        json!({"type": "noul", "instructions": instructions,
-            "criteria": {"true": yes, "false": no}})
-    };
-    let mut questions = Map::new();
-    questions.insert(
-        USAGE_LIMIT.into(),
-        noul(
-            "Has the agent stopped because its account's usage limit is used up?",
-            "The account cannot do more work until its usage limit resets or is increased.",
-            "The agent can still do work, including when a warning says its limit is near.",
-        ),
-    );
-    questions.insert(
-        BUSY.into(),
-        noul(
-            "Is the agent busy right now?",
-            "The agent is actively working or waiting for a command it started.",
-            "The agent is idle, stopped, finished, or waiting for a person.",
-        ),
-    );
-    questions.insert(
-        FINISHED.into(),
-        noul(
-            "Has the agent finished its task and reported the result?",
-            "The agent completed its task and reported the outcome.",
-            "The task is still underway, stopped short, or has no reported outcome.",
-        ),
-    );
-    questions.insert(
-        WAITING_FOR_PERSON.into(),
-        noul(
-            "Is the screen waiting for a person to choose?",
-            "The agent cannot continue until a person answers or selects an option.",
-            "The agent needs no choice from a person to continue.",
-        ),
-    );
-    questions.insert(
-        TRUST_PROMPT.into(),
-        noul(
-            "Is the agent asking whether to trust the folder?",
-            "The screen asks whether to trust the folder or workspace.",
-            "The screen has no folder or workspace trust question.",
-        ),
-    );
-    questions.insert(
-        LOGIN_REFUSED.into(),
-        noul(
-            "Has the agent stopped because its login or key was refused?",
-            "Authentication failed, a login expired, or an API key was refused.",
-            "There is no authentication or API-key refusal.",
-        ),
-    );
-    let criteria: Map<String, Value> = screen
-        .iter()
-        .map(|line| (line.clone(), json!("This exact line is the reason the agent stopped.")))
-        .collect();
-    questions.insert(
-        EVIDENCE.into(),
-        json!({
-            "type": "choice",
-            "instructions": "Which line of the screen says why the agent stopped?",
-            "criteria": criteria,
-        }),
-    );
-    json!({"model": "jev-latest", "state": screen.join("\n"), "questions": questions})
-}
-
-/// Jev's six Noul answers as probabilities in thousandths, and its selected
-/// evidence line. The effect layer refuses missing or out-of-range answers.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Answers {
-    pub usage_limit: u64,
-    pub busy: u64,
-    pub finished: u64,
-    pub waiting_for_person: u64,
-    pub trust_prompt: u64,
-    pub login_refused: u64,
-    pub evidence: String,
-}
-
+/// Where the fault's evidence leaves the worker: an account and its
+/// harness, or this worker alone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scope {
     Account,
     Worker,
 }
 
+/// What the fleet does with the worker.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
+    /// Look again at the next check, within the hour that bounds a wait.
     Wait,
+    /// Continue it on the next harness of the kit, its work kept.
     Continue,
+    /// Nothing: it is done.
     Complete,
 }
 
-/// One settled row of the health table.
+/// One judgment Jev is asked, as a Noul, and the row of the table its yes
+/// stands for.
+struct Question {
+    id: &'static str,
+    instructions: &'static str,
+    yes: &'static str,
+    no: &'static str,
+    class: &'static str,
+    scope: Scope,
+    action: Action,
+}
+
+/// The table, in the order it is read: the first yes decides, and an
+/// unsettled answer before it leaves the whole check unsettled. A fault the
+/// screen names comes before a person's choice, a choice before work going
+/// on, and work going on before a finished task: a worker is continued on
+/// another harness only on a settled yes that nothing before it questions.
+const QUESTIONS: [Question; 6] = [
+    Question {
+        id: "usage_limit",
+        instructions: "Has the agent stopped because its account's usage limit is used up?",
+        yes: "The screen says the account has reached its usage limit or quota, so the agent \
+              cannot work until the limit resets or is raised.",
+        no: "The agent can still work: at most a warning says its limit is near, or how much \
+             of it is left.",
+        class: "quota",
+        scope: Scope::Account,
+        action: Action::Continue,
+    },
+    Question {
+        id: "login_refused",
+        instructions: "Has the agent stopped because its login or key was refused?",
+        yes: "The screen says the login expired, authentication failed or an API key was \
+              refused.",
+        no: "The screen shows no refused login or key.",
+        class: "authentication",
+        scope: Scope::Account,
+        action: Action::Continue,
+    },
+    Question {
+        id: "trust_prompt",
+        instructions: "Is the agent asking whether to trust the folder?",
+        yes: "The screen asks whether to trust this folder or workspace, and offers to trust \
+              it or to exit.",
+        no: "The screen asks nothing about trusting the folder.",
+        class: "trust_gap",
+        scope: Scope::Worker,
+        action: Action::Wait,
+    },
+    Question {
+        id: "waiting_for_person",
+        instructions: "Is the screen waiting for a person to choose?",
+        yes: "A menu or a question on the screen waits for a person to pick an option or to \
+              answer before the agent goes on.",
+        no: "The screen shows no menu and asks no question: an empty input box for the next \
+             instruction is no choice.",
+        class: "waiting_human",
+        scope: Scope::Worker,
+        action: Action::Wait,
+    },
+    Question {
+        id: "busy",
+        instructions: "Is the agent busy right now?",
+        yes: "The agent is working: it shows a spinner, a timer counting up or a command it \
+              started still running.",
+        no: "The agent is idle at its prompt, stopped, or waiting for a person.",
+        class: "working",
+        scope: Scope::Worker,
+        action: Action::Wait,
+    },
+    Question {
+        id: "finished",
+        instructions: "Has the agent finished its task and reported the result?",
+        yes: "The agent's last message reports the outcome of its task, and it is idle.",
+        no: "The task is still underway, was stopped short by an error or a limit, or no \
+             outcome is reported.",
+        class: "complete",
+        scope: Scope::Worker,
+        action: Action::Complete,
+    },
+];
+
+/// The ids of the Nouls of a request, in the table's order.
+pub fn judgments() -> impl Iterator<Item = &'static str> {
+    QUESTIONS.iter().map(|question| question.id)
+}
+
+/// The lines of `screen` the evidence is selected from: each that holds
+/// something, trimmed, once, the last `MOST_OPTIONS` of them.
+pub fn options(screen: &[String]) -> Vec<String> {
+    let mut options: Vec<String> = vec![];
+    for line in screen {
+        let line = line.trim();
+        if !line.is_empty() && !options.iter().any(|option| option == line) {
+            options.push(line.to_string());
+        }
+    }
+    if options.len() > MOST_OPTIONS {
+        options.drain(..options.len() - MOST_OPTIONS);
+    }
+    options
+}
+
+/// The one System One request of a health check: `screen` as the state, a
+/// Noul for each judgment of the table, and a Choice that selects the line of
+/// the screen saying why the agent stopped, so the evidence is always a line
+/// of it. A screen with nothing on it has nothing to judge.
+pub fn request(screen: &[String]) -> Result<Value, String> {
+    let options = options(screen);
+    if options.is_empty() {
+        return Err("the worker's screen is empty: there is nothing for Jev to judge".into());
+    }
+    let mut questions = Map::new();
+    for question in &QUESTIONS {
+        let criteria = object(vec![("true", question.yes.into()), ("false", question.no.into())]);
+        questions.insert(
+            question.id.into(),
+            object(vec![
+                ("type", "noul".into()),
+                ("instructions", question.instructions.into()),
+                ("criteria", criteria),
+            ]),
+        );
+    }
+    let criteria = options.into_iter().map(|line| (line, Value::Null)).collect();
+    questions.insert(
+        EVIDENCE.into(),
+        object(vec![
+            ("type", "choice".into()),
+            ("instructions", "Which line of the screen says why the agent stopped?".into()),
+            ("criteria", Value::Object(criteria)),
+        ]),
+    );
+    Ok(object(vec![
+        ("model", MODEL.into()),
+        ("state", screen.join("\n").into()),
+        ("questions", Value::Object(questions)),
+    ]))
+}
+
+/// A JSON object of `fields`, built field by field: `json!` would unwrap.
+fn object(fields: Vec<(&str, Value)>) -> Value {
+    Value::Object(fields.into_iter().map(|(key, value)| (key.to_string(), value)).collect())
+}
+
+/// Jev's answers to one request: each Noul's probability in thousandths, in
+/// the table's order, and the line it selected as evidence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Answers {
+    pub nouls: Vec<u64>,
+    pub evidence: String,
+}
+
+/// The answers of TypeSafe's `response` to `request`. A Noul missing or out
+/// of range, or evidence that is no option of the request, is an error, never
+/// an answer.
+// Compared, not `RangeInclusive::contains`: Flux cannot see that it never panics.
+#[allow(clippy::manual_range_contains)]
+pub fn answers(request: &Value, response: &Value) -> Result<Answers, String> {
+    let answered = response.get("answers").ok_or("TypeSafe returned no answers")?;
+    let mut nouls = vec![];
+    for id in judgments() {
+        let probability = answered
+            .get(id)
+            .and_then(|answer| answer.get("noul"))
+            .and_then(Value::as_f64)
+            .ok_or_else(|| format!("TypeSafe returned no Noul for `{id}`"))?;
+        if !(probability >= 0.0 && probability <= 1.0) {
+            return Err(format!("TypeSafe returned {probability} for `{id}`, outside 0 to 1"));
+        }
+        nouls.push((probability * 1000.0).round() as u64);
+    }
+    let evidence = answered
+        .get(EVIDENCE)
+        .and_then(|answer| answer.get("choice"))
+        .and_then(Value::as_str)
+        .ok_or("TypeSafe returned no evidence Choice")?;
+    let offered = request.pointer("/questions/evidence/criteria");
+    if offered.and_then(|options| options.get(evidence)).is_none() {
+        return Err(format!("TypeSafe selected `{evidence}`, which is no line of the screen"));
+    }
+    Ok(Answers { nouls, evidence: evidence.to_string() })
+}
+
+/// The row of the table `answers` settle on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Decision {
     pub class: &'static str,
     pub scope: Scope,
     pub action: Action,
+    /// The line of the screen Jev selected.
     pub evidence: String,
 }
 
-/// Maps settled judgments to the existing health actions. Any Noul between
-/// 0.3 and 0.7 leaves the whole check unsettled; an all-negative screen has
-/// no class the fleet can safely act on. Explicit faults take priority over
-/// activity, a person waiting over completion, and completion over activity.
+/// The row of the table the answers settle on, read in its order. The
+/// reason the check stays unsettled otherwise: a question before any yes was
+/// unsettled, or none was a yes.
 pub fn classify(answers: &Answers) -> Result<Decision, String> {
-    let probabilities = [
-        answers.usage_limit,
-        answers.busy,
-        answers.finished,
-        answers.waiting_for_person,
-        answers.trust_prompt,
-        answers.login_refused,
-    ];
-    if probabilities.iter().any(|probability| *probability > NO && *probability < YES) {
-        return Err("Jev left the worker health check unsettled".into());
+    for (question, probability) in QUESTIONS.iter().zip(&answers.nouls) {
+        if *probability >= YES {
+            return Ok(Decision {
+                class: question.class,
+                scope: question.scope,
+                action: question.action,
+                evidence: answers.evidence.clone(),
+            });
+        }
+        if *probability > NO {
+            return Err(format!(
+                "Jev left `{}` unsettled, at {}.{:03}",
+                question.id,
+                probability / 1000,
+                probability % 1000
+            ));
+        }
     }
-    let decision = |class, scope, action| Decision {
-        class,
-        scope,
-        action,
-        evidence: answers.evidence.clone(),
-    };
-    if answers.usage_limit >= YES {
-        return Ok(decision("quota", Scope::Account, Action::Continue));
-    }
-    if answers.login_refused >= YES {
-        return Ok(decision("authentication", Scope::Account, Action::Continue));
-    }
-    if answers.trust_prompt >= YES || answers.waiting_for_person >= YES {
-        return Ok(decision("waiting_human", Scope::Worker, Action::Wait));
-    }
-    if answers.finished >= YES {
-        return Ok(decision("complete", Scope::Worker, Action::Complete));
-    }
-    if answers.busy >= YES {
-        return Ok(decision("working", Scope::Worker, Action::Wait));
-    }
-    Err("Jev found no worker health class the fleet can act on".into())
+    Err("Jev judged none of its questions true of the screen".into())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
-    fn recorded(
-        usage_limit: u64,
-        busy: u64,
-        finished: u64,
-        waiting_for_person: u64,
-        trust_prompt: u64,
-        login_refused: u64,
-        evidence: &str,
-    ) -> Answers {
-        Answers {
-            usage_limit,
-            busy,
-            finished,
-            waiting_for_person,
-            trust_prompt,
-            login_refused,
-            evidence: evidence.into(),
+    /// What Jev answered on 2026-10-26 for real screens of this host's
+    /// workers, each sent as `request` builds it: `asked` is every request
+    /// but its state and its options, so a change of wording fails here
+    /// until the answers are recorded again.
+    const RECORDED: &str = include_str!("worker_health/recorded.json");
+
+    #[test]
+    fn recorded_answers_on_real_screens_take_their_rows() {
+        let recorded: Value = serde_json::from_str(RECORDED).unwrap();
+        let cases = recorded["cases"].as_array().unwrap();
+        for case in cases {
+            let name = case["screen"].as_str().unwrap();
+            let screen: Vec<String> = case["lines"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|line| line.as_str().unwrap().to_string())
+                .collect();
+            let request = request(&screen).unwrap();
+            let mut asked = request.clone();
+            asked.as_object_mut().unwrap().remove("state");
+            asked["questions"][EVIDENCE].as_object_mut().unwrap().remove("criteria");
+            assert_eq!(asked, recorded["asked"], "{name}: asked as it was recorded");
+            let decision = classify(&answers(&request, &case["response"]).unwrap())
+                .unwrap_or_else(|reason| panic!("{name}: {reason}"));
+            assert_eq!(decision.class, case["expected"]["class"], "{name}");
+            assert_eq!(decision.evidence, case["expected"]["evidence"], "{name}");
+            assert!(screen.iter().any(|line| line.contains(&decision.evidence)), "{name}");
+        }
+        for screen in [
+            "usage limit",
+            "near-limit warning",
+            "trust prompt",
+            "working screen",
+            "finished screen",
+        ] {
+            assert!(cases.iter().any(|case| case["screen"] == screen), "{screen} is recorded");
         }
     }
 
-    #[test]
-    fn recorded_real_screen_answers_take_the_right_rows() {
-        let cases = [
-            (
-                "usage limit",
-                recorded(940, 20, 30, 40, 10, 20, "■ Usage limit reached."),
-                ("quota", Scope::Account, Action::Continue),
-            ),
-            (
-                "near-limit warning",
-                recorded(150, 960, 100, 120, 10, 10, "weekly limit: only 1% left"),
-                ("working", Scope::Worker, Action::Wait),
-            ),
-            (
-                "trust prompt",
-                recorded(20, 40, 30, 950, 950, 10, "Trust this folder?"),
-                ("waiting_human", Scope::Worker, Action::Wait),
-            ),
-            (
-                "working screen",
-                recorded(30, 980, 200, 200, 10, 10, "Running cargo nextest"),
-                ("working", Scope::Worker, Action::Wait),
-            ),
-            (
-                "finished screen",
-                recorded(20, 50, 970, 100, 10, 10, "Opened the PR and joined the landing train."),
-                ("complete", Scope::Worker, Action::Complete),
-            ),
-        ];
-        for (screen, answers, expected) in cases {
-            let decided = classify(&answers).unwrap_or_else(|error| panic!("{screen}: {error}"));
-            assert_eq!((decided.class, decided.scope, decided.action), expected, "{screen}");
-            assert_eq!(decided.evidence, answers.evidence, "{screen}");
-        }
+    fn answered(nouls: [u64; 6]) -> Answers {
+        Answers { nouls: nouls.to_vec(), evidence: "Working".into() }
     }
 
     #[test]
-    fn an_unsettled_or_all_negative_answer_goes_to_the_operator() {
-        let unsettled = recorded(20, 950, 500, 100, 10, 10, "Working");
-        assert!(classify(&unsettled).unwrap_err().contains("unsettled"));
-        let unknown = recorded(20, 50, 100, 100, 10, 10, "Shall I continue?");
-        assert!(classify(&unknown).unwrap_err().contains("no worker health class"));
-        let at_bounds = recorded(300, 700, 300, 300, 300, 300, "Working");
-        assert_eq!(classify(&at_bounds).unwrap().class, "working");
+    fn the_first_settled_yes_decides_and_an_unsettled_answer_before_it_does_not() {
+        let decided = |nouls| classify(&answered(nouls)).map(|d| (d.class, d.scope, d.action));
+        assert_eq!(
+            decided([940, 20, 10, 20, 30, 30]),
+            Ok(("quota", Scope::Account, Action::Continue))
+        );
+        assert_eq!(
+            decided([10, 900, 10, 10, 10, 10]),
+            Ok(("authentication", Scope::Account, Action::Continue))
+        );
+        assert_eq!(
+            decided([10, 10, 950, 900, 10, 10]),
+            Ok(("trust_gap", Scope::Worker, Action::Wait))
+        );
+        assert_eq!(
+            decided([10, 10, 10, 10, 960, 500]),
+            Ok(("working", Scope::Worker, Action::Wait))
+        );
+        assert_eq!(
+            decided([10, 10, 10, 10, 10, 970]),
+            Ok(("complete", Scope::Worker, Action::Complete))
+        );
+        assert!(
+            decided([500, 10, 10, 10, 960, 10])
+                .unwrap_err()
+                .contains("`usage_limit` unsettled, at 0.500")
+        );
+        assert!(decided([10, 10, 10, 10, 10, 10]).unwrap_err().contains("none of its questions"));
+        assert_eq!(decided([300, 300, 300, 300, 700, 300]).map(|d| d.0), Ok("working"));
+        assert!(decided([301, 10, 10, 10, 960, 10]).is_err());
     }
 
     #[test]
-    fn the_request_asks_all_judgments_together_and_selects_screen_evidence() {
-        let screen = vec!["first line".to_string(), "Usage limit reached.".to_string()];
-        let request = request(&screen);
-        assert_eq!(request["model"], "jev-latest");
-        assert_eq!(request["state"], "first line\nUsage limit reached.");
-        for id in NOULS {
+    fn evidence_is_selected_from_the_lines_of_the_screen() {
+        let screen: Vec<String> =
+            ["", "  Usage limit reached.  ", "first", "Usage limit reached.", "   "]
+                .map(String::from)
+                .to_vec();
+        assert_eq!(options(&screen), ["Usage limit reached.", "first"]);
+        let request = request(&screen).unwrap();
+        assert_eq!(request["model"], MODEL);
+        assert_eq!(request["state"], screen.join("\n"));
+        assert_eq!(request["questions"].as_object().unwrap().len(), 7);
+        for id in judgments() {
             assert_eq!(request["questions"][id]["type"], "noul", "{id}");
         }
-        assert_eq!(request["questions"][EVIDENCE]["type"], "choice");
-        assert!(request["questions"][EVIDENCE]["criteria"].get("Usage limit reached.").is_some());
-        assert!(!request.to_string().contains("Authorization"));
+        let response = |choice: &str| {
+            let mut answered: Map<String, Value> = judgments()
+                .map(|id| (id.to_string(), json!({"type": "noul", "noul": 0.1})))
+                .collect();
+            answered.insert(EVIDENCE.into(), json!({"type": "choice", "choice": choice}));
+            json!({"answers": answered})
+        };
+        assert_eq!(answers(&request, &response("first")).unwrap().evidence, "first");
+        assert!(
+            answers(&request, &response("invented")).unwrap_err().contains("no line of the screen")
+        );
+        let long: Vec<String> = (0..300).map(|n| format!("line {n}")).collect();
+        let kept = options(&long);
+        assert_eq!((kept.len(), kept[0].as_str()), (255, "line 45"));
+        assert!(super::request(&["  ".to_string()]).unwrap_err().contains("empty"));
+    }
+
+    #[test]
+    fn a_missing_or_impossible_answer_is_an_error_never_a_no() {
+        let screen = vec!["Working".to_string()];
+        let request = request(&screen).unwrap();
+        assert!(answers(&request, &json!({})).unwrap_err().contains("no answers"));
+        let mut answered: Map<String, Value> =
+            judgments().map(|id| (id.to_string(), json!({"type": "noul", "noul": 0.1}))).collect();
+        answered.insert(EVIDENCE.into(), json!({"type": "choice", "choice": "Working"}));
+        answered.insert("busy".into(), json!({"type": "noul", "noul": 1.5}));
+        assert!(answers(&request, &json!({"answers": answered})).unwrap_err().contains("outside"));
+        answered.remove("busy");
+        assert!(answers(&request, &json!({"answers": answered})).unwrap_err().contains("`busy`"));
     }
 }
