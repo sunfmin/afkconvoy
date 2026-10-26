@@ -23,6 +23,8 @@
 //! `close_keeps_terminal` (acknowledges close without ending its terminal),
 //! `start_screen`, `send_screen`, `prompt_stages` (a receipt without a turn
 //! start); each terminal can also have `menu` and its own `prompt_stages`.
+//! `startup_working_reports`: a quiet screen while the harness reports a
+//! start-up working episode for this many fresh runtime observations.
 
 mod fake;
 
@@ -56,7 +58,7 @@ fn main() {
         ["repo", "add", ..] => repo_add(&mut st),
         ["worktree", "create", ..] => worktree_create(&mut st),
         ["worktree", "list", ..] => worktree_list(&st),
-        ["worktree", "ps", ..] => worktree_ps(&st),
+        ["worktree", "ps", ..] => worktree_ps(&mut st),
         ["worktree", "rm", ..] => worktree_rm(&mut st),
         ["terminal", "create", ..] => terminal_create(&mut st),
         ["terminal", "wait", ..] => terminal_wait(&st),
@@ -179,10 +181,22 @@ fn worktree_list(st: &State) -> ! {
     done(st, json!({"worktrees": rows}))
 }
 
-fn worktree_ps(st: &State) -> ! {
+fn worktree_ps(st: &mut State) -> ! {
     assert!(st.opt("--limit").is_some(), "{:?}", st.argv);
     if st.doc["ps_fails"] == true {
         fail(st, "runtime_unreachable");
+    }
+    for terminal in st.list("terminals") {
+        if terminal["open"] != true {
+            continue;
+        }
+        if let Some(left) = terminal["startup_working_reports_left"].as_u64() {
+            let state = if left > 0 { "working" } else { "idle" };
+            terminal["agent"]["state"] = json!(state);
+            terminal["agent"]["programStatus"]["state"] = json!(state);
+            terminal["startup_working_reports_left"] = json!(left.saturating_sub(1));
+            terminal["startup_observations"].as_array_mut().unwrap().push(json!(state));
+        }
     }
     let rows = st.doc["worktrees"].as_array().cloned().unwrap_or_default();
     let out: Vec<Value> = rows
@@ -252,6 +266,13 @@ fn terminal_create(st: &mut State) -> ! {
     st.list("terminals")
         .push(json!({"handle": handle, "worktreePath": path, "command": command, "line": given,
         "title": title, "sent": [], "open": true, "screen": screen}));
+    if let Some(reports) = st.doc["startup_working_reports"].as_u64() {
+        let terminal = st.list("terminals").last_mut().unwrap();
+        terminal["startup_working_reports_left"] = json!(reports);
+        terminal["startup_observations"] = json!([]);
+        terminal["agent"] = json!({"agentType": "codex", "state": "working",
+            "programStatus": {"state": "working"}});
+    }
     done(st, json!({"terminal": {"handle": handle, "worktreePath": path}}))
 }
 
@@ -354,12 +375,25 @@ fn terminal_send(st: &mut State) -> ! {
         .or_else(|| st.doc["prompt_stages"].as_array())
         .cloned()
         .unwrap_or_else(|| {
-            if st.opt("--wait-submit").is_some() {
+            if st.opt("--wait-submit").is_some()
+                && !(st.doc["terminals"][at]["startup_working_reports_left"].is_number()
+                    && st.doc["terminals"][at]["agent"]["state"] == "working")
+            {
                 vec![json!("input_accepted"), json!("turn_started")]
             } else {
                 vec![json!("input_accepted")]
             }
         });
+    st.doc["terminals"][at]["last_prompt_stages"] = json!(stages);
+    if st.doc["terminals"][at]["startup_working_reports_left"].is_number() {
+        // The brief is taken even during startup, but that episode cannot
+        // prove a new turn. This is the receipt failure seen without a spinner.
+        st.doc["terminals"][at]["screen"] =
+            json!(["Carry out convoy worker brief", "Reading ADRs"]);
+        st.doc["terminals"][at].as_object_mut().unwrap().remove("startup_working_reports_left");
+        st.doc["terminals"][at]["agent"]["state"] = json!("working");
+        st.doc["terminals"][at]["agent"]["programStatus"]["state"] = json!("working");
+    }
     done(
         st,
         json!({"send": {"accepted": true, "prompt": {
