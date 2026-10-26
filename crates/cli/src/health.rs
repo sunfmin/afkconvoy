@@ -905,24 +905,24 @@ fn decide(
             observed.action = "complete".into();
             return Ok(());
         }
-        Action::Wait | Action::Unknown
-            if diagnosis.class == "quota"
-                && diagnosis.scope == Scope::Account
-                && diagnosis.retry_after.is_some_and(|delay| {
-                    delay <= MAX_QUOTA_WAIT_SECONDS
-                        && fleet.now.saturating_add(delay)
-                            <= observed.window_started.saturating_add(MAX_QUOTA_WAIT_SECONDS)
-                }) =>
-        {
-            observed.action = "waiting for quota reset".into();
-            return Ok(());
-        }
         Action::Wait | Action::Unknown => {
-            if expired {
-                return escalate_observed(observed, fleet, me, issue);
+            let quota = diagnosis.class == "quota" && diagnosis.scope == Scope::Account;
+            let within_reset = diagnosis.retry_after.is_some_and(|delay| {
+                delay <= MAX_QUOTA_WAIT_SECONDS
+                    && fleet.now.saturating_add(delay)
+                        <= observed.window_started.saturating_add(MAX_QUOTA_WAIT_SECONDS)
+            });
+            if quota && within_reset {
+                observed.action = "waiting for quota reset".into();
+                return Ok(());
             }
-            observed.action = "waiting".into();
-            return Ok(());
+            if !quota {
+                if expired {
+                    return escalate_observed(observed, fleet, me, issue);
+                }
+                observed.action = "waiting".into();
+                return Ok(());
+            }
         }
         Action::Retry if observed.rate_retries < MAX_RATE_RETRIES => {
             observed.rate_retries += 1;
