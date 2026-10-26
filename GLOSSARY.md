@@ -191,8 +191,12 @@ A team's list, for each of its roles, of the harnesses and models that role's wo
 _Avoid_: harness config, model table, routing rules
 
 **Host kit**:
-The harnesses this host can start and their models, each in order of preference, with each harness's worker launch command and each model's research evidence. Writing it lists each login's models but sends none a prompt. A harness found and listed is held at once on its default model, started with no model flag, until research places its listed models with dated sources; a model left `not researched` is not started on, and failed research leaves the default and models already placed. A model's id is its listed id; its names are its listing's display names and research's sourced names, any of which matches it in a roster, a model label or the stock consult. `plan` and `doctor` say whether each harness runs its default and has research pending. A listed model that fails at work is left out at model scope by worker health and returns through its hourly recovery probe; a refusing harness's pause and hourly recovery probe remain. Daily refresh lists again: newly listed models wait for research and ids no longer listed are dropped. A switch adds a missing harness on its default and hands its listing to research after answering, without probing. Older kits' probe fields are read and forgotten. These orders are this machine's sole priority for every checkout; the kit also holds whether automatic model casting is enabled, off until the user enables it.
+The harnesses this host can start and their models, each in order of preference, with each harness's worker launch command and what research says of each model. Writing it lists each harness's models and sends none a prompt. Each model is held by the id its harness lists, with the names its listing shows it by and those research ties to it with a dated source. A harness found and listed is held at once and starts workers on its **default model** until research places its models: a model is placed once research ranks it with a dated source, and one `research pending` or `not researched` is never started on. A model that fails at work is found by worker health, not by the kit. These orders are this machine's sole priority for every checkout; the kit also holds whether automatic model casting is enabled, off until the user enables it.
 _Avoid_: roster (the team's), host config, inventory
+
+**Default model**:
+What a harness's own login runs when a worker is started with no model flag, which the fleet cannot name. A harness the host kit holds with no model placed — none listed yet, or research pending — starts its workers on it, Codex too.
+_Avoid_: fallback model, `default` alone (a model id Claude Code lists)
 
 **Codex effort**:
 The reasoning effort a Codex worker takes from the host user's own Codex settings at its start, or Codex's model default where the user says none. It is independent of the fleet's model selection and is no setting of the fleet.
@@ -211,7 +215,7 @@ A session of one harness, started in one role to perform one stage of one issue 
 _Avoid_: agent (whoever reads the help; and a worker, to whoever has not met the term), subagent, child (an issue a split opened)
 
 **Switch**:
-Moving a harness, or one of its models and that model's harness, to the first position in this machine's host kit while retaining the other entries' relative order and contents. A known installed harness it does not hold is added on its stock worker launch command with no model, and listed and researched only after the switch answers; no model is probed. Every checkout follows these orders; existing workers continue only when explicitly targeted, preserving their scene and claims and starting no replacement until the old writer is confirmed ended.
+Moving a harness, or one of its models and that model's harness, to the first position in this machine's host kit while retaining the other entries' relative order and contents. A known installed harness it does not hold is added on its stock worker launch command with no model, on its default model, and listed and researched only after the switch answers; no model is sent a prompt. Every checkout follows these orders; existing workers continue only when explicitly targeted, preserving their scene and claims and starting no replacement until the old writer is confirmed ended.
 _Avoid_: harness change (what a new casting makes)
 
 **Worker launch command**:

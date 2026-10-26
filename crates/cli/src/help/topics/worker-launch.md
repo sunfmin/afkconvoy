@@ -63,7 +63,7 @@ Kimi reads hooks only from its user configuration, so the fleet gives each role 
 
 The generated `SYSTEM.md` preserves Kimi's base prompt and adds the repo's own rules and the team rules, each named with its file. The role's rules come from its `AGENTS.md` link. Explicit `--skills-dir` arguments replace automatic skill discovery: the role's are named first, then your ~/.kimi-code/skills and ~/.agents/skills when `host_user` allows them. Your Kimi `AGENTS.md` is linked into that home. Generic ~/.agents resources can also be discovered by Kimi wherever its data home is; keep none there on a host whose workers must have no host-specific instructions.
 
-A command you give for Kimi must take `--add-dir`, `--skills-dir` and `--model`. Its model aliases come from `kimi provider list --json`; probes use `kimi --prompt ... --output-format stream-json` without the stock command's `--auto`, which Kimi rejects in prompt mode.
+A command you give for Kimi must take `--add-dir`, `--skills-dir` and `--model`. Its model aliases come from `kimi provider list --json`; recovery probes use `kimi --prompt ... --output-format stream-json` without the stock command's `--auto`, which Kimi rejects in prompt mode.
 
 ## DeepSeek Harness
 
