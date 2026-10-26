@@ -171,7 +171,7 @@ pub fn land_train(
     }
     let (run, source) = match gated {
         Gated::Green { run, source } => (run, source),
-        Gated::Red { ran, excerpt } => {
+        Gated::Red { ran, excerpt, termination } => {
             // Best effort: a red commit not on record only costs a worker's gate a red run.
             let _ = repo.try_git(&[
                 "push",
@@ -192,7 +192,7 @@ pub fn land_train(
             );
             let gate = json!({"status": "red", "exit_code": ran.exit_code,
                 "timed_out": ran.timed_out, "seconds": ran.seconds, "command": command.text(),
-                "excerpt": excerpt});
+                "excerpt": excerpt, "termination": termination});
             return Ok(stop(
                 &answer,
                 TrainOutcome::GateRed,
