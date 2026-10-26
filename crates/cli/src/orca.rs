@@ -44,6 +44,8 @@ const NUDGE_FILE: &str = "convoy-nudged";
 const BACKGROUND_FILE: &str = "convoy-background";
 /// When the worker here was started (epoch seconds), beside the brief.
 const START_FILE: &str = "convoy-started";
+/// The complete line handed to Orca, with credential values removed.
+const COMMAND_FILE: &str = "convoy-worker-command";
 /// Where a stage that writes nothing started here (`guard::WritesNothing`).
 const WRITES_NOTHING_FILE: &str = "convoy-writes-nothing";
 /// The comment of the `blocked` verdict a worker was last started again over.
@@ -210,6 +212,37 @@ impl Asked {
         };
         anyhow!("orca {} failed: {said}", self.what)
     }
+
+    /// Preserve the transport evidence too: an answered wait may exit nonzero,
+    /// and an unavailable screen must not become an empty successful read.
+    fn evidence(&self) -> String {
+        startup_redacted(&format!(
+            "exit success: {}\nstdout:\n{}\nstderr:\n{}",
+            self.exited_ok, self.stdout, self.stderr
+        ))
+    }
+}
+
+/// A startup screen or command may echo a provider credential. Compare only
+/// secret-valued environment entries; never include the environment itself.
+fn startup_redacted(text: &str) -> String {
+    let mut secrets: Vec<String> = std::env::vars()
+        .filter(|(name, value)| {
+            let name = name.to_ascii_uppercase();
+            !value.is_empty()
+                && ["TOKEN", "SECRET", "PASSWORD", "API_KEY", "APIKEY", "AUTHORIZATION"]
+                    .iter()
+                    .any(|suffix| name == *suffix || name.ends_with(&format!("_{suffix}")))
+        })
+        .flat_map(|(_, value)| {
+            let json = serde_json::to_string(&value).unwrap_or_default();
+            let escaped = json.trim_matches('"').to_string();
+            [value.clone(), escaped, afkconvoy_core::line::quoted(&value)]
+        })
+        .collect();
+    secrets.sort_by_key(|secret| std::cmp::Reverse(secret.len()));
+    secrets.dedup();
+    secrets.into_iter().fold(text.to_string(), |text, secret| text.replace(&secret, "[redacted]"))
 }
 
 /// Where orca is run from: the host user's home, or the root on a host with
@@ -1050,6 +1083,7 @@ impl Worktree {
         let handle = made["terminal"]["handle"].as_str();
         let handle =
             handle.ok_or_else(|| anyhow!("orca terminal create returned no terminal handle"))?;
+        std::fs::write(self.note(COMMAND_FILE)?, startup_redacted(&command))?;
         self.observed_terminals(1);
         self.forget(crate::health::SIGNAL_FILE)?;
         let file = self.note(START_FILE)?;
@@ -1109,17 +1143,31 @@ impl Worktree {
         harness: Harness,
         command: &str,
     ) -> Result<()> {
-        let ready = self.wait(terminal, timeout_seconds).with_context(|| {
+        let (ready, waited) = self.wait(terminal, timeout_seconds).with_context(|| {
             self.prompt_context(terminal, "cannot confirm the worker is ready for its brief")
         })?;
         match ready {
             Waited::Ready => Ok(()),
             Waited::AtTrustPrompt => Err(TrustGap {
                 harness,
-                command: command.to_string(),
+                command: std::fs::read_to_string(self.note(COMMAND_FILE)?)
+                    .unwrap_or_else(|_| startup_redacted(command)),
                 worktree: self.path.display().to_string(),
                 terminal: terminal.to_string(),
                 seconds: timeout_seconds,
+                startup_wait: waited.evidence(),
+                startup_screen: match Asked::of(&[
+                    "terminal",
+                    "read",
+                    "--terminal",
+                    terminal,
+                    "--screen",
+                    "--limit",
+                    "200",
+                ]) {
+                    Ok(read) => read.evidence(),
+                    Err(error) => startup_redacted(&format!("screen read failed: {error:#}")),
+                },
             }
             .into()),
             Waited::NotReady => Err(self.prompt_failure(
@@ -1131,7 +1179,7 @@ impl Worktree {
 
     /// One wait for the agent in `terminal`. orca exits non-zero on a wait it
     /// answered but that was not satisfied: what it answered is still read.
-    fn wait(&self, terminal: &str, timeout_seconds: u64) -> Result<Waited> {
+    fn wait(&self, terminal: &str, timeout_seconds: u64) -> Result<(Waited, Asked)> {
         let timeout = (timeout_seconds * 1000).to_string();
         let asked = Asked::of(&[
             "terminal",
@@ -1147,13 +1195,14 @@ impl Worktree {
         if asked.answer["ok"] != true || !wait.is_object() {
             return Err(asked.failure());
         }
-        Ok(if wait["blockedReason"] == TRUST_PROMPT {
+        let ready = if wait["blockedReason"] == TRUST_PROMPT {
             Waited::AtTrustPrompt
         } else if wait["satisfied"] == true && wait["blockedReason"].is_null() {
             Waited::Ready
         } else {
             Waited::NotReady
-        })
+        };
+        Ok((ready, asked))
     }
 
     /// A failed delivery includes the current screen, even when no known
@@ -1185,7 +1234,7 @@ impl Worktree {
     }
 
     fn tell_unchecked(&self, terminal: &str, line: &str) -> Result<()> {
-        let ready = self.wait(terminal, 1).with_context(|| {
+        let (ready, _) = self.wait(terminal, 1).with_context(|| {
             self.prompt_context(terminal, "no running worker harness confirmed; no line was sent")
         })?;
         if ready != Waited::Ready {
