@@ -1,0 +1,5 @@
+Migrate from kimi-cli
+Migrate chat sessions too? (they are bulky and slower)
+ ❯ Config only
+   Config + 1 sessions
+↑/↓ move · ⏎ select · esc later

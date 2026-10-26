@@ -68,6 +68,9 @@ const CUT_LOG_FILE: &str = "convoy-cut.log";
 const PS_LIMIT: &str = "1000";
 /// What orca says holds up a worker asking whether its folder is trusted.
 const TRUST_PROMPT: &str = "agent-trust-workspace";
+/// How long each accepted line is observed for a turn start. Orca observes
+/// the same request throughout this bound and never resends it.
+const SUBMIT_SECONDS: u64 = 30;
 
 /// One `orca … --json` call → its `result` object. An error when orca cannot
 /// be run, exits non-zero, or answers `ok: false` — never an empty answer.
@@ -539,6 +542,9 @@ impl Worktree {
             row["path"].as_str().is_some_and(|path| same_dir(Path::new(path), &self.path))
         });
         let Some(row) = row else { return Ok(WorkerState::Gone) };
+        if row["liveTerminalCount"].as_u64().unwrap_or(0) > 0 && crate::health::has_signal(self)? {
+            return Ok(WorkerState::Idle { quiet: None });
+        }
         // orca's clocks are epoch milliseconds
         let seconds = |stamp: &Value| stamp.as_u64().map(|ms| ms / 1000);
         let agents: Vec<AgentReport> = row["agents"]
@@ -938,6 +944,7 @@ impl Worktree {
         let handle = made["terminal"]["handle"].as_str();
         let handle =
             handle.ok_or_else(|| anyhow!("orca terminal create returned no terminal handle"))?;
+        self.forget(crate::health::SIGNAL_FILE)?;
         let file = self.note(START_FILE)?;
         std::fs::write(&file, now.to_string())
             .with_context(|| format!("cannot write {}", file.display()))?;
@@ -962,7 +969,10 @@ impl Worktree {
         harness: Harness,
         command: &str,
     ) -> Result<()> {
-        match self.wait(terminal, timeout_seconds)? {
+        let ready = self.wait(terminal, timeout_seconds).with_context(|| {
+            self.prompt_context(terminal, "cannot confirm the worker is ready for its brief")
+        })?;
+        match ready {
             Waited::Ready => Ok(()),
             Waited::AtTrustPrompt => Err(TrustGap {
                 harness,
@@ -972,10 +982,10 @@ impl Worktree {
                 seconds: timeout_seconds,
             }
             .into()),
-            Waited::NotReady => bail!(
-                "the worker in {} was not ready for a prompt within {timeout_seconds}s (terminal {terminal})",
-                self.path.display()
-            ),
+            Waited::NotReady => Err(self.prompt_failure(
+                terminal,
+                &format!("the worker was not ready for a prompt within {timeout_seconds}s"),
+            )),
         }
     }
 
@@ -997,30 +1007,35 @@ impl Worktree {
         if asked.answer["ok"] != true || !wait.is_object() {
             return Err(asked.failure());
         }
-        Ok(if wait["satisfied"] == true {
-            Waited::Ready
-        } else if wait["blockedReason"] == TRUST_PROMPT {
+        Ok(if wait["blockedReason"] == TRUST_PROMPT {
             Waited::AtTrustPrompt
+        } else if wait["satisfied"] == true && wait["blockedReason"].is_null() {
+            Waited::Ready
         } else {
             Waited::NotReady
         })
     }
 
-    /// A terminal may have fallen back to its shell since the worker was
-    /// read. Require the harness's prompt immediately before a nudge; never
-    /// answer a trust question or type a nudge into a shell.
-    pub(crate) fn ready_for_nudge(&self, terminal: &str) -> Result<()> {
-        let ready = self.wait(terminal, 1).with_context(|| {
-            format!("no running worker harness confirmed in terminal {terminal}; no nudge was sent")
-        })?;
-        if ready != Waited::Ready {
-            bail!("no running worker harness ready in terminal {terminal}; no nudge was sent");
-        }
-        Ok(())
+    /// A failed delivery includes the current screen, even when no known
+    /// rule names its menu. An unreadable screen cannot hide the failure.
+    fn prompt_failure(&self, terminal: &str, reason: &str) -> anyhow::Error {
+        PromptBlocked(self.prompt_context(terminal, reason)).into()
     }
 
-    /// Types one line at the worker and submits it. Typed but unsubmitted, a
-    /// worker sits idle forever, indistinguishable from one that finished.
+    fn prompt_context(&self, terminal: &str, reason: &str) -> String {
+        let screen = match self.screen(terminal, 20) {
+            Ok(lines) => lines.join("\n"),
+            Err(error) => format!("screen unavailable: {error:#}"),
+        };
+        format!(
+            "{reason}; worktree {} (terminal {terminal})\nScreen's last lines:\n{screen}",
+            self.path.display()
+        )
+    }
+
+    /// Types one line only at the harness's input, then requires Orca's
+    /// receipt to prove that this submission started a turn. Input acceptance
+    /// alone is no delivery. A failed line is kept for worker health.
     pub fn tell(&self, terminal: &str, line: &str) -> Result<()> {
         self.tell_at(terminal, line, crate::clock())
     }
@@ -1030,7 +1045,27 @@ impl Worktree {
     }
 
     fn tell_unchecked(&self, terminal: &str, line: &str) -> Result<()> {
-        let sent = orca(&["terminal", "send", "--terminal", terminal, "--text", line, "--enter"])?;
+        let ready = self.wait(terminal, 1).with_context(|| {
+            self.prompt_context(terminal, "no running worker harness confirmed; no line was sent")
+        })?;
+        if ready != Waited::Ready {
+            return Err(self.prompt_failure(
+                terminal,
+                "no running worker harness at its input; no line was sent",
+            ));
+        }
+        let timeout = SUBMIT_SECONDS.to_string();
+        let sent = orca(&[
+            "terminal",
+            "send",
+            "--terminal",
+            terminal,
+            "--text",
+            line,
+            "--enter",
+            "--wait-submit",
+            &timeout,
+        ])?;
         if sent["send"]["accepted"] != true {
             return Err(PromptBlocked(
                 sent["send"]["blockedReason"]
@@ -1039,6 +1074,18 @@ impl Worktree {
                     .to_string(),
             )
             .into());
+        }
+        let prompt = &sent["send"]["prompt"];
+        if !prompt["stages"]
+            .as_array()
+            .is_some_and(|stages| stages.iter().any(|stage| stage == "turn_started"))
+        {
+            return Err(self.prompt_failure(
+                terminal,
+                &format!(
+                    "the line started no turn within {SUBMIT_SECONDS}s; delivery receipt: {prompt}"
+                ),
+            ));
         }
         Ok(())
     }
