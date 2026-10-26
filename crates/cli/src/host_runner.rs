@@ -210,9 +210,13 @@ pub struct Installed {
     #[serde(default)]
     pub since: u64,
     /// The safe moment did not arrive within `MOVE_WAIT_WITHIN`: the old
-    /// host runner works on and retries only once the installed file changes.
+    /// host runner works on between bounded attempts, and keeps trying.
     #[serde(default)]
     pub wait_expired: bool,
+    /// The current bounded attempt's start, or the next one's earliest
+    /// start after an expired wait. Process-local; the finding keeps `since`.
+    #[serde(skip)]
+    attempt_since: u64,
     /// What holds the move back now, each in words; empty as it moves, and
     /// where it failed.
     pub held_back: Vec<String>,
@@ -831,10 +835,15 @@ impl Watched {
                 }
             }
         }
-        matches!(
-            &*self.installed(),
-            Some(Installed { version: Some(_), failed: None, wait_expired: false, .. })
-        )
+        self.moves_at(crate::clock())
+    }
+
+    fn moves_at(&self, now: u64) -> bool {
+        self.installed().as_ref().is_some_and(|installed| {
+            installed.version.is_some()
+                && installed.failed.is_none()
+                && now >= installed.attempt_since
+        })
     }
 
     /// The move onto what it found failed, `why`: the host runner works on,
@@ -842,6 +851,7 @@ impl Watched {
     fn failed(&mut self, why: String) {
         if let Some(installed) = self.installed().as_mut() {
             (installed.failed, installed.held_back) = (Some(why), vec![]);
+            installed.wait_expired = false;
         }
     }
 }
@@ -864,6 +874,7 @@ fn found_at(path: &Path, log: &RunnerLog) -> Option<Installed> {
         version,
         from: VERSION.to_string(),
         since: crate::clock(),
+        attempt_since: crate::clock(),
         wait_expired: false,
         held_back: vec![],
         failed,
@@ -1025,10 +1036,12 @@ impl Runner {
         });
         if let Some(installed) = self.shared.installed().as_mut() {
             installed.held_back = held.iter().map(HeldBack::said).collect();
-            if !held.is_empty() && now.saturating_sub(installed.since) >= MOVE_WAIT_WITHIN.as_secs()
+            if !held.is_empty()
+                && now.saturating_sub(installed.attempt_since) >= MOVE_WAIT_WITHIN.as_secs()
             {
                 installed.wait_expired = true;
-                self.log.say(&format!("host runner not moved: wait exceeded {}s: {} — it works on and tries again once the installed file changes", MOVE_WAIT_WITHIN.as_secs(), installed.held_back.join("; ")));
+                installed.attempt_since = now.saturating_add(INSTALLED_LOOKED_EVERY.as_secs());
+                self.log.say(&format!("host runner not moved: wait exceeded {}s: {} — it lets ticks and the queue run again, and keeps trying the move", MOVE_WAIT_WITHIN.as_secs(), installed.held_back.join("; ")));
                 self.shared.standings.resume();
                 self.shared.queue.resume();
             }
@@ -2378,6 +2391,7 @@ mod tests {
             from: VERSION.into(),
             since: 1000,
             wait_expired: true,
+            attempt_since: 1000,
             held_back: vec![
                 "/checkout is in a tick".into(),
                 "1 exclusive command(s) running".into(),
@@ -2400,6 +2414,7 @@ mod tests {
             from: VERSION.into(),
             since: 1000,
             wait_expired: false,
+            attempt_since: 1000,
             held_back: vec![],
             failed: None,
         });
@@ -2444,6 +2459,17 @@ mod tests {
         assert!(!runner.moved() && !stop.told());
         host.ticked(1600, Some((false, true)));
         assert!(host.begins_unless_stopped(&stop), "new ticks resume after expiry");
+        let watched = Watched {
+            path: None,
+            seen: None,
+            looked: Instant::now(),
+            installed: Arc::clone(&shared.installed),
+        };
+        assert!(!watched.moves_at(1600), "the old runner gets time to work");
+        assert!(watched.moves_at(1601), "the same installed file is tried again");
+        host.ticked(1601, Some((false, true)));
+        assert!(runner.stopped_for_move_at(1601).is_some());
+        assert!(runner.moved() && stop.told(), "it moves once the long tick ended");
     }
 
     #[test]
