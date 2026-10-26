@@ -152,8 +152,9 @@ fn a_host_with_no_operator_directory_runs_the_stock_watch_and_records_what_stays
     assert_eq!(open(&world, &dir), [watch["terminal"].as_str().unwrap()]);
     let doctor = world.afk(&["doctor", "--all"]).json;
     assert_eq!(doctor["host"]["watch"]["running"]["stock"], true);
-    assert_eq!(doctor["host"]["settings"]["said"]["watch_dir"], Value::Null);
-    assert_eq!(doctor["host"]["settings"]["in_force"]["watch_dir"], json!(dir));
+    let settings = &doctor["checkouts"][0]["doctor"]["host"]["settings"];
+    assert_eq!(settings["said"]["watch_dir"], Value::Null);
+    assert_eq!(settings["in_force"]["watch_dir"], json!(dir));
 
     let left = [
         "left with a human: spending money to create an account and supply a credential",
@@ -231,15 +232,20 @@ fn a_watch_can_fix_a_fleet_fault_and_hand_it_back_while_a_human_decision_stays()
     let dir = operator(&world);
     world.set_gate_config("gate_command: ./gate.sh\nescalate_to: human");
     let other = world.second_repo();
-    world.afk_in(&other, &["run", "--host", "h1"]).ok();
+    world
+        .afk_in(
+            &other,
+            &["run", "--host", "h1", "--watch-dir", dir.to_str().unwrap(), "--watch-every", "1"],
+        )
+        .ok();
     world.issue(7, &["ready-for-agent"]);
     world.issue(8, &["ready-for-human"]);
     world.comment(8, "<!--convoy:escalation claim=old-->\nShould we migrate the customer's data now or wait for approval?");
     world.with_orca(|orca| orca["trust_prompt"] = json!(true));
     let fault = world.afk(&["dispatch", "--issue", "7", "--instance", "alpha", "--host", "h1"]);
     assert!(fault.error().contains("worktree trust gap"));
-    // Register both checkouts before enabling watches: a setting is in
-    // force before run's first tick puts a new checkout on the list.
+    // Register both checkouts before waiting for their look: every host
+    // watches now, with its settings in force before the first tick.
     world.afk(&["run", "--host", "h1"]).ok();
     // A watch is independent of the issue worker's trust gap: its launch is
     // non-interactive and already trusted. The fake's gap affects dispatch.
