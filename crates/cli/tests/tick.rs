@@ -60,8 +60,8 @@ fn a_tick_never_waits_for_the_workers_it_started() {
     let calls: Vec<String> = world.orca_calls().iter().map(|call| common::asked(call)).collect();
     assert_eq!(
         calls.iter().filter(|call| *call == "terminal wait").count(),
-        1,
-        "only for readiness"
+        2,
+        "only for readiness at start and immediately before the brief"
     );
 }
 
@@ -70,7 +70,7 @@ fn a_claim_whose_issue_is_closed_is_settled_and_its_slot_refilled() {
     let world = backlog(&[3, 5, 9]);
     tick(&world, "1000");
     let worktree = world.orca()["worktrees"][0]["path"].as_str().unwrap().to_string();
-    let tmp = afkconvoy::worker_tmp::of(std::path::Path::new(&worktree));
+    let tmp = world.tmp(std::path::Path::new(&worktree));
     assert!(tmp.is_dir(), "its worker's TMPDIR");
     world.close_issue(3);
     world.watch_pushes(None);

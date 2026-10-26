@@ -169,7 +169,7 @@ fn on_a_custom_provider_the_passed_command_is_preserved_and_worktree_trust_is_ad
     // …but for its issue, and starting it under `nice` with its own `TMPDIR`
     let dir = Path::new(create[3].strip_prefix("path:").unwrap());
     let line = format!("export AFKCONVOY_ISSUE=7 && {}", common::trusted(passed));
-    let niced = common::niced(dir, &line);
+    let niced = common::niced(&world, dir, &line);
     assert_eq!(create[create.len() - 3..create.len() - 1], ["--command", &niced], "{create:?}");
     assert!(create.len() <= 7, "a worktree, a command, and nothing else: {create:?}");
 

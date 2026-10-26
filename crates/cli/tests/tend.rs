@@ -122,6 +122,51 @@ fn a_failed_train_agent_is_diagnosed_on_the_first_tick_and_keeps_its_train() {
 }
 
 #[test]
+fn a_train_pointer_requires_input_readiness_and_a_started_turn_before_recording_told() {
+    for menu in [true, false] {
+        let world = fleet(&[7, 8]);
+        let first = finish(&world, 7);
+        tick(&world, "1090");
+        let train = train_worktree(&world);
+        let notes = PathBuf::from(git(&train, &["rev-parse", "--absolute-git-dir"]));
+        finish(&world, 8);
+        world.with_orca(|orca| {
+            for terminal in orca["terminals"].as_array_mut().unwrap() {
+                if terminal["worktreePath"] == train.to_str().unwrap() {
+                    terminal["agent"] = json!({"state":"idle", "stateStartedAt":1_100_000});
+                    terminal["menu"] = json!(menu);
+                    terminal["screen"] = json!(
+                        include_str!("screens/codex-model-menu.txt").lines().collect::<Vec<_>>()
+                    );
+                    terminal["prompt_stages"] = json!(["input_accepted"]);
+                }
+            }
+        });
+        world.orca_calls();
+        let ticked = tick(&world, "1180");
+        assert!(
+            ticked["errors"].as_array().unwrap().iter().any(|e| e["do"] == "tend_train"),
+            "{ticked}"
+        );
+        let told = std::fs::read_to_string(notes.join("convoy-train-told")).unwrap();
+        assert!(told.starts_with(&first), "an unproven pointer changed told: {told}");
+        let sends =
+            world.orca_calls().iter().filter(|call| common::asked(call) == "terminal send").count();
+        assert_eq!(sends, usize::from(!menu), "no pointer is typed into a menu");
+        assert!(
+            notes.join("convoy-worker-error.json").exists(),
+            "worker health must see failed delivery on its next tick"
+        );
+        world.orca_calls();
+        tick(&world, "1270");
+        assert!(
+            !world.orca_calls().iter().any(|call| common::asked(call) == "terminal send"),
+            "the next tick leaves the stopped worker to health instead of resending"
+        );
+    }
+}
+
+#[test]
 fn a_codex_train_session_has_model_and_effort_evidence_in_plan_and_doctor() {
     let world = fleet(&[7]);
     finish(&world, 7);

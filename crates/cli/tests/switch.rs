@@ -990,6 +990,37 @@ fn fleet_with_two_workers() -> World {
 }
 
 #[test]
+fn a_failed_delivery_is_classified_even_if_orcas_last_report_was_working() {
+    let world = fleet_with_two_workers();
+    let dir = worktree(&world, 7);
+    let notes = PathBuf::from(git(&dir, &["rev-parse", "--absolute-git-dir"]));
+    std::fs::write(
+        notes.join("convoy-worker-error.json"),
+        json!({
+            "source":"orca terminal send", "error":{"code":"insufficient_quota"}, "at":799
+        })
+        .to_string(),
+    )
+    .unwrap();
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            terminal["agent"] = json!({"state":"working", "agentType":"claude",
+                "stateStartedAt":700000});
+            terminal["lastOutputAt"] = json!(799000);
+        }
+    });
+    tick(&world, 800);
+    let health = world.afk(&["plan", "--now", "801"]).ok();
+    let workers = health["host_kit"]["worker_health"]["workers"].as_array().unwrap();
+    let worker = workers.iter().find(|w| w["path"] == json!(dir)).unwrap();
+    assert_eq!(worker["orca"]["state"], "working");
+    assert_eq!(worker["diagnosis"]["class"], "quota");
+    assert_eq!(worker["source"], "structured rule");
+    assert_ne!(worker["action"], "healthy");
+    assert!(!world.root.join("diagnosis-asked").exists());
+}
+
+#[test]
 fn orcas_harness_overrules_a_wrong_record_for_quota_recovery_and_is_shown() {
     let world = blocked();
     let dir = worktree(&world, 7);

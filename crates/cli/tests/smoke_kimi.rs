@@ -107,6 +107,9 @@ fn a_real_kimi_worker_loads_its_role_and_refuses_what_the_role_and_guard_refuse(
     let root = root.path().canonicalize().unwrap();
     let (role, project, team) = (root.join("role"), root.join("project"), root.join("team"));
     let home = root.join("home");
+    // A fresh role home on a host that used kimi-cli must not offer its
+    // migration menu or eat the brief as the menu's selection.
+    write(&home, ".kimi/config.toml", "default_model = 'legacy'\n");
     let hooked = root.join("role-hook-ran");
     let reported = root.join("orca-events");
     let user_hook = root.join("user-hook-ran");
