@@ -515,31 +515,31 @@ fn kit_holds_each_listed_id_with_its_display_name_and_never_probes() {
 }
 
 #[test]
-fn kit_research_is_written_from_a_fake_session_and_is_not_repeated() {
+fn kit_research_is_written_from_a_checked_file_and_survives_relisting() {
     let world = backlog();
     std::fs::remove_file(world.kit_path()).unwrap();
     host_to_kit(&world);
     let source = json!({"url":"https://vendor.example/card", "date":"2026-10-24"});
-    std::fs::write(world.root.join("research-answer"), json!({
-        "harness_order":["claude-code","pi"],
-        "model_order":[{"harness":"claude-code","models":["opus","default"]},{"harness":"pi","models":["openai/gpt-5.5"]}],
+    std::fs::write(world.root.join("research.json"), json!({
         "models":[
             {"harness":"claude-code","model":"opus","good_at":"wide refactors; costly","sources":[source]},
             {"harness":"claude-code","model":"default","good_at":"small fixes","sources":[source]},
             {"harness":"pi","model":"openai/gpt-5.5","good_at":"review","sources":[source]}
         ]
     }).to_string()).unwrap();
-    let written = world.afk(&["kit", "--now", "1000"]).ok();
+    world.afk(&["kit", "--now", "900"]).ok();
+    assert!(!world.root.join("research-asked").exists(), "listing calls no model");
+    let file = world.root.join("research.json");
+    let written = world.afk(&["kit", "--research", file.to_str().unwrap(), "--now", "1000"]).ok();
+
     let models = &written["kit"]["harnesses"][0]["models"];
     assert_eq!(models[0]["model"], "opus");
     assert_eq!(models[0]["researched_at"], 1000);
     assert_eq!(models[0]["sources"], json!([source]));
-    let asked = std::fs::read_to_string(world.root.join("research-asked")).unwrap();
-    assert!(asked.contains("--allowedTools WebSearch WebFetch"), "{asked}");
     let again = world.afk(&["kit", "--now", "200000"]).ok();
     assert_eq!(again["kit"]["harnesses"][0]["models"][0]["model"], "opus");
     assert_eq!(again["kit"]["harnesses"][0]["models"][0]["researched_at"], 1000);
-    assert_eq!(std::fs::read_to_string(world.root.join("research-asked")).unwrap(), asked);
+    assert!(!world.root.join("research-asked").exists(), "relisting calls no model");
 }
 
 #[test]

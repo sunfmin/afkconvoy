@@ -252,12 +252,11 @@ fn a_missing_harness_starts_on_its_default_before_its_listing_is_researched() {
     let until = std::time::Instant::now() + std::time::Duration::from_secs(15);
     while std::time::Instant::now() < until {
         let kit: Value = serde_json::from_slice(&std::fs::read(world.kit_path()).unwrap()).unwrap();
-        if !kit["harnesses"][0]["models"].as_array().unwrap().is_empty()
-            && world.root.join("research-asked").exists()
-        {
+        if !kit["harnesses"][0]["models"].as_array().unwrap().is_empty() {
             assert_eq!(kit["harnesses"][0]["harness"], "kimi");
             assert_eq!(kit["harnesses"][0]["models"][0]["model"], "kimi-code/k3");
             assert_eq!(kit["harnesses"][0]["models"][0]["good_at"], "research pending");
+            assert!(!world.root.join("research-asked").exists());
             assert!(
                 !world
                     .shell_asked()
