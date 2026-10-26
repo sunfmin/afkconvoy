@@ -79,6 +79,10 @@ pub struct Settings {
 pub const PANEL_PORT: u16 = 7070;
 /// How often the host runner looks at its host where it says no interval.
 pub const WATCH_EVERY: u64 = 300;
+/// The default number of worker lanes on a host.
+pub const GATE_LANES: u64 = 1;
+/// The default number of train lanes on a host.
+pub const TRAIN_LANES: u64 = 1;
 
 /// What a `run` named of the host settings; each it left unnamed is `None`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -242,10 +246,10 @@ impl Settings {
     }
 
     pub fn gate_lanes(&self) -> u64 {
-        self.gate_lanes.unwrap_or(1).max(1)
+        self.gate_lanes.unwrap_or(GATE_LANES).max(1)
     }
     pub fn train_lanes(&self) -> u64 {
-        self.train_lanes.unwrap_or(1).max(1)
+        self.train_lanes.unwrap_or(TRAIN_LANES).max(1)
     }
 
     /// The sleep hours it says, else the default.

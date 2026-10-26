@@ -1424,11 +1424,11 @@ enum Command {
         /// [default: {const:EXCLUSIVE_SECONDS}]
         #[arg(long, env = EXCLUSIVE_SECONDS_ENV, value_name = "SECONDS", value_parser = whole_or_default)]
         exclusive_seconds: Option<To<u64>>,
-        /// Worker lanes on this host, at least 1, or `default` (1). A repo holds
+        /// Worker lanes on this host, above zero, or `default` ({const:GATE_LANES}). A repo holds
         /// at most one turn at a time, regardless of this count.
         #[arg(long, env = "AFKCONVOY_GATE_LANES", value_parser = host_settings::watch_every_or_default)]
         gate_lanes: Option<To<u64>>,
-        /// Train lanes on this host, at least 1, or `default` (1).
+        /// Train lanes on this host, above zero, or `default` ({const:TRAIN_LANES}).
         #[arg(long, env = "AFKCONVOY_TRAIN_LANES", value_parser = host_settings::watch_every_or_default)]
         train_lanes: Option<To<u64>>,
         /// Stop after this many ticks
@@ -1816,6 +1816,7 @@ enum Command {
     /// - `merged`: the base branch already holds the PR's head — stop. With "head"
     /// - `conflict`: with "files" and "worktree": resolve every file, commit the merge, run the gate again, then this again
     /// - `locked`: a fleet lock stands, and this issue is not one — an inspection's PR never is: nothing joined and nothing was pushed — stop, and run this again when told to carry on. With "locks", the lock issues
+    /// - `gate_red`: nothing joined. With the gate's `status`, `recorded`, `exit_code`, `timed_out`, `seconds`, `command`, `head` and `merged`. Fix a red gate, commit and ask again. A green run whose record could not be written joins nothing too: `detail` says to run it again
     ///
     /// `--train`: {"train", "base", "outcome", "detail", …}
     ///
@@ -2501,7 +2502,7 @@ enum Command {
     ///
     /// ## What it reads and writes
     ///
-    /// Commands use independent host worker and train lanes, 1 each by default. `run --gate-lanes N` and `--train-lanes N` set their counts live for every fleet on the host, or `default` restores 1. N must be at least 1. One repo holds at most one turn and one train gate at a time, regardless of the counts. Worker gates, heavy tests, benchmarks, cut builds and inspection commands run one at a time in the worker lane, in request order. Train gates run one at a time in the train lane, in request order across every repo, and can run beside a worker command. A train never waits behind or interrupts a worker. Light gates take turns in their repo's own lane. A turn holds its lane through merge, gate, record and join; a process that dies frees it.
+    /// Commands use independent host worker and train lanes, {const:GATE_LANES} worker and {const:TRAIN_LANES} train by default. `run --gate-lanes N` and `--train-lanes N` set their counts live for every fleet on the host, or `default` restores those counts. N must be above zero. One repo holds at most one turn and one train gate at a time, regardless of the counts. Worker gates, heavy tests, benchmarks, cut builds and inspection commands use the worker lanes, one command per lane, in request order. Train gates use the train lanes in request order across repos, one gate per lane, and can run beside worker commands. A train never waits behind or interrupts a worker. Light gates take turns in their repo's own lane. A turn holds its lane through merge, gate, record and join; a process that dies frees it.
     ///
     /// The queue is the host runner's (`afkconvoy run --help`), held in its process: `exclusive` asks it on its socket, naming its checkout, and stays on the line while it waits and while its command runs. A process that leaves it — its command ended, or it was killed while waiting or running — frees its place for the next. The command runs in the directory `exclusive` is run in, or with `-C <dir>` in that one, as named: a checkout of the repo or a directory in one, and not that checkout's top.
     ///
@@ -3515,6 +3516,8 @@ pub fn manual() -> agent_help::Help {
         .constant("CONFIG_FILE", config::FILE)
         .constant("PANEL_PORT", host_settings::PANEL_PORT)
         .constant("EXCLUSIVE_SECONDS", exclusive::SECONDS)
+        .constant("GATE_LANES", host_settings::GATE_LANES)
+        .constant("TRAIN_LANES", host_settings::TRAIN_LANES)
         .constant("EXCLUSIVE_BOUND_CODE", exclusive::BOUND_CODE)
         .constant("WATCH_EVERY", host_settings::WATCH_EVERY)
         .constant("WATCH_CHECKOUT", host_watch::CHECKOUT)
