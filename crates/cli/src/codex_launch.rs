@@ -80,6 +80,18 @@ pub(crate) fn automatic_model(explicit: Option<&str>) -> Result<(Option<String>,
     let config = config(&file)?;
     match config.get(MODEL) {
         Some(toml::Value::String(model)) if !model.trim().is_empty() => {
+            let kit = crate::kit::load()?;
+            let listed = kit
+                .harnesses
+                .iter()
+                .find(|held| held.harness == Harness::Codex)
+                .is_some_and(|held| held.models.iter().any(|listed| listed.model == *model));
+            if !listed {
+                bail!(
+                    "Codex user selection `{model}` from {}:{MODEL} is not listed by the host kit; confirm the model is available to this Codex login and refresh `afkconvoy kit`",
+                    file.display()
+                );
+            }
             Ok((Some(model.clone()), "user_selection"))
         }
         None => Ok((None, "codex_default")),
@@ -88,6 +100,15 @@ pub(crate) fn automatic_model(explicit: Option<&str>) -> Result<(Option<String>,
             file.display()
         ),
     }
+}
+
+pub(crate) fn require_role_model(model: &str, allowed: &[String], role: &str) -> Result<()> {
+    if !allowed.iter().any(|allowed| allowed == model) {
+        bail!(
+            "Codex user selection `{model}` from ~/.codex/config.toml is outside role `{role}`'s range; update the role's roster to allow it or choose a model the role allows"
+        );
+    }
+    Ok(())
 }
 
 /// A fresh launch's directory, under the worktree so it goes with the work.
@@ -110,7 +131,8 @@ pub(crate) fn prepare(
     let config = config(&file)?;
     let mut settings = settings(model, model_source, &config, &file)?;
     let command = match model {
-        Some(model) => Harness::Codex.with_model(command, model),
+        Some(model) if !command.contains("--model") => Harness::Codex.with_model(command, model),
+        Some(_) => command.to_string(),
         None => command.to_string(),
     };
     let (line, home) = if in_role {

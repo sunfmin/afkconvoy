@@ -205,7 +205,7 @@ Research states: `research pending` is a newly listed model awaiting dated resea
 _Avoid_: roster (the team's), host config, inventory
 
 **Default model**:
-What a harness's own login runs when a worker is started with no model flag, which the fleet cannot name. A harness the host kit holds with no model placed — none listed yet, or research pending — starts its workers on it, Codex too.
+What a harness's own login runs when a worker is started with no model flag, which the fleet cannot name. A harness the host kit holds with no model placed — none listed yet, or research pending — starts its workers on it. Codex automatic starts use this only when the user has no model preference.
 _Avoid_: fallback model, `default` alone (a model id Claude Code lists)
 
 **Codex effort**:

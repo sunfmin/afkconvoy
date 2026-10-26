@@ -377,7 +377,7 @@ fn a_codex_worker_starts_in_its_role_under_a_user_directory_of_the_fleet_s_own()
     for (file, text) in [
         (".codex/auth.json", "{\"a\": \"login\"}\n"),
         (".codex/AGENTS.md", "the user's rules\n"),
-        (".codex/config.toml", "model = \"theirs\"\n"),
+        (".codex/config.toml", "model = \"gpt-5.5\"\n"),
         (".codex/hooks.json", "{\"hooks\": {}}\n"),
         (".codex/skills/theirs/SKILL.md", "---\nname: theirs\ndescription: theirs\n---\n"),
         (".codex/memories/theirs.md", "theirs\n"),
@@ -600,7 +600,7 @@ fn assert_worktree_trusted(world: &World, dir: &Path) {
 #[test]
 fn a_codex_worker_outside_a_role_trusts_its_worktree_without_editing_the_user_s_config() {
     let world = unbound_codex();
-    let config = "model = \"theirs\"\n";
+    let config = "model = \"gpt-5.5\"\n";
     write(&world.home(), ".codex/config.toml", config);
     write(&world.home(), ".codex/auth.json", "{}\n");
     world.issue(7, &["ready-for-agent"]);
@@ -920,6 +920,7 @@ fn a_hook_of_a_role_s_limits_for_codex_runs_beside_the_guard_and_never_in_its_pl
 #[test]
 fn a_stage_record_of_a_codex_worker_names_codex() {
     let world = bound();
+    write(&world.home(), ".codex/config.toml", "model = 'gpt-5.5'\n");
     world.issue(7, &["flow:feature"]);
     assert_eq!(did(&tick(&world, 1000).ok())[0], "dispatch 7 done");
     let dir = worktree(&world, 7);
@@ -1164,7 +1165,7 @@ fn a_codex_worker_is_given_the_host_user_s_skills_and_rules_and_its_role_s_skill
     for (file, text) in [
         (".codex/auth.json", "{\"a\": \"login\"}\n".to_string()),
         (".codex/AGENTS.md", "the user's rules\n".to_string()),
-        (".codex/config.toml", "model = \"theirs\"\n".to_string()),
+        (".codex/config.toml", "model = \"gpt-5.5\"\n".to_string()),
         (".codex/hooks.json", "{\"hooks\": {}}\n".to_string()),
         (".codex/skills/theirs/SKILL.md", skill("theirs")),
         (".codex/skills/implement/SKILL.md", skill("implement")),
