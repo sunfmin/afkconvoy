@@ -20,9 +20,9 @@ use crate::flows::{READY_LABEL_SAYS, create_missing};
 use crate::gh::{GitHub, Tracker};
 use crate::git::Repo;
 use crate::host_settings::To;
+use crate::legacy::Legacy;
 use crate::probe::refused_public;
 use crate::topic::See;
-use crate::train::Train;
 
 /// What the repo label says of itself in the tracker.
 const REPO_LABEL_SAYS: &str = "afkconvoy: an issue of the repo this names, which its fleet works";
@@ -192,7 +192,7 @@ pub fn findings(repo: &Repo) -> Vec<Finding> {
 
 /// What the fleet of the checkout `repo` holds of the tracker it says now:
 /// its claims on that tracker's issues, those stamped with `host`, and the
-/// PRs of that tracker's issues on the landing train — each said.
+/// PRs of that tracker's issues on the base branch — each said.
 fn held(repo: &Repo, config: &Config, host: &str) -> Result<Vec<String>> {
     let scan = Scan::read(repo)?;
     let issue = |number: u64| scan.tracker.issue(number);
@@ -203,7 +203,7 @@ fn held(repo: &Repo, config: &Config, host: &str) -> Result<Vec<String>> {
     if !claims.is_empty() {
         held.push(format!("it holds the claims on {}", claims.join(", ")));
     }
-    let joins = Train::read(repo, config)?.joins(repo, &scan.tracker)?;
+    let joins = Legacy::read(repo, config)?.joins(repo, &scan.tracker)?;
     let riding: Vec<String> = joins
         .iter()
         .filter_map(|join| {

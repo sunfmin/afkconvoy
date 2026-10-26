@@ -148,8 +148,6 @@ pub struct Panel {
     pub idle: bool,
     pub locks: Vec<u64>,
     pub lanes: Vec<Lane>,
-    /// The issues whose PR is on the landing train.
-    pub train: Vec<Card>,
     /// The issues that wait for a human, each with why and the line that
     /// answers it: the working set's `waiting_on_human`, as `doctor` gives it.
     /// The page lists them across every repo.
@@ -286,7 +284,6 @@ pub struct Host {
     /// and the rest wait their turn, next first.
     pub exclusive: Vec<Ticket>,
     pub gate_lanes: u64,
-    pub train_lanes: u64,
     /// The hours of its local time a fleet may put it to sleep in; `None`
     /// where its host settings keep it awake.
     pub sleep_hours: Option<Hours>,
@@ -312,7 +309,6 @@ impl Host {
             host_inspected: inspection::last_on_host(),
             exclusive: shared.exclusive,
             gate_lanes: settings.gate_lanes(),
-            train_lanes: settings.train_lanes(),
             sleep_hours: host_settings::host_sleep(),
             kit: crate::kit::load().map_err(|error| format!("{error:#}")),
             worker_health: crate::health::show(),
@@ -359,7 +355,7 @@ fn lanes(seen: &Seen) -> Vec<Lane> {
     }
     let nodes = vec![
         Node::new(WORK, "one worker writes the PR".to_string()),
-        Node::new(LAND, "the same worker joins the train".to_string()),
+        Node::new(LAND, "the same worker lands in a turn".to_string()),
     ];
     vec![Lane { name: BACKLOG.to_string(), nodes }]
 }
@@ -423,7 +419,6 @@ impl Panel {
             idle: false,
             locks: vec![],
             lanes: vec![],
-            train: vec![],
             to_human: vec![],
             proposals: fleet.proposals.clone(),
             off: vec![],
@@ -458,8 +453,7 @@ impl Panel {
             match mine.status {
                 // Settled or let go by the same tick: there is nothing left of them to show.
                 Status::Landed | Status::Closed | Status::Gone => {}
-                Status::Joined => put.panel.train.push(card),
-                Status::Joining => put.at(Some(LAND), card, List::AtWork),
+                Status::Landing => put.at(Some(LAND), card, List::AtWork),
                 Status::NoPr | Status::AtStage => put.at(None, card, List::AtWork),
             }
         }
@@ -616,7 +610,7 @@ pub fn read(
     let state = |issue: u64| {
         Worktree::worker_of(source.as_ref()?, issue, fleet.now).ok().map(|(_, state)| state)
     };
-    let at_work = |status| matches!(status, Status::NoPr | Status::AtStage | Status::Joining);
+    let at_work = |status| matches!(status, Status::NoPr | Status::AtStage | Status::Landing);
     let mut workers = vec![];
     for mine in set.mine.iter().filter(|mine| at_work(mine.status)) {
         if let Some(state) = state(mine.number) {
@@ -637,9 +631,7 @@ pub fn read(
     panel.held = set.mine.len() - panel.declared;
     panel.bound = set.bound(fleet.config.concurrency()) - panel.declared;
     panel.frontier = set.frontier.len();
-    let on_train = set.on_train();
-    panel.idle = afkconvoy_core::host_sleep::idle(set.held(), panel.frontier, on_train)
-        && !set.cut_running();
+    panel.idle = afkconvoy_core::host_sleep::idle(set.held(), panel.frontier) && !set.cut_running();
     panel.cut = set.cut.as_ref().and_then(|row| crate::cut::says(&fleet.repo, row));
     // Soft: a team or a host kit that cannot be read names no role.
     if let (Ok(team), Ok((kit, _))) = (flows.team(), crate::kit::running()) {
@@ -1056,11 +1048,7 @@ fn host_part(out: &mut String, page: &Page) {
         let lanes: std::collections::BTreeSet<_> =
             host.exclusive.iter().map(afkconvoy_core::exclusive::lane).collect();
         out.push_str("<section class=\"exclusive\"><h2>Command lanes</h2>");
-        let _ = write!(
-            out,
-            "<p>{} worker lanes · {} train lanes</p>",
-            host.gate_lanes, host.train_lanes
-        );
+        let _ = write!(out, "<p>{} worker lanes</p>", host.gate_lanes);
         for lane in lanes {
             let _ = write!(out, "<h3>{} lane</h3><ul class=\"cards\">", esc(&lane));
             for (place, ticket) in host
@@ -1445,7 +1433,6 @@ fn repo(out: &mut String, at: usize, panel: &Panel) {
         gauge(out, "Declared", panel.declared, None);
     }
     gauge(out, "Queued", panel.queued(), None);
-    gauge(out, "On the train", panel.train.len(), None);
     gauge(out, "With a human", panel.with_a_human(), None);
     out.push_str("</dl></header>\n");
 
@@ -1579,24 +1566,6 @@ fn repo(out: &mut String, at: usize, panel: &Panel) {
         );
     }
 
-    let _ = write!(
-        out,
-        "<section class=\"train\"><h2>Landing train</h2><p class=\"by\">{}, gated, then landed \
-         on {} together</p>",
-        count(panel.train.len(), "PR"),
-        esc(&panel.base_branch),
-    );
-    let _ = write!(
-        out,
-        "<div class=\"rail\"><span class=\"base\">{}</span></div>",
-        esc(&panel.base_branch)
-    );
-    cards(out, "cars", None, &panel.train);
-    if panel.train.is_empty() {
-        out.push_str("<p class=\"none\">No PR is on the train.</p>");
-    }
-    out.push_str("</section>\n");
-
     if !panel.patrols.is_empty() {
         out.push_str("<section class=\"patrols\"><h2>Patrols</h2><ul class=\"cards\">");
         for row in &panel.patrols {
@@ -1653,7 +1622,6 @@ mod tests {
             idle: true,
             locks: vec![],
             lanes: vec![],
-            train: vec![],
             to_human: vec![],
             proposals: None,
             off: vec![],
@@ -1683,7 +1651,6 @@ mod tests {
             host_inspected: None,
             exclusive: vec![],
             gate_lanes: 1,
-            train_lanes: 1,
             sleep_hours: Some(SLEEP_HOURS),
             kit: Ok(Kit::default()),
             worker_health: serde_json::json!({}),
@@ -1773,46 +1740,6 @@ mod tests {
     }
 
     #[test]
-    fn the_host_s_exclusive_queue_shows_what_runs_alone_and_what_waits() {
-        let ticket = |command: &str, issue, ran| Ticket {
-            number: 1,
-            pid: 1,
-            command: command.into(),
-            dir: "/w/acme".into(),
-            issue,
-            train: false,
-            repo_lane: None,
-            repo: None,
-            is_turn: false,
-            asked: 700,
-            ran,
-        };
-        let running = ticket("cargo test <all>", Some(12), Some(820));
-        let waiting = ticket("make bench", None, None);
-        assert_eq!(exclusive_says(&running, 0, 1000), "runs alone, for 3m · #12 in acme");
-        assert_eq!(exclusive_says(&waiting, 1, 1000), "waits behind 1, for 5m · in acme");
-        assert_eq!(exclusive_says(&ticket("x", None, None), 0, 1000), "about to run · in acme");
-        let mut host = host_of(1000);
-        assert!(!render(&page_of(host.clone(), vec![])).contains("Run alone on this host"));
-        let mut train = ticket("train gate", None, None);
-        train.train = true;
-        train.number = 2;
-        train.asked = 900;
-        host.exclusive = afkconvoy_core::exclusive::in_order(vec![running, waiting, train]);
-        let page = render(&page_of(host, vec![]));
-        assert!(
-            page.contains("<h2>Command lanes</h2>")
-                && page.contains("<h3>train lane</h3>")
-                && page.contains("<h3>worker lane</h3>"),
-            "{page}"
-        );
-        assert!(page.contains("<code>cargo test &lt;all&gt;</code>"), "{page}");
-        assert!(page.find("cargo test").unwrap() < page.find("make bench").unwrap());
-        assert!(page.find("train gate").unwrap() < page.find("cargo test").unwrap());
-        assert!(page.find("train gate").unwrap() < page.find("make bench").unwrap());
-    }
-
-    #[test]
     fn a_paused_harness_is_shown_with_since_when_and_why() {
         let mut host = host_of(1000 + 7200);
         host.paused = vec![afkconvoy_core::casting::Paused {
@@ -1853,7 +1780,7 @@ mod tests {
     fn a_title_is_never_read_as_markup() {
         let mut part = part_of("r", 1000);
         part.who = Some(("alpha".into(), "h1".into()));
-        part.train = vec![Card::new(7, "<script>alert(\"x\")</script> & more")];
+        part.off = vec![Card::new(7, "<script>alert(\"x\")</script> & more")];
         let mut page = page_of(host_of(1000), vec![part]);
         let html = render(&page);
         assert!(html.contains("&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt; &amp; more"));
@@ -1944,7 +1871,7 @@ mod tests {
             assert!(page.contains(&format!("as the operator on this host: <b>{found}</b> · five worktrees of 14 GiB · did: removed /w/a/target")), "{page}");
         }
         let page = render(&page_of(host, vec![]));
-        assert!(page.contains("did: removed /w/a/target · on the landing train: #451"), "{page}");
+        assert!(page.contains("did: removed /w/a/target · on the base branch: #451"), "{page}");
     }
 
     #[test]

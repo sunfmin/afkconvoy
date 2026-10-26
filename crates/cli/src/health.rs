@@ -619,34 +619,6 @@ pub fn holding(worktree: &Worktree) -> bool {
     })
 }
 
-/// Bounds a continuous health hold of this train session, independently of
-/// changing diagnosis evidence or failed observations. A healthy session or
-/// a different terminal starts no time on the previous worker's account.
-pub(crate) fn train_hold_expired(worktree: &Worktree, now: u64) -> Result<bool> {
-    let file = worktree.note("convoy-train-health-held")?;
-    let terminal = worktree.terminal()?;
-    if !holding(worktree) || terminal.is_none() {
-        match std::fs::remove_file(file) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e.into()),
-        }
-        return Ok(false);
-    }
-    let terminal = terminal.context("held train terminal")?;
-    let kept = std::fs::read(&file)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<(String, u64)>(&bytes).ok());
-    let since = match kept {
-        Some((held, since)) if held == terminal => since,
-        _ => {
-            std::fs::write(file, serde_json::to_vec(&(&terminal, now))?)?;
-            now
-        }
-    };
-    Ok(now.saturating_sub(since) >= RECOVERY_SECONDS)
-}
-
 pub fn background_since(worktree: &Worktree) -> Option<u64> {
     read().ok()?.workers.into_iter().find(|o| o.path == worktree.path)?.background
 }
@@ -708,10 +680,7 @@ pub fn reconcile(
         }
         if set.mine.iter().any(|mine| {
             mine.number == claim.number
-                && matches!(
-                    mine.status,
-                    Status::Joined | Status::Landed | Status::Closed | Status::Gone
-                )
+                && matches!(mine.status, Status::Landed | Status::Closed | Status::Gone)
         }) {
             if let Some(worktree) = Worktree::of_issue(&source, claim.number)? {
                 book.workers.retain(|o| o.path != worktree.path);
@@ -808,14 +777,6 @@ pub fn reconcile(
                 Worktree::named(&source, &afkconvoy_core::patrol::checkout_name(name))?
         {
             jobs.push((None, Some(name.to_string()), worktree));
-        }
-    }
-    if set.locks.is_empty()
-        && let Some(worktree) = Worktree::of_train(&source)?
-    {
-        let train = crate::train::Train::read(&fleet.repo, &fleet.config)?;
-        if train.tip != train.base {
-            jobs.push((None, Some("@train".into()), worktree));
         }
     }
     if set.locks.is_empty()

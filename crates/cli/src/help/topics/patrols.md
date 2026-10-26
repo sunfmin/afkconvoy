@@ -49,7 +49,7 @@ Two limits hold what workers take in. The repo's `intake_limit` bounds the open 
 
 A fault every issue shares — the base branch is broken, so every gate is red whatever its PR holds — is not one issue's to escalate. In a bound repo a patrol or a stage that finds it raises the lock; in an unbound repo a worker or an inspection does, though it has no role. The train worker does in either. First prove the base branch red the same way gated alone in a clean checkout, then find the open issue for the fix or open one, make it dispatchable — with the ready label in an unbound repo, intake to a workflow in a bound one — and run `afkconvoy lock --issue <n>` on it. An open issue carrying the repo's lock label is a fleet lock.
 
-While one stands the fleet works lock issues only: nothing else is dispatched, no patrol runs, no PR of another issue joins the landing train, and workers already running are left alone. The lock issue is worked as any issue is: in a bound repo it needs a flow label too. Closing the last lock issue ends the lock; a stage that declared `escalate` or stayed silent before it closed then runs again, which is no rework. What trips you up: `afkconvoy lock --help`.
+While one stands the fleet works lock issues only: nothing else is dispatched, no patrol runs, no PR of another issue lands in a turn, and workers already running are left alone. The lock issue is worked as any issue is: in a bound repo it needs a flow label too. Closing the last lock issue ends the lock; a stage that declared `escalate` or stayed silent before it closed then runs again, which is no rework. What trips you up: `afkconvoy lock --help`.
 
 ## Where to read on
 

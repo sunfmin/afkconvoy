@@ -249,7 +249,7 @@ impl Settings {
         self.gate_lanes.unwrap_or(GATE_LANES).max(1)
     }
     pub fn train_lanes(&self) -> u64 {
-        self.train_lanes.unwrap_or(TRAIN_LANES).max(1)
+        0
     }
 
     /// The sleep hours it says, else the default.
@@ -290,7 +290,7 @@ impl Settings {
             "admit_inspect_after": self.admit_inspect_after.unwrap_or(SPAN),
             "exclusive_seconds": self.exclusive_seconds(),
             "gate_lanes": self.gate_lanes(),
-            "train_lanes": self.train_lanes(),
+            "ignored": self.train_lanes.map(|_| "train_lanes is ignored: turns land directly; only gate_lanes applies"),
             "panel": self.panel_port(),
             "watch_dir": crate::host_watch::directory(self).ok(),
             "watch_every": self.watch_every(),

@@ -357,7 +357,7 @@ fn an_issue_walks_a_four_stage_workflow_to_the_base_branch() {
         "Your ONLY job is to get that PR on the train.".to_string(),
         "**Your role:** `lander`, which you were started in. Perform its skill `join`".to_string(),
         // It gates and joins with the commands every worker does…
-        format!("   {own} gate --train\n"),
+        format!("   {own} gate --land\n"),
         format!("   {own} land --issue 7\n"),
         format!("```bash\n{own} wake\n```"),
         // …and a conflict on joining is its own to resolve.

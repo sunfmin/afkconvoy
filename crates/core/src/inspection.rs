@@ -90,21 +90,21 @@ pub const SAID: &str = "said";
 
 /// What an inspection said as it ended: what held the work back — and what
 /// it could not fix, if anything — and each thing it did; with the PRs of the
-/// changes of the repo it put on the landing train.
+/// changes of the repo it put on the base branch.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Finding {
     /// What held the work back, where and why, in its own words.
     pub said: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub did: Vec<String>,
-    /// The PRs it put on the landing train (`afkconvoy land --inspection`),
+    /// The PRs it put on the base branch (`afkconvoy land --inspection`),
     /// which the train lands as any other.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub prs: Vec<u64>,
 }
 
 impl Finding {
-    /// What it said and did, and its PRs on the landing train, in one line:
+    /// What it said and did, and its PRs on the base branch, in one line:
     /// what the log keeps.
     pub fn line(&self) -> String {
         let each = |items: &[String]| items.iter().map(|item| one_line(item)).collect::<Vec<_>>();
@@ -113,7 +113,7 @@ impl Finding {
             said.push(format!("did: {}", each(&self.did).join("; ")));
         }
         if !self.prs.is_empty() {
-            said.push(format!("on the landing train: {}", numbered(&self.prs)));
+            said.push(format!("on the base branch: {}", numbered(&self.prs)));
         }
         said.join(" · ")
     }
@@ -209,7 +209,7 @@ pub fn over(started: u64, said: bool, gone: bool, now: u64) -> bool {
 }
 
 /// The comment left on the hot worker's issue once its inspection is over:
-/// what held the work back, what it did and its PRs on the landing train, or
+/// what held the work back, what it did and its PRs on the base branch, or
 /// that it said nothing in time. A marker of its own: it is no stage record.
 pub fn comment(worker: &str, why: &str, by: &str, finding: Option<&Finding>) -> String {
     let word = finding.map_or("nothing", |_| SAID);
@@ -230,7 +230,7 @@ pub fn comment(worker: &str, why: &str, by: &str, finding: Option<&Finding>) -> 
     }
     if !finding.prs.is_empty() {
         said.push_str(&format!(
-            "\nIts change of the repo is on the landing train, which lands it as any other: {}.\n",
+            "\nIts change of the repo is on the base branch, which lands it as any other: {}.\n",
             numbered(&finding.prs)
         ));
     }
@@ -261,7 +261,7 @@ Make it yourself, in your checkout, and land it as any worker's change lands —
 1. Commit it on your checkout's branch, `{branch}`, and push that: `git push origin HEAD`.
 2. Open its PR against `{base_branch}`, saying what it changes and why, and closing no issue:
    `gh pr create --base {base_branch} --head {branch} --title '<title>' --body '<what and why>'`.
-3. Put it on the landing train: `{afkconvoy} land --inspection`. It takes a turn: merges the
+3. Put it on the base branch: `{afkconvoy} land --inspection`. It takes a turn: merges the
    train's green tip, gates, records green and joins before releasing the turn. On `joined` or
    `merged` it is done: the train lands on that record, and you need not wait for it. On
    `conflict`, resolve every file, commit the merge and ask again. Red: fix your change, commit
@@ -302,7 +302,7 @@ and why — and what you could not fix, if anything, and why — to a file, and 
 {afkconvoy} inspected --text-file <file> [--did '<what you did>']...
 ```
 Each is a line of the fleet's log, shown by `afkconvoy doctor` and the panel{shown_on}, and so is
-each PR you put on the landing train. What you could not fix, the next episode inspects again.
+each PR you put on the base branch. What you could not fix, the next episode inspects again.
 ";
 
 /// Where an inspection works, and how it runs afkconvoy there: what every
@@ -315,7 +315,7 @@ pub struct Operator<'a> {
     pub branch: &'a str,
     /// The base branch, which the PR of a change is opened against.
     pub base_branch: &'a str,
-    /// How it runs afkconvoy from its checkout: `inspected`, `gate --train`
+    /// How it runs afkconvoy from its checkout: `inspected`, `gate --land`
     /// and `land --inspection` follow it.
     pub afkconvoy: &'a str,
 }
@@ -461,7 +461,7 @@ mod tests {
         );
         let changed = Finding { prs: vec![451, 452], ..fixed.clone() };
         let line = changed.line();
-        assert!(line.ends_with(" · on the landing train: #451, #452"), "{line}");
+        assert!(line.ends_with(" · on the base branch: #451, #452"), "{line}");
         // As versions before kept it: what it found, or what it left, and no PR.
         let kept: Finding = serde_json::from_str(r#"{"found": "heavy", "said": "x"}"#).unwrap();
         assert_eq!((kept.said.as_str(), kept.did.len(), kept.prs.len()), ("x", 0, 0));
@@ -498,10 +498,7 @@ mod tests {
         assert!(!said.contains(crate::stage_record::STAGE_RECORD), "{said}");
         let changed = Finding { prs: vec![451], ..finding };
         let said = comment("#7", "past 4.0 cores for 120s", "stock-consult", Some(&changed));
-        assert!(
-            said.contains("on the landing train, which lands it as any other: #451."),
-            "{said}"
-        );
+        assert!(said.contains("on the base branch, which lands it as any other: #451."), "{said}");
         let nothing = comment("#7", "past 4.0 cores for 120s", "stock-consult", None);
         assert!(nothing.contains("found=nothing") && nothing.contains("60 minutes"), "{nothing}");
     }

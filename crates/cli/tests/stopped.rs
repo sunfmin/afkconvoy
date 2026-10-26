@@ -252,7 +252,7 @@ fn show(world: &World, screen: &[&str]) {
 /// What Claude Code's terminal shows as it waits on a gate it started in the
 /// background, with a monitor on it.
 const WAITING: [&str; 5] = [
-    "⏺ Monitor(gate --train finishing for #7)",
+    "⏺ Monitor(gate --land finishing for #7)",
     "✻ Worked for 14s · done 11:03 PM · 1 shell, 1 monitor still running",
     "❯ ",
     "─────",

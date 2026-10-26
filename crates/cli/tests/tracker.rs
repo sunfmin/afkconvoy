@@ -376,7 +376,7 @@ stages:
     on: { pass: done }
 ```
 ";
-/// `build`, then `review`, then the landing train.
+/// `build`, then `review`, then a turn that lands its PR.
 const SHIP: &str = "\
 ```yaml
 stages:

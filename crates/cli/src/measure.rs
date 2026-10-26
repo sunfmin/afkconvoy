@@ -3,7 +3,7 @@
 
 use std::path::Path;
 
-use afkconvoy_core::train::Built;
+use afkconvoy_core::landing::Built;
 use anyhow::{Context, Result};
 
 use crate::git::Repo;

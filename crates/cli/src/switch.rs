@@ -109,14 +109,11 @@ pub fn on_host(
             }
             if matches!(which, Which::All) {
                 let source = Source::of(&repo)?;
-                for (name, worktree, caster) in [
-                    ("landing train", Worktree::of_train(&source)?, false),
-                    (
-                        "caster",
-                        Worktree::named(&source, afkconvoy_core::casting::CASTER_WORKTREE)?,
-                        true,
-                    ),
-                ] {
+                for (name, worktree, caster) in [(
+                    "caster",
+                    Worktree::named(&source, afkconvoy_core::casting::CASTER_WORKTREE)?,
+                    true,
+                )] {
                     if let Some(worktree) =
                         worktree.filter(|w| w.terminal().ok().flatten().is_some())
                     {

@@ -7,7 +7,6 @@
 extern crate flux_alloc;
 extern crate flux_core;
 
-pub mod abandon;
 pub mod admission;
 pub mod before;
 pub mod blocked;
@@ -31,10 +30,12 @@ pub mod hot;
 pub mod inspection;
 pub mod intake;
 pub mod joining;
+pub mod landing;
 pub mod launch;
 pub mod layout;
 pub mod lease;
 pub mod left;
+pub mod legacy;
 pub mod line;
 pub mod lock;
 pub mod patrol;
@@ -60,7 +61,6 @@ pub mod team;
 pub mod tick;
 pub mod tools;
 pub mod tracker;
-pub mod train;
 pub mod transition;
 pub mod verdict;
 pub mod waiting;

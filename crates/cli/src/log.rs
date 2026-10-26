@@ -148,7 +148,7 @@ pub enum What {
     /// The inspection of a hot worker ended, or none was started: `found` is
     /// how it ended — `said`, `nothing` in time, or `none` where nobody
     /// inspects it; `said` is what held the work back, what it did and the
-    /// PRs it put on the landing train, or why.
+    /// PRs it put on the base branch, or why.
     Inspected { worker: String, found: String, said: String },
     /// Admission held back for `reason` past its span, and the host's
     /// inspection started (`crate::inspection`), `by` the role it was
@@ -158,7 +158,7 @@ pub enum What {
     /// ended — `said`, `nothing` in time, `failed` where it could not be
     /// started, or `covered` where another fleet of the host inspected it in
     /// the episode; `said` is what held the work back, what it did and the
-    /// PRs it put on the landing train, or why.
+    /// PRs it put on the base branch, or why.
     HostInspected { reason: String, found: String, said: String },
     /// A watch started in the operator's directory for these reasons.
     WatchStarted { id: String, directory: String, harness: String, reasons: Vec<String> },
@@ -993,12 +993,12 @@ mod tests {
         let host = What::HostInspected {
             reason: "disk".into(),
             found: "said".into(),
-            said: "the gate built in /tmp · on the landing train: #451".into(),
+            said: "the gate built in /tmp · on the base branch: #451".into(),
         };
         let host = Entry { what: host, ..tick(1) }.event().unwrap();
         assert_eq!(
             host.1,
-            "the host, disk: said · the gate built in /tmp · on the landing train: #451"
+            "the host, disk: said · the gate built in /tmp · on the base branch: #451"
         );
         let starts = What::Inspecting { worker: "#7".into(), by: "stock-consult".into() };
         let starts = Entry { what: starts, ..tick(1) };

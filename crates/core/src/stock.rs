@@ -169,9 +169,7 @@ mod tests {
     #[test]
     fn a_fleet_fault_skips_the_consult_without_consuming_a_later_work_hand_off() {
         let work = escalation_comment("work", None, "The schema is ambiguous.");
-        for fault in
-            [FleetFault::WorkerStart, FleetFault::WorktreeTrust, FleetFault::TrainAbandoned]
-        {
+        for fault in [FleetFault::WorkerStart, FleetFault::WorktreeTrust] {
             let faulted = fault.comment("fault", None, "Evidence from the host.");
             assert_eq!(FleetFault::read(&faulted), Some(fault));
             assert!(!due([faulted.as_str()]));

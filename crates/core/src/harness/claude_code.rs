@@ -693,7 +693,7 @@ mod tests {
     fn its_footer_says_whether_background_work_of_its_own_runs() {
         let screen = |lines: &[&str]| lines.iter().map(|line| line.to_string()).collect::<Vec<_>>();
         let waiting = screen(&[
-            "⏺ Monitor(gate --train finishing for #512)",
+            "⏺ Monitor(gate --land finishing for #512)",
             "✻ Worked for 14s · done 11:03 PM · 1 shell, 1 monitor still running",
             "─────",
             "❯ ",

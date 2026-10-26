@@ -15,7 +15,7 @@
 //! the host shares, for `doctor` and the panel to show beside admission's
 //! reading. Only a proven red base branch in an unbound repo has it open
 //! an issue for the fix and raise the fleet lock; it hands nothing to a human.
-//! Any other change of the repo it makes itself, and puts on the landing train with
+//! Any other change of the repo it makes itself, and puts on the base branch with
 //! `afkconvoy land --inspection` (`land`), on no issue.
 //!
 //! One inspection runs on the host at a time, of either kind, across its
@@ -37,10 +37,10 @@ use afkconvoy_core::inspection::{
     self, CHECKOUT, Fields, Finding, Hot, Inspected, Inspector as Who, Kind, Operator, SAID,
     inspector, over,
 };
+use afkconvoy_core::landing::Of;
 use afkconvoy_core::role::{Facts, On, Start, workflow_of};
 use afkconvoy_core::stage_record::history;
 use afkconvoy_core::stock;
-use afkconvoy_core::train::Of;
 use afkconvoy_core::worker::WorkerState;
 use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
@@ -257,7 +257,7 @@ pub struct Last {
     pub found: String,
     /// What held the work back, in its words.
     pub said: String,
-    /// Each thing it did, and the PRs it put on the landing train.
+    /// Each thing it did, and the PRs it put on the base branch.
     #[serde(default)]
     pub did: Vec<String>,
     #[serde(default)]
@@ -265,7 +265,7 @@ pub struct Last {
 }
 
 impl Last {
-    /// What it said and did, and its PRs on the landing train, in one line,
+    /// What it said and did, and its PRs on the base branch, in one line,
     /// as the log keeps it.
     pub fn line(&self) -> String {
         Finding { said: self.said.clone(), did: self.did.clone(), prs: self.prs.clone() }.line()
@@ -1047,7 +1047,7 @@ fn command(
 /// Ends `inspection` of the fleet of the checkout `repo`, which said
 /// `finding` — at `now` — and removes its checkout, its terminal with it →
 /// what to log of it: a line for each thing it did, then how it ended, with
-/// the PRs it put on the landing train. What cannot be done of it is said,
+/// the PRs it put on the base branch. What cannot be done of it is said,
 /// and the rest done all the same.
 fn end(repo: &Repo, inspection: Box<Inspection>, finding: Option<Finding>, now: u64) -> Vec<What> {
     // As its checkout says them last: one put on the train after it said.
@@ -1167,7 +1167,7 @@ fn inspection_checkout(repo: &Repo) -> Result<Worktree> {
 
 /// `afkconvoy inspected`: keeps what the inspection in the checkout
 /// `checkout` said — what held the work back, and each thing it `did` — with
-/// the PRs it put on the landing train, for its `run` to log, leave on the
+/// the PRs it put on the base branch, for its `run` to log, leave on the
 /// issue or keep beside admission's reading, and to end it.
 pub fn inspected(checkout: &Repo, said: &str, did: &[String]) -> Result<Value> {
     if said.trim().is_empty() {
@@ -1186,7 +1186,7 @@ pub fn inspected(checkout: &Repo, said: &str, did: &[String]) -> Result<Value> {
 }
 
 /// `afkconvoy land --inspection`: the inspection or watch in checkout `repo` puts
-/// the PR of its branch there on the landing train — a change of the repo it
+/// the PR of its branch there on the base branch — a change of the repo it
 /// made itself, on no issue — as a worker's joins it (`train::join`), its
 /// join commit naming the inspection on `host` where a worker's names its
 /// issue. A PR that joined, or that the base branch already holds, is kept

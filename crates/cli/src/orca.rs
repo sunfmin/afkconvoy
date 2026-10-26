@@ -13,12 +13,12 @@ use afkconvoy_core::guard::WritesNothing;
 use afkconvoy_core::harness::Harness;
 use afkconvoy_core::inspection::{self, Finding, Kind};
 use afkconvoy_core::launch::{TrustGap, Waited};
+use afkconvoy_core::legacy::TRAIN_WORKTREE;
 use afkconvoy_core::line::niced;
 use afkconvoy_core::prompt::brief_pointer;
 use afkconvoy_core::question;
 use afkconvoy_core::stopped::Nudged;
 use afkconvoy_core::tools::{Found, add_checkout};
-use afkconvoy_core::train::TRAIN_WORKTREE;
 use afkconvoy_core::worker::{
     AgentReport, WorkerState, is_worktree_named, lead, short_branch, worker_state,
 };
@@ -59,7 +59,7 @@ const INSPECTED_FILE: &str = "convoy-inspected.json";
 /// What the inspection in this checkout was started on: a hot worker, or the
 /// host.
 const INSPECTION_KIND_FILE: &str = "convoy-inspection-kind";
-/// The PRs the inspection in this checkout put on the landing train.
+/// The PRs the inspection in this checkout put on the base branch.
 const INSPECTION_PRS_FILE: &str = "convoy-inspection-prs";
 /// What the cut in a checkout is, and what it did so far (`cut::Record`).
 const CUT_FILE: &str = "convoy-cut.json";
@@ -903,7 +903,7 @@ impl Worktree {
             .with_context(|| format!("cannot write {}", file.display()))
     }
 
-    /// The PRs the inspection in this checkout put on the landing train,
+    /// The PRs the inspection in this checkout put on the base branch,
     /// oldest first.
     pub fn inspection_prs(&self) -> Result<Vec<u64>> {
         let kept = std::fs::read_to_string(self.note(INSPECTION_PRS_FILE)?).unwrap_or_default();

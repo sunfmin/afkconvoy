@@ -296,7 +296,7 @@ impl Limits {
             if let Some(pushed) = every.or(to_base) {
                 return Some(format!(
                     "`git push … {pushed}` pushes the base branch `{}`: nothing reaches it \
-                     except through the landing train. Push your own branch only",
+                     except through a landing turn. Push your own branch only",
                     self.base_branch
                 ));
             }
@@ -586,7 +586,7 @@ fn host_change(what: &str) -> String {
 }
 
 fn merging() -> String {
-    "merging a PR is refused: a finished PR reaches the base branch through the landing train, \
+    "merging a PR is refused: a finished PR reaches the base branch through a landing turn, \
      and a worker never merges one"
         .to_string()
 }

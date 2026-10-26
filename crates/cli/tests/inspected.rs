@@ -1,7 +1,7 @@
 //! `afkconvoy inspected`: an inspection, the operator on its host, says what
 //! held the work back and what it did, from the checkout it was started in,
 //! for its `run` to log and keep. And `afkconvoy land --inspection`: a change
-//! of the repo it made itself lands through the landing train, on no issue.
+//! of the repo it made itself lands through a landing turn, on no issue.
 
 use crate::common;
 
@@ -150,7 +150,7 @@ fn issue_writes(world: &World) -> Vec<Vec<String>> {
 }
 
 /// An inspection in `world` makes a change of the repo, gates it and puts it
-/// on the landing train; the train lands it on the base branch, and no issue
+/// on the base branch; the train lands it on the base branch, and no issue
 /// is opened, closed or labelled for it.
 fn lands_on_no_issue(world: &World, name: &str) {
     let checkout = operator_on_branch(world, name);

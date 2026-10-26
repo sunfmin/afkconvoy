@@ -84,7 +84,7 @@ pub fn raised_comment(role: Option<&str>) -> String {
     };
     format!(
         "{marker}\n**afkconvoy** — {by} raised a fleet lock on this issue. While it is open the \
-         fleet works lock issues only, and no PR of another issue joins the landing train. \
+         fleet works lock issues only, and no PR of another issue lands in a turn. \
          Closing this issue ends the lock."
     )
 }

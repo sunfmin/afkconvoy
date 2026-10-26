@@ -12,7 +12,6 @@ use afkconvoy_core::plan::{Status, WorkingSet, handed_by};
 use afkconvoy_core::position::Position;
 use afkconvoy_core::takeover::run_said;
 use afkconvoy_core::tick::{Outcome, Pass, TickStep, empty_streak, pace, run_pass, sleeps_skipped};
-use afkconvoy_core::train::Built;
 use afkconvoy_core::wake::turn;
 use anyhow::{Result, anyhow};
 use serde_json::{Value, json};
@@ -33,7 +32,6 @@ use crate::hot::{self, Hot};
 use crate::inspection::Inspector;
 use crate::judge::judge;
 use crate::log::{self, Cause, Log};
-use crate::measure;
 use crate::panel::{self, Panel};
 use crate::patrol;
 use crate::precedent;
@@ -42,7 +40,6 @@ use crate::slow_gate;
 use crate::stage::Flows;
 use crate::stop::Stop;
 use crate::takeover::{at_start, reclaim, unlock};
-use crate::tend::{cut_train, tend_train};
 use crate::topic::{self, See};
 use crate::wake::{During, Wakes};
 use crate::watch::watch;
@@ -97,9 +94,6 @@ pub struct Ticked {
     lost: Vec<Lost>,
     /// The closed claimed issues, each with who closed it (`Fleet::closers`).
     closers: Vec<(u64, String)>,
-    /// What the train's worktree held when the pass cut it again
-    /// (`Fleet::cut_train`).
-    cut_train: Option<Built>,
     /// What the pass's start and end of a cut said (`Fleet::cut_said`).
     cut_said: Vec<log::What>,
     /// The open issues, each with the label that hands it to the fleet
@@ -148,6 +142,7 @@ pub fn tick(
     let _ = crate::paused::probe(repo, me.instance.as_str(), &me.host, me.now);
     let _ = crate::kit::refresh(repo, me.instance.as_str(), &me.host, me.now);
     let (mut fleet, mut open) = Fleet::read(repo, me.now)?;
+    let _ = crate::legacy::migrate(repo, &fleet.config, &fleet.gh, &me.host, me.now)?;
     if crate::repair::tend(&mut fleet, me)? == Outcome::Done {
         (fleet, open) = Fleet::read(repo, me.now)?;
     }
@@ -217,7 +212,6 @@ pub fn tick(
     let escalated = std::mem::take(&mut fleet.escalated);
     let forgotten = std::mem::take(&mut fleet.forgotten);
     let closers = std::mem::take(&mut fleet.closers);
-    let cut_train = fleet.cut_train.take();
     let cut_said = std::mem::take(&mut fleet.cut_said);
     let (concurrency, bound) = (fleet.config.concurrency(), pass.bound);
     let issues = &open.issues.rows;
@@ -244,7 +238,6 @@ pub fn tick(
         before: before.cloned(),
         lost,
         closers,
-        cut_train,
         cut_said,
         handed,
         saw,
@@ -328,11 +321,6 @@ fn carry_out(
             Ok(Outcome::Done)
         }
         TickStep::Forget { issue } => forget(fleet, me, issue),
-        TickStep::TendTrain => tend_train(fleet, me, agent),
-        TickStep::CutTrain => match read.set.outgrown_train {
-            Some(built) => cut_train(fleet, built),
-            None => Ok(Outcome::Nothing),
-        },
         TickStep::Judge { issue, start } => judge(fleet, me, agent, issue, start),
         TickStep::Watch { issue } => watch(fleet, me, agent, issue),
         TickStep::Advance { issue } => advance(fleet, me, agent, read.flows, issue),
@@ -404,8 +392,6 @@ fn words(step: TickStep) -> (&'static str, Option<u64>) {
     match step {
         TickStep::Settle { issue } => ("settle", Some(issue)),
         TickStep::Forget { issue } => ("forget", Some(issue)),
-        TickStep::TendTrain => ("tend_train", None),
-        TickStep::CutTrain => ("cut_train", None),
         TickStep::Judge { issue, .. } => ("judge", Some(issue)),
         TickStep::Watch { issue } => ("watch", Some(issue)),
         TickStep::Advance { issue } => ("advance", Some(issue)),
@@ -560,9 +546,8 @@ impl Ticked {
             return positions.iter().map(said).collect();
         }
         let said = |status: Status| match status {
-            Status::Joined => "on the landing train",
             Status::Landed | Status::Closed | Status::Gone => "landed or closed",
-            Status::NoPr | Status::Joining | Status::AtStage => "claimed, at work",
+            Status::NoPr | Status::Landing | Status::AtStage => "claimed, at work",
         };
         self.set.mine.iter().map(|mine| (mine.number, said(mine.status).to_string())).collect()
     }
@@ -592,14 +577,13 @@ impl Ticked {
 
     /// Whether this instance is idle after the tick, and whether it worked in
     /// it: held a claim — as its rebuild read the claims, or as its pass ended
-    /// — or had something on the landing train. A cut of mine going is work,
+    /// — or had something on the base branch. A cut of mine going is work,
     /// as a claim held is: it takes no slot, and keeps the host awake.
     pub fn idle(&self) -> (bool, bool) {
-        let on_train = self.set.on_train();
         let pass = &self.pass;
         let cutting = pass.cutting(&self.set);
-        let idle = host_sleep::idle(pass.held, pass.frontier_remaining, on_train) && !cutting;
-        (idle, host_sleep::worked(self.set.held().max(pass.held), on_train) || cutting)
+        let idle = host_sleep::idle(pass.held, pass.frontier_remaining) && !cutting;
+        (idle, host_sleep::worked(self.set.held().max(pass.held)) || cutting)
     }
 
     /// What the pass's start and end of a cut said, for the log to keep.
@@ -664,7 +648,6 @@ impl Ticked {
                     Outcome::Waiting(_) => "waiting",
                     Outcome::Continued => "continued",
                     Outcome::Restarted => "restarted",
-                    Outcome::Abandoned => "abandoned",
                     Outcome::Nothing => "nothing",
                     Outcome::Lost => "lost",
                     Outcome::Blocked => "blocked",
@@ -827,7 +810,7 @@ impl Ticked {
                     let since = waiting_since(*since, self.now);
                     Some(match words(*step).1 {
                         Some(issue) => format!("#{issue} ({since})"),
-                        None => format!("the train worker ({since})"),
+                        None => format!("the repo command ({since})"),
                     })
                 }
                 _ => None,
@@ -862,25 +845,6 @@ impl Ticked {
             if !issues.is_empty() {
                 parts.push(format!("{verb} {}", issues.join(", ")));
             }
-        }
-        for (outcome, said) in [
-            (Outcome::Done, "tended the train"),
-            (Outcome::Nudged, "nudged the train worker"),
-            (Outcome::Abandoned, "abandoned the train"),
-        ] {
-            if self.pass.did.contains(&(TickStep::TendTrain, outcome)) {
-                parts.push(said.to_string());
-            }
-        }
-        if let Some(cut) = self.cut_train {
-            let fresh = match cut.fresh {
-                Some(fresh) => format!("its fresh build {}", measure::said(fresh)),
-                None => "no fresh build on record".to_string(),
-            };
-            parts.push(format!(
-                "cut the train's worktree again (built {}, {fresh})",
-                measure::said(cut.built)
-            ));
         }
         if self.pass.did.contains(&(TickStep::Cast, Outcome::Done))
             && let Some(caster) = &self.set.caster

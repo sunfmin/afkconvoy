@@ -9,7 +9,7 @@ It is written as one repo holds a team: the team at the root, each role under `r
 
 ## What the team is for
 
-It is modelled on the one Cockroach Labs describes in "An experiment in running a hospital for code". An issue is a patient: routed, worked up into a plan, the plan reviewed, treated under it, the code reviewed, its record audited, and discharged — its PR joins the landing train. Each is a stage a new worker performs in one role: none reviews what it wrote, and none writes code before the plan passed. The Chief is a human: an issue reaches the Chief by escalating, and a consult is asked first.
+It is modelled on the one Cockroach Labs describes in "An experiment in running a hospital for code". An issue is a patient: routed, worked up into a plan, the plan reviewed, treated under it, the code reviewed, its record audited, and discharged — its PR lands in a turn. Each is a stage a new worker performs in one role: none reviews what it wrote, and none writes code before the plan passed. The Chief is a human: an issue reaches the Chief by escalating, and a consult is asked first.
 
 ## The team
 

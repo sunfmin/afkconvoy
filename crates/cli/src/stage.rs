@@ -721,7 +721,7 @@ impl Flows {
         };
         match history(workflow, records).place.position {
             Position::Escalating(stage, reason) => format!("{}: {}", stage.name, reason.brief()),
-            Position::Landing => "nothing to join the landing train with".to_string(),
+            Position::Landing => "nothing to land in a turn with".to_string(),
             at => match at.stage() {
                 Some(stage) => format!("{}: its stage cannot be carried on", stage.name),
                 None => "its workflow has ended".to_string(),

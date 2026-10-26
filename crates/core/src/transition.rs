@@ -202,7 +202,6 @@ pub fn skips_consult(body: &str) -> bool {
 pub enum FleetFault {
     WorkerStart,
     WorktreeTrust,
-    TrainAbandoned,
 }
 
 impl FleetFault {
@@ -210,7 +209,6 @@ impl FleetFault {
         match self {
             FleetFault::WorkerStart => "worker-start",
             FleetFault::WorktreeTrust => "worktree-trust",
-            FleetFault::TrainAbandoned => "train-abandoned",
         }
     }
 
@@ -219,7 +217,6 @@ impl FleetFault {
         match self {
             FleetFault::WorkerStart => "its worker start failed again",
             FleetFault::WorktreeTrust => "its harness's worktree trust gap",
-            FleetFault::TrainAbandoned => "its landing train was given up twice",
         }
     }
 
@@ -246,7 +243,6 @@ impl FleetFault {
         match fields.get("fault")? {
             "worker-start" => Some(FleetFault::WorkerStart),
             "worktree-trust" => Some(FleetFault::WorktreeTrust),
-            "train-abandoned" => Some(FleetFault::TrainAbandoned),
             _ => None,
         }
     }

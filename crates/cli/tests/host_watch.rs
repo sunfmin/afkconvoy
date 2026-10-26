@@ -259,7 +259,7 @@ fn a_watch_can_fix_a_fleet_fault_and_hand_it_back_while_a_human_decision_stays()
         "actually dispatches or continues",
         "An escalation that asks a human for a decision stays with the human",
         "afkconvoy-watch-<digits>",
-        "it takes a turn to merge, gate and join",
+        "it takes a turn to merge, gate and land",
         "afkconvoy land --inspection",
         "the next idle tick starts a due cut",
         "On the new version repeat the check",

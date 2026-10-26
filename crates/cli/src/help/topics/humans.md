@@ -14,7 +14,7 @@ A **fleet fault** escalates at once, with no consult asked and no consult claim 
 
 A watch is the operator for every repo on its host's checkout list (`afkconvoy run --help`, WATCH). It may fix the host cause of a fleet fault and hand the issue back with the current line `doctor` gives, checking the next tick dispatches or continues it. A lasting fix in any listed repo goes through its own checkout, gate and landing train; one that must reach an installed tool is followed through cutting, installation and a check on the new version. An escalation asking for a human decision stays with the human: the watch leaves it untouched and lists it in its record.
 
-For a failure, fix what failed first: `afkconvoy rule` starts the same stage anew, and what failed it once fails it again. In an unbound repo there is no stage to run again: fix what the comment names and put the ready label back, with the line the comment ends with. A PR the escalation kept is not started anew: the next worker takes it up — it reads the issue's comments, merges the base branch, gates and joins the landing train — so say on the issue what is to be done on it.
+For a failure, fix what failed first: `afkconvoy rule` starts the same stage anew, and what failed it once fails it again. In an unbound repo there is no stage to run again: fix what the comment names and put the ready label back, with the line the comment ends with. A PR the escalation kept is not started anew: the next worker takes it up — it reads the issue's comments, merges the base branch, gates and lands in a turn — so say on the issue what is to be done on it.
 
 ## An escalation with no position
 

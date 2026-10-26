@@ -845,7 +845,7 @@ pub struct Workflow {
     pub max_consecutive_rework: u64,
     #[field(Vec<Stage{v: v.n == n && v.roles == roles}>[n])]
     stages: Vec<Stage>,
-    /// Who gates the PR and joins the landing train.
+    /// Who gates the PR and lands in a turn.
     #[field(Option<Work[roles]>)]
     pub land: Option<Work>,
     /// How many roles its team has.

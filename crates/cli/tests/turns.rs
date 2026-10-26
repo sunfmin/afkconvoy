@@ -27,7 +27,7 @@ fn start(world: &World, dir: &Path, cache: &Path, issue: u64) -> Child {
         .command(env!("CARGO_BIN_EXE_afkconvoy"), dir)
         .env("XDG_CACHE_HOME", cache)
         .env("AFKCONVOY_ISSUE", issue.to_string())
-        .args(["gate", "--train"])
+        .args(["gate", "--land"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -52,7 +52,7 @@ fn workers_waiting(world: &World) -> usize {
 }
 
 #[test]
-fn two_turns_merge_gate_and_join_in_order_and_the_train_uses_the_last_record() {
+fn two_turns_land_in_order_with_a_record_of_each_landed_tree_and_no_line() {
     let world = World::new();
     let started = world.root.join("first-started");
     let release = world.root.join("release");
@@ -89,7 +89,7 @@ fn two_turns_merge_gate_and_join_in_order_and_the_train_uses_the_last_record() {
                 .remote(&[
                     "for-each-ref",
                     "--format=%(refname)",
-                    &format!("refs/convoy/gate/{tree}")
+                    &format!("refs/convoy/gate/{tree}-*")
                 ])
                 .is_empty()
         );
@@ -102,21 +102,21 @@ fn red_and_conflict_release_the_turn_without_joining() {
     world.set_gate("test ! -f bad.txt");
     seed(&world);
     let red = world.worker(1, "bad.txt", "bad");
-    let answer = world.afk_in(&red, &["gate", "--train"]).ok();
+    let answer = world.afk_in(&red, &["gate", "--land"]).ok();
     assert_eq!(answer["status"], "red");
     assert!(world.remote(&["for-each-ref", "--format=%(refname)", LINE]).is_empty());
     let one = world.worker(2, "README.md", "two");
     let two = world.worker(3, "README.md", "three");
-    assert_eq!(world.afk_in(&one, &["gate", "--train"]).ok()["outcome"], "merged");
+    assert_eq!(world.afk_in(&one, &["gate", "--land"]).ok()["outcome"], "merged");
     let before = world.remote(&["rev-parse", "refs/heads/main"]);
-    let answer = world.afk_in(&two, &["gate", "--train"]).ok();
+    let answer = world.afk_in(&two, &["gate", "--land"]).ok();
     assert_eq!(answer["outcome"], "conflict", "{answer}");
     assert_eq!(git(&two, &["diff", "--name-only", "--diff-filter=U"]), "README.md");
     assert_eq!(world.remote(&["rev-parse", "refs/heads/main"]), before);
 }
 
 #[test]
-fn a_missing_tip_record_is_gated_in_the_train_lane_before_any_worker_turn() {
+fn a_missing_base_record_is_gated_alone_before_any_worker_turn() {
     let world = World::new();
     let certifying = world.root.join("certifying");
     let release = world.root.join("release");
@@ -130,8 +130,8 @@ fn a_missing_tip_record_is_gated_in_the_train_lane_before_any_worker_turn() {
     until(|| certifying.exists());
     let doctor = world.afk(&["doctor"]).json;
     let lanes = &doctor["host"]["exclusive"]["lanes"];
-    assert!(!lanes["train"]["running"].is_null(), "{lanes}");
-    assert_eq!(lanes["worker"]["running"], Value::Null);
+    assert!(lanes.get("train").is_none(), "{lanes}");
+    assert!(lanes["repos"].as_array().is_some_and(|lanes| !lanes.is_empty()), "{lanes}");
     assert!(!worker_gate.exists());
     std::fs::write(release, "").unwrap();
     assert_eq!(finish(child)["outcome"], "merged");
@@ -174,7 +174,11 @@ fn two_worker_lanes_run_two_repos_but_a_second_turn_of_one_repo_waits() {
     assert!(!another.join("held.txt").exists(), "the second turn has not merged yet");
     let doctor = a.afk(&["doctor"]).json;
     assert_eq!(doctor["host"]["settings"]["in_force"]["gate_lanes"], 2);
-    assert_eq!(doctor["host"]["settings"]["in_force"]["train_lanes"], 2);
+    assert!(
+        doctor["host"]["settings"]["in_force"]["ignored"]
+            .as_str()
+            .is_some_and(|s| s.contains("ignored"))
+    );
     std::fs::write(a.root.join("release"), "").unwrap();
     std::fs::write(b.root.join("release"), "").unwrap();
     assert_eq!(finish(first)["outcome"], "merged");
@@ -243,20 +247,13 @@ fn the_tip_uses_its_own_gate_command_and_each_turn_uses_the_merged_config() {
         "docs/agents/afkconvoy.md",
         "```yaml\nbase_branch: main\ngate_command: test -f required.txt\ngate_seconds: 600\n```\n",
     );
-    let changed = world.afk_in(&first, &["gate", "--train"]).ok();
+    let changed = world.afk_in(&first, &["gate", "--land"]).ok();
     assert_eq!(changed["outcome"], "merged", "{changed}");
     assert_eq!(changed["command"], "test -f required.txt");
-    let merged = world.afk_in(&second, &["gate", "--train"]).ok();
+    let merged = world.afk_in(&second, &["gate", "--land"]).ok();
     assert_eq!(merged["outcome"], "merged", "{merged}");
     assert_eq!(merged["command"], "test -f required.txt", "the merged config names the gate");
     assert_eq!(merged["recorded"], true);
-    let train = world.root.join("convoy-train");
-    git(
-        &world.clone,
-        &["worktree", "add", "-q", "--detach", train.to_str().unwrap(), "origin/main"],
-    );
-    let landed = world.afk_in(&train, &["land", "--train", "--merged-timeout", "0"]).ok();
-    assert_eq!(landed["gate"]["source"], "recorded", "{landed}");
 }
 
 #[test]
@@ -266,7 +263,7 @@ fn a_green_run_without_a_written_record_joins_nothing_and_keeps_the_pr_in_its_an
     seed(&world);
     let worker = world.worker(1, "one.txt", "one");
     world.watch_pushes(Some("convoy/gate"));
-    let answer = world.afk_in(&worker, &["gate", "--train"]).ok();
+    let answer = world.afk_in(&worker, &["gate", "--land"]).ok();
     assert_eq!(answer["status"], "green");
     assert_eq!(answer["recorded"], false);
     assert_eq!(answer["outcome"], "gate_red");
@@ -274,7 +271,7 @@ fn a_green_run_without_a_written_record_joins_nothing_and_keeps_the_pr_in_its_an
     assert_eq!(answer["pr"], 10);
     assert!(world.remote(&["for-each-ref", "--format=%(refname)", LINE]).is_empty());
     world.watch_pushes(None);
-    assert_eq!(world.afk_in(&worker, &["gate", "--train"]).ok()["outcome"], "merged");
+    assert_eq!(world.afk_in(&worker, &["gate", "--land"]).ok()["outcome"], "merged");
 }
 
 #[test]
@@ -283,8 +280,74 @@ fn a_green_tip_whose_record_cannot_be_written_returns_a_retryable_error() {
     world.set_gate("true");
     let worker = world.worker(1, "one.txt", "one");
     world.watch_pushes(Some("convoy/gate"));
-    let error = world.afk_in(&worker, &["gate", "--train"]).error();
-    assert!(error.contains("gated green, but has no record"), "{error}");
+    let error = world.afk_in(&worker, &["gate", "--land"]).error();
+    assert!(error.contains("gated green without a record"), "{error}");
     world.watch_pushes(None);
-    assert_eq!(world.afk_in(&worker, &["gate", "--train"]).ok()["outcome"], "merged");
+    assert_eq!(world.afk_in(&worker, &["gate", "--land"]).ok()["outcome"], "merged");
+}
+
+#[test]
+fn an_outside_red_base_is_certified_alone_and_its_fleet_repair_lands_in_a_turn() {
+    let world = World::new();
+    let certified = world.root.join("certified-red");
+    let worker_gated = world.root.join("worker-gated");
+    world.set_gate(&format!(
+        "if test -f broken.txt && test ! -f repaired.txt; then pwd > {}; exit 1; fi; if test -f worker.txt; then touch {}; fi",
+        quote(&certified), quote(&worker_gated)));
+    seed(&world);
+    let worker = world.worker(1, "worker.txt", "normal work");
+    crate::common::commit(&world.clone, "broken.txt", "outside change");
+    git(&world.clone, &["push", "-q", "origin", "HEAD"]);
+    let before = world.remote(&["rev-parse", "refs/heads/main"]);
+    let child = start(&world, &worker, &world.cache(), 1);
+    until(|| {
+        !world
+            .remote(&["for-each-ref", "--format=%(refname)", "refs/convoy/base/red/main"])
+            .is_empty()
+    });
+    assert!(!worker_gated.exists(), "no ordinary turn starts on red");
+    assert_ne!(std::fs::read_to_string(&certified).unwrap().trim(), worker.to_str().unwrap());
+    let tick = world.afk(&["tick", "--instance", "repair-host"]).ok();
+    let issues = world.gh();
+    let repair = issues["issues"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|issue| issue["title"].as_str().is_some_and(|s| s.starts_with("Repair the red")))
+        .expect("the fleet opened a repair")["number"]
+        .as_u64()
+        .unwrap();
+    assert!(
+        tick["did"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|step| step["do"] == "dispatch" && step["issue"] == repair),
+        "{tick}"
+    );
+    let ordinary = child.wait_with_output().unwrap();
+    assert!(
+        !ordinary.status.success()
+            || serde_json::from_slice::<Value>(&ordinary.stdout).unwrap()["outcome"] == "locked"
+    );
+    assert_eq!(world.remote(&["rev-parse", "refs/heads/main"]), before);
+    let orca = world.orca();
+    let checkout =
+        orca["worktrees"].as_array().unwrap().iter().find(|w| w["linkedIssue"] == repair).unwrap()
+            ["path"]
+            .as_str()
+            .unwrap();
+    let checkout = std::path::PathBuf::from(checkout);
+    crate::common::commit(&checkout, "repaired.txt", "repair");
+    git(&checkout, &["push", "-q", "origin", "HEAD"]);
+    let branch = git(&checkout, &["symbolic-ref", "--short", "HEAD"]);
+    world.pr(2000, repair, &branch);
+    let fixed = world.afk_in(&checkout, &["land", "--issue", &repair.to_string()]).ok();
+    assert_eq!(fixed["outcome"], "merged", "{fixed}");
+    assert_eq!(fixed["recorded"], true);
+    assert_eq!(world.state(repair), "closed");
+    let normal = world.afk_in(&worker, &["land", "--issue", "1"]).ok();
+    assert_eq!(normal["outcome"], "merged", "{normal}");
+    assert!(worker_gated.exists());
+    assert!(world.remote(&["for-each-ref", "--format=%(refname)", LINE]).is_empty());
 }

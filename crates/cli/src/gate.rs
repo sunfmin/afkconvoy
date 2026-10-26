@@ -19,7 +19,6 @@ use crate::gh::GitHub;
 use crate::git::{REMOTE, Repo};
 use crate::lock::standing_locks;
 use crate::measure;
-use crate::train::{Train, merge_in, unmerged};
 
 /// What keeps a worktree from being exactly a commit: its uncommitted and
 /// untracked paths as `git status --porcelain` lists them, and — given the
@@ -148,15 +147,9 @@ pub fn run_and_record(
     let _permit = if crate::exclusive::held() {
         None
     } else {
-        let train = repo
-            .dir
-            .file_name()
-            .and_then(|n| n.to_str())
-            .is_some_and(afkconvoy_core::train::is_train_worktree);
         Some(crate::exclusive::Permit::take(
             repo,
             command.text(),
-            train,
             crate::config::heavy_gate(command.text()),
             false,
         )?)
@@ -245,7 +238,6 @@ pub fn gated(
     if let Some(run) = recorded(repo, &tree, command, now)? {
         return Ok(Gated::Green { run, source: "recorded" });
     }
-    let _train_lane = crate::exclusive::Permit::take(repo, command.text(), true, true, false)?;
     let not_the_commit = |why: &str, strays: &[String]| {
         let listed: Vec<&str> = strays.iter().take(20).map(String::as_str).collect();
         anyhow!(
@@ -284,12 +276,7 @@ pub fn gated(
 /// A red run with a fleet lock standing says which: the base branch may be
 /// what is red, and the worker is to declare nothing of it.
 pub fn gate(repo: &Repo, config: &Config, train: bool, host: &str, now: u64) -> Result<Value> {
-    let train_worktree = repo
-        .dir
-        .file_name()
-        .and_then(|n| n.to_str())
-        .is_some_and(afkconvoy_core::train::is_train_worktree);
-    if train && !train_worktree && !crate::exclusive::held() {
+    if train && !crate::exclusive::held() {
         let gh = GitHub::of(repo)?;
         let branch = repo.git(&["symbolic-ref", "--short", "HEAD"])?;
         let prs = gh.open_prs()?;
@@ -301,21 +288,6 @@ pub fn gate(repo: &Repo, config: &Config, train: bool, host: &str, now: u64) -> 
         return crate::turn::land(repo, config, &gh, *issue, host, now);
     }
     let command = GateCommand::new(&config.gate_command);
-    let mut merged = None;
-    if train {
-        let mut files = unmerged(repo)?;
-        if files.is_empty() {
-            let train = Train::read(repo, config)?;
-            files = merge_in(repo, &train.tip, "the landing train")?;
-            merged = Some(train.tip);
-        }
-        if !files.is_empty() {
-            return Ok(json!({"status": "conflict", "files": files, "recorded": false,
-                "detail": "merging what this PR lands behind into this branch conflicted; the \
-                    merge is in progress here — resolve every file, `git add` it, COMMIT the \
-                    merge, and run this again. No gate ran"}));
-        }
-    }
     let limit = config.gate_seconds();
     let run = run_and_record(repo, &command, host, now, Duration::from_secs(limit))?;
     // A worker's fresh build is what its worktree holds after its first green
@@ -330,9 +302,6 @@ pub fn gate(repo: &Repo, config: &Config, train: bool, host: &str, now: u64) -> 
     let mut answer = json!({"status": status, "exit_code": run.ran.exit_code,
         "timed_out": run.ran.timed_out, "seconds": run.ran.seconds, "command": command.text(),
         "head": run.head, "recorded": false});
-    if let Some(merged) = merged {
-        answer["merged"] = json!(merged);
-    }
     let head = &run.head;
     // Soft: locks that cannot be read cost the worker only this warning.
     let locks = match run.ran.green() {

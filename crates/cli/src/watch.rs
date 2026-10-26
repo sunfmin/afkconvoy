@@ -1,4 +1,4 @@
-//! A claim whose PR is open and not on the landing train yet: asking after
+//! A claim whose PR is open and not on the base branch yet: asking after
 //! its worker, and the one restart a silent one gets.
 
 use afkconvoy_core::claims::Claim;

@@ -73,7 +73,7 @@ pub enum Stands {
     /// In a tick.
     Ticking,
     /// Between two ticks, the last of which held a claim — on an issue, a
-    /// patrol's run or a proposal — or had something on the landing train,
+    /// patrol's run or a proposal — or had something on the base branch,
     /// or failed whole.
     AtWork,
     /// Between two ticks, the last of which held no claim and had nothing on
@@ -105,7 +105,7 @@ impl HeldBack {
                 format!("{checkout} is in a tick")
             }
             HeldBack::Instance { checkout, stands: Stands::AtWork } => {
-                format!("{checkout} holds a claim or has something on the landing train")
+                format!("{checkout} holds a claim or has something on the base branch")
             }
             HeldBack::Instance { checkout, stands: Stands::Quiet | Stands::Broken } => {
                 format!("{checkout} holds nothing back")

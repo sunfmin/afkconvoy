@@ -6,9 +6,9 @@ use crate::git::{REMOTE, Repo};
 use crate::lock::standing_locks;
 use afkconvoy_core::config::Config;
 use afkconvoy_core::gate::{GateCommand, Proven, Tree};
+use afkconvoy_core::landing::{Of, merge_message};
 use afkconvoy_core::lock::{keeps_off, named};
 use afkconvoy_core::plan::{PullRequest, closing_pr};
-use afkconvoy_core::train::{Of, join_message};
 use anyhow::{Result, anyhow, bail};
 use serde_json::{Value, json};
 use std::time::Duration;
@@ -25,12 +25,11 @@ fn tip_config(repo: &Repo, tip: &str) -> Result<Config> {
 }
 
 /// An unrecorded base tip is gated alone, with no worker's changes present.
-fn certify(repo: &Repo, config: &Config, tip: &str, host: &str, now: u64) -> Result<bool> {
+pub fn certify(repo: &Repo, config: &Config, tip: &str, host: &str, now: u64) -> Result<bool> {
     let command = GateCommand::new(&config.gate_command);
     let _permit = Permit::take(
         repo,
         "gate the base branch's tip",
-        false,
         crate::config::heavy_gate(command.text()),
         true,
     )?;
@@ -110,7 +109,7 @@ fn take(
         }
         let heavy = crate::config::heavy_gate(&config.gate_command)
             || crate::config::heavy_gate(command.text());
-        let permit = Permit::take(repo, "turn: merge, gate, record, land", false, heavy, true)?;
+        let permit = Permit::take(repo, "turn: merge, gate, record, land", heavy, true)?;
         if base(repo, config)? != tip {
             drop(permit);
             continue;
@@ -284,7 +283,7 @@ pub fn join(
     if files.is_empty() {
         let head = repo.git(&["rev-parse", "HEAD"])?;
         repo.git(&["push", "--quiet", REMOTE, &format!("{head}:refs/heads/{}", pr.head_branch)])?;
-        let message = join_message(&pr.title, pr.number, of, tracker);
+        let message = merge_message(&pr.title, pr.number, of, tracker);
         if let Some(commit) = merged_onto(repo, &tip, &head, &message, now)? {
             repo.git(&["merge", "--ff-only", "--quiet", &commit])?;
         } else {

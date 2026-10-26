@@ -7,7 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::train::Built;
+use crate::landing::Built;
 
 /// How often, in seconds, `run` samples each worker's processes.
 pub const SAMPLE_EVERY: u64 = 10;
