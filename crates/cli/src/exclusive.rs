@@ -334,6 +334,11 @@ impl Queue {
     /// asker is told at once how many are `ahead` of it, and later that it
     /// `runs` — on the line it is kept on, as long as it stays there.
     pub fn answer(&self, ticket: Ticket) -> Reply {
+        if let Err(error) = crate::slots::recover() {
+            return Reply::Line(
+                json!({"error": format!("candidate cleanup unconfirmed: {error}")}),
+            );
+        }
         let (number, ahead) = {
             let mut joined = self.joined();
             joined.count(Instant::now());

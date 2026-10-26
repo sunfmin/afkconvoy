@@ -22,6 +22,40 @@ struct Owner {
 
 pub(crate) struct Slot(File, Option<File>);
 
+/// Discover dead candidate owners before repo exclusion can hold a new
+/// ordinary command outside the capacity-acquisition path. Kernel locks
+/// distinguish live inherited leases from stale recovery notes.
+pub(crate) fn recover() -> Result<()> {
+    let cache = crate::copies::cache()?.join("worker-slots");
+    if !cache.exists() {
+        return Ok(());
+    }
+    for entry in std::fs::read_dir(cache)? {
+        let entry = entry?;
+        if entry.file_name().to_string_lossy().starts_with("repo-") {
+            continue;
+        }
+        let file = OpenOptions::new().read(true).write(true).open(entry.path())?;
+        // SAFETY: inspect this slot without waiting or assuming owner death.
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+            continue;
+        }
+        ensure!(
+            std::io::Error::last_os_error().kind() == std::io::ErrorKind::WouldBlock,
+            "cannot inspect inherited candidate lease"
+        );
+        if let Ok(bytes) = std::fs::read(entry.path())
+            && let Ok(owner) = serde_json::from_slice::<Owner>(&bytes)
+            && owner.candidate
+            && owner.process.host == crate::this_host()
+            && crate::candidates::identity(owner.process.pid)?.as_ref() != Some(&owner.process)
+        {
+            crate::candidates::abandoned(&owner.dir)?;
+        }
+    }
+    Ok(())
+}
+
 fn repo_file(ticket: &Ticket) -> Result<Option<File>> {
     let Some(repo) = &ticket.repo else {
         return Ok(None);
@@ -63,9 +97,11 @@ pub(crate) fn repo_available(ticket: &Ticket) -> Result<bool> {
 
 impl Slot {
     pub fn take(ticket: &Ticket) -> Result<Self> {
+        recover()?;
         let repo = repo_file(ticket)?;
         if let Some(file) = &repo {
             while !try_repo(file, ticket)? {
+                recover()?;
                 std::thread::sleep(Duration::from_millis(50));
             }
         }
