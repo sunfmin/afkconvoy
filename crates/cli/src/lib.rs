@@ -199,6 +199,8 @@ const SKILL: &str = include_str!("../../../skills/afkconvoy/SKILL.md");
 /// - **{const:BY_HAND}** — `dispatch`, `close`, `escalate`, `park`, `nudge`, `restart` and `abandon`: each is something a tick does on its own, and `recovery` shows what `dispatch` would continue an issue from. Read one when a plan shows a transition the fleet is not making, or you are told to make it yourself.
 /// - **{const:PLUMBING}** — `scan`, `claim`, `release` and `heartbeat`: what the transitions are built on. Read these only to inspect or repair claims and heartbeats on the remote.
 ///
+/// Read a topic with `afkconvoy help <topic>`.
+///
 /// ## Rules to know before you start
 ///
 /// - One fleet instance per host per repo. `run` in a second checkout of a repo on the host's checkout list is refused, naming the first: run it there.

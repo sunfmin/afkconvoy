@@ -10,7 +10,7 @@ afkconvoy works a repo's ready GitHub issues unattended. One host runner, starte
 
 - A config on the base branch: the first yaml block of docs/agents/afkconvoy.md. With a team, the repo is bound and follows its workflows; without one, it is unbound: one worker per issue, then the landing train.
 - A private tracker for the issues the fleet reads and writes. Only a private repo can be its own tracker: anyone who can comment writes what workers read. Settle it with the user: [`afkconvoy help first-start`](help:first-start).
-- Host settings apply to every fleet; `run` changes those named. Defaults: sleep 00:00-06:00 local time after host and fleets idle 10 minutes (`--no-host-sleep` required off macOS); inspect workers above half the cores for two minutes (at least one), a quarter of memory resident, or a tenth of free disk written in ten minutes (at least one GiB); admission holds starts above 200% load per core or below 10% memory or 1% disk free, inspecting after 600 seconds held for one reason or memory pressure; end exclusive commands after 1200 seconds holding others up; panel port 7070 (a free port if taken); the host runner looks every 300 seconds with an operator directory, none by default so no watch. Concurrency: 3 claims at work per checkout. Flags: `afkconvoy run --help`.
+- Host settings apply to every fleet; `run` changes those named. Defaults: host sleep 00:00-06:00 local time after host and fleets idle 10 minutes (`--no-host-sleep` required off macOS); inspect workers above half the cores (at least one) for two minutes, a quarter of memory resident, or a tenth of free disk written in ten minutes (at least one GiB); admission holds starts above 200% load per core or below 10% memory or 1% disk free, inspecting after 600 seconds held for one reason or memory pressure; end exclusive commands after 1200 seconds holding others up; panel port 7070 (a free port if taken); the host runner looks every 300 seconds with an operator directory, none by default so no watch. Concurrency: 3 claims at work per checkout. Flags: `afkconvoy run --help`.
 - `gh` logged in as a user who may push to the repo.
 - `orca` on the PATH: every worker is started through it. It is running (`orca open`) and was given this checkout, once (`orca repo add --path "$PWD"`).
 - `claude` on the PATH and logged in, when it is what starts a worker.
@@ -50,6 +50,8 @@ Read `afkconvoy <command> --help` before first running it. Commands are grouped 
 - **Run by a worker's hook** — `guard`, which the harness of a bound repo's worker asks before each thing the worker does. Nobody runs it by hand. Read its help to learn what a worker is refused, and why one was.
 - **One transition by hand** — `dispatch`, `close`, `escalate`, `park`, `nudge`, `restart` and `abandon`: each is something a tick does on its own, and `recovery` shows what `dispatch` would continue an issue from. Read one when a plan shows a transition the fleet is not making, or you are told to make it yourself.
 - **The claim plumbing** — `scan`, `claim`, `release` and `heartbeat`: what the transitions are built on. Read these only to inspect or repair claims and heartbeats on the remote.
+
+Read a topic with `afkconvoy help <topic>`.
 
 ## Rules to know before you start
 
@@ -3460,7 +3462,7 @@ A first start settles a new checkout's tracker and a new host's host settings wi
 
 Explain these briefly, in the user's words. A tracker is the private repo the fleet reads and writes its issues in. Anyone who can comment on its issues writes what workers read, so a public repo cannot be its own tracker. Two people working one repo need their own trackers; those choices stay on their hosts and are never pushed. `afkconvoy checkouts` shows the trackers other checkouts on this host already use.
 
-Host settings apply to every fleet; `run` changes those named. Defaults: sleep 00:00-06:00 local time after host and fleets idle 10 minutes (`--no-host-sleep` required off macOS); inspect workers above half the cores for two minutes (at least one), a quarter of memory resident, or a tenth of free disk written in ten minutes (at least one GiB); admission holds starts above 200% load per core or below 10% memory or 1% disk free, inspecting after 600 seconds held for one reason or memory pressure; end exclusive commands after 1200 seconds holding others up; panel port 7070 (a free port if taken); the host runner looks every 300 seconds with an operator directory, none by default so no watch. Concurrency: 3 claims at work per checkout. Flags: `afkconvoy run --help`.
+Host settings apply to every fleet; `run` changes those named. Defaults: host sleep 00:00-06:00 local time after host and fleets idle 10 minutes (`--no-host-sleep` required off macOS); inspect workers above half the cores (at least one) for two minutes, a quarter of memory resident, or a tenth of free disk written in ten minutes (at least one GiB); admission holds starts above 200% load per core or below 10% memory or 1% disk free, inspecting after 600 seconds held for one reason or memory pressure; end exclusive commands after 1200 seconds holding others up; panel port 7070 (a free port if taken); the host runner looks every 300 seconds with an operator directory, none by default so no watch. Concurrency: 3 claims at work per checkout. Flags: `afkconvoy run --help`.
 
 #### Set up without asking
 
