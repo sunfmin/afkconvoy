@@ -7,7 +7,7 @@ use afkconvoy_core::gate::{GateCommand, Proven, Tree};
 use afkconvoy_core::landing::{Of, merge_message};
 use afkconvoy_core::lock::keeps_off;
 use afkconvoy_core::plan::PullRequest;
-use anyhow::{Result, anyhow, bail, ensure};
+use anyhow::{Context, Result, anyhow, bail, ensure};
 use serde_json::{Value, json};
 use std::process::Command;
 use std::time::Duration;
@@ -715,7 +715,13 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
         let pushed = publish(
             repo,
             config,
-            (&landed, &candidate.original_head, &candidate.branch),
+            (
+                &landed,
+                &candidate.original_head,
+                &candidate.branch,
+                &base,
+                snapshot.sha.as_deref().context("candidate record disappeared")?,
+            ),
             &next,
             &proof,
             &publication,
@@ -754,7 +760,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
 fn publish(
     repo: &Repo,
     config: &Config,
-    (candidate, head, branch): (&str, &str, &str),
+    (candidate, head, branch, base, old_state): (&str, &str, &str, &str, &str),
     state: &str,
     proven: &Proven,
     _publication: &Publication,
@@ -763,15 +769,23 @@ fn publish(
         repo.git(&["rev-parse", &format!("{candidate}^{{tree}}")])? == proven.tree(),
         "candidate tree differs from recorded proof"
     );
-    Ok(repo
-        .try_git(&[
-            "push",
-            "--quiet",
-            "--atomic",
-            REMOTE,
-            &format!("{state}:{}", refname(repo, config)),
-            &format!("{candidate}:refs/heads/{}", config.base_branch),
-            &format!("{head}:refs/heads/{branch}"),
-        ])?
-        .ok)
+    ensure!(
+        repo.git(&["rev-parse", &format!("{candidate}^1")])? == base,
+        "candidate does not fast-forward its expected predecessor"
+    );
+    ensure!(
+        repo.git(&["rev-parse", &format!("{state}^1")])? == old_state,
+        "candidate state does not extend its expected record"
+    );
+    let state_ref = refname(repo, config);
+    let base_ref = format!("refs/heads/{}", config.base_branch);
+    let source_ref = format!("refs/heads/{branch}");
+    crate::publication::push(
+        repo,
+        &[
+            crate::publication::Update { name: &source_ref, old: head, new: head },
+            crate::publication::Update { name: &state_ref, old: old_state, new: state },
+            crate::publication::Update { name: &base_ref, old: base, new: candidate },
+        ],
+    )
 }

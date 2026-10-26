@@ -85,6 +85,7 @@ pub mod paused;
 pub mod precedent;
 pub mod probe;
 mod process;
+mod publication;
 pub mod recovery;
 mod repair;
 pub mod resources;
