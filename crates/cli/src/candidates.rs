@@ -664,6 +664,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
             c.predecessor == base,
             true,
             head.as_deref() == Some(&c.original_head),
+            c.stopped,
         ) else {
             invalidate(repo, config, &id, "publication_evidence_changed")?;
             return Ok(cancelled(result, c));

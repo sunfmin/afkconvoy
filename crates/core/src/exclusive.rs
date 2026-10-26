@@ -260,6 +260,26 @@ mod tests {
     }
 
     #[test]
+    fn only_independent_candidate_worktrees_may_overlap_in_one_repo() {
+        let mut a = ticket(1, "/a/source-one", 0);
+        a.repo = Some("a".into());
+        a.is_turn = true;
+        a.candidate = true;
+        a.ran = Some(0);
+        let mut b = ticket(2, "/a/source-two", 1);
+        b.repo = Some("a".into());
+        b.is_turn = true;
+        b.candidate = true;
+        assert!(ready(&[a.clone(), b.clone()], 2, 2));
+        assert!(!ready(&[a.clone(), b.clone()], 2, 1));
+        b.candidate = false;
+        assert!(!ready(&[a.clone(), b.clone()], 2, 2), "ordinary work retains exclusion");
+        a.candidate = false;
+        b.candidate = true;
+        assert!(!ready(&[a, b], 2, 2), "a barrier excludes speculative validation");
+    }
+
+    #[test]
     fn an_older_ticket_has_no_train_priority() {
         let older = r#"{"number":1,"pid":2,"command":"cargo test","dir":"/a","issue":null,"asked":100,"ran":null}"#;
         let ticket: Ticket = serde_json::from_str(older).unwrap();

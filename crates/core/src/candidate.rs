@@ -164,8 +164,8 @@ impl Chain {
 /// The effect boundary must supply each observation anew. Flux checks that
 /// publication cannot be authorized with any missing observation.
 #[derive(Debug)]
-#[refined_by(valid: bool, green: bool, predecessor: bool, unlocked: bool, head: bool)]
-#[invariant(valid && green && predecessor && unlocked && head)]
+#[refined_by(valid: bool, green: bool, predecessor: bool, unlocked: bool, head: bool, stopped: bool)]
+#[invariant(valid && green && predecessor && unlocked && head && stopped)]
 pub struct Publication {
     #[field(bool[valid])]
     _valid: bool,
@@ -177,6 +177,8 @@ pub struct Publication {
     _unlocked: bool,
     #[field(bool[head])]
     _head: bool,
+    #[field(bool[stopped])]
+    _stopped: bool,
 }
 
 impl Publication {
@@ -186,14 +188,16 @@ impl Publication {
         predecessor: bool,
         unlocked: bool,
         head: bool,
+        stopped: bool,
     ) -> Option<Self> {
-        if valid && green && predecessor && unlocked && head {
+        if valid && green && predecessor && unlocked && head && stopped {
             Some(Self {
                 _valid: valid,
                 _green: green,
                 _predecessor: predecessor,
                 _unlocked: unlocked,
                 _head: head,
+                _stopped: stopped,
             })
         } else {
             None
@@ -250,7 +254,7 @@ mod tests {
                     assert!(!c.valid());
                 }
                 if c.phase == Phase::Landed {
-                    assert!(c.result.is_some());
+                    assert!(c.result.is_some() && c.stopped);
                 }
             }
             for i in 0..3 {
@@ -276,6 +280,7 @@ mod tests {
                     c.predecessor == base,
                     true,
                     true,
+                    c.stopped,
                 );
                 if publish.is_some() {
                     assert!(c.cancelled_by.is_none());
