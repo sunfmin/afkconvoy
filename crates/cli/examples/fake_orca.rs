@@ -5,7 +5,8 @@
 //! [{path, branch, linkedIssue, repoId, lastActivityAt}], `terminals` [{handle,
 //! worktreePath, command, title?, sent, open, agent?, lastOutputAt?, screen?}], `calls`,
 //! `envs`: beside each of `calls`, the names of the session's environment it
-//! ran in (`fake::State`), and `from`: the directory each call was run from,
+//! ran in (`fake::State`), `parents`: the pid that made each call, and `from`:
+//! the directory each call was run from,
 //! which real orca takes the current worktree from where a call names none.
 //! A terminal's `line` is the whole line it was started with; `command` is
 //! behind the issue export and what starts every one under `nice` with the
@@ -36,6 +37,9 @@ use serde_json::{Value, json};
 
 fn main() {
     let mut st = State::open("CONVOY_FAKE_ORCA");
+    // A host look is a separate doctor process: it must not be counted as
+    // another observation by the fleet's tick and panel in their process.
+    st.list("parents").push(json!(unsafe { libc::getppid() }));
     assert_eq!(st.argv.last().map(String::as_str), Some("--json"), "{:?}", st.argv);
     let from = std::env::current_dir().map(|dir| dir.display().to_string()).unwrap_or_default();
     st.list("from").push(json!(from));

@@ -588,6 +588,7 @@ impl World {
         self.with_orca(|orca| {
             orca["calls"] = json!([]);
             orca["envs"] = json!([]);
+            orca["parents"] = json!([]);
         });
         calls
     }
