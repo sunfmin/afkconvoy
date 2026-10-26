@@ -119,6 +119,149 @@ fn a_failed_train_agent_is_diagnosed_on_the_first_tick_and_keeps_its_train() {
     let worker = workers.iter().find(|w| w["path"] == json!(train)).unwrap();
     assert_eq!(worker["attempts"], 1);
     assert_eq!(worker["orca"]["programStatus"]["observedAt"], 1102000);
+
+    let handle = terminals(&world, &train)[0]["handle"].clone();
+    let head = commit(&train, "repair.txt", "keep the train's repair\n");
+    std::fs::write(train.join("unfinished.txt"), "keep this too\n").unwrap();
+    tick(&world, "4699");
+    assert_eq!(terminals(&world, &train)[0]["handle"], handle, "the health hold has a bound");
+    let ticked = tick(&world, "4700");
+    assert_eq!(ticked["errors"], json!([]), "{ticked}");
+    let open = terminals(&world, &train);
+    assert_eq!(open.len(), 1);
+    assert_ne!(open[0]["handle"], handle, "health no longer holds this train");
+    assert_eq!(open[0]["command"], common::trusted("agent"));
+    assert_eq!(git(&train, &["rev-parse", "HEAD"]), head);
+    assert_eq!(std::fs::read_to_string(train.join("unfinished.txt")).unwrap(), "keep this too\n");
+    assert_eq!(world.remote(&["rev-parse", LINE]), joined);
+    let logs: String = std::fs::read_dir(world.cache().join("afkconvoy/runs"))
+        .unwrap()
+        .map(|entry| std::fs::read_to_string(entry.unwrap().path()).unwrap())
+        .collect();
+    assert!(logs.contains("worker health held the train worker for 3600 seconds"), "{logs}");
+}
+
+#[test]
+fn a_new_join_replaces_a_failed_paused_faulted_or_outdated_train_worker() {
+    for cause in ["failed", "paused", "faulted", "switched", "switched while busy"] {
+        let world = fleet(&[7, 8]);
+        finish(&world, 7);
+        tick(&world, "1090");
+        world.hold_every_harness();
+        let train = train_worktree(&world);
+        let old = terminals(&world, &train)[0]["handle"].clone();
+        let notes = PathBuf::from(git(&train, &["rev-parse", "--absolute-git-dir"]));
+        let head = commit(&train, "repair.txt", "keep the train's repair\n");
+        std::fs::write(train.join("unfinished.txt"), "unfinished\n").unwrap();
+        let expected = match cause {
+            "failed" => {
+                let mut failed: Value =
+                    serde_json::from_str(include_str!("fixtures/orca-failed-agent.json")).unwrap();
+                failed["agentType"] = json!("claude-code");
+                world.with_orca(|orca| {
+                    for terminal in orca["terminals"].as_array_mut().unwrap() {
+                        if terminal["handle"] == old {
+                            terminal["agent"] = failed.clone();
+                            terminal["menu"] = json!(true);
+                        }
+                    }
+                });
+                "claude-code"
+            }
+            "paused" => {
+                world.pause("claude-code", 1100, "operator paused this harness");
+                "pi"
+            }
+            "faulted" => {
+                let key = std::fs::read_to_string(notes.join("convoy-worker-command-key")).unwrap();
+                let path = world.cache().join("afkconvoy/worker-health.json");
+                let mut book: Value =
+                    serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+                book["faults"] = json!([{"harness":"claude-code", "command_key":key,
+                    "model":null, "scope":"account", "since":1100, "next_check":10000,
+                    "evidence":["account disabled"]}]);
+                std::fs::write(path, serde_json::to_vec(&book).unwrap()).unwrap();
+                "pi"
+            }
+            _ => {
+                world.afk(&["switch", "--harness", "kimi"]).ok();
+                if cause == "switched while busy" {
+                    world.with_orca(|orca| {
+                        for terminal in orca["terminals"].as_array_mut().unwrap() {
+                            if terminal["handle"] == old {
+                                terminal["agent"] = json!({"state":"working", "agentType":"claude-code", "stateStartedAt":1100000});
+                            }
+                        }
+                    });
+                }
+                "kimi"
+            }
+        };
+        let tip = finish(&world, 8);
+        world.orca_calls();
+        let ticked = tick(&world, "1180");
+        assert_eq!(ticked["errors"], json!([]), "{cause}: {ticked}");
+        let open = terminals(&world, &train);
+        assert_eq!(open.len(), 1, "{cause}");
+        assert_ne!(open[0]["handle"], old, "{cause}: the old worker must be ended");
+        assert_eq!(
+            std::fs::read_to_string(notes.join("convoy-harness")).unwrap(),
+            expected,
+            "{cause}"
+        );
+        let sent = open[0]["sent"].as_array().unwrap();
+        assert_eq!(sent.len(), 1, "{cause}");
+        assert!(
+            !sent[0]["text"].as_str().unwrap().starts_with("PRs have joined"),
+            "a replacement gets its brief"
+        );
+        let old_sends = world.orca_calls().iter().any(|call| {
+            common::asked(call) == "terminal send"
+                && call.to_string().contains(old.as_str().unwrap())
+        });
+        assert!(!old_sends, "{cause}: never type into the old session");
+        assert_eq!(git(&train, &["rev-parse", "HEAD"]), head, "{cause}");
+        assert_eq!(std::fs::read_to_string(train.join("unfinished.txt")).unwrap(), "unfinished\n");
+        assert_eq!(world.remote(&["rev-parse", LINE]), tip, "{cause}");
+        assert!(
+            std::fs::read_to_string(notes.join("convoy-train-told")).unwrap().starts_with(&tip)
+        );
+    }
+}
+
+#[test]
+fn switch_all_moves_a_busy_train_worker_and_lists_it_without_a_claim() {
+    let world = fleet(&[7]);
+    let tip = finish(&world, 7);
+    tick(&world, "1090");
+    world.hold_every_harness();
+    // Train workers hold no claim: switch must find this one independently.
+    world.afk(&["release", "--issue", "7", "--instance", "alpha", "--now", "1100"]).ok();
+    let train = train_worktree(&world);
+    let old = terminals(&world, &train)[0]["handle"].clone();
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            if terminal["handle"] == old {
+                terminal["agent"] =
+                    json!({"state":"working", "agentType":"claude-code", "stateStartedAt":1100000});
+            }
+        }
+    });
+    let answer =
+        world.afk(&["switch", "--harness", "kimi", "--all", "--now", "1180", "--host", "h1"]).ok();
+    assert_eq!(answer["failed"], json!([]), "{answer}");
+    let moved = answer["switched"].as_array().unwrap();
+    assert!(
+        moved.iter().any(|worker| worker["worktree"] == json!(train)
+            && worker["from"] == "claude-code"
+            && worker["to"] == "kimi"),
+        "{answer}"
+    );
+    let open = terminals(&world, &train);
+    assert_eq!(open.len(), 1);
+    assert_ne!(open[0]["handle"], old);
+    assert!(open[0]["command"].as_str().unwrap().contains("kimi"));
+    assert_eq!(world.remote(&["rev-parse", LINE]), tip);
 }
 
 #[test]
