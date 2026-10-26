@@ -116,6 +116,56 @@ fn pack(repo: &Repo, updates: &[Update<'_>]) -> Result<Vec<u8>> {
     Ok(output.stdout)
 }
 
+fn advertisement(reader: &mut impl Read) -> Result<(BTreeMap<String, String>, bool)> {
+    let mut refs = BTreeMap::new();
+    let mut capabilities = String::new();
+    while let Some(bytes) = packet(reader)? {
+        let line = String::from_utf8(bytes)?;
+        let (reference, caps) = line.split_once('\0').unwrap_or((&line, ""));
+        if !caps.is_empty() {
+            capabilities = caps.trim().to_string();
+        }
+        if let Some((sha, name)) = reference.trim().split_once(' ') {
+            refs.insert(name.to_string(), sha.to_string());
+        }
+    }
+    let supports = capabilities.split_whitespace().any(|c| c == "atomic")
+        && capabilities.split_whitespace().any(|c| c == "report-status");
+    Ok((refs, supports))
+}
+
+/// Startup checks authentication and atomic capability without sending any
+/// update command. This is safe alongside another publishing turn.
+pub(crate) fn check(repo: &Repo) -> Result<()> {
+    let mut command = transport(repo)?;
+    command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit());
+    let mut child = crate::process::spawn(&mut command)?;
+    let exchange = (|| -> Result<()> {
+        let mut input = child.stdin.take().context("receive-pack has no input")?;
+        let mut output = BufReader::new(child.stdout.take().context("receive-pack has no output")?);
+        let (_, supports) = advertisement(&mut output)?;
+        input.write_all(b"0000")?;
+        drop(input);
+        let mut rest = Vec::new();
+        output.read_to_end(&mut rest)?;
+        ensure!(
+            supports,
+            "Git remote lacks atomic receive-pack status; this host cannot publish candidates"
+        );
+        Ok(())
+    })();
+    if exchange.is_err() {
+        let _ = child.kill();
+    }
+    let status = child.wait()?;
+    exchange?;
+    ensure!(
+        status.success(),
+        "conditional publication authentication failed; verify Git SSH access before starting this fleet"
+    );
+    Ok(())
+}
+
 pub(crate) fn push(repo: &Repo, updates: &[Update<'_>]) -> Result<bool> {
     let bytes = pack(repo, updates)?;
     let mut command = transport(repo)?;
@@ -125,21 +175,8 @@ pub(crate) fn push(repo: &Repo, updates: &[Update<'_>]) -> Result<bool> {
     let exchange = (|| -> Result<bool> {
         let mut input = child.stdin.take().context("receive-pack has no input")?;
         let mut output = BufReader::new(child.stdout.take().context("receive-pack has no output")?);
-        let mut refs = BTreeMap::new();
-        let mut capabilities = String::new();
-        while let Some(bytes) = packet(&mut output)? {
-            let line = String::from_utf8(bytes)?;
-            let (reference, caps) = line.split_once('\0').unwrap_or((&line, ""));
-            if !caps.is_empty() {
-                capabilities = caps.trim().to_string();
-            }
-            if let Some((sha, name)) = reference.trim().split_once(' ') {
-                refs.insert(name.to_string(), sha.to_string());
-            }
-        }
-        if !capabilities.split_whitespace().any(|c| c == "atomic")
-            || !capabilities.split_whitespace().any(|c| c == "report-status")
-        {
+        let (refs, supports) = advertisement(&mut output)?;
+        if !supports {
             input.write_all(b"0000")?;
             drop(input);
             bail!("Git remote lacks atomic receive-pack status; nothing was published");

@@ -293,6 +293,18 @@ mod tests {
     }
 
     #[test]
+    fn a_pending_serial_barrier_drains_the_window_without_reserving_capacity() {
+        let mut chain = Chain { candidates: vec![candidate(0)], ..Chain::default() };
+        chain.barriers.push(Barrier { id: "cut".into(), owner: chain.candidates[0].owner.clone() });
+        assert!(!chain.can_assign(3, false));
+        assert!(!chain.can_assign(3, true));
+        chain.candidates[0].phase = Phase::Landed;
+        chain.candidates[0].stopped = true;
+        assert!(chain.can_assign(3, true));
+        assert!(!chain.can_assign(3, false));
+    }
+
+    #[test]
     fn exhaust_three_candidates_through_completion_invalidation_exit_and_publication() {
         // Exactly three assigned candidates, two results per gate, cancellation
         // and exit confirmations, external moves and publication. Enumerates

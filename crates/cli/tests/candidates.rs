@@ -450,14 +450,26 @@ fn runner_restart_keeps_running_candidate_ownership_and_capacity() {
     world.kill_host_runner("KILL");
     drop(first_runner);
     let _replacement = world.host_held();
+    let ordinary_marker = world.root.join("ordinary-started");
+    let ordinary_script = format!("touch {}", quote(&ordinary_marker));
+    let ordinary = world
+        .command(env!("CARGO_BIN_EXE_afkconvoy"), &a)
+        .args(["exclusive", "--", "sh", "-c", &ordinary_script])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
     let bb = start(&world, &b, &world.cache(), 2);
     began(&world, "b");
+    assert!(!ordinary_marker.exists(), "ordinary work retains repo exclusion after restart");
     assert_eq!(chain(&world)["candidates"].as_array().unwrap().len(), 2);
     release(&world, "b", false);
     green(&world, 2);
     release(&world, "a", false);
     assert_eq!(finish(aa)["outcome"], "merged");
     assert_eq!(finish(bb)["outcome"], "merged");
+    assert!(ordinary.wait_with_output().unwrap().status.success());
+    assert!(ordinary_marker.exists());
 }
 
 #[test]
