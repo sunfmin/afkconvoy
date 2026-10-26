@@ -367,7 +367,7 @@ fn unclassified_silence_without_a_key_waits_for_the_operator_and_preserves_unpus
     assert_eq!(plan["host_kit"]["worker_health"]["workers"][0]["action"], "waiting for operator");
     assert!(!world.labels(7).contains(&"ready-for-human".to_string()));
     assert!(screen_reads(&world).iter().all(|r| r.contains(&"--screen".to_string())));
-    assert!(!world.root.join("diagnosis-asked").exists());
+    assert!(!world.asked_a_harness_about("Shall I open the PR?"));
 
     let doctor = world.afk(&["doctor", "--host", "h1", "--now", "1900"]).json;
     let finding = doctor["findings"]
@@ -633,46 +633,83 @@ fn a_verified_account_fault_holds_new_work_when_no_successor_is_available() {
 }
 
 #[test]
-fn waiting_for_the_operator_never_waits_on_a_diagnosis_or_escalates_after_an_hour() {
+fn waiting_for_the_operator_is_named_in_doctor_and_escalates_after_an_hour_on_unchanged_evidence() {
     let world = fleet(1000);
     world.hold_every_harness();
     report(&world, "done", 1000, 1000);
+    show(&world, &["Ran the tests.", "Shall I open the PR? [y/n]"]);
 
-    for now in [1300, 1600, 1900, 2200, 2500, 4900] {
+    for now in [1300, 1600, 1900, 2200, 2500] {
         tick(&world, now);
     }
-    let doctor = world.afk(&["doctor", "--host", "h1", "--now", "5200"]).json;
+    let doctor = world.afk(&["doctor", "--host", "h1", "--now", "2501"]).json;
     let worker = &doctor["host"]["host_kit"]["worker_health"]["workers"][0];
     assert_eq!(worker["action"], "waiting for operator");
     assert_eq!(worker["window_started"], 1300);
-    assert_eq!(worker["next_check"], 5200);
-    assert_eq!(worker["attempts"], 0);
+    assert_eq!(worker["next_check"], 2800);
     assert_eq!(worker["diagnosis"], Value::Null);
     assert_eq!(worker["path"], json!(worktree(&world)));
     assert_eq!(world.claims().len(), 1);
-    assert_eq!(escalations(&world), 0);
-    assert!(!world.root.join("diagnosis-asked").exists());
-    assert!(doctor["findings"].as_array().unwrap().iter().any(|finding| {
-        finding["what"].as_str().unwrap().contains("worker health is waiting for the operator")
-    }));
+    assert!(!world.asked_a_harness_about("Shall I open the PR?"), "no harness is asked");
+    let named = doctor["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|finding| finding["what"].as_str().unwrap().contains("worker health is waiting"))
+        .count();
+    assert_eq!(named, 1);
+
+    tick(&world, 4900);
+
+    assert_eq!(world.claims(), []);
+    assert!(world.labels(7).contains(&"ready-for-human".to_string()));
+    assert_eq!(escalations(&world), 1);
+    let comment = world.comments(7).last().unwrap().clone();
+    assert!(comment.contains("one hour on unchanged evidence"), "{comment}");
+    assert!(comment.contains("no Jev key command is set in the host settings"), "{comment}");
+    let doctor = world.afk(&["doctor", "--host", "h1", "--now", "4901"]).json;
+    assert_eq!(doctor["waiting_on_human"][0]["issue"], 7);
+}
+
+/// Every line of the tick logs of `world`.
+fn logs(world: &World) -> String {
+    std::fs::read_dir(world.cache().join("afkconvoy/runs"))
+        .unwrap()
+        .map(|entry| std::fs::read_to_string(entry.unwrap().path()).unwrap())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The `worker_health` lines of `logs`, each as its command's fields.
+fn health_lines(logs: &str) -> Vec<Value> {
+    logs.lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .map(|line| line["command"].clone())
+        .filter(|command| command["command"] == "worker_health")
+        .collect()
+}
+
+/// Whether a file under `dir`, but `allowed`, holds `marker`.
+fn leaked(dir: &std::path::Path, marker: &[u8], allowed: &std::path::Path) -> bool {
+    std::fs::read_dir(dir).unwrap().any(|entry| {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            leaked(&path, marker, allowed)
+        } else {
+            path != allowed
+                && std::fs::read(&path)
+                    .is_ok_and(|bytes| bytes.windows(marker.len()).any(|window| window == marker))
+        }
+    })
 }
 
 #[test]
-fn one_jev_request_classes_a_finished_screen_and_the_key_never_leaks() {
+fn one_jev_request_classes_a_real_finished_screen_and_the_key_goes_nowhere_but_typesafe() {
     let world = fleet(1000);
     world.jev_key_command("printf 'jev-secret-%s' 'marker'");
-    world.jev_answers(json!({
-        "usage_limit": {"type": "noul", "noul": 0.02},
-        "busy": {"type": "noul", "noul": 0.05},
-        "finished": {"type": "noul", "noul": 0.97},
-        "waiting_for_person": {"type": "noul", "noul": 0.10},
-        "trust_prompt": {"type": "noul", "noul": 0.01},
-        "login_refused": {"type": "noul", "noul": 0.01},
-        "evidence": {"type": "choice", "choice": "Finished: opened the PR.",
-            "confidence": 0.99, "probabilities": {"Finished: opened the PR.": 0.99}}
-    }));
+    let (screen, response) = world.jev_recorded("finished screen");
     report(&world, "done", 1000, 1000);
-    show(&world, &["Implemented and verified the change.", "Finished: opened the PR."]);
+    show(&world, &screen.iter().map(String::as_str).collect::<Vec<_>>());
 
     tick(&world, 1300);
     tick(&world, 1600);
@@ -684,39 +721,95 @@ fn one_jev_request_classes_a_finished_screen_and_the_key_never_leaks() {
     assert_eq!(worker["diagnosis"]["class"], "complete");
     assert_eq!(worker["diagnosis"]["scope"], "worker");
     assert_eq!(worker["diagnosis"]["action"], "complete");
-    assert_eq!(worker["diagnosis"]["evidence"], json!(["Finished: opened the PR."]));
-    assert_eq!(worker["judgment"]["answers"]["answers"]["finished"]["noul"], 0.97);
-    assert!(!world.root.join("diagnosis-asked").exists());
+    let evidence = &response["answers"]["evidence"]["choice"];
+    assert_eq!(worker["diagnosis"]["evidence"], json!([evidence]));
+    assert_eq!(worker["judgment"]["response"], response);
+    assert!(!world.asked_a_harness_about(evidence.as_str().unwrap()), "no harness is asked");
 
-    let payload = std::fs::read_to_string(world.root.join("typesafe-payload")).unwrap();
-    let payload: Value = serde_json::from_str(&payload).unwrap();
-    assert_eq!(payload["state"], "Implemented and verified the change.\nFinished: opened the PR.");
+    let payload = world.typesafe_payload();
+    assert_eq!(payload["model"], "jev-latest");
+    assert_eq!(payload["state"], screen.join("\n"));
     assert_eq!(payload["questions"].as_object().unwrap().len(), 7);
-    assert!(payload["questions"]["evidence"]["criteria"].get("Finished: opened the PR.").is_some());
-    let request = std::fs::read_to_string(world.root.join("typesafe-request")).unwrap();
-    assert!(request.contains("Authorization: Bearer jev-secret-marker"), "{request}");
-    let logs = std::fs::read_dir(world.cache().join("afkconvoy/runs"))
-        .unwrap()
-        .map(|entry| std::fs::read_to_string(entry.unwrap().path()).unwrap())
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(logs.contains("jev-latest") && logs.contains("0.97"), "{logs}");
+    assert!(payload["questions"]["evidence"]["criteria"].get(evidence.as_str().unwrap()).is_some());
+    assert_eq!(worker["judgment"]["request"], payload, "the request is kept as it was sent");
+    let (arguments, config) = world.typesafe_sent();
+    assert!(config.contains("url = \"https://api.typesafe.ai/v1/systemone\""), "{config}");
+    assert!(config.contains("Authorization: Bearer jev-secret-marker"), "{config}");
+    assert!(!arguments.contains("jev-secret-marker"), "the key is in no argument: {arguments}");
 
-    fn leaked(dir: &std::path::Path, marker: &[u8], allowed: &std::path::Path) -> bool {
-        std::fs::read_dir(dir).unwrap().any(|entry| {
-            let path = entry.unwrap().path();
-            if path.is_dir() {
-                leaked(&path, marker, allowed)
-            } else {
-                path != allowed
-                    && std::fs::read(&path).is_ok_and(|bytes| {
-                        bytes.windows(marker.len()).any(|window| window == marker)
-                    })
-            }
-        })
-    }
+    let logs = logs(&world);
+    let logged = health_lines(&logs)
+        .into_iter()
+        .filter_map(|line| serde_json::from_str::<Value>(line["outcome"].as_str()?).ok())
+        .find(|outcome| outcome["source"] == "jev")
+        .expect("the tick log holds the judgment");
+    assert_eq!(logged["judgment"]["request"], payload);
+    assert_eq!(logged["judgment"]["response"], response);
     assert!(!leaked(&world.root, b"jev-secret-marker", &world.root.join("typesafe-request")));
     assert!(!logs.contains("jev-secret-marker"));
+}
+
+#[test]
+fn a_failed_or_silent_key_command_is_an_error_and_the_worker_waits_for_the_operator() {
+    for (command, error) in [
+        ("exit 3", "the Jev key command failed"),
+        ("printf ''", "the Jev key command printed no key"),
+    ] {
+        let world = fleet(1000);
+        world.jev_key_command(command);
+        report(&world, "done", 1000, 1000);
+        show(&world, &["Ran the tests.", "Shall I open the PR? [y/n]"]);
+        tick(&world, 1300);
+        tick(&world, 1600);
+
+        assert!(!world.root.join("typesafe-request").exists(), "{command}: nothing is sent");
+        assert!(!world.asked_a_harness_about("Shall I open the PR?"), "{command}");
+        let doctor = world.afk(&["doctor", "--host", "h1", "--now", "1601"]).json;
+        let worker = &doctor["host"]["host_kit"]["worker_health"]["workers"][0];
+        assert_eq!(worker["action"], "waiting for operator", "{command}");
+        assert!(worker["error"].as_str().unwrap().contains(error), "{command}: {worker}");
+        let finding = doctor["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|finding| finding["what"].as_str().unwrap().contains("worker health is waiting"))
+            .unwrap_or_else(|| panic!("{command}: the operator is told"));
+        assert!(finding["evidence"].as_str().unwrap().contains(error), "{command}: {finding}");
+        assert!(finding["fix"].as_str().unwrap().starts_with("orca terminal read"), "{finding}");
+        let failed = health_lines(&logs(&world)).iter().any(|line| {
+            line["failed"] == true && line["outcome"].as_str().unwrap().contains(error)
+        });
+        assert!(failed, "{command}: the tick log holds the error");
+    }
+}
+
+#[test]
+fn an_unsettled_judgment_waits_for_the_operator_with_the_screen_line_and_the_reason() {
+    let world = fleet(1000);
+    world.jev_key_command("printf key");
+    let (screen, mut response) = world.jev_recorded("working screen");
+    response["answers"]["usage_limit"]["noul"] = json!(0.5);
+    world.typesafe_answers(&response);
+    report(&world, "done", 1000, 1000);
+    show(&world, &screen.iter().map(String::as_str).collect::<Vec<_>>());
+    tick(&world, 1300);
+    tick(&world, 1600);
+
+    let doctor = world.afk(&["doctor", "--host", "h1", "--now", "1601"]).json;
+    let worker = &doctor["host"]["host_kit"]["worker_health"]["workers"][0];
+    assert_eq!(worker["action"], "waiting for operator");
+    assert_eq!(worker["error"], Value::Null, "an unsettled answer is no error");
+    assert_eq!(world.claims().len(), 1);
+    let finding = doctor["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|finding| finding["what"].as_str().unwrap().contains("worker health is waiting"))
+        .expect("the operator is told");
+    let evidence = finding["evidence"].as_str().unwrap();
+    assert!(evidence.contains("`usage_limit` unsettled, at 0.500"), "{evidence}");
+    let last = screen.iter().rev().find(|line| !line.trim().is_empty()).unwrap();
+    assert!(evidence.contains(last.as_str()), "{evidence}");
 }
 
 #[test]

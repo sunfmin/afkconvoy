@@ -311,15 +311,59 @@ impl World {
         std::fs::write(file, serde_json::to_vec(&listed).unwrap()).unwrap();
     }
 
-    /// Give the TypeSafe stand-in one recorded response body.
+    /// Give the TypeSafe stand-in one response body, with these answers.
     pub fn jev_answers(&self, answers: Value) {
-        std::fs::write(
-            self.root.join("typesafe-answer"),
-            json!({"model": "jev-recorded", "answers": answers,
-                "usage": {"input_tokens": 100, "output_tokens": 7}})
-            .to_string(),
+        self.typesafe_answers(&json!({"model": "jev-recorded", "answers": answers,
+            "usage": {"input_tokens": 100, "output_tokens": 7}}));
+    }
+
+    /// Give the TypeSafe stand-in what Jev answered for the real screen
+    /// recorded as `screen` → the lines of that screen, and the response.
+    pub fn jev_recorded(&self, screen: &str) -> (Vec<String>, Value) {
+        let recorded: Value =
+            serde_json::from_str(include_str!("../../../core/src/worker_health/recorded.json"))
+                .unwrap();
+        let case = recorded["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|case| case["screen"] == screen)
+            .unwrap_or_else(|| panic!("no recorded screen `{screen}`"));
+        self.typesafe_answers(&case["response"]);
+        let lines = case["lines"].as_array().unwrap();
+        (
+            lines.iter().map(|line| line.as_str().unwrap().to_string()).collect(),
+            case["response"].clone(),
         )
-        .unwrap();
+    }
+
+    /// Give the TypeSafe stand-in this whole response body.
+    pub fn typesafe_answers(&self, response: &Value) {
+        std::fs::write(self.root.join("typesafe-answer"), response.to_string()).unwrap();
+    }
+
+    /// What the TypeSafe stand-in was last sent: curl's arguments, and the
+    /// config it read on its standard input.
+    pub fn typesafe_sent(&self) -> (String, String) {
+        let sent = std::fs::read_to_string(self.root.join("typesafe-request")).unwrap();
+        let (arguments, config) = sent.split_once('\n').unwrap();
+        (arguments.to_string(), config.to_string())
+    }
+
+    /// The request body the TypeSafe stand-in was last sent, unquoted from
+    /// curl's config as curl reads it.
+    pub fn typesafe_payload(&self) -> Value {
+        let (_, config) = self.typesafe_sent();
+        let quoted = config
+            .lines()
+            .find_map(|line| line.strip_prefix("data-binary = "))
+            .expect("the payload is in the config");
+        let mut body = String::new();
+        let mut chars = quoted.trim_matches('"').chars();
+        while let Some(c) = chars.next() {
+            body.push(if c == '\\' { chars.next().unwrap() } else { c });
+        }
+        serde_json::from_str(&body).unwrap()
     }
 
     /// Runs the real CLI in the fleet's checkout.
@@ -790,6 +834,17 @@ impl World {
         std::fs::write(self.root.join("shell-aliases"), aliases).unwrap();
     }
 
+    /// Whether a question carrying `line` was put to a harness, in a terminal
+    /// of its own: what the harness diagnosis of a worker's screen did.
+    pub fn asked_a_harness_about(&self, line: &str) -> bool {
+        let calls: Vec<Vec<String>> =
+            serde_json::from_value(self.orca()["calls"].clone()).unwrap_or_default();
+        calls.iter().any(|call| {
+            call.iter().any(|arg| arg == "afkconvoy question")
+                && call.iter().any(|arg| arg.contains(line))
+        })
+    }
+
     /// Every script the stand-in login shell was asked to run, in order.
     pub fn shell_asked(&self) -> Vec<String> {
         let log = std::fs::read_to_string(self.root.join("shell-asked")).unwrap_or_default();
@@ -1076,12 +1131,13 @@ impl World {
     }
 }
 
-/// TypeSafe's HTTP endpoint, with the request and Authorization header kept as
-/// the evidence a test asserts against. No real network call is made.
+/// TypeSafe's HTTP endpoint: curl's arguments on the first line of
+/// `typesafe-request`, and the config it reads on its standard input — the
+/// URL, the headers and the payload — after them, as the evidence a test
+/// asserts against. No real network call is made.
 const CURL: &str = r#"#!/bin/sh
 root=${0%/*}/..
-printf '%s\n' "$*" > "$root/typesafe-request"
-cat > "$root/typesafe-payload"
+{ printf '%s\n' "$*"; cat; } > "$root/typesafe-request"
 if [ -f "$root/typesafe-fail" ]; then cat "$root/typesafe-fail" >&2; exit 22; fi
 cat "$root/typesafe-answer"
 "#;
@@ -1106,15 +1162,6 @@ pwd -P >> "$root/shell-asked-in"
 case "$2" in
   *"AFKCONVOY_ENV"*)
     . "$HOME/.profile"; eval "$2"; exit 0 ;;
-  *"AFKCONVOY_DIAGNOSIS"*)
-    printf '%s\n' "$2" >> "$root/diagnosis-asked"
-    answer="$root/diagnosis-answer"
-    case "$2" in
-      *"codex exec"*) [ ! -f "$root/diagnosis-answer-codex" ] || answer="$root/diagnosis-answer-codex" ;;
-      *"pi --print"*) [ ! -f "$root/diagnosis-answer-pi" ] || answer="$root/diagnosis-answer-pi" ;;
-    esac
-    if [ -f "$answer" ]; then cat "$answer"; exit 0; fi
-    exit 1 ;;
   *"You are the caster of a fleet"*)
     # A caster's prompt: answered with what `caster-answer` holds.
     printf '%s' "$2" > "$root/caster-asked"

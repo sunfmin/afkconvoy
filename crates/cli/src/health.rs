@@ -41,8 +41,9 @@ pub enum Action {
     Complete,
 }
 
-/// The diagnosis protocol. Evidence must quote an actual observation; a
-/// confidence number is deliberately not part of the protocol.
+/// The class a rule or Jev's table gives a stopped worker, and what the
+/// fleet does with it. Evidence quotes an actual observation; a confidence
+/// number is deliberately not part of it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Diagnosis {
@@ -91,7 +92,6 @@ struct Observed {
     model: Option<String>,
     snapshots: Vec<Snapshot>,
     next_check: u64,
-    attempts: u32,
     rate_retries: u32,
     #[serde(default)]
     continuations: u32,
@@ -102,8 +102,7 @@ struct Observed {
     #[serde(default)]
     window_started: u64,
     diagnosis: Option<Diagnosis>,
-    #[serde(default)]
-    diagnosis_failures: Vec<String>,
+    /// The latest check's request to Jev and TypeSafe's response.
     #[serde(default)]
     judgment: Option<Value>,
     #[serde(default)]
@@ -154,13 +153,15 @@ pub fn show() -> Value {
     }
 }
 
-/// Health checks whose bound has passed with no class the fleet can act on.
-/// Each carries the reason and an actual screen line for `doctor` and the watch.
-pub fn waiting_for_operator(now: u64) -> Vec<Value> {
+/// The workers whose health check is waiting for the operator: quiet past
+/// the observation bound, and classed by no rule or settled judgment. Each
+/// carries the reason, its terminal and the last line its screen showed, for
+/// `doctor` and the watch.
+pub fn waiting_for_operator() -> Vec<Value> {
     let Ok(book) = read() else { return vec![] };
     book.workers
         .into_iter()
-        .filter(|worker| worker.action == "waiting for operator" && worker.next_check <= now)
+        .filter(|worker| worker.action == "waiting for operator")
         .map(|worker| {
             let screen_line = worker
                 .snapshots
@@ -170,7 +171,7 @@ pub fn waiting_for_operator(now: u64) -> Vec<Value> {
                 })
                 .cloned()
                 .unwrap_or_default();
-            json!({"worker": worker.path, "since": worker.next_check,
+            json!({"worker": worker.path, "terminal": worker.terminal,
                 "reason": worker.operator_reason, "screen_line": screen_line})
         })
         .collect()
@@ -197,8 +198,8 @@ pub fn available(mut kit: Kit) -> Result<Kit> {
     Ok(kit)
 }
 
-/// Transport refusal is evidence for this worker first. Classification or
-/// diagnosis determines its scope, never a count of arbitrary refused sends.
+/// Transport refusal is evidence for this worker first. A rule or Jev's
+/// table determines its scope, never a count of arbitrary refused sends.
 pub fn signal(worktree: &Worktree, reason: &str) -> Result<()> {
     let file = worktree.note("convoy-worker-error.json")?;
     std::fs::write(
@@ -242,8 +243,9 @@ fn terminal_rule(harness: Harness, output: &[String]) -> Option<Diagnosis> {
     })
 }
 
-/// Conservative structured/error classification. Plain terminal text is sent
-/// through diagnosis unless the harness's own explicit words decide the fault.
+/// Conservative structured/error classification. Plain terminal text goes to
+/// Jev, or the operator, unless the harness's own explicit words decide the
+/// fault.
 fn classified(value: &Value) -> Option<Diagnosis> {
     let retry = value
         .get("retry_after")
@@ -299,8 +301,8 @@ fn classified(value: &Value) -> Option<Diagnosis> {
     })
 }
 
-/// A tick's issue workers being observed or held for diagnosis. Legacy silent
-/// worker escalation cannot bypass this decision branch.
+/// A tick's issue workers being observed, judged or held for the operator.
+/// Legacy silent worker escalation cannot bypass this decision branch.
 pub fn holding(worktree: &Worktree) -> bool {
     read().map_or(true, |book| {
         book.observations_failed.iter().any(|(path, _, _)| *path == worktree.path)
@@ -554,14 +556,12 @@ fn observe(
             command_key: binding.clone(),
             snapshots: vec![],
             next_check: fleet.now,
-            attempts: 0,
             rate_retries: 0,
             continuations: 0,
             failed_candidates: vec![],
             background: None,
             window_started: fleet.now,
             diagnosis: None,
-            diagnosis_failures: vec![],
             judgment: None,
             operator_reason: None,
             source: "observation".into(),
@@ -581,11 +581,9 @@ fn observe(
         observed.model = model;
         observed.command_key = binding;
         observed.snapshots.clear();
-        observed.attempts = 0;
         observed.rate_retries = 0;
         observed.next_check = fleet.now;
         observed.diagnosis = None;
-        observed.diagnosis_failures.clear();
         observed.judgment = None;
         observed.operator_reason = None;
         observed.error = None;
@@ -595,9 +593,7 @@ fn observe(
         observed.snapshots.last().is_some_and(|s| s.output != output || s.progress != progress);
     if changed {
         observed.snapshots.clear();
-        observed.attempts = 0;
         observed.diagnosis = None;
-        observed.diagnosis_failures.clear();
         observed.judgment = None;
         observed.operator_reason = None;
         observed.error = None;
@@ -613,7 +609,7 @@ fn observe(
     if observed.snapshots.len() > 3 {
         observed.snapshots.remove(1);
     }
-    let previous = (observed.action.clone(), observed.attempts, observed.continuations);
+    let previous = (observed.action.clone(), observed.continuations);
     let result = decide(
         book,
         &mut observed,
@@ -632,7 +628,7 @@ fn observe(
         observed.action = "waiting".into();
         observed.next_check = fleet.now.saturating_add(CHECK_SECONDS);
     }
-    if previous != (observed.action.clone(), observed.attempts, observed.continuations)
+    if previous != (observed.action.clone(), observed.continuations)
         || observed.judgment.is_some()
         || observed.error.is_some()
     {
@@ -669,7 +665,8 @@ fn escalate_observed(
         "worker": observed.path,
         "harness": observed.harness,
         "diagnosis": observed.diagnosis,
-        "diagnosis_failures": observed.diagnosis_failures,
+        "waiting_for_operator": observed.operator_reason,
+        "jev_answers": observed.judgment.as_ref().map(|judgment| &judgment["response"]["answers"]),
         "error": observed.error,
         "snapshots": observed.snapshots,
     }))?;
@@ -683,6 +680,10 @@ fn escalate_observed(
     Ok(())
 }
 
+/// Hands a worker no rule or settled judgment classes to the operator:
+/// `doctor` names it, with `reason`, until its evidence changes or the hour
+/// that bounds every wait on unchanged evidence escalates it. A `failed`
+/// reason is an error of the check, as the tick log says it.
 fn wait_for_operator(
     observed: &mut Observed,
     now: u64,
@@ -693,8 +694,32 @@ fn wait_for_operator(
     observed.operator_reason = Some(reason.clone());
     observed.error = failed.then_some(reason);
     observed.action = "waiting for operator".into();
-    observed.next_check = now.saturating_add(CHECK_SECONDS);
+    observed.next_check = now
+        .saturating_add(CHECK_SECONDS)
+        .min(observed.window_started.saturating_add(RECOVERY_SECONDS));
     Ok(())
+}
+
+impl From<afkconvoy_core::worker_health::Decision> for Diagnosis {
+    fn from(decision: afkconvoy_core::worker_health::Decision) -> Diagnosis {
+        use afkconvoy_core::worker_health::{Action as Does, Scope as Over};
+        Diagnosis {
+            status: if decision.action == Does::Continue { "fault" } else { "observed" }.into(),
+            class: decision.class.into(),
+            scope: match decision.scope {
+                Over::Account => Scope::Account,
+                Over::Worker => Scope::Worker,
+            },
+            evidence: vec![decision.evidence],
+            action: match decision.action {
+                Does::Wait => Action::Wait,
+                Does::Continue => Action::Continue,
+                Does::Complete => Action::Complete,
+            },
+            missing: vec![],
+            retry_after: None,
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -717,8 +742,9 @@ fn decide(
     observed.judgment = None;
     let expired = fleet.now.saturating_sub(observed.window_started) >= RECOVERY_SECONDS;
     if expired
-        && observed.action != "waiting for operator"
-        && (observed.error.is_some() || observed.continuations >= MAX_CONTINUATIONS)
+        && (observed.error.is_some()
+            || observed.action == "waiting for operator"
+            || observed.continuations >= MAX_CONTINUATIONS)
     {
         return escalate_observed(observed, fleet, me, issue);
     }
@@ -742,61 +768,30 @@ fn decide(
     }
     let diagnosis = if let Some((source, rule)) = rule {
         observed.source = source.into();
-        observed.judgment = None;
-        observed.operator_reason = None;
         rule
     } else {
-        match crate::jev::judge(output) {
-            Ok(crate::jev::Outcome::Judged(judgment)) => {
-                observed.source = "jev".into();
-                observed.judgment =
-                    Some(json!({"request": judgment.request, "answers": judgment.answers}));
-                match judgment.decision {
-                    Ok(decision) => Diagnosis {
-                        status: if decision.action
-                            == afkconvoy_core::worker_health::Action::Continue
-                        {
-                            "fault"
-                        } else {
-                            "observed"
-                        }
-                        .into(),
-                        class: decision.class.into(),
-                        scope: match decision.scope {
-                            afkconvoy_core::worker_health::Scope::Account => Scope::Account,
-                            afkconvoy_core::worker_health::Scope::Worker => Scope::Worker,
-                        },
-                        evidence: vec![decision.evidence],
-                        action: match decision.action {
-                            afkconvoy_core::worker_health::Action::Wait => Action::Wait,
-                            afkconvoy_core::worker_health::Action::Continue => Action::Continue,
-                            afkconvoy_core::worker_health::Action::Complete => Action::Complete,
-                        },
-                        missing: vec![],
-                        retry_after: None,
-                    },
-                    Err(reason) => return wait_for_operator(observed, fleet.now, reason, false),
-                }
+        let (request, response, decided) = match crate::jev::judge(output) {
+            crate::jev::Outcome::NoKey => {
+                let reason = "no Jev key command is set in the host settings".into();
+                return wait_for_operator(observed, fleet.now, reason, false);
             }
-            Ok(crate::jev::Outcome::NoKey) => {
-                return wait_for_operator(
-                    observed,
-                    fleet.now,
-                    "no Jev key command is set in the host settings".into(),
-                    false,
-                );
+            crate::jev::Outcome::Judged { request, response, decision } => {
+                (request, response, decision.map_err(|reason| (reason, false)))
             }
-            Ok(crate::jev::Outcome::Failed { request, answers, error }) => {
-                observed.source = "jev".into();
-                observed.judgment = Some(json!({"request": request, "answers": answers}));
-                return wait_for_operator(observed, fleet.now, error, true);
+            crate::jev::Outcome::Failed { request, response, error } => {
+                (request, response, Err((error, true)))
             }
-            Err(error) => {
-                return wait_for_operator(observed, fleet.now, format!("{error:#}"), true);
-            }
+        };
+        observed.source = "jev".into();
+        observed.judgment =
+            (!request.is_null()).then(|| json!({"request": request, "response": response}));
+        match decided {
+            Ok(decision) => decision.into(),
+            Err((reason, failed)) => return wait_for_operator(observed, fleet.now, reason, failed),
         }
     };
     observed.diagnosis = Some(diagnosis.clone());
+    observed.operator_reason = None;
     observed.error = None;
     observed.next_check =
         fleet.now.saturating_add(diagnosis.retry_after.unwrap_or(CHECK_SECONDS).max(1));

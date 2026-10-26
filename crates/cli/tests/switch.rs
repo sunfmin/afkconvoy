@@ -468,55 +468,49 @@ fn an_acknowledged_close_that_leaves_the_terminal_is_no_permission_for_a_second_
     assert_eq!(world.claims().len(), 1);
 }
 
-fn diagnosis(world: &World, class: &str, _action: &str, _scope: &str, evidence: &[&str]) {
+/// Has the host name a Jev key command, and Jev answer the next check: no to
+/// every judgment but those `said`, and `evidence` selected from the screen.
+fn jev_judges(world: &World, said: &[(&str, f64)], evidence: &str) {
     world.jev_key_command("printf test-key");
-    let mut answers = json!({
-        "usage_limit": {"type": "noul", "noul": 0.01},
-        "busy": {"type": "noul", "noul": 0.01},
-        "finished": {"type": "noul", "noul": 0.01},
-        "waiting_for_person": {"type": "noul", "noul": 0.01},
-        "trust_prompt": {"type": "noul", "noul": 0.01},
-        "login_refused": {"type": "noul", "noul": 0.01},
-        "evidence": {"type": "choice", "choice": evidence.first().copied().unwrap_or("Your organization has disabled Claude Code access"),
-            "confidence": 0.99, "probabilities": {}}
-    });
-    let (id, probability) = match class {
-        "quota" => ("usage_limit", 0.99),
-        "disabled" | "authentication" => ("login_refused", 0.99),
-        "long_command" => ("busy", 0.99),
-        "waiting_human" | "waiting_dependency" => ("waiting_for_person", 0.99),
-        "complete" => ("finished", 0.99),
-        "unknown" => ("busy", 0.5),
-        _ => ("busy", 0.01),
-    };
-    answers[id]["noul"] = json!(probability);
-    world.jev_answers(answers);
+    let mut answers = serde_json::Map::new();
+    for id in afkconvoy_core::worker_health::judgments() {
+        let noul = said.iter().find(|(said, _)| *said == id).map_or(0.01, |(_, noul)| *noul);
+        answers.insert(id.into(), json!({"type": "noul", "noul": noul}));
+    }
+    answers.insert(
+        "evidence".into(),
+        json!({"type": "choice", "choice": evidence, "confidence": 0.99,
+            "probabilities": {evidence: 0.99}}),
+    );
+    world.jev_answers(Value::Object(answers));
 }
 
+/// What `blocked()`'s worker shows.
+const DISABLED: &str = "Your organization has disabled Claude Code access";
+
 #[test]
-fn screen_faults_are_diagnosed_before_automatic_continuation_and_keep_the_scene() {
+fn screen_faults_are_judged_before_automatic_continuation_and_keep_the_scene() {
     let world = blocked();
     let dir = worktree(&world, 7);
     let head = git(&dir, &["rev-parse", "HEAD"]);
     std::fs::write(dir.join("unfinished.txt"), "keep me").unwrap();
     let before = std::fs::read(world.kit_path()).unwrap();
-    diagnosis(
-        &world,
-        "authentication",
-        "continue",
-        "account",
-        &["Your organization has disabled Claude Code access"],
-    );
+    jev_judges(&world, &[("login_refused", 0.99)], DISABLED);
     tick(&world, 800);
     assert_eq!(open_commands(&world, &dir), [common::trusted("agent")]);
     assert!(!world.root.join("typesafe-request").exists());
     tick(&world, 1100);
     let asked = std::fs::read_to_string(world.root.join("typesafe-request")).unwrap();
-    let payload = std::fs::read_to_string(world.root.join("typesafe-payload")).unwrap();
+    let payload = world.typesafe_payload();
     assert!(asked.contains("https://api.typesafe.ai/v1/systemone"));
-    assert!(payload.contains("Your organization has disabled Claude Code access"));
-    assert!(payload.contains("usage_limit") && payload.contains("login_refused"));
-    assert!(!world.root.join("diagnosis-asked").exists());
+    assert!(
+        payload["state"]
+            .as_str()
+            .unwrap()
+            .contains("Your organization has disabled Claude Code access")
+    );
+    assert_eq!(payload["questions"]["login_refused"]["type"], "noul");
+    assert!(!world.asked_a_harness_about(DISABLED));
     assert_eq!(
         open_commands(&world, &dir),
         [afkconvoy_core::harness::Harness::Pi.in_worktree(
@@ -542,27 +536,22 @@ fn screen_faults_are_diagnosed_before_automatic_continuation_and_keep_the_scene(
 
 #[test]
 fn ambiguous_normal_work_and_failed_judgments_never_authorize_a_switch() {
-    for (class, action) in [
-        ("long_command", "wait"),
-        ("waiting_human", "wait"),
-        ("waiting_dependency", "wait"),
-        ("complete", "complete"),
-        ("unknown", "unknown"),
-    ] {
+    for class in ["busy", "waiting_for_person", "trust_prompt", "finished", "unsettled"] {
         let world = blocked();
         let dir = worktree(&world, 7);
-        diagnosis(&world, class, action, "worker", &[]);
+        let said = if class == "unsettled" { ("busy", 0.5) } else { (class, 0.99) };
+        jev_judges(&world, &[said], DISABLED);
         tick(&world, 800);
         tick(&world, 1100);
         assert_eq!(open_commands(&world, &dir), [common::trusted("agent")], "{class}");
         assert_eq!(world.claims().len(), 1);
         assert!(world.root.join("typesafe-request").exists(), "{class}");
-        assert!(!world.root.join("diagnosis-asked").exists(), "{class}");
+        assert!(!world.asked_a_harness_about(DISABLED), "{class}");
     }
     for answer in ["not JSON", "{}"] {
         let world = blocked();
         let dir = worktree(&world, 7);
-        diagnosis(&world, "unknown", "unknown", "worker", &[]);
+        jev_judges(&world, &[], DISABLED);
         std::fs::write(world.root.join("typesafe-answer"), answer).unwrap();
         tick(&world, 800);
         tick(&world, 1100);
@@ -610,10 +599,8 @@ fn structured_rate_limits_wait_for_retry_after_before_a_bounded_session_fallback
     );
     let book: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
     assert_eq!(book["faults"], json!([]), "a rate limit never pauses the entire account");
-    assert!(
-        !world.root.join("diagnosis-asked").exists(),
-        "classified runtime errors need no model"
-    );
+    assert!(!world.asked_a_harness_about(DISABLED), "classified runtime errors need no model");
+    assert!(!world.root.join("typesafe-request").exists(), "the structured rule runs first");
 }
 
 #[test]
@@ -735,13 +722,7 @@ fn an_unclassed_stuck_session_waits_for_the_operator_without_pausing_its_harness
             ]);
         }
     });
-    diagnosis(
-        &world,
-        "stalled",
-        "continue",
-        "worker",
-        &["Agent session stopped accepting requests"],
-    );
+    jev_judges(&world, &[], "Agent session stopped accepting requests");
     tick(&world, 800);
     tick(&world, 1100);
     assert_eq!(open_commands(&world, &dir), [common::trusted("agent")]);
@@ -821,7 +802,7 @@ fn codex_usage_limit(world: &World) {
 }
 
 #[test]
-fn codex_explicit_usage_limit_continues_by_rule_without_a_diagnosis() {
+fn codex_explicit_usage_limit_continues_by_rule_without_asking_jev() {
     let world = blocked();
     world.jev_key_command("printf unused-key");
     let dir = worktree(&world, 7);
@@ -836,7 +817,7 @@ fn codex_explicit_usage_limit_continues_by_rule_without_a_diagnosis() {
     assert_eq!(git(&dir, &["rev-parse", "HEAD"]), head);
     assert_eq!(std::fs::read_to_string(dir.join("unfinished.txt")).unwrap(), "keep me");
     assert_eq!(world.claims().len(), 1);
-    assert!(!world.root.join("diagnosis-asked").exists());
+    assert!(!world.asked_a_harness_about("Usage limit reached"));
     assert!(!world.root.join("typesafe-request").exists(), "the terminal rule runs first");
     let health = world.afk(&["plan", "--now", "801"]).ok();
     let worker = &health["host_kit"]["worker_health"]["workers"][0];
@@ -871,7 +852,7 @@ fn explicit_usage_limit_starts_nothing_until_the_failed_codex_agent_is_gone() {
 }
 
 #[test]
-fn account_quota_wait_without_a_reset_continues_instead_of_diagnosing_again() {
+fn an_account_quota_jev_judges_without_a_reset_continues_at_once() {
     let world = blocked();
     let dir = worktree(&world, 7);
     world.with_orca(|orca| {
@@ -879,12 +860,10 @@ fn account_quota_wait_without_a_reset_continues_instead_of_diagnosing_again() {
             terminal["screen"] = json!(["Usage limit reached. Increase your limits to continue."]);
         }
     });
-    diagnosis(
+    jev_judges(
         &world,
-        "quota",
-        "wait",
-        "account",
-        &["Usage limit reached. Increase your limits to continue."],
+        &[("usage_limit", 0.99)],
+        "Usage limit reached. Increase your limits to continue.",
     );
 
     tick(&world, 800);
@@ -901,7 +880,6 @@ fn account_quota_wait_without_a_reset_continues_instead_of_diagnosing_again() {
     let health = world.afk(&["plan", "--now", "1101"]).ok();
     let worker = &health["host_kit"]["worker_health"]["workers"][0];
     assert_eq!(worker["action"], "continued");
-    assert_eq!(worker["attempts"], 0);
     assert_eq!(worker["source"], "jev");
     assert_eq!(worker["diagnosis"]["retry_after"], Value::Null);
 }
@@ -910,14 +888,14 @@ fn account_quota_wait_without_a_reset_continues_instead_of_diagnosing_again() {
 fn a_failed_typesafe_call_waits_for_the_operator_and_is_logged() {
     let world = blocked();
     let dir = worktree(&world, 7);
-    diagnosis(&world, "quota", "continue", "account", &["Usage limit reached"]);
+    jev_judges(&world, &[("usage_limit", 0.99)], DISABLED);
     std::fs::write(world.root.join("typesafe-fail"), "refused by the recorded endpoint").unwrap();
 
     tick(&world, 800);
     tick(&world, 1100);
 
     assert_eq!(open_commands(&world, &dir), [common::trusted("agent")]);
-    assert!(!world.root.join("diagnosis-asked").exists());
+    assert!(!world.asked_a_harness_about(DISABLED));
     let path = world.cache().join("afkconvoy/worker-health.json");
     let book: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
     let worker = &book["workers"][0];

@@ -1,150 +1,137 @@
-//! TypeSafe's Jev for worker health. The key command is read and run afresh
-//! for each check. Its stdout lives only in this process and in the request's
-//! Authorization header; payloads, answers and errors never contain the key.
+//! Jev, TypeSafe's System One model, asked what a stopped worker's screen
+//! shows (`afkconvoy_core::worker_health` holds the questions and the table).
+//! The key command is a host setting, run afresh for each check. The key it
+//! prints lives only in this process and in what curl reads on its standard
+//! input: it is in no file, argument, answer or log line.
 
-use std::io::Write;
+use std::io::{Read, Write};
 use std::process::{Command, Stdio};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use afkconvoy_core::worker_health::{self, Answers, Decision};
+use afkconvoy_core::worker_health::{self, Decision};
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
 
 use crate::host_settings;
 
 const ENDPOINT: &str = "https://api.typesafe.ai/v1/systemone";
+
+/// How long the key command, and then the call to TypeSafe, may each take.
 const TIMEOUT: Duration = Duration::from_secs(30);
 
-/// One completed check, with everything the tick log may replay and the pure
-/// table's decision.
-pub struct Judgment {
-    pub request: Value,
-    pub answers: Value,
-    pub decision: Result<Decision, String>,
-}
-
-/// What one check came to. A failed call keeps its attempted request and any
-/// response so the tick log can replay it; no key command means no request.
+/// What one health check came to.
 pub enum Outcome {
+    /// The host settings name no Jev key command: nothing was asked.
     NoKey,
-    Judged(Judgment),
-    Failed { request: Value, answers: Value, error: String },
+    /// Jev answered: `decision` is the row of the table its answers settle
+    /// on, or why they settle on none.
+    Judged { request: Value, response: Value, decision: Result<Decision, String> },
+    /// The key command, the call or its answer failed: an error, never an
+    /// answer. `request` is null where none was built.
+    Failed { request: Value, response: Value, error: String },
 }
 
-pub fn judge(screen: &[String]) -> Result<Outcome> {
-    let Some(command) = host_settings::of_host()?.jev_key_command else {
-        return Ok(Outcome::NoKey);
+/// Asks Jev about `screen`, where the host settings name a key command.
+pub fn judge(screen: &[String]) -> Outcome {
+    let failed = |request, response, error| Outcome::Failed { request, response, error };
+    let command = match host_settings::of_host() {
+        Ok(settings) => match settings.jev_key_command {
+            Some(command) => command,
+            None => return Outcome::NoKey,
+        },
+        Err(error) => return failed(Value::Null, Value::Null, format!("{error:#}")),
     };
-    let key = key(&command)?;
-    let request = worker_health::request(screen);
+    let request = match worker_health::request(screen) {
+        Ok(request) => request,
+        Err(error) => return failed(Value::Null, Value::Null, error),
+    };
+    let key = match key(&command) {
+        Ok(key) => key,
+        Err(error) => return failed(request, Value::Null, format!("{error:#}")),
+    };
     let response = match post(&key, &request) {
         Ok(response) => response,
-        Err(error) => {
-            return Ok(Outcome::Failed {
-                request,
-                answers: Value::Null,
-                error: format!("{error:#}"),
-            });
-        }
+        Err(error) => return failed(request, Value::Null, format!("{error:#}")),
     };
-    let decision = response
-        .get("answers")
-        .context("TypeSafe returned no answers")
-        .and_then(|answers| answers_of(answers, &request))
-        .map(|answers| worker_health::classify(&answers));
-    match decision {
-        Ok(decision) => Ok(Outcome::Judged(Judgment { request, answers: response, decision })),
-        Err(error) => Ok(Outcome::Failed {
-            request,
-            answers: response,
-            error: format!("{error:#}"),
-        }),
+    match worker_health::answers(&request, &response) {
+        Ok(answers) => {
+            Outcome::Judged { decision: worker_health::classify(&answers), request, response }
+        }
+        Err(error) => failed(request, response, error),
     }
 }
 
+/// What `command` prints, trimmed: the key. One that fails, prints nothing,
+/// or does not end within `TIMEOUT` is an error, which never holds what it
+/// printed.
 fn key(command: &str) -> Result<String> {
-    let output = Command::new("sh")
+    let mut child = Command::new("sh")
         .args(["-c", command])
         .stdin(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::null())
-        .output()
+        .spawn()
         .context("the Jev key command could not be started")?;
-    if !output.status.success() {
-        bail!("the Jev key command failed with {}", output.status);
+    let mut printed = child.stdout.take().context("the Jev key command has no stdout")?;
+    let reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = printed.read_to_end(&mut bytes);
+        bytes
+    });
+    let started = Instant::now();
+    let status = loop {
+        match child.try_wait()? {
+            Some(status) => break status,
+            None if started.elapsed() >= TIMEOUT => {
+                let _ = child.kill();
+                let _ = child.wait();
+                bail!("the Jev key command did not end within {}s", TIMEOUT.as_secs());
+            }
+            None => std::thread::sleep(Duration::from_millis(10)),
+        }
+    };
+    if !status.success() {
+        bail!("the Jev key command failed: {status}");
     }
-    let key =
-        String::from_utf8(output.stdout).context("the Jev key command printed no UTF-8 key")?;
-    let key = key.trim().to_string();
+    let printed = reader.join().unwrap_or_default();
+    let key = String::from_utf8(printed).unwrap_or_default().trim().to_string();
     if key.is_empty() {
         bail!("the Jev key command printed no key");
+    }
+    if key.chars().any(char::is_whitespace) {
+        bail!("the Jev key command printed more than one word");
     }
     Ok(key)
 }
 
+/// TypeSafe's answer to `request`. curl reads the key and the payload from
+/// its standard input, as its config, so neither is among its arguments.
 fn post(key: &str, request: &Value) -> Result<Value> {
-    let payload = serde_json::to_vec(request)?;
+    let quoted = |text: &str| format!("\"{}\"", text.replace('\\', "\\\\").replace('"', "\\\""));
+    let config = format!(
+        "url = {}\nheader = \"Content-Type: application/json\"\nheader = {}\ndata-binary = {}\n",
+        quoted(ENDPOINT),
+        quoted(&format!("Authorization: Bearer {key}")),
+        quoted(&serde_json::to_string(request)?),
+    );
     let mut child = Command::new("curl")
-        .args([
-            "--silent",
-            "--show-error",
-            "--fail-with-body",
-            "--max-time",
-            &TIMEOUT.as_secs().to_string(),
-            "--request",
-            "POST",
-            "--url",
-            ENDPOINT,
-            "--header",
-            "Content-Type: application/json",
-            "--header",
-            &format!("Authorization: Bearer {key}"),
-            "--data-binary",
-            "@-",
-        ])
+        .args(["--silent", "--show-error", "--fail-with-body", "--max-time"])
+        .arg(TIMEOUT.as_secs().to_string())
+        .args(["--config", "-"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .context("curl could not be started for the TypeSafe request")?;
-    child.stdin.take().context("curl has no stdin")?.write_all(&payload)?;
+    child.stdin.take().context("curl has no stdin")?.write_all(config.as_bytes())?;
     let output = child.wait_with_output()?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
     if !output.status.success() {
-        let detail = format!("{} {}", stderr.trim(), stdout.trim());
-        bail!("the TypeSafe request failed: {}", detail.trim().replace(key, "[redacted]"));
+        let said = format!(
+            "{} {}",
+            String::from_utf8_lossy(&output.stderr).trim(),
+            String::from_utf8_lossy(&output.stdout).trim()
+        );
+        bail!("the TypeSafe request failed: {}", said.trim().replace(key, "[the key]"));
     }
-    serde_json::from_slice(&output.stdout).context("TypeSafe returned invalid JSON")
-}
-
-fn answers_of(answers: &Value, request: &Value) -> Result<Answers> {
-    let noul = |id: &str| -> Result<u64> {
-        let probability = answers
-            .get(id)
-            .and_then(|answer| answer.get("noul"))
-            .and_then(Value::as_f64)
-            .with_context(|| format!("TypeSafe returned no Noul for {id}"))?;
-        if !probability.is_finite() || !(0.0..=1.0).contains(&probability) {
-            bail!("TypeSafe returned an out-of-range Noul for {id}");
-        }
-        Ok((probability * 1000.0).round() as u64)
-    };
-    let evidence = answers
-        .get(worker_health::EVIDENCE)
-        .and_then(|answer| answer.get("choice"))
-        .and_then(Value::as_str)
-        .context("TypeSafe returned no evidence Choice")?
-        .to_string();
-    if request["questions"][worker_health::EVIDENCE]["criteria"].get(&evidence).is_none() {
-        bail!("TypeSafe selected evidence that is not a screen line");
-    }
-    Ok(Answers {
-        usage_limit: noul(worker_health::USAGE_LIMIT)?,
-        busy: noul(worker_health::BUSY)?,
-        finished: noul(worker_health::FINISHED)?,
-        waiting_for_person: noul(worker_health::WAITING_FOR_PERSON)?,
-        trust_prompt: noul(worker_health::TRUST_PROMPT)?,
-        login_refused: noul(worker_health::LOGIN_REFUSED)?,
-        evidence,
-    })
+    serde_json::from_slice(&output.stdout).context("TypeSafe answered with no JSON")
 }

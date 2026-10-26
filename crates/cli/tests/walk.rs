@@ -411,7 +411,7 @@ fn already_satisfied_closes_an_equal_tree_with_commits_ahead() {
 }
 
 #[test]
-fn a_worker_that_stops_with_no_verdict_keeps_its_stage_while_waiting_for_diagnosis() {
+fn a_worker_that_stops_with_no_verdict_keeps_its_stage_while_waiting_for_the_operator() {
     let world = bound(2);
     world.issue(7, &["flow:feature"]);
     tick(&world, 1000);

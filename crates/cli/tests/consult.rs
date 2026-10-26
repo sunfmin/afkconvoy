@@ -592,7 +592,7 @@ fn a_ruling_declared_before_its_claim_is_taken_over_is_read() {
 }
 
 #[test]
-fn a_taken_over_silent_stage_keeps_its_stage_and_claim_while_waiting_for_diagnosis() {
+fn a_taken_over_silent_stage_keeps_its_stage_and_claim_while_waiting_for_the_operator() {
     let world = bound(FEATURE, 2);
     world.issue(7, &["flow:feature"]);
     tick(&world, 1000);
