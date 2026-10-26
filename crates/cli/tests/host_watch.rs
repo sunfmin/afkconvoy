@@ -240,14 +240,19 @@ fn a_look_reads_a_terminal_preview_ending_in_a_lone_surrogate() {
     .replace("SURROGATE", r"\udf13");
     world.with_orca(|orca| orca["raw_answers"] = json!({"terminal list": answer}));
     printed(&world, &watch, &["checked the host"], Some(0));
+    let no_failures = || {
+        for file in std::fs::read_dir(world.cache().join("afkconvoy/runs")).unwrap() {
+            let text = std::fs::read_to_string(file.unwrap().path()).unwrap();
+            assert!(!text.contains("\"watch_failed\""), "{text}");
+        }
+    };
     until(&world, "a successful look", || {
-        let log = world.runner_log().join("\n");
-        assert!(!log.contains("watch_failed"), "{log}");
+        no_failures();
         state(&world)["until"].as_u64().filter(|until| *until > first)
     });
     assert!(world.orca_calls().iter().any(|call| asked(call) == "terminal list"));
     assert_eq!(state(&world)["last"]["outcome"], "ended");
-    assert!(!world.runner_log().join("\n").contains("watch_failed"));
+    no_failures();
 }
 
 #[test]

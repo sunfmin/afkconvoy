@@ -1400,6 +1400,65 @@ impl Worktree {
 mod tests {
     use super::*;
 
+    #[test]
+    fn every_lone_surrogate_in_an_answer_becomes_one_replacement_character() {
+        for unit in 0xd800..=0xdfff {
+            let text = format!(r#"{{"ok":true,"result":{{"text":"\u{unit:04x}"}}}}"#);
+            assert_eq!(
+                read_answer(text.as_bytes()).unwrap(),
+                serde_json::json!({"ok": true, "result": {"text": "�"}}),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn repairing_an_answer_keeps_pairs_keys_nesting_and_literal_escapes() {
+        let text = r#"{"ok":true,"result":{"\uD800key":["⏺\udf13","\ud83c\udf13","\ud800\ud800\udc00","\udfff\uDBFF\uDFFF","literal: \\udf13","quote: \"\udf17","slash: \\\udf13"]},"error":null}"#;
+        assert_eq!(
+            read_answer(text.as_bytes()).unwrap(),
+            serde_json::json!({
+                "ok": true, "result": {"�key": ["⏺�", "🌓", "�𐀀", "�\u{10ffff}",
+                    r"literal: \udf13", "quote: \"�", "slash: \\�"]}, "error": null
+            })
+        );
+        for high in [0xd800_u32, 0xda00, 0xdbff] {
+            for low in [0xdc00_u32, 0xdd00, 0xdfff] {
+                let text = format!(r#"["\u{high:04X}\u{low:04x}","\udf13"]"#);
+                let character =
+                    char::from_u32(0x10000 + ((high - 0xd800) << 10) + low - 0xdc00).unwrap();
+                assert_eq!(
+                    read_answer(text.as_bytes()).unwrap(),
+                    serde_json::json!([character.to_string(), "�"]),
+                    "{text}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn reading_an_answer_keeps_valid_json_and_rejects_other_malformed_json() {
+        let text = br#"{"ok":false,"error":{"code":"blocked","details":{"reason":"\ud83c\udf13"}},"result":[null,true,false,-12,1.25,18446744073709551615,"\\ud800"]}"#;
+        assert_eq!(read_answer(text).unwrap(), serde_json::from_slice::<Value>(text).unwrap());
+        for text in [
+            "not JSON",
+            r#"{"ok":true,"text":"\udf13",}"#,
+            r#"{"ok":true,"text":"\udf13\q"}"#,
+            r#"{"text":"\ud800\u12"}"#,
+            r#"{"text":"\u+800"}"#,
+            r#"{"text":"\uD8XZ"}"#,
+            r#"{"text":"\udf13"}"#,
+            r#"{"text":"\udf13"} trailing"#,
+            r#"{"text":\udf13}"#,
+            "\"\\udf13\n\"",
+            "\"\\udf13\\",
+            "[\"\\udf13\"",
+        ] {
+            assert!(read_answer(text.as_bytes()).is_err(), "accepted malformed JSON: {text}");
+        }
+        assert!(read_answer(b"\"\\udf13\xff\"").is_err());
+    }
+
     /// An orca whose question terminal shows `shown` at every read, after the
     /// first: each call is kept in `calls`.
     fn orca_showing<'a>(
