@@ -7,7 +7,7 @@
 //! a shell line; what a script, a variable or a quoted substitution hides
 //! gets past it. It stops a worker that errs, not one that means to get by.
 
-use crate::inspection::{INSPECTION_ENV, kept};
+use crate::host_watch::{WATCH_ENV, kept};
 use crate::intake::INTAKE_RECORD;
 use crate::patrol::PATROL_ENV;
 use crate::precedent::PROPOSAL_ENV;
@@ -87,10 +87,10 @@ enum At {
     /// The proposal of a precedent: its worker commits and pushes, in its
     /// clone of the team's repo, and is held to what holds every worker.
     Proposal,
-    /// The inspection of the hot worker so named, or of the host
+    /// The watch of the hot worker so named, or of the host
     /// (docs/adr/0026): the operator on its host, whatever its facts say,
     /// within the bounds of any unattended worker.
-    Inspection(String),
+    Watch(String),
 }
 
 /// What the guard knows of one process of this host that a worker would end:
@@ -98,7 +98,7 @@ enum At {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Process {
     /// The fleets of this host started it — a worker, the landing train, an
-    /// inspection — or it runs under one they started, or was left by one.
+    /// watch — or it runs under one they started, or was left by one.
     Fleets,
     /// The host runner.
     Runner,
@@ -118,7 +118,7 @@ pub struct Limits {
     base_branch: String,
     escalate_label: String,
     lock_label: String,
-    /// The home folder, which an inspection reads paths under; `None` where
+    /// The home folder, which a watch reads paths under; `None` where
     /// the environment names none.
     home: Option<String>,
 }
@@ -139,20 +139,20 @@ impl Limits {
         };
         // A patrol's worker is at no stage, and neither is a proposal's:
         // its facts name the patrol, or the issue whose ruling it proposes.
-        // An inspection's is at none either: it names the hot worker.
-        let at = match (var(PATROL_ENV), var(PROPOSAL_ENV), var(INSPECTION_ENV)) {
-            (_, _, Some(worker)) => At::Inspection(worker),
+        // A watch's is at none either: it names the hot worker.
+        let at = match (var(PATROL_ENV), var(PROPOSAL_ENV), var(WATCH_ENV)) {
+            (_, _, Some(worker)) => At::Watch(worker),
             (Some(patrol), _, None) => At::Patrol(patrol),
             (None, Some(_), None) => At::Proposal,
             (None, None, None) => At::Stage(fact(STAGE_ENV)?),
         };
-        // An inspection is the operator on its host: it commits, and it is
+        // A watch is the operator on its host: it commits, and it is
         // no consult, whatever its facts say.
-        let inspection = matches!(at, At::Inspection(_));
+        let watch = matches!(at, At::Watch(_));
         Ok(Limits {
             at,
-            writes: flag(WRITES_ENV)? || inspection,
-            consult: flag(CONSULT_ENV)? && !inspection,
+            writes: flag(WRITES_ENV)? || watch,
+            consult: flag(CONSULT_ENV)? && !watch,
             base_branch: fact(BASE_BRANCH_ENV)?,
             escalate_label: fact(ESCALATE_LABEL_ENV)?,
             lock_label: fact(LOCK_LABEL_ENV)?,
@@ -180,7 +180,7 @@ impl Limits {
         {
             return Some(host_change(&format!("`{name}`")));
         }
-        if let (At::Inspection(_), Some(name)) = (&self.at, name)
+        if let (At::Watch(_), Some(name)) = (&self.at, name)
             && let Some(why) = self.refuses_operator(name, &args, processes)
         {
             return Some(why);
@@ -206,7 +206,7 @@ impl Limits {
         }
     }
 
-    /// Why the inspection, the operator on its host, is refused the program
+    /// Why the watch, the operator on its host, is refused the program
     /// `name` run with `args`: what holds it to the bounds of any unattended
     /// worker beside what holds every worker — only what the fleets of this
     /// host started or own, and never what cannot be rebuilt.
@@ -218,7 +218,7 @@ impl Limits {
     ) -> Option<String> {
         if ENDS_BY_NAME.contains(&name) {
             return Some(format!(
-                "an inspection ends only what the fleets of this host started: `{name}` ends every \
+                "a watch ends only what the fleets of this host started: `{name}` ends every \
                  process its name matches, the user's own among them. Find the pid (`ps`), and \
                  `kill <pid>`"
             ));
@@ -235,7 +235,7 @@ impl Limits {
         let words = positionals(args, &[]);
         if name == "afkconvoy" && words.first() == Some(&"stop") {
             return Some(
-                "an inspection never stops the host runner, nor takes a checkout off its list: \
+                "a watch never stops the host runner, nor takes a checkout off its list: \
                  `afkconvoy stop` is the user's. Change what holds the work back instead"
                     .to_string(),
             );
@@ -243,9 +243,9 @@ impl Limits {
         None
     }
 
-    /// Why an inspection may not delete `path`, a word of a deleting
+    /// Why a watch may not delete `path`, a word of a deleting
     /// command: it is, or holds, what cannot be rebuilt under the home folder
-    /// (`inspection::KEPT`), or it is outside the home folder and the
+    /// (`watch::KEPT`), or it is outside the home folder and the
     /// system's temporary files — the user's programs and files. A path the
     /// guard cannot place — relative, or named by another variable — is the
     /// worker's to place.
@@ -271,7 +271,7 @@ impl Limits {
             let relative = path.strip_prefix(home).unwrap_or_default();
             return kept(relative).then(|| {
                 format!(
-                    "an inspection never deletes what cannot be rebuilt: `{path}` is, or holds, \
+                    "a watch never deletes what cannot be rebuilt: `{path}` is, or holds, \
                      model weights, downloads, media, Docker's images or the user's own files"
                 )
             });
@@ -280,7 +280,7 @@ impl Limits {
             return None;
         }
         Some(format!(
-            "an inspection never touches what is outside the home folder: `{path}` is the \
+            "a watch never touches what is outside the home folder: `{path}` is the \
              user's, or the system's"
         ))
     }
@@ -296,7 +296,7 @@ impl Limits {
             if let Some(pushed) = every.or(to_base) {
                 return Some(format!(
                     "`git push … {pushed}` pushes the base branch `{}`: nothing reaches it \
-                     except through the landing train. Push your own branch only",
+                     except through a landing turn. Push your own branch only",
                     self.base_branch
                 ));
             }
@@ -308,7 +308,7 @@ impl Limits {
         if self.consult && deletes {
             return Some(host_change(&format!("`git {subcommand}`")));
         }
-        if let At::Inspection(_) = &self.at
+        if let At::Watch(_) = &self.at
             && let Some(why) = git_loses(subcommand, next, args)
         {
             return Some(why);
@@ -335,7 +335,7 @@ impl Limits {
                          nothing; say what you found in the text of your verdict"
                     ));
                 }
-                At::Stage(_) | At::Proposal | At::Inspection(_) => {}
+                At::Stage(_) | At::Proposal | At::Watch(_) => {}
             }
         }
         None
@@ -419,6 +419,11 @@ impl Limits {
 
     /// Why `label` is not a worker's to add or remove, when it is the fleet's.
     fn fleets(&self, label: &str) -> Option<String> {
+        if label.eq_ignore_ascii_case(crate::plan::REPAIR_LABEL) {
+            return Some(format!(
+                "`{label}` is the fleet repair label; only the fleet assigns repair workers"
+            ));
+        }
         if label.eq_ignore_ascii_case(&self.lock_label) {
             return Some(format!(
                 "`{label}` is the lock label, and a worker neither adds nor removes it by hand: \
@@ -448,7 +453,7 @@ impl Limits {
     }
 }
 
-/// Why an inspection may not run `git subcommand`, `next` the word after it,
+/// Why a watch may not run `git subcommand`, `next` the word after it,
 /// with `args`: a force push, or what deletes a change no commit holds.
 fn git_loses(subcommand: &str, next: Option<&str>, args: &[&str]) -> Option<String> {
     match subcommand {
@@ -462,7 +467,7 @@ fn git_loses(subcommand: &str, next: Option<&str>, args: &[&str]) -> Option<Stri
             let plus =
                 positionals(args, &PUSH_VALUES).iter().skip(2).any(|spec| spec.starts_with('+'));
             (forced || plus).then(|| {
-                "an inspection never force-pushes: what others built on would be lost. Push a \
+                "a watch never force-pushes: what others built on would be lost. Push a \
                  branch of your own, as any worker's change goes"
                     .to_string()
             })
@@ -496,7 +501,7 @@ fn git_loses(subcommand: &str, next: Option<&str>, args: &[&str]) -> Option<Stri
 
 fn loses_changes(what: &str) -> String {
     format!(
-        "an inspection never deletes a change no commit holds: {what} is refused. Commit it, or \
+        "a watch never deletes a change no commit holds: {what} is refused. Commit it, or \
          leave it"
     )
 }
@@ -525,7 +530,7 @@ fn ended<'a>(args: &[&'a str]) -> Vec<&'a str> {
     targets
 }
 
-/// Why an inspection may not end `target`, a word `kill` was given: a pid
+/// Why a watch may not end `target`, a word `kill` was given: a pid
 /// of a process the fleets of this host did not start, the host runner, or
 /// what names none — a variable, a process group. A job of its own shell
 /// (`%1`) is its own.
@@ -535,18 +540,18 @@ fn ends(target: &str, processes: &impl Fn(u32) -> Process) -> Option<String> {
     }
     let Ok(pid) = target.parse::<u32>() else {
         return Some(format!(
-            "an inspection ends a process by its pid, and `{target}` names none the guard can \
+            "a watch ends a process by its pid, and `{target}` names none the guard can \
              read: find the pid (`ps`), and `kill <pid>`"
         ));
     };
     match processes(pid) {
         Process::Fleets => None,
-        Process::Runner => Some(format!(
-            "{pid} is the host runner, which an inspection never ends: it is the user's"
-        )),
+        Process::Runner => {
+            Some(format!("{pid} is the host runner, which a watch never ends: it is the user's"))
+        }
         Process::Other => Some(format!(
-            "the fleets of this host did not start {pid}, and an inspection ends only what they \
-             started — a worker's process, the landing train's, an inspection's, or one they left \
+            "the fleets of this host did not start {pid}, and a watch ends only what they \
+             started — a worker's process, the landing train's, a watch's, or one they left \
              behind. Never the user's own, another app or orca"
         )),
     }
@@ -586,7 +591,7 @@ fn host_change(what: &str) -> String {
 }
 
 fn merging() -> String {
-    "merging a PR is refused: a finished PR reaches the base branch through the landing train, \
+    "merging a PR is refused: a finished PR reaches the base branch through a landing turn, \
      and a worker never merges one"
         .to_string()
 }
@@ -826,7 +831,7 @@ enum Within {
 /// lock label; writing a stage record by hand; merging a PR; pushing the base
 /// branch. Refused besides in a stage that writes nothing, and for a consult:
 /// committing and pushing, and changing the host. Refused besides for an
-/// inspection, the operator on its host: ending what the fleets of this host
+/// watch, the operator on its host: ending what the fleets of this host
 /// did not start, deleting what cannot be rebuilt or a change no commit holds,
 /// a force push, and stopping the host runner. The reason is written for the
 /// worker to read.
@@ -886,9 +891,7 @@ impl WritesNothing {
         if self.claim != claim || self.tip == tip {
             return None;
         }
-        let who = if self.stage == crate::stock::ROLE {
-            "a consult writes no code, and the stock consult".to_string()
-        } else if self.consult {
+        let who = if self.consult {
             format!("a consult writes no code, and the consult of the stage `{}`", self.stage)
         } else {
             format!("the stage `{}` is marked `writes: false`, and it", self.stage)
@@ -994,12 +997,12 @@ mod tests {
         assert!(refused(&merging, &limits).is_some());
     }
 
-    /// The limits of an inspection started with a consult's facts, whose
+    /// The limits of a watch started with a consult's facts, whose
     /// home folder is /Users/kim.
-    fn inspection() -> Limits {
-        let facts = Facts { on: On::Inspection("#7"), ..facts(false, true) };
+    fn watch() -> Limits {
+        let facts = Facts { on: On::Watch("#7"), ..facts(false, true) };
         let mut env = facts.env();
-        assert!(env.iter().all(|(name, _)| *name != STAGE_ENV), "an inspection has no stage");
+        assert!(env.iter().all(|(name, _)| *name != STAGE_ENV), "a watch has no stage");
         env.push(("HOME", "/Users/kim".to_string()));
         Limits::read(|name| {
             env.iter().find(|(known, _)| *known == name).map(|(_, value)| value.clone())
@@ -1008,12 +1011,12 @@ mod tests {
     }
 
     #[test]
-    fn an_inspection_is_the_operator_on_its_host_whatever_its_facts_say() {
+    fn a_watch_is_the_operator_on_its_host_whatever_its_facts_say() {
         // Started with a consult's facts, it is no consult all the same.
-        let limits = inspection();
+        let limits = watch();
         assert_eq!(
             (&limits.at, limits.writes, limits.consult),
-            (&At::Inspection("#7".into()), true, false)
+            (&At::Watch("#7".into()), true, false)
         );
         for line in [
             // It changes the repo on a branch of its own, as any worker's change goes.
@@ -1046,8 +1049,8 @@ mod tests {
     }
 
     #[test]
-    fn an_inspection_ends_only_what_the_fleets_of_its_host_started() {
-        let limits = inspection();
+    fn a_watch_ends_only_what_the_fleets_of_its_host_started() {
+        let limits = watch();
         let why = |line: &str| {
             refused(&Call::shell(line), &limits).unwrap_or_else(|| panic!("allowed: {line}"))
         };
@@ -1068,8 +1071,8 @@ mod tests {
     }
 
     #[test]
-    fn an_inspection_never_deletes_what_cannot_be_rebuilt() {
-        let limits = inspection();
+    fn a_watch_never_deletes_what_cannot_be_rebuilt() {
+        let limits = watch();
         let why = |line: &str| {
             refused(&Call::shell(line), &limits).unwrap_or_else(|| panic!("allowed: {line}"))
         };
@@ -1101,8 +1104,8 @@ mod tests {
     }
 
     #[test]
-    fn an_inspection_pushes_no_base_branch_and_forces_nothing() {
-        let limits = inspection();
+    fn a_watch_pushes_no_base_branch_and_forces_nothing() {
+        let limits = watch();
         let why = |line: &str| {
             refused(&Call::shell(line), &limits).unwrap_or_else(|| panic!("allowed: {line}"))
         };
@@ -1173,15 +1176,15 @@ mod tests {
     }
 
     #[test]
-    fn the_seven_inspection_and_patrol_calls_are_data_not_commands() {
-        let inspection = limits(false, true);
+    fn the_seven_watch_and_patrol_calls_are_data_not_commands() {
+        let watch = limits(false, true);
         for line in [
-            "afkconvoy inspected --worker 7 --text-file /dev/stdin <<'REPORT'\nrm target would free space\nREPORT\n",
-            "afkconvoy inspected --worker 7 --text-file - <<\"REPORT\"\ngit worktree remove /w/old\nREPORT\n",
-            "cat <<REPORT > report.md\nrm -rf cache\ngit worktree prune\nREPORT\nafkconvoy inspected --worker 7 --text-file report.md",
-            "afkconvoy inspected --worker 7 --text-file - <<- 'REPORT'\n\trm target\n\tgit worktree remove /w/old\n\tREPORT\n",
+            "cat /dev/stdin <<'REPORT'\nrm target would free space\nREPORT\n",
+            "cat - <<\"REPORT\"\ngit worktree remove /w/old\nREPORT\n",
+            "cat <<REPORT > report.md\nrm -rf cache\ngit worktree prune\nREPORT\ncat report.md",
+            "cat - <<- 'REPORT'\n\trm target\n\tgit worktree remove /w/old\n\tREPORT\n",
         ] {
-            assert_eq!(refused(&Call::shell(line), &inspection), None, "{line}");
+            assert_eq!(refused(&Call::shell(line), &watch), None, "{line}");
         }
         allowed(&[
             r#"gh issue view 7 --json comments --jq '.comments[] | select(.body | contains("convoy:intake"))'"#,

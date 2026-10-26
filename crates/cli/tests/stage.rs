@@ -205,7 +205,18 @@ fn a_verdict_wakes_the_fleet() {
     world.issue(7, &["flow:feature"]);
     let mut running = world
         .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
-        .args(["run", "--foreground", "--instance", "alpha", "--host", "h1", "--ticks", "2"])
+        .args([
+            "run",
+            "--tracker",
+            "default",
+            "--foreground",
+            "--instance",
+            "alpha",
+            "--host",
+            "h1",
+            "--ticks",
+            "2",
+        ])
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()

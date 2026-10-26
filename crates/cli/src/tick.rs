@@ -12,7 +12,6 @@ use afkconvoy_core::plan::{Status, WorkingSet, handed_by};
 use afkconvoy_core::position::Position;
 use afkconvoy_core::takeover::run_said;
 use afkconvoy_core::tick::{Outcome, Pass, TickStep, empty_streak, pace, run_pass, sleeps_skipped};
-use afkconvoy_core::train::Built;
 use afkconvoy_core::wake::turn;
 use anyhow::{Result, anyhow};
 use serde_json::{Value, json};
@@ -30,10 +29,8 @@ use crate::host_runner::Shared;
 use crate::host_settings;
 use crate::host_sleep::{Checked, HostSleep};
 use crate::hot::{self, Hot};
-use crate::inspection::Inspector;
 use crate::judge::judge;
 use crate::log::{self, Cause, Log};
-use crate::measure;
 use crate::panel::{self, Panel};
 use crate::patrol;
 use crate::precedent;
@@ -42,7 +39,6 @@ use crate::slow_gate;
 use crate::stage::Flows;
 use crate::stop::Stop;
 use crate::takeover::{at_start, reclaim, unlock};
-use crate::tend::{cut_train, tend_train};
 use crate::topic::{self, See};
 use crate::wake::{During, Wakes};
 use crate::watch::watch;
@@ -97,9 +93,6 @@ pub struct Ticked {
     lost: Vec<Lost>,
     /// The closed claimed issues, each with who closed it (`Fleet::closers`).
     closers: Vec<(u64, String)>,
-    /// What the train's worktree held when the pass cut it again
-    /// (`Fleet::cut_train`).
-    cut_train: Option<Built>,
     /// What the pass's start and end of a cut said (`Fleet::cut_said`).
     cut_said: Vec<log::What>,
     /// The open issues, each with the label that hands it to the fleet
@@ -148,6 +141,33 @@ pub fn tick(
     let _ = crate::paused::probe(repo, me.instance.as_str(), &me.host, me.now);
     let _ = crate::kit::refresh(repo, me.instance.as_str(), &me.host, me.now);
     let (mut fleet, mut open) = Fleet::read(repo, me.now)?;
+    let migration = crate::legacy::migrate(repo, &fleet.config, &fleet.gh, &me.host, me.now);
+    if !matches!(&migration, Ok(answer) if answer["outcome"] == "idle") {
+        let (outcome, failed) = match migration {
+            Ok(answer) => (answer.to_string(), false),
+            Err(error) => (format!("{error:#}"), true),
+        };
+        let _ = crate::log::Log::of(repo).and_then(|log| {
+            log.append(&crate::log::Entry {
+                at: me.now,
+                instance: me.instance.as_str().into(),
+                host: me.host.clone(),
+                what: crate::log::What::Command {
+                    command: "migrate".into(),
+                    on: None,
+                    by: "fleet".into(),
+                    outcome,
+                    failed,
+                },
+            })
+        });
+        // Migration can open or close issues. Its partial failure must not
+        // prevent ordinary worker recovery or the fleet's heartbeat.
+        (fleet, open) = Fleet::read(repo, me.now)?;
+    }
+    if crate::repair::tend(&mut fleet, me)? == Outcome::Done {
+        (fleet, open) = Fleet::read(repo, me.now)?;
+    }
     for issue in &open.issues.rows {
         // Dispatch reports a resolution failure against its issue; successful
         // discovery must precede casting and the caster's choice of range.
@@ -214,7 +234,6 @@ pub fn tick(
     let escalated = std::mem::take(&mut fleet.escalated);
     let forgotten = std::mem::take(&mut fleet.forgotten);
     let closers = std::mem::take(&mut fleet.closers);
-    let cut_train = fleet.cut_train.take();
     let cut_said = std::mem::take(&mut fleet.cut_said);
     let (concurrency, bound) = (fleet.config.concurrency(), pass.bound);
     let issues = &open.issues.rows;
@@ -241,7 +260,6 @@ pub fn tick(
         before: before.cloned(),
         lost,
         closers,
-        cut_train,
         cut_said,
         handed,
         saw,
@@ -325,11 +343,6 @@ fn carry_out(
             Ok(Outcome::Done)
         }
         TickStep::Forget { issue } => forget(fleet, me, issue),
-        TickStep::TendTrain => tend_train(fleet, me, agent),
-        TickStep::CutTrain => match read.set.outgrown_train {
-            Some(built) => cut_train(fleet, built),
-            None => Ok(Outcome::Nothing),
-        },
         TickStep::Judge { issue, start } => judge(fleet, me, agent, issue, start),
         TickStep::Watch { issue } => watch(fleet, me, agent, issue),
         TickStep::Advance { issue } => advance(fleet, me, agent, read.flows, issue),
@@ -401,8 +414,6 @@ fn words(step: TickStep) -> (&'static str, Option<u64>) {
     match step {
         TickStep::Settle { issue } => ("settle", Some(issue)),
         TickStep::Forget { issue } => ("forget", Some(issue)),
-        TickStep::TendTrain => ("tend_train", None),
-        TickStep::CutTrain => ("cut_train", None),
         TickStep::Judge { issue, .. } => ("judge", Some(issue)),
         TickStep::Watch { issue } => ("watch", Some(issue)),
         TickStep::Advance { issue } => ("advance", Some(issue)),
@@ -532,7 +543,7 @@ impl Ticked {
         format!("{word}{issue}{patrol}")
     }
 
-    /// Each issue the tick read with where it stands, as a host inspection
+    /// Each issue the tick read with where it stands, as a host watch
     /// lists the worktrees of this fleet: in a bound repo the position its
     /// stage records give it, in an unbound one how far its claim is.
     pub fn stages(&self) -> Vec<(u64, String)> {
@@ -557,9 +568,8 @@ impl Ticked {
             return positions.iter().map(said).collect();
         }
         let said = |status: Status| match status {
-            Status::Joined => "on the landing train",
             Status::Landed | Status::Closed | Status::Gone => "landed or closed",
-            Status::NoPr | Status::Joining | Status::AtStage => "claimed, at work",
+            Status::NoPr | Status::Landing | Status::AtStage => "claimed, at work",
         };
         self.set.mine.iter().map(|mine| (mine.number, said(mine.status).to_string())).collect()
     }
@@ -589,14 +599,13 @@ impl Ticked {
 
     /// Whether this instance is idle after the tick, and whether it worked in
     /// it: held a claim — as its rebuild read the claims, or as its pass ended
-    /// — or had something on the landing train. A cut of mine going is work,
+    /// — or had something on the base branch. A cut of mine going is work,
     /// as a claim held is: it takes no slot, and keeps the host awake.
     pub fn idle(&self) -> (bool, bool) {
-        let on_train = self.set.on_train();
         let pass = &self.pass;
         let cutting = pass.cutting(&self.set);
-        let idle = host_sleep::idle(pass.held, pass.frontier_remaining, on_train) && !cutting;
-        (idle, host_sleep::worked(self.set.held().max(pass.held), on_train) || cutting)
+        let idle = host_sleep::idle(pass.held, pass.frontier_remaining) && !cutting;
+        (idle, host_sleep::worked(self.set.held().max(pass.held)) || cutting)
     }
 
     /// What the pass's start and end of a cut said, for the log to keep.
@@ -661,7 +670,6 @@ impl Ticked {
                     Outcome::Waiting(_) => "waiting",
                     Outcome::Continued => "continued",
                     Outcome::Restarted => "restarted",
-                    Outcome::Abandoned => "abandoned",
                     Outcome::Nothing => "nothing",
                     Outcome::Lost => "lost",
                     Outcome::Blocked => "blocked",
@@ -824,7 +832,7 @@ impl Ticked {
                     let since = waiting_since(*since, self.now);
                     Some(match words(*step).1 {
                         Some(issue) => format!("#{issue} ({since})"),
-                        None => format!("the train worker ({since})"),
+                        None => format!("the repo command ({since})"),
                     })
                 }
                 _ => None,
@@ -859,25 +867,6 @@ impl Ticked {
             if !issues.is_empty() {
                 parts.push(format!("{verb} {}", issues.join(", ")));
             }
-        }
-        for (outcome, said) in [
-            (Outcome::Done, "tended the train"),
-            (Outcome::Nudged, "nudged the train worker"),
-            (Outcome::Abandoned, "abandoned the train"),
-        ] {
-            if self.pass.did.contains(&(TickStep::TendTrain, outcome)) {
-                parts.push(said.to_string());
-            }
-        }
-        if let Some(cut) = self.cut_train {
-            let fresh = match cut.fresh {
-                Some(fresh) => format!("its fresh build {}", measure::said(fresh)),
-                None => "no fresh build on record".to_string(),
-            };
-            parts.push(format!(
-                "cut the train's worktree again (built {}, {fresh})",
-                measure::said(cut.built)
-            ));
         }
         if self.pass.did.contains(&(TickStep::Cast, Outcome::Done))
             && let Some(caster) = &self.set.caster
@@ -979,10 +968,6 @@ fn start_line(took: &Value) -> Option<String> {
 /// stop.
 const HEARS_WITHIN: Duration = Duration::from_millis(250);
 
-/// The longest, in seconds, a `run` sleeps while its inspection runs or a
-/// hot worker waits for one: an inspection's time limit is kept to within it.
-const INSPECTING_EVERY: u64 = 30;
-
 /// How many seconds past its length a rest takes before the host is taken to
 /// have slept through it.
 const SLEPT_PAST: u64 = 60;
@@ -1063,7 +1048,7 @@ pub type Show = Arc<dyn Fn(Panel) + Send + Sync>;
 /// What holds a fleet instance's loop — the host runner: the stop it obeys,
 /// where its lines go, the wakes heard for it through the host runner
 /// (docs/adr/0023), what the host runner holds for all its fleet instances
-/// (how each stands for host sleep, the inspection running, the exclusive
+/// (how each stands for host sleep, the watch running, the exclusive
 /// queue), and where its part of the panel goes: `None` where none is
 /// shown, and none is made.
 pub struct Holder {
@@ -1172,10 +1157,8 @@ fn check_host(host: &mut HostSleep, said: &Said, stop: &Stop, clock: &Clock) -> 
 /// heard during a tick, said as it is heard — and prints each as it is
 /// written (`Said`); nothing here ever reads the log. It watches what each
 /// worker's processes take, and says as one turns hot and as it stops being
-/// hot (`hot::watch`, docs/adr/0019); after each tick its inspector ends the
-/// inspection that is over and starts the next a hot worker waits for, and
-/// it looks again within `INSPECTING_EVERY` while either is so
-/// (`Inspector`). Unless the host settings keep the host awake, it puts the
+/// hot (`hot::watch`, docs/adr/0019). Resource conditions are kept for the
+/// host watch's next look. Unless host settings keep it awake, it puts the
 /// host to sleep once every fleet on it has been idle long enough, within
 /// the host's sleep hours, as its host runner holds how each stands
 /// (`HostSleep`, docs/adr/0016, 0023). It obeys `holder`'s stop — whoever holds the
@@ -1207,12 +1190,18 @@ pub fn run(
     wakes.telling(during);
     let watching = shared.blockers.watch(me.instance.as_str(), &wakes);
     let hot = Hot::default();
-    let mut inspector = Inspector::new(repo, &shared.turn);
-    inspector.resume()?;
     {
         let hears: Arc<dyn hot::Hears> = Arc::clone(&said) as _;
         let (second, clock, hot) = (pacing.second, Arc::clone(&clock), Arc::clone(&hot));
-        hot::watch(repo, second, clock, hears, hot, wakes.waker(), stop.clone());
+        hot::watch(
+            repo,
+            second,
+            clock,
+            hears,
+            (hot, shared.resources.clone()),
+            wakes.waker(),
+            stop.clone(),
+        );
     }
     let mut cause = Cause::Start;
     let mut by = None;
@@ -1293,7 +1282,7 @@ pub fn run(
                     shown = panel;
                 }
                 let main = repo.main_checkout().unwrap_or_else(|_| repo.dir.clone());
-                inspector.ticked(clock(), ticked.admission(), main, ticked.stages());
+                shared.resources.ticked(clock(), ticked.admission(), main, ticked.stages())?;
                 before = Some(ticked.saw(count));
                 let pass = &ticked.pass;
                 // A tick GitHub could not be reached in was not an empty one:
@@ -1313,9 +1302,6 @@ pub fn run(
                 (format!("FAILED: {error}"), sleep, (None, None, Some(error)))
             }
         };
-        for what in inspector.step(agent, &hot, clock()) {
-            said.keep(clock(), what);
-        }
         let hot_now = hot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
         for what in cut_said {
             said.keep(clock(), what);
@@ -1324,8 +1310,6 @@ pub fn run(
         for warning in agent.launches.warned() {
             said.warn(&warning);
         }
-        let busy = inspector.busy(&hot_now, clock());
-        let sleep = if busy { sleep.min(INSPECTING_EVERY) } else { sleep };
         let (bound, answer, error) = logged;
         // Shown before its line is kept: whoever that line answers finds it on the page.
         if let Some(show) = &show {
@@ -1337,8 +1321,7 @@ pub fn run(
         }
         let tick = log::Tick { count, sleep, line, bound, answer, error };
         said.keep(clock(), log::What::Tick(tick));
-        // Inspection work and the tick's log are part of the tick too: a
-        // release move must not race an inspection starting or ending.
+        // Resource observations and logging finish before a release move.
         host.ticked(clock(), idle);
         if pacing.panic_at == Some(count) {
             panic!("told to panic as tick {count} ended (--panic-at-tick)");

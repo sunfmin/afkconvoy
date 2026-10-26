@@ -11,6 +11,11 @@ use crate::line::Line;
 /// One watch may last an hour, including every continuation of it.
 pub const TIME_LIMIT: u64 = 3600;
 
+/// Research alone starts a watch at most once a day. Other work takes it too.
+pub const RESEARCH_EVERY: u64 = 24 * 60 * 60;
+/// Research item identities, distinct from findings that hold work up.
+pub const RESEARCH_ITEM: &str = "kit-research:";
+
 /// What of a session's transcript is kept as what it did: its last lines,
 /// each cut to a length a log line can hold.
 pub const DID_LINES: usize = 80;
@@ -35,17 +40,34 @@ impl Item {
 }
 
 /// The items that should start a watch now. A running watch defers every new
-/// item; without one, only items not already watched in their current episode
-/// are returned. Items already watched stay covered until a later look no
-/// longer contains them.
-pub fn pending(current: &[Item], watched: &[String], running: bool) -> Vec<Item> {
+/// item. Without one, new episodes start it and take all pending research
+/// too. Research alone starts it once a day, including during an unchanged
+/// episode. Other watched items stay covered until absent from a later look.
+pub fn pending(
+    current: &[Item],
+    watched: &[String],
+    running: bool,
+    research_started: Option<u64>,
+    now: u64,
+) -> Vec<Item> {
     let mut due = vec![];
     if running {
         return due;
     }
     for item in current {
-        if !watched.contains(&item.id) {
+        if !item.id.starts_with(RESEARCH_ITEM) && !watched.contains(&item.id) {
             due.push(item.clone());
+        }
+    }
+    let research_due = match research_started {
+        Some(started) => now.saturating_sub(started) >= RESEARCH_EVERY,
+        None => true,
+    };
+    if !due.is_empty() || research_due {
+        for item in current {
+            if item.id.starts_with(RESEARCH_ITEM) {
+                due.push(item.clone());
+            }
         }
     }
     due
@@ -110,6 +132,41 @@ pub fn did(transcript: &str) -> Vec<String> {
     did
 }
 
+/// The watch's identity in a guarded command's environment.
+pub const WATCH_ENV: &str = "AFKCONVOY_WATCH";
+
+/// What under the home folder cannot be rebuilt, or is expensive to fetch
+/// again — model weights, downloads, media, Docker's images, the user's own
+/// files: a watch never deletes it, and the guard refuses a deletion
+/// it reads there.
+pub const KEPT: [&str; 13] = [
+    ".cache/huggingface",
+    ".cache/modelscope",
+    ".ollama",
+    ".lmstudio",
+    ".docker",
+    "Library/Containers/com.docker.docker",
+    "Downloads",
+    "Movies",
+    "Music",
+    "Pictures",
+    "Documents",
+    "Desktop",
+    "Library/Mobile Documents",
+];
+
+/// Whether `relative` — a path under the home folder, relative to it, its
+/// parts parted by `/` — is in what is kept (`KEPT`), or holds some of it. A
+/// part a shell pattern stands in (`*`, `?`, `[`) may be any.
+pub fn kept(relative: &str) -> bool {
+    let parts: Vec<&str> = relative.split('/').filter(|part| !part.is_empty()).collect();
+    let pattern = |part: &str| part.contains(['*', '?', '[']);
+    KEPT.iter().any(|root| {
+        let root: Vec<&str> = root.split('/').collect();
+        parts.iter().zip(root.iter()).all(|(part, root)| part == root || pattern(part))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -121,17 +178,40 @@ mod tests {
     #[test]
     fn an_item_starts_at_most_one_watch_until_its_episode_ends() {
         let current = vec![item("finding:one"), item("human:#7")];
-        let due = pending(&current, &[], false);
+        let due = pending(&current, &[], false, None, 0);
         assert_eq!(due, current);
         let watched: Vec<String> = due.iter().map(|item| item.id.clone()).collect();
-        assert!(pending(&current, &watched, false).is_empty());
-        assert!(pending(&current, &[], true).is_empty(), "a running watch defers even new items");
+        assert!(pending(&current, &watched, false, None, 0).is_empty());
+        assert!(
+            pending(&current, &[], true, None, 0).is_empty(),
+            "a running watch defers even new items"
+        );
 
         let with_new = [current.clone(), vec![item("tick:9")]].concat();
-        assert_eq!(pending(&with_new, &watched, false), [item("tick:9")]);
+        assert_eq!(pending(&with_new, &watched, false, None, 0), [item("tick:9")]);
         let covered = covered(&watched, &current[..1]);
         assert_eq!(covered, ["finding:one"]);
-        assert_eq!(pending(&with_new, &covered, false), [item("human:#7"), item("tick:9")]);
+        assert_eq!(
+            pending(&with_new, &covered, false, None, 0),
+            [item("human:#7"), item("tick:9")]
+        );
+    }
+
+    #[test]
+    fn research_is_daily_on_its_own_and_joins_every_other_watch() {
+        let research = item("kit-research:codex");
+        let current = [research.clone()];
+        let watched = [research.id.clone()];
+        assert_eq!(pending(&current, &[], false, None, 100), current);
+        assert!(pending(&current, &[], false, Some(100), 99).is_empty());
+        assert!(pending(&current, &watched, false, Some(100), 100 + RESEARCH_EVERY - 1).is_empty());
+        assert_eq!(pending(&current, &watched, false, Some(100), 100 + RESEARCH_EVERY), current);
+        let urgent = item("human:#7");
+        assert_eq!(
+            pending(&[research.clone(), urgent.clone()], &watched, false, Some(100), 101),
+            [urgent, research]
+        );
+        assert!(pending(&current, &[], true, None, u64::MAX).is_empty());
     }
 
     #[test]

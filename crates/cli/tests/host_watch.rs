@@ -120,32 +120,216 @@ fn printed(world: &World, watch: &Value, lines: &[&str], status: Option<i32>) {
 }
 
 #[test]
-fn a_look_with_nothing_to_act_on_starts_no_model_and_moves_its_until_on() {
+fn a_host_with_no_operator_directory_runs_the_stock_watch_and_records_what_stays_human() {
+    let world = World::new();
+    let dir = world.cache().join("afkconvoy/stock-watch");
+    // doctor resolves the directory without making or registering it.
+    let doctor = world.afk(&["doctor"]).json;
+    assert_eq!(doctor["host"]["watch"]["directory"], json!(dir));
+    assert_eq!(doctor["host"]["watch"]["stock"], true);
+    assert!(!dir.exists());
+    world.issue(7, &["ready-for-human"]);
+    world.comment(7, "<!--convoy:escalation claim=old-->\nChoose the schema.");
+    paused(&world, "pi", "it refused every prompt");
+    world.afk(&["run", "--host", "h1", "--second-ms", "100", "--watch-every", "1"]).ok();
+    let watch = until(&world, "the stock watch", || running(&world));
+    assert_eq!(watch["directory"], json!(dir));
+    assert_eq!(watch["stock"], true);
+    let rules = std::fs::read_to_string(dir.join("CLAUDE.md")).unwrap();
+    assert_eq!(std::fs::read_to_string(dir.join("AGENTS.md")).unwrap(), rules);
+    for required in [
+        "Find what holds",
+        "fix it with the watch's authority",
+        "check that the work goes on",
+        "say what you did",
+        "spending money, or needing an account, a credential or a person's hands",
+        "what cannot be undone",
+        "taking a secret or private data off the host",
+        "changing what a product is for, or who it is for",
+        "never act on them",
+        "list each in your printed record",
+    ] {
+        assert!(rules.contains(required), "stock instruction lacks {required}: {rules}");
+    }
+    let told = brief(&starts(&world)[0]);
+    assert!(told.contains("Answer an escalation yourself"));
+    assert!(told.contains("afkconvoy rule --issue 7 --text-file <file>"));
+    assert!(
+        told.contains("gh issue edit 7 --add-label ready-for-agent --remove-label ready-for-human")
+    );
+    assert!(told.contains("Leave only these four kinds with a human"));
+    assert_eq!(open(&world, &dir), [watch["terminal"].as_str().unwrap()]);
+    let doctor = world.afk(&["doctor", "--all"]).json;
+    assert_eq!(doctor["host"]["watch"]["running"]["stock"], true);
+    let settings = &doctor["checkouts"][0]["doctor"]["host"]["settings"];
+    assert_eq!(settings["said"]["watch_dir"], Value::Null);
+    assert_eq!(settings["in_force"]["watch_dir"], json!(dir));
+
+    let left = [
+        "left with a human: spending money to create an account and supply a credential",
+        "left with a human: an action that cannot be undone",
+        "left with a human: taking private data off the host",
+        "left with a human: changing who the product is for",
+    ];
+    printed(&world, &watch, &left, Some(0));
+    until(&world, "the stock watch's record", || ended(&world, "ended"));
+    let doctor = world.afk(&["doctor", "--all"]).json;
+    assert_eq!(doctor["host"]["watch"]["last"]["did"], json!(left));
+    assert_eq!(doctor["host"]["watch"]["last"]["stock"], true);
+    assert_eq!(starts(&world).len(), 1, "one stock watch per episode");
+    let adds = world.orca_called_with().into_iter().filter(|(call, _)| asked(call) == "repo add");
+    assert_eq!(adds.count(), 1, "the stock directory is registered by the fleet");
+    let help = world
+        .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
+        .args(["run", "--help"])
+        .output()
+        .unwrap();
+    let help = String::from_utf8(help.stdout).unwrap();
+    assert!(help.contains("stock watch"), "{help}");
+    assert!(help.contains("stock-watch"), "{help}");
+}
+
+#[test]
+fn the_operator_directory_wins_and_default_returns_to_the_stock_watch() {
     let world = World::new();
     let dir = operator(&world);
+    let rules = "# This operator\nKeep the operator's rules as written.\n";
+    std::fs::write(dir.join("CLAUDE.md"), rules).unwrap();
+    paused(&world, "pi", "it refused every prompt");
     run(&world, &dir);
+    let watch = until(&world, "the operator's watch", || running(&world));
+    assert_eq!(watch["directory"], json!(dir));
+    assert_eq!(watch["stock"], false);
+    assert_eq!(std::fs::read_to_string(dir.join("CLAUDE.md")).unwrap(), rules);
+    assert!(!dir.join("AGENTS.md").exists());
+    assert!(!world.cache().join("afkconvoy/stock-watch").exists());
+    assert!(!brief(&starts(&world)[0]).contains("# The stock watch"));
+    let doctor = world.afk(&["doctor", "--all"]).json;
+    assert_eq!(doctor["host"]["watch"]["directory"], json!(dir));
+    assert_eq!(doctor["host"]["watch"]["stock"], false);
+
+    // The running watch keeps its own directory and rules. The next watch
+    // uses the new setting, and the stock directory needs no registration.
+    world.afk(&["run", "--host", "h1", "--watch-dir", "default"]).ok();
+    let doctor = world.afk(&["doctor", "--all"]).json;
+    assert_eq!(doctor["host"]["watch"]["stock"], true);
+    assert_eq!(doctor["host"]["watch"]["running"]["stock"], false);
+    printed(&world, &watch, &["checked pi"], Some(0));
+    paused(&world, "dsh", "another episode");
+    let stock = until(&world, "the next stock watch", || {
+        running(&world).filter(|watch| watch["stock"] == true)
+    });
+    assert_eq!(stock["directory"], json!(world.cache().join("afkconvoy/stock-watch")));
+    assert_eq!(std::fs::read_to_string(dir.join("CLAUDE.md")).unwrap(), rules);
+    assert!(open(&world, &dir).contains(&OPERATORS.to_string()));
+}
+
+#[test]
+fn a_look_with_nothing_to_act_on_starts_no_model_and_moves_its_until_on() {
+    let world = World::new();
+    world.afk(&["run", "--host", "h1", "--second-ms", "100", "--watch-every", "1"]).ok();
     let first = until(&world, "first look", || state(&world)["until"].as_u64());
     until(&world, "later look", || state(&world)["until"].as_u64().filter(|until| *until > first));
     assert!(starts(&world).is_empty(), "{:?}", starts(&world));
     assert!(state(&world)["running"].is_null() && state(&world)["last"].is_null());
-    assert_eq!(open(&world, &dir), [OPERATORS]);
+    assert!(!world.cache().join("afkconvoy/stock-watch").exists());
 }
 
 #[test]
-fn a_watch_can_fix_a_fleet_fault_and_hand_it_back_while_a_human_decision_stays() {
+fn unplaced_models_start_a_daily_watch_that_places_research_and_keeps_its_bound_across_restarts() {
+    let world = World::new();
+    world.kit_models("claude-code", &["fast", "deep"]);
+    world.with_kit(|kit| {
+        for model in kit["harnesses"][0]["models"].as_array_mut().unwrap() {
+            model["good_at"] = json!("research pending");
+        }
+    });
+    let dir = operator(&world);
+    run(&world, &dir);
+    let watch = until(&world, "the watch of unplaced models", || running(&world));
+    assert_eq!(watch["items"].as_array().unwrap().len(), 1, "{watch}");
+    assert!(watch["items"][0]["id"].as_str().unwrap().starts_with("kit-research:"));
+    assert_eq!(watch["model"], Value::Null, "the watch starts on the default too");
+    let told = brief(&starts(&world)[0]);
+    for instruction in [
+        "after anything holding work up",
+        "Use your web tools",
+        "afkconvoy kit --research <file>",
+        "correct the file",
+        "what remains unplaced",
+    ] {
+        assert!(told.contains(instruction), "{told}");
+    }
+    let file = world.root.join("research.json");
+    std::fs::write(&file, json!({"models":[{"harness":"claude-code", "model":"fast",
+        "good_at":"small fixes; limited deep reasoning", "sources":[{"url":"https://vendor.example/card", "date":"2026-10-24"}]}]}).to_string()).unwrap();
+    let applied = world.afk(&["kit", "--research", file.to_str().unwrap()]).ok();
+    assert_eq!(applied["placed"], json!([{"harness":"claude-code", "model":"fast"}]));
+    printed(&world, &watch, &["placed fast; deep remains unplaced"], Some(0));
+    until(&world, "research watch ended", || ended(&world, "ended"));
+    let first_until = state(&world)["until"].as_u64().unwrap();
+    until(&world, "a later look with research left", || {
+        state(&world)["until"].as_u64().filter(|at| *at > first_until)
+    });
+    assert_eq!(starts(&world).len(), 1, "pending research alone waits a day");
+
+    world.kill_host_runner("KILL");
+    run(&world, &dir);
+    let before = state(&world)["until"].as_u64().unwrap();
+    until(&world, "a look after restart", || {
+        state(&world)["until"].as_u64().filter(|at| *at > before)
+    });
+    assert_eq!(starts(&world).len(), 1, "restart keeps the research bound");
+
+    // A new urgent item takes pending research even inside its daily bound.
+    paused(&world, "pi", "a new fault");
+    let urgent =
+        until(&world, "a watch of the new fault and remaining research", || running(&world));
+    let items = urgent["items"].as_array().unwrap();
+    assert_eq!(items.len(), 2, "{urgent}");
+    assert!(items[0]["id"].as_str().unwrap().starts_with("finding:"));
+    assert!(items[1]["id"].as_str().unwrap().starts_with("kit-research:"));
+    printed(&world, &urgent, &["checked pi; deep has no evidence yet"], Some(0));
+    until(&world, "the urgent watch ended", || {
+        ended(&world, "ended").filter(|last| last["id"] == urgent["id"])
+    });
+
+    world.kill_host_runner("KILL");
+    let mut kept = state(&world);
+    kept["research_started"] = json!(
+        kept["research_started"].as_u64().unwrap() - afkconvoy_core::host_watch::RESEARCH_EVERY
+    );
+    std::fs::write(world.cache().join("afkconvoy/watch/state.json"), kept.to_string()).unwrap();
+    run(&world, &dir);
+    let daily = until(&world, "research due again after a day", || running(&world));
+    assert_eq!(daily["items"].as_array().unwrap().len(), 1, "{daily}");
+    assert!(daily["items"][0]["id"].as_str().unwrap().starts_with("kit-research:"));
+    assert_eq!(daily["model"], "fast", "the next watch uses the placed model");
+}
+
+#[test]
+fn a_watch_answers_escalations_and_leaves_only_the_four_human_kinds() {
     let world = World::new();
     let dir = operator(&world);
     world.set_gate_config("gate_command: ./gate.sh\nescalate_to: human");
     let other = world.second_repo();
-    world.afk_in(&other, &["run", "--host", "h1"]).ok();
+    world
+        .afk_in(
+            &other,
+            &["run", "--host", "h1", "--watch-dir", dir.to_str().unwrap(), "--watch-every", "1"],
+        )
+        .ok();
     world.issue(7, &["ready-for-agent"]);
     world.issue(8, &["ready-for-human"]);
-    world.comment(8, "<!--convoy:escalation claim=old-->\nShould we migrate the customer's data now or wait for approval?");
+    world.comment(
+        8,
+        "<!--convoy:escalation claim=old-->\nShould we take the customer's data off this host?",
+    );
     world.with_orca(|orca| orca["trust_prompt"] = json!(true));
     let fault = world.afk(&["dispatch", "--issue", "7", "--instance", "alpha", "--host", "h1"]);
     assert!(fault.error().contains("worktree trust gap"));
-    // Register both checkouts before enabling watches: a setting is in
-    // force before run's first tick puts a new checkout on the list.
+    // Register both checkouts before waiting for their look: every host
+    // watches now, with its settings in force before the first tick.
     world.afk(&["run", "--host", "h1"]).ok();
     // A watch is independent of the issue worker's trust gap: its launch is
     // non-interactive and already trusted. The fake's gap affects dispatch.
@@ -157,10 +341,19 @@ fn a_watch_can_fix_a_fleet_fault_and_hand_it_back_while_a_human_decision_stays()
         "trust a worktree for its harness",
         "waiting_on_human.answer",
         "actually dispatches or continues",
-        "An escalation that asks a human for a decision stays with the human",
+        "Answer an escalation yourself",
+        "afkconvoy rule --issue 8 --text-file <file>",
+        "afkconvoy send --issue 8 --stage <stage> --text-file <file>",
+        "gh issue close 8 --comment <why>",
+        "dependencies/blocked_by",
+        "Leave only these four kinds with a human",
+        "spending money, or needing an account, a credential or a person's hands",
+        "what cannot be undone",
+        "taking a secret or private data off the host",
+        "changing what a product is for, or who it is for",
         "afkconvoy-watch-<digits>",
-        "afkconvoy gate --train",
-        "afkconvoy land --inspection",
+        "merge commit",
+        "afkconvoy land --watch",
         "the next idle tick starts a due cut",
         "On the new version repeat the check",
         "never report the fix verified before checking it",
@@ -209,7 +402,7 @@ fn a_watch_can_fix_a_fleet_fault_and_hand_it_back_while_a_human_decision_stays()
         &watch,
         &[
             "fixed trust and checked #7 took its brief",
-            "left #8 with the human: decide when to migrate the customer's data",
+            "left #8 with the human: private data leaving the host",
         ],
         Some(0),
     );
@@ -292,6 +485,7 @@ fn a_watch_whose_harness_runs_out_goes_on_on_the_next_with_the_same_look() {
     let first = until(&world, "a Codex watch", || running(&world));
     assert_eq!(first["harness"], "codex");
     assert!(starts(&world)[0].contains(" exec "), "{:?}", starts(&world));
+    assert!(starts(&world)[0].contains(" --search "), "the watch can search the web");
 
     let out = "Usage limit reached; increase your limits to continue using Codex";
     printed(&world, &first, &["checked kimi", out], None);
@@ -355,4 +549,198 @@ fn a_watch_is_ended_at_its_hour_and_one_no_harness_can_start_is_a_finding() {
     let findings = doctor.json["findings"].as_array().unwrap();
     assert!(findings.iter().any(|f| f["what"] == "no harness can start this host's watch"));
     assert_eq!(doctor.json["host"]["watch"]["unavailable"], json!(why));
+}
+
+/// Fake process readings never count or signal processes of the test host.
+fn resource_host(world: &World) {
+    use std::os::unix::fs::PermissionsExt;
+    let ps = world.root.join("bin/ps");
+    std::fs::write(&ps, "#!/bin/sh\ncat \"${0%/*}/../host-processes\"\n").unwrap();
+    std::fs::set_permissions(&ps, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::write(
+        world.root.join("host-processes"),
+        "999990 2 10485760 0:00.00 outside-memory-holder\n",
+    )
+    .unwrap();
+}
+
+fn resource_worker(world: &World, issue: u64, mib: u64) -> PathBuf {
+    world.issue(issue, &["ready-for-agent"]);
+    let started =
+        world.afk(&["dispatch", &issue.to_string(), "--instance", "alpha", "--host", "h1"]).ok();
+    let path = PathBuf::from(started["worktree"].as_str().unwrap());
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            if terminal["worktreePath"] == json!(path) {
+                terminal["agent"] = json!({"state": "working", "stateStartedAt": now * 1000});
+            }
+        }
+    });
+    let tmp = world.tmp(&path);
+    std::fs::write(world.root.join("host-processes"), format!(
+        "999990 2 10485760 0:00.00 outside-memory-holder\n999980 2 {} 0:00.00 worker TMPDIR={}\n",
+        mib * 1024, tmp.display())).unwrap();
+    path
+}
+
+#[test]
+fn a_hot_worker_starts_the_host_watch_with_its_reading_and_evidence() {
+    let world = World::new();
+    resource_host(&world);
+    let path = resource_worker(&world, 7, 1536);
+    world.say_host_settings(json!({"hot_memory": 1}));
+    let dir = operator(&world);
+    run(&world, &dir);
+    let watch = until(&world, "a watch on the hot worker", || {
+        running(&world).filter(|w| {
+            w["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|i| i["id"].as_str().unwrap().starts_with("resource:hot:"))
+        })
+    });
+    let told = brief(&starts(&world)[0]);
+    for text in ["hot worker", "#7", "resident", path.to_str().unwrap(), "evidence.md", "terminal"]
+    {
+        assert!(told.contains(text), "missing {text}: {told}");
+    }
+    assert!(
+        !world.worktrees().iter().any(|p| p.to_string_lossy().contains("afkconvoy-inspection"))
+    );
+    printed(&world, &watch, &["told #7 to end its runaway process"], Some(0));
+    until(&world, "watch record", || ended(&world, "ended"));
+    std::thread::sleep(Duration::from_secs(3));
+    assert_eq!(starts(&world).len(), 1, "the same hot episode starts nothing again");
+    world.kill_host_runner("KILL");
+    run(&world, &dir);
+    std::thread::sleep(Duration::from_secs(3));
+    assert_eq!(starts(&world).len(), 1, "a runner replacement keeps the hot episode");
+    let doctor = world.afk(&["doctor", "--all"]).json;
+    assert!(
+        doctor["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f["what"].as_str().unwrap().contains("hot worker"))
+    );
+}
+
+/// Seed an uninterrupted observation ten minutes ago, through the same
+/// durable episode format the runner reads after replacement.
+fn held_since(world: &World, pressure: bool) {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+    let mut holding = afkconvoy_core::resources::Holding::default();
+    holding.ticked(
+        now - 600,
+        &[if pressure {
+            afkconvoy_core::resources::Reason::Memory
+        } else {
+            afkconvoy_core::resources::Reason::Load
+        }],
+    );
+    let mut state = json!({"admission": {}, "pressure": {}, "hot": {}});
+    state["pressure"] =
+        serde_json::to_value(afkconvoy_core::resources::Holding::default()).unwrap();
+    if pressure {
+        state["pressure"] = json!(holding);
+    } else {
+        state["admission"][world.clone.to_str().unwrap()] =
+            json!({"holding": holding, "stages": []});
+    }
+    let file = world.cache().join("afkconvoy/watch/resources.json");
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(file, state.to_string()).unwrap();
+}
+
+#[test]
+fn admission_held_ten_minutes_starts_a_watch_with_the_host_reading() {
+    let world = World::new();
+    resource_host(&world);
+    world.busy("1000.00");
+    held_since(&world, false);
+    let dir = operator(&world);
+    run(&world, &dir);
+    let watch = until(&world, "admission's watch", || running(&world));
+    assert!(watch["items"].to_string().contains("resource:admission:"), "{watch}");
+    let told = brief(&starts(&world)[0]);
+    for text in ["admission has held back", "load", "600", "reading", "cores", "evidence.md"] {
+        assert!(told.contains(text), "missing {text}: {told}");
+    }
+    printed(&world, &watch, &["moved the heavy work through exclusive"], Some(0));
+    until(&world, "watch end", || ended(&world, "ended"));
+    let second = world.second_repo();
+    world.afk_in(&second, &["run", "--host", "h1", "--second-ms", "100"]).ok();
+    std::thread::sleep(Duration::from_secs(3));
+    assert_eq!(starts(&world).len(), 1, "a new fleet shares the host's admission episode");
+    world.kill_host_runner("KILL");
+    run(&world, &dir);
+    std::thread::sleep(Duration::from_secs(3));
+    assert_eq!(starts(&world).len(), 1, "episode coverage survives a runner replacement");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn pressure_starts_one_watch_across_fleets_and_no_worker_turns_hot() {
+    let world = World::new();
+    resource_host(&world);
+    resource_worker(&world, 7, 620);
+    std::fs::write(world.root.join("host-pressure"), "2").unwrap();
+    held_since(&world, true);
+    let dir = operator(&world);
+    run(&world, &dir);
+    let watch = until(&world, "pressure's watch", || running(&world));
+    assert!(watch["items"].to_string().contains("resource:pressure:"), "{watch}");
+    let told = brief(&starts(&world)[0]);
+    assert!(told.contains("under memory pressure"), "{told}");
+    assert!(told.contains("level"), "{told}");
+    let second = world.second_repo();
+    world.afk_in(&second, &["run", "--host", "h1", "--second-ms", "100"]).ok();
+    printed(&world, &watch, &["checked the outside memory holder"], Some(0));
+    until(&world, "watch end", || ended(&world, "ended"));
+    std::thread::sleep(Duration::from_secs(3));
+    assert_eq!(starts(&world).len(), 1, "one pressure episode across fleets");
+    let doctor = world.afk(&["doctor", "--all"]).json;
+    for checkout in doctor["checkouts"].as_array().unwrap() {
+        assert_eq!(checkout["doctor"]["fleet"]["hot_workers"], json!([]));
+    }
+}
+
+#[test]
+fn a_resource_trigger_while_a_watch_runs_waits_for_its_next_look() {
+    let world = World::new();
+    resource_host(&world);
+    paused(&world, "pi", "it refused every prompt");
+    let dir = operator(&world);
+    run(&world, &dir);
+    let first = until(&world, "first watch", || running(&world));
+    world.say_host_settings(json!({"hot_memory": 1, "watch_dir": dir, "watch_every": 1}));
+    resource_worker(&world, 7, 1536);
+    until(&world, "hot reading", || {
+        let file = world.cache().join("afkconvoy/watch/resources.json");
+        let saved = std::fs::read_to_string(file).unwrap_or_default();
+        saved.contains("resident").then_some(())
+    });
+    assert_eq!(starts(&world).len(), 1, "no second watch while the first runs");
+    printed(&world, &first, &["checked pi"], Some(0));
+    let next = until(&world, "watch on the new resource episode", || {
+        running(&world).filter(|w| w["id"] != first["id"])
+    });
+    assert!(next["items"].to_string().contains("resource:hot:"), "{next}");
+    assert_eq!(starts(&world).len(), 2);
+}
+
+#[test]
+fn the_removed_reporting_command_is_not_in_the_manual_or_command_tree() {
+    let world = World::new();
+    assert!(world.afk(&["inspected", "--text", "x"]).error().contains("unrecognized subcommand"));
+    let help = world
+        .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
+        .arg("--help")
+        .output()
+        .unwrap();
+    let help = String::from_utf8(help.stdout).unwrap();
+    assert!(!help.contains("inspection"));
+    assert!(!help.contains("inspected"));
 }

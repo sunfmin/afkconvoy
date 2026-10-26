@@ -35,7 +35,7 @@ fn who(by: &By) -> Value {
     match by {
         By::Role { role, on: On::Issue(issue) } => json!({"role": role, "from": issue}),
         By::Role { role, on: On::Patrol(patrol) } => json!({"role": role, "patrol": patrol}),
-        By::Train => json!({"train": true}),
+        By::Repair => json!({"repair": true}),
     }
 }
 

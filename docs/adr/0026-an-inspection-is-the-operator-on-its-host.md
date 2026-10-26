@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: accepted, operator lifecycle superseded by ADR-0035
 ---
 
 # An inspection is the operator on its host

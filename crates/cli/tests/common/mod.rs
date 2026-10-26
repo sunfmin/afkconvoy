@@ -108,6 +108,7 @@ impl World {
             std::os::unix::fs::symlink(built.join(example), bin.join(name)).unwrap();
         }
         write_script(&bin.join("shell"), SHELL);
+        write_script(&bin.join("curl"), CURL);
         // The host a fleet would put to sleep: nothing of the one the tests run on.
         for (name, script) in [("pmset", PMSET), ("sysctl", SYSCTL), ("ioreg", IOREG), ("df", DF)] {
             write_script(&bin.join(name), script);
@@ -299,6 +300,88 @@ impl World {
         std::fs::write(file, serde_json::to_vec(&kit).unwrap()).unwrap();
     }
 
+    /// Set the Jev key command directly in the host's checkout-list settings.
+    pub fn jev_key_command(&self, command: &str) {
+        let file = self.cache().join("afkconvoy/checkouts.json");
+        let mut listed = self.checkout_list();
+        listed["settings"]["jev_key_command"] = json!(command);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(file, serde_json::to_vec(&listed).unwrap()).unwrap();
+    }
+
+    /// Has the host name a Jev key command, and Jev answer the next check: no
+    /// to every judgment but those `said`, and `evidence` selected from the
+    /// screen.
+    pub fn jev_judges(&self, said: &[(&str, f64)], evidence: &str) {
+        self.jev_key_command("printf test-key");
+        let mut answers = serde_json::Map::new();
+        for id in afkconvoy_core::worker_health::judgments() {
+            let noul = said.iter().find(|(said, _)| *said == id).map_or(0.01, |(_, noul)| *noul);
+            answers.insert(id.into(), json!({"type": "noul", "noul": noul}));
+        }
+        answers.insert(
+            "evidence".into(),
+            json!({"type": "choice", "choice": evidence, "confidence": 0.99,
+                "probabilities": {evidence: 0.99}}),
+        );
+        self.jev_answers(Value::Object(answers));
+    }
+
+    /// Give the TypeSafe stand-in one response body, with these answers.
+    pub fn jev_answers(&self, answers: Value) {
+        self.typesafe_answers(&json!({"model": "jev-recorded", "answers": answers,
+            "usage": {"input_tokens": 100, "output_tokens": 7}}));
+    }
+
+    /// Give the TypeSafe stand-in what Jev answered for the real screen
+    /// recorded as `screen` → the lines of that screen, and the response.
+    pub fn jev_recorded(&self, screen: &str) -> (Vec<String>, Value) {
+        let recorded: Value =
+            serde_json::from_str(include_str!("../../../core/src/worker_health/recorded.json"))
+                .unwrap();
+        let case = recorded["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|case| case["screen"] == screen)
+            .unwrap_or_else(|| panic!("no recorded screen `{screen}`"));
+        self.typesafe_answers(&case["response"]);
+        let lines = case["lines"].as_array().unwrap();
+        (
+            lines.iter().map(|line| line.as_str().unwrap().to_string()).collect(),
+            case["response"].clone(),
+        )
+    }
+
+    /// Give the TypeSafe stand-in this whole response body.
+    pub fn typesafe_answers(&self, response: &Value) {
+        std::fs::write(self.root.join("typesafe-answer"), response.to_string()).unwrap();
+    }
+
+    /// What the TypeSafe stand-in was last sent: curl's arguments, and the
+    /// config it read on its standard input.
+    pub fn typesafe_sent(&self) -> (String, String) {
+        let sent = std::fs::read_to_string(self.root.join("typesafe-request")).unwrap();
+        let (arguments, config) = sent.split_once('\n').unwrap();
+        (arguments.to_string(), config.to_string())
+    }
+
+    /// The request body the TypeSafe stand-in was last sent, unquoted from
+    /// curl's config as curl reads it.
+    pub fn typesafe_payload(&self) -> Value {
+        let (_, config) = self.typesafe_sent();
+        let quoted = config
+            .lines()
+            .find_map(|line| line.strip_prefix("data-binary = "))
+            .expect("the payload is in the config");
+        let mut body = String::new();
+        let mut chars = quoted.trim_matches('"').chars();
+        while let Some(c) = chars.next() {
+            body.push(if c == '\\' { chars.next().unwrap() } else { c });
+        }
+        serde_json::from_str(&body).unwrap()
+    }
+
     /// Runs the real CLI in the fleet's checkout.
     pub fn afk(&self, args: &[&str]) -> Answer {
         self.afk_in(&self.clone, args)
@@ -310,7 +393,7 @@ impl World {
 
     /// `afk_in`, as the afkconvoy at `program`: one installed elsewhere.
     pub fn afk_as(&self, program: &Path, cwd: &Path, args: &[&str]) -> Answer {
-        let out = self.command(program, cwd).args(args).output().unwrap();
+        let out = self.command(program, cwd).args(self.settled_args(cwd, args)).output().unwrap();
         let stdout = String::from_utf8_lossy(&out.stdout);
         let json = serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
             panic!(
@@ -320,6 +403,24 @@ impl World {
         });
         let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
         Answer { json, code: out.status.code().unwrap(), stderr }
+    }
+
+    /// Running-fleet tests choose their own private repo on a first start
+    /// unless they name another tracker. Existing choices stand. Tests of
+    /// unanswered first starts use `command` directly, without this choice.
+    fn settled_args<'a>(&self, cwd: &Path, args: &[&'a str]) -> Vec<&'a str> {
+        let mut args = args.to_vec();
+        let listed = self.checkout_list();
+        let known = listed["checkouts"].as_array().unwrap().iter().any(|entry| {
+            entry["checkout"].as_str().is_some_and(|checkout| cwd.starts_with(checkout))
+        });
+        if args.first() == Some(&"run")
+            && !known
+            && !args.iter().any(|arg| *arg == "--tracker" || arg.starts_with("--tracker="))
+        {
+            args.extend(["--tracker", "default"]);
+        }
+        args
     }
 
     /// Sets the repo's gate command: committed on the base branch and pushed,
@@ -338,7 +439,7 @@ impl World {
 
     /// Runs a command that prints lines before its answer → (the lines, the
     /// answer), but for the lines a `run` says of itself whatever it does: its
-    /// start, and each tick's (`bookkeeping`).
+    /// start, each tick's, and the host's independent watch (`bookkeeping`).
     pub fn afk_lines(&self, args: &[&str]) -> (Vec<String>, Value) {
         let (lines, answer) = self.afk_every_line(args);
         (lines.into_iter().filter(|line| !bookkeeping(line)).collect(), answer)
@@ -346,8 +447,11 @@ impl World {
 
     /// Runs a command that prints lines before its answer → (every line, the answer).
     pub fn afk_every_line(&self, args: &[&str]) -> (Vec<String>, Value) {
-        let out =
-            self.command(env!("CARGO_BIN_EXE_afkconvoy"), &self.clone).args(args).output().unwrap();
+        let out = self
+            .command(env!("CARGO_BIN_EXE_afkconvoy"), &self.clone)
+            .args(self.settled_args(&self.clone, args))
+            .output()
+            .unwrap();
         let stdout = String::from_utf8_lossy(&out.stdout);
         let mut lines: Vec<String> = stdout.lines().map(str::to_string).collect();
         let last = lines.pop().unwrap_or_default();
@@ -588,6 +692,7 @@ impl World {
         self.with_orca(|orca| {
             orca["calls"] = json!([]);
             orca["envs"] = json!([]);
+            orca["parents"] = json!([]);
         });
         calls
     }
@@ -765,6 +870,17 @@ impl World {
     /// What the stand-in login shell prints for `alias`.
     pub fn shell_aliases(&self, aliases: &str) {
         std::fs::write(self.root.join("shell-aliases"), aliases).unwrap();
+    }
+
+    /// Whether a question carrying `line` was put to a harness, in a terminal
+    /// of its own: what the harness diagnosis of a worker's screen did.
+    pub fn asked_a_harness_about(&self, line: &str) -> bool {
+        let calls: Vec<Vec<String>> =
+            serde_json::from_value(self.orca()["calls"].clone()).unwrap_or_default();
+        calls.iter().any(|call| {
+            call.iter().any(|arg| arg == "afkconvoy question")
+                && call.iter().any(|arg| arg.contains(line))
+        })
     }
 
     /// Every script the stand-in login shell was asked to run, in order.
@@ -1053,6 +1169,17 @@ impl World {
     }
 }
 
+/// TypeSafe's HTTP endpoint: curl's arguments on the first line of
+/// `typesafe-request`, and the config it reads on its standard input — the
+/// URL, the headers and the payload — after them, as the evidence a test
+/// asserts against. No real network call is made.
+const CURL: &str = r#"#!/bin/sh
+root=${0%/*}/..
+{ printf '%s\n' "$*"; cat; } > "$root/typesafe-request"
+if [ -f "$root/typesafe-fail" ]; then cat "$root/typesafe-fail" >&2; exit 22; fi
+cat "$root/typesafe-answer"
+"#;
+
 /// The login shell a worker would get, as far as the fleet asks it anything:
 /// `shell -lic 'alias'`, `shell -lic "type -- '<word>'"`, `shell -lic '<command> --help'` —
 /// where `pi` answers as pi does, `codex` as Codex and every other command as Claude Code —
@@ -1073,15 +1200,6 @@ pwd -P >> "$root/shell-asked-in"
 case "$2" in
   *"AFKCONVOY_ENV"*)
     . "$HOME/.profile"; eval "$2"; exit 0 ;;
-  *"AFKCONVOY_DIAGNOSIS"*)
-    printf '%s\n' "$2" >> "$root/diagnosis-asked"
-    answer="$root/diagnosis-answer"
-    case "$2" in
-      *"codex exec"*) [ ! -f "$root/diagnosis-answer-codex" ] || answer="$root/diagnosis-answer-codex" ;;
-      *"pi --print"*) [ ! -f "$root/diagnosis-answer-pi" ] || answer="$root/diagnosis-answer-pi" ;;
-    esac
-    if [ -f "$answer" ]; then cat "$answer"; exit 0; fi
-    exit 1 ;;
   *"You are the caster of a fleet"*)
     # A caster's prompt: answered with what `caster-answer` holds.
     printf '%s' "$2" > "$root/caster-asked"
@@ -1305,10 +1423,10 @@ impl World {
 
     /// `running`, of the checkout `dir`.
     pub fn running_in(&self, dir: &Path, args: &[&str]) -> Running {
+        let args = [&["run", "--foreground"][..], args].concat();
         let mut child = self
             .command(env!("CARGO_BIN_EXE_afkconvoy"), dir)
-            .args(["run", "--foreground"])
-            .args(args)
+            .args(self.settled_args(dir, &args))
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
@@ -1378,12 +1496,13 @@ impl Drop for Running {
 }
 
 /// Whether `line` is one a `run` prints whatever its ticks do: the line of
-/// its start (`start: run as …`), or of a tick's (`tick N: started (…)`).
+/// its start (`start: run as …`), a tick's (`tick N: started (…)`), or the
+/// host's independent watch. Watch events are checked by `host_watch`.
 pub fn bookkeeping(line: &str) -> bool {
     let tick_started = line.strip_prefix("tick ").is_some_and(|rest| {
         rest.split_once(": started (").is_some_and(|(count, _)| count.parse::<u64>().is_ok())
     });
-    tick_started || line.starts_with("start: run as ")
+    tick_started || line.starts_with("start: run as ") || line.starts_with("watch: ")
 }
 
 /// Runs git in `cwd` and returns its trimmed stdout; a failure fails the test.

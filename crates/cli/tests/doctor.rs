@@ -21,7 +21,8 @@ fn run(world: &World, extra: &[&str]) -> Vec<String> {
     world.afk_lines(&args).0
 }
 
-/// The lines of the log this world's `run` kept.
+/// The lines this world's fleet kept. The host's independent watch events
+/// are checked by `host_watch`.
 fn log(world: &World) -> Vec<Value> {
     let runs = world.cache().join("afkconvoy/runs");
     let files = std::fs::read_dir(&runs).unwrap().map(|entry| entry.unwrap().path());
@@ -30,7 +31,10 @@ fn log(world: &World) -> Vec<Value> {
         files.filter(|file| file.extension().is_some_and(|ext| ext == "jsonl")).collect();
     assert_eq!(files.len(), 1, "one log for the one repo: {files:?}");
     let text = std::fs::read_to_string(&files[0]).unwrap();
-    text.lines().map(|line| serde_json::from_str(line).unwrap()).collect()
+    text.lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .filter(|entry| entry["instance"] != afkconvoy::host_watch::INSTANCE)
+        .collect()
 }
 
 /// The lines of `log` that are ticks' ends.
@@ -248,7 +252,7 @@ fn a_repo_no_fleet_ever_ran_in_has_no_finding_no_log_and_exits_zero() {
     assert_eq!(answer["issues"]["frontier"][0]["number"], 3);
     // with no `run` to say, the command is the one a `run` would use now
     assert_eq!(answer["host"]["worker_commands"][0]["from"], "host_kit");
-    assert_eq!(answer["host"]["exclusive"], json!({"running": null, "waiting": []}));
+    assert_eq!(answer["host"]["exclusive"]["lanes"]["train"], Value::Null);
     // An unbound repo calls for no harness by name: its one command is the
     // host kit's first's, which holds no model here — and neither is found.
     let commands = answer["host"]["worker_commands"].as_array().unwrap();
@@ -261,7 +265,6 @@ fn a_repo_no_fleet_ever_ran_in_has_no_finding_no_log_and_exits_zero() {
     let kit = &answer["host"]["host_kit"];
     assert_eq!(kit["harnesses"][0]["harness"], "claude-code");
     assert_eq!(kit["harnesses"][0]["models"], json!([]));
-    assert_eq!(kit["stock_consult"]["model"], json!(null));
 }
 
 #[test]
@@ -363,7 +366,10 @@ fn run_logs_a_line_as_it_starts_one_as_each_tick_starts_and_ends_and_prints_each
     }
     // stdout holds every line of the log, in its order
     let host_sleep = "start: puts this host to sleep";
-    let printed: Vec<&String> = lines.iter().filter(|line| !line.starts_with(host_sleep)).collect();
+    let printed: Vec<&String> = lines
+        .iter()
+        .filter(|line| !line.starts_with(host_sleep) && !line.starts_with("watch: "))
+        .collect();
     assert_eq!(printed.len(), log.len(), "{lines:?}");
     assert_eq!(printed[0], "start: run as alpha on h1, its workers started with `agent`");
     assert_eq!(printed[1], "tick 1: started (start)");
@@ -392,8 +398,11 @@ fn run_logs_a_line_as_it_starts_one_as_each_tick_starts_and_ends_and_prints_each
     // …and `doctor` lists the starts of both, newest first, with their causes
     let answer = doctor(&world, "2000").json;
     let events = answer["fleet"]["events"].as_array().unwrap();
-    let said: Vec<(&Value, &Value, &Value)> =
-        events.iter().map(|event| (&event["at"], &event["event"], &event["instance"])).collect();
+    let said: Vec<(&Value, &Value, &Value)> = events
+        .iter()
+        .filter(|event| event["instance"] != afkconvoy::host_watch::INSTANCE)
+        .map(|event| (&event["at"], &event["event"], &event["instance"]))
+        .collect();
     assert_eq!(
         said,
         [
@@ -493,34 +502,6 @@ fn a_brief_that_starts_no_turn_is_named_with_its_screen_in_doctor_and_on_the_iss
 }
 
 #[test]
-fn a_train_worker_s_failed_start_is_a_finding_until_it_starts() {
-    let world = World::new();
-    world.set_gate("true");
-    world.issue(3, &["ready-for-agent"]);
-    run(&world, &["--instance", "alpha", "--ticks", "1", "--now", "1000"]);
-    let dir = world.worktrees()[0].clone();
-    commit(&dir, "built.txt", "built\n");
-    git(&dir, &["push", "-q", "origin", "HEAD"]);
-    world.pr(30, 3, &git(&dir, &["symbolic-ref", "--short", "HEAD"]));
-    assert_eq!(
-        world.afk_in(&dir, &["land", "--issue", "3", "--now", "1050"]).ok()["outcome"],
-        "joined"
-    );
-    world.with_orca(|orca| orca["never_ready"] = json!(true));
-    run(&world, &["--instance", "alpha", "--ticks", "1", "--now", "1090"]);
-    let answer = doctor(&world, "1090").json;
-    let failures = found(&answer, "`tend_train` failed");
-    assert_eq!(failures.len(), 1, "{answer}");
-    assert_eq!(failures[0]["fix"], "afkconvoy tick --instance alpha");
-    assert!(failures[0]["evidence"].as_str().unwrap().contains("not ready"), "{answer}");
-
-    world.with_orca(|orca| orca["never_ready"] = json!(false));
-    run(&world, &["--instance", "alpha", "--ticks", "1", "--now", "1180"]);
-    let answer = doctor(&world, "1180").json;
-    assert!(found(&answer, "`tend_train` failed").is_empty(), "{answer}");
-}
-
-#[test]
 fn an_orca_that_does_not_know_the_checkout_or_is_not_running_is_critical() {
     let world = World::new();
     world.with_orca(|orca| orca["repos"] = json!([]));
@@ -559,7 +540,8 @@ impl Drop for Running {
 }
 
 fn start(world: &World) -> Running {
-    let args = ["run", "--foreground", "--instance", "alpha", "--host", "h1"];
+    let args =
+        ["run", "--tracker", "default", "--foreground", "--instance", "alpha", "--host", "h1"];
     let child = world
         .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
         .args(args)

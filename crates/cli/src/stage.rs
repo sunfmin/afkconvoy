@@ -15,8 +15,7 @@ use afkconvoy_core::stage_record::{
     Advance, Author, StageRecord, Stated, Unconsulted, advance, history, label_moves, lands,
     stage_records, unconsulted,
 };
-use afkconvoy_core::stock;
-use afkconvoy_core::team::{Consult, FlowLabels, LAND, Team, Workflow};
+use afkconvoy_core::team::{FlowLabels, LAND, Team, Workflow};
 use afkconvoy_core::tick::Outcome;
 use afkconvoy_core::transition::{Relabel, escalated_at, skips_consult};
 use afkconvoy_core::waiting::{Back, Waits, back, waits};
@@ -79,29 +78,6 @@ pub fn verdict(repo: &Repo, declaring: Declaring) -> Result<Value> {
     }
     if !blocked_by.is_empty() && declared != Declared::Blocked {
         bail!("--blocked-by goes with `blocked` only, not with `{}`", declared.word());
-    }
-    let config = crate::config::load(&repo.dir.join(crate::config::FILE))?;
-    if config.bound.is_none() && matches!(declared, Declared::Close | Declared::Park) {
-        let scan = Scan::read(repo)?;
-        let claim = scan.claim_of(issue).ok_or_else(|| anyhow!("issue #{issue} is not claimed"))?;
-        let gh = GitHub::of(repo)?;
-        let comments = gh.comments(issue)?;
-        if !consult || !stock::asked_under(comments.iter().map(|c| c.body.as_str()), &claim.id) {
-            bail!("only the stock consult holding this issue may close or park it");
-        }
-        gh.comment(issue, &format!("**Stock consult — {}**\n\n{text}", declared.word()))?;
-        if declared == Declared::Close {
-            gh.close_issue(issue)?;
-        } else {
-            gh.add_label(issue, stock::PARKED_LABEL)?;
-            let labels = gh.issue(issue)?.labels;
-            for label in [&config.ready_label, &config.escalate_label] {
-                if labels.contains(label) {
-                    gh.remove_label(issue, label)?;
-                }
-            }
-        }
-        return Ok(json!({"issue": issue, "verdict": declared.word(), "declared": true}));
     }
     let Some(Ran { role_commit, team_commit, harness, model }) = ran else {
         if !blocked_by.is_empty() {
@@ -432,7 +408,10 @@ impl Flows {
                 None => Unkept::Unloaded(format!("{error:#}")),
             });
         let flow_labels = team.as_ref().map(|kept| kept.team.flow_labels()).unwrap_or_default();
-        let flowing = open.rows.iter().filter(|issue| !flow_labels.among(&issue.labels).is_empty());
+        let flowing = open.rows.iter().filter(|issue| {
+            !afkconvoy_core::plan::is_repair(&issue.labels)
+                && !flow_labels.among(&issue.labels).is_empty()
+        });
         let mut issues = vec![];
         for issue in flowing {
             let comments = open.comments(issue.number);
@@ -528,10 +507,7 @@ impl Flows {
                 at => (at.stage().map(|stage| stage.name.clone()), at.worker()),
             };
             stood.stage = stage;
-            stood.role = match place.position {
-                Position::Consult(_, Consult::Stock, _) => Some(stock::ROLE.to_string()),
-                _ => work.map(|work| team.role_of(work).name.clone()),
-            };
+            stood.role = work.map(|work| team.role_of(work).name.clone());
             stood.rework = (place.rework(), place.rework_left());
             for stage in workflow.stages().iter().filter(|stage| stage.reject().is_some()) {
                 let (had, left) =
@@ -721,7 +697,7 @@ impl Flows {
         };
         match history(workflow, records).place.position {
             Position::Escalating(stage, reason) => format!("{}: {}", stage.name, reason.brief()),
-            Position::Landing => "nothing to join the landing train with".to_string(),
+            Position::Landing => "nothing to land in a turn with".to_string(),
             at => match at.stage() {
                 Some(stage) => format!("{}: its stage cannot be carried on", stage.name),
                 None => "its workflow has ended".to_string(),
@@ -755,17 +731,6 @@ impl Flows {
         for issue in &open.issues.rows {
             let comments = open.issues.comments(issue.number);
             let bodies = || comments.iter().map(|comment| comment.body.as_str());
-            if config.bound.is_none()
-                && stock::parked(&issue.labels, &config.ready_label, &config.escalate_label)
-            {
-                let since = comments.last().and_then(|comment| comment.at);
-                found.push((
-                    issue.number,
-                    Waits::ParkedUnbound { ready: config.ready_label.clone() },
-                    since,
-                ));
-                continue;
-            }
             let handed = escalate.is_some_and(|label| issue.labels.iter().any(|l| l == label))
                 && label_bar(&issue.labels, config, &self.flow_labels()).is_some();
             let Some(at) = escalated_at(bodies()).filter(|_| handed) else { continue };

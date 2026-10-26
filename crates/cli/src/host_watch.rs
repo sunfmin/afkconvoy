@@ -1,7 +1,7 @@
 //! The host runner's watch of its host (docs/adr/0030). A look is the fleet's
 //! own `doctor --all --since`, and starts no model; a look holding something
 //! an operator would act on starts one bounded watch in the operator's
-//! directory, continued on another harness where its own gives out. The
+//! directory, or afkconvoy's own, continued where its harness gives out. The
 //! process holds nothing of it: the watch, its terminal and its transcript are
 //! read back from the host's cache after every restart.
 
@@ -37,15 +37,48 @@ const LOOK_SECONDS: u64 = 300;
 const HISTORY: usize = 20;
 /// What a watch's terminal is titled in orca.
 const TITLE: &str = "afkconvoy watch";
-/// A checkout a watch makes for a change of a listed repo. Distinct from an
-/// inspection's: starting an inspection must never reuse a watch's checkout.
+/// The linked checkout a watch makes for a change of a listed repo.
 pub const CHECKOUT: &str = "afkconvoy-watch";
+
+/// The four kinds every watch leaves with a human, in either directory.
+const HUMAN_KINDS: &str = "\
+- spending money, or needing an account, a credential or a person's hands;\n\
+- what cannot be undone;\n\
+- taking a secret or private data off the host;\n\
+- changing what a product is for, or who it is for.";
+
+/// The stock watch's whole instruction, kept as its directory's rules.
+fn stock_instruction() -> String {
+    format!(
+        "\
+# The stock watch
+
+Find what holds this host's fleets and their work back, fix it with the watch's authority,
+check that the work goes on, and say what you did.
+Leave these with a human, never act on them, and list each in your printed record:
+{HUMAN_KINDS}
+"
+    )
+}
+
+/// Where the host's watch runs. Resolving the stock directory writes nothing:
+/// only starting a stock watch makes it and puts its instruction there.
+pub fn directory(settings: &crate::host_settings::Settings) -> Result<PathBuf> {
+    match &settings.watch_dir {
+        Some(directory) => Ok(directory.clone()),
+        None => Ok(cache()?.join("stock-watch")),
+    }
+}
 
 /// A watch as the host keeps it: what a continuation of it needs too.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Watch {
     pub id: String,
     pub directory: PathBuf,
+    /// Whether it started under afkconvoy's own instruction. Kept with the
+    /// watch so a later host-setting change cannot change a continuation.
+    #[serde(default)]
+    pub stock: bool,
     /// What the look that started it answered.
     pub look: Value,
     /// Why it was started.
@@ -86,7 +119,7 @@ pub struct Attempt {
 
 /// A watch as `doctor` says it: all but the look, which is the watch's own.
 pub fn watch_json(watch: &Watch) -> Value {
-    json!({"id": watch.id, "directory": watch.directory, "items": watch.items,
+    json!({"id": watch.id, "directory": watch.directory, "stock": watch.stock, "items": watch.items,
         "started": watch.started, "harness": watch.harness, "model": watch.model,
         "terminal": watch.terminal, "transcript": watch.transcript, "did": watch.did,
         "attempts": watch.attempts, "ended": watch.ended, "outcome": watch.outcome})
@@ -99,6 +132,8 @@ struct State {
     until: Option<u64>,
     /// The items a watch was started on, while their episodes last.
     watched: Vec<String>,
+    /// Last successful start that took kit research, retained across restarts.
+    research_started: Option<u64>,
     running: Option<Watch>,
     last: Option<Watch>,
     history: Vec<Watch>,
@@ -207,15 +242,12 @@ impl Watcher {
             // A look is taken only while no watch runs: what it would find
             // waits for the first look after the watch ends.
             if now >= next_look && self.shared.running().is_none() {
-                let settings = crate::host_settings::of_host().unwrap_or_default();
-                next_look = match &settings.watch_dir {
-                    Some(directory) => {
-                        let looked = self.look(directory);
-                        self.looking.said(looked, &self.say);
-                        now + Duration::from_secs(settings.watch_every())
-                    }
-                    None => now + CHECK_EVERY,
-                };
+                next_look = now + CHECK_EVERY;
+                let looked = crate::host_settings::of_host().and_then(|settings| {
+                    next_look = now + Duration::from_secs(settings.watch_every());
+                    self.look(&settings)
+                });
+                self.looking.said(looked, &self.say);
             }
             std::thread::sleep(Duration::from_millis(250));
         }
@@ -234,27 +266,54 @@ impl Watcher {
     }
 
     /// One look at the host, and the watch it calls for.
-    fn look(&self, directory: &Path) -> Result<()> {
+    fn look(&self, settings: &crate::host_settings::Settings) -> Result<()> {
         let mut state = read()?;
         if state.running.is_some() {
             return Ok(());
         }
-        if !directory.is_dir() {
+        let directory = directory(settings)?;
+        if settings.watch_dir.is_some() && !directory.is_dir() {
             bail!(
                 "the watch directory {} is not a directory: `afkconvoy run --watch-dir <dir>` \
                  names the operator's",
                 directory.display()
             );
         }
-        let look = doctor_look(state.until, &self.ended)?;
+        let mut look = doctor_look(state.until, &self.ended)?;
         state.until = look["until"].as_u64().or(state.until);
         let current = actionable(&look, look["until"].as_u64().unwrap_or_else(crate::clock));
-        state.watched = host_watch::covered(&state.watched, &current);
-        let pending = host_watch::pending(&current, &state.watched, false);
+        let mut episodes = current.clone();
+        for resource in look["host"]["resources"].as_array().into_iter().flatten() {
+            if let Some(id) = resource["id"].as_str() {
+                episodes.push(Item::new(id, "resource episode recovering"));
+            }
+        }
+        state.watched = host_watch::covered(&state.watched, &episodes);
+        let mut pending = host_watch::pending(
+            &current,
+            &state.watched,
+            false,
+            state.research_started,
+            crate::clock(),
+        );
         if pending.is_empty() {
             state.unavailable = None;
         } else {
-            self.start(&mut state, directory, look, pending)?;
+            crate::resources::evidence(&mut look, &pending)?;
+            // Disk evidence can take minutes. A condition that recovered
+            // while it was taken must not start a watch from an old look.
+            let resources = crate::resources::json(crate::clock())?;
+            pending.retain(|item| {
+                !item.id.starts_with("resource:")
+                    || resources
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .any(|resource| resource["id"] == item.id && resource["active"] == true)
+            });
+            if !pending.is_empty() {
+                self.start(&mut state, &directory, settings.watch_dir.is_none(), look, pending)?;
+            }
         }
         self.save(&state)
     }
@@ -264,6 +323,7 @@ impl Watcher {
         &self,
         state: &mut State,
         directory: &Path,
+        stock: bool,
         look: Value,
         items: Vec<Item>,
     ) -> Result<()> {
@@ -286,6 +346,7 @@ impl Watcher {
         let mut watch = Watch {
             id: format!("{now}-{}", crate::unique()),
             directory: directory.to_path_buf(),
+            stock,
             look,
             items,
             started: now,
@@ -309,6 +370,10 @@ impl Watcher {
                     state.watched.extend(watch.items.iter().map(|item| item.id.clone()));
                     state.watched.sort();
                     state.watched.dedup();
+                    if watch.items.iter().any(|item| item.id.starts_with(host_watch::RESEARCH_ITEM))
+                    {
+                        state.research_started = Some(now);
+                    }
                     state.unavailable = None;
                     (self.say)(What::WatchStarted {
                         id: watch.id.clone(),
@@ -468,6 +533,17 @@ fn gave_out(harness: Harness, transcript: &str, exited: Option<i32>) -> Option<D
 /// Starts a session of `watch` on its harness: its brief written beside its
 /// transcript, in the host's cache. Answers its terminal and transcript.
 fn start_session(watch: &Watch) -> Result<(String, PathBuf)> {
+    if watch.stock {
+        std::fs::create_dir_all(&watch.directory).with_context(|| {
+            format!("cannot make the stock watch's directory {}", watch.directory.display())
+        })?;
+        // Each harness finds the same instruction by its own rules filename.
+        // Refresh it at each start, including after moving onto a new release.
+        for file in [afkconvoy_core::team::RULES, "AGENTS.md"] {
+            std::fs::write(watch.directory.join(file), stock_instruction())?;
+        }
+        crate::orca::watch_directory(&watch.directory)?;
+    }
     let session = watch.attempts.len() + 1;
     let dir = cache()?.join("watch").join(&watch.id);
     std::fs::create_dir_all(&dir)
@@ -480,6 +556,11 @@ fn start_session(watch: &Watch) -> Result<(String, PathBuf)> {
     // directory holds no config, and no role.
     let repo = Repo::new(watch.directory.clone());
     let command = crate::launch::Launches::new(&repo, true)?.command(watch.harness)?;
+    let command = if watch.harness == Harness::Codex {
+        format!("{} --search", command.as_str())
+    } else {
+        command.as_str().to_string()
+    };
     let kept = crate::kept::keep(watch.harness, true)?;
     let line = watch.harness.watch(
         command.as_str(),
@@ -488,6 +569,7 @@ fn start_session(watch: &Watch) -> Result<(String, PathBuf)> {
         watch.model.as_deref(),
         &brief_pointer(&brief_file.display().to_string()),
     );
+    let line = format!("export {}=host; {line}", host_watch::WATCH_ENV);
     let line = host_watch::session(&line, &transcript.display().to_string());
     let worktree = Worktree::at(watch.directory.clone(), String::new());
     Ok((worktree.start_watch(&line, TITLE)?, transcript))
@@ -515,19 +597,27 @@ fn brief(watch: &Watch) -> String {
         .collect();
     format!(
         "# A watch of this host\n\n\
-         You are an afkconvoy **watch**: the operator on this host, started in the operator's \
+         You are an afkconvoy **watch**: the operator on this host, started in the watch's \
          directory by the host runner, because its look found something an operator would act \
          on. Nobody reads this terminal: never wait for an answer, and ask nothing.\n\n\
          Find what holds this host's fleets and their work back, fix it — whatever that takes — \
          and check that the work goes on. You have what the operator at this host's keyboard \
-         has, under the bounds of an inspection (`afkconvoy run --help`): only what the fleets \
+         has, within these bounds (`afkconvoy run --help`): only what the fleets \
          of this host started or own; never the host runner, the user's programs, other apps \
          or orca; never delete what cannot be rebuilt, nor a change no commit holds; no force \
-         push, no push to a base branch, no merge outside the landing train. Follow this \
+         push, no push to a base branch, no merge outside a landing turn. Follow this \
          directory's own rules for looking after the host's projects.\n\n\
          Your authority covers every repo on this host's checkout list, not just the repo of \
          the fault or this directory. `afkconvoy checkouts` gives the current list; the look \
          below names each checkout and its repo. Read the help of each command you need.\n\n\
+         ## Check the resource condition after acting\n\n\
+         For a hot worker, read its evidence, check its processes and worktree, and check \
+         that it is under its limits or that its heavy work goes through `afkconvoy exclusive`. \
+         You may end a fleet-owned runaway, type a line at its terminal, restart or switch it. \
+         For admission, check `afkconvoy plan`'s `admission` admits again. For memory pressure, \
+         check `sysctl -n kern.memorystatus_vm_pressure_level` is below 2: admission may already \
+         admit, and proves nothing about pressure. The look carries the condition, how long \
+         it held, the reading and its evidence.\n\n\
          ## Fix the host, then hand the issue back\n\n\
          You may trust a worktree for its harness; restart, nudge, continue or switch a worker; \
          or change a host setting. Read an escalation's reason and evidence before acting. \
@@ -538,32 +628,58 @@ fn brief(watch: &Watch) -> String {
          `afkconvoy wake <checkout>` after changing GitHub with `gh`, then check the next tick \
          actually dispatches or continues the issue and that its worker takes its brief. \
          Relabelling it alone is no evidence of recovery.\n\n\
-         An escalation that asks a human for a decision stays with the human. Do not invent \
-         a ruling, pass a human stage, choose a workflow or clear its labels to make it run. \
-         Leave it alone and list its repo, issue, question and answer line in your record.\n\n\
+         ## Answer escalations\n\n\
+         Answer an escalation yourself, as the operator would: find out what is true, answer \
+         the cause, keep to earlier decisions, and say what is to be done. For each issue in \
+         `waiting_on_human`, read its reason and evidence, then run its current answer line \
+         in that repo's checkout to hand it back, or use these answering commands:\n\n{}\n\n\
+         Replace `<n>` with that issue's number. Use the tracker that checkout names and its \
+         repo label when opening an issue; `afkconvoy doctor` gives the tracker and \
+         `afkconvoy flows` gives the create line. A ruling or send carries no role or team \
+         commits and no `--consult`: it moves the issue exactly as a human's answer does, \
+         starting its rework counts over. Closing it leaves nothing to dispatch; changing \
+         blocked-by changes what holds it back. Wake its checkout and verify the resulting \
+         position and that work which can proceed does proceed. You may fix the cause on \
+         the host or in a repo under the bounds above.\n\n\
+         Leave only these four kinds with a human; never act on them, and list each with \
+         its repo, issue, question and answer line in your printed record, which `doctor` \
+         lists as what you did:\n\n\
+         {HUMAN_KINDS}\n\n\
+         ## Research the host kit's unplaced models\n\n\
+         Take the host kit's unplaced models after anything holding work up. Read \
+         `afkconvoy kit --help` for the research file's format and `afkconvoy doctor --all` \
+         for the latest listed ids, names and research. Use your web tools to search primary \
+         and high-trust sources: vendor model cards and release notes, SWE-bench, \
+         Terminal-Bench and Aider. Research each pending identity once across harnesses; \
+         use dated sources for its coding strengths, weaknesses and other names. Write a \
+         JSON research file in preference order and run `afkconvoy kit --research <file>`. \
+         A refusal names the fault: correct the file and run it again. Place what the \
+         evidence supports; omitted models stay unplaced, and a harness with none placed \
+         stays on its default model. Check the command's `placed` and the updated doctor \
+         answer; record what you placed and what remains unplaced.\n\n\
          ## Change any repo on the checkout list\n\n\
          When a lasting fix needs code, make it yourself, even if that repo's fleet cannot \
          start a worker. In the affected repo create a linked worktree on a branch of your \
          own from its configured base branch. Name its directory `{CHECKOUT}` or \
-         `{CHECKOUT}-<digits>` so `afkconvoy land --inspection` accepts it; never reuse an \
-         inspection's or another worker's checkout. Work only in your own checkout of that \
+         `{CHECKOUT}-<digits>` so `afkconvoy land --watch` accepts it; never reuse \
+         another worker's checkout. Work only in your own checkout of that \
          repo. Commit and push each completed piece before a long operation. Open its PR \
          against that repo's base branch, on no issue: no intake or flow label is needed, in \
-         a bound repo too. Run `afkconvoy gate --train` there until it answers `status: green` \
-         and `recorded: true`, then `afkconvoy land --inspection`. Resolve conflicts by \
-         merging, committing and gating again; never rebase. This is the inspection's \
-         landing path: its join names an inspection on this host and closes no issue. A \
-         fleet lock standing joins nothing: record what holds it back. Keep the branch and \
+         a bound repo too. Run `afkconvoy land --watch` there: it takes a turn to merge, \
+         gate, record green and land its merge commit on the current base tip. \
+         Resolve conflicts by merging, committing and asking again; never rebase. This is the watch's \
+         landing path: its merge names a watch on this host and closes no issue. A \
+         fleet lock standing lands nothing: record what holds it back. Keep the branch and \
          PR, and name the repo and PR in your record.\n\n\
          ## Cut an installed fix, then check it\n\n\
-         Joining is not landing, and landing code is not fixing an installed tool. When the \
+         Landing code does not update an installed tool. When the \
          fix must reach an installed tool — afkconvoy itself, for example — wait until the \
          change lands, then have that repo's fleet cut a version through its declared cut \
          steps (`afkconvoy cut --help`). Wake its checkout and read `afkconvoy plan`'s `cut`: \
          the next idle tick starts a due cut. Fix what holds that work back; do not bypass \
-         the gate or train, tag by hand, or manufacture a cut record. If a cut failed for a \
+         the landing turn, tag by hand, or manufacture a cut record. If a cut failed for a \
          mechanical cause, fix it and continue with the `cut --from <step>` line its report \
-         gives. If cutting is off or a human decision holds it back, say so.\n\n\
+         gives. If cutting is off or one of the four human kinds holds it back, say so.\n\n\
          Check that the cut published and installed the version containing your change. \
          For afkconvoy, let the host runner move onto it by itself; read `doctor --all`'s \
          `host.installed` for what holds the move back and `checkouts` for its version. Never \
@@ -580,12 +696,56 @@ fn brief(watch: &Watch) -> String {
          ## What this watch did before this session\n\n{}\n\n\
          ## What the look answered\n\n`afkconvoy doctor --all --since <until of the look \
          before>` answered:\n\n```json\n{}\n```\n",
+        answering(&watch.look),
         crate::log::utc(watch.started),
         why.join("\n"),
         said(&watch.earlier),
         said(&sessions),
         serde_json::to_string_pretty(&watch.look).unwrap_or_default(),
     )
+}
+
+/// The shared answering commands for every waiting issue, with its tracker
+/// and number fixed by the look. Its current answer also gives label swaps.
+fn answering(look: &Value) -> String {
+    use afkconvoy_core::config::RepoName;
+    use afkconvoy_core::tracker::Tracker;
+    let mut lines = vec![];
+    for checkout in look["checkouts"].as_array().into_iter().flatten() {
+        let doctor = &checkout["doctor"];
+        let tracker = match &doctor["fleet"]["tracker"] {
+            Value::Null => Tracker::Own,
+            Value::String(named) => {
+                let Some(tracker) = RepoName::read(named) else { continue };
+                let Some(repo) = checkout["repo"].as_str().and_then(RepoName::read) else {
+                    continue;
+                };
+                Tracker::Other { tracker, repo }
+            }
+            _ => continue,
+        };
+        for issue in doctor["waiting_on_human"].as_array().into_iter().flatten() {
+            let Some(number) = issue["issue"].as_u64() else { continue };
+            lines.push(format!(
+                "In `{}`, issue {}:",
+                checkout["checkout"].as_str().unwrap_or("unknown"),
+                tracker.issue(number)
+            ));
+            if let Some(answer) = issue["answer"].as_str() {
+                lines.push(format!("- Hand it back: `{answer}`"));
+            }
+            lines.extend(
+                afkconvoy_core::waiting::answering(&tracker)
+                    .iter()
+                    .map(|line| format!("- `{}`", line.replace("<n>", &number.to_string()))),
+            );
+        }
+    }
+    if lines.is_empty() {
+        "No waiting issue was listed; read `afkconvoy doctor` for current issues and their answer lines.".into()
+    } else {
+        lines.join("\n")
+    }
 }
 
 /// What `afkconvoy doctor --all --since <until>` answers: the fleet's own
@@ -643,7 +803,14 @@ fn findings(items: &mut Vec<Item>, at: &str, findings: &Value) {
             continue;
         }
         let reason = format!("{what}; evidence: {}; fix: {}", finding["evidence"], finding["fix"]);
-        push(items, format!("finding:{at}:{what}"), reason);
+        let id = finding["watch_id"].as_str().map(str::to_string).unwrap_or_else(|| {
+            if what.contains(crate::doctor::Kind::KitUnplaced.symptom()) {
+                format!("{}{what}", host_watch::RESEARCH_ITEM)
+            } else {
+                format!("finding:{at}:{what}")
+            }
+        });
+        push(items, id, reason);
     }
 }
 
@@ -732,7 +899,18 @@ pub fn json(running: Option<&Watch>) -> Value {
         Ok(state) => (json!(state.last.as_ref().map(watch_json)), json!(state.unavailable)),
         Err(error) => (Value::Null, json!(format!("{error:#}"))),
     };
-    json!({"running": running.map(watch_json), "last": last, "unavailable": unavailable})
+    let mut answer =
+        json!({"running": running.map(watch_json), "last": last, "unavailable": unavailable});
+    match crate::host_settings::of_host()
+        .and_then(|settings| Ok((directory(&settings)?, settings.watch_dir.is_none())))
+    {
+        Ok((directory, stock)) => {
+            answer["directory"] = json!(directory);
+            answer["stock"] = json!(stock);
+        }
+        Err(error) => answer["error"] = json!(format!("{error:#}")),
+    }
+    answer
 }
 
 /// The host's finding where a look called for a watch no harness could start.
@@ -770,6 +948,33 @@ pub const INSTANCE: &str = "host-watch";
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn each_waiting_issue_gets_answering_commands_for_its_own_tracker() {
+        let look = json!({"checkouts": [
+            {"checkout": "/one", "repo": "acme/one", "doctor": {
+                "fleet": {"tracker": "acme/tracker"}, "waiting_on_human": [
+                    {"issue": 7, "answer": "afkconvoy rule --issue 7 --text-file <file>"}]}},
+            {"checkout": "/two", "repo": "acme/two", "doctor": {
+                "fleet": {"tracker": null}, "waiting_on_human": [
+                    {"issue": 8, "answer": "gh issue edit 8 --add-label ready --remove-label human"}]}}
+        ]});
+        let commands = answering(&look);
+        for expected in [
+            "In `/one`, issue acme/tracker#7:",
+            "gh issue close 7 --repo acme/tracker --comment <why>",
+            "afkconvoy send --issue 7 --stage <stage> --text-file <file>",
+            "gh api repos/acme/tracker/issues/7/dependencies/blocked_by -F issue_id=<id>",
+            "--label repo:acme/one",
+            "In `/two`, issue #8:",
+            "gh issue close 8 --comment <why>",
+            "gh issue edit 8 --add-label ready --remove-label human",
+        ] {
+            assert!(commands.contains(expected), "{expected}: {commands}");
+        }
+        assert!(!commands.contains("<n>"));
+        assert!(!commands.contains("close 8 --repo acme/tracker"));
+    }
 
     #[test]
     fn a_quiet_look_has_nothing_to_act_on() {

@@ -7,7 +7,7 @@
 use flux_rs::attrs::*;
 
 use crate::harness::Harness;
-use crate::inspection::INSPECTION_ENV;
+use crate::host_watch::WATCH_ENV;
 use crate::patrol::PATROL_ENV;
 use crate::position::Position;
 use crate::precedent::PROPOSAL_ENV;
@@ -110,11 +110,8 @@ pub enum Due<'t> {
     /// A worker is to be started as the consult this stage names, to rule on
     /// its `escalate`.
     Consult(Entry<'t>),
-    /// A worker is to be started as the stock consult, on what this stage of
-    /// this workflow handed on.
-    Stock(&'t Workflow, &'t Stage),
     /// A worker is to be started in the workflow's landing role, to gate the
-    /// issue's PR and join the landing train.
+    /// issue's PR and land in a turn.
     Lander(Lander<'t>),
     /// The issue is to be handed to a human, for this reason.
     Human(String),
@@ -153,7 +150,6 @@ pub fn due<'t>(
         Position::Consult(stage, Consult::Role(work), _) => {
             Due::Consult(Entry { workflow, stage, work, role: team.role_of(work) })
         }
-        Position::Consult(stage, Consult::Stock, _) => Due::Stock(workflow, stage),
         Position::Perform(stage, _) | Position::Waiting(stage) | Position::Parked(stage) => {
             waits(stage, "a human: no worker performs it")
         }
@@ -188,9 +184,8 @@ pub enum On<'a> {
     /// The proposal, as a precedent, of a ruling a human gave this issue: no
     /// stage, and the issue is not its worker's.
     Proposal { issue: u64 },
-    /// An inspection of the hot worker so named (docs/adr/0019): no stage,
-    /// and held as a consult whatever its role.
-    Inspection(&'a str),
+    /// The host watch: no issue or stage; its commands have operator authority.
+    Watch(&'a str),
 }
 
 /// The facts of one start: what its worker, and the commands it runs, read
@@ -228,7 +223,7 @@ impl Facts<'_> {
             ],
             On::Patrol(patrol) => vec![(PATROL_ENV, patrol.to_string())],
             On::Proposal { issue } => vec![(PROPOSAL_ENV, issue.to_string())],
-            On::Inspection(worker) => vec![(INSPECTION_ENV, worker.to_string())],
+            On::Watch(worker) => vec![(WATCH_ENV, worker.to_string())],
         };
         env.extend([
             (ROLE_ENV, self.role.to_string()),
@@ -447,7 +442,6 @@ land: { by: boss, do: implement }
             Due::Consult(entry) => {
                 format!("consult on {} by {}", entry.stage.name, entry.role.name)
             }
-            Due::Stock(_, stage) => format!("consult on {} by the stock consult", stage.name),
             Due::Lander(lander) => format!("PR #{} joined by {}", lander.pr, lander.role.name),
             Due::Human(why) => format!("human: {why}"),
             Due::Nothing(why) => format!("nothing: {why}"),
@@ -468,10 +462,10 @@ land: { by: boss, do: implement }
         assert_eq!(after(&[record("build", Declared::Blocked)]), "build by dev");
         let done = [&built[..], &[record("check", Declared::Pass)]].concat();
         assert_eq!(after(&done), "nothing: its workflow has ended");
-        // `build` names no consult: the stock consult is asked.
+        // `build` names no consult: it escalates for the watch.
         assert_eq!(
             after(&[record("build", Declared::Escalate)]),
-            "consult on build by the stock consult"
+            "human: the stage `build` declared `escalate`, which it hands to a human"
         );
     }
 

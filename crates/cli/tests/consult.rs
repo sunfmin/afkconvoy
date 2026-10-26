@@ -413,114 +413,27 @@ fn a_stage_that_says_to_a_human_escalates_to_a_human_as_before() {
     assert_eq!(started(&world).len(), 1);
 }
 
-/// Issue 7 of `world` built, and its `review` — which names no consult —
-/// having declared `escalate`, which a tick read; the next tick at 1270
-/// starts the stock consult → its start's command.
-fn review_asked(world: &World) -> String {
+#[test]
+fn a_stage_that_names_no_consult_escalates_for_the_watch() {
+    let world = bound(FEATURE, 2);
     world.issue(7, &["flow:feature"]);
-    assert_eq!(did(&tick(world, 1000)), ["dispatch 7 done"]);
-    declare(world, "build", "pass", "Built.");
-    assert_eq!(did(&tick(world, 1090)), ["advance 7 done", "dispatch 7 done"]);
-    declare(world, "review", "escalate", "Two readings of the issue; which one?");
-    assert_eq!(did(&tick(world, 1180)), ["advance 7 done"]);
-    assert!(!with_a_human(world), "{:?}", world.labels(7));
-    let read = shown(world);
-    assert_eq!(
-        (&read["position"]["is"], &read["position"]["by"], &read["position"]["do"]),
-        (&json!("consult"), &json!("stock-consult"), &json!("consult"))
-    );
-    assert_eq!(did(&tick(world, 1270)), ["dispatch 7 done"]);
-    started(world).pop().unwrap()
-}
-
-#[test]
-fn a_stage_that_names_no_consult_hands_off_to_the_stock_consult() {
-    let world = bound(FEATURE, 2);
-    let consult = review_asked(&world);
-    for said in [
-        "/copies/stock-consult/stock-consult-",
-        "AFKCONVOY_STAGE='review'",
-        "AFKCONVOY_ROLE='stock-consult'",
-        "AFKCONVOY_SKILL='consult'",
-        "AFKCONVOY_CONSULT='true'",
-    ] {
-        assert!(consult.contains(said), "{said} in {consult}");
-    }
-    // It starts in a directory of its own, whose rules are its whole instruction.
-    let stock = world.cache().join("afkconvoy/copies/stock-consult");
-    let dirs: Vec<PathBuf> =
-        std::fs::read_dir(&stock).unwrap().map(|entry| entry.unwrap().path()).collect();
-    assert_eq!(dirs.len(), 1, "{dirs:?}");
-    let rules = std::fs::read_to_string(dirs[0].join("CLAUDE.md")).unwrap();
-    assert_eq!(rules, afkconvoy_core::stock::INSTRUCTION);
-    assert_eq!(std::fs::read_dir(&dirs[0]).unwrap().count(), 1, "nothing else");
-    let told = brief(&worktree(&world));
-    for said in [
-        "started in your role as a **consult**",
-        "- **Stage that asked:** `review`, of the workflow `feature`\n",
-        "> Two readings of the issue; which one?",
-    ] {
-        assert!(told.contains(said), "{said}\n{told}");
-    }
-    // It answers as a named consult does: its ruling runs the stage again.
-    let line =
-        ["rule", "--issue", "7", "--stage", "review", "--text", "Read it as the title says."];
-    assert_eq!(world.afk(&[&line[..], &COMMITS].concat()).ok()["declared"], true);
-    assert_eq!(did(&tick(&world, 1360)), ["advance 7 done", "dispatch 7 done"]);
-    let read = shown(&world);
-    assert_eq!(
-        (&read["position"]["is"], &read["position"]["stage"]),
-        (&json!("perform"), &json!("review"))
-    );
-}
-
-#[test]
-fn the_stock_consult_runs_what_the_host_kit_names_for_it_or_its_first() {
-    for (named, model) in
-        [(None, "opus"), (Some(json!({"harness": "claude-code", "model": "haiku"})), "haiku")]
-    {
-        let world = bound(FEATURE, 2);
-        let mut kit: Value =
-            serde_json::from_slice(&std::fs::read(world.kit_path()).unwrap()).unwrap();
-        let probed = json!({"at": 900, "seconds": 2.5});
-        kit["harnesses"][0]["models"] = json!([
-            {"model": "opus", "probed": probed},
-            {"model": "sonnet", "probed": probed},
-            {"model": "haiku", "probed": probed}
-        ]);
-        if let Some(named) = named {
-            kit["stock_consult"] = named;
-        }
-        std::fs::write(world.kit_path(), serde_json::to_vec(&kit).unwrap()).unwrap();
-        let consult = review_asked(&world);
-        assert!(consult.contains(&format!("--model '{model}'")), "{model} in {consult}");
-    }
-}
-
-#[test]
-fn the_stock_consult_s_own_failure_goes_to_a_human() {
-    let world = bound(FEATURE, 2);
-    review_asked(&world);
-    // It lets the issue through.
-    let line = ["verdict", "escalate", "--issue", "7", "--stage", "review", "--text", "A human's."];
-    let out = world
-        .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
-        .args(line)
-        .env("AFKCONVOY_ROLE_COMMIT", "stock")
-        .env("AFKCONVOY_TEAM_COMMIT", "t1")
-        .env("AFKCONVOY_CONSULT", "true")
-        .output()
-        .unwrap();
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-    assert_eq!(did(&tick(&world, 1360)), ["advance 7 done"]);
-    assert!(with_a_human(&world), "{:?}", world.labels(7));
-    let world = bound(FEATURE, 2);
-    review_asked(&world);
-    stop(&world, 1280);
-    tick(&world, 2270);
-    tick(&world, 3270);
-    assert!(!with_a_human(&world));
-    assert_eq!(world.claims().len(), 1);
+    assert_eq!(did(&tick(&world, 1000)), ["dispatch 7 done"]);
+    declare(&world, "build", "pass", "Built.");
+    assert_eq!(did(&tick(&world, 1090)), ["advance 7 done", "dispatch 7 done"]);
+    declare(&world, "review", "escalate", "Two readings; which one?");
+    assert_eq!(did(&tick(&world, 1180)), ["advance 7 done"]);
+    assert!(with_a_human(&world));
+    assert!(world.claims().is_empty());
+    assert!(did(&tick(&world, 1270)).is_empty());
+    assert_eq!(started(&world).len(), 2, "no fallback consult starts");
+    let waiting = world.afk(&["plan", "--now", "1270"]).ok();
+    assert_eq!(waiting["waiting_on_human"][0]["issue"], 7);
+    assert!(waiting["waiting_on_human"][0]["answer"].as_str().unwrap().contains("rule --issue 7"));
+    // A watch answers using the same command as a human, without consult facts.
+    world.afk(&["rule", "--issue", "7", "--text", "Use the existing v2 schema."]).ok();
+    assert_eq!(did(&tick(&world, 1360)), ["dispatch 7 done"]);
+    assert_eq!(shown(&world)["position"]["stage"], "review");
+    assert_eq!(shown(&world)["rework"]["had"], 0);
 }
 
 #[test]
@@ -581,7 +494,7 @@ fn a_consult_takes_one_slot_of_concurrency() {
 }
 
 #[test]
-fn a_silent_consult_waits_for_diagnosis_without_handing_its_claim_to_a_human() {
+fn a_silent_consult_waits_for_the_operator_without_handing_its_claim_to_a_human() {
     let world = bound(FEATURE, 2);
     asked(&world);
     tick(&world, 1180);
@@ -592,7 +505,7 @@ fn a_silent_consult_waits_for_diagnosis_without_handing_its_claim_to_a_human() {
     assert!(!world.labels(7).contains(&"ready-for-human".to_string()));
     assert!(!world.comments(7).join("\n").contains("stopped with no ruling"));
     let plan = world.afk(&["plan", "--now", "3100"]).ok();
-    assert_eq!(plan["host_kit"]["worker_health"]["workers"][0]["action"], "waiting");
+    assert_eq!(plan["host_kit"]["worker_health"]["workers"][0]["action"], "waiting for operator");
 }
 
 #[test]
@@ -677,7 +590,7 @@ fn a_ruling_declared_before_its_claim_is_taken_over_is_read() {
 }
 
 #[test]
-fn a_taken_over_silent_stage_keeps_its_stage_and_claim_while_waiting_for_diagnosis() {
+fn a_taken_over_silent_stage_keeps_its_stage_and_claim_while_waiting_for_the_operator() {
     let world = bound(FEATURE, 2);
     world.issue(7, &["flow:feature"]);
     tick(&world, 1000);
@@ -940,10 +853,13 @@ fn already_satisfied_over_a_branch_that_holds_work_goes_to_its_consult() {
     world.issue(7, &["flow:feature"]);
     assert_eq!(did(&tick(&world, 1000)), ["dispatch 7 done"]);
     commit(&worktree(&world), "half.txt", "half\n");
+    commit(&world.clone, "landed.txt", "only on the base branch\n");
+    git(&world.clone, &["push", "-q", "origin", "main"]);
     declare(&world, "build", "already-satisfied", "Nothing to do.");
     assert_eq!(did(&tick(&world, 1090)), ["advance 7 done"]);
     assert_eq!(world.state(7), "open");
     assert!(world.comments(7).last().unwrap().contains("half.txt"));
+    assert!(!world.comments(7).last().unwrap().contains("landed.txt"));
     consulted_on(&world, 1180, "already-satisfied");
 }
 
@@ -988,7 +904,7 @@ fn an_issue_handed_to_a_human_that_no_consult_saw_is_put_to_its_consult_once() {
 }
 
 #[test]
-fn a_failed_start_or_trust_gap_skips_both_a_named_and_a_stock_consult() {
+fn a_failed_start_or_trust_gap_escalates_with_or_without_a_named_consult() {
     for named in [true, false] {
         let feature = if named {
             FEATURE.to_string()
@@ -1109,73 +1025,57 @@ fn world_help(topic: &str) -> String {
 
 #[test]
 fn consult_close_and_park_are_outcomes_and_a_park_waits_for_an_explicit_send() {
-    for stock in [false, true] {
-        for verdict in ["close", "park"] {
-            let feature = if stock {
-                FEATURE.replace("    escalate: { to: reviewer, do: rule }\n", "")
-            } else {
-                FEATURE.to_string()
-            };
-            let world = bound(&feature, 2);
-            asked(&world);
-            if verdict == "close" {
-                commit(&worktree(&world), "investigation.txt", "builder evidence\n");
-            }
-            tick(&world, 1180);
-            let text = "No reproduction after four investigations; reopen with raw output.";
-            let args = [
-                "verdict",
-                verdict,
-                "--consult",
+    for verdict in ["close", "park"] {
+        let world = bound(FEATURE, 2);
+        asked(&world);
+        if verdict == "close" {
+            commit(&worktree(&world), "investigation.txt", "builder evidence\n");
+        }
+        tick(&world, 1180);
+        let text = "No reproduction after four investigations; reopen with raw output.";
+        let args =
+            ["verdict", verdict, "--consult", "--issue", "7", "--stage", "build", "--text", text];
+        let declared = world.afk(&[&args[..], &COMMITS].concat()).ok();
+        assert_eq!(declared["declared"], true);
+        let read = shown(&world);
+        assert_eq!(read["rework"]["had"], 0, "{read}");
+        assert!(world.comments(7).last().unwrap().contains(text));
+        assert_eq!(did(&tick(&world, 1270)), ["advance 7 done"]);
+        assert_eq!(world.claims(), []);
+        assert_eq!(started(&world).len(), 2);
+        assert_eq!(did(&tick(&world, 1360)), [] as [&str; 0]);
+        if verdict == "close" {
+            assert!(worktree(&world).join("investigation.txt").exists());
+            let plan = world.afk(&["plan", "--now", "1400"]).ok();
+            assert_eq!(plan["frontier"], json!([]));
+            assert_eq!(plan["waiting_on_human"], json!([]));
+            continue;
+        }
+        assert_eq!(shown(&world)["position"]["is"], "parked-for-evidence");
+        let parked = world.comments(7).pop().unwrap();
+        let url = world.comment_url(7, &parked);
+        world.comment(7, "A later status comment.");
+        for command in ["plan", "doctor"] {
+            let view = world.afk(&[command, "--now", "1400"]).ok();
+            assert_eq!(view["waiting_on_human"][0]["issue"], 7, "{view}");
+            assert!(view["waiting_on_human"][0]["why"].as_str().unwrap().contains("parked"));
+            assert!(view["waiting_on_human"][0]["why"].as_str().unwrap().ends_with(text));
+            assert_eq!(view["waiting_on_human"][0]["url"], url);
+        }
+        world.comment(7, "A routine status comment does not resume the investigation.");
+        assert_eq!(did(&tick(&world, 1450)), [] as [&str; 0]);
+        world
+            .afk(&[
+                "send",
                 "--issue",
                 "7",
                 "--stage",
                 "build",
                 "--text",
-                text,
-            ];
-            let declared = world.afk(&[&args[..], &COMMITS].concat()).ok();
-            assert_eq!(declared["declared"], true);
-            let read = shown(&world);
-            assert_eq!(read["rework"]["had"], 0, "{read}");
-            assert!(world.comments(7).last().unwrap().contains(text));
-            assert_eq!(did(&tick(&world, 1270)), ["advance 7 done"]);
-            assert_eq!(world.claims(), []);
-            assert_eq!(started(&world).len(), 2);
-            assert_eq!(did(&tick(&world, 1360)), [] as [&str; 0]);
-            if verdict == "close" {
-                assert!(worktree(&world).join("investigation.txt").exists());
-                let plan = world.afk(&["plan", "--now", "1400"]).ok();
-                assert_eq!(plan["frontier"], json!([]));
-                assert_eq!(plan["waiting_on_human"], json!([]));
-                continue;
-            }
-            assert_eq!(shown(&world)["position"]["is"], "parked-for-evidence");
-            let parked = world.comments(7).pop().unwrap();
-            let url = world.comment_url(7, &parked);
-            world.comment(7, "A later status comment.");
-            for command in ["plan", "doctor"] {
-                let view = world.afk(&[command, "--now", "1400"]).ok();
-                assert_eq!(view["waiting_on_human"][0]["issue"], 7, "{view}");
-                assert!(view["waiting_on_human"][0]["why"].as_str().unwrap().contains("parked"));
-                assert!(view["waiting_on_human"][0]["why"].as_str().unwrap().ends_with(text));
-                assert_eq!(view["waiting_on_human"][0]["url"], url);
-            }
-            world.comment(7, "A routine status comment does not resume the investigation.");
-            assert_eq!(did(&tick(&world, 1450)), [] as [&str; 0]);
-            world
-                .afk(&[
-                    "send",
-                    "--issue",
-                    "7",
-                    "--stage",
-                    "build",
-                    "--text",
-                    "New raw failure output attached.",
-                ])
-                .ok();
-            assert_eq!(did(&tick(&world, 1540)), ["dispatch 7 done"]);
-            assert!(brief(&worktree(&world)).contains("New raw failure output attached."));
-        }
+                "New raw failure output attached.",
+            ])
+            .ok();
+        assert_eq!(did(&tick(&world, 1540)), ["dispatch 7 done"]);
+        assert!(brief(&worktree(&world)).contains("New raw failure output attached."));
     }
 }

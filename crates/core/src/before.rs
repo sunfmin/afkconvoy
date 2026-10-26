@@ -79,7 +79,7 @@ impl Before {
             if claim.owner.as_ref().is_some_and(|owner| owner.instance == me) {
                 let landing = mine.iter().any(|mine| {
                     mine.number == claim.number
-                        && matches!(mine.status, Status::Joining | Status::Joined | Status::Landed)
+                        && matches!(mine.status, Status::Landing | Status::Landed)
                 });
                 held.push(Held { number: claim.number, id: claim.id.clone(), landing });
             }

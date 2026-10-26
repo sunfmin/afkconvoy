@@ -66,6 +66,17 @@ fn a_tick_never_waits_for_the_workers_it_started() {
 }
 
 #[test]
+fn a_brief_waits_for_a_started_harness_whose_prompt_settles_late() {
+    // Ready once, then redrawing past a one-second check: on a busy host a
+    // harness just started is no failed start.
+    let world = backlog(&[3]);
+    world.with_orca(|orca| orca["settles_after_ms"] = json!(5000));
+    let ticked = tick(&world, "1000");
+    assert_eq!(did(&ticked), ["dispatch 3 done", "heartbeat done"], "{ticked}");
+    assert_eq!(world.claims(), alpha(&[3]));
+}
+
+#[test]
 fn a_claim_whose_issue_is_closed_is_settled_and_its_slot_refilled() {
     let world = backlog(&[3, 5, 9]);
     tick(&world, "1000");
@@ -340,6 +351,8 @@ fn every_tick_says_as_it_starts_why_it_started() {
     let args = ["run", "--foreground", "--host", "h1", "--second-ms", "0"];
     let more = ["--instance", "alpha", "--ticks", "3", "--now", "1090", "--no-host-sleep"];
     let (lines, _) = world.afk_every_line(&[&args[..], &more[..]].concat());
+    // The host's watch has its own log events, independent of this fleet's ticks.
+    let lines: Vec<_> = lines.into_iter().filter(|line| !line.starts_with("watch: ")).collect();
     assert_eq!(
         lines,
         [

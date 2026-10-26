@@ -391,7 +391,7 @@ fn no_help_text_holds_a_word_the_glossary_says_to_avoid() {
     let glossary = fs::read_to_string(repository().join("GLOSSARY.md")).unwrap();
     let avoided = avoided(&glossary);
     assert!(avoided.len() > 80, "{avoided:?}");
-    assert!(avoided.contains(&("merge queue".to_string(), "Landing train")));
+    assert!(avoided.contains(&("resync".to_string(), "Rebuild")));
     assert!(!avoided.iter().any(|(word, _)| word.contains('(')), "{avoided:?}");
     // What it catches, and how it names it.
     let made_up = "  The Dashboards are slow.\n_Avoid_: launcher\n  A relauncher is none.";
@@ -608,7 +608,7 @@ fn the_guide_carries_what_an_agent_needs_before_its_first_command() {
         "--worker-command",
         "A watch is the operator for every repo on the host's checkout list",
         "hands the escalated issue back with the line `doctor` names",
-        "join that repo's landing train with `land --inspection`",
+        "land it in that repo's turn with `land --watch`",
         "has that repo's fleet cut a version after landing",
         "checks the fault on the new version",
         "Human decisions stay with the human, untouched and listed",
@@ -968,17 +968,7 @@ fn the_guide_and_each_subcommand_agree_on_who_runs_it_and_why() {
     let workers = group(&long, "Run by a worker");
     assert_eq!(
         workers.iter().copied().collect::<BTreeSet<_>>(),
-        BTreeSet::from([
-            "gate",
-            "land",
-            "verdict",
-            "intake",
-            "lock",
-            "over",
-            "exclusive",
-            "inspected",
-            "cut"
-        ])
+        BTreeSet::from(["gate", "land", "verdict", "intake", "lock", "over", "exclusive", "cut"])
     );
     for command in &workers {
         let who = who(command);
@@ -1113,7 +1103,10 @@ fn the_help_of_tick_says_for_each_kind_of_end_what_becomes_of_the_terminal_and_t
         assert!(row.contains(terminal) && row.contains(worktree), "{end:?}: {row}");
     }
     assert!(said.contains("A run that failed keeps its checkout"), "{said}");
-    assert!(said.contains("only worker alive is the train's"), "{said}");
+    assert!(
+        said.contains("An issue that lands loses its worktree, and its worker with it"),
+        "{said}"
+    );
 }
 
 #[test]
@@ -1224,16 +1217,21 @@ fn one_topic_says_where_the_cache_directory_is_and_every_other_help_sends_there(
 }
 
 #[test]
-fn the_help_of_land_says_what_the_trains_worktree_holds_in_each_of_its_three_numbers() {
+fn the_help_of_land_describes_the_exact_commit_and_each_failed_turn() {
     let land = asked(&["land", "--help"]);
-    for (key, says) in [
-        ("built", "everything git ignores here"),
-        ("fresh", "after the first gate run since it was cut"),
-        ("source", "the files git tracks, for reference only"),
+    for says in [
+        "gate that exact commit",
+        "push that commit to the base branch as a fast-forward",
+        "record green",
+        "target_moved",
+        "no gate ran and nothing landed",
+        "separate checkout",
+        "Ordinary turns wait",
     ] {
-        let row = land.lines().find(|line| line.starts_with(&format!("- `{key}`: ")));
-        let row = row.unwrap_or_else(|| panic!("{key} in {land}"));
-        assert!(row.contains(says), "{key}: {row}");
+        assert!(
+            land.contains(says) || land.to_lowercase().contains(&says.to_lowercase()),
+            "{says}: {land}"
+        );
     }
 }
 
@@ -1251,17 +1249,11 @@ fn the_help_of_checkouts_says_what_host_runner_panel_holds() {
 }
 
 #[test]
-fn the_help_that_keeps_the_trains_worktree_with_what_it_built_says_when_it_is_cut_again() {
-    let land = asked(&["land", "--help"]).split_whitespace().collect::<Vec<_>>().join(" ");
-    for says in [
-        "kept with what its gate runs built",
-        "built more than 3 times fresh and more than 1 GiB",
-        "more than 1 GiB alone while no fresh is on record",
-        "cuts it again",
-    ] {
-        assert!(land.contains(says), "{says}: {land}");
+fn the_retired_train_commands_and_lanes_are_absent_from_public_help() {
+    let help = manual();
+    for retired in
+        ["--train-lanes", "cut_train", "tend_train", "afkconvoy abandon", "landing train given up"]
+    {
+        assert!(!help.contains(retired), "{retired} in help");
     }
-    let tick = asked(&["tick", "--help"]).split_whitespace().collect::<Vec<_>>().join(" ");
-    assert!(tick.contains("cut_train"), "{tick}");
-    assert!(tick.contains("is never cut again"), "{tick}");
 }

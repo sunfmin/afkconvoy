@@ -167,7 +167,7 @@ impl Acting {
 
 /// The commands only a worker runs, including the train's, which carries
 /// no issue in its environment.
-const WORKERS_OWN: [&str; 5] = ["gate", "land", "over", "inspected", "wake"];
+const WORKERS_OWN: [&str; 4] = ["gate", "land", "over", "wake"];
 
 /// Who ran `command`: a worker — started in a role, on an issue, a patrol or
 /// a proposal, or running a command only a worker runs — or the operator.
@@ -264,6 +264,7 @@ pub fn outcome(command: &str, answer: &Value) -> String {
             _ => "a lock already".to_string(),
         }),
         "land" => word("outcome"),
+        "gate" if !answer["termination"].is_null() => word("detail"),
         "gate" => word("status"),
         "tick" => {
             let did = answer["did"].as_array().map_or(0, Vec::len);

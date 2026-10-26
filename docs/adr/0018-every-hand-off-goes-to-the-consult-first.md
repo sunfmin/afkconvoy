@@ -4,6 +4,8 @@ status: accepted
 
 # Every hand-off to a human goes to the stage's consult first
 
+Amended by ADR-0036 (sunfmin/control#96): only consults explicitly named by a team remain. All hand-offs formerly sent to the stock consult escalate for the host's watch to answer.
+
 ADR-0011 asked a consult only of an `escalate`; everything else went straight to a human, and a consult could only rule or let through. In practice most of what reached a human that way was something the team's senior role could have answered as well: a worker counted silent while it waited on its own gate on a full disk, a `blocked` that would have closed a cycle with its own blocker. The human answering each read the worktree and the issue's edges, ran the gate again and ruled — nothing a consult cannot do.
 
 So every way the fleet hands an issue to a human goes to the consult of the stage it is at first: a failure the fleet saw (a worker silent past its nudge, a commit a stage that may not write left, an `already-satisfied` over a branch that holds work, a `blocked` that will never clear), a verdict the stage may not declare, a tripped breaker, and a workflow that changed under the issue. A human is reached only when the consult lets the issue through.

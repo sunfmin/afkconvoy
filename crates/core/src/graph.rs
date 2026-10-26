@@ -108,7 +108,7 @@ fn rows(team: &Team, workflow: &Workflow, stage: &Stage, backs: &[Back], width: 
     if !stage.writes {
         said.push("writes nothing".to_string());
     }
-    // The stock consult is every stage's that says nothing else.
+    // Only a consult named by the team runs before escalation.
     match (&stage.consult, &stage.by) {
         (Some(Consult::Role(consult)), _) => {
             said.push(format!("escalate → {}", work_said(team, consult)));
@@ -235,13 +235,13 @@ stages:
         let expected = "\
 feature — flow:feature — max_rework 5, max_consecutive_rework 2
 
-  ┌─┬─▶ a     dev: plan
+  ┌─┬─▶ a     dev: plan · escalate → human
   │ │     ↓ pass → b
-  │ └── b     dev: plan · reject → a
+  │ └── b     dev: plan · escalate → human · reject → a
   │       ↓ pass → c
-┌─┴───▶ c     dev: plan · reject → a
+┌─┴───▶ c     dev: plan · escalate → human · reject → a
 │         ↓ pass → d
-└────── d     dev: plan · reject → c
+└────── d     dev: plan · escalate → human · reject → c
           ↓ pass → done
         done
 ";

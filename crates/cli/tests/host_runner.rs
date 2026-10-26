@@ -17,7 +17,7 @@ use common::{World, asked, commit, git};
 use serde_json::{Value, json};
 
 /// A `run` of the first repo on the host `h1`, its sleeps short.
-const RUN: [&str; 5] = ["run", "--host", "h1", "--second-ms", "100"];
+const RUN: [&str; 7] = ["run", "--tracker", "default", "--host", "h1", "--second-ms", "100"];
 
 /// A `run` as `RUN`, for a test that waits for the next tick of a fleet
 /// instance that holds claims: a second of its sleeps takes 10ms, so each tick
@@ -260,7 +260,7 @@ fn the_host_runner_starts_with_a_fresh_login_shells_environment() {
     // so the check above can fail
     let control = World::new();
     control.issue(7, &["ready-for-agent"]);
-    let held = ["run", "--foreground", "--ticks", "1", "--second-ms", "0"];
+    let held = ["run", "--tracker", "default", "--foreground", "--ticks", "1", "--second-ms", "0"];
     let ran = control.command(program, &control.clone).args(held).envs(SESSION).output().unwrap();
     assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stdout));
     let calls = control.gh_called_with().into_iter().chain(control.orca_called_with());
@@ -550,6 +550,10 @@ fn the_host_settings_outlive_the_host_runner_and_doctor_says_those_in_force() {
         "0",
         "--exclusive-seconds",
         "1500",
+        "--gate-lanes",
+        "2",
+        "--train-lanes",
+        "3",
     ];
     let hours = ["--host-sleep-hours", "22:00-06:00"];
     let first = world.afk(&[&RUN[..], &named[..], &hours[..]].concat()).ok();
@@ -560,6 +564,8 @@ fn the_host_settings_outlive_the_host_runner_and_doctor_says_those_in_force() {
     assert_eq!(changed["hot_memory"], json!({"from": null, "to": 8.0}), "{first}");
     assert_eq!(changed["admit_disk"], json!({"from": null, "to": 0}), "{first}");
     assert_eq!(changed["exclusive_seconds"], json!({"from": null, "to": 1500}), "{first}");
+    assert_eq!(changed["gate_lanes"], json!({"from": null, "to": 2}));
+    assert_eq!(changed["train_lanes"], json!({"from": null, "to": 3}));
     world.kill_host_runner("KILL");
 
     // a host runner started again keeps them, and a `run` that names none
@@ -575,6 +581,13 @@ fn the_host_settings_outlive_the_host_runner_and_doctor_says_those_in_force() {
     assert_eq!(in_force["hot_memory"], 8.0);
     assert_eq!(said["exclusive_seconds"], 1500);
     assert_eq!(in_force["exclusive_seconds"], 1500);
+    assert_eq!(in_force["gate_lanes"], 2);
+    assert!(in_force["train_lanes"].is_null());
+    assert!(in_force["ignored"].to_string().contains("train_lanes is ignored"));
+    let before = again["instance"].clone();
+    let changed_live = world.afk(&["run", "--gate-lanes", "4", "--train-lanes", "2"]).ok();
+    assert_eq!(changed_live["instance"], before, "settings change no fleet instance");
+    assert_eq!(changed_live["host_runner"]["started"], false);
     let back = world.afk(&["run", "--exclusive-seconds", "default"]).ok();
     assert_eq!(back["settings"]["exclusive_seconds"], json!({"from": 1500, "to": null}));
     let defaulted = world.afk(&["doctor", "--host", "h1"]).json;
@@ -1033,7 +1046,7 @@ fn the_host_runner_never_moves_onto_an_older_afkconvoy_nor_one_that_does_not_say
 }
 
 #[test]
-fn the_host_runner_moves_with_claims_and_a_pr_on_the_train_after_only_the_running_command_ends() {
+fn the_host_runner_moves_with_claims_and_an_open_pr_after_only_the_running_command_ends() {
     let world = World::new();
     world.set_gate("true");
     world.issue(7, &["ready-for-agent"]);
@@ -1074,8 +1087,7 @@ fn the_host_runner_moves_with_claims_and_a_pr_on_the_train_after_only_the_runnin
     commit(&worker, "finished.txt", "done\n");
     git(&worker, &["push", "-q", "origin", "HEAD"]);
     world.pr(70, 7, &git(&worker, &["symbolic-ref", "--short", "HEAD"]));
-    assert_eq!(world.afk_in(&worker, &["land", "--issue", "7"]).ok()["outcome"], "joined");
-    let train = world.remote(&["rev-parse", "refs/convoy/train/line/main"]);
+    let base = world.remote(&["rev-parse", "refs/heads/main"]);
     let terminals = world.orca()["terminals"].clone();
     let ran = world.root.join("queued-ran");
     let queued_script = format!(
@@ -1125,7 +1137,7 @@ fn the_host_runner_moves_with_claims_and_a_pr_on_the_train_after_only_the_runnin
     let held: Vec<_> =
         instances.iter().flat_map(|instance| instance["claims"].as_array().unwrap()).collect();
     assert!(held.contains(&&json!(8)), "{claims}");
-    assert_eq!(world.remote(&["rev-parse", "refs/convoy/train/line/main"]), train);
+    assert_eq!(world.remote(&["rev-parse", "refs/heads/main"]), base);
     for terminal in terminals.as_array().unwrap() {
         assert!(
             world.orca()["terminals"].as_array().unwrap().contains(terminal),
@@ -1135,7 +1147,7 @@ fn the_host_runner_moves_with_claims_and_a_pr_on_the_train_after_only_the_runnin
     let moved = of_kind(&tick_log(&first), "moved");
     let carried = moved[0]["moved"]["carried"].to_string();
     assert!(
-        carried.contains("claim #8 and its worker") && carried.contains("landing train PR #70"),
+        carried.contains("claim #8 and its worker") && carried.contains("claim #7 and its worker"),
         "{moved:#?}"
     );
 }

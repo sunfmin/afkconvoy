@@ -2,7 +2,7 @@
 
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader};
-use std::os::unix::process::CommandExt;
+use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -11,17 +11,15 @@ use afkconvoy_core::config::Config;
 use afkconvoy_core::gate::{
     GateCommand, GreenRun, Ran, Recording, Tree, after_run, at_limit, record_ref,
 };
-use afkconvoy_core::layout::GATE_KIND;
 use afkconvoy_core::lock::named;
-use afkconvoy_core::train::{last_green, train_refs, under_repair};
 use anyhow::{Context, Result, anyhow};
+use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::gh::GitHub;
 use crate::git::{REMOTE, Repo};
 use crate::lock::standing_locks;
 use crate::measure;
-use crate::train::{Train, merge_in, unmerged};
 
 /// What keeps a worktree from being exactly a commit: its uncommitted and
 /// untracked paths as `git status --porcelain` lists them, and — given the
@@ -50,17 +48,43 @@ pub(crate) const TIMED_OUT_CODE: i32 = 124;
 /// its answer lists.
 pub(crate) const STRAYS_LISTED: usize = 20;
 
+/// What wait status proves about a gate command ended by a signal. The pid
+/// also names its process group, created by the gate. Wait status identifies
+/// no sender and proves nothing about which repository checks started.
+#[derive(Clone, Copy, Serialize)]
+pub struct Termination {
+    pid: u32,
+    signal: i32,
+    core_dumped: bool,
+}
+
+impl Termination {
+    pub(crate) fn description(&self) -> String {
+        format!(
+            "gate command pid {} (process group {}) ended by signal {} (core dumped: {}); \
+             signal sender unknown; repository checks may not have started",
+            self.pid, self.pid, self.signal, self.core_dumped
+        )
+    }
+}
+
+struct CommandRun {
+    exit_code: i32,
+    timed_out: bool,
+    seconds: u64,
+    excerpt: Vec<String>,
+    termination: Option<Termination>,
+}
+
 /// Runs the gate command in a worktree, its log going line by line to this
-/// process's stderr → (exit code, timed out, the whole seconds it took, the
-/// end of the log). A run that reaches the gate limit, `limit`, is killed, with
-/// everything it started.
-fn run_command(
-    repo: &Repo,
-    command: &str,
-    limit: Duration,
-) -> Result<(i32, bool, u64, Vec<String>)> {
+/// process's stderr, keeping its status, signal evidence and the end of its
+/// log. A run that reaches the gate limit, `limit`, is killed, with everything
+/// it started, and is reported as a timeout rather than an outside signal.
+fn run_command(repo: &Repo, command: &str, limit: Duration) -> Result<CommandRun> {
+    let mut shell = Command::new("sh");
+    crate::exclusive::inherit(&mut shell, repo)?;
     let mut child = crate::process::spawn(
-        Command::new("sh")
+        shell
             // one stream, so the log reads in the order it was written
             .args(["-c", &format!("exec 2>&1\n{command}")])
             .current_dir(&repo.dir)
@@ -70,6 +94,11 @@ fn run_command(
             .process_group(0),
     )
     .context("the gate command could not be started")?;
+    let pid = child.id();
+    eprintln!(
+        "[afkconvoy] gate: command pid {pid} (process group {pid}) started; gate limit {}s",
+        limit.as_secs()
+    );
     let log = child.stdout.take().context("the gate command has no log")?;
     let (lines, read) = mpsc::channel();
     std::thread::spawn(move || {
@@ -89,19 +118,24 @@ fn run_command(
         tail.push_back(line);
     };
     let started = Instant::now();
-    let (code, timed_out) = loop {
+    let (exit_code, timed_out, termination) = loop {
         while let Ok(line) = read.try_recv() {
             keep(line);
         }
         if let Some(status) = child.try_wait()? {
-            break (status.code().unwrap_or(-1), false);
+            let termination = status.signal().map(|signal| Termination {
+                pid,
+                signal,
+                core_dumped: status.core_dumped(),
+            });
+            break (status.code().unwrap_or(-1), false, termination);
         }
         if started.elapsed() >= limit {
             let group = format!("-{}", child.id());
             let _ = crate::process::status(Command::new("kill").args(["-KILL", "--", &group]));
             let _ = child.wait();
             eprintln!("[afkconvoy] the gate reached the gate limit of {}s", limit.as_secs());
-            break (TIMED_OUT_CODE, true);
+            break (TIMED_OUT_CODE, true, None);
         }
         std::thread::sleep(Duration::from_millis(50));
     };
@@ -111,7 +145,12 @@ fn run_command(
     while let Ok(line) = read.recv_timeout(Duration::from_millis(200)) {
         keep(line);
     }
-    Ok((code, timed_out, seconds, tail.into()))
+    if let Some(termination) = termination {
+        let line = format!("[afkconvoy] gate: {}", termination.description());
+        eprintln!("{line}");
+        keep(line);
+    }
+    Ok(CommandRun { exit_code, timed_out, seconds, excerpt: tail.into(), termination })
 }
 
 /// One run of the gate in a worktree, and what became of its record.
@@ -127,6 +166,8 @@ pub struct GateRun {
     pub not_recorded: Option<String>,
     /// The end of the run's log.
     pub excerpt: Vec<String>,
+    /// Present only when wait status reported a signal, outside our timeout.
+    pub termination: Option<Termination>,
 }
 
 /// The tree the worktree's commit holds.
@@ -145,21 +186,47 @@ pub fn run_and_record(
     now: u64,
     limit: Duration,
 ) -> Result<GateRun> {
+    let _permit = if crate::exclusive::held() {
+        None
+    } else {
+        Some(crate::exclusive::Permit::take(
+            repo,
+            command.text(),
+            crate::config::heavy_gate(command.text()),
+            false,
+        )?)
+    };
     let head = repo.git(&["rev-parse", "HEAD"])?;
     let tree = head_tree(repo)?;
     let before = off_commit(repo, None)?;
-    let (exit_code, timed_out, seconds, excerpt) = run_command(repo, command.text(), limit)?;
+    let command_run = run_command(repo, command.text(), limit)?;
+    let ended = match command_run.termination {
+        Some(termination) => termination.description(),
+        None => format!("gate command ended (exit {})", command_run.exit_code),
+    };
+    crate::acting::Acting::new("exclusive")
+        .on_own_issue()
+        .in_checkout(Some(repo.clone()))
+        .say(crate::clock(), format!("{ended} after {}s", command_run.seconds));
     let after = if before.is_empty() { off_commit(repo, Some(&head))? } else { vec![] };
     let ran = Ran {
-        exit_code,
-        timed_out,
+        exit_code: command_run.exit_code,
+        timed_out: command_run.timed_out,
         clean_before: before.is_empty(),
         clean_after: after.is_empty(),
-        seconds,
+        seconds: command_run.seconds,
     };
     let refname = record_ref(repo.layout(), &tree, command);
     let strays = if before.is_empty() { after } else { before };
-    let mut run = GateRun { ran, head, strays, green: None, not_recorded: None, excerpt };
+    let mut run = GateRun {
+        ran,
+        head,
+        strays,
+        green: None,
+        not_recorded: None,
+        excerpt: command_run.excerpt,
+        termination: command_run.termination,
+    };
     match after_run(&tree, command, ran, host, now) {
         Recording::Write(green) => {
             // The record is a parentless commit OF the tested tree.
@@ -206,6 +273,7 @@ pub enum Gated {
     Red {
         ran: Ran,
         excerpt: Vec<String>,
+        termination: Option<Termination>,
     },
 }
 
@@ -245,51 +313,8 @@ pub fn gated(
         None if run.ran.green() => {
             Err(not_the_commit("the gate left it other than the commit it started on", &run.strays))
         }
-        None => Ok(Gated::Red { ran: run.ran, excerpt: run.excerpt }),
+        None => Ok(Gated::Red { ran: run.ran, excerpt: run.excerpt, termination: run.termination }),
     }
-}
-
-/// What a worker's branch takes in before its own gate run → (the commit, what
-/// to call it): the train's tip — or, while the train is under repair, its
-/// newest commit below the red one with a green run on record, else the base
-/// branch.
-fn lands_behind(
-    repo: &Repo,
-    config: &Config,
-    command: &GateCommand,
-) -> Result<(String, &'static str)> {
-    let train = Train::read(repo, config)?;
-    let ahead = train.tip != train.base;
-    if !ahead {
-        return Ok((train.base, "the base branch"));
-    }
-    let red = repo.fetched(&train_refs(repo.layout(), &config.base_branch).red)?;
-    let marked = match &red {
-        Some(red) => Some((repo.within(red, &train.base)?, repo.within(red, &train.tip)?)),
-        None => None,
-    };
-    let Some(red) = red.filter(|_| under_repair(ahead, marked)) else {
-        return Ok((train.tip, "the landing train"));
-    };
-    let layout = repo.layout();
-    let on_record = repo.git(&["ls-remote", REMOTE, &layout.every(GATE_KIND)])?;
-    let range = format!("{}..{red}^", train.base);
-    let listed = repo.git(&["log", "--first-parent", "--format=%H %T", &range])?;
-    let below: Vec<(&str, bool)> = listed
-        .lines()
-        .filter_map(|row| row.split_once(' '))
-        .map(|(commit, tree)| {
-            let name = record_ref(layout, &Tree::named(tree), command);
-            (commit, on_record.lines().any(|row| row.ends_with(&format!("\t{name}"))))
-        })
-        .collect();
-    let green = last_green(&below, &train.base);
-    let what = if green == train.base {
-        "the base branch"
-    } else {
-        "the landing train's last green commit"
-    };
-    Ok((green.to_string(), what))
 }
 
 /// `afkconvoy gate`: a worker's run of the gate, in the worktree it is called
@@ -299,29 +324,25 @@ fn lands_behind(
 ///
 /// `train`: the branch first takes in what its PR will land behind — the
 /// train's tip, or the base branch when there is no train — by a merge, never
-/// a rebase (`lands_behind`). So a conflict with what is on the train is met before the run,
+/// a rebase. So a conflict with what is on the train is met before the run,
 /// and a green run is of the very tree the PR joins the train with. A merge
 /// that conflicts is left in progress and no gate runs.
 ///
 /// A red run with a fleet lock standing says which: the base branch may be
 /// what is red, and the worker is to declare nothing of it.
 pub fn gate(repo: &Repo, config: &Config, train: bool, host: &str, now: u64) -> Result<Value> {
-    let command = GateCommand::new(&config.gate_command);
-    let mut merged = None;
-    if train {
-        let mut files = unmerged(repo)?;
-        if files.is_empty() {
-            let (commit, what) = lands_behind(repo, config, &command)?;
-            files = merge_in(repo, &commit, what)?;
-            merged = Some(commit);
-        }
-        if !files.is_empty() {
-            return Ok(json!({"status": "conflict", "files": files, "recorded": false,
-                "detail": "merging what this PR lands behind into this branch conflicted; the \
-                    merge is in progress here — resolve every file, `git add` it, COMMIT the \
-                    merge, and run this again. No gate ran"}));
-        }
+    if train && !crate::exclusive::held() {
+        let gh = GitHub::of(repo)?;
+        let branch = repo.git(&["symbolic-ref", "--short", "HEAD"])?;
+        let prs = gh.open_prs()?;
+        let pr = prs.iter().find(|pr| pr.head_branch == branch)
+            .ok_or_else(|| anyhow!("no open PR has branch {branch:?} for its head — push it and open its PR before asking for a turn (`gh pr create --base {} --head {branch}`)", config.base_branch))?;
+        let issue = pr.closes.first().ok_or_else(|| {
+            anyhow!("this PR closes no issue — use `land --watch` for a watch's PR")
+        })?;
+        return crate::turn::land(repo, config, &gh, *issue, host, now);
     }
+    let command = GateCommand::new(&config.gate_command);
     let limit = config.gate_seconds();
     let run = run_and_record(repo, &command, host, now, Duration::from_secs(limit))?;
     // A worker's fresh build is what its worktree holds after its first green
@@ -331,14 +352,14 @@ pub fn gate(repo: &Repo, config: &Config, train: bool, host: &str, now: u64) -> 
     if run.ran.green() && measure::fresh(repo).is_ok_and(|fresh| fresh.is_none()) {
         let _ = measure::built(repo).and_then(|built| measure::record_fresh(repo, built));
     }
-    let red = format!("the gate is red{}", at_limit(run.ran, limit));
+    let red = match run.termination {
+        Some(termination) => format!("the gate is red — {}", termination.description()),
+        None => format!("the gate is red{}", at_limit(run.ran, limit)),
+    };
     let status = if run.ran.green() { "green" } else { "red" };
     let mut answer = json!({"status": status, "exit_code": run.ran.exit_code,
         "timed_out": run.ran.timed_out, "seconds": run.ran.seconds, "command": command.text(),
-        "head": run.head, "recorded": false});
-    if let Some(merged) = merged {
-        answer["merged"] = json!(merged);
-    }
+        "head": run.head, "recorded": false, "termination": run.termination});
     let head = &run.head;
     // Soft: locks that cannot be read cost the worker only this warning.
     let locks = match run.ran.green() {
@@ -352,6 +373,11 @@ pub fn gate(repo: &Repo, config: &Config, train: bool, host: &str, now: u64) -> 
              may be what is red, and not your change — declare nothing of it, stop, and run \
              this again when you are told to carry on",
             named(&locks)
+        )
+    } else if run.termination.is_some() {
+        format!(
+            "{red} — nothing is on record; inspect harness/tool cancellation and host process \
+            logs using this pid and signal, then run `afkconvoy gate` again"
         )
     } else if !run.ran.green() {
         format!("{red} — nothing is on record; fix it, commit, and run this again")
@@ -369,7 +395,9 @@ pub fn gate(repo: &Repo, config: &Config, train: bool, host: &str, now: u64) -> 
         )
     } else if let Some(why) = &run.not_recorded {
         answer["not_recorded"] = json!(why);
-        format!("green on {head}, but the record could not be written — push it and go on")
+        format!(
+            "green on {head}, but the record could not be written — run this again before joining"
+        )
     } else {
         answer["recorded"] = json!(true);
         format!("green on {head} and on record — push it; any further commit needs another run")

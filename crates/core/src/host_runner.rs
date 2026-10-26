@@ -73,7 +73,7 @@ pub enum Stands {
     /// In a tick.
     Ticking,
     /// Between two ticks, the last of which held a claim — on an issue, a
-    /// patrol's run or a proposal — or had something on the landing train,
+    /// patrol's run or a proposal — or had something on the base branch,
     /// or failed whole.
     AtWork,
     /// Between two ticks, the last of which held no claim and had nothing on
@@ -105,7 +105,7 @@ impl HeldBack {
                 format!("{checkout} is in a tick")
             }
             HeldBack::Instance { checkout, stands: Stands::AtWork } => {
-                format!("{checkout} holds a claim or has something on the landing train")
+                format!("{checkout} holds a claim or has something on the base branch")
             }
             HeldBack::Instance { checkout, stands: Stands::Quiet | Stands::Broken } => {
                 format!("{checkout} holds nothing back")
@@ -120,7 +120,7 @@ impl HeldBack {
 /// What holds back a host runner's move onto a newer afkconvoy now: each of
 /// its fleet instances `each`, by checkout, still starting or in a tick,
 /// and the `exclusive` commands running. Claims, workers, the landing train,
-/// cuts, inspections and commands waiting carry on across a move.
+/// cuts, watches and commands waiting carry on across a move.
 pub fn held_back(each: &[(String, Stands)], exclusive: usize) -> Vec<HeldBack> {
     let mut held = vec![];
     for (checkout, stands) in each {

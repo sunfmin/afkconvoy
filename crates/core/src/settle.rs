@@ -3,8 +3,8 @@
 
 use flux_rs::attrs::*;
 
+use crate::landing::LandedPr;
 use crate::plan::PullRequest;
-use crate::train::Joined;
 
 /// One step of settling a landed claim.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -126,7 +126,7 @@ pub fn landed_under(landed_at: u64, claimed_at: u64) -> bool {
 /// the issue's open PR is another PR or has another head than the one that
 /// landed: its worker pushed more since, and joins again with it.
 pub fn cut_landing(
-    join: &Joined,
+    join: &LandedPr,
     landed_at: u64,
     claimed_at: Option<u64>,
     open_pr: Option<&PullRequest>,
@@ -254,8 +254,12 @@ mod tests {
 
     #[test]
     fn a_cut_landing_is_this_claims_and_of_the_head_that_landed() {
-        let join =
-            Joined { of: crate::train::Of::Issue(7), pr: 70, commit: "m".into(), head: "h".into() };
+        let join = LandedPr {
+            of: crate::landing::Of::Issue(7),
+            pr: 70,
+            commit: "m".into(),
+            head: "h".into(),
+        };
         let pr = |number: u64, head: &str| PullRequest {
             number,
             title: String::new(),

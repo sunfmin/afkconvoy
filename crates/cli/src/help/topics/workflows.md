@@ -1,4 +1,4 @@
-A workflow is the stages one issue passes through and where each verdict leads, ending in the landing train or in nothing more to do. Read this to write a file of a team's `workflows/`, or to tell why an issue went where it did.
+A workflow is the stages one issue passes through and where each verdict leads, ending in a landed PR or in nothing more to do. Read this to write a file of a team's `workflows/`, or to tell why an issue went where it did.
 
 ## A workflow's file
 
@@ -40,9 +40,9 @@ Only `pass` and `reject` are keys of `on`: the other three mean the same at ever
 
 A stage may split its issue: open issues, take each in, then declare `blocked` on them. When they close, it judges the whole. The team file's `split` key may be false to omit this procedure from briefs ([`afkconvoy help team`](help:team)); true is the default.
 
-A blocker, defect or split piece for another repo of the host goes on the tracker, with that repo's `repo:<owner>/<repo>` label. Run `afkconvoy flows` in that repo's checkout and use its opening line. In a bound repo omit the flow label while opening, then take it in there with `afkconvoy intake`. A blocker outside the tracker, or carrying no single repo label of a checkout serving it, is one no fleet works: `plan` and `doctor` name it with transfer and label lines. Only such blockers never hold a consult or a declared hand-off back; a build worker still waits. The consult's brief names them.
+A blocker, defect or split piece for another repo of the host goes on the tracker, with that repo's `repo:<owner>/<repo>` label. Run `afkconvoy flows` in that repo's checkout and use its opening line. In a bound repo omit the flow label while opening, then take it in there with `afkconvoy intake`. A blocker outside the tracker, or carrying no single repo label of a checkout serving it, is one no fleet works: `plan` and `doctor` name it with transfer and label lines. Only such blockers never hold a named consult or a declared hand-off back; a build worker still waits. The consult's brief names them.
 
-A stage that may commit and finds its gate red for a defect outside its issue — what the gate merged in is red the same way gated alone — opens that defect's issue itself, unless an open one already records it, takes it in the same way, and declares `blocked` on it. When it closes, the stage runs again and gates again. If the base branch itself is red the same way gated alone in a clean checkout, it first raises the fleet lock on the fix's issue with `afkconvoy lock --issue <n>`; a defect confined to the train raises none. The train worker does the same for a base branch that is red without the train: it takes the defect's issue in with `afkconvoy intake --train`, to the team's first workflow unless another fits it clearly better, raises the lock and stops until told to carry on. It has no issue to park.
+A stage that finds a defect outside its issue records the evidence on an existing issue or opens one, takes it in, and declares `blocked` on it. An unrecorded base tip is also certified before any landing turn. If it is red, the fleet dispatches an operator repair outside product workflows, with a fleet lock. Its own turn alone may start on that red tip, and still must gate green before landing.
 
 ## Rework and its breakers
 
@@ -55,7 +55,7 @@ A count never passes its breaker: the rework that would is not started, and the 
 
 ## A consult
 
-A stage's consult is asked before a human is for a hand-off about the work: its `escalate`, a tripped breaker, a failure, a workflow changed under it. A fleet fault — a worker start that failed again, a worktree trust gap, a landing train given up twice — escalates at once: the fix is on the host. Every other hand-off starts the consult where that human would stand, free to run what they would ([`afkconvoy help humans`](help:humans)). `escalate: { to, do }` names a more senior role, run within its range ([`afkconvoy help roster`](help:roster)); where a stage names none, the stock consult, afkconvoy's own, is asked on what the host kit names for it — its one instruction is to decide as the human would. `{ to: human }` names none: a human, straight. A consult rules (`afkconvoy rule`: the stage runs again; on an `escalate` that is one more rework in total), sends, closes, parks or lets it through. Close and park add no rework ([`afkconvoy help humans`](help:humans) says how to bring a park back). The same hand-off again goes to a human. A consult writes no code.
+A stage's consult is asked before a human is for a hand-off about the work: its `escalate`, a tripped breaker, a failure, a workflow changed under it. A fleet fault — a worker start that failed again, a worktree trust gap — escalates at once: the fix is on the host. Every other hand-off starts a named consult where that human would stand, free to run what they would ([`afkconvoy help humans`](help:humans)). `escalate: { to, do }` names a more senior role, run within its range ([`afkconvoy help roster`](help:roster)); where a stage names none, or says `{ to: human }`, the issue escalates for the host's watch to answer with the same commands a human uses. There is no stock consult. A consult rules (`afkconvoy rule`: the stage runs again; on an `escalate` that is one more rework in total), sends, closes, parks or lets it through. Close and park add no rework ([`afkconvoy help humans`](help:humans) says how to bring a park back). The same hand-off again goes to a human. A consult writes no code.
 
 ## A stage `by: human`
 
@@ -65,7 +65,7 @@ Anywhere else a human is reached by an escalation: what a consult let through, o
 
 ## A landing
 
-A workflow in which a pass leads to `land` names who lands: `land: { by, do }`. The tick after that `pass` starts a new worker in the role `by`, with the skill `do`, within its role's range. It runs the gate on the issue's PR and joins it to the landing train (`afkconvoy land --help`), which lands it on the base branch as it lands any PR. A `land:` no pass leads to is a fault, and so is a `pass: land` with no `land:`.
+A workflow in which a pass leads to `land` names who lands: `land: { by, do }`. The tick after that `pass` starts a new worker in the role `by`, with the skill `do`, within its role's range. It lands the issue's PR in a turn (`afkconvoy land --help`), using the same protocol as every other PR. A `land:` no pass leads to is a fault, and so is a `pass: land` with no `land:`.
 
 ## Where to read on
 
