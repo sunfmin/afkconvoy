@@ -472,7 +472,7 @@ fn probe_due(book: &mut Book, kit: &Kit, now: u64) {
             fault.model.as_deref().or_else(|| held.models.first().map(|m| m.model.as_str()));
         !matches!(
             crate::launch::probe(held.harness, &held.command, model),
-            crate::kit::Answer::Answered(..)
+            crate::launch::Answer::Answered(..)
         )
     });
 }

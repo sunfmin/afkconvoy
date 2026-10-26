@@ -248,25 +248,16 @@ fn removed_worker_command_names_the_kit() {
 }
 
 /// A host with Claude Code (`default opus`), pi (`openai/gpt-5.5`) and Codex
-/// installed, Codex listing no model, and DSH not installed; every model
-/// answers its probe.
+/// installed, Codex listing no model, and DSH not installed.
 fn host_to_kit(world: &World) {
     world.shell_claude_models(&["default", "opus"]);
     world.shell_models(&["openai/gpt-5.5"]);
     world.shell_knows("dsh-tui", None);
-    world.probes_answer();
 }
 
-/// The host kit as written, without when each model was probed.
-fn kit_unprobed(world: &World) -> Value {
-    let mut kit: Value = serde_json::from_slice(&std::fs::read(world.kit_path()).unwrap()).unwrap();
-    for held in kit["harnesses"].as_array_mut().unwrap() {
-        for seen in held["models"].as_array_mut().unwrap() {
-            assert!(seen["probed"]["at"].is_u64(), "every model held was probed: {seen}");
-            seen.as_object_mut().unwrap().remove("probed");
-        }
-    }
-    kit
+/// The host kit as written.
+fn kit_on_disk(world: &World) -> Value {
+    serde_json::from_slice(&std::fs::read(world.kit_path()).unwrap()).unwrap()
 }
 
 #[test]
@@ -283,13 +274,16 @@ fn no_host_kit_has_run_write_it_and_start_its_first_tick_while_a_tick_refuses() 
     assert_eq!(ran.code, 0, "{}", ran.stderr);
     assert!(ran.stderr.contains("wrote the host kit at"), "{}", ran.stderr);
     assert!(ran.stderr.contains("left out: dsh: not installed"), "{}", ran.stderr);
-    let kit = kit_unprobed(&world);
+    let kit = kit_on_disk(&world);
     assert_eq!(kit["harnesses"][0]["harness"], "claude-code");
     assert_eq!(
         kit["harnesses"][0]["models"],
         json!([{"model": "default", "good_at": "not researched"}, {"model": "opus", "good_at": "not researched"}])
     );
-    assert_eq!(started(&world).len(), 1, "its first tick started a worker");
+    let workers = started(&world);
+    assert_eq!(workers.len(), 1, "its first tick started a worker");
+    assert!(!workers[0].contains("--model"), "the default model starts with no flag");
+    assert!(!world.shell_asked().iter().any(|asked| asked.contains("Reply with the single word OK.")));
 }
 
 /// What the run log of `world`'s repo says of the host kit's refreshes, as
@@ -323,7 +317,7 @@ fn a_tick_a_day_later_writes_the_host_kit_again_once_for_every_fleet_of_the_host
     std::fs::remove_file(world.kit_path()).unwrap();
     host_to_kit(&world);
     assert_eq!(answer(&world, &RUN, false).code, 0);
-    let models = |world: &World| kit_unprobed(world)["harnesses"][0]["models"].clone();
+    let models = |world: &World| kit_on_disk(world)["harnesses"][0]["models"].clone();
     assert_eq!(
         models(&world),
         json!([{"model": "default", "good_at": "not researched"}, {"model": "opus", "good_at": "not researched"}])
@@ -357,6 +351,7 @@ fn a_tick_a_day_later_writes_the_host_kit_again_once_for_every_fleet_of_the_host
     // The rest of that day, no tick writes it again.
     tick_at(&world, "beta", 1000 + 2 * day - 1).wait().unwrap();
     assert_eq!(refreshes(&world).len(), 1);
+    assert!(!world.shell_asked().iter().any(|asked| asked.contains("Reply with the single word OK.")));
 }
 
 #[test]
@@ -371,7 +366,7 @@ fn kit_with_no_terminal_writes_what_this_host_can_start_and_says_what_it_left_ou
     let written = world.afk(&["kit"]);
     assert_eq!(written.json["written"], true);
     assert_eq!(written.json["path"], world.kit_path().display().to_string());
-    let kit = kit_unprobed(&world);
+    let kit = kit_on_disk(&world);
     assert_eq!(written.json["kit"]["harnesses"].as_array().unwrap().len(), 2);
     assert_eq!(
         kit,
@@ -399,9 +394,10 @@ fn kit_with_no_terminal_writes_what_this_host_can_start_and_says_what_it_left_ou
     );
     assert!(left_out[2].0 == "kimi" && left_out[2].1.starts_with("listing failed"), "{left_out:?}");
     assert!(written.stderr.contains("left out: codex: listing failed"), "{}", written.stderr);
-    // Written again with nothing changed, it is the same but for when.
+    // Written again with nothing changed, it is exactly the same.
     assert_eq!(world.afk(&["kit"]).json["written"], true);
-    assert_eq!(kit_unprobed(&world), kit);
+    assert_eq!(kit_on_disk(&world), kit);
+    assert!(!world.shell_asked().iter().any(|asked| asked.contains("Reply with the single word OK.")));
 }
 
 #[test]
@@ -412,6 +408,7 @@ fn plan_and_doctor_show_the_host_kit() {
     kit["harnesses"][1]["models"] = json!([
         {"model": "a/fast", "probed": {"at": 900, "seconds": 1.5}},
         {"model": "a/slow", "probed": {"at": 901, "seconds": 9.0}},
+        {"model": "a/wait", "good_at": "not researched"},
     ]);
     std::fs::write(world.kit_path(), serde_json::to_vec(&kit).unwrap()).unwrap();
     for args in [&["plan", "--now", "1000"][..], &["doctor", "--host", "h1", "--now", "1000"][..]] {
@@ -424,9 +421,13 @@ fn plan_and_doctor_show_the_host_kit() {
             kit["stock_consult"],
             json!({"harness": "claude-code", "model": null, "named": false, "unmatched": null})
         );
+        assert_eq!(kit["harnesses"][0]["default_model"], true);
+        assert_eq!(kit["harnesses"][0]["research_pending"], false);
         assert_eq!(kit["harnesses"][1]["harness"], "pi");
+        assert_eq!(kit["harnesses"][1]["default_model"], false);
+        assert_eq!(kit["harnesses"][1]["research_pending"], true);
         assert_eq!(kit["harnesses"][1]["models"][0]["model"], "a/fast");
-        assert_eq!(kit["harnesses"][1]["models"][1]["probed"]["at"], 901);
+        assert!(kit["harnesses"][1]["models"][1].get("probed").is_none());
     }
     // The stock consult the human named, on a model the host kit holds.
     kit["stock_consult"] = json!({"harness": "pi", "model": "a/slow"});
@@ -465,13 +466,9 @@ fn a_missing_required_harness_refuses_the_entire_start() {
 }
 
 #[test]
-fn kit_holds_the_names_that_answered_as_one_model_once_by_its_id() {
+fn kit_holds_each_listed_id_with_its_display_name_and_never_probes() {
     let world = backlog();
     world.kit_command("codex", afkconvoy_core::harness::Harness::Codex.stock());
-    world.with_kit(|kit| {
-        kit["harnesses"][1]["models"] = json!([{"model": "gpt-6-sol", "good_at": "hard work"}]);
-    });
-    // Claude Code lists `default` and `opus`, which it shows as `Opus 5.5`.
     let initialized = json!({"type": "control_response", "response": {"subtype": "success",
         "response": {"models": [{"value": "default", "displayName": "Default (recommended)"},
             {"value": "opus", "displayName": "Opus 5.5"}]}}});
@@ -479,54 +476,31 @@ fn kit_holds_the_names_that_answered_as_one_model_once_by_its_id() {
     world.shell_models(&["openai-codex/gpt-6-sol"]);
     world.shell_server_models(&["gpt-6-sol"]);
     world.shell_knows("dsh-tui", None);
-    // Each probe says which model answered in its harness's own way: Claude
-    // Code's JSON, pi's events, and the session file Codex's thread names.
-    let claude = r#"{"result":"OK","modelUsage":{"claude-opus-5-5":{"outputTokens":4}}}"#;
-    world.probes_answer_as(&[
-        ("default", claude, None),
-        ("opus", claude, None),
-        (
-            "openai-codex/gpt-6-sol",
-            r#"{"type":"message_end","message":{"role":"assistant","provider":"openai-codex","model":"gpt-6-sol"}}"#,
-            None,
-        ),
-        (
-            "gpt-6-sol",
-            r#"{"type":"thread.started","thread_id":"t-gpt-6-sol"}"#,
-            Some(r#"{"type":"turn_context","payload":{"cwd":"/","model":"gpt-6-sol"}}"#),
-        ),
-    ]);
     let written = world.afk(&["kit"]);
     assert_eq!(written.json["written"], true, "{}", written.stderr);
-    let kit = kit_unprobed(&world);
+    let kit = kit_on_disk(&world);
     let models = |harness: &str| {
         let held = kit["harnesses"].as_array().unwrap().iter().find(|h| h["harness"] == harness);
         held.map(|held| held["models"].clone()).unwrap_or_default()
     };
     assert_eq!(
         models("claude-code"),
-        json!([{"model": "claude-opus-5-5", "good_at": "not researched",
-            "names": ["default", "opus", "Default (recommended)", "Opus 5.5"]}])
+        json!([
+            {"model": "default", "names": ["Default (recommended)"], "good_at": "not researched"},
+            {"model": "opus", "names": ["Opus 5.5"], "good_at": "not researched"}
+        ])
     );
-    // One model on two harnesses is held once on each, with one `good_at`.
     assert_eq!(models("codex"), json!([{"model": "gpt-6-sol", "good_at": "not researched"}]));
     assert_eq!(
         models("pi"),
         json!([{"model": "openai-codex/gpt-6-sol", "good_at": "not researched"}])
     );
-    // The session file the probe kept is gone.
-    let sessions = written_anywhere(&world.cache(), "turn_context", &[]);
-    assert_eq!(sessions, [] as [String; 0]);
-    // A worker is started on the id, whatever name its issue's label gives.
-    world.issue(8, &["ready-for-agent", "harness:claude-code", "model:Opus 5.5"]);
-    world.issue(9, &["ready-for-agent", "harness:pi", "model:GPT-6-SOL"]);
+    world.issue(8, &["ready-for-agent", "model:Opus 5.5"]);
     let planned = world.afk(&["plan", "--now", "1000"]).ok();
-    let cast = |number: u64| {
-        let frontier = planned["frontier"].as_array().unwrap();
-        frontier.iter().find(|issue| issue["number"] == number).unwrap()["cast"].clone()
-    };
-    assert_eq!(cast(8)["model"], "claude-opus-5-5", "{planned}");
-    assert_eq!(cast(9)["model"], "claude-opus-5-5", "{planned}");
+    assert_eq!(planned["frontier"][0]["cast"]["model"], Value::Null);
+    assert_eq!(planned["host_kit"]["harnesses"][0]["default_model"], true);
+    assert_eq!(planned["host_kit"]["harnesses"][0]["research_pending"], true);
+    assert!(!world.shell_asked().iter().any(|asked| asked.contains("Reply with the single word OK.")));
 }
 
 #[test]

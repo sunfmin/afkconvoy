@@ -224,15 +224,13 @@ fn a_switch_moves_the_worker_onto_the_harness_in_the_same_worktree_and_records_i
 }
 
 #[test]
-fn a_missing_harness_starts_before_its_targeted_probe_and_research_finish() {
+fn a_missing_harness_starts_on_its_default_before_its_listing_is_researched() {
     let world = blocked();
     world.with_kit(|kit| {
         kit["harnesses"].as_array_mut().unwrap().retain(|held| held["harness"] != "kimi")
     });
     std::fs::write(world.root.join("shell-kimi-models"), r#"{"models":{"kimi-code/k3":{}}}"#)
         .unwrap();
-    world.probes_answer();
-    std::fs::write(world.root.join("probes-wait"), "").unwrap();
     let dir = worktree(&world, 7);
 
     let started = std::time::Instant::now();
@@ -250,10 +248,6 @@ fn a_missing_harness_starts_before_its_targeted_probe_and_research_finish() {
             ""
         )]
     );
-    let kit: Value = serde_json::from_slice(&std::fs::read(world.kit_path()).unwrap()).unwrap();
-    assert_eq!(kit["harnesses"][0]["models"], json!([]));
-
-    std::fs::write(world.root.join("probes-release"), "").unwrap();
     let until = std::time::Instant::now() + std::time::Duration::from_secs(15);
     while std::time::Instant::now() < until {
         let kit: Value = serde_json::from_slice(&std::fs::read(world.kit_path()).unwrap()).unwrap();
@@ -262,12 +256,8 @@ fn a_missing_harness_starts_before_its_targeted_probe_and_research_finish() {
         {
             assert_eq!(kit["harnesses"][0]["harness"], "kimi");
             assert_eq!(kit["harnesses"][0]["models"][0]["model"], "kimi-code/k3");
-            let probes: Vec<_> = world
-                .shell_asked()
-                .into_iter()
-                .filter(|asked| asked.contains("Reply with the single word OK."))
-                .collect();
-            assert!(probes.iter().all(|asked| asked.contains("kimi")), "{probes:?}");
+            assert_eq!(kit["harnesses"][0]["models"][0]["good_at"], "not researched");
+            assert!(!world.shell_asked().iter().any(|asked| asked.contains("Reply with the single word OK.")));
             return;
         }
         std::thread::sleep(std::time::Duration::from_millis(50));

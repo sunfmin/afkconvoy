@@ -9,7 +9,7 @@ use serde_json::json;
 use crate::kit::{Kit, Seen};
 
 const LIMIT: Duration = Duration::from_secs(15 * 60);
-const UNKNOWN: &str = "not researched";
+pub(crate) const UNKNOWN: &str = "not researched";
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -45,13 +45,15 @@ struct Finding {
     model: String,
     good_at: String,
     #[serde(default)]
+    names: Vec<String>,
+    #[serde(default)]
     sources: Vec<Source>,
 }
 
-/// Runs on the kit's first, through the same orca terminal and login as a probe.
+/// Runs on the kit's first, on its default model until research places one.
 /// Failure is data: writing the kit must still succeed.
 pub fn session(kit: &Kit, prompt: &str) -> Result<String> {
-    let first = kit.first().context("no harness answered")?;
+    let first = kit.first().context("the host kit holds no harness")?;
     let kept = crate::kept::keep(first.harness, false)?;
     let question = question(kit, &kept.display().to_string(), prompt)?;
     match crate::orca::ask(&question, LIMIT)? {
@@ -131,6 +133,7 @@ pub fn research(
          \"model_order\":[{{\"harness\":\"pi\",\"models\":[\"kept id\",...]}}],\
          \"models\":[{{\"harness\":\"pi\",\"model\":\"id from targets\",\"good_at\":\
          \"a few words: strengths and weaknesses for long refactors, small fixes, review, speed, cost\",\
+         \"names\":[\"aliases the dated sources tie to this listed id\"],\
          \"sources\":[{{\"url\":\"https://...\",\"date\":\"YYYY-MM-DD\"}}]}}]}}. \
          Include every kept harness exactly once in preference order for a coding fleet. \
          Include model_order for every kept harness, each kept id exactly once, using held \
@@ -167,6 +170,11 @@ pub fn research(
                 model.good_at = Some(finding.good_at.clone());
                 model.sources = finding.sources.clone();
                 model.researched_at = Some(now);
+                for name in &finding.names {
+                    if name != &model.model && !model.names.contains(name) {
+                        model.names.push(name.clone());
+                    }
+                }
             } else {
                 eprintln!(
                     "afkconvoy: {} {} not researched: missing finding or dated source URL; keeping fixed place",
@@ -268,10 +276,8 @@ mod tests {
         kit.harnesses[0].harness = afkconvoy_core::harness::Harness::Codex;
         kit.harnesses[0].command = "codex --dangerously-bypass-approvals-and-sandbox".into();
         let asked = question(&kit, "/kept", "Research now.").unwrap();
-        assert!(
-            asked.contains("--search exec --skip-git-repo-check --ephemeral --model 'fast'"),
-            "{asked}"
-        );
+        assert!(asked.contains("--search exec --skip-git-repo-check --ephemeral 'Research now.'"));
+        assert!(!asked.contains("--model"), "research starts on the default: {asked}");
         assert!(asked.starts_with("export CODEX_HOME='/kept'"));
     }
     fn kit() -> Kit {
@@ -285,19 +291,19 @@ mod tests {
         json!({"harness_order":["pi","claude-code"],"model_order":[{"harness":"pi","models":["other"]},{"harness":"claude-code","models":["deep","fast"]}],"models":[finding("pi","other"),finding("claude-code","deep"),finding("claude-code","fast")]})
     }
     #[test]
-    fn a_sourced_answer_sets_research_and_preference_order() {
+    fn a_sourced_answer_sets_research_names_and_preference_order() {
         let mut after = kit();
+        let mut answer = answer();
+        answer["models"][1]["names"] = json!(["claude-opus-5-5", "default", "opus"]);
         research(&Kit::default(), &mut after, 100, |first, prompt| {
-            assert_eq!(first.first().unwrap().model.as_deref(), Some("fast"));
-            assert!(
-                prompt.contains("default")
-                    && prompt.contains("Fast")
-                    && prompt.contains("SWE-bench")
-            );
-            Ok(answer().to_string())
+            assert_eq!(first.first().unwrap().model, None);
+            assert!(prompt.contains("default") && prompt.contains("Fast") && prompt.contains("SWE-bench"));
+            Ok(answer.to_string())
         });
         assert_eq!(after.harnesses[0].harness.key(), "claude-code");
         assert_eq!(after.harnesses[0].models[0].model, "deep");
+        assert!(after.harnesses[0].models[0].names.contains(&"opus".to_string()));
+        assert_eq!(after.range()[0].model("OPUS").unwrap().id, "deep");
         for m in after.harnesses.iter().flat_map(|h| &h.models) {
             assert_eq!(m.good_at.as_deref(), Some("review; costly"));
             assert_eq!(m.researched_at, Some(100));
@@ -326,6 +332,8 @@ mod tests {
         let mut after = kit();
         research(&Kit::default(), &mut after, 100, |_, _| bail!("no answer"));
         assert_eq!(after.harnesses[0].models[0].good_at.as_deref(), Some(UNKNOWN));
+        assert_eq!(after.first().unwrap().model, None);
+        assert!(after.range()[0].models.is_empty());
     }
     #[test]
     fn omitted_or_unsourced_models_keep_their_fixed_place() {
@@ -342,6 +350,8 @@ mod tests {
             assert_eq!(claude.models[0].model, "fast");
             assert_eq!(claude.models[0].good_at.as_deref(), Some(UNKNOWN));
             assert_eq!(claude.models[1].researched_at, Some(100));
+            assert_eq!(after.first().unwrap().model.as_deref(), Some("deep"));
+            assert_eq!(after.range()[0].models.len(), 1);
         }
     }
     #[test]

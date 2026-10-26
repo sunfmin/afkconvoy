@@ -191,7 +191,7 @@ A team's list, for each of its roles, of the harnesses and models that role's wo
 _Avoid_: harness config, model table, routing rules
 
 **Host kit**:
-The harnesses this host can start and their models, each in order of preference, with each harness's worker launch command and each model's probe evidence. These orders are this machine's sole priority for every checkout; the kit also holds whether automatic model casting is enabled, off until the user enables it.
+The harnesses this host can start and their models, each in order of preference, with each harness's worker launch command and each model's research evidence. Writing it lists each login's models but sends none a prompt. A harness found and listed is held at once on its default model, started with no model flag, until research places its listed models with dated sources; a model left `not researched` is not started on, and failed research leaves the default and models already placed. A model's id is its listed id; its names are its listing's display names and research's sourced names, any of which matches it in a roster, a model label or the stock consult. `plan` and `doctor` say whether each harness runs its default and has research pending. A listed model that fails at work is left out at model scope by worker health and returns through its hourly recovery probe; a refusing harness's pause and hourly recovery probe remain. Daily refresh lists again: newly listed models wait for research and ids no longer listed are dropped. A switch adds a missing harness on its default and hands its listing to research after answering, without probing. Older kits' probe fields are read and forgotten. These orders are this machine's sole priority for every checkout; the kit also holds whether automatic model casting is enabled, off until the user enables it.
 _Avoid_: roster (the team's), host config, inventory
 
 **Codex effort**:
@@ -211,7 +211,7 @@ A session of one harness, started in one role to perform one stage of one issue 
 _Avoid_: agent (whoever reads the help; and a worker, to whoever has not met the term), subagent, child (an issue a split opened)
 
 **Switch**:
-Moving a harness, or one of its models and that model's harness, to the first position in this machine's host kit while retaining the other entries' relative order and contents. A known installed harness it does not hold is added on its stock worker launch command with no model, and listed, probed and researched only after the switch answers. Every checkout follows these orders; existing workers continue only when explicitly targeted, preserving their scene and claims and starting no replacement until the old writer is confirmed ended.
+Moving a harness, or one of its models and that model's harness, to the first position in this machine's host kit while retaining the other entries' relative order and contents. A known installed harness it does not hold is added on its stock worker launch command with no model, and listed and researched only after the switch answers; no model is probed. Every checkout follows these orders; existing workers continue only when explicitly targeted, preserving their scene and claims and starting no replacement until the old writer is confirmed ended.
 _Avoid_: harness change (what a new casting makes)
 
 **Worker launch command**:
