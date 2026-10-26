@@ -131,7 +131,8 @@ fn enabled_casting_does_not_hold_a_bound_issue_whose_selected_harness_has_no_mod
 fn bound_and_unbound_checkouts_share_kit_priority_while_role_limits_remain_constraints() {
     let world = bound(TEAM);
     let other = world.second_repo();
-    world.with_kit(|kit| kit["stock_consult"] = json!({"harness":"claude-code", "model":"haiku"}));
+    world
+        .with_kit(|kit| kit["stock_inspector"] = json!({"harness":"claude-code", "model":"haiku"}));
     world.issue(7, &["flow:feature", "harness:claude-code", "model:opus"]);
     world.issue(9, &["flow:audit", "harness:pi", "model:a/fast"]);
     let mut gh = world.gh2();
@@ -143,7 +144,7 @@ fn bound_and_unbound_checkouts_share_kit_priority_while_role_limits_remain_const
     assert_eq!(said(&bound_plan, 7)["harness"], "pi");
     assert_eq!(said(&bound_plan, 7)["model"], "a/fast");
     assert_eq!(unbound_plan["frontier"][0]["cast"]["harness"], "pi");
-    assert_eq!(unbound_plan["host_kit"]["stock_consult"]["harness"], "pi");
+    assert_eq!(unbound_plan["host_kit"]["stock_inspector"]["harness"], "pi");
     // The audit role allows Claude Code alone. Kit priority cannot invent
     // permission to run pi in that role.
     assert_eq!(said(&bound_plan, 9)["harness"], "claude-code");

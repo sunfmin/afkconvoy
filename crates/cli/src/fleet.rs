@@ -12,7 +12,6 @@ use afkconvoy_core::config::Config;
 use afkconvoy_core::harness::Harness;
 use afkconvoy_core::plan::{Excluded, Issue, Observed, WorkingSet, assemble, closing_pr};
 use afkconvoy_core::position::Position;
-use afkconvoy_core::stock;
 use afkconvoy_core::stopped::standing_verdict;
 use afkconvoy_core::team::{Consult, Role, Team, Workflow};
 use afkconvoy_core::train::{Built, on_train};
@@ -178,14 +177,14 @@ impl Fleet {
         Ok(range)
     }
 
-    /// The stock consult follows the same kit order as every other worker.
-    pub fn stock_consult(&self, issue: Option<u64>) -> Result<Cast> {
-        let kit = self.runnable_for(issue)?;
+    /// The stock inspector follows the same kit order as every other worker.
+    pub fn inspector(&self) -> Result<Cast> {
+        let kit = self.runnable_for(None)?;
         let paused = crate::paused::read();
         if kit.harnesses.is_empty() && !paused.is_empty() {
             return Err(crate::paused::Held::every(&paused, self.now).into());
         }
-        let named = kit.stock_consult();
+        let named = kit.stock_inspector();
         let labels: Vec<String> = named
             .into_iter()
             .flat_map(|named| {
@@ -464,7 +463,6 @@ impl Fleet {
                 declared.push(claim.number);
             }
         }
-        let consults = self.stock_consults(open);
         let heartbeats = self.scan.beats();
         let (landings, slow_gate) = slow_gate::seen(self, &self.listing.records, &train.base)?;
         let cut = crate::cut::seen(self, &stages, issues, &riding, &train.base)?;
@@ -490,7 +488,6 @@ impl Fleet {
             landings: &landings,
             slow_gate: &slow_gate,
             idle_train: if train.tip == train.base { self.train_built() } else { None },
-            consults: &consults,
             inspections: &inspections,
             tracker: &self.gh.tracker,
             cut: cut.as_ref(),
@@ -499,7 +496,7 @@ impl Fleet {
         open.issues.explain(&mut set.waiting_on_human);
         set.casting = crate::caster::status(self, &open.issues, stages.team().ok());
         match self.config.bound {
-            None => self.cast_frontier(&mut set, &open.issues, &consults),
+            None => self.cast_frontier(&mut set, &open.issues),
             Some(_) => self.cast_bound_frontier(&mut set, &open.issues, &stages),
         }
         Ok((set, stages))
@@ -508,7 +505,7 @@ impl Fleet {
     /// Apply host priority and the shared model-casting eligibility to the
     /// unbound frontier. Only an enabled, missing model choice waits, at most
     /// ten minutes; human labels and ineligible harnesses never hold it back.
-    fn cast_frontier(&self, set: &mut WorkingSet, open: &OpenIssues, consults: &[u64]) {
+    fn cast_frontier(&self, set: &mut WorkingSet, open: &OpenIssues) {
         let paused = crate::paused::read();
         let issues = &open.rows;
         let labels_of = |number: u64| -> Vec<String> {
@@ -542,10 +539,6 @@ impl Fleet {
                 }
             };
             let labels = labels_of(issue.number);
-            if consults.contains(&issue.number) {
-                set.frontier.push(issue);
-                continue;
-            }
             let paused_held = (range.is_empty() && !paused.is_empty())
                 .then(|| crate::paused::Held::every(&paused, self.now));
             if let Some(held) = paused_held {
@@ -623,7 +616,7 @@ impl Fleet {
                 set.frontier.push(issue);
                 continue;
             };
-            // The stock consult is no role's, and has no range.
+            // The stock inspector is no role's, and has no range.
             let Some(role) = due_role(team, workflow, *position) else {
                 set.frontier.push(issue);
                 continue;
@@ -687,53 +680,11 @@ impl Fleet {
         let worktree = Worktree::of_train(&Source::of(&self.repo).ok()?).ok()??;
         measure::measured(&Repo::new(worktree.path)).ok()?
     }
-
-    /// The open issues of an unbound repo that are the stock consult's
-    /// (`plan::Observed::consults`): escalated and unclaimed with the consult
-    /// due, or claimed under a claim it was asked under.
-    fn stock_consults(&self, open: &Open) -> Vec<u64> {
-        if !self.config.stock_consult() {
-            return vec![];
-        }
-        let consults = |issue: &&Issue| {
-            let bodies = || open.issues.comments(issue.number).iter().map(|c| c.body.as_str());
-            match self.scan.claim_of(issue.number) {
-                // Whatever labels its answer left.
-                Some(claim) => stock::asked_under(bodies(), &claim.id),
-                None => issue.labels.contains(&self.config.escalate_label) && stock::due(bodies()),
-            }
-        };
-        open.issues.rows.iter().filter(consults).map(|issue| issue.number).collect()
-    }
-
-    /// Whether the worker of `claim`, in an unbound repo, declared a verdict
-    /// that stands: the latest on the issue, written since the claim was
-    /// created — one from an earlier claim is not its own — and not answered
-    /// by a worker started on the issue again (`stopped::standing_verdict`).
-    /// What cannot be read says no: the claim then takes a slot.
-    pub(crate) fn declared_since(&self, open: &Open, claim: &Claim) -> bool {
-        let comments = open.issues.comments(claim.number);
-        let Some(verdict) = latest_verdict(comments.iter().map(|c| c.body.as_str())) else {
-            return false;
-        };
-        let Some(said) = comments.get(verdict.comment) else { return false };
-        let since = said.at.zip(claim.since).is_some_and(|(at, since)| at >= since);
-        // Only a verdict that is the claim's own is looked for in its worktree.
-        let answered = || -> Option<Option<String>> {
-            let worktree =
-                Worktree::of_issue(&Source::of(&self.repo).ok()?, claim.number).ok()??;
-            worktree.answered().ok()
-        };
-        since
-            && answered().is_some_and(|answered| {
-                standing_verdict(Some(verdict), Some(&said.url), answered.as_deref()).is_some()
-            })
-    }
 }
 
 /// The role of the worker due on an issue at `position` in `workflow`, one
 /// of `team`'s: the stage's, its consult's or its landing's. `None` of the
-/// stock consult, and where no worker is due.
+/// stock inspector, and where no worker is due.
 pub fn due_role<'t>(
     team: &'t Team,
     workflow: &'t Workflow,
@@ -741,7 +692,6 @@ pub fn due_role<'t>(
 ) -> Option<&'t Role> {
     let work = match position {
         Position::Landing => workflow.land.as_ref(),
-        Position::Consult(_, Consult::Stock, _) => None,
         at => at.worker(),
     };
     work.map(|work| team.role_of(work))

@@ -1,5 +1,5 @@
 //! A host inspection (docs/adr/0026): when admission holds new workers back
-//! for one reason — the load, memory or disk — past a span, the stock consult
+//! for one reason — the load, memory or disk — past a span, the stock inspector
 //! is started on the host, not on one worker, as the operator on its host:
 //! to find what holds what admission read, fix it, and check that admission
 //! admits again. When one starts and what it is told are decided here;
@@ -219,7 +219,7 @@ pub struct Fields<'a> {
     pub evidence: &'a str,
     pub role: &'a str,
     pub skill: &'a str,
-    /// The stock consult's instruction, where nothing else gives it.
+    /// The stock inspector's instruction, where nothing else gives it.
     pub instruction: Option<&'a str>,
     /// Where it works, and how it runs afkconvoy there.
     pub operator: Operator<'a>,
@@ -416,7 +416,7 @@ mod tests {
             reading: "22.9 GiB of the checkout's disk is free, under 46.3 GiB, 5% of it",
             minutes: 10,
             evidence: "/c/host-inspection/evidence.md",
-            role: "stock-consult",
+            role: "stock-inspector",
             skill: "consult",
             instruction: None,
             operator: Operator {

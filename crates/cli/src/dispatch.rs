@@ -3,19 +3,14 @@
 use std::path::PathBuf;
 
 use afkconvoy_core::casting::{self, Cast};
-use afkconvoy_core::guard::WritesNothing;
 use afkconvoy_core::harness::Harness;
 use afkconvoy_core::launch::LaunchCommand;
 use afkconvoy_core::line::Line;
 use afkconvoy_core::plan::closing_pr;
-use afkconvoy_core::prompt::{
-    StockFields, Switched, WorkerFields, stock_prompt, switched, worker_prompt,
-};
+use afkconvoy_core::prompt::{Switched, WorkerFields, switched, worker_prompt};
 use afkconvoy_core::recovery::{Recovery, Tier, Variant, superseded};
 use afkconvoy_core::role::ISSUE_ENV;
-use afkconvoy_core::stock;
 use afkconvoy_core::tick::Outcome;
-use afkconvoy_core::transition::escalated_at;
 use afkconvoy_core::worker::{DispatchStep, branch_comment, dispatch_steps, recorded_branches};
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
@@ -317,9 +312,6 @@ pub(crate) fn continuation_harness(fleet: &Fleet, agent: &Agent, number: u64) ->
     let issue = fleet.gh.issue(number)?;
     let harness = match &fleet.config.bound {
         Some(bound) => Staged::enter(fleet, bound, number, &issue.labels)?.harness(),
-        None if issue.labels.contains(&fleet.config.escalate_label) => {
-            fleet.stock_consult(Some(number))?.harness
-        }
         None => fleet.cast(&issue.labels, Some(number))?.map_err(|e| anyhow!(e))?.harness,
     };
     crate::role::startable(&agent.launches, harness, "worker continuation")?;
@@ -349,33 +341,17 @@ fn start(
         None => None,
     };
     let held = fleet.scan.claim_of(number).is_some_and(|claim| claim.is_held_by(&me.instance));
-    // In an unbound repo, an escalated issue is the stock consult's.
-    let consult = match staged {
-        None if issue.labels.contains(&fleet.config.escalate_label) => {
-            stock_consult(fleet, number, held)?
-        }
-        _ => None,
-    };
-    // Before the claim too: an issue whose harness cannot be started here is
-    // never locked. An unbound repo's stock consult runs what the host kit
-    // names for it, and its other workers their issue's casting: one the
-    // host kit does not hold runs its first, and the issue is told once
-    // (`casting::unmatched_comment`); a claim already held on a paused
-    // harness — its landing — runs the host kit's first.
-    let (harness, model, unmatched) = match (&staged, &consult) {
-        (Some(staged), _) => {
+    if staged.is_none() && issue.labels.contains(&fleet.config.escalate_label) {
+        bail!("issue #{number} is escalated: the host's watch or a human must answer it first");
+    }
+    let (harness, model, unmatched) = match &staged {
+        Some(staged) => {
             (staged.harness(), staged.model().map(str::to_string), staged.unmatched().cloned())
         }
-        (None, Some(_)) => {
-            let stock = fleet.stock_consult(Some(number))?;
-            (stock.harness, stock.model.clone(), stock.unmatched.clone().map(|name| (name, stock)))
-        }
-        (None, None) => {
-            let cast = match fleet.cast(&issue.labels, Some(number)) {
-                Ok(Ok(cast)) => cast,
-                Ok(Err(why)) => bail!("{why}: run `afkconvoy kit`"),
-                Err(error) => return Err(error),
-            };
+        None => {
+            let cast = fleet
+                .cast(&issue.labels, Some(number))?
+                .map_err(|why| anyhow!("{why}: run `afkconvoy kit`"))?;
             let unmatched = cast.unmatched.clone().map(|name| (name, cast.clone()));
             (cast.harness, cast.model, unmatched)
         }
@@ -389,7 +365,7 @@ fn start(
         staged.refuse_spent(fleet.scan.claim_of(number))?;
     }
     let by_hand = from == StartFrom::Fresh;
-    let answered = if held && staged.is_none() && consult.is_none() && !by_hand {
+    let answered = if held && staged.is_none() && !by_hand {
         crate::park::cleared_verdict(fleet, number)?
     } else {
         None
@@ -425,10 +401,6 @@ fn start(
                 if let Some(staged) = &staged {
                     staged.refuse_spent(fleet.scan.claim_of(number))?;
                 }
-                // Its claim is the stock consult's once this says so.
-                if let Some(claim) = fleet.scan.claim_of(number).filter(|_| consult.is_some()) {
-                    fleet.gh.comment(number, &stock::asked_comment(&claim.id))?;
-                }
             }
             DispatchStep::Survey => {
                 let surveyed = survey(fleet, number)?;
@@ -461,12 +433,9 @@ fn start(
             }
             DispatchStep::Brief => {
                 let cut = worktree.as_ref().ok_or_else(undecided)?;
-                brief = Some(match (&staged, &consult) {
-                    (Some(staged), _) => staged.write_brief(fleet, cut, &issue.title)?,
-                    (None, Some(asked)) => {
-                        write_stock_brief(fleet, cut, number, &issue.title, asked)?
-                    }
-                    (None, None) => write_brief(fleet, cut, number, &issue.title, plan.variant)?,
+                brief = Some(match &staged {
+                    Some(staged) => staged.write_brief(fleet, cut, &issue.title)?,
+                    None => write_brief(fleet, cut, number, &issue.title, plan.variant)?,
                 });
                 if let Some(continuing) = continuing {
                     let pr = closing_pr(&fleet.gh.open_prs()?, number).map(|pr| pr.number);
@@ -478,16 +447,6 @@ fn start(
                 let launch = launch.as_str();
                 if let Some((staged, claim)) = staged.as_ref().zip(fleet.scan.claim_of(number)) {
                     staged.keep_start(cut, claim)?;
-                }
-                // The stock consult writes no code: where it started is kept
-                // to check, as a stage's consult's is.
-                if let Some(claim) = fleet.scan.claim_of(number).filter(|_| consult.is_some()) {
-                    cut.keep_writes_nothing(|tip| WritesNothing {
-                        claim: claim.id.clone(),
-                        tip,
-                        stage: stock::ROLE.to_string(),
-                        consult: true,
-                    })?;
                 }
                 terminal = Some(match &staged {
                     Some(staged) => agent.start_worker(
@@ -544,9 +503,6 @@ fn start(
     } else {
         json!(fleet.skipped_before(harness, None, Some(number)))
     };
-    if consult.is_some() {
-        started["prompt"] = json!(stock::ROLE);
-    }
     if let Some(discarded) = discarded {
         started["discarded"] = discarded;
     }
@@ -623,24 +579,6 @@ pub(crate) fn continue_brief(
     Ok(())
 }
 
-/// What the stock consult of an unbound repo's escalated issue `number` is
-/// asked — its latest escalation, but for its marker — when it is the
-/// consult's: its consult due, or `held` under a claim it was asked under.
-fn stock_consult(fleet: &Fleet, number: u64, held: bool) -> Result<Option<String>> {
-    if !fleet.config.stock_consult() {
-        return Ok(None);
-    }
-    let comments = fleet.gh.comments(number)?;
-    let bodies = || comments.iter().map(|comment| comment.body.as_str());
-    let asked = match fleet.scan.claim_of(number).filter(|_| held) {
-        Some(claim) => stock::asked_under(bodies(), &claim.id),
-        None => stock::due(bodies()),
-    };
-    let Some(at) = escalated_at(bodies()).filter(|_| asked) else { return Ok(None) };
-    let said = comments.get(at).map_or("", |comment| comment.body.as_str());
-    Ok(Some(said.split_once("-->").map_or(said, |(_, said)| said).trim().to_string()))
-}
-
 /// Writes the brief of the worker of issue `number` into its worktree → the
 /// file.
 pub(crate) fn write_brief(
@@ -651,24 +589,6 @@ pub(crate) fn write_brief(
     variant: Variant,
 ) -> Result<PathBuf> {
     brief_with(fleet, worktree, (number, title), |fields| worker_prompt(fields, variant))
-}
-
-/// Writes into `worktree` the brief of the stock consult of issue `number`,
-/// asked of the escalation that said `asked` → the file.
-fn write_stock_brief(
-    fleet: &Fleet,
-    worktree: &Worktree,
-    number: u64,
-    title: &str,
-    asked: &str,
-) -> Result<PathBuf> {
-    let stock = StockFields {
-        asked,
-        escalate_label: &fleet.config.escalate_label,
-        doctor: &crate::own_command().fixed(" doctor").own(),
-        plan: &crate::own_command().fixed(" plan").own(),
-    };
-    brief_with(fleet, worktree, (number, title), |fields| stock_prompt(fields, &stock))
 }
 
 /// Writes into `worktree` the brief `prompt` makes of the fields of issue

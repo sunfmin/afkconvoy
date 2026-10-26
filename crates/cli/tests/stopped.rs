@@ -27,7 +27,7 @@ fn did(ticked: &Value) -> Vec<String> {
 /// A world with a worker dispatched on issue 7 at `now`.
 fn fleet(now: u64) -> World {
     let world = World::new();
-    // Every hand-off to a human, as before the stock consult: what a worker
+    // Every hand-off to a human, as before the stock inspector: what a worker
     // left is what is tried here.
     world.set_gate_config("gate_command: ./gate.sh\ngate_seconds: 600\nescalate_to: human");
     world.issue(7, &["ready-for-agent", "bug"]);

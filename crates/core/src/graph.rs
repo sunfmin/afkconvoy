@@ -108,7 +108,7 @@ fn rows(team: &Team, workflow: &Workflow, stage: &Stage, backs: &[Back], width: 
     if !stage.writes {
         said.push("writes nothing".to_string());
     }
-    // The stock consult is every stage's that says nothing else.
+    // Only a consult named by the team runs before escalation.
     match (&stage.consult, &stage.by) {
         (Some(Consult::Role(consult)), _) => {
             said.push(format!("escalate → {}", work_said(team, consult)));

@@ -5,8 +5,7 @@
 use afkconvoy_core::casting;
 use afkconvoy_core::graph;
 use afkconvoy_core::position::{ConsultOn, Declared, Place, Position};
-use afkconvoy_core::stock;
-use afkconvoy_core::team::{Consult, HUMAN, Team, Workflow};
+use afkconvoy_core::team::{HUMAN, Team, Workflow};
 use anyhow::{Result, bail};
 use serde_json::{Map, Value, json};
 
@@ -81,7 +80,7 @@ pub fn rehearse(loaded: &Loaded, name: &str, declared: &[Declared]) -> Result<Va
 
 /// A position as a command answers it: what it is, at which stage, who acts
 /// on it, and — where a worker does — on which harness with no casting on
-/// this host: a worker in a role on its range's first, the stock consult on
+/// this host: a worker in a role on its range's first, the stock inspector on
 /// the host kit's. None on a host without a host kit.
 pub(crate) fn position(team: &Team, workflow: &Workflow, position: Position) -> Value {
     let is = match position {
@@ -98,23 +97,16 @@ pub(crate) fn position(team: &Team, workflow: &Workflow, position: Position) -> 
         Position::Landing => workflow.land.as_ref(),
         _ => position.worker(),
     };
-    let stock = matches!(position, Position::Consult(_, Consult::Stock, _));
     let by = match position {
         Position::Waiting(_) | Position::Escalating(..) => Some(HUMAN),
-        _ if stock => Some(stock::ROLE),
         _ => worker.map(|work| team.role_of(work).name.as_str()),
     };
     // What runs is this host's host kit's to say: none, on a host without one.
-    let harness = match position {
-        Position::Consult(_, Consult::Stock, _) => {
-            crate::kit::stock_consult().ok().map(|named| named.harness)
-        }
-        _ => worker.and_then(|work| {
-            let range = crate::kit::load().ok()?.range();
-            let range = casting::range(team.role_of(work), &range);
-            range.first().map(|held| held.harness)
-        }),
-    };
+    let harness = worker.and_then(|work| {
+        let range = crate::kit::load().ok()?.range();
+        let range = casting::range(team.role_of(work), &range);
+        range.first().map(|held| held.harness)
+    });
     // Why it is with a human — or with its stage's consult, for a hand-off
     // that would have gone to one.
     let reason = match position {
@@ -126,7 +118,7 @@ pub(crate) fn position(team: &Team, workflow: &Workflow, position: Position) -> 
         "is": is,
         "stage": position.stage().map(|stage| stage.name.as_str()),
         "by": by,
-        "do": if stock { Some(stock::SKILL) } else { worker.map(|work| work.skill.as_str()) },
+        "do": worker.map(|work| work.skill.as_str()),
         "harness": harness,
         "reason": reason,
     })

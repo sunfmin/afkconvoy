@@ -575,9 +575,26 @@ fn brief(watch: &Watch) -> String {
          `afkconvoy wake <checkout>` after changing GitHub with `gh`, then check the next tick \
          actually dispatches or continues the issue and that its worker takes its brief. \
          Relabelling it alone is no evidence of recovery.\n\n\
-         An escalation that asks a human for a decision stays with the human. Do not invent \
-         a ruling, pass a human stage, choose a workflow or clear its labels to make it run. \
-         Leave it alone and list its repo, issue, question and answer line in your record.\n\n\
+         ## Answer escalations\n\n\
+         Answer an escalation yourself, as the operator would: find out what is true, answer \
+         the cause, keep to earlier decisions, and say what is to be done. For each issue in \
+         `waiting_on_human`, read its reason and evidence, then run its current answer line \
+         in that repo's checkout to hand it back, or use these answering commands:\n\n{}\n\n\
+         Replace `<n>` with that issue's number. Use the tracker that checkout names and its \
+         repo label when opening an issue; `afkconvoy doctor` gives the tracker and \
+         `afkconvoy flows` gives the create line. A ruling or send carries no role or team \
+         commits and no `--consult`: it moves the issue exactly as a human's answer does, \
+         starting its rework counts over. Closing it leaves nothing to dispatch; changing \
+         blocked-by changes what holds it back. Wake its checkout and verify the resulting \
+         position and that work which can proceed does proceed. You may fix the cause on \
+         the host or in a repo under the bounds above.\n\n\
+         Leave only these four kinds with a human; never act on them, and list each with \
+         its repo, issue, question and answer line in your printed record, which `doctor` \
+         lists as what you did:\n\n\
+         - spending money, or needing an account, a credential or a person's hands;\n\
+         - what cannot be undone;\n\
+         - taking a secret or private data off the host;\n\
+         - changing what a product is for, or who it is for.\n\n\
          ## Change any repo on the checkout list\n\n\
          When a lasting fix needs code, make it yourself, even if that repo's fleet cannot \
          start a worker. In the affected repo create a linked worktree on a branch of your \
@@ -600,7 +617,7 @@ fn brief(watch: &Watch) -> String {
          the next idle tick starts a due cut. Fix what holds that work back; do not bypass \
          the gate or train, tag by hand, or manufacture a cut record. If a cut failed for a \
          mechanical cause, fix it and continue with the `cut --from <step>` line its report \
-         gives. If cutting is off or a human decision holds it back, say so.\n\n\
+         gives. If cutting is off or one of the four human kinds holds it back, say so.\n\n\
          Check that the cut published and installed the version containing your change. \
          For afkconvoy, let the host runner move onto it by itself; read `doctor --all`'s \
          `host.installed` for what holds the move back and `checkouts` for its version. Never \
@@ -617,12 +634,56 @@ fn brief(watch: &Watch) -> String {
          ## What this watch did before this session\n\n{}\n\n\
          ## What the look answered\n\n`afkconvoy doctor --all --since <until of the look \
          before>` answered:\n\n```json\n{}\n```\n",
+        answering(&watch.look),
         crate::log::utc(watch.started),
         why.join("\n"),
         said(&watch.earlier),
         said(&sessions),
         serde_json::to_string_pretty(&watch.look).unwrap_or_default(),
     )
+}
+
+/// The shared answering commands for every waiting issue, with its tracker
+/// and number fixed by the look. Its current answer also gives label swaps.
+fn answering(look: &Value) -> String {
+    use afkconvoy_core::config::RepoName;
+    use afkconvoy_core::tracker::Tracker;
+    let mut lines = vec![];
+    for checkout in look["checkouts"].as_array().into_iter().flatten() {
+        let doctor = &checkout["doctor"];
+        let tracker = match &doctor["fleet"]["tracker"] {
+            Value::Null => Tracker::Own,
+            Value::String(named) => {
+                let Some(tracker) = RepoName::read(named) else { continue };
+                let Some(repo) = checkout["repo"].as_str().and_then(RepoName::read) else {
+                    continue;
+                };
+                Tracker::Other { tracker, repo }
+            }
+            _ => continue,
+        };
+        for issue in doctor["waiting_on_human"].as_array().into_iter().flatten() {
+            let Some(number) = issue["issue"].as_u64() else { continue };
+            lines.push(format!(
+                "In `{}`, issue {}:",
+                checkout["checkout"].as_str().unwrap_or("unknown"),
+                tracker.issue(number)
+            ));
+            if let Some(answer) = issue["answer"].as_str() {
+                lines.push(format!("- Hand it back: `{answer}`"));
+            }
+            lines.extend(
+                afkconvoy_core::waiting::answering(&tracker)
+                    .iter()
+                    .map(|line| format!("- `{}`", line.replace("<n>", &number.to_string()))),
+            );
+        }
+    }
+    if lines.is_empty() {
+        "No waiting issue was listed; read `afkconvoy doctor` for current issues and their answer lines.".into()
+    } else {
+        lines.join("\n")
+    }
 }
 
 /// What `afkconvoy doctor --all --since <until>` answers: the fleet's own

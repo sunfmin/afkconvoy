@@ -1,6 +1,6 @@
 //! Inspections, as `run` starts and ends them (docs/adr/0026): once what
 //! shows a worker hot is taken down (`evidence`), a worker in the role of its
-//! stage's consult — the stock consult where the stage names none, and in an
+//! stage's consult — the stock inspector where the stage names none, and in an
 //! unbound repo — is started in a checkout of its own as the operator on this
 //! host, so that the fleet's work goes on: it finds what holds the work back,
 //! fixes it, and says what it did with `afkconvoy inspected`. The fleet logs
@@ -10,7 +10,7 @@
 //!
 //! When admission holds for one reason, or memory pressure lasts, past its span, the
 //! host is inspected the same way (`afkconvoy_core::host_inspection`), once an
-//! episode: the stock consult, given what holds the disk, the load or the
+//! episode: the stock inspector, given what holds the disk, the load or the
 //! memory (`host_evidence`). What it did is kept in the cache every fleet of
 //! the host shares, for `doctor` and the panel to show beside admission's
 //! reading. Only a proven red base branch in an unbound repo has it open
@@ -33,13 +33,13 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use afkconvoy_core::config::{Bound, Config};
 use afkconvoy_core::harness::Harness;
 use afkconvoy_core::host_inspection::{self, Due, Holding, Reason, Trigger, covered};
+use afkconvoy_core::inspection as inspection_rules;
 use afkconvoy_core::inspection::{
     self, CHECKOUT, Fields, Finding, Hot, Inspected, Inspector as Who, Kind, Operator, SAID,
     inspector, over,
 };
 use afkconvoy_core::role::{Facts, On, Start, workflow_of};
 use afkconvoy_core::stage_record::history;
-use afkconvoy_core::stock;
 use afkconvoy_core::train::Of;
 use afkconvoy_core::worker::WorkerState;
 use anyhow::{Context, Result, anyhow};
@@ -391,15 +391,15 @@ enum Started {
 
 /// Who an inspection is started as, and how.
 enum As {
-    /// The stock consult of an unbound repo, started with the worker launch
+    /// The stock inspector of an unbound repo, started with the worker launch
     /// command of the harness the host kit names for it, on its model: its
     /// instruction is in its brief, and nothing guards it.
     Unbound { harness: Harness, model: Option<String> },
-    /// A role's consult, or the stock consult, of a bound repo: started in
+    /// A role's consult, or the stock inspector, of a bound repo: started in
     /// its role, guarded as a consult.
     Bound {
         harness: Harness,
-        /// The stock consult's model, as the host kit names it: none of a
+        /// The stock inspector's model, as the host kit names it: none of a
         /// role's consult.
         model: Option<String>,
         role: String,
@@ -416,7 +416,7 @@ enum As {
 impl As {
     fn role(&self) -> &str {
         match self {
-            As::Unbound { .. } => stock::ROLE,
+            As::Unbound { .. } => inspection_rules::ROLE,
             As::Bound { role, .. } => role,
         }
     }
@@ -434,24 +434,24 @@ impl As {
     }
 }
 
-/// The stock consult of an unbound repo, on what the host kit names for it.
+/// The stock inspector of an unbound repo, on what the host kit names for it.
 fn unbound_as(fleet: &Fleet) -> Result<As> {
-    let stock = fleet.stock_consult(None)?;
+    let stock = fleet.inspector()?;
     Ok(As::Unbound { harness: stock.harness, model: stock.model })
 }
 
-/// The stock consult of the repo `bound` to a team, which inspects the host:
+/// The stock inspector of the repo `bound` to a team, which inspects the host:
 /// on what the host kit names for it.
 fn stock_as(fleet: &Fleet, bound: &Bound) -> Result<As> {
     let copies = Copies::of_host()?;
     let kept = keep(&fleet.gh, &copies, &bound.team, &fleet.config.labels())?;
-    let stock = fleet.stock_consult(None)?;
+    let stock = fleet.inspector()?;
     Ok(As::Bound {
         harness: stock.harness,
         model: stock.model,
-        role: stock::ROLE.to_string(),
-        skill: stock::SKILL.to_string(),
-        role_copy: copies.stock()?,
+        role: inspection_rules::ROLE.to_string(),
+        skill: inspection_rules::SKILL.to_string(),
+        role_copy: copies.inspector()?,
         team_copy: kept.copy.clone(),
         team_rules: kept.rules(),
         host_user: kept.team.host_user,
@@ -492,15 +492,15 @@ fn bound_as(fleet: &Fleet, bound: &Bound, issue: Option<u64>) -> Result<Option<A
                 role.dsh_profile,
             )
         }
-        // The stock consult runs what the host kit names for it.
+        // The stock inspector runs what the host kit names for it.
         Some(Who::Stock) => {
-            let stock = fleet.stock_consult(None)?;
+            let stock = fleet.inspector()?;
             (
                 stock.harness,
                 stock.model,
-                stock::ROLE.to_string(),
-                stock::SKILL.to_string(),
-                copies.stock()?,
+                inspection_rules::ROLE.to_string(),
+                inspection_rules::SKILL.to_string(),
+                copies.inspector()?,
                 kept.team.host_user,
                 kept.team.dsh_profile,
             )
@@ -734,7 +734,7 @@ impl Inspector {
         }
     }
 
-    /// Starts the host's inspection for `due` at `now`: the stock consult,
+    /// Starts the host's inspection for `due` at `now`: the stock inspector,
     /// in a checkout of the base branch of its own, once the host's turn is
     /// taken and what it is given is taken down.
     fn start_host(
@@ -807,10 +807,11 @@ impl Inspector {
                 evidence: &evidence.display().to_string(),
                 role: who.role(),
                 skill: match &who {
-                    As::Unbound { .. } => stock::SKILL,
+                    As::Unbound { .. } => inspection_rules::SKILL,
                     As::Bound { skill, .. } => skill,
                 },
-                instruction: matches!(who, As::Unbound { .. }).then_some(stock::INSTRUCTION),
+                instruction: matches!(who, As::Unbound { .. })
+                    .then_some(inspection_rules::INSTRUCTION),
                 operator: Operator {
                     checkout: &path,
                     branch: &checkout.branch,
@@ -882,7 +883,7 @@ impl Inspector {
             .ok_or_else(|| anyhow!("what shows {} hot is not taken down", hot.worker))?;
         let who = match &fleet.config.bound {
             Some(bound) => bound_as(&fleet, bound, hot.issue)?,
-            None => fleet.config.stock_consult().then(|| unbound_as(&fleet)).transpose()?,
+            None => Some(unbound_as(&fleet)?),
         };
         let Some(who) = who else {
             let why = match fleet.config.bound {
@@ -924,10 +925,11 @@ impl Inspector {
                 evidence: &evidence.display().to_string(),
                 role: who.role(),
                 skill: match &who {
-                    As::Unbound { .. } => stock::SKILL,
+                    As::Unbound { .. } => inspection_rules::SKILL,
                     As::Bound { skill, .. } => skill,
                 },
-                instruction: matches!(who, As::Unbound { .. }).then_some(stock::INSTRUCTION),
+                instruction: matches!(who, As::Unbound { .. })
+                    .then_some(inspection_rules::INSTRUCTION),
                 operator: Operator {
                     checkout: &path,
                     branch: &checkout.branch,
@@ -1260,7 +1262,7 @@ mod tests {
     fn a_turn_says_which_kind_of_inspection_holds_it() {
         // As a `run` of a version before host inspections wrote it.
         let worker: Running = serde_json::from_str(
-            r##"{"repo": "/src/widgets", "worker": "#7", "issue": 7, "by": "stock-consult", "since": 700}"##,
+            r##"{"repo": "/src/widgets", "worker": "#7", "issue": 7, "by": "stock-inspector", "since": 700}"##,
         )
         .unwrap();
         assert_eq!(json(&worker)["kind"], "worker");
@@ -1285,7 +1287,7 @@ mod tests {
             repo: "/src/widgets".into(),
             worker: "#7".into(),
             issue: Some(7),
-            by: "stock-consult".into(),
+            by: "stock-inspector".into(),
             since: 700,
             held_back_by: None,
         };

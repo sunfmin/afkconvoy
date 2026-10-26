@@ -1,6 +1,6 @@
 //! The host kit (docs/adr/0020): the harnesses this host can start, in order
 //! of preference — each one's worker launch command and listed models — and
-//! the stock consult's harness and model. This file belongs to the host user,
+//! the stock inspector's harness and model. This file belongs to the host user,
 //! outside every checkout, and is written with no human: `afkconvoy kit`, or
 //! `run` on a host without one.
 use std::collections::BTreeSet;
@@ -24,10 +24,11 @@ pub struct Kit {
     /// The harnesses this host can start, in order of preference: the first
     /// is the host kit's first.
     pub harnesses: Vec<Held>,
-    /// The stock consult's harness and model, where the human named them;
+    /// The stock inspector's harness and model, where the human named them;
     /// with none named it runs the host kit's first.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stock_consult: Option<Named>,
+    #[serde(alias = "stock_consult")]
+    pub stock_inspector: Option<Named>,
 }
 
 /// One harness the host kit holds.
@@ -153,7 +154,7 @@ impl Kit {
     }
 
     /// The host kit as this host can start it now: without the harnesses
-    /// `paused` on it (docs/adr/0020), and with no stock consult named on
+    /// `paused` on it (docs/adr/0020), and with no stock inspector named on
     /// one of them — it then runs the first of the rest.
     pub fn without(&self, paused: &[afkconvoy_core::casting::Paused]) -> Kit {
         let is_paused = |harness: Harness| paused.iter().any(|pause| pause.harness == harness);
@@ -165,17 +166,17 @@ impl Kit {
                 .filter(|held| !is_paused(held.harness))
                 .cloned()
                 .collect(),
-            stock_consult: self.stock_consult.clone().filter(|named| !is_paused(named.harness)),
+            stock_inspector: self.stock_inspector.clone().filter(|named| !is_paused(named.harness)),
         }
     }
 
-    /// What the stock consult runs: the harness and model named for it — the
+    /// What the stock inspector runs: the harness and model named for it — the
     /// id of the model that name matches (`casting::Held::model`) — or the
     /// host kit's first.
-    pub fn stock_consult(&self) -> Option<Named> {
+    pub fn stock_inspector(&self) -> Option<Named> {
         let first = self.first()?;
         let Some(named) =
-            self.stock_consult.as_ref().filter(|named| named.harness == first.harness)
+            self.stock_inspector.as_ref().filter(|named| named.harness == first.harness)
         else {
             return Some(first);
         };
@@ -207,19 +208,19 @@ impl Kit {
         None
     }
 
-    /// Why what this host kit names for the stock consult is not held by it,
+    /// Why what this host kit names for the stock inspector is not held by it,
     /// when it is not: what `afkconvoy kit` refuses to write.
     fn stock_fault(&self) -> Option<String> {
-        let named = self.stock_consult.as_ref()?;
+        let named = self.stock_inspector.as_ref()?;
         if self.held(named.harness).is_none() {
             return Some(format!(
-                "its stock consult runs the harness `{}`, which it does not hold",
+                "its stock inspector runs the harness `{}`, which it does not hold",
                 named.harness.key()
             ));
         }
         let model = named.model.as_deref()?;
         let why = self.matched(named.harness, model).err()?;
-        Some(format!("its stock consult runs the model `{model}`: {why}"))
+        Some(format!("its stock inspector runs the model `{model}`: {why}"))
     }
 }
 
@@ -288,15 +289,15 @@ pub fn running() -> Result<(Kit, Vec<afkconvoy_core::casting::Paused>)> {
     Ok((crate::health::available(load()?.without(&paused))?, paused))
 }
 
-/// The harness and model the stock consult runs, as this host's host kit
-/// says (`Kit::stock_consult`).
-pub fn stock_consult() -> Result<Named> {
-    load()?.stock_consult().context("the host kit holds no harness: run `afkconvoy kit`")
+/// The harness and model the stock inspector runs, as this host's host kit
+/// says (`Kit::stock_inspector`).
+pub fn stock_inspector() -> Result<Named> {
+    load()?.stock_inspector().context("the host kit holds no harness: run `afkconvoy kit`")
 }
 
 /// The host kit as `doctor` and `plan` show it: where it is kept, each
 /// harness in order with its command and its models in order, whether it runs
-/// its default model and has research pending, what the stock consult runs,
+/// its default model and has research pending, what the stock inspector runs,
 /// and each harness paused on the host, since when and why.
 pub fn show(now: u64) -> Value {
     let file = path().map(|path| path.display().to_string()).ok();
@@ -327,10 +328,10 @@ pub fn show(now: u64) -> Value {
                 "cast": kit.cast,
                 "refreshed": refreshed(),
                 "harnesses": harnesses,
-                "stock_consult": running.stock_consult().map(|named| json!({
+                "stock_inspector": running.stock_inspector().map(|named| json!({
                     "harness": named.harness,
                     "model": named.model,
-                    "named": running.stock_consult.is_some(),
+                    "named": running.stock_inspector.is_some(),
                     "unmatched": running.stock_unmatched(),
                 })),
                 "paused": paused_said, "worker_health": crate::health::show(),
@@ -395,7 +396,7 @@ pub fn write_one(harness: Harness, now: u64) -> Result<Value> {
             .filter(|held| held.harness == harness)
             .cloned()
             .collect(),
-        stock_consult: None,
+        stock_inspector: None,
     };
     let (mut repaired, left_out) = compose(&before, &only, Writing::Refresh);
     let listed = repaired.harnesses.first().is_some_and(|held| !held.models.is_empty());
@@ -713,7 +714,7 @@ fn refresh_at<'a>(
         let before = Kit {
             cast: current.cast,
             harnesses: current.held(Harness::Codex).cloned().into_iter().collect(),
-            stock_consult: None,
+            stock_inspector: None,
         };
         let (mut repaired, _) = compose(&before, &only, Writing::Refresh);
         if repaired.held(Harness::Codex).is_none_or(|held| held.models.is_empty()) {
@@ -841,7 +842,7 @@ impl LeftOut {
 /// The host kit this host can start now, from `current`, with no model sent
 /// a prompt (docs/adr/0020) — and what was left out of it, and why. Every
 /// listed id is held at once on the default model until research places it.
-/// Established harness and model order, research and the stock consult are
+/// Established harness and model order, research and the stock inspector are
 /// retained. A refresh drops ids no longer listed, but keeps a harness whose
 /// listing fails so worker health, not refresh, judges its availability.
 fn compose(current: &Kit, host: &Host, writing: Writing) -> (Kit, Vec<LeftOut>) {
@@ -929,10 +930,10 @@ fn compose(current: &Kit, host: &Host, writing: Writing) -> (Kit, Vec<LeftOut>) 
         harnesses.push(Held { harness, command, models });
     }
 
-    let mut kit = Kit { cast: current.cast, harnesses, stock_consult: None };
+    let mut kit = Kit { cast: current.cast, harnesses, stock_inspector: None };
     retain_model_order(current, &mut kit);
-    kit.stock_consult = current.stock_consult.clone().filter(|named| {
-        Kit { stock_consult: Some(named.clone()), ..kit.clone() }.stock_fault().is_none()
+    kit.stock_inspector = current.stock_inspector.clone().filter(|named| {
+        Kit { stock_inspector: Some(named.clone()), ..kit.clone() }.stock_fault().is_none()
     });
     (kit, left_out)
 }
@@ -960,7 +961,7 @@ fn push_new<T: PartialEq>(into: &mut Vec<T>, items: impl IntoIterator<Item = T>)
 }
 
 /// What writing the host kit at `path` says on stderr: where it is, what it
-/// holds in order, what the stock consult runs, and what was left out.
+/// holds in order, what the stock inspector runs, and what was left out.
 fn report(path: &str, kit: &Kit, left_out: &[LeftOut]) -> String {
     let mut said = format!("afkconvoy: wrote the host kit at {path}\n");
     for held in &kit.harnesses {
@@ -983,8 +984,10 @@ fn report(path: &str, kit: &Kit, left_out: &[LeftOut]) -> String {
         }
         said.push_str(&format!("  {} `{}`: {line}\n", held.harness.key(), held.command));
     }
-    match kit.stock_consult() {
-        Some(named) => said.push_str(&format!("  the stock consult runs {}\n", named_said(&named))),
+    match kit.stock_inspector() {
+        Some(named) => {
+            said.push_str(&format!("  the stock inspector runs {}\n", named_said(&named)))
+        }
         None => said.push_str("  it holds no harness: no worker can be started\n"),
     }
     for out in left_out {
@@ -1011,7 +1014,7 @@ mod tests {
         let current = Kit {
             cast: true,
             harnesses: vec![held(Harness::ClaudeCode, "claude", &["sonnet", "default"])],
-            stock_consult: None,
+            stock_inspector: None,
         };
         for writing in [Writing::Whole, Writing::Refresh] {
             let (kit, _) = composed_as(&current, writing);
@@ -1031,7 +1034,7 @@ mod tests {
         let stale = Kit {
             cast: false,
             harnesses: vec![held(Harness::ClaudeCode, "claude", &["new", "default", "sonnet"])],
-            stock_consult: None,
+            stock_inspector: None,
         };
         store(&file, &stale, 200).unwrap();
         let latest = load_at(&file).unwrap();
@@ -1050,7 +1053,7 @@ mod tests {
         let original = Kit {
             cast: false,
             harnesses: vec![held(Harness::Pi, "pi --custom", &["provider/model"])],
-            stock_consult: Some(Named { harness: Harness::Pi, model: None }),
+            stock_inspector: Some(Named { harness: Harness::Pi, model: None }),
         };
         store(&file, &original, 100).unwrap();
         std::thread::scope(|scope| {
@@ -1072,7 +1075,7 @@ mod tests {
         assert_eq!(kit.harnesses[0].command, "pi --custom");
         assert_eq!(kit.harnesses[0].models[0].model, "provider/model");
         assert_eq!(kit.harnesses[0].models[0].good_at.as_deref(), Some("concurrent research"));
-        assert_eq!(kit.stock_consult, original.stock_consult);
+        assert_eq!(kit.stock_inspector, original.stock_inspector);
         for held in &kit.harnesses[1..] {
             assert!(held.models.is_empty());
         }
@@ -1260,7 +1263,7 @@ mod tests {
         assert!(kit.range().iter().all(|held| held.models.is_empty()));
         assert_eq!(kit.first(), Some(Named { harness: Harness::ClaudeCode, model: None }));
         assert!(!serde_json::to_string(&kit).unwrap().contains("probed"));
-        assert_eq!(kit.stock_consult, None);
+        assert_eq!(kit.stock_inspector, None);
         let said = report("/kit.json", &kit, &left_out);
         assert!(
             said.contains("its default model; research pending: default opus sonnet"),
@@ -1285,14 +1288,14 @@ mod tests {
     }
 
     #[test]
-    fn a_host_kit_written_again_keeps_its_order_commands_good_at_and_stock_consult() {
+    fn a_host_kit_written_again_keeps_its_order_commands_good_at_and_stock_inspector() {
         let mut claude = held(Harness::ClaudeCode, "old", &["bad", "default", "gone"]);
         claude.models[1].names = vec!["claude-opus-5-5".into()];
         claude.models[1].good_at = Some("hard work".into());
         let current = Kit {
             cast: false,
             harnesses: vec![held(Harness::Codex, "mycodex --yolo", &["gpt-a"]), claude],
-            stock_consult: Some(Named {
+            stock_inspector: Some(Named {
                 harness: Harness::ClaudeCode,
                 model: Some("default".into()),
             }),
@@ -1307,9 +1310,9 @@ mod tests {
         );
         assert_eq!(kit.harnesses[1].models[0].good_at.as_deref(), Some("hard work"));
         assert_eq!(kit.harnesses[1].models[0].names, ["claude-opus-5-5", "Default"]);
-        assert_eq!(kit.stock_consult, current.stock_consult);
+        assert_eq!(kit.stock_inspector, current.stock_inspector);
         let stock = Named { harness: Harness::Codex, model: Some("gpt-a".into()) };
-        assert_eq!(kit.stock_consult(), Some(stock));
+        assert_eq!(kit.stock_inspector(), Some(stock));
         for model in ["gone", "bad"] {
             assert!(
                 left_out
@@ -1322,11 +1325,11 @@ mod tests {
     }
 
     #[test]
-    fn a_stock_consult_no_longer_held_runs_the_first_listed_harness() {
+    fn a_stock_inspector_no_longer_held_runs_the_first_listed_harness() {
         let current = Kit {
             cast: false,
             harnesses: vec![held(Harness::Pi, "pi", &["a/b"])],
-            stock_consult: Some(Named { harness: Harness::Pi, model: None }),
+            stock_inspector: Some(Named { harness: Harness::Pi, model: None }),
         };
         let host = Host {
             research: &|_, _| bail!("fake research unavailable"),
@@ -1338,10 +1341,10 @@ mod tests {
         };
         let (kit, left_out) = compose(&current, &host, Writing::Whole);
         assert_eq!(summary(&kit), [(Harness::Codex, Harness::Codex.stock(), vec!["listed"])]);
-        assert_eq!(kit.stock_consult, None);
+        assert_eq!(kit.stock_inspector, None);
         assert!(left_out.iter().any(|out| out.harness == Harness::Pi));
         let said = report("/kit.json", &kit, &left_out);
-        assert!(said.contains("the stock consult runs codex\n"), "{said}");
+        assert!(said.contains("the stock inspector runs codex\n"), "{said}");
         assert!(said.contains("its default model; research pending: listed"), "{said}");
         assert!(!said.contains("probe"), "{said}");
     }
@@ -1358,7 +1361,7 @@ mod tests {
                 held(Harness::Pi, "pi", &["a/b"]),
                 held(Harness::Dsh, "dsh", &["d"]),
             ],
-            stock_consult: None,
+            stock_inspector: None,
         };
         let (kit, left_out) = composed_as(&current, Writing::Refresh);
         assert_eq!(
@@ -1405,10 +1408,10 @@ mod tests {
                 held(Harness::Codex, "codex", &[]),
                 held(Harness::Pi, "pi", &[]),
             ],
-            stock_consult: None,
+            stock_inspector: None,
         };
         assert_eq!(current.first(), Some(Named { harness: Harness::ClaudeCode, model: None }));
-        assert_eq!(current.stock_consult(), current.first());
+        assert_eq!(current.stock_inspector(), current.first());
         for writing in [Writing::Whole, Writing::Refresh] {
             let (kit, left_out) = composed_as(&current, writing);
             let mut expected = vec![
@@ -1425,7 +1428,7 @@ mod tests {
             assert_eq!(summary(&kit), expected, "{writing:?}");
             // Listed, its models wait for research: it runs its default.
             let stock = Named { harness: Harness::ClaudeCode, model: None };
-            assert_eq!(kit.stock_consult(), Some(stock), "{writing:?}");
+            assert_eq!(kit.stock_inspector(), Some(stock), "{writing:?}");
         }
     }
 
@@ -1434,7 +1437,7 @@ mod tests {
         let current = Kit {
             cast: false,
             harnesses: vec![held(Harness::ClaudeCode, "claude", &["old-id"])],
-            stock_consult: None,
+            stock_inspector: None,
         };
         let found =
             |harness| if harness == Harness::ClaudeCode { Ok(()) } else { Err("absent".into()) };
@@ -1475,7 +1478,7 @@ mod tests {
         let current = Kit {
             cast: true,
             harnesses: vec![held(Harness::Codex, "codex", &[])],
-            stock_consult: None,
+            stock_inspector: None,
         };
         store(&file, &current, 1000).unwrap();
         let found = |harness| if harness == Harness::Codex { Ok(()) } else { Err("absent".into()) };
@@ -1497,7 +1500,7 @@ mod tests {
         let current = Kit {
             cast: true,
             harnesses: vec![held(Harness::Codex, "codex", &[]), held(Harness::Dsh, "dsh-tui", &[])],
-            stock_consult: None,
+            stock_inspector: None,
         };
         store(&file, &current, 1000).unwrap();
         let bytes = std::fs::read(&file).unwrap();
@@ -1520,7 +1523,7 @@ mod tests {
         let file = dir.path().join("afkconvoy/kit.json");
         let mut pi = held(Harness::Pi, "pi", &["a/b"]);
         pi.models[0] = sourced(pi.models[0].clone());
-        let current = Kit { cast: false, harnesses: vec![pi], stock_consult: None };
+        let current = Kit { cast: false, harnesses: vec![pi], stock_inspector: None };
         store(&file, &current, 1000).unwrap();
         assert_eq!(written(&file), Some(1000));
         let sessions = std::sync::atomic::AtomicUsize::new(0);
@@ -1597,31 +1600,31 @@ mod tests {
     }
 
     #[test]
-    fn the_stock_consult_runs_what_is_named_or_the_host_kit_s_first() {
+    fn the_stock_inspector_runs_what_is_named_or_the_host_kit_s_first() {
         let mut kit = Kit {
             cast: false,
             harnesses: vec![
                 held(Harness::Pi, "pi", &["a/b", "c/d"]),
                 held(Harness::Codex, "codex", &[]),
             ],
-            stock_consult: None,
+            stock_inspector: None,
         };
         let first = Named { harness: Harness::Pi, model: Some("a/b".into()) };
-        assert_eq!(kit.stock_consult(), Some(first.clone()));
+        assert_eq!(kit.stock_inspector(), Some(first.clone()));
         let named = Named { harness: Harness::Codex, model: None };
-        kit.stock_consult = Some(named.clone());
+        kit.stock_inspector = Some(named.clone());
         assert_eq!(kit.fault(), None);
-        assert_eq!(kit.stock_consult(), Some(first.clone()));
+        assert_eq!(kit.stock_inspector(), Some(first.clone()));
         // One the host kit does not hold: the host kit's first, and said.
-        kit.stock_consult = Some(Named { harness: Harness::Dsh, model: None });
+        kit.stock_inspector = Some(Named { harness: Harness::Dsh, model: None });
         assert_eq!(kit.fault(), None);
         assert!(kit.stock_fault().unwrap().contains("does not hold"));
         assert!(kit.stock_unmatched().unwrap().contains("`dsh`"));
-        assert_eq!(kit.stock_consult(), Some(first.clone()));
-        kit.stock_consult = Some(Named { harness: Harness::Pi, model: Some("x/y".into()) });
+        assert_eq!(kit.stock_inspector(), Some(first.clone()));
+        kit.stock_inspector = Some(Named { harness: Harness::Pi, model: Some("x/y".into()) });
         assert!(kit.stock_unmatched().unwrap().contains("`x/y`"));
-        assert_eq!(kit.stock_consult(), Some(first));
-        assert_eq!(Kit::default().stock_consult(), None);
+        assert_eq!(kit.stock_inspector(), Some(first));
+        assert_eq!(Kit::default().stock_inspector(), None);
     }
 
     #[test]
@@ -1629,7 +1632,7 @@ mod tests {
         let kit = Kit {
             cast: false,
             harnesses: vec![held(Harness::ClaudeCode, "claude", &["opus"])],
-            stock_consult: Some(Named { harness: Harness::ClaudeCode, model: None }),
+            stock_inspector: Some(Named { harness: Harness::ClaudeCode, model: None }),
         };
         let text = serde_json::to_string(&kit).unwrap();
         assert_eq!(serde_json::from_str::<Kit>(&text).unwrap(), kit);

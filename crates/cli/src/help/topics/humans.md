@@ -1,4 +1,4 @@
-Every way the fleet stops for a human, and the command that answers each.
+Every way the fleet stops for an answer, and the command a human or the host's watch uses.
 
 ## Where to look
 
@@ -8,11 +8,11 @@ An escalated issue carries the escalate label (`{const:ESCALATE_LABEL}` unless r
 
 ## An escalation
 
-A stage failed or declared `escalate`. For a hand-off about the work, its consult — the stock consult where none is named, and in an unbound repo — was asked first and let it through, unless the stage says `escalate: { to: human }` or the config `escalate_to: human`. The comment says what failed or gives the question that needs your answer.
+A stage failed or declared `escalate`. A consult explicitly named by the stage is asked first about the work; an unbound repo, or a stage that names no consult, escalates immediately. There is no stock consult. The host's watch picks the issue up from `waiting_on_human` and answers it with the operator's authority. The comment says what failed or gives the question to answer.
 
-A **fleet fault** escalates at once, with no consult asked and no consult claim taken: a worker start that failed again, a worktree trust gap, or a landing train given up twice. The comment and `doctor`'s `waiting_on_human` entry say it is a fleet fault and that the fix is on the host — trusting a worktree, switching a harness, waiting out a usage limit, or mending a build server. Fix it there, then hand the issue back with the line given. Another failed start escalates at once again; nothing new retries. A worker gone silent had its brief, so that hand-off still goes to the consult first, as do an `escalate`, a tripped breaker, an impossible `blocked`, a refuted `already-satisfied`, a commit a stage may not leave and a changed workflow.
+A **fleet fault** escalates at once, with no consult asked and no consult claim taken: a worker start that failed again, a worktree trust gap, or a landing train given up twice. The comment and `doctor`'s `waiting_on_human` entry say it is a fleet fault and that the fix is on the host — trusting a worktree, switching a harness, waiting out a usage limit, or mending a build server. Fix it there, then hand the issue back with the line given. Another failed start escalates at once again; nothing new retries. A worker gone silent had its brief, so that hand-off still goes to its named consult first, as do an `escalate`, a tripped breaker, an impossible `blocked`, a refuted `already-satisfied`, a commit a stage may not leave and a changed workflow.
 
-A watch is the operator for every repo on its host's checkout list (`afkconvoy run --help`, WATCH). It may fix the host cause of a fleet fault and hand the issue back with the current line `doctor` gives, checking the next tick dispatches or continues it. A lasting fix in any listed repo goes through its own checkout, gate and landing train; one that must reach an installed tool is followed through cutting, installation and a check on the new version. An escalation asking for a human decision stays with the human: the watch leaves it untouched and lists it in its record.
+A watch is the operator for every repo on its host's checkout list (`afkconvoy run --help`, WATCH). It may fix the host cause of a fleet fault and hand the issue back with the current line `doctor` gives, checking the next tick dispatches or continues it. A lasting fix in any listed repo goes through its own checkout, gate and landing train; one that must reach an installed tool is followed through cutting, installation and a check on the new version. The watch may rule, hand an issue back, send it to a stage, close it or change its blocked-by, using the same commands as a human. Its ruling and sending start rework counts over as a human's do; it supplies no consult flag or role and team commits. Both the stock watch and a watch in the operator's directory leave only these four kinds to a human, list each with the question and answer line in their printed record, and act on none of them: spending money or needing an account, a credential or a person's hands; what cannot be undone; taking a secret or private data off the host; changing what a product is for or who it is for. `doctor` lists that record as what the watch did.
 
 For a failure, fix what failed first: `afkconvoy rule` starts the same stage anew, and what failed it once fails it again. In an unbound repo there is no stage to run again: fix what the comment names and put the ready label back, with the line the comment ends with. A PR the escalation kept is not started anew: the next worker takes it up — it reads the issue's comments, merges the base branch, gates and joins the landing train — so say on the issue what is to be done on it.
 
@@ -24,7 +24,7 @@ Where its comment gives a line of its own, `doctor`'s is the current one: a comm
 
 ## Answering an escalation
 
-Every command a human runs to answer one, `<n>` the issue's number. Where the checkout's tracker is another repo (`afkconvoy run --tracker`), name it in every `gh` line — `--repo <owner>/<tracker>`, `repos/<owner>/<tracker>/…` — and give `gh issue create` the repo label too, `--label repo:<owner>/<repo>`: run in the checkout, `gh` acts on the checkout's own repo. The lines an escalation's comment, `plan` and `doctor` give name it already. A consult may run each, and any read-only command, the gate too; never commit, push or change the host.
+Every command a human or the watch runs to answer one, `<n>` the issue's number. Where the checkout's tracker is another repo (`afkconvoy run --tracker`), name it in every `gh` line — `--repo <owner>/<tracker>`, `repos/<owner>/<tracker>/…` — and give `gh issue create` the repo label too, `--label repo:<owner>/<repo>`: run in the checkout, `gh` acts on the checkout's own repo. The lines an escalation's comment, `plan` and `doctor` give name it already. A consult may run each, and any read-only command, the gate too; never commit, push or change the host.
 
 - `afkconvoy rule --issue <n> --text-file <file>`: The stage runs again under your ruling; both rework counts start over (a consult's starts none over). `afkconvoy rule --help`.
 - `afkconvoy send --issue <n> --stage <stage> --text-file <file>`: Put it at another stage, when the approach or workflow changed, or bring it back from a park. `afkconvoy send --help`.
@@ -42,15 +42,9 @@ A consult's close or park carries a reason and adds no rework. `plan` and `docto
 afkconvoy send --issue <n> --stage <stage> --text-file <evidence-file>
 ```
 
-In an unbound repo, comment with the evidence, then restore its ready label:
-
-```sh
-gh issue edit <n> --add-label <ready label> --remove-label convoy:parked
-```
-
 ## A tripped breaker
 
-Rework went past what the workflow allows — in total, or as rejections in a row by one stage — and the issue went to the consult in place of that rework, and to a human where the stage says `to: human` or it trips again after the consult ruled. The comment names the breaker and lists every rework with its stage and why. Answer as an escalation: `afkconvoy rule` with what settles it, or `afkconvoy send`. `afkconvoy doctor` says beforehand when an issue is one rework from a breaker.
+Rework went past what the workflow allows — in total, or as rejections in a row by one stage — and the issue went to the consult in place of that rework, and escalates for the watch where the stage names no consult or it trips again after the consult ruled. The comment names the breaker and lists every rework with its stage and why. Answer as an escalation: `afkconvoy rule` with what settles it, or `afkconvoy send`. `afkconvoy doctor` says beforehand when an issue is one rework from a breaker.
 
 ## A stage `by: human`
 

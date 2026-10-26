@@ -134,21 +134,22 @@ pub fn one_line(text: &str) -> String {
 pub enum Inspector<'t> {
     /// The consult its stage names: this skill of a role.
     Role(&'t Work),
-    /// The stock consult.
+    /// The stock inspector.
     Stock,
 }
 
 /// Who inspects the hot worker of a bound repo at `stage`: the consult the
-/// stage names, the stock consult where it names none — and where the
+/// stage names, the stock inspector where it names none — and where the
 /// worker is at no stage, a patrol's or a landing worker's. Nobody where the
-/// stage says `escalate: { to: human }` or a human performs it: then nothing
-/// is inspected.
+/// stage explicitly says `escalate: { to: human }` or a human performs it.
 pub fn inspector(stage: Option<&Stage>) -> Option<Inspector<'_>> {
     let Some(stage) = stage else { return Some(Inspector::Stock) };
+    if !stage.inspect {
+        return None;
+    }
     match &stage.consult {
         Some(Consult::Role(work)) => Some(Inspector::Role(work)),
-        Some(Consult::Stock) => Some(Inspector::Stock),
-        None => None,
+        None => Some(Inspector::Stock),
     }
 }
 
@@ -361,8 +362,8 @@ pub struct Fields<'a> {
     pub evidence: &'a str,
     pub role: &'a str,
     pub skill: &'a str,
-    /// The stock consult's instruction, where nothing else gives it: an
-    /// unbound repo's stock consult starts in no directory of its own.
+    /// The stock inspector's instruction, where nothing else gives it: an
+    /// unbound repo's stock inspector starts in no directory of its own.
     pub instruction: Option<&'a str>,
     /// Where it works, and how it runs afkconvoy there.
     pub operator: Operator<'a>,
@@ -490,19 +491,19 @@ mod tests {
             did: vec!["told #7 to run it through `afkconvoy exclusive`".into()],
             prs: vec![],
         };
-        let said = comment("#7", "past 4.0 cores for 120s", "stock-consult", Some(&finding));
+        let said = comment("#7", "past 4.0 cores for 120s", "stock-inspector", Some(&finding));
         assert!(said.starts_with("<!--convoy:inspection found=said-->\n"), "{said}");
         assert!(said.contains("> cargo build of 900 crates"), "{said}");
         assert!(said.contains("- told #7 to run it through"), "{said}");
         assert!(!said.contains("landing train"), "{said}");
         assert!(!said.contains(crate::stage_record::STAGE_RECORD), "{said}");
         let changed = Finding { prs: vec![451], ..finding };
-        let said = comment("#7", "past 4.0 cores for 120s", "stock-consult", Some(&changed));
+        let said = comment("#7", "past 4.0 cores for 120s", "stock-inspector", Some(&changed));
         assert!(
             said.contains("on the landing train, which lands it as any other: #451."),
             "{said}"
         );
-        let nothing = comment("#7", "past 4.0 cores for 120s", "stock-consult", None);
+        let nothing = comment("#7", "past 4.0 cores for 120s", "stock-inspector", None);
         assert!(nothing.contains("found=nothing") && nothing.contains("60 minutes"), "{nothing}");
     }
 
@@ -546,9 +547,9 @@ stages:
             worktree: "/w/a",
             terminal: "term-1",
             evidence: "/w/a/.git/afkconvoy-hot/evidence.md",
-            role: "stock-consult",
+            role: "stock-inspector",
             skill: "consult",
-            instruction: Some("# The stock consult\n\nYou stand where a human would stand.\n"),
+            instruction: Some("# The stock inspector\n\nFind what holds the fleet back.\n"),
             operator: Operator {
                 checkout: "/w/inspection",
                 branch: "tester/afkconvoy-inspection",
@@ -558,7 +559,7 @@ stages:
         };
         let said = brief(&fields).unwrap();
         assert!(said.contains("- **Hot worker:** #7, on issue #7. Hot for CPU: past"), "{said}");
-        assert!(said.contains("# The stock consult"), "{said}");
+        assert!(said.contains("# The stock inspector"), "{said}");
         assert!(said.contains("## Your goal\n\nThe fleet's work goes on."), "{said}");
         assert!(said.contains("You are the operator on this host"), "{said}");
         assert!(said.contains("No force push, no push to the base branch"), "{said}");
@@ -590,6 +591,13 @@ stages:
         }
         let patrol = brief(&Fields { issue: None, instruction: None, ..fields }).unwrap();
         assert!(patrol.contains("- **Hot worker:** #7. Hot for"), "{patrol}");
-        assert!(!patrol.contains("stock consult"), "{patrol}");
+        assert!(!patrol.contains("stock inspector"), "{patrol}");
     }
 }
+
+/// The fallback inspection worker, separate from a team-named consult.
+pub const ROLE: &str = "stock-inspector";
+pub const SKILL: &str = "inspect";
+
+/// Its directory's rules; the brief supplies the evidence and bounds.
+pub const INSTRUCTION: &str = "# The stock inspector\n\nFind what holds the fleet's work back, fix it with the inspection's authority, check that the work goes on, and say what you did.\n";

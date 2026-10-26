@@ -17,7 +17,6 @@ use afkconvoy_core::prompt::{
 };
 use afkconvoy_core::role::{Due, Facts, On, Rules, Start, Told, due};
 use afkconvoy_core::stage_record::{History, Reading, StageRecord, Stated, history};
-use afkconvoy_core::stock;
 use afkconvoy_core::team::{LAND, PRECEDENTS, Team};
 use afkconvoy_core::tools::{Found, Tool, fault, refused};
 use anyhow::{Context, Result, anyhow, bail};
@@ -50,7 +49,7 @@ pub struct Staged {
     /// `escalate`, and writes no code whatever the stage may.
     consult: bool,
     /// The harness the worker is a session of: what its role's range makes
-    /// of the issue's casting (`Fleet::cast_in`), or the stock consult's.
+    /// of the issue's casting (`Fleet::cast_in`), or the stock inspector's.
     harness: Harness,
     model: Option<String>,
     /// The name the issue was given that matches nothing held, with what
@@ -70,7 +69,7 @@ pub struct Staged {
     /// The team rules, in the team's copy, of a team that has them.
     team_rules: Option<String>,
     /// Whether the worker is given the host user's skills and rules: its
-    /// role's say (`Role::host_user`), or the team's for the stock consult.
+    /// role's say (`Role::host_user`), or the team's for the stock inspector.
     host_user: bool,
     dsh_profile: afkconvoy_core::team::DshProfile,
     /// Whether the team offers splitting in stage briefs.
@@ -126,16 +125,14 @@ impl Staged {
         // A landing worker is at no stage: it may commit, to resolve a
         // conflict on joining, and its workflow names no model for it.
         let due = due(&kept.team, labels, &records, pr);
-        let consult = matches!(due, Due::Consult(_) | Due::Stock(..));
-        // Who the worker is: a skill of a role, or the stock consult, which
-        // is no role of the team.
+        let consult = matches!(due, Due::Consult(_));
+        // Who the worker is: a skill of a role named by the team.
         let (workflow, by, at, joins) = match due {
             Due::Worker(entry) | Due::Consult(entry) => {
-                (entry.workflow, Some((entry.work, entry.role)), Some(entry.stage), None)
+                (entry.workflow, (entry.work, entry.role), Some(entry.stage), None)
             }
-            Due::Stock(workflow, stage) => (workflow, None, Some(stage), None),
             Due::Lander(lander) => {
-                (lander.workflow, Some((lander.work, lander.role)), None, Some(lander.pr))
+                (lander.workflow, (lander.work, lander.role), None, Some(lander.pr))
             }
             // What waits for a human is answered by one; anything else is
             // where the issue is in its workflow.
@@ -156,33 +153,20 @@ impl Staged {
         let ranges = casting::stage_ranges(&kept.team, workflow, &kit);
         // A worker in a role runs the issue's casting within its role's
         // range — its range's first where it matches nothing held
-        // (docs/adr/0020); the stock consult runs what the host kit names for
-        // it. This host's chosen harness, where a switch chose one, wins over
-        // both.
-        let cast = match &by {
-            Some((_, role)) => {
-                casting::unmatched_in(fleet.cast_in(role, &labels, Some(issue))?, &labels, &ranges)
-            }
-            None => fleet.stock_consult(Some(issue))?,
-        };
+        // (docs/adr/0020). This host's chosen harness, where a switch chose
+        // one, wins over it.
+        let (work, role) = by;
+        let cast =
+            casting::unmatched_in(fleet.cast_in(role, &labels, Some(issue))?, &labels, &ranges);
         let (harness, model) = (cast.harness, cast.model.clone());
-        let (role, skill, role_copy, host_user, dsh_profile) = match by {
-            Some((work, role)) => (
-                role.name.clone(),
-                work.skill.clone(),
-                kept.role(role, harness)?,
-                role.host_user,
-                role.dsh_profile,
-            ),
-            None => (
-                stock::ROLE.to_string(),
-                stock::SKILL.to_string(),
-                Copies::of_host()?.stock()?,
-                kept.team.host_user,
-                kept.team.dsh_profile,
-            ),
-        };
-        let skipped = fleet.skipped_before(harness, by.map(|(_, role)| role), Some(issue));
+        let (role, skill, role_copy, host_user, dsh_profile) = (
+            role.name.clone(),
+            work.skill.clone(),
+            kept.role(role, harness)?,
+            role.host_user,
+            role.dsh_profile,
+        );
+        let skipped = fleet.skipped_before(harness, Some(by.1), Some(issue));
         Ok(Staged {
             verdicts: verdicts
                 .filter(|(_, reading)| {
@@ -471,7 +455,7 @@ pub struct Checked {
 }
 
 /// What calls for the host kit's first: every worker in no role but the
-/// stock consult, and whatever nothing casts.
+/// stock inspector, and whatever nothing casts.
 pub const BY_FIRST: &str = "the host kit's first";
 
 /// Adds `by` to what calls for `harness` in `called`.
@@ -493,7 +477,7 @@ pub fn current(repo: &Repo, bound: &Bound, labels: &RepoLabels) -> Option<Team> 
 
 /// Every harness the fleet of the checkout `repo`, bound to `team`, could be
 /// asked for, each with what calls for it: the host kit's first, every
-/// harness of each role's range (`casting::range`), and the stock consult's,
+/// harness of each role's range (`casting::range`), and the stock inspector's,
 /// as the host kit names it. No team (`current`) calls for the first alone.
 pub fn called_for(repo: &Repo, team: Option<&Team>) -> Vec<(Harness, Vec<String>)> {
     let _ = repo;
@@ -509,15 +493,15 @@ pub fn called_for(repo: &Repo, team: Option<&Team>) -> Vec<(Harness, Vec<String>
             }
         }
     }
-    // The stock consult runs what the host kit names for it.
-    if let Some(stock) = kit.stock_consult() {
-        call(&mut called, stock.harness, BY_STOCK_CONSULT.to_string());
+    // The stock inspector runs what the host kit names for it.
+    if let Some(stock) = kit.stock_inspector() {
+        call(&mut called, stock.harness, BY_STOCK_INSPECTOR.to_string());
     }
     called
 }
 
-/// What calls for the harness the host kit names for the stock consult.
-const BY_STOCK_CONSULT: &str = "the host kit's stock consult";
+/// What calls for the harness the host kit names for the stock inspector.
+const BY_STOCK_INSPECTOR: &str = "the host kit's stock inspector";
 
 /// Checks the worker launch command of each harness `called` for, as
 /// `launches` has it, asking the login shell a worker gets: that its first

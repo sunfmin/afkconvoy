@@ -235,7 +235,7 @@ fn a_worker_past_its_own_memory_limit_is_hot_under_pressure_or_without_it() {
 #[test]
 fn pressure_coverage_survives_an_inspection_for_another_reason_and_a_cache_upgrade() {
     let memory = json!({"repo": "/another-fleet", "reason": "memory", "reading": "pressure level 2",
-        "by": "stock-consult", "started": 1000, "ended": 1001, "found": "said", "said": "outside process"});
+        "by": "stock-inspector", "started": 1000, "ended": 1001, "found": "said", "said": "outside process"});
     let mut load = memory.clone();
     load["reason"] = json!("load");
     load["started"] = json!(1200);

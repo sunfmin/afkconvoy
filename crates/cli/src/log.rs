@@ -1000,7 +1000,7 @@ mod tests {
             host.1,
             "the host, disk: said · the gate built in /tmp · on the landing train: #451"
         );
-        let starts = What::Inspecting { worker: "#7".into(), by: "stock-consult".into() };
+        let starts = What::Inspecting { worker: "#7".into(), by: "stock-inspector".into() };
         let starts = Entry { what: starts, ..tick(1) };
         assert!(starts.event().is_none(), "an inspection starting is a line, not an event");
     }

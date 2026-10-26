@@ -70,8 +70,6 @@ pub enum Waits {
     Ended,
     /// The consult waits for evidence and an explicit send.
     Parked { stage: String },
-    /// An unbound issue returns when the ready label is restored.
-    ParkedUnbound { ready: String },
     /// It reports a failed run of this patrol, which is not run again while
     /// it is open.
     PatrolFailed { patrol: String },
@@ -117,7 +115,6 @@ impl Waits {
             },
             Waits::Escalated(_) => "escalated".to_string(),
             Waits::Verdict { stage, .. } => format!("stage {stage} is by a human"),
-            Waits::ParkedUnbound { .. } => "parked for evidence".to_string(),
             Waits::Parked { stage } => format!("parked for evidence at {stage}"),
             Waits::Ended => "its workflow has ended, and it is still open".to_string(),
             Waits::PatrolFailed { patrol } => {
@@ -142,7 +139,7 @@ impl Waits {
                 ));
             }
             Waits::CutFailed => return Some("says a cut failed: waits to be closed".to_string()),
-            Waits::Parked { .. } | Waits::ParkedUnbound { .. } => return Some(self.why()),
+            Waits::Parked { .. } => return Some(self.why()),
             Waits::Verdict { .. } | Waits::Ended => return None,
         };
         Some(format!("escalated: waits for {waits}"))
@@ -185,10 +182,6 @@ impl Waits {
                     line: line.fixed(" --text-file <file>").own(),
                 }];
             }
-            Waits::ParkedUnbound { ready } => WayOut {
-                what: "bring it back after recording new evidence".to_string(),
-                line: swap(issue, tracker, ready, crate::stock::PARKED_LABEL),
-            },
             Waits::Parked { stage } => WayOut {
                 what: format!("bring it back with new evidence at {stage}"),
                 line: own("send", issue, " --stage <stage> --text-file <evidence-file>"),
@@ -260,7 +253,7 @@ pub fn waits(
     }
     let workflow = crate::role::workflow_of(team, labels).ok();
     match due(team, labels, records, pr) {
-        Due::Worker(_) | Due::Consult(_) | Due::Stock(..) | Due::Lander(_) => None,
+        Due::Worker(_) | Due::Consult(_) | Due::Lander(_) => None,
         Due::Human(_) => Some(Waits::Escalated(back(team, workflow, records))),
         Due::Nothing(_) => {
             let read = history(workflow?, records);
@@ -377,9 +370,6 @@ impl Waits {
                         .trim()
                         .into(),
                 )
-            }
-            Waits::ParkedUnbound { .. } => {
-                Some(body.strip_prefix("**Stock consult — park**")?.trim().into())
             }
             Waits::Parked { stage } => {
                 let record = StageRecord::read(body)?;

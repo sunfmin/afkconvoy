@@ -444,7 +444,7 @@ fn a_start_checks_every_harness_it_could_be_asked_for_and_names_what_calls_for_e
     git(&world.clone, &["push", "-q", "origin", "main"]);
     let called = "it is the worker launch command of the harness `claude-code`, called for by the \
                   host kit's first, the range of the role `dev`, the range of the role \
-                  `reviewer`, the host kit's stock consult";
+                  `reviewer`, the host kit's stock inspector";
 
     // One that takes no role flags: a start, `plan` and `doctor` each say so.
     world.shell_help(Some("Usage: agent [options]\n  --model <model>\n"));
@@ -467,7 +467,7 @@ fn a_start_checks_every_harness_it_could_be_asked_for_and_names_what_calls_for_e
             "the host kit's first",
             "the range of the role `dev`",
             "the range of the role `reviewer`",
-            "the host kit's stock consult"
+            "the host kit's stock inspector"
         ])
     );
     let findings = doctor["findings"].as_array().unwrap();

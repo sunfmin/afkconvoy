@@ -1149,7 +1149,7 @@ fn admission(out: &mut String, host: &Host) {
 }
 
 /// The host kit: every harness in it, in order, with its models in order,
-/// and what the stock consult runs; each harness paused, since when and why.
+/// and what the stock inspector runs; each harness paused, since when and why.
 fn kit(out: &mut String, host: &Host) {
     if let Some(faults) = host.worker_health["faults"].as_array().filter(|v| !v.is_empty()) {
         out.push_str("<section data-health-faults><h2>Unavailable candidates</h2><ul>");
@@ -1241,7 +1241,7 @@ fn kit(out: &mut String, host: &Host) {
             )
         })
         .collect();
-    let consult = kit.without(&host.paused).stock_consult().map_or_else(
+    let consult = kit.without(&host.paused).stock_inspector().map_or_else(
         || "no harness: <code>afkconvoy kit</code> writes one".to_string(),
         |named| match named.model {
             Some(model) => format!("{} on {}", esc(named.harness.key()), esc(&model)),
@@ -1251,7 +1251,7 @@ fn kit(out: &mut String, host: &Host) {
     let _ = writeln!(
         out,
         "<section class=\"kit\"><h2>Host kit</h2><p class=\"by\">The harnesses and models this \
-         host can start, in order of preference; the stock consult runs {consult}. Automatic model casting is {}</p>\
+         host can start, in order of preference; the stock inspector runs {consult}. Automatic model casting is {}</p>\
          <ul class=\"harnesses\">{}</ul></section>",
         if kit.cast { "on" } else { "off" },
         harnesses.concat(),
@@ -1899,13 +1899,13 @@ mod tests {
             repo: "/src/widgets".into(),
             worker: "#7".into(),
             issue: Some(7),
-            by: "stock-consult".into(),
+            by: "stock-inspector".into(),
             since: 700,
             held_back_by: None,
         });
         let inspecting = render(&page);
         assert!(
-            inspecting.contains("<b>#7</b> on #7 is inspected by <code>stock-consult</code>, for 5m so far, in /src/widgets."),
+            inspecting.contains("<b>#7</b> on #7 is inspected by <code>stock-inspector</code>, for 5m so far, in /src/widgets."),
             "{inspecting}"
         );
     }
@@ -1918,19 +1918,19 @@ mod tests {
             repo: "/src/widgets".into(),
             worker: "the host".into(),
             issue: None,
-            by: "stock-consult".into(),
+            by: "stock-inspector".into(),
             since: 700,
             held_back_by: Some(Reason::Disk),
         });
         let running = render(&page_of(host.clone(), vec![]));
-        assert!(running.contains("disk past its span; <b>the host</b> is inspected by <code>stock-consult</code>, for 5m so far"), "{running}");
+        assert!(running.contains("disk past its span; <b>the host</b> is inspected by <code>stock-inspector</code>, for 5m so far"), "{running}");
         for (found, prs) in [("said", vec![]), ("said", vec![451])] {
             host.inspection = None;
             host.host_inspected = Some(Last {
                 repo: "/src/widgets".into(),
                 reason: Reason::Disk,
                 reading: "22.9 GiB of the checkout's disk is free, under 46.3 GiB, 5% of it".into(),
-                by: "stock-consult".into(),
+                by: "stock-inspector".into(),
                 started: 100,
                 ended: 400,
                 found: found.into(),
