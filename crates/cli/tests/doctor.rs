@@ -268,7 +268,6 @@ fn a_repo_no_fleet_ever_ran_in_has_no_finding_no_log_and_exits_zero() {
     let kit = &answer["host"]["host_kit"];
     assert_eq!(kit["harnesses"][0]["harness"], "claude-code");
     assert_eq!(kit["harnesses"][0]["models"], json!([]));
-    assert_eq!(kit["stock_consult"]["model"], json!(null));
 }
 
 #[test]

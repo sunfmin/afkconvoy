@@ -447,11 +447,6 @@ pub struct Observed<'a> {
     /// while nothing is on the landing train: none while something is, or
     /// where no landing here measured it.
     pub idle_train: Option<Built>,
-    /// The open issues of an unbound repo that are the stock consult's
-    /// (docs/adr/0018): escalated and unclaimed, with the consult due
-    /// (`stock::due`), or claimed under a claim the consult was asked under.
-    /// Empty in a bound repo, and where `escalate_to` says `human`.
-    pub consults: &'a [u64],
     /// The open PRs of watches on the landing train at their current
     /// head: changes of the repo a watch made on no issue.
     pub watches: &'a [u64],
@@ -500,16 +495,11 @@ fn call<'d>(issue: &Issue, due: &'d [(u64, Due<'d>)]) -> Call<'d> {
         {
             Call::Nothing(blocker_reason(&issue.open_blockers))
         }
-        // Apart: Flux reads no pattern that joins it to those of an entry.
-        Some(Due::Stock(..)) if !issue.open_blockers.is_empty() => {
-            Call::Nothing(blocker_reason(&issue.open_blockers))
-        }
         Some(due @ Due::Lander(_)) => Call::Start(LAND.to_string(), due),
         // A consult is started at the stage that asked it.
         Some(due @ (Due::Worker(entry) | Due::Consult(entry))) => {
             Call::Start(entry.stage.name.clone(), due)
         }
-        Some(due @ Due::Stock(_, stage)) => Call::Start(stage.name.clone(), due),
         None => Call::Nothing("its position was not read".to_string()),
     }
 }
@@ -531,9 +521,7 @@ fn waiting(
     let cut_failed = cut.and_then(|cut| cut.failure).map(|issue| (issue, Waits::CutFailed, None));
     for (number, waits, since) in seen.waiting.iter().cloned().chain(failed).chain(cut_failed) {
         let open = issues.iter().find(|issue| issue.number == number);
-        // Neither does one the stock consult is asked of.
-        let held =
-            claims.iter().any(|claim| claim.number == number) || seen.consults.contains(&number);
+        let held = claims.iter().any(|claim| claim.number == number);
         let listed = rows.iter().any(|row| row.issue == number);
         if let Some(issue) = open.filter(|_| !held && !listed) {
             rows.push(Waiting::new(number, seen.tracker, &issue.title, waits, since));
@@ -592,14 +580,6 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
         }
         let claimed = claims.iter().any(|claim| claim.number == issue.number);
         let (number, title) = (issue.number, issue.title.clone());
-        // An escalated issue the stock consult is due on is started as its
-        // consult, whatever PR it has: the escalation kept it.
-        let consult = seen.consults.contains(&number) && !claimed;
-        let epic = matches!(label_bar(&issue.labels, config, seen.flows), Some(LabelBar::Epic(_)));
-        if consult && !epic && issue.open_blockers.is_empty() {
-            set.frontier.push(Dispatchable { number, title, stage: None, cast: None });
-            continue;
-        }
         let reason = if let Some(bar) = label_bar(&issue.labels, config, seen.flows) {
             // An escalated issue lost the label that bars it to the escalation.
             let waits = set.waiting_on_human.iter().find(|waiting| waiting.issue == number);
@@ -657,8 +637,7 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
                 // A landing worker's claim with no PR left to join has
                 // nothing to do either, and is ended as a stage's is.
                 Status::AtStage
-            } else if pr.is_none() || seen.consults.contains(&claim.number) {
-                // The stock consult answers with no PR of its own.
+            } else if pr.is_none() {
                 Status::NoPr
             } else {
                 Status::Joining
@@ -803,7 +782,6 @@ mod tests {
             watches: &[],
             tracker: &Tracker::Own,
             cut: None,
-            consults: &[],
         };
         let set = assemble(&seen, Some(&me()), 1000, &config(3));
         let frontier: Vec<u64> = set.frontier.iter().map(|d| d.number).collect();
@@ -851,7 +829,6 @@ mod tests {
             watches: &[],
             tracker: &Tracker::Own,
             cut: None,
-            consults: &[],
         };
         let set = assemble(&seen, Some(&me()), 1000, &config(3));
         let frontier: Vec<u64> = set.frontier.iter().map(|d| d.number).collect();
@@ -896,7 +873,6 @@ mod tests {
             watches: &[],
             tracker: &Tracker::Own,
             cut: None,
-            consults: &[],
         };
         let set = assemble(&seen, Some(&me()), 1000, &config(3));
         let reasons: Vec<(u64, &str)> =
@@ -956,7 +932,6 @@ mod tests {
             watches: &[],
             tracker: &Tracker::Own,
             cut: None,
-            consults: &[],
         };
         let claims = [claim(5, "me"), claim(6, "me")];
         let set = assemble(&seen(&issues, &claims), Some(&me()), 1000, &config(2));
@@ -1040,7 +1015,6 @@ mod tests {
             watches: &[],
             tracker: &Tracker::Own,
             cut: None,
-            consults: &[],
         };
         let set = assemble(&seen, Some(&me()), 1000, &bound());
         let frontier: Vec<(u64, Option<&str>)> =
@@ -1158,7 +1132,6 @@ mod tests {
             watches: &[],
             tracker: &Tracker::Own,
             cut: None,
-            consults: &[],
         };
         let set = assemble(&seen, Some(&me()), 1000, &bound());
         let frontier: Vec<(u64, Option<&str>)> =
@@ -1244,7 +1217,6 @@ mod tests {
             watches: &[],
             tracker: &Tracker::Own,
             cut: None,
-            consults: &[],
         };
         let set = assemble(&seen, Some(&me()), 1000, &bound());
         let mine: Vec<_> = set.mine.iter().map(|m| (m.number, m.status, m.pr)).collect();
@@ -1305,7 +1277,6 @@ mod tests {
             watches: &[],
             tracker: &Tracker::Own,
             cut: None,
-            consults: &[],
         };
         let set = assemble(&seen, Some(&me()), 10_000, &config(5));
         let mine: Vec<_> = set.mine.iter().map(|m| (m.number, m.status, m.pr)).collect();
@@ -1358,7 +1329,6 @@ mod tests {
             watches: &[],
             tracker: &Tracker::Own,
             cut: None,
-            consults: &[],
         };
         let set = assemble(&seen, Some(&me()), 10_000, &config(5));
         let mine: Vec<_> = set.mine.iter().map(|m| (m.number, m.status, m.title.clone())).collect();
@@ -1394,7 +1364,6 @@ mod tests {
             watches: &[],
             tracker: &Tracker::Own,
             cut: None,
-            consults: &[],
         };
         assert_eq!(assemble(&seen, None, 1000, &config(3)).stale.len(), 1);
     }
@@ -1439,7 +1408,6 @@ mod tests {
                     watches: &[],
                     tracker: &Tracker::Own,
                     cut: None,
-                    consults: &[],
                 };
                 assemble(&seen, Some(&me()), 1000, &config)
             };

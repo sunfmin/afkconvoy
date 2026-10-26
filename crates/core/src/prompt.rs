@@ -3,7 +3,6 @@
 
 use crate::position::Declared;
 use crate::precedent::entry_form;
-use crate::record;
 use crate::recovery::Variant;
 use crate::stage_record::{Author, StageRecord, Stated};
 use crate::tracker::Tracker;
@@ -477,116 +476,6 @@ End with one answer, and not before; each command's `--help` says what it takes.
   {verdict_command} escalate --text-file <file>
   ```
 ";
-
-/// The brief of the stock consult in an unbound repo, which has no stages:
-/// a fixed form that says what was asked, where to look and what a human
-/// answers with there, and carries the stock consult's instruction
-/// (`stock::INSTRUCTION`) — the worker starts in the worktree, with no role
-/// to give it.
-const STOCK_UNBOUND: &str = "\
-You are an afkconvoy worker, started as the **stock consult**: the fleet handed one GitHub issue to a
-human, and you stand where that human stands. You are asked first, and may answer as they would.
-Nobody reads this terminal: never wait for an answer.
-
-- **Issue:** {issue} — {title}
-- **Worktree:** `{worktree_path}`, on the branch `{branch}` (the base is `{base_branch}`). It is
-  yours to read only: a consult writes no code, so never commit and never push
-
-{instruction}
-## What was asked
-
-The fleet handed this issue to a human, and told them:
-
-{asked}
-
-## Where to look further
-
-What a human answering this would look at, and nothing you must: you decide what to look into.
-
-- The issue, its comments and its blocked-by edges both ways: `gh issue view {n}<tracker> --comments`,
-  `gh api repos/<issues>/issues/{n}/dependencies/blocked_by` and `…/blocking`
-- The worktree, its branch and what only it holds: `git -C {worktree_path} status`, `git log`
-- The gate, run again in the worktree: `{gate_command}`
-- The fleet and its host: `{doctor_command}`, `{plan_command}`, and any other read-only command
-
-## What you may run
-
-Every command a human runs to answer an escalated issue (`afkconvoy help humans`), and any
-read-only command. What you may not do is commit, push, or change the host — delete files, caches or
-worktrees, or stop processes. What needs that, say on the issue for the next worker, or open as an
-issue.
-
-## End
-
-End with one answer, and not before. Then wake the fleet and stop.
-
-- **Say what is to be done, and hand it back.** The next worker reads the issue's comments:
-  ```bash
-  gh issue comment {n}<tracker> --body-file <file>
-  gh issue edit {n}<tracker> --add-label {ready_label} --remove-label {escalate_label}
-  ```
-- **Close** it, nothing being left to do: `gh issue close {n}<tracker> --comment <why>`
-- **Park** it for new evidence, with a reason. Run in the worktree:
-  ```bash
-  afkconvoy verdict park --consult --issue {n} --stage consult --text-file <file>
-  ```
-  It carries `convoy:parked` and leaves the frontier. To bring it back, record the new evidence
-  on the issue and restore `{ready_label}`, removing `convoy:parked`.
-- **Open the issue you found outside this one**, for the fleet to work, with
-  `gh issue create<tracker> --title <title> --body-file <file> --label {ready_label}<labelled>` — record this issue as
-  blocked by it (`gh api repos/<issues>/issues/{n}/dependencies/blocked_by -F issue_id=<id>`)
-  and hand it back as above, or let it through.
-- **Let it through.** It is not yours to answer either: post a comment whose first line is exactly
-  this marker, followed by what a human has to decide, and the issue stays with a human:
-  ```
-  {verdict_marker}
-  ```
-
-<wake>
-";
-
-/// What the unbound stock consult's brief is filled with beside the issue's
-/// fields (`WorkerFields`).
-#[derive(Debug, Clone, Copy)]
-pub struct StockFields<'a> {
-    /// What the human handed the issue was told: the comment of its
-    /// escalation.
-    pub asked: &'a str,
-    pub escalate_label: &'a str,
-    /// The lines that look at the fleet.
-    pub doctor: &'a str,
-    pub plan: &'a str,
-}
-
-/// The brief of the stock consult of an unbound repo's escalated issue.
-pub fn stock_prompt(fields: &WorkerFields, stock: &StockFields) -> Result<String, String> {
-    let number = fields.number.to_string();
-    let marker = record::marker(verdict::VERDICT, &[("phase", verdict::Phase::Escalate.word())]);
-    let wake = WAKE.replace("<outcomes>", " — your answer is");
-    fill(
-        &in_tracker(&STOCK_UNBOUND.replace("<wake>", &wake), fields.tracker),
-        &[
-            ("n", &number),
-            ("issue", &fields.tracker.issue(fields.number)),
-            ("title", fields.title),
-            ("branch", fields.branch),
-            ("worktree_path", fields.worktree),
-            ("base_branch", fields.base_branch),
-            ("instruction", crate::stock::INSTRUCTION),
-            ("asked", &quoted(stock.asked)),
-            ("gate_command", fields.gate_alone_command),
-            ("doctor_command", stock.doctor),
-            ("plan_command", stock.plan),
-            ("ready_label", fields.ready_label),
-            ("escalate_label", stock.escalate_label),
-            ("verdict_marker", &marker),
-            ("wake_command", fields.wake_command),
-            // `gh api` fills these in itself.
-            ("owner", "{owner}"),
-            ("repo", "{repo}"),
-        ],
-    )
-}
 
 /// What a consult is told of the `escalate` it answers.
 const ASKED_ESCALATE: &str = "The stage `{stage}` could not decide, and said why:\n\n";
@@ -1490,12 +1379,6 @@ mod tests {
             repo: crate::config::RepoName::read("acme/dev").unwrap(),
         };
         let fields = WorkerFields { tracker: &tracker, ..fields() };
-        let stock = StockFields {
-            asked: "Its worker went silent.",
-            escalate_label: "ready-for-human",
-            doctor: "/opt/bin/afkconvoy doctor",
-            plan: "/opt/bin/afkconvoy plan",
-        };
         let train = train_prompt(&TrainFields {
             worktree: "/wt/convoy-train",
             base_branch: "develop",
@@ -1515,7 +1398,7 @@ mod tests {
         .into_iter()
         .map(|variant| worker_prompt(&fields, variant).unwrap())
         .collect();
-        briefs.extend([stock_prompt(&fields, &stock).unwrap(), train]);
+        briefs.push(train);
         for brief in &briefs {
             for mark in ["<tracker>", "<issues>", "<labelled>", "<repo_label>", "{owner}"] {
                 assert!(!brief.contains(mark), "{mark}: {brief}");
@@ -1537,7 +1420,7 @@ mod tests {
         assert!(fresh.contains("\n   Closes acme/tracker#7\""), "{fresh}");
         // An issue a worker opens is the repo's in the tracker.
         {
-            let brief = &briefs[5];
+            let brief = briefs.last().unwrap();
             assert!(
                 brief.contains("`gh issue create --repo acme/tracker`): the symptom")
                     && brief.contains(
@@ -1547,10 +1430,6 @@ mod tests {
                 "{brief}"
             );
         }
-        assert!(briefs[4].contains(
-            "`gh issue create --repo acme/tracker --title <title> --body-file <file> --label \
-             agent-ready --label repo:acme/dev`"
-        ));
     }
 
     /// Each issue command of `brief` names the tracker `acme/tracker`, every
@@ -1712,30 +1591,6 @@ mod tests {
         assert!(proposal.contains("ruled on issue acme/tracker#7, which"), "{proposal}");
         // The proposal is the team's: its PR names its repo, as it always did.
         assert!(proposal.contains("one PR on `acme/team`"), "{proposal}");
-    }
-
-    #[test]
-    fn the_unbound_stock_consult_is_told_what_a_human_would_be_and_how_a_human_answers() {
-        let stock = StockFields {
-            asked: "**afkconvoy: escalated to a human.**\n\nIts worker went silent.",
-            escalate_label: "ready-for-human",
-            doctor: "/opt/bin/afkconvoy doctor",
-            plan: "/opt/bin/afkconvoy plan",
-        };
-        let brief = stock_prompt(&fields(), &stock).unwrap();
-        for said in [
-            "started as the **stock consult**",
-            crate::stock::INSTRUCTION,
-            "told them:\n\n> **afkconvoy: escalated to a human.**\n> \n> Its worker went silent.\n",
-            "gh issue edit 7 --add-label agent-ready --remove-label ready-for-human\n",
-            "gh issue close 7 --comment <why>",
-            "--label agent-ready",
-            "<!--convoy:verdict phase=escalate-->",
-            "/opt/bin/afkconvoy wake\n",
-            "never commit and never push",
-        ] {
-            assert!(brief.contains(said), "{said}\n{brief}");
-        }
     }
 
     #[test]

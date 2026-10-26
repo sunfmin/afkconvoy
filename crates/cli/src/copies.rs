@@ -13,7 +13,6 @@ use std::path::{Path, PathBuf};
 
 use afkconvoy_core::config::{RepoDir, RepoName};
 use afkconvoy_core::harness::Harness;
-use afkconvoy_core::stock;
 use afkconvoy_core::team::{RULES, SKILLS};
 use anyhow::{Context, Result, anyhow, bail};
 
@@ -119,31 +118,6 @@ impl Copies {
         } else {
             self.take(fetched, dir, &format!("role+{}", harness.key()), &[], &links, rooted)
         }
-    }
-
-    /// The directory the stock consult's worker starts in (docs/adr/0018):
-    /// its instruction as the rules file and a native discovery boundary.
-    /// It is kept once for each text of the instruction, which its commit names.
-    pub fn stock(&self) -> Result<Copy> {
-        use std::hash::{Hash, Hasher};
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        stock::INSTRUCTION.hash(&mut hasher);
-        // Older copies have no boundary for native ancestor skill discovery.
-        "rooted".hash(&mut hasher);
-        let commit = format!("{}-{:016x}", stock::ROLE, hasher.finish());
-        let kept = Copy { dir: self.root.join(stock::ROLE).join(&commit), commit };
-        if kept.dir.is_dir() {
-            return Ok(kept);
-        }
-        let scratch = self.root.join(stock::ROLE).join(format!("taking-{}", crate::unique()));
-        let _ = std::fs::remove_dir_all(&scratch);
-        let taken = std::fs::create_dir_all(&scratch)
-            .and_then(|()| std::fs::write(scratch.join(RULES), stock::INSTRUCTION))
-            .and_then(|()| discovery_root(&scratch))
-            .with_context(|| format!("cannot write {}", scratch.display()))
-            .and_then(|()| keep_whole(&scratch, &kept.dir));
-        let _ = std::fs::remove_dir_all(&scratch);
-        taken.map(|()| kept)
     }
 
     /// The copy of the team's directory `dir`, taken out of `fetched`, the

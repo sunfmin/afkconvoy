@@ -52,7 +52,6 @@ pub mod roster;
 pub mod settle;
 pub mod slow_gate;
 pub mod stage_record;
-pub mod stock;
 pub mod stopped;
 pub mod takeover;
 pub mod team;

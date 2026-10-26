@@ -1123,7 +1123,7 @@ fn admission(out: &mut String, host: &Host) {
 }
 
 /// The host kit: every harness in it, in order, with its models in order,
-/// and what the stock consult runs; each harness paused, since when and why.
+/// each harness paused, since when and why.
 fn kit(out: &mut String, host: &Host) {
     if let Some(faults) = host.worker_health["faults"].as_array().filter(|v| !v.is_empty()) {
         out.push_str("<section data-health-faults><h2>Unavailable candidates</h2><ul>");
@@ -1218,17 +1218,10 @@ fn kit(out: &mut String, host: &Host) {
             )
         })
         .collect();
-    let consult = kit.without(&host.paused).stock_consult().map_or_else(
-        || "no harness: <code>afkconvoy kit</code> writes one".to_string(),
-        |named| match named.model {
-            Some(model) => format!("{} on {}", esc(named.harness.key()), esc(&model)),
-            None => esc(named.harness.key()),
-        },
-    );
     let _ = writeln!(
         out,
         "<section class=\"kit\"><h2>Host kit</h2><p class=\"by\">The harnesses and models this \
-         host can start, in order of preference; the stock consult runs {consult}. Automatic model casting is {}</p>\
+         host can start, in order of preference. Automatic model casting is {}</p>\
          <ul class=\"harnesses\">{}</ul></section>",
         if kit.cast { "on" } else { "off" },
         harnesses.concat(),
