@@ -116,12 +116,20 @@ fn an_inspection_is_monitored_in_the_same_terminal_after_the_host_runner_moves()
         world.afk_as(&link, &world.clone, &["run", "--host", "h1", "--second-ms", "10"]).ok();
     until(&world, "host inspection", || started(&world) == 1);
     let checkout = inspection(&world);
+    let second = world.second_repo();
+    world.afk_in(&second, &["run", "--host", "h1", "--second-ms", "10"]).ok();
+    // Start the other checkout first after the move. It must not take the
+    // surviving inspection's turn while its original checkout starts.
+    let mut list = world.checkout_list();
+    list["checkouts"].as_array_mut().unwrap().reverse();
+    std::fs::write(world.cache().join("afkconvoy/checkouts.json"), list.to_string()).unwrap();
     let terminals = world.orca()["terminals"].clone();
     upgraded(&link, "999.0.0", &as_built());
     logged(&world, "host runner moved: ");
     until(&world, "inspection resumed by the replacement", || {
         let doctor = world.afk(&["doctor", "--host", "h1"]).json;
         doctor["host"]["inspection"]["since"].is_u64()
+            && doctor["host"]["inspection"]["repo"] == json!(world.clone)
             && world.host_runner().map(u64::from) != first["host_runner"]["pid"].as_u64()
     });
     assert_eq!(inspection(&world), checkout);

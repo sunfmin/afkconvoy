@@ -170,6 +170,18 @@ impl Turn {
         Some(Taken { turn: self.clone() })
     }
 
+    /// Reserves a surviving inspection before any fleet instance starts.
+    /// Its own inspector later takes this same turn, rather than competing
+    /// with a fresh inspection from a faster-starting checkout.
+    fn reserve(&self, running: Running) -> Result<()> {
+        let mut held = self.held();
+        if held.running.as_ref().is_some_and(|old| old != &running) {
+            anyhow::bail!("another inspection already holds the host's turn");
+        }
+        held.running = Some(running);
+        Ok(())
+    }
+
     /// A place at the turn for one fleet instance's inspector.
     fn place(&self) -> Place {
         let mut held = self.held();
@@ -330,6 +342,23 @@ struct Record {
     on: Subject,
     started: u64,
     by: String,
+}
+
+impl Record {
+    fn running(&self, repo: &Repo) -> Result<Running> {
+        let (worker, issue, held_back_by) = match &self.on {
+            Subject::Worker { worker, issue, .. } => (worker.clone(), *issue, None),
+            Subject::Host { reason, .. } => (THE_HOST.to_string(), None, Some(*reason)),
+        };
+        Ok(Running {
+            repo: repo.main_checkout()?.display().to_string(),
+            worker,
+            issue,
+            by: self.by.clone(),
+            since: self.started,
+            held_back_by,
+        })
+    }
 }
 
 const RECORD: &str = "convoy-inspection.json";
@@ -511,39 +540,37 @@ pub struct Inspector {
 }
 
 impl Inspector {
-    /// Takes over an inspection left in its terminal by an earlier host
-    /// runner. Reading or reserving it must succeed before any new one starts.
-    pub fn resume(&mut self) -> Result<()> {
-        let source = Source::of(&self.checkout)?;
-        let Some(checkout) = Worktree::named(&source, CHECKOUT)? else { return Ok(()) };
+    fn left(repo: &Repo) -> Result<Option<(Worktree, Record)>> {
+        let source = Source::of(repo)?;
+        let Some(checkout) = Worktree::named(&source, CHECKOUT)? else { return Ok(None) };
         let file = checkout.note(RECORD)?;
         let text = match std::fs::read(&file) {
             Ok(text) => text,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(error) => {
                 return Err(error).with_context(|| format!("cannot read {}", file.display()));
             }
         };
-        let Record { on, started, by } = serde_json::from_slice(&text)
+        let record = serde_json::from_slice(&text)
             .with_context(|| format!("cannot read {}", file.display()))?;
-        let (worker, issue, held_back_by) = match &on {
-            Subject::Worker { worker, issue, .. } => (worker.clone(), *issue, None),
-            Subject::Host { reason, .. } => (THE_HOST.to_string(), None, Some(*reason)),
-        };
-        let running = Running {
-            repo: self.checkout.main_checkout()?.display().to_string(),
-            worker,
-            issue,
-            by: by.clone(),
-            since: started,
-            held_back_by,
-        };
-        let turn = self.place.turn.take(running).ok_or_else(|| {
-            anyhow!(
-                "cannot resume {}: another inspection holds the host's turn",
-                checkout.path.display()
-            )
-        })?;
+        Ok(Some((checkout, record)))
+    }
+
+    /// Keeps a surviving inspection's turn ahead of every new fleet start.
+    pub fn reserve(repo: &Repo, turn: &Turn) -> Result<()> {
+        if let Some((_, record)) = Self::left(repo)? {
+            turn.reserve(record.running(repo)?)?;
+        }
+        Ok(())
+    }
+
+    /// Takes over an inspection left in its terminal by an earlier host
+    /// runner. Reading or reserving it must succeed before any new one starts.
+    pub fn resume(&mut self) -> Result<()> {
+        let Some((checkout, record)) = Self::left(&self.checkout)? else { return Ok(()) };
+        self.place.turn.reserve(record.running(&self.checkout)?)?;
+        let turn = Taken { turn: self.place.turn.clone() };
+        let Record { on, started, by } = record;
         self.running = Some(Box::new(Inspection { on, checkout, started, by, _turn: turn }));
         Ok(())
     }

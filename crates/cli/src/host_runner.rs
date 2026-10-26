@@ -660,6 +660,16 @@ fn held_host(
     }
     let held = Mutex::default();
     let shared = Shared { installed: Arc::clone(&watched.installed), ..Shared::default() };
+    for entry in &listed.checkouts {
+        let restored = Repo::at(&entry.checkout)
+            .and_then(|repo| crate::inspection::Inspector::reserve(&repo, &shared.turn));
+        if let Err(why) = restored {
+            log.say(&format!(
+                "{}: its inspection could not reserve the host's turn: {why:#}",
+                entry.checkout.display()
+            ));
+        }
+    }
     let panel = HostPanel::new(shared.clone());
     // Read once: a port the host settings change to holds from the next start.
     let port = host_settings::of_host().map_or(host_settings::PANEL_PORT, |said| said.panel_port());
