@@ -259,7 +259,10 @@ fn a_failure_of_orca_is_an_error_with_the_claim_still_held() {
 fn a_trust_prompt_is_a_named_trust_gap_and_the_worker_is_told_nothing() {
     let world = ready_world();
     world.set_gate_config("gate_command: ./gate.sh\nescalate_to: human");
-    world.with_orca(|orca| orca["trust_prompt"] = json!(true));
+    world.with_orca(|orca| {
+        orca["trust_prompt"] = json!(true);
+        orca["start_screen"] = json!(["Accessing workspace:", "Yes, I trust this folder"]);
+    });
     let error = dispatch(&world, "7").error();
     assert!(error.contains("Claude Code worktree trust gap"), "{error}");
     assert!(error.contains("harness `claude-code`"), "{error}");
@@ -275,6 +278,58 @@ fn a_trust_prompt_is_a_named_trust_gap_and_the_worker_is_told_nothing() {
         comments.iter().filter(|body| body.contains("convoy:escalation")).collect();
     assert_eq!(escalations.len(), 1, "{comments:?}");
     assert!(escalations[0].contains("worktree trust gap"), "{comments:?}");
+    let evidence = escalations[0];
+    for raw in ["agent-trust-workspace", "satisfied", "Yes, I trust this folder", "source"] {
+        assert!(evidence.contains(raw), "startup evidence lost: {evidence}");
+    }
+    assert!(evidence.contains(orca["terminals"][0]["line"].as_str().unwrap()), "{evidence}");
+    let calls = world.orca_calls();
+    let read = calls.iter().position(|call| common::asked(call) == "terminal read").unwrap();
+    let close = calls
+        .iter()
+        .rposition(|call| matches!(common::asked(call).as_str(), "terminal close" | "worktree rm"))
+        .unwrap();
+    assert!(read < close, "capture precedes terminal cleanup: {calls:?}");
+}
+
+#[test]
+fn a_trust_gap_keeps_the_screen_read_failure_and_the_wait_that_classified_it() {
+    let world = ready_world();
+    world.set_gate_config("gate_command: ./gate.sh\nescalate_to: human");
+    world.with_orca(|orca| {
+        orca["trust_prompt"] = json!(true);
+        orca["read_fails"] = json!(true);
+    });
+    dispatch(&world, "7").error();
+    let comments = world.comments(7).join("\n");
+    assert!(comments.contains("agent-trust-workspace"), "{comments}");
+    assert!(comments.contains("terminal_not_readable"), "{comments}");
+    assert!(world.orca()["terminals"].as_array().unwrap().iter().all(|t| t["open"] == false));
+}
+
+#[test]
+fn a_trust_gap_keeps_screen_unavailability_and_redacts_echoed_credentials() {
+    let world = ready_world();
+    world.set_gate_config("gate_command: ./gate.sh\nescalate_to: human");
+    world.kit_command("claude-code", COMMAND);
+    let secret = "startup-\"quoted'-secret-103";
+    world.with_orca(|orca| {
+        orca["trust_prompt"] = json!(true);
+        orca["screen_source"] = json!("screen-unavailable");
+        orca["start_screen"] = json!([format!("provider credential: {secret}")]);
+    });
+    let out = world
+        .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
+        .env("ANTHROPIC_AUTH_TOKEN", secret)
+        .args(["dispatch", "--issue", "7", "--instance", "alpha", "--host", "h1"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let comments = world.comments(7).join("\n");
+    assert!(comments.contains("screen-unavailable"), "{comments}");
+    assert!(comments.contains("provider credential: [redacted]"), "{comments}");
+    assert!(!comments.contains(secret), "{comments}");
+    assert!(!String::from_utf8_lossy(&out.stdout).contains(secret));
 }
 
 #[test]

@@ -169,7 +169,6 @@ fn real_claude_code_started_in_a_role_sees_the_role_and_the_project_and_nothing_
     let absent = theirs.iter().filter(|name| !skills.contains(&name.as_str())).count();
     assert!(theirs.is_empty() || absent > 0, "the user's skills were loaded: {skills:?}");
     let files = said.lines().find(|line| line.starts_with("FILES=")).unwrap_or_default();
-    assert!(!files.contains(&text(&home.join(".claude"))), "the user's rules were loaded: {files}");
     assert!(init["memory_paths"].is_null(), "{}", init["memory_paths"]);
 
     // The role's hook fired on every Bash call, and read the stage from the
@@ -200,6 +199,8 @@ fn real_claude_code_started_in_a_role_sees_the_role_and_the_project_and_nothing_
         shown_once("the stage `smoke-stage` is marked `writes: false`: `git commit` is refused"),
         "the guard refused nothing: {shown:?}"
     );
+    println!("verified role hook and fleet guard refusals; project and user hooks did not fire");
+    assert!(!files.contains(&text(&home.join(".claude"))), "the user's rules were loaded: {files}");
 
     // What this run could not show, on this host.
     for (shown, what) in [
@@ -210,5 +211,136 @@ fn real_claude_code_started_in_a_role_sees_the_role_and_the_project_and_nothing_
         let verdict =
             if shown { "has, and none was loaded" } else { "has none: nothing was shown" };
         println!("the user's own {what}: this host {verdict}");
+    }
+}
+
+/// A real interactive start, unlike the print-mode smoke above: print mode
+/// skips workspace trust itself and would hide a broken interactive launch.
+/// Each directory is a fresh Git root so trust in an ancestor cannot mask it.
+#[test]
+#[ignore = "starts real Claude Code in Orca: needs both running and a login; costs a little"]
+fn real_interactive_claude_takes_its_brief_without_persisting_workspace_trust() {
+    use afkconvoy_core::line::Line;
+
+    fn orca(args: &[&str]) -> Value {
+        let out = Command::new("orca").args(args).arg("--json").output().unwrap();
+        let answer: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(answer["ok"], true, "{args:?}: {answer}");
+        answer["result"].clone()
+    }
+    struct Terminal(String);
+    impl Drop for Terminal {
+        fn drop(&mut self) {
+            let _ = Command::new("orca")
+                .args(["terminal", "close", "--terminal", &self.0, "--json"])
+                .output();
+        }
+    }
+    fn persisted_trust(path: &Path) -> bool {
+        let home = PathBuf::from(std::env::var("HOME").unwrap());
+        let config = match std::env::var_os("CLAUDE_CONFIG_DIR") {
+            Some(dir) => PathBuf::from(dir).join(".claude.json"),
+            None => home.join(".claude.json"),
+        };
+        let config: Value =
+            serde_json::from_str(&std::fs::read_to_string(config).unwrap_or_else(|_| "{}".into()))
+                .unwrap();
+        config["projects"][path.to_str().unwrap()]["hasTrustDialogAccepted"] == true
+    }
+
+    let checkout = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap();
+    let tmp = checkout.join(".afkconvoy-tmp");
+    std::fs::create_dir_all(&tmp).unwrap();
+    let scratch = tempfile::Builder::new().prefix("claude-trust-").tempdir_in(tmp).unwrap();
+    let root = scratch.path().canonicalize().unwrap();
+    let (role, project, team, kept) =
+        (root.join("role"), root.join("project"), root.join("team"), root.join("kept"));
+    for dir in [&role, &project, &team, &kept] {
+        std::fs::create_dir(dir).unwrap();
+    }
+    for dir in [&role, &project] {
+        assert!(
+            Command::new("git").args(["init", "-q"]).current_dir(dir).status().unwrap().success()
+        );
+        assert!(!persisted_trust(dir));
+    }
+    let text = |path: &Path| path.display().to_string();
+    let launch = Harness::ClaudeCode.stock();
+    for context in ["unbound", "role", "role-host-user"] {
+        let line = if context == "unbound" {
+            let trusted = Harness::ClaudeCode.in_worktree(launch, &text(&project), "");
+            Line::new().fixed("cd ").word(&text(&project)).fixed(" && ").launch(&trusted).done()
+        } else {
+            let start = Start {
+                role_dir: &text(&role),
+                worktree: &text(&project),
+                team_dir: &text(&team),
+                kept: &text(&kept),
+                model: Some("claude-opus-5-5"),
+                guard: &format!("{} guard", env!("CARGO_BIN_EXE_afkconvoy")),
+                host_user: context == "role-host-user",
+                dsh_profile: afkconvoy_core::team::DshProfile::Fleet,
+                shadowed: &[],
+                told: Told::default(),
+                facts: Facts {
+                    on: On::Stage { issue: 7, flow: "feature", stage: "smoke-stage" },
+                    role: "dev",
+                    skill: ROLE_SKILL,
+                    writes: false,
+                    consult: false,
+                    base_branch: "main",
+                    escalate_label: "ready-for-human",
+                    lock_label: "fleet-lock",
+                    role_commit: "abc",
+                    team_commit: "def",
+                },
+            };
+            let line = Harness::ClaudeCode.in_role(launch, &start);
+            assert_eq!(line.matches("--settings ").count(), 2);
+            line
+        };
+        let selector = format!("path:{}", checkout.display());
+        let made = orca(&["terminal", "create", "--worktree", &selector, "--command", &line]);
+        let terminal = Terminal(made["terminal"]["handle"].as_str().unwrap().into());
+        let waited = orca(&[
+            "terminal",
+            "wait",
+            "--terminal",
+            &terminal.0,
+            "--for",
+            "tui-idle",
+            "--timeout-ms",
+            "30000",
+        ]);
+        let screen =
+            orca(&["terminal", "read", "--terminal", &terminal.0, "--screen", "--limit", "200"]);
+        println!("{context}: wait={waited}; screen={screen}");
+        assert_eq!(waited["wait"]["satisfied"], true, "{waited}; {screen}");
+        assert!(waited["wait"]["blockedReason"].is_null(), "{waited}");
+        assert_eq!(screen["terminal"]["source"], "screen", "{screen}");
+        assert!(!screen.to_string().contains("Yes, I trust this folder"), "{screen}");
+        let sent = orca(&[
+            "terminal",
+            "send",
+            "--terminal",
+            &terminal.0,
+            "--text",
+            "Reply with exactly TRUST-SMOKE-DONE. Use no tools.",
+            "--enter",
+            "--wait-submit",
+            "30",
+        ]);
+        assert!(
+            sent["send"]["prompt"]["stages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|stage| stage == "turn_started"),
+            "{sent}"
+        );
+        println!("{context}: receipt={sent}");
+        drop(terminal);
+        assert!(!persisted_trust(&role));
+        assert!(!persisted_trust(&project));
     }
 }
