@@ -150,13 +150,13 @@ const SKILL: &str = include_str!("../../../skills/afkconvoy/SKILL.md");
 // crate's own, not clap's: it prints a topic too, and `help all` the whole
 // manual. The listing goes straight from the usage line to the commands: one
 // line less, so that `-h` stays one screen.
-/// afkconvoy works a repo's ready GitHub-issue backlog unattended. A fleet instance — one per repo, held by the host's one host runner, which `afkconvoy run` starts — dispatches one worker per issue, a coding agent isolated in its own git worktree, and lands each finished PR on the base branch through the landing train, behind the gate. Fleet state lives entirely in GitHub and the repo's remote: no process holds it.
+/// afkconvoy works a repo's ready GitHub issues unattended. One host runner, started by `afkconvoy run`, holds one fleet instance per repo. Each dispatches a worker per issue — a coding agent in its own git worktree — and lands finished PRs on the base branch through the gate and landing train. Fleet state lives in GitHub and the repo's remote; no process holds it.
 ///
 /// `afkconvoy --help` answers the index: this guide, then each command's one line under who runs it, then each topic's first sentence. `afkconvoy help all` answers the guide, commands and topics in full. `afkconvoy -h` lists commands on one screen.
 ///
 /// ## What it needs
 ///
-/// - A config on the base branch: the first yaml block of {const:CONFIG_FILE}. A repo whose config names a team is a bound repo: the team's workflows say how its issues are worked. One whose config names none is unbound: each issue is worked by one worker, then the landing train.
+/// - A config on the base branch: the first yaml block of {const:CONFIG_FILE}. With a team, the repo is bound and follows its workflows; without one, it is unbound: one worker per issue, then the landing train.
 /// - A private tracker for the issues the fleet reads and writes. Only a private repo can be its own tracker: anyone who can comment writes what workers read. Settle it with the user: [`afkconvoy help first-start`](help:first-start).
 /// - {const:FIRST_START_SETTINGS}
 /// - `gh` logged in as a user who may push to the repo.
@@ -187,7 +187,7 @@ const SKILL: &str = include_str!("../../../skills/afkconvoy/SKILL.md");
 ///
 /// ## The commands, by who runs them
 ///
-/// Read `afkconvoy <command> --help` before the first time you run one. The commands below are grouped by who runs them:
+/// Read `afkconvoy <command> --help` before first running it. Commands are grouped by who runs them:
 ///
 /// - **{const:OPERATOR}** — starting, watching or stopping a fleet. Read these first: `config`, `check` and `plan` before it starts, `run` to start it, `tick` for one pass of it and `stop` to stop it, `doctor --all --since <until of your last look>`, `checkouts` and `panel` to watch it, `kit`, `cast` and `switch` for the harness and model each worker runs, `patrol-now` to have a patrol run now and `takeover` to take another fleet instance's claims. `doctor` also says what is wrong, each finding with the line that fixes it.
 /// - **{const:DESIGNER}** — `scaffold` to start one or a role of it from a skeleton, `draft` to draft its roster from the host kit, then, once `check` accepts it, `show` to review a workflow or to ask where an issue is in it, and `rehearse` to try one out.
@@ -198,10 +198,6 @@ const SKILL: &str = include_str!("../../../skills/afkconvoy/SKILL.md");
 /// - **{const:HOOK}** — `guard`, which the harness of a bound repo's worker asks before each thing the worker does. Nobody runs it by hand. Read its help to learn what a worker is refused, and why one was.
 /// - **{const:BY_HAND}** — `dispatch`, `close`, `escalate`, `park`, `nudge`, `restart` and `abandon`: each is something a tick does on its own, and `recovery` shows what `dispatch` would continue an issue from. Read one when a plan shows a transition the fleet is not making, or you are told to make it yourself.
 /// - **{const:PLUMBING}** — `scan`, `claim`, `release` and `heartbeat`: what the transitions are built on. Read these only to inspect or repair claims and heartbeats on the remote.
-///
-/// ## The topics
-///
-/// Read `afkconvoy help <topic>` when this guide or a command's help names the topic: it prints that topic, Markdown, as `--help` itself is, and no JSON object. The topics below are what belongs to no one command, each opening with the sentence that says what it is for.
 ///
 /// ## Rules to know before you start
 ///

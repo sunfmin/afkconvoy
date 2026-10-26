@@ -2,15 +2,15 @@
 
 # `afkconvoy`
 
-afkconvoy works a repo's ready GitHub-issue backlog unattended. A fleet instance — one per repo, held by the host's one host runner, which `afkconvoy run` starts — dispatches one worker per issue, a coding agent isolated in its own git worktree, and lands each finished PR on the base branch through the landing train, behind the gate. Fleet state lives entirely in GitHub and the repo's remote: no process holds it.
+afkconvoy works a repo's ready GitHub issues unattended. One host runner, started by `afkconvoy run`, holds one fleet instance per repo. Each dispatches a worker per issue — a coding agent in its own git worktree — and lands finished PRs on the base branch through the gate and landing train. Fleet state lives in GitHub and the repo's remote; no process holds it.
 
 `afkconvoy --help` answers the index: this guide, then each command's one line under who runs it, then each topic's first sentence. `afkconvoy help all` answers the guide, commands and topics in full. `afkconvoy -h` lists commands on one screen.
 
 ## What it needs
 
-- A config on the base branch: the first yaml block of docs/agents/afkconvoy.md. A repo whose config names a team is a bound repo: the team's workflows say how its issues are worked. One whose config names none is unbound: each issue is worked by one worker, then the landing train.
+- A config on the base branch: the first yaml block of docs/agents/afkconvoy.md. With a team, the repo is bound and follows its workflows; without one, it is unbound: one worker per issue, then the landing train.
 - A private tracker for the issues the fleet reads and writes. Only a private repo can be its own tracker: anyone who can comment writes what workers read. Settle it with the user: [`afkconvoy help first-start`](help:first-start).
-- Host settings apply to every fleet here; `run` changes those it names. Defaults: host sleep 00:00-06:00 local time after all fleets and the host are idle 10 minutes (off macOS, say `--no-host-sleep`); hot-worker inspection past half the cores for two minutes (at least one), a quarter of memory resident, or a tenth of free disk written in ten minutes (at least one GiB); admission holds new workers past 200% load per core, below 10% memory free or 1% disk free, inspecting after 600 seconds held for one reason or memory pressure; exclusive commands ended after 1200 seconds holding others up; panel port 7070, or a free port if taken; the host runner looks every 300 seconds when an operator directory is set, with none by default and no watch. Checkout concurrency defaults to 3 claims at work at once. `afkconvoy run --help` gives each flag.
+- Host settings apply to every fleet; `run` changes those named. Defaults: sleep 00:00-06:00 local time after host and fleets idle 10 minutes (`--no-host-sleep` required off macOS); inspect workers above half the cores for two minutes (at least one), a quarter of memory resident, or a tenth of free disk written in ten minutes (at least one GiB); admission holds starts above 200% load per core or below 10% memory or 1% disk free, inspecting after 600 seconds held for one reason or memory pressure; end exclusive commands after 1200 seconds holding others up; panel port 7070 (a free port if taken); the host runner looks every 300 seconds with an operator directory, none by default so no watch. Concurrency: 3 claims at work per checkout. Flags: `afkconvoy run --help`.
 - `gh` logged in as a user who may push to the repo.
 - `orca` on the PATH: every worker is started through it. It is running (`orca open`) and was given this checkout, once (`orca repo add --path "$PWD"`).
 - `claude` on the PATH and logged in, when it is what starts a worker.
@@ -39,7 +39,7 @@ Every command prints exactly one JSON object on stdout. A failure is {"error": �
 
 ## The commands, by who runs them
 
-Read `afkconvoy <command> --help` before the first time you run one. The commands below are grouped by who runs them:
+Read `afkconvoy <command> --help` before first running it. Commands are grouped by who runs them:
 
 - **Run by the operator** — starting, watching or stopping a fleet. Read these first: `config`, `check` and `plan` before it starts, `run` to start it, `tick` for one pass of it and `stop` to stop it, `doctor --all --since <until of your last look>`, `checkouts` and `panel` to watch it, `kit`, `cast` and `switch` for the harness and model each worker runs, `patrol-now` to have a patrol run now and `takeover` to take another fleet instance's claims. `doctor` also says what is wrong, each finding with the line that fixes it.
 - **Run by whoever designs a team** — `scaffold` to start one or a role of it from a skeleton, `draft` to draft its roster from the host kit, then, once `check` accepts it, `show` to review a workflow or to ask where an issue is in it, and `rehearse` to try one out.
@@ -50,10 +50,6 @@ Read `afkconvoy <command> --help` before the first time you run one. The command
 - **Run by a worker's hook** — `guard`, which the harness of a bound repo's worker asks before each thing the worker does. Nobody runs it by hand. Read its help to learn what a worker is refused, and why one was.
 - **One transition by hand** — `dispatch`, `close`, `escalate`, `park`, `nudge`, `restart` and `abandon`: each is something a tick does on its own, and `recovery` shows what `dispatch` would continue an issue from. Read one when a plan shows a transition the fleet is not making, or you are told to make it yourself.
 - **The claim plumbing** — `scan`, `claim`, `release` and `heartbeat`: what the transitions are built on. Read these only to inspect or repair claims and heartbeats on the remote.
-
-## The topics
-
-Read `afkconvoy help <topic>` when this guide or a command's help names the topic: it prints that topic, Markdown, as `--help` itself is, and no JSON object. The topics below are what belongs to no one command, each opening with the sentence that says what it is for.
 
 ## Rules to know before you start
 
@@ -3464,7 +3460,7 @@ A first start settles a new checkout's tracker and a new host's host settings wi
 
 Explain these briefly, in the user's words. A tracker is the private repo the fleet reads and writes its issues in. Anyone who can comment on its issues writes what workers read, so a public repo cannot be its own tracker. Two people working one repo need their own trackers; those choices stay on their hosts and are never pushed. `afkconvoy checkouts` shows the trackers other checkouts on this host already use.
 
-Host settings apply to every fleet here; `run` changes those it names. Defaults: host sleep 00:00-06:00 local time after all fleets and the host are idle 10 minutes (off macOS, say `--no-host-sleep`); hot-worker inspection past half the cores for two minutes (at least one), a quarter of memory resident, or a tenth of free disk written in ten minutes (at least one GiB); admission holds new workers past 200% load per core, below 10% memory free or 1% disk free, inspecting after 600 seconds held for one reason or memory pressure; exclusive commands ended after 1200 seconds holding others up; panel port 7070, or a free port if taken; the host runner looks every 300 seconds when an operator directory is set, with none by default and no watch. Checkout concurrency defaults to 3 claims at work at once. `afkconvoy run --help` gives each flag.
+Host settings apply to every fleet; `run` changes those named. Defaults: sleep 00:00-06:00 local time after host and fleets idle 10 minutes (`--no-host-sleep` required off macOS); inspect workers above half the cores for two minutes (at least one), a quarter of memory resident, or a tenth of free disk written in ten minutes (at least one GiB); admission holds starts above 200% load per core or below 10% memory or 1% disk free, inspecting after 600 seconds held for one reason or memory pressure; end exclusive commands after 1200 seconds holding others up; panel port 7070 (a free port if taken); the host runner looks every 300 seconds with an operator directory, none by default so no watch. Concurrency: 3 claims at work per checkout. Flags: `afkconvoy run --help`.
 
 #### Set up without asking
 
