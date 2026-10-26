@@ -361,20 +361,7 @@ where
         did.push((step, carry_out(step)));
     }
     let held = admit(set, concurrency, held, &mut did, &mut carry_out);
-    // After admission, so a cut's start names how the fleet actually ends.
-    let left = set.frontier.iter().filter(|issue| !dispatched(&did, issue.number)).count();
-    let held_back = !set.held_back.is_empty();
-    let superseded = did.contains(&(TickStep::EndCut, Outcome::Superseded)) && set.locks.is_empty();
-    if superseded
-        || set
-            .cut
-            .as_ref()
-            .is_some_and(|cut| cut::starts(cut, held, left, set.on_train(), held_back))
-    {
-        let busy = held > 0 || left > 0 || set.on_train() || held_back;
-        let step = TickStep::Cut { busy };
-        did.push((step, carry_out(step)));
-    }
+    start_cut(set, held, &mut did, &mut carry_out);
     if set.slow_gate.as_ref().is_some_and(|slow| slow.issue.is_none()) {
         let step = TickStep::SlowGate;
         did.push((step, carry_out(step)));
@@ -392,6 +379,32 @@ where
     }
     let left = set.frontier.iter().filter(|issue| !dispatched(&did, issue.number)).count();
     Pass { did, held, bound: concurrency, frontier_remaining: left }
+}
+
+/// Starts a due cut after admission, naming whether the fleet ends busy,
+/// or replaces a patch superseded in this pass. It takes no claim slot;
+/// keeping this decision separate keeps it out of the slot bound's proof.
+fn start_cut<F>(
+    set: &WorkingSet,
+    held: usize,
+    did: &mut Vec<(TickStep, Outcome)>,
+    carry_out: &mut F,
+) where
+    F: FnMut(TickStep) -> Outcome,
+{
+    let left = set.frontier.iter().filter(|issue| !dispatched(did, issue.number)).count();
+    let held_back = !set.held_back.is_empty();
+    let superseded = did.contains(&(TickStep::EndCut, Outcome::Superseded)) && set.locks.is_empty();
+    if superseded
+        || set
+            .cut
+            .as_ref()
+            .is_some_and(|cut| cut::starts(cut, held, left, set.on_train(), held_back))
+    {
+        let busy = held > 0 || left > 0 || set.on_train() || held_back;
+        let step = TickStep::Cut { busy };
+        did.push((step, carry_out(step)));
+    }
 }
 
 /// Which of my claims one sweep of a pass looks at.
