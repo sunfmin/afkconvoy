@@ -387,14 +387,10 @@ impl Staged {
             gate: self.writes.then_some(Gate { train: &gate, alone: &gate_alone }),
         };
         let prompt = if self.consult {
-            let unworked = crate::blockers::for_issue(&fleet.repo, &fleet.gh, self.issue)?;
-            let handed =
-                [self.handed.clone().unwrap_or_default(), crate::blockers::evidence(&unworked)]
-                    .join("\n\n");
             let issue = own().fixed(" show --issue ").number(self.issue).own();
             let consulting = Consulting {
                 rule: &declare(" rule"),
-                handed: (!handed.trim().is_empty()).then_some(handed.as_str()),
+                handed: self.handed.as_deref(),
                 show: &issue,
                 gate: &own().fixed(" gate").own(),
                 doctor: &own().fixed(" doctor").own(),
@@ -404,7 +400,17 @@ impl Staged {
         } else {
             stage_prompt(&fields)
         };
-        worktree.write_brief(&prompt.map_err(|e| anyhow!(e))?)
+        let mut prompt = prompt.map_err(|e| anyhow!(e))?;
+        if self.consult {
+            let unworked = crate::blockers::for_issue(&fleet.repo, &fleet.gh, self.issue)?;
+            if !unworked.is_empty() {
+                prompt.push_str(&format!(
+                    "\n## Blockers no fleet works\n\n{}\n",
+                    crate::blockers::evidence(&unworked)
+                ));
+            }
+        }
+        worktree.write_brief(&prompt)
     }
 
     pub fn json(&self) -> Value {

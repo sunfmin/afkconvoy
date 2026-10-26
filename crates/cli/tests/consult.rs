@@ -260,6 +260,7 @@ fn an_escalate_with_an_outside_blocker_starts_its_consult_and_names_the_blocker(
     assert!(told.contains("acme/kernel#931"), "{told}");
     assert!(told.contains("outside the tracker"), "{told}");
     assert!(told.contains("gh issue transfer 931"), "{told}");
+    assert!(told.contains("Which schema: v1 or v2?"), "{told}");
 }
 
 #[test]
@@ -334,6 +335,10 @@ fn an_unbound_stock_consult_is_started_with_its_unworked_blocker() {
     assert_eq!(did(&first), ["dispatch 7 done"], "{first}");
     world.comment(7, "<!--convoy:verdict phase=escalate-->\nWho will work the kernel blocker?");
     stop(&world, 1010);
+    world.with_orca(|orca| {
+        orca["terminals"].as_array_mut().unwrap().last_mut().unwrap()["lastOutputAt"] =
+            json!(1010 * 1000)
+    });
     world.with_gh(|gh| {
         gh["edges"]["7"] = json!([
             {"number": 931, "state": "open", "repo": "acme/kernel", "labels": []}
