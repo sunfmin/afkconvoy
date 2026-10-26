@@ -1013,7 +1013,7 @@ fn capacity_continuation_never_starts_a_second_writer_before_termination_is_conf
         tick(&world, at);
     }
     let commands = open_commands(&world, &dir);
-    world.with_orca(|orca| orca["close_reports_ended"] = json!(true));
+    world.with_orca(|orca| orca["close_keeps_terminal"] = json!(true));
     tick(&world, 982);
     assert_eq!(open_commands(&world, &dir), commands);
     assert_eq!(world.claims().len(), 1);
