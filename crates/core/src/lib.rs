@@ -66,3 +66,4 @@ pub mod verdict;
 pub mod waiting;
 pub mod wake;
 pub mod worker;
+pub mod worker_health;
