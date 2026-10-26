@@ -1413,6 +1413,34 @@ fn automatic_codex_starts_follow_the_live_user_model_and_ignore_kit_order_and_se
 }
 
 #[test]
+fn a_codex_user_model_outside_the_role_range_is_reported_before_start() {
+    let world = bound();
+    world.kit_models("codex", &["gpt-5.5", "user-selected"]);
+    write(&world.home(), ".codex/config.toml", "model = 'user-selected'\n");
+    world.issue(7, &["flow:feature"]);
+    let error = world
+        .afk(&["dispatch", "7", "--instance", "alpha", "--host", "h1", "--now", "1000"])
+        .error();
+    assert!(error.contains("user-selected"), "{error}");
+    assert!(error.contains("outside this issue's role range"), "{error}");
+    assert!(world.worktrees().is_empty());
+}
+
+#[test]
+fn an_unavailable_codex_user_model_reports_its_preference_source() {
+    let world = unbound_codex();
+    write(&world.home(), ".codex/config.toml", "model = 'not-listed'\n");
+    world.issue(7, &["ready-for-agent"]);
+    let error = world
+        .afk(&["dispatch", "7", "--instance", "alpha", "--host", "h1", "--now", "1000"])
+        .error();
+    assert!(error.contains("not-listed"), "{error}");
+    assert!(error.contains("not listed by the host kit"), "{error}");
+    assert!(error.contains("config.toml:model"), "{error}");
+    assert!(world.worktrees().is_empty());
+}
+
+#[test]
 fn plan_doctor_and_panel_show_each_codex_launch_and_its_sources() {
     let world = bound();
     write(
