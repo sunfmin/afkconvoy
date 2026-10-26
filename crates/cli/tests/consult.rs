@@ -296,6 +296,58 @@ fn a_declared_human_hand_off_with_an_outside_blocker_escalates() {
 }
 
 #[test]
+fn an_unlabelled_tracker_blocker_does_not_hold_its_consult() {
+    let world = bound(FEATURE, 2);
+    world.name_origin(&world.clone, "acme/app");
+    world.say_tracker(&world.clone, "acme/tracker");
+    world.with_tracker(|gh| {
+        gh["issues"].as_array_mut().unwrap().push(json!({
+            "number": 7, "title": "needs a capability", "state": "open",
+            "labels": ["repo:acme/app", "flow:feature"]
+        }))
+    });
+    let first = tick(&world, 1000);
+    assert_eq!(did(&first), ["dispatch 7 done"], "{first}");
+    declare(&world, "build", "escalate", "Who will work the kernel blocker?");
+    stop(&world, 1010);
+    world.with_tracker(|gh| {
+        gh["edges"]["7"] = json!([
+            {"number": 91, "state": "open", "repo": "acme/tracker", "labels": []}
+        ])
+    });
+    assert_eq!(did(&tick(&world, 1090)), ["advance 7 done"]);
+    let plan = world.afk(&["plan"]).ok();
+    assert_eq!(plan["frontier"][0]["number"], 7, "{plan}");
+    assert!(plan["findings"][0]["what"].as_str().unwrap().contains("acme/tracker#91"));
+    assert_eq!(did(&tick(&world, 1180)), ["dispatch 7 done"]);
+    let told = brief(&worktree(&world));
+    assert!(told.contains("acme/tracker#91"), "{told}");
+    assert!(told.contains("no single repo: label"), "{told}");
+}
+
+#[test]
+fn an_unbound_stock_consult_is_started_with_its_unworked_blocker() {
+    let world = World::new();
+    world.issue(7, &["ready-for-agent"]);
+    let first = tick(&world, 1000);
+    assert_eq!(did(&first), ["dispatch 7 done"], "{first}");
+    world.comment(7, "<!--convoy:verdict phase=escalate-->\nWho will work the kernel blocker?");
+    stop(&world, 1010);
+    world.with_gh(|gh| {
+        gh["edges"]["7"] = json!([
+            {"number": 931, "state": "open", "repo": "acme/kernel", "labels": []}
+        ])
+    });
+    tick(&world, 1090);
+    let plan = world.afk(&["plan"]).ok();
+    assert_eq!(plan["frontier"][0]["number"], 7, "{plan}");
+    assert_eq!(did(&tick(&world, 1180)), ["dispatch 7 done"]);
+    let told = brief(&worktree(&world));
+    assert!(told.contains("acme/kernel#931"), "{told}");
+    assert!(told.contains("outside the tracker"), "{told}");
+}
+
+#[test]
 fn a_consult_s_ruling_is_a_stage_record_and_the_stage_that_asked_runs_again_under_it() {
     let world = bound(FEATURE, 2);
     asked(&world);
