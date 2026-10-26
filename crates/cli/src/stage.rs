@@ -504,9 +504,7 @@ impl Flows {
                 at => (at.stage().map(|stage| stage.name.clone()), at.worker()),
             };
             stood.stage = stage;
-            stood.role = match place.position {
-                _ => work.map(|work| team.role_of(work).name.clone()),
-            };
+            stood.role = work.map(|work| team.role_of(work).name.clone());
             stood.rework = (place.rework(), place.rework_left());
             for stage in workflow.stages().iter().filter(|stage| stage.reject().is_some()) {
                 let (had, left) =

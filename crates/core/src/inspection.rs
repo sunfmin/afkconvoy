@@ -14,6 +14,13 @@ use crate::prompt::fill;
 use crate::record;
 use crate::team::{Consult, Stage, Work};
 
+/// The fallback inspection worker, separate from a team-named consult.
+pub const ROLE: &str = "stock-inspector";
+pub const SKILL: &str = "inspect";
+
+/// Its directory's rules; the brief supplies the evidence and bounds.
+pub const INSTRUCTION: &str = "# The stock inspector\n\nFind what holds the fleet's work back, fix it with the inspection's authority, check that the work goes on, and say what you did.\n";
+
 /// The variable an inspection's environment names what it inspects in — the
 /// hot worker, or the host: the guard holds a worker with it as the operator
 /// on its host, within the bounds of any unattended worker.
@@ -594,10 +601,3 @@ stages:
         assert!(!patrol.contains("stock inspector"), "{patrol}");
     }
 }
-
-/// The fallback inspection worker, separate from a team-named consult.
-pub const ROLE: &str = "stock-inspector";
-pub const SKILL: &str = "inspect";
-
-/// Its directory's rules; the brief supplies the evidence and bounds.
-pub const INSTRUCTION: &str = "# The stock inspector\n\nFind what holds the fleet's work back, fix it with the inspection's authority, check that the work goes on, and say what you did.\n";
