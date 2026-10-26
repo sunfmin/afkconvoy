@@ -84,11 +84,20 @@ fn real_claude_code_started_in_a_role_keeps_host_rules_opt_in_and_enforces_both_
     let scratch = tempfile::TempDir::new().unwrap();
     let root = scratch.path().canonicalize().unwrap();
     let home = root.join("host");
-    let (role, project, team) = (home.join("role"), home.join("project"), home.join("team"));
+    let ancestor = root.join("ancestor");
+    let (role, project, team) =
+        (ancestor.join("role"), ancestor.join("project"), ancestor.join("team"));
     let config = home.join(".claude");
     let user_log = root.join("user-hook.log");
     write(&config, "CLAUDE.md", &format!("The user word is {USER_WORD}.\n"));
-    write(&config, "rules/smoke.md", "A rule from the host user's rules directory.\n");
+    // Exercise ancestor rule discovery independently of the user-profile
+    // skill loader: the latter is governed by --setting-sources.
+    write(&ancestor, ".claude/CLAUDE.md", "A host rule found through project ancestry.\n");
+    write(
+        &ancestor,
+        ".claude/rules/smoke.md",
+        "Another host rule found through project ancestry.\n",
+    );
     write(&config, &format!("skills/{USER_SKILL}/SKILL.md"), &skill(USER_SKILL));
     write(&config, "settings.json", &hook(&user_log, "user").to_string());
     write(&role, "CLAUDE.md", &format!("The role word is {ROLE_WORD}.\n"));
@@ -102,6 +111,7 @@ fn real_claude_code_started_in_a_role_keeps_host_rules_opt_in_and_enforces_both_
         .unwrap_or_else(|_| Harness::ClaudeCode.stock().to_string());
     let mut host_rules = afkconvoy::kept::host_rules(Harness::ClaudeCode);
     host_rules.extend(Harness::ClaudeCode.host_rule_excludes(&home.display().to_string()));
+    host_rules.extend(Harness::ClaudeCode.host_rule_excludes(&ancestor.display().to_string()));
     let text = |path: &Path| path.display().to_string();
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
     for host_user in [false, true] {
@@ -205,6 +215,9 @@ fn real_claude_code_started_in_a_role_keeps_host_rules_opt_in_and_enforces_both_
         let user_loaded =
             loaded(config.join("CLAUDE.md")) || loaded(kept.join(".claude/CLAUDE.md"));
         assert_eq!(user_loaded, host_user, "host_user={host_user}: {sources:?}");
+        for path in [".claude/CLAUDE.md", ".claude/rules/smoke.md"] {
+            assert_eq!(loaded(ancestor.join(path)), host_user, "{sources:?}");
+        }
         if !host_user {
             for path in &host_rules {
                 let prefix = path.strip_suffix("**").unwrap_or(path);
