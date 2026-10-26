@@ -56,6 +56,12 @@ Whatever it finds, it leaves a comment on the issue saying what and why, so late
 
 `afkconvoy exclusive -- <command>` runs a command once no other `exclusive` command runs on the host, across all its fleets, and queues it until then. A worker uses it for work it knows to be heavy — told so by an inspection, or by its role's rules. A worker waiting in the queue is busy, not silent; its wait counts toward the gate limit.
 
+### The landing train goes first among the waiting
+
+The landing train's commands run before every waiting worker's or inspection's command (sunfmin/control#104). A landing unblocks every PR on the train, later conflicts and the next cut, while a worker's gate unblocks only that worker. Trains of different repos keep their request order between them, and ordinary commands keep theirs. Priority never interrupts a running command; the contention bound of ADR-0031 still applies.
+
+A train asks once for each landing, so a worker waits behind at most one train gate per repo on the host, plus what runs now and ordinary commands already ahead of it. The train's existing worktree identity determines priority, including its worker's `gate --train` and the gate run by `land --train`; a worker's own `gate --train` gains none. Tickets carry that priority across a host runner replacement. The tick log's runs line counts the earlier ordinary commands still waiting when a train starts, and doctor and the panel show the same order the queue uses.
+
 ## Admission, and priority
 
 - **Admission.** A tick starts no new worker while the host is past a share of its load, under memory pressure, or low on free disk. The issue stays on the frontier for the next tick. Workers already running are left alone.

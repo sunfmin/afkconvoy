@@ -20,8 +20,12 @@ pub struct Ticket {
     pub dir: String,
     /// The issue of the worker that ran it, where its environment says one.
     pub issue: Option<u64>,
-    /// When it asked to run, in epoch seconds: the one that asked first runs
-    /// first, and one that asks again of the next host runner keeps it.
+    /// Whether it is the landing train's: ahead of other waiting commands.
+    /// Older askers name no priority and remain ordinary commands.
+    #[serde(default)]
+    pub train: bool,
+    /// When it asked to run, in epoch seconds: within each priority the one
+    /// that asked first runs first, including in the next host runner.
     pub asked: u64,
     /// When it began to run; `None`: it waits.
     pub ran: Option<u64>,
@@ -42,10 +46,26 @@ pub fn in_order(mut queue: Vec<Ticket>) -> Vec<Ticket> {
 }
 
 /// Where `ticket` stands in the order the queue runs: one that runs before
-/// every one that waits, then the one that asked first, then the one that
-/// joined first.
-fn place(ticket: &Ticket) -> (bool, u64, u64) {
-    (ticket.ran.is_none(), ticket.asked, ticket.number)
+/// every one that waits, then trains before other waiters, then the one
+/// that asked first, then the one that joined first.
+fn place(ticket: &Ticket) -> (bool, bool, u64, u64) {
+    (ticket.ran.is_none(), !ticket.train, ticket.asked, ticket.number)
+}
+
+/// How many earlier ordinary commands `ticket` runs ahead of as a train's
+/// command gets its turn. Commands already running are never passed.
+pub fn runs_ahead_of(ticket: &Ticket, queue: &[Ticket]) -> usize {
+    if !ticket.train {
+        return 0;
+    }
+    queue
+        .iter()
+        .filter(|other| {
+            other.ran.is_none()
+                && !other.train
+                && (other.asked, other.number) < (ticket.asked, ticket.number)
+        })
+        .count()
 }
 
 /// Since when a worker in the worktree `dir` has waited in the queue — or run
@@ -101,9 +121,15 @@ pub fn rejoins_line(ticket: &Ticket) -> String {
 }
 
 /// What the log says of a ticket that runs its command at `now`.
-pub fn runs_line(ticket: &Ticket, now: u64) -> String {
+pub fn runs_line(ticket: &Ticket, now: u64, ahead_of: usize) -> String {
     let waited = now.saturating_sub(ticket.asked);
-    format!("runs `{}` alone on this host, after waiting {waited}s", ticket.command)
+    let line = format!("runs `{}` alone on this host, after waiting {waited}s", ticket.command);
+    if ticket.train {
+        return format!(
+            "runs ahead of {ahead_of} waiting commands, as the landing train's; {line}"
+        );
+    }
+    line
 }
 
 /// What the log says of a ticket whose command ended at `now`, as `ended`
@@ -124,6 +150,7 @@ mod tests {
             command: "cargo test".into(),
             dir: dir.into(),
             issue: Some(7),
+            train: false,
             asked,
             ran: None,
         }
@@ -154,6 +181,41 @@ mod tests {
     }
 
     #[test]
+    fn trains_pass_waiting_workers_in_request_order_and_never_the_running_command() {
+        let mut running = ticket(1, "/a", 100);
+        running.ran = Some(100);
+        let worker = ticket(2, "/b", 101);
+        let mut train = ticket(4, "/a/convoy-train", 102);
+        train.train = true;
+        let mut later_train = ticket(5, "/b/convoy-train-2", 102);
+        later_train.train = true;
+        let queue = [running, worker, ticket(3, "/c", 101), train.clone()];
+        assert_eq!(ahead(&queue, 4), Some(1));
+        assert_eq!(runs_ahead_of(&train, &queue), 2);
+        assert_eq!(runs_ahead_of(&queue[1], &queue), 0);
+        let mut queue = queue.to_vec();
+        queue.push(later_train.clone());
+        // A worker that asks after the trains is not one they passed.
+        queue.push(ticket(6, "/d", 103));
+        assert_eq!(ahead(&queue, 5), Some(2));
+        assert_eq!(runs_ahead_of(&later_train, &queue), 2);
+        let order: Vec<_> = in_order(queue).iter().map(|ticket| ticket.number).collect();
+        assert_eq!(order, [1, 4, 5, 2, 3, 6]);
+        assert_eq!(
+            runs_line(&train, 130, 2),
+            "runs ahead of 2 waiting commands, as the landing train's; \
+             runs `cargo test` alone on this host, after waiting 28s"
+        );
+    }
+
+    #[test]
+    fn an_older_ticket_has_no_train_priority() {
+        let older = r#"{"number":1,"pid":2,"command":"cargo test","dir":"/a","issue":null,"asked":100,"ran":null}"#;
+        let ticket: Ticket = serde_json::from_str(older).unwrap();
+        assert!(!ticket.train);
+    }
+
+    #[test]
     fn a_worktree_waits_since_its_first_ticket_asked_and_counts_no_others() {
         let live = [
             ticket(1, "/w/issue-7", 300),
@@ -174,7 +236,7 @@ mod tests {
             "waits behind 1 exclusive command on this host to run `cargo test`"
         );
         assert_eq!(
-            runs_line(&waits, 130),
+            runs_line(&waits, 130, 0),
             "runs `cargo test` alone on this host, after waiting 30s"
         );
         assert_eq!(

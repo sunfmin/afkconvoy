@@ -16,10 +16,11 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, mpsc};
 use std::time::{Duration, Instant};
 
 use afkconvoy_core::exclusive::{
-    Ticket, ahead, at_once_line, ended_line, in_order, queued_since, rejoins_line, runs_line,
-    waits_line,
+    Ticket, ahead, at_once_line, ended_line, in_order, queued_since, rejoins_line, runs_ahead_of,
+    runs_line, waits_line,
 };
 use afkconvoy_core::role::ISSUE_ENV;
+use afkconvoy_core::train::is_train_worktree;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -54,8 +55,8 @@ struct Bound {
 }
 
 /// The host's exclusive queue, as its host runner holds it: one command runs
-/// at a time, the one that asked first, and each leaves as its asker's line
-/// closes. A clone is the same.
+/// at a time, with trains ahead of other waiters, in request order within
+/// each priority. Each leaves as its asker's line closes. A clone is the same.
 #[derive(Clone, Default)]
 pub struct Queue {
     held: Arc<(Mutex<Joined>, Condvar)>,
@@ -128,13 +129,18 @@ impl Queue {
             }
         }
         let ran = crate::clock();
+        let ahead_of = joined
+            .tickets
+            .iter()
+            .find(|ticket| ticket.number == number)
+            .map_or(0, |ticket| runs_ahead_of(ticket, &joined.tickets));
         joined.waited = Duration::ZERO;
         joined.counted_at = Instant::now();
         for ticket in joined.tickets.iter_mut().filter(|ticket| ticket.number == number) {
             ticket.ran = Some(ran);
         }
         drop(joined);
-        if !kept.say(json!({"runs": ran})) {
+        if !kept.say(json!({"runs": ran, "ahead_of": ahead_of})) {
             self.leave(number);
             return;
         }
@@ -235,7 +241,7 @@ fn canonical(dir: &Path) -> String {
 enum Turn {
     /// The host runner says it runs: the line, held open for as long as it
     /// runs, holds its place.
-    Queued(Conversation),
+    Queued(Conversation, usize),
     /// It runs in no queue, as this says why.
     AtOnce(String),
 }
@@ -269,7 +275,11 @@ fn turn(ticket: &Ticket, acting: &Acting, now: &dyn Fn() -> u64) -> Result<Turn>
                 // What it cannot read, a newer host runner's, is passed over.
                 while let Some(said) = conversation.heard()? {
                     if said.get("runs").is_some() {
-                        return Ok(Turn::Queued(conversation));
+                        let ahead_of = said["ahead_of"].as_u64().unwrap_or(0);
+                        return Ok(Turn::Queued(
+                            conversation,
+                            usize::try_from(ahead_of).unwrap_or(usize::MAX),
+                        ));
                     }
                 }
                 let line = rejoins_line(ticket);
@@ -318,14 +328,19 @@ pub fn exclusive(
         command: shown.join(" "),
         dir: canonical(checkout.as_ref().map_or(dir, |repo| &repo.dir)),
         issue: std::env::var(ISSUE_ENV).ok().and_then(|issue| issue.parse().ok()),
+        train: checkout
+            .as_ref()
+            .and_then(|repo| repo.dir.file_name())
+            .and_then(|name| name.to_str())
+            .is_some_and(is_train_worktree),
         asked: now(),
         ran: None,
     };
     let acting = Acting::new("exclusive").on_own_issue().in_checkout(checkout);
     let place = match turn(&ticket, &acting, &now) {
-        Ok(Turn::Queued(place)) => {
+        Ok(Turn::Queued(place, ahead_of)) => {
             let started = now();
-            acting.say(started, runs_line(&ticket, started));
+            acting.say(started, runs_line(&ticket, started, ahead_of));
             Some(place)
         }
         Ok(Turn::AtOnce(why)) => {
@@ -469,6 +484,7 @@ mod tests {
             command: command.into(),
             dir: "/w/issue-7".into(),
             issue: Some(7),
+            train: false,
             asked,
             ran: None,
         }
