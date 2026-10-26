@@ -298,20 +298,40 @@ fn another_fleet_retires_an_ended_casters_evidence_even_without_its_worktree_or_
         let other = world.second_repo();
         let file = world.cache().join("afkconvoy/worker-health.json");
         let mut book: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
-        let faults = json!([{"harness": "claude-code", "model": null, "scope": "account",
+        let faults = json!([{"harness": "claude-code", "command_key": null,
+            "model": null, "scope": "account",
             "since": 1000, "next_check": 5000, "evidence": ["previous usage limit"]}]);
         book["faults"] = faults.clone();
         book["capacity_stops"] = json!({"claude-code": 3});
         if failure_only {
             book["workers"] = json!([]);
+            std::fs::remove_dir_all(book["observations_failed"][0][0].as_str().unwrap()).unwrap();
         }
         std::fs::write(&file, serde_json::to_vec(&book).unwrap()).unwrap();
+        if !failure_only {
+            world
+                .afk_in(&other, &["tick", "--instance", "beta", "--host", "h1", "--now", "1350"])
+                .ok();
+            let live: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+            assert_eq!(live["workers"], book["workers"], "another fleet keeps a live caster");
+            assert_eq!(live["observations_failed"], book["observations_failed"]);
+        }
         world.with_orca(|orca| {
             orca["terminals"][0]["open"] = json!(false);
             if failure_only {
                 orca["worktrees"] = json!([]);
             }
         });
+        if !failure_only {
+            world.with_orca(|orca| orca["ps_truncated"] = json!(true));
+            world
+                .afk_in(&other, &["tick", "--instance", "beta", "--host", "h1", "--now", "1360"])
+                .ok();
+            let unknown: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+            assert_eq!(unknown["workers"], book["workers"], "unreadable Orca proves no end");
+            assert_eq!(unknown["observations_failed"], book["observations_failed"]);
+            world.with_orca(|orca| orca["ps_truncated"] = json!(false));
+        }
         world.afk_in(&other, &["tick", "--instance", "beta", "--host", "h1", "--now", "1400"]).ok();
         assert_caster_health_retired(&world, 1401);
         let book: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
