@@ -332,7 +332,7 @@ fn trains_and_cuts_gate_ahead_of_waiting_workers_without_interrupting_what_runs(
         .fixed(" exclusive -- sh -c ")
         .word("echo \"$MARK\" >> \"$CACHE/order\"")
         .own();
-    first.set_gate_config(&format!("gate_command: {gate}\ngate_seconds: 2"));
+    first.set_gate_config(&format!("gate_command: {gate}\ngate_seconds: 5"));
     second.set_gate(&gate);
     let worker = second.worker(7, "seven.txt", "7\n");
     assert_eq!(second.afk_in(&worker, &["land", "--issue", "7"]).ok()["outcome"], "joined");
@@ -375,13 +375,13 @@ fn trains_and_cuts_gate_ahead_of_waiting_workers_without_interrupting_what_runs(
     // it must not confer the train worker's priority.
     let worker_a = run(&first, &first.clone, "worker-a", &["gate", "--train"]);
     until(|| tickets(&first) == 2);
-    let worker_b = exclusive(&second, &cache, 22, "sleep 3; echo worker-b >> \"$CACHE/order\"");
+    let worker_b = exclusive(&second, &cache, 22, "sleep 6; echo worker-b >> \"$CACHE/order\"");
     until(|| tickets(&first) == 3);
     let first_train = run(&first, &train_a, "train-a", &["gate", "--train"]);
     until(|| tickets(&first) == 4);
     let second_train = run(&second, &train_b, "train-b", &["land", "--train"]);
     until(|| tickets(&first) == 5);
-    // A cut's gate has only two seconds, less than the three-second worker
+    // A cut's gate has only five seconds, less than the six-second worker
     // already queued. It must get the same priority as the train to pass.
     let cutting = run(&first, &cut, "cut", &["gate", "--train"]);
     until(|| tickets(&first) == 6);

@@ -1669,6 +1669,8 @@ mod tests {
     fn a_due_cut_starts_once_the_pass_ends_idle_and_takes_no_slot() {
         use crate::admission::Hold;
         use crate::cut::Standing as Cutting;
+        let starts =
+            |pass: &Pass| steps(pass).iter().any(|step| matches!(step, TickStep::Cut { .. }));
         let mut idle = set(&[], &[]);
         idle.cut = cut(Cutting::Due);
         let pass = run_pass(&idle, 3, 0, |_| Done);
@@ -1682,14 +1684,10 @@ mod tests {
         // Not while a claim is held, the frontier is left, or the train holds anything.
         let mut working = set(&[], &[(5, Status::NoPr)]);
         working.cut = cut(Cutting::Due);
-        assert!(
-            !steps(&run_pass(&working, 3, 1, |_| Nothing)).contains(&TickStep::Cut { busy: false })
-        );
+        assert!(!starts(&run_pass(&working, 3, 1, |_| Nothing)));
         let mut frontier = set(&[9], &[]);
         frontier.cut = cut(Cutting::Due);
-        assert!(
-            !steps(&run_pass(&frontier, 3, 0, |_| Done)).contains(&TickStep::Cut { busy: false })
-        );
+        assert!(!starts(&run_pass(&frontier, 3, 0, |_| Done)));
         // A frontier issue a peer won is off it, as `frontier_remaining` counts it.
         let mut lost = set(&[9], &[]);
         lost.cut = cut(Cutting::Due);
@@ -1699,12 +1697,10 @@ mod tests {
         assert_eq!(steps(&lost), [Dispatch { issue: 9 }, TickStep::Cut { busy: false }, Heartbeat]);
         let mut riding = set(&[], &[(5, Status::Joined)]);
         riding.cut = cut(Cutting::Due);
-        assert!(
-            !steps(&run_pass(&riding, 3, 1, |_| Nothing)).contains(&TickStep::Cut { busy: false })
-        );
+        assert!(!starts(&run_pass(&riding, 3, 1, |_| Nothing)));
         // Nor while admission holds, nor where it is not due.
         idle.held_back = vec![Hold::Memory { free: 3, floor: 10 }];
-        assert!(!steps(&run_pass(&idle, 3, 0, |_| Done)).contains(&TickStep::Cut { busy: false }));
+        assert!(!starts(&run_pass(&idle, 3, 0, |_| Done)));
         for not_due in
             [Cutting::Off, Cutting::Tagged, Cutting::Untagged, Cutting::Failed, Cutting::Locked]
         {
