@@ -738,11 +738,11 @@ impl Worktree {
     /// work here is over is ended, whatever it is doing. One with no terminal
     /// is as wanted.
     pub fn close_terminals(&self) -> Result<()> {
-        if OBSERVATION.with(|slot| slot.borrow().is_some()) && self.terminal()?.is_none() {
+        if self.terminal()?.is_none() {
             return Ok(());
         }
         orca(&["terminal", "close", "--worktree", &self.selector(), "--all"])?;
-        if self.terminal()?.is_none() {
+        if OBSERVATION.with(|slot| slot.borrow().is_some()) && self.terminal()?.is_none() {
             // A closed worker's old identity cannot override the replacement
             // that starts later in this tick. Other workers keep their view.
             self.observed_terminals(0);
