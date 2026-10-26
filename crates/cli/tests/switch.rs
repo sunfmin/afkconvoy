@@ -844,6 +844,7 @@ fn codex_task_refusal_continues_immediately_and_only_excludes_this_issue() {
     let kit = std::fs::read(world.kit_path()).unwrap();
     std::fs::write(dir.join("unfinished.txt"), "keep me").unwrap();
     codex_refusal(&world, &dir);
+    std::fs::write(world.cache().join("afkconvoy/worker-health.json"), json!({"workers":[], "faults":[], "observations_failed":[[dir,"a previous failed observation",2000]]}).to_string()).unwrap();
 
     tick(&world, 800);
 
@@ -944,7 +945,14 @@ fn an_issue_refusal_is_remembered_at_the_next_stage_and_shown_without_host_healt
     hold_every_harness(&world);
     world.repo(
         "acme/dev",
-        &[(".claude/skills/implement/SKILL.md", "---\nname: implement\ndescription: build\n---\n")],
+        &[
+            (
+                ".claude/skills/implement/SKILL.md",
+                "---\nname: implement\ndescription: build\n---\n",
+            ),
+            (".codex/hooks.json", r#"{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[]}]}}"#),
+            (".pi/extensions/limits.js", "export default () => {};\n"),
+        ],
     );
     world.repo("acme/team", &[
         ("team.md", "```yaml\nroles:\n  dev: acme/dev\n```\n"),
@@ -978,8 +986,6 @@ fn an_issue_refusal_is_remembered_at_the_next_stage_and_shown_without_host_healt
             "t1",
             "--text",
             "done",
-            "--instance",
-            "alpha",
         ])
         .ok();
     tick(&world, 801);
@@ -990,7 +996,7 @@ fn an_issue_refusal_is_remembered_at_the_next_stage_and_shown_without_host_healt
     let plan = world.afk(&["plan", "--now", "802"]).ok();
     let casting = &plan["casting"][0];
     assert!(
-        casting["stages"].as_array().unwrap().iter().all(|s| s["harness"] == "claude-code"),
+        casting["stages"].as_array().unwrap().iter().all(|s| s["harness"] == "pi"),
         "{casting}"
     );
     assert_eq!(
@@ -999,7 +1005,7 @@ fn an_issue_refusal_is_remembered_at_the_next_stage_and_shown_without_host_healt
         )
         .unwrap()
         .trim(),
-        Harness::ClaudeCode.key()
+        Harness::Pi.key()
     );
 }
 
