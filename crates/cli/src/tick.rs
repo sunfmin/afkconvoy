@@ -154,7 +154,7 @@ pub fn tick(
     }
     let (mut set, mut flows) = fleet.rebuild(&open, Some(&me.instance))?;
     let _health_events =
-        crate::health::reconcile(&mut fleet, me, agent, &open, &flows, &set.locks)?;
+        crate::health::reconcile(&mut fleet, me, agent, &open, &flows, &set)?;
     fleet.invalidate_selection();
     // A roster entry that names no model the host kit holds is the team's to
     // correct: one issue is opened for it in the team's repo. One that cannot
