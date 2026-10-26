@@ -224,6 +224,142 @@ fn a_switch_moves_the_worker_onto_the_harness_in_the_same_worktree_and_records_i
 }
 
 #[test]
+fn a_missing_harness_starts_before_its_targeted_probe_and_research_finish() {
+    let world = blocked();
+    world.with_kit(|kit| {
+        kit["harnesses"].as_array_mut().unwrap().retain(|held| held["harness"] != "kimi")
+    });
+    std::fs::write(world.root.join("shell-kimi-models"), r#"{"models":{"kimi-code/k3":{}}}"#)
+        .unwrap();
+    world.probes_answer();
+    std::fs::write(world.root.join("probes-wait"), "").unwrap();
+    let dir = worktree(&world, 7);
+
+    let started = std::time::Instant::now();
+    let answer = switch(&world, "800", &["7", "--harness", "kimi"]).ok();
+    assert!(started.elapsed() < std::time::Duration::from_secs(10));
+    assert_eq!(answer["added"], true);
+    assert_eq!(answer["start_fault"], Value::Null);
+    assert_eq!(answer["order"][0], "kimi");
+    assert_eq!(answer["switched"][0]["to"], "kimi");
+    assert_eq!(open_commands(&world, &dir), [afkconvoy_core::harness::Harness::Kimi.stock()]);
+    let kit: Value = serde_json::from_slice(&std::fs::read(world.kit_path()).unwrap()).unwrap();
+    assert_eq!(kit["harnesses"][0]["models"], json!([]));
+
+    std::fs::write(world.root.join("probes-release"), "").unwrap();
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    while std::time::Instant::now() < until {
+        let kit: Value = serde_json::from_slice(&std::fs::read(world.kit_path()).unwrap()).unwrap();
+        if !kit["harnesses"][0]["models"].as_array().unwrap().is_empty()
+            && world.root.join("research-asked").exists()
+        {
+            assert_eq!(kit["harnesses"][0]["harness"], "kimi");
+            assert_eq!(kit["harnesses"][0]["models"][0]["model"], "kimi-code/k3");
+            let probes: Vec<_> = world
+                .shell_asked()
+                .into_iter()
+                .filter(|asked| asked.contains("Reply with the single word OK."))
+                .collect();
+            assert!(probes.iter().all(|asked| asked.contains("kimi")), "{probes:?}");
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    panic!("the targeted background refresh did not finish");
+}
+
+#[test]
+fn an_added_harness_that_cannot_start_is_kept_and_reported_by_switch_and_doctor() {
+    let world = World::new();
+    world.logged_out("kimi");
+    let answer = world.afk(&["switch", "--harness", "kimi"]).ok();
+    assert_eq!(answer["added"], true);
+    assert_eq!(answer["order"][0], "kimi");
+    assert!(answer["start_fault"].as_str().unwrap().contains("kimi"));
+    let kit: Value = serde_json::from_slice(&std::fs::read(world.kit_path()).unwrap()).unwrap();
+    assert_eq!(kit["harnesses"][0]["harness"], "kimi");
+    assert_eq!(kit["harnesses"][0]["models"], json!([]));
+
+    let doctor = world.afk(&["doctor", "--now", "800"]);
+    let findings = doctor.json["findings"].to_string();
+    assert!(findings.contains("kimi"), "{findings}");
+}
+
+#[test]
+fn a_switch_names_every_skipped_harness_and_its_fix_in_the_answer_and_tick_log() {
+    let world = World::new();
+    world.hold_every_harness();
+    world.with_kit(|kit| {
+        kit["harnesses"].as_array_mut().unwrap().retain(|held| held["harness"] != "kimi")
+    });
+    world.repo(
+        "acme/dev",
+        &[
+            (
+                ".claude/skills/implement/SKILL.md",
+                "---\nname: implement\ndescription: build\n---\n",
+            ),
+            (
+                ".claude/settings.json",
+                r#"{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[]}]}}"#,
+            ),
+        ],
+    );
+    world.repo(
+        "acme/team",
+        &[
+            ("team.md", "```yaml\nroles:\n  dev: acme/dev\n```\n"),
+            (
+                "workflows/feature.md",
+                "```yaml\nstages:\n  - name: build\n    by: dev\n    do: implement\n    on: { pass: done }\n```\n",
+            ),
+        ],
+    );
+    common::write(
+        &world.clone,
+        "docs/agents/afkconvoy.md",
+        "```yaml\nbase_branch: main\ngate_command: ./gate.sh\nteam: acme/team\n```\n",
+    );
+    git(&world.clone, &["commit", "-q", "-am", "bind the repo"]);
+    git(&world.clone, &["push", "-q", "origin", "main"]);
+    world.issue(7, &["flow:feature"]);
+    tick(&world, 700);
+
+    let answer = switch(&world, "800", &["7", "--harness", "kimi"]).ok();
+    let moved = &answer["switched"][0];
+    assert_eq!(moved["to"], "claude-code");
+    assert_eq!(moved["skipped"][0]["harness"], "kimi");
+    assert_eq!(
+        moved["skipped"][0]["why"],
+        "role dev holds no limits for kimi (.kimi-code/limits.toml)"
+    );
+    assert_eq!(
+        moved["skipped"][0]["fix"],
+        "write the role's limits for kimi in its .kimi-code/limits.toml"
+    );
+
+    let runs = world.cache().join("afkconvoy/runs");
+    let log = std::fs::read_dir(runs)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| path.extension().is_some_and(|extension| extension == "jsonl"))
+        .unwrap();
+    let entries: Vec<Value> = std::fs::read_to_string(log)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let logged = entries
+        .iter()
+        .find(|entry| entry["command"]["command"] == "switch")
+        .expect("a switch tick-log line")["command"]["outcome"]
+        .as_str()
+        .unwrap();
+    assert!(logged.contains("skipped kimi: role dev holds no limits for kimi"), "{logged}");
+    assert!(logged.contains("to make it eligible: write the role's limits for kimi"), "{logged}");
+}
+
+#[test]
 fn a_codex_successor_without_a_selected_model_does_not_end_the_existing_worker() {
     let world = blocked();
     world.kit_models("codex", &[]);

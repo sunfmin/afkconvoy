@@ -521,6 +521,11 @@ fn start(
         started["prompt"] = json!(staged.prompt());
         started["stage"] = staged.json();
     }
+    started["skipped"] = if staged.is_some() {
+        started["stage"]["skipped"].clone()
+    } else {
+        json!(fleet.skipped_before(harness, None))
+    };
     if consult.is_some() {
         started["prompt"] = json!(stock::ROLE);
     }

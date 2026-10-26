@@ -325,8 +325,10 @@ pub(crate) fn switch(
     let kept = keep(&fleet.gh, &Copies::of_host()?, &bound.team, &fleet.config.labels())?;
     let none = || See::Patrols.refusal(format!("the team has no patrol {name:?}"));
     let patrol = kept.team.patrol(name).ok_or_else(none)?;
-    let cast = fleet.cast_in(kept.team.role_of(&patrol.work), &[])?;
+    let role = kept.team.role_of(&patrol.work);
+    let cast = fleet.cast_in(role, &[])?;
     let harness = cast.harness;
+    let skipped = fleet.skipped_before(harness, Some(role));
     let launch = agent.command(harness)?;
     let line = in_role(fleet, &kept, name, &cast, launch.as_str(), &checkout)?;
     let continuing = said(&checkout);
@@ -344,7 +346,7 @@ pub(crate) fn switch(
     checkout.await_ready(&terminal, agent.ready_timeout)?;
     checkout.deliver(&terminal, &checkout.brief()?)?;
     Ok(json!({"patrol": name, "from": continuing.from, "to": harness,
-        "worktree": checkout.path, "terminal": terminal}))
+        "worktree": checkout.path, "terminal": terminal, "skipped": skipped}))
 }
 
 /// Ends the run of the patrol `row` once it is over: a peer's presumed dead

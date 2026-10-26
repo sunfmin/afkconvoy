@@ -1056,13 +1056,15 @@ The operator, on the host whose kit and workers are being changed.
 
 ##### What it reads and writes
 
-`afkconvoy switch --model sonnet` accepts any name of an existing model, moves it first within its harness and moves that harness first. A name matching several harnesses or models is refused with candidates; an unknown name is refused with nearest names, leaving the kit unchanged. Repeating a switch is idempotent. Only this machine's kit order changes. Commands, model contents, probe evidence and the relative order of other models and harnesses stay intact. Rebuilds, daily refresh and new-model research preserve these orders; new discoveries follow established models. Unknown, logged-out or unstartable harnesses are refused. Ticket labels and team rosters are untouched. Role limits still constrain candidates. Paused candidates are skipped without reordering the kit, and become eligible again after a successful recovery probe. A switch with no target leaves running workers alone.
+A known harness that is installed but absent is added first on its stock worker launch command, with no model, so workers start on its login's default at once. The answer comes within seconds, before that harness is listed, probed or researched. Only after the answer does a background refresh fill in its models and research, preserving the order this switch set. If the added harness cannot start a worker, the answer's start_fault says why and doctor names the same fault. Unknown or uninstalled harnesses, and existing entries that cannot start, are refused before the kit changes.
 
---all continues workers across every checkout on this host's checkout list. ISSUE or --patrol addresses a claim in the current checkout; --instance may identify its owner. Each continuation keeps its claim, stage, worktree, branch, uncommitted work, PR and breaker counts. Its brief includes the previous output. A failure is reported and other workers continue. An old worker that cannot be confirmed stopped is never given a second writer.
+`afkconvoy switch --model sonnet` accepts any name of an existing model, moves it first within its harness and moves that harness first. A name matching several harnesses or models is refused with candidates; an unknown name is refused with nearest names, leaving the kit unchanged. Repeating a switch is idempotent. Commands, model contents, probe evidence and the relative order of other models and harnesses stay intact. Rebuilds, daily refresh and new-model research preserve these orders; new discoveries follow established models. Ticket labels and team rosters are untouched. Role limits still constrain candidates. Paused candidates are skipped without reordering the kit, and become eligible again after a successful recovery probe. A switch with no target leaves running workers alone.
+
+--all continues workers across every checkout on this host's checkout list. ISSUE or --patrol addresses a claim in the current checkout; --instance may identify its owner. Each continuation keeps its claim, stage, worktree, branch, uncommitted work, PR and breaker counts. Its brief includes the previous output. A failure is reported and other workers continue. An old worker that cannot be confirmed stopped is never given a second writer. Every moved worker's answer and tick-log line name every harness ahead of its actual successor, why it was skipped, and what would make it eligible.
 
 ##### What it answers
 
-{harness, model, path, order_before, order, changed, switched, failed}. model is the promoted id, or null for a harness-only switch. Each failure names its checkout and worker. A successful fallback reports the actual harness.
+{harness, model, path, order_before, order, changed, added, start_fault, switched, failed}. model is the promoted id, or null for a harness-only switch; added says whether a missing harness was inserted. Each moved worker has {from, to, skipped}, where skipped holds {harness, why, fix} for every earlier candidate. Each failure names its checkout and worker. A successful fallback reports the actual harness.
 
 ##### What trips you up
 
@@ -1085,7 +1087,7 @@ afkconvoy switch [OPTIONS] [ISSUE]
 ##### Arguments
 
 - `[ISSUE]`: The issue whose worker to continue in this checkout
-- `--harness <HARNESS>`: The existing kit harness to put first
+- `--harness <HARNESS>`: The known installed harness to put first, adding it when the kit does not hold it
 - `--model <MODEL>`: Put this model first within its harness, and that harness first in the kit
 - `--patrol <PATROL>`: The patrol whose worker to continue in this checkout
 - `--all`: Continue workers in every checkout on this machine
@@ -3658,7 +3660,7 @@ Automatic casting defaults off, including for an older kit. `afkconvoy kit --cas
 
 With it on, only a stage's selected harness offering multiple eligible models leaves a choice. A harness with zero or one model needs no caster. The caster receives only the models of selected harnesses still needing a model, in kit order, with `good_at` and the roster's `cast`. It adds only model labels, preserving earlier labels; human casting labels are never recast. A switch or fallback can add a different harness's model beside earlier caster labels. Switching back reuses those labels. An issue waits at most ten minutes, then runs its range's first eligible model.
 
-`afkconvoy switch --harness codex` moves the existing Codex entry first. `afkconvoy switch --model sonnet` moves that model first within its harness, and its harness first in the kit; any of its names matches. Ambiguous names and names the kit holds no model for are refused with candidates or nearest names. Other entries and contents stay intact. Every checkout follows these orders; no instance or checkout is required. With no target it leaves existing workers alone. `--all` continues workers across the host's checkout list, preserving their scene and reporting failures separately. Change priority by switching again; `--clear` is removed. Old repository choice files are ignored.
+`afkconvoy switch --harness codex` moves the Codex entry first. A known installed harness the kit does not hold is added first with no model, starts workers on its login's default at once, and is listed, probed and researched only after the answer; that later refresh keeps the switch's order. An added harness that cannot start is reported by the switch and `doctor`. `afkconvoy switch --model sonnet` moves that model first within its harness, and its harness first in the kit; any of its names matches. Ambiguous names and names the kit holds no model for are refused with candidates or nearest names. Other entries and contents stay intact. Every checkout follows these orders; no instance or checkout is required. With no target it leaves existing workers alone. `--all` continues workers across the host's checkout list, preserving their scene and reporting failures separately. Every moved worker's answer and tick-log line explain each earlier skipped harness and what would make it eligible. Change priority by switching again; `--clear` is removed. Old repository choice files are ignored.
 
 Rebuild, daily refresh and new-model research preserve established harness and model order. An unavailable or paused candidate is skipped without reordering; a successful recovery probe makes it eligible again. Fault recovery keeps claims and work, reads real output and uses another available harness for bounded diagnosis when structured signals or an explicit harness usage-limit message do not decide the action. Account quota without a reset continues at once; unresolved waits on unchanged evidence are bounded to one hour. Plan, doctor and panel show the host's cast setting, each issue's casting reason, whether model labels were followed, actual running models and why earlier candidates were skipped.
 
@@ -4613,7 +4615,7 @@ A session of one harness, started in one role to perform one stage of one issue 
 _Avoid_: agent (whoever reads the help; and a worker, to whoever has not met the term), subagent, child (an issue a split opened)
 
 **Switch**:
-Moving an existing harness, or one of its models and that model's harness, to the first position in this machine's host kit while retaining the other entries' relative order and contents. Every checkout follows these orders; existing workers continue only when explicitly targeted, preserving their scene and claims and starting no replacement until the old writer is confirmed ended.
+Moving a harness, or one of its models and that model's harness, to the first position in this machine's host kit while retaining the other entries' relative order and contents. A known installed harness it does not hold is added on its stock worker launch command with no model, and listed, probed and researched only after the switch answers. Every checkout follows these orders; existing workers continue only when explicitly targeted, preserving their scene and claims and starting no replacement until the old writer is confirmed ended.
 _Avoid_: harness change (what a new casting makes)
 
 **Worker launch command**:

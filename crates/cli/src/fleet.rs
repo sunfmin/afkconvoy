@@ -252,27 +252,71 @@ impl Fleet {
     }
 
     pub fn role_selection(&self, role: &Role) -> serde_json::Value {
-        let whole = crate::kit::load().map(|k| k.range()).unwrap_or_default();
-        let allowed = casting::range(role, &whole);
-        let eligible = self.runnable().map(|k| k.range()).unwrap_or_default();
         let chosen = self.cast_in(role, &[]).ok().map(|cast| cast.harness);
-        let skipped: Vec<_> = whole
-            .iter()
-            .take_while(|h| Some(h.harness) != chosen)
-            .map(|h| {
-                let why = if let Some(why) = afkconvoy_core::team::unlimited(role, h.harness) {
-                    why.to_string()
-                } else if !allowed.iter().any(|a| a.harness == h.harness) {
-                    "outside this role's roster range".into()
-                } else if !eligible.iter().any(|a| a.harness == h.harness) {
-                    "unavailable on this host; see skipped candidates and health evidence".into()
-                } else {
-                    "no eligible model within this role's range".into()
-                };
-                serde_json::json!({"harness":h.harness,"why":why})
-            })
-            .collect();
+        let skipped = chosen.map_or_else(Vec::new, |to| self.skipped_before(to, Some(role)));
         serde_json::json!({"role":role.name,"harness":chosen,"skipped":skipped})
+    }
+
+    /// Every kit candidate ahead of the one a worker landed on, with the
+    /// concrete constraint that excluded it and the change that makes it
+    /// eligible. The same selection snapshot feeds plan, dispatch and switch.
+    pub fn skipped_before(&self, to: Harness, role: Option<&Role>) -> Vec<serde_json::Value> {
+        let whole = crate::kit::load().map(|kit| kit.range()).unwrap_or_default();
+        let allowed = role.map_or_else(|| whole.clone(), |role| casting::range(role, &whole));
+        let eligible = self.runnable().map(|kit| kit.range()).unwrap_or_default();
+        let start_faults = self
+            .runnable
+            .borrow()
+            .as_ref()
+            .map(|runnable| runnable.skipped.clone())
+            .unwrap_or_default();
+        let paused = crate::paused::read();
+        whole
+            .iter()
+            .take_while(|held| held.harness != to)
+            .map(|held| {
+                let harness = held.harness;
+                let key = harness.key();
+                let (why, fix) = if let Some(role) = role.filter(|role| {
+                    afkconvoy_core::team::unlimited(role, harness).is_some()
+                }) {
+                    (
+                        format!(
+                            "role {} holds no limits for {key} ({})",
+                            role.name,
+                            harness.limits()
+                        ),
+                        format!("write the role's limits for {key} in its {}", harness.limits()),
+                    )
+                } else if !allowed.iter().any(|held| held.harness == harness) {
+                    let role = role.map_or("this worker", |role| role.name.as_str());
+                    (
+                        format!("{key} is outside the roster range of role {role}"),
+                        format!("allow {key} in that role's roster, or switch to a harness it allows"),
+                    )
+                } else if let Some((_, why)) =
+                    start_faults.iter().find(|(skipped, _)| *skipped == harness)
+                {
+                    (why.clone(), format!("correct that start fault, then switch to {key} again"))
+                } else if let Some(pause) = paused.iter().find(|pause| pause.harness == harness) {
+                    (
+                        format!("{key} is paused on this host: {}", pause.why),
+                        format!("make {key} answer its probes; a successful recovery probe restores it"),
+                    )
+                } else if !eligible.iter().any(|held| held.harness == harness) {
+                    (
+                        format!("{key} is unavailable on this host; see health evidence"),
+                        format!("restore {key} to health; a successful recovery probe restores it"),
+                    )
+                } else {
+                    (
+                        format!("{key} has no eligible model within this role's range"),
+                        format!("allow one of {key}'s models in the role's roster, or switch to another harness"),
+                    )
+                };
+                serde_json::json!({"harness": harness, "why": why, "fix": fix})
+            })
+            .collect()
     }
 
     /// What a worker nothing casts runs — the proposal of a precedent, and
