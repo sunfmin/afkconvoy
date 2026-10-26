@@ -922,7 +922,15 @@ fn compose(current: &Kit, host: &Host, writing: Writing) -> (Kit, Vec<LeftOut>) 
                 model: each.name,
                 names: before.map(|seen| seen.names.clone()).unwrap_or_default(),
                 probed: None,
-                good_at: researched.or(before).map_or_else(pending, |seen| seen.good_at.clone()),
+                // A legacy named model keeps running, but unsourced words
+                // must not become casting guidance while the watch researches it.
+                good_at: researched.or(before).map_or_else(pending, |seen| {
+                    if seen.awaits_research() && seen.placed() {
+                        None
+                    } else {
+                        seen.good_at.clone()
+                    }
+                }),
                 sources: researched.map(|seen| seen.sources.clone()).unwrap_or_default(),
                 researched_at: researched.and_then(|seen| seen.researched_at),
             };
