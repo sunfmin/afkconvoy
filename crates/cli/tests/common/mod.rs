@@ -1355,10 +1355,10 @@ impl World {
 
     /// `running`, of the checkout `dir`.
     pub fn running_in(&self, dir: &Path, args: &[&str]) -> Running {
+        let args = [&["run", "--foreground"][..], args].concat();
         let mut child = self
             .command(env!("CARGO_BIN_EXE_afkconvoy"), dir)
-            .args(["run", "--foreground", "--tracker", "default"])
-            .args(args)
+            .args(self.settled_args(dir, &args))
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
