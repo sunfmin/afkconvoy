@@ -1400,14 +1400,14 @@ mod tests {
         let host = Host { found: &found, listed: &listed };
         let (mut kit, _) = compose(&current, &host, Writing::Refresh);
         assert_eq!(kit.harnesses[0].models.len(), 2);
-        assert_eq!(kit.matched(Harness::ClaudeCode, "old-id").unwrap(), "old-id");
+        assert_eq!(kit.range()[0].model("old-id").unwrap().id, "old-id");
         // A newly listed id matches nothing until research places it.
-        assert!(kit.matched(Harness::ClaudeCode, "Opus").is_err());
+        assert!(kit.range()[0].model("Opus").is_err());
         let opus = kit.harnesses[0].models.iter_mut().find(|seen| seen.model == "opus").unwrap();
         assert_eq!(opus.names, ["Opus"]);
         *opus = sourced(opus.clone());
-        assert_eq!(kit.matched(Harness::ClaudeCode, "opus").unwrap(), "opus");
-        assert_eq!(kit.matched(Harness::ClaudeCode, "Opus").unwrap(), "opus");
+        assert_eq!(kit.range()[0].model("opus").unwrap().id, "opus");
+        assert_eq!(kit.range()[0].model("Opus").unwrap().id, "opus");
     }
 
     #[test]
