@@ -223,9 +223,16 @@ struct Bound {
 
 /// The host's exclusive queue, as its host runner holds it: worker lanes run, up to the counts the host says, and
 /// at most one command of each repo in each lane. Requests keep their order. Each leaves as its asker's line closes. A clone is the same.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct Queue {
     held: Arc<(Mutex<Joined>, Condvar)>,
+    inherited: bool,
+}
+
+impl Default for Queue {
+    fn default() -> Self {
+        Self { held: Arc::default(), inherited: true }
+    }
 }
 
 /// Every ticket in the queue, waiting or running, and the number the next
@@ -345,6 +352,9 @@ impl Queue {
 
     fn with_leases(&self, joined: &Joined) -> Result<Vec<Ticket>> {
         let mut tickets = joined.tickets.clone();
+        if !self.inherited {
+            return Ok(tickets);
+        }
         for mut inherited in crate::slots::standing()? {
             if tickets.iter().any(|t| t.pid == inherited.pid && t.ran.is_some()) {
                 continue;
@@ -932,7 +942,7 @@ mod tests {
     #[test]
     fn one_runs_at_a_time_in_the_order_asked_and_each_leaves_as_its_line_closes() {
         let dir = tempfile::tempdir().unwrap();
-        let queue = Queue::default();
+        let queue = Queue { inherited: false, ..Queue::default() };
         served(dir.path(), &queue);
         let (mut first, said) = Asker::joins(dir.path(), ticket("a", 100));
         assert_eq!(said["ahead"], 0);
@@ -958,7 +968,7 @@ mod tests {
     #[test]
     fn one_whose_process_dies_as_it_waits_leaves_and_one_that_asked_again_keeps_its_place() {
         let dir = tempfile::tempdir().unwrap();
-        let queue = Queue::default();
+        let queue = Queue { inherited: false, ..Queue::default() };
         served(dir.path(), &queue);
         let (mut running, _) = Asker::joins(dir.path(), ticket("a", 300));
         assert!(running.next().unwrap()["runs"].is_u64());
@@ -976,7 +986,7 @@ mod tests {
     #[test]
     fn a_release_move_pauses_queue_grants_and_closes_waiters_without_running_them() {
         let dir = tempfile::tempdir().unwrap();
-        let queue = Queue::default();
+        let queue = Queue { inherited: false, ..Queue::default() };
         served(dir.path(), &queue);
         let (mut running, _) = Asker::joins(dir.path(), ticket("a", 100));
         assert!(running.next().unwrap()["runs"].is_u64());

@@ -459,7 +459,11 @@ fn runner_restart_keeps_running_candidate_ownership_and_capacity() {
     world.kill_host_runner("KILL");
     drop(first_runner);
     let _replacement = world.host_held();
-    let restored = world.afk(&["queue"]).ok();
+    let mut restored = Value::Null;
+    until(|| {
+        restored = world.afk(&["queue"]).json;
+        restored["status"] == "available"
+    });
     assert_eq!(restored["worker"]["used"], 1, "{restored}");
     assert!(restored["running"].as_array().unwrap().iter().any(|r| r["issue"] == 1), "{restored}");
     let ordinary_marker = world.root.join("ordinary-started");
