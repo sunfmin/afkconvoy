@@ -1088,7 +1088,14 @@ pub fn inspected(checkout: &Repo, said: &str, did: &[String]) -> Result<Value> {
 /// in the checkout's notes for the inspection's record. With a fleet lock
 /// standing it joins nothing → `locked`: an inspection's is no lock issue's.
 pub fn land(repo: &Repo, config: &Config, gh: &GitHub, host: &str, now: u64) -> Result<Value> {
-    let checkout = inspection_checkout(repo)?;
+    let checkout = Worktree::of(repo)?;
+    let named = checkout.path.file_name().and_then(|name| name.to_str()).unwrap_or("");
+    // A watch uses the same no-issue landing path, from a checkout of its
+    // own in any listed repo. Its distinct name keeps an inspection's start
+    // from taking that checkout for the one an earlier inspection left.
+    if !afkconvoy_core::worker::is_worktree_named(named, crate::host_watch::CHECKOUT) {
+        inspection_checkout(repo)?;
+    }
     let Some(branch) = checkout.branch_now()? else {
         anyhow::bail!(
             "{} is on no branch: commit the change on the branch of this checkout, push it and \
