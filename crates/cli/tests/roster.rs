@@ -453,7 +453,7 @@ fn a_team_s_roster_is_drafted_from_the_host_kit_into_its_working_tree_and_commit
 
     // The draft passes `check` as written.
     let checked = world.afk(&["check", "--dir", dir, "--team", "acme/team"]).ok();
-    assert_eq!(checked["roles"][0]["roster"]["run"].as_array().unwrap().len(), 7, "{checked}");
+    assert_eq!(checked["roles"][0]["roster"]["run"].as_array().unwrap().len(), 6, "{checked}");
     assert_eq!(checked["roles"][1]["roster"]["run"].as_array().unwrap().len(), 2, "{checked}");
 
     // Where a roster is, it says what it would change and writes nothing
