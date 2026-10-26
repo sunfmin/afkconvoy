@@ -246,6 +246,9 @@ fn a_probe_that_found_the_tracker_private_stands_for_the_hour_and_no_longer() {
 #[test]
 fn a_fleet_instance_whose_tracker_is_made_public_works_nothing_from_its_next_check_until_it_is_private()
  {
+    // A second of its sleeps takes 10ms: the host runner starts it again 0.6s
+    // after it broke, not 6s.
+    const RUN: [&str; 5] = ["run", "--host", "h1", "--second-ms", "10"];
     let world = world("private");
     let first = world.afk(&RUN).ok();
     assert!(first["first_tick"].as_str().unwrap().contains("frontier 0"), "{first}");
