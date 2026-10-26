@@ -785,7 +785,8 @@ fn observe(
         && ["state", "outcome", "stateStartedAt", "agentType"]
             .iter()
             .any(|key| observed.orca[*key] != orca[*key]);
-    if newly_failed {
+    let needs_observation = observed.action == "healthy" && !working;
+    if newly_failed || needs_observation {
         observed.next_check = fleet.now;
         observed.window_started = fleet.now;
         observed.diagnosis = None;
@@ -808,7 +809,9 @@ fn observe(
         observed.judgment = None;
         observed.operator_reason = None;
         observed.snapshots.clear();
-        observed.next_check = fleet.now;
+        // The runtime was just checked. A read-only watch must not mistake
+        // this healthy observation for a check that is already overdue.
+        observed.next_check = fleet.now.saturating_add(CHECK_SECONDS);
         observed.background = None;
         book.workers.push(observed);
         return Ok(());
