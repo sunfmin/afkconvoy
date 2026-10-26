@@ -61,9 +61,9 @@ pub fn make(worktree: &Path) -> Result<PathBuf> {
 }
 
 /// Turns the link of the worktree at `worktree` to the host's durable
-/// temporary directory, before the worktree is removed: a process started with it that
-/// outlives the worktree still has a directory there. A worktree no worker
-/// was started in has no link, and one turned already is left as it is.
+/// temporary directory, before the worktree is removed: a process started
+/// with it that outlives the worktree still has a directory there. A worktree
+/// no worker was started in has no link, and one turned already is left as it is.
 pub fn retire(worktree: &Path) -> Result<()> {
     let link = of(worktree);
     if std::fs::read_link(&link).is_ok_and(|to| to == worktree.join(TMP_DIR)) {
@@ -165,8 +165,8 @@ fn retired() -> Result<PathBuf> {
     own_dir(own_links()?.join("retired"))
 }
 
-/// Makes `dir` private to this user, refusing a directory owned by another
-/// user or a symlink, just as for the directory holding the links.
+/// Creates `dir` private to this user where absent, refusing a directory
+/// owned by another user or a symlink, as for the directory holding the links.
 fn own_dir(dir: PathBuf) -> Result<PathBuf> {
     match std::fs::DirBuilder::new().mode(0o700).create(&dir) {
         Err(error) if error.kind() != ErrorKind::AlreadyExists => {
