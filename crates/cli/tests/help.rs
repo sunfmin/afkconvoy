@@ -482,7 +482,7 @@ fn flagged(text: &str) -> Vec<(&str, &str)> {
 }
 
 /// Each way the fleet stops for a human, by the heading `humans` gives it.
-const STOPS: [&str; 6] = [
+const STOPS: [&str; 5] = [
     "An escalation",
     "A tripped breaker",
     "A stage `by: human`",
