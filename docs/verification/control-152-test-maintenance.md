@@ -85,4 +85,42 @@ the individual error field names from `ConfigError` display: the original CLI
 tables and the new pure formatter test each reject all four. Editorial preferences
 explicitly removed above are not counted as retained behavior.
 
-Execution receipts and full-gate measurements are recorded in the PR evidence.
+## Execution receipt
+
+Both full gates passed on 2026-10-27. The baseline is `456b24d1`; the revised
+gate tested `1f9b924f`. Nextest ran every non-ignored test in five binaries:
+1,622 passed before and 1,621 after, with the same 15 skipped. CLI collection
+changes 921→918 and core collection 518→520. The new core tests and the CLI
+test-file registration guard are collected, and the full runs use no filter.
+
+| Gate step | Before | After |
+| --- | ---: | ---: |
+| fmt | 1 s | 1 s |
+| Flux | 30 s | 34 s |
+| clippy | 19 s | 14 s |
+| manual | 16 s | 7 s |
+| build | 9 s | 11 s |
+| tests | 357 s | 357 s |
+| Sum of timed steps, excluding queue wait | 432 s | 424 s |
+| Nextest's precise test duration | 356.484 s | 356.606 s |
+
+The same two switch tests were reported slow: capacity continuation awaiting
+confirmed termination, 20.569→21.879 s; Codex task refusal awaiting confirmed
+termination, 24.044→24.140 s. Both are unchanged. Flux checked the same 2,503
+functions with zero trusted or ignored functions in both runs.
+
+All 24 unique injected faults were caught before and after, with passing
+unfaulted controls. The original 19-fault comparison was supplemented by
+focused comparisons for the length-only manual checker and four individual
+domain-error field names; the stale-manual fault was also rerun after its
+fixture changed. No compile failure or failed control counts as detection.
+
+The test phase did not get faster. The baseline started without a target
+directory; targeted verification had already built artifacts in the revised
+worktree. Build-cache state and ordinary host activity differ, so the eight
+seconds of whole-gate difference is not attributed to this cleanup. Its
+benefit is the explicit removal of editorial contracts and one owner for the
+complete rule tables, with CLI wiring and observable values still checked.
+
+The PR records the same evidence; its landing turn gates the complete merge
+with the then-current base branch separately.
