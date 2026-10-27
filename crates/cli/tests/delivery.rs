@@ -357,3 +357,23 @@ fn branch_layout_and_separate_tracker_keep_one_authoritative_delivery() {
     );
     assert!(world.afk(&["target", "--issue", "7"]).error().contains("missing"));
 }
+
+#[test]
+fn rest_exhaustion_preserves_final_review_discovery_and_watch_exclusion() {
+    let world = World::new();
+    let delivery = create(&world, None);
+    advance(&world, &delivery);
+    world.with_gh(|gh| gh["quota_fail"] = json!({"core": "gh: API rate limit already exceeded"}));
+    let created = create(&world, None);
+    assert_eq!(created["final_pr"]["draft"], true);
+    assert_eq!(final_prs(&world).len(), 1);
+    assert_eq!(create(&world, None)["final_pr"], created["final_pr"]);
+    world.with_gh(|gh| {
+        gh["prs"][0]["updated_at"] = json!(1050);
+        gh["prs"][0]["closed_at"] = json!(1050);
+        gh["prs"][0]["state"] = json!("closed");
+    });
+    let watched = world.afk(&["doctor", "--all", "--since", "1000", "--now", "1100"]).ok();
+    assert!(!watched.to_string().contains("Jira delivery:"), "{watched}");
+    assert_eq!(create(&world, None)["final_pr"]["state"], "closed");
+}

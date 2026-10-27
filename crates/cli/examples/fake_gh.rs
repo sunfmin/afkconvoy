@@ -1130,6 +1130,7 @@ fn equivalent_graph(st: &State) -> ! {
         let rows:Vec<_>=st.doc["prs"].as_array().unwrap().iter().filter(|r|!query.contains("states:[OPEN]")||is_open(r)).map(|r|{
             let links:Vec<_>=r["linked"].as_array().into_iter().flatten().map(|n|if n.is_object(){n.clone()}else{json!({"number":n})}).collect();
             json!({"number":r["number"],"title":r["title"],"body":r["body"],"headRefName":r["headRefName"],"headRefOid":r["headRefOid"],"baseRefName":r["baseRefName"].as_str().unwrap_or(st.doc["base"].as_str().unwrap()),"isCrossRepository":is_fork(r),
+                "state":r["state"].as_str().unwrap_or("open").to_ascii_uppercase(), "isDraft":r["draft"].as_bool().unwrap_or(false), "url":format!("https://gh/pull/{}", r["number"]),
                 "createdAt":stamp(&r["since"]),"updatedAt":stamp(&r["updated_at"]),"closedAt":stamp(&r["closed_at"]),"mergedAt":stamp(&r["merged_at"]),"baseRepository":{"nameWithOwner":r["of"].as_str().unwrap_or("acme/dev")},
                 "closingIssuesReferences":{"nodes":links.iter().take(100).collect::<Vec<_>>(),"pageInfo":{"hasNextPage":links.len()>100,"endCursor":if links.len()>100{json!("100")}else{Value::Null}}}})
         }).collect();
