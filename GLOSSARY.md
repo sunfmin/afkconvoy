@@ -104,17 +104,17 @@ _Avoid_: task branch (the worker's own source branch)
 A Jira delivery's single PR from its delivery branch to its final target, opened as a Draft once there is a meaningful diff. A human owns colleague review and merging it; ordinary fleet task landing never selects it.
 _Avoid_: task PR (an internal contribution), final task
 
-**Delivery handoff**:
-The explicit check that a Jira delivery's attached tasks are implemented, that its delivery branch merges cleanly onto its current final target, and that the existing gate passes on that merge without publishing to the final target. A green result updates the one final review PR and marks it ready for a human. The fleet does not merge it.
+**Delivery hand-off**:
+The explicit check that a Jira delivery's attached tasks are implemented, that its delivery branch merges cleanly onto its current final target, and that the existing gate passes on that merge without publishing to the final target. A green check updates the one final review PR and marks it ready for a human. The fleet does not merge it.
 _Avoid_: auto-land, Jira transition
 
 **Delivery evidence**:
-The record of one delivery handoff: the delivery head, the final-target head, and the attached task results it checked. A later commit, a moved final target, or a different task set does not match it. A green gate of an individual task does not stand in for it.
-_Avoid_: child gate, approval
+The record of one delivery hand-off: the delivery head, the final-target head, and what it checked of each attached task. A later commit, a moved final target, or a different task set does not match it. A green gate of an individual task does not stand in for it.
+_Avoid_: child gate, approval (a reviewer's approval on GitHub)
 
 **Delivery settlement**:
 The one observation that a final review PR merged into its declared final target, or closed without merging. Repeating it does not write another record or remove other work. A merge while attached work is incomplete is a discrepancy, not delivery of the whole Jira ticket.
-_Avoid_: Jira resolution, done
+_Avoid_: Jira resolution, done (a Jira ticket marked done)
 
 ### Teams and roles
 
