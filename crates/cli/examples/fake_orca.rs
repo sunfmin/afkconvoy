@@ -410,7 +410,7 @@ fn terminal_send(st: &mut State) -> ! {
             done(st, receipt);
         }
     }
-    st.doc["terminals"][at]["sent"].as_array_mut().unwrap().push(sent);
+    st.doc["terminals"][at]["sent"].as_array_mut().unwrap().push(sent.clone());
     if st.doc["send_screen"].is_array() {
         st.doc["terminals"][at]["screen"] = st.doc["send_screen"].clone();
     }

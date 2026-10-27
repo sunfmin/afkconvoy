@@ -101,7 +101,7 @@ fn brief(world: &World, line: &str) -> String {
         .iter()
         .find(|terminal| terminal["line"] == line)
         .unwrap();
-    let line = terminal["sent"][0]["text"].as_str().unwrap();
+    let line = terminal["sent"].as_array().unwrap().last().unwrap()["text"].as_str().unwrap();
     let at =
         line.find("Your task brief is the file ").unwrap() + "Your task brief is the file ".len();
     let file = &line[at..line[at..].find(" — ").unwrap() + at];
@@ -361,7 +361,7 @@ fn unplaced_models_start_a_daily_watch_that_places_research_and_keeps_its_bound_
     let daily = until(&world, "research due again after a day", || running(&world));
     assert_eq!(daily["items"].as_array().unwrap().len(), 1, "{daily}");
     assert!(daily["items"][0]["id"].as_str().unwrap().starts_with("kit-research:"));
-    assert_eq!(daily["model"], "fast", "the next watch uses the placed model");
+    assert_eq!(daily["model"], Value::Null, "the healthy resident keeps its model across rounds");
 
     std::fs::write(
         &file,
@@ -389,7 +389,11 @@ fn unplaced_models_start_a_daily_watch_that_places_research_and_keeps_its_bound_
     until(&world, "look after settlement, restart and daily bound", || {
         state(&world)["until"].as_u64().filter(|at| *at > before)
     });
-    assert_eq!(starts(&world).len(), 3, "settled models start no further watch");
+    assert_eq!(
+        starts(&world).len(),
+        1,
+        "all rounds reused one resident; settled models start no further round"
+    );
     assert!(state(&world)["running"].is_null());
     let doctor = world.afk(&["doctor", "--all"]).ok();
     assert!(
@@ -587,7 +591,7 @@ fn a_watch_closed_without_reporting_does_not_consume_the_unresolved_episode() {
     let deadline = Instant::now() + Duration::from_secs(10);
     let after = loop {
         let after = state(&world);
-        if after["until"].as_u64().unwrap_or(0) > first_look {
+        if after["until"].as_u64().unwrap_or(0) > first_look && after["running"].is_object() {
             break after;
         }
         assert!(Instant::now() < deadline, "no look after watch closure: {after}");
@@ -806,6 +810,8 @@ fn a_report_is_complete_durable_and_carried_into_the_next_brief() {
     world.kill_host_runner("KILL");
     let mut kept = state(&world);
     kept["watched"] = json!([]);
+    kept["covered"] = json!([]);
+    kept["observed"] = json!({});
     std::fs::write(world.cache().join("afkconvoy/watch/state.json"), kept.to_string()).unwrap();
     run(&world, &dir);
     let next = until(&world, "next watch", || running(&world).filter(|w| w["id"] != watch["id"]));
@@ -813,7 +819,7 @@ fn a_report_is_complete_durable_and_carried_into_the_next_brief() {
     for text in ["Supply a new account?", "pi still needs its account", "other fleets dispatched"] {
         assert!(told.contains(text), "{told}");
     }
-    assert!(!open(&world, &dir).contains(&watch["terminal"].as_str().unwrap().to_string()));
+    assert_eq!(watch["terminal"], next["terminal"], "the next round reuses the resident Terminal");
     assert!(open(&world, &dir).contains(&next["terminal"].as_str().unwrap().to_string()));
     assert!(open(&world, &dir).contains(&OPERATORS.to_string()));
 }
@@ -1196,7 +1202,9 @@ fn a_resource_trigger_while_a_watch_runs_waits_for_its_next_look() {
         running(&world).filter(|w| w["id"] != first["id"])
     });
     assert!(next["items"].to_string().contains("resource:hot:"), "{next}");
-    assert_eq!(starts(&world).len(), 2);
+    assert_eq!(starts(&world).len(), 1);
+    assert_eq!(next["terminal"], first["terminal"]);
+    assert_eq!(next["session"], first["session"]);
 }
 
 #[test]

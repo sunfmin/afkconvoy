@@ -269,7 +269,7 @@ pub(crate) fn problem(why: &str) -> Result<()> {
 
 pub(crate) fn recovery(why: &str) -> String {
     format!(
-        "{why}. No replacement is started and existing work is retained. Run `afkconvoy doctor --all` and `orca terminal list --worktree path:<watch-directory> --json`; inspect candidates with `orca terminal show --terminal <handle> --json`. Rename unrelated same-name terminals with `orca terminal rename --terminal <handle> --title <title> --json`, then let the runner retry. For an uncertain launch or prompt, inspect the existing session and submit its complete report using `afkconvoy watched --watch <id> --text-file <report.json>`; this ends only its marked executor. Keep the brief, transcript and launch claim; do not resend creation or the prompt."
+        "{why}. No replacement is started and existing work is retained. Run `afkconvoy doctor --all` and `orca terminal list --worktree path:<watch-directory> --json`; inspect candidates with `orca terminal show --terminal <handle> --json`. Rename unrelated same-name terminals with `orca terminal rename --terminal <handle> --title <title> --json`, then let the runner retry. For an uncertain launch or prompt, inspect the existing session and submit its complete report using `afkconvoy watched --watch <id> --text-file <report.json>`; this completes only that round and retains a healthy resident executor. An unresolved association still pauses further delivery. Keep the brief, transcript and launch claim; do not resend creation or send a fresh prompt. The runner may replay only its exact saved Terminal request key."
     )
 }
 
