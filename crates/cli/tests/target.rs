@@ -38,7 +38,7 @@ fn selected_target_cuts_continues_gates_lands_and_settles_only_its_task() {
     git(&dir, &["push", "-q", "origin", "HEAD"]);
     // A new process, and then a new fleet instance after takeover, retain the
     // same target and worktree, even with a different configured base.
-    git(&world.clone, &["push", "-q", "origin", "origin/main:other-base"]);
+    git(&world.clone, &["push", "-q", "origin", "origin/main:refs/heads/other-base"]);
     let config = std::fs::read_to_string(world.clone.join("docs/agents/afkconvoy.md")).unwrap();
     std::fs::write(
         world.clone.join("docs/agents/afkconvoy.md"),
@@ -56,6 +56,7 @@ fn selected_target_cuts_continues_gates_lands_and_settles_only_its_task() {
     world
         .afk(&[
             "takeover",
+            "--yes",
             "--from",
             "alpha",
             "--instance",
@@ -69,14 +70,13 @@ fn selected_target_cuts_continues_gates_lands_and_settles_only_its_task() {
     let continued = world
         .afk(&["dispatch", "--issue", "7", "--instance", "beta", "--host", "h1", "--now", "1100"])
         .ok();
-    assert_eq!(continued["worktree"], started["worktree"]);
+    assert_eq!(continued["worktree"], started["worktree"], "{continued}");
     assert!(brief(&dir).contains("base is `delivery/ABC-123`"));
     let switched = world
         .afk(&[
             "switch",
             "--harness",
             "claude-code",
-            "--issue",
             "7",
             "--instance",
             "beta",
