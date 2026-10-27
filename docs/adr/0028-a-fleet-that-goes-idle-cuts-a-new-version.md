@@ -31,7 +31,7 @@ It is a command, `afkconvoy cut`, not a model session. Its steps are known and t
 ## What
 
 1. The version: the next patch past the newest tag, or the next minor, its patch 0, where a PR that landed since carries `release:minor`. Picked by the tick that starts the cut, and kept in its checkout with the PRs it holds: those the base branch's landings past the tag name, `<title> (#<pr>)`.
-2. `set`: the repo's set lines, on the base branch as it stood, committed as `<repo> <version>`. `pr`: pushed to a branch of the cut's own, its PR opened. `gate`: take its turn to merge, gate, record green and land on the base branch (ADR-0037). `land`: recover that merge commit, whose message says `By a cut on <host>`.
+2. `set`: the repo's set lines, on the base branch as it stood, committed as `<repo> <version>` on the cut's branch. `pr`: pushed to a branch of the cut's own, its PR opened. `gate`: take its turn to build one commit on the base tip as it stands, gate that commit, record green and land it (ADR-0037). That commit has one parent, the base tip. Its diff against that parent is what the set lines wrote. Where the base moved while the cut ran, the parent is the base tip at land time, and the landings already on that tip stay. The set commit is not a parent and is not an ancestor of the base branch. `land`: recover that commit. Its message says `By a cut on <host>` and names the cut's PR.
 3. `tag`: the commit that landed it tagged `v<version>` and the tag pushed.
 4. `publish`: with the tag checked out, the repo's publish lines.
 5. Each step and its seconds, its PR and where it landed are kept in its checkout as it goes; the tick that finds it over says it in its line and the tick log, `doctor` lists it among its events, and the panel shows it.
@@ -44,7 +44,7 @@ A cut that failed at a step, ran out of time, or whose terminal is gone with not
 
 A PR labelled `release:minor` that lands while a patch cut runs is an expected stop at `tag`: it tags and publishes nothing, records why it was superseded and opens no failure issue. The tag step checks landings up to the current base branch, including a minor that landed after the version's own PR. The next tick ends that cut, releases its remote claim, removes its checkout, and starts the minor cut in the same pass, unless a fleet lock stands. A declared initial version remains exact.
 
-Its time remains two gate limits and an hour beside, three hours at the default `gate_seconds`, allowing for base certification and its own gate. A cut interrupted after landing finds the version set by lines that change nothing, recovers that merge commit from the base branch and tags it.
+Its time remains two gate limits and an hour beside, three hours at the default `gate_seconds`, allowing for base certification and its own gate. A cut interrupted after landing finds the version set by lines that change nothing, recovers that commit from the base branch and tags it.
 
 A cut's turn and exclusive commands go ahead of waiting worker commands, determined by its cut worktree and preserved in its ticket across a host runner replacement. Cuts keep request order among themselves; ordinary commands keep theirs. Neither interrupts a running command; ADR-0031's contention bound and ADR-0037's one turn per repo still apply. This amends ADR-0034's FIFO rule for cuts now that ADR-0037 has removed the train lane: an arbitrary queue of workers' gates must not consume the cut's time limit. Queue waits still count toward the cut's overall limit; the gate's own limit starts only after its turn is granted.
 
@@ -75,6 +75,7 @@ Choosing an explicit version instead of inferring it from files keeps the versio
 
 - A repo that turns cutting on is cut whenever its fleet goes idle with landed work, or the oldest landing reaches its age bound while busy: its published version follows its base branch without a human session.
 - A landing commit names the issue its PR closes, the watch that made it, or the cut and its host; a cut's PR closes no issue.
-- An interrupted cut recovers its landed merge commit or takes another gated turn when its PR has not landed.
+- An interrupted cut recovers its landed commit or takes another gated turn when its PR has not landed.
+- A cut adds one commit to the base branch, and the version tag points at it. Issue turns and watches still land as merge commits. A version tag already published stays on the commit it names.
 - `plan` has a `cut` row in a repo that turns cutting on; `doctor` warns while a failed cut's issue is open.
 - The rule that ran the cut from a human's session ends where a repo turns cutting on.

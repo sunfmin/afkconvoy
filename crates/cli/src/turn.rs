@@ -165,10 +165,41 @@ pub fn merge_in(repo: &Repo, sha: &str, what: &str) -> Result<Vec<String>> {
     Ok(files)
 }
 
+/// The tree of `head` merged onto `base`, or `None` when the two conflict.
+/// Made in the object store alone: no worktree is touched and no branch moves.
+fn merged_tree(repo: &Repo, base: &str, head: &str) -> Result<Option<String>> {
+    let merged = repo.try_git(&["merge-tree", "--write-tree", base, head])?;
+    match merged.stdout.split_whitespace().next() {
+        Some(tree) if merged.ok => Ok(Some(tree.to_string())),
+        // git exits 1 for a merge that conflicts, and names the tree it got to
+        Some(_) => Ok(None),
+        None => bail!("git merge-tree of {head} onto {base} failed: {}", merged.stderr.trim()),
+    }
+}
+
+/// Commits `tree` with `parents` and `message` at `now` → its sha.
+fn commit_at(repo: &Repo, tree: &str, parents: &[&str], message: &str, now: u64) -> Result<String> {
+    let at = format!("@{now} +0000");
+    let dated = [("GIT_AUTHOR_DATE", at.as_str()), ("GIT_COMMITTER_DATE", at.as_str())];
+    let mut args = vec!["commit-tree".to_string(), tree.to_string()];
+    for parent in parents {
+        args.push("-p".to_string());
+        args.push((*parent).to_string());
+    }
+    args.push("-m".to_string());
+    args.push(message.to_string());
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let made = repo.try_git_with(&refs, &dated)?;
+    if !made.ok {
+        bail!("could not commit {tree}: {}", made.stderr.trim());
+    }
+    Ok(made.stdout)
+}
+
 /// `head` merged onto `base` as ONE merge commit whose second parent is `head`
-/// → its sha, `None` when the two conflict. Made in the object store alone: no
-/// worktree is touched and no branch moves, and a head that changes nothing
-/// against `base` still gets its commit — which is what says the PR joined.
+/// → its sha, `None` when the two conflict. An issue turn and a watch land
+/// this commit. A head that changes nothing against `base` still gets its
+/// commit — which is what says the PR joined.
 pub(crate) fn merged_onto(
     repo: &Repo,
     base: &str,
@@ -176,21 +207,24 @@ pub(crate) fn merged_onto(
     message: &str,
     now: u64,
 ) -> Result<Option<String>> {
-    let merged = repo.try_git(&["merge-tree", "--write-tree", base, head])?;
-    let tree = match merged.stdout.split_whitespace().next() {
-        Some(tree) if merged.ok => tree,
-        // git exits 1 for a merge that conflicts, and names the tree it got to
-        Some(_) => return Ok(None),
-        None => bail!("git merge-tree of {head} onto {base} failed: {}", merged.stderr.trim()),
-    };
-    let at = format!("@{now} +0000");
-    let dated = [("GIT_AUTHOR_DATE", at.as_str()), ("GIT_COMMITTER_DATE", at.as_str())];
-    let made =
-        repo.try_git_with(&["commit-tree", tree, "-p", base, "-p", head, "-m", message], &dated)?;
-    if !made.ok {
-        bail!("could not commit the merge of {head} onto {base}: {}", made.stderr.trim());
-    }
-    Ok(Some(made.stdout))
+    let Some(tree) = merged_tree(repo, base, head)? else { return Ok(None) };
+    Ok(Some(commit_at(repo, &tree, &[base, head], message, now)?))
+}
+
+/// `head`'s changes on `base` as one commit whose only parent is `base` → its
+/// sha, `None` when the two conflict. A cut lands this commit (ADR-0028). The
+/// tree is the merge, so a base that moved keeps the landings already on it
+/// and the diff against that parent is what `head` adds. `head` itself is not
+/// a parent, and stays off the base branch.
+pub(crate) fn cut_onto(
+    repo: &Repo,
+    base: &str,
+    head: &str,
+    message: &str,
+    now: u64,
+) -> Result<Option<String>> {
+    let Some(tree) = merged_tree(repo, base, head)? else { return Ok(None) };
+    Ok(Some(commit_at(repo, &tree, &[base], message, now)?))
 }
 
 /// The head of a PR's `branch` on the remote, with a worktree that is only
