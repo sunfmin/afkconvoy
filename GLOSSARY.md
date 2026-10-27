@@ -138,7 +138,7 @@ _Avoid_: enroll, admit (a tick starting new workers on a host not busy: admissio
 
 **Stage**:
 One step of a workflow: one skill of one role, performed by one new worker — or a decision waited for from a human.
-_Avoid_: step (one thing a tick does), phase, state (fleet state and worker state are terms)
+_Avoid_: step (one thing a tick does), phase (candidate lifecycle), state (fleet state and worker state are terms)
 
 **Stage record**:
 The comment a stage leaves on its issue: what it produced, its verdict, the versions of the role and team it ran under, and the harness its worker ran on, with the model where it was started on one. A human who declares for a stage, rules on it or sends the issue to it leaves one too, which says a human did; so does the fleet, for a stage that runs again because a fleet lock closed. The stage an issue is at is derived from these and stored nowhere.
