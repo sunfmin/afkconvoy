@@ -109,7 +109,7 @@ pub fn unlock(fleet: &mut Fleet, me: &Me, issue: u64) -> Result<Outcome> {
 }
 
 /// What a start took: the claims stamped with this host — on an issue, on a
-/// patrol's run, on a proposal — whatever their holder's heartbeat says
+/// patrol's run or on a cut — whatever their holder's heartbeat says
 /// (docs/adr/0003). The next tick continues each issue, and ends each run
 /// whose worker is gone or stopped.
 ///

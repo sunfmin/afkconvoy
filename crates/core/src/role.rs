@@ -10,7 +10,6 @@ use crate::harness::Harness;
 use crate::host_watch::WATCH_ENV;
 use crate::patrol::PATROL_ENV;
 use crate::position::Position;
-use crate::precedent::PROPOSAL_ENV;
 use crate::stage_record::{StageRecord, history};
 use crate::team::{Consult, Role, Stage, Team, Work, Workflow};
 use crate::transition::escalated_from;
@@ -181,9 +180,6 @@ pub enum On<'a> {
     },
     /// A run of the patrol of this name: no issue, and no stage.
     Patrol(&'a str),
-    /// The proposal, as a precedent, of a ruling a human gave this issue: no
-    /// stage, and the issue is not its worker's.
-    Proposal { issue: u64 },
     /// The host watch: no issue or stage; its commands have operator authority.
     Watch(&'a str),
 }
@@ -195,8 +191,7 @@ pub struct Facts<'a> {
     pub on: On<'a>,
     pub role: &'a str,
     pub skill: &'a str,
-    /// Whether the worker may commit. A patrol's never may; a proposal's
-    /// does, in its own clone of the team's repo.
+    /// Whether the worker may commit. A patrol's never may.
     pub writes: bool,
     /// Whether the worker is a consult, which writes no code whatever its
     /// stage may.
@@ -222,7 +217,6 @@ impl Facts<'_> {
                 (STAGE_ENV, stage.to_string()),
             ],
             On::Patrol(patrol) => vec![(PATROL_ENV, patrol.to_string())],
-            On::Proposal { issue } => vec![(PROPOSAL_ENV, issue.to_string())],
             On::Watch(worker) => vec![(WATCH_ENV, worker.to_string())],
         };
         env.extend([
@@ -246,7 +240,7 @@ pub struct Start<'a> {
     /// The fleet's copy of the role's directory: the worker's working directory.
     pub role_dir: &'a str,
     /// The issue's worktree, or the checkout of the base branch a patrol's
-    /// worker or a proposal's is given.
+    /// worker is given.
     pub worktree: &'a str,
     /// The fleet's copy of the team's directory, without those of its roles.
     pub team_dir: &'a str,

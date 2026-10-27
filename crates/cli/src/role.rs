@@ -17,7 +17,7 @@ use afkconvoy_core::prompt::{
 };
 use afkconvoy_core::role::{Due, Facts, On, Rules, Start, Told, due};
 use afkconvoy_core::stage_record::{History, Reading, StageRecord, Stated, history};
-use afkconvoy_core::team::{LAND, PRECEDENTS, Team};
+use afkconvoy_core::team::{LAND, Team};
 use afkconvoy_core::tools::{Found, Tool, fault, refused};
 use anyhow::{Context, Result, anyhow, bail};
 use serde_json::{Value, json};
@@ -362,7 +362,6 @@ impl Staged {
             branch: &worktree.branch,
             worktree: &path,
             base_branch: &fleet.config.base_branch,
-            precedents: &self.team_copy.dir.join(PRECEDENTS).display().to_string(),
             team_rules: self.team_rules.as_deref(),
             records: &records,
             verdict_command: &declare(" verdict"),

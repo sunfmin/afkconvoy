@@ -13,9 +13,9 @@ It is modelled on the one Cockroach Labs describes in "An experiment in running 
 
 ## The team
 
-- `team.md`: Names the seven roles, each as `./roles/<name>`: a path from the root of the team's own repo, so that the team names no repo and is pushed, forked or renamed with no edit. Its `precedents` has the fleet start a worker in the role `safety` for each ruling a human gives, to propose it as a precedent: none is asked twice.
+- `team.md`: Names the seven roles, each as `./roles/<name>`: a path from the root of the team's own repo, so that the team names no repo and is pushed, forked or renamed with no edit.
 - `CLAUDE.md`: The team rules: three, given to every worker whatever its role. They say how this team works, and nothing of one codebase or of one role.
-- `precedents.md`: Two precedents a human accepted, each saying when it applies. The first is about the demonstration's own code: take it out when the team works yours.
+- `docs/demo-rules.md`: The interval rule for hospital-demo with its source link, for that repo alone. The rule for continuing after a base-branch fix lives in the team rules, also with its source.
 
 ## The workflows
 
@@ -48,8 +48,8 @@ Each holds its rules, its skills — every `do` above names one — and its limi
   Reviews, and is the consult. A `reject` needs a blocking finding, which keeps rework from the breaker over a name. `refuse.sh` refuses a commit and a push in every stage: the role writes no code, whatever a workflow left unmarked. `limits.ts` is both hooks again, as a pi extension: pi runs no hook of `.claude/settings.json`, so a limit held under two harnesses is written twice. Under pi a skill is loaded by reading its `SKILL.md`, which is what it counts. Without it `check` refuses `plan-review`: its role would hold no limits there.
 - `roles/discharge-nurse/`: `CLAUDE.md`, `.claude/skills/audit/SKILL.md`, `.claude/skills/land/SKILL.md`, `.claude/settings.json`
   The last check, and the landing role. `audit` is a checklist of the record, not a second look at the code; `land` says only how a conflict is resolved.
-- `roles/safety/`: `CLAUDE.md`, `.claude/skills/record-precedent/SKILL.md`, `.claude/skills/review/SKILL.md`, `.claude/settings.json`
-  `record-precedent` is asked by the team file, `review` by a patrol.
+- `roles/safety/`: `CLAUDE.md`, `.claude/skills/review/SKILL.md`, `.claude/settings.json`
+  `review` is asked by a patrol.
 - `roles/triage-nurse/`: `CLAUDE.md`, `.claude/skills/triage/SKILL.md`, `.claude/settings.json`
 - `roles/infection-control/`: `CLAUDE.md`, `.claude/skills/rounds/SKILL.md`, `.claude/settings.json`
 - `roles/research/`: `CLAUDE.md`, `.claude/skills/propose/SKILL.md`, `.claude/settings.json`
