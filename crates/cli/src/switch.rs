@@ -9,7 +9,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use serde_json::{Value, json};
 
 use crate::claims::Me;
-use crate::dispatch::{Agent, Continuing, StartFrom, dispatch_continuing};
+use crate::dispatch::{Agent, Continuing, StartFrom, WorkerSelection, dispatch_continuing};
 use crate::fleet::Fleet;
 use crate::judge::mine;
 use crate::orca::{Source, Worktree};
@@ -264,14 +264,22 @@ pub(crate) fn auxiliary(
     let command = if caster {
         crate::own_command().fixed(" cast; exit").own()
     } else {
-        cast.command(agent.command(cast.harness)?.as_str())
+        if cast.harness == Harness::Codex {
+            agent.command(cast.harness)?.as_str().to_string()
+        } else {
+            cast.command(agent.command(cast.harness)?.as_str())
+        }
     };
     let terminal = if caster {
         agent.start(worktree, cast.harness, &command, None, fleet.now)?
     } else {
         agent.start_worker(
             worktree,
-            (cast.harness, cast.model.as_deref()),
+            WorkerSelection {
+                harness: cast.harness,
+                model: cast.model.as_deref(),
+                explicit_model: false,
+            },
             &command,
             false,
             None,

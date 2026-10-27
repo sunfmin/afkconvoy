@@ -89,6 +89,8 @@ pub struct Watch {
     #[serde(deserialize_with = "crate::kit::harness")]
     pub harness: Harness,
     pub model: Option<String>,
+    #[serde(default)]
+    pub model_source: Option<String>,
     pub terminal: String,
     pub transcript: PathBuf,
     /// What earlier watches on the same items did.
@@ -118,6 +120,8 @@ pub struct Attempt {
     #[serde(deserialize_with = "crate::kit::harness")]
     pub harness: Harness,
     pub model: Option<String>,
+    #[serde(default)]
+    pub model_source: Option<String>,
     pub terminal: String,
     pub why: String,
     #[serde(default)]
@@ -131,6 +135,7 @@ pub struct Attempt {
 pub fn watch_json(watch: &Watch) -> Value {
     json!({"id": watch.id, "directory": watch.directory, "stock": watch.stock, "items": watch.items,
         "started": watch.started, "harness": watch.harness, "model": watch.model,
+        "model_source": watch.model_source,
         "terminal": watch.terminal, "transcript": watch.transcript, "did": watch.did,
         "reported": watch.report.is_some(), "report": watch.report,
         "attempts": watch.attempts, "ended": watch.ended, "outcome": watch.outcome})
@@ -395,6 +400,7 @@ impl Watcher {
             started: now,
             harness: Harness::DEFAULT,
             model: None,
+            model_source: None,
             terminal: String::new(),
             transcript: PathBuf::new(),
             earlier,
@@ -421,7 +427,12 @@ impl Watcher {
         let mut failures = vec![];
         for candidate in crate::health::watch_candidates()? {
             watch.harness = candidate.harness;
-            watch.model = candidate.model;
+            (watch.model, watch.model_source) = if candidate.harness == Harness::Codex {
+                let (model, source) = crate::codex_launch::automatic_model(None)?;
+                (model, Some(source.to_string()))
+            } else {
+                (candidate.model, None)
+            };
             match start_session(&watch) {
                 Ok((terminal, transcript)) => {
                     (watch.terminal, watch.transcript) = (terminal, transcript);
@@ -540,6 +551,7 @@ impl Watcher {
         watch.attempts.push(Attempt {
             harness: from,
             model: watch.model.clone(),
+            model_source: watch.model_source.clone(),
             terminal: watch.terminal.clone(),
             why: why.clone(),
             did: vec![],
@@ -553,7 +565,12 @@ impl Watcher {
                 continue;
             }
             watch.harness = candidate.harness;
-            watch.model = candidate.model;
+            (watch.model, watch.model_source) = if candidate.harness == Harness::Codex {
+                let (model, source) = crate::codex_launch::automatic_model(None)?;
+                (model, Some(source.to_string()))
+            } else {
+                (candidate.model, None)
+            };
             match start_session(&watch) {
                 Ok((terminal, transcript)) => {
                     (watch.terminal, watch.transcript) = (terminal, transcript);
@@ -712,7 +729,12 @@ fn start_session(watch: &Watch) -> Result<(String, PathBuf)> {
     };
     let kept = crate::kept::keep(watch.harness, true)?;
     let line = if watch.harness == Harness::Codex {
-        crate::codex_launch::watch(&watch.directory, watch.model.as_deref(), &command)?
+        crate::codex_launch::watch(
+            &watch.directory,
+            watch.model.as_deref(),
+            watch.model_source.as_deref().unwrap_or("codex_default"),
+            &command,
+        )?
     } else {
         watch.harness.watch(
             command.as_str(),

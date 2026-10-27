@@ -17,7 +17,7 @@ cd <the role's copy> && export CODEX_HOME=<the fleet's own>
   --config features.memories=false
   --config skills.bundled.enabled=false
   [--config 'skills.config=[<each skill of yours the role's stands for, off>]']
-  --model <the fleet's selected model>
+  [--model <your current Codex selection>]
   [--config 'model_reasoning_effort="<your current effort>"']
 ```
 
@@ -29,20 +29,20 @@ Every Codex session has a fresh user directory under its worktree's `.afkconvoy-
 
 ## Model and effort
 
-The fleet selects the model by host kit order, role eligibility and casting, and passes it explicitly with `--model` for both bound and unbound repos. No config.toml selects a worker's model. While the host kit places no Codex model — none listed yet, or research pending — a Codex worker starts with no `--model`, on Codex's own default, and its model is recorded as null with the source `codex_default`. `afkconvoy kit` lists its models now, and the watch supplies research through `afkconvoy kit --research <file>`. The next tick also lists an entry with no Codex models without waiting for the daily refresh, with an hour between unsuccessful tries. Discovery filters the server catalog to model names before it reaches terminal scrollback.
+An automatic Codex worker without an issue `model:` label reads `model` from your `~/.codex/config.toml` at each launch and passes it explicitly with `--model`. This is the model selected for your ordinary Codex sessions; kit order and research do not replace it. The launch records `user_selection`. An issue model label retains its existing casting and is recorded as `casting`. With no user preference the worker starts without `--model` on Codex's native default, recorded as `codex_default`. If a role's range excludes your selected model, the start reports the selected model and source instead of silently using the kit's first model.
 
 Reasoning effort has a different source: every launch reads `model_reasoning_effort` from your own `~/.codex/config.toml` and passes it with `--config`. Changing that file changes the next worker without restarting the fleet. With no setting, Codex uses its selected model's default. This applies even with `host_user: false`. The fleet keeps no effort setting of its own. An unbound worker's fresh user directory holds the same allowed login, skill and rule links, and no other user settings; its `/model` writes change neither your configuration nor another worker's. Existing workers keep the settings they started with.
 
 The same model and effort rules hold for a patrol, a consult, a watch and the caster's headless Codex call. The caster uses a fresh login-only directory and reads the user's effort when it makes that call. Model listing and recovery probes remain host capability checks. The watch researches models with its web tools and places its checked research through `afkconvoy kit --research <file>`.
 
-`plan` and `doctor` list started sessions under `codex_workers`: issue, worktree, model, effort, model_source (`fleet_selection`) and effort_source (your config file and key, or `codex_default`). Each row also names its harness and codex_home, the private session directory. A later edit of your own config does not relabel an existing worker. If `/model` saves a different choice, it is shown with that session's private config as the source. `plan` also gives a Codex frontier issue's next-launch settings under `codex`. The panel shows each Codex worker's model and effort with the same sources. A malformed Codex configuration file or a non-string effort refuses the start and names the file to fix.
+`plan` and `doctor` list started sessions under `codex_workers`: issue, worktree, model, effort, model_source (`user_selection`, `casting`, or `codex_default`) and effort_source (your config file and key, or `codex_default`). Each row also names its harness and codex_home, the private session directory. A later edit of your own config does not relabel an existing worker. If `/model` saves a different choice, it is shown with that session's private config as the source. `plan` also gives a Codex frontier issue's next-launch model and source under `codex`. The panel shows each Codex worker's model and effort with the same sources. A malformed Codex configuration file, or a non-string model or effort, refuses the start and names the file to fix.
 
 ## An unbound repo 
 
 A Codex worker of an unbound repo, starts in its worktree with the same allowed user links in a fresh directory, and the same trust and session setup. Nothing is written to your Codex configuration, even when Codex has never seen the worktree:
 
 ```
-export CODEX_HOME=<this session's directory> && <worker launch command> --model <the fleet's selected model>
+export CODEX_HOME=<this session's directory> && <worker launch command> [--model <your current Codex selection>]
   --dangerously-bypass-hook-trust
   --config 'projects={"<the worktree>"={trust_level="trusted"}}'
   --config 'project_doc_fallback_filenames=["CLAUDE.md"]'
