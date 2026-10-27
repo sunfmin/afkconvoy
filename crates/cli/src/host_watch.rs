@@ -27,6 +27,7 @@ use crate::health::Diagnosis;
 use crate::log::{Entry, What};
 use crate::orca::Worktree;
 use crate::watch_report::Report;
+use crate::watch_terminal::{self, LaunchState, TITLE};
 
 const STATE: &str = "watch/state.json";
 /// How often a running watch's terminal and transcript are read.
@@ -36,8 +37,6 @@ const LOOK_SECONDS: u64 = 300;
 /// How many ended watches are kept, for what earlier watches on the same
 /// items did.
 const HISTORY: usize = 20;
-/// What a watch's terminal is titled in orca.
-const TITLE: &str = "afkconvoy watch";
 /// The linked checkout a watch makes for a change of a listed repo.
 pub const CHECKOUT: &str = "afkconvoy-watch";
 
@@ -89,6 +88,8 @@ pub struct Watch {
     #[serde(deserialize_with = "crate::kit::harness")]
     pub harness: Harness,
     pub model: Option<String>,
+    #[serde(default)]
+    pub model_source: Option<String>,
     pub terminal: String,
     pub transcript: PathBuf,
     /// What earlier watches on the same items did.
@@ -118,6 +119,8 @@ pub struct Attempt {
     #[serde(deserialize_with = "crate::kit::harness")]
     pub harness: Harness,
     pub model: Option<String>,
+    #[serde(default)]
+    pub model_source: Option<String>,
     pub terminal: String,
     pub why: String,
     #[serde(default)]
@@ -131,6 +134,7 @@ pub struct Attempt {
 pub fn watch_json(watch: &Watch) -> Value {
     json!({"id": watch.id, "directory": watch.directory, "stock": watch.stock, "items": watch.items,
         "started": watch.started, "harness": watch.harness, "model": watch.model,
+        "model_source": watch.model_source,
         "terminal": watch.terminal, "transcript": watch.transcript, "did": watch.did,
         "reported": watch.report.is_some(), "report": watch.report,
         "attempts": watch.attempts, "ended": watch.ended, "outcome": watch.outcome})
@@ -186,7 +190,10 @@ fn read() -> Result<State> {
 }
 
 pub(crate) fn running() -> Result<Option<Watch>> {
-    Ok(read()?.running)
+    match read()?.running {
+        Some(watch) => Ok(Some(watch)),
+        None => watch_terminal::active(),
+    }
 }
 
 /// The running watch, shared with what the host runner answers.
@@ -395,6 +402,7 @@ impl Watcher {
             started: now,
             harness: Harness::DEFAULT,
             model: None,
+            model_source: None,
             terminal: String::new(),
             transcript: PathBuf::new(),
             earlier,
@@ -421,8 +429,13 @@ impl Watcher {
         let mut failures = vec![];
         for candidate in crate::health::watch_candidates()? {
             watch.harness = candidate.harness;
-            watch.model = candidate.model;
-            match start_session(&watch) {
+            (watch.model, watch.model_source) = if candidate.harness == Harness::Codex {
+                let (model, source) = crate::codex_launch::automatic_model(None)?;
+                (model, Some(source.to_string()))
+            } else {
+                (candidate.model, None)
+            };
+            match start_session(&mut watch) {
                 Ok((terminal, transcript)) => {
                     (watch.terminal, watch.transcript) = (terminal, transcript);
                     state.watched.extend(watch.items.iter().map(|item| item.id.clone()));
@@ -442,7 +455,14 @@ impl Watcher {
                     state.running = Some(watch);
                     return Ok(());
                 }
-                Err(error) => failures.push(format!("{}: {error:#}", candidate.harness.key())),
+                Err(error) => {
+                    failures.push(format!("{}: {error:#}", candidate.harness.key()));
+                    if let Some(pending) = watch_terminal::active()? {
+                        state.running = Some(pending);
+                        state.unavailable = Some(watch_terminal::recovery(&failures.join("; ")));
+                        return Ok(());
+                    }
+                }
             }
         }
         state.unavailable = Some(unstartable(&failures));
@@ -453,72 +473,121 @@ impl Watcher {
     /// is over, its harness gave out or its hour is up.
     fn check(&self) -> Result<()> {
         let mut state = read()?;
-        let Some(mut watch) = state.running.take() else {
+        let kept = state.running.take();
+        let active = watch_terminal::active()?;
+        let running = match (kept, active) {
+            (Some(kept), Some(active))
+                if kept.id == active.id && kept.attempts.len() == active.attempts.len() =>
+            {
+                Some(kept)
+            }
+            (_, Some(active)) => Some(active),
+            (kept, None) => kept,
+        };
+        let Some(mut watch) = running else {
             self.shared.set(None);
             return Ok(());
         };
+        for item in &watch.items {
+            if !state.watched.contains(&item.id) {
+                state.watched.push(item.id.clone());
+            }
+            if item.id.starts_with(host_watch::RESEARCH_ITEM) {
+                state.research_started = Some(watch.started);
+            }
+        }
         let worktree = Worktree::at(watch.directory.clone(), String::new());
         let transcript = std::fs::read_to_string(&watch.transcript).unwrap_or_default();
         let exited = host_watch::exited(&transcript);
-        let live = worktree.live(&watch.terminal)?;
         let now = crate::clock();
         if let Some(report) = crate::watch_report::read(&watch.id)? {
             stop_session(&watch)?;
+            state.unavailable = None;
             for did in &report.did {
                 (self.say)(What::WatchDid { id: watch.id.clone(), did: did.clone() });
             }
             watch.did = report.did.clone();
             watch.report = Some(report);
             self.finish_said(&mut state, watch, "ended", "it reported; its harness was ended");
-        } else if host_watch::expired(watch.started, now) {
-            stop_session(&watch)?;
-            self.finish_said(
-                &mut state,
-                watch,
-                "time_limit",
-                "it reached its hour and did not report",
-            );
-        } else if !live && let Some(fault) = gave_out(watch.harness, &transcript, exited) {
-            stop_session(&watch)?;
-            self.go_on(&mut state, watch, fault, now, vec![])?;
-        } else if !live {
-            stop_session(&watch)?;
-            self.finish_said(&mut state, watch, "closed", "its terminal closed; it did not report");
         } else {
-            let screen = worktree.screen(&watch.terminal, host_watch::EVIDENCE_LINES)?;
-            let (worker, runtime) = worktree.terminal_health(&watch.terminal, now)?;
-            let fault = crate::health::watch_diagnosis(watch.harness, &screen, &runtime)
-                .or_else(|| gave_out(watch.harness, &transcript, exited));
-            if let Some(fault) = fault {
-                stop_session(&watch)?;
-                close(&worktree, &watch.terminal, live)?;
-                self.go_on(&mut state, watch, fault, now, screen)?;
-            } else if exited.is_some() {
+            // Recovery precedes every terminal read, input and termination.
+            // An uncertain creation or delivery blocks the next launch too.
+            let recovered = (|| -> Result<bool> {
+                let terminal = watch_terminal::locate(&watch)?;
+                if let Some(terminal) = terminal {
+                    watch.terminal = terminal;
+                    resume_delivery(&mut watch)?;
+                    Ok(true)
+                } else {
+                    Ok(false)
+                }
+            })();
+            let live = match recovered {
+                Ok(live) => live,
+                Err(error) => {
+                    let why = watch_terminal::recovery(&format!("{error:#}"));
+                    watch_terminal::problem(&why)?;
+                    state.unavailable = Some(why);
+                    state.running = Some(watch);
+                    return self.save(&state);
+                }
+            };
+            state.unavailable = None;
+            if host_watch::expired(watch.started, now) {
                 stop_session(&watch)?;
                 self.finish_said(
                     &mut state,
                     watch,
-                    "not_reported",
-                    "its harness exited; it did not report",
+                    "time_limit",
+                    "it reached its hour and did not report",
+                );
+            } else if !live && let Some(fault) = gave_out(watch.harness, &transcript, exited) {
+                stop_session(&watch)?;
+                self.go_on(&mut state, watch, fault, now, vec![])?;
+            } else if !live {
+                stop_session(&watch)?;
+                self.finish_said(
+                    &mut state,
+                    watch,
+                    "closed",
+                    "its terminal closed; it did not report",
                 );
             } else {
-                let grace = afkconvoy_core::worker::GRACE;
-                let stopped = match worker {
-                    afkconvoy_core::worker::WorkerState::Idle { quiet: Some(quiet) } => {
-                        quiet >= grace
-                    }
-                    afkconvoy_core::worker::WorkerState::Idle { quiet: None } => true,
-                    _ => false,
-                };
-                if stopped
-                    && watch.nudged.is_none()
-                    && now.saturating_sub(watch.session_started.max(watch.started)) >= grace
-                {
-                    worktree.tell_watch(&watch.terminal,
+                let screen = worktree.screen(&watch.terminal, host_watch::EVIDENCE_LINES)?;
+                let (worker, runtime) = worktree.terminal_health(&watch.terminal, now)?;
+                let fault = crate::health::watch_diagnosis(watch.harness, &screen, &runtime)
+                    .or_else(|| gave_out(watch.harness, &transcript, exited));
+                if let Some(fault) = fault {
+                    stop_session(&watch)?;
+                    close(&worktree, &watch.terminal, live)?;
+                    self.go_on(&mut state, watch, fault, now, screen)?;
+                } else if exited.is_some() {
+                    stop_session(&watch)?;
+                    self.finish_said(
+                        &mut state,
+                        watch,
+                        "not_reported",
+                        "its harness exited; it did not report",
+                    );
+                } else {
+                    let grace = afkconvoy_core::worker::GRACE;
+                    let stopped = match worker {
+                        afkconvoy_core::worker::WorkerState::Idle { quiet: Some(quiet) } => {
+                            quiet >= grace
+                        }
+                        afkconvoy_core::worker::WorkerState::Idle { quiet: None } => true,
+                        _ => false,
+                    };
+                    if stopped
+                        && watch.nudged.is_none()
+                        && now.saturating_sub(watch.session_started.max(watch.started)) >= grace
+                    {
+                        worktree.tell_watch(&watch.terminal,
                     "Continue this watch. You have not reported; finish the work and run the exact afkconvoy watched line at the end of your brief.")?;
-                    watch.nudged = Some(now);
+                        watch.nudged = Some(now);
+                    }
+                    state.running = Some(watch);
                 }
-                state.running = Some(watch);
             }
         }
         self.save(&state)
@@ -540,6 +609,7 @@ impl Watcher {
         watch.attempts.push(Attempt {
             harness: from,
             model: watch.model.clone(),
+            model_source: watch.model_source.clone(),
             terminal: watch.terminal.clone(),
             why: why.clone(),
             did: vec![],
@@ -553,8 +623,13 @@ impl Watcher {
                 continue;
             }
             watch.harness = candidate.harness;
-            watch.model = candidate.model;
-            match start_session(&watch) {
+            (watch.model, watch.model_source) = if candidate.harness == Harness::Codex {
+                let (model, source) = crate::codex_launch::automatic_model(None)?;
+                (model, Some(source.to_string()))
+            } else {
+                (candidate.model, None)
+            };
+            match start_session(&mut watch) {
                 Ok((terminal, transcript)) => {
                     (watch.terminal, watch.transcript) = (terminal, transcript);
                     (self.say)(What::WatchContinued {
@@ -566,7 +641,14 @@ impl Watcher {
                     state.running = Some(watch);
                     return Ok(());
                 }
-                Err(error) => failures.push(format!("{}: {error:#}", candidate.harness.key())),
+                Err(error) => {
+                    failures.push(format!("{}: {error:#}", candidate.harness.key()));
+                    if let Some(pending) = watch_terminal::active()? {
+                        state.running = Some(pending);
+                        state.unavailable = Some(watch_terminal::recovery(&failures.join("; ")));
+                        return Ok(());
+                    }
+                }
             }
         }
         state.unavailable = Some(unstartable(&failures));
@@ -624,7 +706,8 @@ fn stop_session(watch: &Watch) -> Result<()> {
         let worktree = Worktree::at(watch.directory.clone(), String::new());
         return close(&worktree, &watch.terminal, worktree.live(&watch.terminal)?);
     }
-    stop_marked(&session_identity(watch))
+    stop_marked(&session_identity(watch))?;
+    watch_terminal::set_status(watch, LaunchState::Ended)
 }
 
 fn stop_marked(identity: &str) -> Result<()> {
@@ -680,7 +763,7 @@ fn gave_out(harness: Harness, transcript: &str, exited: Option<i32>) -> Option<D
 
 /// Starts a session of `watch` on its harness: its brief written beside its
 /// transcript, in the host's cache. Answers its terminal and transcript.
-fn start_session(watch: &Watch) -> Result<(String, PathBuf)> {
+fn start_session(watch: &mut Watch) -> Result<(String, PathBuf)> {
     if watch.stock {
         std::fs::create_dir_all(&watch.directory).with_context(|| {
             format!("cannot make the stock watch's directory {}", watch.directory.display())
@@ -700,6 +783,7 @@ fn start_session(watch: &Watch) -> Result<(String, PathBuf)> {
     std::fs::write(&brief_file, brief(watch))
         .with_context(|| format!("cannot write the watch's brief {}", brief_file.display()))?;
     let transcript = dir.join(format!("session-{session}.log"));
+    watch.transcript = transcript.clone();
     // A watch is started as a worker of an unbound repo is: the operator's
     // directory holds no config, and no role.
     let repo = Repo::new(watch.directory.clone());
@@ -712,7 +796,12 @@ fn start_session(watch: &Watch) -> Result<(String, PathBuf)> {
     };
     let kept = crate::kept::keep(watch.harness, true)?;
     let line = if watch.harness == Harness::Codex {
-        crate::codex_launch::watch(&watch.directory, watch.model.as_deref(), &command)?
+        crate::codex_launch::watch(
+            &watch.directory,
+            watch.model.as_deref(),
+            watch.model_source.as_deref().unwrap_or("codex_default"),
+            &command,
+        )?
     } else {
         watch.harness.watch(
             command.as_str(),
@@ -726,16 +815,42 @@ fn start_session(watch: &Watch) -> Result<(String, PathBuf)> {
     let line =
         host_watch::session(&line, &transcript.display().to_string(), &session_identity(watch));
     let worktree = Worktree::at(watch.directory.clone(), String::new());
-    let terminal = worktree.start_watch(&line, TITLE)?;
-    let delivered = worktree.await_ready(&terminal, 60, watch.harness, &line).and_then(|()| {
-        worktree.tell_watch(&terminal, &brief_pointer(&brief_file.display().to_string()))
-    });
-    if let Err(error) = delivered {
-        stop_session(watch)?;
-        close(&worktree, &terminal, worktree.live(&terminal)?)?;
-        return Err(error);
+    // Persist intent before the non-idempotent external creation. An error
+    // cannot authorize another create, even on another harness.
+    watch_terminal::prepare(watch, &line)?;
+    let line = watch_terminal::launch_line(watch, &line);
+    match worktree.start_watch(&line, TITLE) {
+        Ok(terminal) => {
+            watch_terminal::created(watch, &terminal)?;
+            watch.terminal = terminal;
+        }
+        Err(error) => {
+            watch.terminal =
+                watch_terminal::locate(watch)?.with_context(|| format!("{error:#}"))?;
+        }
     }
-    Ok((terminal, transcript))
+    resume_delivery(watch)?;
+    Ok((watch.terminal.clone(), transcript))
+}
+
+/// A Ready launch has not sent input. Sending is written first: a crash or
+/// lost acknowledgement at that boundary must never duplicate a prompt.
+fn resume_delivery(watch: &mut Watch) -> Result<()> {
+    let Some(record) = watch_terminal::read()?.filter(|r| watch_terminal::matches(r, watch)) else {
+        return Ok(()); // a watch retained from before launch journaling
+    };
+    match record.status {
+        LaunchState::Running | LaunchState::Ended => return Ok(()),
+        LaunchState::Sending => bail!("the watch's first prompt has an uncertain receipt"),
+        LaunchState::Creating => bail!("the watch's creation is not yet confirmed"),
+        LaunchState::Ready => (),
+    }
+    let worktree = Worktree::at(watch.directory.clone(), String::new());
+    worktree.await_ready(&watch.terminal, 60, watch.harness, &record.command)?;
+    watch_terminal::set_status(watch, LaunchState::Sending)?;
+    let brief = watch.transcript.with_file_name(format!("brief-{}.md", watch.attempts.len() + 1));
+    worktree.tell_watch(&watch.terminal, &brief_pointer(&brief.display().to_string()))?;
+    watch_terminal::set_status(watch, LaunchState::Running)
 }
 
 /// What a session of `watch` is told.
@@ -1084,6 +1199,7 @@ pub fn json(running: Option<&Watch>) -> Value {
     };
     let mut answer =
         json!({"running": running.map(watch_json), "last": last, "unavailable": unavailable});
+    answer["association"] = watch_terminal::json();
     match crate::host_settings::of_host()
         .and_then(|settings| Ok((directory(&settings)?, settings.watch_dir.is_none())))
     {
@@ -1098,12 +1214,14 @@ pub fn json(running: Option<&Watch>) -> Value {
 
 /// The host's finding where a look called for a watch no harness could start.
 pub fn finding() -> Option<crate::doctor::Finding> {
-    let why = read().ok()?.unavailable?;
+    let why = read().ok().and_then(|state| state.unavailable).or_else(|| {
+        watch_terminal::read().err().map(|error| watch_terminal::recovery(&format!("{error:#}")))
+    })?;
     Some(crate::doctor::finding(
         crate::doctor::Kind::WatchUnavailable,
         "no harness can start this host's watch".into(),
         why,
-        "afkconvoy kit".into(),
+        "afkconvoy run --help (WATCH RECOVERY); afkconvoy kit".into(),
     ))
 }
 

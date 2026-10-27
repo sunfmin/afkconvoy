@@ -12,7 +12,7 @@ The plan is the text of the last `pass` of the workup among the stage records yo
 3. **Check the change against the diagnosis.** Does it treat the cause the plan names, or a symptom? Does it touch what it need not?
 4. **Check the design.** Load the `codebase-design` and `single-source-of-truth` skills and hold the plan's `Change` against them. A plan that gives a fact a second home — a constant, a list, a rule copied where it could be read — with nothing that fails when the two drift has a blocking finding. Anything else these skills turn up is a note.
 5. **Check the tests.** Would each test named fail today and pass after? Is there a case the issue names that no test holds?
-6. **Check the open questions.** A plan that decides what a user would see, where the issue and the precedents do not, has a blocking finding: that question is not the plan's to settle.
+6. **Check the open questions.** A plan that decides what a user would see, where the issue, applicable rules and source decisions do not, has a blocking finding: that question is not the plan's to settle.
 7. **Declare**, with the command your brief gives:
    - `pass` — no blocking finding. The text lists your notes; the worker who treats the issue reads them.
    - `reject` — at least one blocking finding. The text lists each with its evidence, then the notes. It is all the next workup is told: write it for someone who has not read your mind.

@@ -1341,25 +1341,6 @@ impl GitHub {
         }
     }
 
-    /// What PR `number` of another repo, `repo`, changes, as `git diff`
-    /// writes it.
-    pub fn pr_diff_of(&self, repo: &RepoName, number: u64) -> Result<String> {
-        self.read(&[
-            "api",
-            &format!("repos/{repo}/pulls/{number}"),
-            "-H",
-            "Accept: application/vnd.github.diff",
-        ])
-    }
-
-    /// Closes one PR of another repo, `repo`, without merging it, with a
-    /// comment saying why.
-    pub fn close_pr_of(&self, repo: &RepoName, number: u64, comment: &str) -> Result<()> {
-        let number = number.to_string();
-        self.gh(&["pr", "close", &number, "--repo", repo.as_str(), "--comment", comment])?;
-        Ok(())
-    }
-
     /// The issues GitHub records `number` as blocked by, open or closed:
     /// `Gone` when `number` was deleted or transferred.
     pub fn blocked_by(&self, number: u64) -> Result<Vec<BlockedBy>> {

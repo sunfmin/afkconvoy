@@ -125,7 +125,7 @@ pub struct Standing {
 }
 
 /// Whether an instance with nothing held — no claim on an issue, a patrol's
-/// run or a proposal — and `frontier` issues left on its frontier, `on_train`
+/// run or a cut — and `frontier` issues left on its frontier, `on_train`
 /// saying whether anything of its is on the base branch, is idle.
 pub fn idle(held: usize, frontier: usize) -> bool {
     held == 0 && frontier == 0

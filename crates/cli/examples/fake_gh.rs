@@ -446,13 +446,30 @@ fn pr_of(st: &mut State, verb: &str, repo: &str) -> ! {
         st.finish(&Value::from(open).to_string(), 0, "")
     }
     let wanted: Option<u64> = st.argv.get(2).and_then(|number| number.parse().ok());
-    let comment = st.opt("--comment").map(str::to_string);
+    let comment = st.opt("--comment").or(st.opt("--body")).map(str::to_string);
     let rows = st.doc["prs_of"][repo].as_array_mut();
     let found = rows.and_then(|rows| rows.iter_mut().find(|pr| wanted == pr["number"].as_u64()));
     let Some(pr) = found.filter(|pr| is_open(pr)) else {
         st.finish("", 1, "gh: no open pull request found\n")
     };
     match verb {
+        "view" => {
+            let bodies: Vec<String> = pr["comments"]
+                .as_array()
+                .map(|rows| {
+                    rows.iter().filter_map(|row| row.as_str().map(str::to_string)).collect()
+                })
+                .unwrap_or_default();
+            st.finish(&bodies.join("\n"), 0, "")
+        }
+        "comment" => {
+            if !pr["comments"].is_array() {
+                pr["comments"] = json!([]);
+            }
+            pr["comments"].as_array_mut().unwrap().push(json!(comment.unwrap()));
+            st.finish("", 0, "")
+        }
+
         "diff" => {
             let against = format!("HEAD...{}", pr["headRefName"].as_str().unwrap());
             let diff = fake::git(&["-C", &from, "diff", &against]);

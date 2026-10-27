@@ -605,11 +605,7 @@ mod tests {
         // They are the `CLAUDE.md` of the team's copy: the directory is
         // added, and the rules of added directories are on — for every
         // worker, whatever it is on.
-        for on in [
-            On::Stage { issue: 7, flow: "feature", stage: "land" },
-            On::Patrol("sweep"),
-            On::Proposal { issue: 7 },
-        ] {
+        for on in [On::Stage { issue: 7, flow: "feature", stage: "land" }, On::Patrol("sweep")] {
             let mut start = start(None);
             start.facts.on = on;
             let line = in_role("claude", &start);

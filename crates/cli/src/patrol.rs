@@ -13,7 +13,6 @@ use afkconvoy_core::patrol::{
 };
 use afkconvoy_core::prompt::{PatrolFields, patrol_prompt};
 use afkconvoy_core::role::{Facts, On, Start};
-use afkconvoy_core::team::PRECEDENTS;
 use afkconvoy_core::tick::Outcome;
 use afkconvoy_core::tracker::Tracker;
 use anyhow::{Result, anyhow, bail};
@@ -21,7 +20,7 @@ use serde_json::{Value, json};
 
 use crate::claims::{Ask, Me, drop_ask, drop_run, push_ask, take_run};
 use crate::copies::Copies;
-use crate::dispatch::{Agent, Continuing};
+use crate::dispatch::{Agent, Continuing, WorkerSelection};
 use crate::fleet::Fleet;
 use crate::gh::OpenIssues;
 use crate::git::{REMOTE, Repo};
@@ -166,8 +165,20 @@ pub fn run(fleet: &mut Fleet, me: &Me, agent: &Agent, read: &Flows, row: &Row) -
     let role = kept.team.role_of(&patrol.work);
     // A patrol has no issue, and so no casting: its role's range's first,
     // or this host's switch.
-    let cast = fleet.cast_in(role, &[], None)?;
+    let mut cast = fleet.cast_in(role, &[], None)?;
     let harness = cast.harness;
+    if harness == afkconvoy_core::harness::Harness::Codex {
+        let (model, _) = crate::codex_launch::automatic_model(None)?;
+        if let Some(model) = model.as_deref() {
+            let allowed = afkconvoy_core::casting::range(role, &crate::kit::load()?.range())
+                .into_iter()
+                .find(|held| held.harness == harness)
+                .map(|held| held.models.into_iter().map(|model| model.id).collect::<Vec<_>>())
+                .unwrap_or_default();
+            crate::codex_launch::require_role_model(model, &allowed, &role.name)?;
+        }
+        cast.model = model;
+    }
     kept.role(role, harness)?;
     // Before the claim: a patrol whose harness cannot be started here runs nothing.
     let launch = agent.command(harness)?;
@@ -209,7 +220,6 @@ pub fn run(fleet: &mut Fleet, me: &Me, agent: &Agent, read: &Flows, row: &Row) -
         skill: &patrol.work.skill,
         worktree: &path,
         base_branch: &fleet.config.base_branch,
-        precedents: &kept.copy.dir.join(PRECEDENTS).display().to_string(),
         team_rules: team_rules.as_deref(),
         workflows: &workflows,
         room: row.max_open.saturating_sub(row.open),
@@ -222,7 +232,7 @@ pub fn run(fleet: &mut Fleet, me: &Me, agent: &Agent, read: &Flows, row: &Row) -
     let line = in_role(fleet, kept, name, &cast, launch.as_str(), &checkout)?;
     let terminal = agent.start_worker(
         &checkout,
-        (harness, cast.model.as_deref()),
+        WorkerSelection { harness, model: cast.model.as_deref(), explicit_model: false },
         &line,
         true,
         None,
@@ -326,8 +336,20 @@ pub(crate) fn switch(
     let none = || See::Patrols.refusal(format!("the team has no patrol {name:?}"));
     let patrol = kept.team.patrol(name).ok_or_else(none)?;
     let role = kept.team.role_of(&patrol.work);
-    let cast = fleet.cast_in(role, &[], None)?;
+    let mut cast = fleet.cast_in(role, &[], None)?;
     let harness = cast.harness;
+    if harness == afkconvoy_core::harness::Harness::Codex {
+        let (model, _) = crate::codex_launch::automatic_model(None)?;
+        if let Some(model) = model.as_deref() {
+            let allowed = afkconvoy_core::casting::range(role, &crate::kit::load()?.range())
+                .into_iter()
+                .find(|held| held.harness == harness)
+                .map(|held| held.models.into_iter().map(|model| model.id).collect::<Vec<_>>())
+                .unwrap_or_default();
+            crate::codex_launch::require_role_model(model, &allowed, &role.name)?;
+        }
+        cast.model = model;
+    }
     let skipped = fleet.skipped_before(harness, Some(role), None);
     let launch = agent.command(harness)?;
     let line = in_role(fleet, &kept, name, &cast, launch.as_str(), &checkout)?;
@@ -336,7 +358,7 @@ pub(crate) fn switch(
     crate::dispatch::continue_brief(fleet, &checkout, None, &continuing)?;
     let terminal = agent.start_worker(
         &checkout,
-        (harness, cast.model.as_deref()),
+        WorkerSelection { harness, model: cast.model.as_deref(), explicit_model: false },
         &line,
         true,
         None,

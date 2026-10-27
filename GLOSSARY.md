@@ -57,7 +57,7 @@ One of the two ways every ref the fleet writes is named: hidden refs (`refs/conv
 _Avoid_: namespace, fallback mode
 
 **Fleet state**:
-The authoritative record of what is claimed, in flight, landed, parked and escalated. It lives entirely in GitHub — the issues in the fleet's tracker, the PRs, branches and refs in the repo — and no process holds it. A PR whose head is in another repository is no part of it: only a login with write access can push a branch to the repo, so a PR from one of its branches is a collaborator's, and one from a fork is anyone's. The fleet acts as if a fork's PR did not exist — none is landed, taken up, synced, closed, commented on or reported, none holds an issue off, and none on a team's repo is taken for a proposal.
+The authoritative record of what is claimed, in flight, landed, parked and escalated. It lives entirely in GitHub — the issues in the fleet's tracker, the PRs, branches and refs in the repo — and no process holds it. A PR whose head is in another repository is no part of it: only a login with write access can push a branch to the repo, so a PR from one of its branches is a collaborator's, and one from a fork is anyone's. The fleet acts as if a fork's PR did not exist — none is landed, taken up, synced, closed, commented on or reported, none holds an issue off.
 _Avoid_: run state, memory (what a host holds resident, as under Hot worker)
 
 **Working set**:
@@ -73,7 +73,7 @@ The issues of the fleet's tracker a worker can be started on now — of a tracke
 _Avoid_: queue (the exclusive queue of a host's heavy commands), backlog (all the issues a repo has open)
 
 **Idle**:
-A fleet instance with nothing to do now: it holds no claim — on an issue, a patrol's run, the proposal of a precedent or a cut — its frontier is empty. An escalated issue waiting for a human leaves it idle, and so does a patrol not yet due.
+A fleet instance with nothing to do now: it holds no claim — on an issue, a patrol's run or a cut — its frontier is empty. An escalated issue waiting for a human leaves it idle, and so does a patrol not yet due.
 _Avoid_: drained, done (what a step or a command did), finished (a PR its worker is through with)
 
 **Host sleep**:
@@ -95,7 +95,7 @@ A directory that defines one kind of worker: the rules it always works under, th
 _Avoid_: agent (as under Worker), persona, profile (as under DSH profile)
 
 **Team**:
-A directory that names a set of roles and holds the workflows, patrols and precedents they work by. It is a whole repo or a subdirectory of one, and its roles may be directories of the same repo.
+A directory that names a set of roles and holds the workflows, patrols and rules they work by. It is a whole repo or a subdirectory of one, and its roles may be directories of the same repo.
 _Avoid_: org, crew, squad
 
 **Team rules**:
@@ -168,14 +168,6 @@ _Avoid_: infrastructure failure, system fault
 What a consult or a human decides on an issue handed on. The stage runs again under it; a human's also hands the issue back to the fleet and starts the rework counts over, a consult's starts none over.
 _Avoid_: answer (what a command prints), decision (what a `by: human` stage waits for), override
 
-**Precedent**:
-A ruling kept so that later stages follow it instead of escalating. A worker proposes it; a human accepts it.
-_Avoid_: rule (a role's rules and the team rules; the command `rule`), policy, guideline
-
-**Proposal**:
-One human's ruling put forward as a precedent: a PR on the team's repo that appends one entry to its precedents file. A ruling gets one; a human merging it is what accepts the precedent.
-_Avoid_: suggestion, draft (a roster `afkconvoy draft` writes), candidate (a key of what `recovery` answers)
-
 **Split**:
 Parking an issue on issues its own stage opened. When they have all closed, that stage runs again and judges the whole.
 _Avoid_: decompose, epic (an issue under an epic label), fan out
@@ -205,11 +197,11 @@ Research states: `research pending` is a newly listed model awaiting dated resea
 _Avoid_: roster (the team's), host config, inventory
 
 **Default model**:
-What a harness's own login runs when a worker is started with no model flag, which the fleet cannot name. A harness the host kit holds with no model placed — none listed yet, or research pending — starts its workers on it, Codex too.
+What a harness's own login runs when a worker is started with no model flag, which the fleet cannot name. A harness the host kit holds with no model placed — none listed yet, or research pending — starts its workers on it. Codex automatic starts use this only when the user has no model preference.
 _Avoid_: fallback model, `default` alone (a model id Claude Code lists)
 
 **Codex effort**:
-The reasoning effort a Codex worker takes from the host user's own Codex settings at its start, or Codex's model default where the user says none. It is independent of the fleet's model selection and is no setting of the fleet.
+The reasoning effort a Codex worker takes from the host user's own Codex settings at its start, or Codex's model default where the user says none. It is independent of the model selected from the user's Codex preference, and is no setting of the fleet.
 _Avoid_: fleet effort, role effort
 
 **Casting**:
@@ -229,7 +221,7 @@ Moving a harness, or one of its models and that model's harness, to the first po
 _Avoid_: harness change (what a new casting makes)
 
 **Worker launch command**:
-The shell string every worker of one harness is started with, in a fleet instance: one for each harness its workers run. The host kit says it, per harness, kept on the host at `$XDG_CONFIG_HOME/afkconvoy/kit.json` or `$HOME/.config/afkconvoy/kit.json` and written by `afkconvoy kit`; each launch reads its latest command, or discovers and records a known harness's stock command when none is held; a start checks that of every harness it could be asked for, and starts no worker when one cannot be started. In an unbound repo it is opaque but for what the fleet adds: its harness's model flag where the worker runs a model — its issue's casting or the host kit's first — and its harness's worktree-trust setup, so every worker starts trusting its worktree and none waits on a folder-trust prompt. Every worker starts under `nice`, with a `TMPDIR` of its worktree's own: a link, `/tmp/afkconvoy-<uid>/<16 hex digits>`, to `.afkconvoy-tmp` in the worktree, short enough for a socket's path however long the worktree's is, and gone with the worktree once nothing started with it runs. A Codex worker's model is always the fleet's selection; its effort is the host user's Codex effort. A session's saved choice belongs to that session alone and chooses nothing for a later worker. In a bound repo the fleet adds to it what puts the worker in its role.
+The shell string every worker of one harness is started with, in a fleet instance: one for each harness its workers run. The host kit says it, per harness, kept on the host at `$XDG_CONFIG_HOME/afkconvoy/kit.json` or `$HOME/.config/afkconvoy/kit.json` and written by `afkconvoy kit`; each launch reads its latest command, or discovers and records a known harness's stock command when none is held; a start checks that of every harness it could be asked for, and starts no worker when one cannot be started. In an unbound repo it is opaque but for what the fleet adds: its harness's model flag where the worker runs a model — its issue's casting or the host kit's first — and its harness's worktree-trust setup, so every worker starts trusting its worktree and none waits on a folder-trust prompt. Every worker starts under `nice`, with a `TMPDIR` of its worktree's own: a link, `/tmp/afkconvoy-<uid>/<16 hex digits>`, to `.afkconvoy-tmp` in the worktree, short enough for a socket's path however long the worktree's is, and gone with the worktree once nothing started with it runs. An automatic Codex worker reads the user's current model from `~/.codex/config.toml` at launch, unless its issue has a model label; it records whether the model came from the user preference or casting. With no preference it leaves the model unset for Codex's native default. Its effort remains the host user's Codex effort. A worker's private session choice never changes what a later worker reads. In a bound repo the fleet adds to it what puts the worker in its role.
 _Avoid_: agent command, provider profile
 
 **Worker state**:
@@ -258,6 +250,7 @@ _Avoid_: hog
 
 **Watch**:
 The operator on its host, started by its host runner when a **look** at the host holds something an operator would act on, in the operator's own directory where the host names one, otherwise as the **stock watch** in afkconvoy's own directory. The stock watch stands in where no operator directory is named: its one short instruction is to find what holds the fleets' work back, fix it with the watch's authority, check that the work goes on and say what it did. An operator's directory supplies its own rules, with none of the stock instruction added. A look is `afkconvoy doctor --all --since <until of the last look>`, every five minutes or as the host settings say (`--watch-every`): the fleet's own code, which runs no model. What starts a watch: a hot worker, admission held back for one reason past its span, memory pressure past that span, an issue waiting on a human, a finding that holds something up (no `info`), a fleet instance not alive or broken, a failed tick or a step failed since, a worker whose health observation is past its time. Each is covered by a watch during its **episode**, which lasts while each look still holds it. A running watch holds that work; a reported watch keeps it covered. One that ends without reporting leaves it for another watch at the next look that still finds it, including after a host runner restart. A watch is one agent session, given its brief as a file — the look, why it started and what earlier watches on the same items did — on the harness this host last started a worker on that took its brief, then the host kit's order, never one paused or with a fault on record; started trusted with prompts skipped, in the harness's interactive terminal, with its brief as the first message, as a worker is. A human can see it work and type to it. Its last step is `afkconvoy watched`: the command records what held work back, each thing it did, what it verified, each human question and answer line left alone, and what is pending. That report is what later watches receive and `doctor` shows. The host runner ends the harness after it reports and keeps the terminal and screen until the next watch starts in that directory. An ended watch that did not call the command is shown as not reported. A watch whose harness gives out — its own words for a usage limit, capacity stop or refusal, or an exit that failed — is ended and continued on the next harness that can start it, with the same look and terminal evidence of its work so far, one interactive session at a time; the fault is recorded, and the harness is skipped until its probe answers. One watch runs on a host at a time: no look is taken while it runs, and a host runner started again keeps the one it finds running. Worker health observes its own terminal as a worker's, nudging a stopped watch with no report. An hour bounds it, its continuations together; one reaching it is ended as not reported. It has the authority and the bounds of a watch (docs/adr/0038). Its start, its end and each thing it did are lines of every tick log of the host; `doctor` says the one running and what the last one did, and a finding where none could start (`docs/adr/0030`).
+Its Terminal has the fixed discovery name “afkconvoy watch”; that name alone confers no ownership or uniqueness. A watch keeps its confirmed session across host runner replacement. An uncertain association pauses new execution and preserves the existing work until it can be confirmed or explicitly reported (docs/adr/0039).
 Its authority spans every repo on the host's checkout list: it fixes the host and hands an issue escalated for a fleet fault back once its cause is gone; makes a lasting fix in a checkout of its own of any listed repo, through that repo's landing turn; and, where the fix must reach an installed tool, has that repo cut a version after landing, lets the host runner move onto it and checks the fault on the new version. It answers escalations with the same commands as a human, whose effect and rework counts its answer has. Every watch leaves spending money or needing an account, a credential or a person's hands; what cannot be undone; taking a secret or private data off the host; and changing what a product is for or who it is for with a human, and records each without acting on it.
 A watch for host load or memory receives the fleet's worker process trees and, where `hostvitals now` answers on the host runner's `PATH`, its whole-host findings followed by its process and App rankings and remaining readings; otherwise it receives the fleet's hottest processes outside those trees. The evidence names its source and says why hostvitals could not answer. hostvitals is optional; hot-worker sampling stays the fleet's own.
 _Avoid_: patrol (a role run on a schedule that writes no code), supervisor (the host runner is the process)
@@ -301,7 +294,7 @@ Another fleet instance's claim whose heartbeat is past the lease. It is the only
 _Avoid_: dead claim, abandoned claim
 
 **Takeover**:
-Taking another fleet instance's claims — on issues, on patrols' runs, on proposals — without waiting for the lease. It happens unconditionally at start for claims stamped with this host, and by explicit command for another host's. A claim taken — by a takeover, or as a stale claim — is still the claim it was created as: what was declared under it stands.
+Taking another fleet instance's claims — on issues, on patrols' runs, on cuts — without waiting for the lease. It happens unconditionally at start for claims stamped with this host, and by explicit command for another host's. A claim taken — by a takeover, or as a stale claim — is still the claim it was created as: what was declared under it stands.
 _Avoid_: failover, stale reclaim
 
 ### Outcomes

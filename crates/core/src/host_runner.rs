@@ -73,7 +73,7 @@ pub enum Stands {
     /// In a tick.
     Ticking,
     /// Between two ticks, the last of which held a claim — on an issue, a
-    /// patrol's run or a proposal — or had something on the base branch,
+    /// patrol's run or a cut — or had something on the base branch,
     /// or failed whole.
     AtWork,
     /// Between two ticks, the last of which held no claim and had nothing on

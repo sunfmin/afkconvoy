@@ -24,12 +24,12 @@ pub fn codex_line(_world: &World, dir: &Path) -> String {
     let notes = PathBuf::from(git(dir, &["rev-parse", "--absolute-git-dir"]));
     let home = std::fs::read_to_string(notes.join("convoy-codex-home")).unwrap();
     let model = std::fs::read_to_string(notes.join("convoy-worker-model")).unwrap();
-    assert!(!model.is_empty(), "Codex starts with an explicit fleet model");
-    Harness::Codex.in_worktree(
-        &Harness::Codex.with_model(Harness::Codex.stock(), &model),
-        &dir.display().to_string(),
-        &home,
-    )
+    let command = if model.is_empty() {
+        Harness::Codex.stock().to_string()
+    } else {
+        Harness::Codex.with_model(Harness::Codex.stock(), &model)
+    };
+    Harness::Codex.in_worktree(&command, &dir.display().to_string(), &home)
 }
 
 /// A Claude Code launch as an unbound worker receives it, with worktree trust.
