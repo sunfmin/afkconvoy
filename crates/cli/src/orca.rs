@@ -1301,6 +1301,40 @@ impl Worktree {
         self.tell_unchecked(terminal, line, BRIEF_SETTLE_SECONDS)
     }
 
+    /// Checks this pane's input without typing or waiting for an active
+    /// model turn. A queued watch round must leave busy input untouched.
+    pub(crate) fn watch_input_ready(&self, terminal: &str) -> Result<bool> {
+        match self.wait_for_input(terminal, Duration::from_millis(100)) {
+            Ok(Waited::Ready) => Ok(true),
+            Ok(_) => Ok(false),
+            Err(error) if error.downcast_ref::<IdleTimeout>().is_some() => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// A saved request key binds the exact text and terminal incarnation.
+    /// Repeating this observes/replays that mutation, never another input.
+    pub(crate) fn send_watch_round(
+        &self,
+        terminal: &str,
+        line: &str,
+        request: &str,
+    ) -> Result<Value> {
+        orca(&[
+            "terminal",
+            "send",
+            "--terminal",
+            terminal,
+            "--text",
+            line,
+            "--enter",
+            "--wait-submit",
+            &SUBMIT_SECONDS.to_string(),
+            "--retry-request",
+            request,
+        ])
+    }
+
     /// Closes `terminal` alone, of the terminals here.
     pub fn close_terminal(&self, terminal: &str) -> Result<()> {
         orca(&["terminal", "close", "--terminal", terminal])?;
