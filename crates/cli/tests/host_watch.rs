@@ -1653,6 +1653,36 @@ fn an_unobservable_provider_needs_working_evidence_and_reuses_its_accepted_reque
 }
 
 #[test]
+fn a_report_before_execution_proof_keeps_research_within_its_daily_bound() {
+    let world = World::new();
+    let dir = operator(&world);
+    world.kit_models("claude-code", &["unplaced"]);
+    world.with_kit(|kit| kit["harnesses"][0]["models"][0]["good_at"] = json!("research pending"));
+    world.with_orca(|orca| {
+        orca["prompt_stages"] = json!(["input_accepted"]);
+        orca["prompt_observation"] = json!("unsupported");
+        orca["send_screen"] = json!(["idle prompt; execution unproven"]);
+    });
+    run(&world, &dir);
+    until(&world, "unproven research delivery", || {
+        state(&world)["unavailable"].as_str().map(str::to_string)
+    });
+    let watch = running(&world).unwrap();
+    assert_eq!(watch["started"], 0);
+    printed(&world, &watch, &["research pending; explicit recovery report"], Some(0));
+    let last = until(&world, "research recovery report", || ended(&world, "ended"));
+    assert!(last["started"].as_u64().unwrap() > 0, "the report proves the round ran");
+    let before = state(&world)["until"].as_u64().unwrap();
+    until(&world, "look after research reported", || {
+        state(&world)["until"].as_u64().filter(|at| *at > before)
+    });
+    assert_eq!(starts(&world).len(), 1);
+    assert_eq!(sent(&world, &watch).len(), 1);
+    assert!(running(&world).is_none());
+    assert_eq!(state(&world)["research_started"], last["started"]);
+}
+
+#[test]
 fn a_pre_journal_watch_keeps_its_recorded_id_and_captures_public_identity_on_upgrade() {
     let world = World::new();
     let dir = operator(&world);

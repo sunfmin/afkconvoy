@@ -732,6 +732,19 @@ impl Watcher {
         let exited = host_watch::exited(&transcript);
         let now = crate::clock();
         if let Some(report) = crate::watch_report::read(&watch.id)? {
+            // A fast or explicitly recovered report can precede Orca's
+            // execution receipt. It still settles this exact round; never
+            // retain a zero research reservation that is already daily-due.
+            if watch.started == 0 {
+                watch.started = watch_terminal::read()?
+                    .filter(|r| r.watch.id == watch.id)
+                    .and_then(|r| r.offered)
+                    .filter(|started| *started != 0)
+                    .unwrap_or(now);
+            }
+            if watch.items.iter().any(|item| item.id.starts_with(host_watch::RESEARCH_ITEM)) {
+                state.research_started = Some(watch.started);
+            }
             state.unavailable = None;
             for did in &report.did {
                 (self.say)(What::WatchDid { id: watch.id.clone(), did: did.clone() });
