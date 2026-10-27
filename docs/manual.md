@@ -63,7 +63,7 @@ Read `afkconvoy help <topic>` when this guide or a command's help names it: it p
 - `run` returns once its checkout's first tick ended: the host runner ticks on, in the background, until `afkconvoy stop --all` stops it, keeping the checkout list. `afkconvoy stop` takes one checkout off the list. `tick` is one pass that exits.
 - Between ticks a fleet instance sleeps 90 seconds while it has work, or 25 minutes after 3 empty ticks. Commands that change fleet state wake it sooner, including a worker's last `afkconvoy wake`. When a fleet on this host closes an issue or sees it closed, it also wakes every other fleet on the same tracker whose open issues it blocked. That next tick reads GitHub and takes up an issue whose last open blocker closed; its tick log names the closed issue and the fleet instance that saw it. After changing issues with `gh`, run `afkconvoy wake <checkout>` on the fleet's host: `gh` sends no wake.
 - Each harness's worker launch command comes from this host's host kit, kept outside the repo. `run` writes it on a host that has none, and `afkconvoy kit` writes it again; neither asks anything. `--worker-command` is gone. A known harness with no entry or command is discovered in the worker login shell, checked, and appended to the latest kit without model probes; an explicit command always wins. A running fleet reads command edits at its next worker launch.
-- In a bound repo the worker launch command must end in its harness — Claude Code, pi, Codex, DSH or Kimi Code — taking flags: the fleet adds to it what starts each worker in its role and under the guard ([`afkconvoy help worker-launch`](help:worker-launch) says what, for each harness), and a start refuses a command whose `--help` does not name those flags. Every harness the team could ask for is checked first, and none is ever started in another's place.
+- In a bound repo the worker launch command must end in its harness — Claude Code, pi, Codex, DSH, Kimi Code or Grok — taking flags: the fleet adds to it what starts each worker in its role and under the guard ([`afkconvoy help worker-launch`](help:worker-launch) says what, for each harness), and a start refuses a command whose `--help` does not name those flags. Every harness the team could ask for is checked first, and none is ever started in another's place.
 
 ## Designing a team, for a bound repo
 
@@ -107,10 +107,10 @@ The operator, or a machine in their place, on the host that starts the workers: 
 The host kit is $XDG_CONFIG_HOME/afkconvoy/kit.json, or $HOME/.config/afkconvoy/kit.json when XDG_CONFIG_HOME is unset. It is kept on this host and never pushed. It is the only source of worker launch commands. It holds the harnesses this host can start, in order of preference, each with its worker launch command and listed models. Former `stock_consult` kit choices are accepted on read and dropped on write. It is written automatically, with no confirmation:
 
 1. Harnesses. Each known harness whose program `type` finds in an orca terminal — the login shell orca starts, which is the shell a worker gets, with its rc files, PATH and logins — on the command the host kit holds for it, or else its stock worker launch command.
-2. Models. Each harness found is asked for the models its own login runs, in an orca terminal. Claude Code is asked through its command with an `initialize` request and no prompt; Codex through its command with `debug models`, its server's list; pi through its command with `--list-models`; Kimi Code through its command with `provider list --json`, under the fleet's isolated home; DSH through `dsh headless`, whose listing plugin asks `https://api.deepseek.com/models` with DSH's account token from `$DSH_HOME/.credentials.yaml` (default `~/.dsh`), or its `DEEPSEEK_API_KEY` when no account token is held. The server's ids and display names are used, never a bundled catalog. This is the sole credential the fleet reads, through DSH's credential service, only for listing: never printed or stored, and sent only to DeepSeek. Not signed in or a server refusal leaves DSH out with the reason.
+2. Models. Each harness found is asked for the models its own login runs, in an orca terminal. Claude Code is asked through its command with an `initialize` request and no prompt; Codex through its command with `debug models`, its server's list; pi through its command with `--list-models`; Kimi Code through its command with `provider list --json`, under the fleet's isolated home; Grok through its command with `models`, under the fleet's isolated home and with no prompt; DSH through `dsh headless`, whose listing plugin asks `https://api.deepseek.com/models` with DSH's account token from `$DSH_HOME/.credentials.yaml` (default `~/.dsh`), or its `DEEPSEEK_API_KEY` when no account token is held. The server's ids and display names are used, never a bundled catalog. This is the sole credential the fleet reads, through DSH's credential service, only for listing: never printed or stored, and sent only to DeepSeek. Not signed in or a server refusal leaves DSH out with the reason.
 3. Default first. No model is sent a prompt. A harness found and listed is held at once, each model it newly lists `research pending`, which no worker is started on. A harness with no placed model starts its workers on its own login's default model, with no model flag. Codex automatic workers instead read the user's current model preference from `~/.codex/config.toml`, unless an issue has a model label; with no preference they use Codex's native default. `plan` and `doctor` report the kit's `default_model` and `research_pending` independently of that preference.
 4. Names. A model's id is exactly the id its harness lists, and a worker is started on it. Its `names` are the names its listing shows it by (Claude Code's `Opus 5.5`) and the aliases research ties to it with a dated source.
-5. Order. Established harness and model order is retained, including switches made while listing or research run. New harnesses follow in this fixed order: claude-code, pi, codex, dsh, kimi. New models follow established models; research may rank discoveries without displacing established priority. The first harness and its first placed model are the host kit's first, or its default while none is placed.
+5. Order. Established harness and model order is retained, including switches made while listing or research run. New harnesses follow in this fixed order: claude-code, pi, codex, dsh, kimi, grok. New models follow established models; research may rank discoveries without displacing established priority. The first harness and its first placed model are the host kit's first, or its default while none is placed.
 6. Research. The watch researches listed identities using its web tools, once across harnesses, and writes a JSON file through `afkconvoy kit --research <file>`. The kit itself calls no model. Unplaced models are a doctor finding: a watch started for other work takes them too; research alone starts one at most once a day. A harness with no placed model stays on its default. Sourced research is kept as good_at, names, sources ({url, date}) and researched_at (epoch seconds), and is never refreshed on a schedule. A caster is told good_at (`afkconvoy cast --help`).
 
 A model named by a roster entry or a `model:` label matches a placed model the host kit holds for its harness when it is its id or one of its names, whatever the case; with the provider prefix left off where that leaves one match (`gpt-6-sol` for pi's `openai-codex/gpt-6-sol`). A name with two matches matches neither, and says which two; one with none says the nearest names.
@@ -389,7 +389,7 @@ It reads this host's host kit (`afkconvoy kit --help`) for each role's range, an
 
 `split` is whether stage briefs offer splitting: true unless the team file says `split: false`. Anything but true or false is a fault (`afkconvoy help team`). `dsh_profile` is `fleet` (default) or `host-user`: which profile DSH workers load, independently of host_user. A role may say its own choice; check answers its effective dsh_profile and refuses every other value.
 
-Each of `roles` is {"name", "repo", "path", "commit", "host_user", "dsh_profile", "skills", "above", "limits", "roster", "range", "left_out", "unmatched", "nothing_safe"}: `path` is the role's directory in `repo`, "" for a whole repo; `commit` the one the role's repo was read at; `host_user` whether its workers are given the host user's skills and rules — its own say, `{ dir, host_user, dsh_profile }`, or the team's; a key of that map but those three, or a `host_user` that is not true or false, is a fault; `above` each `CLAUDE.md` and `.claude/` a directory above the role holds in its repo, as a path from the repo's root — but for the team's own `CLAUDE.md`, where the team's directory is above the role: those are the team rules, which a worker is given; `limits` the harnesses the role holds limits for — a hook or a denied permission in its `.claude/settings.json` for claude-code, an entry of its `.pi/extensions/` for pi, a hook in its `.codex/hooks.json` for codex, a `.dsh/cordis.patch.yml` overlay for dsh, a hook or denied permission in its `.kimi-code/limits.toml` for kimi; `roster` its entry in the team's roster, {"cast", "run": [{"harness", "model", "good_at"}]} with null for what it leaves out, and null for a role it names none for; `range` its range on this host, [{"harness", "models"}] in the order a worker takes them — the host kit whole for a role with no entry, or whose entry matches nothing in the host kit, less each harness the role holds no limits for while it holds limits for another, and null where this host has no host kit (`afkconvoy help roster`); `left_out` each harness its entry and the host kit allow it and its range leaves out, [{"harness", "why"}] — why `no limits for pi` — and null where this host has no host kit; `unmatched` what its roster entry allows and the host kit holds, where the entry matches nothing in the host kit — the role then ranges over the host kit whole — and null otherwise; `nothing_safe` why no worker of it can be started on this host, where it holds limits for no harness the host kit holds — its stages wait — and null otherwise. Each of `workflows` is {"name", "flow_label", "max_rework", "max_consecutive_rework", "stages", "land"}, the defaults filled in; each stage is {"name", "by", "do", "writes", "escalate", "pass", "reject"}. `unmatched_models` lists each roster model matching nothing held, as {role, harness, model, holds, said}, with the nearest names or the two matches; a tick opens one issue for each in the team’s repo.
+Each of `roles` is {"name", "repo", "path", "commit", "host_user", "dsh_profile", "skills", "above", "limits", "roster", "range", "left_out", "unmatched", "nothing_safe"}: `path` is the role's directory in `repo`, "" for a whole repo; `commit` the one the role's repo was read at; `host_user` whether its workers are given the host user's skills and rules — its own say, `{ dir, host_user, dsh_profile }`, or the team's; a key of that map but those three, or a `host_user` that is not true or false, is a fault; `above` each `CLAUDE.md` and `.claude/` a directory above the role holds in its repo, as a path from the repo's root — but for the team's own `CLAUDE.md`, where the team's directory is above the role: those are the team rules, which a worker is given; `limits` the harnesses the role holds limits for — a hook or a denied permission in its `.claude/settings.json` for claude-code, an entry of its `.pi/extensions/` for pi, a hook in its `.codex/hooks.json` for codex, a `.dsh/cordis.patch.yml` overlay for dsh, a hook or denied permission in its `.kimi-code/limits.toml` for kimi, a hook or denied permission in its `.grok/config.toml` for grok; `roster` its entry in the team's roster, {"cast", "run": [{"harness", "model", "good_at"}]} with null for what it leaves out, and null for a role it names none for; `range` its range on this host, [{"harness", "models"}] in the order a worker takes them — the host kit whole for a role with no entry, or whose entry matches nothing in the host kit, less each harness the role holds no limits for while it holds limits for another, and null where this host has no host kit (`afkconvoy help roster`); `left_out` each harness its entry and the host kit allow it and its range leaves out, [{"harness", "why"}] — why `no limits for pi` — and null where this host has no host kit; `unmatched` what its roster entry allows and the host kit holds, where the entry matches nothing in the host kit — the role then ranges over the host kit whole — and null otherwise; `nothing_safe` why no worker of it can be started on this host, where it holds limits for no harness the host kit holds — its stages wait — and null otherwise. Each of `workflows` is {"name", "flow_label", "max_rework", "max_consecutive_rework", "stages", "land"}, the defaults filled in; each stage is {"name", "by", "do", "writes", "escalate", "pass", "reject"}. `unmatched_models` lists each roster model matching nothing held, as {role, harness, model, holds, said}, with the nearest names or the two matches; a tick opens one issue for each in the team’s repo.
 
 Each of `patrols` is {"name", "by", "do", "every", "max_open", "max_runs_a_day", "max_landed_a_day", "runs_here"}: `every` in seconds, `max_runs_a_day` null where the file says none. `runs_here` is whether the config of this checkout names the patrol — false with `--team` and `--dir`, which read no config.
 
@@ -459,6 +459,8 @@ With `--all` it reads the checkout list (checkouts.json in the cache directory) 
 ##### What it answers
 
 {"host", "fleet", "claims", "issues", "waiting_on_human", "refusals", "candidates", "findings"}
+
+`targets` lists open tracker tasks with issue, tracker_issue, delivery (null when unattached), target_branch, configured_base and pinned; an invalid record or missing branch adds error rather than selecting the configured base. A failed listing is {error}.
 
 - `host`: what this host has of what the fleet needs:
 
@@ -589,6 +591,8 @@ The rebuild asks GitHub twice, side by side with one listing of the remote, howe
 ##### What it answers
 
 {"frontier", "excluded", "waiting_on_human", "mine", "peer_live", "stale", "stale_closed", "free_slots", "now", "locks", "concurrency", "tracker", "admission", "host_kit", "worker_no_proxy"} — "held_back" while admission holds; and in a bound repo "intake", "left_out", "unmatched" and "nothing_safe" where they name some, "patrols" where it names some; and "slow_gate" while the gate is slow; and "caster" while one runs or is due; and "cut" in a repo that turns cutting on, or while a cut is going or on the base branch
+
+`targets` lists open tracker tasks with issue, tracker_issue, delivery (null when unattached), target_branch, configured_base and pinned. Invalid destinations report error per task without falling back to the configured base.
 
 - `host_kit`: {path, refreshed, harnesses}: this host's kit file; cast, whether this host enables automatic model casting (false by default); when it was last written, in epoch seconds — by `kit`, by `run`, or by a tick's daily refresh (`afkconvoy kit --help`); each harness in order of preference as {harness, command, models, default_model, research_pending}, each model {model, names, good_at, settled, sources, researched_at}. `default_model` is true when the harness has no placed model, so a worker runs its login's default with no model flag; `research_pending` is true while it holds a model awaiting research. good_at is what a caster is told, or a research marker; settled is a reason research found it unsuitable. The research states are defined in `afkconvoy kit --help`. sources holds dated URLs and researched_at the research time, absent where none succeeded. With an unreadable kit, {path, error}. `afkconvoy kit` writes it again.
 - `frontier`: issues due to dispatch, with their stage and cast {harness, model, why}. Harness priority is kit order within role eligibility; model labels only match within the selected harness. `selection` lists kit order, eligible candidates, skipped candidates and health evidence.
@@ -1316,6 +1320,8 @@ Create or inspect a Jira delivery
 
 Run `afkconvoy delivery -C <checkout> --jira https://example.atlassian.net/browse/ABC-123 --final-target <branch> --issue 7` before making the first task dispatchable. The checkout names the code repo. Repeat with another --issue to attach another open task. Omit --final-target and --issue for read-only inspection. Repeat the creation command to reconcile pending final review.
 
+For discussion and decomposition, create the delivery once without --issue, take its returned `delivery` identity, and use `afkconvoy flows --delivery <identity>`. Its line opens a non-runnable task; its intake_line records membership and then enables dispatch. For example, create ABC-123 and ABC-456 with full Jira URLs and --final-target <branch>. Use ABC-123's flows line twice, then `afkconvoy intake --issue 11 --delivery <ABC-123-identity>` and the same for issue 12. Use ABC-456's line once and intake issue 13 with <ABC-456-identity>. In a bound repo add the chosen --workflow to each intake. Tasks 11 and 12 target ABC-123's delivery branch; task 13 targets ABC-456's. Their internal PRs land only there. Repeated delivery inspection lists their tracker issue identities without writing anything or creating tasks. `afkconvoy plan` and `afkconvoy doctor` answer `targets` with delivery membership, resolved target_branch, configured_base, whether it is pinned, and per-task errors; `afkconvoy show --issue <n>` also shows delivery and target_branch for a bound task.
+
 ##### Who runs it
 
 The operator. Jira is an external reference; no Jira login or synchronization is performed.
@@ -1575,8 +1581,9 @@ A role after the first is written with its rules and its limits, and no skill: a
 - `.claude/settings.json`: its limits for claude-code — hooks: none yet
 - `.codex/hooks.json`: its limits for codex — hooks: none yet
 - `.kimi-code/limits.toml`: its limits for kimi — hooks and denied permissions: none yet
+- `.grok/config.toml`: its limits for grok — hooks and denied permissions: none yet
 
-The rules and the skills are written once, whatever harness a stage runs the role on. The role's limits are written once for each harness, in that harness's own form: for claude-code, hooks and denied permissions in `.claude/settings.json`; for codex, hooks in `.codex/hooks.json`; for kimi, hooks and denied permissions in `.kimi-code/limits.toml`; and for pi, extensions in `.pi/extensions/`, a directory this command does not write. For dsh, a role writes its own overlay in `.dsh/cordis.patch.yml`; this command writes none. A file that names no hook holds no limit: the skeleton is right for every harness. `check` refuses a stage on a harness its role holds no limits for while it holds some for another.
+The rules and the skills are written once, whatever harness a stage runs the role on. The role's limits are written once for each harness, in that harness's own form: for claude-code, hooks and denied permissions in `.claude/settings.json`; for codex, hooks in `.codex/hooks.json`; for kimi, hooks and denied permissions in `.kimi-code/limits.toml`; for grok, hooks and denied permissions in `.grok/config.toml`; and for pi, extensions in `.pi/extensions/`, a directory this command does not write. For dsh, a role writes its own overlay in `.dsh/cordis.patch.yml`; this command writes none. A file that names no hook holds no limit: the skeleton is right for every harness. `check` refuses a stage on a harness its role holds no limits for while it holds some for another.
 
 The role's name is the directory's. Run in a checkout, it writes there and creates nothing on GitHub: commit and push it with the team.
 
@@ -1726,6 +1733,8 @@ The first line is the workflow, its flow label and its two breakers. Then one ro
 With `--issue`, JSON:
 
 {"issue", "workflow", "intake", "position", "follows", "rework", "consecutive_rework", "records", "refusals"}
+
+Also `delivery` (null for an ordinary task) and its resolved `target_branch`.
 
 - `intake`: how the issue came in. {"by": "worker", "role", "from", "url"}: a worker in that role, on the issue `from`, took it in with `afkconvoy intake`, and `url` is the comment that records it; `patrol` in place of `from` where a patrol's worker did. {"by": "human"}: its flow label has no intake record for it
 - `position`: where the issue is: {"is", "stage", "by", "do", "harness", "reason"}, as `afkconvoy rehearse --help` spells out
@@ -2213,7 +2222,9 @@ A worker, in its own worktree: it starts in its role's directory, so it changes 
 
 It reads the config of the checkout, the team it names, the issue, and — to count — the comments of every open issue that carries a flow label. It writes on the issue, in this order: a blocked-by edge to each issue `--blocked-by` names that GitHub does not record yet; one comment, the intake record, whose marker carries the workflow, the role and the issue the worker was on — or the patrol it ran, or, of the repair worker's, `by=repair` and nothing else; then, where the checkout's tracker is another repo (`afkconvoy run --tracker`) and the issue lacks it, this repo's repo label, `repo:<owner>/<repo>`; then the workflow's flow label, `flow:<workflow>`. Nothing but this command writes that format. Then it wakes the fleet, as `afkconvoy wake` does: the issue is on the frontier at the next tick — or, with an open issue to wait for, once that has closed. The edges go first, so the issue is never on the frontier ahead of what blocks it.
 
-To contribute to an existing delivery branch, first run `afkconvoy target --issue <n> --branch <branch>`, then intake normally. Each stage and landing retains that destination without changing the repo config.
+For a Jira delivery, run `afkconvoy flows --delivery <identity>`, open with its line (no runnable label), then run its intake_line. `--delivery <identity>` attaches the existing delivery before any runnable label is added. In a bound repo select --workflow; in an unbound repo omit it and intake adds the ready label. An operator or discussion agent may use explicit --delivery without a worker role: this follows human intake and consumes no worker intake limit. Workers still name their role and source task or patrol and count against the existing limit.
+
+A worker's --from (or its worker issue environment) inherits that source task's delivery automatically. Explicit --delivery selects the named delivery instead of inheritance for work genuinely belonging to another delivery. A dependency, parent link, checkout branch or discussion title supplies no delivery. Keep --blocked-by separate: it orders tasks and never assigns membership. The delivery reference lives once in the task's remote target record; stages, restart, rework and harness/model switches retain it. Missing, contradictory and cross-repo delivery context refuses without a runnable label being added. Existing pinned targets cannot be reassigned; claims, retained work and unaccounted PRs/candidates are preserved and reported.
 
 The issue, the issues it waits for and every issue it counts are the tracker's: the checkout's own repo, or the one its host says, where it counts only the issues that carry this repo's repo label.
 
@@ -2224,6 +2235,8 @@ The limit. Before it writes anything it counts the open issues taken in by worke
 ##### What it answers
 
 {"issue", "workflow", "taken", "role", "from", "blocked_by", "open", "limit", "woke"}
+
+Delivery intake also answers `delivery` and resolved `target_branch`. Human delivery intake omits worker identity, open and limit. Unbound intake omits workflow and answers target_branch for ordinary tasks too.
 
 - taken: true: the record and the flow label were written
 - `role`, `from`: who took it in: the worker's role, and the issue it was on. A patrol's worker answers `patrol`, the patrol's name, in place of `from`. The repair worker answers "repair": true in place of both
@@ -2262,7 +2275,7 @@ As it acts it appends one line to the tick log of this host for this repo, then 
 ##### Usage
 
 ```
-afkconvoy intake [OPTIONS] --workflow <WORKFLOW> <ISSUE|--issue <ISSUE>>
+afkconvoy intake [OPTIONS] <ISSUE|--issue <ISSUE>>
 ```
 
 ##### Arguments
@@ -2270,6 +2283,7 @@ afkconvoy intake [OPTIONS] --workflow <WORKFLOW> <ISSUE|--issue <ISSUE>>
 - `[ISSUE]`: The issue's number
 - `--issue <ISSUE>`: The same, as a flag
 - `--workflow <WORKFLOW>`: The workflow it is to follow, by name: what follows `flow:` in its flow label
+- `--delivery <DELIVERY>`: Existing Jira delivery identity; selects it instead of inheritance from --from
 - `--role <ROLE>`: The role of the worker that takes it in
   - Environment: `AFKCONVOY_ROLE`
 - `--from <FROM>`: The issue that worker is on
@@ -2665,11 +2679,15 @@ It reads the config of the checkout and the labels its tracker has — the check
 
 It writes one thing: each label its lines name that the tracker lacks. In a bound repo that is the flow label of every workflow of the team — `flow:<workflow>`, or the one its file's `label` names; in an unbound one, the ready label. It puts no label on any issue and opens none. Everything is read first: a team with a fault creates nothing.
 
+With `--delivery <identity>`, it first validates an existing same-repo Jira delivery. Its `line` keeps the tracker and repo label but omits the runnable flow or ready label. Run that line, then its `intake_line` with the returned issue number: intake attaches the delivery before adding the selected workflow's label (or the unbound repo's ready label). Both steps run in this code repo's checkout. The answer includes `delivery`; each workflow, or the unbound answer, includes `intake_line`. An invalid or cross-repo delivery refuses before creating labels. Without --delivery, today's ordinary creation line is unchanged.
+
 ##### What it answers
 
 In a bound repo:
 
 {"team", "workflows", "keep_off", "intake", "created"}
+
+With --delivery: also `delivery`, and each workflow's `intake_line` to run after its non-runnable creation line. In an unbound repo, `delivery` and `intake_line` are top-level keys.
 
 - `team`: the team's repo
 - `workflows`: every workflow of the team, each {"name", "flow_label", "description", "first", "ends", "line"}:
@@ -2711,12 +2729,13 @@ Name it after the command, as `[CHECKOUT]`: a checkout of the repo, or any direc
 ##### Usage
 
 ```
-afkconvoy flows [CHECKOUT]
+afkconvoy flows [OPTIONS] [CHECKOUT]
 ```
 
 ##### Arguments
 
 - `[CHECKOUT]`: The checkout it is about, or a directory in it [default: the one it is run in]
+- `--delivery <DELIVERY>`: Existing Jira delivery identity; opens tasks without a runnable label, then attaches through intake
 
 #### `afkconvoy wake`
 
@@ -3597,7 +3616,7 @@ What becomes of one issue, from the moment it is the fleet's to the moment it la
 #### The four things
 
 - **The fleet**: A fleet instance is one `afkconvoy run` on one host, for one repo. It works in ticks: each reads fleet state anew from GitHub and the repo's remote, then does everything that calls for. No process holds fleet state, so a `run` that is killed loses nothing and several hosts can work one repo. `afkconvoy run --help`, `afkconvoy tick --help`.
-- **A worker**: A session of one harness — Claude Code, pi, Codex, DSH or Kimi Code — started for one issue, in a git worktree of that issue's own. It reports through GitHub alone: a PR, a comment. The fleet never waits on one; it reads what the worker left at the next tick. `afkconvoy dispatch --help`.
+- **A worker**: A session of one harness — Claude Code, pi, Codex, DSH, Kimi Code or Grok — started for one issue, in a git worktree of that issue's own. It reports through GitHub alone: a PR, a comment. The fleet never waits on one; it reads what the worker left at the next tick. `afkconvoy dispatch --help`.
 - **A claim**: What marks one issue as one fleet instance's. Creating it succeeds for exactly one instance, so no issue is worked twice. It is live while its owner's heartbeat is; past that another host may take it. `afkconvoy scan --help`, `afkconvoy takeover --help`.
 - **A turn**: One command makes a PR's merge commit on the current base tip, gates it, records green and fast-forwards the base to that same commit. Red, conflict or rejected push lands nothing. `afkconvoy land --help`.
 - **The gate budget**: A fixed duration budget declared as `gate_budget_seconds` in the repo config. Recent recorded landings on one host that all exceed it make a slow gate. It never ends a run; where absent, the warning threshold is 80% of the gate limit. It never learns from past runs.
@@ -3699,6 +3718,7 @@ A `./path` is read from the root of the team's repo, not from the team's directo
 - `.codex/hooks.json`: its limits for codex: hooks
 - `.dsh/cordis.patch.yml`: its limits for dsh: a DSH overlay
 - `.kimi-code/limits.toml`: its limits for kimi: Kimi hooks, and the permissions it denies
+- `.grok/config.toml`: its limits for grok: Grok hooks, and the permissions it denies
 
 Only a skill's file has keys `check` reads: [`afkconvoy help skill-file`](help:skill-file). A `do` names an entry of `.claude/skills/` in the role. Rules and skills are written once; limits per harness, in its own form ([`afkconvoy help worker-launch`](help:worker-launch) says how each loads a role).
 
@@ -3712,9 +3732,9 @@ They are one of three kinds of text a worker reads, beside the repo's own rules 
 
 - **its role's**: the CLAUDE.md of the role's directory, under every harness
 - **the team rules**: the CLAUDE.md of the team's directory, under every harness
-- **the repo's own**: of the repo an issue is of: under claude-code its CLAUDE.md; under pi, codex and kimi its AGENTS.md, or CLAUDE.md where it has none
+- **the repo's own**: of the repo an issue is of: under claude-code its CLAUDE.md; under pi, codex, kimi and grok its AGENTS.md, or CLAUDE.md where it has none
 
-Claude Code and pi load the three; the fleet names the other two to Codex and Kimi Code. What each is for, and where a sentence belongs: [`afkconvoy help roles`](help:roles).
+Claude Code and pi load the three; the fleet names the other three to Codex, Kimi Code and Grok. What each is for, and where a sentence belongs: [`afkconvoy help roles`](help:roles).
 
 #### How a repo is bound to it
 
@@ -3754,7 +3774,7 @@ A role is a directory that defines one kind of worker. A worker of a bound repo 
 
 - **its rules**: what a worker in it always works under, whatever it is asked
 - **its skills**: each one thing it can be asked to perform; a stage's `do` names one ([`afkconvoy help skill-file`](help:skill-file))
-- **its limits**: what it may never do, in the form its harness enforces: hooks for Claude Code, Codex and Kimi Code, extensions for pi
+- **its limits**: what it may never do, in the form its harness enforces: hooks for Claude Code, Codex, Kimi Code and Grok, extensions for pi
 
 A role names no workflow and no stage. The workflow says in which order the work is done and who judges whom; a role serves as many workflows as name it.
 
@@ -3788,7 +3808,7 @@ To place a sentence, ask whom it would still be true for. For this codebase unde
 
 #### The host user's skills and rules
 
-A worker is also given the skills and the rules of the host's own user, as a session that user opens by hand has them — Claude Code's ~/.claude/skills and CLAUDE.md, pi's and Codex's in ~/.pi/agent and ~/.codex, Kimi Code's in ~/.kimi-code and the generic ~/.agents resources a harness discovers — so a role need not copy in the skills its author relies on everywhere. Except for DSH's explicit `dsh_profile: host-user` choice ([`afkconvoy help team`](help:team)), never their settings, hooks, MCP servers or extensions: the guard and orca's report stay the only hooks the fleet adds. A role's skill wins over one of theirs of the same name, and the brief, the role's rules, the team rules and the repo's own rules win over theirs; the brief says so. The cost: a role may behave differently on two hosts. A team file that says `host_user: false` gives its workers none of it, and every role is what its directory says on every host. One role may say it for itself, whatever the team says — `reviewer: { dir: ./roles/reviewer, host_user: false }` — and its workers alone are given none of it, on every harness; the team's other roles keep the team's ([`afkconvoy help team`](help:team)).
+A worker is also given the skills and the rules of the host's own user, as a session that user opens by hand has them — Claude Code's ~/.claude/skills and CLAUDE.md, pi's and Codex's in ~/.pi/agent and ~/.codex, Kimi Code's in ~/.kimi-code and the generic ~/.agents resources a harness discovers, Grok's in ~/.grok and, with Claude skill compatibility left on, ~/.claude/skills — so a role need not copy in the skills its author relies on everywhere. Except for DSH's explicit `dsh_profile: host-user` choice ([`afkconvoy help team`](help:team)), never their settings, hooks, MCP servers, plugins, permission mode or memories: the guard and orca's report stay the only hooks the fleet adds. Grok is the same: `host_user: false` leaves its home skills and rules out. A role's skill wins over one of theirs of the same name, and the brief, the role's rules, the team rules and the repo's own rules win over theirs; the brief says so. The cost: a role may behave differently on two hosts. A team file that says `host_user: false` gives its workers none of it, and every role is what its directory says on every host. One role may say it for itself, whatever the team says — `reviewer: { dir: ./roles/reviewer, host_user: false }` — and its workers alone are given none of it, on every harness; the team's other roles keep the team's ([`afkconvoy help team`](help:team)).
 
 #### What makes a role good
 
@@ -3820,7 +3840,7 @@ roster:
     run: [{ harness: codex, model: gpt-5.5 }]
 ```
 
-Each of `run` names a `harness` — claude-code, pi, codex, dsh or kimi — and may name a `model` by any of its names on that harness — its id, as the host kit holds it and `afkconvoy draft` writes it, or another name it answered to, whatever the case, the provider prefix left off where that leaves one match (`afkconvoy kit --help`) — and `good_at`, what it is good at, which the caster is told. `afkconvoy draft` copies good_at from the host kit's sourced, one-time research; its model supplies only the role's cast guidance. No human edits the host kit to supply it. One that names no model allows any model the host kit holds for the harness, or the harness's command as written where the host kit holds none. `cast` says, in the team's words, how an issue is to be cast among them: the caster is told it too. A role the roster names no entry for may run whatever the host kit holds, but a harness it holds no limits for (below). A model an entry names that matches none the host kit holds for its harness is cut from the range: `check`, `plan` and `doctor` name the entry, what the host kit holds and the nearest names, and a tick opens one issue for it in the team's repo, with that repo's ready label, for the team's own fleet to correct — none while one for it is open. The fleet never changes a roster.
+Each of `run` names a `harness` — claude-code, pi, codex, dsh, kimi or grok — and may name a `model` by any of its names on that harness — its id, as the host kit holds it and `afkconvoy draft` writes it, or another name it answered to, whatever the case, the provider prefix left off where that leaves one match (`afkconvoy kit --help`) — and `good_at`, what it is good at, which the caster is told. `afkconvoy draft` copies good_at from the host kit's sourced, one-time research; its model supplies only the role's cast guidance. No human edits the host kit to supply it. One that names no model allows any model the host kit holds for the harness, or the harness's command as written where the host kit holds none. `cast` says, in the team's words, how an issue is to be cast among them: the caster is told it too. A role the roster names no entry for may run whatever the host kit holds, but a harness it holds no limits for (below). A model an entry names that matches none the host kit holds for its harness is cut from the range: `check`, `plan` and `doctor` name the entry, what the host kit holds and the nearest names, and a tick opens one issue for it in the team's repo, with that repo's ready label, for the team's own fleet to correct — none while one for it is open. The fleet never changes a roster.
 
 A roster is drafted rather than written from nothing: `afkconvoy draft`, in a checkout of the team, writes one into team.md from this host's host kit — every role, every harness and model in the host kit's order, what the host kit's first model says each is good at and how to cast — and commits nothing. A human reads it, edits it and commits it; the fleet never changes a team's roster.
 
@@ -3840,7 +3860,7 @@ With it on, only a stage's selected harness offering multiple eligible models le
 
 Rebuild, daily refresh and new-model research preserve established harness and model order. An unavailable or paused candidate is skipped without reordering; a successful recovery probe makes it eligible again. Fault recovery keeps claims and work, and classes structured signals and an explicit harness usage-limit message by rule first, with or without a key. Where the host settings name a Jev key command, Jev judges what else a stopped worker's screen shows, and the screen is sent to TypeSafe; no harness is asked. Without a key, or where the command, TypeSafe or Jev's answers settle nothing, the worker waits for the operator and the watch: `doctor` names it with its reason and a line of its screen. Account quota without a reset continues at once; unresolved waits on unchanged evidence, the operator's among them, are bounded to one hour, then escalated with evidence. Plan, doctor and panel show the host's cast setting, each issue's casting reason, whether model labels were followed, actual running models and why earlier candidates were skipped.
 
-Every tick first reads Orca's agent state for every worker, from one host-wide `orca worktree ps`. `working` is healthy without screen judgment; the existing time bounds still apply. A failed delivery still goes to classification when the runtime's last report says `working`. `done` with `mainAgent.outcome: failure` is stopped at its first observation: classification rules run at once, then Jev or the operator where no rule decides the fault, without waiting for two screen observations. A turn ending without failure follows the existing finished, verdict and nudge logic. Orca's `agentType` decides the harness for a continuation or pause when the recorded harness disagrees. Doctor and the panel show each observed worker's Orca state, outcome, agent type and `stateStartedAt` (epoch milliseconds), and name a wrong harness record. Termination is confirmed by a fresh runtime read before any replacement starts.
+Every tick reads each worker's turn from that harness's session for its worktree; whether a terminal is live still comes from one host-wide `orca worktree ps`. An open turn is healthy without screen judgment, however long the screen has been quiet. A failed delivery still goes to classification once the session records that the turn ended. `done` with `mainAgent.outcome: failure` is stopped at its first observation: classification rules run at once, then Jev or the operator where no rule decides the fault, without waiting for two screen observations. A turn ending without failure follows the existing finished, verdict and nudge logic. Orca's `agentType` decides the harness for a continuation or pause when the recorded harness disagrees. Doctor and the panel show each observed worker's Orca state, outcome, agent type and `stateStartedAt` (epoch milliseconds), and name a wrong harness record. Termination is confirmed by a fresh runtime read before any replacement starts.
 
 ### `afkconvoy help skill-file`
 
@@ -4189,7 +4209,7 @@ Each command reads the variable for itself, so two commands find the same copies
 
 - `copies/`: the fleet's copy of a team's repo and of each role's, one per commit, read-only: copies/<owner>/<repo>/<commit>. Derived copies name their kind and directory too. Claude Code's role copy is `<commit>-role+claude-code-<directory>` (the directory is empty for a whole repo), with an empty `.git` directory to bound native skill discovery. A worker of a bound repo starts in one; an unbound repo has none.
 - `github-quota/`: expiring primary quota observations for REST core and GraphQL and a shared secondary cooldown, separated by GitHub host and authenticated login. Under each host, `identities/` binds an opaque one-way fingerprint of overriding credential environment/configuration to its authoritative login, or to a bounded wait while neither API can identify it. Credential values are never written or printed. The configured login is otherwise read locally, so an authentication status probe does not repeatedly hit an exhausted API. These are observations, never fleet state or cached issue/PR relationships. Removing one loses only an avoided rejected request. `doctor` reports their remaining/reset and API selection in `fleet.github_api`.
-- `harness/`: the user directory the fleet keeps for pi, Codex and Kimi Code, a worker's in place of yours: harness/pi, harness/codex, harness/kimi. A Kimi worker's role-specific home is under that directory, so concurrent roles do not share hooks or rules.
+- `harness/`: the user directory the fleet keeps for pi, Codex, Kimi Code and Grok, a worker's in place of yours: harness/pi, harness/codex, harness/kimi, harness/grok. A Kimi or Grok worker's role-specific home is under that directory, so concurrent roles do not share hooks or rules.
 - `runs/`: the tick log of each repo's fleet instance, one file per repo: what `doctor` reads. It keeps every line of the last 24 hours, and never fewer than 200 lines nor more than 5000, the oldest dropped first.
 - `checkouts.json`: the checkout list, the checkouts the host runner works, each with the `--instance`, `--host` and `--worker-no-proxy` its `run` named, and beside them the host settings (`afkconvoy run --help`); `checkouts.lock`, held while it is changed.
 - `host-runner.lock`: held by the host runner as long as it runs, so a host has one; it says its pid, its version and when it started.
@@ -4244,7 +4264,7 @@ Before a continuation starts, the fleet closes the old worker's terminals and en
 
 A worktree trust gap, a worker start that failed again are fleet faults: each escalates at once, skipping the consult even where a stage names one. The escalation and `doctor` say the fix is on the host. Fix the host, then hand the issue back ([`afkconvoy help humans`](help:humans)); another failed start escalates at once again.
 
-A start counts once its brief has started a turn. Before every line — the brief, a nudge or a rejoin — the fleet requires the harness to be at its input, with no menu blocking it. It sends the line once and waits within a bound for Orca's delivery receipt to prove `turn_started`. When Orca says observation is unsupported, the fleet accepts `input_accepted` only if the terminal screen shows `working` or `thinking`; otherwise the line is a failed delivery with the receipt and screen as evidence. A brief's failed delivery is a failed start: `doctor` names it, and a second failed start hands the issue on with both errors. Later failed deliveries go to worker health; no nudge is recorded until its line starts a turn.
+A start counts once the harness's own session records that this brief began a turn. Before every line — the brief, a nudge or a rejoin — the fleet requires the harness to be at its input, with no menu blocking it. It sends the line once. Orca's delivery receipt and the terminal screen do not prove the turn: the fleet reads the harness's session for that worktree until the turn is there or the bound passes. A turn already recorded since this worker started counts again for a brief; a nudge counts only a turn that begins with that send. A line the terminal did not accept is a failed delivery, and the session is not read for it. A brief's failed delivery is a failed start: `doctor` names it, and a second failed start hands the issue on with both errors, with the screen's last lines kept as evidence. Later failed deliveries go to worker health; no nudge is recorded until its line starts a turn.
 
 A harness ready once may still be redrawing when its brief's idle check times out. No line was sent: dispatch answers `started: false, brief_pending: true` and keeps the ready terminal under its claim. Each later tick checks that terminal once and hands it the brief once its prompt settles, without another start or a failed-start escalation. A harness whose readiness wait never succeeds still fails its start.
 
@@ -4331,6 +4351,19 @@ The fleet's DSH_HOME loads the stock base and TUI bundles, the role's own .dsh/c
 A team or role may instead choose `dsh_profile: host-user` (independent of host_user): DSH_HOME stays the host user's (default ~/.dsh), DSH_AGENTS_HOME stays theirs (default ~/.agents), and dsh-tui loads their manifest, dependencies, plugins, MCP servers, theme, settings and both profile and home patches. This can differ across hosts and the profile may itself load user skills and rules even with host_user: false. The fleet writes no file there: its plugin stays in its cache and its --patch overlay is still last, after the role's limits, with required guard dependencies. User settings cannot disable it. Neither profile edits the user's DSH_HOME; both keep the role's limits.
 
 The --patch overlay, applied last on either profile, loads the guard and orca state plugin. The fleet's plugin supplies role, repo and team rules, role skills before yours, and the worker's model as written. It asks `afkconvoy guard` before every tool call and reports running/idle, including interruption, to orca. The TUI and agent loop require the guard plugin's loader service, so a missing or broken plugin starts neither. Ctrl+C interrupts the running turn and leaves the interactive session open.
+
+#### Grok
+
+A Grok worker (`harness: grok`) is an interactive `grok --always-approve` session. It starts in its role's copy, which already holds the role's `CLAUDE.md` and `.claude/skills`; those are not copied into a second form:
+
+```
+cd <the role's copy> && export GROK_HOME=<the fleet's own, for this role>
+  GROK_MEMORY=0 <Claude and Cursor hook and MCP compatibility off> <the stage's facts>
+  && <worker launch command> --add-dir <the issue's worktree> --add-dir <the team's copy>
+  --trust [--model <its model>]
+```
+`--trust` is on the launch line, so the fleet writes no trusted-folders file and nobody answers a trust question. On Grok 1.0.70 `--help` does not name `--trust`, and the flag check does not require it to. A question that still appears is reported with the command and the worktree. A project `.grok/config.toml` loads denied permissions and does not load hooks, so each role gets a generated home (harness/grok, or harness/grok-host-user) whose config holds the role's hooks and denies, the guard and orca's report. Claude and Cursor hook and MCP compatibility are off, so `.claude/settings.json` and `.cursor/hooks.json` are not a second set of limits. Your `auth.json` is linked; your hooks, MCP servers, plugins, permission mode and memories are not. The guard's `PreToolUse` hook turns a missing or failed guard into exit 2, which is how Grok denies, and a deny the role holds still applies under `--always-approve`. The report uses ~/.orca/agent-hooks/grok-hook.sh and exits 0.
+The role's limits are `.grok/config.toml`: a hook, or a permission it denies. A file that names no hook and denies nothing holds no limit. Repo and team rules are written to the home's `rules/told.md`. Your skills and rules are given unless `host_user: false`; with it on, `~/.grok/rules` is named and Claude skill compatibility stays on. An unbound worker or a watch is the stock command plus `--trust` and `--model` when a model is set, with no role, no limits and no guard. Listing asks the worker launch command for `models` and sends no prompt; the id marked `*` and `(default)` is the one workers start on until research places one. A probe uses `-p` and `--output-format json`, and the model that answered is the key of `modelUsage`. Not logged in, or a listing that names no model, is `grok login`. A command you give must take `--add-dir` and `--model`.
 
 #### Where to read on
 
@@ -4555,7 +4588,7 @@ A warning may be the fleet mid-step: run `doctor` again after a tick before you 
 
 - `failed in tick`: A step failed, including a worker that could not start or take its brief. `evidence` is the error and `fix` is the line to try after correcting it: a failed dispatch can be run again, and a failed repair worker start uses `afkconvoy tick`. It stays visible across unrelated ticks until the step succeeds or the issue's work continues or ends. Three consecutive failed ticks make it critical instead.
 - `has no worker`: A claim's worker is gone; a tick starts one. `fix` is for a claim it leaves so.
-- `has been stopped for`: A worker stopped half an hour ago and its claim is still at work. Read its terminal; `fix` follows its verdict and progress. A `blocked` verdict whose blockers all closed names `dispatch`, which continues its worktree; open blockers name `park`. Only a worker eligible for a nudge names `nudge`; other cases name `tick`.
+- `has been stopped for`: A worker stopped half an hour ago and its claim is still at work. One waiting on background work of its own — a shell or a monitor its harness shows, or a command of its in the exclusive queue — is not this, however long that wait runs. Read its terminal; `fix` follows its verdict and progress. A `blocked` verdict whose blockers all closed names `dispatch`, which continues its worktree; open blockers name `park`. Only a worker eligible for a nudge names `nudge`; other cases name `tick`.
 - `waits on a blocker no fleet works`: The blocker is outside the tracker, or no single `repo:` label names a checkout serving it. `plan` and `doctor` name the waiting issue and the blocker, with the transfer line where needed and the label line. Run `afkconvoy flows` in the target checkout to choose its flow label. A named consult or declared hand-off proceeds when these are the only blockers; build work still waits. Transfer with `gh issue transfer <n> <tracker> --repo <its repo>`; use the new number GitHub assigns when applying the labels.
 - `worker health is waiting for the operator`: A worker stopped past the observation bound, and neither the rules nor Jev — where the host settings name a Jev key command — classed it: there is no key command, it failed, TypeSafe failed, or Jev's answers settled nothing. `evidence` is that reason and the last line of its screen; `fix` names a key command where there is none, else the worker's screen to read. The watch starts on it. An hour on unchanged evidence escalates its issue.
 - `the last tick started no worker`: Slots are free, the frontier is not empty, and nothing was dispatched: `evidence` is the tick's line, and `fix` the step that failed or the dispatch by hand.
@@ -4596,7 +4629,7 @@ A warning may be the fleet mid-step: run `doctor` again after a tick before you 
 - A missing worker launch command is discovered automatically for a known harness in the worker's login shell and merged into the latest host kit. If resolution fails, install the named program or fix that shell's PATH. If login or required flags fail, follow the named harness's login command or update its explicit command in the host kit. An explicit command is never replaced by a default; running fleets read kit edits at their next worker launch.
 - `cannot read the host kit`: Run `afkconvoy kit` on this host, or `run`, which writes it where there is none.
 - `--worker-command is gone`: Run `afkconvoy kit` to edit this host's worker launch commands.
-- `is no harness`: Use claude-code, pi, codex, dsh or kimi.
+- `is no harness`: Use claude-code, pi, codex, dsh, kimi or grok.
 
 #### What neither says
 
@@ -4810,7 +4843,7 @@ _Avoid_: freeze, pause (a harness paused on a host, as under Host kit), kill swi
 ##### Workers
 
 **Harness**:
-The program a worker is a session of: it runs a model, with tools, on the work it is handed. Claude Code, pi, Codex, DeepSeek Harness (DSH) and Kimi Code are harnesses. The host kit's order chooses the first eligible one; a role's limits and range constrain eligibility.
+The program a worker is a session of: it runs a model, with tools, on the work it is handed. Claude Code, pi, Codex, DeepSeek Harness (DSH), Kimi Code and Grok are harnesses. The host kit's order chooses the first eligible one; a role's limits and range constrain eligibility.
 _Avoid_: agent (as under Worker), coding agent (as under Worker), CLI, provider (whose models a harness runs)
 
 **Roster**:
@@ -4852,7 +4885,7 @@ The shell string every worker of one harness is started with, in a fleet instanc
 _Avoid_: agent command, provider profile
 
 **Worker state**:
-Whether a worker is busy or has stopped, as its harness reports it to the worker backend — or, where the backend has no report of it, as its terminal's last output shows. Stopped never means finished.
+Whether a worker is busy or has stopped. It is busy while the turn its harness took is still open, and stopped once that turn has ended or none was recorded. Stopped never means finished.
 _Avoid_: liveness, status (as under Position)
 
 **Task refusal**:
@@ -4868,7 +4901,7 @@ What ends a stage, declared on the issue by whoever performed it: `pass`, `rejec
 _Avoid_: outcome (what a worker leaves on GitHub: its landed PR, or its verdict), result, needs-human
 
 **Silent worker**:
-A worker that stopped, declared nothing, and for the grace period showed no sign of life — its terminal's output, a commit, a file touched, being started or nudged — while waiting on no background work of its own: a shell or a monitor it started that its harness shows still running, or a command of its in the exclusive queue. One waiting on such work is not silent until that work ends and it stays still past its nudge, or until it has waited longer than the gate limit.
+A worker that stopped, declared nothing, and for the grace period showed no sign of life — the end of its turn, a commit, a file touched, being started or nudged — while waiting on no background work of its own: a shell or a monitor it started that its harness shows still running, or a command of its in the exclusive queue. One waiting on such work is not silent until that work ends and it stays still past its nudge, or until it has waited longer than the gate limit.
 _Avoid_: hung, idle (a fleet instance with nothing to do)
 
 **Hot worker**:

@@ -340,7 +340,10 @@ fn carry_out(
             && worktree.state(fleet.now)? != afkconvoy_core::worker::WorkerState::Gone
             && crate::health::holding(&worktree)
         {
-            if let Some(since) = crate::health::background_since(&worktree) {
+            // The same test worker health and `doctor` read. The since is the
+            // stamp that test's record already holds.
+            if crate::judge::waits_on_own_background(&worktree) {
+                let since = crate::health::background_since(&worktree).unwrap_or(fleet.now);
                 return Ok(Outcome::Waiting(since));
             }
             return Ok(Outcome::Nothing);

@@ -29,6 +29,7 @@ mod fixture;
 mod flows;
 mod gate;
 mod goodbye;
+mod grok;
 mod guard;
 mod help;
 mod host_runner;

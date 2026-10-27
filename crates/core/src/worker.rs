@@ -6,6 +6,7 @@ use flux_rs::attrs::*;
 
 use crate::harness::Harness;
 use crate::record;
+use crate::turn::Turn;
 
 /// A task refusal belongs to the issue at every stage, never to the account.
 /// Its comment is fleet state, so another host reads the same exclusion.
@@ -264,77 +265,32 @@ pub fn is_worktree_named(directory: &str, name: &str) -> bool {
 /// How long a worker may be quiet before its silence means anything.
 pub const GRACE: u64 = 300;
 
-/// What a worker's runtime last reported to orca: `working`, or that it
-/// stopped (waiting, blocked, done), and when.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AgentReport {
-    pub working: bool,
-    /// When it entered that state, in epoch seconds.
-    pub since: Option<u64>,
-}
-
-/// What the worker in a worktree is doing, as orca has it.
+/// What the worker in a worktree is doing, from its harness's session and
+/// whether a terminal is still live.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkerState {
-    /// No live terminal in the worktree: the worker is gone.
+    /// No live terminal in the worktree: the worker is gone. An open session
+    /// left behind by a kill is not a worker still at work.
     Gone,
-    /// Its terminal produced output within grace, and it does not report
-    /// that it stopped: it reports `working`, or orca has no report of it.
+    /// Its harness has a turn open.
     Busy,
-    /// Anything else, with how long it has been quiet — unknown where
-    /// neither a report nor the terminal says since when.
+    /// Its turn has ended, or no turn is recorded, with how long it has been
+    /// quiet — unknown when no turn was recorded.
     Idle { quiet: Option<u64> },
 }
 
-/// The report that speaks for a worktree: of its top-level agents, the one
-/// that changed state last. An older pane's report does not.
-pub fn lead(agents: &[AgentReport]) -> Option<AgentReport> {
-    let mut lead: Option<AgentReport> = None;
-    for agent in agents {
-        let newer = match lead {
-            Some(found) => agent.since.unwrap_or(0) >= found.since.unwrap_or(0),
-            None => true,
-        };
-        if newer {
-            lead = Some(*agent);
-        }
-    }
-    lead
-}
-
-/// Reads a worker's state off its worktree's row of `orca worktree ps`:
-/// `terminals` live there, the terminal's `last_output` (epoch seconds), and
-/// the `lead` report.
-///
-/// Busy takes both the report and recent output: a stop report the runtime
-/// lost would otherwise read `working` forever. With no report the output
-/// alone speaks: orca hears nothing of a worker whose session loads no hook
-/// of orca's, and one writing to its terminal is at work all the same.
-pub fn worker_state(
-    terminals: u64,
-    last_output: Option<u64>,
-    lead: Option<AgentReport>,
-    now: u64,
-) -> WorkerState {
+/// The worker's state from how many terminals are live and the turn its
+/// session records. A quiet screen does not end an open turn, and a turn
+/// the session says ended is idle from that end however recently the
+/// terminal printed.
+pub fn worker_state(terminals: u64, turn: Option<Turn>, now: u64) -> WorkerState {
     if terminals == 0 {
         return WorkerState::Gone;
     }
-    let output_quiet = match last_output {
-        Some(at) => stamp_age(at, now),
-        None => None,
-    };
-    match lead {
-        Some(agent) if !agent.working => {
-            let stopped = match agent.since {
-                Some(at) => stamp_age(at, now),
-                None => None,
-            };
-            WorkerState::Idle { quiet: if stopped.is_some() { stopped } else { output_quiet } }
-        }
-        _ => match output_quiet {
-            Some(quiet) if quiet < GRACE => WorkerState::Busy,
-            _ => WorkerState::Idle { quiet: output_quiet },
-        },
+    match turn {
+        Some(Turn::Open { .. }) => WorkerState::Busy,
+        Some(Turn::Closed { since }) => WorkerState::Idle { quiet: stamp_age(since, now) },
+        None => WorkerState::Idle { quiet: None },
     }
 }
 
@@ -468,31 +424,26 @@ mod tests {
     }
 
     #[test]
-    fn a_workers_state_is_read_off_orcas_row() {
-        let working = AgentReport { working: true, since: Some(900) };
-        let stopped = AgentReport { working: false, since: Some(940) };
-        assert_eq!(worker_state(0, Some(990), Some(working), 1000), WorkerState::Gone);
-        assert_eq!(worker_state(1, Some(990), Some(working), 1000), WorkerState::Busy);
-        // a stop report the runtime lost: `working`, but no output within grace
+    fn a_workers_state_is_its_session_turn() {
+        let open = Turn::Open { since: 900 };
+        let closed = Turn::Closed { since: 940 };
+        assert_eq!(worker_state(0, Some(open), 1000), WorkerState::Gone);
+        assert_eq!(worker_state(1, Some(open), 1000), WorkerState::Busy);
         assert_eq!(
-            worker_state(1, Some(1000 - GRACE), Some(working), 1000),
-            WorkerState::Idle { quiet: Some(GRACE) }
+            worker_state(1, Some(open), 1000 + GRACE),
+            WorkerState::Busy,
+            "an open turn stays busy however quiet the screen is"
         );
-        assert_eq!(worker_state(1, None, Some(working), 1000), WorkerState::Idle { quiet: None });
         assert_eq!(
-            worker_state(1, Some(990), Some(stopped), 1000),
+            worker_state(1, Some(closed), 1000),
             WorkerState::Idle { quiet: Some(60) },
-            "timed from when it said it stopped"
+            "quiet is measured from the end"
         );
-        // no report: the terminal's last output is the sign of life
-        assert_eq!(worker_state(1, Some(990), None, 1000), WorkerState::Busy);
+        assert_eq!(worker_state(1, None, 1000), WorkerState::Idle { quiet: None });
         assert_eq!(
-            worker_state(1, Some(1000 - GRACE), None, 1000),
-            WorkerState::Idle { quiet: Some(GRACE) },
-            "quiet since that output"
+            worker_state(1, Some(Turn::Closed { since: 1000 + 10_000 }), 1000),
+            WorkerState::Idle { quiet: None },
+            "a stamp far ahead is not a quiet time"
         );
-        assert_eq!(worker_state(1, None, None, 1000), WorkerState::Idle { quiet: None });
-        assert_eq!(lead(&[stopped, working]), Some(stopped), "the newest report speaks");
-        assert_eq!(lead(&[]), None);
     }
 }

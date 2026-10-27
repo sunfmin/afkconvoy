@@ -27,10 +27,22 @@
 //! `raw_answers` maps a call's first two words to its stdout, after its effects.
 //! `startup_working_reports`: a quiet screen while the harness reports a
 //! start-up working episode for this many fresh runtime observations.
+//!
+//! The fleet reads a harness's session, not this stand-in's `working` flag
+//! and not the screen. An accepted send writes a closed turn for every
+//! harness unless `prompt_stages` omits `turn_started`, `session_turn` is
+//! false, or the raw answer for `terminal send` does not contain
+//! `turn_started`. `session_turn: true` forces the file. The stamp is the
+//! wall clock, or `convoy-started` when that handoff is later: the start
+//! proof compares against the handoff and skips a file written before it.
+//! `worktree ps` and `terminal show` overwrite that turn from the terminal's
+//! agent: `working` is open at `stateStartedAt`, any other state is closed
+//! then. No agent leaves the send's turn as it stands.
 
 mod fake;
 
 use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use afkconvoy::worker_tmp;
 use afkconvoy_core::line::niced;
@@ -228,6 +240,7 @@ fn worktree_ps(st: &mut State) -> ! {
         })
         .collect();
     let truncated = st.doc["ps_truncated"] == true;
+    sync_sessions(st);
     done(st, json!({"worktrees": out, "totalCount": out.len(), "truncated": truncated}))
 }
 
@@ -407,6 +420,17 @@ fn terminal_send(st: &mut State) -> ! {
             assert_eq!(previous["input"], sent, "a replay must use the exact saved input");
             let mut receipt = previous["receipt"].clone();
             receipt["mutation"] = json!({"replayed": true});
+            // The first response was lost, so that send wrote no session.
+            // Record the turn only when this replay is the answer the CLI
+            // receives. A raw stand-in answer is still that lost response.
+            let hidden = st.doc["raw_answers"]["terminal send"].is_string();
+            if !hidden && receipt_started(&receipt) {
+                let cwd = st.doc["terminals"][at]["worktreePath"].as_str().unwrap_or("");
+                if !cwd.is_empty() {
+                    let cwd = Path::new(cwd);
+                    record_turn(cwd, false, send_stamp(cwd));
+                }
+            }
             done(st, receipt);
         }
     }
@@ -414,21 +438,27 @@ fn terminal_send(st: &mut State) -> ! {
     if st.doc["send_screen"].is_array() {
         st.doc["terminals"][at]["screen"] = st.doc["send_screen"].clone();
     }
-    let stages = st.doc["terminals"][at]["prompt_stages"]
+    let in_startup = st.doc["terminals"][at]["startup_working_reports_left"].is_number()
+        && st.doc["terminals"][at]["agent"]["state"] == "working";
+    let explicit = st.doc["terminals"][at]["prompt_stages"]
         .as_array()
         .or_else(|| st.doc["prompt_stages"].as_array())
-        .cloned()
-        .unwrap_or_else(|| {
-            if st.opt("--wait-submit").is_some()
-                && !(st.doc["terminals"][at]["startup_working_reports_left"].is_number()
-                    && st.doc["terminals"][at]["agent"]["state"] == "working")
-            {
-                vec![json!("input_accepted"), json!("turn_started")]
-            } else {
-                vec![json!("input_accepted")]
-            }
-        });
-    st.doc["terminals"][at]["last_prompt_stages"] = json!(stages);
+        .cloned();
+    let stages = explicit.clone().unwrap_or_else(|| {
+        if in_startup {
+            vec![json!("input_accepted")]
+        } else {
+            vec![json!("input_accepted"), json!("turn_started")]
+        }
+    });
+    st.doc["terminals"][at]["last_prompt_stages"] = json!(stages.clone());
+    if record_send(st, at, &stages) {
+        let cwd = st.doc["terminals"][at]["worktreePath"].as_str().unwrap_or("");
+        if !cwd.is_empty() {
+            let cwd = Path::new(cwd);
+            record_turn(cwd, false, send_stamp(cwd));
+        }
+    }
     if st.doc["terminals"][at]["startup_working_reports_left"].is_number() {
         // The brief is taken even during startup, but that episode cannot
         // prove a new turn. This is the receipt failure seen without a spinner.
@@ -446,6 +476,108 @@ fn terminal_send(st: &mut State) -> ! {
         st.doc["terminals"][at]["requests"][&request] = json!({"input": sent, "receipt": receipt});
     }
     done(st, receipt)
+}
+
+/// The saved receipt claims the harness started a turn.
+fn receipt_started(receipt: &Value) -> bool {
+    receipt["send"]["accepted"] == true
+        && receipt["send"]["prompt"]["stages"]
+            .as_array()
+            .is_some_and(|stages| stages.iter().any(|stage| stage == "turn_started"))
+}
+
+/// Whether this accepted send should leave a session turn. A raw answer is
+/// judged on its text, so a fixture that only accepted input writes nothing
+/// even though the handler would otherwise have started a turn.
+fn record_send(st: &State, at: usize, stages: &[Value]) -> bool {
+    if let Some(raw) = st.doc["raw_answers"]["terminal send"].as_str() {
+        let accepted = (raw.contains("\"ok\":true") || raw.contains("\"ok\": true"))
+            && !raw.contains("\"accepted\":false")
+            && !raw.contains("\"accepted\": false");
+        return accepted && raw.contains("turn_started");
+    }
+    let forced = |value: &Value| match value {
+        Value::Bool(set) => Some(*set),
+        _ => None,
+    };
+    if let Some(set) =
+        forced(&st.doc["terminals"][at]["session_turn"]).or_else(|| forced(&st.doc["session_turn"]))
+    {
+        return set;
+    }
+    let explicit =
+        st.doc["terminals"][at]["prompt_stages"].is_array() || st.doc["prompt_stages"].is_array();
+    if explicit {
+        return stages.iter().any(|stage| stage == "turn_started");
+    }
+    let in_startup = st.doc["terminals"][at]["startup_working_reports_left"].is_number()
+        && st.doc["terminals"][at]["agent"]["state"] == "working";
+    !in_startup
+}
+
+/// `working` is an open turn at the test's clock. Any other agent state is
+/// a turn that ended then. A terminal with no agent keeps the send's turn.
+fn sync_sessions(st: &State) {
+    let Some(terminals) = st.doc["terminals"].as_array() else { return };
+    for terminal in terminals {
+        if terminal["open"] != true || !terminal["agent"].is_object() {
+            continue;
+        }
+        let Some(state) = terminal["agent"]["state"].as_str() else { continue };
+        if state.is_empty() {
+            continue;
+        }
+        let Some(cwd) = terminal["worktreePath"].as_str() else { continue };
+        if cwd.is_empty() {
+            continue;
+        }
+        let at = terminal["agent"]["stateStartedAt"].as_u64().unwrap_or(0) / 1000;
+        record_turn(Path::new(cwd), state == "working", at);
+    }
+}
+
+fn record_turn(cwd: &Path, open: bool, at: u64) {
+    let Ok(home) = std::env::var("HOME") else { return };
+    if home.is_empty() {
+        return;
+    }
+    afkconvoy::session::record(Path::new(&home), cwd, open, at).unwrap_or_else(|error| {
+        panic!("cannot record a session turn for {}: {error}", cwd.display())
+    });
+}
+
+/// When this send's turn is stamped. The proof accepts a turn that started
+/// at or after the handoff in `convoy-started`, and it does not read a file
+/// last written before that. A fleet clock ahead of the wall clock — a test
+/// that moves `--now` past every file mtime — has to be the stamp, or the
+/// turn looks older than the handoff.
+fn send_stamp(cwd: &Path) -> u64 {
+    let wall = now_secs();
+    match handed_stamp(cwd) {
+        Some(started) if started > wall => started,
+        _ => wall,
+    }
+}
+
+/// The epoch seconds `start` wrote for this worktree, when it did.
+fn handed_stamp(cwd: &Path) -> Option<u64> {
+    let git = cwd.join(".git");
+    let dir = if git.is_file() {
+        let text = std::fs::read_to_string(&git).ok()?;
+        let raw = text.trim().strip_prefix("gitdir:")?.trim();
+        let noted = Path::new(raw);
+        if noted.is_absolute() { noted.to_path_buf() } else { cwd.join(noted) }
+    } else if git.is_dir() {
+        git
+    } else {
+        return None;
+    };
+    let text = std::fs::read_to_string(dir.join("convoy-started")).ok()?;
+    text.trim().parse().ok()
+}
+
+fn now_secs() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|since| since.as_secs()).unwrap_or(0)
 }
 
 fn terminal_list(st: &State) -> ! {
@@ -491,6 +623,7 @@ fn terminal_read(st: &State) -> ! {
 
 fn terminal_show(st: &State) -> ! {
     let Some(at) = terminal_at(st) else { fail(st, "terminal_handle_stale") };
+    sync_sessions(st);
     let terminal = &st.doc["terminals"][at];
     done(
         st,

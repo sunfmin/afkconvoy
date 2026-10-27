@@ -1206,6 +1206,7 @@ mod tests {
                 .map(|name| listed(name, None))
                 .collect()),
             Harness::Kimi => Err(format!("it listed none: {command} provider list --json")),
+            Harness::Grok => Err(format!("it listed none: {command} models")),
             _ => Err(format!("it listed none: {command} --list-models")),
         };
         let host = Host { found: &found, listed: &listed };
@@ -1269,6 +1270,11 @@ mod tests {
                     Harness::Kimi,
                     None,
                     "listing failed: it listed none: kimi --auto provider list --json"
+                ),
+                (
+                    Harness::Grok,
+                    None,
+                    "listing failed: it listed none: grok --always-approve models"
                 ),
             ]
         );

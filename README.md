@@ -18,6 +18,7 @@ Homebrew installs `git` and `gh` with it. The rest is yours to set up:
 - **pi**, when it is what starts some of your workers — `curl -fsSL https://pi.dev/install.sh | sh`, then `pi`, and `/login` at its prompt.
 - **Codex**, when it is what starts some of your workers — `brew install --cask codex`, then `codex login`.
 - **Kimi Code**, when it is what starts some of your workers — `curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash`, then `kimi login`.
+- **Grok**, when it is what starts some of your workers — `curl -fsSL https://x.ai/cli/install.sh | bash`, then `grok login`.
 
 `run`, `tick` and `plan` check all of this before anything else, and refuse with the line to run for each thing missing, logged out, not running or not given the checkout. afkconvoy installs nothing, starts and adds nothing, and logs nobody in.
 

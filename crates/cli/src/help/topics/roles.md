@@ -6,7 +6,7 @@ A role is a directory that defines one kind of worker. A worker of a bound repo 
 
 - **its rules**: what a worker in it always works under, whatever it is asked
 - **its skills**: each one thing it can be asked to perform; a stage's `do` names one ([`afkconvoy help skill-file`](help:skill-file))
-- **its limits**: what it may never do, in the form its harness enforces: hooks for Claude Code, Codex and Kimi Code, extensions for pi
+- **its limits**: what it may never do, in the form its harness enforces: hooks for Claude Code, Codex, Kimi Code and Grok, extensions for pi
 
 A role names no workflow and no stage. The workflow says in which order the work is done and who judges whom; a role serves as many workflows as name it.
 
@@ -40,7 +40,7 @@ To place a sentence, ask whom it would still be true for. For this codebase unde
 
 ## The host user's skills and rules
 
-A worker is also given the skills and the rules of the host's own user, as a session that user opens by hand has them — Claude Code's ~/.claude/skills and CLAUDE.md, pi's and Codex's in ~/.pi/agent and ~/.codex, Kimi Code's in ~/.kimi-code and the generic ~/.agents resources a harness discovers — so a role need not copy in the skills its author relies on everywhere. Except for DSH's explicit `dsh_profile: host-user` choice ([`afkconvoy help team`](help:team)), never their settings, hooks, MCP servers or extensions: the guard and orca's report stay the only hooks the fleet adds. A role's skill wins over one of theirs of the same name, and the brief, the role's rules, the team rules and the repo's own rules win over theirs; the brief says so. The cost: a role may behave differently on two hosts. A team file that says `host_user: false` gives its workers none of it, and every role is what its directory says on every host. One role may say it for itself, whatever the team says — `reviewer: { dir: ./roles/reviewer, host_user: false }` — and its workers alone are given none of it, on every harness; the team's other roles keep the team's ([`afkconvoy help team`](help:team)).
+A worker is also given the skills and the rules of the host's own user, as a session that user opens by hand has them — Claude Code's ~/.claude/skills and CLAUDE.md, pi's and Codex's in ~/.pi/agent and ~/.codex, Kimi Code's in ~/.kimi-code and the generic ~/.agents resources a harness discovers, Grok's in ~/.grok and, with Claude skill compatibility left on, ~/.claude/skills — so a role need not copy in the skills its author relies on everywhere. Except for DSH's explicit `dsh_profile: host-user` choice ([`afkconvoy help team`](help:team)), never their settings, hooks, MCP servers, plugins, permission mode or memories: the guard and orca's report stay the only hooks the fleet adds. Grok is the same: `host_user: false` leaves its home skills and rules out. A role's skill wins over one of theirs of the same name, and the brief, the role's rules, the team rules and the repo's own rules win over theirs; the brief says so. The cost: a role may behave differently on two hosts. A team file that says `host_user: false` gives its workers none of it, and every role is what its directory says on every host. One role may say it for itself, whatever the team says — `reviewer: { dir: ./roles/reviewer, host_user: false }` — and its workers alone are given none of it, on every harness; the team's other roles keep the team's ([`afkconvoy help team`](help:team)).
 
 ## What makes a role good
 

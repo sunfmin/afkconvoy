@@ -32,7 +32,7 @@ impl Local {
         // failure were swallowed. No external program is needed for queue.
         for program in [
             "git", "gh", "orca", "sh", "bash", "zsh", "ps", "sysctl", "df", "claude", "codex",
-            "pi", "dsh", "kimi", "kill",
+            "pi", "dsh", "kimi", "grok", "kill",
         ] {
             let file = local.root.path().join("bin").join(program);
             std::fs::write(&file, "#!/bin/sh\nprintf '%s\\n' \"$0 $*\" >> \"$CALLED\"\nexit 99\n")

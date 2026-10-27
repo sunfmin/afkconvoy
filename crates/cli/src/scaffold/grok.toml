@@ -1,0 +1,3 @@
+# Grok limits for this role, in Grok's project configuration form.
+# Add [[hooks.PreToolUse]] and deny entries under [permission] here.
+# A file that names no hook and denies nothing holds no limit.

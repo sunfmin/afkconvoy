@@ -3,7 +3,7 @@
 //! fault with the line that fixes it; the tool itself never installs anything
 //! and logs nobody in.
 
-use crate::harness::Harness;
+use crate::harness::{Harness, grok_not_authenticated};
 use crate::launch::first_word;
 use crate::line::quoted;
 
@@ -23,6 +23,8 @@ pub enum Tool {
     Dsh,
     /// Kimi Code: needed only when it is what starts a worker.
     Kimi,
+    /// Grok: needed only when it is what starts a worker.
+    Grok,
 }
 
 /// What pi lists in place of its models when it holds credentials for no
@@ -69,6 +71,7 @@ impl Tool {
             Tool::DshTui => Harness::Dsh.program(),
             Tool::Dsh => "dsh",
             Tool::Kimi => Harness::Kimi.program(),
+            Tool::Grok => Harness::Grok.program(),
         }
     }
 
@@ -83,6 +86,7 @@ impl Tool {
             Harness::Codex => Tool::Codex,
             Harness::Dsh => Tool::DshTui,
             Harness::Kimi => Tool::Kimi,
+            Harness::Grok => Tool::Grok,
         };
         (first_word(launch) == Some(tool.name())).then_some(tool)
     }
@@ -91,7 +95,13 @@ impl Tool {
     fn starts_workers(self) -> bool {
         matches!(
             self,
-            Tool::Claude | Tool::Pi | Tool::Codex | Tool::DshTui | Tool::Dsh | Tool::Kimi
+            Tool::Claude
+                | Tool::Pi
+                | Tool::Codex
+                | Tool::DshTui
+                | Tool::Dsh
+                | Tool::Kimi
+                | Tool::Grok
         )
     }
 
@@ -109,6 +119,7 @@ impl Tool {
             Tool::DshTui => "npm install -g @deepseek-harness-tui/dsh-tui",
             Tool::Dsh => "install DeepSeek Harness (dsh) and add it to PATH",
             Tool::Kimi => "curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash",
+            Tool::Grok => "curl -fsSL https://x.ai/cli/install.sh | bash",
         }
     }
 
@@ -126,6 +137,7 @@ impl Tool {
             Tool::Pi => Some("pi --list-models".to_string()),
             Tool::Codex => Some(CODEX_LOGIN.to_string()),
             Tool::Kimi => Some("kimi provider list --json".to_string()),
+            Tool::Grok => Some("grok models".to_string()),
         }
     }
 
@@ -142,6 +154,11 @@ impl Tool {
             }
             Tool::Pi => succeeded && !printed.trim().is_empty() && !printed.contains(PI_NO_MODELS),
             Tool::Kimi => succeeded && Harness::Kimi.models(printed).is_some(),
+            Tool::Grok => {
+                succeeded
+                    && !grok_not_authenticated(printed)
+                    && Harness::Grok.models(printed).is_some()
+            }
             Tool::Git | Tool::Gh | Tool::Orca | Tool::Codex | Tool::DshTui | Tool::Dsh => succeeded,
         }
     }
@@ -158,6 +175,7 @@ impl Tool {
                  kept in a keyring is in no file)"
             }
             Tool::Kimi => "is not logged in or has no models configured",
+            Tool::Grok => "is not logged in or listed no model",
             Tool::Git | Tool::Gh | Tool::Orca | Tool::Claude | Tool::DshTui | Tool::Dsh => {
                 "is not logged in"
             }
@@ -172,6 +190,7 @@ impl Tool {
             Tool::Pi => "pi".to_string(),
             Tool::Codex => "codex login".to_string(),
             Tool::Kimi => "kimi login".to_string(),
+            Tool::Grok => "grok login".to_string(),
             // github.com is where `gh auth login` logs in unasked.
             _ => format!("gh auth login{}", hostname(host.filter(|host| *host != "github.com"))),
         }
@@ -517,6 +536,22 @@ mod tests {
         }
         assert!(Tool::Gh.logged_in(true, ""));
         assert!(!Tool::Gh.logged_in(false, "Logged in to github.com"));
+    }
+
+    #[test]
+    fn grok_is_logged_in_only_when_it_says_so_and_names_a_model() {
+        let grok = Tool::Grok;
+        let listed = "You are logged in with grok.com.\nAvailable models:\n  * grok-4.7 (default)\n  - grok-4.5\n";
+        assert!(grok.logged_in(true, listed));
+        assert!(!grok.logged_in(false, listed), "a failed question is not a login");
+        let out =
+            "You are not authenticated.\nAvailable models:\n  * grok-4.6 (default)\n  - grok-4.5\n";
+        assert!(!grok.logged_in(true, out), "a listing that names models is still logged out");
+        assert!(!grok.logged_in(true, "You are logged in with grok.com.\n"));
+        assert_eq!(grok.login_question(None).unwrap(), "grok models");
+        assert_eq!(grok.login(None), "grok login");
+        assert_eq!(grok.install(), "curl -fsSL https://x.ai/cli/install.sh | bash");
+        assert_eq!(grok.logged_out(), "is not logged in or listed no model");
     }
 
     #[test]

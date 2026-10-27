@@ -24,12 +24,14 @@ pub(crate) const READY_LABEL_SAYS: &str = "afkconvoy: the fleet works an issue t
 /// The line that opens an issue of `tracker` carrying `label` — in a tracker
 /// that is another repo, with the repo label too — its title and body left to
 /// whoever runs it.
-fn line(tracker: &Tracker, label: &str) -> String {
+fn line(tracker: &Tracker, label: Option<&str>) -> String {
     let mut line = Line::new().fixed("gh issue create");
     if let Some(named) = tracker.named() {
         line = line.fixed(" --repo ").program(named.as_str());
     }
-    line = line.fixed(" --label ").word(label);
+    if let Some(label) = label {
+        line = line.fixed(" --label ").word(label);
+    }
     if let Some(repo_label) = tracker.repo_label() {
         line = line.fixed(" --label ").word(&repo_label);
     }
@@ -51,7 +53,7 @@ pub(crate) fn create_missing(gh: &GitHub, labels: &[String], says: &str) -> Resu
 }
 
 /// One workflow, as whoever opens an issue of `tracker` into it reads it.
-fn workflow(tracker: &Tracker, team: &Team, workflow: &Workflow) -> Value {
+fn workflow(tracker: &Tracker, team: &Team, workflow: &Workflow, delivery: Option<&str>) -> Value {
     let first = workflow.first();
     let (by, skill) = match &first.by {
         Performer::Human => (HUMAN, None),
@@ -69,14 +71,26 @@ fn workflow(tracker: &Tracker, team: &Team, workflow: &Workflow) -> Value {
         ends.push(DONE);
     }
     let flow_label = workflow.flow_label();
-    json!({
+    let mut answer = json!({
         "name": workflow.name,
         "flow_label": flow_label,
         "description": workflow.description,
         "first": {"stage": first.name, "by": by, "do": skill},
         "ends": ends,
-        "line": line(tracker, flow_label),
-    })
+        "line": line(tracker, delivery.is_none().then_some(flow_label)),
+    });
+    if let Some(id) = delivery {
+        answer["intake_line"] = json!(intake_line(id, Some(&workflow.name)));
+    }
+    answer
+}
+
+fn intake_line(id: &str, workflow: Option<&str>) -> String {
+    let mut line = Line::new().fixed("afkconvoy intake --issue <n> --delivery ").word(id);
+    if let Some(workflow) = workflow {
+        line = line.fixed(" --workflow ").word(workflow);
+    }
+    line.own()
 }
 
 /// The labels that keep an issue from being worked, with `escalate_label` the
@@ -93,27 +107,39 @@ fn keep_off(config: &Config, escalate_label: &str) -> Value {
 ///   {"team", "workflows": [{"name", "flow_label", "description", "first", "ends", "line"}],
 ///    "keep_off", "intake": {"open", "limit"}, "created"}
 ///   {"team": null, "ready_label", "line", "keep_off", "created"}
-pub fn flows(repo: &Repo) -> Result<Value> {
+pub fn flows(repo: &Repo, delivery: Option<&str>) -> Result<Value> {
     let config = config::load(&repo.dir.join(config::FILE))?;
     let gh = GitHub::of(repo)?;
+    if let Some(id) = delivery {
+        crate::delivery::reference(repo, id)?;
+    }
     let Some(bound) = &config.bound else {
         let created =
             create_missing(&gh, std::slice::from_ref(&config.ready_label), READY_LABEL_SAYS)?;
-        return Ok(json!({"team": null, "ready_label": config.ready_label,
-            "line": line(&gh.tracker, &config.ready_label),
-            "keep_off": keep_off(&config, &config.escalate_label), "created": created}));
+        let mut answer = json!({"team": null, "ready_label": config.ready_label,
+            "line": line(&gh.tracker, delivery.is_none().then_some(config.ready_label.as_str())),
+            "keep_off": keep_off(&config, &config.escalate_label), "created": created});
+        if let Some(id) = delivery {
+            answer["delivery"] = json!(id);
+            answer["intake_line"] = json!(intake_line(id, None));
+        }
+        return Ok(answer);
     };
     let team = team::load(team::From::Config, Some(repo))?.team;
     let open = open_taken_in(&team, &gh.open_issues()?);
     let flow_labels: Vec<String> =
         team.workflows.iter().map(|workflow| workflow.flow_label().to_string()).collect();
     let created = create_missing(&gh, &flow_labels, FLOW_LABEL_SAYS)?;
-    Ok(json!({
+    let mut answer = json!({
         "team": bound.team,
         "workflows":
-            team.workflows.iter().map(|w| workflow(&gh.tracker, &team, w)).collect::<Vec<_>>(),
+            team.workflows.iter().map(|w| workflow(&gh.tracker, &team, w, delivery)).collect::<Vec<_>>(),
         "keep_off": keep_off(&config, &team.escalate_label),
         "intake": {"open": open, "limit": bound.intake_limit},
         "created": created,
-    }))
+    });
+    if let Some(id) = delivery {
+        answer["delivery"] = json!(id);
+    }
+    Ok(answer)
 }

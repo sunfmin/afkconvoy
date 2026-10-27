@@ -22,10 +22,11 @@ pub const EXAMPLE_WORKFLOW: &str = "feature";
 /// The harnesses a role's skeleton holds a file of limits for, each with that
 /// file, which names no hook yet: the ones whose limits are one file. pi's
 /// are the entries of a directory, and a skeleton writes no empty one.
-const LIMITS: [(Harness, &str); 3] = [
+const LIMITS: [(Harness, &str); 4] = [
     (Harness::ClaudeCode, include_str!("scaffold/settings.json")),
     (Harness::Codex, include_str!("scaffold/hooks.json")),
     (Harness::Kimi, include_str!("scaffold/limits.toml")),
+    (Harness::Grok, include_str!("scaffold/grok.toml")),
 ];
 /// Where a team's skeleton writes the roles it holds, in the team's directory.
 pub const ROLES: &str = "roles";

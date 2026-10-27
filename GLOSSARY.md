@@ -199,7 +199,7 @@ _Avoid_: freeze, pause (a harness paused on a host, as under Host kit), kill swi
 ### Workers
 
 **Harness**:
-The program a worker is a session of: it runs a model, with tools, on the work it is handed. Claude Code, pi, Codex, DeepSeek Harness (DSH) and Kimi Code are harnesses. The host kit's order chooses the first eligible one; a role's limits and range constrain eligibility.
+The program a worker is a session of: it runs a model, with tools, on the work it is handed. Claude Code, pi, Codex, DeepSeek Harness (DSH), Kimi Code and Grok are harnesses. The host kit's order chooses the first eligible one; a role's limits and range constrain eligibility.
 _Avoid_: agent (as under Worker), coding agent (as under Worker), CLI, provider (whose models a harness runs)
 
 **Roster**:
@@ -241,7 +241,7 @@ The shell string every worker of one harness is started with, in a fleet instanc
 _Avoid_: agent command, provider profile
 
 **Worker state**:
-Whether a worker is busy or has stopped, as its harness reports it to the worker backend — or, where the backend has no report of it, as its terminal's last output shows. Stopped never means finished.
+Whether a worker is busy or has stopped. It is busy while the turn its harness took is still open, and stopped once that turn has ended or none was recorded. Stopped never means finished.
 _Avoid_: liveness, status (as under Position)
 
 **Task refusal**:
@@ -257,7 +257,7 @@ What ends a stage, declared on the issue by whoever performed it: `pass`, `rejec
 _Avoid_: outcome (what a worker leaves on GitHub: its landed PR, or its verdict), result, needs-human
 
 **Silent worker**:
-A worker that stopped, declared nothing, and for the grace period showed no sign of life — its terminal's output, a commit, a file touched, being started or nudged — while waiting on no background work of its own: a shell or a monitor it started that its harness shows still running, or a command of its in the exclusive queue. One waiting on such work is not silent until that work ends and it stays still past its nudge, or until it has waited longer than the gate limit.
+A worker that stopped, declared nothing, and for the grace period showed no sign of life — the end of its turn, a commit, a file touched, being started or nudged — while waiting on no background work of its own: a shell or a monitor it started that its harness shows still running, or a command of its in the exclusive queue. One waiting on such work is not silent until that work ends and it stays still past its nudge, or until it has waited longer than the gate limit.
 _Avoid_: hung, idle (a fleet instance with nothing to do)
 
 **Hot worker**:

@@ -755,8 +755,11 @@ impl Watcher {
                             std::fs::read_to_string(&resident.transcript).unwrap_or_default();
                         let screen =
                             worktree.screen(&resident.terminal, host_watch::EVIDENCE_LINES)?;
-                        let (_, runtime) =
-                            worktree.terminal_health(&resident.terminal, crate::clock())?;
+                        let (_, runtime) = worktree.terminal_health(
+                            &resident.terminal,
+                            resident.harness,
+                            crate::clock(),
+                        )?;
                         let fault =
                             crate::health::watch_diagnosis(resident.harness, &screen, &runtime)
                                 .or_else(|| {
@@ -883,7 +886,8 @@ impl Watcher {
                 );
             } else {
                 let screen = worktree.screen(&watch.terminal, host_watch::EVIDENCE_LINES)?;
-                let (worker, runtime) = worktree.terminal_health(&watch.terminal, now)?;
+                let (worker, runtime) =
+                    worktree.terminal_health(&watch.terminal, watch.harness, now)?;
                 let fault = crate::health::watch_diagnosis(watch.harness, &screen, &runtime)
                     .or_else(|| gave_out(watch.harness, &transcript, exited));
                 if let Some(fault) = fault {
@@ -912,7 +916,8 @@ impl Watcher {
                         && now.saturating_sub(watch.session_started.max(watch.started)) >= grace
                     {
                         worktree.tell_watch(&watch.terminal,
-                    "Continue this watch. You have not reported; finish the work and run the exact afkconvoy watched line at the end of your brief.")?;
+                    "Continue this watch. You have not reported; finish the work and run the exact afkconvoy watched line at the end of your brief.",
+                    watch.harness)?;
                         watch.nudged = Some(now);
                     }
                     state.resident = Some(watch.clone());
@@ -1215,39 +1220,35 @@ fn resume_delivery(watch: &mut Watch) -> Result<()> {
         watch_terminal::save(&record)?;
     }
     let brief = brief_file(watch)?;
-    let receipt = worktree.send_watch_round(
+    // This round's offer, not a turn already on the session. A previous
+    // round a second ago must not prove this submission.
+    let earliest = record.offered.unwrap_or_else(crate::clock);
+    let sent = worktree.send_watch_round(
         &watch.terminal,
         &brief_pointer(&brief.display().to_string()),
         record.request.as_deref().expect("saved request"),
-    )?;
+    );
+    let receipt = match sent {
+        Ok(receipt) => receipt,
+        Err(error) => {
+            if worktree.saw_turn(watch.harness, earliest)? {
+                json!({"send": {"accepted": true, "prompt": {"stages": ["session_turn"]}}})
+            } else {
+                return Err(error);
+            }
+        }
+    };
     record.receipt = Some(receipt.clone());
     watch_terminal::save(&record)?;
-    let prompt = &receipt["send"]["prompt"];
-    let turn_started = prompt["stages"]
-        .as_array()
-        .is_some_and(|stages| stages.iter().any(|s| s == "turn_started"));
-    let evidence = if turn_started {
-        Some(json!({"kind": "turn_started"}))
-    } else if prompt["observation"] == "unsupported"
-        && prompt["stages"]
-            .as_array()
-            .is_some_and(|stages| stages.iter().any(|s| s == "input_accepted"))
-    {
-        // Same fallback as worker delivery: accepted input alone proves
-        // nothing, but an unobservable provider may show the new turn on
-        // its own Terminal after the previous round returned to input.
-        let screen = worktree.screen(&watch.terminal, 20)?;
-        screen
-            .iter()
-            .any(|line| {
-                let line = line.to_ascii_lowercase();
-                line.contains("working") || line.contains("thinking")
-            })
-            .then(|| json!({"kind": "terminal_evidence", "screen": screen}))
-    } else {
-        None
-    };
-    if receipt["send"]["accepted"] != true || evidence.is_none() {
+    // A line the terminal did not accept did not start a turn. The session
+    // is not consulted for it. An accepted line is proved by the session.
+    let evidence =
+        if receipt["send"]["accepted"] == true && worktree.prove(watch.harness, earliest)? {
+            Some(json!({"kind": "session_turn"}))
+        } else {
+            None
+        };
+    if evidence.is_none() {
         bail!(
             "watch round {} submission is unproven; retained request {} and receipt {}; no fresh input will be sent",
             watch.id,
@@ -1579,7 +1580,7 @@ fn findings(items: &mut Vec<Item>, at: &str, findings: &Value) {
 
 /// Everything in a look an operator would act on, each by an identity that
 /// stays the same while its episode lasts.
-fn actionable(look: &Value, now: u64) -> Vec<Item> {
+pub(crate) fn actionable(look: &Value, now: u64) -> Vec<Item> {
     let mut items = vec![];
     findings(&mut items, "host", &look["findings"]);
     for checkout in look["checkouts"].as_array().into_iter().flatten() {
@@ -1621,7 +1622,20 @@ fn actionable(look: &Value, now: u64) -> Vec<Item> {
             let reason = format!("a tick of {instance} failed: {}; errors: {errors}", tick["line"]);
             push(&mut items, format!("tick:{at}:{instance}:{how}"), reason);
         }
+        let unrecovered: BTreeSet<&str> = doctor["findings"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|finding| finding["watch_id"].as_str())
+            .collect();
         for failed in fleet["failed_steps"].as_array().into_iter().flatten() {
+            let identity = format!(
+                "checkout:{}",
+                json!(["step", failed["do"], failed["issue"], failed["patrol"]])
+            );
+            if !unrecovered.contains(identity.as_str()) {
+                continue;
+            }
             let step = failed["do"].as_str().unwrap_or("tick");
             let reason = format!(
                 "`{step}` failed in tick {} and has not recovered: {}",
@@ -2087,7 +2101,8 @@ mod tests {
         submit(&mut first, 1);
         wait_report(&first);
         let pid = executor(&first);
-        let first_runtime = worktree.terminal_health(&first.terminal, crate::clock()).unwrap().1;
+        let first_runtime =
+            worktree.terminal_health(&first.terminal, first.harness, crate::clock()).unwrap().1;
         let deadline = Instant::now() + Duration::from_secs(90);
         while !worktree.watch_input_ready(&first.terminal).unwrap() {
             assert!(Instant::now() < deadline, "first round did not return to input");
@@ -2119,7 +2134,8 @@ mod tests {
             assert!(Instant::now() < deadline, "second round did not return to input");
             std::thread::sleep(Duration::from_millis(500));
         }
-        let second_runtime = worktree.terminal_health(&second.terminal, crate::clock()).unwrap().1;
+        let second_runtime =
+            worktree.terminal_health(&second.terminal, second.harness, crate::clock()).unwrap().1;
         let evidence = json!({"terminal": first.terminal, "session": first.session,
             "executor_pid": pid, "first": watch_json(&read().unwrap().history[0]),
             "second": watch_json(read().unwrap().last.as_ref().unwrap()),
@@ -2226,7 +2242,10 @@ mod tests {
                 {"severity": "info", "what": "a key is read and changes nothing"}],
             "host": {"host_kit": {"worker_health": {"workers": [{"path": "/w", "next_check": next, "error": "stuck"}]}}},
             "checkouts": [{"checkout": "/r", "doctor": {
-            "findings": [], "waiting_on_human": [{"issue": 7, "why": "escalated", "answer": "gh issue view 7"}],
+            "findings": [{"what": "`dispatch` failed in tick and has not recovered",
+                "evidence": "no", "fix": "afkconvoy tick",
+                "watch_id": "checkout:[\"step\",\"dispatch\",null,null]"}],
+            "waiting_on_human": [{"issue": 7, "why": "escalated", "answer": "gh issue view 7"}],
             "fleet": {"alive": false, "broken": {"since": 800, "why": "panic"},
                 "failed_steps": [{"tick": first, "do": "dispatch", "error": "no"}]},
             "watching": {"ticks": [{"instance": "alpha", "first": first, "failed": true,
@@ -2240,6 +2259,7 @@ mod tests {
             first,
             [
                 "finding:host:orca is not running",
+                r#"finding:/r:["step","dispatch",null,null]"#,
                 r#"finding:/r:human:{"issue":7,"since":null,"url":null,"why":"escalated","answer":"gh issue view 7"}"#,
                 "fleet:/r:not-alive",
                 "fleet:/r:broken:800",
