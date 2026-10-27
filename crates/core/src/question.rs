@@ -1,9 +1,10 @@
-//! A question put to the login shell orca starts in a terminal — the shell a
-//! worker gets, with its rc files, PATH and logins — and its answer as read
-//! back from what that terminal shows. The question is typed between two
-//! marks: what it printed is the lines between them, and the second says how
-//! it exited. Whatever the shell prints before the first — its rc files, its
-//! prompt — is no part of the answer.
+//! A question put to the login shell a worker gets — `$SHELL -lic`, with no
+//! terminal opened — and its answer as read back from that shell's stdout
+//! and stderr together. The question is typed between two marks: what it
+//! printed is the lines between them, and the second says how it exited.
+//! Whatever the shell prints before the first — its rc files, its prompt —
+//! is no part of the answer. Raw output between the marks is what a harness
+//! parses; a terminal's line wrapping is not required.
 
 /// The mark an answer starts after, on a line of its own.
 const ASKED: &str = "AFKCONVOY_ASKED";
