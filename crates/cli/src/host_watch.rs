@@ -521,7 +521,8 @@ impl Watcher {
             crate::resources::evidence(&mut state.look, &pending)?;
             // Disk evidence can take minutes. A condition that recovered
             // while it was taken must not start a watch from an old look.
-            let resources = crate::resources::json(crate::clock())?;
+            let resources =
+                crate::resources::json(crate::clock(), &crate::admission::Readings::new())?;
             state.pending.retain(|q| {
                 !q.item.id.starts_with("resource:")
                     || resources
@@ -1648,8 +1649,9 @@ fn actionable(look: &Value, now: u64) -> Vec<Item> {
 }
 
 /// What `doctor` answers of the host's watch: the one running, the last that
-/// ended, and why none could start or go on, where none could.
-pub fn json(running: Option<&Watch>) -> Value {
+/// ended, and why none could start or go on, where none could. Earlier rounds
+/// are included only when the caller asks for them.
+pub fn json(running: Option<&Watch>, rounds: bool) -> Value {
     let state = read();
     let (last, unavailable) = match &state {
         Ok(state) => (json!(state.last.as_ref().map(watch_json)), json!(state.unavailable)),
@@ -1667,7 +1669,9 @@ pub fn json(running: Option<&Watch>) -> Value {
             "round": state.running.as_ref().map(|r| &r.id),
         })));
         answer["pending"] = json!(state.pending);
-        answer["rounds"] = json!(state.history.iter().map(watch_json).collect::<Vec<_>>());
+        if rounds {
+            answer["rounds"] = json!(state.history.iter().map(watch_json).collect::<Vec<_>>());
+        }
         answer["looked"] = json!(state.looked);
         answer["until"] = json!(state.until);
     }

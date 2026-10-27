@@ -1071,6 +1071,9 @@ enum Command {
         /// Add what happened since this time (epoch seconds or YYYY-MM-DDTHH:MM:SSZ); requires --all
         #[arg(long, requires = "all", value_parser = doctor::watching::since)]
         since: Option<u64>,
+        /// Include earlier watch rounds; the default keeps only the last round's report
+        #[arg(long)]
+        rounds: bool,
         #[command(flatten)]
         proxy: ProxyArgs,
         /// The host whose fleet is asked after [default: this machine's name]
@@ -4318,14 +4321,15 @@ fn run(
             let (from, checkout) = team.read(checkout)?;
             workflow::rehearse(&team::load(from, checkout.as_ref())?, &workflow, &declared)
         }
-        Command::Doctor { all: true, host, proxy, since, .. } => {
-            doctor::all_since(now, host.as_deref(), &proxy.worker_no_proxy, since)
+        Command::Doctor { all: true, host, proxy, since, rounds, .. } => {
+            doctor::all_since_rounds(now, host.as_deref(), &proxy.worker_no_proxy, since, rounds)
         }
-        Command::Doctor { host, proxy, .. } => doctor::doctor_with_proxy(
+        Command::Doctor { host, proxy, rounds, .. } => doctor::doctor_with_proxy_rounds(
             &checkout?,
             now,
             &host.unwrap_or_else(this_host),
             &proxy.worker_no_proxy,
+            rounds,
         ),
         Command::Plan { instance, proxy, .. } => {
             let repo = checkout?;

@@ -306,7 +306,7 @@ impl Host {
             sleep_hours: host_settings::host_sleep(),
             kit: crate::kit::load().map_err(|error| format!("{error:#}")),
             worker_health: crate::health::show(),
-            watch: crate::host_watch::json(shared.watch.as_ref()),
+            watch: crate::host_watch::json(shared.watch.as_ref(), false),
             paused: crate::paused::read(),
         }
     }

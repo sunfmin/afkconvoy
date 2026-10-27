@@ -3,7 +3,9 @@
 //! says, in its host settings. Whether admission holds is the core's to decide
 //! (`afkconvoy_core::admission::holds`).
 
+use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::Mutex;
 
 use afkconvoy_core::admission::{Disk, Hold, Reading, SHARES, Shares, holds, thresholds};
 use afkconvoy_core::resources::{Reason, SPAN};
@@ -13,6 +15,37 @@ use serde_json::{Value, json};
 use crate::host_settings;
 use crate::host_sleep::output;
 use crate::measure;
+
+/// One look's host reading, with one disk observation per volume. Every
+/// checkout derives its admission from these same load and memory values.
+pub struct Readings {
+    cores: u64,
+    load: Option<u64>,
+    memory_free: Option<u64>,
+    disks: Mutex<BTreeMap<u64, Option<Disk>>>,
+}
+
+impl Readings {
+    /// Reads the host-wide values once; volumes are read on first use.
+    pub fn new() -> Readings {
+        Readings {
+            cores: std::thread::available_parallelism().map_or(1, |cores| cores.get() as u64),
+            load: load().ok(),
+            memory_free: memory_free().ok(),
+            disks: Mutex::new(BTreeMap::new()),
+        }
+    }
+
+    /// The host reading for a checkout at `dir`, reusing its volume's disk
+    /// observation when another checkout already read it.
+    pub fn at(&self, dir: &Path) -> Reading {
+        use std::os::unix::fs::MetadataExt;
+        let volume = std::fs::metadata(dir).map(|meta| meta.dev()).unwrap_or(0);
+        let mut disks = self.disks.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let disk = *disks.entry(volume).or_insert_with(|| disk(dir).ok());
+        Reading { cores: self.cores, load: self.load, memory_free: self.memory_free, disk }
+    }
+}
 
 /// The shares this host is held to, and what was read of it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,7 +65,13 @@ impl Admission {
     /// for a checkout at `dir`. Settings that cannot be read are an error,
     /// not the defaults.
     pub fn read(dir: &Path) -> Result<Admission> {
-        Ok(Admission::of(&host_settings::of_host()?, read_host(dir)))
+        Self::read_from(dir, &Readings::new())
+    }
+
+    /// The shares the host settings say, with the checkout's reading from one
+    /// shared look.
+    pub fn read_from(dir: &Path, readings: &Readings) -> Result<Admission> {
+        Ok(Admission::of(&host_settings::of_host()?, readings.at(dir)))
     }
 
     /// The shares `settings` say, with `reading`.
@@ -138,13 +177,6 @@ impl Admission {
 /// `hundredths` as a load is written: `105.43`.
 fn hundredths(hundredths: u64) -> String {
     format!("{}.{:02}", hundredths / 100, hundredths % 100)
-}
-
-/// What is read of the host now, the disk of the checkout at `dir`. What
-/// cannot be read is `None`, and holds nothing back.
-fn read_host(dir: &Path) -> Reading {
-    let cores = std::thread::available_parallelism().map_or(1, |cores| cores.get() as u64);
-    Reading { cores, load: load().ok(), memory_free: memory_free().ok(), disk: disk(dir).ok() }
 }
 
 /// The 1-minute load average, in hundredths: what `sysctl vm.loadavg` says

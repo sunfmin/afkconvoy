@@ -30,7 +30,7 @@ use anyhow::{Result, anyhow};
 use serde::Serialize;
 use serde_json::{Map, Value, json};
 
-use crate::admission::Admission;
+use crate::admission::{Admission, Readings};
 use crate::checkout_list::{List, repo_of};
 use crate::claims::Me;
 use crate::config;
@@ -1806,7 +1806,19 @@ pub fn doctor(repo: &Repo, now: u64, host: &str) -> Result<Value> {
 
 /// Adds the network settings of a start the host is considering.
 pub fn doctor_with_proxy(repo: &Repo, now: u64, host: &str, proxy: &[String]) -> Result<Value> {
-    let (mut answer, found) = examined(repo, now, host, proxy)?;
+    doctor_with_proxy_rounds(repo, now, host, proxy, false)
+}
+
+/// Adds earlier watch rounds when `rounds` is true.
+pub fn doctor_with_proxy_rounds(
+    repo: &Repo,
+    now: u64,
+    host: &str,
+    proxy: &[String],
+    rounds: bool,
+) -> Result<Value> {
+    let look = Look::new(now, rounds);
+    let (mut answer, found) = examined(repo, now, host, proxy, &look)?;
     let unwell = critical(&found);
     answer["findings"] = serde_json::to_value(found)?;
     if unwell {
@@ -1825,9 +1837,16 @@ fn critical(found: &[Finding]) -> bool {
 /// `findings`, and what it found, most severe first.
 type Examined = (Value, Vec<Finding>);
 
+/// The host's one reading for a look, shared by every checkout.
+struct Look {
+    readings: Readings,
+    host: Map<String, Value>,
+    findings: Vec<Finding>,
+}
+
 /// What `doctor` reads of the fleet of `host` in the checkout `repo`, under
-/// the network settings `proxy` names.
-fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String]) -> Result<Examined> {
+/// the network settings `proxy` names and the look's shared host reading.
+fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String], look: &Look) -> Result<Examined> {
     let _observation = crate::orca::Observation::begin();
     let launches = Launches::foreseen(repo).with_no_proxy(proxy)?;
 
@@ -1870,9 +1889,7 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String]) -> Result<Exami
     found.extend(crate::paused::findings(now));
     found.extend(host_runner::findings());
     found.extend(crate::host_watch::finding());
-    let resources = crate::resources::json(now)?;
-    found.extend(crate::resources::findings(&resources, now));
-    found.extend(crate::kit_research::findings());
+    found.extend(look.findings.clone());
     found.sort_by_key(|finding| finding.severity);
     let (claims, issues, waiting) = match &state {
         Ok(state) => (
@@ -1884,7 +1901,7 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String]) -> Result<Exami
     };
     let mut host = host_json(&seen_host);
     host["worker_no_proxy"] = launches.proxy_json();
-    host["admission"] = match Admission::read(&repo.dir) {
+    host["admission"] = match Admission::read_from(&repo.dir, &look.readings) {
         Ok(admission) => admission.json(),
         Err(error) => json!({"error": format!("{error:#}")}),
     };
@@ -1893,7 +1910,7 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String]) -> Result<Exami
         Err(error) => json!({"error": format!("{error:#}")}),
     };
     if let Some(host) = host.as_object_mut() {
-        host.extend(host_once(now));
+        host.extend(look.host.clone());
     }
     let mut fleet = fleet_json(&run);
     fleet["concurrency"] = crate::concurrency::json_of(repo);
@@ -1950,7 +1967,7 @@ fn exclusive_findings(entries: &[Entry], now: u64) -> Vec<Finding> {
 /// watch running, the newer afkconvoy the host runner moves onto — by
 /// its key: `doctor --all` says it once. All but the host kit are as the
 /// host runner says them, asked once.
-fn host_once(now: u64) -> Map<String, Value> {
+fn host_once(now: u64, readings: &Readings, rounds: bool) -> Map<String, Value> {
     let (exclusive, installed, watch) = match host_runner::shared() {
         Ok(said) => {
             let said = said.unwrap_or_default();
@@ -1959,15 +1976,26 @@ fn host_once(now: u64) -> Map<String, Value> {
         Err(error) => (Err(error), None, None),
     };
     Map::from_iter([
-        ("host_kit".to_string(), crate::kit::show(now)),
+        ("host_kit".to_string(), crate::kit::show_for_look(now)),
         (
             "resources".to_string(),
-            crate::resources::json(now).unwrap_or_else(|e| json!({"error": format!("{e:#}")})),
+            crate::resources::json(now, readings)
+                .unwrap_or_else(|e| json!({"error": format!("{e:#}")})),
         ),
         ("exclusive".to_string(), exclusive_json(exclusive, now)),
         ("installed".to_string(), serde_json::to_value(installed).unwrap_or_default()),
-        ("watch".to_string(), crate::host_watch::json(watch.as_ref())),
+        ("watch".to_string(), crate::host_watch::json(watch.as_ref(), rounds)),
     ])
+}
+
+impl Look {
+    fn new(now: u64, rounds: bool) -> Look {
+        let readings = Readings::new();
+        let host = host_once(now, &readings, rounds);
+        let mut findings = crate::resources::findings(&host["resources"], now);
+        findings.extend(crate::kit_research::findings());
+        Look { readings, host, findings }
+    }
 }
 
 /// `afkconvoy doctor --all`: `doctor` of every checkout on this host's
@@ -1986,7 +2014,7 @@ fn host_once(now: u64) -> Map<String, Value> {
 /// answer with a critical finding, or a checkout that could not be asked,
 /// is an `Unwell` error.
 pub fn all(now: u64, host: Option<&str>, proxy: &[String]) -> Result<Value> {
-    all_since(now, host, proxy, None)
+    all_since_rounds(now, host, proxy, None, false)
 }
 
 /// Adds the interval report when `since` is named. Every checkout uses the
@@ -1998,12 +2026,25 @@ pub fn all_since(
     proxy: &[String],
     since: Option<u64>,
 ) -> Result<Value> {
+    all_since_rounds(now, host, proxy, since, false)
+}
+
+/// Adds earlier watch rounds when `rounds` is true.
+pub fn all_since_rounds(
+    now: u64,
+    host: Option<&str>,
+    proxy: &[String],
+    since: Option<u64>,
+    rounds: bool,
+) -> Result<Value> {
     if since.is_some_and(|since| since > now) {
         anyhow::bail!("--since is after this look's time: use the previous answer's `until`");
     }
     let listed = List::of_host()?.read()?.checkouts;
+    let look = Look::new(now, rounds);
     // Each checkout's repo, where it can be read, beside what was made of it.
     let asked: Vec<(Option<String>, Result<Examined>)> = std::thread::scope(|scope| {
+        let look = &look;
         let asking: Vec<_> = listed
             .iter()
             .map(|entry| {
@@ -2013,7 +2054,7 @@ pub fn all_since(
                     let repo = Repo::at(&entry.checkout);
                     let key = repo.as_ref().ok().and_then(|repo| repo_of(repo).ok());
                     let examined = repo.and_then(|repo| {
-                        let (mut answer, found) = examined(&repo, now, &host, proxy)?;
+                        let (mut answer, found) = examined(&repo, now, &host, proxy, &look)?;
                         if let Some(since) = since {
                             answer["watching"] = match watching::read(&repo, &host, since, now) {
                                 Ok(watching) => watching,
@@ -2029,8 +2070,8 @@ pub fn all_since(
         let panicked = || (None, Err(anyhow!("its `doctor` panicked")));
         asking.into_iter().map(|asked| asked.join().unwrap_or_else(|_| panicked())).collect()
     });
-    let once = host_once(now);
-    let mut of_host = crate::kit_research::findings();
+    let once = look.host;
+    let mut of_host = look.findings;
     let mut unwell = false;
     let mut complete = true;
     let mut checkouts = vec![];

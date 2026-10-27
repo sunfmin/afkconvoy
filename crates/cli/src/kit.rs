@@ -250,11 +250,18 @@ pub fn running() -> Result<(Kit, Vec<afkconvoy_core::casting::Paused>)> {
     Ok((crate::health::available(load()?.without(&paused))?, paused))
 }
 
-/// The host kit as `doctor` and `plan` show it: where it is kept, each
-/// harness in order with its command and its models in order, whether it runs
-/// its default model and has research pending,
-/// and each harness paused on the host, since when and why.
+/// The host kit as `plan` shows it, including research notes and sources.
 pub fn show(now: u64) -> Value {
+    show_with_research(now, true)
+}
+
+/// The host kit as a look needs it: identities, commands and research state,
+/// without the research prose that no finding reads.
+pub fn show_for_look(now: u64) -> Value {
+    show_with_research(now, false)
+}
+
+fn show_with_research(now: u64, research: bool) -> Value {
     let file = path().map(|path| path.display().to_string()).ok();
     let paused = crate::paused::read();
     let paused_said: Vec<Value> = paused
@@ -271,6 +278,13 @@ pub fn show(now: u64) -> Value {
                 .iter()
                 .map(|held| {
                     let mut shown = serde_json::to_value(held).expect("a held harness serializes");
+                    if !research {
+                        for model in shown["models"].as_array_mut().into_iter().flatten() {
+                            if let Some(model) = model.as_object_mut() {
+                                model.retain(|key, _| ["model", "names"].contains(&key.as_str()));
+                            }
+                        }
+                    }
                     shown["default_model"] = json!(held.placed().next().is_none());
                     shown["research_pending"] =
                         json!(held.models.iter().any(Seen::awaits_research));
