@@ -647,7 +647,7 @@ fn queued_fixture_reaps_its_workers_and_releases_inherited_descriptors() {
     // Reproduce a gate's inherited kernel lease, without holding or changing
     // the real host's capacity. The original fixture runs in a child test.
     struct Probe {
-        child: std::process::Child,
+        child: Option<std::process::Child>,
         observer: std::fs::File,
         path: tempfile::TempPath,
     }
@@ -664,13 +664,16 @@ fn queued_fixture_reaps_its_workers_and_releases_inherited_descriptors() {
                     unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
                 }
             }
-            let _ = self.child.wait();
+            if let Some(child) = &mut self.child {
+                let _ = child.wait();
+            }
         }
     }
 
-    for scenario in [
-        "stopped::a_worker_waiting_in_the_exclusive_queue_is_busy_until_the_gate_limit",
-        "doctor::the_host_s_exclusive_queue_is_shown_what_runs_first_then_what_waits",
+    for (scenario, panics) in [
+        ("stopped::a_worker_waiting_in_the_exclusive_queue_is_busy_until_the_gate_limit", false),
+        ("doctor::the_host_s_exclusive_queue_is_shown_what_runs_first_then_what_waits", false),
+        ("stopped::a_worker_waiting_in_the_exclusive_queue_is_busy_until_the_gate_limit", true),
     ] {
         let rendezvous = tempfile::tempdir().unwrap();
         let tmp = rendezvous
@@ -684,12 +687,13 @@ fn queued_fixture_reaps_its_workers_and_releases_inherited_descriptors() {
         let fd = lease.as_raw_fd();
         let mut command = std::process::Command::new(std::env::current_exe().unwrap());
         command
-            .args(["--exact", scenario])
+            .args(["--exact", scenario, "--nocapture"])
             .env("CONVOY_FIXTURE_LEASE_PROBE", rendezvous.path())
+            .env("CONVOY_FIXTURE_LEASE_PANIC", panics.to_string())
             .env("TMPDIR", &tmp)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::inherit());
+            .stderr(std::process::Stdio::piped());
         // SAFETY: change only this live descriptor's flag in the child.
         unsafe {
             command.pre_exec(move || {
@@ -699,7 +703,7 @@ fn queued_fixture_reaps_its_workers_and_releases_inherited_descriptors() {
                 Ok(())
             });
         }
-        let mut probe = Probe { child: command.spawn().unwrap(), observer, path };
+        let mut probe = Probe { child: Some(command.spawn().unwrap()), observer, path };
         drop(lease);
         assert!(
             matches!(probe.observer.try_lock(), Err(std::fs::TryLockError::WouldBlock)),
@@ -708,7 +712,7 @@ fn queued_fixture_reaps_its_workers_and_releases_inherited_descriptors() {
         let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
         while !rendezvous.path().join("ready").exists() {
             assert!(
-                probe.child.try_wait().unwrap().is_none(),
+                probe.child.as_mut().unwrap().try_wait().unwrap().is_none(),
                 "{scenario} ended before observation"
             );
             assert!(std::time::Instant::now() < until, "{scenario} never reached observation");
@@ -721,8 +725,36 @@ fn queued_fixture_reaps_its_workers_and_releases_inherited_descriptors() {
             "the actual worker must inherit its lease: {}",
             String::from_utf8_lossy(&holders.stdout)
         );
+        let mut pid = None;
+        let worker = String::from_utf8_lossy(&holders.stdout)
+            .lines()
+            .find_map(|line| {
+                if let Some(value) = line.strip_prefix('p') {
+                    pid = value.parse::<u32>().ok();
+                }
+                (line == "csleep").then_some(pid).flatten()
+            })
+            .unwrap();
+        // SAFETY: the rendezvous keeps both fixture processes alive here.
+        assert_eq!(
+            unsafe { libc::getpgid(worker as libc::pid_t) },
+            unsafe { libc::getpgid(probe.child.as_ref().unwrap().id() as libc::pid_t) },
+            "workers must stay in the runner's timeout process group"
+        );
         std::fs::write(rendezvous.path().join("release"), "").unwrap();
-        assert!(probe.child.wait().unwrap().success(), "{scenario} must pass");
+        let output = probe.child.take().unwrap().wait_with_output().unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if panics {
+            assert!(
+                !output.status.success() && stderr.contains("deliberate fixture teardown failure"),
+                "{scenario}: {stderr}"
+            );
+        } else {
+            assert!(output.status.success(), "{scenario}: {stderr}");
+        }
+        if std::env::var_os("CONVOY_FIXTURE_TIMINGS").is_some() {
+            eprint!("{stderr}");
+        }
         assert!(
             probe.observer.try_lock().is_ok(),
             "completed {scenario} workers still retain the inherited lease"

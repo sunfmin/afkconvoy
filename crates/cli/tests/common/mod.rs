@@ -21,58 +21,96 @@ pub fn fixture_timing(part: &str, began: Instant) {
     }
 }
 
-/// A long-lived fixture command and the process group it owns. The root is
-/// never reaped before drop, so its group id cannot be reused by another job.
-/// Inherited descriptors remain intact until the owned processes exit.
+/// A long-lived fixture command whose children remain attached to it. Keep
+/// the root unreaped until drop, and freeze parents before discovering their
+/// children so owned pids cannot be reaped/reused while being signalled.
+/// Preserve inherited descriptors and the runner's process group: its timeout
+/// must still end these processes if the test itself cannot unwind.
 pub struct FixtureProcess {
     child: Child,
 }
 
 impl FixtureProcess {
     pub fn spawn(command: &mut Command) -> Self {
-        use std::os::unix::process::CommandExt;
-        Self { child: command.process_group(0).spawn().unwrap() }
+        Self { child: command.spawn().unwrap() }
     }
 
     pub fn id(&self) -> u32 {
         self.child.id()
     }
+
+    fn state(pid: u32) -> Option<char> {
+        let out =
+            Command::new("ps").args(["-p", &pid.to_string(), "-o", "stat="]).output().unwrap();
+        assert!(
+            out.status.success() || (out.status.code() == Some(1) && out.stderr.is_empty()),
+            "cannot observe fixture process {pid}"
+        );
+        String::from_utf8_lossy(&out.stdout).trim().chars().next()
+    }
+
+    fn wait_for(pid: u32, stopped: bool) {
+        let until = Instant::now() + Duration::from_secs(5);
+        loop {
+            match Self::state(pid) {
+                None | Some('Z') => return,
+                Some('T' | 't') if stopped => return,
+                _ => {}
+            }
+            if Instant::now() >= until {
+                let message = format!(
+                    "fixture process {pid} did not {}",
+                    if stopped { "stop" } else { "exit" }
+                );
+                if std::thread::panicking() {
+                    eprintln!("{message}");
+                    return;
+                }
+                panic!("{message}");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
 }
 
 impl Drop for FixtureProcess {
     fn drop(&mut self) {
-        let group = self.child.id() as libc::pid_t;
-        // SAFETY: spawn established this private group, whose root we have
-        // not reaped. Never signal the test runner's or the gate's group.
-        unsafe { libc::kill(-group, libc::SIGKILL) };
-        let _ = self.child.wait();
-        let until = Instant::now() + Duration::from_secs(5);
+        let began = Instant::now();
+        let root = self.child.id();
+        let mut owned = vec![root];
+        // SAFETY: this is our unreaped child. Never signal an entire group.
+        unsafe { libc::kill(root as libc::pid_t, libc::SIGSTOP) };
+        Self::wait_for(root, true);
         loop {
-            // Zombies own no descriptors. Waiting for their adoption/reaping
-            // by pid 1 would hang on systems whose init leaves them around.
-            let listed = Command::new("ps").args(["-axo", "pgid=,stat="]).output().unwrap();
-            assert!(listed.status.success(), "cannot confirm fixture process exit");
-            let alive = String::from_utf8_lossy(&listed.stdout).lines().any(|line| {
-                let mut fields = line.split_whitespace();
-                fields.next().and_then(|id| id.parse::<libc::pid_t>().ok()) == Some(group)
-                    && fields.next().is_some_and(|state| !state.starts_with('Z'))
-            });
-            if !alive {
+            let listed = Command::new("ps").args(["-axo", "pid=,ppid="]).output().unwrap();
+            assert!(listed.status.success(), "cannot discover fixture descendants");
+            let children: Vec<u32> = String::from_utf8_lossy(&listed.stdout)
+                .lines()
+                .filter_map(|line| {
+                    let mut fields = line.split_whitespace();
+                    let pid = fields.next()?.parse().ok()?;
+                    let parent = fields.next()?.parse().ok()?;
+                    (owned.contains(&parent) && !owned.contains(&pid)).then_some(pid)
+                })
+                .collect();
+            if children.is_empty() {
                 break;
             }
-            if Instant::now() >= until {
-                let message = format!("fixture process group {group} did not exit");
-                if std::thread::panicking() {
-                    eprintln!("{message}");
-                    break;
-                }
-                panic!("{message}");
+            for pid in children {
+                // SAFETY: its frozen parent cannot reap/reuse this child pid.
+                unsafe { libc::kill(pid as libc::pid_t, libc::SIGSTOP) };
+                Self::wait_for(pid, true);
+                owned.push(pid);
             }
-            // A child forked as the first signal was delivered must end too.
-            // SAFETY: remaining members keep this owned group id reserved.
-            unsafe { libc::kill(-group, libc::SIGKILL) };
-            std::thread::sleep(Duration::from_millis(10));
         }
+        for pid in owned.into_iter().rev() {
+            // SAFETY: each parent is still frozen; observe child exit before
+            // ending that parent, keeping the child's pid reserved throughout.
+            unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+            Self::wait_for(pid, false);
+        }
+        let _ = self.child.wait();
+        fixture_timing("owned process teardown", began);
     }
 }
 
@@ -86,6 +124,9 @@ pub fn fixture_lease_observed() {
     while !root.join("release").exists() {
         assert!(Instant::now() < until, "fixture lease was never observed");
         std::thread::sleep(Duration::from_millis(10));
+    }
+    if std::env::var("CONVOY_FIXTURE_LEASE_PANIC").as_deref() == Ok("true") {
+        panic!("deliberate fixture teardown failure");
     }
 }
 
