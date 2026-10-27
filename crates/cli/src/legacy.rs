@@ -257,3 +257,91 @@ pub fn migrate(
     }
     Ok(answer)
 }
+
+/// Ends owned proposal workers without removing their work or treating a
+/// peer's worktree as ours. Retired claims never enter slot or idle counts.
+/// A failed retirement is retried by the next tick without blocking issues.
+pub fn retire_proposals(fleet: &mut crate::fleet::Fleet, me: &crate::claims::Me) -> Result<()> {
+    use crate::claims::drop_run;
+    use afkconvoy_core::claims::Holder;
+    use afkconvoy_core::legacy::Proposal;
+
+    let runs = fleet.scan.runs.clone();
+    for claim in runs {
+        let Some(old) = Proposal::claimed(&claim.key) else { continue };
+        let local_owner = claim
+            .owner
+            .as_ref()
+            .is_some_and(|owner| owner.instance == me.instance.as_str() && owner.host == me.host);
+        let dead = claim.holder(Some(&me.instance), &fleet.scan.beats(), me.now) == Holder::Dead;
+        if !local_owner && !dead {
+            continue;
+        }
+        // Check the remote again before stopping a local worker. A moved
+        // claim is another fleet's; releasing below is leased to this sha too.
+        let refname = afkconvoy_core::claims::run_ref(fleet.repo.layout(), &claim.key);
+        if fleet.repo.remote_sha(&refname)?.as_deref() != Some(claim.sha.as_str()) {
+            continue;
+        }
+        if local_owner {
+            let source = crate::orca::Source::of(&fleet.repo)?;
+            if let Some(worktree) = crate::orca::Worktree::named(&source, &old.branch())? {
+                anyhow::ensure!(
+                    worktree.branch.rsplit('/').next() == Some(old.branch().as_str()),
+                    "retained proposal worktree has another branch: {}; left alone",
+                    worktree.path.display()
+                );
+                worktree.stop_for_continuation()?;
+            }
+        }
+        drop_run(&fleet.repo, &mut fleet.scan, &claim)?;
+    }
+    report_proposals(fleet)
+}
+
+/// Lists the team's legacy PRs once per checkout/team binding, then records
+/// completion on the remote. Each PR keeps an idempotent disposition comment.
+/// This is upgrade migration, never an acceptance queue or ongoing PR poll.
+fn report_proposals(fleet: &crate::fleet::Fleet) -> Result<()> {
+    use afkconvoy_core::legacy::Proposal;
+    let Some(bound) = &fleet.config.bound else { return Ok(()) };
+    let team = &bound.team.repo;
+    let refname = fleet.repo.layout().under(&format!("migration/proposals/{}", bound.team));
+    if fleet.repo.remote_sha(&refname)?.is_some() {
+        return Ok(());
+    }
+    for pr in fleet.gh.open_prs_of(team)? {
+        let Some(old) = Proposal::branch_named(&pr.head_ref_name) else { continue };
+        let marker = "<!--convoy:retired-proposal-->";
+        let number = pr.number.to_string();
+        let read = fleet.gh.gh(&[
+            "pr",
+            "view",
+            &number,
+            "--repo",
+            team.as_str(),
+            "--json",
+            "comments",
+            "--jq",
+            ".comments[].body",
+        ])?;
+        if read.contains(marker) {
+            continue;
+        }
+        let link = format!("https://github.com/{team}/pull/{number}");
+        let body = format!(
+            "{marker}\n**afkconvoy** — retired automatic proposal: {link}. Its legacy branch names \
+             issue {} and ruling comment {}; the source remains in this PR's history. \
+             Disposition: retain this PR, its branch and decision history for review; \
+             no automatic merge or close. Review its effective content through ordinary work in \
+             the owning ADR, team or role rules, amend conflicting older wording and preserve \
+             source links. A shared GitHub identity, an agent ruling or a merged document alone \
+             establishes no human decision. The issue's ruling still stands on its issue.",
+            old.issue, old.comment
+        );
+        fleet.gh.gh(&["pr", "comment", &number, "--repo", team.as_str(), "--body", &body])?;
+    }
+    let sha = fleet.repo.record_commit("convoy:migration retired=proposals")?;
+    fleet.repo.git(&["push", "--quiet", crate::git::REMOTE, &format!("{sha}:{refname}")])?;
+    Ok(())
+}

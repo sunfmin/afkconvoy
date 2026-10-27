@@ -14,7 +14,7 @@ This reverses where the design started — a human's label as the approval of ev
 - Rework is bounded by two breakers, since no reviewer of the reviewers exists: a total per issue, and rejections in a row by one stage. A breaker escalates straight to a human; one more role in the loop is one more round.
 - An `escalate` verdict goes first to a consult, where the stage names one, and only then to a human. The chain is one role long.
 - Whether a rejection raises new findings or old ones is not counted. Only the reviewer could say, and nothing could check it.
-- A human's ruling on an escalated issue may become a precedent: a worker proposes it as a change to the team's precedents, and a human merging that change is what accepts it. Open proposals are held under a limit.
+- A ruling answers its issue and resumes its stage. Lasting rules are amended through ordinary work in their owning ADR, team or role rules with their sources preserved (ADR-0039, sunfmin/control#141). This supersedes the former automatic proposal and human acceptance lifecycle.
 - Trunk broken is the one fault every issue shares, and with no human watching it would escalate them one by one. A fleet lock stops everything but the fix, and is itself the issue that carries the fix.
 - A human who is needed is not told (ADR-0008); the escalate label and the `stage:` label are what there is to look at.
 
