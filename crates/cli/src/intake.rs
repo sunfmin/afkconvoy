@@ -20,10 +20,13 @@ use crate::team::keep;
 pub struct Taking {
     pub issue: u64,
     /// The workflow to take it in to, by name.
-    pub workflow: String,
+    pub workflow: Option<String>,
     /// The worker: one in its role, on an issue or a patrol, or the train
     /// worker.
-    pub by: By,
+    pub by: Option<By>,
+    /// Explicit delivery wins over inheritance from the worker's source task.
+    pub delivery: Option<String>,
+    pub from: Option<u64>,
     /// The issues it is to wait for: what a stage that splits its issue says
     /// of the order of the children.
     pub blocked_by: Vec<u64>,
@@ -105,19 +108,67 @@ fn blockers(gh: &GitHub, number: u64, blocked_by: &[u64]) -> Result<Vec<(u64, u6
 ///
 /// `open` is the open issues taken in by workers, this one among them.
 pub fn intake(repo: &Repo, taking: Taking) -> Result<Value> {
-    let Taking { issue: number, workflow: name, by, blocked_by } = taking;
+    let Taking { issue: number, workflow: name, by, blocked_by, delivery, from } = taking;
     let config = config::load(&repo.dir.join(config::FILE))?;
+    let gh = GitHub::of(repo)?;
+    // Only this supported operation's source task supplies inheritance. Edges,
+    // parent links, checkout branches and ambient discussion supply none.
+    let delivery = match delivery {
+        Some(id) => Some(id),
+        None => from.map(|source| crate::target::delivery(repo, source)).transpose()?.flatten(),
+    };
+    if let Some(id) = &delivery {
+        crate::delivery::reference(repo, id)?;
+    }
     let labels = config.labels();
     let Some(bound) = config.bound else {
-        bail!("this repo is unbound: its config names no team, so it has no workflow to take in to")
+        if name.is_some() {
+            bail!(
+                "this repo is unbound: its config names no team, so it has no workflow to take in to"
+            )
+        }
+        let read = gh.issue(number)?;
+        anyhow::ensure!(
+            !read.pull_request && !read.is_closed(),
+            "intake requires an open task issue"
+        );
+        gh.tracker.to_take(&read.labels).map_err(anyhow::Error::msg)?;
+        let blockers = blockers(&gh, number, &blocked_by)?;
+        if let Some(id) = &delivery {
+            crate::target::attach(repo, number, id)?;
+        }
+        let recorded = gh.blocked_by(number)?;
+        for (blocker, id) in blockers {
+            if !recorded.iter().any(|edge| edge.number == blocker) {
+                gh.add_blocker(number, id)?;
+            }
+        }
+        gh.take(number, &read.labels)?;
+        crate::flows::create_missing(
+            &gh,
+            std::slice::from_ref(&config.ready_label),
+            crate::flows::READY_LABEL_SAYS,
+        )?;
+        gh.add_label(number, &config.ready_label)?;
+        return Ok(with(
+            json!({"issue": number, "taken": true, "blocked_by": blocked_by}),
+            crate::target::select(repo, number, None)?,
+        ));
     };
-    let gh = GitHub::of(repo)?;
+    let name = name.ok_or_else(|| {
+        anyhow!("a bound repo requires --workflow <name>; choose with afkconvoy flows")
+    })?;
+    if by.is_none() && delivery.is_none() {
+        bail!(
+            "an intake names the role of its worker (--role and --from, or their worker environment) — or an explicit --delivery for discussion intake"
+        );
+    }
     let kept = keep(&gh, &Copies::of_host()?, &bound.team, &labels)?;
     let Some(workflow) = kept.team.workflow(&name) else {
         let has: Vec<&str> = kept.team.workflows.iter().map(|w| w.name.as_str()).collect();
         bail!("the team {} has no workflow {name:?}: it has {}", bound.team, has.join(", "));
     };
-    if let By::Role { role, .. } = &by
+    if let Some(By::Role { role, .. }) = &by
         && kept.team.role(role).is_none()
     {
         bail!(
@@ -125,7 +176,7 @@ pub fn intake(repo: &Repo, taking: Taking) -> Result<Value> {
             bound.team
         );
     }
-    if let By::Role { on: On::Patrol(patrol), .. } = &by
+    if let Some(By::Role { on: On::Patrol(patrol), .. }) = &by
         && kept.team.patrol(patrol).is_none()
     {
         bail!(
@@ -146,10 +197,18 @@ pub fn intake(repo: &Repo, taking: Taking) -> Result<Value> {
     match kept.team.flows(&issue.labels).as_slice() {
         [] => {}
         [carried] if *carried == workflow.flow_label() => {
+            if let Some(id) = &delivery {
+                crate::target::attach(repo, number, id)?;
+            }
             gh.take(number, &issue.labels)?;
             let standing = came_in(&kept.team, &issue.labels, &gh.comments(number)?);
-            return Ok(json!({"issue": number, "workflow": name, "taken": false,
-                "standing": standing}));
+            let answer =
+                json!({"issue": number, "workflow": name, "taken": false, "standing": standing});
+            return if delivery.is_some() {
+                Ok(with(answer, crate::target::select(repo, number, None)?))
+            } else {
+                Ok(answer)
+            };
         }
         carried => bail!(
             "issue #{number} already follows a workflow ({}): an issue follows one workflow",
@@ -158,25 +217,36 @@ pub fn intake(repo: &Repo, taking: Taking) -> Result<Value> {
     }
     let blockers = blockers(&gh, number, &blocked_by)?;
     let (open, limit) = (open_taken_in(&kept.team, &gh.open_issues()?), bound.intake_limit);
-    if !has_room(open, limit) {
+    if by.is_some() && !has_room(open, limit) {
         bail!(
             "the intake limit is reached: {open} open issues were taken in by workers, and \
              `intake_limit` is {limit}. One has to close before a worker takes another in"
         );
     }
     let recorded = gh.blocked_by(number)?;
+    if let Some(id) = &delivery {
+        crate::target::attach(repo, number, id)?;
+    }
     for (blocker, id) in blockers {
         if !recorded.iter().any(|edge| edge.number == blocker) {
             gh.add_blocker(number, id)?;
         }
     }
-    let record = IntakeRecord { workflow: name, by };
-    gh.comment(number, &record.comment())?;
+    let record = by.map(|by| IntakeRecord { workflow: name.clone(), by });
+    if let Some(record) = &record {
+        gh.comment(number, &record.comment())?;
+    }
     gh.take(number, &issue.labels)?;
     gh.add_label(number, workflow.flow_label())?;
-    let taken = json!({"issue": number, "workflow": record.workflow, "taken": true,
-        "blocked_by": blocked_by, "open": open + 1, "limit": limit});
-    Ok(with(taken, who(&record.by)))
+    let mut taken = json!({"issue": number, "workflow": name, "taken": true,
+        "blocked_by": blocked_by});
+    if let Some(record) = record {
+        taken = with(taken, with(json!({"open": open + 1, "limit": limit}), who(&record.by)));
+    }
+    if delivery.is_some() {
+        taken = with(taken, crate::target::select(repo, number, None)?);
+    }
+    Ok(taken)
 }
 
 /// A number in the checkout's repo is often mistaken for one in its tracker.
