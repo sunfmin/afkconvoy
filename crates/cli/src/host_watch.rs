@@ -152,6 +152,29 @@ struct State {
     unavailable: Option<String>,
 }
 
+impl State {
+    /// A start reserves its episodes while the watch runs; only a report
+    /// keeps them covered afterwards. Reconcile from retained outcomes so a
+    /// restart also repairs coverage left by an older runner. A later report
+    /// on the same item wins over an earlier unsuccessful watch.
+    fn retry_unreported(&mut self) {
+        let mut seen = BTreeSet::new();
+        for watch in self.last.iter().chain(self.history.iter().rev()) {
+            for item in &watch.items {
+                if seen.insert(&item.id) && watch.report.is_none() {
+                    self.watched.retain(|id| id != &item.id);
+                }
+            }
+            if watch.report.is_none()
+                && self.research_started == Some(watch.started)
+                && watch.items.iter().any(|item| item.id.starts_with(host_watch::RESEARCH_ITEM))
+            {
+                self.research_started = None;
+            }
+        }
+    }
+}
+
 fn read() -> Result<State> {
     let file = cache()?.join(STATE);
     match std::fs::read(&file) {
@@ -303,6 +326,7 @@ impl Watcher {
                 episodes.push(Item::new(id, "resource episode recovering"));
             }
         }
+        state.retry_unreported();
         state.watched = host_watch::covered(&state.watched, &episodes);
         let mut pending = host_watch::pending(
             &current,
