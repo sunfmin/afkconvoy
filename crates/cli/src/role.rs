@@ -52,6 +52,8 @@ pub struct Staged {
     /// of the issue's casting (`Fleet::cast_in`).
     harness: Harness,
     model: Option<String>,
+    /// Models this role allows on the selected harness.
+    allowed_models: Vec<String>,
     /// The name the issue was given that matches nothing held, with what
     /// the worker runs instead.
     unmatched: Option<(String, casting::Cast)>,
@@ -169,6 +171,12 @@ impl Staged {
             role.host_user,
             role.dsh_profile,
         );
+        let allowed_models = ranges
+            .iter()
+            .flat_map(|(_, ranges)| ranges)
+            .find(|range| range.harness == harness)
+            .map(|range| range.models.iter().map(|model| model.id.clone()).collect())
+            .unwrap_or_default();
         let skipped = fleet.skipped_before(harness, Some(by.1), Some(issue));
         Ok(Staged {
             verdicts: verdicts
@@ -190,6 +198,7 @@ impl Staged {
             consult,
             harness,
             model,
+            allowed_models,
             unmatched: cast.unmatched.clone().map(|name| (name, cast)),
             skipped,
             base_branch: fleet.config.base_branch.clone(),
@@ -216,6 +225,12 @@ impl Staged {
         self.model.as_deref()
     }
 
+    /// Whether the role's range allows a model selected from the user's
+    /// Codex preference.
+    pub fn allows_model(&self, model: &str) -> bool {
+        self.allowed_models.iter().any(|allowed| allowed == model)
+    }
+
     /// The name the issue was given that matches nothing held, with what
     /// the worker runs instead: what the issue is told once.
     pub fn unmatched(&self) -> Option<&(String, casting::Cast)> {
@@ -225,7 +240,12 @@ impl Staged {
     /// The line the terminal on `worktree` runs to start the worker with
     /// `launch`, the worker launch command of its harness. What this host
     /// keeps for that harness is put in place first (`kept::keep`).
-    pub fn command(&self, launch: &str, worktree: &Worktree) -> Result<String> {
+    pub fn command(
+        &self,
+        launch: &str,
+        worktree: &Worktree,
+        model: Option<&str>,
+    ) -> Result<String> {
         let told = ToldRules::read(self.harness, &worktree.path, self.team_rules.as_deref())?;
         let (kept, shadowed) = crate::kept::for_worker(
             self.harness,
@@ -239,7 +259,7 @@ impl Staged {
             role_dir: &self.role_copy.dir.display().to_string(),
             worktree: &worktree.path.display().to_string(),
             team_dir: &self.team_copy.dir.display().to_string(),
-            model: self.model.as_deref(),
+            model,
             guard: &crate::own_command().fixed(" guard").own(),
             kept: &kept,
             host_user: self.host_user,
