@@ -4,6 +4,11 @@ status: accepted
 
 # The host runner watches its host
 
+Amended by ADR-0040 (sunfmin/control#145): the watch retains a resident
+interactive session across independent rounds; looks continue while it is
+busy, and reporting leaves the healthy harness standing by. The older rules
+below that stop looks or end a reported harness are superseded.
+
 Amended by ADR-0038 (sunfmin/control#118): watches run interactively, report by command, and retain their terminal after the harness ends. The non-interactive launch and printed-output record below no longer apply.
 
 Amended by ADR-0033 (sunfmin/control#94): every host has a watch. Where no operator directory is named, the stock watch runs in afkconvoy's own directory. The statements below that no directory means no look or watch no longer hold.

@@ -4,6 +4,11 @@ status: accepted
 
 # An inspection becomes the host's watch
 
+Amended by ADR-0040 (sunfmin/control#145): the watch retains a resident
+interactive session across independent rounds; looks continue while it is
+busy, and reporting leaves the healthy harness standing by. The older rules
+below that stop looks or end a reported harness are superseded.
+
 Supersedes ADR-0026. Amends ADR-0019 and ADR-0029: their resource limits,
 readings, evidence and episode boundaries remain; each condition calls for
 one host watch through a finding in the look. There is no separate inspection
