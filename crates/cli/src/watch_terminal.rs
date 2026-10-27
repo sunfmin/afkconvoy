@@ -161,6 +161,18 @@ pub(crate) fn locate(watch: &Watch) -> Result<Option<String>> {
                 );
             }
         }
+        if record.is_none() {
+            // An upgrade may retain a pre-journal watch. Its persisted
+            // exact handle is afkconvoy's ownership evidence; capture the
+            // public identity now, without changing its running session.
+            save(&Record {
+                watch: watch.clone(),
+                phase: Phase::Running,
+                terminal: Some(row.clone()),
+                problem: None,
+                command: String::new(),
+            })?;
+        }
         return Ok(Some(exact.to_string()));
     }
     let acknowledged =
@@ -176,7 +188,7 @@ pub(crate) fn locate(watch: &Watch) -> Result<Option<String>> {
         })
         .collect();
     if candidates.is_empty() {
-        if !watch.terminal.is_empty() {
+        if !exact.is_empty() {
             return Ok(None);
         }
         bail!("watch creation has no receipt or confirmed terminal; creation will not be repeated");
@@ -305,7 +317,12 @@ mod tests {
     #[test]
     #[ignore = "requires visible local Orca; creates two temporary terminals in the current worktree"]
     fn real_orca_recovers_a_visible_terminal_and_preserves_input_while_refusing_ambiguity() {
-        let directory = std::env::current_dir().unwrap();
+        let directory = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
         let mut watch = watch(directory.clone());
         watch.transcript = cache().unwrap().join("smoke-session.log");
         let worktree = Worktree::at(directory, String::new());

@@ -1266,6 +1266,18 @@ impl Worktree {
         let rows = listed["terminals"]
             .as_array()
             .ok_or_else(|| anyhow!("orca terminal list returned no terminals array"))?;
+        anyhow::ensure!(
+            listed["hostScope"]["omittedHostIds"].as_array().is_none_or(|ids| ids.is_empty()),
+            "orca's terminal list omits execution hosts"
+        );
+        anyhow::ensure!(
+            rows.iter().all(|row| {
+                (row["worktreePath"].is_null()
+                    || row["worktreePath"] == self.path.display().to_string())
+                    && (row["executionHostId"].is_null() || row["executionHostId"] == "local")
+            }),
+            "watch terminal ownership cannot be confirmed on this local directory and host"
+        );
         Ok(rows.clone())
     }
 
