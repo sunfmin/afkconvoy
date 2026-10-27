@@ -2169,6 +2169,7 @@ mod tests {
     fn state() -> State {
         State {
             refusals: json!({}),
+            targets: json!([]),
             set: set(),
             held: vec![],
             stood: vec![],
