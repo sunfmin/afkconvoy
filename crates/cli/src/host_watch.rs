@@ -198,6 +198,7 @@ impl State {
     /// reserves only its own episodes; a recovery and return can queue a new
     /// episode of that same finding while the old round is still executing.
     fn observe(&mut self, look: Value, now: u64) {
+        self.migrate_human_waits();
         let current = actionable(&look, now);
         let mut present: BTreeSet<String> = current.iter().map(|i| i.id.clone()).collect();
         for resource in look["host"]["resources"].as_array().into_iter().flatten() {
@@ -261,6 +262,60 @@ impl State {
         self.look = if self.pending.is_empty() { Value::Null } else { look };
         self.looked = Some(now);
         self.episodes_initialized = true;
+    }
+
+    /// Older runners keyed the question by issue alone, and its warning by
+    /// display text. Translate from each retained look's structured question,
+    /// never from today's question, which may require a different answer.
+    fn migrate_human_waits(&mut self) {
+        let mut aliases = BTreeMap::new();
+        for round in self
+            .history
+            .iter_mut()
+            .chain(self.last.iter_mut())
+            .chain(self.resident.iter_mut())
+            .chain(self.running.iter_mut())
+        {
+            let own = human_wait_aliases(&round.look);
+            for item in &mut round.items {
+                if let Some(id) = own.get(&item.id) {
+                    aliases.insert(item.id.clone(), (id.clone(), round.report.is_some()));
+                    item.id = id.clone();
+                }
+            }
+        }
+        for id in &mut self.watched {
+            if let Some((canonical, _)) = aliases.get(id) {
+                *id = canonical.clone();
+            }
+        }
+        for (old, (canonical, reported)) in aliases {
+            let Some(episode) = self.observed.remove(&old) else { continue };
+            if !reported {
+                self.covered.retain(|covered| covered != &episode);
+            }
+            let retained =
+                self.observed.entry(canonical).or_insert_with(|| episode.clone()).clone();
+            if retained == episode {
+                continue;
+            }
+            if self.covered.contains(&episode) {
+                self.covered.push(retained.clone());
+            }
+            for round in self
+                .history
+                .iter_mut()
+                .chain(self.last.iter_mut())
+                .chain(self.resident.iter_mut())
+                .chain(self.running.iter_mut())
+            {
+                for reserved in &mut round.episodes {
+                    if *reserved == episode {
+                        *reserved = retained.clone();
+                    }
+                }
+            }
+        }
     }
 
     /// A start reserves its episodes while the watch runs; only a report
@@ -1455,6 +1510,40 @@ fn push(items: &mut Vec<Item>, id: String, reason: String) {
     }
 }
 
+fn scoped_finding_id(at: &str, id: &str) -> String {
+    match id.strip_prefix("checkout:") {
+        Some(identity) => format!("finding:{at}:{identity}"),
+        None => id.to_string(),
+    }
+}
+
+fn human_wait_aliases(look: &Value) -> BTreeMap<String, String> {
+    let mut aliases = BTreeMap::new();
+    for checkout in look["checkouts"].as_array().into_iter().flatten() {
+        let Some(at) = checkout["checkout"].as_str() else { continue };
+        let doctor = &checkout["doctor"];
+        for waiting in doctor["waiting_on_human"].as_array().into_iter().flatten() {
+            let Ok(identity) = serde_json::from_value::<crate::doctor::HumanWait>(waiting.clone())
+            else {
+                continue;
+            };
+            let id = scoped_finding_id(at, &identity.watch_id());
+            let issue = waiting["issue"].as_u64().unwrap_or(0);
+            aliases.insert(format!("human:{at}:#{issue}"), id.clone());
+            // Only migration reads the old presentation identity. The issue
+            // and source above establish which question that old look held.
+            for finding in doctor["findings"].as_array().into_iter().flatten() {
+                if let Some(what) = finding["what"].as_str()
+                    && what.starts_with(&format!("#{issue} has waited for a human for "))
+                {
+                    aliases.insert(format!("finding:{at}:{what}"), id.clone());
+                }
+            }
+        }
+    }
+    aliases
+}
+
 fn findings(items: &mut Vec<Item>, at: &str, findings: &Value) {
     let unavailable = crate::doctor::Kind::WatchUnavailable.symptom();
     for finding in findings.as_array().into_iter().flatten() {
@@ -1465,13 +1554,14 @@ fn findings(items: &mut Vec<Item>, at: &str, findings: &Value) {
             continue;
         }
         let reason = format!("{what}; evidence: {}; fix: {}", finding["evidence"], finding["fix"]);
-        let id = finding["watch_id"].as_str().map(str::to_string).unwrap_or_else(|| {
-            if what.contains(crate::doctor::Kind::KitUnplaced.symptom()) {
-                format!("{}{what}", host_watch::RESEARCH_ITEM)
-            } else {
-                format!("finding:{at}:{what}")
-            }
-        });
+        let id =
+            finding["watch_id"].as_str().map(|id| scoped_finding_id(at, id)).unwrap_or_else(|| {
+                if what.contains(crate::doctor::Kind::KitUnplaced.symptom()) {
+                    format!("{}{what}", host_watch::RESEARCH_ITEM)
+                } else {
+                    format!("finding:{at}:{what}")
+                }
+            });
         push(items, id, reason);
     }
 }
@@ -1491,7 +1581,11 @@ fn actionable(look: &Value, now: u64) -> Vec<Item> {
                 "#{issue} waits on a human: {}; answer: {}",
                 waiting["why"], waiting["answer"]
             );
-            push(&mut items, format!("human:{at}:#{issue}"), reason);
+            if let Ok(identity) =
+                serde_json::from_value::<crate::doctor::HumanWait>(waiting.clone())
+            {
+                push(&mut items, scoped_finding_id(at, &identity.watch_id()), reason);
+            }
         }
         let fleet = &doctor["fleet"];
         if fleet["alive"] == false {
@@ -1626,6 +1720,237 @@ pub const INSTANCE: &str = "host-watch";
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const HUMAN_SINCE: u64 = 1_793_036_772;
+
+    fn human_look(now: u64) -> Value {
+        use afkconvoy_core::tracker::Tracker;
+        use afkconvoy_core::waiting::{Back, Said, Waiting, Waits};
+        let mut waiting = Waiting::new(
+            11,
+            &Tracker::Own,
+            "quiet measurement environment",
+            Waits::Escalated(Back::Ready {
+                ready: "ready-for-agent".into(),
+                escalate: "ready-for-human".into(),
+            }),
+            Some(HUMAN_SINCE),
+        );
+        waiting.explain(&[Said {
+            body: "<!--convoy:escalation claim=old-->\nNeeds a quiet measurement environment.",
+            url: "https://github.com/sunfmin/control/issues/11#issuecomment-6423248030",
+            at: Some(HUMAN_SINCE),
+        }]);
+        json!({"until": now, "checkouts": [{"checkout": "/bizkernel", "doctor": {
+            "findings": crate::doctor::waiting_findings(std::slice::from_ref(&waiting), now),
+            "waiting_on_human": [waiting], "fleet": {"alive": true}
+        }}]})
+    }
+
+    fn reload(state: &State) -> State {
+        serde_json::from_slice(&serde_json::to_vec(state).unwrap()).unwrap()
+    }
+
+    fn human_round(look: Value, items: Vec<Item>, episodes: Vec<String>, reported: bool) -> Watch {
+        serde_json::from_value(json!({"id": "human-round", "directory": "/operator",
+            "look": look, "items": items, "episodes": episodes, "started": HUMAN_SINCE + 34000,
+            "harness": "codex", "model": null, "terminal": "watch", "transcript": "",
+            "report": reported.then(|| json!({"held_back": ["quiet environment"], "did": [],
+                "verified": [], "human": [{"question": "Provide a quiet environment?",
+                "answer": "the current waiting_on_human.answer"}], "pending": []}))}))
+        .unwrap()
+    }
+
+    #[test]
+    fn first_long_wait_warning_and_new_answers_use_the_human_questions_episode() {
+        let first = HUMAN_SINCE + 30 * 60;
+        let mut state = State::default();
+        let look = human_look(first);
+        assert_eq!(look["checkouts"][0]["doctor"]["findings"], json!([]));
+        state.observe(look.clone(), first);
+        assert_eq!(state.pending.len(), 1);
+        let episode = state.pending[0].episode.clone();
+        let round =
+            human_round(look, actionable(&human_look(first), first), vec![episode.clone()], true);
+        state.covered.extend(round.episodes.iter().cloned());
+        state.history.push(round);
+        let mut state = reload(&state);
+        let later = HUMAN_SINCE + 9 * 3600 + 33 * 60;
+        state.observe(human_look(later), later);
+        assert!(state.pending.is_empty(), "first warning is the already-reported question");
+        assert_eq!(state.observed.values().collect::<Vec<_>>(), [&episode]);
+        for field in ["url", "since", "why", "answer"] {
+            let mut next = human_look(later);
+            let value = &mut next["checkouts"][0]["doctor"]["waiting_on_human"][0][field];
+            *value = if field == "since" { json!(later) } else { json!("changed answer source") };
+            next["checkouts"][0]["doctor"]["findings"] = json!([]);
+            let mut changed = reload(&state);
+            changed.observe(next, later);
+            assert_eq!(changed.pending.len(), 1, "changed {field} requires a new answer");
+        }
+        let mut unrelated = human_look(later);
+        let mut other = unrelated["checkouts"][0].clone();
+        other["checkout"] = json!("/another-repo");
+        unrelated["checkouts"].as_array_mut().unwrap().push(other);
+        state.observe(unrelated, later);
+        assert_eq!(state.pending.len(), 1, "another checkout is unrelated work");
+    }
+
+    #[test]
+    fn an_unrelated_rounds_newer_look_cannot_migrate_old_coverage_to_a_changed_question() {
+        let now = HUMAN_SINCE + 9 * 3600 + 27 * 60;
+        let old = "human:/bizkernel:#11";
+        let reported = human_round(
+            human_look(now),
+            vec![Item::new(old, "human decision")],
+            vec!["old-episode".into()],
+            true,
+        );
+        let mut changed = human_look(now + 360);
+        changed["checkouts"][0]["doctor"]["findings"] = json!([]);
+        changed["checkouts"][0]["doctor"]["waiting_on_human"][0]["url"] =
+            json!("changed-escalation");
+        let unrelated = human_round(
+            changed.clone(),
+            vec![Item::new("another-condition", "unrelated")],
+            vec!["another-episode".into()],
+            true,
+        );
+        let mut state = State {
+            watched: vec![old.into()],
+            observed: BTreeMap::from([(old.into(), "old-episode".into())]),
+            covered: vec!["old-episode".into()],
+            episodes_initialized: true,
+            history: vec![reported, unrelated.clone()],
+            last: Some(unrelated),
+            look: changed.clone(),
+            ..State::default()
+        };
+        state.observe(changed.clone(), now + 360);
+        assert_eq!(state.pending.len(), 1, "only a report on that question can cover it");
+
+        // An older scheduler could also retain the issue-only episode when
+        // a later, changed question ran without a report. Its latest outcome
+        // must release the inherited coverage during the upgrade.
+        let unreported = human_round(
+            changed.clone(),
+            vec![Item::new(old, "changed question")],
+            vec!["old-episode".into()],
+            false,
+        );
+        let mut state = State {
+            observed: BTreeMap::from([(old.into(), "old-episode".into())]),
+            covered: vec!["old-episode".into()],
+            episodes_initialized: true,
+            last: Some(unreported.clone()),
+            history: vec![unreported],
+            ..State::default()
+        };
+        state.observe(changed, now + 360);
+        assert_eq!(state.pending.len(), 1, "unreported work releases inherited coverage");
+    }
+
+    #[test]
+    fn older_human_wait_reports_migrate_from_their_own_look_but_missing_reports_retry() {
+        let first = HUMAN_SINCE + 9 * 3600 + 27 * 60;
+        let later = HUMAN_SINCE + 9 * 3600 + 33 * 60;
+        for initialized in [false, true] {
+            for reported in [false, true] {
+                let mut look = human_look(first);
+                let warning = &mut look["checkouts"][0]["doctor"]["findings"][0];
+                warning.as_object_mut().unwrap().remove("watch_id");
+                let warning_id =
+                    format!("finding:/bizkernel:{}", warning["what"].as_str().unwrap());
+                let human_id = "human:/bizkernel:#11".to_string();
+                let items = vec![
+                    Item::new(&warning_id, "long wait"),
+                    Item::new(&human_id, "human decision"),
+                ];
+                let episodes: Vec<String> = if initialized {
+                    vec!["warning-episode".into(), "human-episode".into()]
+                } else {
+                    vec![]
+                };
+                let round = human_round(look, items, episodes.clone(), reported);
+                let mut state = State {
+                    watched: vec![warning_id.clone(), human_id.clone()],
+                    observed: if initialized {
+                        BTreeMap::from([
+                            (warning_id, episodes[0].clone()),
+                            (human_id, episodes[1].clone()),
+                        ])
+                    } else {
+                        BTreeMap::new()
+                    },
+                    covered: if initialized && reported { episodes } else { vec![] },
+                    episodes_initialized: initialized,
+                    last: Some(round.clone()),
+                    history: vec![round],
+                    ..State::default()
+                };
+                state.retry_unreported();
+                state.observe(human_look(later), later);
+                assert_eq!(
+                    state.pending.is_empty(),
+                    reported,
+                    "initialized={initialized}, reported={reported}"
+                );
+                assert_eq!(state.observed.len(), 1);
+                let canonical = state.observed.keys().next().unwrap();
+                assert!(
+                    state.history[0].items.iter().all(|item| &item.id == canonical),
+                    "prior report follows the same work"
+                );
+                let mut state = reload(&state);
+                state.observe(human_look(later + 300), later + 300);
+                assert_eq!(state.pending.is_empty(), reported);
+
+                let mut changed = human_look(later + 600);
+                changed["checkouts"][0]["doctor"]["findings"] = json!([]);
+                changed["checkouts"][0]["doctor"]["waiting_on_human"][0]["url"] =
+                    json!("a-new-escalation");
+                state.observe(changed, later + 600);
+                assert_eq!(state.pending.len(), 1, "old reports cannot cover a new escalation");
+            }
+        }
+    }
+
+    #[test]
+    fn reported_human_wait_keeps_one_episode_as_doctors_displayed_age_increases() {
+        let first = HUMAN_SINCE + 9 * 3600 + 27 * 60;
+        let later = HUMAN_SINCE + 9 * 3600 + 33 * 60;
+        let look = human_look(first);
+        assert!(
+            look["checkouts"][0]["doctor"]["findings"][0]["what"]
+                .as_str()
+                .unwrap()
+                .contains("9h 27m")
+        );
+        assert!(
+            human_look(later)["checkouts"][0]["doctor"]["findings"][0]["what"]
+                .as_str()
+                .unwrap()
+                .contains("9h 33m")
+        );
+        let mut state = State::default();
+        state.observe(look, first);
+        assert_eq!(state.pending.len(), 1, "one actionable condition for both representations");
+        let episode = state.pending[0].episode.clone();
+        state.covered.push(episode.clone());
+        let mut state = reload(&state);
+        state.observe(human_look(later), later);
+        assert!(state.pending.is_empty(), "the report covers the older wait");
+        assert_eq!(state.observed.values().collect::<Vec<_>>(), [&episode]);
+
+        state.observe(json!({"until": later + 1}), later + 1);
+        state.observe(human_look(later + 2), later + 2);
+        assert_eq!(state.pending.len(), 1, "recovery and return is new work");
+        assert_ne!(state.pending[0].episode, episode);
+        let unreported = state.pending[0].episode.clone();
+        let mut state = reload(&state);
+        state.observe(human_look(later + 300), later + 300);
+        assert_eq!(state.pending[0].episode, unreported, "unreported work stays eligible");
+    }
 
     /// Uses a real interactive Codex in this worker's visible Terminal, with
     /// harmless bounded tasks and isolated durable state. Normal scheduling
@@ -1901,7 +2226,7 @@ mod tests {
             first,
             [
                 "finding:host:orca is not running",
-                "human:/r:#7",
+                r#"finding:/r:human:{"issue":7,"since":null,"url":null,"why":"escalated","answer":"gh issue view 7"}"#,
                 "fleet:/r:not-alive",
                 "fleet:/r:broken:800",
                 r#"tick:/r:alpha:[{"error":"gh is down"}]"#,

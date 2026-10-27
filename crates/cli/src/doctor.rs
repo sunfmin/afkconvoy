@@ -94,7 +94,8 @@ pub struct Finding {
     /// says once.
     #[serde(skip)]
     pub of_host: bool,
-    /// Stable identity of a resource episode watched once.
+    /// Stable condition identity. `checkout:` identities are scoped by the
+    /// watch to this checkout; resource identities already include their scope.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub watch_id: Option<String>,
 }
@@ -221,6 +222,42 @@ pub(crate) fn finding(kind: Kind, what: String, evidence: String, fix: String) -
     debug_assert!(what.contains(kind.symptom()), "{kind:?} is not said in: {what}");
     let (severity, see, of_host) = (kind.severity(), kind.see(), kind.of_host());
     Finding { severity, what, evidence, fix, see, of_host, watch_id: None }
+}
+
+impl Finding {
+    fn condition(mut self, identity: Value) -> Self {
+        self.watch_id = Some(format!("checkout:{identity}"));
+        self
+    }
+}
+
+/// A human question's source and answer, independent of its displayed age
+/// and issue title. Both doctor representations use this same condition.
+#[derive(serde::Deserialize, Serialize)]
+pub(crate) struct HumanWait {
+    issue: u64,
+    since: Option<u64>,
+    url: Option<String>,
+    why: String,
+    answer: String,
+}
+
+impl From<&Waiting> for HumanWait {
+    fn from(waiting: &Waiting) -> Self {
+        Self {
+            issue: waiting.issue,
+            since: waiting.since,
+            url: waiting.url.clone(),
+            why: waiting.why.clone(),
+            answer: waiting.answer.clone(),
+        }
+    }
+}
+
+impl HumanWait {
+    pub(crate) fn watch_id(&self) -> String {
+        format!("checkout:human:{}", serde_json::to_string(self).expect("human wait identity"))
+    }
 }
 
 /// An answer with a finding of the highest severity: printed as it is, with
@@ -684,7 +721,7 @@ fn claim_findings(run: &Run, held: &[Held]) -> Vec<Finding> {
                     ),
                     format!("orca reports it stopped, in {place}: look at its terminal there"),
                     fix,
-                ));
+                ).condition(json!(["worker-stopped", issue, claim.worktree])));
             }
             _ => {}
         }
@@ -771,7 +808,7 @@ fn log_findings(run: &Run) -> Vec<Finding> {
             let repeated = recent.filter(|last| {
                 last.iter().all(|(_, tick)| tick.failed().iter().any(|was| was.same_step(&failed)))
             });
-            match repeated {
+            let finding = match repeated {
                 Some(last) => {
                     let (first, latest) = (last[0].1.count, last[FAILED_TICKS - 1].1.count);
                     finding(
@@ -790,7 +827,8 @@ fn log_findings(run: &Run) -> Vec<Finding> {
                     failed.error.clone(),
                     fix_of(&failed, instance),
                 ),
-            }
+            };
+            finding.condition(json!(["step", failed.step, failed.issue, failed.patrol]))
         })
         .collect()
 }
@@ -825,20 +863,28 @@ fn issue_findings(stood: &[Stood], team: &TeamRead, now: u64) -> Vec<Finding> {
         if let Some((took, here)) =
             took.zip(here).filter(|(took, here)| here > took && *here >= STAGE_LONG)
         {
-            found.push(finding(
-                Kind::LongAtStage,
-                format!(
-                    "#{number} has been at the stage `{stage}` for {}, longer than any stage \
+            found.push(
+                finding(
+                    Kind::LongAtStage,
+                    format!(
+                        "#{number} has been at the stage `{stage}` for {}, longer than any stage \
                      before it took",
-                    lasted(here)
-                ),
-                format!(
-                    "its last stage record is {} old; the longest between two before it is {}",
-                    lasted(here),
-                    lasted(took)
-                ),
-                show.clone(),
-            ));
+                        lasted(here)
+                    ),
+                    format!(
+                        "its last stage record is {} old; the longest between two before it is {}",
+                        lasted(here),
+                        lasted(took)
+                    ),
+                    show.clone(),
+                )
+                .condition(json!([
+                    "long-stage",
+                    number,
+                    stage,
+                    issue.recorded.last()
+                ])),
+            );
         }
         let mut near = vec![];
         if let (had @ 1.., 0) = issue.rework {
@@ -898,7 +944,7 @@ fn plan_findings(run: &Run, state: &State) -> Vec<Finding> {
                     Some(failed) => fix_of(failed, instance),
                     None => on("dispatch", first.number, instance),
                 },
-            ));
+            ).condition(json!(["nothing-started", set.frontier.iter().map(|issue| issue.number).collect::<Vec<_>>()]))) ;
         }
     }
     if let Some(slow) = &set.slow_gate {
@@ -1000,10 +1046,10 @@ fn plan_findings(run: &Run, state: &State) -> Vec<Finding> {
 }
 
 /// An issue has waited for a human for long: nothing in the fleet moves it.
-fn waiting_findings(set: &WorkingSet, now: u64) -> Vec<Finding> {
+pub(crate) fn waiting_findings(waiting: &[Waiting], now: u64) -> Vec<Finding> {
     let long = |waiting: &Waiting| {
         let waited = waiting.waited_long(now)?;
-        Some(finding(
+        let mut finding = finding(
             Kind::WaitedLong,
             format!(
                 "#{} has waited for a human for {}: {}",
@@ -1017,9 +1063,11 @@ fn waiting_findings(set: &WorkingSet, now: u64) -> Vec<Finding> {
                 lasted(WAITED_LONG)
             ),
             waiting.answer.clone(),
-        ))
+        );
+        finding.watch_id = Some(HumanWait::from(waiting).watch_id());
+        Some(finding)
     };
-    set.waiting_on_human.iter().filter_map(long).collect()
+    waiting.iter().filter_map(long).collect()
 }
 
 /// A worktree kept on this host with no claim on its issue: what it holds
@@ -1244,7 +1292,7 @@ pub fn findings(seen: &Seen) -> Vec<Finding> {
             found.extend(plan_findings(seen.run, state));
             found.extend(claim_findings(seen.run, &state.held));
             found.extend(issue_findings(&state.stood, &state.team, seen.now));
-            found.extend(waiting_findings(&state.set, seen.now));
+            found.extend(waiting_findings(&state.set.waiting_on_human, seen.now));
             found.extend(crate::blockers::findings(&state.set.unworked_blockers));
             found.extend(state.unclaimed.iter().map(unclaimed_finding));
             found.extend(state.not_ours.iter().map(not_ours_finding));
@@ -2354,6 +2402,37 @@ mod tests {
         // …and one orca could not speak of is not said to have none
         state.held = vec![Held { worker: None, ..held(3) }];
         assert_eq!(self::found(&host(), &run(vec![]), &state), []);
+    }
+
+    #[test]
+    fn changing_durations_tick_counts_and_free_slots_keep_their_condition_identity() {
+        let same = |before: &Finding, after: &Finding| {
+            assert_ne!(before.what, after.what, "doctor keeps its current presentation");
+            assert!(before.watch_id.is_some());
+            assert_eq!(before.watch_id, after.watch_id);
+        };
+        let stopped =
+            |quiet| Held { worker: Some(WorkerState::Idle { quiet: Some(quiet) }), ..held(3) };
+        same(
+            &claim_findings(&run(vec![]), &[stopped(STOPPED_LONG)])[0],
+            &claim_findings(&run(vec![]), &[stopped(STOPPED_LONG + 360)])[0],
+        );
+        let long = Stood { recorded: vec![NOW - 3300, NOW - 3000, NOW - 2000], ..stood(7) };
+        same(
+            &issue_findings(std::slice::from_ref(&long), &team(), NOW)[0],
+            &issue_findings(&[long], &team(), NOW + 360)[0],
+        );
+        let failed = |count| tick(count, json!([{"do": "dispatch", "issue": 3, "error": "busy"}]));
+        let once = log_findings(&run(vec![failed(1)]));
+        let repeated = log_findings(&run(vec![failed(1), failed(2), failed(3)]));
+        same(&once[0], &repeated[0]);
+        same(&repeated[0], &log_findings(&run(vec![failed(2), failed(3), failed(4)]))[0]);
+        let mut state = state();
+        state.set.frontier =
+            vec![Dispatchable { number: 3, title: "work".into(), stage: None, cast: None }];
+        let before = plan_findings(&run(vec![failed(1)]), &state);
+        state.set.free_slots += 1;
+        same(&before[0], &plan_findings(&run(vec![failed(2)]), &state)[0]);
     }
 
     #[test]
