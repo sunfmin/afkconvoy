@@ -26,6 +26,7 @@ const AUDIT: &str = "```yaml\nby: dev\ndo: sweep\nevery: 2d\nmax_open: 1\n```\n"
 /// A world whose repo is bound to a team with the patrols `sweep` and
 /// `audit`, and names `patrols` of them.
 fn bound(patrols: &str) -> World {
+    let began = std::time::Instant::now();
     let world = World::new();
     let skills = [
         (".claude/skills/implement/SKILL.md", "---\nname: implement\ndescription: build\n---\n"),
@@ -49,6 +50,7 @@ fn bound(patrols: &str) -> World {
     git(&world.clone, &["commit", "-q", "-am", "bind the repo"]);
     git(&world.clone, &["push", "-q", "origin", "main"]);
     world.say_concurrency(&world.clone, 2);
+    common::fixture_timing("patrol bound setup", began);
     world
 }
 

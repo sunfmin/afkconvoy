@@ -12,6 +12,9 @@ fn the_bare_repo_is_the_clones_remote() {
     git(&world.clone, &["commit", "-q", "-m", "a"]);
     git(&world.clone, &["push", "-q", "origin", BASE]);
     assert_eq!(world.remote(&["rev-parse", BASE]), git(&world.clone, &["rev-parse", "HEAD"]));
+    let began = std::time::Instant::now();
+    drop(world);
+    common::fixture_timing("world teardown", began);
 }
 
 #[test]

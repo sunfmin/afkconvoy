@@ -34,6 +34,7 @@ stages:
 /// A world whose repo is bound to a team with the one workflow `feature`,
 /// and runs `concurrency` workers at once.
 fn bound(feature: &str, concurrency: u64) -> World {
+    let began = std::time::Instant::now();
     let world = World::new();
     world.kit_researched_models("claude-code", &["opus", "sonnet"]);
     world.repo(
@@ -51,6 +52,7 @@ fn bound(feature: &str, concurrency: u64) -> World {
     git(&world.clone, &["commit", "-q", "-am", "bind the repo"]);
     git(&world.clone, &["push", "-q", "origin", "main"]);
     world.say_concurrency(&world.clone, concurrency);
+    common::fixture_timing("consult bound setup", began);
     world
 }
 

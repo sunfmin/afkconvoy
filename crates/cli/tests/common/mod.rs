@@ -15,7 +15,7 @@ pub const BASE: &str = "main";
 
 /// Opt-in fixture timings, captured by nextest with `--success-output final`.
 /// The environment belongs to the test driver, never to a world's host.
-fn fixture_timing(part: &str, began: Instant) {
+pub fn fixture_timing(part: &str, began: Instant) {
     if std::env::var_os("CONVOY_FIXTURE_TIMINGS").is_some() {
         eprintln!("fixture timing: {part} {:.6}s", began.elapsed().as_secs_f64());
     }
