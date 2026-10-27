@@ -52,6 +52,63 @@ fn bound() -> World {
     world
 }
 
+#[test]
+fn delivery_creation_preserves_separate_tracker_repo_label_and_selected_workflow() {
+    let world = bound();
+    world.name_origin(&world.clone, "acme/dev");
+    world.say_tracker(&world.clone, "acme/tracker");
+    // Starting a fleet creates its repo label in the tracker.
+    world.with_tracker(|gh| gh["labels"].as_array_mut().unwrap().push(json!("repo:acme/dev")));
+    let delivery = world
+        .afk(&[
+            "delivery",
+            "--jira",
+            "https://example.atlassian.net/browse/ABC-123",
+            "--final-target",
+            "main",
+        ])
+        .ok();
+    let id = delivery["delivery"].as_str().unwrap();
+    let answer = world.afk(&["flows", "--delivery", id]).ok();
+    let selected =
+        answer["workflows"].as_array().unwrap().iter().find(|w| w["name"] == "note").unwrap();
+    let line = selected["line"].as_str().unwrap();
+    assert!(line.contains("--repo acme/tracker"), "{line}");
+    assert!(line.contains("--label 'repo:acme/dev'"), "{line}");
+    assert!(!line.contains("flow:"), "{line}");
+    run(&world, line).unwrap();
+    let mut number = 0;
+    world.with_tracker(|gh| {
+        let issue = gh["issues"].as_array().unwrap().last().unwrap();
+        assert_eq!(issue["labels"], json!(["repo:acme/dev"]));
+        number = issue["number"].as_u64().unwrap();
+    });
+    let script = selected["intake_line"]
+        .as_str()
+        .unwrap()
+        .replace("<n>", &number.to_string())
+        .replacen("afkconvoy", "\"$1\"", 1);
+    let output = world
+        .command("sh", &world.clone)
+        .args(["-c", &script, "sh", env!("CARGO_BIN_EXE_afkconvoy")])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stdout));
+    world.with_tracker(|gh| {
+        let issue = gh["issues"].as_array().unwrap().last().unwrap();
+        assert_eq!(issue["labels"], json!(["repo:acme/dev", "flow:note"]));
+    });
+    let shown = world.afk(&["show", "--issue", &number.to_string()]).ok();
+    assert_eq!(shown["workflow"], "note");
+    assert_eq!(shown["delivery"], id);
+    assert_eq!(shown["target_branch"], delivery["branch"]);
+    assert_eq!(shown["intake"]["by"], "human");
+    assert_eq!(
+        world.afk(&["delivery", "--jira", "https://example.atlassian.net/browse/ABC-123"]).ok()["tasks"],
+        json!([format!("acme/tracker#{number}")])
+    );
+}
+
 /// The labels the repo has, on the stand-in GitHub.
 fn repo_labels(world: &World) -> Value {
     world.gh()["labels"].clone()

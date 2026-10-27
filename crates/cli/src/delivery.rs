@@ -39,7 +39,13 @@ pub(crate) struct Reference {
 pub fn reference(repo: &Repo, id: &str) -> Result<Reference> {
     let name = refname(repo, id)?;
     let rows = repo.remote_records(&name)?;
-    decode(repo, id, rows.first())?;
+    let delivery = decode(repo, id, rows.first())?;
+    ensure!(
+        delivery.repository.eq_ignore_ascii_case(&GitHub::of(repo)?.repository()?),
+        "delivery {id} belongs to code repo {}; select a delivery in this code repo with afkconvoy delivery --jira <url>",
+        delivery.repository
+    );
+    delivery.validate(repo)?;
     Ok(Reference { identity: id.to_string(), record: rows[0].sha.clone() })
 }
 
@@ -465,7 +471,7 @@ pub fn brief(repo: &Repo, issue: u64) -> Result<String> {
     let Some(id) = crate::target::delivery(repo, issue)? else { return Ok(String::new()) };
     let d = load(repo, &id)?;
     Ok(format!(
-        "\n## Jira delivery\nThis task contributes to delivery `{id}` ({}) on `{}`. Add `Delivery: {id}` to the internal task PR body alongside its task-closing line. The final review PR targets `{}` and is owned by a human; complete only this task's internal PR and landing.\n",
+        "\n## Jira delivery\nThis task contributes to delivery `{id}` ({}) on `{}`. Add `Delivery: {id}` to the internal task PR body alongside its task-closing line. The final review PR targets `{}` and is owned by a human; complete only this task's internal PR and landing.\n\nOpen follow-up task issues without ready or flow labels. Run `afkconvoy intake --issue <n> --from {issue}` (add `--workflow <name>` in a bound repo); intake inherits this delivery before making the task dispatchable. For discussion creation run `afkconvoy flows --delivery {id}` and follow its line then intake_line. Work belonging to another delivery must name `--delivery <other-id>` explicitly in its code repo. Dependencies and parent links alone never assign delivery membership.\n",
         d.jira, d.branch, d.final_target
     ))
 }
