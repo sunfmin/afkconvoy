@@ -455,8 +455,8 @@ fn one_that_waits_as_its_host_runner_ends_waits_in_the_next_one_s_queue() {
     let waiting = exclusive(&world, &cache, 2, &say("b"));
     until(|| tickets(&world) == 2);
 
-    // the host runner killed: what ran runs on, and the next one, unknown
-    // to the host runner after, may run beside it
+    // The replacement runner discovers the command's inherited slot and
+    // waits for it to end before granting another worker lane.
     world.kill_host_runner("KILL");
     drop(first);
     let _next = world.host_held();
@@ -468,7 +468,7 @@ fn one_that_waits_as_its_host_runner_ends_waits_in_the_next_one_s_queue() {
     assert!(said.contains(rejoins), "{said}");
     assert!(!said.contains("at once"), "the next host runner placed it: {said}");
     assert!(running.wait_with_output().unwrap().status.success());
-    assert_eq!(lines(&order), ["a", "b", "a-end"]);
+    assert_eq!(lines(&order), ["a", "a-end", "b"]);
 }
 
 /// Kills the process `child` with SIGKILL: it has no chance to tidy up.
@@ -486,23 +486,26 @@ fn a_waiter_killed_leaves_the_queue_and_a_holder_that_dies_frees_its_place() {
     let order = cache.join("order");
     let say = |what: &str| format!("echo {what} >> \"$CACHE/order\"");
     // the holder's command: it runs on past its holder, and is ended at the end
-    let mut holder = exclusive(&world, &cache, 1, "echo $$ > \"$CACHE/pid\"; sleep 5");
+    let mut holder = exclusive(&world, &cache, 1, "echo $$ > \"$CACHE/pid\"; exec sleep 5");
     until(|| pid.exists() && !lines(&pid).is_empty());
     let mut killed = exclusive(&world, &cache, 2, &say("killed-ran"));
     until(|| tickets(&world) == 2);
-    let next = exclusive(&world, &cache, 3, &say("next-ran"));
+    let mut next = exclusive(&world, &cache, 3, &say("next-ran"));
     until(|| tickets(&world) == 3);
 
-    // a waiter killed: it never runs, and holds up nobody
+    // A waiter killed never runs and leaves the queue.
     kill(&mut killed);
-    // the holder killed while its command runs: its place is free
+    // Killing the holder frees its queue entry, while the child's inherited
+    // slot keeps the worker lane occupied until that command ends.
     let started = Instant::now();
     kill(&mut holder);
-    let next = next.wait_with_output().unwrap();
-    assert!(next.status.success());
-    assert!(started.elapsed() < Duration::from_secs(4), "it did not wait for the orphan's sleep");
-    assert_eq!(lines(&order), ["next-ran"]);
-    assert_eq!(tickets(&world), 0, "what the killed left is gone");
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(next.try_wait().unwrap().is_none(), "the orphan still owns its worker slot");
     let orphan = lines(&pid)[0].clone();
     let _ = Command::new("kill").arg(orphan).status();
+    let next = next.wait_with_output().unwrap();
+    assert!(next.status.success());
+    assert!(started.elapsed() < Duration::from_secs(4), "the released slot was not observed");
+    assert_eq!(lines(&order), ["next-ran"]);
+    assert_eq!(tickets(&world), 0, "what the killed left is gone");
 }

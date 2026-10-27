@@ -1220,7 +1220,7 @@ fn the_help_of_land_describes_the_exact_commit_and_each_failed_turn() {
     for says in [
         "gate that exact commit",
         "push that commit to the base branch as a fast-forward",
-        "record green",
+        "recorded green",
         "target_moved",
         "no gate ran and nothing landed",
         "separate checkout",

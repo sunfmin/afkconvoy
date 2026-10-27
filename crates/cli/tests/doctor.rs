@@ -175,6 +175,7 @@ fn a_fleet_with_no_fault_answers_its_keys_and_no_finding_and_writes_nothing() {
     assert_eq!(
         keys,
         [
+            "candidates",
             "claims",
             "codex_workers",
             "findings",
@@ -185,6 +186,7 @@ fn a_fleet_with_no_fault_answers_its_keys_and_no_finding_and_writes_nothing() {
             "waiting_on_human"
         ]
     );
+    assert_eq!(answer["candidates"], json!([]));
     assert!(answer.get("proposals").is_none());
     assert_eq!(answer["refusals"], json!({"3": [], "5": []}));
     assert_eq!(answer["waiting_on_human"], json!([]));
@@ -292,7 +294,18 @@ fn the_host_s_exclusive_queue_is_shown_what_runs_first_then_what_waits() {
     }
     let exclusive = shown();
     let dir = std::fs::canonicalize(&world.clone).unwrap().display().to_string();
-    let ticket = |command: &str, issue: Value, pid: u32, asked: u64| json!({"command": command, "dir": dir, "issue": issue, "pid": pid, "asked": asked});
+    let ticket = |command: &str, issue: Value, pid: u32, asked: u64| {
+        json!({
+            "command": command,
+            "dir": dir,
+            "issue": issue,
+            "pid": pid,
+            "asked": asked,
+            "candidate": false,
+            "validation": null,
+            "waiting": "running",
+        })
+    };
     let mut first = exclusive["running"].clone();
     assert!(first["ran"].as_u64().is_some(), "{exclusive}");
     first.as_object_mut().unwrap().remove("ran");
@@ -300,6 +313,7 @@ fn the_host_s_exclusive_queue_is_shown_what_runs_first_then_what_waits() {
     assert_eq!(first, ticket(&command, json!(12), running.id(), 900));
     let mut next = ticket("sh -c true", Value::Null, waiting.id(), 950);
     next["ran"] = Value::Null;
+    next["waiting"] = json!("waiting_for_capacity");
     assert_eq!(exclusive["waiting"], json!([next]));
     for child in [&mut running, &mut waiting] {
         let _ = child.kill();
