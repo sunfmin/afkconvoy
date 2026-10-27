@@ -176,8 +176,10 @@ mod tests {
 
     #[test]
     fn a_wrong_type_names_its_key() {
-        let e = error("base_branch: main\ngate_command: make\nconcurrency: many");
-        assert!(e.contains("concurrency"), "{e}");
+        for value in ["many", "0"] {
+            let e = error(&format!("base_branch: main\ngate_command: make\nconcurrency: {value}"));
+            assert!(e.contains("concurrency"), "{e}");
+        }
         let e = error("base_branch: main\ngate_command: make\nepic_labels: epic");
         assert!(e.contains("epic_labels"), "{e}");
     }

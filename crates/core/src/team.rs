@@ -2634,6 +2634,36 @@ land: { by: dev, do: land }
         assert_eq!(key, "roles.reviewer");
     }
 
+    #[test]
+    fn dsh_profiles_inherit_and_override_the_team_and_reject_other_values_at_each_key() {
+        let feature = [("workflows/feature.md", FEATURE)];
+        let own = |value: &str, team: &str| {
+            format!(
+                "roles:\n  dev: acme/dev\n  reviewer: {{ dir: acme/reviewer, dsh_profile: {value} }}\n{team}"
+            )
+        };
+        for (key, inherited, value, expected) in [
+            ("", DshProfile::Fleet, "host-user", DshProfile::HostUser),
+            ("dsh_profile: host-user\n", DshProfile::HostUser, "fleet", DshProfile::Fleet),
+        ] {
+            let team = load(&sources(&own(value, key), &feature)).unwrap();
+            assert_eq!(team.dsh_profile, inherited);
+            assert_eq!(team.roles[DEV].dsh_profile, inherited);
+            assert_eq!(team.roles[REVIEWER].dsh_profile, expected);
+        }
+        for value in ["true", "0", "null", "[fleet]", "{}", "other", "''"] {
+            for (text, key) in [
+                (format!("{TEAM}dsh_profile: {value}\n"), "dsh_profile"),
+                (own(value, ""), "roles.reviewer.dsh_profile"),
+            ] {
+                let faults = load(&sources(&text, &feature)).unwrap_err();
+                let [fault] = &faults[..] else { panic!("one fault: {faults:#?}") };
+                assert_eq!((fault.file.as_str(), fault.key.as_str()), (TEAM_FILE, key));
+                assert_eq!(fault.problem, "must be fleet or host-user");
+            }
+        }
+    }
+
     /// A workflow whose second stage, by `dev`, has `rest` as the rest of it,
     /// and whose `land` is `land`.
     fn landed(rest: &str, land: &str) -> String {

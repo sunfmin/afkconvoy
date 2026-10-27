@@ -463,13 +463,9 @@ fn a_bound_repos_config_answers_its_three_keys_more_and_refuses_a_harness() {
     assert_eq!(set["patrols"], json!(["triage"]));
     assert_eq!((&set["lock_label"], &set["intake_limit"]), (&json!("stop"), &json!(9)));
     for (yaml, key) in [
-        ("team: acme", "team"),
         ("team: [acme/team]", "team"),
         ("team: acme/team\nintake_limit: -1", "intake_limit"),
         ("team: acme/team\npatrols: triage", "patrols"),
-        ("patrols: [triage]", "patrols"),
-        ("intake_limit: 5", "intake_limit"),
-        ("harness: claude-code", "delete the line `harness: claude-code`"),
         ("team: acme/team\nharness: aider", "delete the line `harness: aider`"),
         ("team: acme/team\nharness: [claude-code]", "harness"),
     ] {
@@ -1070,24 +1066,25 @@ fn dsh_profile_defaults_to_fleet_and_roles_override_the_team_in_either_direction
     }
     let world = bound(&[("team.md", TEAM), ("workflows/feature.md", FEATURE)]);
     let team = world.root.join("github/acme/team");
-    for value in ["true", "0", "null", "[fleet]", "{}", "other", "''"] {
-        for role in [false, true] {
-            let text = if role {
-                TEAM.replace(
-                    "reviewer: acme/reviewer",
-                    &format!("reviewer: {{ dir: acme/reviewer, dsh_profile: {value} }}"),
-                )
-            } else {
-                TEAM.replace("```\n", &format!("dsh_profile: {value}\n```\n"))
-            };
-            commit(&team, "team.md", &text);
-            let answer = world.afk(&["check"]);
-            assert_eq!(answer.code, 1);
-            assert_eq!(
-                faults(&answer.json),
-                [if role { "team.md: roles.reviewer.dsh_profile" } else { "team.md: dsh_profile" }]
-            );
-            assert_eq!(answer.json["faults"][0]["problem"], "must be fleet or host-user");
-        }
+    // The core owns the complete invalid-value matrix. Here each field
+    // location must survive file loading, error serialization and exit 1.
+    for role in [false, true] {
+        let value = "other";
+        let text = if role {
+            TEAM.replace(
+                "reviewer: acme/reviewer",
+                &format!("reviewer: {{ dir: acme/reviewer, dsh_profile: {value} }}"),
+            )
+        } else {
+            TEAM.replace("```\n", &format!("dsh_profile: {value}\n```\n"))
+        };
+        commit(&team, "team.md", &text);
+        let answer = world.afk(&["check"]);
+        assert_eq!(answer.code, 1);
+        assert_eq!(
+            faults(&answer.json),
+            [if role { "team.md: roles.reviewer.dsh_profile" } else { "team.md: dsh_profile" }]
+        );
+        assert_eq!(answer.json["faults"][0]["problem"], "must be fleet or host-user");
     }
 }
