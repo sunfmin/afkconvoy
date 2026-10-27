@@ -309,6 +309,12 @@ impl Limits {
                     || to.starts_with("refs/convoy/delivery-pr/")
                     || to.starts_with("refs/heads/convoy-delivery-pr/")
                     || to.starts_with("convoy-delivery-pr/")
+                    || to.starts_with("refs/convoy/delivery-evidence/")
+                    || to.starts_with("refs/heads/convoy-delivery-evidence/")
+                    || to.starts_with("convoy-delivery-evidence/")
+                    || to.starts_with("refs/convoy/delivery-settled/")
+                    || to.starts_with("refs/heads/convoy-delivery-settled/")
+                    || to.starts_with("convoy-delivery-settled/")
             });
             if let Some(pushed) = target {
                 return Some(format!(

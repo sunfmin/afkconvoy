@@ -98,6 +98,7 @@ fn main() {
                 json!({"number":pr["number"], "body":pr["body"].as_str().unwrap_or(""),
                     "head_branch":pr["headRefName"], "base_branch":pr["baseRefName"].as_str().unwrap_or("main"),
                     "state":pr["state"], "draft":pr["draft"].as_bool().unwrap_or(false),
+                    "merged":pr["merged"].as_bool().unwrap_or(false) || pr["state"] == "merged",
                     "url":format!("https://gh/pull/{}", pr["number"]), "fork":is_fork(pr)}).to_string()
             }).collect();
             st.finish(&rows.join("\n"), 0, "")
@@ -171,6 +172,14 @@ fn main() {
         ["pr", "close", number, ..] => {
             let number = number.to_string();
             pr_close(&mut st, &number)
+        }
+        ["pr", "edit", number, ..] => {
+            let number = number.to_string();
+            pr_edit(&mut st, &number)
+        }
+        ["pr", "ready", number, ..] => {
+            let number = number.to_string();
+            pr_ready(&mut st, &number)
         }
         ["api", endpoint, "--jq", ".sha"] if endpoint.ends_with("/commits/HEAD") => {
             let name = endpoint.trim_start_matches("repos/").trim_end_matches("/commits/HEAD");
@@ -551,6 +560,30 @@ fn pr_create(st: &mut State) -> ! {
         st.finish("", 1, "connection lost after PR creation\n");
     }
     st.finish(&format!("https://gh/pull/{number}"), 0, "")
+}
+
+fn pr_edit(st: &mut State, number: &str) -> ! {
+    let body = st.opt("--body").map(str::to_string);
+    let wanted: u64 = number.parse().unwrap();
+    let rows = st.doc["prs"].as_array_mut().unwrap();
+    let Some(pr) = rows.iter_mut().find(|pr| pr["number"] == wanted) else {
+        st.finish("", 1, "gh: no pull request found\n")
+    };
+    if let Some(body) = body {
+        pr["body"] = json!(body);
+    }
+    st.finish("", 0, "")
+}
+
+fn pr_ready(st: &mut State, number: &str) -> ! {
+    let undo = st.has("--undo");
+    let wanted: u64 = number.parse().unwrap();
+    let rows = st.doc["prs"].as_array_mut().unwrap();
+    let Some(pr) = rows.iter_mut().find(|pr| pr["number"] == wanted && is_open(pr)) else {
+        st.finish("", 1, "gh: no open pull request found\n")
+    };
+    pr["draft"] = json!(undo);
+    st.finish("", 0, "")
 }
 
 fn pr_close(st: &mut State, number: &str) -> ! {

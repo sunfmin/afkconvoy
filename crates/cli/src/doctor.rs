@@ -1817,7 +1817,7 @@ fn exclusive_json(standing: Result<(Vec<Ticket>, bool)>, now: u64) -> Value {
 /// `afkconvoy doctor`, for the fleet of `host` in the checkout `repo`:
 ///
 ///   {"host", "fleet", "claims", "issues", "waiting_on_human": [{"issue", "title",
-///    "why", "url", "since", "answer"}], "candidates", "findings": [{"severity", "what",
+///    "why", "url", "since", "answer"}], "candidates", "deliveries", "findings": [{"severity", "what",
 ///    "evidence", "fix"}]}
 ///
 /// An answer with a `critical` finding is an `Unwell` error: the same object,
@@ -1946,11 +1946,14 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String], look: &Look) ->
         Ok(list) => crate::tracker::json_of(&list, repo),
         Err(error) => json!({"error": format!("{error:#}")}),
     };
+    let deliveries = crate::delivery::reported(repo, now)
+        .unwrap_or_else(|error| vec![json!({ "error": format!("{error:#}") })]);
     let answer = json!({
         "host": host,
         "fleet": fleet,
         "claims": Value::Array(claims),
         "codex_workers": crate::codex_launch::workers(repo),
+        "deliveries": deliveries,
         "issues": issues,
         "targets": state.as_ref().map(|state| state.targets.clone())
             .unwrap_or_else(|error| json!({"error": error})),

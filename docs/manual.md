@@ -458,9 +458,11 @@ With `--all` it reads the checkout list (checkouts.json in the cache directory) 
 
 ##### What it answers
 
-{"host", "fleet", "claims", "issues", "waiting_on_human", "refusals", "candidates", "findings"}
+{"host", "fleet", "claims", "issues", "waiting_on_human", "refusals", "candidates", "findings", "deliveries"}
 
 `targets` lists open tracker tasks with issue, tracker_issue, delivery (null when unattached), target_branch, configured_base and pinned; an invalid record or missing branch adds error rather than selecting the configured base. A failed listing is {error}.
+
+`deliveries` lists each Jira delivery with its final PR or pending reason, whether recorded delivery evidence certifies the current delivery head, final-target head and what each attached task came to, and any settlement. Reading writes nothing.
 
 - `host`: what this host has of what the fleet needs:
 
@@ -593,6 +595,8 @@ The rebuild asks GitHub twice, side by side with one listing of the remote, howe
 {"frontier", "excluded", "waiting_on_human", "mine", "peer_live", "stale", "stale_closed", "free_slots", "now", "locks", "concurrency", "tracker", "admission", "host_kit", "worker_no_proxy"} — "held_back" while admission holds; and in a bound repo "intake", "left_out", "unmatched" and "nothing_safe" where they name some, "patrols" where it names some; and "slow_gate" while the gate is slow; and "caster" while one runs or is due; and "cut" in a repo that turns cutting on, or while a cut is going or on the base branch
 
 `targets` lists open tracker tasks with issue, tracker_issue, delivery (null when unattached), target_branch, configured_base and pinned. Invalid destinations report error per task without falling back to the configured base.
+
+`deliveries` lists each Jira delivery with its final PR or pending reason, whether recorded delivery evidence certifies the current delivery head, final-target head and what each attached task came to, and any settlement. Reading writes nothing.
 
 - `host_kit`: {path, refreshed, harnesses}: this host's kit file; cast, whether this host enables automatic model casting (false by default); when it was last written, in epoch seconds — by `kit`, by `run`, or by a tick's daily refresh (`afkconvoy kit --help`); each harness in order of preference as {harness, command, models, default_model, research_pending}, each model {model, names, good_at, settled, sources, researched_at}. `default_model` is true when the harness has no placed model, so a worker runs its login's default with no model flag; `research_pending` is true while it holds a model awaiting research. good_at is what a caster is told, or a research marker; settled is a reason research found it unsuitable. The research states are defined in `afkconvoy kit --help`. sources holds dated URLs and researched_at the research time, absent where none succeeded. With an unreadable kit, {path, error}. `afkconvoy kit` writes it again.
 - `frontier`: issues due to dispatch, with their stage and cast {harness, model, why}. Harness priority is kit order within role eligibility; model labels only match within the selected harness. `selection` lists kit order, eligible candidates, skipped candidates and health evidence.
@@ -1057,6 +1061,7 @@ Not a JSON object: one HTML document on stdout, complete in itself, with no addr
   - a stage: the number in its stop is the workers at it; under it the issues at work — each with its worker's state: busy, stopped and for how long, or no worker — then the queued, which are the frontier, and in a bound repo those held back there, with why
   - `Patrols`: in a bound repo that names patrols: each, with what it is doing or what holds it back — one held by its `max_runs_a_day` says until when, as a time of day in UTC and how long from now
   - left alone: every other open issue, with the reason `plan` gives under `excluded`
+  - Jira deliveries, when the repo has any: each delivery's reference, its identity, and whether it is ready for a human, not ready, or settled, as `doctor` answers under `deliveries`
 
 Errors, as {"error": …} with a non-zero exit: the checkout list cannot be read; of a checkout named — or of the one it is run in, where the list holds none — the config, GitHub or the remote cannot be read. A checkout on the list that cannot be rebuilt is said so in its part, with why, and every other is shown.
 
@@ -1322,6 +1327,8 @@ Run `afkconvoy delivery -C <checkout> --jira https://example.atlassian.net/brows
 
 For discussion and decomposition, create the delivery once without --issue, take its returned `delivery` identity, and use `afkconvoy flows --delivery <identity>`. Its line opens a non-runnable task; its intake_line records membership and then enables dispatch. For example, create ABC-123 and ABC-456 with full Jira URLs and --final-target <branch>. Use ABC-123's flows line twice, then `afkconvoy intake --issue 11 --delivery <ABC-123-identity>` and the same for issue 12. Use ABC-456's line once and intake issue 13 with <ABC-456-identity>. In a bound repo add the chosen --workflow to each intake. Tasks 11 and 12 target ABC-123's delivery branch; task 13 targets ABC-456's. Their internal PRs land only there. Repeated delivery inspection lists their tracker issue identities without writing anything or creating tasks. `afkconvoy plan` and `afkconvoy doctor` answer `targets` with delivery membership, resolved target_branch, configured_base, whether it is pinned, and per-task errors; `afkconvoy show --issue <n>` also shows delivery and target_branch for a bound task.
 
+Run `afkconvoy delivery -C <checkout> --jira <url> --handoff` once every attached task has landed. It checks the whole attached set and what actually landed, gates the combined delivery against the current final target without publishing that merge, and marks the same final PR ready for a human. Repeat it after a new task, a new delivery commit, or a moved final target: an older green check does not certify later work. After a human merges or closes that PR, run it again to record what happened.
+
 ##### Who runs it
 
 The operator. Jira is an external reference; no Jira login or synchronization is performed.
@@ -1332,13 +1339,19 @@ The full HTTPS Jira browse URL, including site and optional context path, and th
 
 A task cuts from the delivery branch and lands its internal PR only there. The final review PR is opened as a Draft as soon as a meaningful diff exists, after task landing or on an acting tick. No diff leaves creation pending without empty commits or PR attempts. Its number lives once in the subordinate delivery-pr/<identity> receipt. Each invocation discovers actual remote branches, records and all PR states first. Later tasks reuse the same final PR even after it is closed or merged. A human owns colleague review and merging the final PR; ordinary dispatch, landing, watch and recovery exclude it.
 
+`--handoff` reads the delivery definition, every attached task's issue state, claims, open internal PRs, blockers, landing candidates and linked worktrees, plus the delivery branch and the current final target. A green check records that snapshot at delivery-evidence/<identity>, updates the one final PR's body with the Jira reference, what each attached task came to and the verification evidence, and marks that PR ready. It does not open a second final PR, does not publish the merge to the final target, and does not change reviews. A conflict or a red gate leaves both branches as they are and returns the PR to draft without recording a green snapshot. A merged or closed final PR is observed once at delivery-settled/<identity>; repeating the observation does not write another record or remove other work.
+
 ##### What it answers
 
-{"jira", "delivery", "repository", "record", "branch", "final_target", "final_pr", "tasks"}, and "woke" after creation. final_pr is {number, url, state, draft} or {pending: reason}; tasks lists the attached tracker issue identities. Inspection writes nothing. Errors answer {"error": …} with a non-zero exit.
+{"jira", "delivery", "repository", "record", "branch", "final_target", "final_pr", "tasks"}, and "woke" after creation. final_pr is {number, url, state, draft, merged} or {pending: reason}; tasks lists the attached tracker issue identities. Inspection writes nothing and adds `handoff`, the read-only summary `plan` and `doctor` list under deliveries. Errors answer {"error": …} with a non-zero exit.
+
+`--handoff` answers {jira, delivery, branch, final_target, final_pr, tasks, ready, reasons, gate, settlement, discrepancy, delivered, reviews}, and "woke". tasks is each attached issue with `result` (implemented, not_planned, abandoned or incomplete) and blocking reasons. ready is true only when the evidence just recorded certifies those heads and what each task came to and the final PR is open and not a draft. reasons names every attached task that is not implemented, a conflict, a red gate, or a closed or incomplete merge. gate is {status, source, tree} after an aggregate check, or {status: red, detail} or {status: conflict}. settlement is the one observation, or null. delivered is true only when that observation is a complete merge onto the declared final target and still matches. reviews is "not changed". A task closed as not planned or abandoned is not implemented. An empty attached set is not ready.
 
 ##### What trips you up
 
 Ticket keys alone are not references: different Jira sites may reuse a key. An unrelated existing branch, conflicting final target, claimed task with another target, ambiguous PRs, unreadable record or missing owned branch refuses with a diagnostic. Restore inconsistent remote metadata before continuing attached tasks; nothing falls back to the configured base. A ticket spanning code repos has a separate delivery and final PR in each. To hand a task to the fleet, give it its ready or flow label after attaching it.
+
+A green gate of one task does not make the final PR ready. `--handoff` is the check of the whole delivery. The fleet, ordinary landing, recovery and watches do not merge the final PR because it is green or names a delivery. Closing it without a merge is not delivery: the observation says it needs action. A merge while an attached task is not implemented is a discrepancy, not delivery of the whole Jira ticket. A new task, a new delivery commit, or a moved final target makes an older snapshot not certify; run `--handoff` again. It withdraws readiness with `gh pr ready --undo` or marks the same PR ready with `gh pr ready`. It does not dismiss reviews.
 
 ##### Which checkout it is about
 
@@ -1359,6 +1372,7 @@ afkconvoy delivery [OPTIONS] --jira <JIRA>
 - `--jira <JIRA>`: Full HTTPS Jira browse URL, including the site
 - `--final-target <FINAL_TARGET>`: Existing branch on origin; required for creation and attachment
 - `--issue <ISSUE>`: Open tracker task to attach before dispatch or intake
+- `--handoff`: Check the attached tasks, gate the combined delivery against its final target, and hand the same final PR to a human
 - `-C <CHECKOUT>`: The checkout it is about, or a directory in it [default: the one it is run in]
 
 #### `afkconvoy patrol-now`
@@ -4746,6 +4760,18 @@ _Avoid_: task branch (the worker's own source branch)
 **Final review PR**:
 A Jira delivery's single PR from its delivery branch to its final target, opened as a Draft once there is a meaningful diff. A human owns colleague review and merging it; ordinary fleet task landing never selects it.
 _Avoid_: task PR (an internal contribution), final task
+
+**Delivery hand-off**:
+The explicit check that a Jira delivery's attached tasks are implemented, that its delivery branch merges cleanly onto its current final target, and that the existing gate passes on that merge without publishing to the final target. A green check updates the one final review PR and marks it ready for a human. The fleet does not merge it.
+_Avoid_: auto-land, Jira transition
+
+**Delivery evidence**:
+The record of one delivery hand-off: the delivery head, the final-target head, and what it checked of each attached task. A later commit, a moved final target, or a different task set does not match it. A green gate of an individual task does not stand in for it.
+_Avoid_: child gate, approval (a reviewer's approval on GitHub)
+
+**Delivery settlement**:
+The one observation that a final review PR merged into its declared final target, or closed without merging. Repeating it does not write another record or remove other work. A merge while attached work is incomplete is a discrepancy, not delivery of the whole Jira ticket.
+_Avoid_: Jira resolution, done (a Jira ticket marked done)
 
 ##### Teams and roles
 

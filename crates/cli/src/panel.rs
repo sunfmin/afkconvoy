@@ -175,6 +175,8 @@ pub struct Panel {
     pub codex_workers: Vec<serde_json::Value>,
     /// The same authoritative candidate interpretation doctor reads.
     pub candidates: Vec<serde_json::Value>,
+    /// Each Jira delivery, as one line: its reference, identity and handoff detail.
+    pub deliveries: Vec<String>,
 }
 
 /// A worker that is hot, as the page shows it.
@@ -425,6 +427,7 @@ impl Panel {
             nothing_safe: vec![],
             codex_workers: vec![],
             candidates: vec![],
+            deliveries: vec![],
         }
     }
 
@@ -631,6 +634,8 @@ pub fn read(
     .ok()
     .and_then(|rows| rows.as_array().cloned())
     .unwrap_or_default();
+    panel.deliveries = crate::delivery::panel_lines(&fleet.repo, fleet.now)
+        .unwrap_or_else(|error| vec![format!("deliveries could not be read: {error:#}")]);
     panel.declared = set.declared();
     panel.held = set.mine.len() - panel.declared;
     panel.bound = set.bound(fleet.config.concurrency()) - panel.declared;
@@ -1493,6 +1498,13 @@ fn repo(out: &mut String, at: usize, panel: &Panel) {
         }
         out.push_str("</ul></section>");
     }
+    if !panel.deliveries.is_empty() {
+        out.push_str("<section class=\"deliveries\"><h3>Jira deliveries</h3><ul>");
+        for line in &panel.deliveries {
+            let _ = write!(out, "<li>{}</li>", esc(line));
+        }
+        out.push_str("</ul></section>");
+    }
 
     match &panel.tick {
         Some(tick) => {
@@ -1691,6 +1703,7 @@ mod tests {
             nothing_safe: vec![],
             codex_workers: vec![],
             candidates: vec![],
+            deliveries: vec![],
         }
     }
 

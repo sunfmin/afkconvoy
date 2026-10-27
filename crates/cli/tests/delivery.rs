@@ -544,3 +544,357 @@ fn invalid_context_and_existing_evidence_refuse_before_a_runnable_label() {
     );
     assert!(world.labels(9).is_empty());
 }
+
+fn handoff(world: &World) -> Value {
+    world.afk(&["delivery", "--jira", JIRA, "--handoff"]).ok()
+}
+
+fn refs_under(world: &World, prefix: &str) -> Vec<String> {
+    world
+        .remote(&["for-each-ref", "--format=%(refname)", prefix])
+        .lines()
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn tip(world: &World, branch: &str) -> String {
+    world.remote(&["rev-parse", &format!("refs/heads/{branch}")])
+}
+
+/// Lands one attached task on the delivery branch and lets the fleet settle
+/// the worker's claim, which is what leaves the task implemented.
+fn contribute(world: &World, delivery: &Value, issue: u64, file: &str, text: &str, now: u64) {
+    let number = issue.to_string();
+    let started = world
+        .afk(&[
+            "dispatch",
+            "--issue",
+            &number,
+            "--instance",
+            "alpha",
+            "--host",
+            "h1",
+            "--now",
+            &now.to_string(),
+        ])
+        .ok();
+    let dir = PathBuf::from(started["worktree"].as_str().unwrap());
+    commit(&dir, file, text);
+    git(&dir, &["push", "-q", "origin", "HEAD"]);
+    let branch = started["branch"].as_str().unwrap().to_string();
+    world.pr(issue * 10, issue, &branch);
+    let target = delivery["branch"].as_str().unwrap().to_string();
+    world.with_gh(|gh| {
+        let pr = gh["prs"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|pr| pr["number"] == json!(issue * 10))
+            .unwrap();
+        pr["baseRefName"] = json!(target);
+    });
+    let landed = world.afk_in(&dir, &["land", "--issue", &number]).ok();
+    assert_eq!(landed["outcome"], "merged", "{landed}");
+    assert_eq!(landed["target_branch"], delivery["branch"]);
+    world
+        .afk(&["tick", "--instance", "alpha", "--host", "h1", "--now", &(now + 1000).to_string()])
+        .ok();
+}
+
+fn two_tasks(world: &World) -> Value {
+    world.set_gate("true");
+    world.issue(7, &["ready-for-agent"]);
+    let delivery = create(world, Some("7"));
+    contribute(world, &delivery, 7, "seven.txt", "task seven\n", 1000);
+    world.issue(8, &["ready-for-agent"]);
+    create(world, Some("8"));
+    contribute(world, &delivery, 8, "eight.txt", "task eight\n", 3000);
+    delivery
+}
+
+fn one_task(world: &World) -> Value {
+    world.set_gate("true");
+    world.issue(7, &["ready-for-agent"]);
+    let delivery = create(world, Some("7"));
+    contribute(world, &delivery, 7, "seven.txt", "task seven\n", 1000);
+    delivery
+}
+
+#[test]
+fn two_tasks_hand_off_one_pr_and_a_human_merge_is_reconstructed_after_restart() {
+    let world = World::new();
+    let delivery = two_tasks(&world);
+    let branch = delivery["branch"].as_str().unwrap().to_string();
+    let main = tip(&world, "main");
+    assert_eq!(final_prs(&world).len(), 1);
+    assert_eq!(final_prs(&world)[0]["draft"], true);
+    assert!(refs_under(&world, "refs/convoy/delivery-evidence").is_empty());
+    assert!(
+        !refs_under(&world, "refs/convoy/gate").is_empty(),
+        "each task landing records its own green gate"
+    );
+
+    world.gh_calls();
+    let handed = handoff(&world);
+    assert_eq!(handed["ready"], true, "{handed}");
+    assert_eq!(handed["delivered"], false, "{handed}");
+    assert_eq!(handed["reviews"], "not changed");
+    assert_eq!(handed["gate"]["status"], "green", "{handed}");
+    assert_eq!(handed["reasons"], json!([]), "{handed}");
+    assert_eq!(tip(&world, "main"), main, "handoff does not publish to the final target");
+    assert_eq!(final_prs(&world).len(), 1);
+    assert_eq!(final_prs(&world)[0]["draft"], false);
+    let body = final_prs(&world)[0]["body"].as_str().unwrap().to_string();
+    assert!(body.contains("<!--convoy:delivery"), "{body}");
+    assert!(body.contains(JIRA), "{body}");
+    assert!(body.contains("#7 implemented"), "{body}");
+    assert!(body.contains("#8 implemented"), "{body}");
+    assert!(body.contains("Delivery head:"), "{body}");
+    assert!(body.contains("Gate tree:"), "{body}");
+    assert_eq!(refs_under(&world, "refs/convoy/delivery-evidence").len(), 1);
+    let calls = world.gh_calls();
+    assert!(
+        calls.iter().flatten().all(|arg| arg != "review" && !arg.contains("dismiss")),
+        "reviews stay as they are: {calls:?}"
+    );
+
+    let again = handoff(&world);
+    assert_eq!(again["ready"], true, "{again}");
+    assert_eq!(final_prs(&world).len(), 1);
+    assert_eq!(refs_under(&world, "refs/convoy/delivery-evidence").len(), 1);
+    assert_eq!(tip(&world, "main"), main);
+
+    world.issue(9, &["ready-for-agent"]);
+    world.with_gh(|gh| {
+        let pr = gh["prs"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|pr| pr["headRefName"].as_str().unwrap().starts_with("delivery/jira-"))
+            .unwrap();
+        let body = pr["body"].as_str().unwrap().to_string();
+        pr["body"] = json!(format!("{body}\nCloses #9\n"));
+        pr["linked"] = json!([9]);
+    });
+    let refused = world.afk(&["land", "--issue", "9"]).error();
+    assert!(refused.contains("no open PR"), "{refused}");
+    assert_eq!(tip(&world, "main"), main);
+    world.afk(&["tick", "--instance", "alpha", "--host", "h1", "--now", "5000"]).ok();
+    assert_eq!(tip(&world, "main"), main, "a tick does not land the final PR");
+
+    let inspected = world.afk(&["delivery", "--jira", JIRA]).ok();
+    assert_eq!(inspected["tasks"], json!(["#7", "#8"]));
+    assert!(inspected["tasks"][0].is_string());
+    assert_eq!(inspected["handoff"]["certifies"], true, "{inspected}");
+    let plan = world.afk(&["plan"]).ok();
+    let doctor = world.afk(&["doctor"]).ok();
+    assert_eq!(plan["deliveries"][0]["certifies"], true, "{plan}");
+    assert_eq!(plan["deliveries"][0]["detail"], "ready for human review");
+    assert_eq!(doctor["deliveries"][0]["detail"], plan["deliveries"][0]["detail"]);
+    // `panel` prints one HTML document, not a JSON object.
+    let out =
+        world.command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone).arg("panel").output().unwrap();
+    let html = String::from_utf8(out.stdout).unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(html.contains("Jira deliveries"), "{html}");
+    assert!(html.contains(JIRA), "{html}");
+
+    git(&world.clone, &["branch", "kept-aside"]);
+    git(&world.clone, &["push", "-q", "origin", "kept-aside"]);
+    let aside = tip(&world, "kept-aside");
+    let delivery_tip = tip(&world, &branch);
+    git(&world.clone, &["fetch", "-q", "origin", &branch]);
+    git(&world.clone, &["merge", "--ff-only", &format!("origin/{branch}")]);
+    git(&world.clone, &["push", "-q", "origin", "HEAD:main"]);
+
+    let settled = handoff(&world);
+    assert_eq!(settled["delivered"], true, "{settled}");
+    assert_eq!(settled["ready"], false, "{settled}");
+    assert_eq!(settled["discrepancy"], false, "{settled}");
+    assert_eq!(settled["settlement"]["complete"], true, "{settled}");
+    assert_eq!(settled["settlement"]["observed"], "merged");
+    assert_eq!(settled["reviews"], "not changed");
+    let settlement = refs_under(&world, "refs/convoy/delivery-settled");
+    assert_eq!(settlement.len(), 1, "{settlement:?}");
+    let reread = handoff(&world);
+    assert_eq!(reread["delivered"], true, "{reread}");
+    assert_eq!(refs_under(&world, "refs/convoy/delivery-settled"), settlement);
+    assert_eq!(tip(&world, &branch), delivery_tip);
+    assert_eq!(tip(&world, "kept-aside"), aside);
+    assert_eq!(world.remote(&["show", "refs/heads/main:seven.txt"]), "task seven");
+    assert_eq!(world.remote(&["show", "refs/heads/main:eight.txt"]), "task eight");
+}
+
+#[test]
+fn a_late_task_withdraws_readiness_and_old_evidence_does_not_certify() {
+    let world = World::new();
+    let delivery = two_tasks(&world);
+    let branch = delivery["branch"].as_str().unwrap().to_string();
+    let main = tip(&world, "main");
+    let delivery_tip = tip(&world, &branch);
+    let ready = handoff(&world);
+    assert_eq!(ready["ready"], true, "{ready}");
+    let evidence = refs_under(&world, "refs/convoy/delivery-evidence");
+
+    world.issue(9, &[]);
+    create(&world, Some("9"));
+    let reported = world.afk(&["doctor"]).ok();
+    assert_eq!(reported["deliveries"][0]["certifies"], false, "{reported}");
+    assert_eq!(reported["deliveries"][0]["detail"], "not ready");
+    let withdrawn = handoff(&world);
+    assert_eq!(withdrawn["ready"], false, "{withdrawn}");
+    let reasons = withdrawn["reasons"].to_string();
+    assert!(reasons.contains("#9"), "{reasons}");
+    assert!(reasons.contains("still open"), "{reasons}");
+    assert_eq!(final_prs(&world)[0]["draft"], true);
+    assert_eq!(tip(&world, "main"), main);
+    assert_eq!(tip(&world, &branch), delivery_tip);
+    assert_eq!(refs_under(&world, "refs/convoy/delivery-evidence"), evidence);
+    let inspected = world.afk(&["delivery", "--jira", JIRA]).ok();
+    assert_eq!(inspected["tasks"], json!(["#7", "#8", "#9"]));
+    assert_eq!(inspected["handoff"]["certifies"], false, "{inspected}");
+}
+
+#[test]
+fn a_moved_final_target_with_a_red_gate_preserves_both_branches() {
+    let world = World::new();
+    let delivery = two_tasks(&world);
+    let branch = delivery["branch"].as_str().unwrap().to_string();
+    let ready = handoff(&world);
+    assert_eq!(ready["ready"], true, "{ready}");
+    let delivery_tip = tip(&world, &branch);
+    world.set_gate("false");
+    let main = tip(&world, "main");
+    let red = handoff(&world);
+    assert_eq!(red["ready"], false, "{red}");
+    assert_eq!(red["gate"]["status"], "red", "{red}");
+    assert_eq!(final_prs(&world)[0]["draft"], true);
+    assert_eq!(tip(&world, &branch), delivery_tip);
+    assert_eq!(tip(&world, "main"), main, "a red gate does not move the final target back");
+    assert_ne!(tip(&world, "main"), delivery_tip);
+    let config = std::fs::read_to_string(world.clone.join("docs/agents/afkconvoy.md")).unwrap();
+    assert!(config.contains("gate_command: \"false\""), "{config}");
+    let reported = world.afk(&["doctor"]).ok();
+    assert_eq!(reported["deliveries"][0]["certifies"], false, "{reported}");
+}
+
+#[test]
+fn a_conflict_with_the_final_target_leaves_both_branches_and_withdraws() {
+    let world = World::new();
+    let delivery = one_task(&world);
+    let branch = delivery["branch"].as_str().unwrap().to_string();
+    let ready = handoff(&world);
+    assert_eq!(ready["ready"], true, "{ready}");
+    let delivery_tip = tip(&world, &branch);
+    commit(&world.clone, "seven.txt", "from the final target\n");
+    git(&world.clone, &["push", "-q", "origin", "HEAD:main"]);
+    let main = tip(&world, "main");
+    let conflict = handoff(&world);
+    assert_eq!(conflict["ready"], false, "{conflict}");
+    assert_eq!(conflict["gate"]["status"], "conflict", "{conflict}");
+    assert!(conflict["reasons"].to_string().contains("conflicts"), "{conflict}");
+    assert_eq!(final_prs(&world)[0]["draft"], true);
+    assert_eq!(tip(&world, &branch), delivery_tip);
+    assert_eq!(tip(&world, "main"), main);
+    assert_eq!(world.remote(&["show", &format!("refs/heads/{branch}:seven.txt")]), "task seven");
+}
+
+#[test]
+fn a_closed_unmerged_pr_is_observed_once_and_needs_action() {
+    let world = World::new();
+    let delivery = one_task(&world);
+    let branch = delivery["branch"].as_str().unwrap().to_string();
+    let delivery_tip = tip(&world, &branch);
+    world.with_gh(|gh| {
+        let pr = gh["prs"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|pr| pr["headRefName"].as_str().unwrap().starts_with("delivery/jira-"))
+            .unwrap();
+        pr["state"] = json!("closed");
+        pr["merged"] = json!(false);
+    });
+    let observed = handoff(&world);
+    assert_eq!(observed["delivered"], false, "{observed}");
+    assert_eq!(observed["settlement"]["observed"], "closed", "{observed}");
+    assert_eq!(observed["settlement"]["complete"], false, "{observed}");
+    assert!(observed["reasons"].to_string().contains("needs action"), "{observed}");
+    let settlement = refs_under(&world, "refs/convoy/delivery-settled");
+    assert_eq!(settlement.len(), 1, "{settlement:?}");
+    let again = handoff(&world);
+    assert_eq!(again["delivered"], false, "{again}");
+    assert_eq!(refs_under(&world, "refs/convoy/delivery-settled"), settlement);
+    assert_eq!(tip(&world, &branch), delivery_tip);
+    let reported = world.afk(&["plan"]).ok();
+    assert_eq!(reported["deliveries"][0]["detail"], "final PR closed unmerged; needs action");
+}
+
+#[test]
+fn a_merged_flag_without_the_commit_on_the_target_is_not_delivery() {
+    let world = World::new();
+    let delivery = one_task(&world);
+    let main = tip(&world, "main");
+    world.with_gh(|gh| {
+        let pr = gh["prs"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|pr| pr["headRefName"].as_str().unwrap().starts_with("delivery/jira-"))
+            .unwrap();
+        pr["state"] = json!("merged");
+        pr["merged"] = json!(true);
+    });
+    let observed = handoff(&world);
+    assert_eq!(observed["delivered"], false, "{observed}");
+    assert_eq!(observed["settlement"]["complete"], false, "{observed}");
+    assert_eq!(observed["settlement"]["on_target"], false, "{observed}");
+    assert!(
+        observed["reasons"].to_string().contains("not on the declared final target"),
+        "{observed}"
+    );
+    assert_eq!(tip(&world, "main"), main);
+    let settlement = refs_under(&world, "refs/convoy/delivery-settled");
+    assert_eq!(handoff(&world)["delivered"], false);
+    assert_eq!(refs_under(&world, "refs/convoy/delivery-settled"), settlement);
+    let _ = delivery;
+}
+
+#[test]
+fn a_task_closed_as_not_planned_is_not_implemented() {
+    let world = World::new();
+    world.set_gate("true");
+    world.issue(7, &["ready-for-agent"]);
+    create(&world, Some("7"));
+    world.close(7, "not_planned");
+    let handed = handoff(&world);
+    assert_eq!(handed["ready"], false, "{handed}");
+    assert_eq!(handed["delivered"], false, "{handed}");
+    let reasons = handed["reasons"].to_string();
+    assert!(reasons.contains("not planned"), "{reasons}");
+    assert!(handed["tasks"][0]["result"] == json!("not_planned"), "{handed}");
+    assert!(refs_under(&world, "refs/convoy/delivery-evidence").is_empty());
+    assert!(final_prs(&world).is_empty());
+}
+
+#[test]
+fn a_merge_while_an_attached_task_is_open_is_not_the_whole_delivery() {
+    let world = World::new();
+    let delivery = one_task(&world);
+    let branch = delivery["branch"].as_str().unwrap().to_string();
+    world.issue(8, &[]);
+    create(&world, Some("8"));
+    git(&world.clone, &["fetch", "-q", "origin", &branch]);
+    git(&world.clone, &["merge", "--ff-only", &format!("origin/{branch}")]);
+    git(&world.clone, &["push", "-q", "origin", "HEAD:main"]);
+    let observed = handoff(&world);
+    assert_eq!(observed["delivered"], false, "{observed}");
+    assert_eq!(observed["settlement"]["observed"], "merged", "{observed}");
+    assert_eq!(observed["settlement"]["complete"], false, "{observed}");
+    assert!(observed["reasons"].to_string().contains("not delivered"), "{observed}");
+    let settlement = refs_under(&world, "refs/convoy/delivery-settled");
+    assert_eq!(handoff(&world)["settlement"]["complete"], false);
+    assert_eq!(refs_under(&world, "refs/convoy/delivery-settled"), settlement);
+    assert_eq!(tip(&world, &branch), world.remote(&["rev-parse", "refs/heads/main"]));
+}
