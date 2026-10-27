@@ -3,9 +3,11 @@
 //! cooldown. Reads of this note precede requests, including in a later tick or
 //! another CLI process. Losing a note costs a rejected request, never a fact.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::Mutex;
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -64,37 +66,64 @@ fn segment(text: &str) -> String {
     text.bytes().map(|b| format!("{b:02x}")).collect()
 }
 
+static HOSTS: Mutex<BTreeMap<PathBuf, String>> = Mutex::new(BTreeMap::new());
+static SCOPES: Mutex<BTreeMap<String, Result<Scope, String>>> = Mutex::new(BTreeMap::new());
+static OBSERVED: Mutex<BTreeSet<PathBuf>> = Mutex::new(BTreeSet::new());
+
+/// The GitHub host a checkout uses, read once per checkout in this process.
+fn host(gh: &GitHub) -> String {
+    if let Ok(host) = std::env::var("GH_HOST") {
+        return host.to_ascii_lowercase();
+    }
+    let mut hosts = HOSTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    hosts
+        .entry(gh.dir.clone())
+        .or_insert_with_key(|dir| {
+            let host = Command::new("git")
+                .current_dir(dir)
+                .args(["remote", "get-url", "origin"])
+                .output()
+                .ok()
+                .and_then(|out| String::from_utf8(out.stdout).ok())
+                .and_then(|remote| {
+                    let remote = remote.trim();
+                    if let Some((_, rest)) = remote.split_once("://") {
+                        rest.split('/').next()?.rsplit('@').next()?.split(':').next()
+                    } else if let Some((_, rest)) = remote.split_once('@') {
+                        rest.split(':').next()
+                    } else {
+                        None
+                    }
+                    .map(str::to_string)
+                })
+                .unwrap_or_else(|| "github.com".into());
+            host.to_ascii_lowercase()
+        })
+        .clone()
+}
+
 impl Scope {
+    /// The login's quota scope on this host, discovered once in this process.
     pub(crate) fn of(gh: &GitHub) -> Result<Self> {
-        let host = std::env::var("GH_HOST")
-            .ok()
-            .or_else(|| {
-                let out = Command::new("git")
-                    .current_dir(&gh.dir)
-                    .args(["remote", "get-url", "origin"])
-                    .output()
-                    .ok()?;
-                let remote = String::from_utf8(out.stdout).ok()?;
-                let remote = remote.trim();
-                let host = if let Some((_, rest)) = remote.split_once("://") {
-                    rest.split('/').next()?.rsplit('@').next()?.split(':').next()?
-                } else if let Some((_, rest)) = remote.split_once('@') {
-                    rest.split(':').next()?
-                } else {
-                    return None;
-                };
-                Some(host.to_string())
-            })
-            .unwrap_or_else(|| "github.com".into())
-            .to_ascii_lowercase();
+        let host = host(gh);
+        let mut scopes = SCOPES.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(scope) = scopes.get(&host) {
+            return scope.clone().map_err(|error| anyhow::anyhow!(error));
+        }
+        let made = Self::discover(gh, &host).map_err(|error| format!("{error:#}"));
+        scopes.insert(host, made.clone());
+        made.map_err(|error| anyhow::anyhow!(error))
+    }
+
+    fn discover(gh: &GitHub, host: &str) -> Result<Self> {
         // `auth status` makes hidden API calls (GraphQL for env tokens).
         // The configured active user is local; an overriding token needs its
         // own authoritative identity, bound to an opaque credential fingerprint.
-        let local = gh.raw(&["config", "get", "user", "--host", &host]).unwrap_or_default();
+        let local = gh.raw(&["config", "get", "user", "--host", host]).unwrap_or_default();
         let local = local.trim();
         let login = match credential_fingerprint(gh, local)? {
             None => local.to_string(),
-            Some(key) => environment_login(gh, &host, &key)?,
+            Some(key) => environment_login(gh, host, &key)?,
         };
         if login.is_empty() || login.lines().count() != 1 {
             bail!(
@@ -102,8 +131,8 @@ impl Scope {
             );
         }
         let dir =
-            crate::copies::cache()?.join("github-quota").join(segment(&host)).join(segment(&login));
-        Ok(Self { dir, host, login })
+            crate::copies::cache()?.join("github-quota").join(segment(host)).join(segment(&login));
+        Ok(Self { dir, host: host.to_string(), login })
     }
 
     pub(crate) fn read(&self, name: &str) -> Result<Observation> {
@@ -163,7 +192,14 @@ impl Scope {
 
     /// The rate-limit endpoint has its own exemption from primary quotas.
     /// An unavailable observation never clears an exhaustion already seen.
+    /// At most one observation is made for this login in this process.
     pub(crate) fn observe(&self, gh: &GitHub) -> Result<()> {
+        {
+            let mut observed = OBSERVED.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            if !observed.insert(self.dir.clone()) {
+                return Ok(());
+            }
+        }
         let out = match gh.raw(&["api", "rate_limit", "--hostname", &self.host]) {
             Ok(out) => out,
             Err(error) => {

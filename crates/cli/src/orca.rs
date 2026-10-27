@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::rc::Rc;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use afkconvoy_core::casting::CASTER_WORKTREE;
@@ -545,6 +545,17 @@ pub struct Source {
     pub id: String,
 }
 
+static REPOS: Mutex<Option<Result<Value, String>>> = Mutex::new(None);
+
+/// Orca's host-wide repo listing, read once in this process.
+fn repo_list() -> Result<Value> {
+    let mut listed = REPOS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if listed.is_none() {
+        *listed = Some(orca(&["repo", "list"]).map_err(|error| format!("{error:#}")));
+    }
+    listed.as_ref().expect("set above").clone().map_err(|error| anyhow!(error))
+}
+
 impl Source {
     /// The orca repo whose path is this checkout's main worktree.
     pub fn of(repo: &Repo) -> Result<Source> {
@@ -560,7 +571,7 @@ impl Source {
 
     /// The orca repo whose path is `main`; `None` when orca knows none there.
     fn at(main: &Path) -> Result<Option<Source>> {
-        let listed = orca(&["repo", "list"])?;
+        let listed = repo_list()?;
         let rows = listed["repos"].as_array().cloned().unwrap_or_default();
         let found = rows
             .iter()
@@ -582,6 +593,7 @@ fn same_dir(a: &Path, b: &Path) -> bool {
 pub fn watch_directory(directory: &Path) -> Result<()> {
     if Source::at(directory)?.is_none() {
         orca(&["repo", "add", "--path", &directory.display().to_string()])?;
+        *REPOS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
     }
     Ok(())
 }

@@ -1842,6 +1842,7 @@ struct Look {
     readings: Readings,
     host: Map<String, Value>,
     findings: Vec<Finding>,
+    trackers: crate::tracker::Public,
 }
 
 /// What `doctor` reads of the fleet of `host` in the checkout `repo`, under
@@ -1885,7 +1886,7 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String], look: &Look) ->
     };
     let mut found = findings(&seen);
     found.extend(bounded);
-    found.extend(crate::tracker::findings(repo));
+    found.extend(look.trackers.findings(repo));
     found.extend(crate::paused::findings(now));
     found.extend(host_runner::findings());
     found.extend(crate::host_watch::finding());
@@ -1994,7 +1995,7 @@ impl Look {
         let host = host_once(now, &readings, rounds);
         let mut findings = crate::resources::findings(&host["resources"], now);
         findings.extend(crate::kit_research::findings());
-        Look { readings, host, findings }
+        Look { readings, host, findings, trackers: crate::tracker::Public::default() }
     }
 }
 

@@ -558,15 +558,7 @@ impl GitHub {
     fn quota(&self) -> Result<crate::gh_quota::Scope> {
         let mut scope = self.quota.lock().unwrap_or_else(|e| e.into_inner());
         if scope.is_none() {
-            let made = crate::gh_quota::Scope::of(self)?;
-            let now = crate::gh_quota::now();
-            let held = ["core", "graphql", "secondary"]
-                .iter()
-                .any(|name| made.read(name).is_ok_and(|r| r.remaining == Some(0) && r.reset > now));
-            if !held {
-                made.observe(self)?;
-            }
-            *scope = Some(made);
+            *scope = Some(crate::gh_quota::Scope::of(self)?);
         }
         Ok(scope.as_ref().expect("scope was established").clone())
     }
