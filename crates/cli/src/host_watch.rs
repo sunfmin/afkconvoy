@@ -185,7 +185,10 @@ fn read() -> Result<State> {
 }
 
 pub(crate) fn running() -> Result<Option<Watch>> {
-    Ok(read()?.running)
+    match read()?.running {
+        Some(watch) => Ok(Some(watch)),
+        None => watch_terminal::active(),
+    }
 }
 
 /// The running watch, shared with what the host runner answers.
@@ -1189,7 +1192,9 @@ pub fn json(running: Option<&Watch>) -> Value {
 
 /// The host's finding where a look called for a watch no harness could start.
 pub fn finding() -> Option<crate::doctor::Finding> {
-    let why = read().ok()?.unavailable?;
+    let why = read().ok().and_then(|state| state.unavailable).or_else(|| {
+        watch_terminal::read().err().map(|error| watch_terminal::recovery(&format!("{error:#}")))
+    })?;
     Some(crate::doctor::finding(
         crate::doctor::Kind::WatchUnavailable,
         "no harness can start this host's watch".into(),

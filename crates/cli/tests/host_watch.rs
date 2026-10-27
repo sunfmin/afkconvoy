@@ -1377,3 +1377,29 @@ fn uncertain_creation_and_prompt_receipts_pause_across_restarts_and_accept_an_ex
         until(&world, "explicit report settles uncertainty", || ended(&world, "ended"));
     }
 }
+
+#[test]
+fn a_pre_journal_watch_keeps_its_recorded_id_and_captures_public_identity_on_upgrade() {
+    let world = World::new();
+    let dir = operator(&world);
+    paused(&world, "pi", "a fault");
+    run(&world, &dir);
+    let watch = until(&world, "watch", || running(&world));
+    world.kill_host_runner("KILL");
+    let association = world.cache().join("afkconvoy/watch/terminal.json");
+    std::fs::remove_file(&association).unwrap();
+    // The pre-upgrade state still names exactly the Terminal we own. A
+    // title collision must not replace it with the operator's session.
+    world.with_orca(|orca| orca["terminals"][0]["title"] = json!("afkconvoy watch"));
+    run(&world, &dir);
+    until(&world, "the migrated association", || {
+        let bytes = std::fs::read(&association).ok()?;
+        let record: Value = serde_json::from_slice(&bytes).ok()?;
+        (record["phase"] == "running").then_some(record)
+    });
+    assert_eq!(running(&world).unwrap()["terminal"], watch["terminal"]);
+    assert_eq!(starts(&world).len(), 1);
+    let doctor = world.afk(&["doctor"]).json;
+    assert_eq!(doctor["host"]["watch"]["association"]["terminal"], watch["terminal"]);
+    assert!(doctor["host"]["watch"]["association"]["identity"]["ptyId"].is_string());
+}
