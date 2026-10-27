@@ -1,0 +1,124 @@
+[afkconvoy] exclusive: waits behind 6 exclusive commands on this host to run `sh -c cd .afkconvoy-tmp/baseline; date -u "+granted %Y-%m-%dT%H:%M:%SZ"; git rev-parse HEAD; hostname; sysctl -n hw.model hw.logicalcpu hw.memsize; uptime; du -sh target 2>/dev/null || true; sccache --show-stats 2>/dev/null || true; /usr/bin/time -p ./gate.sh`
+granted 2026-10-27T02:57:24Z
+456b24d1683252d0386a3b79c1ec98cb2c342ea7
+FelixMBP14.local
+Mac16,8
+14
+51539607552
+10:57  up 14 days, 17:23, 36 users, load averages: 57.05 44.35 35.86
+Compile requests                   25290
+Compile requests executed          14932
+Cache hits                         11251
+Cache hits (Assembler)               261
+Cache hits (C/C++)                   544
+Cache hits (Rust)                  10446
+Cache misses                        3591
+Cache misses (Rust)                 3591
+Cache hits rate                    75.81 %
+Cache hits rate (Assembler)       100.00 %
+Cache hits rate (C/C++)           100.00 %
+Cache hits rate (Rust)             74.42 %
+Cache timeouts                         0
+Cache read errors                      0
+Forced recaches                        0
+Cache write errors                     0
+Cache errors                           1
+Cache errors (Rust)                    1
+Compilations                        3591
+Compilation failures                  85
+Non-cacheable compilations             0
+Non-cacheable calls                10183
+Non-compilation calls                175
+Unsupported compiler calls             0
+Average cache write                0.001 s
+Average compiler                   1.127 s
+Average cache read hit             0.000 s
+Failed distributed compilations        0
+
+Non-cacheable reasons:
+crate-type                          5515
+multiple input files                1450
+incremental                         1065
+missing input                       1025
+-                                    820
+-o                                   164
+missing output_dir                   144
+
+Cache location                  Local disk: "/Users/sunfmin/Library/Caches/Mozilla.sccache"
+Base directories                (none)
+Use direct/preprocessor mode?   yes
+Version (client)                0.18.0
+Cache size                            10 GiB
+Max cache size                        10 GiB
+   Compiling proc-macro2 v1.0.107
+   Compiling quote v1.0.47
+   Compiling unicode-ident v1.0.26
+   Compiling serde_core v1.0.229
+   Compiling flux-attrs-impl v0.1.0 (https://github.com/flux-rs/flux.git?rev=b2f3e31e17727ffe08c2efee1e7aa0bc4f0a66f9#b2f3e31e)
+   Compiling serde v1.0.229
+   Compiling flux-attrs v0.1.0 (https://github.com/flux-rs/flux.git?rev=b2f3e31e17727ffe08c2efee1e7aa0bc4f0a66f9#b2f3e31e)
+   Compiling zmij v1.0.23
+    Checking equivalent v1.0.2
+    Checking hashbrown v0.17.1
+    Checking winnow v0.7.15
+    Checking toml_write v0.1.2
+   Compiling serde_json v1.0.152
+    Checking memchr v2.8.3
+    Checking indexmap v2.14.2
+    Checking itoa v1.0.18
+   Compiling syn v3.0.7
+   Compiling syn v2.0.119
+   Compiling serde_derive v1.0.229
+    Checking flux-core v0.1.0 (https://github.com/flux-rs/flux.git?rev=b2f3e31e17727ffe08c2efee1e7aa0bc4f0a66f9#b2f3e31e)
+    Checking flux-rs v0.1.0 (https://github.com/flux-rs/flux.git?rev=b2f3e31e17727ffe08c2efee1e7aa0bc4f0a66f9#b2f3e31e)
+
+summary. 60 functions processed: 2 checked; 58 trusted; 0 ignored. 0 constraints solved. Finished in 55.35ms
+
+summary. 0 functions processed: 0 checked; 0 trusted; 0 ignored. 0 constraints solved. Finished in 130.62ms
+    Checking flux-alloc v0.1.0 (https://github.com/flux-rs/flux.git?rev=b2f3e31e17727ffe08c2efee1e7aa0bc4f0a66f9#b2f3e31e)
+
+summary. 1 functions processed: 0 checked; 1 trusted; 0 ignored. 0 constraints solved. Finished in 25.88ms
+    Checking toml_datetime v0.6.11
+    Checking serde_spanned v0.6.9
+    Checking toml_edit v0.22.27
+    Checking toml v0.8.23
+    Checking afkconvoy-core v0.5.26 (/Users/sunfmin/orca/workspaces/afkconvoy/sunfmin-control-150-afkconvoy-gate/.afkconvoy-tmp/baseline/crates/core)
+
+warning: feature `custom_inner_attributes` is declared but not used
+ --> <crate attribute>:1:27
+  |
+1 | #![feature(register_tool, custom_inner_attributes)]
+  |                           ^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_features)]` (part of `#[warn(unused)]`) on by default
+
+summary. 2503 functions processed: 2503 checked; 0 trusted; 0 ignored. 951 constraints solved. Finished in 22.32s
+warning: `afkconvoy-core` (lib) generated 1 warning
+    Finished `flux` profile [unoptimized + debuginfo] target(s) in 31.76s
+gate: what Flux took longest to check in the core crate:
+───────────────────── Timing Report ────────────────────────
+Total running time:                                   20.84s
+Functions checked:                                      2503
+Min:                                                 10.79µs
+Max:                                                   2.94s
+Mean:                                                 8.25ms
+Std. Dev.:                                           72.00ms
+────────────────────────────────────────────────────────────
+Top 5 Functions 
+• stage_record::history                                2.94s
+• team::workflow_file                                  1.44s
+• tick::hand_over                                   649.91ms
+• team::load                                        599.00ms
+• tick::end_claims                                  561.80ms
+────────────────────────────────────────────────────────────
+────────────
+ Nextest run ID af851da0-04e0-457e-9a0b-9cdf01890b07 with nextest profile: default
+    Starting 1622 tests across 5 binaries (15 tests skipped)
+────────────
+     Summary [ 367.466s] 1622 tests run: 1622 passed (2 slow), 15 skipped
+        SLOW [  20.601s] afkconvoy::cli switch::capacity_continuation_never_starts_a_second_writer_before_termination_is_confirmed
+        SLOW [  24.090s] afkconvoy::cli switch::codex_task_refusal_never_starts_a_second_writer_while_termination_is_unconfirmed
+gate: the seconds each step took: fmt 1s flux 32s clippy 15s manual 15s build 10s tests 368s
+real 441.47
+user 777.75
+sys 843.00

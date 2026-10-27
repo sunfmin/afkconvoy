@@ -335,14 +335,18 @@ _Avoid_: CI (what a push to an ordinary branch starts), checks (what `check` and
 
 **Gate limit**:
 How long the gate may run. A run that reaches it is ended and is red. A repo declares it; nothing learns it from past runs.
-_Avoid_: timeout (what a run that reached it did), budget, baseline
+_Avoid_: timeout (what a run that reached it did), budget (the warning threshold), baseline (a committed timing observation)
+
+**Gate budget**:
+The fixed duration a repo expects its gate to stay within. Recent recorded landings on one host that all exceed it make a slow gate; exceeding it never ends a run.
+_Avoid_: gate limit (the termination bound), learned baseline
 
 **Recorded gate run**:
 The evidence that the gate passed on one committed tree, with how long the run took and on which host, made by the tool that saw the exit code and kept where every host can read it.
 _Avoid_: gate cache, CI status
 
 **Slow gate**:
-What the gate is when its recent runs for the base branch, on one host, all took most of the gate limit. The fleet opens one issue that says so, and no second while that one is open.
+What the gate is when its recent runs for the base branch, on one host, all exceeded the gate budget, or took most of the gate limit where no budget is declared. The fleet opens one issue that says so, and no second while that one is open.
 _Avoid_: regression, drift, creep
 
 **Sync**:

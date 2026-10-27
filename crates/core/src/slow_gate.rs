@@ -1,5 +1,5 @@
 //! A slow gate: what the gate is when its recent runs for the base branch, on
-//! one host, all took most of the gate limit.
+//! one host, all exceeded its fixed duration budget, or most of its limit.
 //!
 //! The limit ends a run that became many times slower. It does nothing about
 //! a gate that slows a little with every PR, until the PR that happens to
@@ -24,7 +24,7 @@ pub const PERCENT: u64 = 80;
 pub const LABEL: &str = "slow-gate";
 
 /// The title of that issue.
-pub const TITLE: &str = "The gate is slow: its runs keep taking most of the gate limit";
+pub const TITLE: &str = "The gate is slow: its runs keep exceeding the duration budget";
 
 /// The key of the claim one host of several opens that issue under.
 pub const CLAIM_KEY: &str = "slow-gate";
@@ -85,6 +85,10 @@ pub struct Slowed {
 pub struct SlowGate {
     /// The gate limit the runs are measured against.
     pub gate_seconds: u64,
+    /// The declared warning budget, separate from the termination limit.
+    /// Absent: `PERCENT` percent of `gate_seconds`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gate_budget_seconds: Option<u64>,
     pub host: String,
     pub runs: Vec<Slowed>,
     /// The open issue that says so, when there is one: no other is opened.
@@ -106,11 +110,11 @@ pub fn took_most(seconds: u64, limit: u64) -> bool {
     seconds > most(limit)
 }
 
-/// Whether the gate is slow under the gate limit of `limit`, by `landings` —
-/// the base branch's, newest first.
+/// Whether the gate is slow under the fixed warning `budget`, or `PERCENT`
+/// percent of `limit` where absent, by the base branch's `landings`, newest first.
 ///
-/// It is when one host's last `LANDINGS` landings that count all took most of
-/// the limit: one host whose runs say so is enough, the one that landed last
+/// It is when one host's last `LANDINGS` landings that count all exceeded
+/// the warning threshold: one host whose runs say so is enough, the one that landed last
 /// of several. A landing counts when its run says how long it took and on
 /// which host, and it was made since the last issue for a slow gate closed:
 /// it is above every landing whose run had finished by then. What landed
@@ -119,7 +123,12 @@ pub fn took_most(seconds: u64, limit: u64) -> bool {
 /// So a gate that is slow since an issue closed is slow by its landings
 /// alone, whatever closed: asking with `Reported::NONE` first tells whether
 /// GitHub has to be asked at all.
-pub fn slow(landings: &[Landing], limit: u64, reported: &Reported) -> Option<SlowGate> {
+pub fn slow(
+    landings: &[Landing],
+    limit: u64,
+    budget: Option<u64>,
+    reported: &Reported,
+) -> Option<SlowGate> {
     let mut counted = Vec::new();
     for landing in landings {
         if reported.closed.is_some_and(|closed| landing.run.at() <= closed) {
@@ -135,16 +144,37 @@ pub fn slow(landings: &[Landing], limit: u64, reported: &Reported) -> Option<Slo
         let mut all_took_most = true;
         for (commit, took) in &counted {
             if took.host() == host && runs.len() < LANDINGS {
-                all_took_most = all_took_most && took_most(took.seconds(), limit);
+                all_took_most = all_took_most
+                    && match budget {
+                        Some(budget) => took.seconds() > budget,
+                        None => took_most(took.seconds(), limit),
+                    };
                 runs.push(Slowed { commit: commit.to_string(), seconds: took.seconds() });
             }
         }
         if runs.len() == LANDINGS && all_took_most {
             let host = host.to_string();
-            return Some(SlowGate { gate_seconds: limit, host, runs, issue: reported.open });
+            return Some(SlowGate {
+                gate_seconds: limit,
+                gate_budget_seconds: budget,
+                host,
+                runs,
+                issue: reported.open,
+            });
         }
     }
     None
+}
+
+/// The warning threshold as the issue, plan and doctor explain it.
+fn threshold(slow: &SlowGate) -> String {
+    match slow.gate_budget_seconds {
+        Some(budget) => format!(
+            "the fixed duration budget of {budget}s (`gate_budget_seconds`); the termination gate limit is {}s (`gate_seconds`)",
+            slow.gate_seconds
+        ),
+        None => format!("{PERCENT}% of the gate limit of {}s (`gate_seconds`)", slow.gate_seconds),
+    }
 }
 
 /// The body of the issue the fleet opens for the slow gate `slow` of
@@ -156,15 +186,18 @@ pub fn report(slow: &SlowGate, command: &str, base_branch: &str) -> String {
     }
     format!(
         "**afkconvoy** — the gate is slow. On the host `{host}`, the last {LANDINGS} landings on \
-         `{base_branch}` with a recorded gate run all took more than {PERCENT}% of the gate limit \
-         of {limit}s (`gate_seconds`), newest first:\n\n{runs}\nNothing is stopped yet: a run \
+         `{base_branch}` with a recorded gate run all took more than {threshold}, \
+         newest first:\n\n{runs}\nNothing is stopped by this warning: a run \
          that reaches the limit is ended and is red, and the PR it stops will not be the one \
          that made the gate slow. Find what `{command}` spends its time on, and make that \
          faster.\n\nTwo things are not a fix: deleting or skipping tests, and raising \
-         `gate_seconds`.\n\nThe fleet opens no other issue for a slow gate while this one is \
+         `gate_seconds` or `gate_budget_seconds`. The gate's output names step wall times, \
+         Flux functions and slow tests with their full names and seconds where the gate prints \
+         them; compare those logs to the repo's committed baseline. Queue waiting is outside \
+         the recorded duration.\n\nThe fleet opens no other issue for a slow gate while this one is \
          open. Once it is closed, only the landings made since count.",
         host = slow.host,
-        limit = slow.gate_seconds,
+        threshold = threshold(slow),
     )
 }
 
@@ -177,9 +210,9 @@ pub fn said(slow: &SlowGate) -> String {
     }
     format!(
         "on the host {}, the last {LANDINGS} landings with a recorded gate run all took more \
-         than {PERCENT}% of the gate limit of {}s: {}",
+         than {}: {}",
         slow.host,
-        slow.gate_seconds,
+        threshold(slow),
         runs.join(", ")
     )
 }
@@ -246,37 +279,37 @@ mod tests {
     #[test]
     fn five_landings_on_one_host_all_over_most_of_the_limit_are_a_slow_gate() {
         let runs = [("mini", 590), ("mini", 481), ("mini", 500), ("mini", 599), ("mini", 550)];
-        let slow = slow(&landings(&runs), 600, &none()).expect("slow");
+        let slow = slow(&landings(&runs), 600, None, &none()).expect("slow");
         assert_eq!((slow.gate_seconds, slow.host.as_str(), slow.issue), (600, "mini", None));
         let evidence: Vec<(&str, u64)> =
             slow.runs.iter().map(|run| (run.commit.as_str(), run.seconds)).collect();
         assert_eq!(evidence, [("c0", 590), ("c1", 481), ("c2", 500), ("c3", 599), ("c4", 550)]);
         // an older landing that was fast is not one of the five
         let older = [&runs[..], &[("mini", 10)]].concat();
-        assert!(super::slow(&landings(&older), 600, &none()).is_some());
+        assert!(super::slow(&landings(&older), 600, None, &none()).is_some());
     }
 
     #[test]
     fn one_run_at_or_under_most_of_the_limit_or_fewer_than_five_is_no_slow_gate() {
         let one_fast = [("mini", 590), ("mini", 480), ("mini", 500), ("mini", 599), ("mini", 550)];
-        assert_eq!(slow(&landings(&one_fast), 600, &none()), None);
+        assert_eq!(slow(&landings(&one_fast), 600, None, &none()), None);
         let four = [("mini", 590); 4];
-        assert_eq!(slow(&landings(&four), 600, &none()), None);
+        assert_eq!(slow(&landings(&four), 600, None, &none()), None);
         // the newest five decide: five slow ones under a fast one are not the last five
         let recovered = [&[("mini", 100)][..], &[("mini", 590); 5]].concat();
-        assert_eq!(slow(&landings(&recovered), 600, &none()), None);
-        assert_eq!(slow(&[], 600, &none()), None);
+        assert_eq!(slow(&landings(&recovered), 600, None, &none()), None);
+        assert_eq!(slow(&[], 600, None, &none()), None);
     }
 
     #[test]
     fn the_five_are_one_hosts() {
         let spread = [("mini", 590), ("mini", 590), ("mini", 590), ("air", 590), ("air", 590)];
-        assert_eq!(slow(&landings(&spread), 600, &none()), None, "no host has five");
+        assert_eq!(slow(&landings(&spread), 600, None, &none()), None, "no host has five");
         // one host whose runs say so is enough, whatever the other's say
         let mut mixed = vec![("air", 10)];
         mixed.extend([("mini", 590); 5]);
         mixed.push(("air", 20));
-        let found = slow(&landings(&mixed), 600, &none()).expect("mini is slow");
+        let found = slow(&landings(&mixed), 600, None, &none()).expect("mini is slow");
         assert_eq!(found.host, "mini");
         let commits: Vec<&str> = found.runs.iter().map(|run| run.commit.as_str()).collect();
         assert_eq!(commits, ["c1", "c2", "c3", "c4", "c5"]);
@@ -286,7 +319,7 @@ mod tests {
     fn a_landing_whose_run_has_no_time_is_passed_over() {
         let mut runs = vec![("mini", 590), ("", 5)];
         runs.extend([("mini", 590); 4]);
-        let found = slow(&landings(&runs), 600, &none()).expect("the five with a time");
+        let found = slow(&landings(&runs), 600, None, &none()).expect("the five with a time");
         let commits: Vec<&str> = found.runs.iter().map(|run| run.commit.as_str()).collect();
         assert_eq!(commits, ["c0", "c2", "c3", "c4", "c5"]);
     }
@@ -296,23 +329,23 @@ mod tests {
         // finished at 1000, 999, … 995
         let runs = landings(&[("mini", 590); 6]);
         let closed = |at| Reported { open: None, closed: Some(at) };
-        assert!(slow(&runs, 600, &closed(994)).is_some());
-        assert!(slow(&runs, 600, &closed(995)).is_some(), "five finished since");
-        assert_eq!(slow(&runs, 600, &closed(996)), None, "four since");
-        assert_eq!(slow(&runs, 600, &closed(2000)), None);
+        assert!(slow(&runs, 600, None, &closed(994)).is_some());
+        assert!(slow(&runs, 600, None, &closed(995)).is_some(), "five finished since");
+        assert_eq!(slow(&runs, 600, None, &closed(996)), None, "four since");
+        assert_eq!(slow(&runs, 600, None, &closed(2000)), None);
         // a landing made before it closed ends the count, with or without a time
         let mut cut = landings(&[("mini", 590); 3]);
         cut.push(landing("old", "", 5, 10));
         cut.extend(landings(&[("mini", 590); 3]));
-        assert!(slow(&cut, 600, &none()).is_some());
-        assert_eq!(slow(&cut, 600, &closed(10)), None, "three since, whatever is under them");
+        assert!(slow(&cut, 600, None, &none()).is_some());
+        assert_eq!(slow(&cut, 600, None, &closed(10)), None, "three since, whatever is under them");
     }
 
     #[test]
     fn the_open_issue_is_named_with_the_evidence() {
         let runs = landings(&[("mini", 590); 5]);
         let reported = Reported { open: Some(41), closed: Some(10) };
-        assert_eq!(slow(&runs, 600, &reported).unwrap().issue, Some(41));
+        assert_eq!(slow(&runs, 600, None, &reported).unwrap().issue, Some(41));
     }
 
     #[test]
@@ -325,7 +358,7 @@ mod tests {
 
     #[test]
     fn the_report_gives_the_evidence_and_what_is_not_a_fix() {
-        let found = slow(&landings(&[("mini", 590); 5]), 600, &none()).unwrap();
+        let found = slow(&landings(&[("mini", 590); 5]), 600, None, &none()).unwrap();
         let body = report(&found, "./gate.sh", "main");
         assert!(body.contains("On the host `mini`") && body.contains("gate limit of 600s"));
         for at in 0..5 {
