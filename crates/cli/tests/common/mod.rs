@@ -261,6 +261,11 @@ impl World {
             .env("HOME", self.home())
             .env_remove("AFKCONVOY_ISSUE")
             .env_remove("ANTHROPIC_BASE_URL");
+        // A stand-in world never inherits the host's real GitHub credential.
+        // Quota identity scenarios opt into an explicit fixture token.
+        for name in ["GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"] {
+            cmd.env_remove(name);
+        }
         cmd
     }
 

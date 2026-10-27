@@ -25,7 +25,7 @@ const CONFIG: &str = "```yaml\nbase_branch: main\ngate_command: ./gate.sh\nteam:
 
 /// A world whose repo is bound to a team with the one workflow `feature`,
 /// and whose startup probe passed at 1000.
-fn bound() -> World {
+pub(super) fn bound() -> World {
     let world = World::new();
     world.repo(
         "acme/dev",
