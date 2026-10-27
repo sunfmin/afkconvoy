@@ -2,7 +2,7 @@
 
 # `afkconvoy`
 
-afkconvoy works a repo's ready GitHub issues unattended. One host runner, started by `afkconvoy run`, holds one fleet instance per repo. Each dispatches a worker per issue — a coding agent in its own git worktree — and lands finished PRs on the base branch through the gate and landing turns. Fleet state lives in GitHub and the repo's remote; no process holds it.
+afkconvoy works a repo's ready GitHub issues unattended. One host runner, started by `afkconvoy run`, holds one fleet instance per repo. Each dispatches a worker per issue — a coding agent in its own git worktree — and lands finished PRs on their target branches through the gate and landing turns, using the configured base unless a task selects another. Fleet state lives in GitHub and the repo's remote; no process holds it.
 
 `afkconvoy --help` answers the index: this guide, then each command's one line under who runs it, then each topic's first sentence. `afkconvoy help all` answers the whole manual: guide, commands and topics in full. `afkconvoy -h` lists commands on one screen.
 
@@ -330,7 +330,7 @@ Errors: the file cannot be read; it has no ```yaml block; a ```yaml cut block ha
 ##### What trips you up
 
 - It reads the config only. Whether the team it names loads is `afkconvoy check`.
-- It reads the file as it is in this checkout, committed or not. A worker reads the one in its own worktree, which is cut from the base branch: a change is in force only once it is on the base branch.
+- It reads the file as it is in this checkout, committed or not. A worker reads the one in its own worktree, cut from its target branch. The destination remains pinned even if that file names a different configured base.
 
 ##### Which checkout it is about
 
@@ -2607,7 +2607,7 @@ In a bound repo:
 
   - `description`: what the workflow is for and what an issue of it holds: the prose of its file, workflows/<name>.md, above the yaml block. Empty when the file says nothing there — `afkconvoy check` warns of that. Choose the workflow by it
   - `first`: the stage an issue enters at, {"stage", "by", "do"}: the role that performs it and the skill — `by` is `human`, and `do` null, where a human's decision is waited for
-  - `ends`: where its passes end: `land`, a landing turn — its issues end in a PR landed on the base branch — `done`, nothing more to do, or both, by different stages
+  - `ends`: where its passes end: `land`, a landing turn — its issues end in a PR landed on their target branch — `done`, nothing more to do, or both, by different stages
   - `line`: the line that opens an issue into it, in the tracker. Give it a title and a file holding the body
 - `keep_off`: the labels that keep an issue from being worked as one of a workflow, {"epic_labels", "escalate_label", "lock_label"}: an issue carrying an epic label is never dispatched; the escalate label is the fleet's to put on, when it hands an issue to a human; and an open issue carrying the lock label is a fleet lock, which stops all other work (`afkconvoy lock --help`)
 - `intake`: {"open", "limit"}: the open issues workers took in, against the repo's `intake_limit`. An issue a human opens with a flow label is outside both: nothing refuses it
@@ -2657,7 +2657,7 @@ End the sleep of this host's `run` for this repo: its next tick starts now (afte
 
 Once, after the last of the issues you open for the fleet with `gh`, or label: nothing `gh` does wakes the fleet, which otherwise takes them up at its next tick (`afkconvoy flows --help` says how soon).
 
-Once, as a worker's last command: after its PR is on the base branch, or its verdict is posted on the issue. A worker's prompt names the exact command. Every command that changes fleet state wakes the `run` as it ends, so after `land` or `verdict` this one is redundant, and harmless.
+Once, as a worker's last command: after its PR is on its target branch, or its verdict is posted on the issue. A worker's prompt names the exact command. Every command that changes fleet state wakes the `run` as it ends, so after `land` or `verdict` this one is redundant, and harmless.
 
 ##### Who runs it
 
@@ -4893,7 +4893,7 @@ One command's construction, validation and ordered landing of an open PR's candi
 _Avoid_: landing slot, merge queue
 
 **Candidate**:
-An immutable merge of a PR's original head onto its assigned predecessor, validated in its own worktree. Its predecessor is the certified base tip or the preceding candidate.
+An immutable merge of a PR's original head onto its assigned predecessor, validated in its own worktree. Its predecessor is the certified target tip or the preceding candidate.
 _Avoid_: speculative branch, train tip
 
 **Candidate chain**:
@@ -4905,7 +4905,7 @@ Pushing the exact candidate a turn recorded green onto its target branch as a fa
 _Avoid_: join, enqueue
 
 **Repair**:
-A change the fleet starts to restore a red base tip or finish retained work from an older release. Its operator worker owns an issue and a worktree, works outside product workflows and human stages, and lands through the same recorded turn as every other change.
+A change the fleet starts to restore a red target tip or finish retained work from an older release. Its operator worker owns an issue and a worktree, works outside product workflows and human stages, and lands through the same recorded turn as every other change.
 _Avoid_: manual repair
 
 **Cut**:
