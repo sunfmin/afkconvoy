@@ -51,6 +51,12 @@ fn repository_templates_leave_each_world_with_its_own_writable_git_history() {
             "{relative} must not be hard-linked"
         );
     }
+    let object = format!(".git/objects/{}/{}", &original[..2], &original[2..]);
+    assert_ne!(
+        std::fs::metadata(a.join(&object)).unwrap().ino(),
+        std::fs::metadata(b.join(&object)).unwrap().ino(),
+        "Git objects must be independent too"
+    );
     common::commit(&a, "a directory/skill.md", "changed\n");
     std::fs::set_permissions(a.join(".git/index"), std::fs::Permissions::from_mode(0o400)).unwrap();
     drop(first);
