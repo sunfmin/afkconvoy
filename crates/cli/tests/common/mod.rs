@@ -13,6 +13,123 @@ use tempfile::TempDir;
 
 pub const BASE: &str = "main";
 
+/// Opt-in fixture timings, captured by nextest with `--success-output final`.
+/// The environment belongs to the test driver, never to a world's host.
+pub fn fixture_timing(part: &str, began: Instant) {
+    if std::env::var_os("CONVOY_FIXTURE_TIMINGS").is_some() {
+        eprintln!("fixture timing: {part} {:.6}s", began.elapsed().as_secs_f64());
+    }
+}
+
+/// A long-lived fixture command whose children remain attached to it. Keep
+/// the root unreaped until drop, and freeze parents before discovering their
+/// children so owned pids cannot be reaped/reused while being signalled.
+/// Preserve inherited descriptors and the runner's process group: its timeout
+/// must still end these processes if the test itself cannot unwind.
+pub struct FixtureProcess {
+    child: Child,
+}
+
+impl FixtureProcess {
+    pub fn spawn(command: &mut Command) -> Self {
+        Self { child: command.spawn().unwrap() }
+    }
+
+    pub fn id(&self) -> u32 {
+        self.child.id()
+    }
+
+    fn state(pid: u32) -> Option<char> {
+        let out =
+            Command::new("ps").args(["-p", &pid.to_string(), "-o", "stat="]).output().unwrap();
+        assert!(
+            out.status.success() || (out.status.code() == Some(1) && out.stderr.is_empty()),
+            "cannot observe fixture process {pid}"
+        );
+        String::from_utf8_lossy(&out.stdout).trim().chars().next()
+    }
+
+    fn wait_for(pid: u32, stopped: bool) {
+        let until = Instant::now() + Duration::from_secs(5);
+        loop {
+            match Self::state(pid) {
+                None | Some('Z') => return,
+                Some('T' | 't') if stopped => return,
+                _ => {}
+            }
+            if Instant::now() >= until {
+                let message = format!(
+                    "fixture process {pid} did not {}",
+                    if stopped { "stop" } else { "exit" }
+                );
+                if std::thread::panicking() {
+                    eprintln!("{message}");
+                    return;
+                }
+                panic!("{message}");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+}
+
+impl Drop for FixtureProcess {
+    fn drop(&mut self) {
+        let began = Instant::now();
+        let root = self.child.id();
+        let mut owned = vec![root];
+        // SAFETY: this is our unreaped child. Never signal an entire group.
+        unsafe { libc::kill(root as libc::pid_t, libc::SIGSTOP) };
+        Self::wait_for(root, true);
+        loop {
+            let listed = Command::new("ps").args(["-axo", "pid=,ppid="]).output().unwrap();
+            assert!(listed.status.success(), "cannot discover fixture descendants");
+            let children: Vec<u32> = String::from_utf8_lossy(&listed.stdout)
+                .lines()
+                .filter_map(|line| {
+                    let mut fields = line.split_whitespace();
+                    let pid = fields.next()?.parse().ok()?;
+                    let parent = fields.next()?.parse().ok()?;
+                    (owned.contains(&parent) && !owned.contains(&pid)).then_some(pid)
+                })
+                .collect();
+            if children.is_empty() {
+                break;
+            }
+            for pid in children {
+                // SAFETY: its frozen parent cannot reap/reuse this child pid.
+                unsafe { libc::kill(pid as libc::pid_t, libc::SIGSTOP) };
+                Self::wait_for(pid, true);
+                owned.push(pid);
+            }
+        }
+        for pid in owned.into_iter().rev() {
+            // SAFETY: each parent is still frozen; observe child exit before
+            // ending that parent, keeping the child's pid reserved throughout.
+            unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+            Self::wait_for(pid, false);
+        }
+        let _ = self.child.wait();
+        fixture_timing("owned process teardown", began);
+    }
+}
+
+/// A regression driver observes inherited leases before allowing teardown.
+/// Ordinary scenarios have no rendezvous and return immediately.
+pub fn fixture_lease_observed() {
+    let Some(root) = std::env::var_os("CONVOY_FIXTURE_LEASE_PROBE") else { return };
+    let root = PathBuf::from(root);
+    std::fs::write(root.join("ready"), "").unwrap();
+    let until = Instant::now() + Duration::from_secs(30);
+    while !root.join("release").exists() {
+        assert!(Instant::now() < until, "fixture lease was never observed");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    if std::env::var("CONVOY_FIXTURE_LEASE_PANIC").as_deref() == Ok("true") {
+        panic!("deliberate fixture teardown failure");
+    }
+}
+
 /// The config every world starts with, committed on the base branch.
 pub const CONFIG: &str =
     "```yaml\nbase_branch: main\ngate_command: ./gate.sh\ngate_seconds: 600\n```\n";
@@ -58,6 +175,8 @@ pub struct World {
     bin: PathBuf,
     gh_file: PathBuf,
     orca_file: PathBuf,
+    repository_templates: std::sync::atomic::AtomicBool,
+    termination_clock: std::sync::atomic::AtomicBool,
 }
 
 /// One answer of the CLI: the JSON object it printed, and its exit code.
@@ -87,6 +206,7 @@ impl World {
     /// Claude Code alone, on no model: it leaves no choice to make, so no
     /// caster is started (`hold_every_harness` holds the others).
     pub fn new() -> World {
+        let began = Instant::now();
         let dir = TempDir::new().unwrap();
         let root = dir.path().canonicalize().unwrap();
         let (bare, clone, bin) = (root.join("remote.git"), root.join("clone"), root.join("bin"));
@@ -114,6 +234,8 @@ impl World {
             write_script(&bin.join(name), script);
         }
         let world = World {
+            repository_templates: std::sync::atomic::AtomicBool::new(false),
+            termination_clock: std::sync::atomic::AtomicBool::new(false),
             tmp_links: tempfile::tempdir_in("/tmp").unwrap(),
             gh_file: root.join("gh.json"),
             orca_file: root.join("orca.json"),
@@ -139,6 +261,7 @@ impl World {
             .collect();
         let profile = "export AFKCONVOY_TEST_LOGIN=1\necho 'a line an rc file printed'\n";
         write(&world.home(), ".profile", &format!("{exported}{profile}"));
+        fixture_timing("world setup", began);
         world
     }
 
@@ -424,7 +547,28 @@ impl World {
     }
 
     pub fn afk_in(&self, cwd: &Path, args: &[&str]) -> Answer {
-        self.afk_as(Path::new(env!("CARGO_BIN_EXE_afkconvoy")), cwd, args)
+        let program = Path::new(env!("CARGO_BIN_EXE_afkconvoy"));
+        if self.termination_clock.load(std::sync::atomic::Ordering::Relaxed) {
+            self.afk_as(
+                &program.parent().unwrap().join("examples/test_termination_clock"),
+                cwd,
+                args,
+            )
+        } else {
+            self.afk_as(program, cwd, args)
+        }
+    }
+
+    /// Advance only termination time in the real CLI entry point. Use only
+    /// when Orca's terminal is a stand-in that deliberately never closes.
+    pub fn control_termination_time(&self) {
+        self.termination_clock.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Reuse immutable Git seeds for subsequent role/team repositories. Each
+    /// call to `repo` still gets independent files, objects, refs and index.
+    pub fn reuse_repository_templates(&self) {
+        self.repository_templates.store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// `afk_in`, as the afkconvoy at `program`: one installed elsewhere.
@@ -535,18 +679,15 @@ impl World {
     /// Puts another repo on the stand-in GitHub as `name` (`owner/repo`), with
     /// `files` committed on its default branch → its checkout, to commit more to.
     pub fn repo(&self, name: &str, files: &[(&str, &str)]) -> PathBuf {
+        let began = Instant::now();
         let dir = self.root.join("github").join(name);
-        std::fs::create_dir_all(&dir).unwrap();
-        git(&dir, &["init", "-q", "-b", BASE]);
-        git(&dir, &["commit", "-q", "--allow-empty", "-m", "initial"]);
-        for (file, text) in files {
-            write(&dir, file, text);
-        }
-        if !files.is_empty() {
-            git(&dir, &["add", "."]);
-            git(&dir, &["commit", "-q", "-m", "files"]);
+        if self.repository_templates.load(std::sync::atomic::Ordering::Relaxed) {
+            copy_repository(&repository_template(files), &dir);
+        } else {
+            create_repository(&dir, files);
         }
         self.with_gh(|gh| gh["repos"][name] = json!(dir));
+        fixture_timing("repo setup", began);
         dir
     }
 
@@ -961,6 +1102,77 @@ impl World {
     /// git against the remote itself.
     pub fn remote(&self, args: &[&str]) -> String {
         git(&self.bare, args)
+    }
+}
+
+fn create_repository(dir: &Path, files: &[(&str, &str)]) {
+    std::fs::create_dir_all(dir).unwrap();
+    git(dir, &["init", "-q", "-b", BASE]);
+    git(dir, &["commit", "-q", "--allow-empty", "-m", "initial"]);
+    for (file, text) in files {
+        write(dir, file, text);
+    }
+    if !files.is_empty() {
+        git(dir, &["add", "."]);
+        git(dir, &["commit", "-q", "-m", "files"]);
+    }
+}
+
+/// Built privately, then published by one atomic rename. Readers see only a
+/// complete, read-only seed. Concurrent builders discard their own copies.
+/// The manifest checks the full input even if two inputs hash to one name.
+fn repository_template(files: &[(&str, &str)]) -> PathBuf {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    let manifest = serde_json::to_vec(&(BASE, files)).unwrap();
+    let mut hash = DefaultHasher::new();
+    manifest.hash(&mut hash);
+    // Cargo keeps a test binary's filename across source edits. Changing the
+    // builder or GIT_ENV must rebuild seeds too, without a manual cache bump.
+    include_str!("mod.rs").hash(&mut hash);
+    let binary = std::env::current_exe().unwrap();
+    let templates = binary.with_extension("repository-templates-v1");
+    std::fs::create_dir_all(&templates).unwrap();
+    let kept = templates.join(format!("{:016x}", hash.finish()));
+    if !kept.exists() {
+        let scratch = tempfile::tempdir_in(&templates).unwrap();
+        create_repository(&scratch.path().join("repo"), files);
+        std::fs::write(scratch.path().join("manifest.json"), &manifest).unwrap();
+        let frozen =
+            Command::new("chmod").args(["-R", "a-w"]).arg(scratch.path()).status().unwrap();
+        assert!(frozen.success());
+        if let Err(error) = std::fs::rename(scratch.path(), &kept) {
+            // Another complete seed may have won. Open our scratch again so
+            // TempDir can remove it, including when the failure was real.
+            let thawed =
+                Command::new("chmod").args(["-R", "u+w"]).arg(scratch.path()).status().unwrap();
+            assert!(thawed.success());
+            assert!(kept.is_dir(), "cannot publish repository template: {error}");
+        }
+    }
+    assert_eq!(std::fs::read(kept.join("manifest.json")).unwrap(), manifest);
+    kept.join("repo")
+}
+
+/// Ordinary copies, never hard links or Git alternates: committing, changing
+/// permissions or removing a world's repo cannot change the seed or a peer.
+fn copy_repository(from: &Path, to: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let source = entry.path();
+        let target = to.join(entry.file_name());
+        let metadata = std::fs::symlink_metadata(&source).unwrap();
+        if metadata.is_dir() {
+            copy_repository(&source, &target);
+        } else if metadata.file_type().is_symlink() {
+            std::os::unix::fs::symlink(std::fs::read_link(&source).unwrap(), target).unwrap();
+        } else {
+            std::fs::copy(&source, &target).unwrap();
+            let mut permissions = metadata.permissions();
+            permissions.set_mode(permissions.mode() | 0o200);
+            std::fs::set_permissions(target, permissions).unwrap();
+        }
     }
 }
 

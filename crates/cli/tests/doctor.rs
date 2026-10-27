@@ -280,14 +280,16 @@ fn the_host_s_exclusive_queue_is_shown_what_runs_first_then_what_waits() {
             command.env("AFKCONVOY_ISSUE", issue);
         }
         let args = ["--now", now, "exclusive", "--", "sh", "-c", script];
-        command.args(args).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap()
+        common::FixtureProcess::spawn(
+            command.args(args).stdout(Stdio::null()).stderr(Stdio::null()),
+        )
     };
-    let touched = format!("touch {}; sleep 30", ran.display());
-    let mut running = exclusive("900", Some("12"), &touched);
+    let touched = format!("touch '{}'; sleep 30", ran.display().to_string().replace('\'', "'\\''"));
+    let running = exclusive("900", Some("12"), &touched);
     while !ran.exists() {
         std::thread::sleep(Duration::from_millis(20));
     }
-    let mut waiting = exclusive("950", None, "true");
+    let waiting = exclusive("950", None, "true");
     let shown = || doctor(&world, "1000").ok()["host"]["exclusive"].clone();
     while shown()["waiting"].as_array().is_none_or(Vec::is_empty) {
         std::thread::sleep(Duration::from_millis(20));
@@ -315,10 +317,9 @@ fn the_host_s_exclusive_queue_is_shown_what_runs_first_then_what_waits() {
     next["ran"] = Value::Null;
     next["waiting"] = json!("waiting_for_capacity");
     assert_eq!(exclusive["waiting"], json!([next]));
-    for child in [&mut running, &mut waiting] {
-        let _ = child.kill();
-        let _ = child.wait();
-    }
+    common::fixture_lease_observed();
+    drop(running);
+    drop(waiting);
 }
 
 #[test]

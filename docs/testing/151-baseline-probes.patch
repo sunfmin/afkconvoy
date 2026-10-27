@@ -1,0 +1,49 @@
+--- a/crates/cli/src/orca.rs
++++ b/crates/cli/src/orca.rs
+@@ -931,6 +931,22 @@
+         let before = crate::hot::listed_checked()?;
+         let pids: Vec<_> = crate::hot::tree(&before, &self.path).iter().map(|p| p.pid).collect();
+         self.close_terminals()?;
++        struct ConfirmationTiming {
++            began: Instant,
++            slept: Duration,
++        }
++        impl Drop for ConfirmationTiming {
++            fn drop(&mut self) {
++                if std::env::var_os("CONVOY_FIXTURE_TIMINGS").is_some() {
++                    eprintln!(
++                        "confirmation timing: wall {:.6}s sleep {:.6}s",
++                        self.began.elapsed().as_secs_f64(),
++                        self.slept.as_secs_f64()
++                    );
++                }
++            }
++        }
++        let mut timing = ConfirmationTiming { began: Instant::now(), slept: Duration::ZERO };
+         let until = Instant::now() + Duration::from_secs(5);
+         let mut ending = BTreeMap::<u32, Ending>::new();
+         loop {
+@@ -990,7 +1006,9 @@
+                     }
+                 );
+             }
++            let sleeping = Instant::now();
+             std::thread::sleep(Duration::from_millis(100));
++            timing.slept += sleeping.elapsed();
+         }
+     }
+ 
+--- a/crates/cli/tests/common/mod.rs
++++ b/crates/cli/tests/common/mod.rs
+@@ -443,6 +443,11 @@
+             )
+         });
+         let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
++        if std::env::var_os("CONVOY_FIXTURE_TIMINGS").is_some() {
++            for line in stderr.lines().filter(|line| line.starts_with("confirmation timing:")) {
++                eprintln!("{line}");
++            }
++        }
+         Answer { json, code: out.status.code().unwrap(), stderr }
+     }
+ 

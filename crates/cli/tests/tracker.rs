@@ -113,6 +113,10 @@ fn a_blocker_repair_read_in_a_workers_worktree_uses_the_main_checkout_for_flows(
     let plan = world.afk_in(&worktree, &["plan", "--now", "1090"]).ok();
     let fix = plan["findings"][0]["fix"].as_str().unwrap();
     let flows = fix.lines().find(|line| line.contains("afkconvoy flows")).unwrap();
+    // The suggested shell command must exercise this build, even after the
+    // host installs a newer release while this branch is being validated.
+    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_afkconvoy"), world.root.join("bin/afkconvoy"))
+        .unwrap();
     let out = world.command("sh", &worktree).args(["-c", flows]).output().unwrap();
     assert!(out.status.success(), "{flows}: {}", String::from_utf8_lossy(&out.stdout));
     let answer: Value = serde_json::from_slice(&out.stdout).unwrap();

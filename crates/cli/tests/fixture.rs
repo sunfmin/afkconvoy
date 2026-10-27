@@ -12,6 +12,9 @@ fn the_bare_repo_is_the_clones_remote() {
     git(&world.clone, &["commit", "-q", "-m", "a"]);
     git(&world.clone, &["push", "-q", "origin", BASE]);
     assert_eq!(world.remote(&["rev-parse", BASE]), git(&world.clone, &["rev-parse", "HEAD"]));
+    let began = std::time::Instant::now();
+    drop(world);
+    common::fixture_timing("world teardown", began);
 }
 
 #[test]
@@ -26,4 +29,57 @@ fn gh_and_orca_on_path_are_the_stand_ins() {
     let answer: serde_json::Value = serde_json::from_slice(&orca.stdout).unwrap();
     assert_eq!(answer["ok"], false);
     assert_eq!(world.orca()["calls"], serde_json::json!([["no-such-call", "--json"]]));
+}
+
+#[test]
+fn repository_templates_leave_each_world_with_its_own_writable_git_history() {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let first = World::new();
+    let second = World::new();
+    first.reuse_repository_templates();
+    second.reuse_repository_templates();
+    // A unique input makes each repetition exercise cold publication, as
+    // well as concurrent readers. Only immutable seed data crosses Worlds.
+    let original_text = format!("the original in {}\n", first.root.display());
+    let files = [("a directory/skill.md", original_text.as_str())];
+    let ready = std::sync::Barrier::new(2);
+    let (a, b) = std::thread::scope(|scope| {
+        let a = scope.spawn(|| {
+            ready.wait();
+            first.repo("acme/role with spaces", &files)
+        });
+        let b = scope.spawn(|| {
+            ready.wait();
+            second.repo("acme/role with spaces", &files)
+        });
+        (a.join().unwrap(), b.join().unwrap())
+    });
+    let original = git(&a, &["rev-parse", "HEAD"]);
+    assert_eq!(git(&b, &["rev-parse", "HEAD"]), original);
+    assert_eq!(git(&b, &["rev-list", "--count", "HEAD"]), "2");
+    for relative in ["a directory/skill.md", ".git/index", ".git/refs/heads/main"] {
+        assert_ne!(
+            std::fs::metadata(a.join(relative)).unwrap().ino(),
+            std::fs::metadata(b.join(relative)).unwrap().ino(),
+            "{relative} must not be hard-linked"
+        );
+    }
+    let object = format!(".git/objects/{}/{}", &original[..2], &original[2..]);
+    assert_ne!(
+        std::fs::metadata(a.join(&object)).unwrap().ino(),
+        std::fs::metadata(b.join(&object)).unwrap().ino(),
+        "Git objects must be independent too"
+    );
+    common::commit(&a, "a directory/skill.md", "changed\n");
+    std::fs::set_permissions(a.join(".git/index"), std::fs::Permissions::from_mode(0o400)).unwrap();
+    drop(first);
+    assert!(!a.exists(), "even the read-only index is cleaned up");
+    assert_eq!(git(&b, &["rev-parse", "HEAD"]), original);
+    assert_eq!(std::fs::read_to_string(b.join("a directory/skill.md")).unwrap(), original_text);
+    let c = second.repo("acme/a later copy", &files);
+    assert_eq!(git(&c, &["rev-parse", "HEAD"]), original, "the seed stays intact");
+    assert_eq!(git(&c, &["status", "--porcelain"]), "");
+    common::commit(&b, "a directory/skill.md", "independent\n");
+    assert_eq!(git(&b, &["rev-list", "--count", "HEAD"]), "3");
+    assert_eq!(git(&c, &["rev-list", "--count", "HEAD"]), "2");
 }

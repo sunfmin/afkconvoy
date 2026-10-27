@@ -580,35 +580,27 @@ fn close_is_refused_over_work_and_closes_a_branch_with_none() {
 /// `asked`, placed in the queue of a host runner held for it (`host_held`)
 /// and running there for as long as this lives.
 struct Queued {
-    command: std::process::Child,
+    _command: common::FixtureProcess,
     _host_runner: common::Running,
-}
-
-impl Drop for Queued {
-    fn drop(&mut self) {
-        let _ = self.command.kill();
-        let _ = self.command.wait();
-    }
 }
 
 fn queued(world: &World, asked: u64) -> Queued {
     let host_runner = world.host_held();
     let ran = world.root.join("queued-ran");
-    let script = format!("touch {}; sleep 600", ran.display());
-    let command = world
-        .command(env!("CARGO_BIN_EXE_afkconvoy"), &worktree(world))
+    let script = format!("touch '{}'; sleep 600", ran.display().to_string().replace('\'', "'\\''"));
+    let mut command = world.command(env!("CARGO_BIN_EXE_afkconvoy"), &worktree(world));
+    command
         .env("AFKCONVOY_ISSUE", "7")
         .args(["--now", &asked.to_string(), "exclusive", "--", "sh", "-c", &script])
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .unwrap();
+        .stderr(std::process::Stdio::null());
+    let command = common::FixtureProcess::spawn(&mut command);
     let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
     while !ran.exists() {
         assert!(std::time::Instant::now() < until, "the queued command never ran");
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
-    Queued { command, _host_runner: host_runner }
+    Queued { _command: command, _host_runner: host_runner }
 }
 
 #[test]
@@ -636,6 +628,147 @@ fn a_worker_waiting_in_the_exclusive_queue_is_busy_until_the_gate_limit() {
     assert_eq!(typed(&world).len(), 1, "no nudge");
     assert_eq!(world.claims().len(), 1);
     assert!(!world.labels(7).contains(&"ready-for-human".to_string()));
+    common::fixture_lease_observed();
+}
+
+#[test]
+fn queued_fixture_reaps_its_workers_and_releases_inherited_descriptors() {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::process::CommandExt;
+
+    let unrelated = common::FixtureProcess::spawn(
+        std::process::Command::new("sleep")
+            .arg("600")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null()),
+    );
+
+    // Reproduce a gate's inherited kernel lease, without holding or changing
+    // the real host's capacity. The original fixture runs in a child test.
+    struct Probe {
+        child: Option<std::process::Child>,
+        observer: std::fs::File,
+        path: tempfile::TempPath,
+    }
+    impl Drop for Probe {
+        fn drop(&mut self) {
+            // Also clean up a red reproduction: only this unique descriptor's
+            // inheritors are ours, including helpers reparented to pid 1.
+            let holders =
+                std::process::Command::new("lsof").arg("-t").arg(&self.path).output().unwrap();
+            for pid in String::from_utf8_lossy(&holders.stdout).split_whitespace() {
+                let pid: u32 = pid.parse().unwrap();
+                if pid != std::process::id() {
+                    // SAFETY: lsof confirmed this private lease's inheritor.
+                    unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+                }
+            }
+            if let Some(child) = &mut self.child {
+                let _ = child.wait();
+            }
+        }
+    }
+
+    for (scenario, panics) in [
+        ("stopped::a_worker_waiting_in_the_exclusive_queue_is_busy_until_the_gate_limit", false),
+        ("doctor::the_host_s_exclusive_queue_is_shown_what_runs_first_then_what_waits", false),
+        ("stopped::a_worker_waiting_in_the_exclusive_queue_is_busy_until_the_gate_limit", true),
+    ] {
+        let rendezvous = tempfile::tempdir().unwrap();
+        let tmp = rendezvous
+            .path()
+            .join("a deep fixture directory with spaces")
+            .join("the-tests-run-below-this-directory-to-exercise-long-temporary-paths");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let (lease, path) = tempfile::NamedTempFile::new().unwrap().into_parts();
+        lease.lock_shared().unwrap();
+        let observer = std::fs::OpenOptions::new().read(true).write(true).open(&path).unwrap();
+        let fd = lease.as_raw_fd();
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command
+            .args(["--exact", scenario, "--nocapture"])
+            .env("CONVOY_FIXTURE_LEASE_PROBE", rendezvous.path())
+            .env("CONVOY_FIXTURE_LEASE_PANIC", panics.to_string())
+            .env("TMPDIR", &tmp)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped());
+        // SAFETY: change only this live descriptor's flag in the child.
+        unsafe {
+            command.pre_exec(move || {
+                if libc::fcntl(fd, libc::F_SETFD, 0) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let mut probe = Probe { child: Some(command.spawn().unwrap()), observer, path };
+        drop(lease);
+        assert!(
+            matches!(probe.observer.try_lock(), Err(std::fs::TryLockError::WouldBlock)),
+            "a running fixture must retain its inherited lease"
+        );
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while !rendezvous.path().join("ready").exists() {
+            assert!(
+                probe.child.as_mut().unwrap().try_wait().unwrap().is_none(),
+                "{scenario} ended before observation"
+            );
+            assert!(std::time::Instant::now() < until, "{scenario} never reached observation");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let holders =
+            std::process::Command::new("lsof").arg("-Fpc").arg(&probe.path).output().unwrap();
+        assert!(
+            String::from_utf8_lossy(&holders.stdout).lines().any(|line| line == "csleep"),
+            "the actual worker must inherit its lease: {}",
+            String::from_utf8_lossy(&holders.stdout)
+        );
+        let mut pid = None;
+        let worker = String::from_utf8_lossy(&holders.stdout)
+            .lines()
+            .find_map(|line| {
+                if let Some(value) = line.strip_prefix('p') {
+                    pid = value.parse::<u32>().ok();
+                }
+                (line == "csleep").then_some(pid).flatten()
+            })
+            .unwrap();
+        // SAFETY: the rendezvous keeps both fixture processes alive here.
+        assert_eq!(
+            unsafe { libc::getpgid(worker as libc::pid_t) },
+            unsafe { libc::getpgid(probe.child.as_ref().unwrap().id() as libc::pid_t) },
+            "workers must stay in the runner's timeout process group"
+        );
+        std::fs::write(rendezvous.path().join("release"), "").unwrap();
+        let output = probe.child.take().unwrap().wait_with_output().unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if panics {
+            assert!(
+                !output.status.success() && stderr.contains("deliberate fixture teardown failure"),
+                "{scenario}: {stderr}"
+            );
+        } else {
+            assert!(output.status.success(), "{scenario}: {stderr}");
+        }
+        if std::env::var_os("CONVOY_FIXTURE_TIMINGS").is_some() {
+            eprint!("{stderr}");
+        }
+        assert!(
+            probe.observer.try_lock().is_ok(),
+            "completed {scenario} workers still retain the inherited lease"
+        );
+        let state = std::process::Command::new("ps")
+            .args(["-p", &unrelated.id().to_string(), "-o", "stat="])
+            .output()
+            .unwrap();
+        let state = String::from_utf8_lossy(&state.stdout);
+        assert!(
+            !state.trim().is_empty() && !state.trim().starts_with('Z'),
+            "fixture cleanup killed an unrelated process: {state}"
+        );
+    }
 }
 
 #[test]
