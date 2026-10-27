@@ -97,6 +97,14 @@ pub struct Agent {
     pub ready_timeout: u64,
 }
 
+/// A worker's selected harness and model, including whether an issue model
+/// label requires casting to take precedence over the user's Codex preference.
+pub struct WorkerSelection<'a> {
+    pub harness: Harness,
+    pub model: Option<&'a str>,
+    pub explicit_model: bool,
+}
+
 impl Agent {
     /// Starts an interactive worker with the fleet's selected model and
     /// freshly read host-user effort, and waits until it can take its brief.
@@ -106,15 +114,26 @@ impl Agent {
     pub fn start_worker(
         &self,
         worktree: &Worktree,
-        selection: (Harness, Option<&str>),
+        selection: WorkerSelection<'_>,
         command: &str,
         in_role: bool,
         issue: Option<u64>,
         now: u64,
     ) -> Result<String> {
-        let (harness, model) = selection;
+        let WorkerSelection { harness, model, explicit_model } = selection;
+        let (model, model_source) = if harness == Harness::Codex {
+            crate::codex_launch::automatic_model(explicit_model.then_some(model).flatten())?
+        } else {
+            (model.map(str::to_string), "fleet_selection")
+        };
         let prepared = if harness == Harness::Codex {
-            Some(crate::codex_launch::prepare(worktree, model, command, in_role)?)
+            Some(crate::codex_launch::prepare(
+                worktree,
+                model.as_deref(),
+                command,
+                in_role,
+                model_source,
+            )?)
         } else {
             None
         };
@@ -140,7 +159,10 @@ impl Agent {
             None => command,
         };
         let terminal = self.start(worktree, harness, &command, None, now)?;
-        std::fs::write(worktree.note("convoy-worker-model")?, model.unwrap_or_default())?;
+        std::fs::write(
+            worktree.note("convoy-worker-model")?,
+            model.as_deref().unwrap_or_default(),
+        )?;
         if let Some((_, settings)) = prepared {
             crate::codex_launch::record(worktree, &settings)?;
         }
@@ -380,7 +402,7 @@ fn start(
     if staged.is_none() && issue.labels.contains(&fleet.config.escalate_label) {
         bail!("issue #{number} is escalated: the host's watch or a human must answer it first");
     }
-    let (harness, model, unmatched) = match &staged {
+    let (harness, mut model, unmatched) = match &staged {
         Some(staged) => {
             (staged.harness(), staged.model().map(str::to_string), staged.unmatched().cloned())
         }
@@ -392,6 +414,21 @@ fn start(
             (cast.harness, cast.model, unmatched)
         }
     };
+    let explicit_model = issue.labels.iter().any(|label| label.starts_with("model:"));
+    if harness == Harness::Codex {
+        model = crate::codex_launch::automatic_model(
+            explicit_model.then_some(model.as_deref()).flatten(),
+        )?
+        .0;
+        if !explicit_model
+            && let (Some(staged), Some(model)) = (staged.as_ref(), model.as_deref())
+            && !staged.allows_model(model)
+        {
+            bail!(
+                "Codex user selection `{model}` from ~/.codex/config.toml is outside this issue's role range; update the role's roster to allow it or choose a model the role allows"
+            );
+        }
+    }
     // No worker is started on a harness paused on this host.
     if let Some(pause) = crate::paused::Pauses::of_host()?.of(harness)? {
         return Err(crate::paused::Held::of(&pause, fleet.now).into());
@@ -515,20 +552,23 @@ fn start(
                 terminal = Some(match &staged {
                     Some(staged) => agent.start_worker(
                         cut,
-                        (harness, model.as_deref()),
-                        &staged.command(launch, cut)?,
+                        WorkerSelection { harness, model: model.as_deref(), explicit_model },
+                        &staged.command(launch, cut, model.as_deref())?,
                         true,
                         None,
                         fleet.now,
                     )?,
                     None => {
                         let launch = match &model {
-                            Some(model) => harness.with_model(launch, model),
+                            Some(model) if harness != Harness::Codex => {
+                                harness.with_model(launch, model)
+                            }
+                            Some(_) => launch.to_string(),
                             None => launch.to_string(),
                         };
                         agent.start_worker(
                             cut,
-                            (harness, model.as_deref()),
+                            WorkerSelection { harness, model: model.as_deref(), explicit_model },
                             &launch,
                             false,
                             Some(number),
