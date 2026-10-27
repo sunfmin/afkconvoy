@@ -34,6 +34,12 @@ pub struct Ticket {
     /// the two branches configure different kinds of gate.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub is_turn: bool,
+    /// An immutable candidate worktree may overlap another candidate of
+    /// its repo. Ordinary commands and serial barriers retain exclusion.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub candidate: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validation: Option<crate::candidate::Validation>,
     /// When it asked to run, in epoch seconds: within each priority the one
     /// that asked first runs first, including in the next host runner.
     pub asked: u64,
@@ -70,7 +76,7 @@ pub fn same_repo(a: &Ticket, b: &Ticket) -> bool {
 pub fn ready(queue: &[Ticket], number: u64, worker_lanes: u64) -> bool {
     scheduling(queue, worker_lanes, false)
         .iter()
-        .any(|request| request.number == number && request.state == State::Eligible)
+        .any(|request| request.number == number && matches!(request.state, State::Eligible))
 }
 
 /// The scheduler's decision for a request at this observation. Eligible
@@ -126,52 +132,65 @@ pub fn scheduling(queue: &[Ticket], worker_lanes: u64, paused: bool) -> Vec<Sche
         .map(|ticket| Scheduling { number: ticket.number, state: State::Running, reasons: vec![] })
         .collect();
     for ticket in ordered.iter().filter(|t| t.ran.is_none()) {
-        let limit = if ticket.repo_lane.is_some() { 1 } else { worker_lanes };
-        let occupied: Vec<_> = admitted.iter().copied().filter(|t| same_lane(t, ticket)).collect();
-        let own: Vec<_> = admitted
-            .iter()
-            .copied()
-            .filter(|t| {
-                (same_lane(t, ticket) || (t.is_turn && ticket.is_turn)) && same_repo(t, ticket)
-            })
-            .collect();
-        let mut reasons = vec![];
-        if paused {
-            reasons.push(Constraint {
-                kind: ConstraintKind::Paused,
-                requests: vec![],
-                capacity: None,
-                explanation:
-                    "the host runner has paused new grants while moving to another release".into(),
-            });
-        }
-        if !own.is_empty() {
-            reasons.push(Constraint {
-                kind: ConstraintKind::SameRepo,
-                requests: holders(&own),
-                capacity: None,
-                explanation: "this repo already holds or reserves this lane, or another turn of this repo holds or reserves a different lane".into(),
-            });
-        }
-        if occupied.len() as u64 >= limit {
-            reasons.push(Constraint {
-                kind: if ticket.repo_lane.is_some() {
-                    ConstraintKind::RepoCapacity
-                } else {
-                    ConstraintKind::WorkerCapacity
-                },
-                requests: holders(&occupied),
-                capacity: Some(limit),
-                explanation: format!("all {limit} {} lane places are held by running requests or reserved by earlier eligible requests", lane(ticket)),
-            });
-        }
-        let state = if reasons.is_empty() { State::Eligible } else { State::Waiting };
-        if state == State::Eligible {
+        let decision = reservation(ticket, &admitted, worker_lanes, paused);
+        if matches!(decision.state, State::Eligible) {
             admitted.push(ticket);
         }
-        decisions.push(Scheduling { number: ticket.number, state, reasons });
+        decisions.push(decision);
     }
     decisions
+}
+
+/// One admission decision, with earlier reservations already applied.
+fn reservation(
+    ticket: &Ticket,
+    admitted: &[&Ticket],
+    worker_lanes: u64,
+    paused: bool,
+) -> Scheduling {
+    let limit = if ticket.repo_lane.is_some() { 1 } else { worker_lanes };
+    let occupied: Vec<_> = admitted.iter().copied().filter(|t| same_lane(t, ticket)).collect();
+    let own: Vec<_> = admitted
+        .iter()
+        .copied()
+        .filter(|t| {
+            (same_lane(t, ticket) || (t.is_turn && ticket.is_turn))
+                && same_repo(t, ticket)
+                && !(t.candidate && ticket.candidate)
+        })
+        .collect();
+    let mut reasons = vec![];
+    if paused {
+        reasons.push(Constraint {
+            kind: ConstraintKind::Paused,
+            requests: vec![],
+            capacity: None,
+            explanation: "the host runner has paused new grants while moving to another release"
+                .into(),
+        });
+    }
+    if !own.is_empty() {
+        reasons.push(Constraint {
+            kind: ConstraintKind::SameRepo,
+            requests: holders(&own),
+            capacity: None,
+            explanation: "this repo already holds or reserves this lane, or another turn of this repo holds or reserves a different lane".into(),
+        });
+    }
+    if occupied.len() as u64 >= limit {
+        reasons.push(Constraint {
+            kind: if ticket.repo_lane.is_some() {
+                ConstraintKind::RepoCapacity
+            } else {
+                ConstraintKind::WorkerCapacity
+            },
+            requests: holders(&occupied),
+            capacity: Some(limit),
+            explanation: format!("all {limit} {} lane places are held by running requests or reserved by earlier eligible requests", lane(ticket)),
+        });
+    }
+    let state = if reasons.is_empty() { State::Eligible } else { State::Waiting };
+    Scheduling { number: ticket.number, state, reasons }
 }
 
 fn holders(tickets: &[&Ticket]) -> Vec<Holder> {
@@ -373,6 +392,8 @@ mod tests {
             repo_lane: None,
             repo: None,
             is_turn: false,
+            candidate: false,
+            validation: None,
             asked,
             ran: None,
         }
@@ -429,6 +450,26 @@ mod tests {
         assert!(!ready(&queue, 2, 2));
         assert!(ready(&queue, 3, 2));
         assert!(!ready(&queue, 3, 1));
+    }
+
+    #[test]
+    fn only_independent_candidate_worktrees_may_overlap_in_one_repo() {
+        let mut a = ticket(1, "/a/source-one", 0);
+        a.repo = Some("a".into());
+        a.is_turn = true;
+        a.candidate = true;
+        a.ran = Some(0);
+        let mut b = ticket(2, "/a/source-two", 1);
+        b.repo = Some("a".into());
+        b.is_turn = true;
+        b.candidate = true;
+        assert!(ready(&[a.clone(), b.clone()], 2, 2));
+        assert!(!ready(&[a.clone(), b.clone()], 2, 1));
+        b.candidate = false;
+        assert!(!ready(&[a.clone(), b.clone()], 2, 2), "ordinary work retains exclusion");
+        a.candidate = false;
+        b.candidate = true;
+        assert!(!ready(&[a, b], 2, 2), "a barrier excludes speculative validation");
     }
 
     #[test]

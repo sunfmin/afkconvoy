@@ -164,13 +164,17 @@ impl Shared {
     /// What it holds now: what `shared` is answered, and the panel the host
     /// runner serves shows.
     pub fn now(&self) -> SharedNow {
-        let (exclusive, exclusive_paused) = self.queue.observation();
-        SharedNow {
+        self.checked_now().unwrap_or_default()
+    }
+
+    fn checked_now(&self) -> Result<SharedNow> {
+        let (exclusive, exclusive_paused) = self.queue.observation()?;
+        Ok(SharedNow {
             exclusive,
             exclusive_paused,
             installed: self.installed().clone(),
             watch: self.watch.running(),
-        }
+        })
     }
 
     fn installed(&self) -> MutexGuard<'_, Option<Installed>> {
@@ -179,7 +183,10 @@ impl Shared {
 
     /// What `shared` is answered.
     fn said(&self) -> Value {
-        serde_json::to_value(self.now()).unwrap_or_default()
+        match self.checked_now() {
+            Ok(now) => serde_json::to_value(now).unwrap_or_default(),
+            Err(error) => crate::error_json(&error),
+        }
     }
 }
 
@@ -344,6 +351,7 @@ fn about_instance(request: &Request, held: impl FnOnce(&str) -> HeldAs) -> Resul
         | Request::StopAll
         | Request::Checkouts
         | Request::Exclusive { .. }
+        | Request::Candidate { .. }
         | Request::Shared => {
             bail!("{request:?} is no question about one fleet instance")
         }
@@ -1114,6 +1122,10 @@ impl Runner {
             Request::StopAll => self.stop_all(),
             Request::Checkouts => Ok(self.checkouts()),
             Request::Exclusive { ticket } => return self.shared.queue.answer(ticket),
+            Request::Candidate { pid, validation } => {
+                self.shared.queue.validation(pid, validation);
+                Ok(json!({}))
+            }
             Request::Shared => Ok(self.shared.said()),
             about => about_instance(&about, held),
         };
@@ -2216,6 +2228,10 @@ pub fn foreground(checkout: &Repo, start: &Start, settings: host_settings::Named
         let answered = match request {
             Request::Version => Ok(json!({})),
             Request::Exclusive { ticket } => return answerer.queue.answer(ticket),
+            Request::Candidate { pid, validation } => {
+                answerer.queue.validation(pid, validation);
+                Ok(json!({}))
+            }
             Request::Shared => Ok(answerer.said()),
             Request::Checkouts => {
                 let instance = named.lock().unwrap_or_else(|poisoned| poisoned.into_inner());

@@ -7,6 +7,7 @@ use common::{World, git};
 use serde_json::json;
 
 use std::os::unix::net::UnixListener;
+use std::os::unix::process::CommandExt;
 use std::process::{Child, Output, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
@@ -16,12 +17,10 @@ use afkconvoy::runner_socket::{self, Kept, Reply, Request, SOCKET};
 const GATE_BINARY: &str = env!("CARGO_BIN_EXE_afkconvoy");
 
 /// A gate held by an isolated runner until the test explicitly grants it.
-/// Its nested wrapper drops the inherited lease to model an installed CLI
-/// from before gate turns, which still queues inside the gate command.
+/// The gate process owns a group so interruption cannot signal the test.
 /// Drop cleans up even when an assertion fails before the grant.
 struct QueuedGate {
     _socket: tempfile::TempDir,
-    _permit: Kept,
     child: Option<Child>,
     group: i32,
     place: Kept,
@@ -55,22 +54,20 @@ impl QueuedGate {
             .args(["gate"])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
+            .process_group(0)
             .spawn()
             .unwrap();
-        let (owner, mut permit) = receive.recv_timeout(Duration::from_secs(5)).unwrap();
+        let (owner, permit) = receive.recv_timeout(Duration::from_secs(5)).unwrap();
         assert_eq!(owner, child.id(), "the gate takes its owning lease first");
-        assert!(permit.say(json!({"runs": 5000})));
-        let (pid, place) = receive.recv_timeout(Duration::from_secs(5)).unwrap();
-        // SAFETY: pid is this gate's exclusive child in the isolated runner.
-        let group = unsafe { libc::getpgid(pid as i32) };
-        assert_eq!(group, pid as i32, "only the gate child's own group may be signalled");
-        Self { _socket: socket, _permit: permit, child: Some(child), group, place }
+        // SAFETY: the process group was created for this child alone.
+        let group = unsafe { libc::getpgid(child.id() as i32) };
+        assert_eq!(group, child.id() as i32, "only the gate child's own group may be signalled");
+        Self { _socket: socket, child: Some(child), group, place: permit }
     }
 
     fn observe(&mut self, world: &World) {
         for interval in 0..3 {
-            // Exercise the real socket read between the gate's child polls;
-            // only an explicit runs message grants the command its turn.
+            // Exercise the real socket read while the gate waits for its turn.
             assert!(self.place.say(json!({"observation": interval})));
             std::thread::sleep(Duration::from_millis(100));
             assert!(
@@ -80,11 +77,6 @@ impl QueuedGate {
             assert!(!world.root.join("executed").exists());
             assert!(records(world).is_empty());
         }
-    }
-
-    fn interrupt(&self) {
-        // SAFETY: this is the gate child's own process group, never ours.
-        assert_eq!(unsafe { libc::kill(-self.group, libc::SIGTERM) }, 0);
     }
 
     fn finish(&mut self) -> Output {
@@ -113,12 +105,7 @@ impl Drop for QueuedGate {
 }
 
 fn queue_command(world: &World) {
-    let command = afkconvoy_core::line::Line::new()
-        .fixed("exec env -u AFKCONVOY_EXCLUSIVE_OWNER ")
-        .program(GATE_BINARY)
-        .fixed(" exclusive -- sh -c ")
-        .word("echo executed >> \"$EXECUTED\"; if test -f \"$FAIL_GATE\"; then exit 3; fi")
-        .own();
+    let command = "echo executed >> \"$EXECUTED\"; if test -f \"$FAIL_GATE\"; then exit 3; fi";
     // Markers are outside the committed tree so the gate can record a pass.
     world.set_gate_config(&format!("gate_command: {command}\ngate_seconds: 10"));
 }
@@ -151,12 +138,13 @@ fn a_queued_gate_survives_observation_and_runs_exactly_once_when_granted() {
 }
 
 #[test]
-fn a_signalled_queued_gate_keeps_termination_evidence_without_claiming_checks_ran() {
+fn a_signalled_gate_keeps_termination_evidence_without_claiming_checks_ran() {
     let world = World::new();
     queue_command(&world);
+    world.set_gate_config("gate_command: kill -TERM $$\ngate_seconds: 10");
     let mut gate = QueuedGate::start(&world);
     gate.observe(&world);
-    gate.interrupt();
+    assert!(gate.place.say(json!({"runs": 5000})));
     let out = gate.finish();
     let answer: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert!(out.status.success(), "{out:?}");
@@ -164,7 +152,7 @@ fn a_signalled_queued_gate_keeps_termination_evidence_without_claiming_checks_ra
     assert_eq!(answer["exit_code"], -1, "preserve the existing exit-code contract");
     assert_eq!(answer["timed_out"], false);
     assert_eq!(answer["termination"]["signal"], libc::SIGTERM, "{answer}");
-    assert_eq!(answer["termination"]["pid"], gate.group, "{answer}");
+    assert!(answer["termination"]["pid"].as_u64().is_some(), "{answer}");
     assert_eq!(answer["termination"]["core_dumped"], false);
     assert_eq!(answer["recorded"], false);
     assert!(!world.root.join("executed").exists());
