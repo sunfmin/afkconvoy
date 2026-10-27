@@ -370,6 +370,36 @@ pub fn has_signal(worktree: &Worktree) -> Result<bool> {
     Ok(!error_of(worktree)?.is_empty())
 }
 
+fn account_quota(evidence: String) -> Diagnosis {
+    Diagnosis {
+        status: "fault".into(),
+        class: "quota".into(),
+        scope: Scope::Account,
+        evidence: vec![evidence],
+        action: Action::Continue,
+        missing: vec![],
+        retry_after: None,
+    }
+}
+
+fn zai_quota(text: &str) -> Option<Diagnosis> {
+    let start = text.find('{')?;
+    if !text[..start].contains("429") {
+        return None;
+    }
+    let body: Value = serde_json::from_str(&text[start..]).ok()?;
+    let code = body.get("code")?;
+    if code.as_str() != Some("1308") && code.as_u64() != Some(1308)
+        || !body
+            .get("message")
+            .and_then(Value::as_str)
+            .is_some_and(|message| message.to_lowercase().contains("usage limit reached"))
+    {
+        return None;
+    }
+    Some(account_quota(text.into()))
+}
+
 fn terminal_rule(harness: Harness, output: &[String]) -> Option<Diagnosis> {
     if let Some(evidence) = harness.task_refusal(output) {
         return Some(Diagnosis {
@@ -393,6 +423,11 @@ fn terminal_rule(harness: Harness, output: &[String]) -> Option<Diagnosis> {
             retry_after: None,
         });
     }
+    if harness == Harness::Pi
+        && let Some(diagnosis) = output.iter().find_map(|line| zai_quota(line))
+    {
+        return Some(diagnosis);
+    }
     if harness != Harness::Codex {
         return None;
     }
@@ -408,15 +443,7 @@ fn terminal_rule(harness: Harness, output: &[String]) -> Option<Diagnosis> {
         .find(|line| line.to_lowercase().contains("usage limit reached"))
         .cloned()
         .unwrap_or(screen);
-    Some(Diagnosis {
-        status: "fault".into(),
-        class: "quota".into(),
-        scope: Scope::Account,
-        evidence: vec![evidence],
-        action: Action::Continue,
-        missing: vec![],
-        retry_after: None,
-    })
+    Some(account_quota(evidence))
 }
 
 /// Conservative structured/error classification. Plain terminal text goes to
@@ -445,10 +472,13 @@ fn classified(value: &Value) -> Option<Diagnosis> {
             }
         }
     }
-    if let Some(text) = value.as_str()
-        && let Ok(parsed) = serde_json::from_str::<Value>(text)
-    {
-        return classified(&parsed);
+    if let Some(text) = value.as_str() {
+        if let Some(diagnosis) = zai_quota(text) {
+            return Some(diagnosis);
+        }
+        if let Ok(parsed) = serde_json::from_str::<Value>(text) {
+            return classified(&parsed);
+        }
     }
     let code = value.get("code").and_then(Value::as_str)?;
     let (class, scope, action) = match code {
