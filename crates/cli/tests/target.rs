@@ -71,6 +71,23 @@ fn selected_target_cuts_continues_gates_lands_and_settles_only_its_task() {
         .ok();
     assert_eq!(continued["worktree"], started["worktree"]);
     assert!(brief(&dir).contains("base is `delivery/ABC-123`"));
+    let switched = world
+        .afk(&[
+            "switch",
+            "--harness",
+            "claude-code",
+            "--issue",
+            "7",
+            "--instance",
+            "beta",
+            "--host",
+            "h1",
+            "--now",
+            "1150",
+        ])
+        .ok();
+    assert_eq!(switched["failed"], json!([]), "{switched}");
+    assert!(brief(&dir).contains("base is `delivery/ABC-123`"));
     world.pr(70, 7, started["branch"].as_str().unwrap());
     world.with_gh(|gh| gh["prs"][0]["baseRefName"] = json!("delivery/ABC-123"));
     let landed = world.afk_in(&dir, &["land", "--issue", "7"]).ok();
@@ -147,4 +164,46 @@ fn unreadable_explicit_target_prevents_claim_without_holding_other_tasks_back() 
         world.afk(&["dispatch", "--issue", "8", "--instance", "alpha", "--host", "h1"]).ok();
     assert_eq!(other["started"], true);
     assert_eq!(world.claims().iter().map(|(n, _)| *n).collect::<Vec<_>>(), [8]);
+}
+
+#[test]
+fn a_target_repair_is_dispatched_and_landed_on_the_affected_branch() {
+    let world = World::new();
+    world.set_gate("test ! -f broken.txt || test -f repaired.txt");
+    let main = world.remote(&["rev-parse", "refs/heads/main"]);
+    let broken = commit(&world.clone, "broken.txt", "broken target\n");
+    git(
+        &world.clone,
+        &["push", "-q", "origin", "HEAD:delivery/red", "HEAD:refs/convoy/base/red/delivery/red"],
+    );
+    git(&world.clone, &["reset", "--hard", "origin/main"]);
+    world.issue(7, &[]);
+    world.afk(&["target", "--issue", "7", "--branch", "delivery/red"]).ok();
+    let ticked = world.afk(&["tick", "--instance", "alpha", "--host", "h1"]).ok();
+    assert_eq!(ticked["errors"], json!([]), "{ticked}");
+    let gh = world.gh();
+    let repair = gh["issues"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["title"].as_str().unwrap_or("").contains("Repair the red delivery/red"))
+        .unwrap()["number"]
+        .as_u64()
+        .unwrap();
+    let orca = world.orca();
+    let row =
+        orca["worktrees"].as_array().unwrap().iter().find(|w| w["linkedIssue"] == repair).unwrap();
+    let dir = PathBuf::from(row["path"].as_str().unwrap());
+    assert_eq!(git(&dir, &["rev-parse", "HEAD"]), broken);
+    assert!(brief(&dir).contains("base is `delivery/red`"));
+    commit(&dir, "repaired.txt", "repaired\n");
+    git(&dir, &["push", "-q", "origin", "HEAD"]);
+    world.pr(2000, repair, &git(&dir, &["symbolic-ref", "--short", "HEAD"]));
+    world.with_gh(|gh| gh["prs"][0]["baseRefName"] = json!("delivery/red"));
+    let fixed = world.afk_in(&dir, &["land", "--issue", &repair.to_string()]).ok();
+    assert_eq!(fixed["outcome"], "merged", "{fixed}");
+    assert_eq!(world.remote(&["rev-parse", "refs/heads/main"]), main);
+    assert_eq!(world.remote(&["show", "refs/heads/delivery/red:repaired.txt"]), "repaired");
+    assert_eq!(world.state(7), "open");
+    assert_eq!(world.state(repair), "closed");
 }

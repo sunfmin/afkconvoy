@@ -11,7 +11,8 @@ use crate::host_watch::{WATCH_ENV, kept};
 use crate::intake::INTAKE_RECORD;
 use crate::patrol::PATROL_ENV;
 use crate::role::{
-    BASE_BRANCH_ENV, CONSULT_ENV, ESCALATE_LABEL_ENV, LOCK_LABEL_ENV, STAGE_ENV, WRITES_ENV,
+    BASE_BRANCH_ENV, CONSULT_ENV, ESCALATE_LABEL_ENV, LOCK_LABEL_ENV, STAGE_ENV, TARGET_BRANCH_ENV,
+    WRITES_ENV,
 };
 use crate::stage_record::{STAGE_LABEL, STAGE_RECORD};
 use crate::team::FLOW_LABEL;
@@ -112,6 +113,7 @@ pub struct Limits {
     writes: bool,
     consult: bool,
     base_branch: String,
+    target_branch: Option<String>,
     escalate_label: String,
     lock_label: String,
     /// The home folder, which a watch reads paths under; `None` where
@@ -146,6 +148,7 @@ impl Limits {
             writes: flag(WRITES_ENV)? || watch,
             consult: flag(CONSULT_ENV)? && !watch,
             base_branch: fact(BASE_BRANCH_ENV)?,
+            target_branch: var(TARGET_BRANCH_ENV),
             escalate_label: fact(ESCALATE_LABEL_ENV)?,
             lock_label: fact(LOCK_LABEL_ENV)?,
             home: var("HOME").filter(|home| home.starts_with('/')),
@@ -308,9 +311,10 @@ impl Limits {
             }
             let to_base = named.iter().skip(2).find(|refspec| self.lands_on_base(refspec));
             if let Some(pushed) = every.or(to_base) {
+                let target = self.target_branch.as_deref().unwrap_or(&self.base_branch);
                 return Some(format!(
                     "`git push … {pushed}` pushes the base branch `{}`: nothing reaches it \
-                     except through a landing turn. Push your own branch only",
+                     except through a landing turn. The target branch `{target}` is protected too. Push your own branch only",
                     self.base_branch
                 ));
             }
@@ -359,7 +363,8 @@ impl Limits {
     fn lands_on_base(&self, refspec: &str) -> bool {
         let refspec = refspec.strip_prefix('+').unwrap_or(refspec);
         let to = refspec.rsplit(':').next().unwrap_or(refspec);
-        to.strip_prefix("refs/heads/").unwrap_or(to) == self.base_branch
+        let branch = to.strip_prefix("refs/heads/").unwrap_or(to);
+        branch == self.base_branch || self.target_branch.as_deref() == Some(branch)
     }
 
     fn refuses_gh(&self, args: &[&str], input: &str) -> Option<String> {
@@ -945,6 +950,7 @@ mod tests {
             writes,
             consult,
             base_branch: "main",
+            target_branch: None,
             escalate_label: "ready-for-human",
             lock_label: "fleet-lock",
             role_commit: "abc",

@@ -298,6 +298,7 @@ fn in_role(
             writes: false,
             consult: false,
             base_branch: &fleet.config.base_branch,
+            target_branch: None,
             escalate_label: &kept.team.escalate_label,
             lock_label: &fleet.config.lock_label,
             role_commit: &role_copy.commit,
