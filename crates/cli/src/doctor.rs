@@ -1849,6 +1849,10 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String]) -> Result<Exami
     }
     let mut fleet = fleet_json(&run);
     fleet["concurrency"] = crate::concurrency::json_of(repo);
+    fleet["github_api"] = match crate::gh::GitHub::of(repo).and_then(|gh| gh.quota_status()) {
+        Ok(status) => status,
+        Err(error) => json!({"error":format!("{error:#}")}),
+    };
     fleet["tracker"] = match List::of_host() {
         Ok(list) => crate::tracker::json_of(&list, repo),
         Err(error) => json!({"error": format!("{error:#}")}),
