@@ -1679,6 +1679,7 @@ echo "$*" >> "${0%/*}/../pmset.log"
 /// `vm.loadavg`, the load in `host-load`, or none; for
 /// `kern.memorystatus_level`, the share of memory free in `host-memory`, or 80%.
 const SYSCTL: &str = r#"#!/bin/sh
+echo "$*" >> "${0%/*}/../sysctl.log"
 case "$*" in
 *vm.loadavg*) echo "{ $(cat "${0%/*}/../host-load" 2>/dev/null || echo 0.00) 0.00 0.00 }" ;;
 *kern.memorystatus_level*) cat "${0%/*}/../host-memory" 2>/dev/null || echo 80 ;;
@@ -1694,6 +1695,7 @@ esac
 /// The stand-in `df`, for admission: a disk of 1000 GiB, half of it free —
 /// never the disk of whoever runs the tests.
 const DF: &str = r#"#!/bin/sh
+echo "$*" >> "${0%/*}/../df.log"
 echo "Filesystem 1024-blocks Used Available Capacity Mounted on"
 echo "/dev/stand-in 1048576000 524288000 524288000 50% /"
 "#;
@@ -1722,7 +1724,13 @@ impl World {
 
     /// What the stand-in `pmset` was asked, one call a line.
     pub fn pmset_calls(&self) -> Vec<String> {
-        let log = std::fs::read_to_string(self.root.join("pmset.log")).unwrap_or_default();
+        self.host_calls("pmset")
+    }
+
+    /// What the named host command stand-in was asked, one call a line.
+    pub fn host_calls(&self, command: &str) -> Vec<String> {
+        let log =
+            std::fs::read_to_string(self.root.join(format!("{command}.log"))).unwrap_or_default();
         log.lines().map(str::to_string).collect()
     }
 }

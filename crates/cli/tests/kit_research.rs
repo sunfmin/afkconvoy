@@ -125,6 +125,9 @@ fn sourced_settlements_preserve_seven_placed_codex_models_and_survive_relisting(
         }
         kit["cast"] = json!(true);
     });
+    // `doctor` trims research notes. The placed models are what the kit holds.
+    let placed =
+        world.afk(&["plan", "--now", "1000"]).ok()["host_kit"]["harnesses"][1]["models"].clone();
     let before = world.afk(&["doctor", "--all"]).ok()["host"]["host_kit"].clone();
     let settlement = |model, reason| {
         json!({"harness":"codex", "model":model,
@@ -149,7 +152,7 @@ fn sourced_settlements_preserve_seven_placed_codex_models_and_survive_relisting(
     assert_eq!(applied["kit"]["cast"], true);
     assert_eq!(
         &applied["kit"]["harnesses"][1]["models"].as_array().unwrap()[..7],
-        &before["harnesses"][1]["models"].as_array().unwrap()[..7]
+        &placed.as_array().unwrap()[..7]
     );
     let settled = &applied["kit"]["harnesses"][1]["models"][8];
     assert!(settled["settled"].as_str().unwrap().contains("quota meter"));
@@ -177,10 +180,7 @@ fn sourced_settlements_preserve_seven_placed_codex_models_and_survive_relisting(
         .iter()
         .find(|h| h["harness"] == "codex")
         .unwrap();
-    assert_eq!(
-        &codex["models"].as_array().unwrap()[..7],
-        &before["harnesses"][1]["models"].as_array().unwrap()[..7]
-    );
+    assert_eq!(&codex["models"].as_array().unwrap()[..7], &placed.as_array().unwrap()[..7]);
     for model in &codex["models"].as_array().unwrap()[7..] {
         let prior = applied["kit"]["harnesses"][1]["models"]
             .as_array()
@@ -202,10 +202,7 @@ fn sourced_settlements_preserve_seven_placed_codex_models_and_survive_relisting(
         .unwrap();
     assert_eq!(codex["models"][7]["good_at"], "research pending");
     assert!(codex["models"][7].get("settled").is_none());
-    assert_eq!(
-        &codex["models"].as_array().unwrap()[..7],
-        &before["harnesses"][1]["models"].as_array().unwrap()[..7]
-    );
+    assert_eq!(&codex["models"].as_array().unwrap()[..7], &placed.as_array().unwrap()[..7]);
 }
 
 #[test]

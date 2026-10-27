@@ -8,6 +8,9 @@
 //! kept in that process alone until its first tick puts it on the list with
 //! it (`checkout_list::Asked`).
 
+use std::collections::BTreeMap;
+use std::sync::Mutex;
+
 use afkconvoy_core::config::{Config, RepoName};
 use afkconvoy_core::tracker::{names_a_ref, repo_label, says_private};
 use anyhow::{Result, bail};
@@ -171,23 +174,37 @@ fn labelled(gh: &GitHub, repo: &Repo, config: &Config) -> Result<()> {
     Ok(())
 }
 
-/// What `doctor` finds of the tracker of the checkout `repo`: that GitHub
-/// says it is public, and its fleet works nothing — none where GitHub cannot
-/// be asked, which `doctor` finds otherwise.
-pub fn findings(repo: &Repo) -> Vec<Finding> {
-    let Ok(gh) = GitHub::of(repo) else { return vec![] };
-    let Ok(Some(why)) = refused_public(repo, &gh) else { return vec![] };
-    let checkout = repo.dir.display().to_string();
-    let named = crate::probe::named(repo, &gh.tracker);
-    vec![finding(
-        Kind::PublicTracker,
-        format!(
-            "this checkout's tracker, {named}, is public: its fleet instance works nothing, as \
-             anyone can comment on its issues"
-        ),
-        why,
-        says_private(&checkout),
-    )]
+/// Tracker visibility observations shared by one look, keyed by tracker.
+#[derive(Default)]
+pub struct Public {
+    why: Mutex<BTreeMap<String, Option<String>>>,
+}
+
+impl Public {
+    /// What `doctor` finds of the tracker of the checkout `repo`: that GitHub
+    /// says it is public, and its fleet works nothing — none where GitHub cannot
+    /// be asked, which `doctor` finds otherwise. Each tracker is asked once.
+    pub fn findings(&self, repo: &Repo) -> Vec<Finding> {
+        let Ok(gh) = GitHub::of(repo) else { return vec![] };
+        let named = crate::probe::named(repo, &gh.tracker);
+        let mut observed = self.why.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let why = observed
+            .entry(named.clone())
+            .or_insert_with(|| refused_public(repo, &gh).ok().flatten())
+            .clone();
+        drop(observed);
+        let Some(why) = why else { return vec![] };
+        let checkout = repo.dir.display().to_string();
+        vec![finding(
+            Kind::PublicTracker,
+            format!(
+                "this checkout's tracker, {named}, is public: its fleet instance works nothing, as \
+                 anyone can comment on its issues"
+            ),
+            why,
+            says_private(&checkout),
+        )]
+    }
 }
 
 /// What the fleet of the checkout `repo` holds of the tracker it says now:

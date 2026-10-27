@@ -122,7 +122,8 @@ pub fn samples(repo: &std::path::Path) -> Result<BTreeMap<PathBuf, afkconvoy_cor
 
 /// Current conditions, with stable episode identities. Inactive episodes are
 /// kept during their five-minute recovery, preserving a watch's coverage.
-pub fn json(now: u64) -> Result<Value> {
+/// Every checkout's admission comes from the look's shared host reading.
+pub fn json(now: u64, readings: &crate::admission::Readings) -> Result<Value> {
     let state = read()?;
     let span = crate::host_settings::of_host()?
         .admit_inspect_after
@@ -134,7 +135,7 @@ pub fn json(now: u64) -> Result<Value> {
         if !on_list(repo) {
             continue;
         }
-        let admission = Admission::read(repo)?;
+        let admission = Admission::read_from(repo, readings)?;
         let mut holding = observed.holding.clone();
         holding.ticked(now, &admission.reasons());
         if let Some(episode) = holding.episode() {

@@ -521,7 +521,8 @@ impl Watcher {
             crate::resources::evidence(&mut state.look, &pending)?;
             // Disk evidence can take minutes. A condition that recovered
             // while it was taken must not start a watch from an old look.
-            let resources = crate::resources::json(crate::clock())?;
+            let resources =
+                crate::resources::json(crate::clock(), &crate::admission::Readings::new())?;
             state.pending.retain(|q| {
                 !q.item.id.starts_with("resource:")
                     || resources
@@ -530,6 +531,16 @@ impl Watcher {
                         .flatten()
                         .any(|resource| resource["id"] == q.item.id && resource["active"] == true)
             });
+            // A host-wide condition names no checkout. Its evidence is read
+            // at the first checkout on the list, and a look that ran before
+            // any `run` handed one over has nowhere to read it. That
+            // condition waits for the next look.
+            let evidenced = |id: &str| {
+                state.look["host"]["resources"].as_array().is_some_and(|rows| {
+                    rows.iter().any(|row| row["id"] == id && row["evidence"].as_str().is_some())
+                })
+            };
+            state.pending.retain(|q| !q.item.id.starts_with("resource:") || evidenced(&q.item.id));
             if !state.pending.is_empty() {
                 let look = state.look.clone();
                 let items = state.pending.iter().map(|q| q.item.clone()).collect();
@@ -1662,8 +1673,9 @@ pub(crate) fn actionable(look: &Value, now: u64) -> Vec<Item> {
 }
 
 /// What `doctor` answers of the host's watch: the one running, the last that
-/// ended, and why none could start or go on, where none could.
-pub fn json(running: Option<&Watch>) -> Value {
+/// ended, and why none could start or go on, where none could. Earlier rounds
+/// are included only when the caller asks for them.
+pub fn json(running: Option<&Watch>, rounds: bool) -> Value {
     let state = read();
     let (last, unavailable) = match &state {
         Ok(state) => (json!(state.last.as_ref().map(watch_json)), json!(state.unavailable)),
@@ -1681,7 +1693,9 @@ pub fn json(running: Option<&Watch>) -> Value {
             "round": state.running.as_ref().map(|r| &r.id),
         })));
         answer["pending"] = json!(state.pending);
-        answer["rounds"] = json!(state.history.iter().map(watch_json).collect::<Vec<_>>());
+        if rounds {
+            answer["rounds"] = json!(state.history.iter().map(watch_json).collect::<Vec<_>>());
+        }
         answer["looked"] = json!(state.looked);
         answer["until"] = json!(state.until);
     }
