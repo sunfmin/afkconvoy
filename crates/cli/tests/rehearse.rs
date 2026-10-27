@@ -118,10 +118,14 @@ fn each_verdict_is_answered_with_its_stage_and_the_position_that_follows() {
     let entered = rehearse(&world, "feature", &[]);
     assert_eq!((&entered["ends"], &entered["steps"]), (&entered["enters"], &json!([])));
     // Nothing was started and nothing written: GitHub was only asked for the
-    // head of each repo, and cloned from.
+    // head of each repo, and cloned from, beside login/quota observations.
     assert!(world.orca_calls().is_empty());
-    let read =
-        |call: &Vec<String>| call[..2] == ["repo", "clone"] || call[1].ends_with("/commits/HEAD");
+    let read = |call: &Vec<String>| {
+        call[..2] == ["repo", "clone"]
+            || call[1].ends_with("/commits/HEAD")
+            || call[..2] == ["api", "rate_limit"]
+            || call.starts_with(&["config".into(), "get".into(), "user".into()])
+    };
     assert!(world.gh_calls().iter().all(read));
 }
 

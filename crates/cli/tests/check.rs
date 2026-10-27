@@ -129,12 +129,16 @@ fn a_well_formed_team_is_accepted_with_what_was_read() {
 }
 
 /// The repos cloned since the last look, sorted — every other `gh` call
-/// since being a read through its API.
+/// since being an API read or local authentication configuration read.
 fn clones(world: &World) -> Vec<String> {
     let calls = world.gh_calls();
     let (clones, reads): (Vec<_>, Vec<_>) =
         calls.iter().partition(|call| call[..2] == ["repo", "clone"]);
-    assert!(reads.iter().all(|call| call[0] == "api" && !call.contains(&"--method".into())));
+    assert!(
+        reads.iter().all(|call| (call[0] == "api" && !call.contains(&"--method".into()))
+            || call.starts_with(&["config".into(), "get".into(), "user".into()])),
+        "only reads: {reads:?}"
+    );
     let mut cloned: Vec<String> = clones.iter().map(|call| call[2].clone()).collect();
     cloned.sort();
     cloned
