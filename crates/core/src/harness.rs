@@ -31,6 +31,32 @@ pub struct Link {
     pub kept: &'static str,
 }
 
+/// A harness that keeps each session apart, and reads the user's own model
+/// for a start the issue does not name. Codex is the one (docs/adr/0013).
+/// The directory, the file and the note are named here; what they mean is
+/// that harness's module.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Session {
+    /// The prefix of one fresh directory under the worktree's temporary
+    /// directory. The host keeps the session's directory under it.
+    pub fresh: &'static str,
+    /// The note in the worktree that names the directory kept for the session.
+    pub note: &'static str,
+    /// The user's config, under their home, that an automatic start reads.
+    pub config: &'static str,
+    /// The note in the worktree that records what the start resolved.
+    pub record: &'static str,
+}
+
+/// A model and an effort a session saved into its own config after it started.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Saved {
+    pub model: Option<String>,
+    pub model_source: Option<String>,
+    pub effort: Option<String>,
+    pub effort_source: Option<String>,
+}
+
 /// What a host keeps for one harness before it starts a worker of it, in a
 /// directory of the fleet's own: what that harness is given that is neither
 /// its role's nor, but for what is linked to, the host user's.
@@ -585,6 +611,130 @@ impl Harness {
             Harness::Dsh => dsh::watch(command, worktree, kept, model),
             Harness::Kimi => kimi::watch(command, kept, model),
             Harness::Grok => grok::watch(command, model),
+        }
+    }
+
+    /// How this harness keeps a session of its own. `None`: the worker launch
+    /// command, the fleet's model and the directory the host keeps are the
+    /// whole start. Codex names a fresh directory, the user's model unless
+    /// the issue names one, and its watch line (docs/adr/0013).
+    pub const fn session(self) -> Option<Session> {
+        match self {
+            Harness::Codex => Some(codex::SESSION),
+            Harness::ClaudeCode | Harness::Pi | Harness::Dsh | Harness::Kimi | Harness::Grok => {
+                None
+            }
+        }
+    }
+
+    /// The model of an automatic start. `explicit` is the issue's model and
+    /// wins. Otherwise the user's, read from `text`, the config file `file`
+    /// (`Session::config`), and it must be one of `listed`, the host kit's
+    /// models for this harness. `None`: this harness has no such preference,
+    /// and the fleet's selection stands. An error is a preference the start
+    /// cannot use.
+    pub fn automatic_model(
+        self,
+        explicit: Option<&str>,
+        text: &str,
+        file: &str,
+        listed: &[String],
+    ) -> Option<Result<(Option<String>, &'static str), String>> {
+        match self {
+            Harness::Codex => Some(codex::automatic_model(explicit, text, file, listed)),
+            Harness::ClaudeCode | Harness::Pi | Harness::Dsh | Harness::Kimi | Harness::Grok => {
+                None
+            }
+        }
+    }
+
+    /// The effort of a start, from the same config `automatic_model` reads.
+    /// `None`: this harness names none.
+    pub fn effort(
+        self,
+        text: &str,
+        file: &str,
+    ) -> Option<Result<(Option<String>, String), String>> {
+        match self {
+            Harness::Codex => Some(codex::effort(text, file)),
+            Harness::ClaudeCode | Harness::Pi | Harness::Dsh | Harness::Kimi | Harness::Grok => {
+                None
+            }
+        }
+    }
+
+    /// Why `model`, chosen from the user's config, cannot start this issue.
+    /// `None`: this harness does not refuse a model that way.
+    pub fn outside_issue(self, model: &str) -> Option<String> {
+        match self {
+            Harness::Codex => Some(codex::outside_issue(model)),
+            Harness::ClaudeCode | Harness::Pi | Harness::Dsh | Harness::Kimi | Harness::Grok => {
+                None
+            }
+        }
+    }
+
+    /// Why `model` is outside the role `role`'s range. `None`: this harness
+    /// does not refuse a model that way.
+    pub fn outside_role(self, model: &str, role: &str) -> Option<String> {
+        match self {
+            Harness::Codex => Some(codex::outside_role(model, role)),
+            Harness::ClaudeCode | Harness::Pi | Harness::Dsh | Harness::Kimi | Harness::Grok => {
+                None
+            }
+        }
+    }
+
+    /// What the session at `file` saved of its model and effort, read from
+    /// `text`. `None`: this harness keeps none, or the text is not its config.
+    pub fn saved(self, file: &str, text: &str) -> Option<Saved> {
+        match self {
+            Harness::Codex => codex::saved(file, text),
+            Harness::ClaudeCode | Harness::Pi | Harness::Dsh | Harness::Kimi | Harness::Grok => {
+                None
+            }
+        }
+    }
+
+    /// `command` naming `model`, unless it already does. A harness that keeps
+    /// a session puts the model on here, once, as the session starts.
+    pub fn ensure_model(self, command: &str, model: Option<&str>) -> String {
+        match self {
+            Harness::Codex => codex::ensure_model(command, model),
+            Harness::ClaudeCode | Harness::Pi | Harness::Dsh | Harness::Kimi | Harness::Grok => {
+                command.to_string()
+            }
+        }
+    }
+
+    /// `line` with this harness's effort, when `effort` is one it read.
+    /// Unchanged when this harness names no effort, or none was read.
+    pub fn with_effort(self, line: &str, effort: Option<&str>) -> String {
+        match self {
+            Harness::Codex => codex::with_effort(line, effort),
+            Harness::ClaudeCode | Harness::Pi | Harness::Dsh | Harness::Kimi | Harness::Grok => {
+                line.to_string()
+            }
+        }
+    }
+
+    /// The line a watch of this harness starts with, in the directory `kept`.
+    /// A harness that keeps a session of its own answers its own line, search
+    /// included, and `effort` when it read one. Every other harness answers
+    /// `watch`, and `effort` is unused.
+    pub fn session_watch(
+        self,
+        command: &str,
+        worktree: &str,
+        kept: &str,
+        model: Option<&str>,
+        effort: Option<&str>,
+    ) -> String {
+        match self {
+            Harness::Codex => codex::session_watch(command, worktree, kept, model, effort),
+            Harness::ClaudeCode | Harness::Pi | Harness::Dsh | Harness::Kimi | Harness::Grok => {
+                self.watch(command, worktree, kept, model)
+            }
         }
     }
 
