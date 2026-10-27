@@ -702,6 +702,18 @@ mod tests {
     }
 
     #[test]
+    fn config_errors_name_the_field_to_change() {
+        for (error, key) in [
+            (ConfigError::EscalatesToReady, "escalate_label"),
+            (ConfigError::NotARepo("team"), "team"),
+            (ConfigError::NeedsTeam("patrols"), "patrols"),
+            (ConfigError::NeedsTeam("intake_limit"), "intake_limit"),
+        ] {
+            assert!(error.to_string().contains(key), "{error:?} must name {key}");
+        }
+    }
+
+    #[test]
     fn a_config_nothing_could_run_on_is_refused() {
         let no_time = Settings { gate_seconds: Some(0), ..minimal() };
         assert_eq!(Config::new(no_time), Err(ConfigError::ZeroGateSeconds));

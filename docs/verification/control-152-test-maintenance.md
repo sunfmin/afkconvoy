@@ -17,6 +17,7 @@ it does not claim to solve the test suite's several-minute runtime.
 | `probe::plan_help_says_when_it_probes` | Retain the documented probe conditions; launch the CLI directly instead of constructing a `World`. | The check now also asserts exit 0 and empty stderr. All real startup-probe I/O scenarios remain unchanged. |
 | `config::a_bad_config_is_an_error_naming_the_key` | Replace ten CLI rows with four representative rows: required key, unknown key, fractional YAML value, and zero domain boundary. | `config_errors_wire_yaml_parsing_and_domain_validation_to_json` still passes through file loading, YAML decoding, `Config::new`, one JSON error, and a nonzero exit. The success/default/`--file`/checkout-discovery tests remain. |
 | Missing `gate_command` and label collision CLI rows | Merge into core rule ownership, with parser error propagation retained. | Core `the_two_keys_without_a_default_are_required` now checks absent, empty, and whitespace-only values for **both** required keys, comparing exact `ConfigError::Required` variants/keys. Core `a_config_nothing_could_run_on_is_refused` retains `ZeroGateSeconds`, `EscalatesToReady`, and empty-label variants. CLI parser `a_missing_required_key_is_named` still checks both fields' error text. |
+| Removed domain-error field-name assertions | Move into core `config_errors_name_the_field_to_change`. | The public `ConfigError` display still names `escalate_label`, `team`, `patrols`, and `intake_limit`. Typed rejection tests alone do not protect this contract. |
 | Repeated invalid concurrency and gate-limit CLI rows | Consolidate into the existing parser tests, which require no Git repository, host runner, or worker. | `a_wrong_type_names_its_key` retains text and sequence rejection and gains zero concurrency. `a_gate_limit_is_a_whole_number_of_seconds_from_1` retains zero, negative, fractional, text, sequence, quoted number, and valid 1. `an_unknown_key_is_named_not_ignored` retains unknown-field rejection. |
 | Pure-rule rows in `check::a_bound_repos_config_answers_its_three_keys_more_and_refuses_a_harness` | Remove invalid repo syntax, team-required patrol/intake, and the duplicate unbound-harness row. Retain actual bound/unbound output values, bound harness rejection, and distinct YAML type branches (team sequence, negative intake, scalar patrols, harness sequence). | Core `a_team_is_named_as_github_names_a_repo`, `a_key_of_a_bound_repo_is_refused_where_no_team_is_named`, and `a_config_that_names_a_harness_is_refused_with_the_line_to_delete` own those rules. `check`'s separate harness error path remains because it is another command's loading/error wiring. |
 | Fourteen CLI DSH profile rejection cases | Move the entire seven-value × two-location matrix into the core; retain both CLI success/inheritance directions and representative rejection at both field locations. | New core `dsh_profiles_inherit_and_override_the_team_and_reject_other_values_at_each_key` checks actual enum values, exact fault count, `team.md`, nested key, and error text. CLI `dsh_profile_defaults_to_fleet_and_roles_override_the_team_in_either_direction` still checks serialized values, exit 1, and team/role field positions. |
@@ -31,14 +32,14 @@ silently passing.
 
 ## Change size
 
-Eight Rust files: 94 lines added, 144 removed. Every changed Rust statement is
-inside a test or its private helper. Three CLI tests are deleted, one core test
-is added; net two fewer tests. The README and config checks are replacements,
+Eight Rust files: 106 lines added, 144 removed. Every changed Rust statement is
+inside a test or its private helper. Three CLI tests are deleted, two core tests
+are added; net one fewer test. The README and config checks are replacements,
 not additional test removals.
 
 Static `assert!`/`assert_eq!`/`assert_ne!` call sites in those files change from
-780 to 775: help 178→166, manual 15→15, probe 103→105, core team 228→233;
-the other files' totals are unchanged. These are source sites, not dynamic
+780 to 776: help 178→166, manual 15→15, probe 103→105, core team 228→233;
+core config 54→55; the other files' totals are unchanged. These are source sites, not dynamic
 assertion counts: loops still exercise their complete specified domains.
 The config CLI rejection table shrinks 10→4, bound-config rejection rows 9→5,
 and DSH CLI rejection rows 14→2 with all 14 moved to core. Counts describe the
@@ -79,7 +80,9 @@ faults run the same parser tests. Zero concurrency moves from the CLI table
 to `a_wrong_type_names_its_key`; invalid profile values and nested keys move
 from the CLI matrix to the new core test. Config wiring, actual serialized
 profiles, JSON/exit errors, manual rejection, help reference reachability, and
-actor responsibility also retain real CLI checks. Editorial preferences
+actor responsibility also retain real CLI checks. Four additional faults remove
+the individual error field names from `ConfigError` display: the original CLI
+tables and the new pure formatter test each reject all four. Editorial preferences
 explicitly removed above are not counted as retained behavior.
 
 Execution receipts and full-gate measurements are recorded in the PR evidence.
