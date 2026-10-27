@@ -159,7 +159,7 @@ fn graph_read(
 const LABELS: &str = "labels(first:100) { nodes { name } pageInfo { hasNextPage endCursor } }";
 const ISSUE: &str = "id number title body url fullDatabaseId state stateReason createdAt closedAt";
 const COMMENT: &str = "fullDatabaseId body url createdAt";
-const PR: &str = "number title body headRefName headRefOid baseRefName isCrossRepository createdAt updatedAt closedAt mergedAt baseRepository { nameWithOwner }";
+const PR: &str = "number title body headRefName headRefOid baseRefName isCrossRepository state isDraft url createdAt updatedAt closedAt mergedAt baseRepository { nameWithOwner }";
 
 fn graph_labels(gh: &GitHub, repo: &str, row: &Value) -> Result<Value> {
     let conn = &row["labels"];
@@ -420,11 +420,21 @@ fn graphql(gh: &GitHub, args: &[&str]) -> Result<String> {
         );
         let rows = graph(gh, &repo, &selection, true)?;
         if jq == Some(gh::PR_HEADS_JQ) {
-            return Ok(lines(rows.into_iter().filter(|r|r["isCrossRepository"]==false).map(|r|json!({"number":r["number"],"title":r["title"],"head_branch":r["headRefName"],"head_sha":r["headRefOid"],"base_branch":r["baseRefName"]}))));
+            return Ok(lines(rows.into_iter().filter(|r|r["isCrossRepository"]==false).map(|r|json!({"number":r["number"],"title":r["title"],"body":r["body"].as_str().unwrap_or(""),"head_branch":r["headRefName"],"head_sha":r["headRefOid"],"base_branch":r["baseRefName"]}))));
         }
         if jq == Some(gh::WATCH_PRS_JQ) {
             let page: usize = parameter(query, "page").unwrap_or("1").parse()?;
-            return Ok(lines(rows.into_iter().skip((page-1)*100).take(100).map(|r|json!({"number":r["number"],"title":r["title"],"body":r["body"],"updated":time(&r["updatedAt"]),"closed":time(&r["closedAt"]),"merged":time(&r["mergedAt"]),"fork":r["isCrossRepository"],"of":r["baseRepository"]["nameWithOwner"]}))));
+            return Ok(lines(rows.into_iter().skip((page-1)*100).take(100).map(|r|json!({"number":r["number"],"title":r["title"],"body":r["body"],"head_branch":r["headRefName"].as_str().unwrap_or(""),"updated":time(&r["updatedAt"]),"closed":time(&r["closedAt"]),"merged":time(&r["mergedAt"]),"fork":r["isCrossRepository"],"of":r["baseRepository"]["nameWithOwner"]}))));
+        }
+        if jq == Some(gh::DELIVERY_PRS_JQ) {
+            return Ok(lines(rows.into_iter().map(|r| {
+                json!({
+                    "number":r["number"], "body":r["body"].as_str().unwrap_or(""),
+                    "head_branch":r["headRefName"], "base_branch":r["baseRefName"],
+                    "state":r["state"].as_str().map(str::to_ascii_lowercase),
+                    "draft":r["isDraft"], "url":r["url"], "fork":r["isCrossRepository"]
+                })
+            })));
         }
     }
     if path == "commits/HEAD" {
