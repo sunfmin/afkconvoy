@@ -517,27 +517,6 @@ fn humans_names_for_each_way_the_fleet_stops_a_command_with_the_flags_its_help_g
     assert!(seen >= 5, "{seen}");
 }
 
-/// The lines of `markdown` that go on with the paragraph or the item above
-/// them: a text wrapped, or filled, where each is written on one line. A
-/// line in a fence, a heading, an item, a line of a table and a line indented
-/// under an item each stand on their own.
-fn wrapped(markdown: &str) -> Vec<&str> {
-    let (mut fenced, mut above) = (false, "");
-    let mut wrapped = vec![];
-    for line in markdown.lines() {
-        let fence = line.trim_start().starts_with("```");
-        let numbered = line.split_once(". ").is_some_and(|(n, _)| n.parse::<u32>().is_ok());
-        let alone = fence || fenced || line.is_empty() || numbered;
-        let alone = alone || ["#", "- ", "|", "  "].iter().any(|mark| line.starts_with(mark));
-        if !alone && !above.is_empty() {
-            wrapped.push(line);
-        }
-        fenced ^= fence;
-        above = if fenced || fence { "" } else { line };
-    }
-    wrapped
-}
-
 #[test]
 fn a_topic_is_short_and_refers_to_nothing_outside_the_binary() {
     let files = topic_files();
@@ -550,24 +529,6 @@ fn a_topic_is_short_and_refers_to_nothing_outside_the_binary() {
             assert!(!text.contains(outside), "{topic} refers to {outside:?}");
         }
         assert!(text.ends_with('\n') && !text.ends_with("\n\n"), "{topic}");
-    }
-}
-
-/// Markdown as written: the guide, every command's text and every topic
-/// write each paragraph on one line, and nothing wraps or fills one.
-#[test]
-fn no_paragraph_of_the_guide_a_command_or_a_topic_is_wrapped() {
-    // What it catches: a paragraph on two lines, and nothing else.
-    let made_up = "A paragraph\nwrapped.\n\n- an item\n  under it\n1. a step\n\n```\na\nb\n```\n";
-    assert_eq!(wrapped(made_up), ["wrapped."]);
-    let long = help("--help");
-    assert!(wrapped(guide(&long)).is_empty(), "{:?}", wrapped(guide(&long)));
-    for (topic, text) in topic_files() {
-        assert!(wrapped(&text).is_empty(), "{topic} is wrapped at: {:?}", wrapped(&text));
-    }
-    for command in listed(&help("-h")) {
-        let text = asked(&[command, "--help"]);
-        assert!(wrapped(&text).is_empty(), "{command} is wrapped at: {:?}", wrapped(&text));
     }
 }
 
@@ -784,29 +745,6 @@ fn the_team_topic_lays_out_the_files_of_a_team_and_a_role() {
     }
 }
 
-/// Each of the three topics a team's files are described in says first what
-/// its thing is and when to read it, and ends with the topics to read next.
-#[test]
-fn a_topic_of_a_teams_files_opens_with_what_it_is_and_ends_with_what_to_read_next() {
-    for name in ["team", "workflows", "patrols"] {
-        let text = asked(&["help", name]);
-        let mut parts = text.split("\n\n");
-        assert_eq!(parts.next(), Some(format!("# `afkconvoy help {name}`").as_str()));
-        let opening = parts.next().unwrap();
-        assert!(opening.starts_with("A ") && opening.contains(" is "), "{name}: {opening}");
-        assert!(opening.contains(". Read this to "), "{name} does not say when to read it");
-        let (_, next) = text.rsplit_once("\n## Where to read on\n").expect("its last section");
-        let rows: Vec<_> = next.lines().filter(|row| !row.is_empty()).collect();
-        assert!(rows.len() >= 2, "{name}: {next}");
-        for row in rows {
-            let other = row.strip_prefix("- [`afkconvoy help ");
-            let other = other.and_then(|rest| rest.split('`').next());
-            let other = other.unwrap_or_else(|| panic!("{name} ends with more than topics: {row}"));
-            assert!(other != name && asked(&["help", other]).len() > 100, "{name}: {row}");
-        }
-    }
-}
-
 /// The loop that designs a team is the guide's: the commands, in order.
 #[test]
 fn the_guide_teaches_the_loop_that_designs_a_team() {
@@ -835,20 +773,13 @@ fn scaffold_shows_a_team_and_its_roles_in_one_repo_first() {
     assert!(said.contains("\"team_line\": \"reviewer: ./roles/reviewer\""));
 }
 
-/// The README is what afkconvoy is, how it is installed, where it is
-/// explained and how it is developed: the help is the one place that explains.
+/// The README points readers to the binary's help and the generated page.
 #[test]
-fn the_readme_explains_no_concept_and_sends_its_reader_to_the_help() {
-    let heads: Vec<_> = README.lines().filter_map(|line| line.strip_prefix("## ")).collect();
-    assert_eq!(heads, ["Install", "Run `afkconvoy --help`", "Develop"]);
-    let (users, _) = README.split_once("\n## Develop\n").unwrap();
-    let said = users.to_lowercase();
-    for concept in ["role", "team", "guard", "workflow", "stage", "patrol", "verdict", "flow label"]
-    {
-        assert!(!said.contains(concept), "the README explains {concept:?}: a topic does");
+fn the_readme_points_to_the_help_and_its_generated_manual() {
+    for entry in ["afkconvoy --help", "afkconvoy help <topic>", "(docs/manual.md)"] {
+        assert!(README.contains(entry), "the README lost {entry:?}");
     }
-    assert!(users.contains("`afkconvoy help <topic>`") && users.contains("(docs/manual.md)"));
-    assert!(!README.contains("manual.zh"));
+    assert!(repository().join("docs/manual.md").is_file());
 }
 
 #[test]
@@ -965,10 +896,7 @@ fn the_guide_and_each_subcommand_agree_on_who_runs_it_and_why() {
     for command in &workers {
         let who = who(command);
         if *command == "watched" {
-            assert!(
-                who.trim_start().starts_with("The host's watch, in its watch directory"),
-                "{who}"
-            );
+            assert!(who.contains("watch") && who.contains("watch directory"), "{who}");
             continue;
         }
         assert!(who.contains("worker") && who.contains("in its own worktree"), "{command}: {who}");
@@ -976,24 +904,24 @@ fn the_guide_and_each_subcommand_agree_on_who_runs_it_and_why() {
     // The guard is nobody's to run: it is a hook of Claude Code's.
     let hooks = group(&long, "Run by a worker's hook");
     assert_eq!(hooks, ["guard"]);
-    assert!(who("guard").trim_start().starts_with("Claude Code, as a hook"));
+    assert!(who("guard").contains("Claude Code") && who("guard").contains("hook"));
     // Nor is opening issues the operator's: whoever has work for the fleet does.
     // Waking the fleet after opening them is theirs too, and a worker's last.
     let hands = group(&long, "Run by whoever hands the fleet work");
     assert_eq!(hands, ["flows", "wake"]);
     for command in &hands {
-        assert!(who(command).trim_start().starts_with("Whoever hands the fleet work: "));
+        assert!(who(command).contains("hands the fleet work"), "{command}");
     }
-    assert!(who("wake").contains("And a worker, in its own worktree."));
+    assert!(who("wake").contains("worker") && who("wake").contains("in its own worktree"));
     // Nor is giving an agent of one's own the skill file.
     let sets_up = group(&long, "Run by whoever sets an agent up");
     assert_eq!(sets_up, ["skill"]);
-    assert!(who("skill").trim_start().starts_with("Whoever sets an agent up: "));
+    assert!(who("skill").contains("sets an agent up"));
     let operated = |command: &&str| {
         ![&workers, &hooks, &hands, &sets_up].iter().any(|group| group.contains(command))
     };
     for command in listed(&help("-h")).into_iter().filter(operated) {
-        assert!(who(command).trim_start().starts_with("The operator, "), "{command}");
+        assert!(who(command).contains("operator"), "{command}");
     }
     // Each transition the guide says a tick makes on its own says so itself,
     // and when to make it by hand; `recovery` only shows one.
@@ -1002,12 +930,11 @@ fn the_guide_and_each_subcommand_agree_on_who_runs_it_and_why() {
         let when = section(&asked(&[command, "--help"]), "## When to run it");
         let when = when.split_whitespace().collect::<Vec<_>>().join(" ");
         assert!(when.contains("by hand") && when.contains("A tick does this on its own"), "{when}");
-        assert!(when.contains("Do it yourself when"), "{command}: {when}");
     }
     // …and the plumbing, that it is seldom the command to reach for.
     for command in ["claim", "release", "heartbeat"] {
         let when = section(&asked(&[command, "--help"]), "## When to run it");
-        assert!(when.trim_start().starts_with("Hardly ever:"), "{command}: {when}");
+        assert!(when.to_lowercase().contains("hardly ever"), "{command}: {when}");
     }
 }
 

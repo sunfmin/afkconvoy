@@ -71,6 +71,7 @@ pub struct Settings {
     pub base_branch: Option<String>,
     pub gate_command: Option<String>,
     pub gate_seconds: Option<u64>,
+    pub gate_budget_seconds: Option<u64>,
     pub ready_label: Option<String>,
     pub epic_labels: Option<Vec<String>>,
     /// Read only to be said: a checkout's concurrency is said on its host,
@@ -119,6 +120,10 @@ pub struct Config {
     /// The gate limit, in seconds: the repo's, or `GATE_SECONDS`.
     #[field(u64[gate_seconds])]
     gate_seconds: u64,
+    /// Fixed duration budget for slow-gate warnings; never ends a run.
+    /// Absent: warn at `slow_gate::PERCENT` percent of the gate limit.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gate_budget_seconds: Option<u64>,
     /// Whether the repo declared its gate limit: `gate_seconds` is in its config.
     #[serde(skip)]
     pub gate_limit_declared: bool,
@@ -163,6 +168,8 @@ pub enum ConfigError {
     Empty(&'static str),
     /// `gate_seconds` is 0: a gate given no time at all.
     ZeroGateSeconds,
+    /// A warning budget must be positive and below the termination limit.
+    InvalidGateBudget,
     /// `escalate_label` is `ready_label`: escalating would leave the issue dispatchable.
     EscalatesToReady,
     /// `team` is not `owner/repo` or `owner/repo/path`.
@@ -185,6 +192,10 @@ impl std::fmt::Display for ConfigError {
             ConfigError::ZeroGateSeconds => {
                 write!(f, "gate_seconds: must be a whole number of seconds, at least 1")
             }
+            ConfigError::InvalidGateBudget => write!(
+                f,
+                "gate_budget_seconds: must be a whole number of seconds, at least 1 and below gate_seconds"
+            ),
             ConfigError::EscalatesToReady => {
                 write!(f, "escalate_label: must differ from ready_label")
             }
@@ -225,6 +236,11 @@ impl Config {
             return Err(ConfigError::Harness(named));
         }
         let base_branch = required("base_branch", settings.base_branch)?;
+        if settings.gate_budget_seconds.is_some_and(|budget| {
+            budget == 0 || budget >= settings.gate_seconds.unwrap_or(GATE_SECONDS)
+        }) {
+            return Err(ConfigError::InvalidGateBudget);
+        }
         let gate_command = required("gate_command", settings.gate_command)?;
         let ready_label = label("ready_label", settings.ready_label, "ready-for-agent")?;
         let escalate_label = label("escalate_label", settings.escalate_label, ESCALATE_LABEL)?;
@@ -271,7 +287,9 @@ impl Config {
             escalate_to,
             bound,
         ) {
-            Some(config) => Ok(config),
+            Some(config) => {
+                Ok(Config { gate_budget_seconds: settings.gate_budget_seconds, ..config })
+            }
             None => Err(ConfigError::ZeroGateSeconds),
         }
     }
@@ -345,6 +363,7 @@ fn checked(
         base_branch,
         gate_command,
         gate_seconds,
+        gate_budget_seconds: None,
         gate_limit_declared,
         ready_label,
         epic_labels,
@@ -597,6 +616,25 @@ mod tests {
     }
 
     #[test]
+    fn a_warning_budget_is_fixed_and_below_the_termination_limit() {
+        let config = Config::new(Settings {
+            gate_seconds: Some(3600),
+            gate_budget_seconds: Some(600),
+            ..minimal()
+        })
+        .unwrap();
+        assert_eq!(config.gate_budget_seconds, Some(600));
+        assert_eq!(config.gate_seconds(), 3600);
+        assert_eq!(Config::new(minimal()).unwrap().gate_budget_seconds, None);
+        for budget in [0, 3600, u64::MAX] {
+            assert_eq!(
+                Config::new(Settings { gate_budget_seconds: Some(budget), ..minimal() }),
+                Err(ConfigError::InvalidGateBudget)
+            );
+        }
+    }
+
+    #[test]
     fn a_repo_that_names_a_team_is_bound_with_defaults_filled() {
         let named = Settings { team: Some("acme/team".into()), ..minimal() };
         let bound = Config::new(named).unwrap().bound.unwrap();
@@ -693,10 +731,24 @@ mod tests {
 
     #[test]
     fn the_two_keys_without_a_default_are_required() {
-        let no_base = Settings { base_branch: None, ..minimal() };
-        assert_eq!(Config::new(no_base), Err(ConfigError::Required("base_branch")));
-        let blank_gate = Settings { gate_command: Some("  ".into()), ..minimal() };
-        assert_eq!(Config::new(blank_gate), Err(ConfigError::Required("gate_command")));
+        for value in [None, Some("".to_string()), Some("  ".to_string())] {
+            let base = Settings { base_branch: value.clone(), ..minimal() };
+            assert_eq!(Config::new(base), Err(ConfigError::Required("base_branch")));
+            let gate = Settings { gate_command: value, ..minimal() };
+            assert_eq!(Config::new(gate), Err(ConfigError::Required("gate_command")));
+        }
+    }
+
+    #[test]
+    fn config_errors_name_the_field_to_change() {
+        for (error, key) in [
+            (ConfigError::EscalatesToReady, "escalate_label"),
+            (ConfigError::NotARepo("team"), "team"),
+            (ConfigError::NeedsTeam("patrols"), "patrols"),
+            (ConfigError::NeedsTeam("intake_limit"), "intake_limit"),
+        ] {
+            assert!(error.to_string().contains(key), "{error:?} must name {key}");
+        }
     }
 
     #[test]

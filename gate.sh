@@ -16,6 +16,13 @@ export PATH RUSTUP_TOOLCHAIN
 # only the whole gate (docs/adr/0024), and which step grew is for its log to
 # say. A red gate says the steps it finished.
 began=$(date +%s)
+echo "gate: started $(date -u '+%Y-%m-%dT%H:%M:%SZ') on $(hostname), commit $(git rev-parse HEAD)" >&2
+echo "gate: host $(uname -sm); $(uptime)" >&2
+if [ -d target ]; then
+    echo "gate: target/ present; this alone does not establish warm artifacts" >&2
+else
+    echo "gate: target/ absent; shared compiler and dependency caches may still be warm" >&2
+fi
 took=
 step() {
     now=$(date +%s)

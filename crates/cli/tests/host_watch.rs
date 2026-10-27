@@ -510,6 +510,88 @@ fn a_watch_answers_escalations_and_leaves_only_the_four_human_kinds() {
 }
 
 #[test]
+fn a_reported_human_wait_sends_no_more_prompts_across_looks_and_runner_restart() {
+    let world = World::new();
+    let dir = operator(&world);
+    world.issue(11, &["ready-for-human"]);
+    world.comment(11, "<!--convoy:escalation claim=old-->\nNeeds a quiet measurement environment.");
+    world.with_gh(|gh| gh["comments"]["11"][0]["at"] = json!(1_793_036_772u64));
+    // Real doctor output at the two observed ages retains the warning,
+    // reason, source and exact answer, but has one structured identity.
+    let earlier = world.afk(&["doctor", "--now", "1793070792"]).json;
+    let later = world.afk(&["doctor", "--now", "1793071152"]).json;
+    let warning = |answer: &Value| {
+        answer["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|finding| finding["what"].as_str().unwrap().contains("has waited for a human"))
+            .unwrap_or_else(|| panic!("no long wait in {answer}"))
+            .clone()
+    };
+    assert!(warning(&earlier)["what"].as_str().unwrap().contains("9h 27m"));
+    assert!(warning(&later)["what"].as_str().unwrap().contains("9h 33m"));
+    assert_eq!(warning(&earlier)["watch_id"], warning(&later)["watch_id"]);
+    assert_eq!(warning(&later)["fix"], later["waiting_on_human"][0]["answer"]);
+    assert_eq!(later["waiting_on_human"][0]["url"], "https://gh/c/2000");
+    assert!(later["waiting_on_human"][0]["why"].as_str().unwrap().contains("quiet measurement"));
+
+    run(&world, &dir);
+    let first = until(&world, "human wait round", || {
+        running(&world).filter(|w| w["started"].as_u64().unwrap_or(0) > 0)
+    });
+    assert_eq!(first["items"].as_array().unwrap().len(), 1);
+    let report = world.root.join("human-report.json");
+    std::fs::write(&report, json!({"held_back": ["quiet measurement environment"], "did": [],
+        "verified": ["human decision still pending"], "human": [{"question": "Provide the environment?",
+        "answer": later["waiting_on_human"][0]["answer"]}], "pending": []}).to_string()).unwrap();
+    world
+        .afk(&[
+            "watched",
+            "--watch",
+            first["id"].as_str().unwrap(),
+            "--text-file",
+            report.to_str().unwrap(),
+        ])
+        .ok();
+    until(&world, "human report", || ended(&world, "ended"));
+    let at = state(&world)["until"].as_u64().unwrap();
+    until(&world, "repeated looks of the reported question", || {
+        state(&world)["until"].as_u64().filter(|until| *until > at + 2)
+    });
+    assert!(running(&world).is_none());
+    assert_eq!(sent(&world, &first).len(), 1, "no repeated model prompt");
+    assert_eq!(state(&world)["pending"], json!([]));
+
+    world.kill_host_runner("KILL");
+    run(&world, &dir);
+    let at = state(&world)["until"].as_u64().unwrap();
+    until(&world, "repeated looks after runner replacement", || {
+        state(&world)["until"].as_u64().filter(|until| *until > at + 2)
+    });
+    assert!(running(&world).is_none());
+    assert_eq!(starts(&world).len(), 1);
+    assert_eq!(sent(&world, &first).len(), 1);
+    assert_eq!(world.labels(11), ["ready-for-human"]);
+
+    // A new source needs a fresh answer even without an intervening look
+    // that found the issue recovered.
+    world.comment(11, "<!--convoy:escalation claim=new-->\nNeeds different measurement equipment.");
+    world.with_gh(|gh| {
+        gh["comments"]["11"].as_array_mut().unwrap().last_mut().unwrap()["at"] =
+            json!(1_793_036_773u64)
+    });
+    let next = until(&world, "changed human question", || {
+        running(&world).filter(|w| w["started"].as_u64().unwrap_or(0) > 0)
+    });
+    assert_ne!(next["id"], first["id"]);
+    assert_eq!(next["items"].as_array().unwrap().len(), 1);
+    assert_ne!(next["episodes"], first["episodes"]);
+    assert_eq!(sent(&world, &next).len(), 2);
+    printed(&world, &next, &["left changed question for a human"], Some(0));
+}
+
+#[test]
 fn one_watch_covers_an_episode_is_kept_across_a_restart_and_is_recorded() {
     let world = World::new();
     let dir = operator(&world);

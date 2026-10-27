@@ -669,8 +669,16 @@ fn an_escalation_says_so_on_the_tick_line_and_names_the_command_that_answers_it(
     assert_eq!(waited(&soon), [] as [Value; 0], "an hour is not more than an hour");
     let late = doctor("8571");
     assert_eq!(late["waiting_on_human"], waiting);
+    let mut warnings = waited(&late);
+    let identity = warnings[0].as_object_mut().unwrap().remove("watch_id").unwrap();
+    let identity: Value =
+        serde_json::from_str(identity.as_str().unwrap().strip_prefix("checkout:human:").unwrap())
+            .unwrap();
+    let mut question = waiting[0].clone();
+    question.as_object_mut().unwrap().remove("title");
+    assert_eq!(identity, question, "the warning identifies the structured human question");
     assert_eq!(
-        waited(&late),
+        warnings,
         [json!({"severity": "warning",
             "what": format!("#7 has waited for a human for 2h 1m: {why}"),
             "evidence": "nobody holds it and no tick moves it; it is the fleet's again once \

@@ -54,7 +54,12 @@ fn nothing_was_done(world: &World) {
     assert_eq!(world.probes(), [] as [String; 0], "no probe was pushed");
     assert_eq!(world.pushes(), [] as [String; 0], "no ref was written");
     assert_eq!(world.remote(&["for-each-ref", "--format=%(refname)"]), "refs/heads/main");
-    assert_eq!(world.gh()["calls"], json!([]), "GitHub was not asked a thing");
+    let calls: Vec<Vec<String>> = serde_json::from_value(world.gh()["calls"].clone()).unwrap();
+    assert!(
+        calls.iter().all(|call| call.starts_with(&["config".into(), "get".into(), "user".into()])
+            || call.starts_with(&["api".into(), "rate_limit".into()])),
+        "a refused start may inspect local login/quota observations, never issue/PR facts or writes: {calls:?}"
+    );
     let asked = world.orca_calls();
     let only_asked = asked.iter().all(|call| call == &["status"] || call == &["repo", "list"]);
     assert!(only_asked, "orca was asked what it is, and nothing more: {asked:?}");

@@ -470,7 +470,7 @@ impl Failed {
 
 /// The time `at`, in epoch seconds, as a line stamped in UTC says it:
 /// `2026-10-20 23:03:00`.
-pub(crate) fn utc(at: u64) -> String {
+pub fn utc(at: u64) -> String {
     let days = at / 86_400;
     let (hour, minute, second) = (at % 86_400 / 3600, at % 3600 / 60, at % 60);
     // Days since 1970-01-01 to a civil date (Howard Hinnant's `civil_from_days`).

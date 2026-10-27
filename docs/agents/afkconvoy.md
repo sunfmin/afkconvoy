@@ -1,7 +1,7 @@
 # afkconvoy config
 
-What `afkconvoy` reads for this repo: the yaml block below, the cut steps under
-"Cutting a version", and nothing else in this file. An unknown key or a wrong
+What `afkconvoy` reads for this repo: the yaml block below, its gate budget,
+and the cut steps under "Cutting a version". An unknown key or a wrong
 type is an error, not a default.
 
 ```yaml
@@ -15,6 +15,23 @@ escalate_label: ready-for-human   # swapped in for ready_label when the fleet gi
 
 `base_branch` and `gate_command` have no default. The rest default to the values
 shown, and so does the one left out here: `lock_label`, `fleet-lock`.
+
+The warning budget is separate from termination. This block lets an older
+installed afkconvoy still land and cut the version that introduces it; older
+versions skip it and keep their existing warning rule until upgraded.
+
+```yaml gate-budget
+gate_budget_seconds: 600
+```
+
+This fixed ten-minute budget is based on the 14-core, 48-GiB Apple Silicon
+host's complete gate, including builds and checks, with the observations and
+cache/load limits in [the gate baseline](../gate-baseline.md). Five consecutive
+recorded landings on one host must each exceed it before the existing slow-gate
+finding opens one issue. Queue waits count toward neither budget nor limit.
+The one-hour gate limit still bounds termination, leaving cold builds and host
+competition room to finish. A warning alone fails no validation. Change the
+budget only with a deliberate baseline review; never raise it per run.
 
 How many claims are at work at once is no key here: each host that works this
 repo says its own, `afkconvoy run <checkout> --concurrency N`, and 3 until it

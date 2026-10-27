@@ -65,7 +65,7 @@ A tick's view of the fleet at one moment, derived from fleet state and dropped w
 _Avoid_: session state
 
 **Rebuild**:
-The read-only pass at the top of every tick that derives the working set. Any fleet instance rebuilds the same working set from the same GitHub. It lists the remote once and asks GitHub a fixed number of times, however many issues are open, and however many repos' issues its tracker holds.
+The read-only pass at the top of every tick that derives the working set. Any fleet instance rebuilds the same working set from the same GitHub. Missing facts fail the rebuild rather than forming an empty working set.
 _Avoid_: refresh (a heartbeat is refreshed), resync
 
 **Frontier**:
@@ -339,14 +339,18 @@ _Avoid_: CI (what a push to an ordinary branch starts), checks (what `check` and
 
 **Gate limit**:
 How long the gate may run. A run that reaches it is ended and is red. A repo declares it; nothing learns it from past runs.
-_Avoid_: timeout (what a run that reached it did), budget, baseline
+_Avoid_: timeout (what a run that reached it did), budget (the warning threshold), baseline (a committed timing observation)
+
+**Gate budget**:
+The fixed duration a repo expects its gate to stay within. Recent recorded landings on one host that all exceed it make a slow gate; exceeding it never ends a run.
+_Avoid_: gate limit (the termination bound), learned baseline
 
 **Recorded gate run**:
 The evidence that the gate passed on one committed tree, with how long the run took and on which host, made by the tool that saw the exit code and kept where every host can read it.
 _Avoid_: gate cache, CI status
 
 **Slow gate**:
-What the gate is when its recent runs for the base branch, on one host, all took most of the gate limit. The fleet opens one issue that says so, and no second while that one is open.
+What the gate is when its recent runs for the base branch, on one host, all exceeded the gate budget, or took most of the gate limit where no budget is declared. The fleet opens one issue that says so, and no second while that one is open.
 _Avoid_: regression, drift, creep
 
 **Sync**:
