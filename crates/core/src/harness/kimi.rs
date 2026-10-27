@@ -392,6 +392,52 @@ pub(super) fn call<'de, D: Deserializer<'de>>(described: D) -> Result<Call, D::E
     })
 }
 
+/// The line Kimi Code waits for the next prompt at. Its status line, the
+/// footer, is below it.
+const INPUT: char = '❯';
+
+/// Whether the end of a Kimi Code worker's screen shows a background shell
+/// it started still running. The footer badges that shell as `[1 task running]`
+/// or `[2 tasks running]`; a background agent (`[1 agent running]`) is not a
+/// gate or a landing. What a turn quoted above the prompt is not read.
+pub(super) fn shows_background(screen: &[String]) -> bool {
+    let mut below = screen.iter();
+    match screen.iter().rposition(|line| line.trim_start().starts_with(INPUT)) {
+        Some(prompt) => {
+            below.nth(prompt);
+        }
+        // No prompt: the badge is on the first of the two footer lines.
+        None => {
+            if let Some(from) = screen.len().checked_sub(2).and_then(|n| n.checked_sub(1)) {
+                below.nth(from);
+            }
+        }
+    }
+    below.any(|line| background_task(line))
+}
+
+/// Kimi's footer badge for one or more background shells, not an agent.
+fn background_task(line: &str) -> bool {
+    let mut rest = line;
+    while let Some((_, after)) = rest.split_once('[') {
+        let Some((badge, tail)) = after.split_once(']') else { return false };
+        rest = tail;
+        let mut words = badge.split_whitespace();
+        let (Some(count), Some(noun), Some(state)) = (words.next(), words.next(), words.next())
+        else {
+            continue;
+        };
+        if words.next().is_some() || state != "running" {
+            continue;
+        }
+        let Ok(count) = count.parse::<u32>() else { continue };
+        if (count == 1 && noun == "task") || (count > 1 && noun == "tasks") {
+            return true;
+        }
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -526,5 +572,23 @@ pattern = "Bash(rm -rf*)"
         assert_eq!(judged, Call::Shell("git commit -m x".into()));
         let other = r#"{"tool_name":"Edit","tool_input":{"command":"git commit"}}"#;
         assert_eq!(call(serde_yaml::Deserializer::from_str(other)).unwrap(), Call::Other);
+    }
+
+    #[test]
+    fn its_footer_badge_says_a_background_shell_is_still_running() {
+        let screen =
+            |lines: &[&str]| lines.iter().map(|line| (*line).to_string()).collect::<Vec<_>>();
+        assert!(shows_background(&screen(&[
+            "Error: [provider.api_error] 429 You've reached your 5-hour usage limit.",
+            "❯",
+            "kimi-code/k3.1-pro  [1 task running]",
+        ])));
+        assert!(shows_background(&screen(&["❯", "[2 tasks running]", "ctx 10%"])));
+        assert!(shows_background(&screen(&["[1 task running]", "ctx 10%"])));
+        assert!(!shows_background(&screen(&["[1 task running]", "❯", "kimi-code/k3.1-pro"])));
+        assert!(!shows_background(&screen(&["❯", "[1 agent running]"])));
+        assert!(!shows_background(&screen(&["❯", "[1 tasks running]"])));
+        assert!(!shows_background(&screen(&["❯", "[0 tasks running]"])));
+        assert!(!shows_background(&screen(&[])));
     }
 }
