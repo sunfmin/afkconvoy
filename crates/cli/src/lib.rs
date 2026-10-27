@@ -4632,6 +4632,7 @@ mod tests {
         &["rule", "7", "--text", "x"],
         &["send", "7", "--stage", "build", "--text", "x"],
         &["intake", "7", "--workflow", "w", "--role", "r", "--from", "3"],
+        &["target", "7", "--branch", "delivery/ticket"],
         &["lock", "7"],
         &["patrol-now", "sweep"],
         &["over", "--run", "sweep"],
@@ -4685,6 +4686,8 @@ mod tests {
         // The listing with `--list` changes nothing, and says nothing.
         let list = Cli::try_parse_from(["afkconvoy", "takeover", "--list"]).unwrap();
         assert!(list.command.acting().is_none());
+        let target = Cli::try_parse_from(["afkconvoy", "target", "7"]).unwrap();
+        assert!(target.command.acting().is_none());
         // What one acts on is named, as its wake names it.
         let named = |line: &[&str]| {
             let cli = Cli::try_parse_from(std::iter::once("afkconvoy").chain(line.iter().copied()));
