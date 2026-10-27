@@ -1226,12 +1226,7 @@ fn resume_delivery(watch: &mut Watch) -> Result<()> {
         // nothing, but an unobservable provider may show the new turn on
         // its own Terminal after the previous round returned to input.
         let screen = worktree.screen(&watch.terminal, 20)?;
-        screen
-            .iter()
-            .any(|line| {
-                let line = line.to_ascii_lowercase();
-                line.contains("working") || line.contains("thinking")
-            })
+        crate::orca::screen_shows_turn(&screen)
             .then(|| json!({"kind": "terminal_evidence", "screen": screen}))
     } else {
         None
