@@ -66,8 +66,8 @@ pub struct World {
     bin: PathBuf,
     gh_file: PathBuf,
     orca_file: PathBuf,
-    repository_templates: std::cell::Cell<bool>,
-    termination_clock: std::cell::Cell<bool>,
+    repository_templates: std::sync::atomic::AtomicBool,
+    termination_clock: std::sync::atomic::AtomicBool,
 }
 
 /// One answer of the CLI: the JSON object it printed, and its exit code.
@@ -125,8 +125,8 @@ impl World {
             write_script(&bin.join(name), script);
         }
         let world = World {
-            repository_templates: std::cell::Cell::new(false),
-            termination_clock: std::cell::Cell::new(false),
+            repository_templates: std::sync::atomic::AtomicBool::new(false),
+            termination_clock: std::sync::atomic::AtomicBool::new(false),
             tmp_links: tempfile::tempdir_in("/tmp").unwrap(),
             gh_file: root.join("gh.json"),
             orca_file: root.join("orca.json"),
@@ -434,7 +434,7 @@ impl World {
 
     pub fn afk_in(&self, cwd: &Path, args: &[&str]) -> Answer {
         let program = Path::new(env!("CARGO_BIN_EXE_afkconvoy"));
-        if self.termination_clock.get() {
+        if self.termination_clock.load(std::sync::atomic::Ordering::Relaxed) {
             self.afk_as(
                 &program.parent().unwrap().join("examples/test_termination_clock"),
                 cwd,
@@ -448,13 +448,13 @@ impl World {
     /// Advance only termination time in the real CLI entry point. Use only
     /// when Orca's terminal is a stand-in that deliberately never closes.
     pub fn control_termination_time(&self) {
-        self.termination_clock.set(true);
+        self.termination_clock.store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Reuse immutable Git seeds for subsequent role/team repositories. Each
     /// call to `repo` still gets independent files, objects, refs and index.
     pub fn reuse_repository_templates(&self) {
-        self.repository_templates.set(true);
+        self.repository_templates.store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// `afk_in`, as the afkconvoy at `program`: one installed elsewhere.
@@ -564,7 +564,7 @@ impl World {
     pub fn repo(&self, name: &str, files: &[(&str, &str)]) -> PathBuf {
         let began = Instant::now();
         let dir = self.root.join("github").join(name);
-        if self.repository_templates.get() {
+        if self.repository_templates.load(std::sync::atomic::Ordering::Relaxed) {
             copy_repository(&repository_template(files), &dir);
         } else {
             create_repository(&dir, files);
