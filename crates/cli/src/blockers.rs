@@ -104,7 +104,7 @@ pub fn unworked(
             } else {
                 String::new()
             };
-            let flows = Line::new().fixed("cd ").word(&path).fixed(" && afkconvoy flows").own();
+            let flows = Line::new().fixed("afkconvoy flows ").word(&path).own();
             // Construct the repair independently of the number GitHub will
             // assign on transfer: that number cannot be known beforehand.
             let label_line = Line::new().fixed("gh issue edit ");

@@ -4,7 +4,7 @@ Every way the fleet stops for an answer, and the command a human or the host's w
 
 `afkconvoy doctor` lists every open issue that waits for a human under `waiting_on_human`, with `why` (what kind of wait, then the first sentence of the reason its comment gives), `url` (that comment, or an older failure report itself), since when and `answer`: the line to run for that issue. `afkconvoy plan` gives the same list; the panel shows it as "With a human". Waiting more than an hour is a finding.
 
-An escalated issue carries the escalate label (`{const:ESCALATE_LABEL}` unless renamed) in place of its flow label. Its comment says why; current comments end with the line to answer. `doctor` gives the current line, even where an older comment has none or names the issue before it moved to the tracker. Run every command below in a checkout of the repo, replacing what stands between < and >.
+An escalated issue carries the escalate label (`{const:ESCALATE_LABEL}` unless renamed) in place of its flow label. Its comment says why; current comments end with the line to answer. `doctor` gives the current line, even where an older comment has none or names the issue before it moved to the tracker. A line `doctor` or `plan` prints is run as printed, apart from what stands between < and >, and already names the checkout. The same commands are below, `<n>` the issue's number.
 
 ## An escalation
 

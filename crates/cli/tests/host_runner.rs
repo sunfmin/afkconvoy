@@ -1275,7 +1275,7 @@ fn a_listed_checkout_whose_probe_no_longer_passes_is_broken_and_doctor_says_when
     assert!(found["what"].as_str().unwrap().contains(&why), "{found}");
     let evidence = found["evidence"].as_str().unwrap();
     assert!(evidence.contains("; the host runner starts it again at "), "{evidence}");
-    assert_eq!(found["fix"], "afkconvoy run");
+    assert_eq!(found["fix"], format!("afkconvoy run '{}'", world.clone.display()));
     let alive_or_not = findings
         .iter()
         .any(|finding| finding["what"].as_str().unwrap().starts_with("no `afkconvoy run`"));
