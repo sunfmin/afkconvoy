@@ -299,3 +299,27 @@ fn a_start_takes_and_retires_its_hosts_legacy_claim_without_restarting_the_propo
     assert!(path.join("uncommitted-decision.md").is_file());
     assert!(!world.open_terminals().contains(&path.display().to_string()));
 }
+
+#[test]
+fn retirement_accepts_orcas_numeric_name_suffix_and_leaves_the_archived_worktree_alone() {
+    let world = bound("");
+    let archived = legacy_worker(&world);
+    world.with_orca(|orca| {
+        for row in orca["worktrees"].as_array_mut().unwrap() {
+            if row["path"] == archived.to_str().unwrap() {
+                row["isArchived"] = json!(true);
+            }
+        }
+    });
+    let active = legacy_worker(&world);
+    assert_eq!(active.file_name().unwrap(), "convoy-precedent-7-c2001-2");
+    record(&world, "claim/precedent-7-c2001", "convoy:claim instance=alpha host=h1 ts=1000");
+    let result = tick(&world, 1100);
+    assert_eq!(result["held"], 0);
+    assert!(proposal_refs(&world).is_empty());
+    assert!(!world.open_terminals().contains(&active.display().to_string()));
+    assert!(world.open_terminals().contains(&archived.display().to_string()));
+    for kept in [active, archived] {
+        assert!(kept.join("uncommitted-decision.md").is_file());
+    }
+}

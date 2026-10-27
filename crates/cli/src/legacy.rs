@@ -287,7 +287,9 @@ pub fn retire_proposals(fleet: &mut crate::fleet::Fleet, me: &crate::claims::Me)
             let source = crate::orca::Source::of(&fleet.repo)?;
             if let Some(worktree) = crate::orca::Worktree::named(&source, &old.branch())? {
                 anyhow::ensure!(
-                    worktree.branch.rsplit('/').next() == Some(old.branch().as_str()),
+                    worktree.branch.rsplit('/').next().is_some_and(|name| {
+                        afkconvoy_core::worker::is_worktree_named(name, &old.branch())
+                    }),
                     "retained proposal worktree has another branch: {}; left alone",
                     worktree.path.display()
                 );
