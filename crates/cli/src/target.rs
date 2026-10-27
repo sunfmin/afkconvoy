@@ -7,7 +7,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::gh::GitHub;
-use crate::git::{REMOTE, Repo};
+use crate::git::{REMOTE, RemoteRecord, Repo};
+use afkconvoy_core::tracker::Tracker;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -16,37 +17,65 @@ struct Target {
     branch: String,
 }
 
-fn refname(repo: &Repo, gh: &GitHub, issue: u64) -> String {
-    repo.layout().under(&format!("target/{}", gh.tracker.claim_key(issue)))
+fn refname(repo: &Repo, tracker: &Tracker, issue: u64) -> String {
+    repo.layout().under(&format!("target/{}", tracker.claim_key(issue)))
 }
 
 fn existing(repo: &Repo, gh: &GitHub, issue: u64) -> Result<Option<Target>> {
-    let name = refname(repo, gh, issue);
+    let name = refname(repo, &gh.tracker, issue);
     let record = repo.remote_records(&name)?.pop();
     let claim_ref = afkconvoy_core::claims::claim_ref(repo.layout(), &gh.tracker, issue);
-    if let Some(claim) = repo.remote_records(&claim_ref)?.pop()
+    let claim = repo.remote_records(&claim_ref)?.pop();
+    let target = decode(&gh.tracker.issue(issue), &name, record.as_ref(), claim.as_ref())?;
+    if let Some(target) = &target {
+        validate(repo, &target.branch)?;
+    }
+    Ok(target)
+}
+
+fn decode(
+    issue: &str,
+    name: &str,
+    record: Option<&RemoteRecord>,
+    claim: Option<&RemoteRecord>,
+) -> Result<Option<Target>> {
+    if let Some(claim) = claim
         && let Some(expected) = afkconvoy_core::record::read("convoy:claim", &claim.subject)
             .and_then(|fields| fields.get("target").map(str::to_string))
     {
         ensure!(
             record.as_ref().is_some_and(|r| r.sha == expected),
             "missing or contradictory pinned target for {}; restore {name} to {expected} before continuing",
-            gh.tracker.issue(issue)
+            issue
         );
     }
     let Some(record) = record else { return Ok(None) };
     let target: Target = serde_json::from_str(&record.subject).with_context(|| {
-        format!(
-            "unreadable target for {} at {name}; restore its pinned record",
-            gh.tracker.issue(issue)
-        )
+        format!("unreadable target for {} at {name}; restore its pinned record", issue)
     })?;
     ensure!(
-        target.issue.eq_ignore_ascii_case(&gh.tracker.issue(issue)),
+        target.issue.eq_ignore_ascii_case(issue),
         "contradictory target at {name}; restore its pinned record"
     );
-    validate(repo, &target.branch)?;
     Ok(Some(target))
+}
+
+/// A rebuild reads exactly the snapshot it already listed, including the
+/// claim's reference to its target. Branch existence is checked against the
+/// branch tips in that same snapshot, rather than a new per-task listing.
+pub fn snapshot_branch(
+    repo: &Repo,
+    config: &Config,
+    tracker: &Tracker,
+    issue: u64,
+    records: &[RemoteRecord],
+) -> Result<String> {
+    let name = refname(repo, tracker, issue);
+    let claim_ref = afkconvoy_core::claims::claim_ref(repo.layout(), tracker, issue);
+    let record = records.iter().find(|r| r.name == name);
+    let claim = records.iter().find(|r| r.name == claim_ref);
+    Ok(decode(&tracker.issue(issue), &name, record, claim)?
+        .map_or_else(|| config.base_branch.clone(), |t| t.branch))
 }
 
 /// Claims retain the identity of the target record, so losing or replacing
@@ -65,7 +94,7 @@ pub fn stamp_claim(
         return Ok(subject);
     };
     let gh = GitHub::of(repo)?;
-    let name = refname(repo, &gh, issue);
+    let name = refname(repo, &gh.tracker, issue);
     let sha = repo
         .remote_sha(&name)?
         .context("target disappeared before claim; restore its pinned record")?;
@@ -129,7 +158,7 @@ pub fn pin(repo: &Repo, config: &Config, issue: u64, selected: Option<&str>) -> 
     }
     let target = Target { issue: gh.tracker.issue(issue), branch: branch.to_string() };
     let sha = repo.record_commit(&serde_json::to_string(&target)?)?;
-    let name = refname(repo, &gh, issue);
+    let name = refname(repo, &gh.tracker, issue);
     let pushed = repo.try_git(&["push", "--quiet", REMOTE, &format!("{sha}:{name}")])?;
     if !pushed.ok {
         if let Some(won) = existing(repo, &gh, issue)? {

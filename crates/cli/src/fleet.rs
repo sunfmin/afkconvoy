@@ -2,7 +2,7 @@
 //! remote's claims — and the rebuild that assembles a working set from them.
 //!
 //! A rebuild asks the remote once and GitHub a fixed number of times, side by
-//! side: one listing of the base branch and every ref of the fleet
+//! side: one listing of branch tips and every ref of the fleet
 //! (`Repo::listing`), and what is open on GitHub (`GitHub::open`). Neither
 //! grows with the issues in flight.
 
@@ -379,6 +379,25 @@ impl Fleet {
         })
     }
 
+    fn task_tip_at_open(&self, issue: u64) -> Result<String> {
+        let branch = crate::target::snapshot_branch(
+            &self.repo,
+            &self.config,
+            &self.gh.tracker,
+            issue,
+            &self.listing.records,
+        )?;
+        let name = format!("refs/heads/{branch}");
+        let (_, tip) = self.listing.heads.iter().find(|(r, _)| r == &name).ok_or_else(|| {
+            anyhow!(
+                "target branch {branch:?} is missing; restore it before continuing {}",
+                self.gh.tracker.issue(issue)
+            )
+        })?;
+        self.repo.bring(tip, &name)?;
+        Ok(tip.clone())
+    }
+
     /// Rebuilds the working set of `me` from `open` and the remote as this
     /// view was opened on it (`Fleet::read`) → it, and the read of the issues
     /// that follow a workflow it was assembled from. Reads only. A claimed
@@ -429,7 +448,7 @@ impl Fleet {
             if !me.is_some_and(|me| claim.is_held_by(me)) || closed.contains(&claim.number) {
                 continue;
             }
-            let tip = match self.task_tip(claim.number) {
+            let tip = match self.task_tip_at_open(claim.number) {
                 Ok(tip) => tip,
                 Err(error) => {
                     self.unread.push((claim.number, error));

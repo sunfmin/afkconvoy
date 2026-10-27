@@ -97,8 +97,11 @@ fn selected_target_cuts_continues_gates_lands_and_settles_only_its_task() {
     assert_eq!(world.remote(&["show", "refs/heads/delivery/ABC-123:work.txt"]), "task seven");
     assert_eq!(world.gh()["issues"][0]["state"], "closed");
     assert_eq!(world.gh()["issues"][1]["state"], "open");
+    // Recover the crash window after publication but before issue closure.
+    world.with_gh(|gh| gh["issues"][0]["state"] = json!("open"));
     let ticked = world.afk(&["tick", "--instance", "beta", "--host", "h1", "--now", "1200"]).ok();
     assert_eq!(ticked["errors"], json!([]), "{ticked}");
+    assert_eq!(world.state(7), "closed");
     assert!(world.claims().is_empty(), "settlement follows the target's history");
 }
 
