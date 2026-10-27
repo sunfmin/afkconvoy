@@ -814,7 +814,10 @@ fn a_report_is_complete_durable_and_carried_into_the_next_brief() {
     kept["observed"] = json!({});
     std::fs::write(world.cache().join("afkconvoy/watch/state.json"), kept.to_string()).unwrap();
     run(&world, &dir);
-    let next = until(&world, "next watch", || running(&world).filter(|w| w["id"] != watch["id"]));
+    let next = until(&world, "next delivered round", || {
+        running(&world)
+            .filter(|w| w["id"] != watch["id"] && w["started"].as_u64().unwrap_or(0) != 0)
+    });
     let told = brief(&world, starts(&world).last().unwrap());
     for text in ["Supply a new account?", "pi still needs its account", "other fleets dispatched"] {
         assert!(told.contains(text), "{told}");
