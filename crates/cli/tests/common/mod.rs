@@ -1009,6 +1009,9 @@ fn repository_template(files: &[(&str, &str)]) -> PathBuf {
     let manifest = serde_json::to_vec(&(BASE, files)).unwrap();
     let mut hash = DefaultHasher::new();
     manifest.hash(&mut hash);
+    // Cargo keeps a test binary's filename across source edits. Changing the
+    // builder or GIT_ENV must rebuild seeds too, without a manual cache bump.
+    include_str!("mod.rs").hash(&mut hash);
     let binary = std::env::current_exe().unwrap();
     let templates = binary.with_extension("repository-templates-v1");
     std::fs::create_dir_all(&templates).unwrap();
