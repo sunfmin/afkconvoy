@@ -16,7 +16,7 @@ const FILE: &str = "watch/terminal.json";
 
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum Phase {
+pub(crate) enum LaunchState {
     Creating,
     Ready,
     Sending,
@@ -29,7 +29,7 @@ pub(crate) enum Phase {
 #[derive(Serialize, Deserialize)]
 pub(crate) struct Record {
     pub watch: Watch,
-    pub phase: Phase,
+    pub status: LaunchState,
     /// Public Orca metadata from our creation receipt or verified handshake.
     pub terminal: Option<Value>,
     pub problem: Option<String>,
@@ -62,7 +62,7 @@ pub(crate) fn save(record: &Record) -> Result<()> {
 }
 
 pub(crate) fn active() -> Result<Option<Watch>> {
-    Ok(read()?.filter(|r| r.phase != Phase::Ended).map(|r| r.watch))
+    Ok(read()?.filter(|r| r.status != LaunchState::Ended).map(|r| r.watch))
 }
 
 fn handshake(watch: &Watch) -> PathBuf {
@@ -96,7 +96,7 @@ pub(crate) fn prepare(watch: &Watch, command: &str) -> Result<()> {
     );
     save(&Record {
         watch: watch.clone(),
-        phase: Phase::Creating,
+        status: LaunchState::Creating,
         terminal: None,
         problem: None,
         command: command.into(),
@@ -132,7 +132,7 @@ pub(crate) fn created(watch: &Watch, handle: &str) -> Result<()> {
         .context("created watch terminal is not listed; recovery required")?;
     record.watch.terminal = handle.into();
     record.terminal = Some(row);
-    record.phase = Phase::Ready;
+    record.status = LaunchState::Ready;
     save(&record)
 }
 
@@ -167,7 +167,7 @@ pub(crate) fn locate(watch: &Watch) -> Result<Option<String>> {
             // public identity now, without changing its running session.
             save(&Record {
                 watch: watch.clone(),
-                phase: Phase::Running,
+                status: LaunchState::Running,
                 terminal: Some(row.clone()),
                 problem: None,
                 command: String::new(),
@@ -213,18 +213,18 @@ pub(crate) fn locate(watch: &Watch) -> Result<Option<String>> {
     if let Some(mut record) = record {
         record.watch.terminal = handle.clone();
         record.terminal = Some(row.clone());
-        if record.phase == Phase::Creating {
-            record.phase = Phase::Ready;
+        if record.status == LaunchState::Creating {
+            record.status = LaunchState::Ready;
         }
         save(&record)?;
     }
     Ok(Some(handle))
 }
 
-pub(crate) fn phase(watch: &Watch, phase: Phase) -> Result<()> {
+pub(crate) fn set_status(watch: &Watch, status: LaunchState) -> Result<()> {
     if let Some(mut record) = read()?.filter(|r| matches(r, watch)) {
         record.watch = watch.clone();
-        record.phase = phase;
+        record.status = status;
         record.problem = None;
         save(&record)?;
     }
@@ -249,10 +249,10 @@ pub(crate) fn json() -> Value {
     match read() {
         Ok(Some(record)) => json!({"title": TITLE, "watch": record.watch.id,
             "directory": record.watch.directory, "terminal": record.watch.terminal,
-            "identity": record.terminal, "phase": record.phase, "problem": record.problem}),
-        Ok(None) => json!({"title": TITLE, "phase": "unassociated"}),
+            "identity": record.terminal, "status": record.status, "problem": record.problem}),
+        Ok(None) => json!({"title": TITLE, "status": "unassociated"}),
         Err(error) => {
-            json!({"title": TITLE, "phase": "uncertain", "problem": recovery(&format!("{error:#}"))})
+            json!({"title": TITLE, "status": "uncertain", "problem": recovery(&format!("{error:#}"))})
         }
     }
 }
@@ -343,7 +343,7 @@ mod tests {
         }
         assert_eq!(locate(&watch).unwrap().unwrap(), terminal);
         watch.terminal = terminal.clone();
-        phase(&watch, Phase::Running).unwrap();
+        set_status(&watch, LaunchState::Running).unwrap();
         let sent = Command::new("orca")
             .args([
                 "terminal",
@@ -399,6 +399,6 @@ mod tests {
         );
         worktree.close_terminal(&other).unwrap();
         worktree.close_terminal(&terminal).unwrap();
-        phase(&watch, Phase::Ended).unwrap();
+        set_status(&watch, LaunchState::Ended).unwrap();
     }
 }

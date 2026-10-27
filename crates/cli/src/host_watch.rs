@@ -27,7 +27,7 @@ use crate::health::Diagnosis;
 use crate::log::{Entry, What};
 use crate::orca::Worktree;
 use crate::watch_report::Report;
-use crate::watch_terminal::{self, Phase, TITLE};
+use crate::watch_terminal::{self, LaunchState, TITLE};
 
 const STATE: &str = "watch/state.json";
 /// How often a running watch's terminal and transcript are read.
@@ -707,7 +707,7 @@ fn stop_session(watch: &Watch) -> Result<()> {
         return close(&worktree, &watch.terminal, worktree.live(&watch.terminal)?);
     }
     stop_marked(&session_identity(watch))?;
-    watch_terminal::phase(watch, Phase::Ended)
+    watch_terminal::set_status(watch, LaunchState::Ended)
 }
 
 fn stop_marked(identity: &str) -> Result<()> {
@@ -839,18 +839,18 @@ fn resume_delivery(watch: &mut Watch) -> Result<()> {
     let Some(record) = watch_terminal::read()?.filter(|r| watch_terminal::matches(r, watch)) else {
         return Ok(()); // a watch retained from before launch journaling
     };
-    match record.phase {
-        Phase::Running | Phase::Ended => return Ok(()),
-        Phase::Sending => bail!("the watch's first prompt has an uncertain receipt"),
-        Phase::Creating => bail!("the watch's creation is not yet confirmed"),
-        Phase::Ready => (),
+    match record.status {
+        LaunchState::Running | LaunchState::Ended => return Ok(()),
+        LaunchState::Sending => bail!("the watch's first prompt has an uncertain receipt"),
+        LaunchState::Creating => bail!("the watch's creation is not yet confirmed"),
+        LaunchState::Ready => (),
     }
     let worktree = Worktree::at(watch.directory.clone(), String::new());
     worktree.await_ready(&watch.terminal, 60, watch.harness, &record.command)?;
-    watch_terminal::phase(watch, Phase::Sending)?;
+    watch_terminal::set_status(watch, LaunchState::Sending)?;
     let brief = watch.transcript.with_file_name(format!("brief-{}.md", watch.attempts.len() + 1));
     worktree.tell_watch(&watch.terminal, &brief_pointer(&brief.display().to_string()))?;
-    watch_terminal::phase(watch, Phase::Running)
+    watch_terminal::set_status(watch, LaunchState::Running)
 }
 
 /// What a session of `watch` is told.

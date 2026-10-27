@@ -17,7 +17,7 @@ sessions remain open, and creation pauses with recovery instructions in
 `doctor` and help.
 
 The journal precedes creation and retains the watch, guarded command,
-transcript and delivery phase independently of the host runner's progress
+transcript and delivery status independently of the host runner's progress
 file. Before executing the harness, the launch shell atomically claims its
 session and writes its `ORCA_TERMINAL_HANDLE` acknowledgement. The claim
 survives exit: repeating the same launch cannot execute another harness.

@@ -1229,7 +1229,7 @@ fn a_lost_creation_receipt_recovers_the_acknowledged_terminal_without_another_ag
     let handle = watch["terminal"].as_str().unwrap();
     assert!(open(&world, &dir).contains(&handle.into()));
     let doctor = world.afk(&["doctor"]).json;
-    assert_eq!(doctor["host"]["watch"]["association"]["phase"], "running");
+    assert_eq!(doctor["host"]["watch"]["association"]["status"], "running");
     assert_eq!(doctor["host"]["watch"]["association"]["terminal"], handle);
 
     // Lose both the caller's saved ID and its progress file after a hard
@@ -1338,7 +1338,7 @@ fn stale_runtime_handles_reassociate_by_confirmed_pane_identity_and_keep_interac
 
 #[test]
 fn uncertain_creation_and_prompt_receipts_pause_across_restarts_and_accept_an_explicit_report() {
-    for phase in ["creating", "sending"] {
+    for status in ["creating", "sending"] {
         let world = World::new();
         let dir = operator(&world);
         paused(&world, "pi", "a fault");
@@ -1347,8 +1347,8 @@ fn uncertain_creation_and_prompt_receipts_pause_across_restarts_and_accept_an_ex
         world.kill_host_runner("KILL");
         let file = world.cache().join("afkconvoy/watch/terminal.json");
         let mut record: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
-        record["phase"] = json!(phase);
-        if phase == "creating" {
+        record["status"] = json!(status);
+        if status == "creating" {
             record["terminal"] = Value::Null;
             record["watch"]["terminal"] = json!("");
             let transcript = Path::new(watch["transcript"].as_str().unwrap());
@@ -1367,7 +1367,7 @@ fn uncertain_creation_and_prompt_receipts_pause_across_restarts_and_accept_an_ex
                 .map(str::to_string)
         });
         std::thread::sleep(Duration::from_millis(2200));
-        assert_eq!(starts(&world).len(), 1, "{phase}");
+        assert_eq!(starts(&world).len(), 1, "{status}");
         assert!(open(&world, &dir).contains(&watch["terminal"].as_str().unwrap().into()));
         let doctor = world.afk(&["doctor"]).json;
         assert!(
@@ -1395,7 +1395,7 @@ fn a_pre_journal_watch_keeps_its_recorded_id_and_captures_public_identity_on_upg
     until(&world, "the migrated association", || {
         let bytes = std::fs::read(&association).ok()?;
         let record: Value = serde_json::from_slice(&bytes).ok()?;
-        (record["phase"] == "running").then_some(record)
+        (record["status"] == "running").then_some(record)
     });
     assert_eq!(running(&world).unwrap()["terminal"], watch["terminal"]);
     assert_eq!(starts(&world).len(), 1);

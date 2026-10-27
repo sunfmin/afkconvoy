@@ -15,7 +15,7 @@ RUSTUP_TOOLCHAIN=nightly-2026-09-25 cargo test -p afkconvoy --lib \
 ```
 
 It used the production `prepare`, `launch_line`, `Worktree::start_watch`,
-startup acknowledgement, `locate`, `active` and phase persistence. The
+startup acknowledgement, `locate`, `active` and status persistence. The
 executor was a harmless interactive shell wrapped in the existing marked
 watch session, so the test did not ask a model to operate the real host.
 
@@ -56,12 +56,12 @@ landing turn; its exact result is recorded by that turn and on the PR.
 ## Contract for sunfmin/control#145
 
 `watch/terminal.json` in the host cache holds the watch snapshot, guarded
-launch command, public Terminal metadata and launch phase. A launch reserves
+launch command, public Terminal metadata and launch status. A launch reserves
 execution with an atomic, retained claim beside its transcript and writes its
 own Orca runtime handle before starting the harness. The host runner's lock
 serializes launches. Recovery consults the saved exact ID first, then only a
 unique proven candidate; ambiguous creation is never resent. Before brief
-input the phase changes to `sending`; an uncertain acknowledgement pauses
+input the status changes to `sending`; an uncertain acknowledgement pauses
 instead of repeating input. `doctor.host.watch.association` exposes the
 current association and any problem.
 
