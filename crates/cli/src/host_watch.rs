@@ -1,9 +1,8 @@
-//! The host runner's watch of its host (docs/adr/0030). A look is the fleet's
-//! own `doctor --all --since`, and starts no model; a look holding something
-//! an operator would act on starts one bounded watch in the operator's
-//! directory, or afkconvoy's own, continued where its harness gives out. The
-//! process holds nothing of it: the watch, its terminal and its transcript are
-//! read back from the host's cache after every restart.
+//! The host runner's resident watch (docs/adr/0040). Deterministic looks
+//! queue episodes while independent bounded rounds execute in one interactive
+//! session. Reports complete rounds and leave a healthy executor at input.
+//! The cache owns the queue, coverage, round, delivery and session identities;
+//! neither a restart nor an Agent's conversation becomes their authority.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
@@ -70,7 +69,8 @@ pub fn directory(settings: &crate::host_settings::Settings) -> Result<PathBuf> {
     }
 }
 
-/// A watch as the host keeps it: what a continuation of it needs too.
+/// One watch round, including what a continuation needs. The resident keeps
+/// its latest round's executor metadata to start another round in that session.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Watch {
     pub id: String,
@@ -156,7 +156,8 @@ pub fn watch_json(watch: &Watch) -> Value {
 struct State {
     /// The `until` of the last look: where the next starts.
     until: Option<u64>,
-    /// The items a watch was started on, while their episodes last.
+    /// Raw coverage retained for older-state migration. Once episodes are
+    /// initialized, `covered` holds the authoritative episode coverage.
     watched: Vec<String>,
     /// Last successful start that took kit research, retained across restarts.
     research_started: Option<u64>,

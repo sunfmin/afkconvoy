@@ -56,8 +56,8 @@ its temporary state and closing its own Terminal.
 
 ## Scheduler regressions
 
-The focused watch suite passed all 35 tests in 45.505 seconds before the
-additional receipt archive and provider fallback checks. It covers real CLI
+All 58 focused watch and launch tests passed in 46.522 seconds, including the
+receipt archive, provider fallback and idle-configuration retention fix. They cover real CLI
 and host-runner scheduling with external-tool stand-ins: queueing during a
 busy round; duplicate, recovered and returning episodes; busy input after
 reporting; restart recovery; uncertain creation; exact request replay after
