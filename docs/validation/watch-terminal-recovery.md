@@ -49,6 +49,10 @@ rules, model continuation, termination bounds and migration from a runner
 that predates the journal. The launch-shell test runs concurrent duplicate
 calls and asserts exactly one execution.
 
+All 34 selected host-watch and launch-shell tests passed under nextest in
+30.659 seconds. The project gate runs on the merged candidate during the
+landing turn; its exact result is recorded by that turn and on the PR.
+
 ## Contract for sunfmin/control#145
 
 `watch/terminal.json` in the host cache holds the watch snapshot, guarded
