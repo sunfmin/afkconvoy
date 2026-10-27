@@ -94,7 +94,8 @@ pub struct Finding {
     /// says once.
     #[serde(skip)]
     pub of_host: bool,
-    /// Stable identity of a resource episode watched once.
+    /// Stable condition identity. `checkout:` identities are scoped by the
+    /// watch to this checkout; resource identities already include their scope.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub watch_id: Option<String>,
 }
@@ -221,6 +222,42 @@ pub(crate) fn finding(kind: Kind, what: String, evidence: String, fix: String) -
     debug_assert!(what.contains(kind.symptom()), "{kind:?} is not said in: {what}");
     let (severity, see, of_host) = (kind.severity(), kind.see(), kind.of_host());
     Finding { severity, what, evidence, fix, see, of_host, watch_id: None }
+}
+
+impl Finding {
+    fn condition(mut self, identity: Value) -> Self {
+        self.watch_id = Some(format!("checkout:{identity}"));
+        self
+    }
+}
+
+/// A human question's source and answer, independent of its displayed age
+/// and issue title. Both doctor representations use this same condition.
+#[derive(serde::Deserialize, Serialize)]
+pub(crate) struct HumanWait {
+    issue: u64,
+    since: Option<u64>,
+    url: Option<String>,
+    why: String,
+    answer: String,
+}
+
+impl From<&Waiting> for HumanWait {
+    fn from(waiting: &Waiting) -> Self {
+        Self {
+            issue: waiting.issue,
+            since: waiting.since,
+            url: waiting.url.clone(),
+            why: waiting.why.clone(),
+            answer: waiting.answer.clone(),
+        }
+    }
+}
+
+impl HumanWait {
+    pub(crate) fn watch_id(&self) -> String {
+        format!("checkout:human:{}", serde_json::to_string(self).expect("human wait identity"))
+    }
 }
 
 /// An answer with a finding of the highest severity: printed as it is, with
@@ -684,7 +721,7 @@ fn claim_findings(run: &Run, held: &[Held]) -> Vec<Finding> {
                     ),
                     format!("orca reports it stopped, in {place}: look at its terminal there"),
                     fix,
-                ));
+                ).condition(json!(["worker-stopped", issue, claim.worktree])));
             }
             _ => {}
         }
@@ -771,7 +808,7 @@ fn log_findings(run: &Run) -> Vec<Finding> {
             let repeated = recent.filter(|last| {
                 last.iter().all(|(_, tick)| tick.failed().iter().any(|was| was.same_step(&failed)))
             });
-            match repeated {
+            let finding = match repeated {
                 Some(last) => {
                     let (first, latest) = (last[0].1.count, last[FAILED_TICKS - 1].1.count);
                     finding(
@@ -790,7 +827,8 @@ fn log_findings(run: &Run) -> Vec<Finding> {
                     failed.error.clone(),
                     fix_of(&failed, instance),
                 ),
-            }
+            };
+            finding.condition(json!(["step", failed.named()]))
         })
         .collect()
 }
@@ -825,20 +863,28 @@ fn issue_findings(stood: &[Stood], team: &TeamRead, now: u64) -> Vec<Finding> {
         if let Some((took, here)) =
             took.zip(here).filter(|(took, here)| here > took && *here >= STAGE_LONG)
         {
-            found.push(finding(
-                Kind::LongAtStage,
-                format!(
-                    "#{number} has been at the stage `{stage}` for {}, longer than any stage \
+            found.push(
+                finding(
+                    Kind::LongAtStage,
+                    format!(
+                        "#{number} has been at the stage `{stage}` for {}, longer than any stage \
                      before it took",
-                    lasted(here)
-                ),
-                format!(
-                    "its last stage record is {} old; the longest between two before it is {}",
-                    lasted(here),
-                    lasted(took)
-                ),
-                show.clone(),
-            ));
+                        lasted(here)
+                    ),
+                    format!(
+                        "its last stage record is {} old; the longest between two before it is {}",
+                        lasted(here),
+                        lasted(took)
+                    ),
+                    show.clone(),
+                )
+                .condition(json!([
+                    "long-stage",
+                    number,
+                    stage,
+                    issue.recorded.last()
+                ])),
+            );
         }
         let mut near = vec![];
         if let (had @ 1.., 0) = issue.rework {
@@ -1003,7 +1049,7 @@ fn plan_findings(run: &Run, state: &State) -> Vec<Finding> {
 pub(crate) fn waiting_findings(waiting: &[Waiting], now: u64) -> Vec<Finding> {
     let long = |waiting: &Waiting| {
         let waited = waiting.waited_long(now)?;
-        Some(finding(
+        let mut finding = finding(
             Kind::WaitedLong,
             format!(
                 "#{} has waited for a human for {}: {}",
@@ -1017,7 +1063,9 @@ pub(crate) fn waiting_findings(waiting: &[Waiting], now: u64) -> Vec<Finding> {
                 lasted(WAITED_LONG)
             ),
             waiting.answer.clone(),
-        ))
+        );
+        finding.watch_id = Some(HumanWait::from(waiting).watch_id());
+        Some(finding)
     };
     waiting.iter().filter_map(long).collect()
 }

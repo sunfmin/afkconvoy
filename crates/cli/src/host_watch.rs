@@ -198,6 +198,7 @@ impl State {
     /// reserves only its own episodes; a recovery and return can queue a new
     /// episode of that same finding while the old round is still executing.
     fn observe(&mut self, look: Value, now: u64) {
+        self.migrate_human_waits();
         let current = actionable(&look, now);
         let mut present: BTreeSet<String> = current.iter().map(|i| i.id.clone()).collect();
         for resource in look["host"]["resources"].as_array().into_iter().flatten() {
@@ -261,6 +262,58 @@ impl State {
         self.look = if self.pending.is_empty() { Value::Null } else { look };
         self.looked = Some(now);
         self.episodes_initialized = true;
+    }
+
+    /// Older runners keyed the question by issue alone, and its warning by
+    /// display text. Translate from each retained look's structured question,
+    /// never from today's question, which may require a different answer.
+    fn migrate_human_waits(&mut self) {
+        let mut aliases = BTreeMap::new();
+        for round in self
+            .history
+            .iter_mut()
+            .chain(self.last.iter_mut())
+            .chain(self.resident.iter_mut())
+            .chain(self.running.iter_mut())
+        {
+            let own = human_wait_aliases(&round.look);
+            for item in &mut round.items {
+                if let Some(id) = own.get(&item.id) {
+                    item.id = id.clone();
+                }
+            }
+            aliases.extend(own);
+        }
+        aliases.extend(human_wait_aliases(&self.look));
+        for id in &mut self.watched {
+            if let Some(canonical) = aliases.get(id) {
+                *id = canonical.clone();
+            }
+        }
+        for (old, canonical) in aliases {
+            let Some(episode) = self.observed.remove(&old) else { continue };
+            let retained =
+                self.observed.entry(canonical).or_insert_with(|| episode.clone()).clone();
+            if retained == episode {
+                continue;
+            }
+            if self.covered.contains(&episode) {
+                self.covered.push(retained.clone());
+            }
+            for round in self
+                .history
+                .iter_mut()
+                .chain(self.last.iter_mut())
+                .chain(self.resident.iter_mut())
+                .chain(self.running.iter_mut())
+            {
+                for reserved in &mut round.episodes {
+                    if *reserved == episode {
+                        *reserved = retained.clone();
+                    }
+                }
+            }
+        }
     }
 
     /// A start reserves its episodes while the watch runs; only a report
@@ -1455,6 +1508,40 @@ fn push(items: &mut Vec<Item>, id: String, reason: String) {
     }
 }
 
+fn scoped_finding_id(at: &str, id: &str) -> String {
+    match id.strip_prefix("checkout:") {
+        Some(identity) => format!("finding:{at}:{identity}"),
+        None => id.to_string(),
+    }
+}
+
+fn human_wait_aliases(look: &Value) -> BTreeMap<String, String> {
+    let mut aliases = BTreeMap::new();
+    for checkout in look["checkouts"].as_array().into_iter().flatten() {
+        let Some(at) = checkout["checkout"].as_str() else { continue };
+        let doctor = &checkout["doctor"];
+        for waiting in doctor["waiting_on_human"].as_array().into_iter().flatten() {
+            let Ok(identity) = serde_json::from_value::<crate::doctor::HumanWait>(waiting.clone())
+            else {
+                continue;
+            };
+            let id = scoped_finding_id(at, &identity.watch_id());
+            let issue = waiting["issue"].as_u64().unwrap_or(0);
+            aliases.insert(format!("human:{at}:#{issue}"), id.clone());
+            // Only migration reads the old presentation identity. The issue
+            // and source above establish which question that old look held.
+            for finding in doctor["findings"].as_array().into_iter().flatten() {
+                if let Some(what) = finding["what"].as_str()
+                    && what.starts_with(&format!("#{issue} has waited for a human for "))
+                {
+                    aliases.insert(format!("finding:{at}:{what}"), id.clone());
+                }
+            }
+        }
+    }
+    aliases
+}
+
 fn findings(items: &mut Vec<Item>, at: &str, findings: &Value) {
     let unavailable = crate::doctor::Kind::WatchUnavailable.symptom();
     for finding in findings.as_array().into_iter().flatten() {
@@ -1465,13 +1552,14 @@ fn findings(items: &mut Vec<Item>, at: &str, findings: &Value) {
             continue;
         }
         let reason = format!("{what}; evidence: {}; fix: {}", finding["evidence"], finding["fix"]);
-        let id = finding["watch_id"].as_str().map(str::to_string).unwrap_or_else(|| {
-            if what.contains(crate::doctor::Kind::KitUnplaced.symptom()) {
-                format!("{}{what}", host_watch::RESEARCH_ITEM)
-            } else {
-                format!("finding:{at}:{what}")
-            }
-        });
+        let id =
+            finding["watch_id"].as_str().map(|id| scoped_finding_id(at, id)).unwrap_or_else(|| {
+                if what.contains(crate::doctor::Kind::KitUnplaced.symptom()) {
+                    format!("{}{what}", host_watch::RESEARCH_ITEM)
+                } else {
+                    format!("finding:{at}:{what}")
+                }
+            });
         push(items, id, reason);
     }
 }
@@ -1491,7 +1579,11 @@ fn actionable(look: &Value, now: u64) -> Vec<Item> {
                 "#{issue} waits on a human: {}; answer: {}",
                 waiting["why"], waiting["answer"]
             );
-            push(&mut items, format!("human:{at}:#{issue}"), reason);
+            if let Ok(identity) =
+                serde_json::from_value::<crate::doctor::HumanWait>(waiting.clone())
+            {
+                push(&mut items, scoped_finding_id(at, &identity.watch_id()), reason);
+            }
         }
         let fleet = &doctor["fleet"];
         if fleet["alive"] == false {
@@ -1968,7 +2060,7 @@ mod tests {
             first,
             [
                 "finding:host:orca is not running",
-                "human:/r:#7",
+                r#"finding:/r:human:{"issue":7,"since":null,"url":null,"why":"escalated","answer":"gh issue view 7"}"#,
                 "fleet:/r:not-alive",
                 "fleet:/r:broken:800",
                 r#"tick:/r:alpha:[{"error":"gh is down"}]"#,
