@@ -1568,7 +1568,7 @@ fn findings(items: &mut Vec<Item>, at: &str, findings: &Value) {
 
 /// Everything in a look an operator would act on, each by an identity that
 /// stays the same while its episode lasts.
-fn actionable(look: &Value, now: u64) -> Vec<Item> {
+pub(crate) fn actionable(look: &Value, now: u64) -> Vec<Item> {
     let mut items = vec![];
     findings(&mut items, "host", &look["findings"]);
     for checkout in look["checkouts"].as_array().into_iter().flatten() {
@@ -1610,7 +1610,20 @@ fn actionable(look: &Value, now: u64) -> Vec<Item> {
             let reason = format!("a tick of {instance} failed: {}; errors: {errors}", tick["line"]);
             push(&mut items, format!("tick:{at}:{instance}:{how}"), reason);
         }
+        let unrecovered: BTreeSet<&str> = doctor["findings"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|finding| finding["watch_id"].as_str())
+            .collect();
         for failed in fleet["failed_steps"].as_array().into_iter().flatten() {
+            let identity = format!(
+                "checkout:{}",
+                json!(["step", failed["do"], failed["issue"], failed["patrol"]])
+            );
+            if !unrecovered.contains(identity.as_str()) {
+                continue;
+            }
             let step = failed["do"].as_str().unwrap_or("tick");
             let reason = format!(
                 "`{step}` failed in tick {} and has not recovered: {}",
@@ -2212,7 +2225,10 @@ mod tests {
                 {"severity": "info", "what": "a key is read and changes nothing"}],
             "host": {"host_kit": {"worker_health": {"workers": [{"path": "/w", "next_check": next, "error": "stuck"}]}}},
             "checkouts": [{"checkout": "/r", "doctor": {
-            "findings": [], "waiting_on_human": [{"issue": 7, "why": "escalated", "answer": "gh issue view 7"}],
+            "findings": [{"what": "`dispatch` failed in tick and has not recovered",
+                "evidence": "no", "fix": "afkconvoy tick",
+                "watch_id": "checkout:[\"step\",\"dispatch\",null,null]"}],
+            "waiting_on_human": [{"issue": 7, "why": "escalated", "answer": "gh issue view 7"}],
             "fleet": {"alive": false, "broken": {"since": 800, "why": "panic"},
                 "failed_steps": [{"tick": first, "do": "dispatch", "error": "no"}]},
             "watching": {"ticks": [{"instance": "alpha", "first": first, "failed": true,
@@ -2226,6 +2242,7 @@ mod tests {
             first,
             [
                 "finding:host:orca is not running",
+                r#"finding:/r:["step","dispatch",null,null]"#,
                 r#"finding:/r:human:{"issue":7,"since":null,"url":null,"why":"escalated","answer":"gh issue view 7"}"#,
                 "fleet:/r:not-alive",
                 "fleet:/r:broken:800",

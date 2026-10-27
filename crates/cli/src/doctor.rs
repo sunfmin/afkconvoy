@@ -2548,6 +2548,60 @@ mod tests {
     }
 
     #[test]
+    fn unrecovered_steps_keep_their_watch_item_whatever_their_severity() {
+        let items = |ticks: Vec<(u64, Tick)>, failure: Value| {
+            let findings = log_findings(&run(ticks));
+            let look = json!({"findings": [], "checkouts": [{"checkout": "/r", "doctor": {
+                "findings": findings, "waiting_on_human": [],
+                "fleet": {"alive": true, "broken": null, "failed_steps": [failure]},
+                "watching": {"ticks": []}}}],
+                "host": {"host_kit": {"worker_health": {"workers": []}}}});
+            crate::host_watch::actionable(&look, NOW)
+        };
+        let failed = |count| json!({"tick": count, "do": "advance", "issue": 160, "error": "no live terminal"});
+
+        let items_once = items(vec![tick(21, json!([failed(21)]))], failed(21));
+        let step = items_once.iter().find(|item| item.id == "step:/r:advance").unwrap();
+        assert_eq!(
+            step.reason,
+            "`advance` failed in tick 21 and has not recovered: \"no live terminal\""
+        );
+
+        let repeated = vec![
+            tick(21, json!([failed(21)])),
+            tick(22, json!([failed(22)])),
+            tick(23, json!([failed(23)])),
+        ];
+        let findings = log_findings(&run(repeated.clone()));
+        assert_eq!(findings[0].severity, Severity::Critical);
+        let items_repeated = items(repeated, failed(23));
+        assert!(items_repeated.iter().any(|item| item.id == "step:/r:advance"));
+    }
+
+    #[test]
+    fn a_recovered_step_leaves_neither_a_finding_nor_a_watch_item() {
+        let failure =
+            json!({"tick": 21, "do": "advance", "issue": 160, "error": "no live terminal"});
+        let mut ticks = vec![tick(21, json!([failure.clone()]))];
+        for count in 22..=30 {
+            let mut recovered = tick(count, json!([]));
+            recovered.1.answer.as_mut().unwrap()["did"] =
+                json!([{"do": "advance", "issue": 160, "outcome": "nothing"}]);
+            ticks.push(recovered);
+        }
+        let findings = log_findings(&run(ticks));
+        assert!(findings.iter().all(|finding| !finding.what.contains("failed in tick")));
+
+        let look = json!({"findings": [], "checkouts": [{"checkout": "/r", "doctor": {
+            "findings": findings, "waiting_on_human": [],
+            "fleet": {"alive": true, "broken": null, "failed_steps": [failure]},
+            "watching": {"ticks": []}}}],
+            "host": {"host_kit": {"worker_health": {"workers": []}}}});
+        let items = crate::host_watch::actionable(&look, NOW);
+        assert!(items.iter().all(|item| !item.id.starts_with("step:")), "{items:?}");
+    }
+
+    #[test]
     fn an_issue_longer_at_its_stage_than_any_before_it_took_names_show() {
         let mut state = state();
         state.team = team();
