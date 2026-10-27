@@ -78,6 +78,8 @@ fn a_targeted_worker_cannot_push_either_destination_or_rewrite_its_target_record
         "git push origin HEAD:convoy-delivery/abcd",
         "git push origin HEAD:refs/convoy/delivery-pr/abcd",
         "git push origin HEAD:convoy-delivery-pr/abcd",
+        "git push origin HEAD:refs/convoy/delivery-evidence/abcd",
+        "git push origin HEAD:refs/convoy/delivery-settled/abcd",
         "git push origin HEAD:delivery/jira-ABC-123-abcd",
     ] {
         let answer = guard(&bash(line), &facts);

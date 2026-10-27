@@ -136,9 +136,9 @@ pub const PR_HEADS_JQ: &str = ".[] | select(.head.repo != null and \
     {number, title: (.title // \"\"), body: (.body // \"\"), head_branch: .head.ref, head_sha: .head.sha, base_branch: .base.ref}";
 
 /// Full history for final-review recovery, including closed and merged PRs.
-pub const DELIVERY_PRS_JQ: &str = ".[] | {number, body: (.body // \"\"), head_branch: .head.ref, base_branch: .base.ref, state, draft, url: .html_url, fork: (.head.repo.full_name != .base.repo.full_name)}";
+pub const DELIVERY_PRS_JQ: &str = ".[] | {number, body: (.body // \"\"), head_branch: .head.ref, base_branch: .base.ref, state, draft, merged, url: .html_url, fork: (.head.repo.full_name != .base.repo.full_name)}";
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct DeliveryPr {
     pub number: u64,
     pub body: String,
@@ -146,6 +146,8 @@ pub struct DeliveryPr {
     pub base_branch: String,
     pub state: String,
     pub draft: bool,
+    #[serde(default)]
+    pub merged: bool,
     pub url: String,
     pub fork: bool,
 }
@@ -1312,6 +1314,24 @@ impl GitHub {
             "pr", "create", "--draft", "--base", base, "--head", head, "--title", title, "--body",
             body,
         ])?;
+        Ok(())
+    }
+
+    /// Replaces one PR's body. It does not open a PR and does not change reviews.
+    pub fn edit_pr_body(&self, number: u64, body: &str) -> Result<()> {
+        self.gh(&["pr", "edit", &number.to_string(), "--body", body])?;
+        Ok(())
+    }
+
+    /// Marks one open PR ready for review, or returns it to draft with `--undo`.
+    /// Neither call dismisses reviews.
+    pub fn set_draft(&self, number: u64, draft: bool) -> Result<()> {
+        let number = number.to_string();
+        if draft {
+            self.gh(&["pr", "ready", &number, "--undo"])?;
+        } else {
+            self.gh(&["pr", "ready", &number])?;
+        }
         Ok(())
     }
 
