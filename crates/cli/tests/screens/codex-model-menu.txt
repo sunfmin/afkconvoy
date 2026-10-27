@@ -1,5 +1,0 @@
-■ Usage limit reached
-Approaching rate limits
-Switch to gpt-6-luna for lower credit usage?
-› 1. Switch to gpt-6-luna
-  2. Keep current model

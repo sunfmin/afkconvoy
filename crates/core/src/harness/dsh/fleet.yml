@@ -1,7 +1,0 @@
-- id: approval
-  config:
-    policy: never
-- id: sandbox-policy
-  config:
-    mode: danger-full-access
-    workspaceRoot: !!js process.env.AFKCONVOY_WORKTREE
