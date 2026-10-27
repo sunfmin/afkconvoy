@@ -28,6 +28,7 @@ const AUDIT: &str = "```yaml\nby: dev\ndo: sweep\nevery: 2d\nmax_open: 1\n```\n"
 fn bound(patrols: &str) -> World {
     let began = std::time::Instant::now();
     let world = World::new();
+    world.reuse_repository_templates();
     let skills = [
         (".claude/skills/implement/SKILL.md", "---\nname: implement\ndescription: build\n---\n"),
         (".claude/skills/sweep/SKILL.md", "---\nname: sweep\ndescription: s\n---\n"),

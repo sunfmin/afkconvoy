@@ -36,6 +36,7 @@ stages:
 fn bound(feature: &str, concurrency: u64) -> World {
     let began = std::time::Instant::now();
     let world = World::new();
+    world.reuse_repository_templates();
     world.kit_researched_models("claude-code", &["opus", "sonnet"]);
     world.repo(
         "acme/dev",

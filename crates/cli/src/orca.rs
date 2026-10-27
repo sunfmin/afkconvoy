@@ -5,6 +5,7 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::rc::Rc;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
@@ -70,12 +71,61 @@ const BRIEF_SETTLE_SECONDS: u64 = 20;
 /// How often a quiet screen's harness state is read during that bound.
 const INPUT_POLL: Duration = Duration::from_millis(200);
 
+/// Monotonic time for continuation termination, supplied by the integration
+/// executable when the terminal is a stand-in. Process discovery, signals,
+/// runtime refresh and the decision to permit a replacement remain real.
+#[doc(hidden)]
+pub trait TerminationClock {
+    fn now(&self) -> Duration;
+    fn sleep(&self, interval: Duration);
+}
+
+thread_local! {
+    static TERMINATION_CLOCK: RefCell<Option<Rc<dyn TerminationClock>>> = RefCell::new(None);
+}
+
+/// Runs an entry point with a clock on this thread, restoring its predecessor
+/// even on panic. The shipped executable installs none and exposes no switch.
+#[doc(hidden)]
+pub fn with_termination_clock<T>(clock: Rc<dyn TerminationClock>, run: impl FnOnce() -> T) -> T {
+    struct Restore(Option<Rc<dyn TerminationClock>>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            TERMINATION_CLOCK.with(|slot| *slot.borrow_mut() = self.0.take());
+        }
+    }
+    let _restore = Restore(TERMINATION_CLOCK.with(|slot| slot.replace(Some(clock))));
+    run()
+}
+
+struct TerminationTime {
+    began: Instant,
+    clock: Option<Rc<dyn TerminationClock>>,
+}
+
+impl TerminationTime {
+    fn new() -> Self {
+        Self { began: Instant::now(), clock: TERMINATION_CLOCK.with(|slot| slot.borrow().clone()) }
+    }
+
+    fn now(&self) -> Duration {
+        self.clock.as_ref().map_or_else(|| self.began.elapsed(), |clock| clock.now())
+    }
+
+    fn sleep(&self, interval: Duration) {
+        match &self.clock {
+            Some(clock) => clock.sleep(interval),
+            None => std::thread::sleep(interval),
+        }
+    }
+}
+
 /// A process left after terminal close, and the bounded effort to end it.
 /// The command is read without its environment: the process-tree listing
 /// includes environment variables, which must never be copied to the log.
 struct Ending {
     description: String,
-    since: Instant,
+    since: Duration,
     forced: bool,
     sent: bool,
     logged: bool,
@@ -83,7 +133,7 @@ struct Ending {
 }
 
 impl Ending {
-    fn observe(proc: &crate::hot::Proc) -> Self {
+    fn observe(proc: &crate::hot::Proc, since: Duration) -> Self {
         let pid = proc.pid.to_string();
         let metadata = crate::process::output(Command::new("ps").args([
             "-ww",
@@ -103,14 +153,7 @@ impl Ending {
                     proc.line.split_whitespace().next().unwrap_or("unavailable")
                 ),
             };
-        Self {
-            description,
-            since: Instant::now(),
-            forced: false,
-            sent: false,
-            logged: false,
-            error: None,
-        }
+        Self { description, since, forced: false, sent: false, logged: false, error: None }
     }
 
     fn signal(&mut self, pid: u32, forced: bool) {
@@ -931,7 +974,8 @@ impl Worktree {
         let before = crate::hot::listed_checked()?;
         let pids: Vec<_> = crate::hot::tree(&before, &self.path).iter().map(|p| p.pid).collect();
         self.close_terminals()?;
-        let until = Instant::now() + Duration::from_secs(5);
+        let clock = TerminationTime::new();
+        let until = clock.now() + Duration::from_secs(5);
         let mut ending = BTreeMap::<u32, Ending>::new();
         loop {
             let processes = crate::hot::listed_checked()?;
@@ -942,11 +986,13 @@ impl Worktree {
                     || writers.iter().any(|writer| writer.pid == proc.pid)
                 {
                     let record = ending.entry(proc.pid).or_insert_with(|| {
-                        let mut record = Ending::observe(proc);
+                        let mut record = Ending::observe(proc, clock.now());
                         record.signal(proc.pid, false);
                         record
                     });
-                    if !record.forced && record.since.elapsed() >= Duration::from_secs(1) {
+                    if !record.forced
+                        && clock.now().saturating_sub(record.since) >= Duration::from_secs(1)
+                    {
                         record.signal(proc.pid, true);
                     }
                 }
@@ -970,7 +1016,7 @@ impl Worktree {
             if self.terminal()?.is_none() && writers.is_empty() && !old_alive && !agent_alive {
                 return Ok(());
             }
-            if Instant::now() >= until {
+            if clock.now() >= until {
                 let survivors = ending
                     .iter()
                     .filter(|(pid, _)| processes.iter().any(|proc| proc.pid == **pid))
@@ -990,7 +1036,7 @@ impl Worktree {
                     }
                 );
             }
-            std::thread::sleep(Duration::from_millis(100));
+            clock.sleep(Duration::from_millis(100));
         }
     }
 

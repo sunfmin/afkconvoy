@@ -456,12 +456,17 @@ fn a_failed_close_preserves_work_and_all_continues_with_the_other_workers() {
 fn an_acknowledged_close_that_leaves_the_terminal_is_no_permission_for_a_second_writer() {
     let world = blocked();
     let dir = worktree(&world, 7);
+    let original_brief = brief(&dir);
+    let original_claims = world.claims();
+    world.control_termination_time();
     world.with_orca(|orca| orca["close_keeps_terminal"] = json!(true));
     let answer = switch(&world, "800", &["7", "--harness", "codex"]).ok();
     let error = answer["failed"][0]["error"].as_str().unwrap();
     assert!(error.contains("termination is unconfirmed"), "{error}");
     assert_eq!(open_commands(&world, &dir), [common::trusted("agent")]);
     assert_eq!(world.claims().len(), 1);
+    assert_eq!(brief(&dir), original_brief, "an unconfirmed writer keeps its brief");
+    assert_eq!(world.claims(), original_claims, "its claim stays held");
 }
 
 /// What `blocked()`'s worker shows.
@@ -991,6 +996,9 @@ fn capacity_continuation_never_starts_a_second_writer_before_termination_is_conf
         tick(&world, at);
     }
     let commands = open_commands(&world, &dir);
+    let original_brief = brief(&dir);
+    let original_claims = world.claims();
+    world.control_termination_time();
     world.with_orca(|orca| orca["close_keeps_terminal"] = json!(true));
     tick(&world, 982);
     assert_eq!(open_commands(&world, &dir), commands);
@@ -1002,6 +1010,8 @@ fn capacity_continuation_never_starts_a_second_writer_before_termination_is_conf
             .contains("termination is unconfirmed")
     );
     assert_eq!(health_book(&world)["faults"], json!([]));
+    assert_eq!(brief(&dir), original_brief, "an unconfirmed writer keeps its brief");
+    assert_eq!(world.claims(), original_claims, "its claim stays held");
 }
 
 fn codex_refusal(world: &World, dir: &Path) {
@@ -1096,12 +1106,17 @@ fn codex_task_refusal_never_starts_a_second_writer_while_termination_is_unconfir
     let dir = worktree(&world, 7);
     switch(&world, "750", &["7", "--harness", "codex"]).ok();
     codex_refusal(&world, &dir);
+    let original_brief = brief(&dir);
+    let original_claims = world.claims();
+    world.control_termination_time();
     world.with_orca(|orca| orca["close_keeps_terminal"] = json!(true));
     tick(&world, 800);
     assert_eq!(open_commands(&world, &dir), [codex_line(&world, &dir)]);
     assert_eq!(world.claims().len(), 1);
     assert!(!world.root.join("typesafe-request").exists());
     assert!(world.comments(7).iter().any(|body| body.starts_with("<!--convoy:refusal ")));
+    assert_eq!(brief(&dir), original_brief, "an unconfirmed writer keeps its brief");
+    assert_eq!(world.claims(), original_claims, "its claim stays held");
 }
 
 #[test]
@@ -1273,6 +1288,9 @@ fn explicit_usage_limit_starts_nothing_until_the_failed_codex_agent_is_gone() {
     let dir = worktree(&world, 7);
     switch(&world, "750", &["7", "--harness", "codex"]).ok();
     codex_usage_limit(&world);
+    let original_brief = brief(&dir);
+    let original_claims = world.claims();
+    world.control_termination_time();
     world.with_orca(|orca| orca["close_keeps_terminal"] = json!(true));
 
     tick(&world, 800);
@@ -1283,6 +1301,8 @@ fn explicit_usage_limit_starts_nothing_until_the_failed_codex_agent_is_gone() {
     assert!(worker["error"].as_str().unwrap().contains("termination is unconfirmed"), "{worker}");
     assert_eq!(worker["successor"], Value::Null);
     assert_eq!(world.claims().len(), 1);
+    assert_eq!(brief(&dir), original_brief, "an unconfirmed writer keeps its brief");
+    assert_eq!(world.claims(), original_claims, "its claim stays held");
 }
 
 #[test]

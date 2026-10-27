@@ -66,6 +66,8 @@ pub struct World {
     bin: PathBuf,
     gh_file: PathBuf,
     orca_file: PathBuf,
+    repository_templates: std::cell::Cell<bool>,
+    termination_clock: std::cell::Cell<bool>,
 }
 
 /// One answer of the CLI: the JSON object it printed, and its exit code.
@@ -123,6 +125,8 @@ impl World {
             write_script(&bin.join(name), script);
         }
         let world = World {
+            repository_templates: std::cell::Cell::new(false),
+            termination_clock: std::cell::Cell::new(false),
             tmp_links: tempfile::tempdir_in("/tmp").unwrap(),
             gh_file: root.join("gh.json"),
             orca_file: root.join("orca.json"),
@@ -429,7 +433,28 @@ impl World {
     }
 
     pub fn afk_in(&self, cwd: &Path, args: &[&str]) -> Answer {
-        self.afk_as(Path::new(env!("CARGO_BIN_EXE_afkconvoy")), cwd, args)
+        let program = Path::new(env!("CARGO_BIN_EXE_afkconvoy"));
+        if self.termination_clock.get() {
+            self.afk_as(
+                &program.parent().unwrap().join("examples/test_termination_clock"),
+                cwd,
+                args,
+            )
+        } else {
+            self.afk_as(program, cwd, args)
+        }
+    }
+
+    /// Advance only termination time in the real CLI entry point. Use only
+    /// when Orca's terminal is a stand-in that deliberately never closes.
+    pub fn control_termination_time(&self) {
+        self.termination_clock.set(true);
+    }
+
+    /// Reuse immutable Git seeds for subsequent role/team repositories. Each
+    /// call to `repo` still gets independent files, objects, refs and index.
+    pub fn reuse_repository_templates(&self) {
+        self.repository_templates.set(true);
     }
 
     /// `afk_in`, as the afkconvoy at `program`: one installed elsewhere.
@@ -539,15 +564,10 @@ impl World {
     pub fn repo(&self, name: &str, files: &[(&str, &str)]) -> PathBuf {
         let began = Instant::now();
         let dir = self.root.join("github").join(name);
-        std::fs::create_dir_all(&dir).unwrap();
-        git(&dir, &["init", "-q", "-b", BASE]);
-        git(&dir, &["commit", "-q", "--allow-empty", "-m", "initial"]);
-        for (file, text) in files {
-            write(&dir, file, text);
-        }
-        if !files.is_empty() {
-            git(&dir, &["add", "."]);
-            git(&dir, &["commit", "-q", "-m", "files"]);
+        if self.repository_templates.get() {
+            copy_repository(&repository_template(files), &dir);
+        } else {
+            create_repository(&dir, files);
         }
         self.with_gh(|gh| gh["repos"][name] = json!(dir));
         fixture_timing("repo setup", began);
@@ -965,6 +985,74 @@ impl World {
     /// git against the remote itself.
     pub fn remote(&self, args: &[&str]) -> String {
         git(&self.bare, args)
+    }
+}
+
+fn create_repository(dir: &Path, files: &[(&str, &str)]) {
+    std::fs::create_dir_all(dir).unwrap();
+    git(dir, &["init", "-q", "-b", BASE]);
+    git(dir, &["commit", "-q", "--allow-empty", "-m", "initial"]);
+    for (file, text) in files {
+        write(dir, file, text);
+    }
+    if !files.is_empty() {
+        git(dir, &["add", "."]);
+        git(dir, &["commit", "-q", "-m", "files"]);
+    }
+}
+
+/// Built privately, then published by one atomic rename. Readers see only a
+/// complete, read-only seed. Concurrent builders discard their own copies.
+/// The manifest checks the full input even if two inputs hash to one name.
+fn repository_template(files: &[(&str, &str)]) -> PathBuf {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    let manifest = serde_json::to_vec(&(BASE, files)).unwrap();
+    let mut hash = DefaultHasher::new();
+    manifest.hash(&mut hash);
+    let binary = std::env::current_exe().unwrap();
+    let templates = binary.with_extension("repository-templates-v1");
+    std::fs::create_dir_all(&templates).unwrap();
+    let kept = templates.join(format!("{:016x}", hash.finish()));
+    if !kept.exists() {
+        let scratch = tempfile::tempdir_in(&templates).unwrap();
+        create_repository(&scratch.path().join("repo"), files);
+        std::fs::write(scratch.path().join("manifest.json"), &manifest).unwrap();
+        let frozen =
+            Command::new("chmod").args(["-R", "a-w"]).arg(scratch.path()).status().unwrap();
+        assert!(frozen.success());
+        if let Err(error) = std::fs::rename(scratch.path(), &kept) {
+            // Another complete seed may have won. Open our scratch again so
+            // TempDir can remove it, including when the failure was real.
+            let thawed =
+                Command::new("chmod").args(["-R", "u+w"]).arg(scratch.path()).status().unwrap();
+            assert!(thawed.success());
+            assert!(kept.is_dir(), "cannot publish repository template: {error}");
+        }
+    }
+    assert_eq!(std::fs::read(kept.join("manifest.json")).unwrap(), manifest);
+    kept.join("repo")
+}
+
+/// Ordinary copies, never hard links or Git alternates: committing, changing
+/// permissions or removing a world's repo cannot change the seed or a peer.
+fn copy_repository(from: &Path, to: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let source = entry.path();
+        let target = to.join(entry.file_name());
+        let metadata = std::fs::symlink_metadata(&source).unwrap();
+        if metadata.is_dir() {
+            copy_repository(&source, &target);
+        } else if metadata.file_type().is_symlink() {
+            std::os::unix::fs::symlink(std::fs::read_link(&source).unwrap(), target).unwrap();
+        } else {
+            std::fs::copy(&source, &target).unwrap();
+            let mut permissions = metadata.permissions();
+            permissions.set_mode(permissions.mode() | 0o200);
+            std::fs::set_permissions(target, permissions).unwrap();
+        }
     }
 }
 
