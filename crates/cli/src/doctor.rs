@@ -465,6 +465,7 @@ pub enum TeamRead {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct State {
     pub set: WorkingSet,
+    pub targets: Value,
     pub refusals: Value,
     pub held: Vec<Held>,
     pub stood: Vec<Stood>,
@@ -1612,6 +1613,7 @@ fn read_state(repo: &Repo, now: u64, run: &mut Run) -> Result<State> {
         .collect();
     Ok(State {
         refusals: fleet.selection()["refusals"].clone(),
+        targets: fleet.targets(&open.issues)?,
         set,
         held,
         stood,
@@ -1911,6 +1913,8 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String]) -> Result<Exami
         "claims": Value::Array(claims),
         "codex_workers": crate::codex_launch::workers(repo),
         "issues": issues,
+        "targets": state.as_ref().map(|state| state.targets.clone())
+            .unwrap_or_else(|error| json!({"error": error})),
         "refusals": state.as_ref().ok().map(|state| &state.refusals),
         "waiting_on_human": waiting,
         "candidates": config.as_ref().ok().map(|config| crate::candidates::view(repo, config)
@@ -2165,6 +2169,7 @@ mod tests {
     fn state() -> State {
         State {
             refusals: json!({}),
+            targets: json!([]),
             set: set(),
             held: vec![],
             stood: vec![],

@@ -150,6 +150,100 @@ fn split(world: &World, children: &[u64]) {
 }
 
 #[test]
+fn split_inherits_delivery_and_parent_restart_and_harness_switch_retain_it() {
+    let world = bound(3, 50);
+    world.issue(7, &["flow:feature"]);
+    let delivery = world
+        .afk(&[
+            "delivery",
+            "--jira",
+            "https://example.atlassian.net/browse/ABC-123",
+            "--final-target",
+            "main",
+            "--issue",
+            "7",
+        ])
+        .ok();
+    let other = world
+        .afk(&[
+            "delivery",
+            "--jira",
+            "https://example.atlassian.net/browse/ABC-456",
+            "--final-target",
+            "main",
+        ])
+        .ok();
+    assert_eq!(did(&tick(&world, 1000)), ["dispatch 7 done"]);
+    let dir = worktree(&world, 7);
+    let told = brief(&dir);
+    assert!(told.contains(delivery["delivery"].as_str().unwrap()));
+    assert!(told.contains("--from 7"));
+    let child = take_in(&world, 7, 11, "fix", "").ok();
+    assert_eq!(child["delivery"], delivery["delivery"]);
+    assert_eq!(child["target_branch"], delivery["branch"]);
+    assert_eq!(world.afk(&["show", "--issue", "11"]).ok()["delivery"], delivery["delivery"]);
+    // An explicitly named second delivery overrides the worker source.
+    world.issue(12, &[]);
+    world
+        .afk(&[
+            "intake",
+            "--issue",
+            "12",
+            "--workflow",
+            "fix",
+            "--role",
+            "dev",
+            "--from",
+            "7",
+            "--delivery",
+            other["delivery"].as_str().unwrap(),
+            "--blocked-by",
+            "11",
+        ])
+        .ok();
+    assert_eq!(world.afk(&["target", "--issue", "12"]).ok()["delivery"], other["delivery"]);
+    // A dependency alone supplies no ownership.
+    world.issue(13, &[]);
+    take_in(&world, 99, 13, "fix", "11").ok();
+    assert_eq!(world.afk(&["target", "--issue", "13"]).ok()["target_branch"], "main");
+    assert!(world.afk(&["target", "--issue", "13"]).ok().get("delivery").is_none());
+    declare(&world, 7, "plan", "blocked", &["--text", "Split.", "--blocked-by", "11"]);
+    tick(&world, 1090);
+    assert_eq!(world.edges(7), [11]);
+    world.with_gh(|gh| {
+        for row in gh["issues"].as_array_mut().unwrap() {
+            if [11, 12, 13].contains(&row["number"].as_u64().unwrap()) {
+                row["state"] = json!("closed");
+            }
+        }
+    });
+    tick(&world, 1180);
+    let resumed = worktree(&world, 7);
+    assert!(brief(&resumed).contains(delivery["delivery"].as_str().unwrap()));
+    let switched = world
+        .afk(&[
+            "switch",
+            "--harness",
+            "claude-code",
+            "7",
+            "--instance",
+            "alpha",
+            "--host",
+            "h1",
+            "--now",
+            "1200",
+        ])
+        .ok();
+    assert_eq!(switched["failed"], json!([]), "{switched}");
+    assert!(brief(&resumed).contains(delivery["delivery"].as_str().unwrap()));
+    assert_eq!(world.afk(&["target", "--issue", "7"]).ok()["target_branch"], delivery["branch"]);
+    assert_eq!(
+        world.afk(&["delivery", "--jira", "https://example.atlassian.net/browse/ABC-123"]).ok()["tasks"],
+        json!(["#11", "#7"])
+    );
+}
+
+#[test]
 fn a_split_parks_the_parent_and_its_children_are_worked_in_the_order_their_blockers_close() {
     let world = bound(3, 50);
     world.issue(7, &["flow:feature"]);
