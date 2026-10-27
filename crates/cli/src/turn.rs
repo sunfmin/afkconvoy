@@ -96,11 +96,12 @@ fn take(
             );
         }
         let tip = base(repo, config)?;
-        let declared = tip_config(repo, &tip)?;
+        let mut declared = tip_config(repo, &tip)?;
+        declared.base_branch = config.base_branch.clone();
         let command = GateCommand::new(&declared.gate_command);
         let tree = Tree::named(&repo.git(&["rev-parse", &format!("{tip}^{{tree}}")])?);
         let repairing = match issue.filter(|n| locks.contains(n)) {
-            Some(n) => crate::repair::is_for(&gh, n, &tip)?,
+            Some(n) => crate::repair::is_for(repo, &gh, n, &tip, &config.base_branch)?,
             None => false,
         };
         if !repairing && crate::gate::recorded(repo, &tree, &command, now)?.is_none() {
@@ -229,6 +230,9 @@ pub fn land(
     host: &str,
     now: u64,
 ) -> Result<Value> {
+    let mut routed = crate::config::load(&repo.dir.join(crate::config::FILE))?;
+    routed.base_branch = crate::target::pin(repo, config, issue, None)?;
+    let config = &routed;
     let prs = gh.open_prs()?;
     let Some(pr) = closing_pr(&prs, issue) else {
         let tip = base(repo, config)?;
@@ -299,6 +303,16 @@ fn run(
         Of::Issue(n) => Some(*n),
         _ => None,
     };
+    let mut routed;
+    let config = if let Some(issue) = issue {
+        routed = crate::config::load(&repo.dir.join(crate::config::FILE))?;
+        routed.base_branch = crate::target::pin(repo, config, issue, None)?;
+        &routed
+    } else {
+        config
+    };
+    ensure_base(pr, &config.base_branch)?;
+    answer["target_branch"] = json!(config.base_branch);
     let locks = standing_locks(&gh, config)?;
     if issue.map_or(!locks.is_empty(), |n| keeps_off(&locks, n)) {
         return Ok(locked(answer, &locks));
@@ -337,4 +351,16 @@ fn run(
         crate::candidates::Request { repo, config, tracker, pr, of, host, now },
         answer,
     )
+}
+
+pub(crate) fn ensure_base(pr: &PullRequest, target: &str) -> Result<()> {
+    if pr.base_branch != target {
+        bail!(
+            "PR #{} has base {:?}, but its pinned target is {target:?}; restore it with gh pr edit {} --base {target}",
+            pr.number,
+            pr.base_branch,
+            pr.number
+        );
+    }
+    Ok(())
 }

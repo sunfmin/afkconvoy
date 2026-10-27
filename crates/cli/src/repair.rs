@@ -13,7 +13,17 @@ pub fn red_ref(repo: &Repo, branch: &str) -> String {
 
 /// A repair opened for this tip, or an older unmarked lock, may bypass its
 /// missing green record. A marked repair for another tip still waits.
-pub fn is_for(gh: &crate::gh::GitHub, issue: u64, tip: &str) -> Result<bool> {
+pub fn is_for(
+    repo: &Repo,
+    gh: &crate::gh::GitHub,
+    issue: u64,
+    tip: &str,
+    branch: &str,
+) -> Result<bool> {
+    let config = crate::config::load(&repo.dir.join(crate::config::FILE))?;
+    if crate::target::branch(repo, &config, issue)? != branch {
+        return Ok(false);
+    }
     let marker = format!("<!--convoy:base-repair tip={tip}-->");
     let read = gh.issue(issue)?;
     Ok(read.body.is_none_or(|body| {
@@ -22,24 +32,41 @@ pub fn is_for(gh: &crate::gh::GitHub, issue: u64, tip: &str) -> Result<bool> {
 }
 
 pub fn tend(fleet: &mut Fleet, me: &Me) -> Result<Outcome> {
-    let base = fleet.base_tip()?;
-    if fleet.repo.remote_sha(&red_ref(&fleet.repo, &fleet.config.base_branch))?.as_deref()
-        != Some(&base)
-    {
+    let prefix = red_ref(&fleet.repo, "");
+    let mut outcome = Outcome::Nothing;
+    for record in fleet.repo.remote_records(&format!("{prefix}*"))? {
+        let Some(branch) = record.name.strip_prefix(&prefix) else { continue };
+        let next = tend_on(fleet, me, branch)?;
+        if next != Outcome::Nothing {
+            outcome = next;
+        }
+    }
+    Ok(outcome)
+}
+
+fn tend_on(fleet: &mut Fleet, me: &Me, branch: &str) -> Result<Outcome> {
+    let mut config = crate::config::load(&fleet.repo.dir.join(crate::config::FILE))?;
+    config.base_branch = branch.to_string();
+    let base = crate::turn::base(&fleet.repo, &config)?;
+    if fleet.repo.remote_sha(&red_ref(&fleet.repo, branch))?.as_deref() != Some(&base) {
         return Ok(Outcome::Nothing);
     }
-    let key = "base-repair";
+    let key = if branch == fleet.config.base_branch {
+        "base-repair".to_string()
+    } else {
+        format!("base-repair/{branch}")
+    };
     if let Some(left) = fleet.scan.runs.iter().find(|run| run.key == key).cloned() {
         if left.holder(Some(&me.instance), &fleet.scan.beats(), me.now) == Holder::Peer {
             return Ok(Outcome::Nothing);
         }
         drop_run(&fleet.repo, &mut fleet.scan, &left)?;
     }
-    let Some(claim) = take_run(&fleet.repo, &mut fleet.scan, me, key)? else {
+    let Some(claim) = take_run(&fleet.repo, &mut fleet.scan, me, &key)? else {
         return Ok(Outcome::Lost);
     };
     let opened = (|| {
-        let config = &fleet.config;
+        let config = &config;
         let label = config.ready_label.clone();
         let labels = fleet.gh.labels()?;
         for label in [label.as_str(), &config.lock_label, afkconvoy_core::plan::REPAIR_LABEL] {
@@ -48,7 +75,7 @@ pub fn tend(fleet: &mut Fleet, me: &Me) -> Result<Outcome> {
             }
         }
         for issue in crate::lock::standing_locks(&fleet.gh, config)? {
-            if is_for(&fleet.gh, issue, &base)? {
+            if is_for(&fleet.repo, &fleet.gh, issue, &base, branch)? {
                 let read = fleet.gh.issue(issue)?;
                 let mut changed = false;
                 // Older locks can be waiting at a product workflow's human
@@ -70,11 +97,15 @@ pub fn tend(fleet: &mut Fleet, me: &Me) -> Result<Outcome> {
             "<!--convoy:base-repair tip={base}-->\nThe base branch `{}` was gated alone in a clean checkout and is red.\n\nReproduce at `{base}` with `{}`. Find the cause from the gate's log, fix it and add a regression test. Open the repair PR and run `afkconvoy land --issue <n>`. This fleet-lock issue's turn may start on the red tip; it still gates the complete merge commit before landing. Closing this issue frees ordinary turns.\n",
             config.base_branch, config.gate_command
         );
-        fleet.gh.open_issue(
+        let issue = fleet.gh.open_issue(
             &format!("Repair the red {} tip {}", config.base_branch, &base[..12.min(base.len())]),
             &body,
-            &[&label, &config.lock_label, afkconvoy_core::plan::REPAIR_LABEL],
+            &[],
         )?;
+        crate::target::pin(&fleet.repo, config, issue, Some(branch))?;
+        for label in [label.as_str(), &config.lock_label, afkconvoy_core::plan::REPAIR_LABEL] {
+            fleet.gh.add_label(issue, label)?;
+        }
         Ok(Outcome::Done)
     })();
     drop_run(&fleet.repo, &mut fleet.scan, &claim)?;

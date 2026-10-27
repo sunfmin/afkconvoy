@@ -132,7 +132,7 @@ pub const OPEN_LABELLED_JQ: &str = ".[] | select(.pull_request == null) | \
 /// Same-repository PR heads. No closing-issue relationships are inferred.
 pub const PR_HEADS_JQ: &str = ".[] | select(.head.repo != null and \
     .head.repo.full_name == .base.repo.full_name) | \
-    {number, title: (.title // \"\"), head_branch: .head.ref, head_sha: .head.sha}";
+    {number, title: (.title // \"\"), head_branch: .head.ref, head_sha: .head.sha, base_branch: .base.ref}";
 /// What is read of each comment on an issue or a PR.
 pub const COMMENTS_JQ: &str =
     ".[] | {id, body, url: .html_url, at: (.created_at | fromdateiso8601? // null)}";
@@ -146,7 +146,7 @@ pub const VISIBILITY_JQ: &str = ".visibility";
 /// What is read of each open PR: `isCrossRepository` says its head is in
 /// another repository — a fork's (`GitHub::open_prs`) — and
 /// `headRepository` and `headRepositoryOwner` name the repo it is of.
-pub const PR_FIELDS: &str = "number,title,headRefName,headRefOid,body,closingIssuesReferences,\
+pub const PR_FIELDS: &str = "number,title,headRefName,headRefOid,baseRefName,body,closingIssuesReferences,\
     isCrossRepository,headRepository,headRepositoryOwner";
 /// What is read of each open PR of another repo.
 pub const PR_OF_FIELDS: &str = "number,headRefName,isCrossRepository,createdAt";
@@ -841,6 +841,7 @@ impl GitHub {
             title: String,
             head_branch: String,
             head_sha: String,
+            base_branch: String,
         }
         let endpoint = format!("repos/{OWN}/pulls?state=open&per_page=100");
         let out = self.read(&["api", "--paginate", &endpoint, "--jq", PR_HEADS_JQ])?;
@@ -852,6 +853,7 @@ impl GitHub {
                     title: row.title,
                     head_branch: row.head_branch,
                     head_sha: row.head_sha,
+                    base_branch: row.base_branch,
                     closes: vec![],
                 }));
             }
@@ -871,6 +873,7 @@ impl GitHub {
             title: Option<String>,
             head_ref_name: String,
             head_ref_oid: String,
+            base_ref_name: String,
             body: Option<String>,
             closing_issues_references: Option<Vec<Link>>,
             is_cross_repository: bool,
@@ -921,6 +924,7 @@ impl GitHub {
                     title: row.title.unwrap_or_default(),
                     head_branch: row.head_ref_name,
                     head_sha: row.head_ref_oid,
+                    base_branch: row.base_ref_name,
                     closes: self.tracker.closed_by(body, &linked, of.as_deref()),
                 }
             })

@@ -259,7 +259,7 @@ pub(crate) fn auxiliary(
     let continued = continuing(Some(worktree), cast.harness);
     worktree.stop_for_continuation()?;
     if worktree.brief()?.exists() {
-        crate::dispatch::continue_brief(fleet, worktree, None, &continued)?;
+        crate::dispatch::continue_brief(fleet, worktree, None, None, &continued)?;
     }
     let command = if caster {
         crate::own_command().fixed(" cast; exit").own()

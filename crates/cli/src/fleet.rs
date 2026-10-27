@@ -362,6 +362,23 @@ impl Fleet {
         Ok(tip.clone())
     }
 
+    /// The task destination is read from remote fleet state on every use.
+    pub fn task_branch(&self, issue: u64) -> Result<String> {
+        crate::target::branch(&self.repo, &self.config, issue)
+    }
+
+    pub fn task_tip(&self, issue: u64) -> Result<String> {
+        let branch = self.task_branch(issue)?;
+        if branch == self.config.base_branch {
+            return self.base_tip();
+        }
+        self.repo.fetched(&format!("refs/heads/{branch}"))?.ok_or_else(|| {
+            anyhow!(
+                "target branch {branch:?} disappeared; restore it before continuing task {issue}"
+            )
+        })
+    }
+
     /// Rebuilds the working set of `me` from `open` and the remote as this
     /// view was opened on it (`Fleet::read`) → it, and the read of the issues
     /// that follow a workflow it was assembled from. Reads only. A claimed
@@ -411,7 +428,14 @@ impl Fleet {
         for claim in &self.scan.claims {
             if me.is_some_and(|me| claim.is_held_by(me))
                 && !closed.contains(&claim.number)
-                && cut_landing_of(&self.repo, &self.gh.tracker, &base, claim, prs)?.is_some()
+                && cut_landing_of(
+                    &self.repo,
+                    &self.gh.tracker,
+                    &self.task_tip(claim.number)?,
+                    claim,
+                    prs,
+                )?
+                .is_some()
             {
                 landed.push(claim.number);
             }

@@ -88,7 +88,8 @@ pub fn park_claim(
     worktree: Option<&Worktree>,
 ) -> Result<Option<Left>> {
     let issue = claim.number;
-    let left = worktree.map(|worktree| leaving(fleet, worktree)).transpose()?.map(|l| l.left);
+    let left =
+        worktree.map(|worktree| leaving(fleet, issue, worktree)).transpose()?.map(|l| l.left);
     let recorded = fleet.gh.blocked_by(issue)?;
     let spare = left.as_ref().and_then(Left::spare);
     let kept = left.as_ref().and_then(Left::kept).copied();

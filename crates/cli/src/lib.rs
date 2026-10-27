@@ -103,6 +103,7 @@ pub mod steer;
 pub mod stop;
 pub mod switch;
 pub mod takeover;
+mod target;
 pub mod team;
 pub mod tick;
 pub mod tools;
@@ -2289,6 +2290,23 @@ enum Command {
         #[command(flatten)]
         at: AtFlag,
     },
+    /// Select or read a task's pinned target branch
+    ///
+    /// Run before dispatch or intake: `afkconvoy target --issue 7 --branch delivery/ABC-123`. Then give the issue its ready or flow label as usual. The worker cuts from that branch, opens its internal PR against it, gates and lands there, and closes only its task issue. The repo's configured base and its release destination stay as configured.
+    ///
+    /// Without --branch, reads the target, or the configured base for a task not yet resolved. Selection requires an existing branch on origin and an open issue in this checkout's private tracker scope. It writes an immutable remote record, keyed by the tracker issue identity. A first claim also pins the configured base when no selection exists. Stages, continuation and landing retain it across restarts. Reading a malformed record or a missing branch refuses; it never falls back to the configured base.
+    ///
+    /// Answers {"issue", "target_branch", "woke"}. Selection is idempotent for the same branch. A different resolved target, a claimed task, remaining candidates, an unreadable tracker, a foreign repo label or a missing branch is refused with a diagnostic. A resolved target cannot be changed: open a new task for another destination.
+    #[command(next_help_heading = OPERATOR, verbatim_doc_comment)]
+    Target {
+        #[command(flatten)]
+        issue: IssueArg,
+        /// An existing same-repo branch on origin; omit to read the destination
+        #[arg(long)]
+        branch: Option<String>,
+        #[command(flatten)]
+        at: AtFlag,
+    },
     /// Raise a fleet lock on an issue: the fleet works lock issues only until it closes (a worker's command)
     ///
     /// ## When to run it
@@ -3351,7 +3369,7 @@ fn own_program() -> String {
 
 /// The commands that act: each logs a line and wakes the `run` as it ends
 /// (`Command::acting`), and its `--help` says so (`acting::HELP`).
-const ACTS: [&str; 24] = [
+const ACTS: [&str; 25] = [
     "dispatch",
     "cast",
     "close",
@@ -3369,6 +3387,7 @@ const ACTS: [&str; 24] = [
     "land",
     "verdict",
     "intake",
+    "target",
     "lock",
     "patrol-now",
     "over",
@@ -3382,7 +3401,8 @@ const ACTS: [&str; 24] = [
 /// consult's, the caster's and a watch's give them: with those that
 /// only read (`ONLY_READ`), the only commands a worker's worktree is taken
 /// for (`checkout::resolve`).
-const IN_ITS_WORKTREE: [&str; 15] = [
+const IN_ITS_WORKTREE: [&str; 16] = [
+    "target",
     "cast",
     "doctor",
     "plan",
@@ -4133,6 +4153,7 @@ impl Command {
             Command::Land { number, issue, .. } => Acting::new("land").on_issue(issue.or(*number)),
             Command::Verdict { issue, .. } => of("verdict", issue, None),
             Command::Intake { issue, .. } => of("intake", issue, None),
+            Command::Target { issue, .. } => of("target", issue, None),
             Command::Lock { issue, .. } => of("lock", issue, None),
             Command::PatrolNow { name, .. } => {
                 Acting::new("patrol-now").on(name.trim().to_string())
@@ -4459,6 +4480,9 @@ fn run(
             };
             let taking = intake::Taking { issue: issue.number(), workflow, by, blocked_by };
             intake::intake(&checkout?, taking)
+        }
+        Command::Target { issue, branch, .. } => {
+            target::select(&checkout?, issue.number(), branch.as_deref())
         }
         Command::Lock { issue, role, .. } => {
             let repo = checkout?;
