@@ -1064,7 +1064,7 @@ fn equivalent_rest(st: &mut State, path: &str, query: &str) -> ! {
         st.doc["prs"].as_array().unwrap().iter().filter(|r| {
             if query.contains("state=open") {is_open(r)}else{!is_open(r)}
         }).map(|r|json!({"number":r["number"],"title":r["title"],"body":r["body"],"created_at":stamp(&r["since"]),"merged_at":stamp(&r["merged_at"]),"labels":[],
-            "head":{"ref":r["headRefName"],"sha":r["headRefOid"],"repo":{"full_name":if is_fork(r){"fork/dev"}else{"acme/dev"}}},"base":{"repo":{"full_name":"acme/dev"}}})).collect()
+            "head":{"ref":r["headRefName"],"sha":r["headRefOid"],"repo":{"full_name":if is_fork(r){"fork/dev"}else{"acme/dev"}}},"base":{"ref":r["baseRefName"].as_str().unwrap_or(st.doc["base"].as_str().unwrap()),"repo":{"full_name":"acme/dev"}}})).collect()
     } else if path.ends_with("/blocked_by") {
         let number = path.split('/').nth(1).unwrap();
         blockers(st, number).iter().map(rest_issue).collect()
@@ -1100,7 +1100,7 @@ fn equivalent_graph(st: &State) -> ! {
     let mut resource = if query.contains("resource: pullRequests(") {
         let rows:Vec<_>=st.doc["prs"].as_array().unwrap().iter().filter(|r|!query.contains("states:[OPEN]")||is_open(r)).map(|r|{
             let links:Vec<_>=r["linked"].as_array().into_iter().flatten().map(|n|if n.is_object(){n.clone()}else{json!({"number":n})}).collect();
-            json!({"number":r["number"],"title":r["title"],"body":r["body"],"headRefName":r["headRefName"],"headRefOid":r["headRefOid"],"isCrossRepository":is_fork(r),
+            json!({"number":r["number"],"title":r["title"],"body":r["body"],"headRefName":r["headRefName"],"headRefOid":r["headRefOid"],"baseRefName":r["baseRefName"].as_str().unwrap_or(st.doc["base"].as_str().unwrap()),"isCrossRepository":is_fork(r),
                 "createdAt":stamp(&r["since"]),"updatedAt":stamp(&r["updated_at"]),"closedAt":stamp(&r["closed_at"]),"mergedAt":stamp(&r["merged_at"]),"baseRepository":{"nameWithOwner":r["of"].as_str().unwrap_or("acme/dev")},
                 "closingIssuesReferences":{"nodes":links.iter().take(100).collect::<Vec<_>>(),"pageInfo":{"hasNextPage":links.len()>100,"endCursor":if links.len()>100{json!("100")}else{Value::Null}}}})
         }).collect();

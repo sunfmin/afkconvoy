@@ -231,7 +231,7 @@ pub fn land(
     now: u64,
 ) -> Result<Value> {
     let mut routed = crate::config::load(&repo.dir.join(crate::config::FILE))?;
-    routed.base_branch = crate::target::pin(repo, config, issue, None)?;
+    routed.base_branch = crate::target::branch(repo, config, issue)?;
     let config = &routed;
     let prs = gh.open_prs()?;
     let Some(pr) = closing_pr(&prs, issue) else {
@@ -303,6 +303,10 @@ fn run(
         Of::Issue(n) => Some(*n),
         _ => None,
     };
+    let locks = standing_locks(&gh, config)?;
+    if issue.map_or(!locks.is_empty(), |n| keeps_off(&locks, n)) {
+        return Ok(locked(answer, &locks));
+    }
     let mut routed;
     let config = if let Some(issue) = issue {
         routed = crate::config::load(&repo.dir.join(crate::config::FILE))?;
@@ -313,10 +317,6 @@ fn run(
     };
     ensure_base(pr, &config.base_branch)?;
     answer["target_branch"] = json!(config.base_branch);
-    let locks = standing_locks(&gh, config)?;
-    if issue.map_or(!locks.is_empty(), |n| keeps_off(&locks, n)) {
-        return Ok(locked(answer, &locks));
-    }
     let files = unmerged(repo)?;
     if !files.is_empty() {
         answer["outcome"] = json!("conflict");

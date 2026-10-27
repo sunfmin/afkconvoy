@@ -371,6 +371,18 @@ pub(crate) fn continuation_harness(fleet: &Fleet, agent: &Agent, number: u64) ->
 }
 
 /// `dispatch`, but for an issue found gone on the way, which it fails on.
+/// Freeze the destination used to prepare the stage, after its preflight.
+/// A concurrent selection requires a new preparation, never a stale brief.
+fn pin_target(fleet: &Fleet, number: u64, prepared: &str) -> Result<()> {
+    let pinned = crate::target::pin(&fleet.repo, &fleet.config, number, None)?;
+    if pinned != prepared {
+        bail!(
+            "issue #{number}'s target became {pinned:?} while dispatch was prepared for {prepared:?}; run dispatch again"
+        );
+    }
+    Ok(())
+}
+
 fn start(
     fleet: &mut Fleet,
     me: &Me,
@@ -385,7 +397,7 @@ fn start(
         // before the claim: never lock a closed issue
         bail!("issue #{number} is closed, not open — nothing to dispatch");
     }
-    let target = crate::target::pin(&fleet.repo, &fleet.config, number, None)?;
+    let target = fleet.task_branch(number)?;
     agent.discover_casting(&issue.labels)?;
     // In a bound repo the worker performs a stage, or the join that follows
     // the last, in its role. Read before the claim: an issue no worker can
@@ -454,6 +466,7 @@ fn start(
     let undecided = || anyhow!("a dispatch step ran before the one that feeds it");
     let interrupted = "dispatch ended before the worker took its brief";
     if held {
+        pin_target(fleet, number, &target)?;
         if !by_hand
             && continuing.is_none()
             && let Some(ready) = ready
@@ -485,6 +498,7 @@ fn start(
                     return Ok(json!({"issue": number, "started": false, "skipped": "blocked",
                         "blocked_by": blockers}));
                 }
+                pin_target(fleet, number, &target)?;
                 let claim = take(&fleet.repo, &mut fleet.scan, me, number, Take::Fresh)?;
                 if claim["won"] != true {
                     return Ok(json!({"issue": number, "started": false, "claim": "lost",
