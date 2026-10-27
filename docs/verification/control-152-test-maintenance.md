@@ -13,7 +13,7 @@ it does not claim to solve the test suite's several-minute runtime.
 | `help::the_readme_explains_no_concept_and_sends_its_reader_to_the_help` | Replace with `the_readme_points_to_the_help_and_its_generated_manual`. Fixed heading order, banned substrings, and the retired translation filename cease to be gate contracts. | Check the actual `--help`, `help <topic>`, and generated manual links, including the manual file's existence. The skill installation assertions remain. |
 | `help::no_paragraph_of_the_guide_a_command_or_a_topic_is_wrapped` | Delete, including its private `wrapped` implementation and its example assertion. Paragraph wrapping ceases to be a gate contract. | Existing content, command/flag, example parsing/execution, glossary, index size (20 KiB, the harness display bound), and short-help screen bounds remain. No content check is replaced by a length-only assertion. |
 | `help::the_guide_and_each_subcommand_agree_on_who_runs_it_and_why` | Retain responsibility groups, actors, worker worktree context, hook ownership, automatic tick transitions, and infrequent plumbing use. Remove fixed sentence starts, punctuation, and `Do it yourself when`. | The same test checks actual actor/context words and exact command group membership. Other help tests still execute every visible command's help and check its advertised arguments. This does not attempt to automatically judge arbitrary English paraphrases. |
-| `manual::the_gate_checks_the_repositorys_page` | Delete inspection of the exact shell command's source text. That implementation spelling ceases to be a contract. | The unchanged gate actually runs the manual example's `--check`. Three manual tests retain generation, exact agreement with `help all`, and rejection of stale/missing files. Staleness now appends known content and compares the entire unchanged file, instead of depending on a particular glossary phrase being present. |
+| `manual::the_gate_checks_the_repositorys_page` | Delete inspection of the exact shell command's source text. That implementation spelling ceases to be a contract. | The unchanged gate actually runs the manual example's `--check`. Three manual tests retain generation, exact agreement with `help all`, and rejection of stale/missing files. Staleness now changes a body heading without changing its length and also appends known content; both checks compare the entire unchanged file. The fixture explicitly proves the content changed, without depending on a glossary phrase. |
 | `probe::plan_help_says_when_it_probes` | Retain the documented probe conditions; launch the CLI directly instead of constructing a `World`. | The check now also asserts exit 0 and empty stderr. All real startup-probe I/O scenarios remain unchanged. |
 | `config::a_bad_config_is_an_error_naming_the_key` | Replace ten CLI rows with four representative rows: required key, unknown key, fractional YAML value, and zero domain boundary. | `config_errors_wire_yaml_parsing_and_domain_validation_to_json` still passes through file loading, YAML decoding, `Config::new`, one JSON error, and a nonzero exit. The success/default/`--file`/checkout-discovery tests remain. |
 | Missing `gate_command` and label collision CLI rows | Merge into core rule ownership, with parser error propagation retained. | Core `the_two_keys_without_a_default_are_required` now checks absent, empty, and whitespace-only values for **both** required keys, comparing exact `ConfigError::Required` variants/keys. Core `a_config_nothing_could_run_on_is_refused` retains `ZeroGateSeconds`, `EscalatesToReady`, and empty-label variants. CLI parser `a_missing_required_key_is_named` still checks both fields' error text. |
@@ -31,13 +31,13 @@ silently passing.
 
 ## Change size
 
-Eight Rust files: 81 lines added, 136 removed. Every changed Rust statement is
+Eight Rust files: 94 lines added, 144 removed. Every changed Rust statement is
 inside a test or its private helper. Three CLI tests are deleted, one core test
 is added; net two fewer tests. The README and config checks are replacements,
 not additional test removals.
 
 Static `assert!`/`assert_eq!`/`assert_ne!` call sites in those files change from
-780 to 774: help 178→166, manual 15→14, probe 103→105, core team 228→233;
+780 to 775: help 178→166, manual 15→15, probe 103→105, core team 228→233;
 the other files' totals are unchanged. These are source sites, not dynamic
 assertion counts: loops still exercise their complete specified domains.
 The config CLI rejection table shrinks 10→4, bound-config rejection rows 9→5,
@@ -69,7 +69,8 @@ a team; accepting a retired harness key; dropping unknown YAML fields;
 coercing fractional gate seconds; accepting zero concurrency; bypassing YAML
 and domain config loading; accepting invalid DSH profiles; losing a nested
 profile key; returning the wrong actual profile enum; printing two JSON
-errors; exiting zero on an error; accepting a stale manual; introducing an
+errors; exiting zero on an error; accepting a stale manual; comparing manual lengths
+instead of contents; introducing an
 unresolvable topic reference; and dropping the watch's documented actor.
 
 The required-key, collision, zero, repo, team-required, and harness faults run
