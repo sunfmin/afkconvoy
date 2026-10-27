@@ -474,11 +474,16 @@ fn reconcile(repo: &Repo, config: &Config) -> Result<Chain> {
 /// Used before queue capacity is released after a candidate owner dies.
 pub(crate) fn abandoned(dir: &str) -> Result<()> {
     let repo = Repo::new(dir.into());
-    let config = crate::config::load(&crate::config::file_of(&repo))?;
-    let chain = read(&repo, &config)?.chain;
-    for c in chain.candidates.iter().filter(|c| c.active()) {
-        if !alive(&c.owner)? {
-            invalidate(&repo, &config, &c.id, "owner_died")?;
+    let prefix = repo.layout().under("candidates/");
+    for record in repo.remote_records(&format!("{prefix}*"))? {
+        let mut config = crate::config::load(&crate::config::file_of(&repo))?;
+        config.base_branch =
+            record.name.strip_prefix(&prefix).context("invalid candidate ref")?.to_string();
+        let chain: Chain = serde_json::from_str(&record.subject)?;
+        for c in chain.candidates.iter().filter(|c| c.active()) {
+            if !alive(&c.owner)? {
+                invalidate(&repo, &config, &c.id, "owner_died")?;
+            }
         }
     }
     Ok(())

@@ -155,6 +155,26 @@ fn show(world: &World) -> Value {
     world.afk(&["show", "--issue", "7"]).ok()
 }
 
+#[test]
+fn successive_stages_keep_the_task_target_in_their_briefs() {
+    let world = bound();
+    world.issue(7, &["flow:feature"]);
+    git(&world.clone, &["push", "-q", "origin", "HEAD:delivery/stages"]);
+    world.afk(&["target", "--issue", "7", "--branch", "delivery/stages"]).ok();
+    assert_eq!(tick(&world, 1000)["errors"], json!([]));
+    let dir = world.worktrees()[0].clone();
+    let notes = PathBuf::from(git(&dir, &["rev-parse", "--absolute-git-dir"]));
+    let brief = || std::fs::read_to_string(notes.join("convoy-worker-prompt.md")).unwrap();
+    assert!(brief().contains("base is `delivery/stages`"), "{}", brief());
+    declare(&world, "build", "pass", &["--text", "built"]).ok();
+    for now in [1090, 1180] {
+        assert_eq!(tick(&world, now)["errors"], json!([]));
+    }
+    assert!(brief().contains("review"));
+    assert!(brief().contains("base is `delivery/stages`"), "{}", brief());
+    assert_eq!(world.afk(&["target", "--issue", "7"]).ok()["target_branch"], "delivery/stages");
+}
+
 fn stage_labels(world: &World, issue: u64) -> Vec<String> {
     world.labels(issue).into_iter().filter(|label| label.starts_with("stage:")).collect()
 }

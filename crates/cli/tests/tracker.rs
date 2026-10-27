@@ -29,6 +29,26 @@ fn tracker_issue(world: &World, number: u64, labels: &[&str]) {
 }
 
 #[test]
+fn target_selection_keeps_tracker_identity_and_refuses_foreign_ownership() {
+    let world = world();
+    tracker_issue(&world, 7, &[MINE, "ready-for-agent"]);
+    tracker_issue(&world, 8, &["repo:acme/other", "ready-for-agent"]);
+    git(&world.clone, &["push", "-q", "origin", "HEAD:delivery/tracker"]);
+    world.afk(&["target", "--issue", "7", "--branch", "delivery/tracker"]).ok();
+    let record: Value = serde_json::from_str(&world.remote(&[
+        "show",
+        "-s",
+        "--format=%s",
+        "refs/convoy/target/acme/tracker/7",
+    ]))
+    .unwrap();
+    assert_eq!(record["issue"], "acme/tracker#7");
+    assert_eq!(record["branch"], "delivery/tracker");
+    let error = world.afk(&["target", "--issue", "8", "--branch", "delivery/tracker"]).error();
+    assert!(error.contains("another repo"), "{error}");
+}
+
+#[test]
 fn unworked_blockers_are_named_with_repairs_in_plan_and_doctor() {
     let world = world();
     tracker_issue(&world, 7, &[MINE, "ready-for-agent"]);

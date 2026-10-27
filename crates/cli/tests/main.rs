@@ -72,6 +72,7 @@ mod steer;
 mod stopped;
 mod switch;
 mod takeover;
+mod target;
 mod tick;
 mod tmpdir;
 mod tools;
