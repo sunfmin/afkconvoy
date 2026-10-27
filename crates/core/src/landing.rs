@@ -30,9 +30,11 @@ const BY_CUT: &str = "By a cut on ";
 pub struct LandedPr {
     pub of: Of,
     pub pr: u64,
-    /// The merge commit that landed.
+    /// The commit that landed.
     pub commit: String,
-    /// The PR's head it merged: the commit's second parent.
+    /// The PR's head it merged: the commit's second parent. Empty for a cut's
+    /// landed commit, which has one parent; the commit that set the version
+    /// stays on the cut's branch and is not recorded here.
     pub head: String,
 }
 
@@ -95,13 +97,14 @@ pub struct Logged<'a> {
 /// ends ` (#<pr>)` and whose message has a line `Closes <issue>` — of an
 /// issue of `tracker`'s, `Of::Issue`, and of any other, `Of::Elsewhere` — or,
 /// of a watch's PR, `By a watch on <host>`, and of a cut's,
-/// `By a cut on <host>`. A commit with one parent is never one, whatever its
-/// message says — a fix titled `… (#12)` is a fix.
+/// `By a cut on <host>`. A cut may instead have one parent: the same subject
+/// and a `By a cut on <host>` line. A commit with one parent and no such line
+/// is never one — a fix titled `… (#12)` is a fix. Issue turns and watches
+/// stay merge commits.
 pub fn read_landings(commits: &[Logged], tracker: &Tracker) -> Vec<LandedPr> {
     let mut joins = vec![];
     for commit in commits {
         let parents: Vec<&str> = commit.parents.split_whitespace().collect();
-        let [_, head] = parents.as_slice() else { continue };
         let subject = commit.message.lines().next().unwrap_or("");
         let pr = subject
             .strip_suffix(')')
@@ -120,9 +123,16 @@ pub fn read_landings(commits: &[Logged], tracker: &Tracker) -> Vec<LandedPr> {
             .or_else(|| by(BY_WATCH).map(Of::Watch))
             .or_else(|| by("By an inspection on ").map(Of::Watch))
             .or_else(|| by(BY_CUT).map(Of::Cut));
-        if let (Some(pr), Some(of)) = (pr, of) {
-            joins.push(LandedPr { of, pr, commit: commit.sha.to_string(), head: head.to_string() });
-        }
+        let Some(pr) = pr else { continue };
+        let Some(of) = of else { continue };
+        // A merge commit's second parent is the PR head. A cut's one-parent
+        // landing has none: the commit that set the version stays off the base.
+        let head = match (parents.as_slice(), &of) {
+            ([_, head], _) => (*head).to_string(),
+            ([_], Of::Cut(_)) => String::new(),
+            _ => continue,
+        };
+        joins.push(LandedPr { of, pr, commit: commit.sha.to_string(), head });
     }
     joins
 }
@@ -276,6 +286,40 @@ mod tests {
             [LandedPr { of: cut, pr: 470, commit: "m1".into(), head: "h470".into() }]
         );
         assert_eq!(joins[0].issue(), None);
+    }
+
+    #[test]
+    fn a_cut_with_one_parent_is_a_landing_and_a_fix_with_one_parent_is_not() {
+        let cut = Of::Cut("felixmbp14".into());
+        let message = merge_message("afkconvoy 0.5.37", 600, &cut, &Tracker::Own);
+        let commits = [
+            Logged { sha: "c1", parents: "base", message: &message },
+            Logged { sha: "f1", parents: "c1", message: "afkconvoy 0.5.37 (#600)\n" },
+            Logged { sha: "f2", parents: "f1", message: "fix the manifest (#12)\n\nCloses #12\n" },
+            Logged {
+                sha: "w1",
+                parents: "f2",
+                message: "Queue the gates (#45)\n\nBy a watch on felixmbp14\n",
+            },
+            Logged {
+                sha: "old",
+                parents: "t0 h470",
+                message: &merge_message("afkconvoy 0.5.17", 470, &cut, &Tracker::Own),
+            },
+        ];
+        let joins = read_landings(&commits, &Tracker::Own);
+        assert_eq!(
+            joins.len(),
+            2,
+            "a one-parent fix or watch is no landing; an old merge still is"
+        );
+        assert_eq!(
+            joins[0],
+            LandedPr { of: cut.clone(), pr: 600, commit: "c1".into(), head: String::new() }
+        );
+        assert_eq!(joins[1].pr, 470);
+        assert_eq!(joins[1].head, "h470");
+        assert!(matches!(joins[1].of, Of::Cut(_)));
     }
 
     #[test]
