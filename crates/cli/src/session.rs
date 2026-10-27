@@ -8,7 +8,7 @@
 //! launch points somewhere else. Parsing stays here; the fold is
 //! `afkconvoy_core::turn`.
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -267,13 +267,14 @@ fn kimi_turns(
     let Some(text) = read_text(&root.join("session_index.jsonl"))? else {
         return Ok(Vec::new());
     };
+    // Kimi is started in the role copy, so `workDir` is that copy. The brief
+    // and a nudge name the prompt file, under this checkout or its git dir.
+    let aliases = kimi_aliases(cwd);
     let mut turns = Vec::new();
     for line in text.lines() {
         let Ok(value) = serde_json::from_str::<Value>(line) else { continue };
-        if value["workDir"].as_str().is_none_or(|dir| !same_cwd(dir, cwd)) {
-            continue;
-        }
         let Some(session) = value["sessionDir"].as_str() else { continue };
+        let named = value["workDir"].as_str().is_some_and(|dir| same_cwd(dir, cwd));
         let path = root.join(session).join("agents/main/wire.jsonl");
         let path = if Path::new(session).is_absolute() {
             PathBuf::from(session).join("agents/main/wire.jsonl")
@@ -283,11 +284,98 @@ fn kimi_turns(
         if !fresh(&path, since)? {
             continue;
         }
-        if let Some(turn) = fold_jsonl(&path, not_before, &kimi_note)? {
+        if let Some(turn) = kimi_wire_turn(&path, named, &aliases, not_before)? {
             turns.push(turn);
         }
     }
     Ok(turns)
+}
+
+/// The checkout, and the git dir a linked worktree's `.git` file names.
+/// The prompt file is written in that git dir, so the brief does not name
+/// the checkout path.
+fn kimi_aliases(cwd: &str) -> Vec<String> {
+    let mut aliases = vec![cwd.trim_end_matches('/').to_string()];
+    let Some(text) = std::fs::read_to_string(Path::new(cwd).join(".git")).ok() else {
+        return aliases;
+    };
+    let Some(dir) = text.trim().strip_prefix("gitdir:") else {
+        return aliases;
+    };
+    let dir = dir.trim().trim_end_matches('/');
+    if !dir.is_empty() && aliases.iter().all(|alias| alias != dir) {
+        aliases.push(dir.to_string());
+    }
+    aliases
+}
+
+/// A wire indexed under the role copy still belongs to this checkout when
+/// its opening prompt names the checkout or the checkout's git dir.
+fn kimi_wire_turn(
+    path: &Path,
+    named: bool,
+    aliases: &[String],
+    not_before: Option<u64>,
+) -> Result<Option<Turn>> {
+    if !named && !kimi_prompt_names(path, aliases)? {
+        return Ok(None);
+    }
+    fold_jsonl(path, not_before, &kimi_note)
+}
+
+/// Whether the start of `path` names one of `aliases` as its own path.
+/// The brief is the first prompt, well inside this prefix. The rest of a
+/// wire is the model's traffic and is not read to decide whose session it is.
+fn kimi_prompt_names(path: &Path, aliases: &[String]) -> Result<bool> {
+    let mut file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(error).with_context(|| format!("cannot read {}", path.display()));
+        }
+    };
+    let mut buf = [0_u8; 65_536];
+    let read = file.read(&mut buf).with_context(|| format!("cannot read {}", path.display()))?;
+    let text = String::from_utf8_lossy(&buf[..read]);
+    Ok(aliases.iter().any(|alias| path_names(&text, alias)))
+}
+
+/// `alias` occurs in `text` as a whole path: not a prefix or a suffix of a
+/// longer path. A slash after it is a file inside that directory.
+fn path_names(text: &str, alias: &str) -> bool {
+    let needle = alias.as_bytes();
+    if needle.is_empty() {
+        return false;
+    }
+    let bytes = text.as_bytes();
+    let mut from = 0;
+    while from + needle.len() <= bytes.len() {
+        let Some(shift) = bytes[from..].windows(needle.len()).position(|window| window == needle)
+        else {
+            break;
+        };
+        let at = from + shift;
+        let end = at + needle.len();
+        let before = at == 0 || path_boundary(bytes[at - 1]);
+        let after = end == bytes.len() || !path_byte(bytes[end]);
+        if before && after {
+            return true;
+        }
+        from = at + 1;
+    }
+    false
+}
+
+/// A byte that continues a path. `/` does not: it separates the directory
+/// from a file inside it.
+fn path_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~')
+}
+
+/// A byte that can stand immediately before an absolute path. `/` cannot:
+/// the match would be the tail of a longer path.
+fn path_boundary(byte: u8) -> bool {
+    !path_byte(byte) && byte != b'/'
 }
 
 fn grok_turns(
@@ -971,5 +1059,51 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let turn = read_root(dir.path(), Harness::Grok, Path::new("/nowhere"), None, None).unwrap();
         assert_eq!(turn, None);
+    }
+
+    #[test]
+    fn a_kimi_role_session_is_the_checkout_whose_brief_it_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let checkout = dir.path().join("checkout");
+        let gitdir = dir.path().join("repo.git").join("worktrees").join("checkout");
+        let role = dir.path().join("role-copy");
+        std::fs::create_dir_all(&checkout).unwrap();
+        std::fs::create_dir_all(&gitdir).unwrap();
+        std::fs::write(checkout.join(".git"), format!("gitdir: {}\n", gitdir.display())).unwrap();
+        let home = dir.path().join("home");
+        let root = user_root(&home, Harness::Kimi);
+        let session = root.join("sessions").join("role-session");
+        std::fs::create_dir_all(session.join("agents/main")).unwrap();
+        let brief = gitdir.join("convoy-worker-prompt.md");
+        let wire = format!(
+            "{}\n{}\n",
+            json!({"type":"agent.turn.started","time":AT * 1000,"turnId":0,"kind":"event"}),
+            json!({"type":"turn.prompt","input":[{"type":"text","text":format!("Your task brief is the file {} — read it now.", brief.display())}],"time":AT * 1000})
+        );
+        std::fs::write(session.join("agents/main/wire.jsonl"), &wire).unwrap();
+        let index =
+            format!("{}\n", json!({"sessionId":"role","sessionDir":session,"workDir":role}));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("session_index.jsonl"), index).unwrap();
+
+        let turn = kimi_turns(&root, &cwd_str(&checkout), None, Some(AT)).unwrap();
+        assert_eq!(turn, vec![Turn::Open { since: AT }]);
+        let later = kimi_turns(&root, &cwd_str(&checkout), None, Some(AT + 1)).unwrap();
+        assert!(later.is_empty(), "{later:?}");
+
+        let other = dir.path().join("other");
+        std::fs::create_dir_all(&other).unwrap();
+        std::fs::write(other.join(".git"), format!("gitdir: {}-other\n", gitdir.display()))
+            .unwrap();
+        let missed = kimi_turns(&root, &cwd_str(&other), None, Some(AT)).unwrap();
+        assert!(missed.is_empty(), "{missed:?}");
+    }
+
+    #[test]
+    fn a_path_is_not_a_prefix_or_a_suffix_of_a_longer_one() {
+        assert!(path_names("file /wt/issue/brief.md", "/wt/issue"));
+        assert!(!path_names("file /wt/issue-other/brief.md", "/wt/issue"));
+        assert!(!path_names("file /other/wt/issue/brief.md", "/wt/issue"));
+        assert!(!path_names("no path here", ""));
     }
 }
