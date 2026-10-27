@@ -545,7 +545,7 @@ pub struct Source {
 
 static REPOS: Mutex<Option<Result<Value, String>>> = Mutex::new(None);
 
-/// Orca's host-wide repo listing, read once in this process.
+/// Orca's host-wide repo listing, read once in this look.
 fn repo_list() -> Result<Value> {
     let mut listed = REPOS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     if listed.is_none() {

@@ -100,7 +100,7 @@ pub fn hold(checkout: &Repo, start: &Start, holder: Holder) -> Result<Value> {
     // A start is a look of its own. The host runner is one process, and its
     // earlier tick already read orca's repos and the quota note; this start
     // reads each again, so a checkout a `run` registered since is known
-    // (docs/adr/0042).
+    // (docs/adr/0043).
     crate::orca::new_look();
     crate::gh_quota::new_look();
     if !host_settings::of_host()?.no_host_sleep && !cfg!(target_os = "macos") {
