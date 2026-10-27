@@ -169,7 +169,7 @@ fn selectable(gh: &GitHub, issue: u64) -> Result<()> {
     Ok(())
 }
 
-fn write(repo: &Repo, gh: &GitHub, issue: u64, target: Target) -> Result<String> {
+fn write(repo: &Repo, gh: &GitHub, issue: u64, target: Target, selecting: bool) -> Result<String> {
     let branch = target.resolve(repo)?;
     if let Some(won) = existing(repo, gh, issue)? {
         ensure!(
@@ -179,16 +179,18 @@ fn write(repo: &Repo, gh: &GitHub, issue: u64, target: Target) -> Result<String>
         );
         return won.resolve(repo);
     }
-    ensure!(
-        crate::claims::Scan::read(repo)?.claim_of(issue).is_none(),
-        "{} is already claimed; its target cannot change",
-        target.issue
-    );
-    ensure!(
-        !crate::candidates::has_task(repo, issue)?,
-        "{} still has candidates; its target cannot change",
-        target.issue
-    );
+    if selecting {
+        ensure!(
+            crate::claims::Scan::read(repo)?.claim_of(issue).is_none(),
+            "{} is already claimed; its target cannot change",
+            target.issue
+        );
+        ensure!(
+            !crate::candidates::has_task(repo, issue)?,
+            "{} still has candidates; its target cannot change",
+            target.issue
+        );
+    }
     let sha = repo.record_commit(&serde_json::to_string(&target)?)?;
     let name = refname(repo, &gh.tracker, issue);
     let pushed = repo.try_git(&["push", "--quiet", REMOTE, &format!("{sha}:{name}")])?;
@@ -229,6 +231,7 @@ pub fn pin(repo: &Repo, config: &Config, issue: u64, selected: Option<&str>) -> 
             branch: Some(selected.unwrap_or(&config.base_branch).to_string()),
             delivery: None,
         },
+        selected.is_some(),
     )
 }
 
@@ -244,6 +247,7 @@ pub fn attach(repo: &Repo, issue: u64, id: &str) -> Result<String> {
             branch: None,
             delivery: Some(crate::delivery::reference(repo, id)?),
         },
+        true,
     )
 }
 

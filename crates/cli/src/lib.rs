@@ -2317,11 +2317,13 @@ enum Command {
     ///
     /// ## What it answers
     ///
-    /// {"issue", "target_branch"}, and "woke" after selection. Selection is idempotent for the same branch. Errors answer {"error": …} with a non-zero exit.
+    /// {"issue", "target_branch"}, with "delivery" for an attached task, and "woke" after selection. Selection is idempotent for the same branch. Errors answer {"error": …} with a non-zero exit.
     ///
     /// ## What trips you up
     ///
     /// A different resolved target, a claimed task, remaining candidates, an unreadable tracker, a foreign repo label or a missing branch is refused with a diagnostic. A resolved target cannot be changed: open a new task for another destination.
+    ///
+    /// Jira delivery branches are reserved: attach tasks through `afkconvoy delivery --jira <url> --final-target <branch> --issue <n>`. Their target records pin a reference to the immutable delivery definition; they never copy its branch settings. A missing or replaced definition blocks work instead of selecting the configured base.
     #[command(next_help_heading = OPERATOR, verbatim_doc_comment)]
     Target {
         #[command(flatten)]
@@ -3431,7 +3433,7 @@ fn own_program() -> String {
 
 /// The commands that act: each logs a line and wakes the `run` as it ends
 /// (`Command::acting`), and its `--help` says so (`acting::HELP`).
-const ACTS: [&str; 25] = [
+const ACTS: [&str; 26] = [
     "dispatch",
     "cast",
     "close",
@@ -3450,6 +3452,7 @@ const ACTS: [&str; 25] = [
     "verdict",
     "intake",
     "target",
+    "delivery",
     "lock",
     "patrol-now",
     "over",
@@ -3463,8 +3466,9 @@ const ACTS: [&str; 25] = [
 /// consult's, the caster's and a watch's give them: with those that
 /// only read (`ONLY_READ`), the only commands a worker's worktree is taken
 /// for (`checkout::resolve`).
-const IN_ITS_WORKTREE: [&str; 16] = [
+const IN_ITS_WORKTREE: [&str; 17] = [
     "target",
+    "delivery",
     "cast",
     "doctor",
     "plan",
@@ -4698,6 +4702,7 @@ mod tests {
         &["send", "7", "--stage", "build", "--text", "x"],
         &["intake", "7", "--workflow", "w", "--role", "r", "--from", "3"],
         &["target", "7", "--branch", "delivery/ticket"],
+        &["delivery", "--jira", "https://example.com/browse/ABC-123", "--final-target", "main"],
         &["lock", "7"],
         &["patrol-now", "sweep"],
         &["over", "--run", "sweep"],

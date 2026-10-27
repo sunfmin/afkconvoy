@@ -47,6 +47,7 @@ use crate::watch::watch;
 enum Failed {
     Step(TickStep),
     Read(u64),
+    Delivery,
 }
 
 /// One step that failed, and why.
@@ -211,7 +212,7 @@ pub fn tick(
         .map(|(issue, error)| Failure::of(Failed::Read(issue), &error))
         .collect();
     if let Some(error) = delivery_failure {
-        failures.push(Failure::of(Failed::Read(0), &error));
+        failures.push(Failure::of(Failed::Delivery, &error));
     }
     let mut blocked = vec![];
     let read = Read { set: &set, flows: &flows };
@@ -511,6 +512,7 @@ impl Ticked {
         match failed {
             Failed::Step(step) => self.named(step),
             Failed::Read(issue) => json!({"do": "read", "issue": issue}),
+            Failed::Delivery => json!({"do": "delivery"}),
         }
     }
 
@@ -519,6 +521,7 @@ impl Ticked {
         let step = match failed {
             Failed::Step(step) => step,
             Failed::Read(issue) => return format!("read #{issue}"),
+            Failed::Delivery => return "reconcile deliveries".to_string(),
         };
         let (word, issue) = words(step);
         let issue = issue.map(|issue| format!(" #{issue}")).unwrap_or_default();

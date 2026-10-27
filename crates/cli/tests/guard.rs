@@ -74,6 +74,11 @@ fn a_targeted_worker_cannot_push_either_destination_or_rewrite_its_target_record
         "git push origin :refs/heads/delivery/ABC-123",
         "git push origin HEAD:refs/convoy/target/7",
         "git push origin HEAD:convoy-target/7",
+        "git push origin HEAD:refs/convoy/delivery/abcd",
+        "git push origin HEAD:convoy-delivery/abcd",
+        "git push origin HEAD:refs/convoy/delivery-pr/abcd",
+        "git push origin HEAD:convoy-delivery-pr/abcd",
+        "git push origin HEAD:delivery/jira-ABC-123-abcd",
     ] {
         let answer = guard(&bash(line), &facts);
         assert_ne!(answer.code, 0, "{line}");
