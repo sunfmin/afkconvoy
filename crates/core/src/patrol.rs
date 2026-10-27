@@ -333,7 +333,7 @@ pub fn ask(
     }
 }
 
-/// Whether the run `claim` is of — a patrol's, a proposal's — is over, its
+/// Whether the run `claim` is of — a patrol's — is over, its
 /// worker being in `worker`: the worker declared it over, or is gone, or
 /// stopped for a grace period. A worker that never declares is one that is
 /// done once it has stopped that long.

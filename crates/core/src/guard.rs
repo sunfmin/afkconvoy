@@ -10,7 +10,6 @@
 use crate::host_watch::{WATCH_ENV, kept};
 use crate::intake::INTAKE_RECORD;
 use crate::patrol::PATROL_ENV;
-use crate::precedent::PROPOSAL_ENV;
 use crate::role::{
     BASE_BRANCH_ENV, CONSULT_ENV, ESCALATE_LABEL_ENV, LOCK_LABEL_ENV, STAGE_ENV, WRITES_ENV,
 };
@@ -84,9 +83,6 @@ impl Call {
 enum At {
     Stage(String),
     Patrol(String),
-    /// The proposal of a precedent: its worker commits and pushes, in its
-    /// clone of the team's repo, and is held to what holds every worker.
-    Proposal,
     /// The watch of the hot worker so named, or of the host
     /// (docs/adr/0026): the operator on its host, whatever its facts say,
     /// within the bounds of any unattended worker.
@@ -137,14 +133,10 @@ impl Limits {
             "false" => Ok(false),
             other => Err(format!("{name} is {other:?}, neither true nor false")),
         };
-        // A patrol's worker is at no stage, and neither is a proposal's:
-        // its facts name the patrol, or the issue whose ruling it proposes.
-        // A watch's is at none either: it names the hot worker.
-        let at = match (var(PATROL_ENV), var(PROPOSAL_ENV), var(WATCH_ENV)) {
-            (_, _, Some(worker)) => At::Watch(worker),
-            (Some(patrol), _, None) => At::Patrol(patrol),
-            (None, Some(_), None) => At::Proposal,
-            (None, None, None) => At::Stage(fact(STAGE_ENV)?),
+        let at = match (var(PATROL_ENV), var(WATCH_ENV)) {
+            (_, Some(worker)) => At::Watch(worker),
+            (Some(patrol), None) => At::Patrol(patrol),
+            (None, None) => At::Stage(fact(STAGE_ENV)?),
         };
         // A watch is the operator on its host: it commits, and it is
         // no consult, whatever its facts say.
@@ -335,7 +327,7 @@ impl Limits {
                          nothing; say what you found in the text of your verdict"
                     ));
                 }
-                At::Stage(_) | At::Proposal | At::Watch(_) => {}
+                At::Stage(_) | At::Watch(_) => {}
             }
         }
         None
@@ -976,38 +968,6 @@ mod tests {
         assert!(missing.contains("AFKCONVOY_STAGE is not set"), "{missing}");
         let odd = Limits::read(|name| Some(if name == WRITES_ENV { "yes" } else { "x" }.into()));
         assert!(odd.unwrap_err().contains("AFKCONVOY_WRITES is \"yes\""));
-    }
-
-    #[test]
-    fn a_proposal_s_worker_is_at_no_stage_and_merges_nothing() {
-        let facts = Facts { on: On::Proposal { issue: 7 }, ..facts(true, false) };
-        let env = facts.env();
-        assert!(env.iter().all(|(name, _)| *name != STAGE_ENV), "a proposal has no stage");
-        let limits = Limits::read(|name| {
-            env.iter().find(|(known, _)| *known == name).map(|(_, value)| value.clone())
-        })
-        .unwrap();
-        assert_eq!(limits.at, At::Proposal);
-        // It commits in a clone of the team's repo and pushes its own branch from it.
-        for line in ["git commit -m entry", "git push origin convoy-precedent-7-c2001"] {
-            assert_eq!(refused(&Call::shell(line), &limits), None, "{line}");
-        }
-        // The PR is a human's to merge.
-        let merging = Call::shell("gh pr merge 31 --repo acme/team --squash");
-        assert!(refused(&merging, &limits).is_some());
-    }
-
-    /// The limits of a watch started with a consult's facts, whose
-    /// home folder is /Users/kim.
-    fn watch() -> Limits {
-        let facts = Facts { on: On::Watch("#7"), ..facts(false, true) };
-        let mut env = facts.env();
-        assert!(env.iter().all(|(name, _)| *name != STAGE_ENV), "a watch has no stage");
-        env.push(("HOME", "/Users/kim".to_string()));
-        Limits::read(|name| {
-            env.iter().find(|(known, _)| *known == name).map(|(_, value)| value.clone())
-        })
-        .unwrap()
     }
 
     #[test]

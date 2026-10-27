@@ -28,16 +28,15 @@ A worker reads its rules and still does, now and then, what they forbid: a rule 
 
 So write as a sentence what you want done well, and as a limit what must not happen at all: a commit made past its hooks, a branch rebased, a test deleted. The fleet adds a limit of its own to every worker of a bound repo — the guard, for what no worker of any role may do (`afkconvoy guard --help`); a role's limits add what that role may not. Either stops a worker that errs, not one that sets out to get past it: the gate still stands between every change and the base branch.
 
-## The four kinds of text a worker reads
+## The three kinds of text a worker reads
 
-A worker of a bound repo works under four kinds of text. Each is for one thing, and a sentence belongs in exactly one of them:
+A worker of a bound repo works under three kinds of text. Each is for one thing, and a sentence belongs in exactly one of them:
 
 - **the repo's own rules**: what one codebase asks: how it is built and tested, what its conventions are. True for every role that touches it, and for no other repo.
 - **the team rules**: how the team works: what every role holds to, in every repo bound to the team. True whatever the codebase.
 - **the role's rules**: what one kind of worker does and does not do, whichever stage it is in and whichever repo it is in.
-- **the precedents**: what a human ruled before, on a question a stage could not decide: followed instead of asking again.
 
-To place a sentence, ask whom it would still be true for. For this codebase under any team: the repo's own rules. For this team in any codebase: the team rules. For this kind of worker alone: its role's. And if nobody could have written it down before the question came up, it is a ruling, and becomes a precedent when a human accepts it ([`afkconvoy help humans`](help:humans)). The four have no order: two that contradict each other are a defect of the files, and nothing says which holds.
+To place a sentence, ask whom it would still be true for. For this codebase under any team: the repo's own rules. For this team in any codebase: the team rules. For this kind of worker alone: its role's. A ruling answers its current issue; lasting rules belong in their owning ADR, team or role rules, with conflicting wording amended and source links preserved. An actual human instruction or confirmation and its source establish a human decision; a shared GitHub identity, an agent ruling or a merged document alone does not. The three have no order: two that contradict each other are a defect of the files, and nothing says which holds.
 
 ## The host user's skills and rules
 

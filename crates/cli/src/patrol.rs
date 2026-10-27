@@ -13,7 +13,6 @@ use afkconvoy_core::patrol::{
 };
 use afkconvoy_core::prompt::{PatrolFields, patrol_prompt};
 use afkconvoy_core::role::{Facts, On, Start};
-use afkconvoy_core::team::PRECEDENTS;
 use afkconvoy_core::tick::Outcome;
 use afkconvoy_core::tracker::Tracker;
 use anyhow::{Result, anyhow, bail};
@@ -209,7 +208,6 @@ pub fn run(fleet: &mut Fleet, me: &Me, agent: &Agent, read: &Flows, row: &Row) -
         skill: &patrol.work.skill,
         worktree: &path,
         base_branch: &fleet.config.base_branch,
-        precedents: &kept.copy.dir.join(PRECEDENTS).display().to_string(),
         team_rules: team_rules.as_deref(),
         workflows: &workflows,
         room: row.max_open.saturating_sub(row.open),

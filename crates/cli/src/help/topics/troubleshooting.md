@@ -50,7 +50,6 @@ A warning may be the fleet mid-step: run `doctor` again after a tick before you 
 - `` have reached its `max_open` ``: A patrol is not run while that many of its issues are open. Close some, or raise it.
 - `has waited for a human for`: Nothing in the fleet moves that issue. `fix` answers it: [`afkconvoy help humans`](help:humans).
 
-- ``have reached the team's `max_open` ``: Open proposals on the team's repo fill its limit, so further proposals wait at `full`. `doctor` lists every PR under `proposals.open`, with the commands to merge or close it; the panel shows them under "With a human". Accept or close one to make room ([`afkconvoy help humans`](help:humans)).
 - `is held off by a PR not the fleet's`: No worker starts: it would open a second PR. `fix` closes it, or merge it yourself.
 - `is claimed but GitHub has it no more`: Deleted or transferred: its fleet's next tick releases it. `fix` is for one stopped.
 - `the gate is slow`: On one host, the last {const:SLOW_GATE_LANDINGS} landings with a recorded gate run all took more than {const:SLOW_GATE_PERCENT}% of the gate limit. A tick opens one issue for the fleet to make the gate faster: `fix` shows it. Raising `gate_seconds` is no fix, nor is deleting or skipping tests.

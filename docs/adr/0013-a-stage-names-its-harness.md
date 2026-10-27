@@ -6,7 +6,7 @@ status: accepted
 
 Until now every worker of a bound repo was a Claude Code session, and the fleet's start of a worker was written in Claude Code's flags, hooks and paths (ADR-0009). A team should be able to put one stage on another harness — pi is the first — to have work done, or reviewed, by something other than what wrote it.
 
-A stage, and a patrol, names the harness its worker runs, beside its model. One that names none takes the default, which the project's config names; a config that names none means Claude Code. A consult, a landing and the proposal of a precedent run on the default. The worker starts in its role's directory whatever its harness (ADR-0009 holds), and the fleet adds, per harness, what that harness does not load from there.
+A stage, and a patrol, names the harness its worker runs, beside its model. One that names none takes the default, which the project's config names; a config that names none means Claude Code. A consult and a landing run on the default. The former proposal worker was retired by ADR-0039. The worker starts in its role's directory whatever its harness (ADR-0009 holds), and the fleet adds, per harness, what that harness does not load from there.
 
 A role has one core every harness works under: its rules and its skills, each written once. What a harness needs of its own is added to that core and never stands in its place. A role's limits are the part that cannot be shared, so they are written once per harness, in that harness's own form. The guard is the fleet's and not a role's: it is decided in one place for every harness, and each harness is given a way to ask it.
 

@@ -876,8 +876,8 @@ fn a_lock_raised_on_a_tracker_issue_is_given_the_repo_label_and_one_of_another_r
 }
 
 #[test]
-fn rule_and_send_steer_the_trackers_issue_and_its_ruling_is_proposed_on_the_teams_repo() {
-    let world = bound_with("precedents: { by: clerk, do: propose, max_open: 1 }\n", "");
+fn rule_and_send_steer_the_trackers_issue_without_proposing_a_precedent() {
+    let world = bound_with("", "");
     tracker_issue(&world, 7, &["flow:feature", MINE]);
     world.issue(7, &["flow:feature"]);
     let own = world.gh()["issues"].clone();
@@ -901,22 +901,11 @@ fn rule_and_send_steer_the_trackers_issue_and_its_ruling_is_proposed_on_the_team
         .iter()
         .rfind(|comment| comment["body"].as_str().unwrap().contains(" verdict=ruling by=human-->"))
         .expect("the ruling, on the tracker's issue");
-    let (comment, link) = (ruling["id"].as_u64().unwrap(), ruling["html_url"].as_str().unwrap());
-
-    // The stage runs again, and the ruling is proposed as a PR on the team's
-    // repo by a worker told to read the tracker's issue.
-    assert_eq!(walked(&tick_at_work(&world, 1180)), ["dispatch 7 done", "propose 7 done"]);
-    let dir = world.root.join("wt").join(format!("convoy-precedent-7-c{comment}"));
-    let told = brief(&dir);
-    for said in [
-        format!("issue acme/tracker#7, which was escalated to them — {link}"),
-        "`gh issue view 7 --repo acme/tracker --comments`".to_string(),
-        format!("opening one PR on `acme/team`, from the branch `convoy-precedent-7-c{comment}`"),
-    ] {
-        assert!(told.contains(&said), "{said}: {told}");
-    }
-    let said = comments_of(&world.tracker(), 7).join("\n");
-    assert!(said.contains(&format!("<!--convoy:precedent-proposed ruling={comment}-->")));
+    assert!(ruling["body"].as_str().unwrap().contains("Keep the v1 schema."));
+    // The stage runs again with its ruling and no additional worker.
+    assert_eq!(walked(&tick_at_work(&world, 1180)), ["dispatch 7 done"]);
+    assert!(!comments_of(&world.tracker(), 7).join("\n").contains("convoy:precedent-proposed"));
+    assert!(!world.worktrees().iter().any(|path| path.to_string_lossy().contains("precedent")));
 
     // A human sends it on to `review`, once its worker has let it go.
     world.afk(&["release", "--issue", "7", "--instance", "alpha", "--host", "h1"]).ok();

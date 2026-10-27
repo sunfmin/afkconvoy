@@ -24,7 +24,6 @@ use crate::gh::{GitHub, Gone, Open, OpenIssues, beside, gone};
 use crate::git::{Listing, Repo};
 use crate::orca::{Source, Worktree};
 use crate::patrol;
-use crate::precedent;
 use crate::settle::cut_landing_of;
 use crate::slow_gate;
 use crate::stage::Flows;
@@ -68,8 +67,6 @@ pub struct Fleet {
     /// What this view's start and end of a cut said: what a tick's line says
     /// of them, and its log keeps.
     pub cut_said: Vec<crate::log::What>,
-    /// The open proposals on the team's repo, as the last rebuild read them.
-    pub proposals: Option<precedent::Open>,
 }
 
 /// Why no worker of a role can be started on this host: it holds limits for
@@ -116,7 +113,6 @@ impl Fleet {
             unread: vec![],
             closers: vec![],
             cut_said: vec![],
-            proposals: None,
         })
     }
 
@@ -341,7 +337,7 @@ impl Fleet {
             .collect()
     }
 
-    /// What a worker nothing casts runs — the proposal of a precedent, and
+    /// What a worker nothing casts runs —
     /// a landing whose casting the host kit does not hold: the host kit's
     /// first, or this host's switch.
     pub fn first(&self) -> Result<Cast> {
@@ -452,7 +448,6 @@ impl Fleet {
         let heartbeats = self.scan.beats();
         let (landings, slow_gate) = slow_gate::seen(self, &self.listing.records, &base)?;
         let cut = crate::cut::seen(self, &stages, issues, &base)?;
-        self.proposals = precedent::open(self, &stages)?;
         let seen = Observed {
             unworked_blockers: &unworked_blockers,
             handoffs: &handoffs,
@@ -470,7 +465,6 @@ impl Fleet {
             landing: &stages.landing(&self.scan.claims),
             begun: &stages.begun(),
             patrols: &patrol::seen(self, &stages, &open.issues)?,
-            proposals: &precedent::seen(self, &stages)?,
             waiting: &stages.waiting(self, open),
             landings: &landings,
             slow_gate: &slow_gate,

@@ -192,7 +192,7 @@ pub struct Claim {
 }
 
 /// The claim on a run: work a fleet instance does for no issue — a patrol's
-/// run, the proposal of a precedent — as the remote has it.
+/// run or a cut — as the remote has it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunClaim {
     /// What follows `CLAIM_KIND` in its ref's name: whoever claims runs of
