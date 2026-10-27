@@ -211,10 +211,21 @@ Reproduction commands (rustup's cargo, rather than Homebrew cargo):
 ~/.cargo/bin/cargo +nightly-2026-09-25 test -p afkconvoy --test cli quota:: -- --nocapture
 ```
 
-Latest focused run: **20 passed, 0 failed in 3.88 seconds**, following the
+Latest focused run: **22 passed, 0 failed in 4.05 seconds**, following the
 initial two red reproductions. The stand-in emits string GraphQL database
 identities and multiple REST/GraphQL pages; the assertions check dispatch,
 stage/lock/blocker positions, mutation counts and the gated remote commit.
+
+The additional authentication scenarios exercise overriding environment
+credentials. `gh auth status` would itself query GraphQL for such a token, so
+the common entry resolves the login through an available API and binds an
+opaque one-way credential/profile fingerprint to that identity. Token values
+never enter argv, disk notes or diagnostics. A changed token gets a separate
+identity lookup; a known token does not hit an exhausted identity API each
+tick. With both quotas zero before identification, an expiring refusal is
+remembered under that fingerprint. Keychain/configured users are read locally,
+and quota-aware startup tool checks defer API authentication to the common
+entry before GitHub effects instead of mistaking a quota stop for logout.
 
 The full repository gate is run by the required landing turn, after the PR is
 open and all changes committed. Its receipt and final outcome are recorded on

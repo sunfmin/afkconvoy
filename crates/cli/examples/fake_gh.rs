@@ -86,6 +86,13 @@ fn main() {
     let argv: Vec<&str> = st.argv.iter().map(String::as_str).collect();
     let other = st.opt("--repo").map(str::to_string);
     match argv.as_slice() {
+        ["config", "get", "user", "--host", _] => {
+            st.finish(st.doc["login"].as_str().unwrap_or("fixture-user"), 0, "")
+        }
+        ["api", "user", ..] => st.finish(&identity_login(&st), 0, ""),
+        ["api", "graphql", ..] if line.contains("ConvoyQuotaIdentity") => {
+            st.finish(&identity_login(&st), 0, "")
+        }
         ["auth", "status", ..] if st.has("--json") => {
             st.finish(st.doc["login"].as_str().unwrap_or("fixture-user"), 0, "")
         }
@@ -1258,4 +1265,12 @@ fn equivalent_write(st: &mut State) -> ! {
         st.finish("", 1, "unexpected end of JSON input")
     }
     st.finish(&json!({"data":{operation:data}}).to_string(), 0, "")
+}
+
+fn identity_login(st: &State) -> String {
+    std::env::var("GH_TOKEN")
+        .ok()
+        .and_then(|token| st.doc["identity_by_token"][&token].as_str().map(str::to_string))
+        .or_else(|| st.doc["login"].as_str().map(str::to_string))
+        .unwrap_or_else(|| "fixture-user".into())
 }

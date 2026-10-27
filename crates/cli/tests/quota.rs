@@ -509,3 +509,71 @@ fn watching_keeps_all_pr_endings_and_late_intake_records_in_both_directions() {
         assert_eq!(answer["until"], 1100, "{answer}");
     }
 }
+
+fn with_token(world: &World, token: &str) -> crate::common::Answer {
+    let out = world
+        .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
+        .env("GH_TOKEN", token)
+        .args(["plan", "--instance", "alpha", "--now", "1000"])
+        .output()
+        .unwrap();
+    crate::common::Answer {
+        json: serde_json::from_slice(&out.stdout).unwrap(),
+        code: out.status.code().unwrap_or(1),
+        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+    }
+}
+
+#[test]
+fn overriding_credentials_resolve_identity_without_exhausted_status_probes() {
+    for api in ["core", "graphql"] {
+        let world = World::new();
+        world.issue(146, &["ready-for-agent"]);
+        world.with_gh(|gh| {
+            gh["identity_by_token"] = json!({"fixture-token-a":"user-a","fixture-token-b":"user-b"})
+        });
+        primary(&world, api);
+        assert_eq!(with_token(&world, "fixture-token-a").ok()["frontier"][0]["number"], 146);
+        world.gh_calls();
+        assert_eq!(with_token(&world, "fixture-token-a").ok()["frontier"][0]["number"], 146);
+        assert_eq!(
+            resource_calls(&world, api),
+            0,
+            "a known credential must not rediscover its identity via the exhausted API"
+        );
+        assert_eq!(with_token(&world, "fixture-token-b").ok()["frontier"][0]["number"], 146);
+        assert!(
+            resource_calls(&world, api) > 0,
+            "a changed credential must discover its own login/quota"
+        );
+        for file in quota_files(&world) {
+            let text = std::fs::read_to_string(file).unwrap();
+            assert!(
+                !text.contains("fixture-token-a") && !text.contains("fixture-token-b"),
+                "credentials must not be stored"
+            );
+        }
+    }
+}
+
+#[test]
+fn an_unidentified_credential_with_both_quotas_zero_waits_without_repeated_probes() {
+    let world = World::new();
+    world.issue(146, &["ready-for-agent"]);
+    world.with_gh(|gh|gh["quota"]=json!({"resources":{
+        "core":{"remaining":0,"reset":4_000_000_000u64},"graphql":{"remaining":0,"reset":4_000_000_100u64}}}));
+    let error = with_token(&world, "fixture-token").error();
+    assert!(
+        error.contains("both GitHub primary quotas exhausted") && error.contains("reset"),
+        "{error}"
+    );
+    world.gh_calls();
+    let error = with_token(&world, "fixture-token").error();
+    assert!(error.contains("identity waits"), "{error}");
+    let calls: Vec<Vec<String>> = serde_json::from_value(world.gh()["calls"].clone()).unwrap();
+    assert!(
+        calls.iter().all(|c| c.first().is_none_or(|s| s != "api")
+            && !c.starts_with(&["pr".into(), "list".into()])),
+        "{calls:?}"
+    );
+}
