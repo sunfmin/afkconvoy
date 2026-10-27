@@ -322,6 +322,7 @@ fn tracked(st: State) -> State {
         let (owner, name) = repo.split_once('/').unwrap();
         let endpoint = format!("repos/{repo}/");
         st.argv.iter().any(|arg| arg.starts_with(&endpoint) || *arg == format!("repos/{repo}"))
+            || st.opt("--repo") == Some(repo.as_str())
             || st.argv.contains(&format!("owner={owner}"))
                 && st.argv.contains(&format!("repo={name}"))
     });
@@ -336,7 +337,12 @@ fn tracked(st: State) -> State {
     let (endpoint, owner, name) =
         (format!("repos/{repo}/"), format!("owner={owner}"), format!("repo={name}"));
     let mut argv = vec![];
-    for arg in &there.argv {
+    let mut args = there.argv.iter();
+    while let Some(arg) = args.next() {
+        if arg == "--repo" {
+            args.next();
+            continue;
+        }
         argv.push(match arg {
             arg if *arg == owner => "owner={owner}".to_string(),
             arg if *arg == name => "repo={repo}".to_string(),

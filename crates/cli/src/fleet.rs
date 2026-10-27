@@ -362,6 +362,17 @@ impl Fleet {
         Ok(tip.clone())
     }
 
+    /// Destinations derived from this view's GitHub and remote snapshots.
+    pub fn targets(&self, open: &OpenIssues) -> Result<serde_json::Value> {
+        crate::target::listing(
+            &self.repo,
+            &self.config,
+            &self.gh.tracker,
+            &open.rows,
+            &self.listing,
+        )
+    }
+
     /// The task destination is read from remote fleet state on every use.
     pub fn task_branch(&self, issue: u64) -> Result<String> {
         crate::target::branch(&self.repo, &self.config, issue)
