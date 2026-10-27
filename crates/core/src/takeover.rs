@@ -5,8 +5,8 @@ use flux_rs::attrs::*;
 
 use crate::claims::{Beat, Claim, InstanceId, Owner, RunClaim};
 use crate::lease::{LEASE, is_stale, stamp_age, stamp_forgotten, stamp_stale};
+use crate::legacy::Proposal;
 use crate::patrol;
-use crate::precedent::Ruling;
 
 /// What licenses taking another instance's claim: its heartbeat is past the
 /// lease, or the claim is stamped with this host, or a human confirmed it.
@@ -78,8 +78,8 @@ impl<'a> Held<'a> {
 
 /// What a human is told the run whose claim is keyed `key` is.
 pub fn run_said(key: &str) -> String {
-    if let Some(ruling) = Ruling::claimed(key) {
-        format!("the proposal of the ruling on #{}", ruling.issue)
+    if let Some(ruling) = Proposal::claimed(key) {
+        format!("the retired proposal of the ruling on #{}", ruling.issue)
     } else if let Some(name) = patrol::claimed(key) {
         format!("the run of the patrol {name}")
     } else if key == crate::cut::CLAIM_KEY {
@@ -461,7 +461,7 @@ mod tests {
     #[test]
     fn a_run_taken_is_said_as_what_it_is_a_run_of() {
         assert_eq!(run_said("patrol-triage"), "the run of the patrol triage");
-        assert_eq!(run_said("precedent-7-c2001"), "the proposal of the ruling on #7");
+        assert_eq!(run_said("precedent-7-c2001"), "the retired proposal of the ruling on #7");
         assert_eq!(run_said("cut"), "the cut");
         assert_eq!(run_said("else"), "the run else");
     }

@@ -75,14 +75,11 @@ afkconvoy lock --issue <n>
 
 Closing a lock's issue ends it. A lock needs you when nothing can work its issue: it has no flow label or an open blocker. `afkconvoy doctor` gives a critical finding with a `fix` to run. Close a lock raised by mistake. `afkconvoy lock --help`.
 
-## A precedent to accept
+## Lasting decisions
 
-Where the team names who proposes precedents, each ruling a human gives with `afkconvoy rule` is followed by a proposal: a PR on the team's repo that appends one entry to its precedents — the ruling in a sentence, when it applies, and a link to the ruling. Nothing waits on it: the stage that asked has already run again.
+A ruling records the decision on its issue; its stage runs again under the existing rework semantics. Incorporate a lasting rule through ordinary work in the owning ADR, team or role rules: amend contradictory wording and preserve the source. A human decision needs an actual human instruction or confirmation and its source; a shared GitHub identity, agent-authored ruling or merged document alone establishes none.
 
-- `gh pr merge <pr> --repo <the team's repo>`: Merging accepts the precedent: every later stage reads it, and follows it in place of declaring `escalate` on the same question.
-- `gh pr close <pr> --repo <the team's repo>`: The ruling was about that one issue, and no stage should follow it unasked.
-
-The fleet never merges on the team's repo. `afkconvoy doctor` lists the team's open proposals under `proposals.open`: each PR, the issue and comment of its ruling, how long it has been open, and the merge and close commands. `afkconvoy doctor --all` lists them for every checkout on this host's checkout list. `afkconvoy panel` shows them under "With a human" too. Both read only and make no startup probe. Once the open proposals reach the team's `max_open`, doctor gives a finding and the panel says so: no further proposal starts until a human merges or closes one. `afkconvoy plan` lists the rulings being proposed or still to be proposed under `proposals`, with how each stands; it makes a startup probe where one is due.
+Legacy proposal PRs are retained for content review and migration, with their links and disposition recorded on the PR. The fleet schedules no proposals and provides no human acceptance queue.
 
 ## An issue past the end of its workflow
 

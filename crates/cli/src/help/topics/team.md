@@ -1,4 +1,4 @@
-A team is a directory — a whole repo, or a subdirectory of one — that names a set of roles and holds the workflows, patrols and precedents they work by. Read this to write a team, bind a repo to one, or understand a fault from `afkconvoy check`.
+A team is a directory — a whole repo, or a subdirectory of one — that names a set of roles and holds the workflows and patrols they work by. Read this to write a team, bind a repo to one, or understand a fault from `afkconvoy check`.
 
 ## What its directory holds
 
@@ -6,7 +6,6 @@ A team is a directory — a whole repo, or a subdirectory of one — that names 
 - `CLAUDE.md`: the team rules: what every worker of the team works under
 - `workflows/<name>.md`: one file per workflow: [`afkconvoy help workflows`](help:workflows)
 - `patrols/<name>.md`: one file per patrol: [`afkconvoy help patrols`](help:patrols)
-- `precedents.md`: the precedents: one line per ruling a human accepted
 
 Only each definition file's first `` ```yaml `` block is read; the rest explains it.
 
@@ -20,13 +19,12 @@ roles:
 roster:                            # optional: `afkconvoy help roster`
   <short name>: { cast: <how to cast>, run: [{ harness: pi, model: <model>,
     good_at: <what it does best> }] }   # cast, model and good_at optional
-precedents: { by: <role>, do: <skill>, max_open: 10 }   # optional
 host_user: true                    # default
 dsh_profile: fleet                # fleet (default) or host-user; DSH only
 split: true                        # default; false omits splitting
 ```
 
-`escalate_label` is the label an issue handed to a human carries in place of its flow label. `roles` gives each role the short name a `by` or a `to` says. `precedents` names who proposes a human's ruling as a precedent: for each ruling a human gives an escalated issue (`afkconvoy rule`) a worker in the role `by`, with the skill `do`, opens a PR on the team's repo that appends one entry to `precedents.md`, unless `max_open` are open; none without the key (`afkconvoy tick --help`). `host_user`, true or false, says whether a worker is given the host user's own skills and rules beside its role's ([`afkconvoy help roles`](help:roles)); a role named by `dir` may set its own. `dsh_profile`: `fleet` (default) or `host-user`; independent of `host_user`. A role's `{ dir, dsh_profile }` says its own. Details: [`afkconvoy help worker-launch`](help:worker-launch). `split: false` omits splitting from briefs; true or unsaid offers it, with no guard.
+`escalate_label` is the label an issue handed to a human carries in place of its flow label. `roles` gives each role the short name a `by` or a `to` says. `host_user`, true or false, says whether a worker is given the host user's own skills and rules beside its role's ([`afkconvoy help roles`](help:roles)); a role named by `dir` may set its own. `dsh_profile`: `fleet` (default) or `host-user`; independent of `host_user`. A role's `{ dir, dsh_profile }` says its own. Details: [`afkconvoy help worker-launch`](help:worker-launch). `split: false` omits splitting from briefs; true or unsaid offers it, with no guard.
 
 ## How it names a role
 
@@ -52,9 +50,9 @@ A worker is given its role's directory alone, and nothing else of its repo: a `C
 
 ## The team rules
 
-The `CLAUDE.md` in the team's directory, and optional. Every worker of the team is given it, whatever its role and whatever it was started for — a stage, a consult, a patrol, the proposal of a precedent, a landing — and no key turns it off. A role two teams name works under the rules of the team whose stage it is in.
+The `CLAUDE.md` in the team's directory, and optional. Every worker of the team is given it, whatever its role and whatever it was started for — a stage, a consult, a patrol, a landing — and no key turns it off. A role two teams name works under the rules of the team whose stage it is in.
 
-They are one of four kinds of text a worker reads, beside the repo's own rules, its role's rules and the precedents; the host user's rules give way to all four. Whose:
+They are one of three kinds of text a worker reads, beside the repo's own rules and its role's rules; the host user's rules give way to all three. Whose:
 
 - **its role's**: the CLAUDE.md of the role's directory, under every harness
 - **the team rules**: the CLAUDE.md of the team's directory, under every harness
@@ -79,6 +77,8 @@ The team is read at the head of its repo's default branch: pushing is the only w
 - A role's directory that holds an `AGENTS.md`, an `AGENTS.MD` or an `AGENTS.override.md` is a fault: pi, Codex and Kimi Code load one in place of `CLAUDE.md`; the fleet adds the link Kimi needs to its own role copy.
 - A role that holds limits for one harness and none for another is right for the first alone: a roster entry that lets it run the other is a fault. One with no limits is right for every harness; two that refuse alike are the role's to see to.
 - A `.claude/` in the team's directory is no fault and is loaded by no worker: a note.
+
+The legacy `precedents` key is retired and refused with migration instructions. Migrate effective content and source links from the old document into the owning ADR, team or role rules before removing the key. Rulings remain on their issues; no separate document is loaded as an authority.
 
 ## Where to read on
 

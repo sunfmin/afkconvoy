@@ -9,7 +9,6 @@ use afkconvoy_core::harness::Harness;
 use afkconvoy_core::intake::{opened_by, taken_in};
 use afkconvoy_core::plan::{PullRequest, closing_pr, label_bar};
 use afkconvoy_core::position::{Declared, Failure, Position};
-use afkconvoy_core::precedent::{Ruling, proposed, rulings};
 use afkconvoy_core::role::{Due, due, followed, workflow_of};
 use afkconvoy_core::stage_record::{
     Advance, Author, StageRecord, Stated, Unconsulted, advance, history, label_moves, lands,
@@ -320,13 +319,8 @@ struct Flowing {
     records: Vec<StageRecord>,
     /// The URL of each record's comment.
     urls: Vec<String>,
-    /// The id of each record's comment.
-    ids: Vec<u64>,
     /// When each record's comment was written, where GitHub said.
     at: Vec<Option<u64>>,
-    /// The rulings its comments say were proposed as precedents
-    /// (`precedent::proposed`).
-    proposed: Vec<u64>,
     /// Whether a worker took it in (`intake::taken_in`).
     taken_in: bool,
     /// The patrol that opened it, when one did (`intake::opened_by`).
@@ -417,26 +411,14 @@ impl Flows {
             let comments = open.comments(issue.number);
             let (records, said) = records_in(comments);
             let urls = said.iter().map(|comment| comment.url.clone()).collect();
-            let ids = said.iter().map(|comment| comment.id).collect();
             let at = said.iter().map(|comment| comment.at).collect();
             let bodies = || comments.iter().map(|comment| comment.body.as_str());
-            let proposed = proposed(bodies());
             let taken_in = team
                 .as_ref()
                 .is_ok_and(|kept| taken_in(&kept.team, &issue.labels, bodies()).is_some());
             let opened_by = opened_by(bodies());
             let (number, labels) = (issue.number, issue.labels.clone());
-            issues.push(Flowing {
-                number,
-                labels,
-                records,
-                urls,
-                ids,
-                at,
-                proposed,
-                taken_in,
-                opened_by,
-            });
+            issues.push(Flowing { number, labels, records, urls, at, taken_in, opened_by });
         }
         Ok(Flows { team: Some(team), issues })
     }
@@ -517,24 +499,6 @@ impl Flows {
             stood
         };
         self.issues.iter().map(stood).collect()
-    }
-
-    /// The rulings humans gave the issues read that nothing says were
-    /// proposed as precedents, lowest issue first and oldest first on each.
-    pub fn unproposed(&self) -> Vec<Ruling> {
-        let Ok(team) = self.team() else { return vec![] };
-        let mut found = vec![];
-        for issue in &self.issues {
-            let Ok(workflow) = workflow_of(team, &issue.labels) else { continue };
-            let readings = history(workflow, &issue.records).readings;
-            for ruling in rulings(issue.number, &issue.records, &readings, &issue.ids) {
-                if !issue.proposed.contains(&ruling.comment) {
-                    found.push(ruling);
-                }
-            }
-        }
-        found.sort_by_key(|ruling| (ruling.issue, ruling.comment));
-        found
     }
 
     /// How many of the issues read — the open ones that follow a workflow — a

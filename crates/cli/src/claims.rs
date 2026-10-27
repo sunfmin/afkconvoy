@@ -39,7 +39,7 @@ pub struct Scan {
     pub tracker: Tracker,
     pub claims: Vec<Claim>,
     pub heartbeats: BTreeMap<String, Beat>,
-    /// The claims on runs — a patrol's, the proposal of a precedent: one for
+    /// The claims on runs — a patrol's or a cut's: one for
     /// each still going.
     pub runs: Vec<RunClaim>,
     /// patrol → its last recorded run.
@@ -426,7 +426,7 @@ pub fn declare_over(repo: &Repo, key: &str) -> Result<Value> {
     if fleet_number(key).is_some() {
         bail!(
             "{key} is an issue, and no run: the stage of a worker on an issue ends with \
-             `afkconvoy verdict`. Only a patrol's run and a proposal's are declared over"
+             `afkconvoy verdict`. Only a patrol's run is declared over"
         );
     }
     let layout = repo.layout();
