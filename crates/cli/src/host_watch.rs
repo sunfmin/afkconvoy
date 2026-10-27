@@ -1735,7 +1735,7 @@ mod tests {
             Some(HUMAN_SINCE),
         );
         waiting.explain(&[Said {
-            body: "<!--convoy:escalated at=1793036772-->\nNeeds a quiet measurement environment.",
+            body: "<!--convoy:escalation claim=old-->\nNeeds a quiet measurement environment.",
             url: "https://github.com/sunfmin/control/issues/11#issuecomment-6423248030",
             at: Some(HUMAN_SINCE),
         }]);
@@ -1747,6 +1747,116 @@ mod tests {
 
     fn reload(state: &State) -> State {
         serde_json::from_slice(&serde_json::to_vec(state).unwrap()).unwrap()
+    }
+
+    fn human_round(look: Value, items: Vec<Item>, episodes: Vec<String>, reported: bool) -> Watch {
+        serde_json::from_value(json!({"id": "human-round", "directory": "/operator",
+            "look": look, "items": items, "episodes": episodes, "started": HUMAN_SINCE + 34000,
+            "harness": "codex", "model": null, "terminal": "watch", "transcript": "",
+            "report": reported.then(|| json!({"held_back": ["quiet environment"], "did": [],
+                "verified": [], "human": [{"question": "Provide a quiet environment?",
+                "answer": "the current waiting_on_human.answer"}], "pending": []}))}))
+        .unwrap()
+    }
+
+    #[test]
+    fn first_long_wait_warning_and_new_answers_use_the_human_questions_episode() {
+        let first = HUMAN_SINCE + 30 * 60;
+        let mut state = State::default();
+        let look = human_look(first);
+        assert_eq!(look["checkouts"][0]["doctor"]["findings"], json!([]));
+        state.observe(look.clone(), first);
+        assert_eq!(state.pending.len(), 1);
+        let episode = state.pending[0].episode.clone();
+        let round =
+            human_round(look, actionable(&human_look(first), first), vec![episode.clone()], true);
+        state.covered.extend(round.episodes.iter().cloned());
+        state.history.push(round);
+        let mut state = reload(&state);
+        let later = HUMAN_SINCE + 9 * 3600 + 33 * 60;
+        state.observe(human_look(later), later);
+        assert!(state.pending.is_empty(), "first warning is the already-reported question");
+        assert_eq!(state.observed.values().collect::<Vec<_>>(), [&episode]);
+        for field in ["url", "since", "why", "answer"] {
+            let mut next = human_look(later);
+            let value = &mut next["checkouts"][0]["doctor"]["waiting_on_human"][0][field];
+            *value = if field == "since" { json!(later) } else { json!("changed answer source") };
+            next["checkouts"][0]["doctor"]["findings"] = json!([]);
+            let mut changed = reload(&state);
+            changed.observe(next, later);
+            assert_eq!(changed.pending.len(), 1, "changed {field} requires a new answer");
+        }
+        let mut unrelated = human_look(later);
+        let mut other = unrelated["checkouts"][0].clone();
+        other["checkout"] = json!("/another-repo");
+        unrelated["checkouts"].as_array_mut().unwrap().push(other);
+        state.observe(unrelated, later);
+        assert_eq!(state.pending.len(), 1, "another checkout is unrelated work");
+    }
+
+    #[test]
+    fn older_human_wait_reports_migrate_from_their_own_look_but_missing_reports_retry() {
+        let first = HUMAN_SINCE + 9 * 3600 + 27 * 60;
+        let later = HUMAN_SINCE + 9 * 3600 + 33 * 60;
+        for initialized in [false, true] {
+            for reported in [false, true] {
+                let mut look = human_look(first);
+                let warning = &mut look["checkouts"][0]["doctor"]["findings"][0];
+                warning.as_object_mut().unwrap().remove("watch_id");
+                let warning_id =
+                    format!("finding:/bizkernel:{}", warning["what"].as_str().unwrap());
+                let human_id = "human:/bizkernel:#11".to_string();
+                let items = vec![
+                    Item::new(&warning_id, "long wait"),
+                    Item::new(&human_id, "human decision"),
+                ];
+                let episodes: Vec<String> = if initialized {
+                    vec!["warning-episode".into(), "human-episode".into()]
+                } else {
+                    vec![]
+                };
+                let round = human_round(look, items, episodes.clone(), reported);
+                let mut state = State {
+                    watched: vec![warning_id.clone(), human_id.clone()],
+                    observed: if initialized {
+                        BTreeMap::from([
+                            (warning_id, episodes[0].clone()),
+                            (human_id, episodes[1].clone()),
+                        ])
+                    } else {
+                        BTreeMap::new()
+                    },
+                    covered: if initialized && reported { episodes } else { vec![] },
+                    episodes_initialized: initialized,
+                    last: Some(round.clone()),
+                    history: vec![round],
+                    ..State::default()
+                };
+                state.retry_unreported();
+                state.observe(human_look(later), later);
+                assert_eq!(
+                    state.pending.is_empty(),
+                    reported,
+                    "initialized={initialized}, reported={reported}"
+                );
+                assert_eq!(state.observed.len(), 1);
+                let canonical = state.observed.keys().next().unwrap();
+                assert!(
+                    state.history[0].items.iter().all(|item| &item.id == canonical),
+                    "prior report follows the same work"
+                );
+                let mut state = reload(&state);
+                state.observe(human_look(later + 300), later + 300);
+                assert_eq!(state.pending.is_empty(), reported);
+
+                let mut changed = human_look(later + 600);
+                changed["checkouts"][0]["doctor"]["findings"] = json!([]);
+                changed["checkouts"][0]["doctor"]["waiting_on_human"][0]["url"] =
+                    json!("a-new-escalation");
+                state.observe(changed, later + 600);
+                assert_eq!(state.pending.len(), 1, "old reports cannot cover a new escalation");
+            }
+        }
     }
 
     #[test]

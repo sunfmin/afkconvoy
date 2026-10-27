@@ -828,7 +828,7 @@ fn log_findings(run: &Run) -> Vec<Finding> {
                     fix_of(&failed, instance),
                 ),
             };
-            finding.condition(json!(["step", failed.named()]))
+            finding.condition(json!(["step", failed.step, failed.issue, failed.patrol]))
         })
         .collect()
 }
@@ -944,7 +944,7 @@ fn plan_findings(run: &Run, state: &State) -> Vec<Finding> {
                     Some(failed) => fix_of(failed, instance),
                     None => on("dispatch", first.number, instance),
                 },
-            ));
+            ).condition(json!(["nothing-started", set.frontier.iter().map(|issue| issue.number).collect::<Vec<_>>()]))) ;
         }
     }
     if let Some(slow) = &set.slow_gate {
@@ -2402,6 +2402,37 @@ mod tests {
         // …and one orca could not speak of is not said to have none
         state.held = vec![Held { worker: None, ..held(3) }];
         assert_eq!(self::found(&host(), &run(vec![]), &state), []);
+    }
+
+    #[test]
+    fn changing_durations_tick_counts_and_free_slots_keep_their_condition_identity() {
+        let same = |before: &Finding, after: &Finding| {
+            assert_ne!(before.what, after.what, "doctor keeps its current presentation");
+            assert!(before.watch_id.is_some());
+            assert_eq!(before.watch_id, after.watch_id);
+        };
+        let stopped =
+            |quiet| Held { worker: Some(WorkerState::Idle { quiet: Some(quiet) }), ..held(3) };
+        same(
+            &claim_findings(&run(vec![]), &[stopped(STOPPED_LONG)])[0],
+            &claim_findings(&run(vec![]), &[stopped(STOPPED_LONG + 360)])[0],
+        );
+        let long = Stood { recorded: vec![NOW - 3300, NOW - 3000, NOW - 2000], ..stood(7) };
+        same(
+            &issue_findings(std::slice::from_ref(&long), &team(), NOW)[0],
+            &issue_findings(&[long], &team(), NOW + 360)[0],
+        );
+        let failed = |count| tick(count, json!([{"do": "dispatch", "issue": 3, "error": "busy"}]));
+        let once = log_findings(&run(vec![failed(1)]));
+        let repeated = log_findings(&run(vec![failed(1), failed(2), failed(3)]));
+        same(&once[0], &repeated[0]);
+        same(&repeated[0], &log_findings(&run(vec![failed(2), failed(3), failed(4)]))[0]);
+        let mut state = state();
+        state.set.frontier =
+            vec![Dispatchable { number: 3, title: "work".into(), stage: None, cast: None }];
+        let before = plan_findings(&run(vec![failed(1)]), &state);
+        state.set.free_slots += 1;
+        same(&before[0], &plan_findings(&run(vec![failed(2)]), &state)[0]);
     }
 
     #[test]
