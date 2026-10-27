@@ -37,6 +37,8 @@ pub const STAGE_ENV: &str = "AFKCONVOY_STAGE";
 pub const WRITES_ENV: &str = "AFKCONVOY_WRITES";
 pub const CONSULT_ENV: &str = "AFKCONVOY_CONSULT";
 pub const BASE_BRANCH_ENV: &str = "AFKCONVOY_BASE_BRANCH";
+/// An explicitly selected task destination, protected alongside the repo base.
+pub const TARGET_BRANCH_ENV: &str = "AFKCONVOY_TARGET_BRANCH";
 pub const ESCALATE_LABEL_ENV: &str = "AFKCONVOY_ESCALATE_LABEL";
 pub const LOCK_LABEL_ENV: &str = "AFKCONVOY_LOCK_LABEL";
 
@@ -200,6 +202,7 @@ pub struct Facts<'a> {
     /// beside the flow and stage labels: the team's escalate label and the
     /// repo's lock label.
     pub base_branch: &'a str,
+    pub target_branch: Option<&'a str>,
     pub escalate_label: &'a str,
     pub lock_label: &'a str,
     /// The commits of the role's repo and the team's the stage runs under.
@@ -230,6 +233,9 @@ impl Facts<'_> {
             (ROLE_COMMIT_ENV, self.role_commit.to_string()),
             (TEAM_COMMIT_ENV, self.team_commit.to_string()),
         ]);
+        if let Some(target) = self.target_branch {
+            env.push((TARGET_BRANCH_ENV, target.to_string()));
+        }
         env
     }
 }

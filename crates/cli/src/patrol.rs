@@ -298,6 +298,7 @@ fn in_role(
             writes: false,
             consult: false,
             base_branch: &fleet.config.base_branch,
+            target_branch: None,
             escalate_label: &kept.team.escalate_label,
             lock_label: &fleet.config.lock_label,
             role_commit: &role_copy.commit,
@@ -355,7 +356,7 @@ pub(crate) fn switch(
     let line = in_role(fleet, &kept, name, &cast, launch.as_str(), &checkout)?;
     let continuing = said(&checkout);
     checkout.stop_for_continuation()?;
-    crate::dispatch::continue_brief(fleet, &checkout, None, &continuing)?;
+    crate::dispatch::continue_brief(fleet, &checkout, None, None, &continuing)?;
     let terminal = agent.start_worker(
         &checkout,
         WorkerSelection { harness, model: cast.model.as_deref(), explicit_model: false },

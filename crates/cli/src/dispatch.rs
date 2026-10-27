@@ -385,6 +385,7 @@ fn start(
         // before the claim: never lock a closed issue
         bail!("issue #{number} is closed, not open — nothing to dispatch");
     }
+    let target = crate::target::pin(&fleet.repo, &fleet.config, number, None)?;
     agent.discover_casting(&issue.labels)?;
     // In a bound repo the worker performs a stage, or the join that follows
     // the last, in its role. Read before the claim: an issue no worker can
@@ -512,7 +513,7 @@ fn start(
                         let pushed = survived.and_then(|found| found.pushed.as_ref());
                         cut_at(fleet, &issue, number, &pushed.ok_or_else(undecided)?.name)?
                     }
-                    Tier::Fresh => cut_at(fleet, &issue, number, &fleet.config.base_branch)?,
+                    Tier::Fresh => cut_at(fleet, &issue, number, &target)?,
                 });
             }
             DispatchStep::RecordBranch => {
@@ -531,7 +532,7 @@ fn start(
                 });
                 if let Some(continuing) = continuing {
                     let pr = closing_pr(&fleet.gh.open_prs()?, number).map(|pr| pr.number);
-                    continue_brief(fleet, cut, pr, continuing)?;
+                    continue_brief(fleet, cut, Some(number), pr, continuing)?;
                 }
             }
             DispatchStep::Start => {
@@ -656,10 +657,18 @@ fn tell_unmatched(
 pub(crate) fn continue_brief(
     fleet: &Fleet,
     worktree: &Worktree,
+    number: Option<u64>,
     pr: Option<u64>,
     continuing: &Continuing,
 ) -> Result<()> {
-    let base = fleet.base_tip()?;
+    let branch = number
+        .map(|n| fleet.task_branch(n))
+        .transpose()?
+        .unwrap_or_else(|| fleet.config.base_branch.clone());
+    let base = fleet
+        .repo
+        .fetched(&format!("refs/heads/{branch}"))?
+        .ok_or_else(|| anyhow!("target branch {branch:?} disappeared"))?;
     let log = Repo::new(worktree.path.clone()).git(&[
         "log",
         "--oneline",
@@ -671,7 +680,7 @@ pub(crate) fn continue_brief(
     let commits: Vec<String> = log.lines().map(str::to_string).collect();
     let added = switched(&Switched {
         from: continuing.from.key(),
-        base_branch: &fleet.config.base_branch,
+        base_branch: &branch,
         commits: &commits,
         pr,
         said: &continuing.said,
@@ -718,7 +727,7 @@ fn brief_with(
         title,
         branch: &worktree.branch,
         worktree: &path,
-        base_branch: &fleet.config.base_branch,
+        base_branch: &fleet.task_branch(number)?,
         gate_command: &crate::own_command().fixed(" gate --land").own(),
         gate_alone_command: &crate::own_command().fixed(" gate").own(),
         lock_command: &crate::own_command().fixed(" lock").own(),

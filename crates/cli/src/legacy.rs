@@ -124,6 +124,7 @@ fn recovery(
             title,
             head_branch: worktree.branch,
             head_sha: head,
+            base_branch: config.base_branch.clone(),
             closes: vec![issue],
         },
     ))

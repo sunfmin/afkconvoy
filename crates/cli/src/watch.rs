@@ -66,7 +66,7 @@ fn ask_after(fleet: &Fleet, me: &Me, issue: u64) -> Result<Option<Asked>> {
         return Ok(Some(Asked::NoPr));
     };
     let (record, comments) = join_record(fleet, pr)?;
-    let progress = progress(&worktree, &fleet.base_tip()?)?;
+    let progress = progress(&worktree, &fleet.task_tip(issue)?)?;
     let (nudged, handed) = (worktree.nudged()?, worktree.handed(record.restarted)?);
     let past_grace = past_grace(state, &progress, nudged, handed, fleet.now);
     let background = own_background(fleet, &worktree, past_grace)?;
