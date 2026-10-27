@@ -148,6 +148,14 @@ pub enum What {
     WatchEnded { id: String, outcome: String, said: String },
     /// The host runner could not look at its host, or read its watch.
     WatchFailed { said: String },
+    /// A deterministic look or session transition; no model is called.
+    WatchState {
+        session: Option<String>,
+        round: Option<String>,
+        terminal: Option<String>,
+        status: String,
+        pending: Vec<String>,
+    },
     /// A tick started a cut of `version` (docs/adr/0028): `said` is the
     /// version, the tag it is cut past and the PRs it holds.
     CutStarted {
@@ -288,6 +296,13 @@ impl Entry {
                 format!("watch: {id}: {outcome} · {said}")
             }
             What::WatchFailed { said } => format!("watch: {said}"),
+            What::WatchState { session, round, terminal, status, pending } => format!(
+                "watch: session {} terminal {} {status}; round {}; pending {}",
+                session.as_deref().unwrap_or("none"),
+                terminal.as_deref().unwrap_or("none"),
+                round.as_deref().unwrap_or("none"),
+                pending.join(", ")
+            ),
             What::CutStarted { .. } | What::CutEnded { .. } => {
                 format!("cut: {}", cut_said(&self.what).unwrap_or_default())
             }
@@ -342,6 +357,7 @@ impl Entry {
             | What::Hot { .. }
             | What::Cooled { .. }
             | What::WatchStarted { .. }
+            | What::WatchState { .. }
             | What::WatchContinued { .. } => None,
         }
     }
@@ -357,6 +373,7 @@ impl Entry {
                 | What::Moved { .. }
                 | What::NotMoved { .. }
                 | What::WatchStarted { .. }
+                | What::WatchState { .. }
                 | What::WatchContinued { .. }
                 | What::WatchDid { .. }
                 | What::WatchEnded { .. }

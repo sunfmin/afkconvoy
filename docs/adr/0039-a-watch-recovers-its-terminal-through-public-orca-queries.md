@@ -4,6 +4,11 @@ status: accepted
 
 # A watch recovers its Terminal through public Orca queries
 
+Amended by ADR-0040 (sunfmin/control#145): the watch retains a resident
+interactive session across independent rounds; looks continue while it is
+busy, and reporting leaves the healthy harness standing by. The older rules
+below that stop looks or end a reported harness are superseded.
+
 Amends ADR-0038 (sunfmin/control#146). Orca is external software. afkconvoy
 uses its existing Terminal CLI and its own durable launch journal; it needs
 no upstream creation key, custom Orca build or private database access.
