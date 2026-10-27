@@ -169,9 +169,14 @@ fn unreadable_explicit_target_prevents_claim_without_holding_other_tasks_back() 
 #[test]
 fn a_target_repair_is_dispatched_and_landed_on_the_affected_branch() {
     let world = World::new();
-    world.set_gate("test ! -f broken.txt || test -f repaired.txt");
+    world.set_gate("true");
     let main = world.remote(&["rev-parse", "refs/heads/main"]);
-    let broken = commit(&world.clone, "broken.txt", "broken target\n");
+    commit(&world.clone, "broken.txt", "broken target\n");
+    let broken = commit(
+        &world.clone,
+        "docs/agents/afkconvoy.md",
+        "```yaml\nbase_branch: main\ngate_command: test ! -f broken.txt || test -f repaired.txt\ngate_seconds: 600\n```\n",
+    );
     git(
         &world.clone,
         &["push", "-q", "origin", "HEAD:delivery/red", "HEAD:refs/convoy/base/red/delivery/red"],
@@ -182,6 +187,15 @@ fn a_target_repair_is_dispatched_and_landed_on_the_affected_branch() {
     let ticked = world.afk(&["tick", "--instance", "alpha", "--host", "h1"]).ok();
     assert_eq!(ticked["errors"], json!([]), "{ticked}");
     let gh = world.gh();
+    let repair_body = gh["issues"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["title"].as_str().unwrap_or("").contains("Repair the red delivery/red"))
+        .unwrap()["body"]
+        .as_str()
+        .unwrap();
+    assert!(repair_body.contains("test ! -f broken.txt || test -f repaired.txt"), "{repair_body}");
     let repair = gh["issues"]
         .as_array()
         .unwrap()

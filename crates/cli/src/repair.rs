@@ -51,6 +51,7 @@ fn tend_on(fleet: &mut Fleet, me: &Me, branch: &str) -> Result<Outcome> {
     if fleet.repo.remote_sha(&red_ref(&fleet.repo, branch))?.as_deref() != Some(&base) {
         return Ok(Outcome::Nothing);
     }
+    let declared = crate::turn::tip_config(&fleet.repo, &base)?;
     let key = if branch == fleet.config.base_branch {
         "base-repair".to_string()
     } else {
@@ -95,7 +96,7 @@ fn tend_on(fleet: &mut Fleet, me: &Me, branch: &str) -> Result<Outcome> {
         }
         let body = format!(
             "<!--convoy:base-repair tip={base}-->\nThe base branch `{}` was gated alone in a clean checkout and is red.\n\nReproduce at `{base}` with `{}`. Find the cause from the gate's log, fix it and add a regression test. Open the repair PR and run `afkconvoy land --issue <n>`. This fleet-lock issue's turn may start on the red tip; it still gates the complete merge commit before landing. Closing this issue frees ordinary turns.\n",
-            config.base_branch, config.gate_command
+            config.base_branch, declared.gate_command
         );
         let issue = fleet.gh.open_issue(
             &format!("Repair the red {} tip {}", config.base_branch, &base[..12.min(base.len())]),
