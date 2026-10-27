@@ -629,6 +629,8 @@ enum Command {
     ///
     /// It writes one thing: each label its lines name that the tracker lacks. In a bound repo that is the flow label of every workflow of the team — `flow:<workflow>`, or the one its file's `label` names; in an unbound one, the ready label. It puts no label on any issue and opens none. Everything is read first: a team with a fault creates nothing.
     ///
+    /// With `--delivery <identity>`, it first validates an existing same-repo Jira delivery. Its `line` keeps the tracker and repo label but omits the runnable flow or ready label. Run that line, then its `intake_line` with the returned issue number: intake attaches the delivery before adding the selected workflow's label (or the unbound repo's ready label). Both steps run in this code repo's checkout. The answer includes `delivery`; each workflow, or the unbound answer, includes `intake_line`. An invalid or cross-repo delivery refuses before creating labels. Without --delivery, today's ordinary creation line is unchanged.
+    ///
     /// ## What it answers
     ///
     /// In a bound repo:
@@ -2242,7 +2244,9 @@ enum Command {
     ///
     /// It reads the config of the checkout, the team it names, the issue, and — to count — the comments of every open issue that carries a flow label. It writes on the issue, in this order: a blocked-by edge to each issue `--blocked-by` names that GitHub does not record yet; one comment, the intake record, whose marker carries the workflow, the role and the issue the worker was on — or the patrol it ran, or, of the repair worker's, `by=repair` and nothing else; then, where the checkout's tracker is another repo (`afkconvoy run --tracker`) and the issue lacks it, this repo's repo label, `repo:<owner>/<repo>`; then the workflow's flow label, `flow:<workflow>`. Nothing but this command writes that format. Then it wakes the fleet, as `afkconvoy wake` does: the issue is on the frontier at the next tick — or, with an open issue to wait for, once that has closed. The edges go first, so the issue is never on the frontier ahead of what blocks it.
     ///
-    /// To contribute to an existing delivery branch, first run `afkconvoy target --issue <n> --branch <branch>`, then intake normally. Each stage and landing retains that destination without changing the repo config.
+    /// For a Jira delivery, run `afkconvoy flows --delivery <identity>`, open with its line (no runnable label), then run its intake_line. `--delivery <identity>` attaches the existing delivery before any runnable label is added. In a bound repo select --workflow; in an unbound repo omit it and intake adds the ready label. An operator or discussion agent may use explicit --delivery without a worker role: this follows human intake and consumes no worker intake limit. Workers still name their role and source task or patrol and count against the existing limit.
+    ///
+    /// A worker's --from (or its worker issue environment) inherits that source task's delivery automatically. Explicit --delivery overrides inheritance for work genuinely belonging to another delivery. A dependency, parent link, checkout branch or discussion title supplies no delivery. Keep --blocked-by separate: it orders tasks and never assigns membership. The delivery reference lives once in the task's remote target record; stages, restart, rework and harness/model switches retain it. Missing, contradictory and cross-repo delivery context refuses without a runnable label being added. Existing pinned targets cannot be reassigned; claims, retained work and unaccounted PRs/candidates are preserved and reported.
     ///
     /// The issue, the issues it waits for and every issue it counts are the tracker's: the checkout's own repo, or the one its host says, where it counts only the issues that carry this repo's repo label.
     ///
@@ -2345,6 +2349,8 @@ enum Command {
     /// ## When to run it
     ///
     /// Run `afkconvoy delivery -C <checkout> --jira https://example.atlassian.net/browse/ABC-123 --final-target <branch> --issue 7` before making the first task dispatchable. The checkout names the code repo. Repeat with another --issue to attach another open task. Omit --final-target and --issue for read-only inspection. Repeat the creation command to reconcile pending final review.
+    ///
+    /// For discussion and decomposition, create the delivery once without --issue, take its returned `delivery` identity, and use `afkconvoy flows --delivery <identity>`. Its line opens a non-runnable task; its intake_line records membership and then enables dispatch. For example, create ABC-123 and ABC-456 with full Jira URLs and --final-target main. Use ABC-123's flows line twice, then `afkconvoy intake --issue 11 --delivery <ABC-123-identity>` and the same for issue 12. Use ABC-456's line once and intake issue 13 with <ABC-456-identity>. In a bound repo add the chosen --workflow to each intake. Tasks 11 and 12 target ABC-123's delivery branch; task 13 targets ABC-456's. Their internal PRs land only there. Repeated delivery inspection lists their tracker issue identities without writing anything or creating tasks. `afkconvoy plan` and `afkconvoy doctor` answer `targets` with delivery membership, resolved target_branch, configured_base, whether it is pinned, and per-task errors; `afkconvoy show --issue <n>` also shows delivery and target_branch for a bound task.
     ///
     /// ## Who runs it
     ///

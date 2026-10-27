@@ -385,3 +385,154 @@ fn rest_exhaustion_preserves_final_review_discovery_and_watch_exclusion() {
     assert!(!watched.to_string().contains("Jira delivery:"), "{watched}");
     assert_eq!(create(&world, None)["final_pr"]["state"], "closed");
 }
+
+/// Execute the creation line exactly as a discussion agent receives it.
+fn open_from_flows(world: &World, flows: &Value) -> u64 {
+    let body = world.root.join("task.md");
+    std::fs::write(&body, "A contribution discussed for this Jira delivery.\n").unwrap();
+    let script = flows["line"]
+        .as_str()
+        .unwrap()
+        .replace("'<title>'", "'Discussed task'")
+        .replace("<file>", "\"$1\"");
+    let output = world
+        .command("sh", &world.clone)
+        .args(["-c", &script, "sh", body.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    String::from_utf8(output.stdout).unwrap().trim().rsplit('/').next().unwrap().parse().unwrap()
+}
+
+#[test]
+fn discussion_creation_reconstructs_three_tasks_and_lands_only_on_their_two_deliveries() {
+    let world = World::new();
+    world.set_gate("true");
+    let first = create(&world, None);
+    let second = world
+        .afk(&[
+            "delivery",
+            "--jira",
+            "https://example.atlassian.net/browse/ABC-456",
+            "--final-target",
+            "main",
+        ])
+        .ok();
+    let main = world.remote(&["rev-parse", "refs/heads/main"]);
+    let mut tasks = vec![];
+    for delivery in [&first, &first, &second] {
+        let id = delivery["delivery"].as_str().unwrap();
+        let flows = world.afk(&["flows", "--delivery", id]).ok();
+        assert!(!flows["line"].as_str().unwrap().contains("ready-for-agent"));
+        let issue = open_from_flows(&world, &flows);
+        assert!(!world.labels(issue).contains(&"ready-for-agent".to_string()));
+        let script = flows["intake_line"].as_str().unwrap().replace("<n>", &issue.to_string());
+        let output = world.command("sh", &world.clone).args(["-c", &script]).output().unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stdout));
+        assert!(world.labels(issue).contains(&"ready-for-agent".to_string()));
+        tasks.push(issue);
+    }
+    for _ in 0..2 {
+        assert_eq!(
+            world.afk(&["delivery", "--jira", JIRA]).ok()["tasks"],
+            json!(tasks[..2].iter().map(|n| format!("#{n}")).collect::<Vec<_>>())
+        );
+    }
+    let targets = world.afk(&["plan"]).ok()["targets"].clone();
+    assert_eq!(targets.as_array().unwrap().len(), 3);
+    let doctor = world.afk(&["doctor"]).ok();
+    assert_eq!(doctor["targets"], targets);
+    for (at, issue) in tasks.iter().enumerate() {
+        let delivery = if at < 2 { &first } else { &second };
+        let branch = delivery["branch"].as_str().unwrap();
+        let number = issue.to_string();
+        assert_eq!(
+            world.afk(&["target", "--issue", &number]).ok()["delivery"],
+            delivery["delivery"]
+        );
+        let started = world
+            .afk(&["dispatch", "--issue", &number, "--instance", "alpha", "--host", "h1"])
+            .ok();
+        let dir = PathBuf::from(started["worktree"].as_str().unwrap());
+        let file = format!("task-{issue}.txt");
+        commit(&dir, &file, &number);
+        git(&dir, &["push", "-q", "origin", "HEAD"]);
+        let pr = 2000 + issue;
+        world.pr(pr, *issue, started["branch"].as_str().unwrap());
+        world.with_gh(|gh| {
+            let row =
+                gh["prs"].as_array_mut().unwrap().iter_mut().find(|p| p["number"] == pr).unwrap();
+            row["baseRefName"] = json!(branch);
+        });
+        let landed = world.afk_in(&dir, &["land", "--issue", &number]).ok();
+        assert_eq!(landed["outcome"], "merged", "{landed}");
+        assert_eq!(landed["target_branch"], branch);
+        assert_eq!(world.remote(&["show", &format!("refs/heads/{branch}:{file}")]), number);
+        let other = if at < 2 { &second } else { &first };
+        let absent = std::process::Command::new("git")
+            .args([
+                "--git-dir",
+                world.bare.to_str().unwrap(),
+                "cat-file",
+                "-e",
+                &format!("refs/heads/{}:{file}", other["branch"].as_str().unwrap()),
+            ])
+            .output()
+            .unwrap();
+        assert!(!absent.status.success());
+    }
+    assert_eq!(world.remote(&["rev-parse", "refs/heads/main"]), main);
+    assert_eq!(final_prs(&world).len(), 2);
+    world.issue(99, &[]);
+    world.afk(&["intake", "--issue", "99"]).ok();
+    assert_eq!(world.afk(&["target", "--issue", "99"]).ok()["target_branch"], "main");
+    assert!(world.afk(&["target", "--issue", "99"]).ok().get("delivery").is_none());
+}
+
+#[test]
+fn invalid_context_and_existing_evidence_refuse_before_a_runnable_label() {
+    let world = World::new();
+    world.issue(7, &[]);
+    world.issue(8, &[]);
+    let delivery = create(&world, None);
+    let id = delivery["delivery"].as_str().unwrap();
+    for invalid in ["missing", "0000000000000000"] {
+        world.afk(&["flows", "--delivery", invalid]).error();
+        world.afk(&["intake", "--issue", "7", "--delivery", invalid]).error();
+        assert!(world.labels(7).is_empty());
+        assert!(world.claims().is_empty());
+    }
+    world.with_gh(|gh| gh["repository"] = json!("another/repo"));
+    assert!(
+        world
+            .afk(&["intake", "--issue", "7", "--delivery", id])
+            .error()
+            .contains("belongs to code repo")
+    );
+    assert!(world.labels(7).is_empty());
+    world.with_gh(|gh| gh["repository"] = json!("acme/dev"));
+    // An unaccounted PR must not acquire a new destination just because its
+    // target record was never written (for example by an older worker).
+    world.pr(70, 7, "earlier-work");
+    let error = world.afk(&["intake", "--issue", "7", "--delivery", id]).error();
+    assert!(error.contains("PRs [70]"), "{error}");
+    assert!(world.labels(7).is_empty());
+    world.afk(&["claim", "--issue", "8", "--instance", "alpha"]).ok();
+    let error = world.afk(&["intake", "--issue", "8", "--delivery", id]).error();
+    assert!(error.contains("pinned") && error.contains("main"), "{error}");
+    assert!(world.labels(8).is_empty());
+    assert_eq!(world.gh()["prs"][0]["state"], "open");
+    // An absent definition remains a refusal on every fresh invocation.
+    git(
+        &world.clone,
+        &["push", "-q", "origin", &format!(":{}", delivery["record"].as_str().unwrap())],
+    );
+    world.issue(9, &[]);
+    assert!(
+        world
+            .afk(&["intake", "--issue", "9", "--delivery", id])
+            .error()
+            .contains("missing delivery")
+    );
+    assert!(world.labels(9).is_empty());
+}
