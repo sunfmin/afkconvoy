@@ -366,6 +366,20 @@ impl Harness {
         }
     }
 
+    /// The role file a worker is told, from the role's directory, beside the
+    /// repo's and the team's. A harness that starts in the worktree names the
+    /// file, because that file is how the role's rules reach the worker
+    /// (ADR-0043). `None`: it starts in the role and loads the file itself,
+    /// and is told no role file.
+    pub const fn role_file(self) -> Option<&'static str> {
+        match self {
+            Harness::Grok => Some(grok::ROLE_FILE),
+            Harness::ClaudeCode | Harness::Pi | Harness::Codex | Harness::Dsh | Harness::Kimi => {
+                None
+            }
+        }
+    }
+
     /// The directories of the one it starts in where it finds skills, when
     /// those are not where a role's are (`team::SKILLS`). The fleet's copy
     /// of a role that holds none of them links the first to the role's
@@ -831,6 +845,17 @@ mod tests {
 
             let headless = ["--print", " exec ", "--prompt", "headless"];
             assert!(!headless.iter().any(|mode| line.contains(mode)), "{}: {line}", harness.key());
+        }
+    }
+
+    #[test]
+    fn the_harness_names_the_role_file_a_worker_is_told() {
+        assert_eq!(Harness::Grok.role_file(), Some(crate::team::RULES));
+        for harness in Harness::ALL {
+            if harness == Harness::Grok {
+                continue;
+            }
+            assert_eq!(harness.role_file(), None, "{}", harness.key());
         }
     }
 

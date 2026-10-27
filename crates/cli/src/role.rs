@@ -451,8 +451,10 @@ impl ToldRules {
     /// Reads what a worker of `harness` is told: the repo's own rules, from
     /// the first file of `Harness::told` that `worktree` holds, and the team
     /// rules, from `team_rules`, of a team that has them. Nothing of those is
-    /// read for a harness that loads both itself. Grok is also told the role's
-    /// `CLAUDE.md` from `role_dir`, because it starts in the worktree (ADR-0043).
+    /// read for a harness that loads both itself. The role's rules are the
+    /// file `Harness::role_file` names in `role_dir`, when that harness names
+    /// one and the file is there. A harness that names none is told no role
+    /// file by this read.
     pub fn read(
         harness: Harness,
         worktree: &Path,
@@ -471,11 +473,12 @@ impl ToldRules {
             let held = names.iter().map(|name| worktree.join(name)).find(|file| file.is_file());
             (held.map(read).transpose()?, team_rules.map(PathBuf::from).map(read).transpose()?)
         };
-        let role = if harness == Harness::Grok {
-            let file = role_dir.join("CLAUDE.md");
-            if file.is_file() { Some(read(file)?) } else { None }
-        } else {
-            None
+        let role = match harness.role_file() {
+            Some(name) => {
+                let file = role_dir.join(name);
+                if file.is_file() { Some(read(file)?) } else { None }
+            }
+            None => None,
         };
         Ok(ToldRules { repo, team, role })
     }
@@ -655,4 +658,79 @@ fn refusal(checked: Vec<Checked>) -> Option<String> {
     }
     let faults = (!faults.is_empty()).then(|| faults.join("\n"));
     refused(&lacking, faults.as_deref())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rules(root: &Path) -> (PathBuf, PathBuf, PathBuf) {
+        let worktree = root.join("worktree");
+        let role = root.join("role");
+        let team = root.join("team").join("CLAUDE.md");
+        std::fs::create_dir(&worktree).unwrap();
+        std::fs::create_dir(&role).unwrap();
+        std::fs::create_dir(team.parent().unwrap()).unwrap();
+        std::fs::write(worktree.join("AGENTS.md"), "the repo's own rules\n").unwrap();
+        std::fs::write(worktree.join("CLAUDE.md"), "the repo's claude rules\n").unwrap();
+        std::fs::write(&team, "the team rules\n").unwrap();
+        // Present for every harness. Only one whose harness names this file is told it.
+        std::fs::write(role.join("CLAUDE.md"), "the role's rules\n").unwrap();
+        for harness in Harness::ALL {
+            if let Some(name) = harness.role_file() {
+                std::fs::write(role.join(name), format!("the role file {name}\n")).unwrap();
+            }
+        }
+        (worktree, role, team)
+    }
+
+    #[test]
+    fn the_role_file_a_worker_is_told_is_the_one_its_harness_names() {
+        let root = tempfile::tempdir().unwrap();
+        let (worktree, role, team) = rules(root.path());
+        for harness in Harness::ALL {
+            let read = ToldRules::read(harness, &worktree, team.to_str(), &role).unwrap();
+            let told = read.told();
+            match harness.role_file() {
+                Some(name) => {
+                    let rules = told.role.unwrap_or_else(|| panic!("{}", harness.key()));
+                    assert!(rules.file.ends_with(name), "{}: {}", harness.key(), rules.file);
+                    assert_eq!(rules.text, format!("the role file {name}\n"), "{}", harness.key());
+                }
+                None => assert!(told.role.is_none(), "{}", harness.key()),
+            }
+            if harness.told().is_empty() {
+                assert!(told.repo.is_none() && told.team.is_none(), "{}", harness.key());
+            } else {
+                let repo = told.repo.unwrap_or_else(|| panic!("{}", harness.key()));
+                assert!(repo.file.ends_with("AGENTS.md"), "{}: {}", harness.key(), repo.file);
+                assert_eq!(repo.text, "the repo's own rules\n");
+                let team_rules = told.team.unwrap_or_else(|| panic!("{}", harness.key()));
+                assert_eq!(team_rules.text, "the team rules\n");
+            }
+        }
+    }
+
+    #[test]
+    fn a_named_role_file_that_is_absent_is_not_told() {
+        let root = tempfile::tempdir().unwrap();
+        let (worktree, role, team) = rules(root.path());
+        let mut removed = Vec::new();
+        for harness in Harness::ALL {
+            if let Some(name) = harness.role_file()
+                && !removed.contains(&name)
+            {
+                std::fs::remove_file(role.join(name)).unwrap();
+                removed.push(name);
+            }
+        }
+        for harness in Harness::ALL {
+            let read = ToldRules::read(harness, &worktree, team.to_str(), &role).unwrap();
+            let told = read.told();
+            assert!(told.role.is_none(), "{}", harness.key());
+            if !harness.told().is_empty() {
+                assert!(told.repo.is_some() && told.team.is_some(), "{}", harness.key());
+            }
+        }
+    }
 }
