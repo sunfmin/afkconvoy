@@ -387,7 +387,7 @@ pub fn has_signal(worktree: &Worktree) -> Result<bool> {
     Ok(!error_of(worktree)?.is_empty())
 }
 
-fn account_quota(evidence: String) -> Diagnosis {
+fn quota(evidence: String) -> Diagnosis {
     Diagnosis {
         status: "fault".into(),
         class: "quota".into(),
@@ -397,45 +397,6 @@ fn account_quota(evidence: String) -> Diagnosis {
         missing: vec![],
         retry_after: None,
     }
-}
-
-fn zai_quota(text: &str) -> Option<Diagnosis> {
-    let start = text.find('{')?;
-    let status = text[..start]
-        .split(|character: char| !character.is_ascii_digit())
-        .any(|digits| digits == "429");
-    if !status {
-        return None;
-    }
-    let body: Value = serde_json::from_str(&text[start..]).ok()?;
-    let code = body.get("code")?;
-    let known_code = code.as_str() == Some("1308") || code.as_u64() == Some(1308);
-    let explicit_limit = body
-        .get("message")
-        .and_then(Value::as_str)
-        .is_some_and(|message| message.to_lowercase().contains("usage limit reached"));
-    if !known_code || !explicit_limit {
-        return None;
-    }
-    Some(account_quota(text.into()))
-}
-
-/// Kimi Code's own usage-limit error, reported on sunfmin/control#166.
-const KIMI_USAGE_LIMIT: &str = "[provider.api_error] 429 You've reached your 5-hour usage limit";
-
-fn kimi_quota(output: &[String]) -> Option<Diagnosis> {
-    let flat = output.join(" ").split_whitespace().collect::<Vec<_>>().join(" ");
-    if !flat.contains(KIMI_USAGE_LIMIT) {
-        return None;
-    }
-    let evidence = output
-        .iter()
-        .find(|line| {
-            line.split_whitespace().collect::<Vec<_>>().join(" ").contains("5-hour usage limit")
-        })
-        .cloned()
-        .unwrap_or_else(|| KIMI_USAGE_LIMIT.to_string());
-    Some(account_quota(evidence))
 }
 
 fn terminal_rule(harness: Harness, output: &[String]) -> Option<Diagnosis> {
@@ -461,32 +422,7 @@ fn terminal_rule(harness: Harness, output: &[String]) -> Option<Diagnosis> {
             retry_after: None,
         });
     }
-    if harness == Harness::Pi
-        && let Some(diagnosis) = output.iter().find_map(|line| zai_quota(line))
-    {
-        return Some(diagnosis);
-    }
-    if harness == Harness::Kimi
-        && let Some(diagnosis) = kimi_quota(output)
-    {
-        return Some(diagnosis);
-    }
-    if harness != Harness::Codex {
-        return None;
-    }
-    let screen = output.join("\n");
-    let lower = screen.to_lowercase();
-    if !lower.contains("usage limit reached")
-        || !lower.contains("increase your limits to continue using codex")
-    {
-        return None;
-    }
-    let evidence = output
-        .iter()
-        .find(|line| line.to_lowercase().contains("usage limit reached"))
-        .cloned()
-        .unwrap_or(screen);
-    Some(account_quota(evidence))
+    harness.account_quota(output).map(quota)
 }
 
 /// Conservative structured/error classification. Plain terminal text goes to
@@ -520,10 +456,10 @@ fn classified_for(harness: Option<Harness>, value: &Value) -> Option<Diagnosis> 
         }
     }
     if let Some(text) = value.as_str() {
-        if harness == Some(Harness::Pi)
-            && let Some(diagnosis) = zai_quota(text)
+        if let Some(harness) = harness
+            && let Some(evidence) = harness.account_quota(&[text.to_string()])
         {
-            return Some(diagnosis);
+            return Some(quota(evidence));
         }
         if let Ok(parsed) = serde_json::from_str::<Value>(text) {
             return classified_for(harness, &parsed);
@@ -1417,39 +1353,57 @@ fn decide(
 mod tests {
     use super::*;
 
+    fn screen(lines: &[&str]) -> Vec<String> {
+        lines.iter().map(|line| (*line).to_string()).collect()
+    }
+
+    /// What the harness reports is an account quota that continues. The
+    /// words themselves are the harness's; here only the class is decided.
     #[test]
-    fn zai_runtime_quota_requires_pi_and_an_http_429_status() {
-        let error = r#"429: {"code":"1308","message":"Usage limit reached for 5 hour"}"#;
-        assert_eq!(
-            classified_for(Some(Harness::Pi), &json!(error)).map(|diagnosis| diagnosis.class),
-            Some("quota".into())
-        );
-        assert!(classified_for(Some(Harness::Codex), &json!(error)).is_none());
-        assert!(
-            classified_for(Some(Harness::Pi), &json!(error.replacen("429", "1429", 1))).is_none()
-        );
+    fn an_account_quota_continues_and_only_on_the_harness_that_names_it() {
+        let cases = [
+            (
+                Harness::Codex,
+                screen(&["Usage limit", "reached. Increase your limits to continue using codex."]),
+            ),
+            (
+                Harness::Kimi,
+                screen(&[
+                    "Error: [provider.api_error] 429 You've reached your",
+                    "5-hour usage limit.",
+                ]),
+            ),
+            (
+                Harness::Pi,
+                screen(&[
+                    "Error: 429: {\"code\":\"1308\",\"message\":\"Usage limit reached for 5 hour. Your limit will reset at",
+                    "2026-10-27 17:52:40\"}",
+                ]),
+            ),
+        ];
+        for (harness, output) in cases {
+            let diagnosis = terminal_rule(harness, &output).unwrap();
+            assert_eq!(diagnosis.class, "quota", "{}", harness.key());
+            assert_eq!(diagnosis.scope, Scope::Account);
+            assert_eq!(diagnosis.action, Action::Continue);
+            assert_eq!(diagnosis.evidence, vec![harness.account_quota(&output).unwrap()]);
+            for other in Harness::ALL {
+                if other != harness {
+                    assert!(terminal_rule(other, &output).is_none(), "{}", other.key());
+                }
+            }
+        }
     }
 
     #[test]
-    fn kimi_usage_limit_is_an_account_quota_only_on_kimi_s_screen() {
-        let line = "Error: [provider.api_error] 429 You've reached your 5-hour usage limit. \
-                    Your quota will reset when the current 5-hour window";
-        let screen = [line.to_string(), "ends. To continue now.".into()];
-        let diagnosis = terminal_rule(Harness::Kimi, &screen).unwrap();
+    fn a_runtime_account_quota_continues_for_the_harness_that_names_it() {
+        let error = r#"429: {"code":"1308","message":"Usage limit reached for 5 hour"}"#;
+        let diagnosis = classified_for(Some(Harness::Pi), &json!(error)).unwrap();
         assert_eq!(diagnosis.class, "quota");
         assert_eq!(diagnosis.scope, Scope::Account);
         assert_eq!(diagnosis.action, Action::Continue);
-        assert_eq!(diagnosis.evidence, vec![line.to_string()]);
-        assert!(terminal_rule(Harness::Pi, &screen).is_none());
-        assert!(terminal_rule(Harness::Codex, &screen).is_none());
-        let wrapped = [
-            "Error: [provider.api_error] 429 You've reached your".into(),
-            "5-hour usage limit.".into(),
-        ];
-        assert_eq!(terminal_rule(Harness::Kimi, &wrapped).unwrap().class, "quota");
-        assert!(
-            terminal_rule(Harness::Kimi, &["429 You've reached your 5-hour usage limit".into()])
-                .is_none()
-        );
+        assert_eq!(diagnosis.retry_after, None);
+        assert!(classified_for(Some(Harness::Codex), &json!(error)).is_none());
+        assert!(classified_for(Some(Harness::Kimi), &json!(error)).is_none());
     }
 }
