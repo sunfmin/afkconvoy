@@ -531,6 +531,16 @@ impl Watcher {
                         .flatten()
                         .any(|resource| resource["id"] == q.item.id && resource["active"] == true)
             });
+            // A host-wide condition names no checkout. Its evidence is read
+            // at the first checkout on the list, and a look that ran before
+            // any `run` handed one over has nowhere to read it. That
+            // condition waits for the next look.
+            let evidenced = |id: &str| {
+                state.look["host"]["resources"].as_array().is_some_and(|rows| {
+                    rows.iter().any(|row| row["id"] == id && row["evidence"].as_str().is_some())
+                })
+            };
+            state.pending.retain(|q| !q.item.id.starts_with("resource:") || evidenced(&q.item.id));
             if !state.pending.is_empty() {
                 let look = state.look.clone();
                 let items = state.pending.iter().map(|q| q.item.clone()).collect();

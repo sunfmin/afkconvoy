@@ -1204,6 +1204,11 @@ pub fn run(
             said.keep(clock(), log::What::Stop { line: stop_line(repo, me) });
             return Ok(json!({"stopped": true, "ticks": count, "instance": me.instance.as_str()}));
         }
+        // Each tick is a look of its own: what it reads of orca's repos and
+        // of the quota note it reads once in itself, not once in the runner's
+        // life, so what a `run` registered since is seen (sunfmin/control#162).
+        crate::orca::new_look();
+        crate::gh_quota::new_look();
         // A tracker made public ends this fleet instance before it works
         // anything more — within the hour a check that found it private
         // stands, and at once of one said anew — as a start's probe refuses

@@ -279,10 +279,10 @@ fn the_steps_run_in_order() {
     assert_eq!(
         calls,
         [
-            // what survived is read first, under the claim
+            // what survived is read first, under the claim; the repo list is
+            // the look's one (docs/adr/0042)
             "repo list",
             "worktree list",
-            "repo list",
             "worktree create",
             "terminal list",
             "terminal close",

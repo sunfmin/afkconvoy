@@ -1917,7 +1917,7 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String], look: &Look) ->
         Err(error) => json!({"error": format!("{error:#}")}),
     };
     host["settings"] = match List::of_host() {
-        Ok(list) => crate::host_settings::json(&list, &repo.dir),
+        Ok(list) => crate::host_settings::json(&list, &repo.dir, &look.readings),
         Err(error) => json!({"error": format!("{error:#}")}),
     };
     if let Some(host) = host.as_object_mut() {

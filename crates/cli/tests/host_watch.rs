@@ -1594,7 +1594,10 @@ fn resident_rounds_queue_while_busy_revalidate_recover_and_keep_reports_separate
     assert_eq!(sent(&world, &second).len(), 2, "standby never nudges or calls a model");
     let doctor = world.afk(&["doctor", "--all"]).json;
     assert_eq!(doctor["host"]["watch"]["session"]["status"], "standby");
-    assert_eq!(doctor["host"]["watch"]["rounds"].as_array().unwrap().len(), 2);
+    assert_eq!(doctor["host"]["watch"]["last"]["id"], second["id"]);
+    assert!(doctor["host"]["watch"].get("rounds").is_none());
+    let with_rounds = world.afk(&["doctor", "--all", "--rounds"]).json;
+    assert_eq!(with_rounds["host"]["watch"]["rounds"].as_array().unwrap().len(), 2);
     assert_eq!(doctor["host"]["watch"]["pending"], json!([]));
     assert!(open(&world, &dir).contains(&OPERATORS.into()));
     // A real observed recovery ends coverage; its return is a new episode.

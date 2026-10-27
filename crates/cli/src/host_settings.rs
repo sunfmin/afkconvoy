@@ -284,9 +284,13 @@ impl Settings {
 
     /// Each setting in force for the fleet of the checkout at `dir`, by its
     /// key, in the units of its flag: what the host says, else its default
-    /// worked out for this host.
-    pub fn in_force(&self, dir: &Path) -> Map<String, Value> {
-        let limits = hot::limits(self.hot(), dir);
+    /// worked out from the look's host reading.
+    pub fn in_force(
+        &self,
+        dir: &Path,
+        readings: &crate::admission::Readings,
+    ) -> Map<String, Value> {
+        let limits = readings.hot_limits(self.hot(), dir);
         let gib = |bytes: u64| (bytes as u128 * 1000 / (1 << 30)) as f64 / 1000.0;
         let in_force = json!({
             "no_host_sleep": self.no_host_sleep,
@@ -372,12 +376,12 @@ pub fn change(list: &List, named: &Named) -> Result<Map<String, Value>> {
 /// what the host says (null: it says none, and the default holds), and what
 /// is in force for the fleet of the checkout at `dir`; {file, error} where
 /// the file cannot be read.
-pub fn json(list: &List, dir: &Path) -> Value {
+pub fn json(list: &List, dir: &Path, readings: &crate::admission::Readings) -> Value {
     match list.read() {
         Ok(listed) => json!({
             "file": list.file(),
             "said": listed.settings.said(),
-            "in_force": listed.settings.in_force(dir),
+            "in_force": listed.settings.in_force(dir, readings),
         }),
         Err(error) => json!({"file": list.file(), "error": format!("{error:#}")}),
     }
@@ -563,7 +567,8 @@ mod tests {
         assert_eq!(Value::Object(changed), json!({"admit_load": {"from": null, "to": 400}}));
         assert_eq!(list.read().unwrap().settings.admit_load, Some(400));
         assert!(change(&list, &named).unwrap().is_empty(), "named as it is: no change");
-        let answered = json(&list, dir.path());
+        let readings = crate::admission::Readings::new();
+        let answered = json(&list, dir.path(), &readings);
         assert_eq!(answered["said"]["admit_load"], 400);
         assert_eq!(answered["in_force"]["admit_load"], 400);
         assert_eq!(answered["in_force"]["admit_memory"], SHARES.memory);
@@ -574,7 +579,10 @@ mod tests {
         let named = Named { host_sleep_hours: Some(To::Value(night)), ..Named::default() };
         let changed = Value::Object(change(&list, &named).unwrap());
         assert_eq!(changed, json!({"host_sleep_hours": {"from": null, "to": "22:00-06:00"}}));
-        assert_eq!(json(&list, dir.path())["in_force"]["host_sleep_hours"], "22:00-06:00");
+        assert_eq!(
+            json(&list, dir.path(), &readings)["in_force"]["host_sleep_hours"],
+            "22:00-06:00"
+        );
         let named = Named { host_sleep_hours: Some(To::Default), ..Named::default() };
         let changed = Value::Object(change(&list, &named).unwrap());
         assert_eq!(changed, json!({"host_sleep_hours": {"from": "22:00-06:00", "to": null}}));

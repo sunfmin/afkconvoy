@@ -558,7 +558,18 @@ impl GitHub {
     fn quota(&self) -> Result<crate::gh_quota::Scope> {
         let mut scope = self.quota.lock().unwrap_or_else(|e| e.into_inner());
         if scope.is_none() {
-            *scope = Some(crate::gh_quota::Scope::of(self)?);
+            let made = crate::gh_quota::Scope::of(self)?;
+            let now = crate::gh_quota::now();
+            let held = ["core", "graphql", "secondary"]
+                .iter()
+                .any(|name| made.read(name).is_ok_and(|r| r.remaining == Some(0) && r.reset > now));
+            // Once in this look, and not while the note already says the
+            // login is held. A second ask in the same look does nothing
+            // (`observe`, docs/adr/0042).
+            if !held {
+                made.observe(self)?;
+            }
+            *scope = Some(made);
         }
         Ok(scope.as_ref().expect("scope was established").clone())
     }
@@ -623,8 +634,11 @@ impl GitHub {
         }
     }
 
+    /// The quota note as it stands. A look that read GitHub already carried
+    /// the response headers into it; this reports that note and does not ask
+    /// `rate_limit` of its own (docs/adr/0042). An empty note is an answer.
     pub(crate) fn quota_status(&self) -> Result<serde_json::Value> {
-        self.quota()?.json()
+        crate::gh_quota::Scope::of(self)?.json()
     }
 
     /// Executes one backend only. Compound equivalents use this entry so a

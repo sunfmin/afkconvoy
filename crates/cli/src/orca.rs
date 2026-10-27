@@ -556,6 +556,14 @@ fn repo_list() -> Result<Value> {
     listed.as_ref().expect("set above").clone().map_err(|error| anyhow!(error))
 }
 
+/// A new look begins: the listing is read again in it. A process that is one
+/// look — `doctor`, say — never calls this and reads the listing once; the
+/// host runner is a process of many looks, one per tick and one per start,
+/// and each must see what a `run` registered since.
+pub fn new_look() {
+    *REPOS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+}
+
 impl Source {
     /// The orca repo whose path is this checkout's main worktree.
     pub fn of(repo: &Repo) -> Result<Source> {
@@ -593,7 +601,7 @@ fn same_dir(a: &Path, b: &Path) -> bool {
 pub fn watch_directory(directory: &Path) -> Result<()> {
     if Source::at(directory)?.is_none() {
         orca(&["repo", "add", "--path", &directory.display().to_string()])?;
-        *REPOS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        new_look();
     }
     Ok(())
 }
@@ -783,7 +791,7 @@ impl Worktree {
     /// it is linked to, and whether a worker holds it: a terminal of it is
     /// live. A main checkout is no worktree of a fleet's, and is left out.
     pub fn on_host() -> Result<Vec<OnHost>> {
-        let repos = orca(&["repo", "list"])?;
+        let repos = repo_list()?;
         let listed = orca(&["worktree", "list"])?;
         let ps = runtime()?;
         Ok(on_host(&repos, &listed, &ps))

@@ -70,6 +70,17 @@ static HOSTS: Mutex<BTreeMap<PathBuf, String>> = Mutex::new(BTreeMap::new());
 static SCOPES: Mutex<BTreeMap<String, Result<Scope, String>>> = Mutex::new(BTreeMap::new());
 static OBSERVED: Mutex<BTreeSet<PathBuf>> = Mutex::new(BTreeSet::new());
 
+/// A new look begins: the quota note may be observed once in it. A process
+/// that is one look — `doctor`, say — never calls this and observes at most
+/// once; the host runner is a process of many looks, one per tick and one
+/// per start, and observing once in each keeps the note honest instead of
+/// leaving it to whatever response headers happen to arrive afterwards. The
+/// login scope stands for the process's life: nobody changes `gh`'s login
+/// under a running runner.
+pub(crate) fn new_look() {
+    OBSERVED.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clear();
+}
+
 /// The GitHub host a checkout uses, read once per checkout in this process.
 fn host(gh: &GitHub) -> String {
     if let Ok(host) = std::env::var("GH_HOST") {
@@ -192,7 +203,7 @@ impl Scope {
 
     /// The rate-limit endpoint has its own exemption from primary quotas.
     /// An unavailable observation never clears an exhaustion already seen.
-    /// At most one observation is made for this login in this process.
+    /// At most one observation is made for this login in this look.
     pub(crate) fn observe(&self, gh: &GitHub) -> Result<()> {
         {
             let mut observed = OBSERVED.lock().unwrap_or_else(|poisoned| poisoned.into_inner());

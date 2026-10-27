@@ -22,6 +22,7 @@ pub struct Readings {
     cores: u64,
     load: Option<u64>,
     memory_free: Option<u64>,
+    memory: Option<u64>,
     disks: Mutex<BTreeMap<u64, Option<Disk>>>,
 }
 
@@ -32,6 +33,7 @@ impl Readings {
             cores: std::thread::available_parallelism().map_or(1, |cores| cores.get() as u64),
             load: load().ok(),
             memory_free: memory_free().ok(),
+            memory: crate::hot::memory(),
             disks: Mutex::new(BTreeMap::new()),
         }
     }
@@ -44,6 +46,17 @@ impl Readings {
         let mut disks = self.disks.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let disk = *disks.entry(volume).or_insert_with(|| disk(dir).ok());
         Reading { cores: self.cores, load: self.load, memory_free: self.memory_free, disk }
+    }
+
+    /// Hot-worker limits derived from this same host reading.
+    pub fn hot_limits(&self, said: crate::hot::Said, dir: &Path) -> afkconvoy_core::hot::Limits {
+        let reading = self.at(dir);
+        crate::hot::limits_from(
+            said,
+            reading.cores,
+            self.memory,
+            reading.disk.map(|disk| disk.free),
+        )
     }
 }
 
