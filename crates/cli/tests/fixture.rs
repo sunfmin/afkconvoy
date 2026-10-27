@@ -1,5 +1,9 @@
 //! The fixture itself: what every later test stands on.
 
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
 use crate::common;
 
 use common::{BASE, World, git};
@@ -33,7 +37,6 @@ fn gh_and_orca_on_path_are_the_stand_ins() {
 
 #[test]
 fn repository_templates_leave_each_world_with_its_own_writable_git_history() {
-    use std::os::unix::fs::{MetadataExt, PermissionsExt};
     let first = World::new();
     let second = World::new();
     first.reuse_repository_templates();
@@ -70,6 +73,11 @@ fn repository_templates_leave_each_world_with_its_own_writable_git_history() {
         std::fs::metadata(b.join(&object)).unwrap().ino(),
         "Git objects must be independent too"
     );
+    let seed = common::repository_template(&files);
+    assert_read_only(seed.parent().unwrap());
+    assert_eq!(std::fs::read_to_string(seed.join("a directory/skill.md")).unwrap(), original_text);
+    let copied = std::fs::metadata(a.join("a directory/skill.md")).unwrap().permissions().mode();
+    assert_ne!(copied & 0o200, 0, "a world's copy restores the write bit");
     common::commit(&a, "a directory/skill.md", "changed\n");
     std::fs::set_permissions(a.join(".git/index"), std::fs::Permissions::from_mode(0o400)).unwrap();
     drop(first);
@@ -82,4 +90,255 @@ fn repository_templates_leave_each_world_with_its_own_writable_git_history() {
     common::commit(&b, "a directory/skill.md", "independent\n");
     assert_eq!(git(&b, &["rev-list", "--count", "HEAD"]), "3");
     assert_eq!(git(&c, &["rev-list", "--count", "HEAD"]), "2");
+    assert_eq!(
+        std::fs::read_to_string(seed.join("a directory/skill.md")).unwrap(),
+        original_text,
+        "the seed stays intact"
+    );
+}
+
+#[test]
+fn a_repository_template_seed_is_kept_outside_the_checkout() {
+    let files = [("a directory/skill.md", "outside the checkout\n")];
+    let cache = afkconvoy::copies::cache().unwrap();
+    let cache_existed = cache.exists();
+    let seed = canonical(&common::repository_template(&files));
+    let process_temp = canonical(&std::env::temp_dir());
+    let checkout = this_checkout();
+    let build = this_build_output();
+    let cache_at = if cache_existed { canonical(&cache) } else { cache.clone() };
+
+    assert!(!seed.starts_with(&checkout), "the seed is inside the checkout: {}", seed.display());
+    assert!(!seed.starts_with(&build), "the seed is inside the build output: {}", seed.display());
+    assert!(
+        !seed.starts_with(&cache_at),
+        "the seed is inside the fleet's cache directory: {}",
+        seed.display()
+    );
+    if !cache_existed {
+        assert!(!cache.exists(), "publishing a seed created the fleet's cache directory");
+    }
+    let temp_blocked = process_temp.starts_with(&checkout)
+        || process_temp.starts_with(&build)
+        || process_temp.starts_with(&cache_at);
+    let allowed = if temp_blocked { canonical(Path::new("/tmp")) } else { process_temp };
+    assert!(
+        seed.starts_with(&allowed),
+        "the seed {} is not under the process temp directory {}",
+        seed.display(),
+        allowed.display()
+    );
+
+    let templates = seed.parent().unwrap().parent().unwrap();
+    assert_eq!(templates.file_name().unwrap(), "afkconvoy-repository-templates-v1");
+    let held = std::fs::metadata(templates).unwrap();
+    assert_eq!(held.uid(), std::fs::metadata(std::env::current_exe().unwrap()).unwrap().uid());
+    assert_ne!(
+        held.permissions().mode() & 0o200,
+        0,
+        "the seed directory is not writable by its owner"
+    );
+    assert_read_only(seed.parent().unwrap());
+}
+
+#[test]
+fn a_seed_stays_outside_a_checkout_that_holds_the_process_temp() {
+    let checkout = tempfile::tempdir().unwrap();
+    let inside = tempfile::tempdir_in(checkout.path()).unwrap();
+    let build = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+
+    let blocked = common::repository_template_home(
+        inside.path(),
+        Some(checkout.path()),
+        Some(build.path()),
+        Some(cache.path()),
+    );
+    assert_eq!(blocked, PathBuf::from("/tmp/afkconvoy-repository-templates-v1"));
+    assert!(!path_is_inside(&blocked, checkout.path()));
+    assert!(!path_is_inside(&blocked, build.path()));
+    assert!(!path_is_inside(&blocked, cache.path()));
+
+    let kept = common::repository_template_home(outside.path(), Some(checkout.path()), None, None);
+    assert!(path_is_inside(&kept, outside.path()));
+    assert!(!path_is_inside(&kept, checkout.path()));
+
+    let in_build = common::repository_template_home(build.path(), None, Some(build.path()), None);
+    assert!(!path_is_inside(&in_build, build.path()));
+    let in_cache = common::repository_template_home(cache.path(), None, None, Some(cache.path()));
+    assert!(!path_is_inside(&in_cache, cache.path()));
+}
+
+#[test]
+fn two_publishers_of_the_same_inputs_leave_one_seed() {
+    let files = [("a directory/skill.md", "one published seed\n")];
+    let ready = std::sync::Barrier::new(2);
+    let (first, second) = std::thread::scope(|scope| {
+        let first = scope.spawn(|| {
+            ready.wait();
+            common::publish_repository_template(&files, "the same builder")
+        });
+        let second = scope.spawn(|| {
+            ready.wait();
+            common::publish_repository_template(&files, "the same builder")
+        });
+        (first.join().unwrap(), second.join().unwrap())
+    });
+    assert_eq!(first, second, "two publishers left two seeds");
+    assert!(first.is_dir());
+    assert_read_only(first.parent().unwrap());
+}
+
+#[test]
+fn a_losing_publisher_thaws_its_scratch_and_that_scratch_is_removed() {
+    let templates = tempfile::tempdir().unwrap();
+    let kept = templates.path().join("kept");
+    std::fs::create_dir(&kept).unwrap();
+    std::fs::write(kept.join("manifest.json"), b"winner").unwrap();
+    let scratch = templates.path().join("scratch");
+    std::fs::create_dir_all(scratch.join("repo/a directory")).unwrap();
+    std::fs::write(scratch.join("repo/a directory/skill.md"), "loser\n").unwrap();
+
+    common::publish_scratch(&scratch, &kept);
+
+    let nested = std::fs::metadata(scratch.join("repo/a directory")).unwrap().permissions().mode();
+    assert_ne!(nested & 0o200, 0, "the losing scratch stays read-only");
+    std::fs::remove_dir_all(&scratch).unwrap();
+    assert!(!scratch.exists(), "the losing scratch is still there");
+    assert_eq!(std::fs::read(kept.join("manifest.json")).unwrap(), b"winner");
+    let held = std::fs::metadata(templates.path()).unwrap().permissions().mode();
+    assert_ne!(held & 0o200, 0, "publishing took the write bit off the directory that holds seeds");
+}
+
+#[test]
+fn a_changed_input_or_builder_publishes_a_new_seed_and_an_unchanged_one_is_reused() {
+    let files = [("a directory/skill.md", "the inputs\n")];
+    let seed = common::publish_repository_template(&files, "builder one");
+    let head = seed.join(".git/HEAD");
+    let inode = std::fs::metadata(&head).unwrap().ino();
+    let again = common::publish_repository_template(&files, "builder one");
+    assert_eq!(again, seed, "an unchanged builder published a second seed");
+    assert_eq!(
+        std::fs::metadata(&head).unwrap().ino(),
+        inode,
+        "an unchanged builder rebuilt the seed"
+    );
+
+    let rebuilt = common::publish_repository_template(&files, "builder two");
+    assert_ne!(rebuilt, seed, "a changed builder reused the seed");
+    let changed = common::publish_repository_template(
+        &[("a directory/skill.md", "other inputs\n")],
+        "builder one",
+    );
+    assert_ne!(changed, seed, "changed inputs reused the seed");
+    assert_ne!(changed, rebuilt);
+
+    let wired =
+        common::repository_template(&[("a directory/skill.md", "wired to the builder source\n")]);
+    let same = common::publish_repository_template(
+        &[("a directory/skill.md", "wired to the builder source\n")],
+        include_str!("common/mod.rs"),
+    );
+    assert_eq!(wired, same, "the published seed hashes the builder source");
+    let templates = seed.parent().unwrap().parent().unwrap();
+    let held = std::fs::metadata(templates).unwrap().permissions().mode();
+    assert_ne!(held & 0o200, 0, "a later seed cannot be published");
+    assert!(rebuilt.is_dir() && changed.is_dir());
+}
+
+#[test]
+fn a_worktree_removes_after_a_repository_template_is_published() {
+    let base = tempfile::tempdir().unwrap();
+    let main = base.path().join("main");
+    let linked = base.path().join("linked");
+    std::fs::create_dir(&main).unwrap();
+    git(&main, &["init", "-q", "-b", BASE]);
+    git(&main, &["commit", "-q", "--allow-empty", "-m", "initial"]);
+    git(&main, &["worktree", "add", "--detach", linked.to_str().unwrap()]);
+
+    let build = linked.join("target/debug/deps");
+    std::fs::create_dir_all(&build).unwrap();
+    std::fs::write(build.join("cli-test"), b"binary").unwrap();
+    let seed = canonical(&common::repository_template(&[(
+        "a directory/skill.md",
+        "published from a worktree\n",
+    )]));
+    assert!(!seed.starts_with(canonical(&linked)), "the seed landed in the worktree");
+    assert!(!seed.starts_with(canonical(&main)), "the seed landed in the main checkout");
+    assert!(!seed.starts_with(this_checkout()), "the seed landed in this checkout");
+    assert!(!seed.starts_with(this_build_output()), "the seed landed in the build output");
+
+    let removed =
+        Command::new("rm").args(["-rf", "--"]).arg(linked.join("target")).status().unwrap();
+    assert!(removed.success(), "removing the worktree's build output");
+    assert!(!linked.join("target").exists());
+    git(&main, &["worktree", "remove", "--force", linked.to_str().unwrap()]);
+    assert!(!linked.exists(), "the worktree is still there");
+}
+
+/// Every file and directory under `dir` has no write bit. A symlink's mode
+/// is not a permission on its target.
+fn assert_read_only(dir: &Path) {
+    let mut pending = vec![dir.to_path_buf()];
+    while let Some(path) = pending.pop() {
+        let meta = std::fs::symlink_metadata(&path).unwrap();
+        if meta.file_type().is_symlink() {
+            continue;
+        }
+        assert_eq!(
+            meta.permissions().mode() & 0o222,
+            0,
+            "{} is writable ({:o})",
+            path.display(),
+            meta.permissions().mode()
+        );
+        if meta.is_dir() {
+            for entry in std::fs::read_dir(&path).unwrap() {
+                pending.push(entry.unwrap().path());
+            }
+        }
+    }
+}
+
+fn this_checkout() -> PathBuf {
+    let exe = std::env::current_exe().unwrap();
+    let top = git(exe.parent().unwrap(), &["rev-parse", "--show-toplevel"]);
+    canonical(Path::new(&top))
+}
+
+fn this_build_output() -> PathBuf {
+    let exe = canonical(&std::env::current_exe().unwrap());
+    let mut dir = exe.parent().unwrap().to_path_buf();
+    loop {
+        let profile = dir.file_name().is_some_and(|name| name == "debug" || name == "release");
+        if profile {
+            let target = dir.parent().unwrap().to_path_buf();
+            assert_eq!(target.file_name().unwrap(), "target");
+            assert!(exe.starts_with(&target));
+            return target;
+        }
+        assert!(dir.pop(), "the test binary is outside a cargo target directory");
+    }
+}
+
+fn canonical(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// Whether `path` is `root` or under it, following symlinks of the parts
+/// that exist. `/tmp` is `/private/tmp` once the real directory is named.
+fn path_is_inside(path: &Path, root: &Path) -> bool {
+    resolved(path).starts_with(resolved(root))
+}
+
+fn resolved(path: &Path) -> PathBuf {
+    let mut acc = PathBuf::new();
+    for component in path.components() {
+        acc.push(component);
+        if let Ok(canon) = std::fs::canonicalize(&acc) {
+            acc = canon;
+        }
+    }
+    acc
 }
