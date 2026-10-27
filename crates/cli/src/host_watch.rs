@@ -1142,10 +1142,31 @@ fn resume_delivery(watch: &mut Watch) -> Result<()> {
     record.receipt = Some(receipt.clone());
     watch_terminal::save(&record)?;
     let prompt = &receipt["send"]["prompt"];
-    let started = prompt["stages"]
+    let turn_started = prompt["stages"]
         .as_array()
         .is_some_and(|stages| stages.iter().any(|s| s == "turn_started"));
-    if receipt["send"]["accepted"] != true || !started {
+    let evidence = if turn_started {
+        Some(json!({"kind": "turn_started"}))
+    } else if prompt["observation"] == "unsupported"
+        && prompt["stages"]
+            .as_array()
+            .is_some_and(|stages| stages.iter().any(|s| s == "input_accepted"))
+    {
+        // Same fallback as worker delivery: accepted input alone proves
+        // nothing, but an unobservable provider may show the new turn on
+        // its own Terminal after the previous round returned to input.
+        let screen = worktree.screen(&watch.terminal, 20)?;
+        screen
+            .iter()
+            .any(|line| {
+                let line = line.to_ascii_lowercase();
+                line.contains("working") || line.contains("thinking")
+            })
+            .then(|| json!({"kind": "terminal_evidence", "screen": screen}))
+    } else {
+        None
+    };
+    if receipt["send"]["accepted"] != true || evidence.is_none() {
         bail!(
             "watch round {} submission is unproven; retained request {} and receipt {}; no fresh input will be sent",
             watch.id,
@@ -1156,6 +1177,9 @@ fn resume_delivery(watch: &mut Watch) -> Result<()> {
     if watch.started == 0 {
         watch.started = record.offered.unwrap_or_else(crate::clock);
     }
+    record.watch = watch.clone();
+    record.execution_evidence = evidence;
+    watch_terminal::save(&record)?;
     watch_terminal::set_status(watch, LaunchState::Running)
 }
 
@@ -1664,7 +1688,17 @@ mod tests {
             let mut state = read().unwrap();
             state.running = Some(round.clone());
             watcher.save(&state).unwrap();
-            resume_delivery(round).unwrap();
+            let until = Instant::now() + Duration::from_secs(90);
+            loop {
+                match resume_delivery(round) {
+                    Ok(()) => break,
+                    Err(_) if crate::watch_report::read(&round.id).unwrap().is_some() => break,
+                    Err(error) => {
+                        assert!(Instant::now() < until, "{error:#}");
+                        std::thread::sleep(Duration::from_millis(500));
+                    }
+                }
+            }
             let mut state = read().unwrap();
             state.running = Some(round.clone());
             watcher.save(&state).unwrap();
@@ -1699,6 +1733,7 @@ mod tests {
         submit(&mut first, 1);
         wait_report(&first);
         let pid = executor(&first);
+        let first_runtime = worktree.terminal_health(&first.terminal, crate::clock()).unwrap().1;
         let deadline = Instant::now() + Duration::from_secs(90);
         while !worktree.watch_input_ready(&first.terminal).unwrap() {
             assert!(Instant::now() < deadline, "first round did not return to input");
@@ -1725,6 +1760,23 @@ mod tests {
             crate::watch_report::read(&second.id).unwrap().unwrap().did,
             ["smoke round 2 only"]
         );
+        let deadline = Instant::now() + Duration::from_secs(90);
+        while !worktree.watch_input_ready(&second.terminal).unwrap() {
+            assert!(Instant::now() < deadline, "second round did not return to input");
+            std::thread::sleep(Duration::from_millis(500));
+        }
+        let second_runtime = worktree.terminal_health(&second.terminal, crate::clock()).unwrap().1;
+        let evidence = json!({"terminal": first.terminal, "session": first.session,
+            "executor_pid": pid, "first": watch_json(&read().unwrap().history[0]),
+            "second": watch_json(read().unwrap().last.as_ref().unwrap()),
+            "first_runtime": first_runtime, "second_runtime": second_runtime,
+            "screen_after_both_reports": worktree.screen(&second.terminal, 35).unwrap(),
+            "input_ready_after_both_reports": true});
+        std::fs::write(
+            directory.join(".afkconvoy-tmp/real-resident-evidence.json"),
+            serde_json::to_vec_pretty(&evidence).unwrap(),
+        )
+        .unwrap();
         println!(
             "real resident proof: terminal={}, session={}, executor_pid={pid}, first={}, second={}, reports=2; both reports left the same interactive Agent alive",
             first.terminal, first.session, first.id, second.id

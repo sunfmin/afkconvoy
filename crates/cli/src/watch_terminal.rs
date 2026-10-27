@@ -42,6 +42,8 @@ pub(crate) struct Record {
     pub receipt: Option<Value>,
     #[serde(default)]
     pub offered: Option<u64>,
+    #[serde(default)]
+    pub execution_evidence: Option<Value>,
 }
 
 fn file() -> Result<PathBuf> {
@@ -80,6 +82,7 @@ pub(crate) fn save(record: &Record) -> Result<()> {
             "terminal": record.watch.terminal, "status": record.status,
             "request": record.request, "receipt": record.receipt,
             "offered": record.offered, "started": record.watch.started,
+        "execution_evidence": record.execution_evidence,
         }))?,
     )?;
     std::fs::rename(temporary, delivery)?;
@@ -140,6 +143,7 @@ pub(crate) fn prepare(watch: &Watch, command: &str) -> Result<()> {
         request: None,
         receipt: None,
         offered: None,
+        execution_evidence: None,
     })
 }
 
@@ -214,6 +218,7 @@ pub(crate) fn locate(watch: &Watch) -> Result<Option<String>> {
                 request: None,
                 receipt: None,
                 offered: None,
+                execution_evidence: None,
             })?;
         }
         return Ok(Some(exact.to_string()));
@@ -285,6 +290,7 @@ pub(crate) fn begin_round(watch: &Watch) -> Result<()> {
     record.request = None;
     record.receipt = None;
     record.offered = None;
+    record.execution_evidence = None;
     save(&record)
 }
 
