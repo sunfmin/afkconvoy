@@ -291,6 +291,7 @@ fn routed(world: &World) -> Vec<Vec<String>> {
                 let rest = what.strip_prefix("issues/");
                 let on = rest.and_then(|rest| rest.split('/').next()).unwrap_or_default();
                 let of_pr = what.starts_with("pr ")
+                    || what.starts_with("pulls?")
                     || what.starts_with("branches/")
                     || prs.iter().any(|pr| pr == on)
                     || rest.and_then(|rest| rest.strip_prefix("comments/")).is_some_and(|id| {

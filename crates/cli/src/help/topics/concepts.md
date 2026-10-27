@@ -13,7 +13,7 @@ An unrecorded base tip is gated alone first. A red tip holds ordinary turns whil
 
 ## Task destinations
 
-An operator can select an existing same-repo branch before a task is claimed: `afkconvoy target --issue 7 --branch delivery/ABC-123`. The selection is pinned in remote fleet state; stages, switches, continuation and landing retain it. With no selection, the first claim pins the configured base. The worker cuts from its target and opens its internal PR against it; a turn gates and lands there, then closes the task issue. A different PR base or a missing target refuses. Each branch has its own candidate chain and settlement history, under the same host worker lanes. Watches and cuts continue using the configured base, and a target branch triggers no independent product release. `afkconvoy target --help`, `afkconvoy land --help`.
+An operator can select an existing same-repo branch before a task is claimed: `afkconvoy target --issue 7 --branch delivery/ABC-123`. The selection is pinned in remote fleet state; stages, switches, continuation and landing retain it. With no selection, the first claim pins the configured base. The worker cuts from its target and opens its internal PR against it; a turn gates and lands there, then closes the task issue. A different PR base or a missing target refuses. Each branch has its own candidate chain and landed commits, under the same host worker lanes. Watches and cuts continue using the configured base, and a target branch triggers no independent product release. `afkconvoy target --help`, `afkconvoy land --help`.
 
 ## One issue, in an unbound repo
 
