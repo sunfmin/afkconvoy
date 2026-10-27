@@ -38,9 +38,22 @@ fn repository_templates_leave_each_world_with_its_own_writable_git_history() {
     let second = World::new();
     first.reuse_repository_templates();
     second.reuse_repository_templates();
-    let files = [("a directory/skill.md", "the original\n")];
-    let a = first.repo("acme/role with spaces", &files);
-    let b = second.repo("acme/role with spaces", &files);
+    // A unique input makes each repetition exercise cold publication, as
+    // well as concurrent readers. Only immutable seed data crosses Worlds.
+    let original_text = format!("the original in {}\n", first.root.display());
+    let files = [("a directory/skill.md", original_text.as_str())];
+    let ready = std::sync::Barrier::new(2);
+    let (a, b) = std::thread::scope(|scope| {
+        let a = scope.spawn(|| {
+            ready.wait();
+            first.repo("acme/role with spaces", &files)
+        });
+        let b = scope.spawn(|| {
+            ready.wait();
+            second.repo("acme/role with spaces", &files)
+        });
+        (a.join().unwrap(), b.join().unwrap())
+    });
     let original = git(&a, &["rev-parse", "HEAD"]);
     assert_eq!(git(&b, &["rev-parse", "HEAD"]), original);
     assert_eq!(git(&b, &["rev-list", "--count", "HEAD"]), "2");
@@ -62,7 +75,7 @@ fn repository_templates_leave_each_world_with_its_own_writable_git_history() {
     drop(first);
     assert!(!a.exists(), "even the read-only index is cleaned up");
     assert_eq!(git(&b, &["rev-parse", "HEAD"]), original);
-    assert_eq!(std::fs::read_to_string(b.join("a directory/skill.md")).unwrap(), "the original\n");
+    assert_eq!(std::fs::read_to_string(b.join("a directory/skill.md")).unwrap(), original_text);
     let c = second.repo("acme/a later copy", &files);
     assert_eq!(git(&c, &["rev-parse", "HEAD"]), original, "the seed stays intact");
     assert_eq!(git(&c, &["status", "--porcelain"]), "");
