@@ -162,6 +162,7 @@ struct State {
     resident: Option<Watch>,
     /// Current observation's episode identities and durable delivery queue.
     observed: BTreeMap<String, String>,
+    episodes_initialized: bool,
     covered: Vec<String>,
     pending: Vec<Queued>,
     look: Value,
@@ -202,7 +203,17 @@ impl State {
             }
         }
         // Migrate old coverage before adding new episode identities.
-        let legacy = self.observed.is_empty() && self.covered.is_empty();
+        let legacy = !self.episodes_initialized;
+        if legacy {
+            if let Some(round) = self.running.as_ref().or(self.resident.as_ref()) {
+                for (item, episode) in round.items.iter().zip(&round.episodes) {
+                    self.observed.insert(item.id.clone(), episode.clone());
+                    if round.report.is_some() {
+                        self.covered.push(episode.clone());
+                    }
+                }
+            }
+        }
         self.observed.retain(|id, _| present.contains(id));
         for id in &present {
             let episode =
@@ -245,6 +256,7 @@ impl State {
         self.until = look["until"].as_u64().or(self.until);
         self.look = look;
         self.looked = Some(now);
+        self.episodes_initialized = true;
     }
 
     /// A start reserves its episodes while the watch runs; only a report
@@ -253,17 +265,23 @@ impl State {
     /// on the same item wins over an earlier unsuccessful watch.
     fn retry_unreported(&mut self) {
         let mut seen = BTreeSet::new();
+        let mut research_seen = self
+            .running
+            .as_ref()
+            .is_some_and(|r| r.items.iter().any(|i| i.id.starts_with(host_watch::RESEARCH_ITEM)));
         for watch in self.last.iter().chain(self.history.iter().rev()) {
             for item in &watch.items {
                 if seen.insert(&item.id) && watch.report.is_none() {
                     self.watched.retain(|id| id != &item.id);
                 }
             }
-            if watch.report.is_none()
-                && self.research_started == Some(watch.started)
+            if !research_seen
                 && watch.items.iter().any(|item| item.id.starts_with(host_watch::RESEARCH_ITEM))
             {
-                self.research_started = None;
+                research_seen = true;
+                if watch.report.is_none() && self.research_started == Some(watch.started) {
+                    self.research_started = None;
+                }
             }
         }
     }
@@ -1002,6 +1020,14 @@ fn gave_out(harness: Harness, transcript: &str, exited: Option<i32>) -> Option<D
 /// Starts a session of `watch` on its harness: its brief written beside its
 /// transcript, in the host's cache. Answers its terminal and transcript.
 fn start_session(watch: &mut Watch) -> Result<(String, PathBuf)> {
+    let result = launch_session(watch)?;
+    resume_delivery(watch)?;
+    Ok(result)
+}
+
+/// Creates only the owned executor. Round delivery has a separate journal
+/// boundary, so creation recovery cannot silently become a second prompt.
+fn launch_session(watch: &mut Watch) -> Result<(String, PathBuf)> {
     watch.session = uuid::Uuid::new_v4().to_string();
     if watch.stock {
         std::fs::create_dir_all(&watch.directory).with_context(|| {
@@ -1066,7 +1092,6 @@ fn start_session(watch: &mut Watch) -> Result<(String, PathBuf)> {
                 watch_terminal::locate(watch)?.with_context(|| format!("{error:#}"))?;
         }
     }
-    resume_delivery(watch)?;
     Ok((watch.terminal.clone(), transcript))
 }
 
@@ -1128,7 +1153,6 @@ fn resume_delivery(watch: &mut Watch) -> Result<()> {
     }
     if watch.started == 0 {
         watch.started = record.offered.unwrap_or_else(crate::clock);
-        write_brief(watch)?;
     }
     watch_terminal::set_status(watch, LaunchState::Running)
 }
