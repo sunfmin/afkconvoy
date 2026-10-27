@@ -177,6 +177,7 @@ fn a_real_kimi_worker_loads_its_role_and_refuses_what_the_role_and_guard_refuse(
             file: &team.join("CLAUDE.md").display().to_string(),
             text: &team_rules,
         }),
+        role: None,
     };
     let guard = format!("{} guard", env!("CARGO_BIN_EXE_afkconvoy"));
     let (kept, _) = for_worker_under(

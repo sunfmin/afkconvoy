@@ -248,7 +248,12 @@ impl Staged {
         worktree: &Worktree,
         model: Option<&str>,
     ) -> Result<String> {
-        let told = ToldRules::read(self.harness, &worktree.path, self.team_rules.as_deref())?;
+        let told = ToldRules::read(
+            self.harness,
+            &worktree.path,
+            self.team_rules.as_deref(),
+            &self.role_copy.dir,
+        )?;
         let (kept, shadowed) = crate::kept::for_worker(
             self.harness,
             self.host_user,
@@ -439,28 +444,40 @@ impl Staged {
 pub struct ToldRules {
     repo: Option<(String, String)>,
     team: Option<(String, String)>,
+    role: Option<(String, String)>,
 }
 
 impl ToldRules {
     /// Reads what a worker of `harness` is told: the repo's own rules, from
     /// the first file of `Harness::told` that `worktree` holds, and the team
-    /// rules, from `team_rules`, of a team that has them. Nothing is read
-    /// for a harness that loads both itself.
-    pub fn read(harness: Harness, worktree: &Path, team_rules: Option<&str>) -> Result<ToldRules> {
-        let names = harness.told();
-        if names.is_empty() {
-            return Ok(ToldRules::default());
-        }
+    /// rules, from `team_rules`, of a team that has them. Nothing of those is
+    /// read for a harness that loads both itself. Grok is also told the role's
+    /// `CLAUDE.md` from `role_dir`, because it starts in the worktree (ADR-0043).
+    pub fn read(
+        harness: Harness,
+        worktree: &Path,
+        team_rules: Option<&str>,
+        role_dir: &Path,
+    ) -> Result<ToldRules> {
         let read = |file: PathBuf| {
             let text = std::fs::read_to_string(&file)
                 .with_context(|| format!("cannot read the rules in {}", file.display()))?;
             anyhow::Ok((file.display().to_string(), text))
         };
-        let held = names.iter().map(|name| worktree.join(name)).find(|file| file.is_file());
-        Ok(ToldRules {
-            repo: held.map(read).transpose()?,
-            team: team_rules.map(PathBuf::from).map(read).transpose()?,
-        })
+        let names = harness.told();
+        let (repo, team) = if names.is_empty() {
+            (None, None)
+        } else {
+            let held = names.iter().map(|name| worktree.join(name)).find(|file| file.is_file());
+            (held.map(read).transpose()?, team_rules.map(PathBuf::from).map(read).transpose()?)
+        };
+        let role = if harness == Harness::Grok {
+            let file = role_dir.join("CLAUDE.md");
+            if file.is_file() { Some(read(file)?) } else { None }
+        } else {
+            None
+        };
+        Ok(ToldRules { repo, team, role })
     }
 
     /// What was read, as a start says it.
@@ -468,7 +485,11 @@ impl ToldRules {
         fn rules(read: &(String, String)) -> Rules<'_> {
             Rules { file: &read.0, text: &read.1 }
         }
-        Told { repo: self.repo.as_ref().map(rules), team: self.team.as_ref().map(rules) }
+        Told {
+            repo: self.repo.as_ref().map(rules),
+            team: self.team.as_ref().map(rules),
+            role: self.role.as_ref().map(rules),
+        }
     }
 }
 

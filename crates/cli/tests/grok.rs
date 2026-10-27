@@ -1,6 +1,7 @@
-//! Grok is a harness: a bound worker starts in its role, under a generated
+//! Grok is a harness: a bound worker starts in its worktree, under a generated
 //! home that holds the role's limits, the fleet's guard and the report.
-//! The role's rules and skills stay where every harness writes them.
+//! The role's rules are told in that home, and its skills are named there.
+//! The role's files stay where every harness writes them.
 
 use crate::common;
 
@@ -126,10 +127,12 @@ fn a_grok_worker_gets_an_isolated_role_home_and_keeps_the_role_s_own_files() {
     world.issue(7, &["flow:feature"]);
     tick(&world);
 
-    let line = started(&world, &worktree(&world, 7));
+    let tree = worktree(&world, 7);
+    let line = started(&world, &tree);
     let role = role_copy(&world, "acme/dev");
     let kept = kept_from(&line);
-    assert!(line.starts_with(&format!("cd '{}'", role.display())), "{line}");
+    assert!(line.starts_with(&format!("cd '{}'", tree.display())), "{line}");
+    assert!(!line.contains("--add-dir"), "{line}");
     assert!(line.contains("GROK_MEMORY=0"), "{line}");
     assert!(line.contains("GROK_CLAUDE_HOOKS_ENABLED=0"), "{line}");
     assert!(line.contains("GROK_CLAUDE_MCPS_ENABLED=0"), "{line}");
@@ -139,9 +142,7 @@ fn a_grok_worker_gets_an_isolated_role_home_and_keeps_the_role_s_own_files() {
     assert!(line.contains("GROK_CURSOR_SKILLS_ENABLED=0"), "{line}");
     assert!(!line.contains("GROK_CLAUDE_SKILLS_ENABLED=0"), "{line}");
     assert!(line.contains("AFKCONVOY_HARNESS='grok' AFKCONVOY_MODEL='grok-4.7'"), "{line}");
-    assert!(line.contains(" && grok --always-approve --add-dir "), "{line}");
-    assert_eq!(line.matches("--add-dir").count(), 2, "{line}");
-    assert!(line.contains(" --trust --model 'grok-4.7'"), "{line}");
+    assert!(line.contains(" && grok --always-approve --trust --model 'grok-4.7'"), "{line}");
     assert!(!line.contains("--skills-dir") && !line.contains("--rules "), "{line}");
     assert!(kept.starts_with(world.cache().join("afkconvoy/harness/grok")), "{kept:?}");
     assert_ne!(kept, world.cache().join("afkconvoy/harness/grok"));
@@ -177,11 +178,14 @@ fn a_grok_worker_gets_an_isolated_role_home_and_keeps_the_role_s_own_files() {
     assert_eq!(parsed["compat"]["cursor"]["hooks"], false);
     assert_eq!(parsed["compat"]["cursor"]["mcps"], false);
     let told = std::fs::read_to_string(kept.join("rules/told.md")).unwrap();
+    assert!(told.contains("# The role's own rules:"), "{told}");
+    assert!(told.contains("the rules of a dev"), "{told}");
     assert!(told.contains("# The repo's own rules:"), "{told}");
     assert!(
         told.contains("the rules of the project") && told.contains("the rules of the team"),
         "{told}"
     );
+    assert!(config.contains(&role.join(".claude/skills").display().to_string()), "{config}");
     assert!(!told.contains("base_prompt"), "{told}");
 }
 
@@ -224,7 +228,13 @@ fn roles_do_not_share_a_home_and_the_host_user_s_skills_and_rules_are_named() {
     );
     assert!(!auditor_config.contains("role-limit"));
     assert!(auditor_config.contains("afkconvoy guard"));
-    assert!(!dev_config.contains("ignore"), "{dev_config}");
+    assert!(dev_config.contains("~/.claude/skills/implement"), "{dev_config}");
+    assert!(
+        dev_config
+            .contains(&role_copy(&world, "acme/dev").join(".claude/skills").display().to_string()),
+        "{dev_config}"
+    );
+    assert!(!dev_config.contains("~/.grok/skills\"]"), "{dev_config}");
     assert!(dev_config.contains("extra_rule_dirs"), "{dev_config}");
 }
 
