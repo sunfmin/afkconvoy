@@ -333,6 +333,10 @@ fn the_example_team_is_written_whole_and_passes_check_as_pushed() {
     // Each file is there as the binary holds it, and nothing else is.
     for (path, text) in hospital.files {
         assert_eq!(&std::fs::read_to_string(team.join(path)).unwrap(), text, "{path}");
+        assert!(!path.contains("record-precedent") && *path != "precedents.md", "{path}");
+        if path.ends_with("SKILL.md") {
+            assert!(!text.contains("precedent"), "retired authority in {path}: {text}");
+        }
     }
     assert_eq!(git(&team, &["status", "--porcelain"]), "");
     let tracked = git(&team, &["ls-files"]);
@@ -341,7 +345,7 @@ fn the_example_team_is_written_whole_and_passes_check_as_pushed() {
     assert_eq!(world.gh_calls(), [created]);
 
     // The team's loader takes it as pushed, with no edit: seven roles in the
-    // team's own repo, three workflows, four patrols, rules and precedents.
+    // team's own repo, three workflows, four patrols and rules.
     let read = world.afk(&check).ok();
     let names = |of: &str, key: &str| -> Vec<String> {
         let all = read[of].as_array().unwrap_or_else(|| panic!("{of}: {read}")).iter();

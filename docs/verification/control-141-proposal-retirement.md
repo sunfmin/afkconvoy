@@ -52,4 +52,6 @@ Control ADR 0006's corresponding amendment is owned by [control#143](https://git
 
 Seven CLI integration scenarios in `crates/cli/tests/retired_proposals.rs` pass: repeated human ruling-to-resume with zero proposals; explicit legacy config refusal; owned worker stop with work/branch/history retained; live and stale peer protection; idempotent PR disposition and no ongoing polling; failed stop retry while an ordinary issue fills the concurrency slot; and same-host startup takeover followed by retirement without a replacement proposal.
 
+The existing scaffold integration scenario also passes: every bundled skill is checked for retired precedent references, and the generated team has neither the separate document nor a record-precedent skill.
+
 Existing consult, operator/watch, rework, issue, patrol and cut tests remain in the full gate. The landing turn records the full gate result for the exact merge commit on the remote and in the PR landing receipt.
