@@ -36,4 +36,26 @@ ends that session before starting the next eligible harness in the same
 terminal slot. Its brief carries the same look and the earlier session's
 terminal evidence. Continuations share the original hour and directory;
 there is still at most one watch on the host. Authority, human bounds,
-triggers and episode coverage are unchanged.
+triggers and episode coverage are unchanged by the terminal surface.
+
+## An unreported watch leaves its work eligible
+
+Amends ADR-0030's once-per-episode rule (sunfmin/control#138). Starting a
+watch reserves the work while it runs; its explicit report keeps that
+episode covered afterwards. A terminal closed without a report, an expired
+watch, a harness exiting without reporting, or exhausted harness choices
+must not permanently consume the trigger. The next scheduled look that
+still finds the condition starts another watch when a harness is available.
+The watch interval bounds these retries; a running watch still prevents a
+second one, and a reported human decision is not repeatedly dispatched.
+
+The host runner reconciles coverage against retained watch outcomes before
+choosing new work. This repairs failed episodes left covered by an older
+runner after an upgrade or restart. The latest outcome for an item wins:
+an earlier unsuccessful watch cannot undo a later report. An unreported
+research watch also releases its daily research reservation. Earlier failed
+attempts and their missing reports remain in the next brief.
+
+Felix's clarification on sunfmin/control#138 keeps workers and watches in
+interactive Orca terminals. The defect is missed automatic recovery, not
+the choice of chat versus terminal.
