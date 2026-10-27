@@ -1716,22 +1716,18 @@ fn an_unobservable_provider_needs_working_evidence_and_reuses_its_accepted_reque
     let waiting = running(&world).unwrap();
     assert_eq!(waiting["started"], 0, "input acceptance alone consumes no execution hour");
     assert_eq!(sent(&world, &waiting).len(), 1);
-    world.with_orca(|orca| {
-        for terminal in orca["terminals"].as_array_mut().unwrap() {
-            if terminal["handle"] == waiting["terminal"] {
-                terminal["screen"] = json!(["Working: handling the round"]);
-            }
-        }
-    });
-    let running = until(&world, "visible execution on the same accepted request", || {
-        running(&world).filter(|r| r["started"].as_u64().unwrap_or(0) != 0)
-    });
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+    afkconvoy::session::record(&world.home(), &dir, true, now).unwrap();
+    let running =
+        until(&world, "the session records the turn on the same accepted request", || {
+            running(&world).filter(|r| r["started"].as_u64().unwrap_or(0) != 0)
+        });
     assert_eq!(sent(&world, &running).len(), 1);
     assert_eq!(starts(&world).len(), 1);
     let doctor = world.afk(&["doctor"]).json;
     assert_eq!(
         doctor["host"]["watch"]["running"]["delivery"]["execution_evidence"]["kind"],
-        "terminal_evidence"
+        "session_turn"
     );
     printed(&world, &running, &["unobservable provider reported"], Some(0));
     until(&world, "explicit report", || ended(&world, "ended"));

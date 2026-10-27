@@ -613,18 +613,28 @@ fn a_live_run_is_seen_alive_and_a_claim_whose_worker_is_gone_is_a_finding() {
     assert_eq!(answer["claims"][0]["worker"]["state"], "busy");
     assert_eq!(answer["findings"], json!([]), "a fleet at work has no finding");
 
-    // orca has no report of it — a worker in its role loads none of the
-    // user's hooks: one writing to its terminal is at work all the same
-    world.with_orca(|orca| orca["terminals"][0]["agent"] = json!(null));
+    // Orca dropping its agent report does not end the turn the session still
+    // has open, however long the screen has been quiet.
+    world.with_orca(|orca| {
+        orca["terminals"][0]["agent"] = json!(null);
+        orca["terminals"][0]["lastOutputAt"] = json!((at - 400) * 1000);
+    });
     let answer = doctor(&world, &now).ok();
     assert_eq!(answer["claims"][0]["worker"]["state"], "busy");
-    world.with_orca(|orca| orca["terminals"][0]["lastOutputAt"] = json!((at - 400) * 1000));
+
+    // The session says that turn ended 400s ago.
+    world.with_orca(|orca| {
+        orca["terminals"][0]["agent"] =
+            json!({"state": "idle", "stateStartedAt": (at - 400) * 1000});
+    });
     let answer = doctor(&world, &now).ok();
-    assert_eq!(
-        answer["claims"][0]["worker"],
-        json!({"state": "stopped", "quiet": 400, "harness": "claude-code",
-            "orca":null, "recorded_harness":"claude-code", "harness_mismatch":false})
-    );
+    let worker = &answer["claims"][0]["worker"];
+    assert_eq!(worker["state"], "stopped");
+    assert_eq!(worker["quiet"], 400);
+    assert_eq!(worker["harness"], "claude-code");
+    assert_eq!(worker["recorded_harness"], "claude-code");
+    assert_eq!(worker["harness_mismatch"], false);
+    assert_eq!(worker["orca"]["state"], "idle");
 
     // its worker's terminal is closed under it
     world.with_orca(|orca| orca["terminals"] = json!([]));

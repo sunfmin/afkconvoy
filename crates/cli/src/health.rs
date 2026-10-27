@@ -763,8 +763,10 @@ fn observe(
     let signal = error_of(worktree)?;
     // A delivery that failed after the runtime reported working still
     // belongs to classification; it cannot be cleared by that old report.
-    let working = (orca["state"] == "working" || (orca.is_null() && state == WorkerState::Busy))
-        && signal.is_empty();
+    // An open session turn is healthy. Orca's `working` is not: a harness it
+    // cannot observe never reports one, and a turn the session has ended is
+    // idle however the runtime last labeled it.
+    let working = state == WorkerState::Busy && signal.is_empty();
     let harness = worktree.harness()?.unwrap_or(Harness::DEFAULT);
     let recorded = worktree.recorded_harness()?;
     let mismatch = recorded.is_some_and(|h| h != harness);
@@ -877,7 +879,7 @@ fn observe(
             }
         }
         observed.action = "healthy".into();
-        observed.source = "orca worktree ps".into();
+        observed.source = "session turn".into();
         observed.error = None;
         observed.diagnosis = None;
         observed.judgment = None;

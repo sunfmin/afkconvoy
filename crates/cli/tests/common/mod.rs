@@ -418,6 +418,9 @@ impl World {
         // A `run` keeps its host awake, but where a test says otherwise
         // (`World::host_sleeps`).
         env.push(("AFKCONVOY_NO_HOST_SLEEP".to_string(), "true".to_string()));
+        // The fleet polls a session file for the turn. The stand-in has
+        // already written it when send returns, so a test checks once.
+        env.push(("AFKCONVOY_TURN_WAIT_SECONDS".to_string(), "0".to_string()));
         env
     }
 
