@@ -262,16 +262,24 @@ impl Harness {
     /// The generated configuration this harness's kept home needs, if any.
     /// `host_user` is whether that worker is given the host user's skills and
     /// rules. A harness that reads no user config ignores `user`.
+    /// `role_skills` is the role's `.claude/skills` when this worker has one,
+    /// and `role_skill_names` the directories in it. Grok names that directory
+    /// and ignores a host skill of the same name (ADR-0043). Every other
+    /// harness ignores both.
     pub fn kept_configuration(
         self,
         user: Option<&str>,
         role: Option<&str>,
         guard: Option<&str>,
         host_user: bool,
+        role_skills: Option<&str>,
+        role_skill_names: &[String],
     ) -> Result<Option<String>, String> {
         match self {
             Harness::Kimi => kimi::configuration(user, role, guard).map(Some),
-            Harness::Grok => grok::configuration(role, guard, host_user).map(Some),
+            Harness::Grok => {
+                grok::configuration(role, guard, host_user, role_skills, role_skill_names).map(Some)
+            }
             Harness::ClaudeCode | Harness::Pi | Harness::Codex | Harness::Dsh => Ok(None),
         }
     }
@@ -582,14 +590,20 @@ impl Harness {
 
     /// The line a terminal opened on the issue's worktree runs to start a
     /// worker of this harness in its role with the worker launch command
-    /// `command`: change to the role's copy, put the stage's facts and this
-    /// harness in the environment, and start the command with what this
-    /// harness does not load from there: the worktree and its rules, the
-    /// user's configuration left out, the guard and the report to the worker
-    /// backend, the host user's skills and rules where the worker is given
-    /// them, and the stage's model — each in this harness's way.
+    /// `command`: change to the directory this harness loads a session from,
+    /// put the stage's facts and this harness in the environment, and start
+    /// the command with what this harness does not load from there: the
+    /// worktree and its rules, the user's configuration left out, the guard
+    /// and the report to the worker backend, the host user's skills and rules
+    /// where the worker is given them, and the stage's model — each in this
+    /// harness's way. Every harness but Grok starts in the role's copy. Grok's
+    /// session works only in its cwd, so it starts in the worktree (ADR-0043).
     pub fn in_role(self, command: &str, start: &Start) -> String {
-        let mut line = Line::new().fixed("cd ").word(start.role_dir).fixed(" && export");
+        let directory = match self {
+            Harness::Grok => start.worktree,
+            _ => start.role_dir,
+        };
+        let mut line = Line::new().fixed("cd ").word(directory).fixed(" && export");
         for variable in self.environment() {
             line = line.fixed(" ").fixed(variable).fixed("=1");
         }

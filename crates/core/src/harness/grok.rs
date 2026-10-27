@@ -1,7 +1,9 @@
 //! Grok, as a harness. A role's denied permissions are Grok's own project
 //! file; its hooks are not loaded from that file, so each role gets a
 //! generated home whose config holds the role's hooks and denies, the fleet's
-//! guard and the report. The role's rules and skills stay where every harness
+//! guard and the report. A session works only in its cwd, so the worker
+//! starts in the worktree (ADR-0043). The role's rules are told in that home,
+//! and its skills are named there. The role's files stay where every harness
 //! writes them.
 
 use std::collections::BTreeMap;
@@ -23,12 +25,14 @@ pub(super) const PROGRAM: &str = "grok";
 /// Lets an unattended interactive worker run. Deny rules and hooks still apply.
 pub(super) const STOCK: &str = "grok --always-approve";
 
-const ADD_DIR: &str = "--add-dir";
 pub(super) const MODEL: &str = "--model";
 /// On the launch line. Grok 1.0.70 accepts it and `--help` does not name it,
 /// so it is not one of `FLAGS`: the flag check does not require `--help` to.
 pub(super) const TRUST: &str = "--trust";
-pub(super) const FLAGS: [&str; 2] = [ADD_DIR, MODEL];
+/// `--add-dir` is not one of these. Grok 1.0.60 and later reject
+/// `additionalDirectories` on session create, so the fleet never passes it
+/// (ADR-0043). A command must take `--model`.
+pub(super) const FLAGS: [&str; 1] = [MODEL];
 const HELP: &str = " --help";
 const MODELS: &str = " models";
 const PROMPT: &str = " -p";
@@ -143,6 +147,8 @@ pub(super) fn configuration(
     role: Option<&str>,
     guard: Option<&str>,
     host_user: bool,
+    role_skills: Option<&str>,
+    role_skill_names: &[String],
 ) -> Result<String, String> {
     let mut table = toml::map::Map::new();
     table.insert("compat".into(), compat(host_user));
@@ -150,11 +156,9 @@ pub(super) fn configuration(
         let mut paths = toml::map::Map::new();
         paths.insert("extra_rule_dirs".into(), Toml::Array(vec![Toml::from("~/.grok/rules")]));
         table.insert("paths".into(), Toml::Table(paths));
-    } else {
-        let mut skills = toml::map::Map::new();
-        let ignore = HOME_SKILLS.into_iter().map(Toml::from).collect();
-        skills.insert("ignore".into(), Toml::Array(ignore));
-        table.insert("skills".into(), Toml::Table(skills));
+    }
+    if let Some(skills) = skills_table(host_user, role_skills, role_skill_names) {
+        table.insert("skills".into(), skills);
     }
     if let Some(role) = role.filter(|text| !text.trim().is_empty()) {
         let role =
@@ -180,6 +184,37 @@ pub(super) fn configuration(
         }
     }
     toml::to_string_pretty(&Toml::Table(table)).map_err(|error| error.to_string())
+}
+
+/// Role skills, and the host skills a role's own name stands in place of.
+/// With `host_user` false the whole host skill directories are ignored, as
+/// before. With it true, only a directory of the same name as one of the
+/// role's is ignored, so the rest of the host user's skills stay and the
+/// role's copy of a shared name is the one Grok loads.
+fn skills_table(host_user: bool, role_skills: Option<&str>, names: &[String]) -> Option<Toml> {
+    let mut skills = toml::map::Map::new();
+    let role_skills = role_skills.filter(|dir| !dir.is_empty());
+    if !host_user {
+        let ignore = HOME_SKILLS.into_iter().map(Toml::from).collect();
+        skills.insert("ignore".into(), Toml::Array(ignore));
+    } else if role_skills.is_some() {
+        let mut ignore = Vec::new();
+        for name in names {
+            if name.is_empty() || name.contains('/') || name.contains('\\') {
+                continue;
+            }
+            for root in HOME_SKILLS {
+                ignore.push(Toml::from(format!("{root}/{name}")));
+            }
+        }
+        if !ignore.is_empty() {
+            skills.insert("ignore".into(), Toml::Array(ignore));
+        }
+    }
+    if let Some(dir) = role_skills {
+        skills.insert("paths".into(), Toml::Array(vec![Toml::from(dir)]));
+    }
+    if skills.is_empty() { None } else { Some(Toml::Table(skills)) }
 }
 
 fn compat(host_user: bool) -> Toml {
@@ -243,13 +278,17 @@ const REPORT: &str = "hook=\"${HOME-}/.orca/agent-hooks/grok-hook.sh\"; \
      if [ -x \"$hook\" ]; then ORCA_HOOK_AGENT_PID=\"$PPID\" /bin/sh \"$hook\"; \
      else cat >/dev/null; fi; exit 0";
 
-/// Repo and team rules, as markdown Grok loads from its home. The role's own
-/// rules are the `CLAUDE.md` of the directory it starts in.
+/// Repo, team and role rules, as markdown Grok loads from its home. The
+/// worker starts in the worktree, so the role's `CLAUDE.md` is told here
+/// rather than loaded as the start directory's own rules.
 pub(super) fn system(told: &Told) -> Option<String> {
-    if told.repo.is_none() && told.team.is_none() {
+    if told.role.is_none() && told.repo.is_none() && told.team.is_none() {
         return None;
     }
     let mut text = String::new();
+    if let Some(rules) = told.role {
+        told_rules(&mut text, "The role's own rules", rules);
+    }
     if let Some(rules) = told.repo {
         told_rules(&mut text, "The repo's own rules", rules);
     }
@@ -311,17 +350,10 @@ pub(super) fn environment(line: Line, start: &Start) -> Line {
 
 #[spec(fn(Line[@l], &Start) -> Line[l])]
 pub(super) fn added(line: Line, start: &Start) -> Line {
-    let line = line
-        .fixed(" ")
-        .fixed(ADD_DIR)
-        .fixed(" ")
-        .word(start.worktree)
-        .fixed(" ")
-        .fixed(ADD_DIR)
-        .fixed(" ")
-        .word(start.team_dir)
-        .fixed(" ")
-        .fixed(TRUST);
+    // No `--add-dir`. Grok 1.0.60+ refuses `additionalDirectories` and the
+    // session then never starts. The worktree is the cwd (`in_role`). Repo
+    // and team rules are in the kept home, and so are the role's.
+    let line = line.fixed(" ").fixed(TRUST);
     match start.model {
         Some(model) => line.fixed(" ").fixed(MODEL).fixed(" ").word(model),
         None => line,
@@ -493,12 +525,18 @@ mod tests {
     #[test]
     fn a_worker_starts_in_its_role_with_trust_and_no_shell_expansion() {
         let line = Harness::Grok.in_role(STOCK, &start(Some("grok-4.7"), false));
-        assert!(line.starts_with("cd '/copies/acme/dev/abc' && export GROK_HOME='/cache/harness/grok-role' GROK_MEMORY=0"), "{line}");
+        assert!(
+            line.starts_with(
+                "cd '/wt/issue 7' && export GROK_HOME='/cache/harness/grok-role' GROK_MEMORY=0"
+            ),
+            "{line}"
+        );
         assert!(line.contains("GROK_CLAUDE_HOOKS_ENABLED=0"), "{line}");
         assert!(line.contains("GROK_CLAUDE_RULES_ENABLED=0"), "{line}");
         assert!(line.contains("GROK_CURSOR_SKILLS_ENABLED=0"), "{line}");
         assert!(!line.contains("GROK_CLAUDE_SKILLS_ENABLED=0"), "{line}");
-        assert!(line.contains(" AFKCONVOY_HARNESS='grok' AFKCONVOY_MODEL='grok-4.7' && grok --always-approve --add-dir '/wt/issue 7' --add-dir '/copies/acme/team/def' --trust --model 'grok-4.7'"), "{line}");
+        assert!(!line.contains("--add-dir"), "{line}");
+        assert!(line.contains(" AFKCONVOY_HARNESS='grok' AFKCONVOY_MODEL='grok-4.7' && grok --always-approve --trust --model 'grok-4.7'"), "{line}");
         let odd = Start { kept: "/it's kept/$HOME", host_user: true, ..start(None, true) };
         let line = Harness::Grok.in_role("grok", &odd);
         assert!(line.contains("GROK_HOME='/it'\\''s kept/$HOME'"), "{line}");
@@ -532,7 +570,8 @@ pattern = "Bash(git push*)"
 matcher = "Write"
 hooks = [{ type = "command", command = "role hook", timeout = 5 }]
 "#;
-        let config = configuration(Some(role), Some("/bin/afkconvoy guard"), false).unwrap();
+        let config =
+            configuration(Some(role), Some("/bin/afkconvoy guard"), false, None, &[]).unwrap();
         let parsed: Toml = config.parse().unwrap();
         assert_eq!(parsed["compat"]["claude"]["hooks"].as_bool(), Some(false));
         assert_eq!(parsed["compat"]["claude"]["mcps"].as_bool(), Some(false));
@@ -555,8 +594,21 @@ hooks = [{ type = "command", command = "role hook", timeout = 5 }]
                 .unwrap()
                 .contains("grok-hook.sh")
         );
-        assert!(configuration(Some("plugins = []\n"), None, true).is_err());
-        let shared = configuration(None, None, true).unwrap().parse::<Toml>().unwrap();
+        assert!(configuration(Some("plugins = []\n"), None, true, None, &[]).is_err());
+        let shared = configuration(None, None, true, None, &[]).unwrap().parse::<Toml>().unwrap();
+        assert!(shared.get("skills").is_none());
+        let named = configuration(
+            None,
+            None,
+            true,
+            Some("/copies/acme/dev/abc/.claude/skills"),
+            &["implement".into()],
+        )
+        .unwrap();
+        assert!(named.contains("/copies/acme/dev/abc/.claude/skills"), "{named}");
+        assert!(named.contains("~/.grok/skills/implement"), "{named}");
+        assert!(named.contains("~/.agents/skills/implement"), "{named}");
+        assert!(!named.contains("~/.grok/skills\"]"), "{named}");
         assert!(shared.get("hooks").is_none());
         assert_eq!(shared["paths"]["extra_rule_dirs"][0].as_str(), Some("~/.grok/rules"));
         assert!(shared["compat"]["claude"].get("rules").is_none());
@@ -622,12 +674,21 @@ hooks = [{ type = "command", command = "role hook", timeout = 5 }]
     #[test]
     fn told_rules_are_markdown_with_no_base_prompt() {
         let told = Told {
+            role: Some(Rules { file: "CLAUDE.md", text: "role rules" }),
             repo: Some(Rules { file: "AGENTS.md", text: "repo rules" }),
             team: Some(Rules { file: "CLAUDE.md", text: "team rules" }),
         };
         let text = system(&told).unwrap();
+        assert!(
+            text.find("# The role's own rules:").unwrap()
+                < text.find("# The repo's own rules:").unwrap()
+        );
         assert!(text.contains("# The repo's own rules: AGENTS.md"));
-        assert!(text.contains("repo rules") && text.contains("team rules"));
+        assert!(
+            text.contains("role rules")
+                && text.contains("repo rules")
+                && text.contains("team rules")
+        );
         assert!(!text.contains("base_prompt"));
         assert!(system(&Told::default()).is_none());
     }

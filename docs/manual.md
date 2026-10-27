@@ -4353,16 +4353,15 @@ The --patch overlay, applied last on either profile, loads the guard and orca st
 
 #### Grok
 
-A Grok worker (`harness: grok`) is an interactive `grok --always-approve` session. It starts in its role's copy, which already holds the role's `CLAUDE.md` and `.claude/skills`; those are not copied into a second form:
+A Grok worker (`harness: grok`) is an interactive `grok --always-approve` session. It starts in the issue's worktree. Grok 1.0.60 and later reject `--add-dir` (`additionalDirectories`: a session works only in its cwd), so the fleet does not pass it and does not start the worker in the role's copy. The role's `CLAUDE.md` and `.claude/skills` stay where every harness writes them. The rules are told in the generated home, and the skills directory is named there:
 
 ```
-cd <the role's copy> && export GROK_HOME=<the fleet's own, for this role>
+cd <the issue's worktree> && export GROK_HOME=<the fleet's own, for this role>
   GROK_MEMORY=0 <Claude and Cursor hook and MCP compatibility off> <the stage's facts>
-  && <worker launch command> --add-dir <the issue's worktree> --add-dir <the team's copy>
-  --trust [--model <its model>]
+  && <worker launch command> --trust [--model <its model>]
 ```
 `--trust` is on the launch line, so the fleet writes no trusted-folders file and nobody answers a trust question. On Grok 1.0.70 `--help` does not name `--trust`, and the flag check does not require it to. A question that still appears is reported with the command and the worktree. A project `.grok/config.toml` loads denied permissions and does not load hooks, so each role gets a generated home (harness/grok, or harness/grok-host-user) whose config holds the role's hooks and denies, the guard and orca's report. Claude and Cursor hook and MCP compatibility are off, so `.claude/settings.json` and `.cursor/hooks.json` are not a second set of limits. Your `auth.json` is linked; your hooks, MCP servers, plugins, permission mode and memories are not. The guard's `PreToolUse` hook turns a missing or failed guard into exit 2, which is how Grok denies, and a deny the role holds still applies under `--always-approve`. The report uses ~/.orca/agent-hooks/grok-hook.sh and exits 0.
-The role's limits are `.grok/config.toml`: a hook, or a permission it denies. A file that names no hook and denies nothing holds no limit. Repo and team rules are written to the home's `rules/told.md`. Your skills and rules are given unless `host_user: false`; with it on, `~/.grok/rules` is named and Claude skill compatibility stays on. An unbound worker or a watch is the stock command plus `--trust` and `--model` when a model is set, with no role, no limits and no guard. Listing asks the worker launch command for `models` and sends no prompt; the id marked `*` and `(default)` is the one workers start on until research places one. A probe uses `-p` and `--output-format json`, and the model that answered is the key of `modelUsage`. Not logged in, or a listing that names no model, is `grok login`. A command you give must take `--add-dir` and `--model`.
+The role's limits are `.grok/config.toml`: a hook, or a permission it denies. A file that names no hook and denies nothing holds no limit. The role's rules, the repo's own rules and the team rules are written to the home's `rules/told.md`. The role's `.claude/skills` is named in `[skills] paths`. Your skills and rules are given unless `host_user: false`; with it on, `~/.grok/rules` is named, Claude skill compatibility stays on, and a skill of yours whose name is one of the role's is ignored so the role's copy is the one that loads. An unbound worker or a watch is the stock command plus `--trust` and `--model` when a model is set, with no role, no limits and no guard. Listing asks the worker launch command for `models` and sends no prompt; the id marked `*` and `(default)` is the one workers start on until research places one. A probe uses `-p` and `--output-format json`, and the model that answered is the key of `modelUsage`. Not logged in, or a listing that names no model, is `grok login`. A command you give must take `--model`.
 
 #### Where to read on
 

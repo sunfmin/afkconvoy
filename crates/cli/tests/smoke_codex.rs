@@ -124,6 +124,7 @@ fn a_real_codex_worker_is_shown_its_role_s_rules_and_skills_the_repo_s_own_and_t
         told: Told {
             repo: Some(Rules { file: &text(&held), text: &own }),
             team: Some(Rules { file: &text(&team.join("CLAUDE.md")), text: &team_rules }),
+            role: None,
         },
         facts: Facts {
             on: On::Stage { issue: 7, flow: "feature", stage: "smoke-stage" },
@@ -339,6 +340,7 @@ fn a_real_codex_worker_starts_on_its_brief_and_makes_no_call_its_role_or_the_gua
         told: Told {
             repo: Some(Rules { file: &text(&project.join("AGENTS.md")), text: &own }),
             team: Some(Rules { file: &text(&team.join("CLAUDE.md")), text: &team_rules }),
+            role: None,
         },
         facts: Facts {
             on: On::Stage { issue: 7, flow: "feature", stage: "smoke-stage" },
