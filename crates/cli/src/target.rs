@@ -42,7 +42,7 @@ fn existing(repo: &Repo, gh: &GitHub, issue: u64) -> Result<Option<Target>> {
         )
     })?;
     ensure!(
-        target.issue == gh.tracker.issue(issue),
+        target.issue.eq_ignore_ascii_case(&gh.tracker.issue(issue)),
         "contradictory target at {name}; restore its pinned record"
     );
     validate(repo, &target.branch)?;

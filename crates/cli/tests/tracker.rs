@@ -44,6 +44,16 @@ fn target_selection_keeps_tracker_identity_and_refuses_foreign_ownership() {
     .unwrap();
     assert_eq!(record["issue"], "acme/tracker#7");
     assert_eq!(record["branch"], "delivery/tracker");
+    // Another host may spell the same GitHub tracker with different case.
+    let differently_spelled = json!({"issue": "ACME/TRACKER#7", "branch": "delivery/tracker"});
+    let sha = afkconvoy::git::Repo::new(world.clone.clone())
+        .record_commit(&differently_spelled.to_string())
+        .unwrap();
+    git(
+        &world.clone,
+        &["push", "-q", "--force", "origin", &format!("{sha}:refs/convoy/target/acme/tracker/7")],
+    );
+    assert_eq!(world.afk(&["target", "--issue", "7"]).ok()["target_branch"], "delivery/tracker");
     let error = world.afk(&["target", "--issue", "8", "--branch", "delivery/tracker"]).error();
     assert!(error.contains("another repo"), "{error}");
 }
