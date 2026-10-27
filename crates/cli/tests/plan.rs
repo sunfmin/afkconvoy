@@ -136,7 +136,12 @@ fn plan_writes_nothing() {
     assert!(!calls.is_empty());
     for call in &calls {
         let line = call.join(" ");
-        assert!(line.starts_with("api ") || line.starts_with("pr list"), "{line}");
+        assert!(
+            line.starts_with("api ")
+                || line.starts_with("pr list")
+                || call.starts_with(&["config".into(), "get".into(), "user".into()]),
+            "{line}"
+        );
         // The one GraphQL call is a query: its fields say what it asks for.
         let asks = call.iter().any(|arg| arg.starts_with("query=query("));
         let writes: &[&str] =

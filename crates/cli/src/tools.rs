@@ -77,8 +77,37 @@ pub fn harness(launch: &Proposed) -> Option<(Tool, Found)> {
 /// What `tool` is found to be by its answer to `question`, in a login shell
 /// started in `dir`.
 fn asked(dir: &Path, tool: Tool, question: &str) -> Found {
+    if tool == Tool::Gh {
+        // gh auth status itself spends quota, and looks up env-token users
+        // through GraphQL. The common entry verifies an override's identity
+        // before any GitHub effect; don't let this redundant probe block it.
+        if crate::gh_quota::credential_present() {
+            return Found::Ready;
+        }
+        let gh = crate::gh::GitHub::new(dir.to_path_buf(), crate::gh::Tracker::Own);
+        if let Ok(scope) = crate::gh_quota::Scope::of(&gh)
+            && quota_waits(&scope)
+        {
+            return Found::Ready;
+        }
+    }
     let (succeeded, printed) = ask_login_shell(dir, question).unwrap_or_default();
+    if tool == Tool::Gh && !succeeded {
+        let gh = crate::gh::GitHub::new(dir.to_path_buf(), crate::gh::Tracker::Own);
+        if let Ok(scope) = crate::gh_quota::Scope::of(&gh) {
+            let _ = scope.observe(&gh);
+            if quota_waits(&scope) {
+                return Found::Ready;
+            }
+        }
+    }
     if tool.logged_in(succeeded, &printed) { Found::Ready } else { Found::LoggedOut }
+}
+
+fn quota_waits(scope: &crate::gh_quota::Scope) -> bool {
+    ["core", "graphql", "secondary"].into_iter().any(|name| {
+        scope.read(name).is_ok_and(|r| r.remaining == Some(0) && r.reset > crate::gh_quota::now())
+    })
 }
 
 /// Checks that this host has every command a start in the checkout `repo`
