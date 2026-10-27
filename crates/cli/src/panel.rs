@@ -1059,7 +1059,30 @@ fn host_part(out: &mut String, page: &Page) {
         );
     }
 
-    for (key, title) in [("running", "Watch"), ("last", "Last watch")] {
+    if let Some(session) = host.watch["session"].as_object() {
+        let _ = write!(
+            out,
+            "<section class=\"hot\" data-watch=\"session\"><b>Watch session</b>: {} · {} · Terminal {}</section>",
+            esc(session["id"].as_str().unwrap_or("")),
+            esc(session["status"].as_str().unwrap_or("unavailable")),
+            esc(session["terminal"].as_str().unwrap_or(""))
+        );
+    }
+    if let Some(pending) = host.watch["pending"].as_array().filter(|p| !p.is_empty()) {
+        out.push_str(
+            "<section class=\"hot\" data-watch=\"pending\"><b>Pending watch episodes</b><ul>",
+        );
+        for item in pending {
+            let _ = write!(
+                out,
+                "<li>{}: {}</li>",
+                esc(item["episode"].as_str().unwrap_or("")),
+                esc(item["item"]["reason"].as_str().unwrap_or(""))
+            );
+        }
+        out.push_str("</ul></section>");
+    }
+    for (key, title) in [("running", "Watch round"), ("last", "Last watch round")] {
         let watch = &host.watch[key];
         if watch.is_null() {
             continue;
@@ -1077,7 +1100,18 @@ fn host_part(out: &mut String, page: &Page) {
         for did in watch["did"].as_array().into_iter().flatten() {
             let _ = write!(out, "<li>Did: {}</li>", esc(did.as_str().unwrap_or("")));
         }
+        if !watch["report"].is_null() {
+            let _ = write!(
+                out,
+                "<li>Report: <pre>{}</pre></li>",
+                esc(&serde_json::to_string_pretty(&watch["report"]).unwrap_or_default())
+            );
+        }
         out.push_str("</ul></section>");
+    }
+    if let Some(why) = host.watch["unavailable"].as_str() {
+        let _ =
+            write!(out, "<section class=\"hot\"><b>Watch unavailable</b>: {}</section>", esc(why));
     }
 
     {

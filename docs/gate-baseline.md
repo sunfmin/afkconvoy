@@ -132,5 +132,5 @@ existing gate's phase times suffice to distinguish Flux, Clippy, manual,
 test build and the test run; its test timer includes fixtures and cleanup.
 Fixture speed work belongs to the separate approved issues. No speedup,
 cache-isolated comparison or arbitrary-host guarantee is claimed. The final
-landing candidate may include upstream changes and therefore more tests;
+landing candidate may include upstream changes with different test counts;
 its source commit, test counts and step times must accompany its duration.

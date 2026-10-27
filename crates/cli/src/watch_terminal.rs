@@ -21,6 +21,7 @@ pub(crate) enum LaunchState {
     Ready,
     Sending,
     Running,
+    Idle,
     Ended,
 }
 
@@ -34,6 +35,15 @@ pub(crate) struct Record {
     pub terminal: Option<Value>,
     pub problem: Option<String>,
     pub command: String,
+    /// One durable Orca mutation identity per round, allocated before input.
+    #[serde(default)]
+    pub request: Option<String>,
+    #[serde(default)]
+    pub receipt: Option<Value>,
+    #[serde(default)]
+    pub offered: Option<u64>,
+    #[serde(default)]
+    pub execution_evidence: Option<Value>,
 }
 
 fn file() -> Result<PathBuf> {
@@ -58,7 +68,37 @@ pub(crate) fn save(record: &Record) -> Result<()> {
     let temporary = path.with_extension(format!("{}.tmp", crate::unique()));
     std::fs::write(&temporary, serde_json::to_vec_pretty(record)?)?;
     std::fs::rename(temporary, path)?;
+    // Keep each round's delivery evidence after the resident journal moves
+    // to another round. This is an archive of the journal, never a second
+    // source from which the scheduler sends input.
+    let round = crate::watch_report::directory(&record.watch.id)?;
+    std::fs::create_dir_all(&round)?;
+    let delivery = delivery_file(&record.watch)?;
+    let temporary = delivery.with_extension(format!("{}.tmp", crate::unique()));
+    std::fs::write(
+        &temporary,
+        serde_json::to_vec_pretty(&json!({
+            "round": record.watch.id, "session": crate::host_watch::session_identity(&record.watch),
+            "terminal": record.watch.terminal, "status": record.status,
+            "request": record.request, "receipt": record.receipt,
+            "offered": record.offered, "started": record.watch.started,
+        "execution_evidence": record.execution_evidence,
+        }))?,
+    )?;
+    std::fs::rename(temporary, delivery)?;
     Ok(())
+}
+
+fn delivery_file(watch: &Watch) -> Result<PathBuf> {
+    Ok(crate::watch_report::directory(&watch.id)?
+        .join(format!("delivery-{}.json", watch.attempts.len() + 1)))
+}
+
+pub(crate) fn delivery_json(watch: &Watch) -> Value {
+    match delivery_file(watch).and_then(|path| Ok(serde_json::from_slice(&std::fs::read(path)?)?)) {
+        Ok(value) => value,
+        Err(_) => Value::Null,
+    }
 }
 
 pub(crate) fn active() -> Result<Option<Watch>> {
@@ -74,7 +114,7 @@ pub(crate) fn claim(watch: &Watch) -> PathBuf {
 }
 
 pub(crate) fn matches(record: &Record, watch: &Watch) -> bool {
-    record.watch.id == watch.id && record.watch.attempts.len() == watch.attempts.len()
+    crate::host_watch::session_identity(&record.watch) == crate::host_watch::session_identity(watch)
 }
 
 /// Refuses unknown same-name sessions before creating anything. The host
@@ -100,6 +140,10 @@ pub(crate) fn prepare(watch: &Watch, command: &str) -> Result<()> {
         terminal: None,
         problem: None,
         command: command.into(),
+        request: None,
+        receipt: None,
+        offered: None,
+        execution_evidence: None,
     })
 }
 
@@ -171,6 +215,10 @@ pub(crate) fn locate(watch: &Watch) -> Result<Option<String>> {
                 terminal: Some(row.clone()),
                 problem: None,
                 command: String::new(),
+                request: None,
+                receipt: None,
+                offered: None,
+                execution_evidence: None,
             })?;
         }
         return Ok(Some(exact.to_string()));
@@ -231,6 +279,21 @@ pub(crate) fn set_status(watch: &Watch, status: LaunchState) -> Result<()> {
     Ok(())
 }
 
+pub(crate) fn begin_round(watch: &Watch) -> Result<()> {
+    let mut record = read()?.context("the resident watch has no launch journal")?;
+    ensure!(
+        matches(&record, watch) && record.status == LaunchState::Idle,
+        "the resident session has an unresolved round; nothing sent"
+    );
+    record.watch = watch.clone();
+    record.status = LaunchState::Ready;
+    record.request = None;
+    record.receipt = None;
+    record.offered = None;
+    record.execution_evidence = None;
+    save(&record)
+}
+
 pub(crate) fn problem(why: &str) -> Result<()> {
     if let Some(mut record) = read()? {
         record.problem = Some(why.into());
@@ -241,15 +304,17 @@ pub(crate) fn problem(why: &str) -> Result<()> {
 
 pub(crate) fn recovery(why: &str) -> String {
     format!(
-        "{why}. No replacement is started and existing work is retained. Run `afkconvoy doctor --all` and `orca terminal list --worktree path:<watch-directory> --json`; inspect candidates with `orca terminal show --terminal <handle> --json`. Rename unrelated same-name terminals with `orca terminal rename --terminal <handle> --title <title> --json`, then let the runner retry. For an uncertain launch or prompt, inspect the existing session and submit its complete report using `afkconvoy watched --watch <id> --text-file <report.json>`; this ends only its marked executor. Keep the brief, transcript and launch claim; do not resend creation or the prompt."
+        "{why}. No replacement is started and existing work is retained. Run `afkconvoy doctor --all` and `orca terminal list --worktree path:<watch-directory> --json`; inspect candidates with `orca terminal show --terminal <handle> --json`. Rename unrelated same-name terminals with `orca terminal rename --terminal <handle> --title <title> --json`, then let the runner retry. For an uncertain launch or prompt, inspect the existing session and submit its complete report using `afkconvoy watched --watch <id> --text-file <report.json>`; this completes only that round and retains a healthy resident executor. An unresolved association still pauses further delivery. Keep the brief, transcript and launch claim; do not resend creation or send a fresh prompt. The runner may replay only its exact saved Terminal request key."
     )
 }
 
 pub(crate) fn json() -> Value {
     match read() {
         Ok(Some(record)) => json!({"title": TITLE, "watch": record.watch.id,
+            "session": crate::host_watch::session_identity(&record.watch),
             "directory": record.watch.directory, "terminal": record.watch.terminal,
-            "identity": record.terminal, "status": record.status, "problem": record.problem}),
+            "identity": record.terminal, "status": record.status, "problem": record.problem,
+            "request": record.request, "receipt": record.receipt}),
         Ok(None) => json!({"title": TITLE, "status": "unassociated"}),
         Err(error) => {
             json!({"title": TITLE, "status": "uncertain", "problem": recovery(&format!("{error:#}"))})

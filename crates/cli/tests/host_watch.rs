@@ -101,7 +101,7 @@ fn brief(world: &World, line: &str) -> String {
         .iter()
         .find(|terminal| terminal["line"] == line)
         .unwrap();
-    let line = terminal["sent"][0]["text"].as_str().unwrap();
+    let line = terminal["sent"].as_array().unwrap().last().unwrap()["text"].as_str().unwrap();
     let at =
         line.find("Your task brief is the file ").unwrap() + "Your task brief is the file ".len();
     let file = &line[at..line[at..].find(" — ").unwrap() + at];
@@ -361,7 +361,7 @@ fn unplaced_models_start_a_daily_watch_that_places_research_and_keeps_its_bound_
     let daily = until(&world, "research due again after a day", || running(&world));
     assert_eq!(daily["items"].as_array().unwrap().len(), 1, "{daily}");
     assert!(daily["items"][0]["id"].as_str().unwrap().starts_with("kit-research:"));
-    assert_eq!(daily["model"], "fast", "the next watch uses the placed model");
+    assert_eq!(daily["model"], Value::Null, "the healthy resident keeps its model across rounds");
 
     std::fs::write(
         &file,
@@ -389,7 +389,11 @@ fn unplaced_models_start_a_daily_watch_that_places_research_and_keeps_its_bound_
     until(&world, "look after settlement, restart and daily bound", || {
         state(&world)["until"].as_u64().filter(|at| *at > before)
     });
-    assert_eq!(starts(&world).len(), 3, "settled models start no further watch");
+    assert_eq!(
+        starts(&world).len(),
+        1,
+        "all rounds reused one resident; settled models start no further round"
+    );
     assert!(state(&world)["running"].is_null());
     let doctor = world.afk(&["doctor", "--all"]).ok();
     assert!(
@@ -506,6 +510,88 @@ fn a_watch_answers_escalations_and_leaves_only_the_four_human_kinds() {
 }
 
 #[test]
+fn a_reported_human_wait_sends_no_more_prompts_across_looks_and_runner_restart() {
+    let world = World::new();
+    let dir = operator(&world);
+    world.issue(11, &["ready-for-human"]);
+    world.comment(11, "<!--convoy:escalation claim=old-->\nNeeds a quiet measurement environment.");
+    world.with_gh(|gh| gh["comments"]["11"][0]["at"] = json!(1_793_036_772u64));
+    // Real doctor output at the two observed ages retains the warning,
+    // reason, source and exact answer, but has one structured identity.
+    let earlier = world.afk(&["doctor", "--now", "1793070792"]).json;
+    let later = world.afk(&["doctor", "--now", "1793071152"]).json;
+    let warning = |answer: &Value| {
+        answer["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|finding| finding["what"].as_str().unwrap().contains("has waited for a human"))
+            .unwrap_or_else(|| panic!("no long wait in {answer}"))
+            .clone()
+    };
+    assert!(warning(&earlier)["what"].as_str().unwrap().contains("9h 27m"));
+    assert!(warning(&later)["what"].as_str().unwrap().contains("9h 33m"));
+    assert_eq!(warning(&earlier)["watch_id"], warning(&later)["watch_id"]);
+    assert_eq!(warning(&later)["fix"], later["waiting_on_human"][0]["answer"]);
+    assert_eq!(later["waiting_on_human"][0]["url"], "https://gh/c/2000");
+    assert!(later["waiting_on_human"][0]["why"].as_str().unwrap().contains("quiet measurement"));
+
+    run(&world, &dir);
+    let first = until(&world, "human wait round", || {
+        running(&world).filter(|w| w["started"].as_u64().unwrap_or(0) > 0)
+    });
+    assert_eq!(first["items"].as_array().unwrap().len(), 1);
+    let report = world.root.join("human-report.json");
+    std::fs::write(&report, json!({"held_back": ["quiet measurement environment"], "did": [],
+        "verified": ["human decision still pending"], "human": [{"question": "Provide the environment?",
+        "answer": later["waiting_on_human"][0]["answer"]}], "pending": []}).to_string()).unwrap();
+    world
+        .afk(&[
+            "watched",
+            "--watch",
+            first["id"].as_str().unwrap(),
+            "--text-file",
+            report.to_str().unwrap(),
+        ])
+        .ok();
+    until(&world, "human report", || ended(&world, "ended"));
+    let at = state(&world)["until"].as_u64().unwrap();
+    until(&world, "repeated looks of the reported question", || {
+        state(&world)["until"].as_u64().filter(|until| *until > at + 2)
+    });
+    assert!(running(&world).is_none());
+    assert_eq!(sent(&world, &first).len(), 1, "no repeated model prompt");
+    assert_eq!(state(&world)["pending"], json!([]));
+
+    world.kill_host_runner("KILL");
+    run(&world, &dir);
+    let at = state(&world)["until"].as_u64().unwrap();
+    until(&world, "repeated looks after runner replacement", || {
+        state(&world)["until"].as_u64().filter(|until| *until > at + 2)
+    });
+    assert!(running(&world).is_none());
+    assert_eq!(starts(&world).len(), 1);
+    assert_eq!(sent(&world, &first).len(), 1);
+    assert_eq!(world.labels(11), ["ready-for-human"]);
+
+    // A new source needs a fresh answer even without an intervening look
+    // that found the issue recovered.
+    world.comment(11, "<!--convoy:escalation claim=new-->\nNeeds different measurement equipment.");
+    world.with_gh(|gh| {
+        gh["comments"]["11"].as_array_mut().unwrap().last_mut().unwrap()["at"] =
+            json!(1_793_036_773u64)
+    });
+    let next = until(&world, "changed human question", || {
+        running(&world).filter(|w| w["started"].as_u64().unwrap_or(0) > 0)
+    });
+    assert_ne!(next["id"], first["id"]);
+    assert_eq!(next["items"].as_array().unwrap().len(), 1);
+    assert_ne!(next["episodes"], first["episodes"]);
+    assert_eq!(sent(&world, &next).len(), 2);
+    printed(&world, &next, &["left changed question for a human"], Some(0));
+}
+
+#[test]
 fn one_watch_covers_an_episode_is_kept_across_a_restart_and_is_recorded() {
     let world = World::new();
     let dir = operator(&world);
@@ -587,7 +673,7 @@ fn a_watch_closed_without_reporting_does_not_consume_the_unresolved_episode() {
     let deadline = Instant::now() + Duration::from_secs(10);
     let after = loop {
         let after = state(&world);
-        if after["until"].as_u64().unwrap_or(0) > first_look {
+        if after["until"].as_u64().unwrap_or(0) > first_look && after["running"].is_object() {
             break after;
         }
         assert!(Instant::now() < deadline, "no look after watch closure: {after}");
@@ -806,14 +892,19 @@ fn a_report_is_complete_durable_and_carried_into_the_next_brief() {
     world.kill_host_runner("KILL");
     let mut kept = state(&world);
     kept["watched"] = json!([]);
+    kept["covered"] = json!([]);
+    kept["observed"] = json!({});
     std::fs::write(world.cache().join("afkconvoy/watch/state.json"), kept.to_string()).unwrap();
     run(&world, &dir);
-    let next = until(&world, "next watch", || running(&world).filter(|w| w["id"] != watch["id"]));
+    let next = until(&world, "next delivered round", || {
+        running(&world)
+            .filter(|w| w["id"] != watch["id"] && w["started"].as_u64().unwrap_or(0) != 0)
+    });
     let told = brief(&world, starts(&world).last().unwrap());
     for text in ["Supply a new account?", "pi still needs its account", "other fleets dispatched"] {
         assert!(told.contains(text), "{told}");
     }
-    assert!(!open(&world, &dir).contains(&watch["terminal"].as_str().unwrap().to_string()));
+    assert_eq!(watch["terminal"], next["terminal"], "the next round reuses the resident Terminal");
     assert!(open(&world, &dir).contains(&next["terminal"].as_str().unwrap().to_string()));
     assert!(open(&world, &dir).contains(&OPERATORS.to_string()));
 }
@@ -1191,12 +1282,21 @@ fn a_resource_trigger_while_a_watch_runs_waits_for_its_next_look() {
         saved.contains("resident").then_some(())
     });
     assert_eq!(starts(&world).len(), 1, "no second watch while the first runs");
+    until(&world, "resource episode queued during the first round", || {
+        state(&world)["pending"]
+            .as_array()?
+            .iter()
+            .any(|q| q["item"]["id"].as_str().is_some_and(|id| id.starts_with("resource:hot:")))
+            .then_some(())
+    });
     printed(&world, &first, &["checked pi"], Some(0));
     let next = until(&world, "watch on the new resource episode", || {
         running(&world).filter(|w| w["id"] != first["id"])
     });
     assert!(next["items"].to_string().contains("resource:hot:"), "{next}");
-    assert_eq!(starts(&world).len(), 2);
+    assert_eq!(starts(&world).len(), 1);
+    assert_eq!(next["terminal"], first["terminal"]);
+    assert_eq!(next["session"], first["session"]);
 }
 
 #[test]
@@ -1348,6 +1448,9 @@ fn uncertain_creation_and_prompt_receipts_pause_across_restarts_and_accept_an_ex
         let file = world.cache().join("afkconvoy/watch/terminal.json");
         let mut record: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
         record["status"] = json!(status);
+        // A retained older runner had no caller-allocated delivery key.
+        // Such an ambiguous send cannot be replayed safely.
+        record["request"] = Value::Null;
         if status == "creating" {
             record["terminal"] = Value::Null;
             record["watch"]["terminal"] = json!("");
@@ -1376,6 +1479,292 @@ fn uncertain_creation_and_prompt_receipts_pause_across_restarts_and_accept_an_ex
         printed(&world, &watch, &["inspected and retained the existing work"], Some(0));
         until(&world, "explicit report settles uncertainty", || ended(&world, "ended"));
     }
+}
+
+fn sent(world: &World, watch: &Value) -> Vec<Value> {
+    world.orca()["terminals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["handle"] == watch["terminal"])
+        .unwrap()["sent"]
+        .as_array()
+        .unwrap()
+        .clone()
+}
+
+fn busy(world: &World, watch: &Value, working: bool) {
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            if terminal["handle"] == watch["terminal"] {
+                terminal["agent"] = json!({"state": if working { "working" } else { "stopped" },
+                    "stateStartedAt": 1000});
+            }
+        }
+    });
+}
+
+#[test]
+fn resident_rounds_queue_while_busy_revalidate_recover_and_keep_reports_separate() {
+    let world = World::new();
+    let dir = operator(&world);
+    paused(&world, "pi", "first episode");
+    run(&world, &dir);
+    let first = until(&world, "first round", || running(&world));
+    busy(&world, &first, true);
+    let before = state(&world)["until"].as_u64().unwrap();
+    paused(&world, "dsh", "a queued condition that will recover");
+    paused(&world, "kimi", "second round");
+    let queued = until(&world, "two episodes queued during execution", || {
+        let s = state(&world);
+        (s["pending"].as_array()?.len() == 2 && s["until"].as_u64()? > before).then_some(s)
+    });
+    let episodes = queued["pending"].clone();
+    until(&world, "another busy look", || {
+        state(&world)["until"].as_u64().filter(|at| *at > queued["until"].as_u64().unwrap())
+    });
+    assert_eq!(state(&world)["pending"][0]["episode"], episodes[0]["episode"]);
+    assert_eq!(state(&world)["pending"][1]["episode"], episodes[1]["episode"]);
+    assert_eq!(sent(&world, &first).len(), 1, "busy input remains untouched");
+    let mut paused_items = world.paused();
+    paused_items.as_array_mut().unwrap().retain(|p| p["harness"] != "dsh");
+    std::fs::write(world.paused_path(), paused_items.to_string()).unwrap();
+    until(&world, "recovered episode removed before delivery", || {
+        let s = state(&world);
+        (s["pending"].as_array()?.len() == 1
+            && s["pending"][0]["item"]["id"].as_str()?.contains("kimi"))
+        .then_some(())
+    });
+    world.kill_host_runner("KILL");
+    run(&world, &dir);
+    assert_eq!(running(&world).unwrap()["id"], first["id"]);
+    assert_eq!(starts(&world).len(), 1);
+    printed(&world, &first, &["first round reported"], Some(0));
+    until(&world, "first report", || ended(&world, "ended"));
+    let at = state(&world)["until"].as_u64().unwrap();
+    until(&world, "a look after the report while input stays busy", || {
+        state(&world)["until"].as_u64().filter(|until| *until > at)
+    });
+    assert!(running(&world).is_none());
+    assert_eq!(sent(&world, &first).len(), 1);
+    busy(&world, &first, false);
+    let second = until(&world, "second round on the resident", || {
+        running(&world).filter(|w| w["id"] != first["id"] && w["started"].as_u64().unwrap_or(0) > 0)
+    });
+    assert_eq!(second["terminal"], first["terminal"]);
+    assert_eq!(second["session"], first["session"]);
+    assert_eq!(second["items"].as_array().unwrap().len(), 1);
+    assert!(second["items"][0]["id"].as_str().unwrap().contains("kimi"));
+    assert_eq!(starts(&world).len(), 1);
+    assert_eq!(sent(&world, &second).len(), 2);
+    // A repeated first report cannot complete the second round.
+    let first_report = world
+        .cache()
+        .join("afkconvoy/watch")
+        .join(first["id"].as_str().unwrap())
+        .join("reported.json");
+    world
+        .afk(&[
+            "watched",
+            "--watch",
+            first["id"].as_str().unwrap(),
+            "--text-file",
+            first_report.to_str().unwrap(),
+        ])
+        .ok();
+    assert_eq!(running(&world).unwrap()["id"], second["id"]);
+    assert!(
+        world
+            .afk(&[
+                "watched",
+                "--watch",
+                "wrong-round",
+                "--text-file",
+                first_report.to_str().unwrap()
+            ])
+            .error()
+            .contains("not the running watch")
+    );
+    printed(&world, &second, &["second round reported"], Some(0));
+    until(&world, "second independent report", || {
+        ended(&world, "ended").filter(|w| w["id"] == second["id"])
+    });
+    let at = state(&world)["until"].as_u64().unwrap();
+    until(&world, "idle look", || state(&world)["until"].as_u64().filter(|until| *until > at));
+    assert_eq!(sent(&world, &second).len(), 2, "standby never nudges or calls a model");
+    let doctor = world.afk(&["doctor", "--all"]).json;
+    assert_eq!(doctor["host"]["watch"]["session"]["status"], "standby");
+    assert_eq!(doctor["host"]["watch"]["rounds"].as_array().unwrap().len(), 2);
+    assert_eq!(doctor["host"]["watch"]["pending"], json!([]));
+    assert!(open(&world, &dir).contains(&OPERATORS.into()));
+    // A real observed recovery ends coverage; its return is a new episode.
+    let mut paused_items = world.paused();
+    paused_items.as_array_mut().unwrap().retain(|p| p["harness"] != "pi");
+    std::fs::write(world.paused_path(), paused_items.to_string()).unwrap();
+    until(&world, "pi's observed recovery", || {
+        (!state(&world)["observed"].as_object()?.keys().any(|id| id.contains("`pi`"))).then_some(())
+    });
+    paused(&world, "pi", "a new episode");
+    let third = until(&world, "the new episode", || running(&world));
+    assert_eq!(third["terminal"], first["terminal"]);
+    assert_ne!(third["episodes"], first["episodes"]);
+    printed(&world, &third, &["new episode reported"], Some(0));
+    until(&world, "third independent report", || {
+        ended(&world, "ended").filter(|w| w["id"] == third["id"])
+    });
+}
+
+#[test]
+fn standby_and_completed_round_age_do_not_spend_the_next_rounds_hour() {
+    let world = World::new();
+    let dir = operator(&world);
+    paused(&world, "pi", "first round");
+    run(&world, &dir);
+    let first = until(&world, "first round", || running(&world));
+    printed(&world, &first, &["reported before standby"], Some(0));
+    until(&world, "first report", || ended(&world, "ended"));
+    world.kill_host_runner("KILL");
+    let mut kept = state(&world);
+    let old = first["started"].as_u64().unwrap() - 7200;
+    kept["resident"]["started"] = json!(old);
+    kept["resident"]["session_started"] = json!(old);
+    std::fs::write(world.cache().join("afkconvoy/watch/state.json"), kept.to_string()).unwrap();
+    let file = world.cache().join("afkconvoy/watch/terminal.json");
+    let mut record: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    record["watch"]["started"] = json!(old);
+    record["watch"]["session_started"] = json!(old);
+    std::fs::write(file, record.to_string()).unwrap();
+    let before = kept["until"].as_u64().unwrap();
+    run(&world, &dir);
+    until(&world, "an idle look after two hours", || {
+        state(&world)["until"].as_u64().filter(|at| *at > before)
+    });
+    assert!(running(&world).is_none());
+    assert_eq!(sent(&world, &first).len(), 1, "no idle nudge or model turn");
+    paused(&world, "dsh", "next round");
+    let next = until(&world, "a fresh execution hour", || {
+        running(&world).filter(|w| w["started"].as_u64().unwrap_or(0) > before)
+    });
+    assert_eq!(next["terminal"], first["terminal"]);
+    assert_eq!(next["session"], first["session"]);
+    assert_eq!(next["session_started"], json!(old), "the executor is older than this round");
+    assert!(!afkconvoy_core::host_watch::expired(next["started"].as_u64().unwrap(), before + 10));
+    printed(&world, &next, &["fresh round reported"], Some(0));
+    until(&world, "fresh report", || ended(&world, "ended").filter(|w| w["id"] == next["id"]));
+}
+
+#[test]
+fn a_second_rounds_lost_send_receipt_replays_after_restart_without_typing_twice() {
+    let world = World::new();
+    let dir = operator(&world);
+    paused(&world, "pi", "first round");
+    run(&world, &dir);
+    let first = until(&world, "first round", || running(&world));
+    printed(&world, &first, &["first done"], Some(0));
+    until(&world, "first report", || ended(&world, "ended"));
+    world.with_orca(|orca| {
+        orca["raw_answers"]["terminal send"] = json!("lost response after accepting input")
+    });
+    paused(&world, "dsh", "second round");
+    until(&world, "retained uncertain second delivery", || {
+        state(&world)["unavailable"].as_str().map(str::to_string)
+    });
+    world.kill_host_runner("KILL");
+    let file = world.cache().join("afkconvoy/watch/terminal.json");
+    let intent: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    assert_eq!(intent["status"], "sending");
+    assert!(intent["request"].is_string());
+    assert_ne!(intent["watch"]["id"], first["id"]);
+    assert_eq!(intent["watch"]["started"], 0, "unproven execution consumes no hour");
+    assert_eq!(sent(&world, &first).len(), 2);
+    world.with_orca(|orca| orca["raw_answers"] = json!({}));
+    run(&world, &dir);
+    until(&world, "replayed exact submission", || {
+        let receipt: Value = serde_json::from_slice(&std::fs::read(&file).ok()?).ok()?;
+        (receipt["status"] == "running" && receipt["receipt"]["mutation"]["replayed"] == true)
+            .then_some(receipt)
+    });
+    let second = running(&world).unwrap();
+    assert_eq!(second["id"], intent["watch"]["id"]);
+    assert_eq!(second["session"], first["session"]);
+    assert_eq!(
+        sent(&world, &second).len(),
+        2,
+        "one input per round across a lost receipt and restart"
+    );
+    assert_eq!(starts(&world).len(), 1);
+    printed(&world, &second, &["recovered round reported"], Some(0));
+    until(&world, "recovered report", || {
+        ended(&world, "ended").filter(|w| w["id"] == second["id"])
+    });
+}
+
+#[test]
+fn an_unobservable_provider_needs_working_evidence_and_reuses_its_accepted_request() {
+    let world = World::new();
+    let dir = operator(&world);
+    world.with_orca(|orca| {
+        orca["prompt_stages"] = json!(["input_accepted"]);
+        orca["prompt_observation"] = json!("unsupported");
+        orca["send_screen"] = json!(["idle prompt; no new turn proven"]);
+    });
+    paused(&world, "pi", "first round");
+    run(&world, &dir);
+    until(&world, "accepted input without execution evidence", || {
+        state(&world)["unavailable"].as_str().map(str::to_string)
+    });
+    let waiting = running(&world).unwrap();
+    assert_eq!(waiting["started"], 0, "input acceptance alone consumes no execution hour");
+    assert_eq!(sent(&world, &waiting).len(), 1);
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            if terminal["handle"] == waiting["terminal"] {
+                terminal["screen"] = json!(["Working: handling the round"]);
+            }
+        }
+    });
+    let running = until(&world, "visible execution on the same accepted request", || {
+        running(&world).filter(|r| r["started"].as_u64().unwrap_or(0) != 0)
+    });
+    assert_eq!(sent(&world, &running).len(), 1);
+    assert_eq!(starts(&world).len(), 1);
+    let doctor = world.afk(&["doctor"]).json;
+    assert_eq!(
+        doctor["host"]["watch"]["running"]["delivery"]["execution_evidence"]["kind"],
+        "terminal_evidence"
+    );
+    printed(&world, &running, &["unobservable provider reported"], Some(0));
+    until(&world, "explicit report", || ended(&world, "ended"));
+}
+
+#[test]
+fn a_report_before_execution_proof_keeps_research_within_its_daily_bound() {
+    let world = World::new();
+    let dir = operator(&world);
+    world.kit_models("claude-code", &["unplaced"]);
+    world.with_kit(|kit| kit["harnesses"][0]["models"][0]["good_at"] = json!("research pending"));
+    world.with_orca(|orca| {
+        orca["prompt_stages"] = json!(["input_accepted"]);
+        orca["prompt_observation"] = json!("unsupported");
+        orca["send_screen"] = json!(["idle prompt; execution unproven"]);
+    });
+    run(&world, &dir);
+    until(&world, "unproven research delivery", || {
+        state(&world)["unavailable"].as_str().map(str::to_string)
+    });
+    let watch = running(&world).unwrap();
+    assert_eq!(watch["started"], 0);
+    printed(&world, &watch, &["research pending; explicit recovery report"], Some(0));
+    let last = until(&world, "research recovery report", || ended(&world, "ended"));
+    assert!(last["started"].as_u64().unwrap() > 0, "the report proves the round ran");
+    let before = state(&world)["until"].as_u64().unwrap();
+    until(&world, "look after research reported", || {
+        state(&world)["until"].as_u64().filter(|at| *at > before)
+    });
+    assert_eq!(starts(&world).len(), 1);
+    assert_eq!(sent(&world, &watch).len(), 1);
+    assert!(running(&world).is_none());
+    assert_eq!(state(&world)["research_started"], last["started"]);
 }
 
 #[test]

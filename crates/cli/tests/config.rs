@@ -42,30 +42,16 @@ fn config_is_found_from_anywhere_in_the_checkout() {
 }
 
 #[test]
-fn a_bad_config_is_an_error_naming_the_key() {
+fn config_errors_wire_yaml_parsing_and_domain_validation_to_json() {
     let world = World::new();
+    // One required key, unknown field, YAML type and domain boundary. The
+    // full rule tables live in core::config and src/config.rs's parser tests.
     for (yaml, key) in [
         ("gate_command: make", "base_branch"),
-        ("base_branch: main", "gate_command"),
         ("base_branch: main\ngate_command: make\nretry: 2", "retry"),
-        ("base_branch: main\ngate_command: make\nconcurrency: lots", "concurrency"),
-        ("base_branch: main\ngate_command: make\nconcurrency: 0", "concurrency"),
         ("base_branch: main\ngate_command: make\ngate_seconds: 0", "gate_seconds"),
         ("base_branch: main\ngate_command: make\ngate_seconds: 1.5", "gate_seconds"),
-        ("base_branch: main\ngate_command: make\ngate_seconds: -1", "gate_seconds"),
-        ("base_branch: main\ngate_command: make\ngate_seconds: an hour", "gate_seconds"),
         ("base_branch: main\ngate_command: make\ngate_budget_seconds: 0", "gate_budget_seconds"),
-        ("base_branch: main\ngate_command: make\ngate_budget_seconds: 1.5", "gate_budget_seconds"),
-        ("base_branch: main\ngate_command: make\ngate_budget_seconds: -1", "gate_budget_seconds"),
-        ("base_branch: main\ngate_command: make\ngate_budget_seconds: 3600", "gate_budget_seconds"),
-        (
-            "base_branch: main\ngate_command: make\ngate_seconds: 600\ngate_budget_seconds: 601",
-            "gate_budget_seconds",
-        ),
-        (
-            "base_branch: main\ngate_command: make\nescalate_label: ready-for-agent",
-            "escalate_label",
-        ),
     ] {
         write_config(&world, yaml);
         let error = world.afk(&["config"]).error();

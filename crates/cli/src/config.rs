@@ -196,8 +196,10 @@ mod tests {
 
     #[test]
     fn a_wrong_type_names_its_key() {
-        let e = error("base_branch: main\ngate_command: make\nconcurrency: many");
-        assert!(e.contains("concurrency"), "{e}");
+        for value in ["many", "0"] {
+            let e = error(&format!("base_branch: main\ngate_command: make\nconcurrency: {value}"));
+            assert!(e.contains("concurrency"), "{e}");
+        }
         let e = error("base_branch: main\ngate_command: make\nepic_labels: epic");
         assert!(e.contains("epic_labels"), "{e}");
     }
@@ -212,6 +214,23 @@ mod tests {
         }
         let config = parse(&format!("```yaml\n{}\n```\n", limit("1"))).unwrap();
         assert_eq!(config.gate_seconds(), 1);
+        // Budget rule enumeration belongs beside gate-limit parsing; the
+        // CLI keeps one representative budget rejection to check its wiring.
+        for wrong in ["0", "-1", "1.5", "soon", "[600]", "\"600\"", "3600"] {
+            let e = error(&format!(
+                "base_branch: main\ngate_command: make\ngate_budget_seconds: {wrong}"
+            ));
+            assert!(e.contains("gate_budget_seconds"), "{wrong}: {e}");
+        }
+        let e = error(
+            "base_branch: main\ngate_command: make\ngate_seconds: 600\ngate_budget_seconds: 601",
+        );
+        assert!(e.contains("gate_budget_seconds"), "{e}");
+        let valid = parse(
+            "```yaml\nbase_branch: main\ngate_command: make\ngate_budget_seconds: 600\n```\n",
+        )
+        .unwrap();
+        assert_eq!(valid.gate_budget_seconds, Some(600));
     }
 
     #[test]

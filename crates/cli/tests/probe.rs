@@ -187,12 +187,12 @@ fn a_tick_trusts_only_a_probe_that_checked_its_worker_launch_command() {
 
 #[test]
 fn plan_help_says_when_it_probes() {
-    let world = World::new();
-    let out = world
-        .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_afkconvoy"))
         .args(["plan", "--help"])
         .output()
         .unwrap();
+    assert!(out.status.success());
+    assert!(out.stderr.is_empty());
     let help = String::from_utf8_lossy(&out.stdout);
     for said in ["WHEN IT PROBES", "in the last hour stands", "`base_branch`", "the remote's URL"] {
         assert!(help.contains(said), "plan --help lost {said:?}:\n{help}");

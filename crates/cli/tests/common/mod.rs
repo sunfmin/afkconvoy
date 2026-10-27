@@ -517,8 +517,11 @@ impl World {
         read(&self.gh_file)
     }
 
-    /// Changes the stand-in GitHub's state in place.
+    /// Changes GitHub state under the stand-in's transaction lock. A tick
+    /// or watch look may otherwise overwrite an issue the test just added.
     pub fn with_gh(&self, change: impl FnOnce(&mut Value)) {
+        let lock = std::fs::File::create(self.gh_file.with_extension("lock")).unwrap();
+        lock.lock().unwrap();
         let mut state = self.gh();
         change(&mut state);
         self.write_gh(&state);

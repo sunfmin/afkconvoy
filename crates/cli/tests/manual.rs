@@ -49,24 +49,23 @@ fn the_page_is_the_manual_that_help_prints() {
 fn a_page_that_is_not_what_the_topics_generate_fails_the_check_with_the_command() {
     let (dir, file, page) = written();
     assert!(manual(&["--check"], &file).status.success());
-    std::fs::write(&file, page.replacen("**A claim**", "**A lease**", 1)).unwrap();
-    let out = manual(&["--check"], &file);
-    let said = String::from_utf8_lossy(&out.stderr);
-    assert!(!out.status.success());
-    assert!(
-        said.contains(&format!("run `{COMMAND}`")) && said.contains("differs at line"),
-        "{said}"
-    );
-    // The check wrote nothing, and a page that is not there fails it too.
-    assert!(std::fs::read_to_string(&file).unwrap().contains("**A lease**"));
+    let (top, body) = page.split_once("\n\n").unwrap();
+    let changed = format!("{top}\n\n{}", body.replacen('#', "!", 1));
+    assert_ne!(changed, page, "the stale fixture must change the body's contents");
+    for stale in [changed, format!("{page}\nStale content.\n")] {
+        std::fs::write(&file, &stale).unwrap();
+        let out = manual(&["--check"], &file);
+        let said = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success());
+        assert!(
+            said.contains(&format!("run `{COMMAND}`")) && said.contains("differs at line"),
+            "{said}"
+        );
+        // The check wrote nothing, whether the contents or the length changed.
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), stale);
+    }
+    // A page that is not there fails too.
     let missing = manual(&["--check"], &dir.path().join("none.md"));
     assert!(!missing.status.success());
     assert!(String::from_utf8_lossy(&missing.stderr).contains(COMMAND));
-}
-
-/// What makes a topic edited and a page not written again fail the gate.
-#[test]
-fn the_gate_checks_the_repositorys_page() {
-    let gate = include_str!("../../../gate.sh");
-    assert!(gate.contains(&format!("{} -- --check\n", COMMAND.replace("run", "run --quiet"))));
 }

@@ -71,6 +71,10 @@ pub fn record(id: &str, file: &Path, now: u64) -> Result<Value> {
         .truncate(false)
         .open(directory.join("report.lock"))?;
     held.lock()?;
+    let _state_lock = crate::host_watch::state_lock()?;
+    // A look or another report may have held the lock. Validate the hour
+    // when the transition can occur, not when this command began waiting.
+    let now = now.max(crate::clock());
     if let Some(kept) = read(id)? {
         if serde_json::to_value(&kept)? != serde_json::to_value(&report)? {
             bail!("watch {id} already reported; its record cannot be replaced");
@@ -78,7 +82,9 @@ pub fn record(id: &str, file: &Path, now: u64) -> Result<Value> {
     } else {
         let watch =
             crate::host_watch::running()?.context("no watch is running; nothing recorded")?;
-        if watch.id != id || afkconvoy_core::host_watch::expired(watch.started, now) {
+        if watch.id != id
+            || (watch.started != 0 && afkconvoy_core::host_watch::expired(watch.started, now))
+        {
             bail!("watch {id} is not the running watch within its hour; nothing recorded");
         }
         let temporary = directory.join(format!("report-{}.tmp", crate::unique()));
