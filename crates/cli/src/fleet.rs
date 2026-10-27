@@ -322,10 +322,10 @@ impl Fleet {
                         format!("make {key} answer its probes; a successful recovery probe restores it"),
                     )
                 } else if !eligible.iter().any(|held| held.harness == harness) {
-                    (
-                        format!("{key} is unavailable on this host; see health evidence"),
-                        format!("restore {key} to health; a successful recovery probe restores it"),
-                    )
+                    let why = crate::health::fault_reason(harness).unwrap_or_else(|| {
+                        format!("{key} is unavailable on this host; see health evidence")
+                    });
+                    (why, format!("restore {key} to health; a successful recovery probe restores it"))
                 } else {
                     (
                         format!("{key} has no eligible model within this role's range"),
