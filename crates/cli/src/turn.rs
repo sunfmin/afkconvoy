@@ -235,7 +235,14 @@ pub fn land(
     Ok(answer)
 }
 
-fn land_task(repo: &Repo, config: &Config, gh: &GitHub, issue: u64, host: &str, now: u64) -> Result<Value> {
+fn land_task(
+    repo: &Repo,
+    config: &Config,
+    gh: &GitHub,
+    issue: u64,
+    host: &str,
+    now: u64,
+) -> Result<Value> {
     let mut routed = crate::config::load(&repo.dir.join(crate::config::FILE))?;
     routed.base_branch = crate::target::branch(repo, config, issue)?;
     let config = &routed;
@@ -259,7 +266,10 @@ fn land_task(repo: &Repo, config: &Config, gh: &GitHub, issue: u64, host: &str, 
     if let Some(id) = crate::target::delivery(repo, issue)? {
         let marker = format!("<!--convoy:task-delivery id={id}-->");
         if !gh.pr_comments(pr.number)?.iter().any(|c| c.body.contains(&marker)) {
-            gh.comment_on_pr(pr.number, &format!("{marker}\nTask: {}\nDelivery: {id}", gh.tracker.issue(issue)))?;
+            gh.comment_on_pr(
+                pr.number,
+                &format!("{marker}\nTask: {}\nDelivery: {id}", gh.tracker.issue(issue)),
+            )?;
         }
     }
     join(

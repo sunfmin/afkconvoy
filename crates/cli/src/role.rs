@@ -363,7 +363,8 @@ impl Staged {
                 wake_command: &own().fixed(" wake").own(),
             };
             let landing = Landing { role: &self.role, skill: &self.skill };
-            let prompt = landing_prompt(&fields, pr, landing).map_err(|e| anyhow!(e))?;
+            let mut prompt = landing_prompt(&fields, pr, landing).map_err(|e| anyhow!(e))?;
+            prompt.push_str(&crate::delivery::brief(&fleet.repo, self.issue)?);
             return worktree.write_brief(&prompt);
         }
         // What a brief tells a worker to declare with: this tool's `subcommand`,
@@ -419,6 +420,7 @@ impl Staged {
                 ));
             }
         }
+        prompt.push_str(&crate::delivery::brief(&fleet.repo, self.issue)?);
         worktree.write_brief(&prompt)
     }
 

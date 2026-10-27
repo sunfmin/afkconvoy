@@ -35,10 +35,10 @@
 mod fake;
 
 use afkconvoy::gh::{
-    BLOCKED_BY_JQ, CARRYING_JQ, CLOSED_JQ, COMMENTS_JQ, COMMENTS_WITH, DELIVERY_PRS_JQ, ISSUE_JQ, LABELS_JQ,
-    LANDED_ISSUES_JQ, LANDED_ISSUES_QUERY, OPEN_ISSUES_JQ, OPEN_ISSUES_QUERY, OPEN_LABELLED_JQ,
-    PR_FIELDS, PR_HEADS_JQ, PR_OF_FIELDS, PR_OF_JQ, VISIBILITY_JQ, WATCH_ISSUES_JQ,
-    WATCH_ISSUES_QUERY, WATCH_PRS_JQ,
+    BLOCKED_BY_JQ, CARRYING_JQ, CLOSED_JQ, COMMENTS_JQ, COMMENTS_WITH, DELIVERY_PRS_JQ, ISSUE_JQ,
+    LABELS_JQ, LANDED_ISSUES_JQ, LANDED_ISSUES_QUERY, OPEN_ISSUES_JQ, OPEN_ISSUES_QUERY,
+    OPEN_LABELLED_JQ, PR_FIELDS, PR_HEADS_JQ, PR_OF_FIELDS, PR_OF_JQ, VISIBILITY_JQ,
+    WATCH_ISSUES_JQ, WATCH_ISSUES_QUERY, WATCH_PRS_JQ,
 };
 use std::path::PathBuf;
 
@@ -89,7 +89,9 @@ fn main() {
         ["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"] => {
             st.finish(st.doc["repository"].as_str().unwrap_or("acme/dev"), 0, "")
         }
-        ["api", "--paginate", endpoint, "--jq", jq] if endpoint == &format!("{REPO}pulls?state=all&per_page=100") => {
+        ["api", "--paginate", endpoint, "--jq", jq]
+            if endpoint == &format!("{REPO}pulls?state=all&per_page=100") =>
+        {
             assert_eq!(*jq, DELIVERY_PRS_JQ);
             notice_merges(&mut st);
             let rows: Vec<String> = st.doc["prs"].as_array().unwrap().iter().map(|pr| {
@@ -519,7 +521,12 @@ fn pr_create(st: &mut State) -> ! {
     if commit.is_empty() {
         st.finish("", 1, "gh: head branch does not exist\n");
     }
-    if st.doc["prs"].as_array().unwrap().iter().any(|pr| is_open(pr) && pr["headRefName"] == head && pr["baseRefName"] == base) {
+    if st.doc["prs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|pr| is_open(pr) && pr["headRefName"] == head && pr["baseRefName"] == base)
+    {
         st.finish("", 1, "a pull request already exists for that head and base\n");
     }
     let number = ["issues", "prs"]

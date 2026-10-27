@@ -42,6 +42,7 @@ pub mod concurrency;
 pub mod config;
 pub mod copies;
 pub mod cut;
+mod delivery;
 pub mod dispatch;
 pub mod doctor;
 pub mod draft;
@@ -106,7 +107,6 @@ pub mod stop;
 pub mod switch;
 pub mod takeover;
 mod target;
-mod delivery;
 pub mod team;
 pub mod tick;
 pub mod tools;
@@ -4217,7 +4217,9 @@ impl Command {
             Command::Intake { issue, .. } => of("intake", issue, None),
             Command::Target { issue, branch: Some(_), .. } => of("target", issue, None),
             Command::Target { branch: None, .. } => return None,
-            Command::Delivery { final_target: Some(_), issue, .. } => Acting::new("delivery").on_issue(*issue),
+            Command::Delivery { final_target: Some(_), issue, .. } => {
+                Acting::new("delivery").on_issue(*issue)
+            }
             Command::Delivery { final_target: None, .. } => return None,
             Command::Lock { issue, .. } => of("lock", issue, None),
             Command::PatrolNow { name, .. } => {

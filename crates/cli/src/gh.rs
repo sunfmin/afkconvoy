@@ -917,8 +917,14 @@ impl GitHub {
                 })
                 .collect::<Result<_>>()?;
             let finished = rows.len() < 100 || rows.iter().any(|row| row.updated < since);
-            prs.extend(rows.into_iter().filter(|row| row.updated >= since && !row.fork
-                && !crate::delivery::final_pr(&row.head_branch, row.body.as_deref().unwrap_or(""))));
+            prs.extend(rows.into_iter().filter(|row| {
+                row.updated >= since
+                    && !row.fork
+                    && !crate::delivery::final_pr(
+                        &row.head_branch,
+                        row.body.as_deref().unwrap_or(""),
+                    )
+            }));
             if finished {
                 break;
             }
@@ -1051,7 +1057,8 @@ impl GitHub {
         let out = self.read(&["api", "--paginate", &endpoint, "--jq", PR_HEADS_JQ])?;
         for line in out.lines().filter(|line| !line.trim().is_empty()) {
             let row: Row = serde_json::from_str(line).context("gh api pulls: unexpected answer")?;
-            if row.head_branch == branch && !crate::delivery::final_pr(&row.head_branch, &row.body) {
+            if row.head_branch == branch && !crate::delivery::final_pr(&row.head_branch, &row.body)
+            {
                 return Ok(Some(PullRequest {
                     number: row.number,
                     title: row.title,
@@ -1107,7 +1114,13 @@ impl GitHub {
         let rows: Vec<Row> = serde_json::from_str(&out).context("gh pr list: unexpected answer")?;
         Ok(rows
             .into_iter()
-            .filter(|row| !row.is_cross_repository && !crate::delivery::final_pr(&row.head_ref_name, row.body.as_deref().unwrap_or("")))
+            .filter(|row| {
+                !row.is_cross_repository
+                    && !crate::delivery::final_pr(
+                        &row.head_ref_name,
+                        row.body.as_deref().unwrap_or(""),
+                    )
+            })
             .map(|row| {
                 let linked: Vec<Linked> = row
                     .closing_issues_references
@@ -1286,13 +1299,19 @@ impl GitHub {
     pub fn delivery_prs(&self) -> Result<Vec<DeliveryPr>> {
         let endpoint = format!("repos/{OWN}/pulls?state=all&per_page=100");
         let out = self.read(&["api", "--paginate", &endpoint, "--jq", DELIVERY_PRS_JQ])?;
-        out.lines().filter(|s| !s.trim().is_empty()).map(|line|
-            serde_json::from_str(line).context("gh api: unreadable delivery PR history")
-        ).collect()
+        out.lines()
+            .filter(|s| !s.trim().is_empty())
+            .map(|line| {
+                serde_json::from_str(line).context("gh api: unreadable delivery PR history")
+            })
+            .collect()
     }
 
     pub fn open_draft_pr(&self, base: &str, head: &str, title: &str, body: &str) -> Result<()> {
-        self.gh(&["pr", "create", "--draft", "--base", base, "--head", head, "--title", title, "--body", body])?;
+        self.gh(&[
+            "pr", "create", "--draft", "--base", base, "--head", head, "--title", title, "--body",
+            body,
+        ])?;
         Ok(())
     }
 
