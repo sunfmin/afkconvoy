@@ -639,6 +639,18 @@ fn on_host(repos: &Value, listed: &Value, ps: &Value) -> Vec<OnHost> {
         .collect()
 }
 
+/// Whether a harness Orca cannot observe has shown a turn of its own.
+/// Claude Code and Codex say they are working or thinking. Grok says it is
+/// waiting for a response while a submitted turn has not printed yet.
+pub(crate) fn screen_shows_turn(lines: &[String]) -> bool {
+    lines.iter().any(|line| {
+        let line = line.to_ascii_lowercase();
+        line.contains("working")
+            || line.contains("thinking")
+            || line.contains("waiting for response")
+    })
+}
+
 /// A worker's worktree on this machine.
 #[derive(Debug, Clone)]
 pub struct Worktree {
@@ -1590,10 +1602,7 @@ impl Worktree {
         // harness began working; otherwise this is still a failed delivery.
         let accepted_unobserved = prompt["observation"] == "unsupported"
             && stages.is_some_and(|stages| stages.iter().any(|stage| stage == "input_accepted"))
-            && self.screen(terminal, 20)?.iter().any(|line| {
-                let line = line.to_ascii_lowercase();
-                line.contains("working") || line.contains("thinking")
-            });
+            && screen_shows_turn(&self.screen(terminal, 20)?);
         if !started && !accepted_unobserved {
             return Err(self.prompt_failure(
                 terminal,
@@ -1621,6 +1630,17 @@ impl Worktree {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn grok_waiting_for_a_response_is_a_started_turn_and_an_idle_prompt_is_not() {
+        assert!(screen_shows_turn(&[
+            "Waiting for response… 0.3s".into(),
+            "Grok 4.7 (high) · always-approve".into(),
+        ]));
+        assert!(screen_shows_turn(&["Working…".into()]));
+        assert!(screen_shows_turn(&["Thinking".into()]));
+        assert!(!screen_shows_turn(&["Grok 4.7 (high) · always-approve".into(), "❯".into(),]));
+    }
 
     #[test]
     fn every_lone_surrogate_in_an_answer_becomes_one_replacement_character() {

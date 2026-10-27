@@ -114,6 +114,22 @@ fn a_brief_orca_cannot_observe_is_delivered_for_worker_health_to_judge() {
 }
 
 #[test]
+fn a_grok_screen_waiting_for_a_response_counts_as_a_started_turn() {
+    let world = ready_world();
+    world.with_orca(|orca| {
+        orca["raw_answers"] = json!({
+            "terminal wait": r#"{"ok":true,"result":{"wait":{"satisfied":true,"preview":"❯"}}}"#,
+            "terminal send": r#"{"ok":true,"result":{"send":{"accepted":true,
+                "prompt":{"stages":["input_accepted"],"observation":"unsupported",
+                "provider":"unsupported"}}}}"#,
+            "terminal read": r#"{"ok":true,"result":{"terminal":{"tail":["Waiting for response… 0.3s","Grok 4.7 (high) · always-approve"],"source":"screen"}}}"#
+        });
+    });
+    let answer = dispatch(&world, "7").ok();
+    assert_eq!(answer["started"], true, "{answer}");
+}
+
+#[test]
 fn an_unobservable_accepted_brief_without_a_working_screen_is_a_failed_start() {
     let world = ready_world();
     world.with_orca(|orca| {
