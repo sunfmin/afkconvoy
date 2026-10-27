@@ -401,24 +401,27 @@ const INPUT: char = '❯';
 /// or `[2 tasks running]`; a background agent (`[1 agent running]`) is not a
 /// gate or a landing. What a turn quoted above the prompt is not read.
 pub(super) fn shows_background(screen: &[String]) -> bool {
-    let below = match screen.iter().rposition(|line| line.trim_start().starts_with(INPUT)) {
-        Some(prompt) => &screen[prompt + 1..],
-        None => {
-            let start = screen.len().saturating_sub(2);
-            &screen[start..]
+    let mut below = screen.iter();
+    match screen.iter().rposition(|line| line.trim_start().starts_with(INPUT)) {
+        Some(prompt) => {
+            below.nth(prompt);
         }
-    };
-    below.iter().any(|line| background_task(line))
+        // No prompt: the badge is on the first of the two footer lines.
+        None => {
+            if let Some(from) = screen.len().checked_sub(2).and_then(|n| n.checked_sub(1)) {
+                below.nth(from);
+            }
+        }
+    }
+    below.any(|line| background_task(line))
 }
 
 /// Kimi's footer badge for one or more background shells, not an agent.
 fn background_task(line: &str) -> bool {
     let mut rest = line;
-    while let Some(start) = rest.find('[') {
-        rest = &rest[start + 1..];
-        let Some(end) = rest.find(']') else { return false };
-        let badge = &rest[..end];
-        rest = &rest[end + 1..];
+    while let Some((_, after)) = rest.split_once('[') {
+        let Some((badge, tail)) = after.split_once(']') else { return false };
+        rest = tail;
         let mut words = badge.split_whitespace();
         let (Some(count), Some(noun), Some(state)) = (words.next(), words.next(), words.next())
         else {
