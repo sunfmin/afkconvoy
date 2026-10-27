@@ -392,18 +392,16 @@ pub(crate) fn onto(fleet: &mut Fleet, me: &Me, agent: &Agent, target: Harness) -
     if let Some(worktree) = Worktree::named(&source, afkconvoy_core::casting::CASTER_WORKTREE)?
         && worktree.terminal()?.is_some()
         && other_than(&worktree, fleet.now, target, &mut landed)
+        && auxiliary(fleet, agent, &worktree, true).is_err()
     {
-        if auxiliary(fleet, agent, &worktree, true).is_err() {
-            landed = false;
-        }
+        landed = false;
     }
     if let Some(worktree) = Worktree::of_train(&source)?
         && worktree.terminal()?.is_some()
         && other_than(&worktree, fleet.now, target, &mut landed)
+        && auxiliary(fleet, agent, &worktree, false).is_err()
     {
-        if auxiliary(fleet, agent, &worktree, false).is_err() {
-            landed = false;
-        }
+        landed = false;
     }
     Ok(landed)
 }
