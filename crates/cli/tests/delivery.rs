@@ -465,7 +465,7 @@ fn discussion_creation_reconstructs_three_tasks_and_lands_only_on_their_two_deli
         let file = format!("task-{issue}.txt");
         commit(&dir, &file, &number);
         git(&dir, &["push", "-q", "origin", "HEAD"]);
-        let pr = 2000 + issue;
+        let pr = 2000 + issue * 10;
         world.pr(pr, *issue, started["branch"].as_str().unwrap());
         world.with_gh(|gh| {
             let row =
