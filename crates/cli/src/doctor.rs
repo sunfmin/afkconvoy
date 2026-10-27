@@ -2079,7 +2079,7 @@ pub fn all_since_rounds(
                     let repo = Repo::at(&entry.checkout);
                     let key = repo.as_ref().ok().and_then(|repo| repo_of(repo).ok());
                     let examined = repo.and_then(|repo| {
-                        let (mut answer, found) = examined(&repo, now, &host, proxy, &look)?;
+                        let (mut answer, found) = examined(&repo, now, &host, proxy, look)?;
                         if let Some(since) = since {
                             answer["watching"] = match watching::read(&repo, &host, since, now) {
                                 Ok(watching) => watching,

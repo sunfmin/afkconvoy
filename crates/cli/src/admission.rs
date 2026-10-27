@@ -60,6 +60,12 @@ impl Readings {
     }
 }
 
+impl Default for Readings {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// The shares this host is held to, and what was read of it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Admission {
