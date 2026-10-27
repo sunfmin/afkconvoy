@@ -272,6 +272,7 @@ impl World {
         self.kit_command("codex", afkconvoy_core::harness::Harness::Codex.stock());
         self.kit_command("dsh", afkconvoy_core::harness::Harness::Dsh.stock());
         self.kit_command("kimi", afkconvoy_core::harness::Harness::Kimi.stock());
+        self.kit_command("grok", afkconvoy_core::harness::Harness::Grok.stock());
     }
 
     /// Has the host kit hold `models` for `harness`, in that order, as seen
@@ -1497,6 +1498,24 @@ case "$2" in
   *" && kimi provider list --json")
     if [ -f "$root/shell-kimi-models" ]; then cat "$root/shell-kimi-models"; exit 0; fi
     echo "command not found" >&2; exit 127 ;;
+  "grok models")
+    if [ -e "$root/logged-out-grok" ]; then
+      echo "You are not authenticated."
+      echo "Default model: grok-4.6"
+      echo "Available models:"
+      echo "  * grok-4.6 (default)"
+      echo "  - grok-4.5"
+      exit 0
+    fi
+    echo "You are logged in with grok.com."
+    echo "Default model: grok-4.7"
+    echo "Available models:"
+    echo "  * grok-4.7 (default)"
+    echo "  - grok-4.5"
+    exit 0 ;;
+  *" && grok --always-approve models"|*" && grok models")
+    if [ -f "$root/shell-grok-models" ]; then cat "$root/shell-grok-models"; exit 0; fi
+    echo "command not found" >&2; exit 127 ;;
   "printf 'AFKCONVOY_PROXY"*)
     if [ -f "$root/shell-proxy" ]; then cat "$root/shell-proxy"; else printf 'AFKCONVOY_PROXY\000\000'; fi
     exit 0 ;;
@@ -1523,6 +1542,10 @@ case "$2" in
     if [ -f "$root/shell-help" ]; then cat "$root/shell-help"; exit 0; fi
     echo "Usage: kimi [options]"
     echo "  --add-dir <dir>"; echo "  --skills-dir <dir>"; echo "  --model <model>"; exit 0 ;;
+  "grok "*" --help")
+    if [ -f "$root/shell-help" ]; then cat "$root/shell-help"; exit 0; fi
+    echo "Usage: grok [options]"
+    echo "  --add-dir <directories...>"; echo "  --model <model>"; echo "  --always-approve"; exit 0 ;;
   *" --list-models")
     if [ -f "$root/shell-models" ]; then cat "$root/shell-models"; exit 0; fi
     echo "command not found" >&2; exit 127 ;;

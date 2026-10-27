@@ -338,6 +338,7 @@ fn a_role_s_range_leaves_out_a_harness_it_holds_no_limits_for_and_plan_and_check
         {"harness": "pi", "why": "no limits for pi"},
         {"harness": "dsh", "why": "no limits for dsh"},
         {"harness": "kimi", "why": "no limits for kimi"},
+        {"harness": "grok", "why": "no limits for grok"},
     ]);
     assert_eq!(reviewer["left_out"], left_out);
     // A role with no limits at all is right for every harness.
@@ -402,14 +403,19 @@ fn a_team_s_roster_is_drafted_from_the_host_kit_into_its_working_tree_and_commit
     assert_eq!(drafted["drafted_by"], json!({"harness": "claude-code", "model": "opus"}));
     assert_eq!(
         drafted["unsaid"],
-        json!(["what codex is good at", "what dsh is good at", "what kimi is good at"])
+        json!([
+            "what codex is good at",
+            "what dsh is good at",
+            "what kimi is good at",
+            "what grok is good at"
+        ])
     );
     assert!(answer.stderr.contains("the draft says nothing of what codex is good at"));
 
     // The host kit's first was asked, of every role and every model in order.
     let asked = world.drafter_asked();
     for given in [
-        "- claude-code opus\n- claude-code haiku\n- pi a/fast\n- codex\n- dsh\n- kimi\n",
+        "- claude-code opus\n- claude-code haiku\n- pi a/fast\n- codex\n- dsh\n- kimi\n- grok\n",
         "- reviewer: the stage `look` of the workflow `audit`, performing the skill `review`; \
          the stage `review` of the workflow `feature`, performing the skill `review`. It may \
          run: claude-code opus, claude-code haiku.\n",
@@ -434,12 +440,13 @@ fn a_team_s_roster_is_drafted_from_the_host_kit_into_its_working_tree_and_commit
         "      - { harness: codex }\n",
         "      - { harness: dsh }\n",
         "      - { harness: kimi }\n",
+        "      - { harness: grok }\n",
         "  reviewer:\n",
         "    cast: \"Haiku unless the change is wide.\"\n",
         "    run:\n",
         "      - { harness: claude-code, model: \"opus\", good_at: \"hard, wide work\" }\n",
         "      - { harness: claude-code, model: \"haiku\", good_at: \"reviews\" }\n",
-        "    # left out: pi, codex, dsh, kimi, which the role holds no limits for\n",
+        "    # left out: pi, codex, dsh, kimi, grok, which the role holds no limits for\n",
     );
     assert_eq!(
         written,
@@ -451,7 +458,7 @@ fn a_team_s_roster_is_drafted_from_the_host_kit_into_its_working_tree_and_commit
 
     // The draft passes `check` as written.
     let checked = world.afk(&["check", "--dir", dir, "--team", "acme/team"]).ok();
-    assert_eq!(checked["roles"][0]["roster"]["run"].as_array().unwrap().len(), 6, "{checked}");
+    assert_eq!(checked["roles"][0]["roster"]["run"].as_array().unwrap().len(), 7, "{checked}");
     assert_eq!(checked["roles"][1]["roster"]["run"].as_array().unwrap().len(), 2, "{checked}");
 
     // Where a roster is, it says what it would change and writes nothing

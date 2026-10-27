@@ -73,6 +73,8 @@ pub(super) const KEPT: Kept = Kept {
 };
 
 pub(super) const LIMITS: &str = ".kimi-code/limits.toml";
+/// The host user's Kimi config, of which a worker keeps only model routing.
+pub(super) const USER_CONFIG: &str = ".kimi-code/config.toml";
 pub(super) const BEFORE_THE_RULES: [&str; 1] = ["AGENTS.md"];
 pub(super) const RULES_LINK: &str = "AGENTS.md";
 pub(super) const REPO_RULES: [&str; 2] = ["AGENTS.md", RULES];

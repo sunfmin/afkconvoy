@@ -43,6 +43,7 @@ A `./path` is read from the root of the team's repo, not from the team's directo
 - `.codex/hooks.json`: its limits for codex: hooks
 - `.dsh/cordis.patch.yml`: its limits for dsh: a DSH overlay
 - `.kimi-code/limits.toml`: its limits for kimi: Kimi hooks, and the permissions it denies
+- `.grok/config.toml`: its limits for grok: Grok hooks, and the permissions it denies
 
 Only a skill's file has keys `check` reads: [`afkconvoy help skill-file`](help:skill-file). A `do` names an entry of `.claude/skills/` in the role. Rules and skills are written once; limits per harness, in its own form ([`afkconvoy help worker-launch`](help:worker-launch) says how each loads a role).
 
@@ -56,9 +57,9 @@ They are one of three kinds of text a worker reads, beside the repo's own rules 
 
 - **its role's**: the CLAUDE.md of the role's directory, under every harness
 - **the team rules**: the CLAUDE.md of the team's directory, under every harness
-- **the repo's own**: of the repo an issue is of: under claude-code its CLAUDE.md; under pi, codex and kimi its AGENTS.md, or CLAUDE.md where it has none
+- **the repo's own**: of the repo an issue is of: under claude-code its CLAUDE.md; under pi, codex, kimi and grok its AGENTS.md, or CLAUDE.md where it has none
 
-Claude Code and pi load the three; the fleet names the other two to Codex and Kimi Code. What each is for, and where a sentence belongs: [`afkconvoy help roles`](help:roles).
+Claude Code and pi load the three; the fleet names the other three to Codex, Kimi Code and Grok. What each is for, and where a sentence belongs: [`afkconvoy help roles`](help:roles).
 
 ## How a repo is bound to it
 
