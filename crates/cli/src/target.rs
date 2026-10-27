@@ -1,6 +1,5 @@
-//! A task's immutable destination, held on the remote before its first claim.
-//! Parentless records cannot fast-forward one another: competing selections
-//! converge on one branch, and every later stage reads that same decision.
+//! Immutable task destinations. A delivery reference resolves its policy from
+//! the delivery's one record, never from a separately editable branch copy.
 use afkconvoy_core::config::Config;
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
@@ -10,11 +9,33 @@ use crate::gh::GitHub;
 use crate::git::{REMOTE, RemoteRecord, Repo};
 use afkconvoy_core::tracker::Tracker;
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 struct Target {
     issue: String,
-    branch: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    branch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    delivery: Option<crate::delivery::Reference>,
+}
+
+impl Target {
+    fn resolve(&self, repo: &Repo) -> Result<String> {
+        match (&self.branch, &self.delivery) {
+            (Some(branch), None) => {
+                ensure!(
+                    !crate::delivery::final_pr(branch, ""),
+                    "reserved delivery branch requires its delivery reference; attach with afkconvoy delivery --jira <url> --final-target <branch> --issue <n>"
+                );
+                validate(repo, branch)?;
+                Ok(branch.clone())
+            }
+            (None, Some(reference)) => crate::delivery::resolve(repo, reference, None),
+            _ => {
+                bail!("contradictory task target; restore exactly one branch or delivery reference")
+            }
+        }
+    }
 }
 
 fn refname(repo: &Repo, tracker: &Tracker, issue: u64) -> String {
@@ -28,7 +49,7 @@ fn existing(repo: &Repo, gh: &GitHub, issue: u64) -> Result<Option<Target>> {
     let claim = repo.remote_records(&claim_ref)?.pop();
     let target = decode(&gh.tracker.issue(issue), &name, record.as_ref(), claim.as_ref())?;
     if let Some(target) = &target {
-        validate(repo, &target.branch)?;
+        target.resolve(repo)?;
     }
     Ok(target)
 }
@@ -57,12 +78,14 @@ fn decode(
         target.issue.eq_ignore_ascii_case(issue),
         "contradictory target at {name}; restore its pinned record"
     );
+    ensure!(
+        target.branch.is_some() != target.delivery.is_some(),
+        "contradictory target at {name}; restore exactly one branch or delivery reference"
+    );
     Ok(Some(target))
 }
 
-/// A rebuild reads exactly the snapshot it already listed, including the
-/// claim's reference to its target. Branch existence is checked against the
-/// branch tips in that same snapshot, rather than a new per-task listing.
+/// Resolve delivery references from the rebuild's same remote snapshot.
 pub fn snapshot_branch(
     repo: &Repo,
     config: &Config,
@@ -72,17 +95,32 @@ pub fn snapshot_branch(
 ) -> Result<String> {
     let name = refname(repo, tracker, issue);
     let claim_ref = afkconvoy_core::claims::claim_ref(repo.layout(), tracker, issue);
-    let record = records.iter().find(|r| r.name == name);
-    let claim = records.iter().find(|r| r.name == claim_ref);
-    Ok(decode(&tracker.issue(issue), &name, record, claim)?
-        .map_or_else(|| config.base_branch.clone(), |t| t.branch))
+    let target = decode(
+        &tracker.issue(issue),
+        &name,
+        records.iter().find(|r| r.name == name),
+        records.iter().find(|r| r.name == claim_ref),
+    )?;
+    match target {
+        None => Ok(config.base_branch.clone()),
+        Some(Target { delivery: Some(reference), .. }) => {
+            crate::delivery::resolve(repo, &reference, Some(records))
+        }
+        Some(Target { branch: Some(branch), .. }) => {
+            ensure!(
+                !crate::delivery::final_pr(&branch, ""),
+                "delivery branch requires its immutable delivery reference; restore the task target"
+            );
+            Ok(branch)
+        }
+        _ => bail!("contradictory task target; restore its record"),
+    }
 }
 
-/// Claims retain the identity of the target record, so losing or replacing
-/// that ref never makes an explicit task look like a default-target task.
+/// Claims retain the target record's identity so losing it never means default.
 pub fn stamp_claim(
     repo: &Repo,
-    tracker: &afkconvoy_core::tracker::Tracker,
+    tracker: &Tracker,
     claim_ref: &str,
     subject: String,
 ) -> Result<String> {
@@ -113,70 +151,125 @@ fn validate(repo: &Repo, branch: &str) -> Result<()> {
     Ok(())
 }
 
-/// Reads the pinned branch; only a task with no record uses the configured base.
 pub fn branch(repo: &Repo, config: &Config, issue: u64) -> Result<String> {
-    let gh = GitHub::of(repo)?;
-    Ok(existing(repo, &gh, issue)?.map_or_else(|| config.base_branch.clone(), |t| t.branch))
+    match existing(repo, &GitHub::of(repo)?, issue)? {
+        Some(target) => target.resolve(repo),
+        None => Ok(config.base_branch.clone()),
+    }
 }
 
-/// Selects exactly once. The default is pinned by the claim path too, so a
-/// later config change cannot move a worker that has already started.
-pub fn pin(repo: &Repo, config: &Config, issue: u64, selected: Option<&str>) -> Result<String> {
-    let gh = GitHub::of(repo)?;
-    if selected.is_some() {
+fn selectable(gh: &GitHub, issue: u64) -> Result<()> {
+    ensure!(
+        !afkconvoy_core::tracker::is_public(&gh.visibility()?),
+        "target selection requires a private tracker; configure one with afkconvoy run --tracker <owner/private-repo>"
+    );
+    let read = gh.issue(issue)?;
+    ensure!(!read.pull_request && !read.is_closed(), "select a target for an open task issue");
+    gh.tracker.to_take(&read.labels).map_err(anyhow::Error::msg)?;
+    Ok(())
+}
+
+fn write(repo: &Repo, gh: &GitHub, issue: u64, target: Target, selecting: bool) -> Result<String> {
+    let branch = target.resolve(repo)?;
+    if let Some(won) = existing(repo, gh, issue)? {
         ensure!(
-            !afkconvoy_core::tracker::is_public(&gh.visibility()?),
-            "target selection requires a private tracker; configure one with afkconvoy run --tracker <owner/private-repo>"
+            target == won,
+            "{} is pinned to another target; changing a resolved target is refused; open a new task",
+            target.issue
         );
-        let read = gh.issue(issue)?;
-        ensure!(!read.pull_request && !read.is_closed(), "select a target for an open task issue");
-        gh.tracker.to_take(&read.labels).map_err(anyhow::Error::msg)?;
+        return won.resolve(repo);
     }
-    if let Some(target) = existing(repo, &gh, issue)? {
-        ensure!(
-            selected.is_none_or(|b| b == target.branch),
-            "{} is pinned to {:?}; changing a resolved target is refused; open a new task for another destination",
-            gh.tracker.issue(issue),
-            target.branch
-        );
-        return Ok(target.branch);
-    }
-    let branch = selected.unwrap_or(&config.base_branch);
-    validate(repo, branch)?;
-    if selected.is_some() {
+    if selecting {
         ensure!(
             crate::claims::Scan::read(repo)?.claim_of(issue).is_none(),
             "{} is already claimed; its target cannot change",
-            gh.tracker.issue(issue)
+            target.issue
         );
-        // A candidate can survive its issue's claim. Never retarget it.
         ensure!(
             !crate::candidates::has_task(repo, issue)?,
             "{} still has candidates; its target cannot change",
-            gh.tracker.issue(issue)
+            target.issue
         );
     }
-    let target = Target { issue: gh.tracker.issue(issue), branch: branch.to_string() };
     let sha = repo.record_commit(&serde_json::to_string(&target)?)?;
     let name = refname(repo, &gh.tracker, issue);
     let pushed = repo.try_git(&["push", "--quiet", REMOTE, &format!("{sha}:{name}")])?;
-    if !pushed.ok {
-        if let Some(won) = existing(repo, &gh, issue)? {
-            ensure!(
-                selected.is_none_or(|b| b == won.branch),
-                "another selection pinned {} to {:?}; target change refused",
-                target.issue,
-                won.branch
-            );
-            return Ok(won.branch);
-        }
-        bail!(
-            "could not pin target {}: {}; run this command again",
-            target.issue,
-            pushed.stderr.trim()
+    // Always discover even after success, covering simultaneous selection.
+    if let Some(won) = existing(repo, gh, issue)? {
+        ensure!(
+            target == won,
+            "another selection pinned {} to a different target; target change refused",
+            target.issue
         );
+        return Ok(branch);
     }
-    Ok(target.branch)
+    bail!("could not pin target {}: {}; run this command again", target.issue, pushed.stderr.trim())
+}
+
+/// A first claim pins the default too; a later config change cannot move it.
+pub fn pin(repo: &Repo, config: &Config, issue: u64, selected: Option<&str>) -> Result<String> {
+    let gh = GitHub::of(repo)?;
+    if selected.is_some() {
+        selectable(&gh, issue)?;
+    }
+    if let Some(target) = existing(repo, &gh, issue)? {
+        let branch = target.resolve(repo)?;
+        ensure!(
+            selected.is_none_or(|b| b == branch),
+            "{} is pinned to {:?}; changing a resolved target is refused; open a new task for another destination",
+            gh.tracker.issue(issue),
+            branch
+        );
+        return Ok(branch);
+    }
+    write(
+        repo,
+        &gh,
+        issue,
+        Target {
+            issue: gh.tracker.issue(issue),
+            branch: Some(selected.unwrap_or(&config.base_branch).to_string()),
+            delivery: None,
+        },
+        selected.is_some(),
+    )
+}
+
+pub fn attach(repo: &Repo, issue: u64, id: &str) -> Result<String> {
+    let gh = GitHub::of(repo)?;
+    selectable(&gh, issue)?;
+    write(
+        repo,
+        &gh,
+        issue,
+        Target {
+            issue: gh.tracker.issue(issue),
+            branch: None,
+            delivery: Some(crate::delivery::reference(repo, id)?),
+        },
+        true,
+    )
+}
+
+pub fn delivery(repo: &Repo, issue: u64) -> Result<Option<String>> {
+    Ok(existing(repo, &GitHub::of(repo)?, issue)?.and_then(|t| t.delivery).map(|r| r.identity))
+}
+
+pub fn attached(repo: &Repo, id: &str) -> Result<Vec<String>> {
+    let mut issues = vec![];
+    for record in repo.remote_records(&repo.layout().every("target/"))? {
+        let target: Target = serde_json::from_str(&record.subject).with_context(|| {
+            format!(
+                "unreadable task target at {}; restore it before inspecting deliveries",
+                record.name
+            )
+        })?;
+        if target.delivery.as_ref().is_some_and(|r| r.identity == id) {
+            issues.push(target.issue);
+        }
+    }
+    issues.sort();
+    Ok(issues)
 }
 
 pub fn select(repo: &Repo, issue: u64, selected: Option<&str>) -> Result<Value> {
@@ -185,5 +278,9 @@ pub fn select(repo: &Repo, issue: u64, selected: Option<&str>) -> Result<Value> 
         Some(branch) => pin(repo, &config, issue, Some(branch))?,
         None => branch(repo, &config, issue)?,
     };
-    Ok(json!({"issue": issue, "target_branch": branch}))
+    let mut answer = json!({"issue": issue, "target_branch": branch});
+    if let Some(id) = delivery(repo, issue)? {
+        answer["delivery"] = json!(id);
+    }
+    Ok(answer)
 }

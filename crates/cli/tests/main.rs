@@ -18,6 +18,7 @@ mod consult;
 mod continuation;
 mod cutting;
 mod declared;
+mod delivery;
 mod dispatch;
 mod doctor;
 mod dsh;

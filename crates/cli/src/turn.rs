@@ -230,6 +230,19 @@ pub fn land(
     host: &str,
     now: u64,
 ) -> Result<Value> {
+    let mut answer = land_task(repo, config, gh, issue, host, now)?;
+    crate::delivery::after_task(repo, issue, &mut answer);
+    Ok(answer)
+}
+
+fn land_task(
+    repo: &Repo,
+    config: &Config,
+    gh: &GitHub,
+    issue: u64,
+    host: &str,
+    now: u64,
+) -> Result<Value> {
     let mut routed = crate::config::load(&repo.dir.join(crate::config::FILE))?;
     routed.base_branch = crate::target::branch(repo, config, issue)?;
     let config = &routed;
@@ -250,6 +263,15 @@ pub fn land(
         }
         bail!("no open PR closes issue #{issue} — if it has already merged, stop");
     };
+    if let Some(id) = crate::target::delivery(repo, issue)? {
+        let marker = format!("<!--convoy:task-delivery id={id}-->");
+        if !gh.pr_comments(pr.number)?.iter().any(|c| c.body.contains(&marker)) {
+            gh.comment_on_pr(
+                pr.number,
+                &format!("{marker}\nTask: {}\nDelivery: {id}", gh.tracker.issue(issue)),
+            )?;
+        }
+    }
     join(
         repo,
         config,

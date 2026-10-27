@@ -4,7 +4,7 @@
 
 afkconvoy works ready GitHub issues unattended. `afkconvoy run` starts one host runner with a fleet instance per repo. Each dispatches a coding agent per issue in its own git worktree, gates finished PRs and lands them on the configured base or a task's selected target. Fleet state lives in GitHub and the remote.
 
-`afkconvoy --help` answers the index: this guide, then each command's one line under who runs it, then each topic's first sentence. `afkconvoy help all` answers the whole manual: guide, commands and topics in full. `afkconvoy -h` lists commands on one screen.
+`afkconvoy --help` answers the index: this guide, each command by who runs it, and each topic's first sentence. `afkconvoy help all` answers the whole manual. `afkconvoy -h` lists commands on one screen.
 
 ## What it needs
 
@@ -16,7 +16,7 @@ afkconvoy works ready GitHub issues unattended. `afkconvoy run` starts one host 
 - `claude` on the PATH and logged in, when it is what starts a worker.
 - `pi` there too, holding credentials for a provider (`/login` at its prompt), or `codex`, logged in (`codex login`): each when a stage or a patrol is on it, only then.
 
-`plan`, `tick` and `run` check these first. With one missing, logged out, not running or not given the checkout they do nothing and the error gives the line to run for each: nothing is installed, started or added for you.
+`plan`, `tick` and `run` check these first. A missing command, login or checkout registration refuses with a fix for each; nothing is installed, started or added for you.
 
 ## What to run first, in a checkout of the repo
 
@@ -43,7 +43,7 @@ Every command prints exactly one JSON object on stdout. A failure is {"error": �
 
 Read `afkconvoy <command> --help` before first running it. Commands are grouped by who runs them:
 
-- **Run by the operator** — `config`, `check`, `plan` before `run`; `target` to select a task's destination; `tick` for one pass, `stop` to stop; `queue` for the local exclusive queue; `doctor --all --since <until of your last look>`, `checkouts`, `panel` to watch (`doctor` names each fix); `kit`, `cast`, `switch` for workers' harnesses and models; `patrol-now` to run a patrol now; `takeover` to take another fleet instance's claims.
+- **Run by the operator** — `config`, `check`, `plan` before `run`; `target` to select a task's destination; `delivery` for a Jira delivery; `tick` for one pass, `stop` to stop; `queue` for the local exclusive queue; `doctor --all --since <until of your last look>`, `checkouts`, `panel` to watch (`doctor` names each fix); `kit`, `cast`, `switch` for workers' harnesses and models; `patrol-now` to run a patrol now; `takeover` to take another fleet instance's claims.
 - **Run by whoever designs a team** — `scaffold` to start one or a role of it from a skeleton, `draft` to draft its roster from the host kit, then, once `check` accepts it, `show` to review a workflow or to ask where an issue is in it, and `rehearse` to try one out.
 - **Run by whoever hands the fleet work** — a human or their agent opening decided work. `flows` names the workflow, gives the issue-create line and makes labels. After opening issues, `wake` has the fleet take them up now.
 - **Run by whoever sets an agent up** — `skill` prints the skill file that sends their agent to `afkconvoy --help`.
@@ -1278,11 +1278,13 @@ Without --branch, reads the target, or the configured base for a task not yet re
 
 ##### What it answers
 
-{"issue", "target_branch"}, and "woke" after selection. Selection is idempotent for the same branch. Errors answer {"error": …} with a non-zero exit.
+{"issue", "target_branch"}, with "delivery" for an attached task, and "woke" after selection. Selection is idempotent for the same branch. Errors answer {"error": …} with a non-zero exit.
 
 ##### What trips you up
 
 A different resolved target, a claimed task, remaining candidates, an unreadable tracker, a foreign repo label or a missing branch is refused with a diagnostic. A resolved target cannot be changed: open a new task for another destination.
+
+Jira delivery branches are reserved: attach tasks through `afkconvoy delivery --jira <url> --final-target <branch> --issue <n>`. Their target records pin a reference to the immutable delivery definition; they never copy its branch settings. A missing or replaced definition blocks work instead of selecting the configured base.
 
 ##### Which checkout it is about
 
@@ -1303,6 +1305,53 @@ afkconvoy target [OPTIONS] <ISSUE|--issue <ISSUE>>
 - `[ISSUE]`: The issue's number
 - `--issue <ISSUE>`: The same, as a flag
 - `--branch <BRANCH>`: An existing same-repo branch on origin; omit to read the destination
+- `-C <CHECKOUT>`: The checkout it is about, or a directory in it [default: the one it is run in]
+
+#### `afkconvoy delivery`
+
+Create or inspect a Jira delivery
+
+##### When to run it
+
+Run `afkconvoy delivery -C <checkout> --jira https://example.atlassian.net/browse/ABC-123 --final-target <branch> --issue 7` before making the first task dispatchable. The checkout names the code repo. Repeat with another --issue to attach another open task. Omit --final-target and --issue for read-only inspection. Repeat the creation command to reconcile pending final review.
+
+##### Who runs it
+
+The operator. Jira is an external reference; no Jira login or synchronization is performed.
+
+##### What it reads and writes
+
+The full HTTPS Jira browse URL, including site and optional context path, and the code repo identify the delivery. Creation requires an explicit existing final target on origin and a private tracker. It atomically creates an immutable JSON definition at delivery/<identity> under the remote fleet ref layout and a predictable delivery/jira-<key>-<identity> branch at that target's tip. This definition alone owns both branches. Task target records store only a delivery reference. The repo defaults and release destination stay unchanged.
+
+A task cuts from the delivery branch and lands its internal PR only there. The final review PR is opened as a Draft as soon as a meaningful diff exists, after task landing or on an acting tick. No diff leaves creation pending without empty commits or PR attempts. Its number lives once in the subordinate delivery-pr/<identity> receipt. Each invocation discovers actual remote branches, records and all PR states first. Later tasks reuse the same final PR even after it is closed or merged. A human owns colleague review and merging the final PR; ordinary dispatch, landing, watch and recovery exclude it.
+
+##### What it answers
+
+{"jira", "delivery", "repository", "record", "branch", "final_target", "final_pr", "tasks"}, and "woke" after creation. final_pr is {number, url, state, draft} or {pending: reason}; tasks lists the attached tracker issue identities. Inspection writes nothing. Errors answer {"error": …} with a non-zero exit.
+
+##### What trips you up
+
+Ticket keys alone are not references: different Jira sites may reuse a key. An unrelated existing branch, conflicting final target, claimed task with another target, ambiguous PRs, unreadable record or missing owned branch refuses with a diagnostic. Restore inconsistent remote metadata before continuing attached tasks; nothing falls back to the configured base. A ticket spanning code repos has a separate delivery and final PR in each. To hand a task to the fleet, give it its ready or flow label after attaching it.
+
+##### Which checkout it is about
+
+Name it with `-C <CHECKOUT>`: a checkout of the repo, or any directory in one, which names that checkout. What follows the command is its own: the checkout is not among it. Naming none, it is about the checkout it is run in. A worker runs it in its own worktree.
+
+##### What it logs
+
+As it acts it appends one line to the tick log of this host for this repo, then wakes this host's fleet instance of this repo, through the host runner; its answer says whether it woke one, as "woke": [`afkconvoy help tick-log`](help:tick-log).
+
+##### Usage
+
+```
+afkconvoy delivery [OPTIONS] --jira <JIRA>
+```
+
+##### Arguments
+
+- `--jira <JIRA>`: Full HTTPS Jira browse URL, including the site
+- `--final-target <FINAL_TARGET>`: Existing branch on origin; required for creation and attachment
+- `--issue <ISSUE>`: Open tracker task to attach before dispatch or intake
 - `-C <CHECKOUT>`: The checkout it is about, or a directory in it [default: the one it is run in]
 
 #### `afkconvoy patrol-now`
@@ -4652,6 +4701,18 @@ _Avoid_: trunk, main, default branch (a team's or a role's repo is read at its o
 **Target branch**:
 The same-repo branch one task is cut from and lands on, pinned before it is claimed: the selected branch, or the configured base branch. Its stages and continuations retain that destination.
 _Avoid_: delivery branch (a Jira ticket's broader delivery), integration branch (a team's purpose for a branch)
+
+**Jira delivery**:
+One Jira ticket's delivery in one code repo, identified by its full Jira reference, including the site. It owns one delivery branch, one final target branch and one final review PR. Attached tasks contribute through internal task PRs. The same ticket across code repos has a separate delivery in each.
+_Avoid_: Jira workflow, task (one contribution to a delivery)
+
+**Delivery branch**:
+The branch a Jira delivery gathers its attached tasks on. Each attached task resolves it as its target branch; the repo's configured base stays unchanged.
+_Avoid_: task branch (the worker's own source branch)
+
+**Final review PR**:
+A Jira delivery's single PR from its delivery branch to its final target, opened as a Draft once there is a meaningful diff. A human owns colleague review and merging it; ordinary fleet task landing never selects it.
+_Avoid_: task PR (an internal contribution), final task
 
 ##### Teams and roles
 
