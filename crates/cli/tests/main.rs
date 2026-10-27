@@ -53,6 +53,7 @@ mod probe;
 mod proxy;
 mod public_tracker;
 mod queue;
+mod quota;
 mod rebuild;
 mod rehearse;
 mod release;

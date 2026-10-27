@@ -209,6 +209,7 @@ pub struct GitHub {
     /// Closures this view read or made, shared with its clones. These only
     /// route wakes; every woken tick reads GitHub for itself.
     closed: Arc<Mutex<BTreeSet<u64>>>,
+    quota: Arc<Mutex<Option<crate::gh_quota::Scope>>>,
 }
 
 /// An open PR from another repo's own branch, with when it was opened.
@@ -231,7 +232,7 @@ impl GitHub {
     /// A new read of `tracker` from `dir`, with its closure observations
     /// shared only by this view and its clones.
     pub fn new(dir: PathBuf, tracker: Tracker) -> GitHub {
-        GitHub { dir, tracker, closed: Arc::default() }
+        GitHub { dir, tracker, closed: Arc::default(), quota: Arc::default() }
     }
 
     /// The issues this view has seen closed, whatever read or write saw it.
@@ -388,6 +389,19 @@ impl std::fmt::Display for Unreached {
 
 impl std::error::Error for Unreached {}
 
+#[derive(Debug)]
+struct PrimaryQuota(String);
+impl std::fmt::Display for PrimaryQuota {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "GitHub primary quotas unavailable: {}; next attempt at reset (Unix seconds)",
+            self.0
+        )
+    }
+}
+impl std::error::Error for PrimaryQuota {}
+
 /// The read `error` says got no answer, when that is why it was raised,
 /// whatever was said around it since.
 pub fn unreached(error: &anyhow::Error) -> Option<&Unreached> {
@@ -490,10 +504,112 @@ impl GitHub {
 
     /// One `gh` call that must succeed → its stdout. It is made once: what
     /// writes is not made again on a failure that may have written.
-    pub fn gh(&self, args: &[&str]) -> Result<String> {
+    pub(crate) fn raw(&self, args: &[&str]) -> Result<String> {
         match self.call(args)? {
             Ok(out) => Ok(out),
             Err((call, said)) => bail!("{call} failed: {said}"),
+        }
+    }
+
+    pub fn gh(&self, args: &[&str]) -> Result<String> {
+        self.routed(args, true)
+    }
+
+    fn quota(&self) -> Result<crate::gh_quota::Scope> {
+        let mut scope = self.quota.lock().unwrap_or_else(|e| e.into_inner());
+        if scope.is_none() {
+            let made = crate::gh_quota::Scope::of(self)?;
+            let now = crate::gh_quota::now();
+            let held = ["core", "graphql", "secondary"]
+                .iter()
+                .any(|name| made.read(name).is_ok_and(|r| r.remaining == Some(0) && r.reset > now));
+            if !held {
+                made.observe(self)?;
+            }
+            *scope = Some(made);
+        }
+        Ok(scope.as_ref().expect("scope was established").clone())
+    }
+
+    /// A quota rejection or an unexpired observation. Only this error type
+    /// authorizes another backend; neither transport errors nor a generic 403 do.
+    fn routed(&self, args: &[&str], writing: bool) -> Result<String> {
+        let Some(api) = crate::gh_quota::Api::of(args) else { return self.raw(args) };
+        match self.on_api(args, writing) {
+            Err(error) if error.is::<PrimaryQuota>() => {
+                let scope = self.quota()?;
+                let why = scope.describe()?;
+                eprintln!(
+                    "GitHub API: {} primary quota exhausted; trying {} for gh {}; {why}",
+                    api.name(),
+                    api.other().name(),
+                    args.iter().take(2).copied().collect::<Vec<_>>().join(" ")
+                );
+                crate::gh_equivalent::run(self, args, writing).with_context(|| format!(
+                    "GitHub API fallback for gh {} from {} to {}; {why}; retry after reset (Unix seconds)",
+                    args.iter().take(2).copied().collect::<Vec<_>>().join(" "), api.name(), api.other().name()))
+            }
+            other => other,
+        }
+    }
+
+    /// Executes one backend only. Compound equivalents use this entry so a
+    /// failed alternate cannot bounce recursively to its unavailable original.
+    pub(crate) fn on_api(&self, args: &[&str], writing: bool) -> Result<String> {
+        let Some(api) = crate::gh_quota::Api::of(args) else { return self.raw(args) };
+        let scope = self.quota()?;
+        let now = crate::gh_quota::now();
+        let secondary = scope.read("secondary")?;
+        if secondary.reset > now {
+            bail!(
+                "GitHub secondary rate limit: both APIs wait until {} (Unix seconds); {}",
+                secondary.reset,
+                scope.describe()?
+            );
+        }
+        let known = scope.read(api.name())?;
+        if known.remaining == Some(0) && known.reset > now {
+            return Err(PrimaryQuota(scope.describe()?).into());
+        }
+        let made = if writing { self.raw(args) } else { self.read_once_backend(args) };
+        match made {
+            Err(error) if crate::gh_quota::secondary(&error.to_string()).is_some() => {
+                let delay = crate::gh_quota::secondary(&error.to_string()).unwrap_or(60);
+                let reset = now.saturating_add(delay);
+                scope.save(
+                    "secondary",
+                    &crate::gh_quota::Observation { remaining: Some(0), reset },
+                )?;
+                bail!(
+                    "GitHub secondary rate limit: both APIs wait until {reset} (Unix seconds); {error}"
+                );
+            }
+            Err(error) if crate::gh_quota::primary(&error.to_string()) => {
+                scope.observe(self)?;
+                let known = scope.read(api.name())?;
+                // An error is authoritative even if a later quota observation
+                // already reports points. Bound a missing reset to one minute.
+                let reset = if known.reset > now { known.reset } else { now.saturating_add(60) };
+                scope.save(
+                    api.name(),
+                    &crate::gh_quota::Observation { remaining: Some(0), reset },
+                )?;
+                // High-level gh writes can contain several HTTP operations;
+                // their error cannot prove that earlier writes did not happen.
+                if writing && args.first() != Some(&"api") {
+                    bail!(
+                        "{error}; write outcome uncertain: inspect the authoritative issue/PR before retrying; {}",
+                        scope.describe()?
+                    );
+                }
+                Err(PrimaryQuota(scope.describe()?).into())
+            }
+            Err(error) if writing && in_transit(&error.to_string()) => {
+                bail!(
+                    "{error}; write outcome uncertain: inspect the authoritative issue/PR before retrying; no alternate write attempted"
+                )
+            }
+            other => other,
         }
     }
 
@@ -501,6 +617,10 @@ impl GitHub {
     /// (`in_transit`) is made again, `TRIES` times in all; none of them
     /// answered is `Unreached`. A failure GitHub answered with is as `gh`'s.
     pub fn read(&self, args: &[&str]) -> Result<String> {
+        self.routed(args, false)
+    }
+
+    fn read_once_backend(&self, args: &[&str]) -> Result<String> {
         let mut tries = 1;
         loop {
             match self.call(args)? {

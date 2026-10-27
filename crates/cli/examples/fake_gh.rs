@@ -50,6 +50,16 @@ const REPO: &str = "repos/{owner}/{repo}/";
 fn main() {
     let mut st = State::open_routed("CONVOY_FAKE_GH", "convoy-fake-gh");
     let line = st.argv.join(" ");
+    let resource = if line.starts_with("api graphql") || line.starts_with("pr list") {
+        "graphql"
+    } else if line.starts_with("api ") && !line.starts_with("api rate_limit") {
+        "core"
+    } else {
+        "other"
+    };
+    if let Some(said) = st.doc["quota_fail"][resource].as_str() {
+        st.finish("", 1, said);
+    }
     let injected = st.doc["fail"]
         .as_array()
         .is_some_and(|parts| parts.iter().filter_map(|p| p.as_str()).any(|p| line.contains(p)));
@@ -67,6 +77,17 @@ fn main() {
     let argv: Vec<&str> = st.argv.iter().map(String::as_str).collect();
     let other = st.opt("--repo").map(str::to_string);
     match argv.as_slice() {
+        ["auth", "status", ..] if st.has("--json") => {
+            st.finish(st.doc["login"].as_str().unwrap_or("fixture-user"), 0, "")
+        }
+        ["api", "rate_limit", ..] => {
+            let default = json!({"resources": {
+                "core": {"remaining":5000,"reset":4_000_000_000u64},
+                "graphql": {"remaining":5000,"reset":4_000_000_000u64}
+            }});
+            st.finish(&st.doc.get("quota").unwrap_or(&default).to_string(), 0, "")
+        }
+        ["api", "graphql", ..] if line.contains("ConvoyQuotaEquivalent") => equivalent_graph(&st),
         ["api", endpoint, "--jq", jq] if endpoint.starts_with(&format!("{REPO}pulls?")) => {
             assert_eq!(*jq, WATCH_PRS_JQ);
             let page = endpoint.rsplit("page=").next().unwrap().parse::<usize>().unwrap();
@@ -484,6 +505,15 @@ fn api(st: &mut State) -> ! {
     }
     let jq = st.opt("--jq").map(str::to_string);
     let jq = jq.as_deref();
+    if jq.is_none()
+        && method == "GET"
+        && (path == "issues"
+            || path == "pulls"
+            || path.ends_with("/comments")
+            || path.ends_with("/blocked_by"))
+    {
+        equivalent_rest(st, path, query)
+    }
     match parts.as_slice() {
         ["pulls"] if query.contains("state=open") => {
             assert!(st.has("--paginate"));
@@ -898,4 +928,110 @@ fn next_comment_id(st: &State) -> u64 {
 fn issue<'a>(st: &'a State, number: &str) -> Option<&'a Value> {
     let number: u64 = number.parse().ok()?;
     st.doc["issues"].as_array().unwrap().iter().find(|issue| issue["number"] == number)
+}
+
+fn stamp(at: &Value) -> Value {
+    at.as_u64()
+        .map_or(Value::Null, |at| json!(format!("{}Z", afkconvoy::log::utc(at).replace(' ', "T"))))
+}
+fn rest_issue(row: &Value) -> Value {
+    let labels: Vec<_> =
+        row["labels"].as_array().into_iter().flatten().map(|n| json!({"name":n})).collect();
+    json!({"id":issue_id(row),"number":row["number"],"title":row["title"],"body":row["body"],
+        "labels":labels,"state":if is_open(row){"open"}else{"closed"},"state_reason":row["state_reason"],
+        "created_at":stamp(&row["at"]),"closed_at":stamp(&row["closed_at"]),
+        "html_url":format!("https://gh/i/{}",row["number"]),
+        "repository_url":format!("https://api.github.com/repos/{}",row["repo"].as_str().unwrap_or("acme/dev")),
+        "pull_request":if row["pull_request"]==true {json!({})}else{Value::Null}})
+}
+fn equivalent_rest(st: &mut State, path: &str, query: &str) -> ! {
+    assert!(st.has("--paginate"));
+    let rows = if path == "issues" {
+        let labels = query
+            .split('&')
+            .find_map(|p| p.strip_prefix("labels="))
+            .map(unescaped)
+            .unwrap_or_default();
+        st.doc["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|r| {
+                (!query.contains("state=open") || is_open(r))
+                    && (!query.contains("state=closed") || !is_open(r))
+                    && labels.split(',').filter(|l| !l.is_empty()).all(|l| carries(r, l))
+            })
+            .map(rest_issue)
+            .collect::<Vec<_>>()
+    } else if path == "pulls" {
+        notice_merges(st);
+        st.doc["prs"].as_array().unwrap().iter().filter(|r| {
+            if query.contains("state=open") {is_open(r)}else{!is_open(r)}
+        }).map(|r|json!({"number":r["number"],"title":r["title"],"body":r["body"],"created_at":stamp(&r["since"]),"merged_at":stamp(&r["merged_at"]),"labels":[],
+            "head":{"ref":r["headRefName"],"sha":r["headRefOid"],"repo":{"full_name":if is_fork(r){"fork/dev"}else{"acme/dev"}}},"base":{"repo":{"full_name":"acme/dev"}}})).collect()
+    } else if path.ends_with("/blocked_by") {
+        let number = path.split('/').nth(1).unwrap();
+        blockers(st, number).iter().map(rest_issue).collect()
+    } else {
+        let number = path.split('/').nth(1).unwrap();
+        st.doc["comments"][number].as_array().into_iter().flatten().map(|r|json!({"id":r["id"],"body":r["body"],"html_url":r["html_url"],"created_at":stamp(&r["at"])})).collect()
+    };
+    // Multiple HTTP pages become multiple JSON arrays in gh api --paginate.
+    let out = if rows.is_empty() {
+        "[]".into()
+    } else {
+        rows.chunks(100).map(|p| json!(p).to_string()).collect::<Vec<_>>().join("\n")
+    };
+    st.finish(&out, 0, "")
+}
+fn graph_issue_row(row: &Value) -> Value {
+    let labels: Vec<_> =
+        row["labels"].as_array().into_iter().flatten().map(|n| json!({"name":n})).collect();
+    json!({"__typename":if row["pull_request"]==true{"PullRequest"}else{"Issue"},"fullDatabaseId":issue_id(row),
+        "number":row["number"],"title":row["title"],"body":row["body"],"url":format!("https://gh/i/{}",row["number"]),
+        "state":if is_open(row){"OPEN"}else{"CLOSED"},"stateReason":row["state_reason"].as_str().map(str::to_uppercase),
+        "createdAt":stamp(&row["at"]),"closedAt":stamp(&row["closed_at"]),
+        "repository":{"nameWithOwner":row["repo"].as_str().unwrap_or("acme/dev")},
+        "labels":{"nodes":labels,"pageInfo":{"hasNextPage":false,"endCursor":null}}})
+}
+fn equivalent_graph(st: &State) -> ! {
+    let query = st.argv.iter().find_map(|a| a.strip_prefix("query=")).unwrap();
+    let number = query
+        .split("number:")
+        .nth(1)
+        .and_then(|s| s.split(')').next())
+        .and_then(|s| s.parse::<u64>().ok());
+    let resource = if query.contains("resource: visibility") {
+        json!(st.doc["visibility"].as_str().unwrap_or("private").to_uppercase())
+    } else if query.contains("resource: issues(") {
+        let rows: Vec<_> = st.doc["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|r| {
+                (!query.contains("states:[OPEN]") || is_open(r))
+                    && (!query.contains("states:[CLOSED]") || !is_open(r))
+            })
+            .map(graph_issue_row)
+            .collect();
+        json!({"nodes":rows,"pageInfo":{"hasNextPage":false,"endCursor":null}})
+    } else if query.contains("resource: labels(") {
+        json!({"nodes":repo_labels(st).iter().map(|n|json!({"name":n})).collect::<Vec<_>>(),"pageInfo":{"hasNextPage":false,"endCursor":null}})
+    } else if query.contains("resource: comments(") {
+        let rows = comments(st, &number.unwrap().to_string());
+        json!({"nodes":rows.iter().map(|r|json!({"fullDatabaseId":r["id"],"body":r["body"],"url":r["url"],"createdAt":stamp(&r["at"])})).collect::<Vec<_>>(),"pageInfo":{"hasNextPage":false,"endCursor":null}})
+    } else if query.contains("resource: blockedBy(") {
+        json!({"nodes":blockers(st,&number.unwrap().to_string()).iter().map(graph_issue_row).collect::<Vec<_>>(),"pageInfo":{"hasNextPage":false,"endCursor":null}})
+    } else if query.contains("resource: issueOrPullRequest(") {
+        let Some(row) = issue(st, &number.unwrap().to_string()) else {
+            st.finish("", 1, "gh: Not Found (HTTP 404)")
+        };
+        graph_issue_row(row)
+    } else if query.contains("timelineItems") {
+        let row = issue(st, &number.unwrap().to_string()).unwrap();
+        json!({"timelineItems":{"nodes":[{"actor":{"login":row["closed_by"]}}]}})
+    } else {
+        unsupported(st)
+    };
+    st.finish(&json!({"data":{"repository":{"resource":resource}}}).to_string(), 0, "")
 }
