@@ -27,6 +27,7 @@ use crate::health::Diagnosis;
 use crate::log::{Entry, What};
 use crate::orca::Worktree;
 use crate::watch_report::Report;
+use crate::watch_terminal::{self, Phase, TITLE};
 
 const STATE: &str = "watch/state.json";
 /// How often a running watch's terminal and transcript are read.
@@ -36,8 +37,6 @@ const LOOK_SECONDS: u64 = 300;
 /// How many ended watches are kept, for what earlier watches on the same
 /// items did.
 const HISTORY: usize = 20;
-/// What a watch's terminal is titled in orca.
-const TITLE: &str = "afkconvoy watch";
 /// The linked checkout a watch makes for a change of a listed repo.
 pub const CHECKOUT: &str = "afkconvoy-watch";
 
@@ -422,7 +421,7 @@ impl Watcher {
         for candidate in crate::health::watch_candidates()? {
             watch.harness = candidate.harness;
             watch.model = candidate.model;
-            match start_session(&watch) {
+            match start_session(&mut watch) {
                 Ok((terminal, transcript)) => {
                     (watch.terminal, watch.transcript) = (terminal, transcript);
                     state.watched.extend(watch.items.iter().map(|item| item.id.clone()));
@@ -442,7 +441,14 @@ impl Watcher {
                     state.running = Some(watch);
                     return Ok(());
                 }
-                Err(error) => failures.push(format!("{}: {error:#}", candidate.harness.key())),
+                Err(error) => {
+                    failures.push(format!("{}: {error:#}", candidate.harness.key()));
+                    if let Some(pending) = watch_terminal::active()? {
+                        state.running = Some(pending);
+                        state.unavailable = Some(watch_terminal::recovery(&failures.join("; ")));
+                        return Ok(());
+                    }
+                }
             }
         }
         state.unavailable = Some(unstartable(&failures));
@@ -453,14 +459,13 @@ impl Watcher {
     /// is over, its harness gave out or its hour is up.
     fn check(&self) -> Result<()> {
         let mut state = read()?;
-        let Some(mut watch) = state.running.take() else {
+        let Some(mut watch) = state.running.take().or(watch_terminal::active()?) else {
             self.shared.set(None);
             return Ok(());
         };
         let worktree = Worktree::at(watch.directory.clone(), String::new());
         let transcript = std::fs::read_to_string(&watch.transcript).unwrap_or_default();
         let exited = host_watch::exited(&transcript);
-        let live = worktree.live(&watch.terminal)?;
         let now = crate::clock();
         if let Some(report) = crate::watch_report::read(&watch.id)? {
             stop_session(&watch)?;
@@ -470,7 +475,31 @@ impl Watcher {
             watch.did = report.did.clone();
             watch.report = Some(report);
             self.finish_said(&mut state, watch, "ended", "it reported; its harness was ended");
-        } else if host_watch::expired(watch.started, now) {
+        } else {
+            // Recovery precedes every terminal read, input and termination.
+            // An uncertain creation or delivery blocks the next launch too.
+            let recovered = (|| -> Result<bool> {
+                let terminal = watch_terminal::locate(&watch)?;
+                if let Some(terminal) = terminal {
+                    watch.terminal = terminal;
+                    resume_delivery(&mut watch)?;
+                    Ok(true)
+                } else {
+                    Ok(false)
+                }
+            })();
+            let live = match recovered {
+                Ok(live) => live,
+                Err(error) => {
+                    let why = watch_terminal::recovery(&format!("{error:#}"));
+                    watch_terminal::problem(&why)?;
+                    state.unavailable = Some(why);
+                    state.running = Some(watch);
+                    return self.save(&state);
+                }
+            };
+            state.unavailable = None;
+            if host_watch::expired(watch.started, now) {
             stop_session(&watch)?;
             self.finish_said(
                 &mut state,
@@ -520,6 +549,7 @@ impl Watcher {
                 }
                 state.running = Some(watch);
             }
+            }
         }
         self.save(&state)
     }
@@ -554,7 +584,7 @@ impl Watcher {
             }
             watch.harness = candidate.harness;
             watch.model = candidate.model;
-            match start_session(&watch) {
+            match start_session(&mut watch) {
                 Ok((terminal, transcript)) => {
                     (watch.terminal, watch.transcript) = (terminal, transcript);
                     (self.say)(What::WatchContinued {
@@ -566,7 +596,14 @@ impl Watcher {
                     state.running = Some(watch);
                     return Ok(());
                 }
-                Err(error) => failures.push(format!("{}: {error:#}", candidate.harness.key())),
+                Err(error) => {
+                    failures.push(format!("{}: {error:#}", candidate.harness.key()));
+                    if let Some(pending) = watch_terminal::active()? {
+                        state.running = Some(pending);
+                        state.unavailable = Some(watch_terminal::recovery(&failures.join("; ")));
+                        return Ok(());
+                    }
+                }
             }
         }
         state.unavailable = Some(unstartable(&failures));
@@ -624,7 +661,8 @@ fn stop_session(watch: &Watch) -> Result<()> {
         let worktree = Worktree::at(watch.directory.clone(), String::new());
         return close(&worktree, &watch.terminal, worktree.live(&watch.terminal)?);
     }
-    stop_marked(&session_identity(watch))
+    stop_marked(&session_identity(watch))?;
+    watch_terminal::phase(watch, Phase::Ended)
 }
 
 fn stop_marked(identity: &str) -> Result<()> {
@@ -680,7 +718,7 @@ fn gave_out(harness: Harness, transcript: &str, exited: Option<i32>) -> Option<D
 
 /// Starts a session of `watch` on its harness: its brief written beside its
 /// transcript, in the host's cache. Answers its terminal and transcript.
-fn start_session(watch: &Watch) -> Result<(String, PathBuf)> {
+fn start_session(watch: &mut Watch) -> Result<(String, PathBuf)> {
     if watch.stock {
         std::fs::create_dir_all(&watch.directory).with_context(|| {
             format!("cannot make the stock watch's directory {}", watch.directory.display())
@@ -700,6 +738,7 @@ fn start_session(watch: &Watch) -> Result<(String, PathBuf)> {
     std::fs::write(&brief_file, brief(watch))
         .with_context(|| format!("cannot write the watch's brief {}", brief_file.display()))?;
     let transcript = dir.join(format!("session-{session}.log"));
+    watch.transcript = transcript.clone();
     // A watch is started as a worker of an unbound repo is: the operator's
     // directory holds no config, and no role.
     let repo = Repo::new(watch.directory.clone());
@@ -726,16 +765,41 @@ fn start_session(watch: &Watch) -> Result<(String, PathBuf)> {
     let line =
         host_watch::session(&line, &transcript.display().to_string(), &session_identity(watch));
     let worktree = Worktree::at(watch.directory.clone(), String::new());
-    let terminal = worktree.start_watch(&line, TITLE)?;
-    let delivered = worktree.await_ready(&terminal, 60, watch.harness, &line).and_then(|()| {
-        worktree.tell_watch(&terminal, &brief_pointer(&brief_file.display().to_string()))
-    });
-    if let Err(error) = delivered {
-        stop_session(watch)?;
-        close(&worktree, &terminal, worktree.live(&terminal)?)?;
-        return Err(error);
+    // Persist intent before the non-idempotent external creation. An error
+    // cannot authorize another create, even on another harness.
+    watch_terminal::prepare(watch, &line)?;
+    let line = watch_terminal::launch_line(watch, &line);
+    match worktree.start_watch(&line, TITLE) {
+        Ok(terminal) => {
+            watch_terminal::created(watch, &terminal)?;
+            watch.terminal = terminal;
+        }
+        Err(error) => {
+            watch.terminal = watch_terminal::locate(watch)?.with_context(|| format!("{error:#}"))?;
+        }
     }
-    Ok((terminal, transcript))
+    resume_delivery(watch)?;
+    Ok((watch.terminal.clone(), transcript))
+}
+
+/// A Ready launch has not sent input. Sending is written first: a crash or
+/// lost acknowledgement at that boundary must never duplicate a prompt.
+fn resume_delivery(watch: &mut Watch) -> Result<()> {
+    let Some(record) = watch_terminal::read()?.filter(|r| watch_terminal::matches(r, watch)) else {
+        return Ok(()); // a watch retained from before launch journaling
+    };
+    match record.phase {
+        Phase::Running | Phase::Ended => return Ok(()),
+        Phase::Sending => bail!("the watch's first prompt has an uncertain receipt"),
+        Phase::Creating => bail!("the watch's creation is not yet confirmed"),
+        Phase::Ready => (),
+    }
+    let worktree = Worktree::at(watch.directory.clone(), String::new());
+    worktree.await_ready(&watch.terminal, 60, watch.harness, &record.command)?;
+    watch_terminal::phase(watch, Phase::Sending)?;
+    let brief = watch.transcript.with_file_name(format!("brief-{}.md", watch.attempts.len() + 1));
+    worktree.tell_watch(&watch.terminal, &brief_pointer(&brief.display().to_string()))?;
+    watch_terminal::phase(watch, Phase::Running)
 }
 
 /// What a session of `watch` is told.
@@ -1084,6 +1148,7 @@ pub fn json(running: Option<&Watch>) -> Value {
     };
     let mut answer =
         json!({"running": running.map(watch_json), "last": last, "unavailable": unavailable});
+    answer["association"] = watch_terminal::json();
     match crate::host_settings::of_host()
         .and_then(|settings| Ok((directory(&settings)?, settings.watch_dir.is_none())))
     {
