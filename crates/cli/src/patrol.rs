@@ -269,7 +269,12 @@ fn in_role(
     let role_copy = kept.role(role, harness)?;
     let path = checkout.path.display().to_string();
     let team_rules = kept.rules();
-    let told = crate::role::ToldRules::read(harness, &checkout.path, team_rules.as_deref())?;
+    let told = crate::role::ToldRules::read(
+        harness,
+        &checkout.path,
+        team_rules.as_deref(),
+        &role_copy.dir,
+    )?;
     let host_user = role.host_user;
     let (kept_dir, shadowed) = crate::kept::for_worker(
         harness,

@@ -308,7 +308,7 @@ impl Host {
             sleep_hours: host_settings::host_sleep(),
             kit: crate::kit::load().map_err(|error| format!("{error:#}")),
             worker_health: crate::health::show(),
-            watch: crate::host_watch::json(shared.watch.as_ref()),
+            watch: crate::host_watch::json(shared.watch.as_ref(), false),
             paused: crate::paused::read(),
         }
     }
@@ -625,10 +625,15 @@ pub fn read(
     };
     let mut panel = Panel::empty(fleet, me).show(&seen);
     panel.codex_workers = crate::codex_launch::workers(&fleet.repo);
-    panel.candidates = crate::candidates::view(&fleet.repo, &fleet.config)
-        .ok()
-        .and_then(|rows| rows.as_array().cloned())
-        .unwrap_or_default();
+    let prefix = fleet.repo.layout().under("candidates/");
+    panel.candidates = crate::candidates::view(
+        &fleet.repo,
+        &fleet.config,
+        &fleet.records_at_open(&format!("{prefix}*")),
+    )
+    .ok()
+    .and_then(|rows| rows.as_array().cloned())
+    .unwrap_or_default();
     panel.deliveries = crate::delivery::panel_lines(&fleet.repo, fleet.now)
         .unwrap_or_else(|error| vec![format!("deliveries could not be read: {error:#}")]);
     panel.declared = set.declared();

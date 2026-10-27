@@ -420,6 +420,24 @@ fn zai_quota(text: &str) -> Option<Diagnosis> {
     Some(account_quota(text.into()))
 }
 
+/// Kimi Code's own usage-limit error, reported on sunfmin/control#166.
+const KIMI_USAGE_LIMIT: &str = "[provider.api_error] 429 You've reached your 5-hour usage limit";
+
+fn kimi_quota(output: &[String]) -> Option<Diagnosis> {
+    let flat = output.join(" ").split_whitespace().collect::<Vec<_>>().join(" ");
+    if !flat.contains(KIMI_USAGE_LIMIT) {
+        return None;
+    }
+    let evidence = output
+        .iter()
+        .find(|line| {
+            line.split_whitespace().collect::<Vec<_>>().join(" ").contains("5-hour usage limit")
+        })
+        .cloned()
+        .unwrap_or_else(|| KIMI_USAGE_LIMIT.to_string());
+    Some(account_quota(evidence))
+}
+
 fn terminal_rule(harness: Harness, output: &[String]) -> Option<Diagnosis> {
     if let Some(evidence) = harness.task_refusal(output) {
         return Some(Diagnosis {
@@ -445,6 +463,11 @@ fn terminal_rule(harness: Harness, output: &[String]) -> Option<Diagnosis> {
     }
     if harness == Harness::Pi
         && let Some(diagnosis) = output.iter().find_map(|line| zai_quota(line))
+    {
+        return Some(diagnosis);
+    }
+    if harness == Harness::Kimi
+        && let Some(diagnosis) = kimi_quota(output)
     {
         return Some(diagnosis);
     }
@@ -1262,6 +1285,22 @@ fn decide(
             book.faults.push(fault);
         }
     }
+    // An account quota continues at once, but not through a gate or landing
+    // the worker still has running: that work keeps the session until it
+    // ends. The fault is already recorded, so a new start skips the harness.
+    if diagnosis.class == "quota" && diagnosis.scope == Scope::Account {
+        let waiting = crate::judge::own_background(fleet, worktree, true)?;
+        if crate::judge::waits_on_own_background(worktree)
+            && let Some(waiting) = waiting
+        {
+            observed.action = "waiting for background work".into();
+            observed.background = Some(waiting.since);
+            observed.next_check = fleet.now.saturating_add(CHECK_SECONDS);
+            store(book)?;
+            fleet.invalidate_selection();
+            return Ok(());
+        }
+    }
     // A fallback never promotes another kit entry. Exclusions last only for
     // this continuation; shared scoped evidence is persisted independently.
     std::fs::write(
@@ -1388,6 +1427,29 @@ mod tests {
         assert!(classified_for(Some(Harness::Codex), &json!(error)).is_none());
         assert!(
             classified_for(Some(Harness::Pi), &json!(error.replacen("429", "1429", 1))).is_none()
+        );
+    }
+
+    #[test]
+    fn kimi_usage_limit_is_an_account_quota_only_on_kimi_s_screen() {
+        let line = "Error: [provider.api_error] 429 You've reached your 5-hour usage limit. \
+                    Your quota will reset when the current 5-hour window";
+        let screen = [line.to_string(), "ends. To continue now.".into()];
+        let diagnosis = terminal_rule(Harness::Kimi, &screen).unwrap();
+        assert_eq!(diagnosis.class, "quota");
+        assert_eq!(diagnosis.scope, Scope::Account);
+        assert_eq!(diagnosis.action, Action::Continue);
+        assert_eq!(diagnosis.evidence, vec![line.to_string()]);
+        assert!(terminal_rule(Harness::Pi, &screen).is_none());
+        assert!(terminal_rule(Harness::Codex, &screen).is_none());
+        let wrapped = [
+            "Error: [provider.api_error] 429 You've reached your".into(),
+            "5-hour usage limit.".into(),
+        ];
+        assert_eq!(terminal_rule(Harness::Kimi, &wrapped).unwrap().class, "quota");
+        assert!(
+            terminal_rule(Harness::Kimi, &["429 You've reached your 5-hour usage limit".into()])
+                .is_none()
         );
     }
 }

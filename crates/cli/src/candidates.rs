@@ -151,10 +151,14 @@ impl Drop for Reservation<'_> {
     }
 }
 
-pub(crate) fn view(repo: &Repo, _config: &Config) -> Result<Value> {
+pub(crate) fn view(
+    repo: &Repo,
+    _config: &Config,
+    records: &[crate::git::RemoteRecord],
+) -> Result<Value> {
     let prefix = repo.layout().under("candidates/");
     let mut rows = vec![];
-    for record in repo.remote_records(&format!("{prefix}*"))? {
+    for record in records.iter().filter(|record| record.name.starts_with(&prefix)) {
         let branch = record.name.strip_prefix(&prefix).context("invalid candidate ref")?;
         let chain: Chain = serde_json::from_str(&record.subject)?;
         for c in &chain.candidates {

@@ -159,8 +159,7 @@ pub struct Probed {
     pub harness: Harness,
     /// It is no longer paused.
     pub resumed: bool,
-    /// Why it could not be asked, when no terminal could be made for its
-    /// probe.
+    /// Why it could not be asked, when its login shell could not be started.
     pub unasked: Option<String>,
 }
 

@@ -1361,6 +1361,148 @@ fn pi_zai_usage_limit_is_an_account_quota_by_rule_from_either_source() {
     }
 }
 
+const KIMI_SCREEN: &str = include_str!("screens/kimi-5-hour-usage-limit-control-166.txt");
+
+#[test]
+fn kimi_5_hour_usage_limit_is_an_account_quota_by_rule_and_continues() {
+    let world = blocked();
+    world.jev_key_command("printf unused-key");
+    let dir = worktree(&world, 7);
+    switch(&world, "750", &["7", "--harness", "kimi"]).ok();
+    let branch = git(&dir, &["symbolic-ref", "--short", "HEAD"]);
+    let claims = world.claims();
+    let pr = world.gh()["prs"][0].clone();
+    let kit = std::fs::read(world.kit_path()).unwrap();
+    std::fs::write(dir.join("unfinished.txt"), "keep me").unwrap();
+    let evidence = KIMI_SCREEN.lines().next().unwrap();
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            terminal["agent"] = json!({
+                "state": "done", "outcome": "failure",
+                "programStatus": {"state": "error"}
+            });
+            terminal["screen"] = json!(KIMI_SCREEN.lines().collect::<Vec<_>>());
+        }
+    });
+
+    tick(&world, 800);
+    world.issue(8, &["ready-for-agent"]);
+
+    assert_eq!(open_commands(&world, &dir), [common::trusted("agent")]);
+    assert_eq!(git(&dir, &["symbolic-ref", "--short", "HEAD"]), branch);
+    assert_eq!(std::fs::read_to_string(dir.join("unfinished.txt")).unwrap(), "keep me");
+    assert_eq!(world.claims(), claims);
+    assert_eq!(world.gh()["prs"][0], pr);
+    assert_eq!(std::fs::read(world.kit_path()).unwrap(), kit);
+    assert!(!world.root.join("typesafe-request").exists(), "the terminal rule runs first");
+    assert!(!world.asked_a_harness_about("5-hour usage limit"));
+    let plan = world.afk(&["plan", "--now", "801"]).ok();
+    let health = &plan["host_kit"]["worker_health"];
+    let worker = &health["workers"][0];
+    assert_eq!(worker["source"], "terminal rule");
+    assert_eq!(worker["diagnosis"]["class"], "quota", "{worker}");
+    assert_eq!(worker["diagnosis"]["scope"], "account");
+    assert_eq!(worker["diagnosis"]["retry_after"], Value::Null);
+    assert_eq!(worker["action"], "continued");
+    assert_eq!(worker["successor"], "claude-code");
+    assert_eq!(health["faults"][0]["harness"], "kimi");
+    assert_eq!(health["faults"][0]["scope"], "account");
+    assert_eq!(health["faults"][0]["evidence"][0], evidence);
+    assert_eq!(plan["selection"]["order"][0], "kimi");
+    assert_eq!(plan["selection"]["eligible"][0], "claude-code");
+    let skipped = switch(&world, "801", &["7", "--harness", "kimi"]).ok();
+    assert_eq!(skipped["switched"][0]["to"], "claude-code");
+    let why = skipped["switched"][0]["skipped"][0]["why"].as_str().unwrap();
+    assert!(why.contains("kimi has an account fault") && why.contains(evidence), "{why}");
+
+    world.say_concurrency(&world.clone, 2);
+    tick(&world, 802);
+    assert_eq!(open_commands(&world, &worktree(&world, 8)), [common::trusted("agent")]);
+
+    world.probes_answer();
+    tick(&world, 4400);
+    let recovered = world.afk(&["plan", "--now", "4401"]).ok();
+    assert_eq!(recovered["selection"]["health"]["faults"], json!([]));
+    assert_eq!(recovered["selection"]["eligible"][0], "kimi");
+}
+
+#[test]
+fn kimi_usage_limit_waits_out_a_running_gate_then_continues() {
+    let world = blocked();
+    world.jev_key_command("printf unused-key");
+    let dir = worktree(&world, 7);
+    switch(&world, "750", &["7", "--harness", "kimi"]).ok();
+    let kimi = open_commands(&world, &dir);
+    let branch = git(&dir, &["symbolic-ref", "--short", "HEAD"]);
+    let claims = world.claims();
+    let pr = world.gh()["prs"][0].clone();
+    let kit = std::fs::read(world.kit_path()).unwrap();
+    std::fs::write(dir.join("unfinished.txt"), "keep me").unwrap();
+    let evidence = KIMI_SCREEN.lines().next().unwrap();
+    let mut lines: Vec<String> = KIMI_SCREEN.lines().map(str::to_string).collect();
+    lines.push("❯".into());
+    lines.push("kimi-code/k3.1-pro  [1 task running]".into());
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            terminal["agent"] = json!({
+                "state": "done", "outcome": "failure",
+                "programStatus": {"state": "error"}
+            });
+            terminal["screen"] = json!(lines.clone());
+        }
+    });
+
+    tick(&world, 800);
+
+    assert_eq!(open_commands(&world, &dir), kimi, "a running gate is not cut short");
+    assert_eq!(std::fs::read(world.kit_path()).unwrap(), kit);
+    assert!(!world.root.join("typesafe-request").exists());
+    let plan = world.afk(&["plan", "--now", "801"]).ok();
+    let health = &plan["host_kit"]["worker_health"];
+    let worker = &health["workers"][0];
+    assert_eq!(worker["source"], "terminal rule");
+    assert_eq!(worker["diagnosis"]["class"], "quota");
+    assert_eq!(worker["diagnosis"]["scope"], "account");
+    assert_eq!(worker["action"], "waiting for background work");
+    assert_eq!(worker["successor"], Value::Null);
+    assert_eq!(health["faults"][0]["harness"], "kimi");
+    assert_eq!(health["faults"][0]["evidence"][0], evidence);
+    assert_eq!(plan["selection"]["order"][0], "kimi");
+    assert_eq!(plan["selection"]["eligible"][0], "claude-code");
+
+    world.issue(8, &["ready-for-agent"]);
+    world.say_concurrency(&world.clone, 2);
+    tick(&world, 802);
+    assert_eq!(open_commands(&world, &dir), kimi);
+    assert_eq!(open_commands(&world, &worktree(&world, 8)), [common::trusted("agent")]);
+
+    lines.pop();
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            if terminal["worktreePath"] == dir.to_str().unwrap() {
+                terminal["screen"] = json!(lines);
+            }
+        }
+    });
+    tick(&world, 900);
+
+    assert_eq!(open_commands(&world, &dir), [common::trusted("agent")]);
+    assert_eq!(git(&dir, &["symbolic-ref", "--short", "HEAD"]), branch);
+    assert_eq!(std::fs::read_to_string(dir.join("unfinished.txt")).unwrap(), "keep me");
+    assert!(world.claims().contains(&claims[0]), "issue 7 keeps its claim");
+    assert_eq!(world.gh()["prs"][0], pr);
+    assert_eq!(std::fs::read(world.kit_path()).unwrap(), kit);
+    let continued = world.afk(&["plan", "--now", "901"]).ok();
+    let worker = &continued["host_kit"]["worker_health"]["workers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|worker| worker["action"] == "continued")
+        .expect("the stopped worker continued");
+    assert_eq!(worker["successor"], "claude-code");
+    assert_eq!(continued["selection"]["order"][0], "kimi");
+}
+
 #[test]
 fn explicit_usage_limit_starts_nothing_until_the_failed_codex_agent_is_gone() {
     let world = blocked();

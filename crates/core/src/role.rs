@@ -292,6 +292,10 @@ pub struct Told<'a> {
     pub repo: Option<Rules<'a>>,
     /// The team rules, in the team's copy. `None` of a team that has none.
     pub team: Option<Rules<'a>>,
+    /// The role's own rules. `None` of a harness that loads them from the
+    /// role's copy, which is where it starts. Grok starts in the worktree
+    /// (ADR-0043), so it is told them.
+    pub role: Option<Rules<'a>>,
 }
 
 #[cfg(test)]

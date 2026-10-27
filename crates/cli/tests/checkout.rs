@@ -305,13 +305,10 @@ fn the_host_kit_is_asked_of_the_host_wherever_it_is_written_from() {
     world.shell_claude_models(&["default", "opus"]);
     world.probes_answer();
     world.afk_in(&world.clone.join("docs"), &["kit", "--now", "1000"]).ok();
-    let orca = world.orca();
-    let questions = orca["questions"].as_array().unwrap();
-    assert!(!questions.is_empty(), "{orca}");
-    // in no worktree — not the checkout it was written from — and from the
-    // host's home
-    assert!(questions.iter().all(|asked| asked["worktreePath"] == ""), "{questions:?}");
     let home = path(&world.home()).to_string();
-    let from = world.orca_run_from();
-    assert!(from.iter().all(|dir| *dir == home), "{from:?}");
+    let asked_in = world.shell_asked_in();
+    // in the host's home — not the checkout it was written from — and in no
+    // question terminal
+    assert!(!asked_in.is_empty() && asked_in.iter().all(|dir| dir == &home), "{asked_in:?}");
+    assert!(world.questions().is_empty(), "{:?}", world.orca());
 }

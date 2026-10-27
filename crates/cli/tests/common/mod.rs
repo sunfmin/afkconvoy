@@ -1125,36 +1125,126 @@ fn create_repository(dir: &Path, files: &[(&str, &str)]) {
 /// Built privately, then published by one atomic rename. Readers see only a
 /// complete, read-only seed. Concurrent builders discard their own copies.
 /// The manifest checks the full input even if two inputs hash to one name.
-fn repository_template(files: &[(&str, &str)]) -> PathBuf {
+pub(crate) fn repository_template(files: &[(&str, &str)]) -> PathBuf {
+    // Cargo keeps a test binary's filename across source edits. Changing the
+    // builder or GIT_ENV must rebuild seeds too, without a manual cache bump.
+    publish_repository_template(files, include_str!("mod.rs"))
+}
+
+/// `repository_template`, hashing `builder` in place of this file. A test
+/// passes another source to prove a change publishes a new seed.
+pub(crate) fn publish_repository_template(files: &[(&str, &str)], builder: &str) -> PathBuf {
     use std::hash::{DefaultHasher, Hash, Hasher};
+    use std::os::unix::fs::PermissionsExt;
     let manifest = serde_json::to_vec(&(BASE, files)).unwrap();
     let mut hash = DefaultHasher::new();
     manifest.hash(&mut hash);
-    // Cargo keeps a test binary's filename across source edits. Changing the
-    // builder or GIT_ENV must rebuild seeds too, without a manual cache bump.
-    include_str!("mod.rs").hash(&mut hash);
-    let binary = std::env::current_exe().unwrap();
-    let templates = binary.with_extension("repository-templates-v1");
+    builder.hash(&mut hash);
+    let templates = repository_templates_dir();
     std::fs::create_dir_all(&templates).unwrap();
+    // `chmod` of a seed stops at that seed. The directory holding them stays
+    // writable, so a later publisher can add one.
+    let held = std::fs::metadata(&templates).unwrap().permissions().mode();
+    assert_ne!(held & 0o200, 0, "the repository template directory is not writable by its owner");
     let kept = templates.join(format!("{:016x}", hash.finish()));
     if !kept.exists() {
         let scratch = tempfile::tempdir_in(&templates).unwrap();
         create_repository(&scratch.path().join("repo"), files);
         std::fs::write(scratch.path().join("manifest.json"), &manifest).unwrap();
-        let frozen =
-            Command::new("chmod").args(["-R", "a-w"]).arg(scratch.path()).status().unwrap();
-        assert!(frozen.success());
-        if let Err(error) = std::fs::rename(scratch.path(), &kept) {
-            // Another complete seed may have won. Open our scratch again so
-            // TempDir can remove it, including when the failure was real.
-            let thawed =
-                Command::new("chmod").args(["-R", "u+w"]).arg(scratch.path()).status().unwrap();
-            assert!(thawed.success());
-            assert!(kept.is_dir(), "cannot publish repository template: {error}");
-        }
+        publish_scratch(scratch.path(), &kept);
     }
     assert_eq!(std::fs::read(kept.join("manifest.json")).unwrap(), manifest);
     kept.join("repo")
+}
+
+/// Freezes `scratch` and publishes it as `kept` by one rename. A publisher
+/// that loses the race thaws its own scratch so the scratch can be removed.
+pub(crate) fn publish_scratch(scratch: &Path, kept: &Path) {
+    let frozen = Command::new("chmod").args(["-R", "a-w"]).arg(scratch).status().unwrap();
+    assert!(frozen.success(), "freezing the repository template");
+    if let Err(error) = std::fs::rename(scratch, kept) {
+        // Another complete seed may have won. Open our scratch again so it
+        // can be removed, including when the failure was real.
+        let thawed = Command::new("chmod").args(["-R", "u+w"]).arg(scratch).status().unwrap();
+        assert!(thawed.success(), "thawing the losing repository template");
+        assert!(kept.is_dir(), "cannot publish repository template: {error}");
+    }
+}
+
+/// Where repository template seeds are kept.
+///
+/// The process temp directory, when that is outside the checkout, the test
+/// binary's build output and the fleet's cache directory. The gate points
+/// `TMPDIR` at a directory inside the checkout, and a read-only seed there
+/// stops `git worktree remove` with `Permission denied`. `/tmp` is outside
+/// the checkout. Nothing here reads or writes the fleet's cache directory:
+/// its path is only a place the seed must not be.
+fn repository_templates_dir() -> PathBuf {
+    let checkout = std::env::current_exe().ok().as_deref().and_then(enclosing_checkout);
+    let fleet_cache = afkconvoy::copies::cache().ok();
+    repository_template_home(
+        &std::env::temp_dir(),
+        checkout.as_deref(),
+        build_output().as_deref(),
+        fleet_cache.as_deref(),
+    )
+}
+
+/// The directory `repository_templates_dir` chooses for these roots.
+pub(crate) fn repository_template_home(
+    process_temp: &Path,
+    checkout: Option<&Path>,
+    build: Option<&Path>,
+    fleet_cache: Option<&Path>,
+) -> PathBuf {
+    let blocked = lies_inside(process_temp, &[checkout, build, fleet_cache]);
+    let base = if blocked { PathBuf::from("/tmp") } else { process_temp.to_path_buf() };
+    base.join("afkconvoy-repository-templates-v1")
+}
+
+/// Whether `dir` is `root` or a path under it. A missing path is compared as
+/// given, so a cache directory that is not there yet still counts.
+fn lies_inside(dir: &Path, roots: &[Option<&Path>]) -> bool {
+    let dir = canonical(dir);
+    roots.iter().flatten().any(|root| dir.starts_with(canonical(root)))
+}
+
+fn canonical(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// The checkout that holds `path`: the directory whose `.git` is its own,
+/// walking up. A worktree's `.git` is a file, and that still marks it.
+fn enclosing_checkout(path: &Path) -> Option<PathBuf> {
+    let mut dir = canonical(path);
+    if !dir.is_dir() && !dir.pop() {
+        return None;
+    }
+    loop {
+        if dir.join(".git").exists() {
+            return Some(dir);
+        }
+        if !dir.pop() {
+            return None;
+        }
+    }
+}
+
+/// The cargo target directory of this test binary: the parent of the
+/// `debug` or `release` directory the binary sits under, whether cargo put
+/// it in `deps` or under the build script's output.
+fn build_output() -> Option<PathBuf> {
+    let exe = canonical(&std::env::current_exe().ok()?);
+    let mut dir = exe.parent()?.to_path_buf();
+    loop {
+        let profile = dir.file_name().is_some_and(|name| name == "debug" || name == "release");
+        if profile {
+            return dir.parent().map(Path::to_path_buf);
+        }
+        if !dir.pop() {
+            return None;
+        }
+    }
 }
 
 /// Ordinary copies, never hard links or Git alternates: committing, changing
@@ -1435,7 +1525,10 @@ if [ -f "$root/typesafe-fail" ]; then cat "$root/typesafe-fail" >&2; exit 22; fi
 cat "$root/typesafe-answer"
 "#;
 
-/// The login shell a worker would get, as far as the fleet asks it anything:
+/// The login shell a worker would get, as far as the fleet asks it anything.
+/// A question wrapped between its marks is unwrapped first: the inner script
+/// is what is logged and answered, and the marks are printed around that
+/// answer. Otherwise:
 /// `shell -lic 'alias'`, `shell -lic "type -- '<word>'"`, `shell -lic '<command> --help'` —
 /// where `pi` answers as pi does, `codex` as Codex and every other command as Claude Code —
 /// a model's probe, which prints nothing and fails unless a `probes-answer` beside
@@ -1450,6 +1543,19 @@ cat "$root/typesafe-answer"
 /// the world's profile, then runs what it was asked.
 const SHELL: &str = r#"#!/bin/sh
 root=${0%/*}/..
+# A question is wrapped between marks. Answer the inner script, and print the
+# marks around that answer. The log records the inner script, once.
+case "$2" in
+  *"AFKCONVOY_ ASKED; ("*)
+    inner=$2
+    inner=${inner#*"AFKCONVOY_ ASKED; ( "}
+    inner=${inner%" ); printf '\n%s%s %s\n' AFKCONVOY_ ANSWERED \"\$?\""}
+    captured=$("$0" -lic "$inner" 2>&1)
+    status=$?
+    printf 'AFKCONVOY_ASKED\n%s\n\nAFKCONVOY_ANSWERED %s\n' "$captured" "$status"
+    exit 0
+    ;;
+esac
 echo "$2" >> "$root/shell-asked"
 pwd -P >> "$root/shell-asked-in"
 case "$2" in
@@ -1589,6 +1695,7 @@ echo "$*" >> "${0%/*}/../pmset.log"
 /// `vm.loadavg`, the load in `host-load`, or none; for
 /// `kern.memorystatus_level`, the share of memory free in `host-memory`, or 80%.
 const SYSCTL: &str = r#"#!/bin/sh
+echo "$*" >> "${0%/*}/../sysctl.log"
 case "$*" in
 *vm.loadavg*) echo "{ $(cat "${0%/*}/../host-load" 2>/dev/null || echo 0.00) 0.00 0.00 }" ;;
 *kern.memorystatus_level*) cat "${0%/*}/../host-memory" 2>/dev/null || echo 80 ;;
@@ -1604,6 +1711,7 @@ esac
 /// The stand-in `df`, for admission: a disk of 1000 GiB, half of it free —
 /// never the disk of whoever runs the tests.
 const DF: &str = r#"#!/bin/sh
+echo "$*" >> "${0%/*}/../df.log"
 echo "Filesystem 1024-blocks Used Available Capacity Mounted on"
 echo "/dev/stand-in 1048576000 524288000 524288000 50% /"
 "#;
@@ -1632,7 +1740,13 @@ impl World {
 
     /// What the stand-in `pmset` was asked, one call a line.
     pub fn pmset_calls(&self) -> Vec<String> {
-        let log = std::fs::read_to_string(self.root.join("pmset.log")).unwrap_or_default();
+        self.host_calls("pmset")
+    }
+
+    /// What the named host command stand-in was asked, one call a line.
+    pub fn host_calls(&self, command: &str) -> Vec<String> {
+        let log =
+            std::fs::read_to_string(self.root.join(format!("{command}.log"))).unwrap_or_default();
         log.lines().map(str::to_string).collect()
     }
 }

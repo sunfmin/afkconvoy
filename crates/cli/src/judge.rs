@@ -126,8 +126,23 @@ pub(crate) struct Leaving {
 /// the commits of its branch on neither the branch the remote has of that
 /// name nor the base branch → what becomes of it as its claim ends.
 pub(crate) fn leaving(fleet: &Fleet, issue: u64, worktree: &Worktree) -> Result<Leaving> {
-    let mut known = vec![fleet.task_tip(issue)?];
-    known.extend(fleet.repo.fetched(&format!("refs/heads/{}", worktree.branch))?);
+    leaving_with(fleet, issue, worktree, false)
+}
+
+/// The same comparison against the fleet view's existing remote listing.
+pub(crate) fn leaving_at_open(fleet: &Fleet, issue: u64, worktree: &Worktree) -> Result<Leaving> {
+    leaving_with(fleet, issue, worktree, true)
+}
+
+fn leaving_with(fleet: &Fleet, issue: u64, worktree: &Worktree, at_open: bool) -> Result<Leaving> {
+    let branch = format!("refs/heads/{}", worktree.branch);
+    let mut known =
+        if at_open { vec![fleet.task_tip_at_open(issue)?] } else { vec![fleet.task_tip(issue)?] };
+    known.extend(if at_open {
+        fleet.fetched_at_open(&branch)?
+    } else {
+        fleet.repo.fetched(&branch)?
+    });
     let repo = Repo::new(worktree.path.clone());
     let dirty = !repo.git_raw(&["status", "--porcelain"])?.trim().is_empty();
     let mut args = vec!["log", "--format=%s", "HEAD", "--not"];

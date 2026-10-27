@@ -58,8 +58,12 @@ pub struct Said {
 /// (`Limits::of_host`) — of the disk `dir` is on — but for what it says.
 pub fn limits(said: Said, dir: &Path) -> Limits {
     let cores = std::thread::available_parallelism().map_or(1, |cores| cores.get() as u64);
-    let disk = free_disk(dir).unwrap_or(u64::MAX);
-    let shares = Limits::of_host(cores, memory().unwrap_or(u64::MAX), disk);
+    limits_from(said, cores, memory(), free_disk(dir))
+}
+
+/// The limits derived from an existing host reading.
+pub fn limits_from(said: Said, cores: u64, memory: Option<u64>, disk: Option<u64>) -> Limits {
+    let shares = Limits::of_host(cores, memory.unwrap_or(u64::MAX), disk.unwrap_or(u64::MAX));
     Limits {
         millicores: said.millicores.unwrap_or(shares.millicores),
         resident: said.resident.unwrap_or(shares.resident),
@@ -136,7 +140,7 @@ fn works_in(pid: u32) -> Option<PathBuf> {
 }
 
 /// The bytes of memory this host has; `None` where it cannot be read.
-fn memory() -> Option<u64> {
+pub fn memory() -> Option<u64> {
     if cfg!(target_os = "macos") {
         return sysctl("hw.memsize");
     }

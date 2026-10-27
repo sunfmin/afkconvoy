@@ -542,12 +542,11 @@ fn each_paused_harness_is_probed_every_hour_and_one_that_answers_is_back() {
     assert_eq!(world.paused()[0]["probed"], Value::Null, "not probed within the hour");
     tick_at(&world, 3600);
     assert_eq!(world.paused()[0]["probed"], 3600, "probed, and silent");
-    // In an orca terminal of its own, closed once it was silent.
-    let questions = world.questions();
+    // In the login shell a worker gets, and in no question terminal.
     let probes: Vec<_> =
-        questions.iter().filter(|(asked, _)| asked.contains("single word OK")).collect();
-    assert_eq!(probes.len(), 1, "{questions:?}");
-    assert!(!probes[0].1, "its terminal is closed");
+        world.shell_asked().into_iter().filter(|asked| asked.contains("single word OK")).collect();
+    assert_eq!(probes.len(), 1, "{probes:?}");
+    assert!(world.questions().is_empty(), "a recovery probe opens no terminal");
     assert_eq!(
         started(&world),
         [common::trusted(&Harness::ClaudeCode.with_model("agent", "opus"))]

@@ -248,6 +248,44 @@ fn doctor_all_answers_each_checkouts_doctor_and_the_hosts_findings_once() {
 }
 
 #[test]
+fn one_doctor_all_reads_each_shared_source_once_and_each_remote_once_per_checkout() {
+    let world = World::new();
+    let clone2 = world.clone_again("clone2");
+    list(&world, &[&world.clone, &clone2]);
+    world.gh_calls();
+    world.watch_git();
+
+    let answer = world.afk_in(&world.root, &["doctor", "--all", "--now", "1000"]);
+    assert_eq!(answer.json["checkouts"].as_array().unwrap().len(), 2, "{}", answer.json);
+
+    let loads = world.host_calls("sysctl");
+    assert_eq!(loads.iter().filter(|call| call.contains("vm.loadavg")).count(), 1, "{loads:?}");
+    let disks = world.host_calls("df");
+    assert_eq!(disks.len(), 1, "one volume is read once: {disks:?}");
+
+    let github: Vec<Vec<String>> =
+        world.gh_called_with().into_iter().map(|(call, _)| call).collect();
+    let count = |parts: &[&str]| {
+        github.iter().filter(|call| call.windows(parts.len()).any(|window| window == parts)).count()
+    };
+    assert_eq!(count(&["config", "get", "user"]), 1, "{github:?}; {}", answer.json);
+    assert!(count(&["api", "rate_limit"]) <= 1, "{github:?}");
+    let visibility = afkconvoy::gh::VISIBILITY_JQ;
+    assert_eq!(github.iter().filter(|call| call.contains(&visibility.to_string())).count(), 1);
+
+    let orca = world.orca_called_with();
+    assert_eq!(
+        orca.iter()
+            .filter(|(call, _)| call.windows(2).any(|window| window == ["repo", "list"]))
+            .count(),
+        1,
+        "{orca:?}"
+    );
+    let git = world.git_calls();
+    assert_eq!(git.iter().filter(|call| call.starts_with("ls-remote ")).count(), 2, "{git:?}");
+}
+
+#[test]
 fn a_fleet_instance_held_in_the_foreground_says_it_holds_its_checkout_alone() {
     let world = World::new();
     let running = world.running(&["--instance", "alpha", "--host", "h1"]);

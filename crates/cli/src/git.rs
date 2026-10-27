@@ -316,10 +316,12 @@ pub struct Listing {
 }
 
 impl Listing {
-    /// The sha the fleet's ref `refname` was at, `None` if the remote had none.
+    /// The sha a fleet ref or branch had in this listing, `None` if absent.
     pub fn sha(&self, refname: &str) -> Option<&str> {
         let found = self.records.iter().find(|record| record.name == refname);
-        found.map(|record| record.sha.as_str())
+        found.map(|record| record.sha.as_str()).or_else(|| {
+            self.heads.iter().find(|(name, _)| name == refname).map(|(_, sha)| sha.as_str())
+        })
     }
 }
 

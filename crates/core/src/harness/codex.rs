@@ -684,7 +684,7 @@ mod tests {
         // told, and the worker starts all the same.
         assert_eq!(told(Told::default()), "");
         assert_eq!(
-            told(Told { repo: Some(repo), team: Some(team) }),
+            told(Told { repo: Some(repo), team: Some(team), role: None }),
             format!(
                 "--config 'developer_instructions=\"{TOLD_OPENS}\\u000A\\u000A\
                  # The repo'\\''s own rules: /wt/issue 7/AGENTS.md\\u000A\\u000A\
@@ -694,9 +694,9 @@ mod tests {
                 TOLD_OPENS = TOLD_OPENS.replace('\'', "'\\''")
             )
         );
-        let one = told(Told { repo: None, team: Some(team) });
+        let one = told(Told { repo: None, team: Some(team), role: None });
         assert!(one.contains("# The team rules: ") && !one.contains("own rules"), "{one}");
-        let one = told(Told { repo: Some(repo), team: None });
+        let one = told(Told { repo: Some(repo), team: None, role: None });
         assert!(one.contains("s own rules: ") && !one.contains("The team rules"), "{one}");
     }
 

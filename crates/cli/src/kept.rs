@@ -25,8 +25,8 @@ pub fn keep(harness: Harness, host_user: bool) -> Result<PathBuf> {
     let dir = keep_under(&cache()?, home().as_deref(), harness, host_user)?;
     if harness == Harness::Dsh {
         // Prefer the installed program's package to an editable profile copy,
-        // as the shell a worker gets finds it.
-        let asked = crate::orca::ask("command -v dsh-tui", crate::launch::SHELL_TIMEOUT);
+        // as the login shell a worker gets finds it. No terminal is opened.
+        let asked = crate::launch::ask_host("command -v dsh-tui", crate::launch::SHELL_TIMEOUT);
         let (_, path) = asked.ok().flatten().unwrap_or_default();
         if let Ok(program) = std::fs::canonicalize(path.trim())
             && let Some(package) = program.parent().and_then(Path::parent)
@@ -151,6 +151,27 @@ fn keep_at_with_dsh_homes(
     Ok(())
 }
 
+/// The directories under a role's `.claude/skills`. Grok ignores a host skill
+/// of each of these names so the role's copy is the one that loads (ADR-0043).
+fn role_skill_names(role_dir: &Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(role_dir.join(SKILLS)) else { return vec![] };
+    let mut names: Vec<String> = entries
+        .flatten()
+        .filter_map(|entry| {
+            if !entry.file_type().ok()?.is_dir() {
+                return None;
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.is_empty() || name.contains('/') || name.contains('\\') {
+                return None;
+            }
+            Some(name)
+        })
+        .collect();
+    names.sort();
+    names
+}
+
 /// Writes the harness's generated files from the host's current model routing
 /// and, for a worker, its role's limits and the fleet's guard.
 fn configure(
@@ -163,7 +184,7 @@ fn configure(
     guard: Option<&str>,
 ) -> Result<()> {
     if harness
-        .kept_configuration(None, None, None, host_user)
+        .kept_configuration(None, None, None, host_user, None, &[])
         .map_err(anyhow::Error::msg)?
         .is_none()
     {
@@ -178,8 +199,20 @@ fn configure(
         .filter(|file| file.is_file())
         .map(std::fs::read_to_string)
         .transpose()?;
+    let names = role_dir.map(role_skill_names).unwrap_or_default();
+    let skills = role_dir.and_then(|role| {
+        let dir = role.join(SKILLS);
+        dir.is_dir().then(|| dir.display().to_string())
+    });
     let Some(config) = harness
-        .kept_configuration(user.as_deref(), role.as_deref(), guard, host_user)
+        .kept_configuration(
+            user.as_deref(),
+            role.as_deref(),
+            guard,
+            host_user,
+            skills.as_deref(),
+            &names,
+        )
         .map_err(anyhow::Error::msg)?
     else {
         return Ok(());
@@ -257,7 +290,7 @@ fn worker_at(
     guard: &str,
 ) -> Result<(String, Vec<String>)> {
     let dir = if harness
-        .kept_configuration(None, None, None, host_user)
+        .kept_configuration(None, None, None, host_user, None, &[])
         .map_err(anyhow::Error::msg)?
         .is_some()
     {
