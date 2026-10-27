@@ -42,6 +42,7 @@ pub mod concurrency;
 pub mod config;
 pub mod copies;
 pub mod cut;
+mod delivery;
 pub mod dispatch;
 pub mod doctor;
 pub mod draft;
@@ -2316,11 +2317,13 @@ enum Command {
     ///
     /// ## What it answers
     ///
-    /// {"issue", "target_branch"}, and "woke" after selection. Selection is idempotent for the same branch. Errors answer {"error": …} with a non-zero exit.
+    /// {"issue", "target_branch"}, with "delivery" for an attached task, and "woke" after selection. Selection is idempotent for the same branch. Errors answer {"error": …} with a non-zero exit.
     ///
     /// ## What trips you up
     ///
     /// A different resolved target, a claimed task, remaining candidates, an unreadable tracker, a foreign repo label or a missing branch is refused with a diagnostic. A resolved target cannot be changed: open a new task for another destination.
+    ///
+    /// Jira delivery branches are reserved: attach tasks through `afkconvoy delivery --jira <url> --final-target <branch> --issue <n>`. Their target records pin a reference to the immutable delivery definition; they never copy its branch settings. A missing or replaced definition blocks work instead of selecting the configured base.
     #[command(next_help_heading = OPERATOR, verbatim_doc_comment)]
     Target {
         #[command(flatten)]
@@ -2328,6 +2331,43 @@ enum Command {
         /// An existing same-repo branch on origin; omit to read the destination
         #[arg(long)]
         branch: Option<String>,
+        #[command(flatten)]
+        at: AtFlag,
+    },
+    /// Create or inspect one Jira delivery per ticket and code repo
+    ///
+    /// ## When to run it
+    ///
+    /// Run `afkconvoy delivery -C <checkout> --jira https://example.atlassian.net/browse/ABC-123 --final-target main --issue 7` before making the first task dispatchable. The checkout names the code repo. Repeat with another --issue to attach another open task. Omit --final-target and --issue for read-only inspection. Repeat the creation command to reconcile pending final review.
+    ///
+    /// ## Who runs it
+    ///
+    /// The operator. Jira is an external reference; no Jira login or synchronization is performed.
+    ///
+    /// ## What it reads and writes
+    ///
+    /// The full HTTPS Jira browse URL, including site and optional context path, and the code repo identify the delivery. Creation requires an explicit existing final target on origin and a private tracker. It atomically creates an immutable JSON definition at delivery/<identity> under the remote fleet ref layout and a predictable delivery/jira-<key>-<identity> branch at that target's tip. This definition alone owns both branches. Task target records store only a delivery reference. The repo defaults and release destination stay unchanged.
+    ///
+    /// A task cuts from the delivery branch and lands its internal PR only there. The final review PR is opened as a Draft as soon as a meaningful diff exists, after task landing or on an acting tick. No diff leaves creation pending without empty commits or PR attempts. Its number lives once in the subordinate delivery-pr/<identity> receipt. Every retry discovers actual remote branches, records and all PR states first. Later tasks reuse the same final PR even after it is closed or merged. A human owns colleague review and merging the final PR; ordinary dispatch, landing, watch and recovery exclude it.
+    ///
+    /// ## What it answers
+    ///
+    /// {"jira", "delivery", "repository", "record", "branch", "final_target", "final_pr", "tasks"}, and "woke" after creation. final_pr is {number, url, state, draft} or {pending: reason}; tasks lists the attached tracker issue identities. Inspection writes nothing. Errors answer {"error": …} with a non-zero exit.
+    ///
+    /// ## What trips you up
+    ///
+    /// Ticket keys alone are not references: different Jira sites may reuse a key. An unrelated existing branch, conflicting final target, claimed task with another target, ambiguous PR history, unreadable record or missing owned branch refuses with a diagnostic. Restore inconsistent remote metadata before continuing attached tasks; nothing falls back to the configured base. A ticket spanning code repos has a separate delivery and final PR in each. To hand a task to the fleet, give it its ready or flow label after attaching it.
+    #[command(next_help_heading = OPERATOR, verbatim_doc_comment)]
+    Delivery {
+        /// Full HTTPS Jira browse URL, including the site
+        #[arg(long)]
+        jira: String,
+        /// Existing branch on origin; required for creation and attachment
+        #[arg(long)]
+        final_target: Option<String>,
+        /// Open tracker task to attach before dispatch or intake
+        #[arg(long, requires = "final_target")]
+        issue: Option<u64>,
         #[command(flatten)]
         at: AtFlag,
     },
@@ -3393,7 +3433,7 @@ fn own_program() -> String {
 
 /// The commands that act: each logs a line and wakes the `run` as it ends
 /// (`Command::acting`), and its `--help` says so (`acting::HELP`).
-const ACTS: [&str; 25] = [
+const ACTS: [&str; 26] = [
     "dispatch",
     "cast",
     "close",
@@ -3412,6 +3452,7 @@ const ACTS: [&str; 25] = [
     "verdict",
     "intake",
     "target",
+    "delivery",
     "lock",
     "patrol-now",
     "over",
@@ -3425,8 +3466,9 @@ const ACTS: [&str; 25] = [
 /// consult's, the caster's and a watch's give them: with those that
 /// only read (`ONLY_READ`), the only commands a worker's worktree is taken
 /// for (`checkout::resolve`).
-const IN_ITS_WORKTREE: [&str; 16] = [
+const IN_ITS_WORKTREE: [&str; 17] = [
     "target",
+    "delivery",
     "cast",
     "doctor",
     "plan",
@@ -4179,6 +4221,10 @@ impl Command {
             Command::Intake { issue, .. } => of("intake", issue, None),
             Command::Target { issue, branch: Some(_), .. } => of("target", issue, None),
             Command::Target { branch: None, .. } => return None,
+            Command::Delivery { final_target: Some(_), issue, .. } => {
+                Acting::new("delivery").on_issue(*issue)
+            }
+            Command::Delivery { final_target: None, .. } => return None,
             Command::Lock { issue, .. } => of("lock", issue, None),
             Command::PatrolNow { name, .. } => {
                 Acting::new("patrol-now").on(name.trim().to_string())
@@ -4509,6 +4555,9 @@ fn run(
         Command::Target { issue, branch, .. } => {
             target::select(&checkout?, issue.number(), branch.as_deref())
         }
+        Command::Delivery { jira, final_target, issue, .. } => {
+            delivery::command(&checkout?, &jira, final_target.as_deref(), issue)
+        }
         Command::Lock { issue, role, .. } => {
             let repo = checkout?;
             let config = config::load(&repo.dir.join(config::FILE))?;
@@ -4653,6 +4702,7 @@ mod tests {
         &["send", "7", "--stage", "build", "--text", "x"],
         &["intake", "7", "--workflow", "w", "--role", "r", "--from", "3"],
         &["target", "7", "--branch", "delivery/ticket"],
+        &["delivery", "--jira", "https://example.com/browse/ABC-123", "--final-target", "main"],
         &["lock", "7"],
         &["patrol-now", "sweep"],
         &["over", "--run", "sweep"],

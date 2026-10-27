@@ -15,6 +15,7 @@ use crate::git::Repo;
 
 pub(crate) struct Update<'a> {
     pub name: &'a str,
+    /// Expected old object, or the object-format's zero ID to create a ref.
     pub old: &'a str,
     pub new: &'a str,
 }
@@ -110,7 +111,9 @@ fn pack(repo: &Repo, updates: &[Update<'_>]) -> Result<Vec<u8>> {
         writeln!(input, "{}", update.new)?;
     }
     for update in updates {
-        writeln!(input, "^{}", update.old)?;
+        if !update.old.bytes().all(|c| c == b'0') {
+            writeln!(input, "^{}", update.old)?;
+        }
     }
     drop(input);
     let output = child.wait_with_output()?;
@@ -187,7 +190,10 @@ pub(crate) fn push(repo: &Repo, updates: &[Update<'_>]) -> Result<bool> {
             drop(input);
             bail!("Git remote lacks atomic receive-pack status; nothing was published");
         }
-        if updates.iter().any(|u| refs.get(u.name).map(String::as_str) != Some(u.old)) {
+        if updates.iter().any(|u| {
+            let expected = (!u.old.bytes().all(|c| c == b'0')).then_some(u.old);
+            refs.get(u.name).map(String::as_str) != expected
+        }) {
             input.write_all(b"0000")?;
             drop(input);
             return Ok(false);

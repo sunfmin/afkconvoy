@@ -35,10 +35,10 @@
 mod fake;
 
 use afkconvoy::gh::{
-    BLOCKED_BY_JQ, CARRYING_JQ, CLOSED_JQ, COMMENTS_JQ, COMMENTS_WITH, ISSUE_JQ, LABELS_JQ,
-    LANDED_ISSUES_JQ, LANDED_ISSUES_QUERY, OPEN_ISSUES_JQ, OPEN_ISSUES_QUERY, OPEN_LABELLED_JQ,
-    PR_FIELDS, PR_HEADS_JQ, PR_OF_FIELDS, PR_OF_JQ, VISIBILITY_JQ, WATCH_ISSUES_JQ,
-    WATCH_ISSUES_QUERY, WATCH_PRS_JQ,
+    BLOCKED_BY_JQ, CARRYING_JQ, CLOSED_JQ, COMMENTS_JQ, COMMENTS_WITH, DELIVERY_PRS_JQ, ISSUE_JQ,
+    LABELS_JQ, LANDED_ISSUES_JQ, LANDED_ISSUES_QUERY, OPEN_ISSUES_JQ, OPEN_ISSUES_QUERY,
+    OPEN_LABELLED_JQ, PR_FIELDS, PR_HEADS_JQ, PR_OF_FIELDS, PR_OF_JQ, VISIBILITY_JQ,
+    WATCH_ISSUES_JQ, WATCH_ISSUES_QUERY, WATCH_PRS_JQ,
 };
 use std::path::PathBuf;
 
@@ -86,6 +86,22 @@ fn main() {
     let argv: Vec<&str> = st.argv.iter().map(String::as_str).collect();
     let other = st.opt("--repo").map(str::to_string);
     match argv.as_slice() {
+        ["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"] => {
+            st.finish(st.doc["repository"].as_str().unwrap_or("acme/dev"), 0, "")
+        }
+        ["api", "--paginate", endpoint, "--jq", jq]
+            if endpoint == &format!("{REPO}pulls?state=all&per_page=100") =>
+        {
+            assert_eq!(*jq, DELIVERY_PRS_JQ);
+            notice_merges(&mut st);
+            let rows: Vec<String> = st.doc["prs"].as_array().unwrap().iter().map(|pr| {
+                json!({"number":pr["number"], "body":pr["body"].as_str().unwrap_or(""),
+                    "head_branch":pr["headRefName"], "base_branch":pr["baseRefName"].as_str().unwrap_or("main"),
+                    "state":pr["state"], "draft":pr["draft"].as_bool().unwrap_or(false),
+                    "url":format!("https://gh/pull/{}", pr["number"]), "fork":is_fork(pr)}).to_string()
+            }).collect();
+            st.finish(&rows.join("\n"), 0, "")
+        }
         ["config", "get", "user", "--host", _] => {
             st.finish(st.doc["login"].as_str().unwrap_or("fixture-user"), 0, "")
         }
@@ -140,7 +156,7 @@ fn main() {
                     json!({"number": pr["number"], "title": pr["title"], "body": pr["body"],
                     "updated": pr["updated_at"].as_u64().unwrap_or(0),
                     "closed": pr["closed_at"], "merged": pr["merged_at"],
-                    "fork": is_fork(pr), "of": pr["of"]})
+                    "fork": is_fork(pr), "of": pr["of"], "head_branch": pr["headRefName"].as_str().unwrap_or("")})
                     .to_string()
                 })
                 .collect();
@@ -505,6 +521,14 @@ fn pr_create(st: &mut State) -> ! {
     if commit.is_empty() {
         st.finish("", 1, "gh: head branch does not exist\n");
     }
+    if st.doc["prs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|pr| is_open(pr) && pr["headRefName"] == head && pr["baseRefName"] == base)
+    {
+        st.finish("", 1, "a pull request already exists for that head and base\n");
+    }
     let number = ["issues", "prs"]
         .into_iter()
         .flat_map(|key| st.doc[key].as_array().into_iter().flatten())
@@ -512,9 +536,14 @@ fn pr_create(st: &mut State) -> ! {
         .max()
         .unwrap_or(0)
         + 1;
+    let draft = st.has("--draft");
     st.list("prs").push(json!({"number": number, "headRefName": head,
         "headRefOid": commit, "baseRefName": base, "title": title, "body": body,
-        "state": "open", "labels": []}));
+        "state": "open", "labels": [], "draft": draft}));
+    if st.doc["lose_pr_create_receipt"] == true {
+        st.doc["lose_pr_create_receipt"] = json!(false);
+        st.finish("", 1, "connection lost after PR creation\n");
+    }
     st.finish(&format!("https://gh/pull/{number}"), 0, "")
 }
 
@@ -623,7 +652,7 @@ fn api(st: &mut State) -> ! {
                 .filter(|pr| is_open(pr) && !is_fork(pr))
                 .map(|pr| {
                     let head = branch_head(pr, bare);
-                    json!({"number":pr["number"], "title":pr["title"].as_str().unwrap_or(""),
+                    json!({"number":pr["number"], "title":pr["title"].as_str().unwrap_or(""), "body":pr["body"].as_str().unwrap_or(""),
                         "head_branch":pr["headRefName"], "head_sha":head, "base_branch":pr["baseRefName"].as_str().unwrap_or(st.doc["base"].as_str().unwrap())})
                     .to_string()
                 })

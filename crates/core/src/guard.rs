@@ -303,10 +303,16 @@ impl Limits {
                 to.starts_with("refs/convoy/target/")
                     || to.starts_with("refs/heads/convoy-target/")
                     || to.starts_with("convoy-target/")
+                    || to.starts_with("refs/convoy/delivery/")
+                    || to.starts_with("refs/heads/convoy-delivery/")
+                    || to.starts_with("convoy-delivery/")
+                    || to.starts_with("refs/convoy/delivery-pr/")
+                    || to.starts_with("refs/heads/convoy-delivery-pr/")
+                    || to.starts_with("convoy-delivery-pr/")
             });
             if let Some(pushed) = target {
                 return Some(format!(
-                    "`git push … {pushed}` changes a pinned target: select an unresolved task's branch with afkconvoy target; push your source branch only"
+                    "`git push … {pushed}` changes a pinned target or delivery: use afkconvoy target or afkconvoy delivery; push your source branch only"
                 ));
             }
             let to_base = named.iter().skip(2).find(|refspec| self.lands_on_base(refspec));
@@ -364,7 +370,9 @@ impl Limits {
         let refspec = refspec.strip_prefix('+').unwrap_or(refspec);
         let to = refspec.rsplit(':').next().unwrap_or(refspec);
         let branch = to.strip_prefix("refs/heads/").unwrap_or(to);
-        branch == self.base_branch || self.target_branch.as_deref() == Some(branch)
+        branch == self.base_branch
+            || self.target_branch.as_deref() == Some(branch)
+            || branch.starts_with("delivery/jira-")
     }
 
     fn refuses_gh(&self, args: &[&str], input: &str) -> Option<String> {
