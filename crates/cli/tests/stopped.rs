@@ -639,6 +639,70 @@ fn a_worker_waiting_in_the_exclusive_queue_is_busy_until_the_gate_limit() {
 }
 
 #[test]
+fn queued_fixture_reaps_its_workers_and_releases_inherited_descriptors() {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::process::CommandExt;
+
+    // Reproduce a gate's inherited kernel lease, without holding or changing
+    // the real host's capacity. The original fixture runs in a child test.
+    struct Probe {
+        child: std::process::Child,
+        observer: std::fs::File,
+        path: tempfile::TempPath,
+    }
+    impl Drop for Probe {
+        fn drop(&mut self) {
+            // Also clean up a red reproduction: only this unique descriptor's
+            // inheritors are ours, including helpers reparented to pid 1.
+            let holders =
+                std::process::Command::new("lsof").arg("-t").arg(&self.path).output().unwrap();
+            for pid in String::from_utf8_lossy(&holders.stdout).split_whitespace() {
+                let pid: u32 = pid.parse().unwrap();
+                if pid != std::process::id() {
+                    // SAFETY: lsof confirmed this private lease's inheritor.
+                    unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+                }
+            }
+            let _ = self.child.wait();
+        }
+    }
+
+    let (lease, path) = tempfile::NamedTempFile::new().unwrap().into_parts();
+    lease.lock_shared().unwrap();
+    let observer = std::fs::OpenOptions::new().read(true).write(true).open(&path).unwrap();
+    let fd = lease.as_raw_fd();
+    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    command
+        .args([
+            "--exact",
+            "stopped::a_worker_waiting_in_the_exclusive_queue_is_busy_until_the_gate_limit",
+        ])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    // SAFETY: change only this live descriptor's flag in the child.
+    unsafe {
+        command.pre_exec(move || {
+            if libc::fcntl(fd, libc::F_SETFD, 0) < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let mut probe = Probe { child: command.spawn().unwrap(), observer, path };
+    drop(lease);
+    assert!(
+        matches!(probe.observer.try_lock(), Err(std::fs::TryLockError::WouldBlock)),
+        "a running fixture must retain its inherited lease"
+    );
+    assert!(probe.child.wait().unwrap().success(), "the original scenario must pass");
+    assert!(
+        probe.observer.try_lock().is_ok(),
+        "completed fixture workers still retain the inherited lease"
+    );
+}
+
+#[test]
 fn an_unclassified_refusal_waits_for_the_operator_without_pausing_unrelated_work() {
     let world = fleet(1000);
     report(&world, "done", 1000, 1000);
