@@ -57,7 +57,7 @@ One of the two ways every ref the fleet writes is named: hidden refs (`refs/conv
 _Avoid_: namespace, fallback mode
 
 **Fleet state**:
-The authoritative record of what is claimed, in flight, landed, parked and escalated. It lives entirely in GitHub — the issues in the fleet's tracker, the PRs, branches and refs in the repo — and no process holds it. A PR whose head is in another repository is no part of it: only a login with write access can push a branch to the repo, so a PR from one of its branches is a collaborator's, and one from a fork is anyone's. The fleet acts as if a fork's PR did not exist — none is landed, taken up, synced, closed, commented on or reported, none holds an issue off, and none on a team's repo is taken for a proposal.
+The authoritative record of what is claimed, in flight, landed, parked and escalated. It lives entirely in GitHub — the issues in the fleet's tracker, the PRs, branches and refs in the repo — and no process holds it. A PR whose head is in another repository is no part of it: only a login with write access can push a branch to the repo, so a PR from one of its branches is a collaborator's, and one from a fork is anyone's. The fleet acts as if a fork's PR did not exist — none is landed, taken up, synced, closed, commented on or reported, none holds an issue off.
 _Avoid_: run state, memory (what a host holds resident, as under Hot worker)
 
 **Working set**:
@@ -73,7 +73,7 @@ The issues of the fleet's tracker a worker can be started on now — of a tracke
 _Avoid_: queue (the exclusive queue of a host's heavy commands), backlog (all the issues a repo has open)
 
 **Idle**:
-A fleet instance with nothing to do now: it holds no claim — on an issue, a patrol's run, the proposal of a precedent or a cut — its frontier is empty. An escalated issue waiting for a human leaves it idle, and so does a patrol not yet due.
+A fleet instance with nothing to do now: it holds no claim — on an issue, a patrol's run or a cut — its frontier is empty. An escalated issue waiting for a human leaves it idle, and so does a patrol not yet due.
 _Avoid_: drained, done (what a step or a command did), finished (a PR its worker is through with)
 
 **Host sleep**:
@@ -95,7 +95,7 @@ A directory that defines one kind of worker: the rules it always works under, th
 _Avoid_: agent (as under Worker), persona, profile (as under DSH profile)
 
 **Team**:
-A directory that names a set of roles and holds the workflows, patrols and precedents they work by. It is a whole repo or a subdirectory of one, and its roles may be directories of the same repo.
+A directory that names a set of roles and holds the workflows, patrols and rules they work by. It is a whole repo or a subdirectory of one, and its roles may be directories of the same repo.
 _Avoid_: org, crew, squad
 
 **Team rules**:
@@ -167,14 +167,6 @@ _Avoid_: infrastructure failure, system fault
 **Ruling**:
 What a consult or a human decides on an issue handed on. The stage runs again under it; a human's also hands the issue back to the fleet and starts the rework counts over, a consult's starts none over.
 _Avoid_: answer (what a command prints), decision (what a `by: human` stage waits for), override
-
-**Precedent**:
-A ruling kept so that later stages follow it instead of escalating. A worker proposes it; a human accepts it.
-_Avoid_: rule (a role's rules and the team rules; the command `rule`), policy, guideline
-
-**Proposal**:
-One human's ruling put forward as a precedent: a PR on the team's repo that appends one entry to its precedents file. A ruling gets one; a human merging it is what accepts the precedent.
-_Avoid_: suggestion, draft (a roster `afkconvoy draft` writes), candidate (a key of what `recovery` answers)
 
 **Split**:
 Parking an issue on issues its own stage opened. When they have all closed, that stage runs again and judges the whole.
@@ -301,7 +293,7 @@ Another fleet instance's claim whose heartbeat is past the lease. It is the only
 _Avoid_: dead claim, abandoned claim
 
 **Takeover**:
-Taking another fleet instance's claims — on issues, on patrols' runs, on proposals — without waiting for the lease. It happens unconditionally at start for claims stamped with this host, and by explicit command for another host's. A claim taken — by a takeover, or as a stale claim — is still the claim it was created as: what was declared under it stands.
+Taking another fleet instance's claims — on issues, on patrols' runs, on cuts — without waiting for the lease. It happens unconditionally at start for claims stamped with this host, and by explicit command for another host's. A claim taken — by a takeover, or as a stale claim — is still the claim it was created as: what was declared under it stands.
 _Avoid_: failover, stale reclaim
 
 ### Outcomes

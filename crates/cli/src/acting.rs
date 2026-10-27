@@ -8,7 +8,6 @@
 //! with no fleet instance to wake its line is in the log all the same.
 
 use afkconvoy_core::patrol::PATROL_ENV;
-use afkconvoy_core::precedent::PROPOSAL_ENV;
 use afkconvoy_core::role::{ISSUE_ENV, ROLE_ENV};
 use serde_json::{Value, json};
 
@@ -169,10 +168,9 @@ impl Acting {
 /// no issue in its environment.
 const WORKERS_OWN: [&str; 4] = ["gate", "land", "over", "wake"];
 
-/// Who ran `command`: a worker — started in a role, on an issue, a patrol or
-/// a proposal, or running a command only a worker runs — or the operator.
+/// Who ran `command`: a worker — started in a role, on an issue or a patrol, or running a command only a worker runs — or the operator.
 fn by(command: &str) -> &'static str {
-    let started = [ROLE_ENV, ISSUE_ENV, PATROL_ENV, PROPOSAL_ENV];
+    let started = [ROLE_ENV, ISSUE_ENV, PATROL_ENV];
     let in_worker = started.iter().any(|name| std::env::var_os(name).is_some());
     if in_worker || WORKERS_OWN.contains(&command) { "worker" } else { "operator" }
 }

@@ -360,7 +360,7 @@ fn the_example_team_is_written_whole_and_passes_check_as_pushed() {
     assert_eq!(names("workflows", "name"), ["chore", "design", "fix"]);
     assert_eq!(names("patrols", "name"), ["research", "rounds", "safety-review", "triage"]);
     assert_eq!(read["rules"], true);
-    assert_eq!(read["precedents"]["by"], "safety");
+    assert!(read.get("precedents").is_none());
     // The two roles with hooks hold limits, and the rest hold none.
     let limited: Vec<&str> = read["roles"]
         .as_array()

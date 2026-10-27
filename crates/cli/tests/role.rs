@@ -278,7 +278,6 @@ fn a_flow_labelled_issue_is_dispatched_to_its_first_stage_with_the_worker_in_its
             dir.display()
         ),
         "- **History:** the issue and every comment on it (`gh issue view 7 --comments`)".into(),
-        format!("- **Precedents:** `{}`\n", team_dir.join("precedents.md").display()),
         " verdict --issue 7 --stage 'build'\n```".to_string(),
     ] {
         assert!(brief.contains(&said), "{said}\n{brief}");
@@ -702,7 +701,6 @@ fn one_repo() -> World {
     for (file, text) in [
         ("CLAUDE.md", "the rules of the team\n"),
         (".claude/skills/release/SKILL.md", "---\nname: release\ndescription: a human's\n---\n"),
-        ("precedents.md", "# Precedents\n"),
         ("patrols/sweep.md", "```yaml\nby: dev\ndo: implement\nevery: 1h\nmax_open: 2\n```\n"),
         ("docs/notes.md", "whatever else\n"),
         ("roles/README.md", "the roles\n"),
@@ -785,10 +783,7 @@ fn a_stage_whose_role_is_a_subdirectory_starts_its_worker_in_that_directory_alon
     assert!(!role_dir.parent().unwrap().join("CLAUDE.md").exists());
     // …and the team's is its directory without those of its roles, and
     // without the skills and settings at its top: its rules are kept.
-    assert_eq!(
-        holds(&team_dir),
-        ["CLAUDE.md", "docs", "patrols", "precedents.md", "roles", "team.md", "workflows"]
-    );
+    assert_eq!(holds(&team_dir), ["CLAUDE.md", "docs", "patrols", "roles", "team.md", "workflows"]);
     assert_eq!(holds(&team_dir.join("roles")), ["README.md"]);
     for copied in [&role_dir, &role_dir.join(".claude/settings.json"), &team_dir] {
         assert!(is_read_only(copied), "{}", copied.display());
@@ -817,7 +812,7 @@ fn a_stage_whose_role_is_a_subdirectory_starts_its_worker_in_that_directory_alon
     assert!(told.contains(&rules) && !told.contains("the rules of the team"), "{told}");
     let roles = format!(" AFKCONVOY_ROLE_COMMIT='{team}' AFKCONVOY_TEAM_COMMIT='{team}' ");
     assert!(command.contains(&roles), "{command}");
-    assert!(brief(&dir).contains(&team_dir.join("precedents.md").display().to_string()));
+    assert!(!brief(&dir).contains("precedents.md"));
 
     // A hook of the role runs as Claude Code runs it: from the directory the
     // worker starts in, which is the project's.

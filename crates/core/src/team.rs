@@ -21,8 +21,6 @@ pub const SKILL_FILE: &str = "SKILL.md";
 /// The keys of a skill's frontmatter every harness reads: what `skill-file`,
 /// the help topic, must name.
 pub const SKILL_KEYS: [&str; 2] = ["name", "description"];
-/// The file of a team's repo that holds its precedents.
-pub const PRECEDENTS: &str = "precedents.md";
 /// A directory's rules: the file every harness loads them from, so that they
 /// are written once (docs/adr/0013). In a role's directory they are the
 /// role's, and in a team's the team rules.
@@ -68,8 +66,6 @@ pub const LAND: &str = "land";
 /// Where a `pass` leads that ends a workflow in nothing more to do.
 pub const DONE: &str = "done";
 
-/// The key of the team file that says who proposes precedents.
-const PRECEDENTS_KEY: &str = "precedents";
 /// The key of the team file that says whether a worker of the team is given
 /// the host user's skills and rules (`Team::host_user`).
 const HOST_USER_KEY: &str = "host_user";
@@ -108,22 +104,14 @@ pub const ROSTER_KEY: &str = "roster";
 const LABEL_KEY: &str = "label";
 
 /// The keys of each map a definition holds: what `check`'s help must name.
-pub const TEAM_KEYS: [&str; 7] = [
-    "escalate_label",
-    "roles",
-    ROSTER_KEY,
-    PRECEDENTS_KEY,
-    HOST_USER_KEY,
-    DSH_PROFILE_KEY,
-    "split",
-];
+pub const TEAM_KEYS: [&str; 6] =
+    ["escalate_label", "roles", ROSTER_KEY, HOST_USER_KEY, DSH_PROFILE_KEY, "split"];
 /// The keys of a role named as a map, beside the directory that names it.
 pub const ROLE_KEYS: [&str; 3] = [DIR_KEY, HOST_USER_KEY, DSH_PROFILE_KEY];
 /// The keys of a role's entry in the roster.
 pub const ROSTER_ENTRY_KEYS: [&str; 2] = ["cast", "run"];
 /// The keys of one harness and model of a role's entry in the roster.
 pub const RUN_KEYS: [&str; 3] = [HARNESS_KEY, MODEL_KEY, "good_at"];
-pub const PRECEDENTS_KEYS: [&str; 3] = ["by", "do", "max_open"];
 pub const WORKFLOW_KEYS: [&str; 5] =
     [LABEL_KEY, "max_rework", "max_consecutive_rework", "stages", LAND];
 pub const STAGE_KEYS: [&str; 6] = ["name", "by", "do", "writes", "escalate", "on"];
@@ -360,8 +348,8 @@ impl std::fmt::Display for Fault {
     }
 }
 
-/// A loaded team of `roles` roles. Whoever its workflows, its patrols and its
-/// precedents have perform a skill is one of them.
+/// A loaded team of `roles` roles. Whoever its workflows and patrols have
+/// perform a skill is one of them.
 #[derive(Debug, PartialEq, Eq)]
 #[refined_by(roles: int)]
 pub struct Team {
@@ -386,10 +374,6 @@ pub struct Team {
     pub workflows: Vec<Workflow>,
     #[field(Vec<Patrol[roles]>)]
     pub patrols: Vec<Patrol>,
-    /// Who proposes a human's ruling as a precedent. `None`: the team names
-    /// nobody, and none is proposed.
-    #[field(Option<Precedents[roles]>)]
-    pub precedents: Option<Precedents>,
 }
 
 impl Team {
@@ -499,15 +483,6 @@ impl Team {
                 by: format!("the patrol `{}`", patrol.name),
                 role: self.role_of(&patrol.work).clone(),
                 skill: patrol.work.skill.clone(),
-            });
-        }
-        if let Some(precedents) = &self.precedents {
-            runs.push(Run {
-                file: TEAM_FILE.to_string(),
-                skill_key: under(PRECEDENTS_KEY, "do"),
-                by: "the proposal of a precedent".to_string(),
-                role: self.role_of(&precedents.work).clone(),
-                skill: precedents.work.skill.clone(),
             });
         }
         runs
@@ -715,18 +690,6 @@ pub struct Patrol {
     pub max_runs_a_day: Option<u64>,
     /// How many issues it opened may have completed in the last rolling day.
     pub max_landed_a_day: Option<u64>,
-}
-
-/// Who proposes a human's ruling as a precedent — a skill of a role, started
-/// once for the ruling — and how many proposals may wait for a human at once.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[refined_by(roles: int)]
-pub struct Precedents {
-    #[field(Work[roles])]
-    pub work: Work,
-    /// How many proposals may be open on the team's repo before no other is
-    /// started.
-    pub max_open: u64,
 }
 
 /// Who a stage hands an issue to before a human (docs/adr/0018): `by_role`
@@ -1087,7 +1050,6 @@ pub fn load(sources: &Sources) -> Result<Team, Vec<Fault>> {
     let split = team_bool_key(&mut faults, sources, "split");
     let (escalate_label, mut roles) = team_file(&mut faults, sources, host_user, dsh_profile);
     roster_key(&mut faults, sources, &mut roles);
-    let precedents = precedents_key(&mut faults, sources, &roles);
     let mut workflows: Vec<Workflow> = vec![];
     for file in &sources.workflows {
         let mut report = Report { file: &file.path, faults: &mut faults };
@@ -1113,7 +1075,6 @@ pub fn load(sources: &Sources) -> Result<Team, Vec<Fault>> {
             roles: roles.loaded,
             workflows,
             patrols,
-            precedents: precedents.flatten(),
         })
     } else {
         Err(faults)
@@ -1204,7 +1165,12 @@ fn map<'n>(
     for (key, _) in entries {
         if !known.contains(&key.as_str()) {
             let known = known.join(", ");
-            report.fault(&under(at, key), format!("unknown key; the keys here are: {known}"));
+            let problem = if report.file == TEAM_FILE && at.is_empty() && key == "precedents" {
+                "retired: migrate effective rules from precedents.md into their owning ADR, team or role rules, preserve source links, then remove the precedents key; rulings remain on their issues".to_string()
+            } else {
+                format!("unknown key; the keys here are: {known}")
+            };
+            report.fault(&under(at, key), problem);
         } else if seen.contains(&key.as_str()) {
             report.fault(&under(at, key), "written twice".to_string());
         }
@@ -1672,24 +1638,6 @@ fn profile_key(
             default
         }
     }
-}
-
-/// Reads the team file's `precedents` → who proposes a ruling as one;
-/// `Some(None)` where the file has no such key, `None` when the key is at
-/// fault. What is wrong with the file itself is `team_file`'s to say.
-#[spec(fn(&mut Vec<Fault>, &Sources, &Roles[@n]) -> Option<Option<Precedents[n]>>)]
-fn precedents_key(
-    faults: &mut Vec<Fault>,
-    sources: &Sources,
-    roles: &Roles,
-) -> Option<Option<Precedents>> {
-    let mut report = Report { file: &sources.team.path, faults };
-    let Ok(Node::Map(entries)) = &sources.team.yaml else { return Some(None) };
-    let Some(node) = get(entries, PRECEDENTS_KEY) else { return Some(None) };
-    let entries = map(&mut report, PRECEDENTS_KEY, node, &PRECEDENTS_KEYS)?;
-    let work = work(&mut report, roles, PRECEDENTS_KEY, entries, ("by", "do"));
-    let max_open = limit(&mut report, PRECEDENTS_KEY, entries);
-    Some(Some(Precedents { work: work?, max_open: max_open? }))
 }
 
 /// A boolean team setting, true where unsaid. A wrong type is reported.
@@ -2443,30 +2391,6 @@ land: { by: dev, do: land }
     }
 
     #[test]
-    fn a_team_names_who_proposes_precedents_or_has_none_proposed() {
-        let without = load(&sources(TEAM, &[])).unwrap();
-        assert_eq!(without.precedents, None);
-        let named = format!("{TEAM}precedents: {{ by: reviewer, do: rule, max_open: 4 }}\n");
-        let with = load(&sources(&named, &[])).unwrap();
-        let work = work(REVIEWER, "rule");
-        assert_eq!(with.precedents, Some(Precedents { work, max_open: 4 }));
-
-        let keys = |precedents: &str| -> Vec<String> {
-            let team = format!("{TEAM}precedents: {precedents}\n");
-            let faults = load(&sources(&team, &[])).unwrap_err();
-            faults.into_iter().map(|fault| format!("{} {}", fault.file, fault.key)).collect()
-        };
-        assert_eq!(keys("reviewer"), ["team.md precedents"]);
-        assert_eq!(
-            keys("{ by: ops, do: mop, when: now }"),
-            ["team.md precedents.when", "team.md precedents.by", "team.md precedents.max_open"]
-        );
-        assert_eq!(keys("{ by: reviewer, do: mop, max_open: -1 }").len(), 2);
-        assert_eq!(keys("{ by: human, do: rule, max_open: 1 }"), ["team.md precedents.by"]);
-        assert_eq!(keys("{ by: reviewer, max_open: 1 }"), ["team.md precedents.do"]);
-    }
-
-    #[test]
     fn a_duration_is_a_count_from_one_up_and_a_unit() {
         assert_eq!(duration("30m"), Some(1800));
         assert_eq!(duration("6h"), Some(21600));
@@ -2817,7 +2741,7 @@ land: { by: dev, do: land }
 
     /// The usual team, `dev` and `reviewer` holding limits for these
     /// harnesses, with `workflow` as its one workflow, `patrol` as its one
-    /// patrol, `reviewer` proposing its precedents, and `roster` its roster.
+    /// patrol and `roster` its roster.
     fn limited(
         dev: &[Harness],
         reviewer: &[Harness],
@@ -2825,7 +2749,7 @@ land: { by: dev, do: land }
         patrol: &str,
         roster: &str,
     ) -> Result<Team, Vec<Fault>> {
-        let team = format!("{TEAM}precedents: {{ by: reviewer, do: rule, max_open: 4 }}\n{roster}");
+        let team = format!("{TEAM}{roster}");
         let mut sources = sources(&team, &[("workflows/feature.md", workflow)]);
         sources.patrols = vec![file("patrols/sweep.md", patrol)];
         for (role, limits) in [(DEV, dev), (REVIEWER, reviewer)] {
@@ -3001,17 +2925,13 @@ land: { by: dev, do: land }
     }
 
     #[test]
-    fn a_harness_is_no_key_of_a_consult_a_landing_a_workflow_or_precedents() {
+    fn a_harness_is_no_key_of_a_consult_a_landing_or_a_workflow() {
         let usual = "{ by: dev, do: land }";
         let consulted = "    escalate: { to: reviewer, do: rule, harness: claude-code }\n";
         assert_eq!(fault(&landed(consulted, usual)).0, "stages[1].escalate.harness");
         let land = "{ by: dev, do: land, harness: claude-code }";
         assert_eq!(fault(&landed("", land)).0, "land.harness");
         assert_eq!(fault(&format!("harness: claude-code\n{FEATURE}")).0, "harness");
-        let precedents = "precedents: { by: dev, do: plan, max_open: 1, harness: claude-code }\n";
-        let faults = faults(&format!("{TEAM}{precedents}"), FEATURE);
-        assert_eq!(faults.len(), 1, "{faults:#?}");
-        assert_eq!((faults[0].0.as_str(), faults[0].1.as_str()), ("team.md", "precedents.harness"));
     }
 
     #[test]

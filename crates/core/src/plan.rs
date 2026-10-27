@@ -12,7 +12,6 @@ use crate::cut;
 use crate::lease::is_stale;
 use crate::lock;
 use crate::patrol::{self, Standing};
-use crate::precedent;
 use crate::role::Due;
 use crate::slow_gate::{Landing, Reported, SlowGate, slow};
 use crate::team::{FlowLabels, LAND};
@@ -272,10 +271,6 @@ pub struct WorkingSet {
     /// the repo names them.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub patrols: Vec<patrol::Row>,
-    /// The proposals of precedents a bound repo has to make or has going:
-    /// one for each ruling a human gave that nothing says was proposed.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub proposals: Vec<precedent::Row>,
     /// The gate is slow, with the evidence and the open issue that says so:
     /// a pass opens one while there is none.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -314,16 +309,11 @@ impl WorkingSet {
     }
 
     /// The slots taken as a pass starts: one for each claim of mine, and one
-    /// for each patrol and each proposal whose run of mine is still going.
+    /// for each patrol whose run of mine is still going.
     pub fn held(&self) -> usize {
         let mut held = self.mine.len();
         for patrol in &self.patrols {
             if patrol.standing == Standing::Running {
-                held = held.saturating_add(1);
-            }
-        }
-        for proposal in &self.proposals {
-            if proposal.standing == precedent::Standing::Running {
                 held = held.saturating_add(1);
             }
         }
@@ -435,9 +425,6 @@ pub struct Observed<'a> {
     /// The patrols the repo names (`patrol::Seen`), in its order. Empty in
     /// an unbound repo.
     pub patrols: &'a [patrol::Seen],
-    /// The proposals of precedents (`precedent::Seen`). Nothing in an unbound
-    /// repo.
-    pub proposals: &'a precedent::Seen,
     /// The open issues that wait for a human, each with what for
     /// (`waiting::Waits`) and since when, where GitHub said. The reports of
     /// a patrol's failed run are not among them: `patrols` names those.
@@ -557,7 +544,7 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
         locks: lock::standing(seen.issues, config),
         flowing: vec![],
         patrols: vec![],
-        proposals: vec![],
+
         slow_gate: slow(seen.landings, config.gate_seconds(), seen.slow_gate),
         held_back: vec![],
         caster: None,
@@ -568,7 +555,7 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
     for patrol in seen.patrols {
         set.patrols.push(patrol::row(patrol, me, seen.heartbeats, now, locked));
     }
-    set.proposals = precedent::rows(seen.proposals, me, seen.heartbeats, now, locked);
+
     set.cut = seen.cut.map(|cut| cut::row(cut, me, seen.heartbeats, now, locked));
     set.waiting_on_human = waiting(seen, &issues, &claims, &set.patrols, set.cut.as_ref());
     for issue in &issues {
@@ -773,7 +760,7 @@ mod tests {
             landing: &[],
             begun: &[],
             patrols: &[],
-            proposals: &precedent::Seen::default(),
+
             waiting: &[],
             landings: &[],
             slow_gate: &Reported::NONE,
@@ -819,7 +806,7 @@ mod tests {
             landing: &[],
             begun: &[],
             patrols: &[],
-            proposals: &precedent::Seen::default(),
+
             waiting: &[],
             landings: &[],
             slow_gate: &Reported::NONE,
@@ -857,7 +844,7 @@ mod tests {
             landing: &[],
             begun: &[],
             patrols: &[],
-            proposals: &precedent::Seen::default(),
+
             waiting: &[
                 (4, Waits::Escalated(back()), Some(900)),
                 (3, Waits::Escalated(back()), Some(400)),
@@ -901,7 +888,7 @@ mod tests {
             issue(5, READY),
             issue(6, READY),
         ];
-        let none = precedent::Seen::default();
+
         let no_flows = FlowLabels::default();
         let seen = |issues, claims| Observed {
             unworked_blockers: &[],
@@ -920,7 +907,7 @@ mod tests {
             landing: &[],
             begun: &[],
             patrols: &[],
-            proposals: &none,
+
             waiting: &[],
             landings: &[],
             slow_gate: &Reported::NONE,
@@ -1002,7 +989,7 @@ mod tests {
             landing: &[],
             begun: &[],
             patrols: &[],
-            proposals: &precedent::Seen::default(),
+
             waiting: &[],
             landings: &[],
             slow_gate: &Reported::NONE,
@@ -1118,7 +1105,7 @@ mod tests {
             landing: &[],
             begun: &[5, 6, 7, 8, 9, 10, 11, 12],
             patrols: &[],
-            proposals: &precedent::Seen::default(),
+
             waiting: &[],
             landings: &[],
             slow_gate: &Reported::NONE,
@@ -1202,7 +1189,7 @@ mod tests {
             landing: &[8, 9, 10],
             begun: &[],
             patrols: &[],
-            proposals: &precedent::Seen::default(),
+
             waiting: &[],
             landings: &[],
             slow_gate: &Reported::NONE,
@@ -1261,7 +1248,7 @@ mod tests {
             landing: &[],
             begun: &[],
             patrols: &[],
-            proposals: &precedent::Seen::default(),
+
             waiting: &[],
             landings: &[],
             slow_gate: &Reported::NONE,
@@ -1312,7 +1299,7 @@ mod tests {
             landing: &[],
             begun: &[],
             patrols: &[],
-            proposals: &precedent::Seen::default(),
+
             waiting: &[],
             landings: &[],
             slow_gate: &Reported::NONE,
@@ -1346,7 +1333,7 @@ mod tests {
             landing: &[],
             begun: &[],
             patrols: &[],
-            proposals: &precedent::Seen::default(),
+
             waiting: &[],
             landings: &[],
             slow_gate: &Reported::NONE,
@@ -1389,7 +1376,7 @@ mod tests {
                     landing: &[],
                     begun: &[],
                     patrols: &[],
-                    proposals: &precedent::Seen::default(),
+
                     waiting: &[],
                     landings: &[],
                     slow_gate: &Reported::NONE,
