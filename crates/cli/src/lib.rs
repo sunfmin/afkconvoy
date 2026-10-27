@@ -4401,7 +4401,7 @@ fn run(
             }
             plan["concurrency"] = concurrency::json(&fleet.config);
             plan["tracker"] = json!(fleet.gh.tracker.named());
-            plan["targets"] = target::listing(&repo)?;
+            plan["targets"] = fleet.targets(&open.issues)?;
             plan["admission"] = admission.json();
             plan["host_kit"] = kit::show(now);
             plan["selection"] = fleet.selection();

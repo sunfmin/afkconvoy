@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::gh::GitHub;
-use crate::git::{REMOTE, RemoteRecord, Repo};
+use crate::git::{Listing, REMOTE, RemoteRecord, Repo};
 use afkconvoy_core::tracker::Tracker;
 
 #[derive(Serialize, Deserialize, PartialEq, Eq)]
@@ -305,27 +305,29 @@ pub fn select(repo: &Repo, issue: u64, selected: Option<&str>) -> Result<Value> 
 
 /// Read-only destinations, including unbound tasks and per-task errors, for
 /// plan and doctor. Membership stays solely in the remote target record.
-pub fn listing(repo: &Repo) -> Result<Value> {
-    let gh = GitHub::of(repo)?;
-    let config = crate::config::load(&repo.dir.join(crate::config::FILE))?;
-    let open = gh.open_issues()?;
-    let records = repo.remote_records(&repo.layout().every(""))?;
-    let heads = repo.remote_heads()?;
+pub fn listing(
+    repo: &Repo,
+    config: &Config,
+    tracker: &Tracker,
+    open: &[afkconvoy_core::plan::Issue],
+    listing: &Listing,
+) -> Result<Value> {
     let mut rows = vec![];
-    for issue in open.rows.iter().filter(|issue| gh.tracker.holds(&issue.labels)) {
-        let name = refname(repo, &gh.tracker, issue.number);
-        let record = records.iter().find(|r| r.name == name);
-        let mut answer = json!({"issue": issue.number, "tracker_issue": gh.tracker.issue(issue.number),
+    for issue in open.iter().filter(|issue| tracker.holds(&issue.labels)) {
+        let name = refname(repo, tracker, issue.number);
+        let record = listing.records.iter().find(|r| r.name == name);
+        let mut answer = json!({"issue": issue.number, "tracker_issue": tracker.issue(issue.number),
             "pinned": record.is_some(), "delivery": null, "configured_base": config.base_branch});
         if let Some(record) = record
             && let Ok(target) = serde_json::from_str::<Target>(&record.subject)
         {
             answer["delivery"] = json!(target.delivery.map(|r| r.identity));
         }
-        match snapshot_branch(repo, &config, &gh.tracker, issue.number, &records) {
+        match snapshot_branch(repo, config, tracker, issue.number, &listing.records) {
             Ok(branch) => {
                 answer["target_branch"] = json!(branch);
-                if !heads.iter().any(|head| head == &branch) {
+                let head = format!("refs/heads/{branch}");
+                if !listing.heads.iter().any(|(name, _)| name == &head) {
                     answer["error"] =
                         json!(format!("target branch {branch:?} is missing; restore it on origin"));
                 }
