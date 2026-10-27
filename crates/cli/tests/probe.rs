@@ -261,7 +261,7 @@ fn a_remote_that_takes_hidden_refs_again_is_gone_back_to() {
 }
 
 #[test]
-fn a_probe_push_that_reached_no_verdict_is_an_error_not_a_fallback() {
+fn an_unreachable_push_target_fails_before_the_probe_ref_fallback() {
     let world = World::new();
     world.issue(7, &["ready-for-agent"]);
     // The remote reads, and pushes go nowhere: nobody said refs are refused.
@@ -270,8 +270,8 @@ fn a_probe_push_that_reached_no_verdict_is_an_error_not_a_fallback() {
 
     for start in [tick_at(&world, "1000"), plan(&world), run_once(&world)] {
         let error = start.error();
-        assert!(error.contains("never reached a verdict from the remote"), "{error}");
-        assert!(error.contains("refs/convoy/*"), "{error}");
+        assert!(error.contains("receive-pack advertisement/status ended early"), "{error}");
+        assert!(error.contains("check Git SSH authentication"), "{error}");
     }
     assert_eq!(refs(&world, "refs/heads"), ["refs/heads/main"], "no branch layout was tried");
     assert_eq!(refs(&world, "refs/convoy"), [] as [String; 0]);
