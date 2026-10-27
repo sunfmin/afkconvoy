@@ -371,12 +371,13 @@ fn branch_head(pr: &Value, bare: &str) -> String {
 /// except the PRs listed under `slow_merge`, which it has not got round to.
 fn notice_merges(st: &mut State) {
     let bare = st.doc["bare"].as_str().unwrap().to_string();
-    let base = format!("refs/heads/{}", st.doc["base"].as_str().unwrap());
+    let default_base = st.doc["base"].as_str().unwrap().to_string();
     let slow = st.doc["slow_merge"].as_array().cloned().unwrap_or_default();
     for pr in st.doc["prs"].as_array_mut().unwrap() {
         if !is_open(pr) || slow.contains(&pr["number"]) {
             continue;
         }
+        let base = format!("refs/heads/{}", pr["baseRefName"].as_str().unwrap_or(&default_base));
         let head = branch_head(pr, &bare);
         let landed = !head.is_empty()
             && fake::ok(&["--git-dir", &bare, "merge-base", "--is-ancestor", &head, &base]);
@@ -426,7 +427,7 @@ fn pr_list(st: &mut State) -> ! {
                 })
                 .unwrap_or_default();
             json!({"number": pr["number"], "title": pr["title"], "headRefName": pr["headRefName"],
-                "headRefOid": head, "body": pr["body"], "closingIssuesReferences": linked,
+                "headRefOid": head, "baseRefName": pr["baseRefName"].as_str().unwrap_or(st.doc["base"].as_str().unwrap()), "body": pr["body"], "closingIssuesReferences": linked,
                 "isCrossRepository": is_fork(pr)})
         })
         .collect();
@@ -623,7 +624,7 @@ fn api(st: &mut State) -> ! {
                 .map(|pr| {
                     let head = branch_head(pr, bare);
                     json!({"number":pr["number"], "title":pr["title"].as_str().unwrap_or(""),
-                        "head_branch":pr["headRefName"], "head_sha":head})
+                        "head_branch":pr["headRefName"], "head_sha":head, "base_branch":pr["baseRefName"].as_str().unwrap_or(st.doc["base"].as_str().unwrap())})
                     .to_string()
                 })
                 .collect();

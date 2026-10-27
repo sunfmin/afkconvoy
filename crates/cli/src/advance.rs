@@ -185,7 +185,7 @@ fn ask_after(
     let (Some(worktree), Some(state)) = (worktree, state) else {
         bail!("issue #{issue}: a worker that stopped has a worktree and a state");
     };
-    let progress = progress(&worktree, &fleet.base_tip()?)?;
+    let progress = progress(&worktree, &fleet.task_tip(issue)?)?;
     let (nudged, handed) = (worktree.nudged()?, worktree.handed(None)?);
     let past_grace = past_grace(state, &progress, nudged, handed, fleet.now);
     let background = own_background(fleet, &worktree, past_grace)?;
@@ -311,7 +311,7 @@ pub fn advance(
             let reason = format!(
                 "{}\n\n{}",
                 Why::Refuted.reason(said.unwrap_or("(its stage record)")),
-                refuted_work(fleet, worktree.as_ref())?
+                refuted_work(fleet, issue, worktree.as_ref())?
             );
             let why = Handed::at(stage, Why::Refuted.brief(), reason);
             return hand_off(fleet, flows, &claim, Failure::Refuted, &why, worktree.as_ref());

@@ -65,6 +65,23 @@ fn reviewing() -> Vec<(&'static str, &'static str)> {
 }
 
 #[test]
+fn a_targeted_worker_cannot_push_either_destination_or_rewrite_its_target_record() {
+    let mut facts = FACTS.to_vec();
+    facts.push(("AFKCONVOY_TARGET_BRANCH", "delivery/ABC-123"));
+    for line in [
+        "git push origin HEAD:trunk",
+        "git push origin HEAD:delivery/ABC-123",
+        "git push origin :refs/heads/delivery/ABC-123",
+        "git push origin HEAD:refs/convoy/target/7",
+        "git push origin HEAD:convoy-target/7",
+    ] {
+        let answer = guard(&bash(line), &facts);
+        assert_ne!(answer.code, 0, "{line}");
+    }
+    assert_eq!(guard(&bash("git push origin HEAD:issue-7"), &facts).code, 0);
+}
+
+#[test]
 fn an_allowed_call_exits_zero_and_says_nothing() {
     for line in [
         "cargo test",

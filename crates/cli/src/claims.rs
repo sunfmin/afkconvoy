@@ -257,6 +257,7 @@ fn put(repo: &Repo, scan: &mut Scan, me: &Me, refname: &str, how: Take) -> Resul
         Take::Fresh | Take::Run(_) => owner.write(),
         Take::From(taken) => owner.write_over(taken),
     };
+    let subject = crate::target::stamp_claim(repo, &scan.tracker, refname, subject)?;
     let sha = repo.record_commit(&subject)?;
     let last_beat = scan.last_beat(me.instance.as_str());
     let mut pushed = None;
@@ -299,6 +300,8 @@ fn put(repo: &Repo, scan: &mut Scan, me: &Me, refname: &str, how: Take) -> Resul
 /// it was won. A lost race is an answer (`won: false`); a push that failed for
 /// any other reason is an error.
 pub fn take(repo: &Repo, scan: &mut Scan, me: &Me, number: u64, how: Take) -> Result<Value> {
+    let config = crate::config::load(&repo.dir.join(crate::config::FILE))?;
+    crate::target::pin(repo, &config, number, None)?;
     let refname = claim_ref(repo.layout(), &scan.tracker, number);
     match put(repo, scan, me, &refname, how)? {
         Put::Won { sha, subject, .. } => {

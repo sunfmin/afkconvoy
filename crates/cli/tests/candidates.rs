@@ -123,6 +123,90 @@ fn worker(world: &World, n: u64, name: &str) -> (PathBuf, String) {
 }
 
 #[test]
+fn interleaved_targets_and_default_publish_only_to_their_own_chains() {
+    let world = world(3);
+    let base = world.remote(&["rev-parse", "refs/heads/main"]);
+    for target in ["delivery/one", "delivery/two"] {
+        git(&world.clone, &["push", "-q", "origin", &format!("HEAD:refs/heads/{target}")]);
+    }
+    let a = worker(&world, 1, "a").0;
+    let b = worker(&world, 2, "b").0;
+    let c = worker(&world, 3, "c").0;
+    for (n, target) in [(1, "delivery/one"), (2, "delivery/two")] {
+        world.afk(&["target", "--issue", &n.to_string(), "--branch", target]).ok();
+        world.with_gh(|gh| gh["prs"][(n - 1) as usize]["baseRefName"] = json!(target));
+    }
+    let _runner = world.host_held();
+    let first = start(&world, &a, &world.cache(), 1);
+    began(&world, "a");
+    let second = start(&world, &b, &world.cache(), 2);
+    began(&world, "b");
+    let default = start(&world, &c, &world.cache(), 3);
+    began(&world, "c");
+    // A fresh process with no resident memory sees all three destinations.
+    let rows = world.afk(&["doctor"]).json["candidates"].clone();
+    for target in ["delivery/one", "delivery/two", "main"] {
+        assert!(rows.as_array().unwrap().iter().any(|c| c["target_branch"] == target), "{rows}");
+    }
+    release(&world, "b", false);
+    let second = finish(second);
+    assert_eq!(second["outcome"], "merged", "{second}");
+    assert_eq!(world.remote(&["rev-parse", "refs/heads/main"]), base);
+    assert_eq!(world.remote(&["rev-parse", "refs/heads/delivery/one"]), base);
+    release(&world, "c", false);
+    let default = finish(default);
+    release(&world, "a", false);
+    let first = finish(first);
+    for (target, file, result) in
+        [("delivery/one", "a", first), ("delivery/two", "b", second), ("main", "c", default)]
+    {
+        assert_eq!(result["outcome"], "merged", "{result}");
+        assert_eq!(result["predecessor"], base, "no cross-target predecessor");
+        assert_eq!(world.remote(&["rev-parse", &format!("refs/heads/{target}")]), result["commit"]);
+        let files = world.remote(&["ls-tree", "--name-only", &format!("refs/heads/{target}")]);
+        for other in ["a", "b", "c"] {
+            assert_eq!(
+                files.lines().any(|f| f == format!("{other}.txt")),
+                other == file,
+                "{target}: {files}"
+            );
+        }
+        let record: Value = serde_json::from_str(&world.remote(&[
+            "show",
+            "-s",
+            "--format=%B",
+            &format!("refs/convoy/candidates/{target}"),
+        ]))
+        .unwrap();
+        assert_eq!(record["candidates"].as_array().unwrap().len(), 1);
+    }
+    assert!(world.gh()["issues"].as_array().unwrap().iter().all(|i| i["state"] == "closed"));
+}
+
+#[test]
+fn a_pr_retargeted_during_validation_is_invalidated_without_publishing() {
+    let world = world(2);
+    git(&world.clone, &["push", "-q", "origin", "HEAD:delivery/one"]);
+    let a = worker(&world, 1, "a").0;
+    world.afk(&["target", "--issue", "1", "--branch", "delivery/one"]).ok();
+    world.with_gh(|gh| gh["prs"][0]["baseRefName"] = json!("delivery/one"));
+    let base = world.remote(&["rev-parse", "refs/heads/main"]);
+    let _runner = world.host_held();
+    let child = start(&world, &a, &world.cache(), 1);
+    began(&world, "a");
+    world.with_gh(|gh| gh["prs"][0]["baseRefName"] = json!("main"));
+    release(&world, "a", false);
+    let out = child.wait_with_output().unwrap();
+    assert!(!out.status.success());
+    let error: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(error["error"].as_str().unwrap().contains("pinned target"), "{error}");
+    for target in ["main", "delivery/one"] {
+        assert_eq!(world.remote(&["rev-parse", &format!("refs/heads/{target}")]), base);
+    }
+    assert_eq!(world.gh()["issues"][0]["state"], "open");
+}
+
+#[test]
 fn three_candidates_overlap_finish_out_of_order_and_publish_exact_commits_once() {
     let world = world(3);
     let workers: Vec<_> = [(1, "a"), (2, "b"), (3, "c")]

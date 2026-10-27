@@ -1634,7 +1634,7 @@ fn read_unclaimed(fleet: &Fleet) -> Vec<Unclaimed> {
     let unclaimed = linked.into_iter().filter(|(issue, _)| fleet.scan.claim_of(*issue).is_none());
     unclaimed
         .filter_map(|(issue, worktree)| {
-            let left = leaving(fleet, &worktree).ok()?.left;
+            let left = leaving(fleet, issue, &worktree).ok()?.left;
             Some(Unclaimed {
                 issue,
                 kept: left.kept().copied(),

@@ -208,6 +208,7 @@ fn a_real_kimi_worker_loads_its_role_and_refuses_what_the_role_and_guard_refuse(
             writes: false,
             consult: false,
             base_branch: "main",
+            target_branch: None,
             escalate_label: "ready-for-human",
             lock_label: "fleet-lock",
             role_commit: "abc",

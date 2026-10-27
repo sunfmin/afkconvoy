@@ -336,6 +336,7 @@ mod tests {
             title: String::new(),
             head_branch: head.to_string(),
             head_sha: String::new(),
+            base_branch: "main".into(),
             closes: vec![closes],
         };
         let prs = [pr(70, "u/a", 7), pr(71, "someone/else", 7), pr(80, "u/a", 8)];

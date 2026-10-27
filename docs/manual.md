@@ -2,7 +2,7 @@
 
 # `afkconvoy`
 
-afkconvoy works a repo's ready GitHub issues unattended. One host runner, started by `afkconvoy run`, holds one fleet instance per repo. Each dispatches a worker per issue — a coding agent in its own git worktree — and lands finished PRs on the base branch through the gate and landing turns. Fleet state lives in GitHub and the repo's remote; no process holds it.
+afkconvoy works a repo's ready GitHub issues unattended. One host runner, started by `afkconvoy run`, holds one fleet instance per repo. Each dispatches a worker per issue — a coding agent in its own git worktree — and lands finished PRs on their target branches through the gate and landing turns, using the configured base unless a task selects another. Fleet state lives in GitHub and the repo's remote; no process holds it.
 
 `afkconvoy --help` answers the index: this guide, then each command's one line under who runs it, then each topic's first sentence. `afkconvoy help all` answers the whole manual: guide, commands and topics in full. `afkconvoy -h` lists commands on one screen.
 
@@ -330,7 +330,7 @@ Errors: the file cannot be read; it has no ```yaml block; a ```yaml cut block ha
 ##### What trips you up
 
 - It reads the config only. Whether the team it names loads is `afkconvoy check`.
-- It reads the file as it is in this checkout, committed or not. A worker reads the one in its own worktree, which is cut from the base branch: a change is in force only once it is on the base branch.
+- It reads the file as it is in this checkout, committed or not. A worker reads the one in its own worktree, cut from its target branch. The destination remains pinned even if that file names a different configured base.
 
 ##### Which checkout it is about
 
@@ -489,7 +489,7 @@ With `--all` it reads the checkout list (checkouts.json in the cache directory) 
 - `claims`: each claim of that instance: {issue, title, status, pr, stage, role, held_for, worker, worktree, gate} — status as `plan` gives it; stage and role in a bound repo; held_for in seconds; worker is {state, quiet}, state being busy, stopped or gone, and null when orca could not say; gate is {green_at} when a green gate run is on record for the tree the worktree is at, else null
 - `issues`: as `plan` answers them: {frontier, excluded, escalating, locks, free_slots, patrols} — what a worker can be started on, what waits and why, and what is being handed to a human and why. null when they could not be read
 - `refusals`: issue number → the harnesses that refused that task, each with `harness` and `evidence`, read from GitHub. Later starts skip them across every stage; the harness stays healthy for other issues.
-- `candidates`: the current remote candidate chain for this repo's base branch, in order. Each candidate includes its commit, predecessor, current candidate stage and what it is waiting for; `waiting` distinguishes worktree construction, validation, a predecessor and process exit. An error reading the chain is reported as `{error}`.
+- `candidates`: the remote candidate chains for every target branch of this repo, each in order and identified by `target_branch`. Each candidate includes its commit, predecessor, current candidate stage and what it is waiting for; `waiting` distinguishes worktree construction, validation, a predecessor and process exit. An error reading the chain is reported as `{error}`.
 - `codex_workers`: this checkout's Codex sessions, each with issue, worktree, harness, model, effort, model_source, effort_source and codex_home (its private session directory). Automatic starts read the model from your `~/.codex/config.toml` (`user_selection`), an issue's `model:` label keeps casting (`casting`), and no user preference leaves the model null for Codex's native default (`codex_default`). Every start reads the effort from your own Codex config, or uses Codex's model default. Sources stay attached to the session after your config changes; a saved `/model` choice is shown with its session's private config as the source. [`afkconvoy help worker-launch`](help:worker-launch).
 - `waiting_on_human`: as `plan` answers it, and as the panel lists it under "With a human": every open issue nobody holds that waits for a human — escalated, at a stage that is a human's, past the end of its workflow and still open, or reporting a patrol's failed run — each as {issue, title, why, url, since, answer}: `why` is what kind of wait, then the reason the issue’s comment gives, in its first sentence; `url` is that comment (the report itself for an older failed patrol or cut with no reason comment), or null where no comment explains the wait; `answer` is the line that answers it, to run as it is but for what stands between < and >. An escalation with no position gets the team's only flow label filled in; with several workflows, `why` lists the flow labels to choose `<flow label>` from. null when the issues could not be read
 - `findings`: what is wrong, most severe first — none: []. Each is {severity, what, evidence, fix, see}:
@@ -1256,6 +1256,37 @@ afkconvoy takeover [OPTIONS] [CHECKOUT]
 - `--instance <INSTANCE>`: The fleet instance to take them as
 - `--host <HOST>`
 
+#### `afkconvoy target`
+
+Select or read a task's pinned target branch
+
+Run before dispatch or intake: `afkconvoy target --issue 7 --branch delivery/ABC-123`. Then give the issue its ready or flow label as usual. The worker cuts from that branch, opens its internal PR against it, gates and lands there, and closes only its task issue. The repo's configured base and its release destination stay as configured.
+
+Without --branch, reads the target, or the configured base for a task not yet resolved. Selection requires an existing branch on origin and an open issue in this checkout's private tracker scope. It writes an immutable remote record, keyed by the tracker issue identity. A first claim also pins the configured base when no selection exists. Stages, continuation and landing retain it across restarts. Reading a malformed record or a missing branch refuses; it never falls back to the configured base.
+
+Answers {"issue", "target_branch"}, and "woke" after selection. Selection is idempotent for the same branch. A different resolved target, a claimed task, remaining candidates, an unreadable tracker, a foreign repo label or a missing branch is refused with a diagnostic. A resolved target cannot be changed: open a new task for another destination.
+
+##### Which checkout it is about
+
+Name it with `-C <CHECKOUT>`: a checkout of the repo, or any directory in one, which names that checkout. What follows the command is its own: the checkout is not among it. Naming none, it is about the checkout it is run in. A worker runs it in its own worktree.
+
+##### What it logs
+
+As it acts it appends one line to the tick log of this host for this repo, then wakes this host's fleet instance of this repo, through the host runner; its answer says whether it woke one, as "woke": [`afkconvoy help tick-log`](help:tick-log).
+
+##### Usage
+
+```
+afkconvoy target [OPTIONS] <ISSUE|--issue <ISSUE>>
+```
+
+##### Arguments
+
+- `[ISSUE]`: The issue's number
+- `--issue <ISSUE>`: The same, as a flag
+- `--branch <BRANCH>`: An existing same-repo branch on origin; omit to read the destination
+- `-C <CHECKOUT>`: The checkout it is about, or a directory in it [default: the one it is run in]
+
 #### `afkconvoy patrol-now`
 
 Have a patrol run now, past its interval and its daily bound: the next tick runs it
@@ -1912,7 +1943,7 @@ afkconvoy exclusive [OPTIONS] <COMMAND>...
 
 #### `afkconvoy land`
 
-Land this worktree's PR on the base branch in one turn
+Land this worktree's PR on its pinned target branch in one turn
 
 ##### When to run it
 
@@ -1924,9 +1955,11 @@ An issue's worker in its own worktree; in a bound workflow its landing worker af
 
 ##### What it reads and writes
 
-A turn preserves the PR's original head and atomically assigns a candidate merged onto the certified base or its preceding candidate. Each candidate must gate that exact commit in its own worktree, and its gate run is recorded green against it. With free worker lanes, candidates of the same repo validate concurrently; green successors wait for their exact predecessors, then push that commit to the base branch as a fast-forward without another gate. The window, including green waiters and unconfirmed cancellation, is bounded by the host's live worker-lane count. A light gate keeps its repo lane. Committed source changes are pushed to the PR first; candidate merges never move that source branch. The merge message names the PR and issue, watch or cut. Landing closes the issue; the tick settles its claim and source worktree.
+A task uses its pinned target branch (`afkconvoy target --help`), or resolves the configured base when it has no target. Its PR must actually name that base; a wrong base, missing branch or unreadable target refuses without falling back. Candidate chains and settlement history are independent per repo and target. Watches and cuts retain the configured base.
 
-The remote candidate record holds original head, predecessor, commit, tree, gate declaration, owner, process group, validation and cancellation. Publication rechecks validity, head, predecessor landing, issue blockers, fleet locks and the green record, then atomically fast-forwards the exact tested candidate and its state. No force push, extra merge or aggregate gate is used. Known candidate advances preserve successors; an outside base move or changed PR head invalidates the affected suffix. Cuts, watches, fleet-lock repairs and base certification drain the candidate window and run as serial barriers.
+A turn preserves the PR's original head and atomically assigns a candidate merged onto the certified base or its preceding candidate. Each candidate must gate that exact commit in its own worktree, and its gate run is recorded green against it. With free worker lanes, candidates of the same repo validate concurrently; green successors wait for their exact predecessors, then push that commit to the target branch as a fast-forward without another gate. The window, including green waiters and unconfirmed cancellation, is bounded by the host's live worker-lane count. A light gate keeps its repo lane. Committed source changes are pushed to the PR first; candidate merges never move that source branch. The merge message names the PR and issue, watch or cut. Landing closes the issue; the tick settles its claim and source worktree.
+
+The remote candidate record holds original head, predecessor, commit, tree, gate declaration, owner, process group, validation and cancellation. Publication rechecks validity, the PR's actual base, head, predecessor landing, issue blockers, fleet locks and the green record, then atomically fast-forwards the exact tested candidate and its state. No force push, extra merge or aggregate gate is used. Known candidate advances preserve successors; an outside base move or changed PR head invalidates the affected suffix. Cuts, watches, fleet-lock repairs and base certification drain the candidate window and run as serial barriers.
 
 Failure invalidates the dependent suffix before terminating its running gates and children. Their lanes remain occupied until exit is confirmed. Cancellation does not record a dependent worker's gate as failed or increase its rework count. A later turn rebuilds from preserved original heads and the last landed base, respecting issue blockers. Gate startup waits until its group is recorded; inherited kernel lane leases prevent duplicate capacity after runner or owner death. Interrupted cancellation is completed on the owning host; unconfirmed remote processes are not replaced. A successful base push records its landed prefix atomically, and its merge commit lets recovery settle the issue after a crash.
 
@@ -1938,7 +1971,7 @@ An unrecorded base tip is gated alone in a separate checkout using its own gate 
 
 ##### What it answers
 
-{"outcome", "pr", "commit", "merged", "candidate", "predecessor", "status", "recorded", "detail", …}. issue or watch identifies whose PR it is. merged and predecessor name the assigned predecessor; commit is the exact candidate landed. status and recorded describe the gate, with head, command, exit_code, timed_out, seconds and excerpt. doctor and the panel expose the same candidate lifecycle with validation, predecessor, waiting and cancellation cause.
+{"outcome", "pr", "commit", "merged", "candidate", "predecessor", "target_branch", "status", "recorded", "detail", …}. issue or watch identifies whose PR it is. merged and predecessor name the assigned predecessor; commit is the exact candidate landed. status and recorded describe the gate, with head, command, exit_code, timed_out, seconds and excerpt. doctor and the panel expose the same candidate lifecycle with validation, predecessor, waiting and cancellation cause.
 
 - merged: landed on the base branch, or already present there; stop.
 - gate_red: nothing landed. Fix the change, commit and ask for a turn again. Green without a written record also lands nothing; detail says what prevented recording.
@@ -2111,6 +2144,8 @@ A worker, in its own worktree: it starts in its role's directory, so it changes 
 ##### What it reads and writes
 
 It reads the config of the checkout, the team it names, the issue, and — to count — the comments of every open issue that carries a flow label. It writes on the issue, in this order: a blocked-by edge to each issue `--blocked-by` names that GitHub does not record yet; one comment, the intake record, whose marker carries the workflow, the role and the issue the worker was on — or the patrol it ran, or, of the repair worker's, `by=repair` and nothing else; then, where the checkout's tracker is another repo (`afkconvoy run --tracker`) and the issue lacks it, this repo's repo label, `repo:<owner>/<repo>`; then the workflow's flow label, `flow:<workflow>`. Nothing but this command writes that format. Then it wakes the fleet, as `afkconvoy wake` does: the issue is on the frontier at the next tick — or, with an open issue to wait for, once that has closed. The edges go first, so the issue is never on the frontier ahead of what blocks it.
+
+To contribute to an existing delivery branch, first run `afkconvoy target --issue <n> --branch <branch>`, then intake normally. Each stage and landing retains that destination without changing the repo config.
 
 The issue, the issues it waits for and every issue it counts are the tracker's: the checkout's own repo, or the one its host says, where it counts only the issues that carry this repo's repo label.
 
@@ -2476,7 +2511,7 @@ It writes nothing. It reads two things, and a third for a watch that would end a
 
 Standard input: one tool call, as Claude Code describes it to a `PreToolUse` hook — a JSON object with `tool_name` and `tool_input`. Only a `Bash` call is judged, by the words of each simple command of its `tool_input.command`. pi's is described as pi describes it to an extension — `toolName` and `input` — and only a `bash` call is judged, the same way. Codex describes its own as Claude Code does, and a `Bash` call is judged; its `apply_patch` hands the text of a patch as `tool_input.command`, which is no shell line and is not judged as one. DSH describes a call with `name` and `arguments`: `bash` and `bash_persistent` are judged by `arguments.command`. What is refused is decided once, for all.
 
-The environment: the facts of the worker's stage, which the fleet put there when it started the worker — AFKCONVOY_STAGE, AFKCONVOY_WRITES, AFKCONVOY_CONSULT, AFKCONVOY_BASE_BRANCH, AFKCONVOY_ESCALATE_LABEL, AFKCONVOY_LOCK_LABEL — and AFKCONVOY_HARNESS, the harness that asks: how the call is described is its own. A watch names its host in AFKCONVOY_WATCH, in place of a stage, and HOME, the home folder it reads paths under.
+The environment: the facts of the worker's stage, which the fleet put there when it started the worker — AFKCONVOY_STAGE, AFKCONVOY_WRITES, AFKCONVOY_CONSULT, AFKCONVOY_BASE_BRANCH, AFKCONVOY_ESCALATE_LABEL, AFKCONVOY_LOCK_LABEL — and, for a selected task destination, AFKCONVOY_TARGET_BRANCH, protected alongside the configured base — and AFKCONVOY_HARNESS, the harness that asks: how the call is described is its own. A watch names its host in AFKCONVOY_WATCH, in place of a stage, and HOME, the home folder it reads paths under.
 
 The host's processes, as `ps` says them, and the host runner's pid, as its lock says it: whom each process a `kill` names is. The fleets of this host started a process carrying a worker's `TMPDIR` — the link a fleet made for it (`afkconvoy help worker-launch`), or the own one (.afkconvoy-tmp) of a worktree they put a worker in — or one under either, as a gate sets, and every process under one of those, or left behind by one.
 
@@ -2573,7 +2608,7 @@ In a bound repo:
 
   - `description`: what the workflow is for and what an issue of it holds: the prose of its file, workflows/<name>.md, above the yaml block. Empty when the file says nothing there — `afkconvoy check` warns of that. Choose the workflow by it
   - `first`: the stage an issue enters at, {"stage", "by", "do"}: the role that performs it and the skill — `by` is `human`, and `do` null, where a human's decision is waited for
-  - `ends`: where its passes end: `land`, a landing turn — its issues end in a PR landed on the base branch — `done`, nothing more to do, or both, by different stages
+  - `ends`: where its passes end: `land`, a landing turn — its issues end in a PR landed on their target branch — `done`, nothing more to do, or both, by different stages
   - `line`: the line that opens an issue into it, in the tracker. Give it a title and a file holding the body
 - `keep_off`: the labels that keep an issue from being worked as one of a workflow, {"epic_labels", "escalate_label", "lock_label"}: an issue carrying an epic label is never dispatched; the escalate label is the fleet's to put on, when it hands an issue to a human; and an open issue carrying the lock label is a fleet lock, which stops all other work (`afkconvoy lock --help`)
 - `intake`: {"open", "limit"}: the open issues workers took in, against the repo's `intake_limit`. An issue a human opens with a flow label is outside both: nothing refuses it
@@ -2623,7 +2658,7 @@ End the sleep of this host's `run` for this repo: its next tick starts now (afte
 
 Once, after the last of the issues you open for the fleet with `gh`, or label: nothing `gh` does wakes the fleet, which otherwise takes them up at its next tick (`afkconvoy flows --help` says how soon).
 
-Once, as a worker's last command: after its PR is on the base branch, or its verdict is posted on the issue. A worker's prompt names the exact command. Every command that changes fleet state wakes the `run` as it ends, so after `land` or `verdict` this one is redundant, and harmless.
+Once, as a worker's last command: after its PR is on its target branch, or its verdict is posted on the issue. A worker's prompt names the exact command. Every command that changes fleet state wakes the `run` as it ends, so after `land` or `verdict` this one is redundant, and harmless.
 
 ##### Who runs it
 
@@ -3501,6 +3536,10 @@ What becomes of one issue, from the moment it is the fleet's to the moment it la
 
 An unrecorded base tip is gated alone first. A red tip holds ordinary turns while the fleet dispatches its own repair, outside product workflows. That repair still takes a turn and gates its complete merge green before landing.
 
+#### Task destinations
+
+An operator can select an existing same-repo branch before a task is claimed: `afkconvoy target --issue 7 --branch delivery/ABC-123`. The selection is pinned in remote fleet state; stages, switches, continuation and landing retain it. With no selection, the first claim pins the configured base. The worker cuts from its target and opens its internal PR against it; a turn gates and lands there, then closes the task issue. A different PR base or a missing target refuses. Each branch has its own candidate chain and settlement history, under the same host worker lanes. Watches and cuts continue using the configured base, and a target branch triggers no independent product release. `afkconvoy target --help`, `afkconvoy land --help`.
+
 #### One issue, in an unbound repo
 
 An unbound repo's config names no team: every issue takes the same path, with one worker from start to landing. It is where to start when issues turned into PRs is all you want; bind the repo to a team once the work is to be judged by another than the worker that wrote it before it lands.
@@ -4140,7 +4179,7 @@ A start counts once its brief has started a turn. Before every line — the brie
 
 A harness ready once may still be redrawing when its brief's idle check times out. No line was sent: dispatch answers `started: false, brief_pending: true` and keeps the ready terminal under its claim. Each later tick checks that terminal once and hands it the brief once its prompt settles, without another start or a failed-start escalation. A harness whose readiness wait never succeeds still fails its start.
 
-The stage's facts are in the environment of every worker of a bound repo, and a role's limits may read them: AFKCONVOY_ISSUE, AFKCONVOY_FLOW, AFKCONVOY_STAGE, AFKCONVOY_ROLE, AFKCONVOY_SKILL, AFKCONVOY_WRITES, AFKCONVOY_CONSULT, AFKCONVOY_BASE_BRANCH, AFKCONVOY_ESCALATE_LABEL, AFKCONVOY_LOCK_LABEL, AFKCONVOY_ROLE_COMMIT, AFKCONVOY_TEAM_COMMIT and AFKCONVOY_HARNESS. A patrol's worker has AFKCONVOY_PATROL in place of the first three. An unbound repo's issue worker has AFKCONVOY_ISSUE too, exported before its worker launch command runs, so its commands name that issue in the tick log and the host's exclusive queue. A watch is on no issue and carries none.
+The stage's facts are in the environment of every worker of a bound repo, and a role's limits may read them: AFKCONVOY_ISSUE, AFKCONVOY_FLOW, AFKCONVOY_STAGE, AFKCONVOY_ROLE, AFKCONVOY_SKILL, AFKCONVOY_WRITES, AFKCONVOY_CONSULT, AFKCONVOY_BASE_BRANCH, AFKCONVOY_ESCALATE_LABEL, AFKCONVOY_LOCK_LABEL, AFKCONVOY_ROLE_COMMIT, AFKCONVOY_TEAM_COMMIT and AFKCONVOY_HARNESS. A task with an explicit target also carries AFKCONVOY_TARGET_BRANCH; the guard protects it alongside AFKCONVOY_BASE_BRANCH. A patrol's worker has AFKCONVOY_PATROL in place of the first three. An unbound repo's issue worker has AFKCONVOY_ISSUE too, exported before its worker launch command runs, so its commands name that issue in the tick log and the host's exclusive queue. A watch is on no issue and carries none.
 
 #### Claude Code
 
@@ -4588,8 +4627,12 @@ The hours of a host's local time its fleets may put it to sleep in: from 00:00 t
 _Avoid_: quiet hours, night mode
 
 **Base branch**:
-The one branch a repo's fleet work is cut from and lands on.
+The configured destination of a repo's ordinary tasks, watches and cuts, and the branch from which versions are cut. A task with an explicit target branch leaves it unchanged.
 _Avoid_: trunk, main, default branch (a team's or a role's repo is read at its own)
+
+**Target branch**:
+The same-repo branch one task is cut from and lands on, pinned before it is claimed: the selected branch, or the configured base branch. Its stages and continuations retain that destination.
+_Avoid_: delivery branch (a Jira ticket's broader delivery), integration branch (a team's purpose for a branch)
 
 ##### Teams and roles
 
@@ -4775,7 +4818,7 @@ Replacing a silent worker with a new one in the same worktree and the same role,
 _Avoid_: retry, re-dispatch
 
 **Continuation**:
-Recovering a claim whose worker died from the progress that survived: its worktree if still on this host, else its pushed branch, else a fresh start from the base branch.
+Recovering a claim whose worker died from the progress that survived: its worktree if still on this host, else its pushed branch, else a fresh start from its target branch.
 _Avoid_: resume, checkpoint restore
 
 **Wake**:
@@ -4857,19 +4900,19 @@ One command's construction, validation and ordered landing of an open PR's candi
 _Avoid_: landing slot, merge queue
 
 **Candidate**:
-An immutable merge of a PR's original head onto its assigned predecessor, validated in its own worktree. Its predecessor is the certified base tip or the preceding candidate.
+An immutable merge of a PR's original head onto its assigned predecessor, validated in its own worktree. Its predecessor is the certified target tip or the preceding candidate.
 _Avoid_: speculative branch, train tip
 
 **Candidate chain**:
-The ordered candidates of one repo, each depending on its predecessor. A failed or invalid candidate cancels its dependent suffix; already landed predecessors remain landed.
+The ordered candidates of one repo and target branch, each depending on its predecessor. A failed or invalid candidate cancels its dependent suffix; already landed predecessors remain landed.
 _Avoid_: landing train, speculative queue
 
 **Land**:
-Pushing the exact candidate a turn recorded green onto the base branch as a fast-forward after its predecessor has landed, and closing the issue it completes. Issue workers, a workflow's landing worker, watches and cuts all land in a turn.
+Pushing the exact candidate a turn recorded green onto its target branch as a fast-forward after its predecessor has landed, and closing the issue it completes. Issue workers, a workflow's landing worker, watches and cuts all land in a turn; watches and cuts retain the configured base branch.
 _Avoid_: join, enqueue
 
 **Repair**:
-A change the fleet starts to restore a red base tip or finish retained work from an older release. Its operator worker owns an issue and a worktree, works outside product workflows and human stages, and lands through the same recorded turn as every other change.
+A change the fleet starts to restore a red target tip or finish retained work from an older release. Its operator worker owns an issue and a worktree, works outside product workflows and human stages, and lands through the same recorded turn as every other change.
 _Avoid_: manual repair
 
 **Cut**:

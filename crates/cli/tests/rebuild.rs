@@ -99,6 +99,9 @@ fn a_rebuild_lists_the_remote_once() {
     let world = bound();
     for number in [7, 8] {
         world.issue(number, &["flow:feature"]);
+        let target = format!("delivery/{number}");
+        git(&world.clone, &["push", "-q", "origin", &format!("HEAD:refs/heads/{target}")]);
+        world.afk(&["target", "--issue", &number.to_string(), "--branch", &target]).ok();
     }
     for (issue, instance) in [("7", "alpha"), ("8", "beta")] {
         world.afk(&["claim", "--issue", issue, "--instance", instance, "--now", "1000"]).ok();
@@ -114,7 +117,7 @@ fn a_rebuild_lists_the_remote_once() {
     assert_eq!(planned["peer_live"][0]["number"], 8, "{planned}");
     let calls = world.git_calls();
     let listed: Vec<&String> = calls.iter().filter(|call| call.starts_with("ls-remote")).collect();
-    let once = "ls-remote origin refs/convoy/* refs/heads/main refs/tags/v*";
+    let once = "ls-remote origin refs/convoy/* refs/heads/* refs/tags/v*";
     assert_eq!(listed, [once], "{calls:#?}");
 }
 
