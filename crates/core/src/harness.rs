@@ -679,7 +679,8 @@ impl Harness {
     pub fn shows_background(self, screen: &[String]) -> bool {
         match self {
             Harness::ClaudeCode => claude_code::shows_background(screen),
-            Harness::Pi | Harness::Codex | Harness::Dsh | Harness::Kimi | Harness::Grok => false,
+            Harness::Kimi => kimi::shows_background(screen),
+            Harness::Pi | Harness::Codex | Harness::Dsh | Harness::Grok => false,
         }
     }
 
