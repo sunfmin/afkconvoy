@@ -156,7 +156,7 @@ fn main() {
                     json!({"number": pr["number"], "title": pr["title"], "body": pr["body"],
                     "updated": pr["updated_at"].as_u64().unwrap_or(0),
                     "closed": pr["closed_at"], "merged": pr["merged_at"],
-                    "fork": is_fork(pr), "of": pr["of"], "head_branch": pr["headRefName"]})
+                    "fork": is_fork(pr), "of": pr["of"], "head_branch": pr["headRefName"].as_str().unwrap_or("")})
                     .to_string()
                 })
                 .collect();

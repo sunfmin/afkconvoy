@@ -80,10 +80,20 @@ fn jira_reference(input: &str) -> Result<(String, String)> {
     let invalid = "use a full Jira reference: https://<site>[/context]/browse/ABC-123 (no query, fragment or credentials)";
     let rest = input.trim().strip_prefix("https://").context(invalid)?;
     let (host, path) = rest.split_once('/').context(invalid)?;
+    let (hostname, port) = match host.rsplit_once(':') {
+        Some((hostname, port)) => {
+            let port: u16 = port.parse().context(invalid)?;
+            ensure!(port != 0, "{invalid}");
+            (hostname, (port != 443).then_some(port))
+        }
+        None => (host, None),
+    };
     ensure!(
-        !host.is_empty()
-            && host.bytes().all(|c| c.is_ascii_alphanumeric() || b".-:".contains(&c))
-            && host.bytes().any(|c| c.is_ascii_alphabetic())
+        !hostname.is_empty()
+            && hostname.split('.').all(|label| !label.is_empty()
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-'))
             && !path.contains(['?', '#', '%', '\\'])
             && !path.split('/').any(|p| p == "." || p == ".." || p.is_empty()),
         "{invalid}"
@@ -101,7 +111,11 @@ fn jira_reference(input: &str) -> Result<(String, String)> {
             && context.bytes().all(|c| c.is_ascii_alphanumeric() || b"/_.-".contains(&c)),
         "{invalid}"
     );
-    Ok((format!("https://{}{context}/browse/{key}", host.to_ascii_lowercase()), key))
+    let authority = match port {
+        Some(port) => format!("{}:{port}", hostname.to_ascii_lowercase()),
+        None => hostname.to_ascii_lowercase(),
+    };
+    Ok((format!("https://{authority}{context}/browse/{key}"), key))
 }
 
 fn identity(jira: &str, repository: &str) -> String {

@@ -323,3 +323,37 @@ fn acting_tick_recovers_final_review_and_ambiguous_or_edited_review_refuses_dupl
     );
     assert_eq!(final_prs(&world).len(), 1);
 }
+
+#[test]
+fn branch_layout_and_separate_tracker_keep_one_authoritative_delivery() {
+    let world = World::new();
+    world.name_origin(&world.clone, "acme/dev");
+    world.say_tracker(&world.clone, "acme/tracker");
+    world.with_tracker(|gh| {
+        gh["issues"].as_array_mut().unwrap().push(json!({
+            "number": 7, "title": "first task", "labels": ["repo:acme/dev"], "state": "open"
+        }))
+    });
+    afkconvoy::git::Repo::new(world.clone.clone())
+        .note_layout(afkconvoy_core::layout::Layout::Branches)
+        .unwrap();
+    let delivery = create(&world, Some("7"));
+    assert_eq!(delivery["tasks"], json!(["acme/tracker#7"]));
+    assert!(delivery["record"].as_str().unwrap().starts_with("refs/heads/convoy-delivery/"));
+    let target: Value = serde_json::from_str(&world.remote(&[
+        "show",
+        "-s",
+        "--format=%s",
+        "refs/heads/convoy-target/acme/tracker/7",
+    ]))
+    .unwrap();
+    assert_eq!(target["delivery"]["identity"], delivery["delivery"]);
+    assert!(target.get("branch").is_none());
+    let read = world.afk(&["target", "--issue", "7"]).ok();
+    assert_eq!(read["target_branch"], delivery["branch"]);
+    git(
+        &world.clone,
+        &["push", "-q", "origin", &format!(":{}", delivery["branch"].as_str().unwrap())],
+    );
+    assert!(world.afk(&["target", "--issue", "7"]).error().contains("missing"));
+}
