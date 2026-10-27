@@ -487,3 +487,34 @@ fn an_old_repair_lock_at_a_bound_human_stage_becomes_an_operator_repair() {
 fn an_old_repair_lock_bypasses_its_product_roles_unavailable_harness() {
     red_base_repair(true, Some("worker"));
 }
+
+/// A land that finds no open PR reads the remote once and writes nothing.
+#[test]
+fn a_land_that_finds_no_pr_reads_the_remote_once() {
+    let world = World::new();
+    world.watch_git();
+    world.watch_pushes(None);
+    let missing = "999999999";
+    let expected = format!("no open PR closes issue #{missing} — if it has already merged, stop");
+    for args in [vec!["land", "--issue", missing], vec!["land", missing]] {
+        assert_eq!(world.afk(&args).error(), expected);
+    }
+    let git = world.git_calls();
+    let listed: Vec<_> = git.iter().filter(|line| line.starts_with("ls-remote ")).collect();
+    assert_eq!(listed.len(), 2, "{git:?}");
+    for line in &listed {
+        for name in
+            ["refs/convoy/target/999999999", "refs/convoy/claim/999999999", "refs/heads/main"]
+        {
+            assert_eq!(line.matches(name).count(), 1, "{line}");
+        }
+    }
+    let gh = world.gh_calls();
+    let lists = gh.iter().filter(|call| call.windows(2).any(|pair| pair == ["pr", "list"])).count();
+    let rates =
+        gh.iter().filter(|call| call.windows(2).any(|pair| pair == ["api", "rate_limit"])).count();
+    assert_eq!(lists, 2, "{gh:?}");
+    assert_eq!(rates, 0, "{gh:?}");
+    assert!(world.pushes().is_empty(), "{:?}", world.pushes());
+    assert!(world.probes().is_empty(), "{:?}", world.probes());
+}

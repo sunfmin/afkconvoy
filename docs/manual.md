@@ -2038,7 +2038,7 @@ Land this worktree's PR on its pinned target branch in one turn
 
 ##### When to run it
 
-After the PR is open and all changes are committed: `afkconvoy land --issue <n>`. A watch uses `land --watch` for its own PR. Cuts take the same turn automatically.
+After the PR is open and all changes are committed: `afkconvoy land <n>` or `afkconvoy land --issue <n>`. A watch uses `land --watch` for its own PR. Cuts take the same turn automatically.
 
 ##### Who runs it
 
@@ -2093,7 +2093,7 @@ As it acts it appends one line to the tick log of this host for this repo, then 
 ##### Usage
 
 ```
-afkconvoy land [OPTIONS] [ISSUE]
+afkconvoy land <n> | afkconvoy land --issue <n>
 ```
 
 ##### Arguments

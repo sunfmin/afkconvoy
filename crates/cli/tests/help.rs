@@ -34,6 +34,19 @@ fn manual() -> String {
     asked(&["help", "all"])
 }
 
+/// `land <n>` and `land --issue <n>` are the one usage both the help and a
+/// missing issue name.
+#[test]
+fn land_help_and_a_missing_issue_name_the_same_forms() {
+    let forms = "afkconvoy land <n> | afkconvoy land --issue <n>";
+    let help = asked(&["land", "--help"]);
+    assert!(help.contains(forms), "{help}");
+    let out = Command::new(env!("CARGO_BIN_EXE_afkconvoy")).arg("land").output().unwrap();
+    assert!(!out.status.success());
+    let said = String::from_utf8(out.stdout).unwrap();
+    assert!(said.contains(forms), "{said}");
+}
+
 #[test]
 fn help_explains_the_idle_wait_and_a_closed_blockers_wake() {
     for text in [asked(&["help"]), asked(&["run", "--help"])] {
