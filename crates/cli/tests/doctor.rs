@@ -183,10 +183,26 @@ fn a_fleet_with_no_fault_answers_its_keys_and_no_finding_and_writes_nothing() {
             "host",
             "issues",
             "refusals",
+            "targets",
             "waiting_on_human"
         ]
     );
     assert_eq!(answer["candidates"], json!([]));
+    // both open issues are destinations on the configured base; only the dispatched one is pinned
+    let targets = answer["targets"].as_array().unwrap();
+    assert_eq!(targets.len(), 2, "{answer}");
+    assert!(
+        targets.iter().all(|row| row["delivery"].is_null()
+            && row["target_branch"] == json!("main")
+            && row.get("error").is_none()),
+        "{targets:?}"
+    );
+    let pinned: Vec<u64> = targets
+        .iter()
+        .filter(|row| row["pinned"] == json!(true))
+        .map(|row| row["issue"].as_u64().unwrap())
+        .collect();
+    assert_eq!(pinned, [3], "{targets:?}");
     assert!(answer.get("proposals").is_none());
     assert_eq!(answer["refusals"], json!({"3": [], "5": []}));
     assert_eq!(answer["waiting_on_human"], json!([]));
