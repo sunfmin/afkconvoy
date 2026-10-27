@@ -3,7 +3,6 @@
 //! `every_file_here_is_a_module` holds to.
 
 mod common;
-mod quota_feasibility_probe;
 
 mod admission;
 mod board;

@@ -96,3 +96,37 @@ At the time of a separate quota observation, REST core remaining was 4676 and
 GraphQL remaining was 4906. These are observations during this investigation,
 not the quotas at the incident's failed requests. No account quota was
 deliberately exhausted, and no test wrote to live issues or PRs.
+
+## Isolated CLI reproduction
+
+The temporary probe source is preserved in
+[commit 13be11fc](https://github.com/sunfmin/afkconvoy/blob/13be11fc/crates/cli/tests/quota_feasibility_probe.rs).
+It uses the existing `World` fixture, real CLI binary and stand-in `gh`/`orca`.
+A wrapper rejects only `api graphql` or `pr list` with the incident's primary
+quota error, while forwarding other calls to the normal stand-in. The native
+link probe supplies `linked: [146]` and a body with no closing keyword.
+
+Commands, run on that probe tree using the gate's installed toolchain:
+
+```sh
+cargo +nightly-2026-09-25 build -p afkconvoy --examples --quiet
+cargo +nightly-2026-09-25 test -p afkconvoy --test cli quota_feasibility_probe -- --nocapture
+```
+
+The three probes ran in 0.55 seconds after compilation:
+
+```text
+graphql_exhaustion_should_still_allow_a_rebuild ... FAILED
+  {"error":"gh api graphql failed: GraphQL: API rate limit already exceeded"}
+pr_list_exhaustion_should_still_allow_dispatch ... FAILED
+  {"error":"gh pr list failed: GraphQL: API rate limit already exceeded"}
+a_native_link_without_a_body_reference_still_holds_an_issue_off ... ok
+
+test result: FAILED. 1 passed; 2 failed
+```
+
+The first two failures establish the original symptom; they are not a
+completed fix. The third establishes existing behavior a fallback must retain.
+The probes were removed from the final tree rather than leaving deliberately
+red acceptance tests in its suite. Only this report differs from the initial
+tree. The full gate was not run: no implementation or landing is proposed.
