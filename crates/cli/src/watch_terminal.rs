@@ -21,6 +21,7 @@ pub(crate) enum LaunchState {
     Ready,
     Sending,
     Running,
+    Idle,
     Ended,
 }
 
@@ -34,6 +35,13 @@ pub(crate) struct Record {
     pub terminal: Option<Value>,
     pub problem: Option<String>,
     pub command: String,
+    /// One durable Orca mutation identity per round, allocated before input.
+    #[serde(default)]
+    pub request: Option<String>,
+    #[serde(default)]
+    pub receipt: Option<Value>,
+    #[serde(default)]
+    pub offered: Option<u64>,
 }
 
 fn file() -> Result<PathBuf> {
@@ -74,7 +82,7 @@ pub(crate) fn claim(watch: &Watch) -> PathBuf {
 }
 
 pub(crate) fn matches(record: &Record, watch: &Watch) -> bool {
-    record.watch.id == watch.id && record.watch.attempts.len() == watch.attempts.len()
+    crate::host_watch::session_identity(&record.watch) == crate::host_watch::session_identity(watch)
 }
 
 /// Refuses unknown same-name sessions before creating anything. The host
@@ -100,6 +108,9 @@ pub(crate) fn prepare(watch: &Watch, command: &str) -> Result<()> {
         terminal: None,
         problem: None,
         command: command.into(),
+        request: None,
+        receipt: None,
+        offered: None,
     })
 }
 
@@ -171,6 +182,9 @@ pub(crate) fn locate(watch: &Watch) -> Result<Option<String>> {
                 terminal: Some(row.clone()),
                 problem: None,
                 command: String::new(),
+                request: None,
+                receipt: None,
+                offered: None,
             })?;
         }
         return Ok(Some(exact.to_string()));
@@ -231,6 +245,20 @@ pub(crate) fn set_status(watch: &Watch, status: LaunchState) -> Result<()> {
     Ok(())
 }
 
+pub(crate) fn begin_round(watch: &Watch) -> Result<()> {
+    let mut record = read()?.context("the resident watch has no launch journal")?;
+    ensure!(
+        matches(&record, watch) && record.status == LaunchState::Idle,
+        "the resident session has an unresolved round; nothing sent"
+    );
+    record.watch = watch.clone();
+    record.status = LaunchState::Ready;
+    record.request = None;
+    record.receipt = None;
+    record.offered = None;
+    save(&record)
+}
+
 pub(crate) fn problem(why: &str) -> Result<()> {
     if let Some(mut record) = read()? {
         record.problem = Some(why.into());
@@ -248,8 +276,10 @@ pub(crate) fn recovery(why: &str) -> String {
 pub(crate) fn json() -> Value {
     match read() {
         Ok(Some(record)) => json!({"title": TITLE, "watch": record.watch.id,
+            "session": crate::host_watch::session_identity(&record.watch),
             "directory": record.watch.directory, "terminal": record.watch.terminal,
-            "identity": record.terminal, "status": record.status, "problem": record.problem}),
+            "identity": record.terminal, "status": record.status, "problem": record.problem,
+            "request": record.request, "receipt": record.receipt}),
         Ok(None) => json!({"title": TITLE, "status": "unassociated"}),
         Err(error) => {
             json!({"title": TITLE, "status": "uncertain", "problem": recovery(&format!("{error:#}"))})

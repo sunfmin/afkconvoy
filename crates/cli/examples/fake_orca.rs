@@ -400,6 +400,16 @@ fn terminal_send(st: &mut State) -> ! {
         answer_trust(st, at);
     }
     let sent = json!({"text": st.opt("--text").expect("--text"), "enter": st.has("--enter")});
+    let request = st.opt("--retry-request").map(str::to_string);
+    if let Some(request) = &request {
+        let previous = st.doc["terminals"][at]["requests"][request].clone();
+        if !previous.is_null() {
+            assert_eq!(previous["input"], sent, "a replay must use the exact saved input");
+            let mut receipt = previous["receipt"].clone();
+            receipt["mutation"] = json!({"replayed": true});
+            done(st, receipt);
+        }
+    }
     st.doc["terminals"][at]["sent"].as_array_mut().unwrap().push(sent);
     if st.doc["send_screen"].is_array() {
         st.doc["terminals"][at]["screen"] = st.doc["send_screen"].clone();
@@ -428,12 +438,13 @@ fn terminal_send(st: &mut State) -> ! {
         st.doc["terminals"][at]["agent"]["state"] = json!("working");
         st.doc["terminals"][at]["agent"]["programStatus"]["state"] = json!("working");
     }
-    done(
-        st,
-        json!({"send": {"accepted": true, "prompt": {
-            "requestId": "request-1", "stages": stages, "observation": "observed"
-        }}}),
-    )
+    let receipt = json!({"send": {"accepted": true, "prompt": {
+        "requestId": request.as_deref().unwrap_or("request-1"), "stages": stages, "observation": "observed"
+    }}});
+    if let Some(request) = request {
+        st.doc["terminals"][at]["requests"][&request] = json!({"input": sent, "receipt": receipt});
+    }
+    done(st, receipt)
 }
 
 fn terminal_list(st: &State) -> ! {
