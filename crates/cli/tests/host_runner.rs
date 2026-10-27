@@ -1498,22 +1498,23 @@ fn default_sets_a_checkouts_concurrency_back_and_a_host_runner_started_again_kee
 }
 
 #[test]
-fn a_running_fleet_uses_commands_added_and_changed_after_it_started() {
+fn a_running_fleet_uses_commands_and_codex_preferences_changed_after_it_started() {
     let world = World::new();
     world.shell_help(Some(
         "--add-dir --config --model --dangerously-bypass-hook-trust --setting-sources --settings",
     ));
     let ran = world.afk(&RUN).ok();
     let pid = ran["host_runner"]["pid"].clone();
-    for (number, command, effort) in
-        [(7, "agent --added-codex", "xhigh"), (8, "agent --changed-codex", "high")]
-    {
+    for (number, command, model, effort) in [
+        (7, "agent --added-codex", "user-first", "xhigh"),
+        (8, "agent --changed-codex", "user-next", "high"),
+    ] {
         world.kit_command("codex", command);
-        world.kit_models("codex", &["fleet-model"]);
+        world.kit_models("codex", &["fleet-model", model]);
         common::write(
             &world.home(),
             ".codex/config.toml",
-            &format!("model_reasoning_effort = '{effort}'\n"),
+            &format!("model = '{model}'\nmodel_reasoning_effort = '{effort}'\n"),
         );
         world.afk(&["switch", "--harness", "codex"]).ok();
         world.issue(number, &["ready-for-agent", "harness:codex"]);
@@ -1525,7 +1526,7 @@ fn a_running_fleet_uses_commands_added_and_changed_after_it_started() {
                     if !line.contains(&format!(" && {command} ")) {
                         return false;
                     }
-                    assert!(line.contains("--model 'fleet-model'"), "{line}");
+                    assert!(line.contains(&format!("--model '{model}'")), "{line}");
                     assert!(
                         line.contains(&format!("model_reasoning_effort=\"{effort}\"")),
                         "{line}"
