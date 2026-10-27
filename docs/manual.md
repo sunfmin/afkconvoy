@@ -313,7 +313,7 @@ The optional `gate_budget_seconds` is omitted from this example: it has no defau
 escalate_to: human                 # legacy consult is accepted; both escalate for the watch
 ```
 
-An optional `gate_budget_seconds` declares a fixed warning budget: a positive whole number of seconds below `gate_seconds`. It never ends a run. Put it in the main yaml block, or in a separate block opened by ```yaml gate-budget; that block accepts only `gate_budget_seconds`. Declare it once: duplicate keys fail, including across blocks. Older versions skip the separate block and keep their termination limit, so they can land and cut the version that first supports the budget. They keep warning at 80% of that limit until upgraded. The budget is fixed in the repo, with its machine class, baseline version, cache conditions and rationale; it never follows recent runs upward. Queue waiting is outside both durations.
+An optional `gate_budget_seconds` declares a fixed warning budget: a positive whole number of seconds below `gate_seconds`. It never ends a run. Put it in the first yaml block, or in a separate block opened by ```yaml gate-budget; that block accepts only `gate_budget_seconds`. Declare it once: duplicate keys fail, including across blocks. Older versions skip the separate block and keep their termination limit, so they can land and cut the version that first supports the budget. They keep warning at 80% of that limit until upgraded. The budget is fixed in the repo, with its machine class, baseline version, cache conditions and rationale; it never follows recent runs upward. Queue waiting is outside both durations.
 
 What is outside these blocks is yours to explain it in — but for a second block opened by the line ```yaml cut, which names the repo's cut steps and turns cutting on (`afkconvoy cut --help`). It is read beside this one; older versions read only this one, and refuse nothing for it.
 
@@ -4836,11 +4836,11 @@ _Avoid_: CI (what a push to an ordinary branch starts), checks (what `check` and
 
 **Gate limit**:
 How long the gate may run. A run that reaches it is ended and is red. A repo declares it; nothing learns it from past runs.
-_Avoid_: timeout (what a run that reached it did), budget, baseline
+_Avoid_: timeout (what a run that reached it did), budget (the warning threshold), baseline (a committed timing observation)
 
 **Gate budget**:
 The fixed duration a repo expects its gate to stay within. Recent recorded landings on one host that all exceed it make a slow gate; exceeding it never ends a run.
-_Avoid_: gate limit, learned baseline
+_Avoid_: gate limit (the termination bound), learned baseline
 
 **Recorded gate run**:
 The evidence that the gate passed on one committed tree, with how long the run took and on which host, made by the tool that saw the exit code and kept where every host can read it.
