@@ -227,6 +227,23 @@ pub fn available(mut kit: Kit) -> Result<Kit> {
     Ok(kit)
 }
 
+/// Why selection skips a harness with a recorded account or model fault.
+pub fn fault_reason(harness: Harness) -> Option<String> {
+    let kit = crate::kit::load().ok()?;
+    let command_key = command_key(kit.command(harness)?);
+    let fault = read().ok()?.faults.into_iter().find(|fault| {
+        fault.harness == harness
+            && fault.command_key.as_ref() == Some(&command_key)
+            && fault.scope != Scope::Worker
+    })?;
+    let scope = match fault.scope {
+        Scope::Account => "account",
+        Scope::Model => "model",
+        Scope::Worker => return None,
+    };
+    Some(format!("{} has an {scope} fault: {}", harness.key(), fault.evidence.join("; ")))
+}
+
 /// The harnesses whose workers took their briefs, most recent first.
 fn delivered_file() -> Result<PathBuf> {
     Ok(crate::copies::cache()?.join("watch/delivered.json"))
@@ -326,7 +343,7 @@ pub(crate) fn watch_diagnosis(
     output: &[String],
     runtime: &Value,
 ) -> Option<Diagnosis> {
-    terminal_rule(harness, output).or_else(|| classified(runtime))
+    terminal_rule(harness, output).or_else(|| classified_for(Some(harness), runtime))
 }
 
 /// A session that exited with a failure: its harness failed it, and is held
@@ -384,17 +401,20 @@ fn account_quota(evidence: String) -> Diagnosis {
 
 fn zai_quota(text: &str) -> Option<Diagnosis> {
     let start = text.find('{')?;
-    if !text[..start].contains("429") {
+    let status = text[..start]
+        .split(|character: char| !character.is_ascii_digit())
+        .any(|digits| digits == "429");
+    if !status {
         return None;
     }
     let body: Value = serde_json::from_str(&text[start..]).ok()?;
     let code = body.get("code")?;
-    if code.as_str() != Some("1308") && code.as_u64() != Some(1308)
-        || !body
-            .get("message")
-            .and_then(Value::as_str)
-            .is_some_and(|message| message.to_lowercase().contains("usage limit reached"))
-    {
+    let known_code = code.as_str() == Some("1308") || code.as_u64() == Some(1308);
+    let explicit_limit = body
+        .get("message")
+        .and_then(Value::as_str)
+        .is_some_and(|message| message.to_lowercase().contains("usage limit reached"));
+    if !known_code || !explicit_limit {
         return None;
     }
     Some(account_quota(text.into()))
@@ -450,6 +470,10 @@ fn terminal_rule(harness: Harness, output: &[String]) -> Option<Diagnosis> {
 /// Jev, or the operator, unless the harness's own explicit words decide the
 /// fault.
 fn classified(value: &Value) -> Option<Diagnosis> {
+    classified_for(None, value)
+}
+
+fn classified_for(harness: Option<Harness>, value: &Value) -> Option<Diagnosis> {
     let retry = value
         .get("retry_after")
         .or_else(|| value.get("retryAfter"))
@@ -459,7 +483,7 @@ fn classified(value: &Value) -> Option<Diagnosis> {
     if let Some(fields) = value.as_object() {
         for (key, nested) in fields {
             if key != "code"
-                && let Some(found) = classified(nested)
+                && let Some(found) = classified_for(harness, nested)
             {
                 return Some(Diagnosis { retry_after: retry.or(found.retry_after), ..found });
             }
@@ -467,17 +491,19 @@ fn classified(value: &Value) -> Option<Diagnosis> {
     }
     if let Some(items) = value.as_array() {
         for item in items {
-            if let Some(found) = classified(item) {
+            if let Some(found) = classified_for(harness, item) {
                 return Some(found);
             }
         }
     }
     if let Some(text) = value.as_str() {
-        if let Some(diagnosis) = zai_quota(text) {
+        if harness == Some(Harness::Pi)
+            && let Some(diagnosis) = zai_quota(text)
+        {
             return Some(diagnosis);
         }
         if let Ok(parsed) = serde_json::from_str::<Value>(text) {
-            return classified(&parsed);
+            return classified_for(harness, &parsed);
         }
     }
     let code = value.get("code").and_then(Value::as_str)?;
@@ -1097,9 +1123,9 @@ fn decide(
         return escalate_observed(observed, fleet, me, issue);
     }
     let raw_error = structured.get("error").unwrap_or(structured);
-    let rule = terminal
-        .map(|rule| ("terminal rule", rule))
-        .or_else(|| classified(raw_error).map(|rule| ("structured rule", rule)));
+    let rule = terminal.map(|rule| ("terminal rule", rule)).or_else(|| {
+        classified_for(Some(observed.harness), raw_error).map(|rule| ("structured rule", rule))
+    });
     let failed = observed.orca["state"] == "done" && observed.orca["outcome"] == "failure";
     if !failed
         && rule.is_none()
@@ -1339,4 +1365,22 @@ fn decide(
     };
     crate::log::Log::of(&fleet.repo)?.append(&entry)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn zai_runtime_quota_requires_pi_and_an_http_429_status() {
+        let error = r#"429: {"code":"1308","message":"Usage limit reached for 5 hour"}"#;
+        assert_eq!(
+            classified_for(Some(Harness::Pi), &json!(error)).map(|diagnosis| diagnosis.class),
+            Some("quota".into())
+        );
+        assert!(classified_for(Some(Harness::Codex), &json!(error)).is_none());
+        assert!(
+            classified_for(Some(Harness::Pi), &json!(error.replacen("429", "1429", 1))).is_none()
+        );
+    }
 }

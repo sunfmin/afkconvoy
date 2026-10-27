@@ -1287,7 +1287,10 @@ const ZAI_RUNTIME: &str = r#"429: {"code":"1308","message":"Usage limit reached 
 
 #[test]
 fn pi_zai_usage_limit_is_an_account_quota_by_rule_from_either_source() {
-    for source in ["terminal", "runtime"] {
+    for (source, rule, evidence) in [
+        ("terminal", "terminal rule", ZAI_SCREEN.lines().next().unwrap()),
+        ("runtime", "structured rule", ZAI_RUNTIME),
+    ] {
         let world = blocked();
         world.jev_key_command("printf unused-key");
         world.kit_models("pi", &["zai/glm-5.3"]);
@@ -1295,6 +1298,7 @@ fn pi_zai_usage_limit_is_an_account_quota_by_rule_from_either_source() {
         switch(&world, "750", &["7", "--harness", "pi"]).ok();
         let branch = git(&dir, &["symbolic-ref", "--short", "HEAD"]);
         let claims = world.claims();
+        let pr = world.gh()["prs"][0].clone();
         let kit = std::fs::read(world.kit_path()).unwrap();
         std::fs::write(dir.join("unfinished.txt"), "keep me").unwrap();
         world.with_orca(|orca| {
@@ -1319,15 +1323,13 @@ fn pi_zai_usage_limit_is_an_account_quota_by_rule_from_either_source() {
         assert_eq!(git(&dir, &["symbolic-ref", "--short", "HEAD"]), branch);
         assert_eq!(std::fs::read_to_string(dir.join("unfinished.txt")).unwrap(), "keep me");
         assert_eq!(world.claims(), claims);
+        assert_eq!(world.gh()["prs"][0], pr);
         assert_eq!(std::fs::read(world.kit_path()).unwrap(), kit);
         assert!(!world.root.join("typesafe-request").exists(), "{source} rule runs first");
         let plan = world.afk(&["plan", "--now", "801"]).ok();
         let health = &plan["host_kit"]["worker_health"];
         let worker = &health["workers"][0];
-        assert_eq!(
-            worker["source"],
-            if source == "terminal" { "terminal rule" } else { "structured rule" }
-        );
+        assert_eq!(worker["source"], rule);
         assert_eq!(worker["diagnosis"]["class"], "quota", "{source}: {worker}");
         assert_eq!(worker["diagnosis"]["scope"], "account");
         assert_eq!(
@@ -1336,21 +1338,16 @@ fn pi_zai_usage_limit_is_an_account_quota_by_rule_from_either_source() {
             "the reset has no provider zone"
         );
         assert_eq!(worker["action"], "continued");
+        assert_eq!(worker["successor"], "claude-code");
         assert_eq!(health["faults"][0]["harness"], "pi");
         assert_eq!(health["faults"][0]["scope"], "account");
-        let evidence =
-            if source == "terminal" { ZAI_SCREEN.lines().next().unwrap() } else { ZAI_RUNTIME };
         assert_eq!(health["faults"][0]["evidence"][0], evidence);
         assert_eq!(plan["selection"]["order"][0], "pi");
         assert_eq!(plan["selection"]["eligible"][0], "claude-code");
         let skipped = switch(&world, "801", &["7", "--harness", "pi"]).ok();
         assert_eq!(skipped["switched"][0]["to"], "claude-code");
-        assert!(
-            skipped["switched"][0]["skipped"][0]["why"]
-                .as_str()
-                .unwrap()
-                .contains("pi is unavailable on this host; see health evidence")
-        );
+        let why = skipped["switched"][0]["skipped"][0]["why"].as_str().unwrap();
+        assert!(why.contains("pi has an account fault") && why.contains(evidence), "{why}");
 
         world.say_concurrency(&world.clone, 2);
         tick(&world, 802);

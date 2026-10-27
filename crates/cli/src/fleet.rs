@@ -321,6 +321,8 @@ impl Fleet {
                         format!("{key} is paused on this host: {}", pause.why),
                         format!("make {key} answer its probes; a successful recovery probe restores it"),
                     )
+                } else if let Some(why) = crate::health::fault_reason(harness) {
+                    (why, format!("restore {key} to health; a successful recovery probe restores it"))
                 } else if !eligible.iter().any(|held| held.harness == harness) {
                     (
                         format!("{key} is unavailable on this host; see health evidence"),
