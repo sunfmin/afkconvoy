@@ -55,7 +55,8 @@ fn tend_on(fleet: &mut Fleet, me: &Me, branch: &str) -> Result<Outcome> {
     let key = if branch == fleet.config.base_branch {
         "base-repair".to_string()
     } else {
-        format!("base-repair/{branch}")
+        // A slash names a tracker issue to the claim reader, never a run.
+        format!("base-repair-{:016x}", afkconvoy_core::gate::key(branch))
     };
     if let Some(left) = fleet.scan.runs.iter().find(|run| run.key == key).cloned() {
         if left.holder(Some(&me.instance), &fleet.scan.beats(), me.now) == Holder::Peer {

@@ -108,7 +108,7 @@ fn validate(repo: &Repo, branch: &str) -> Result<()> {
     );
     ensure!(
         repo.remote_sha(&format!("refs/heads/{branch}"))?.is_some(),
-        "target branch {branch:?} is missing; restore that branch on origin before continuing this task"
+        "the remote has no branch {branch:?}: the task's target branch is missing; restore that branch on origin before continuing this task"
     );
     Ok(())
 }

@@ -187,8 +187,20 @@ fn a_target_repair_is_dispatched_and_landed_on_the_affected_branch() {
     git(&world.clone, &["reset", "--hard", "origin/main"]);
     world.issue(7, &[]);
     world.afk(&["target", "--issue", "7", "--branch", "delivery/red"]).ok();
+    // A predecessor died holding the repair reservation. The next tick
+    // must read it as a run, recover it, and remove it when intake ends.
+    let key = format!("base-repair-{:016x}", afkconvoy_core::gate::key("delivery/red"));
+    let owner =
+        afkconvoy_core::claims::Owner { instance: "dead".into(), host: "elsewhere".into(), ts: 0 };
+    let sha = afkconvoy::git::Repo::new(world.clone.clone()).record_commit(&owner.write()).unwrap();
+    git(&world.clone, &["push", "-q", "origin", &format!("{sha}:refs/convoy/claim/{key}")]);
     let ticked = world.afk(&["tick", "--instance", "alpha", "--host", "h1"]).ok();
     assert_eq!(ticked["errors"], json!([]), "{ticked}");
+    assert!(
+        world
+            .remote(&["for-each-ref", "--format=%(refname)", "refs/convoy/claim/base-repair*"])
+            .is_empty()
+    );
     let gh = world.gh();
     let repair_body = gh["issues"]
         .as_array()
