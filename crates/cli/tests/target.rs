@@ -130,3 +130,21 @@ fn unresolved_default_is_pinned_before_claim_and_survives_config_change() {
     .unwrap();
     assert_eq!(world.afk(&["target", "--issue", "7"]).ok()["target_branch"], "main");
 }
+
+#[test]
+fn unreadable_explicit_target_prevents_claim_without_holding_other_tasks_back() {
+    let world = World::new();
+    world.issue(7, &["ready-for-agent"]);
+    world.issue(8, &["ready-for-agent"]);
+    git(&world.clone, &["push", "-q", "origin", "HEAD:delivery/broken"]);
+    world.afk(&["target", "--issue", "7", "--branch", "delivery/broken"]).ok();
+    git(&world.clone, &["push", "-q", "--force", "origin", "HEAD:refs/convoy/target/7"]);
+    let error =
+        world.afk(&["dispatch", "--issue", "7", "--instance", "alpha", "--host", "h1"]).error();
+    assert!(error.contains("unreadable target"), "{error}");
+    assert!(world.claims().is_empty());
+    let other =
+        world.afk(&["dispatch", "--issue", "8", "--instance", "alpha", "--host", "h1"]).ok();
+    assert_eq!(other["started"], true);
+    assert_eq!(world.claims().iter().map(|(n, _)| *n).collect::<Vec<_>>(), [8]);
+}

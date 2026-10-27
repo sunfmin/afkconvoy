@@ -2,9 +2,15 @@
 status: accepted
 ---
 
-# A turn lands its PR on the base branch
+# A turn lands its PR on its target branch
 
-A turn makes the PR's merge commit on the current base tip, gates that commit, records green, and pushes that same commit to the base branch as a fast-forward. This replaces the landing train of ADR-0004 and the joining step of ADR-0034. The train added no verification after a recorded turn, but needed another worker and a separate lane; the measurements in ADR-0034 show the cost of running those gates together.
+A turn makes the PR's merge commit on the current target tip, gates that commit, records green, and pushes that same commit to the target branch as a fast-forward. This replaces the landing train of ADR-0004 and the joining step of ADR-0034. The train added no verification after a recorded turn, but needed another worker and a separate lane; the measurements in ADR-0034 show the cost of running those gates together.
+
+## Pinned task destinations (sunfmin/control#154)
+
+An issue turn resolves the task's immutable target record before reading its PR or recovering a landing (ADR-0006). The PR's actual base must equal that target, before any already-landed shortcut and again before publication. A base changed during validation invalidates the candidate. Existing source-head verification, green evidence, expected predecessor and atomic publication checks remain required. Each target has its own `candidates/<branch>` record; no candidate or settlement walk uses another target's history. The configured base alone supplies the landings that trigger a cut.
+
+Certification reads the gate declaration from the selected branch's tip, but retains the selected branch identity even when that declaration still names another `base_branch`. Red markers and repair claims name the affected branch; the repair issue is pinned before it receives dispatchable labels. A repair for another target cannot bypass certification even if the two tips have the same commit. Abandoned-candidate cleanup, doctor and the panel inspect all branch chains and identify their targets. Host worker lanes and repo leases remain the same scheduler and exclusion boundary.
 
 Red, a conflict, or a rejected push ends the turn without landing. A conflict with the landed base stays in the worker's worktree. A rejected push requires another turn. Only worker lanes remain; independently owned candidates of one repo may validate together as described below.
 

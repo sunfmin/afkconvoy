@@ -295,6 +295,17 @@ impl Limits {
                     "`git push … {pushed}` changes candidate ownership: only afkconvoy land may assign, invalidate or publish candidates; push your source branch only"
                 ));
             }
+            let target = named.iter().skip(2).find(|refspec| {
+                let to = refspec.rsplit(':').next().unwrap_or(refspec);
+                to.starts_with("refs/convoy/target/")
+                    || to.starts_with("refs/heads/convoy-target/")
+                    || to.starts_with("convoy-target/")
+            });
+            if let Some(pushed) = target {
+                return Some(format!(
+                    "`git push … {pushed}` changes a pinned target: select an unresolved task's branch with afkconvoy target; push your source branch only"
+                ));
+            }
             let to_base = named.iter().skip(2).find(|refspec| self.lands_on_base(refspec));
             if let Some(pushed) = every.or(to_base) {
                 return Some(format!(

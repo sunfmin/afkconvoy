@@ -115,9 +115,6 @@ pub fn pin(repo: &Repo, config: &Config, issue: u64, selected: Option<&str>) -> 
     let branch = selected.unwrap_or(&config.base_branch);
     validate(repo, branch)?;
     if selected.is_some() {
-        let read = gh.issue(issue)?;
-        ensure!(!read.pull_request && !read.is_closed(), "select a target for an open task issue");
-        gh.tracker.to_take(&read.labels).map_err(anyhow::Error::msg)?;
         ensure!(
             crate::claims::Scan::read(repo)?.claim_of(issue).is_none(),
             "{} is already claimed; its target cannot change",

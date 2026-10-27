@@ -426,17 +426,17 @@ impl Fleet {
         let base = self.base_tip()?;
         let mut landed = vec![];
         for claim in &self.scan.claims {
-            if me.is_some_and(|me| claim.is_held_by(me))
-                && !closed.contains(&claim.number)
-                && cut_landing_of(
-                    &self.repo,
-                    &self.gh.tracker,
-                    &self.task_tip(claim.number)?,
-                    claim,
-                    prs,
-                )?
-                .is_some()
-            {
+            if !me.is_some_and(|me| claim.is_held_by(me)) || closed.contains(&claim.number) {
+                continue;
+            }
+            let tip = match self.task_tip(claim.number) {
+                Ok(tip) => tip,
+                Err(error) => {
+                    self.unread.push((claim.number, error));
+                    continue;
+                }
+            };
+            if cut_landing_of(&self.repo, &self.gh.tracker, &tip, claim, prs)?.is_some() {
                 landed.push(claim.number);
             }
         }
