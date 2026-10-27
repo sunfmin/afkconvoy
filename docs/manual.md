@@ -487,7 +487,7 @@ With `--all` it reads the checkout list (checkouts.json in the cache directory) 
 - `claims`: each claim of that instance: {issue, title, status, pr, stage, role, held_for, worker, worktree, gate} — status as `plan` gives it; stage and role in a bound repo; held_for in seconds; worker is {state, quiet}, state being busy, stopped or gone, and null when orca could not say; gate is {green_at} when a green gate run is on record for the tree the worktree is at, else null
 - `issues`: as `plan` answers them: {frontier, excluded, escalating, locks, free_slots, patrols} — what a worker can be started on, what waits and why, and what is being handed to a human and why. null when they could not be read
 - `refusals`: issue number → the harnesses that refused that task, each with `harness` and `evidence`, read from GitHub. Later starts skip them across every stage; the harness stays healthy for other issues.
-- `codex_workers`: this checkout's Codex sessions, each with issue, worktree, harness, model, effort, model_source, effort_source and codex_home (its private session directory). Automatic starts read the model from your `~/.codex/config.toml` (`user_selection`), an issue's `model:` label keeps casting (`casting`), and no preference leaves the model null for Codex's native default (`codex_default`). Every start reads the effort from your own Codex config, or uses Codex's model default. Sources stay attached to the session after your config changes; a saved `/model` choice is shown with its session's private config as the source. [`afkconvoy help worker-launch`](help:worker-launch).
+- `codex_workers`: this checkout's Codex sessions, each with issue, worktree, harness, model, effort, model_source, effort_source and codex_home (its private session directory). Automatic starts read the model from your `~/.codex/config.toml` (`user_selection`), an issue's `model:` label keeps casting (`casting`), and no user preference leaves the model null for Codex's native default (`codex_default`). Every start reads the effort from your own Codex config, or uses Codex's model default. Sources stay attached to the session after your config changes; a saved `/model` choice is shown with its session's private config as the source. [`afkconvoy help worker-launch`](help:worker-launch).
 - `waiting_on_human`: as `plan` answers it, and as the panel lists it under "With a human": every open issue nobody holds that waits for a human — escalated, at a stage that is a human's, past the end of its workflow and still open, or reporting a patrol's failed run — each as {issue, title, why, url, since, answer}: `why` is what kind of wait, then the reason the issue’s comment gives, in its first sentence; `url` is that comment (the report itself for an older failed patrol or cut with no reason comment), or null where no comment explains the wait; `answer` is the line that answers it, to run as it is but for what stands between < and >. An escalation with no position gets the team's only flow label filled in; with several workflows, `why` lists the flow labels to choose `<flow label>` from. null when the issues could not be read
 - `proposals`: a bound repo's team's open proposals, including those whose source issue is closed: {team, tracker, max_open, open}. team is the team's repo; tracker names another tracker, null where the checkout's own repo holds the rulings; max_open is the team's limit, null where it names nobody who proposes. `proposals.open` lists each PR from the team's own branches, lowest PR first: {pr, issue, comment, since, age, merge, close} — the PR number, the source issue and the id of its ruling's comment, when the PR opened in epoch seconds and its age in seconds (both null where GitHub said no time), and the exact `gh pr merge <pr> --repo <team>` and `gh pr close <pr> --repo <team>` commands. [] with none; proposals is null in an unbound repo or when the team or fleet state cannot be read. The panel shows these under "With a human" too. Once open proposals reach max_open, a warning finding names the PRs and a merge command: further proposals wait at `full` (`afkconvoy help humans`)
 - `findings`: what is wrong, most severe first — none: []. Each is {severity, what, evidence, fix, see}:
@@ -4169,7 +4169,7 @@ A worker's model is its harness's own name for it: pi's is `<provider>/<id>`. A 
 
 #### Codex
 
-Codex uses a fresh `CODEX_HOME` for each session. The fleet selects and explicitly passes the model; each launch reads reasoning effort from your own ~/.codex/config.toml, or uses Codex's model default. Saved `/model` choices stay in that session. An unbound worker trusts its worktree on the launch line with `--config 'projects={"<worktree>"={trust_level="trusted"}}'`; a role's worker keeps its guard. Launch commands, rules, skills and settings evidence: [`afkconvoy help worker-codex`](help:worker-codex).
+Codex uses a fresh `CODEX_HOME` for each session. An automatic launch reads your current model preference and reasoning effort from `~/.codex/config.toml`; an issue's `model:` label keeps its casting. Saved session `/model` choices stay in that session. An unbound worker trusts its worktree on the launch line with `--config 'projects={"<worktree>"={trust_level="trusted"}}'`; a role's worker keeps its guard. Launch commands, rules, skills and settings evidence: [`afkconvoy help worker-codex`](help:worker-codex).
 
 A Codex command must take `--add-dir`, `--dangerously-bypass-hook-trust`, `--config` and `--model`.
 
@@ -4246,7 +4246,7 @@ cd <the role's copy> && export CODEX_HOME=<the fleet's own>
   --config features.memories=false
   --config skills.bundled.enabled=false
   [--config 'skills.config=[<each skill of yours the role's stands for, off>]']
-  --model <the fleet's selected model>
+  [--model <your current Codex selection>]
   [--config 'model_reasoning_effort="<your current effort>"']
 ```
 
@@ -4258,20 +4258,20 @@ Every Codex session has a fresh user directory under its worktree's `.afkconvoy-
 
 #### Model and effort
 
-An automatic Codex worker without an issue `model:` label reads `model` from the user's `~/.codex/config.toml` at each launch and passes it explicitly with `--model`. It records the source as `user_selection`; a model label retains casting and is recorded as `casting`. Kit order and research do not replace this preference. With no user preference, the worker starts without `--model` on Codex's native default and records `codex_default`. A selected model excluded by a role's range is reported with its source and the roster to change. `afkconvoy kit` still lists Codex models, and the watch supplies research through `afkconvoy kit --research <file>`; discovery filters the server catalog to model names before it reaches terminal scrollback.
+An automatic Codex worker without an issue `model:` label reads `model` from your `~/.codex/config.toml` at each launch and passes it explicitly with `--model`. This is the model selected for your ordinary Codex sessions; kit order and research do not replace it. The launch records `user_selection`. An issue model label retains its existing casting and is recorded as `casting`. With no user preference the worker starts without `--model` on Codex's native default, recorded as `codex_default`. If a role's range excludes your selected model, the start reports the selected model and source instead of silently using the kit's first model.
 
 Reasoning effort has a different source: every launch reads `model_reasoning_effort` from your own `~/.codex/config.toml` and passes it with `--config`. Changing that file changes the next worker without restarting the fleet. With no setting, Codex uses its selected model's default. This applies even with `host_user: false`. The fleet keeps no effort setting of its own. An unbound worker's fresh user directory holds the same allowed login, skill and rule links, and no other user settings; its `/model` writes change neither your configuration nor another worker's. Existing workers keep the settings they started with.
 
 The same model and effort rules hold for a patrol, a consult, a watch and the caster's headless Codex call. The caster uses a fresh login-only directory and reads the user's effort when it makes that call. Model listing and recovery probes remain host capability checks. The watch researches models with its web tools and places its checked research through `afkconvoy kit --research <file>`.
 
-`plan` and `doctor` list started sessions under `codex_workers`: issue, worktree, model, effort, model_source (`user_selection`, `casting`, or `codex_default`) and effort_source (your config file and key, or `codex_default`). Each row also names its harness and codex_home, the private session directory. A later edit of your own config does not relabel an existing worker. If `/model` saves a different choice, it is shown with that session's private config as the source. `plan` also gives a Codex frontier issue's next-launch model and source under `codex`; the panel shows each Codex worker's model and effort with the same sources. A malformed Codex configuration file, or a non-string model or effort, refuses the start and names the file to fix.
+`plan` and `doctor` list started sessions under `codex_workers`: issue, worktree, model, effort, model_source (`user_selection`, `casting`, or `codex_default`) and effort_source (your config file and key, or `codex_default`). Each row also names its harness and codex_home, the private session directory. A later edit of your own config does not relabel an existing worker. If `/model` saves a different choice, it is shown with that session's private config as the source. `plan` also gives a Codex frontier issue's next-launch model and source under `codex`. The panel shows each Codex worker's model and effort with the same sources. A malformed Codex configuration file, or a non-string model or effort, refuses the start and names the file to fix.
 
 #### An unbound repo 
 
 A Codex worker of an unbound repo, starts in its worktree with the same allowed user links in a fresh directory, and the same trust and session setup. Nothing is written to your Codex configuration, even when Codex has never seen the worktree:
 
 ```
-export CODEX_HOME=<this session's directory> && <worker launch command> --model <the fleet's selected model>
+export CODEX_HOME=<this session's directory> && <worker launch command> [--model <your current Codex selection>]
   --dangerously-bypass-hook-trust
   --config 'projects={"<the worktree>"={trust_level="trusted"}}'
   --config 'project_doc_fallback_filenames=["CLAUDE.md"]'
@@ -4704,7 +4704,7 @@ What a harness's own login runs when a worker is started with no model flag, whi
 _Avoid_: fallback model, `default` alone (a model id Claude Code lists)
 
 **Codex effort**:
-The reasoning effort a Codex worker takes from the host user's own Codex settings at its start, or Codex's model default where the user says none. It is independent of the fleet's model selection and is no setting of the fleet.
+The reasoning effort a Codex worker takes from the host user's own Codex settings at its start, or Codex's model default where the user says none. It is independent of the model selected from the user's Codex preference, and is no setting of the fleet.
 _Avoid_: fleet effort, role effort
 
 **Casting**:
