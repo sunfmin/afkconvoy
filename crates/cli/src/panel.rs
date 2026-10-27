@@ -634,8 +634,13 @@ pub fn read(
     .ok()
     .and_then(|rows| rows.as_array().cloned())
     .unwrap_or_default();
-    panel.deliveries = crate::delivery::panel_lines(&fleet.repo, fleet.now)
-        .unwrap_or_else(|error| vec![format!("deliveries could not be read: {error:#}")]);
+    let delivery_prefix = fleet.repo.layout().under("delivery/");
+    panel.deliveries = crate::delivery::panel_lines(
+        &fleet.repo,
+        fleet.now,
+        &fleet.records_at_open(&format!("{delivery_prefix}*")),
+    )
+    .unwrap_or_else(|error| vec![format!("deliveries could not be read: {error:#}")]);
     panel.declared = set.declared();
     panel.held = set.mine.len() - panel.declared;
     panel.bound = set.bound(fleet.config.concurrency()) - panel.declared;

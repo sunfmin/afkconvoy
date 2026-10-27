@@ -4427,7 +4427,12 @@ fn run(
             plan["concurrency"] = concurrency::json(&fleet.config);
             plan["tracker"] = json!(fleet.gh.tracker.named());
             plan["targets"] = fleet.targets(&open.issues)?;
-            plan["deliveries"] = json!(crate::delivery::reported(&fleet.repo, now)?);
+            let delivery_prefix = fleet.repo.layout().under("delivery/");
+            plan["deliveries"] = json!(crate::delivery::reported(
+                &fleet.repo,
+                now,
+                &fleet.records_at_open(&format!("{delivery_prefix}*")),
+            )?);
             plan["admission"] = admission.json();
             plan["host_kit"] = kit::show(now);
             plan["selection"] = fleet.selection();

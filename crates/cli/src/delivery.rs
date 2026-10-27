@@ -1079,18 +1079,24 @@ fn summary(repo: &Repo, gh: &GitHub, delivery: &Delivery, now: u64) -> Result<Va
     }))
 }
 
-/// Read-only handoff state for plan, doctor and the panel. It writes nothing.
-pub fn reported(repo: &Repo, now: u64) -> Result<Vec<Value>> {
+/// Read-only delivery state for plan, doctor and the panel. It writes nothing.
+/// `records` are the delivery definitions already in the look's remote listing,
+/// so this does not list the remote again.
+pub fn reported(repo: &Repo, now: u64, records: &[RemoteRecord]) -> Result<Vec<Value>> {
     let gh = GitHub::of(repo)?;
     let mut rows = vec![];
-    for record in repo.remote_records(&repo.layout().every("delivery/"))? {
+    for record in records {
         let id = repo
             .layout()
             .kept(&record.name)
             .and_then(|name| name.strip_prefix("delivery/"))
+            .filter(|id| !id.is_empty() && !id.contains('/'))
             .unwrap_or("")
             .to_string();
-        match decode(repo, &id, Some(&record))
+        if id.is_empty() {
+            continue;
+        }
+        match decode(repo, &id, Some(record))
             .and_then(|delivery| summary(repo, &gh, &delivery, now))
         {
             Ok(row) => rows.push(row),
@@ -1104,8 +1110,8 @@ pub fn reported(repo: &Repo, now: u64) -> Result<Vec<Value>> {
     Ok(rows)
 }
 
-pub fn panel_lines(repo: &Repo, now: u64) -> Result<Vec<String>> {
-    Ok(reported(repo, now)?
+pub fn panel_lines(repo: &Repo, now: u64, records: &[RemoteRecord]) -> Result<Vec<String>> {
+    Ok(reported(repo, now, records)?
         .into_iter()
         .map(|row| {
             format!(
