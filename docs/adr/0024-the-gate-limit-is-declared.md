@@ -4,6 +4,37 @@ status: accepted
 
 # The gate limit is declared, and a slow gate is an issue
 
+## Fixed warning budget (sunfmin/control#150)
+
+A repo may now declare `gate_budget_seconds`, a positive whole number below
+`gate_seconds`, for its slow-gate warning threshold. It is a fixed budget,
+grounded in a committed observation and machine class, never learned from
+recent runs. The termination limit remains `gate_seconds`. This amends the
+original coupling below: a six-minute gate can warn after ten minutes without
+ending a cold build or a run on a contended host at that point. Where no budget
+is declared, the original 80%-of-limit rule is unchanged.
+
+The existing five-recorded-landings rule, same-host grouping, remote opening
+claim, open-issue deduplication and post-close reset are unchanged. Only command
+wall time counts, not the queue wait or the sum of parallel test times. Doctor,
+plan, the tick log and the issue keep the same path; their evidence names the
+budget when present and distinguishes it from termination. The gate still owns
+step and slow-test reporting, with no new performance record format.
+
+The budget may be in the main config block or a `yaml gate-budget` block that
+accepts only `gate_budget_seconds`, never both. Duplicate declarations fail.
+The separate block allows an older installed version to land this change and
+cut the version that reads it; until upgraded that version retains the old
+warning rule. Rejecting a new main-block key remains correct. Lowering the
+termination limit alone was considered: it would make early warnings compete
+with normal cold-build and load tolerance. Making the threshold adaptive was
+rejected for the original reason: a moving baseline follows slow gates upward.
+
+The declaration for afkconvoy itself and its evidence are in
+`docs/agents/afkconvoy.md` and `docs/gate-baseline.md`.
+
+## Original decision
+
 The gate was given an hour by a flag nobody set, and a green run kept no time. So when one function of the core took Flux nine minutes instead of fifteen seconds, every run was green and nothing said so: the gate could grow to an hour before anything refused it.
 
 A repo declares its gate limit in its config, beside the gate command, and that is the only place the number is written. A run that reaches it is ended and is red, as a run that reached the flag's hour was. A recorded gate run says how long the run took and on which host. When the recent landings on the base branch, on one host, all took most of the limit, the gate is slow: the fleet opens one issue that says so and gives it to the fleet to work, and opens no second while that one is open.

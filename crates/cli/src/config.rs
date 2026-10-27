@@ -11,6 +11,16 @@ use crate::git::Repo;
 /// Where a repo keeps its config, relative to the checkout's top.
 pub const FILE: &str = "docs/agents/afkconvoy.md";
 
+/// A warning budget can follow the main block so older afkconvoy versions
+/// can still gate and land the change that introduces it.
+pub const BUDGET_BLOCK: &str = "```yaml gate-budget";
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GateBudget {
+    gate_budget_seconds: u64,
+}
+
 /// The config file of the checkout `repo`.
 pub fn file_of(repo: &Repo) -> PathBuf {
     repo.dir.join(FILE)
@@ -23,12 +33,22 @@ pub fn load(file: &Path) -> Result<Config> {
 }
 
 /// The config in a markdown text: its first ```` ```yaml ```` block, and the
-/// cut settings across its ```` ```yaml cut ```` blocks (`cut::BLOCK`). New
+/// optional gate-budget blocks and the cut settings across its ```` ```yaml cut ```` blocks (`cut::BLOCK`). New
 /// settings can follow the first cut block: older versions read only that
 /// first block and skip additions, while duplicate keys still fail here.
 pub fn parse(markdown: &str) -> Result<Config> {
     let yaml = yaml_block(markdown).ok_or_else(|| anyhow!("has no ```yaml block"))?;
-    let settings: Settings = serde_yaml::from_str(&yaml)?;
+    let mut settings: Settings = serde_yaml::from_str(&yaml)?;
+    let budgets = fenced_all(markdown, BUDGET_BLOCK);
+    if !budgets.is_empty() {
+        let budget: GateBudget =
+            serde_yaml::from_str(&budgets.join("\n")).context("its ```yaml gate-budget blocks")?;
+        if settings.gate_budget_seconds.replace(budget.gate_budget_seconds).is_some() {
+            return Err(anyhow!(
+                "duplicate field `gate_budget_seconds`: declare it in one block only"
+            ));
+        }
+    }
     let blocks = fenced_all(markdown, cut::BLOCK);
     let steps = match blocks.is_empty() {
         false => Some(cut_steps(&blocks.join("\n")).context("its ```yaml cut blocks")?),
@@ -67,7 +87,7 @@ fn cut_steps(yaml: &str) -> Result<cut::Steps> {
 }
 
 /// The text of the first ```` ```yaml ```` block of a markdown text: the one
-/// carrier of every definition afkconvoy reads.
+/// main config block; gate-budget and cut settings may follow separately.
 pub fn yaml_block(markdown: &str) -> Option<String> {
     fenced(markdown, "```yaml")
 }
@@ -194,6 +214,23 @@ mod tests {
         }
         let config = parse(&format!("```yaml\n{}\n```\n", limit("1"))).unwrap();
         assert_eq!(config.gate_seconds(), 1);
+        // Budget rule enumeration belongs beside gate-limit parsing; the
+        // CLI keeps one representative budget rejection to check its wiring.
+        for wrong in ["0", "-1", "1.5", "soon", "[600]", "\"600\"", "3600"] {
+            let e = error(&format!(
+                "base_branch: main\ngate_command: make\ngate_budget_seconds: {wrong}"
+            ));
+            assert!(e.contains("gate_budget_seconds"), "{wrong}: {e}");
+        }
+        let e = error(
+            "base_branch: main\ngate_command: make\ngate_seconds: 600\ngate_budget_seconds: 601",
+        );
+        assert!(e.contains("gate_budget_seconds"), "{e}");
+        let valid = parse(
+            "```yaml\nbase_branch: main\ngate_command: make\ngate_budget_seconds: 600\n```\n",
+        )
+        .unwrap();
+        assert_eq!(valid.gate_budget_seconds, Some(600));
     }
 
     #[test]

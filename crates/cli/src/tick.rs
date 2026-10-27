@@ -656,6 +656,11 @@ impl Ticked {
                 };
                 let mut did = self.named(*step);
                 did["outcome"] = json!(ended);
+                if *step == TickStep::SlowGate
+                    && let Some(slow) = &self.set.slow_gate
+                {
+                    did["evidence"] = json!(afkconvoy_core::slow_gate::said(slow));
+                }
                 if let TickStep::Advance { issue } = step
                     && let Some(stage) = self.advanced_to(*issue)
                 {
@@ -837,7 +842,13 @@ impl Ticked {
             parts.push(format!("started a caster on {} issues", caster.to_cast.len()));
         }
         if self.pass.did.contains(&(TickStep::SlowGate, Outcome::Done)) {
-            parts.push("opened an issue for the slow gate".to_string());
+            let evidence = self
+                .set
+                .slow_gate
+                .as_ref()
+                .map(afkconvoy_core::slow_gate::said)
+                .unwrap_or_default();
+            parts.push(format!("opened an issue for the slow gate: {evidence}"));
         }
         parts.extend(self.cut_said.iter().filter_map(log::cut_said));
         if self.pass.held_back(&self.set) {

@@ -544,7 +544,12 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
         locks: lock::standing(seen.issues, config),
         flowing: vec![],
         patrols: vec![],
-        slow_gate: slow(seen.landings, config.gate_seconds(), seen.slow_gate),
+        slow_gate: slow(
+            seen.landings,
+            config.gate_seconds(),
+            config.gate_budget_seconds,
+            seen.slow_gate,
+        ),
         held_back: vec![],
         caster: None,
         casting: vec![],
