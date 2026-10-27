@@ -76,9 +76,14 @@ fn a_busy_worker_is_left_with_no_github_read() {
     let calls: Vec<String> = world.gh_calls().iter().map(|call| call.join(" ")).collect();
     assert!(!calls.iter().any(|call| call.contains("issues/7/comments")), "{calls:?}");
 
-    // `working`, but no output within the grace period: a stop report that was lost
+    // an open session turn stays busy past the grace period
     report(&world, "working", 1000, 1080);
-    assert_eq!(did(&tick(&world, 1080 + 300))[0], "judge 7 done");
+    assert_eq!(did(&tick(&world, 1080 + 300))[0], "judge 7 nothing");
+    assert_eq!(world.claims().len(), 1);
+
+    // the session says the turn ended, and the grace has passed
+    report(&world, "done", 1000, 1000);
+    assert_eq!(did(&tick(&world, 1000 + 300))[0], "judge 7 done");
     assert_eq!(world.claims(), []);
 }
 

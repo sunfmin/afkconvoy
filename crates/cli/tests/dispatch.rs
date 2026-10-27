@@ -91,16 +91,13 @@ fn an_orca_error_with_a_lone_surrogate_and_non_json_output_still_fail() {
 }
 
 #[test]
-fn a_brief_orca_cannot_observe_is_delivered_for_worker_health_to_judge() {
+fn a_brief_orca_cannot_observe_is_delivered_when_the_session_records_the_turn() {
     let world = ready_world();
     world.with_orca(|orca| {
-        orca["raw_answers"] = json!({
-            "terminal wait": r#"{"ok":true,"result":{"wait":{"satisfied":true,"preview":"⏺"}}}"#,
-            "terminal send": r#"{"ok":true,"result":{"send":{"accepted":true,
-                "prompt":{"stages":["input_accepted"],"observation":"unsupported",
-                "provider":"unsupported"}}}}"#,
-            "terminal read": r#"{"ok":true,"result":{"terminal":{"tail":["⏺ Working…"],"source":"screen"}}}"#
-        });
+        orca["prompt_observation"] = json!("unsupported");
+        orca["prompt_stages"] = json!(["input_accepted"]);
+        orca["session_turn"] = json!(true);
+        orca["send_screen"] = json!(["❯"]);
     });
     let answer = dispatch(&world, "7").ok();
     assert_eq!(answer["started"], true, "{answer}");
@@ -114,19 +111,17 @@ fn a_brief_orca_cannot_observe_is_delivered_for_worker_health_to_judge() {
 }
 
 #[test]
-fn a_grok_screen_waiting_for_a_response_counts_as_a_started_turn() {
+fn a_grok_screen_waiting_for_a_response_is_not_a_started_turn() {
     let world = ready_world();
     world.with_orca(|orca| {
-        orca["raw_answers"] = json!({
-            "terminal wait": r#"{"ok":true,"result":{"wait":{"satisfied":true,"preview":"❯"}}}"#,
-            "terminal send": r#"{"ok":true,"result":{"send":{"accepted":true,
-                "prompt":{"stages":["input_accepted"],"observation":"unsupported",
-                "provider":"unsupported"}}}}"#,
-            "terminal read": r#"{"ok":true,"result":{"terminal":{"tail":["Waiting for response… 0.3s","Grok 4.7 (high) · always-approve"],"source":"screen"}}}"#
-        });
+        orca["prompt_observation"] = json!("unsupported");
+        orca["prompt_stages"] = json!(["input_accepted"]);
+        orca["send_screen"] =
+            json!(["Waiting for response… 0.3s", "Grok 4.7 (high) · always-approve"]);
     });
-    let answer = dispatch(&world, "7").ok();
-    assert_eq!(answer["started"], true, "{answer}");
+    let error = dispatch(&world, "7").error();
+    assert!(error.contains("started no turn"), "{error}");
+    assert!(error.contains("Waiting for response"), "{error}");
 }
 
 #[test]

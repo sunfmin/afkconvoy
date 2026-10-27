@@ -37,9 +37,9 @@ The launch journal from ADR-0039 still fences creation and owns exactly one
 executor. Its session identity is independent of round IDs. Before every
 round submission it persists a UUID request key, exact brief pointer and
 send intent. Orca's supported `terminal send --retry-request` replays that
-exact mutation on recovery; its retained `turn_started` receipt proves
-execution. For an unobservable provider, the existing worker fallback
-requires both accepted input and this Terminal's visible working evidence.
+exact mutation on recovery. The harness's session for this directory
+proves the turn; the receipt and the Terminal's screen do not. An
+accepted send with no session turn stays unproven.
 Each round retains its delivery archive after the session advances. Unproven or unsupported delivery remains explicit and paused,
 never retried as fresh input. The journal's round intent wins over a stale
 progress snapshot after a crash. Creation ambiguity retains ADR-0039's

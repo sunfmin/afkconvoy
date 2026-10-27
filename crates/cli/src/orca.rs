@@ -20,9 +20,7 @@ use afkconvoy_core::prompt::brief_pointer;
 use afkconvoy_core::question;
 use afkconvoy_core::stopped::Nudged;
 use afkconvoy_core::tools::{Found, add_checkout};
-use afkconvoy_core::worker::{
-    AgentReport, WorkerState, is_worktree_named, lead, short_branch, worker_state,
-};
+use afkconvoy_core::worker::{WorkerState, is_worktree_named, short_branch, worker_state};
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -275,8 +273,8 @@ fn pane_agent(row: &Value, terminal: &Value) -> Value {
         .unwrap_or(Value::Null)
 }
 
-/// The newest top-level agent speaks for a worktree, as `worker::lead`
-/// does. Child panes cannot change the worker's harness or outcome.
+/// The newest top-level agent speaks for a worktree's harness and outcome.
+/// Child panes cannot change either.
 fn main_agent(row: &Value) -> Value {
     row["agents"]
         .as_array()
@@ -639,16 +637,13 @@ fn on_host(repos: &Value, listed: &Value, ps: &Value) -> Vec<OnHost> {
         .collect()
 }
 
-/// Whether a harness Orca cannot observe has shown a turn of its own.
-/// Claude Code and Codex say they are working or thinking. Grok says it is
-/// waiting for a response while a submitted turn has not printed yet.
-pub(crate) fn screen_shows_turn(lines: &[String]) -> bool {
-    lines.iter().any(|line| {
-        let line = line.to_ascii_lowercase();
-        line.contains("working")
-            || line.contains("thinking")
-            || line.contains("waiting for response")
-    })
+/// How long a send waits for the harness's session to record the turn.
+/// Tests set this to zero and check once; production waits out the submit bound.
+fn turn_wait_seconds() -> u64 {
+    std::env::var("AFKCONVOY_TURN_WAIT_SECONDS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(SUBMIT_SECONDS)
 }
 
 /// A worker's worktree on this machine.
@@ -861,28 +856,28 @@ impl Worktree {
         }))
     }
 
-    /// What the worker here is doing, as its runtime reported it to orca. A
-    /// page of `ps` that was cut short is an error: an orca that cannot say is
-    /// never "no worker there".
+    /// What the worker here is doing. A live terminal comes from orca; the
+    /// turn comes from the harness's session for this worktree. A page of
+    /// `ps` that was cut short is an error: an orca that cannot say whether
+    /// a terminal is live is never "no worker there".
     pub fn state(&self, now: u64) -> Result<WorkerState> {
         let row = self.health_report()?;
-        if row["liveTerminalCount"].as_u64().unwrap_or(0) > 0 && crate::health::has_signal(self)? {
+        let terminals = row["liveTerminalCount"].as_u64().unwrap_or(0);
+        if terminals > 0 && crate::health::has_signal(self)? {
             return Ok(WorkerState::Idle { quiet: None });
         }
-        // orca's clocks are epoch milliseconds
-        let seconds = |stamp: &Value| stamp.as_u64().map(|ms| ms / 1000);
-        let agents: Vec<AgentReport> = row["agents"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter(|agent| agent["state"].is_string() && agent["parentPaneKey"].is_null())
-            .map(|agent| AgentReport {
-                working: agent["state"] == "working",
-                since: seconds(&agent["stateStartedAt"]),
-            })
-            .collect();
-        let terminals = row["liveTerminalCount"].as_u64().unwrap_or(0);
-        Ok(worker_state(terminals, seconds(&row["lastOutputAt"]), lead(&agents), now))
+        if terminals == 0 {
+            return Ok(WorkerState::Gone);
+        }
+        let harness = agent_harness(&main_agent(&row)).or(self.recorded_harness()?);
+        let since = self.handed(None)?;
+        let turn = crate::session::read_turn(
+            &self.path,
+            harness.unwrap_or(Harness::DEFAULT),
+            since,
+            None,
+        )?;
+        Ok(worker_state(terminals, turn, now))
     }
 
     /// Actual structured runtime observations for diagnosis. A transport
@@ -1347,30 +1342,63 @@ impl Worktree {
     }
 
     /// A session sharing a directory with the operator uses only its own
-    /// pane's runtime report and output, never the directory's lead agent.
-    pub(crate) fn terminal_health(&self, terminal: &str, now: u64) -> Result<(WorkerState, Value)> {
+    /// pane's runtime report, and the session `harness` recorded for this
+    /// directory. The directory need not be git.
+    pub(crate) fn terminal_health(
+        &self,
+        terminal: &str,
+        harness: Harness,
+        now: u64,
+    ) -> Result<(WorkerState, Value)> {
         let shown = orca(&["terminal", "show", "--terminal", terminal])?;
-        let shown = &shown["terminal"];
         let row = self.health_report()?;
-        let agent = pane_agent(&row, shown);
-        let lead = (!agent.is_null()).then(|| AgentReport {
-            working: agent["state"] == "working",
-            since: agent["stateStartedAt"].as_u64().map(|at| at / 1000),
-        });
-        Ok((worker_state(1, shown["lastOutputAt"].as_u64().map(|at| at / 1000), lead, now), agent))
+        let agent = pane_agent(&row, &shown["terminal"]);
+        let since = self.handed(None).ok().flatten();
+        let turn = crate::session::read_turn(&self.path, harness, since, None)?;
+        Ok((worker_state(1, turn, now), agent))
     }
 
-    /// Delivers to a watch with the same input check and turn receipt as a
+    /// Whether `harness` recorded a turn for this directory that started at
+    /// or after `earliest`. Waits out the submit bound, checking as soon as
+    /// the session has it.
+    pub(crate) fn prove(&self, harness: Harness, earliest: u64) -> Result<bool> {
+        self.poll_turn(harness, earliest, true)
+    }
+
+    /// One look, for a send Orca already failed: the turn is either written
+    /// or it is not.
+    pub(crate) fn saw_turn(&self, harness: Harness, earliest: u64) -> Result<bool> {
+        self.poll_turn(harness, earliest, false)
+    }
+
+    fn poll_turn(&self, harness: Harness, earliest: u64, wait: bool) -> Result<bool> {
+        let seconds = if wait { turn_wait_seconds() } else { 0 };
+        let deadline = Instant::now() + Duration::from_secs(seconds);
+        let since = Some(earliest.saturating_sub(2));
+        loop {
+            if crate::session::read_turn(&self.path, harness, since, Some(earliest))?.is_some() {
+                return Ok(true);
+            }
+            if seconds == 0 || Instant::now() >= deadline {
+                return Ok(false);
+            }
+            let left = deadline.saturating_duration_since(Instant::now());
+            std::thread::sleep(Duration::from_millis(200).min(left));
+        }
+    }
+
+    /// Delivers to a watch with the same input check and session proof as a
     /// worker. Its directory need not be git, so it keeps no worktree notes.
-    pub(crate) fn tell_watch(&self, terminal: &str, line: &str) -> Result<()> {
-        self.tell_unchecked(terminal, line, BRIEF_SETTLE_SECONDS)
+    pub(crate) fn tell_watch(&self, terminal: &str, line: &str, harness: Harness) -> Result<()> {
+        let earliest = crate::clock().saturating_sub(2);
+        self.tell_unchecked(terminal, line, BRIEF_SETTLE_SECONDS, Some(harness), earliest)
     }
 
     /// Checks this pane's input without typing or waiting for an active
     /// model turn. A queued watch round must leave busy input untouched.
     pub(crate) fn watch_input_ready(&self, terminal: &str) -> Result<bool> {
         match self.wait_for_input(terminal, Duration::from_millis(100)) {
-            Ok(Waited::Ready) => Ok(true),
+            Ok((Waited::Ready, _)) => Ok(true),
             Ok(_) => Ok(false),
             Err(error) if error.downcast_ref::<IdleTimeout>().is_some() => Ok(false),
             Err(error) => Err(error),
@@ -1393,8 +1421,6 @@ impl Worktree {
             "--text",
             line,
             "--enter",
-            "--wait-submit",
-            &SUBMIT_SECONDS.to_string(),
             "--retry-request",
             request,
         ])
@@ -1498,16 +1524,17 @@ impl Worktree {
     /// startup episode even with its animations off. Read its state afresh,
     /// outside the tick's cached observation, until it leaves that episode.
     /// Both checks share one bound; a harness with no report uses tui-idle.
-    fn wait_for_input(&self, terminal: &str, within: Duration) -> Result<Waited> {
+    /// The agent of that read is the one the caller already paid for.
+    fn wait_for_input(&self, terminal: &str, within: Duration) -> Result<(Waited, Value)> {
         let began = Instant::now();
         loop {
             let remaining = within.saturating_sub(began.elapsed());
             if remaining.is_zero() {
-                return Ok(Waited::NotReady);
+                return Ok((Waited::NotReady, Value::Null));
             }
             let (ready, _) = self.wait(terminal, remaining)?;
             if ready != Waited::Ready {
-                return Ok(ready);
+                return Ok((ready, Value::Null));
             }
             let row = runtime_row(&runtime_live()?, &self.path);
             let agent = if row["liveTerminalCount"].as_u64().unwrap_or(0) > 1 {
@@ -1520,7 +1547,7 @@ impl Worktree {
             };
             let state = agent["programStatus"]["state"].as_str().or(agent["state"].as_str());
             if state != Some("working") {
-                return Ok(Waited::Ready);
+                return Ok((Waited::Ready, agent));
             }
             std::thread::sleep(INPUT_POLL.min(within.saturating_sub(began.elapsed())));
         }
@@ -1543,22 +1570,30 @@ impl Worktree {
         )
     }
 
-    /// Types one line only at the harness's input, then requires Orca's
-    /// receipt to prove that this submission started a turn. Input acceptance
-    /// alone is no delivery, except where Orca reports that it cannot observe
-    /// the harness at all (`observation: unsupported`): there the screen is
-    /// the evidence and worker health judges it. A failed line is kept for
-    /// worker health.
+    /// Types one line only at the harness's input, then requires that
+    /// harness's session to show this submission started a turn. A line the
+    /// terminal did not accept is a failed delivery, and the session is not
+    /// read for it. The screen's last lines stay on the error as evidence.
     pub fn tell(&self, terminal: &str, line: &str) -> Result<()> {
         self.tell_at(terminal, line, crate::clock())
     }
 
     pub fn tell_at(&self, terminal: &str, line: &str, now: u64) -> Result<()> {
-        crate::harness_down::tell(self, terminal, now, || self.tell_unchecked(terminal, line, 1))
+        let earliest = crate::clock().saturating_sub(2);
+        crate::harness_down::tell(self, terminal, now, || {
+            self.tell_unchecked(terminal, line, 1, None, earliest)
+        })
     }
 
-    fn tell_unchecked(&self, terminal: &str, line: &str, settle_seconds: u64) -> Result<()> {
-        let ready = self
+    fn tell_unchecked(
+        &self,
+        terminal: &str,
+        line: &str,
+        settle_seconds: u64,
+        harness: Option<Harness>,
+        earliest: u64,
+    ) -> Result<()> {
+        let (ready, agent) = self
             .wait_for_input(terminal, Duration::from_secs(settle_seconds))
             .with_context(|| {
                 self.prompt_context(
@@ -1572,18 +1607,19 @@ impl Worktree {
                 "no running worker harness at its input; no line was sent",
             ));
         }
-        let timeout = SUBMIT_SECONDS.to_string();
-        let sent = orca(&[
-            "terminal",
-            "send",
-            "--terminal",
-            terminal,
-            "--text",
-            line,
-            "--enter",
-            "--wait-submit",
-            &timeout,
-        ])?;
+        // The input check already read this agent. Asking again would be a
+        // second `worktree ps` before the line is sent.
+        let harness = match harness {
+            Some(harness) => harness,
+            None => agent_harness(&agent).or(self.recorded_harness()?).unwrap_or(Harness::DEFAULT),
+        };
+        let sent = orca(&["terminal", "send", "--terminal", terminal, "--text", line, "--enter"]);
+        let sent = match sent {
+            Err(error) => {
+                return if self.saw_turn(harness, earliest)? { Ok(()) } else { Err(error) };
+            }
+            Ok(sent) => sent,
+        };
         if sent["send"]["accepted"] != true {
             return Err(PromptBlocked(
                 sent["send"]["blockedReason"]
@@ -1593,32 +1629,26 @@ impl Worktree {
             )
             .into());
         }
-        let prompt = &sent["send"]["prompt"];
-        let stages = prompt["stages"].as_array();
-        let started =
-            stages.is_some_and(|stages| stages.iter().any(|stage| stage == "turn_started"));
-        // Orca names no turn start for a harness it cannot observe. An
-        // accepted input receipt is enough only when the screen confirms the
-        // harness began working; otherwise this is still a failed delivery.
-        let accepted_unobserved = prompt["observation"] == "unsupported"
-            && stages.is_some_and(|stages| stages.iter().any(|stage| stage == "input_accepted"))
-            && screen_shows_turn(&self.screen(terminal, 20)?);
-        if !started && !accepted_unobserved {
-            return Err(self.prompt_failure(
-                terminal,
-                &format!(
-                    "the line started no turn within {SUBMIT_SECONDS}s; delivery receipt: {prompt}"
-                ),
-            ));
+        if self.prove(harness, earliest)? {
+            return Ok(());
         }
-        Ok(())
+        let prompt = &sent["send"]["prompt"];
+        Err(self.prompt_failure(
+            terminal,
+            &format!(
+                "the line started no turn within {}s; delivery receipt: {prompt}",
+                turn_wait_seconds()
+            ),
+        ))
     }
 
     /// Hands the worker in `terminal` the brief at `brief`.
     pub fn deliver(&self, terminal: &str, brief: &Path) -> Result<()> {
         let line = brief_pointer(&brief.display().to_string());
+        // A retry of the brief counts the turn the first send already started.
+        let earliest = self.handed(None)?.unwrap_or_else(|| crate::clock().saturating_sub(2));
         crate::harness_down::tell(self, terminal, crate::clock(), || {
-            self.tell_unchecked(terminal, &line, BRIEF_SETTLE_SECONDS)
+            self.tell_unchecked(terminal, &line, BRIEF_SETTLE_SECONDS, None, earliest)
         })?;
         // What a watch starts on first; a record it cannot keep loses no
         // worker its brief.
@@ -1630,17 +1660,6 @@ impl Worktree {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn grok_waiting_for_a_response_is_a_started_turn_and_an_idle_prompt_is_not() {
-        assert!(screen_shows_turn(&[
-            "Waiting for response… 0.3s".into(),
-            "Grok 4.7 (high) · always-approve".into(),
-        ]));
-        assert!(screen_shows_turn(&["Working…".into()]));
-        assert!(screen_shows_turn(&["Thinking".into()]));
-        assert!(!screen_shows_turn(&["Grok 4.7 (high) · always-approve".into(), "❯".into(),]));
-    }
 
     #[test]
     fn every_lone_surrogate_in_an_answer_becomes_one_replacement_character() {
