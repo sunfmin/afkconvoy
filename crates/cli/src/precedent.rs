@@ -20,7 +20,7 @@ use anyhow::{Result, anyhow};
 use serde::Serialize;
 
 use crate::claims::{Me, drop_run, take_run};
-use crate::dispatch::Agent;
+use crate::dispatch::{Agent, WorkerSelection};
 use crate::fleet::Fleet;
 use crate::orca::{Source, Worktree};
 use crate::stage::Flows;
@@ -254,10 +254,9 @@ pub fn propose(
     };
     let terminal = agent.start_worker(
         &checkout,
-        (harness, first.model.as_deref()),
+        WorkerSelection { harness, model: first.model.as_deref(), explicit_model: false },
         &harness.in_role(launch.as_str(), &start),
         true,
-        false,
         None,
         me.now,
     )?;

@@ -21,7 +21,7 @@ use serde_json::{Value, json};
 
 use crate::claims::{Ask, Me, drop_ask, drop_run, push_ask, take_run};
 use crate::copies::Copies;
-use crate::dispatch::{Agent, Continuing};
+use crate::dispatch::{Agent, Continuing, WorkerSelection};
 use crate::fleet::Fleet;
 use crate::gh::OpenIssues;
 use crate::git::{REMOTE, Repo};
@@ -234,10 +234,9 @@ pub fn run(fleet: &mut Fleet, me: &Me, agent: &Agent, read: &Flows, row: &Row) -
     let line = in_role(fleet, kept, name, &cast, launch.as_str(), &checkout)?;
     let terminal = agent.start_worker(
         &checkout,
-        (harness, cast.model.as_deref()),
+        WorkerSelection { harness, model: cast.model.as_deref(), explicit_model: false },
         &line,
         true,
-        false,
         None,
         me.now,
     )?;
@@ -361,10 +360,9 @@ pub(crate) fn switch(
     crate::dispatch::continue_brief(fleet, &checkout, None, &continuing)?;
     let terminal = agent.start_worker(
         &checkout,
-        (harness, cast.model.as_deref()),
+        WorkerSelection { harness, model: cast.model.as_deref(), explicit_model: false },
         &line,
         true,
-        false,
         None,
         me.now,
     )?;

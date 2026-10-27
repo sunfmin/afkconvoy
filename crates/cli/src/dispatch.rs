@@ -97,6 +97,14 @@ pub struct Agent {
     pub ready_timeout: u64,
 }
 
+/// A worker's selected harness and model, including whether an issue model
+/// label requires casting to take precedence over the user's Codex preference.
+pub struct WorkerSelection<'a> {
+    pub harness: Harness,
+    pub model: Option<&'a str>,
+    pub explicit_model: bool,
+}
+
 impl Agent {
     /// Starts an interactive worker with the fleet's selected model and
     /// freshly read host-user effort, and waits until it can take its brief.
@@ -106,14 +114,13 @@ impl Agent {
     pub fn start_worker(
         &self,
         worktree: &Worktree,
-        selection: (Harness, Option<&str>),
+        selection: WorkerSelection<'_>,
         command: &str,
         in_role: bool,
-        explicit_model: bool,
         issue: Option<u64>,
         now: u64,
     ) -> Result<String> {
-        let (harness, model) = selection;
+        let WorkerSelection { harness, model, explicit_model } = selection;
         let (model, model_source) = if harness == Harness::Codex {
             crate::codex_launch::automatic_model(explicit_model.then_some(model).flatten())?
         } else {
@@ -545,10 +552,9 @@ fn start(
                 terminal = Some(match &staged {
                     Some(staged) => agent.start_worker(
                         cut,
-                        (harness, model.as_deref()),
+                        WorkerSelection { harness, model: model.as_deref(), explicit_model },
                         &staged.command(launch, cut, model.as_deref())?,
                         true,
-                        explicit_model,
                         None,
                         fleet.now,
                     )?,
@@ -562,10 +568,9 @@ fn start(
                         };
                         agent.start_worker(
                             cut,
-                            (harness, model.as_deref()),
+                            WorkerSelection { harness, model: model.as_deref(), explicit_model },
                             &launch,
                             false,
-                            explicit_model,
                             Some(number),
                             fleet.now,
                         )?

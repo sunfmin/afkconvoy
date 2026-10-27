@@ -253,7 +253,7 @@ pub(crate) fn planned(model: Option<&str>, explicit: bool) -> Value {
     let selected = automatic_model(explicit.then_some(model).flatten());
     match selected.and_then(|(model, source)| {
         let config = config(&file)?;
-        Ok(settings(model.as_deref(), source, &config, &file)?)
+        settings(model.as_deref(), source, &config, &file)
     }) {
         Ok(settings) => json!(settings),
         Err(error) => {
