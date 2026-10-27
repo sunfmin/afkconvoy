@@ -1313,7 +1313,7 @@ Create or inspect a Jira delivery
 
 ##### When to run it
 
-Run `afkconvoy delivery -C <checkout> --jira https://example.atlassian.net/browse/ABC-123 --final-target main --issue 7` before making the first task dispatchable. The checkout names the code repo. Repeat with another --issue to attach another open task. Omit --final-target and --issue for read-only inspection. Repeat the creation command to reconcile pending final review.
+Run `afkconvoy delivery -C <checkout> --jira https://example.atlassian.net/browse/ABC-123 --final-target <branch> --issue 7` before making the first task dispatchable. The checkout names the code repo. Repeat with another --issue to attach another open task. Omit --final-target and --issue for read-only inspection. Repeat the creation command to reconcile pending final review.
 
 ##### Who runs it
 
@@ -1323,7 +1323,7 @@ The operator. Jira is an external reference; no Jira login or synchronization is
 
 The full HTTPS Jira browse URL, including site and optional context path, and the code repo identify the delivery. Creation requires an explicit existing final target on origin and a private tracker. It atomically creates an immutable JSON definition at delivery/<identity> under the remote fleet ref layout and a predictable delivery/jira-<key>-<identity> branch at that target's tip. This definition alone owns both branches. Task target records store only a delivery reference. The repo defaults and release destination stay unchanged.
 
-A task cuts from the delivery branch and lands its internal PR only there. The final review PR is opened as a Draft as soon as a meaningful diff exists, after task landing or on an acting tick. No diff leaves creation pending without empty commits or PR attempts. Its number lives once in the subordinate delivery-pr/<identity> receipt. Every retry discovers actual remote branches, records and all PR states first. Later tasks reuse the same final PR even after it is closed or merged. A human owns colleague review and merging the final PR; ordinary dispatch, landing, watch and recovery exclude it.
+A task cuts from the delivery branch and lands its internal PR only there. The final review PR is opened as a Draft as soon as a meaningful diff exists, after task landing or on an acting tick. No diff leaves creation pending without empty commits or PR attempts. Its number lives once in the subordinate delivery-pr/<identity> receipt. Each invocation discovers actual remote branches, records and all PR states first. Later tasks reuse the same final PR even after it is closed or merged. A human owns colleague review and merging the final PR; ordinary dispatch, landing, watch and recovery exclude it.
 
 ##### What it answers
 
@@ -1331,7 +1331,7 @@ A task cuts from the delivery branch and lands its internal PR only there. The f
 
 ##### What trips you up
 
-Ticket keys alone are not references: different Jira sites may reuse a key. An unrelated existing branch, conflicting final target, claimed task with another target, ambiguous PR history, unreadable record or missing owned branch refuses with a diagnostic. Restore inconsistent remote metadata before continuing attached tasks; nothing falls back to the configured base. A ticket spanning code repos has a separate delivery and final PR in each. To hand a task to the fleet, give it its ready or flow label after attaching it.
+Ticket keys alone are not references: different Jira sites may reuse a key. An unrelated existing branch, conflicting final target, claimed task with another target, ambiguous PRs, unreadable record or missing owned branch refuses with a diagnostic. Restore inconsistent remote metadata before continuing attached tasks; nothing falls back to the configured base. A ticket spanning code repos has a separate delivery and final PR in each. To hand a task to the fleet, give it its ready or flow label after attaching it.
 
 ##### Which checkout it is about
 
