@@ -176,7 +176,37 @@ fn a_fixed_budget_warns_through_tick_and_doctor_without_mixing_hosts_or_reopenin
         .map(|run| run["seconds"].as_u64().unwrap())
         .collect();
     assert_eq!(times, [800, 750, 700, 650, 601]);
-    let ticked = tick_as(&world, "alpha", "h1", "91600");
+    // One real foreground tick also persists the existing tick log.
+    let (lines, _) = world.afk_lines(&[
+        "run",
+        "--foreground",
+        "--host",
+        "h1",
+        "--instance",
+        "alpha",
+        "--ticks",
+        "1",
+        "--now",
+        "91600",
+        "--second-ms",
+        "0",
+    ]);
+    let line =
+        lines.iter().find(|line| line.contains("opened an issue for the slow gate")).unwrap();
+    assert!(line.contains("fixed duration budget of 600s"), "{line}");
+    let logs = std::fs::read_dir(world.cache().join("afkconvoy/runs")).unwrap();
+    let ticked = logs
+        .flat_map(|file| {
+            let text = std::fs::read_to_string(file.unwrap().path()).unwrap();
+            text.lines()
+                .map(|line| serde_json::from_str::<afkconvoy::log::Entry>(line).unwrap())
+                .collect::<Vec<_>>()
+        })
+        .find_map(|entry| match entry.what {
+            afkconvoy::log::What::Tick(tick) => tick.answer,
+            _ => None,
+        })
+        .expect("the tick's answer is persisted in the existing log");
     assert_eq!(opening(&ticked), Some("done"));
     let logged =
         ticked["did"].as_array().unwrap().iter().find(|step| step["do"] == "slow_gate").unwrap();

@@ -33,7 +33,7 @@ pub fn load(file: &Path) -> Result<Config> {
 }
 
 /// The config in a markdown text: its first ```` ```yaml ```` block, and the
-/// cut settings across its ```` ```yaml cut ```` blocks (`cut::BLOCK`). New
+/// optional gate-budget blocks and the cut settings across its ```` ```yaml cut ```` blocks (`cut::BLOCK`). New
 /// settings can follow the first cut block: older versions read only that
 /// first block and skip additions, while duplicate keys still fail here.
 pub fn parse(markdown: &str) -> Result<Config> {
@@ -87,7 +87,7 @@ fn cut_steps(yaml: &str) -> Result<cut::Steps> {
 }
 
 /// The text of the first ```` ```yaml ```` block of a markdown text: the one
-/// carrier of every definition afkconvoy reads.
+/// main config block; gate-budget and cut settings may follow separately.
 pub fn yaml_block(markdown: &str) -> Option<String> {
     fenced(markdown, "```yaml")
 }
