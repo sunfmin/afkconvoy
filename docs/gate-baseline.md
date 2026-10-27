@@ -84,8 +84,9 @@ as well as the larger margin above the earlier six-minute observation.
 
 ## Rationale and interpretation
 
-Ten minutes gives about 58% over the review's 378.67 seconds before a run counts
-as slow. Five such recorded landings on one host must confirm the condition:
+Ten minutes gives about 36% over the current 441.47-second observation and
+58% over the review's 378.67 seconds before a run counts as slow.
+Five such recorded landings on one host must confirm the condition:
 one cold compile or a temporary burst of load cannot alone open an issue.
 The termination limit remains the declared hour. A warning can therefore
 surface minute-scale slowing while a normal cold build or contended run still
