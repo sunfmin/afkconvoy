@@ -43,7 +43,7 @@ Every command prints exactly one JSON object on stdout. A failure is {"error": �
 
 Read `afkconvoy <command> --help` before first running it. Commands are grouped by who runs them:
 
-- **Run by the operator** — `config`, `check`, `plan` before `run`; `target` to select a task's destination; `tick` for one pass, `stop` to stop; `queue` for the local exclusive queue; `doctor --all --since <until of your last look>`, `checkouts`, `panel` to watch (`doctor` names each fix); `kit`, `cast`, `switch` for workers' harnesses and models; `patrol-now` to run a patrol now; `takeover` to take another fleet instance's claims.
+- **Run by the operator** — `config`, `check`, `plan` before `run`; `target` to select a task's destination; `delivery` to gather a Jira ticket's tasks on one branch with one final review PR; `tick` for one pass, `stop` to stop; `queue` for the local exclusive queue; `doctor --all --since <until of your last look>`, `checkouts`, `panel` to watch (`doctor` names each fix); `kit`, `cast`, `switch` for workers' harnesses and models; `patrol-now` to run a patrol now; `takeover` to take another fleet instance's claims.
 - **Run by whoever designs a team** — `scaffold` to start one or a role of it from a skeleton, `draft` to draft its roster from the host kit, then, once `check` accepts it, `show` to review a workflow or to ask where an issue is in it, and `rehearse` to try one out.
 - **Run by whoever hands the fleet work** — a human or their agent opening decided work. `flows` names the workflow, gives the issue-create line and makes labels. After opening issues, `wake` has the fleet take them up now.
 - **Run by whoever sets an agent up** — `skill` prints the skill file that sends their agent to `afkconvoy --help`.

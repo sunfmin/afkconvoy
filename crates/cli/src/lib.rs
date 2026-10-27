@@ -204,7 +204,7 @@ const SKILL: &str = include_str!("../../../skills/afkconvoy/SKILL.md");
 ///
 /// Read `afkconvoy <command> --help` before first running it. Commands are grouped by who runs them:
 ///
-/// - **{const:OPERATOR}** — `config`, `check`, `plan` before `run`; `target` to select a task's destination; `tick` for one pass, `stop` to stop; `queue` for the local exclusive queue; `doctor --all --since <until of your last look>`, `checkouts`, `panel` to watch (`doctor` names each fix); `kit`, `cast`, `switch` for workers' harnesses and models; `patrol-now` to run a patrol now; `takeover` to take another fleet instance's claims.
+/// - **{const:OPERATOR}** — `config`, `check`, `plan` before `run`; `target` to select a task's destination; `delivery` to gather a Jira ticket's tasks on one branch with one final review PR; `tick` for one pass, `stop` to stop; `queue` for the local exclusive queue; `doctor --all --since <until of your last look>`, `checkouts`, `panel` to watch (`doctor` names each fix); `kit`, `cast`, `switch` for workers' harnesses and models; `patrol-now` to run a patrol now; `takeover` to take another fleet instance's claims.
 /// - **{const:DESIGNER}** — `scaffold` to start one or a role of it from a skeleton, `draft` to draft its roster from the host kit, then, once `check` accepts it, `show` to review a workflow or to ask where an issue is in it, and `rehearse` to try one out.
 /// - **{const:HANDS_WORK}** — a human or their agent opening decided work. `flows` names the workflow, gives the issue-create line and makes labels. After opening issues, `wake` has the fleet take them up now.
 /// - **{const:SETS_UP}** — `skill` prints the skill file that sends their agent to `afkconvoy --help`.
