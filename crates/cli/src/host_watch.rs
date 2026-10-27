@@ -279,19 +279,21 @@ impl State {
             let own = human_wait_aliases(&round.look);
             for item in &mut round.items {
                 if let Some(id) = own.get(&item.id) {
+                    aliases.insert(item.id.clone(), (id.clone(), round.report.is_some()));
                     item.id = id.clone();
                 }
             }
-            aliases.extend(own);
         }
-        aliases.extend(human_wait_aliases(&self.look));
         for id in &mut self.watched {
-            if let Some(canonical) = aliases.get(id) {
+            if let Some((canonical, _)) = aliases.get(id) {
                 *id = canonical.clone();
             }
         }
-        for (old, canonical) in aliases {
+        for (old, (canonical, reported)) in aliases {
             let Some(episode) = self.observed.remove(&old) else { continue };
+            if !reported {
+                self.covered.retain(|covered| covered != &episode);
+            }
             let retained =
                 self.observed.entry(canonical).or_insert_with(|| episode.clone()).clone();
             if retained == episode {
@@ -1792,6 +1794,60 @@ mod tests {
         unrelated["checkouts"].as_array_mut().unwrap().push(other);
         state.observe(unrelated, later);
         assert_eq!(state.pending.len(), 1, "another checkout is unrelated work");
+    }
+
+    #[test]
+    fn an_unrelated_rounds_newer_look_cannot_migrate_old_coverage_to_a_changed_question() {
+        let now = HUMAN_SINCE + 9 * 3600 + 27 * 60;
+        let old = "human:/bizkernel:#11";
+        let reported = human_round(
+            human_look(now),
+            vec![Item::new(old, "human decision")],
+            vec!["old-episode".into()],
+            true,
+        );
+        let mut changed = human_look(now + 360);
+        changed["checkouts"][0]["doctor"]["findings"] = json!([]);
+        changed["checkouts"][0]["doctor"]["waiting_on_human"][0]["url"] =
+            json!("changed-escalation");
+        let unrelated = human_round(
+            changed.clone(),
+            vec![Item::new("another-condition", "unrelated")],
+            vec!["another-episode".into()],
+            true,
+        );
+        let mut state = State {
+            watched: vec![old.into()],
+            observed: BTreeMap::from([(old.into(), "old-episode".into())]),
+            covered: vec!["old-episode".into()],
+            episodes_initialized: true,
+            history: vec![reported, unrelated.clone()],
+            last: Some(unrelated),
+            look: changed.clone(),
+            ..State::default()
+        };
+        state.observe(changed.clone(), now + 360);
+        assert_eq!(state.pending.len(), 1, "only a report on that question can cover it");
+
+        // An older scheduler could also retain the issue-only episode when
+        // a later, changed question ran without a report. Its latest outcome
+        // must release the inherited coverage during the upgrade.
+        let unreported = human_round(
+            changed.clone(),
+            vec![Item::new(old, "changed question")],
+            vec!["old-episode".into()],
+            false,
+        );
+        let mut state = State {
+            observed: BTreeMap::from([(old.into(), "old-episode".into())]),
+            covered: vec!["old-episode".into()],
+            episodes_initialized: true,
+            last: Some(unreported.clone()),
+            history: vec![unreported],
+            ..State::default()
+        };
+        state.observe(changed, now + 360);
+        assert_eq!(state.pending.len(), 1, "unreported work releases inherited coverage");
     }
 
     #[test]
