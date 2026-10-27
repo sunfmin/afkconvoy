@@ -199,7 +199,7 @@ _Avoid_: freeze, pause (a harness paused on a host, as under Host kit), kill swi
 ### Workers
 
 **Harness**:
-The program a worker is a session of: it runs a model, with tools, on the work it is handed. Claude Code, pi, Codex, DeepSeek Harness (DSH) and Kimi Code are harnesses. The host kit's order chooses the first eligible one; a role's limits and range constrain eligibility.
+The program a worker is a session of: it runs a model, with tools, on the work it is handed. Claude Code, pi, Codex, DeepSeek Harness (DSH), Kimi Code and Grok are harnesses. The host kit's order chooses the first eligible one; a role's limits and range constrain eligibility.
 _Avoid_: agent (as under Worker), coding agent (as under Worker), CLI, provider (whose models a harness runs)
 
 **Roster**:

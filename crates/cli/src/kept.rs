@@ -87,7 +87,7 @@ pub fn keep_under_with_dsh_homes(
     };
     let dir = cache.join("harness").join(name);
     keep_at_with_dsh_homes(&dir, home, harness, host_user, dsh_home, dsh_agents_home)?;
-    configure(&dir, home, harness, None, None, None)?;
+    configure(&dir, home, harness, host_user, None, None, None)?;
     Ok(dir)
 }
 
@@ -157,25 +157,29 @@ fn configure(
     dir: &Path,
     home: Option<&Path>,
     harness: Harness,
+    host_user: bool,
     role_dir: Option<&Path>,
     told: Option<&afkconvoy_core::role::Told>,
     guard: Option<&str>,
 ) -> Result<()> {
-    if harness.kept_configuration(None, None, None).map_err(anyhow::Error::msg)?.is_none() {
+    if harness
+        .kept_configuration(None, None, None, host_user)
+        .map_err(anyhow::Error::msg)?
+        .is_none()
+    {
         return Ok(());
     }
-    let user = home
-        .map(|home| home.join(".kimi-code/config.toml"))
-        .filter(|file| file.is_file())
-        .map(std::fs::read_to_string)
-        .transpose()?;
+    let user = harness.user_config().and_then(|path| {
+        home.map(|home| home.join(path)).filter(|file| file.is_file()).map(std::fs::read_to_string)
+    });
+    let user = user.transpose()?;
     let role = role_dir
         .map(|role| role.join(harness.limits()))
         .filter(|file| file.is_file())
         .map(std::fs::read_to_string)
         .transpose()?;
     let Some(config) = harness
-        .kept_configuration(user.as_deref(), role.as_deref(), guard)
+        .kept_configuration(user.as_deref(), role.as_deref(), guard, host_user)
         .map_err(anyhow::Error::msg)?
     else {
         return Ok(());
@@ -185,10 +189,11 @@ fn configure(
     carry(&file, &config)?;
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600))?;
+    let system_file = dir.join(harness.kept_system_file());
     if let Some(system) = told.and_then(|told| harness.kept_system(told)) {
-        carry(&dir.join("SYSTEM.md"), &system)?;
+        carry(&system_file, &system)?;
     } else {
-        match std::fs::remove_file(dir.join("SYSTEM.md")) {
+        match std::fs::remove_file(&system_file) {
             Err(error) if error.kind() != ErrorKind::NotFound => return Err(error.into()),
             _ => {}
         }
@@ -251,14 +256,25 @@ fn worker_at(
     told: &afkconvoy_core::role::Told,
     guard: &str,
 ) -> Result<(String, Vec<String>)> {
-    let dir = if harness.kept_configuration(None, None, None).map_err(anyhow::Error::msg)?.is_some()
+    let dir = if harness
+        .kept_configuration(None, None, None, host_user)
+        .map_err(anyhow::Error::msg)?
+        .is_some()
     {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         role_dir.hash(&mut hasher);
         let dir = base.join(format!("role-{:016x}", hasher.finish()));
         keep_at(&dir, home.as_deref(), harness, host_user)?;
-        configure(&dir, home.as_deref(), harness, Some(role_dir), Some(told), Some(guard))?;
+        configure(
+            &dir,
+            home.as_deref(),
+            harness,
+            host_user,
+            Some(role_dir),
+            Some(told),
+            Some(guard),
+        )?;
         dir
     } else {
         base

@@ -1,0 +1,634 @@
+//! Grok, as a harness. A role's denied permissions are Grok's own project
+//! file; its hooks are not loaded from that file, so each role gets a
+//! generated home whose config holds the role's hooks and denies, the fleet's
+//! guard and the report. The role's rules and skills stay where every harness
+//! writes them.
+
+use std::collections::BTreeMap;
+
+use flux_rs::attrs::*;
+use serde::de::{Error, IgnoredAny};
+use serde::{Deserialize, Deserializer};
+use toml::Value as Toml;
+
+use super::{Held, Kept, Link};
+use crate::guard::Call;
+use crate::line::Line;
+use crate::role::{Rules, Start, Told};
+use crate::team::RULES;
+
+pub(super) const NAME: &str = "Grok";
+pub(super) const KEY: &str = "grok";
+pub(super) const PROGRAM: &str = "grok";
+/// Lets an unattended interactive worker run. Deny rules and hooks still apply.
+pub(super) const STOCK: &str = "grok --always-approve";
+
+const ADD_DIR: &str = "--add-dir";
+pub(super) const MODEL: &str = "--model";
+/// On the launch line. Grok 1.0.70 accepts it and `--help` does not name it,
+/// so it is not one of `FLAGS`: the flag check does not require `--help` to.
+pub(super) const TRUST: &str = "--trust";
+pub(super) const FLAGS: [&str; 2] = [ADD_DIR, MODEL];
+const HELP: &str = " --help";
+const MODELS: &str = " models";
+const PROMPT: &str = " -p";
+const AS_JSON: &str = " --output-format json";
+
+const USER_DIR: &str = "GROK_HOME";
+/// Nothing here is set to `=1`. The disables are `=0`, written in `environment`.
+pub(super) const ENVIRONMENT: [&str; 0] = [];
+
+pub(super) const KEPT: Kept = Kept {
+    links: &[Link { home: ".grok/auth.json", kept: "auth.json" }],
+    host_user: &[
+        Link { home: ".grok/skills", kept: "skills" },
+        Link { home: ".grok/commands", kept: "commands" },
+    ],
+    files: &[],
+};
+
+pub(super) const LIMITS: &str = ".grok/config.toml";
+pub(super) const REPO_RULES: [&str; 2] = ["AGENTS.md", RULES];
+/// Where the generated home writes the repo and team rules. Not the user's
+/// rules directory: that one is named, when the worker is given it, and this
+/// file has to stay the fleet's.
+pub(super) const SYSTEM_FILE: &str = "rules/told.md";
+pub(super) const REFUSED: u8 = 2;
+
+const HOOK_TIMEOUT: i64 = 10;
+
+/// Events the report rides, besides `PreToolUse` which also asks the guard.
+/// Documented for Grok; a denied call may not reach the report on that one
+/// event, and busy and stopped still come from the others.
+const STATE_EVENTS: [&str; 12] = [
+    "SessionStart",
+    "UserPromptSubmit",
+    "PostToolUse",
+    "PostToolUseFailure",
+    "SubagentStart",
+    "SubagentStop",
+    "Stop",
+    "StopFailure",
+    "PreCompact",
+    "PostCompact",
+    "Notification",
+    "SessionEnd",
+];
+
+/// Home skill and command directories a worker is not given when `host_user`
+/// is false. `~` is the host user's home, which Grok expands in its own config.
+const HOME_SKILLS: [&str; 7] = [
+    "~/.claude/skills",
+    "~/.claude/commands",
+    "~/.agents/skills",
+    "~/.agents/commands",
+    "~/.cursor/skills",
+    "~/.grok/skills",
+    "~/.grok/commands",
+];
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Limits {
+    #[serde(default)]
+    hooks: BTreeMap<String, Vec<IgnoredAny>>,
+    #[serde(default)]
+    permission: Permissions,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Permissions {
+    #[serde(default)]
+    deny: Vec<String>,
+    /// Accepted so a role can name them beside a deny. Neither is a limit.
+    #[serde(default, rename = "allow")]
+    _allow: Vec<IgnoredAny>,
+    #[serde(default, rename = "ask")]
+    _ask: Vec<IgnoredAny>,
+    #[serde(default)]
+    rules: Vec<Rule>,
+}
+
+#[derive(Deserialize)]
+struct Rule {
+    #[serde(default)]
+    decision: String,
+}
+
+pub(super) fn limited<'de, D: Deserializer<'de>>(held: Held<D>) -> Result<bool, D::Error> {
+    match held {
+        Held::Nothing => Ok(false),
+        Held::Entries(_) => Err(D::Error::custom("it is a directory, not a TOML file")),
+        Held::File(limits) => {
+            let limits = Limits::deserialize(limits)?;
+            Ok(!limits.permission.deny.is_empty()
+                || limits.permission.rules.iter().any(|rule| rule.decision == "deny")
+                || limits.hooks.values().any(|hooks| !hooks.is_empty()))
+        }
+    }
+}
+
+/// Reads a role's TOML limits through the same decision as the other harnesses.
+pub(super) fn limited_file(text: &str) -> Result<bool, String> {
+    let deserializer = toml::de::Deserializer::new(text);
+    limited(Held::File(deserializer)).map_err(|error| error.to_string())
+}
+
+/// The configuration a worker or a shared home gets. The host user's Grok
+/// config is not read: its hooks, MCP servers, plugins, permission mode and
+/// memories stay out. A worker also gets its role's limits and the fleet's
+/// hooks; a listing or a probe gets the compatibility switches and neither.
+pub(super) fn configuration(
+    role: Option<&str>,
+    guard: Option<&str>,
+    host_user: bool,
+) -> Result<String, String> {
+    let mut table = toml::map::Map::new();
+    table.insert("compat".into(), compat(host_user));
+    if host_user {
+        let mut paths = toml::map::Map::new();
+        paths.insert("extra_rule_dirs".into(), Toml::Array(vec![Toml::from("~/.grok/rules")]));
+        table.insert("paths".into(), Toml::Table(paths));
+    } else {
+        let mut skills = toml::map::Map::new();
+        let ignore = HOME_SKILLS.into_iter().map(Toml::from).collect();
+        skills.insert("ignore".into(), Toml::Array(ignore));
+        table.insert("skills".into(), Toml::Table(skills));
+    }
+    if let Some(role) = role.filter(|text| !text.trim().is_empty()) {
+        let role =
+            role.parse::<Toml>().map_err(|error| format!("the role's Grok limits: {error}"))?;
+        let role = role.as_table().ok_or("the role's Grok limits are not a table")?;
+        for (key, value) in role {
+            if !matches!(key.as_str(), "hooks" | "permission") {
+                return Err(format!("the role's Grok limits hold unsupported key `{key}`"));
+            }
+            if !value.is_table() {
+                return Err(format!("the role's Grok {key} is not a table"));
+            }
+            table.insert(key.clone(), value.clone());
+        }
+    }
+    if let Some(guard) = guard {
+        let hooks = table.entry("hooks").or_insert_with(|| Toml::Table(Default::default()));
+        let hooks = hooks.as_table_mut().ok_or("the role's Grok hooks are not a table")?;
+        let fleet = group(vec![command_hook(&guard_asked(guard)), command_hook(REPORT)]);
+        prepend(hooks, "PreToolUse", fleet)?;
+        for event in STATE_EVENTS {
+            prepend(hooks, event, group(vec![command_hook(REPORT)]))?;
+        }
+    }
+    toml::to_string_pretty(&Toml::Table(table)).map_err(|error| error.to_string())
+}
+
+fn compat(host_user: bool) -> Toml {
+    let mut claude = toml::map::Map::new();
+    claude.insert("hooks".into(), Toml::from(false));
+    claude.insert("mcps".into(), Toml::from(false));
+    let mut cursor = toml::map::Map::new();
+    cursor.insert("hooks".into(), Toml::from(false));
+    cursor.insert("mcps".into(), Toml::from(false));
+    if !host_user {
+        for cell in ["rules", "agents"] {
+            claude.insert(cell.into(), Toml::from(false));
+        }
+        for cell in ["skills", "rules", "agents"] {
+            cursor.insert(cell.into(), Toml::from(false));
+        }
+    }
+    let mut compat = toml::map::Map::new();
+    compat.insert("claude".into(), Toml::Table(claude));
+    compat.insert("cursor".into(), Toml::Table(cursor));
+    Toml::Table(compat)
+}
+
+fn command_hook(command: &str) -> Toml {
+    let mut hook = toml::map::Map::new();
+    hook.insert("type".into(), Toml::from("command"));
+    hook.insert("command".into(), Toml::from(command));
+    hook.insert("timeout".into(), Toml::from(HOOK_TIMEOUT));
+    Toml::Table(hook)
+}
+
+fn group(hooks: Vec<Toml>) -> Toml {
+    let mut group = toml::map::Map::new();
+    group.insert("hooks".into(), Toml::Array(hooks));
+    Toml::Table(group)
+}
+
+fn prepend(
+    hooks: &mut toml::map::Map<String, Toml>,
+    event: &str,
+    group: Toml,
+) -> Result<(), String> {
+    let entry = hooks.entry(event).or_insert_with(|| Toml::Array(vec![]));
+    let array = entry
+        .as_array_mut()
+        .ok_or_else(|| format!("the role's Grok hooks.{event} is not an array"))?;
+    array.insert(0, group);
+    Ok(())
+}
+
+/// Grok's hooks fail open on an unreadable or failed guard. Turn every such
+/// outcome into the explicit refusal code, with the guard's reason on stderr.
+fn guard_asked(guard: &str) -> String {
+    format!(
+        "said=$({guard} 2>&1 >/dev/null) && exit 0; \
+         printf '%s\\n' \"${{said:-afkconvoy guard: it could not be asked}}\" >&2; exit 2"
+    )
+}
+
+const REPORT: &str = "hook=\"${HOME-}/.orca/agent-hooks/grok-hook.sh\"; \
+     if [ -x \"$hook\" ]; then ORCA_HOOK_AGENT_PID=\"$PPID\" /bin/sh \"$hook\"; \
+     else cat >/dev/null; fi; exit 0";
+
+/// Repo and team rules, as markdown Grok loads from its home. The role's own
+/// rules are the `CLAUDE.md` of the directory it starts in.
+pub(super) fn system(told: &Told) -> Option<String> {
+    if told.repo.is_none() && told.team.is_none() {
+        return None;
+    }
+    let mut text = String::new();
+    if let Some(rules) = told.repo {
+        told_rules(&mut text, "The repo's own rules", rules);
+    }
+    if let Some(rules) = told.team {
+        told_rules(&mut text, "The team rules", rules);
+    }
+    Some(text)
+}
+
+fn told_rules(text: &mut String, whose: &str, rules: Rules) {
+    if !text.is_empty() {
+        text.push_str("\n\n");
+    }
+    text.push_str(&format!("# {whose}: {}\n\n{}\n", rules.file, rules.text.trim_end()));
+}
+
+/// Appends `--trust` when the command does not already carry that word.
+/// A path is not that word.
+pub(super) fn in_worktree(command: &str) -> String {
+    if command.split_whitespace().any(|word| word == TRUST) {
+        command.to_string()
+    } else {
+        format!("{command} {TRUST}")
+    }
+}
+
+/// Starts one watch interactively: the stock command, trust, and the model.
+pub(super) fn watch(command: &str, model: Option<&str>) -> String {
+    let line = Line::new().launch(&in_worktree(command));
+    let line = match model {
+        Some(model) => line.fixed(" ").fixed(MODEL).fixed(" ").word(model),
+        None => line,
+    };
+    line.done()
+}
+
+#[spec(fn(Line[@l], &Start) -> Line[l])]
+pub(super) fn environment(line: Line, start: &Start) -> Line {
+    let line = line
+        .fixed(" ")
+        .fixed(USER_DIR)
+        .fixed("=")
+        .word(start.kept)
+        .fixed(" GROK_MEMORY=0")
+        .fixed(" GROK_CLAUDE_HOOKS_ENABLED=0")
+        .fixed(" GROK_CLAUDE_MCPS_ENABLED=0")
+        .fixed(" GROK_CURSOR_HOOKS_ENABLED=0")
+        .fixed(" GROK_CURSOR_MCPS_ENABLED=0");
+    if start.host_user {
+        line
+    } else {
+        line.fixed(" GROK_CLAUDE_RULES_ENABLED=0")
+            .fixed(" GROK_CLAUDE_AGENTS_ENABLED=0")
+            .fixed(" GROK_CURSOR_RULES_ENABLED=0")
+            .fixed(" GROK_CURSOR_AGENTS_ENABLED=0")
+            .fixed(" GROK_CURSOR_SKILLS_ENABLED=0")
+    }
+}
+
+#[spec(fn(Line[@l], &Start) -> Line[l])]
+pub(super) fn added(line: Line, start: &Start) -> Line {
+    let line = line
+        .fixed(" ")
+        .fixed(ADD_DIR)
+        .fixed(" ")
+        .word(start.worktree)
+        .fixed(" ")
+        .fixed(ADD_DIR)
+        .fixed(" ")
+        .word(start.team_dir)
+        .fixed(" ")
+        .fixed(TRUST);
+    match start.model {
+        Some(model) => line.fixed(" ").fixed(MODEL).fixed(" ").word(model),
+        None => line,
+    }
+}
+
+#[spec(fn(Line[@l]) -> Line[l])]
+pub(super) fn asked_its_flags(line: Line) -> Line {
+    line.fixed(HELP)
+}
+
+pub(super) fn models_question(command: &str, kept: &str) -> String {
+    Line::new()
+        .fixed("export ")
+        .fixed(USER_DIR)
+        .fixed("=")
+        .word(kept)
+        .fixed(" && ")
+        .launch(command)
+        .fixed(MODELS)
+        .done()
+}
+
+pub(super) fn prompt_question(
+    command: &str,
+    kept: &str,
+    model: Option<&str>,
+    prompt: &str,
+) -> String {
+    asked(command, kept, model, prompt, false)
+}
+
+pub(super) fn probe_question(
+    command: &str,
+    kept: &str,
+    model: Option<&str>,
+    prompt: &str,
+) -> String {
+    asked(command, kept, model, prompt, true)
+}
+
+fn asked(command: &str, kept: &str, model: Option<&str>, prompt: &str, json: bool) -> String {
+    let line = Line::new()
+        .fixed("export ")
+        .fixed(USER_DIR)
+        .fixed("=")
+        .word(kept)
+        .fixed(" && ")
+        .launch(command);
+    let line = match model {
+        Some(model) => line.fixed(" ").fixed(MODEL).fixed(" ").word(model),
+        None => line,
+    };
+    line.fixed(PROMPT).fixed(" ").word(prompt).fixed(if json { AS_JSON } else { "" }).done()
+}
+
+/// What comes before the first model's id in a headless JSON answer.
+const USAGE: &str = "\"modelUsage\":{\"";
+
+pub(super) fn answered_as(answer: &str) -> Option<String> {
+    let dense: String = answer.split_whitespace().collect();
+    let (_, after) = dense.split_once(USAGE)?;
+    let (id, _) = after.split_once('"')?;
+    (!id.is_empty()).then(|| id.to_string())
+}
+
+/// The ids under `Available models:`. The one marked `*` or `(default)` is
+/// first: it is the model workers start on until research places them.
+/// A line that is not an id ends the list. No section, or no id, is none.
+pub(super) fn models(answer: &str) -> Option<Vec<String>> {
+    let (_, rest) = answer.split_once("Available models:")?;
+    let mut listed = vec![];
+    let mut default = None;
+    // The colon ends the header line, so the first line of what follows is empty.
+    for line in rest.lines().skip_while(|line| line.trim().is_empty()) {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            break;
+        }
+        let marked = trimmed.starts_with('*') || trimmed.contains("(default)");
+        let id = trimmed
+            .trim_start_matches(|c: char| c == '*' || c == '-' || c.is_whitespace())
+            .trim_end_matches("(default)")
+            .trim();
+        if id.is_empty() || id.split_whitespace().nth(1).is_some() {
+            break;
+        }
+        if marked && default.is_none() {
+            default = Some(id.to_string());
+        } else if default.as_deref() != Some(id) {
+            listed.push(id.to_string());
+        }
+    }
+    let mut models = Vec::new();
+    if let Some(default) = default {
+        models.push(default);
+    }
+    models.extend(listed);
+    if models.is_empty() { None } else { Some(models) }
+}
+
+pub(super) fn shown(_answer: &str) -> Vec<(String, String)> {
+    vec![]
+}
+
+/// Whether a listing says the login is missing. A listing that is not logged
+/// in still names models, so the models alone do not say it is logged in.
+pub(crate) fn not_authenticated(answer: &str) -> bool {
+    answer.to_ascii_lowercase().contains("not authenticated")
+}
+
+#[derive(Deserialize)]
+struct Described {
+    #[serde(rename = "toolName", alias = "tool_name")]
+    tool_name: String,
+    #[serde(default, rename = "toolInput", alias = "tool_input")]
+    tool_input: Input,
+}
+
+#[derive(Default, Deserialize)]
+struct Input {
+    #[serde(default)]
+    command: Option<String>,
+}
+
+pub(super) fn call<'de, D: Deserializer<'de>>(described: D) -> Result<Call, D::Error> {
+    let described = Described::deserialize(described)?;
+    Ok(match described.tool_input.command {
+        Some(line) if described.tool_name == "run_terminal_command" => Call::Shell(line),
+        _ => Call::Other,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::harness::Harness;
+    use crate::role::{Facts, On};
+
+    fn start<'a>(model: Option<&'a str>, host_user: bool) -> Start<'a> {
+        Start {
+            role_dir: "/copies/acme/dev/abc",
+            worktree: "/wt/issue 7",
+            team_dir: "/copies/acme/team/def",
+            model,
+            guard: "/bin/afkconvoy guard",
+            kept: "/cache/harness/grok-role",
+            host_user,
+            dsh_profile: crate::team::DshProfile::Fleet,
+            host_rules: &[],
+            shadowed: &[],
+            told: Told::default(),
+            facts: Facts {
+                on: On::Stage { issue: 7, flow: "feature", stage: "build" },
+                role: "dev",
+                skill: "implement",
+                writes: false,
+                consult: false,
+                base_branch: "main",
+                target_branch: None,
+                escalate_label: "ready-for-human",
+                lock_label: "fleet-lock",
+                role_commit: "abc",
+                team_commit: "def",
+            },
+        }
+    }
+
+    #[test]
+    fn a_worker_starts_in_its_role_with_trust_and_no_shell_expansion() {
+        let line = Harness::Grok.in_role(STOCK, &start(Some("grok-4.7"), false));
+        assert!(line.starts_with("cd '/copies/acme/dev/abc' && export GROK_HOME='/cache/harness/grok-role' GROK_MEMORY=0"), "{line}");
+        assert!(line.contains("GROK_CLAUDE_HOOKS_ENABLED=0"), "{line}");
+        assert!(line.contains("GROK_CLAUDE_RULES_ENABLED=0"), "{line}");
+        assert!(line.contains("GROK_CURSOR_SKILLS_ENABLED=0"), "{line}");
+        assert!(!line.contains("GROK_CLAUDE_SKILLS_ENABLED=0"), "{line}");
+        assert!(line.contains(" AFKCONVOY_HARNESS='grok' AFKCONVOY_MODEL='grok-4.7' && grok --always-approve --add-dir '/wt/issue 7' --add-dir '/copies/acme/team/def' --trust --model 'grok-4.7'"), "{line}");
+        let odd = Start { kept: "/it's kept/$HOME", host_user: true, ..start(None, true) };
+        let line = Harness::Grok.in_role("grok", &odd);
+        assert!(line.contains("GROK_HOME='/it'\\''s kept/$HOME'"), "{line}");
+        assert!(!line.contains("GROK_CLAUDE_RULES_ENABLED"), "{line}");
+        assert!(!line.contains("--model"), "{line}");
+        assert!(line.contains("--trust"), "{line}");
+    }
+
+    #[test]
+    fn an_unbound_command_gains_trust_once() {
+        assert_eq!(Harness::Grok.in_worktree(STOCK, "/wt", ""), "grok --always-approve --trust");
+        assert_eq!(
+            Harness::Grok.in_worktree("grok --trust --always-approve", "/wt", ""),
+            "grok --trust --always-approve"
+        );
+        assert_eq!(
+            Harness::Grok.watch(STOCK, "/wt", "/kept", Some("grok-4.7")),
+            "grok --always-approve --trust --model 'grok-4.7'"
+        );
+    }
+
+    #[test]
+    fn configuration_keeps_the_role_and_not_the_user_and_refuses_other_keys() {
+        let role = r#"
+[permission]
+deny = ["Bash(rm -rf *)"]
+[[permission.rules]]
+decision = "deny"
+pattern = "Bash(git push*)"
+[[hooks.PreToolUse]]
+matcher = "Write"
+hooks = [{ type = "command", command = "role hook", timeout = 5 }]
+"#;
+        let config = configuration(Some(role), Some("/bin/afkconvoy guard"), false).unwrap();
+        let parsed: Toml = config.parse().unwrap();
+        assert_eq!(parsed["compat"]["claude"]["hooks"].as_bool(), Some(false));
+        assert_eq!(parsed["compat"]["claude"]["mcps"].as_bool(), Some(false));
+        assert_eq!(parsed["compat"]["claude"]["rules"].as_bool(), Some(false));
+        assert!(parsed["compat"]["claude"].get("skills").is_none());
+        assert_eq!(parsed["compat"]["cursor"]["skills"].as_bool(), Some(false));
+        assert!(parsed["skills"]["ignore"].as_array().unwrap().len() >= 6);
+        assert!(parsed.get("paths").is_none());
+        assert_eq!(parsed["permission"]["deny"][0].as_str(), Some("Bash(rm -rf *)"));
+        let pre = parsed["hooks"]["PreToolUse"].as_array().unwrap();
+        let fleet = pre[0]["hooks"].as_array().unwrap();
+        assert!(fleet[0]["command"].as_str().unwrap().contains("/bin/afkconvoy guard"));
+        assert!(fleet[0]["command"].as_str().unwrap().ends_with("exit 2"));
+        assert!(fleet[1]["command"].as_str().unwrap().contains("grok-hook.sh"));
+        assert!(fleet[1]["command"].as_str().unwrap().ends_with("exit 0"));
+        assert_eq!(pre[1]["hooks"][0]["command"].as_str(), Some("role hook"));
+        assert!(
+            parsed["hooks"]["SessionStart"].as_array().unwrap()[0]["hooks"][0]["command"]
+                .as_str()
+                .unwrap()
+                .contains("grok-hook.sh")
+        );
+        assert!(configuration(Some("plugins = []\n"), None, true).is_err());
+        let shared = configuration(None, None, true).unwrap().parse::<Toml>().unwrap();
+        assert!(shared.get("hooks").is_none());
+        assert_eq!(shared["paths"]["extra_rule_dirs"][0].as_str(), Some("~/.grok/rules"));
+        assert!(shared["compat"]["claude"].get("rules").is_none());
+    }
+
+    #[test]
+    fn probes_use_the_isolated_home_and_name_no_interactive_prompt_wait() {
+        assert_eq!(
+            Harness::Grok.models_question(STOCK, "/it's kept"),
+            "export GROK_HOME='/it'\\''s kept' && grok --always-approve models"
+        );
+        assert_eq!(
+            Harness::Grok.probe_question(STOCK, "/k", Some("a b"), "Say OK."),
+            "export GROK_HOME='/k' && grok --always-approve --model 'a b' -p 'Say OK.' --output-format json"
+        );
+        assert_eq!(
+            Harness::Grok.prompt_question("mygrok", "/k", None, "Say OK."),
+            "export GROK_HOME='/k' && mygrok -p 'Say OK.'"
+        );
+    }
+
+    #[test]
+    fn models_and_the_answered_model_are_read_from_grok() {
+        let listed = "You are logged in with grok.com.\nDefault model: grok-4.7\nAvailable models:\n  * grok-4.7 (default)\n  - grok-4.5\n  - grok-4.6\n";
+        assert_eq!(Harness::Grok.models(listed).unwrap(), ["grok-4.7", "grok-4.5", "grok-4.6"]);
+        assert!(Harness::Grok.shown(listed).is_empty());
+        assert!(!not_authenticated(listed));
+        let out = "You are not authenticated.\nDefault model: grok-4.6\nAvailable models:\n  * grok-4.6 (default)\n  - grok-4.5\n";
+        assert!(not_authenticated(out));
+        assert_eq!(Harness::Grok.models(out).unwrap(), ["grok-4.6", "grok-4.5"]);
+        assert_eq!(Harness::Grok.models("no models here"), None);
+        assert_eq!(Harness::Grok.models("Available models:\n\n"), None);
+        let answered = "{\"result\":\"OK\",\"modelUsage\":{\"grok-4.6\":{\"outputTokens\":1}}}";
+        assert_eq!(
+            Harness::Grok.answered_as(answered),
+            super::super::AnsweredAs::Said("grok-4.6".into())
+        );
+        assert_eq!(Harness::Grok.answered_as("OK\n"), super::super::AnsweredAs::Unsaid);
+    }
+
+    #[test]
+    fn role_limits_and_calls_are_read_in_grok_s_own_form() {
+        assert!(!limited_file("# nothing yet\n").unwrap());
+        assert!(!limited_file("[permission]\ndeny = []\n").unwrap());
+        assert!(limited_file("[permission]\ndeny = ['Bash(rm *)']\n").unwrap());
+        assert!(limited_file("[[permission.rules]]\ndecision = 'deny'\n").unwrap());
+        assert!(!limited_file("[[permission.rules]]\ndecision = 'ask'\n").unwrap());
+        assert!(limited_file("[[hooks.PreToolUse]]\nmatcher = 'Write'\n").unwrap());
+        assert!(limited_file("plugins = []\n").is_err());
+        let bash =
+            r#"{"toolName":"run_terminal_command","toolInput":{"command":"git commit -m x"}}"#;
+        let judged = call(&mut serde_json::Deserializer::from_str(bash)).unwrap();
+        assert_eq!(judged, Call::Shell("git commit -m x".into()));
+        let snake = r#"{"tool_name":"run_terminal_command","tool_input":{"command":"git status"}}"#;
+        assert_eq!(
+            call(&mut serde_json::Deserializer::from_str(snake)).unwrap(),
+            Call::Shell("git status".into())
+        );
+        let other = r#"{"toolName":"Bash","toolInput":{"command":"git commit"}}"#;
+        assert_eq!(call(&mut serde_json::Deserializer::from_str(other)).unwrap(), Call::Other);
+    }
+
+    #[test]
+    fn told_rules_are_markdown_with_no_base_prompt() {
+        let told = Told {
+            repo: Some(Rules { file: "AGENTS.md", text: "repo rules" }),
+            team: Some(Rules { file: "CLAUDE.md", text: "team rules" }),
+        };
+        let text = system(&told).unwrap();
+        assert!(text.contains("# The repo's own rules: AGENTS.md"));
+        assert!(text.contains("repo rules") && text.contains("team rules"));
+        assert!(!text.contains("base_prompt"));
+        assert!(system(&Told::default()).is_none());
+    }
+}

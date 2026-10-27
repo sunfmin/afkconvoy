@@ -25,7 +25,7 @@ fn switching_a_model_promotes_its_harness_and_preserves_every_entry() {
     let moved = world.afk_in(&world.root, &["switch", "--model", "SONNET"]).ok();
     assert_eq!(moved["harness"], "claude-code");
     assert_eq!(moved["model"], "claude-sonnet-5-5");
-    assert_eq!(moved["order"], json!(["claude-code", "codex", "pi", "dsh", "kimi"]));
+    assert_eq!(moved["order"], json!(["claude-code", "codex", "pi", "dsh", "kimi", "grok"]));
     let after: Value = serde_json::from_slice(&std::fs::read(world.kit_path()).unwrap()).unwrap();
     assert_eq!(
         after["harnesses"][0]["models"],
@@ -79,7 +79,7 @@ fn kit_priority_is_host_wide_idempotent_and_ignores_legacy_repository_choices() 
         std::fs::write(git_dir.join("convoy-chosen-harness"), old).unwrap();
     }
     let moved = world.afk_in(&world.root, &["switch", "--harness", "codex"]).ok();
-    assert_eq!(moved["order"], json!(["codex", "claude-code", "pi", "dsh", "kimi"]));
+    assert_eq!(moved["order"], json!(["codex", "claude-code", "pi", "dsh", "kimi", "grok"]));
     assert_eq!(moved["switched"], json!([]));
     let after: Value = serde_json::from_slice(&std::fs::read(world.kit_path()).unwrap()).unwrap();
     for held in after["harnesses"].as_array().unwrap() {
@@ -97,7 +97,7 @@ fn kit_priority_is_host_wide_idempotent_and_ignores_legacy_repository_choices() 
     assert_eq!(plan["frontier"][0]["cast"]["model"], "gpt-x");
     assert!(world.afk(&["switch", "--clear"]).error().contains("--clear"));
     let back = world.afk_in(&other, &["switch", "--harness", "claude-code"]).ok();
-    assert_eq!(back["order"], json!(["claude-code", "codex", "pi", "dsh", "kimi"]));
+    assert_eq!(back["order"], json!(["claude-code", "codex", "pi", "dsh", "kimi", "grok"]));
 }
 
 fn tick(world: &World, now: u64) -> Value {
