@@ -265,6 +265,7 @@ mod tests {
             title: String::new(),
             head_branch: "b".into(),
             head_sha: head.into(),
+            base_branch: "main".into(),
             closes: vec![7],
         };
         assert!(cut_landing(&join, 500, Some(500), None), "GitHub shows the PR merged");

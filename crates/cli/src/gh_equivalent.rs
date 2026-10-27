@@ -159,7 +159,7 @@ fn graph_read(
 const LABELS: &str = "labels(first:100) { nodes { name } pageInfo { hasNextPage endCursor } }";
 const ISSUE: &str = "id number title body url fullDatabaseId state stateReason createdAt closedAt";
 const COMMENT: &str = "fullDatabaseId body url createdAt";
-const PR: &str = "number title body headRefName headRefOid isCrossRepository createdAt updatedAt closedAt mergedAt baseRepository { nameWithOwner }";
+const PR: &str = "number title body headRefName headRefOid baseRefName isCrossRepository createdAt updatedAt closedAt mergedAt baseRepository { nameWithOwner }";
 
 fn graph_labels(gh: &GitHub, repo: &str, row: &Value) -> Result<Value> {
     let conn = &row["labels"];
@@ -420,7 +420,7 @@ fn graphql(gh: &GitHub, args: &[&str]) -> Result<String> {
         );
         let rows = graph(gh, &repo, &selection, true)?;
         if jq == Some(gh::PR_HEADS_JQ) {
-            return Ok(lines(rows.into_iter().filter(|r|r["isCrossRepository"]==false).map(|r|json!({"number":r["number"],"title":r["title"],"head_branch":r["headRefName"],"head_sha":r["headRefOid"]}))));
+            return Ok(lines(rows.into_iter().filter(|r|r["isCrossRepository"]==false).map(|r|json!({"number":r["number"],"title":r["title"],"head_branch":r["headRefName"],"head_sha":r["headRefOid"],"base_branch":r["baseRefName"]}))));
         }
         if jq == Some(gh::WATCH_PRS_JQ) {
             let page: usize = parameter(query, "page").unwrap_or("1").parse()?;

@@ -29,7 +29,7 @@ pub fn forget(fleet: &mut Fleet, me: &Me, issue: u64) -> Result<Outcome> {
     let Some(claim) = mine(fleet, me, issue)? else { return Ok(Outcome::Nothing) };
     let Some(how) = asked(fleet, issue)? else { return Ok(Outcome::Nothing) };
     let worktree = worktree_of(fleet, issue)?;
-    let left = worktree.as_ref().map(|worktree| leaving(fleet, worktree)).transpose()?;
+    let left = worktree.as_ref().map(|worktree| leaving(fleet, issue, worktree)).transpose()?;
     let spare = left.as_ref().and_then(|left| left.left.spare());
     transition::forget(issue, spare, |step| {
         match (step, &worktree) {

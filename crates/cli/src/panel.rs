@@ -1476,8 +1476,9 @@ fn repo(out: &mut String, at: usize, panel: &Panel) {
             let text = |key: &str| candidate[key].as_str().unwrap_or("");
             let _ = write!(
                 out,
-                "<li>PR {} · <code>{}</code> · predecessor <code>{}</code> · {} · {} {}</li>",
+                "<li>PR {} · target <code>{}</code> · <code>{}</code> · predecessor <code>{}</code> · {} · {} {}</li>",
                 candidate["pr"],
+                esc(text("target_branch")),
                 esc(text("id")),
                 esc(text("predecessor")),
                 esc(text("waiting")),

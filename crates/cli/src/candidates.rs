@@ -17,6 +17,18 @@ use crate::git::{REMOTE, Repo};
 
 const EVERY: Duration = Duration::from_millis(100);
 
+/// Selection must also refuse a candidate left after its claim ended.
+pub(crate) fn has_task(repo: &Repo, issue: u64) -> Result<bool> {
+    let prefix = repo.layout().under("candidates/");
+    for record in repo.remote_records(&format!("{prefix}*"))? {
+        let chain: Chain = serde_json::from_str(&record.subject)?;
+        if chain.candidates.iter().any(|c| c.issue == Some(issue) && c.active()) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 fn refname(repo: &Repo, config: &Config) -> String {
     repo.layout().under(&format!("candidates/{}", config.base_branch))
 }
@@ -38,7 +50,9 @@ fn read(repo: &Repo, config: &Config) -> Result<Snapshot> {
             .map(|(sha, _)| sha.to_string())
     };
     let sha = found(&state_ref);
-    let base = found(&base_ref).ok_or_else(|| anyhow!("base branch disappeared"))?;
+    let base = found(&base_ref).ok_or_else(|| {
+        anyhow!("target branch {:?} disappeared; restore it before continuing", config.base_branch)
+    })?;
     repo.bring(&base, &base_ref)?;
     if let Some(sha) = &sha {
         repo.bring(sha, &state_ref)?;
@@ -137,18 +151,19 @@ impl Drop for Reservation<'_> {
     }
 }
 
-pub(crate) fn view(repo: &Repo, config: &Config) -> Result<Value> {
-    let snapshot = read(repo, config)?;
-    let rows: Vec<_> = snapshot
-        .chain
-        .candidates
-        .iter()
-        .map(|c| {
-            let mut row = serde_json::to_value(c).expect("candidate is serializable");
+pub(crate) fn view(repo: &Repo, _config: &Config) -> Result<Value> {
+    let prefix = repo.layout().under("candidates/");
+    let mut rows = vec![];
+    for record in repo.remote_records(&format!("{prefix}*"))? {
+        let branch = record.name.strip_prefix(&prefix).context("invalid candidate ref")?;
+        let chain: Chain = serde_json::from_str(&record.subject)?;
+        for c in &chain.candidates {
+            let mut row = serde_json::to_value(c)?;
             row["waiting"] = json!(c.waiting());
-            row
-        })
-        .collect();
+            row["target_branch"] = json!(branch);
+            rows.push(row);
+        }
+    }
     Ok(json!(rows))
 }
 
@@ -459,11 +474,16 @@ fn reconcile(repo: &Repo, config: &Config) -> Result<Chain> {
 /// Used before queue capacity is released after a candidate owner dies.
 pub(crate) fn abandoned(dir: &str) -> Result<()> {
     let repo = Repo::new(dir.into());
-    let config = crate::config::load(&crate::config::file_of(&repo))?;
-    let chain = read(&repo, &config)?.chain;
-    for c in chain.candidates.iter().filter(|c| c.active()) {
-        if !alive(&c.owner)? {
-            invalidate(&repo, &config, &c.id, "owner_died")?;
+    let prefix = repo.layout().under("candidates/");
+    for record in repo.remote_records(&format!("{prefix}*"))? {
+        let mut config = crate::config::load(&crate::config::file_of(&repo))?;
+        config.base_branch =
+            record.name.strip_prefix(&prefix).context("invalid candidate ref")?.to_string();
+        let chain: Chain = serde_json::from_str(&record.subject)?;
+        for c in chain.candidates.iter().filter(|c| c.active()) {
+            if !alive(&c.owner)? {
+                invalidate(&repo, &config, &c.id, "owner_died")?;
+            }
         }
     }
     Ok(())
@@ -666,7 +686,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
         let base_command = GateCommand::new(&declared.gate_command);
         let base_tree = Tree::named(&repo.git(&["rev-parse", &format!("{current}^{{tree}}")])?);
         let repairing = match issue.filter(|n| locks.contains(n)) {
-            Some(n) => crate::repair::is_for(&gh, n, &current)?,
+            Some(n) => crate::repair::is_for(repo, &gh, n, &current, &config.base_branch)?,
             None => false,
         };
         if !repairing && crate::gate::recorded(repo, &base_tree, &base_command, clock())?.is_none()
@@ -810,6 +830,19 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
                 result["blocked_by"] = json!(blockers);
                 return Ok(result);
             }
+        }
+        let current_pr = gh.pr_of_branch(&pr.head_branch)?.context(
+            "internal PR disappeared before publication; restore it before requesting another turn",
+        )?;
+        if let Err(error) = crate::turn::ensure_base(&current_pr, &config.base_branch) {
+            invalidate(repo, config, &id, "pr_base_changed")?;
+            return Err(error);
+        }
+        if let Some(n) = issue {
+            ensure!(
+                crate::target::branch(repo, config, n)? == config.base_branch,
+                "pinned target changed during validation; restore its record before continuing"
+            );
         }
         let mut snapshot = read(repo, config)?;
         let Some(c) = snapshot.chain.candidates.iter_mut().find(|c| c.id == id) else {

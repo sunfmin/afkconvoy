@@ -35,6 +35,7 @@ pub struct PullRequest {
     pub title: String,
     pub head_branch: String,
     pub head_sha: String,
+    pub base_branch: String,
     /// The issues of the fleet's tracker it closes (`Tracker::closed_by`).
     pub closes: Vec<u64>,
 }
@@ -717,6 +718,7 @@ mod tests {
             title: format!("pr {number}"),
             head_branch: format!("b{number}"),
             head_sha: format!("sha{number}"),
+            base_branch: "main".into(),
             closes: vec![closes],
         }
     }

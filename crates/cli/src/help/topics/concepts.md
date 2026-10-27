@@ -11,6 +11,10 @@ What becomes of one issue, from the moment it is the fleet's to the moment it la
 
 An unrecorded base tip is gated alone first. A red tip holds ordinary turns while the fleet dispatches its own repair, outside product workflows. That repair still takes a turn and gates its complete merge green before landing.
 
+## Task destinations
+
+An operator can select an existing same-repo branch before a task is claimed: `afkconvoy target --issue 7 --branch delivery/ABC-123`. The selection is pinned in remote fleet state; stages, switches, continuation and landing retain it. With no selection, the first claim pins the configured base. The worker cuts from its target and opens its internal PR against it; a turn gates and lands there, then closes the task issue. A different PR base or a missing target refuses. Each branch has its own candidate chain and landed commits, under the same host worker lanes. Watches and cuts continue using the configured base, and a target branch triggers no independent product release. `afkconvoy target --help`, `afkconvoy land --help`.
+
 ## One issue, in an unbound repo
 
 An unbound repo's config names no team: every issue takes the same path, with one worker from start to landing. It is where to start when issues turned into PRs is all you want; bind the repo to a team once the work is to be judged by another than the worker that wrote it before it lands.

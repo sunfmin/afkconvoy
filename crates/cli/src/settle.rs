@@ -90,7 +90,7 @@ fn follow_base(fleet: &Fleet) -> Result<()> {
 /// way is the next tick's to finish.
 pub fn settle(fleet: &mut Fleet, me: &Me, issue: u64) -> Result<()> {
     let closed = fleet.gh.issue(issue)?.is_closed();
-    let base_tip = fleet.base_tip()?;
+    let base_tip = fleet.task_tip(issue)?;
     for step in settle_steps(closed) {
         match step {
             SettleStep::CloseIssue => {
@@ -114,7 +114,7 @@ pub fn settle(fleet: &mut Fleet, me: &Me, issue: u64) -> Result<()> {
                 if let (Some(pr), Some((join, _))) = (closing_pr(&open, issue), landing)
                     && pr.number == join.pr
                 {
-                    let comment = landed_comment(&join.commit, &fleet.config.base_branch);
+                    let comment = landed_comment(&join.commit, &fleet.task_branch(issue)?);
                     fleet.gh.close_pr(pr.number, &comment)?;
                 }
             }

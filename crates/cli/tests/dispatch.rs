@@ -271,7 +271,10 @@ fn the_steps_run_in_order() {
     let world = ready_world();
     world.watch_pushes(None);
     dispatch(&world, "7").ok();
-    assert_eq!(world.pushes(), ["refs/convoy/heartbeat/alpha", "refs/convoy/claim/7"]);
+    assert_eq!(
+        world.pushes(),
+        ["refs/convoy/target/7", "refs/convoy/heartbeat/alpha", "refs/convoy/claim/7"]
+    );
     let calls: Vec<String> = world.orca_calls().iter().map(|call| common::asked(call)).collect();
     assert_eq!(
         calls,
@@ -496,6 +499,9 @@ fn an_open_blocker_read_before_the_claim_claims_and_starts_nothing() {
     assert_eq!(world.comments(7), [] as [String; 0]);
 
     // a blocker that closed holds nothing back
+    assert!(
+        world.remote(&["for-each-ref", "--format=%(refname)", "refs/convoy/target/7"]).is_empty()
+    );
     world.close(71, "completed");
     world.close(72, "completed");
     assert_eq!(dispatch(&world, "7").ok()["started"], true);

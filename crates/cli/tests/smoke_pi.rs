@@ -195,6 +195,7 @@ fn real_pi_started_in_a_role_sees_the_role_and_the_project_and_nothing_of_the_us
             writes: false,
             consult: false,
             base_branch: "main",
+            target_branch: None,
             escalate_label: "ready-for-human",
             lock_label: "fleet-lock",
             role_commit: "abc",
