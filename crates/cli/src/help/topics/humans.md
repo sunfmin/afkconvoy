@@ -77,7 +77,7 @@ Closing a lock's issue ends it. A lock needs you when nothing can work its issue
 
 ## Lasting decisions
 
-A ruling records the decision on its issue and resumes its stage under the existing rework semantics. Incorporate a lasting rule through ordinary work in the owning ADR, team or role rules: amend contradictory wording and preserve the source. A human decision needs an actual human instruction or confirmation and its source; a shared GitHub identity, agent-authored ruling or merged document alone establishes none.
+A ruling records the decision on its issue; its stage runs again under the existing rework semantics. Incorporate a lasting rule through ordinary work in the owning ADR, team or role rules: amend contradictory wording and preserve the source. A human decision needs an actual human instruction or confirmation and its source; a shared GitHub identity, agent-authored ruling or merged document alone establishes none.
 
 Legacy proposal PRs are retained for content review and migration, with their links and disposition recorded on the PR. The fleet schedules no proposals and provides no human acceptance queue.
 
