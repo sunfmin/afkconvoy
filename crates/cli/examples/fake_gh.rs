@@ -315,6 +315,7 @@ fn tracked(st: State) -> State {
     st.save();
     drop(st);
     let mut there = State::at(PathBuf::from(file.as_str().unwrap()));
+    there.argv.retain(|arg| arg != "--include");
     let (owner, name) = repo.split_once('/').unwrap();
     let (endpoint, owner, name) =
         (format!("repos/{repo}/"), format!("owner={owner}"), format!("repo={name}"));

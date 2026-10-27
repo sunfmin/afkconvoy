@@ -241,6 +241,13 @@ fn routed(world: &World) -> Vec<Vec<String>> {
     let calls: Vec<Vec<String>> = serde_json::from_value(gh["calls"].clone()).unwrap();
     let mut of_tracker = vec![];
     for call in &calls {
+        // Authentication configuration and primary quota observations belong
+        // to the host/login, not to the checkout or its tracker repository.
+        if call.starts_with(&["config".into(), "get".into(), "user".into()])
+            || call.starts_with(&["api".into(), "rate_limit".into()])
+        {
+            continue;
+        }
         let (repo, what) = named(call);
         match repo.as_str() {
             TRACKER => {
