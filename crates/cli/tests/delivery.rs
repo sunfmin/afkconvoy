@@ -361,6 +361,7 @@ fn branch_layout_and_separate_tracker_keep_one_authoritative_delivery() {
 #[test]
 fn rest_exhaustion_preserves_final_review_discovery_and_watch_exclusion() {
     let world = World::new();
+    world.say_concurrency(&world.clone, 3);
     let delivery = create(&world, None);
     advance(&world, &delivery);
     world.with_gh(|gh| gh["quota_fail"] = json!({"core": "gh: API rate limit already exceeded"}));
@@ -368,12 +369,19 @@ fn rest_exhaustion_preserves_final_review_discovery_and_watch_exclusion() {
     assert_eq!(created["final_pr"]["draft"], true);
     assert_eq!(final_prs(&world).len(), 1);
     assert_eq!(create(&world, None)["final_pr"], created["final_pr"]);
+    world.pr(900, 7, "ordinary-task");
     world.with_gh(|gh| {
-        gh["prs"][0]["updated_at"] = json!(1050);
-        gh["prs"][0]["closed_at"] = json!(1050);
-        gh["prs"][0]["state"] = json!("closed");
+        for pr in gh["prs"].as_array_mut().unwrap() {
+            pr["updated_at"] = json!(1050);
+            pr["closed_at"] = json!(1050);
+            pr["state"] = json!("closed");
+        }
+        gh["prs"][1]["body"] = json!("");
     });
     let watched = world.afk(&["doctor", "--all", "--since", "1000", "--now", "1100"]).ok();
+    let ended = watched["checkouts"][0]["doctor"]["watching"]["ended"].as_array().unwrap();
+    assert_eq!(ended.len(), 1, "ordinary task endings remain visible: {watched}");
+    assert_eq!(ended[0]["pr"], 900);
     assert!(!watched.to_string().contains("Jira delivery:"), "{watched}");
     assert_eq!(create(&world, None)["final_pr"]["state"], "closed");
 }
