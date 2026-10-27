@@ -353,6 +353,60 @@ fn a_worker_still_waiting_on_background_work_is_not_failed_by_a_silence_limit() 
     assert!(!world.labels(7).contains(&"ready-for-human".to_string()));
 }
 
+/// Findings whose `what` says a worker has been stopped.
+fn stopped_for(answer: &Value) -> Vec<&Value> {
+    answer["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|finding| finding["what"].as_str().unwrap().contains("has been stopped for"))
+        .collect()
+}
+
+#[test]
+fn a_worker_idle_past_half_an_hour_on_its_landing_gate_is_not_called_stopped() {
+    let world = fleet(1000);
+    let dir = worktree(&world);
+    commit(&dir, "seven.txt", "7\n");
+    git(&dir, &["push", "-q", "origin", "HEAD"]);
+    world.pr(70, 7, &git(&dir, &["symbolic-ref", "--short", "HEAD"]));
+    report(&world, "done", 1000, 1000);
+    show(&world, &WAITING);
+
+    // Past grace, with its PR open: the tick watches, and names the same wait
+    // worker health records.
+    let ticked = tick(&world, 1300);
+    assert_eq!(did(&ticked), ["watch 7 waiting", "heartbeat done"]);
+    assert_eq!(ticked["did"][0]["waiting_since"], 1300, "{ticked}");
+    let health = world.afk(&["doctor", "--host", "h1", "--now", "1301"]).json;
+    let worker = &health["host"]["host_kit"]["worker_health"]["workers"][0];
+    assert_eq!(worker["action"], "waiting for background work");
+
+    // Two hours on, past the gate limit of 600s. The tick still waits — its
+    // heartbeat keeps the claim — and doctor raises no stopped finding.
+    let later = tick(&world, 8200);
+    assert_eq!(did(&later)[0], "watch 7 waiting");
+    assert_eq!(later["did"][0]["waiting_since"], 1300, "{later}");
+    let said = "waiting on its own background work #7";
+    let lines = run_line(&world, 8200);
+    assert!(lines.iter().any(|line| line.contains(said)), "{lines:?}");
+    let doctor = world.afk(&["doctor", "--host", "h1", "--now", "8200"]).json;
+    assert_eq!(stopped_for(&doctor), [] as [&Value; 0], "{doctor}");
+    let claims = doctor["claims"].as_array().unwrap();
+    let claim = claims.iter().find(|claim| claim["issue"] == 7).expect("claim 7");
+    assert_eq!(claim["status"], "landing");
+    assert_eq!(claim["worker"]["state"], "stopped");
+    assert!(claim["worker"]["quiet"].as_u64().unwrap() >= 1800, "{claim}");
+
+    // The gate ended. The same quiet worker, with nothing of its own running,
+    // is stopped, and the fix is a tick.
+    show(&world, &ENDED);
+    let ended = world.afk(&["doctor", "--host", "h1", "--now", "8200"]).json;
+    let stopped = stopped_for(&ended);
+    assert_eq!(stopped.len(), 1, "{ended}");
+    assert_eq!(stopped[0]["fix"], "afkconvoy tick --instance alpha");
+}
+
 fn nudge_record(world: &World) -> PathBuf {
     let dir = worktree(world);
     PathBuf::from(common::git(&dir, &["rev-parse", "--absolute-git-dir"])).join("convoy-nudged")
