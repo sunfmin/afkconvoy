@@ -163,7 +163,8 @@ pub(crate) fn locate(watch: &Watch) -> Result<Option<String>> {
         }
         return Ok(Some(exact.to_string()));
     }
-    let acknowledged = std::fs::read_to_string(handshake(watch)).ok();
+    let acknowledged =
+        claim(watch).is_dir().then(|| std::fs::read_to_string(handshake(watch)).ok()).flatten();
     let candidates: Vec<_> = rows
         .iter()
         .filter(|row| {
@@ -241,5 +242,146 @@ pub(crate) fn json() -> Value {
         Err(error) => {
             json!({"title": TITLE, "phase": "uncertain", "problem": recovery(&format!("{error:#}"))})
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    fn watch(directory: PathBuf) -> Watch {
+        serde_json::from_value(json!({"id": format!("smoke-{}", crate::unique()),
+            "directory": directory, "look": {}, "items": [], "started": crate::clock(),
+            "harness": "claude-code", "model": null, "terminal": "",
+            "transcript": directory.join("session.log")}))
+        .unwrap()
+    }
+
+    #[test]
+    fn the_real_launch_shell_claims_execution_once_even_with_concurrent_duplicate_calls() {
+        let dir = tempfile::tempdir().unwrap();
+        let watch = watch(dir.path().into());
+        let output = dir.path().join("executions");
+        let line =
+            Line::new().fixed("printf 'executed\\n' >> ").word(&output.display().to_string()).own();
+        let line = launch_line(&watch, &line);
+        let spawn = || {
+            Command::new("sh")
+                .args(["-c", &line])
+                .env("ORCA_TERMINAL_HANDLE", "own-terminal")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap()
+        };
+        let mut first = spawn();
+        let mut duplicate = spawn();
+        first.wait().unwrap();
+        duplicate.wait().unwrap();
+        assert_eq!(std::fs::read_to_string(output).unwrap(), "executed\n");
+        assert_eq!(std::fs::read_to_string(handshake(&watch)).unwrap(), "own-terminal\n");
+    }
+
+    #[test]
+    fn a_shell_without_an_orca_handle_never_starts_an_unrecoverable_executor() {
+        let dir = tempfile::tempdir().unwrap();
+        let watch = watch(dir.path().into());
+        let output = dir.path().join("executions");
+        let line = Line::new().fixed("touch ").word(&output.display().to_string()).own();
+        Command::new("sh")
+            .args(["-c", &launch_line(&watch, &line)])
+            .env_remove("ORCA_TERMINAL_HANDLE")
+            .output()
+            .unwrap();
+        assert!(!output.exists());
+        assert!(!handshake(&watch).exists());
+    }
+
+    /// Opt in from a worktree registered with the real Orca. This exercises
+    /// the production creation/handshake/lookup path with a harmless marked
+    /// interactive executor, without asking a model to operate the host.
+    #[test]
+    #[ignore = "requires visible local Orca; creates two temporary terminals in the current worktree"]
+    fn real_orca_recovers_a_visible_terminal_and_preserves_input_while_refusing_ambiguity() {
+        let directory = std::env::current_dir().unwrap();
+        let mut watch = watch(directory.clone());
+        watch.transcript = cache().unwrap().join("smoke-session.log");
+        let worktree = Worktree::at(directory, String::new());
+        let marker = format!("afkconvoy-watch-session-{}-1", watch.id);
+        let command = afkconvoy_core::host_watch::session(
+            "export AFKCONVOY_WATCH=host; printf 'watch recovery smoke: ready\\n'; while IFS= read -r input; do printf 'retained input: %s\\n' \"$input\"; done",
+            &watch.transcript.display().to_string(),
+            &format!("{}-1", watch.id),
+        );
+        prepare(&watch, &command).unwrap();
+        let terminal = worktree.start_watch(&launch_line(&watch, &command), TITLE).unwrap();
+        // Deliberately discard the create receipt. Only the startup
+        // acknowledgement is allowed to associate this candidate.
+        let until = Instant::now() + Duration::from_secs(15);
+        while !handshake(&watch).exists() {
+            assert!(Instant::now() < until, "no terminal handshake");
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        assert_eq!(locate(&watch).unwrap().unwrap(), terminal);
+        watch.terminal = terminal.clone();
+        phase(&watch, Phase::Running).unwrap();
+        let sent = Command::new("orca")
+            .args([
+                "terminal",
+                "send",
+                "--terminal",
+                &terminal,
+                "--text",
+                "human progress",
+                "--enter",
+                "--json",
+            ])
+            .output()
+            .unwrap();
+        assert!(sent.status.success());
+        // A replacement host runner reconstructs solely from on-disk state.
+        let recovered = active().unwrap().unwrap();
+        assert_eq!(locate(&recovered).unwrap().unwrap(), terminal);
+        let processes = crate::hot::listed_checked().unwrap();
+        let executors: Vec<_> = processes
+            .iter()
+            .filter(|p| p.line.split_whitespace().any(|word| word == marker))
+            .collect();
+        assert_eq!(executors.len(), 1, "one marked executor");
+        let mut screen = vec![];
+        while Instant::now() < until {
+            screen = worktree.screen(&terminal, 80).unwrap();
+            if screen.iter().any(|line| line.contains("retained input: human progress")) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        assert!(
+            screen.iter().any(|line| line.contains("retained input: human progress")),
+            "{screen:?}"
+        );
+        let other =
+            worktree.start_watch("printf 'unrelated smoke session\\n'; sleep 120", TITLE).unwrap();
+        // Exact ID wins even alongside a same-title operator terminal.
+        assert_eq!(locate(&recovered).unwrap().unwrap(), terminal);
+        // Without the exact receipt, discovery must pause on the two names.
+        let mut record = read().unwrap().unwrap();
+        record.watch.terminal.clear();
+        save(&record).unwrap();
+        let mut lost = recovered;
+        lost.terminal.clear();
+        assert!(
+            locate(&lost).unwrap_err().to_string().contains("multiple watch terminal candidates")
+        );
+        assert!(worktree.live(&other).unwrap());
+        println!(
+            "real Orca: terminal={terminal}, unrelated={other}, executor_pid={}, marker={marker}; input retained; lost creation reply recovered; exact lookup and runner reconstruction reused the session; ambiguous discovery paused",
+            executors[0].pid
+        );
+        worktree.close_terminal(&other).unwrap();
+        worktree.close_terminal(&terminal).unwrap();
+        phase(&watch, Phase::Ended).unwrap();
     }
 }

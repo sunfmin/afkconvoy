@@ -459,16 +459,36 @@ impl Watcher {
     /// is over, its harness gave out or its hour is up.
     fn check(&self) -> Result<()> {
         let mut state = read()?;
-        let Some(mut watch) = state.running.take().or(watch_terminal::active()?) else {
+        let kept = state.running.take();
+        let active = watch_terminal::active()?;
+        let running = match (kept, active) {
+            (Some(kept), Some(active))
+                if kept.id == active.id && kept.attempts.len() == active.attempts.len() =>
+            {
+                Some(kept)
+            }
+            (_, Some(active)) => Some(active),
+            (kept, None) => kept,
+        };
+        let Some(mut watch) = running else {
             self.shared.set(None);
             return Ok(());
         };
+        for item in &watch.items {
+            if !state.watched.contains(&item.id) {
+                state.watched.push(item.id.clone());
+            }
+            if item.id.starts_with(host_watch::RESEARCH_ITEM) {
+                state.research_started = Some(watch.started);
+            }
+        }
         let worktree = Worktree::at(watch.directory.clone(), String::new());
         let transcript = std::fs::read_to_string(&watch.transcript).unwrap_or_default();
         let exited = host_watch::exited(&transcript);
         let now = crate::clock();
         if let Some(report) = crate::watch_report::read(&watch.id)? {
             stop_session(&watch)?;
+            state.unavailable = None;
             for did in &report.did {
                 (self.say)(What::WatchDid { id: watch.id.clone(), did: did.clone() });
             }
@@ -1174,7 +1194,7 @@ pub fn finding() -> Option<crate::doctor::Finding> {
         crate::doctor::Kind::WatchUnavailable,
         "no harness can start this host's watch".into(),
         why,
-        "afkconvoy kit".into(),
+        "afkconvoy run --help (WATCH RECOVERY); afkconvoy kit".into(),
     ))
 }
 
