@@ -328,6 +328,19 @@ fn a_worker_waiting_on_its_own_background_work_is_not_silent_until_it_ends() {
 }
 
 #[test]
+fn a_worker_waiting_on_background_work_has_its_next_health_observation_scheduled() {
+    let world = fleet(1000);
+    report(&world, "done", 1000, 1000);
+    show(&world, &WAITING);
+    tick(&world, 1300);
+
+    let doctor = world.afk(&["doctor", "--host", "h1", "--now", "1301"]).json;
+    let worker = &doctor["host"]["host_kit"]["worker_health"]["workers"][0];
+    assert_eq!(worker["action"], "waiting for background work");
+    assert_eq!(worker["next_check"], 1600, "a fresh observation must not look overdue");
+}
+
+#[test]
 fn a_worker_still_waiting_on_background_work_is_not_failed_by_a_silence_limit() {
     let world = fleet(1000);
     report(&world, "done", 1000, 1000);

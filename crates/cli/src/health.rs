@@ -1077,6 +1077,7 @@ fn decide(
     {
         observed.action = "waiting for background work".into();
         observed.background = Some(background.since);
+        observed.next_check = fleet.now.saturating_add(CHECK_SECONDS);
         return Ok(());
     }
     observed.background = None;
