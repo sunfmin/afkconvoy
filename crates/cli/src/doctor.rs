@@ -1746,8 +1746,8 @@ fn exclusive_json(standing: Result<(Vec<Ticket>, bool)>, now: u64) -> Value {
 /// `afkconvoy doctor`, for the fleet of `host` in the checkout `repo`:
 ///
 ///   {"host", "fleet", "claims", "issues", "waiting_on_human": [{"issue", "title",
-///    "why", "url", "since", "answer"}], "findings": [{"severity", "what", "evidence",
-///    "fix"}]}
+///    "why", "url", "since", "answer"}], "candidates", "findings": [{"severity", "what",
+///    "evidence", "fix"}]}
 ///
 /// An answer with a `critical` finding is an `Unwell` error: the same object,
 /// and a non-zero exit. It reads only — but for the fleet's own cache, where

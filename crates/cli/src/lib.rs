@@ -970,7 +970,7 @@ enum Command {
     ///
     /// ## What it answers
     ///
-    /// {"host", "fleet", "claims", "issues", "waiting_on_human", "refusals", "findings"}
+    /// {"host", "fleet", "claims", "issues", "waiting_on_human", "refusals", "candidates", "findings"}
     ///
     /// - `host`: what this host has of what the fleet needs:
     ///
@@ -1004,6 +1004,7 @@ enum Command {
     /// - `claims`: each claim of that instance: {issue, title, status, pr, stage, role, held_for, worker, worktree, gate} — status as `plan` gives it; stage and role in a bound repo; held_for in seconds; worker is {state, quiet}, state being busy, stopped or gone, and null when orca could not say; gate is {green_at} when a green gate run is on record for the tree the worktree is at, else null
     /// - `issues`: as `plan` answers them: {frontier, excluded, escalating, locks, free_slots, patrols} — what a worker can be started on, what waits and why, and what is being handed to a human and why. null when they could not be read
     /// - `refusals`: issue number → the harnesses that refused that task, each with `harness` and `evidence`, read from GitHub. Later starts skip them across every stage; the harness stays healthy for other issues.
+    /// - `candidates`: the current remote candidate chain for this repo's base branch, in order. Each candidate includes its commit, predecessor, phase and what it is waiting for; `waiting` distinguishes worktree construction, validation, a predecessor and process exit. An error reading the chain is reported as `{error}`.
     /// - `codex_workers`: this checkout's Codex sessions, each with issue, worktree, harness, model, effort, model_source, effort_source and codex_home (its private session directory). Automatic starts read the model from your `~/.codex/config.toml` (`user_selection`), an issue's `model:` label keeps casting (`casting`), and no user preference leaves the model null for Codex's native default (`codex_default`). Every start reads the effort from your own Codex config, or uses Codex's model default. Sources stay attached to the session after your config changes; a saved `/model` choice is shown with its session's private config as the source. [`afkconvoy help worker-launch`](help:worker-launch).
     /// - `waiting_on_human`: as `plan` answers it, and as the panel lists it under "With a human": every open issue nobody holds that waits for a human — escalated, at a stage that is a human's, past the end of its workflow and still open, or reporting a patrol's failed run — each as {issue, title, why, url, since, answer}: `why` is what kind of wait, then the reason the issue’s comment gives, in its first sentence; `url` is that comment (the report itself for an older failed patrol or cut with no reason comment), or null where no comment explains the wait; `answer` is the line that answers it, to run as it is but for what stands between < and >. An escalation with no position gets the team's only flow label filled in; with several workflows, `why` lists the flow labels to choose `<flow label>` from. null when the issues could not be read
     /// - `findings`: what is wrong, most severe first — none: []. Each is {severity, what, evidence, fix, see}:
