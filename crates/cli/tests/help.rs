@@ -464,20 +464,6 @@ fn troubleshooting_has_a_row_for_every_finding_doctor_can_give() {
     assert!(heads.iter().any(|head| no_branch.starts_with(head)), "{no_branch}");
 }
 
-#[test]
-fn humans_doctor_and_panel_send_open_proposals_to_the_same_read_only_views() {
-    let humans = asked(&["help", "humans"]);
-    let doctor = asked(&["doctor", "--help"]);
-    let panel = asked(&["panel", "--help"]);
-    for text in [&humans, &doctor, &panel] {
-        for words in ["proposals.open", "With a human", "max_open", "merge", "close"] {
-            assert!(text.contains(words), "missing {words}: {text}");
-        }
-    }
-    assert!(humans.contains("doctor --all") && humans.contains("read only"));
-    assert!(!humans.contains("lists the proposals under way and open"));
-}
-
 /// Every flag `text` gives a command of this tool's, with the command: what
 /// stands on a line after `afkconvoy <command>`, up to where the line stops
 /// being the command's.
@@ -496,13 +482,12 @@ fn flagged(text: &str) -> Vec<(&str, &str)> {
 }
 
 /// Each way the fleet stops for a human, by the heading `humans` gives it.
-const STOPS: [&str; 6] = [
+const STOPS: [&str; 5] = [
     "An escalation",
     "A tripped breaker",
     "A stage `by: human`",
     "A patrol's failed run",
     "A fleet lock",
-    "A precedent to accept",
 ];
 
 #[test]
@@ -690,11 +675,11 @@ fn shows(text: &str, key: &str) -> bool {
 #[test]
 fn every_key_the_loader_knows_is_described_in_the_topic_of_its_file_and_in_no_other() {
     use afkconvoy_core::team::{
-        ESCALATE_KEYS, LAND_KEYS, ON_KEYS, PATROL_KEYS, PRECEDENTS_KEYS, ROSTER_ENTRY_KEYS,
-        RUN_KEYS, STAGE_KEYS, TEAM_KEYS, WORKFLOW_KEYS,
+        ESCALATE_KEYS, LAND_KEYS, ON_KEYS, PATROL_KEYS, ROSTER_ENTRY_KEYS, RUN_KEYS, STAGE_KEYS,
+        TEAM_KEYS, WORKFLOW_KEYS,
     };
     let files = [
-        ("team", [&TEAM_KEYS[..], &PRECEDENTS_KEYS, &ROSTER_ENTRY_KEYS, &RUN_KEYS].concat()),
+        ("team", [&TEAM_KEYS[..], &ROSTER_ENTRY_KEYS, &RUN_KEYS].concat()),
         (
             "workflows",
             [&WORKFLOW_KEYS[..], &STAGE_KEYS, &ON_KEYS, &ESCALATE_KEYS, &LAND_KEYS].concat(),
@@ -777,14 +762,11 @@ fn the_guide_and_check_name_the_topics_and_describe_no_file_of_a_team() {
 #[test]
 fn the_team_topic_lays_out_the_files_of_a_team_and_a_role() {
     use afkconvoy_core::harness::Harness;
-    use afkconvoy_core::team::{
-        PATROLS, PRECEDENTS, ROLE_FORMS, RULES, SKILLS, TEAM_FILE, WORKFLOWS,
-    };
+    use afkconvoy_core::team::{PATROLS, ROLE_FORMS, RULES, SKILLS, TEAM_FILE, WORKFLOWS};
     let team = asked(&["help", "team"]);
     // A role's limits are laid out once for each harness.
     let limits = Harness::ALL.map(Harness::limits);
-    for file in [&[TEAM_FILE, WORKFLOWS, PATROLS, PRECEDENTS, RULES, SKILLS][..], &limits].concat()
-    {
+    for file in [&[TEAM_FILE, WORKFLOWS, PATROLS, RULES, SKILLS][..], &limits].concat() {
         assert!(team.contains(&format!("\n- `{file}")), "the topic lays out no {file}");
     }
     // The team rules are a file of the team's; what each of the four kinds of
@@ -1110,7 +1092,6 @@ fn the_help_of_tick_says_for_each_kind_of_end_what_becomes_of_the_terminal_and_t
     let said = &tick[from..from + tick[from..].find("\n- An `escalate`").unwrap()];
     for (end, terminal, worktree) in [
         ("- `end_patrol`: ", "terminal is closed", "checkout removed"),
-        ("- `end_proposal`: ", "terminal is closed", "checkout removed"),
         ("- advance, to a stage or a consult: ", "terminal is closed", "worktree kept"),
         ("- advance, to `done`: ", "terminal is closed", "worktree removed"),
         ("- an escalation: ", "terminal is closed", "worktree"),

@@ -6,7 +6,7 @@ status: accepted
 
 An issue should be able to pass through several stages — plan, review of the plan, implementation, review of the code — each performed by a different role. Running a stage needs exactly what afkconvoy already has: claims, the tick, workers, continuation, the landing train. So roles and workflows are added to afkconvoy rather than built as a tool beside it, and what afkconvoy does today becomes the one path of an unbound repo.
 
-A role is a repo. A team is a repo that names roles and holds workflows, patrols and precedents. A repo binds itself to a team with one `team:` key in its own config.
+A role is a repo. A team is a repo that names roles and holds workflows, patrols and rules (ADR-0039 retires the separate precedent authority). A repo binds itself to a team with one `team:` key in its own config.
 
 ## Considered options
 

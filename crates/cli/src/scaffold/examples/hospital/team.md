@@ -12,7 +12,6 @@ roles:
   infection-control: ./roles/infection-control
   research: ./roles/research
   safety: ./roles/safety
-precedents: { by: safety, do: record-precedent, max_open: 10 }
 roster:
   fellow:
     cast: Hard or wide work — a diagnosis across modules, a change many files feel — on fable; the rest on opus.
@@ -46,6 +45,6 @@ The roster says what each role's workers may run, in order of preference; on a h
 | `triage-nurse` | Routes an open issue to the workflow that fits it | patrol `triage` |
 | `infection-control` | Runs the gate on the base branch; locks the fleet when it is broken | patrol `rounds` |
 | `research` | Proposes work it can show the need for | patrol `research` |
-| `safety` | Proposes a human's ruling as a precedent; reviews how the work went | precedents; patrol `safety-review` |
+| `safety` | Reviews how the work went | patrol `safety-review` |
 
 The article's Charge Nurse, who finds a stalled stage and runs it again, has no role here: the fleet does that itself, with its nudge and its restart.

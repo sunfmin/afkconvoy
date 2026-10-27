@@ -318,18 +318,10 @@ fn a_stage_or_a_patrol_that_names_a_harness_or_a_model_is_told_the_line_to_delet
     let feature = FEATURE
         .replace("do: rule }", "do: rule, harness: claude-code }")
         .replace("do: land }", "do: land, model: opus }");
-    let team = TEAM.replace(
-        "```\n",
-        "precedents: { by: dev, do: implement, max_open: 1, harness: claude-code }\n```\n",
-    );
-    let world = bound(&[("team.md", &team), ("workflows/feature.md", &feature)]);
+    let world = bound(&[("team.md", TEAM), ("workflows/feature.md", &feature)]);
     assert_eq!(
         faults(&world.afk(&["check"]).json),
-        [
-            "team.md: precedents.harness",
-            "workflows/feature.md: land.model",
-            "workflows/feature.md: stages[0].escalate.harness",
-        ]
+        ["workflows/feature.md: land.model", "workflows/feature.md: stages[0].escalate.harness",]
     );
 
     // The config's is a fault with the line to delete.

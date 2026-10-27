@@ -788,10 +788,6 @@ fn answer(loaded: &Loaded) -> Value {
         "unmatched_models": kit.as_ref().map(|kit| casting::unmatched_models(team, kit)),
         "workflows": team.workflows.iter().map(|w| workflow(loaded, w)).collect::<Vec<_>>(),
         "patrols": team.patrols.iter().map(|p| patrol(loaded, p)).collect::<Vec<_>>(),
-        "precedents": team.precedents.as_ref().map(|precedents| {
-            json!({"by": team.role_of(&precedents.work).name, "do": precedents.work.skill,
-                "max_open": precedents.max_open})
-        }),
     })
 }
 
