@@ -432,7 +432,10 @@ fn graphql(gh: &GitHub, args: &[&str]) -> Result<String> {
                     "number":r["number"], "body":r["body"].as_str().unwrap_or(""),
                     "head_branch":r["headRefName"], "base_branch":r["baseRefName"],
                     "state":r["state"].as_str().map(str::to_ascii_lowercase),
-                    "draft":r["isDraft"], "url":r["url"], "fork":r["isCrossRepository"]
+                    "draft":r["isDraft"],
+                    "merged": r["mergedAt"].as_str().is_some()
+                        || r["state"].as_str().is_some_and(|s| s.eq_ignore_ascii_case("merged")),
+                    "url":r["url"], "fork":r["isCrossRepository"]
                 })
             })));
         }
