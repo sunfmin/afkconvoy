@@ -420,6 +420,9 @@ pub struct Held {
     /// The command checked against the stopped worker's route. `None` when
     /// unread or not checked: only a tick is safe to name then.
     pub stopped_command: Option<&'static str>,
+    /// It waits on background work of its own (`judge::waits_on_own_background`).
+    /// A long stop is not a finding while it does, however long the wait.
+    pub waiting_on_background: bool,
     pub worktree: Option<PathBuf>,
     /// What its worker was started under, in a bound repo.
     pub under: Option<Under>,
@@ -708,7 +711,12 @@ fn claim_findings(run: &Run, held: &[Held]) -> Vec<Finding> {
                     on(fix, issue, instance),
                 ));
             }
-            Some(WorkerState::Idle { quiet: Some(quiet) }) if quiet >= STOPPED_LONG => {
+            // Waiting on its own background work is not a stop, however long
+            // the terminal has been quiet. The same test the tick's line and
+            // worker health read.
+            Some(WorkerState::Idle { quiet: Some(quiet) })
+                if quiet >= STOPPED_LONG && !claim.waiting_on_background =>
+            {
                 let fix = match claim.stopped_command {
                     Some(command) if command != "tick" => on(command, issue, instance),
                     _ => format!("afkconvoy tick --instance {instance}"),
@@ -1517,6 +1525,8 @@ fn read_held(
             let tree = head_tree(&Repo::new(worktree.path.clone())).ok()?;
             recorded(&fleet.repo, &tree, &gate, fleet.now).ok()?
         });
+        let waiting_on_background =
+            worktree.as_ref().is_some_and(crate::judge::waits_on_own_background);
         let at = stood.iter().find(|issue| issue.number == mine.number);
         let stamped = fleet.scan.claim_of(mine.number).and_then(|claim| claim.owner.as_ref());
         let stopped_command = match (mine.status, worker, stamped) {
@@ -1546,6 +1556,7 @@ fn read_held(
             held_for: stamped.and_then(|owner| stamp_age(owner.ts, fleet.now)),
             worker,
             stopped_command,
+            waiting_on_background,
             worktree: worktree.map(|worktree| worktree.path),
             moved: match (&under, team) {
                 (Some(under), Some(team)) => read_moved(team, under),
@@ -2219,6 +2230,7 @@ mod tests {
             held_for: Some(600),
             worker: Some(WorkerState::Busy),
             stopped_command: None,
+            waiting_on_background: false,
             worktree: Some(PathBuf::from(format!("/wt/issue-{issue}"))),
             under: None,
             moved: vec![],
@@ -2461,6 +2473,10 @@ mod tests {
         assert!(found[0].evidence.contains("/wt/issue-3"), "{found:?}");
         // a short stop, or one of a runtime that keeps no time, is none
         state.held = vec![stopped(Some(STOPPED_LONG - 1)), stopped(None)];
+        assert_eq!(self::found(&host(), &run(vec![]), &state), []);
+        // its own background work, however long: the same fact the tick names
+        state.held =
+            vec![Held { waiting_on_background: true, ..stopped(Some(STOPPED_LONG + 7200)) }];
         assert_eq!(self::found(&host(), &run(vec![]), &state), []);
     }
 

@@ -496,6 +496,37 @@ pub(crate) fn nudge_worker(
     Ok(terminal)
 }
 
+/// What of a worker's own background work shows right now. Writes nothing.
+struct SeenBackground {
+    /// Its harness shows a shell or a monitor still running.
+    showing: bool,
+    /// Since when the exclusive queue has held a command of its.
+    queued: Option<u64>,
+}
+
+/// The one read of a worker's own background work: the end of its screen, and
+/// the host's exclusive queue. Soft, as `own_background`: a terminal that
+/// cannot be read shows none.
+fn read_own_background(worktree: &Worktree) -> SeenBackground {
+    let screen = worktree.terminal().and_then(|terminal| match terminal {
+        Some(terminal) => worktree.screen(&terminal, FOOTER_LINES),
+        None => Ok(vec![]),
+    });
+    SeenBackground {
+        showing: Harness::any_shows_background(&screen.unwrap_or_default()),
+        queued: exclusive::queued_in(&worktree.path),
+    }
+}
+
+/// Whether the worker in `worktree` waits on background work of its own right
+/// now: a shell or a monitor its harness shows still running, or a command of
+/// its in the host's exclusive queue. Writes nothing. Worker health, the
+/// tick's line and `doctor` all read this and no other test.
+pub(crate) fn waits_on_own_background(worktree: &Worktree) -> bool {
+    let seen = read_own_background(worktree);
+    seen.showing || seen.queued.is_some()
+}
+
 /// The background work the stopped worker in `worktree` started itself and
 /// waits on, as its harness shows it at the end of its screen — or as the
 /// host's `exclusive` queue holds a command of its: since when it
@@ -503,6 +534,7 @@ pub(crate) fn nudge_worker(
 /// `past_grace` (`stopped::past_grace`) — one with a sign of life is not
 /// waiting, and is seen waiting afresh when it next stops — and soft: a
 /// terminal that cannot be read shows none, and a silence never waits on one.
+/// Whether any shows is `waits_on_own_background`.
 pub(crate) fn own_background(
     fleet: &Fleet,
     worktree: &Worktree,
@@ -512,17 +544,13 @@ pub(crate) fn own_background(
         worktree.background_since(false, fleet.now)?;
         return Ok(None);
     }
-    let screen = worktree.terminal().and_then(|terminal| match terminal {
-        Some(terminal) => worktree.screen(&terminal, FOOTER_LINES),
-        None => Ok(vec![]),
-    });
-    let waiting = Harness::any_shows_background(&screen.unwrap_or_default());
-    let since = worktree.background_since(waiting, fleet.now)?;
+    let seen = read_own_background(worktree);
+    let since = worktree.background_since(seen.showing, fleet.now)?;
     // A command of its in the host's `exclusive` queue is work it waits on
     // too, since it asked to run: busy, not silent (docs/adr/0019).
-    let since = match (since, exclusive::queued_in(&worktree.path)) {
-        (Some(seen), Some(queued)) => Some(seen.min(queued)),
-        (seen, queued) => seen.or(queued),
+    let since = match (since, seen.queued) {
+        (Some(screen), Some(queued)) => Some(screen.min(queued)),
+        (screen, queued) => screen.or(queued),
     };
     Ok(since.map(|since| Background { since, limit: fleet.config.gate_seconds() }))
 }

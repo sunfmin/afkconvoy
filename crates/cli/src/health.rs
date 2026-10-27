@@ -1127,14 +1127,18 @@ fn decide(
         classified_for(Some(observed.harness), raw_error).map(|rule| ("structured rule", rule))
     });
     let failed = observed.orca["state"] == "done" && observed.orca["outcome"] == "failure";
-    if !failed
-        && rule.is_none()
-        && let Some(background) = crate::judge::own_background(fleet, worktree, true)?
-    {
-        observed.action = "waiting for background work".into();
-        observed.background = Some(background.since);
-        observed.next_check = fleet.now.saturating_add(CHECK_SECONDS);
-        return Ok(());
+    if !failed && rule.is_none() {
+        // Record since when, then decide by the one test the tick's line and
+        // `doctor` read. The record is what the line names; it is not a second test.
+        let background = crate::judge::own_background(fleet, worktree, true)?;
+        if crate::judge::waits_on_own_background(worktree)
+            && let Some(background) = background
+        {
+            observed.action = "waiting for background work".into();
+            observed.background = Some(background.since);
+            observed.next_check = fleet.now.saturating_add(CHECK_SECONDS);
+            return Ok(());
+        }
     }
     observed.background = None;
     let quiet = fleet.now.saturating_sub(observed.snapshots.first().map_or(fleet.now, |s| s.at));
