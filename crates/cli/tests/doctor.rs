@@ -328,9 +328,9 @@ fn the_host_s_exclusive_queue_is_shown_what_runs_first_then_what_waits() {
     let mut first = exclusive["running"].clone();
     assert!(first["ran"].as_u64().is_some(), "{exclusive}");
     first.as_object_mut().unwrap().remove("ran");
-    let command = format!("sh -c {touched}");
+    let command = format!("touch {}; sleep 30", ran.display());
     assert_eq!(first, ticket(&command, json!(12), running.id(), 900));
-    let mut next = ticket("sh -c true", Value::Null, waiting.id(), 950);
+    let mut next = ticket("true", Value::Null, waiting.id(), 950);
     next["ran"] = Value::Null;
     next["waiting"] = json!("waiting_for_capacity");
     assert_eq!(exclusive["waiting"], json!([next]));
