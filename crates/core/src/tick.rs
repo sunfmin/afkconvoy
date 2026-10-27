@@ -1341,7 +1341,13 @@ mod tests {
     #[test]
     fn a_pass_opens_the_issue_for_a_slow_gate_that_has_none() {
         use crate::slow_gate::SlowGate;
-        let slow = |issue| SlowGate { gate_seconds: 600, host: "mini".into(), runs: vec![], issue };
+        let slow = |issue| SlowGate {
+            gate_seconds: 600,
+            gate_budget_seconds: None,
+            host: "mini".into(),
+            runs: vec![],
+            issue,
+        };
         let mut unreported = set(&[5], &[]);
         unreported.slow_gate = Some(slow(None));
         // after the slots are filled, and in none of them

@@ -140,6 +140,74 @@ fn a_tick_opens_one_issue_for_a_slow_gate_and_no_other_while_it_is_open() {
 }
 
 #[test]
+fn a_fixed_budget_warns_through_tick_and_doctor_without_mixing_hosts_or_reopening() {
+    let world = World::new();
+    world.set_gate_config("gate_command: ./gate.sh\ngate_seconds: 3600\ngate_budget_seconds: 600");
+    // Controlled recorded command durations: no real ten-minute waits.
+    // The observed six-minute gate and the exact budget are both normal.
+    land_all(&world, "mini", &[379, 379, 600, 379, 379], 90_000);
+    let normal = tick_as(&world, "alpha", "h1", "91000");
+    assert_eq!(opening(&normal), None);
+    assert_eq!(plan(&world, "91000").get("slow_gate"), None);
+    let findings = world.afk(&["doctor", "--host", "h1", "--now", "91000"]).json;
+    assert!(
+        !findings["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|finding| { finding["what"].as_str().unwrap().contains("the gate is slow") })
+    );
+
+    // Five slow runs split across two hosts cannot make either host slow.
+    land_all(&world, "mini", &[601, 650, 700], 91_100);
+    land_all(&world, "air", &[800, 900], 91_200);
+    assert_eq!(opening(&tick_as(&world, "alpha", "h1", "91400")), None);
+    assert_eq!(opened(&world).len(), 0);
+
+    land_all(&world, "mini", &[750, 800], 91_500);
+    let slow = plan(&world, "91600")["slow_gate"].clone();
+    assert_eq!(slow["gate_seconds"], 3600, "termination limit is independent");
+    assert_eq!(slow["gate_budget_seconds"], 600, "fixed, never learned from these runs");
+    assert_eq!(slow["host"], "mini");
+    let times: Vec<u64> = slow["runs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|run| run["seconds"].as_u64().unwrap())
+        .collect();
+    assert_eq!(times, [800, 750, 700, 650, 601]);
+    let ticked = tick_as(&world, "alpha", "h1", "91600");
+    assert_eq!(opening(&ticked), Some("done"));
+    let logged =
+        ticked["did"].as_array().unwrap().iter().find(|step| step["do"] == "slow_gate").unwrap();
+    let logged = logged["evidence"].as_str().unwrap();
+    assert!(logged.contains("fixed duration budget of 600s"), "{logged}");
+    assert!(logged.contains("termination gate limit is 3600s"), "{logged}");
+    let issues = opened(&world);
+    assert_eq!(issues.len(), 1);
+    let body = issues[0]["body"].as_str().unwrap();
+    assert!(body.contains("fixed duration budget of 600s"), "{body}");
+    assert!(body.contains("termination gate limit is 3600s"), "{body}");
+    let findings = world.afk(&["doctor", "--host", "h1", "--now", "91700"]).json;
+    let finding = findings["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|finding| finding["what"].as_str().unwrap().contains("the gate is slow"))
+        .unwrap();
+    assert_eq!(finding["severity"], "warning");
+    let evidence = finding["evidence"].as_str().unwrap();
+    assert!(evidence.contains("fixed duration budget of 600s"), "{evidence}");
+    for run in slow["runs"].as_array().unwrap() {
+        assert!(evidence.contains(run["commit"].as_str().unwrap()), "{evidence}");
+    }
+    // Another observing host and even five slow runs on another host reuse the issue.
+    land_all(&world, "air", &[950, 960, 970], 91_800);
+    assert_eq!(opening(&tick_as(&world, "beta", "h2", "92000")), None);
+    assert_eq!(opened(&world).len(), 1);
+}
+
+#[test]
 fn landings_that_do_not_say_the_gate_is_slow_open_nothing() {
     let quiet = |world: &World| {
         let ticked = tick_as(world, "alpha", "h1", "91000");

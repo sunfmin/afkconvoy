@@ -11,6 +11,16 @@ use crate::git::Repo;
 /// Where a repo keeps its config, relative to the checkout's top.
 pub const FILE: &str = "docs/agents/afkconvoy.md";
 
+/// A warning budget can follow the main block so older afkconvoy versions
+/// can still gate and land the change that introduces it.
+pub const BUDGET_BLOCK: &str = "```yaml gate-budget";
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GateBudget {
+    gate_budget_seconds: u64,
+}
+
 /// The config file of the checkout `repo`.
 pub fn file_of(repo: &Repo) -> PathBuf {
     repo.dir.join(FILE)
@@ -28,7 +38,17 @@ pub fn load(file: &Path) -> Result<Config> {
 /// first block and skip additions, while duplicate keys still fail here.
 pub fn parse(markdown: &str) -> Result<Config> {
     let yaml = yaml_block(markdown).ok_or_else(|| anyhow!("has no ```yaml block"))?;
-    let settings: Settings = serde_yaml::from_str(&yaml)?;
+    let mut settings: Settings = serde_yaml::from_str(&yaml)?;
+    let budgets = fenced_all(markdown, BUDGET_BLOCK);
+    if !budgets.is_empty() {
+        let budget: GateBudget =
+            serde_yaml::from_str(&budgets.join("\n")).context("its ```yaml gate-budget blocks")?;
+        if settings.gate_budget_seconds.replace(budget.gate_budget_seconds).is_some() {
+            return Err(anyhow!(
+                "duplicate field `gate_budget_seconds`: declare it in one block only"
+            ));
+        }
+    }
     let blocks = fenced_all(markdown, cut::BLOCK);
     let steps = match blocks.is_empty() {
         false => Some(cut_steps(&blocks.join("\n")).context("its ```yaml cut blocks")?),

@@ -54,6 +54,14 @@ fn a_bad_config_is_an_error_naming_the_key() {
         ("base_branch: main\ngate_command: make\ngate_seconds: 1.5", "gate_seconds"),
         ("base_branch: main\ngate_command: make\ngate_seconds: -1", "gate_seconds"),
         ("base_branch: main\ngate_command: make\ngate_seconds: an hour", "gate_seconds"),
+        ("base_branch: main\ngate_command: make\ngate_budget_seconds: 0", "gate_budget_seconds"),
+        ("base_branch: main\ngate_command: make\ngate_budget_seconds: 1.5", "gate_budget_seconds"),
+        ("base_branch: main\ngate_command: make\ngate_budget_seconds: -1", "gate_budget_seconds"),
+        ("base_branch: main\ngate_command: make\ngate_budget_seconds: 3600", "gate_budget_seconds"),
+        (
+            "base_branch: main\ngate_command: make\ngate_seconds: 600\ngate_budget_seconds: 601",
+            "gate_budget_seconds",
+        ),
         (
             "base_branch: main\ngate_command: make\nescalate_label: ready-for-agent",
             "escalate_label",
@@ -80,6 +88,48 @@ fn this_repos_own_config_names_the_gate() {
     let world = World::new();
     let config = world.afk(&["config", "--file", file]).ok();
     assert_eq!(config["gate_command"], "afkconvoy exclusive -- ./gate.sh");
+}
+
+#[test]
+fn a_warning_budget_has_one_home_and_old_readers_keep_the_termination_limit() {
+    let world = World::new();
+    write_config(&world, "base_branch: main\ngate_command: make test\ngate_seconds: 3600");
+    let file = world.clone.join("docs/agents/afkconvoy.md");
+    let original = std::fs::read_to_string(&file).unwrap();
+    let budget = "\n```yaml gate-budget\ngate_budget_seconds: 600\n```\n";
+    let declared = format!("{original}{budget}");
+    std::fs::write(&file, &declared).unwrap();
+    let config = world.afk(&["config"]).ok();
+    assert_eq!(config["gate_budget_seconds"], 600);
+    assert_eq!(config["gate_seconds"], 3600);
+    // The first block is precisely what older released versions read.
+    let first = afkconvoy::config::yaml_block(&declared).unwrap();
+    assert!(!first.contains("gate_budget_seconds"));
+    let older: serde_json::Value = serde_yaml::from_str(&first).unwrap();
+    assert_eq!(older["gate_seconds"], 3600);
+    for duplicate in [
+        format!("{declared}{budget}"),
+        declared.replace("gate_seconds: 3600", "gate_seconds: 3600\ngate_budget_seconds: 600"),
+    ] {
+        std::fs::write(&file, duplicate).unwrap();
+        let error = world.afk(&["config"]).error();
+        assert!(
+            error.contains("duplicate field") && error.contains("gate_budget_seconds"),
+            "{error}"
+        );
+    }
+    for invalid in ["0", "3600", "-1", "1.5", "'600'"] {
+        std::fs::write(
+            &file,
+            declared
+                .replace("gate_budget_seconds: 600", &format!("gate_budget_seconds: {invalid}")),
+        )
+        .unwrap();
+        assert!(world.afk(&["config"]).error().contains("gate_budget_seconds"));
+    }
+    std::fs::write(&file, declared.replace("gate_budget_seconds: 600", "gate_buget_seconds: 600"))
+        .unwrap();
+    assert!(world.afk(&["config"]).error().contains("unknown field"));
 }
 
 /// The config file `config --help` shows whole: the ```` ```yaml ```` block of

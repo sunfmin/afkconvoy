@@ -76,7 +76,12 @@ pub fn seen(
 ) -> Result<(Vec<Landing>, Reported)> {
     let command = GateCommand::new(&fleet.config.gate_command);
     let landings = landings(&fleet.repo, &command, records, base)?;
-    let reported = match slow(&landings, fleet.config.gate_seconds(), &Reported::NONE) {
+    let reported = match slow(
+        &landings,
+        fleet.config.gate_seconds(),
+        fleet.config.gate_budget_seconds,
+        &Reported::NONE,
+    ) {
         Some(_) => reported(&fleet.gh)?,
         None => Reported::NONE,
     };
