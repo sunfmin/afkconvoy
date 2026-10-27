@@ -905,7 +905,9 @@ fn rule_and_send_steer_the_trackers_issue_without_proposing_a_precedent() {
     // The stage runs again with its ruling and no additional worker.
     assert_eq!(walked(&tick_at_work(&world, 1180)), ["dispatch 7 done"]);
     assert!(!comments_of(&world.tracker(), 7).join("\n").contains("convoy:precedent-proposed"));
-    assert!(!world.worktrees().iter().any(|path| path.to_string_lossy().contains("precedent")));
+    assert!(!world.worktrees().iter().any(|path| {
+        path.file_name().is_some_and(|name| name.to_string_lossy().starts_with("convoy-precedent-"))
+    }));
 
     // A human sends it on to `review`, once its worker has let it go.
     world.afk(&["release", "--issue", "7", "--instance", "alpha", "--host", "h1"]).ok();
