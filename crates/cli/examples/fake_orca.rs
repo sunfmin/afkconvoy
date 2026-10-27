@@ -439,7 +439,8 @@ fn terminal_send(st: &mut State) -> ! {
         st.doc["terminals"][at]["agent"]["programStatus"]["state"] = json!("working");
     }
     let receipt = json!({"send": {"accepted": true, "prompt": {
-        "requestId": request.as_deref().unwrap_or("request-1"), "stages": stages, "observation": "observed"
+        "requestId": request.as_deref().unwrap_or("request-1"), "stages": stages,
+        "observation": st.doc["prompt_observation"].as_str().unwrap_or("observed")
     }}});
     if let Some(request) = request {
         st.doc["terminals"][at]["requests"][&request] = json!({"input": sent, "receipt": receipt});

@@ -206,13 +206,11 @@ impl State {
         }
         // Migrate old coverage before adding new episode identities.
         let legacy = !self.episodes_initialized;
-        if legacy {
-            if let Some(round) = self.running.as_ref().or(self.resident.as_ref()) {
-                for (item, episode) in round.items.iter().zip(&round.episodes) {
-                    self.observed.insert(item.id.clone(), episode.clone());
-                    if round.report.is_some() {
-                        self.covered.push(episode.clone());
-                    }
+        if legacy && let Some(round) = self.running.as_ref().or(self.resident.as_ref()) {
+            for (item, episode) in round.items.iter().zip(&round.episodes) {
+                self.observed.insert(item.id.clone(), episode.clone());
+                if round.report.is_some() {
+                    self.covered.push(episode.clone());
                 }
             }
         }
@@ -1616,7 +1614,7 @@ mod tests {
     /// harmless bounded tasks and isolated durable state. Normal scheduling
     /// is covered by the host-runner CLI scenarios in tests/host_watch.rs.
     #[test]
-    #[ignore = "requires real local Orca and Codex; set XDG_CACHE_HOME inside this worktree's .afkconvoy-tmp"]
+    #[ignore = "requires real local Orca and Codex; set TMPDIR inside this worktree's .afkconvoy-tmp"]
     fn real_orca_resident_agent_reports_two_rounds_in_one_terminal() {
         let directory = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
