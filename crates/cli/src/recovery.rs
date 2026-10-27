@@ -36,7 +36,7 @@ pub fn own_heads(fleet: &Fleet, number: u64, worktree: Option<&Worktree>) -> Res
 /// Reads both signals — always both: a pristine worktree over a branch that
 /// carries pushed commits still has something to continue. Reads only.
 pub fn survey(fleet: &Fleet, number: u64) -> Result<Survey> {
-    let base_tip = fleet.base_tip()?;
+    let base_tip = fleet.task_tip(number)?;
     let worktree = Worktree::of_issue(&Source::of(&fleet.repo)?, number)?;
     let progress = match &worktree {
         Some(worktree) => Some(progress(worktree, &base_tip)?),
@@ -73,7 +73,7 @@ pub fn recovery(fleet: &Fleet, number: u64) -> Result<Value> {
     let names: Vec<&str> = found.candidates.iter().map(|pushed| pushed.name.as_str()).collect();
     Ok(json!({
         "issue": number,
-        "base": fleet.config.base_branch,
+        "base": fleet.task_branch(number)?,
         "worktree": {
             "present": found.worktree.is_some(),
             "path": found.worktree.as_ref().map(|worktree| worktree.path.clone()),

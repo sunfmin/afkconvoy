@@ -85,8 +85,12 @@ The hours of a host's local time its fleets may put it to sleep in: from 00:00 t
 _Avoid_: quiet hours, night mode
 
 **Base branch**:
-The one branch a repo's fleet work is cut from and lands on.
+The configured destination of a repo's ordinary tasks, watches and cuts, and the branch from which versions are cut. A task with an explicit target branch leaves it unchanged.
 _Avoid_: trunk, main, default branch (a team's or a role's repo is read at its own)
+
+**Target branch**:
+The same-repo branch one task is cut from and lands on, pinned before it is claimed: the selected branch, or the configured base branch. Its stages and continuations retain that destination.
+_Avoid_: delivery branch (a Jira ticket's broader delivery), integration branch (a team's purpose for a branch)
 
 ### Teams and roles
 
@@ -272,7 +276,7 @@ Replacing a silent worker with a new one in the same worktree and the same role,
 _Avoid_: retry, re-dispatch
 
 **Continuation**:
-Recovering a claim whose worker died from the progress that survived: its worktree if still on this host, else its pushed branch, else a fresh start from the base branch.
+Recovering a claim whose worker died from the progress that survived: its worktree if still on this host, else its pushed branch, else a fresh start from its target branch.
 _Avoid_: resume, checkpoint restore
 
 **Wake**:
@@ -354,19 +358,19 @@ One command's construction, validation and ordered landing of an open PR's candi
 _Avoid_: landing slot, merge queue
 
 **Candidate**:
-An immutable merge of a PR's original head onto its assigned predecessor, validated in its own worktree. Its predecessor is the certified base tip or the preceding candidate.
+An immutable merge of a PR's original head onto its assigned predecessor, validated in its own worktree. Its predecessor is the certified target tip or the preceding candidate.
 _Avoid_: speculative branch, train tip
 
 **Candidate chain**:
-The ordered candidates of one repo, each depending on its predecessor. A failed or invalid candidate cancels its dependent suffix; already landed predecessors remain landed.
+The ordered candidates of one repo and target branch, each depending on its predecessor. A failed or invalid candidate cancels its dependent suffix; already landed predecessors remain landed.
 _Avoid_: landing train, speculative queue
 
 **Land**:
-Pushing the exact candidate a turn recorded green onto the base branch as a fast-forward after its predecessor has landed, and closing the issue it completes. Issue workers, a workflow's landing worker, watches and cuts all land in a turn.
+Pushing the exact candidate a turn recorded green onto its target branch as a fast-forward after its predecessor has landed, and closing the issue it completes. Issue workers, a workflow's landing worker, watches and cuts all land in a turn; watches and cuts retain the configured base branch.
 _Avoid_: join, enqueue
 
 **Repair**:
-A change the fleet starts to restore a red base tip or finish retained work from an older release. Its operator worker owns an issue and a worktree, works outside product workflows and human stages, and lands through the same recorded turn as every other change.
+A change the fleet starts to restore a red target tip or finish retained work from an older release. Its operator worker owns an issue and a worktree, works outside product workflows and human stages, and lands through the same recorded turn as every other change.
 _Avoid_: manual repair
 
 **Cut**:

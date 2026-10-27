@@ -157,6 +157,7 @@ fn real_claude_skills_keep_host_ancestors_opt_in() {
                     writes: false,
                     consult: false,
                     base_branch: "main",
+                    target_branch: None,
                     escalate_label: "ready-for-human",
                     lock_label: "fleet-lock",
                     role_commit: "abc",

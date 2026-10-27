@@ -203,18 +203,23 @@ impl Repo {
             .collect())
     }
 
-    /// The tip of the branch `base_branch`, every version tag and every ref
+    /// Every branch tip, including `base_branch`, every version tag and every ref
     /// the fleet keeps, as ONE listing of the remote saw them: what a rebuild
     /// reads of the remote, all of it from one moment.
     pub fn listing(&self, base_branch: &str) -> Result<Listing> {
         let (every, base_ref) = (self.layout().every(""), format!("refs/heads/{base_branch}"));
-        let mut records = self.listed(&[&every, &base_ref, TAGS])?;
+        let mut records = self.listed(&[&every, "refs/heads/*", TAGS])?;
         let base = records.iter().find(|record| record.name == base_ref);
         let base = base.map(|record| record.sha.clone());
         let tags = tags_of(&records);
+        let heads = records
+            .iter()
+            .filter(|r| r.name.starts_with("refs/heads/"))
+            .map(|r| (r.name.clone(), r.sha.clone()))
+            .collect();
         records.retain(|record| record.name.starts_with(every.trim_end_matches('*')));
         self.read_records(&mut records)?;
-        Ok(Listing { base_ref, base, records, tags })
+        Ok(Listing { base_ref, base, records, tags, heads })
     }
 
     /// Every version tag the remote has, each with the commit it is on.
@@ -293,10 +298,12 @@ pub struct RemoteRecord {
     pub subject: String,
 }
 
-/// The base branch's tip and every ref of the fleet, as one listing of the
+/// Every branch tip and ref of the fleet, as one listing of the
 /// remote saw them (`Repo::listing`).
 #[derive(Debug, Clone)]
 pub struct Listing {
+    /// Branch identities and tips, from the same observation as fleet state.
+    pub heads: Vec<(String, String)>,
     /// The base branch's ref.
     pub base_ref: String,
     /// Its tip; `None` when the remote has no such branch.

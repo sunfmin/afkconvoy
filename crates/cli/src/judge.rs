@@ -70,7 +70,11 @@ pub fn progress(worktree: &Worktree, base_tip: &str) -> Result<Progress> {
 
 /// What refutes an `already-satisfied` verdict, including the committed and
 /// uncommitted paths a worker must account for. Read failures stay refusals.
-pub(crate) fn refuted_work(fleet: &Fleet, worktree: Option<&Worktree>) -> Result<String> {
+pub(crate) fn refuted_work(
+    fleet: &Fleet,
+    issue: u64,
+    worktree: Option<&Worktree>,
+) -> Result<String> {
     let Some(worktree) = worktree else {
         return Ok("it has no worktree on this host to show its branch holds no work".to_string());
     };
@@ -80,7 +84,7 @@ pub(crate) fn refuted_work(fleet: &Fleet, worktree: Option<&Worktree>) -> Result
         "--no-ext-diff",
         "--name-only",
         "--no-renames",
-        &format!("{}...HEAD", fleet.base_tip()?),
+        &format!("{}...HEAD", fleet.task_tip(issue)?),
         "--",
     ])?;
     let dirty = repo.git_raw(&["status", "--porcelain"])?;
@@ -121,8 +125,8 @@ pub(crate) struct Leaving {
 /// What `worktree` holds that the remote does not: anything uncommitted, and
 /// the commits of its branch on neither the branch the remote has of that
 /// name nor the base branch → what becomes of it as its claim ends.
-pub(crate) fn leaving(fleet: &Fleet, worktree: &Worktree) -> Result<Leaving> {
-    let mut known = vec![fleet.base_tip()?];
+pub(crate) fn leaving(fleet: &Fleet, issue: u64, worktree: &Worktree) -> Result<Leaving> {
+    let mut known = vec![fleet.task_tip(issue)?];
     known.extend(fleet.repo.fetched(&format!("refs/heads/{}", worktree.branch))?);
     let repo = Repo::new(worktree.path.clone());
     let dirty = !repo.git_raw(&["status", "--porcelain"])?.trim().is_empty();
@@ -165,7 +169,7 @@ pub(crate) fn worktree_and_work(
 ) -> Result<(Option<Worktree>, Option<Workless>)> {
     let worktree = worktree_of(fleet, issue)?;
     let workless = match &worktree {
-        Some(worktree) => Workless::of(&progress(worktree, &fleet.base_tip()?)?),
+        Some(worktree) => Workless::of(&progress(worktree, &fleet.task_tip(issue)?)?),
         None => None,
     };
     Ok((worktree, workless))
@@ -246,7 +250,7 @@ pub(crate) fn escalate_claim(
     worktree: Option<&Worktree>,
 ) -> Result<Option<Left>> {
     let issue = claim.number;
-    let leaving = worktree.map(|worktree| leaving(fleet, worktree)).transpose()?;
+    let leaving = worktree.map(|worktree| leaving(fleet, claim.number, worktree)).transpose()?;
     let labels = fleet.gh.issue(issue)?.labels;
     let comments = fleet.gh.comments(issue)?;
     let bodies = || comments.iter().map(|c| c.body.as_str());
@@ -359,7 +363,7 @@ pub fn close(fleet: &mut Fleet, me: &Me, issue: u64) -> Result<Value> {
     let Some(workless) = workless else {
         bail!(
             "issue #{issue} is not closed as needing no change: {}; nothing was changed",
-            refuted_work(fleet, worktree.as_ref())?
+            refuted_work(fleet, issue, worktree.as_ref())?
         );
     };
     close_claim(fleet, &claim, worktree.as_ref(), &workless)?;
@@ -427,7 +431,7 @@ fn ask_after(fleet: &Fleet, me: &Me, issue: u64) -> Result<Option<Asked>> {
     let (Some(worktree), Some(state)) = (worktree, state) else {
         bail!("issue #{issue}: a worker that stopped has a worktree and a state");
     };
-    let progress = progress(&worktree, &fleet.base_tip()?)?;
+    let progress = progress(&worktree, &fleet.task_tip(issue)?)?;
     let comments = fleet.gh.comments(issue)?;
     let bodies = || comments.iter().map(|c| c.body.as_str());
     let verdict = latest_verdict(bodies());
@@ -621,7 +625,7 @@ pub fn judge(
         Route::Escalate(why) => {
             let mut reason = why.reason(said.unwrap_or("(its comment)"));
             if why == Why::Refuted {
-                reason.push_str(&format!("\n\n{}", refuted_work(fleet, Some(&worktree))?));
+                reason.push_str(&format!("\n\n{}", refuted_work(fleet, issue, Some(&worktree))?));
             }
             Handed::new(why.brief(), reason)
         }

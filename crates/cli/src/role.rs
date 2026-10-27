@@ -62,6 +62,7 @@ pub struct Staged {
     /// What the guard holds every worker to: the repo's base branch, the
     /// team's escalate label and the repo's lock label.
     base_branch: String,
+    repo_base_branch: String,
     escalate_label: String,
     lock_label: String,
     /// The PR a landing worker gates and joins. `None` at a stage.
@@ -201,7 +202,8 @@ impl Staged {
             allowed_models,
             unmatched: cast.unmatched.clone().map(|name| (name, cast)),
             skipped,
-            base_branch: fleet.config.base_branch.clone(),
+            base_branch: fleet.task_branch(issue)?,
+            repo_base_branch: fleet.config.base_branch.clone(),
             escalate_label: kept.team.escalate_label.clone(),
             lock_label: fleet.config.lock_label.clone(),
             joins,
@@ -273,7 +275,9 @@ impl Staged {
                 skill: &self.skill,
                 writes: self.writes,
                 consult: self.consult,
-                base_branch: &self.base_branch,
+                base_branch: &self.repo_base_branch,
+                target_branch: (self.base_branch != self.repo_base_branch)
+                    .then_some(self.base_branch.as_str()),
                 escalate_label: &self.escalate_label,
                 lock_label: &self.lock_label,
                 role_commit: &self.role_copy.commit,
@@ -350,7 +354,7 @@ impl Staged {
                 title,
                 branch: &worktree.branch,
                 worktree: &path,
-                base_branch: &fleet.config.base_branch,
+                base_branch: &self.base_branch,
                 gate_command: &gate,
                 gate_alone_command: &gate_alone,
                 lock_command: &own().fixed(" lock").own(),
@@ -381,7 +385,7 @@ impl Staged {
             skill: &self.skill,
             branch: &worktree.branch,
             worktree: &path,
-            base_branch: &fleet.config.base_branch,
+            base_branch: &self.base_branch,
             team_rules: self.team_rules.as_deref(),
             records: &records,
             verdict_command: &declare(" verdict"),
