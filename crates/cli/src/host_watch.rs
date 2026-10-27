@@ -1586,6 +1586,149 @@ pub const INSTANCE: &str = "host-watch";
 mod tests {
     use super::*;
 
+    /// Uses a real interactive Codex in this worker's visible Terminal, with
+    /// harmless bounded tasks and isolated durable state. Normal scheduling
+    /// is covered by the host-runner CLI scenarios in tests/host_watch.rs.
+    #[test]
+    #[ignore = "requires real local Orca and Codex; set XDG_CACHE_HOME inside this worktree's .afkconvoy-tmp"]
+    fn real_orca_resident_agent_reports_two_rounds_in_one_terminal() {
+        let directory = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let cache = cache().unwrap();
+        assert!(
+            cache.starts_with(directory.join(".afkconvoy-tmp")),
+            "an isolated smoke cache is required"
+        );
+        assert!(read().unwrap().running.is_none() && watch_terminal::active().unwrap().is_none());
+        let binary = directory.join("target/debug/afkconvoy");
+        assert!(binary.is_file(), "build the CLI first");
+        let watcher = Watcher {
+            ended: Arc::new(AtomicBool::new(false)),
+            shared: Shared::default(),
+            say: Box::new(|what| println!("{}", serde_json::to_string(&what).unwrap())),
+            looking: Failing::default(),
+            checking: Failing::default(),
+        };
+        let make = |id: &str| -> Watch {
+            serde_json::from_value(json!({"id": id, "session": "", "directory": directory,
+                "look": {}, "items": [], "started": 0, "session_started": crate::clock(),
+                "harness": "codex", "model": null, "terminal": "", "transcript": ""}))
+            .unwrap()
+        };
+        let mut first = make(&format!("real-first-{}", crate::unique()));
+        launch_session(&mut first).unwrap();
+        struct Cleanup(Watch);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = stop_session(&self.0);
+                let worktree = Worktree::at(self.0.directory.clone(), String::new());
+                let _ = worktree.close_terminal(&self.0.terminal);
+            }
+        }
+        let _cleanup = Cleanup(first.clone());
+        let worktree = Worktree::at(directory.clone(), String::new());
+        worktree.await_ready(&first.terminal, 60, first.harness, "codex").unwrap();
+        let submit = |round: &mut Watch, number: u64| {
+            let dir = crate::watch_report::directory(&round.id).unwrap();
+            std::fs::create_dir_all(&dir).unwrap();
+            let file = dir.join("smoke-report.json");
+            let report = json!({"held_back": [], "did": [format!("smoke round {number} only")],
+                "verified": [format!("interactive round {number} received")], "human": [], "pending": []});
+            std::fs::write(&file, report.to_string()).unwrap();
+            let command = afkconvoy_core::line::Line::new()
+                .fixed("XDG_CACHE_HOME=")
+                .word(&cache.parent().unwrap().display().to_string())
+                .fixed(" ")
+                .word(&binary.display().to_string())
+                .fixed(" watched --watch ")
+                .word(&round.id)
+                .fixed(" --text-file ")
+                .word(&file.display().to_string())
+                .own();
+            let task = format!(
+                "Bounded resident Terminal smoke test, round {number}. Only run this exact shell command, then say 'round {number} reported' and return to interactive input. Do not exit, poll or operate any fleet, repo, other session, network or user data. Wait for my next message in this same Agent session.\n\n{command}\n"
+            );
+            std::fs::write(brief_file(round).unwrap(), task).unwrap();
+            let mut record = watch_terminal::read().unwrap().unwrap();
+            record.watch = round.clone();
+            record.status = LaunchState::Sending;
+            record.request = Some(uuid::Uuid::new_v4().to_string());
+            record.offered = Some(crate::clock());
+            watch_terminal::save(&record).unwrap();
+            let mut state = read().unwrap();
+            state.running = Some(round.clone());
+            watcher.save(&state).unwrap();
+            resume_delivery(round).unwrap();
+            let mut state = read().unwrap();
+            state.running = Some(round.clone());
+            watcher.save(&state).unwrap();
+        };
+        let wait_report = |round: &Watch| {
+            let deadline = Instant::now() + Duration::from_secs(180);
+            loop {
+                watcher.check().unwrap();
+                if read()
+                    .unwrap()
+                    .last
+                    .as_ref()
+                    .is_some_and(|last| last.id == round.id && last.report.is_some())
+                {
+                    break;
+                }
+                assert!(Instant::now() < deadline, "round {} did not report", round.id);
+                std::thread::sleep(Duration::from_millis(500));
+            }
+        };
+        let executor = |round: &Watch| {
+            let marker = format!("{}{}", host_watch::SESSION_PROCESS, session_identity(round));
+            let processes = crate::hot::listed_checked().unwrap();
+            let pids: Vec<_> = processes
+                .iter()
+                .filter(|p| p.line.split_whitespace().any(|word| word == marker))
+                .map(|p| p.pid)
+                .collect();
+            assert_eq!(pids.len(), 1, "one actual executor");
+            pids[0]
+        };
+        submit(&mut first, 1);
+        wait_report(&first);
+        let pid = executor(&first);
+        let deadline = Instant::now() + Duration::from_secs(90);
+        while !worktree.watch_input_ready(&first.terminal).unwrap() {
+            assert!(Instant::now() < deadline, "first round did not return to input");
+            std::thread::sleep(Duration::from_millis(500));
+        }
+        // Recover solely from durable state before the next round.
+        let resident = read().unwrap().resident.unwrap();
+        assert_eq!(watch_terminal::locate(&resident).unwrap().unwrap(), first.terminal);
+        let mut second = make(&format!("real-second-{}", crate::unique()));
+        second.session = resident.session;
+        second.terminal = resident.terminal;
+        second.transcript = resident.transcript;
+        second.session_started = resident.session_started;
+        watch_terminal::begin_round(&second).unwrap();
+        submit(&mut second, 2);
+        wait_report(&second);
+        assert_eq!(executor(&first), pid, "same Agent wrapper process after both reports");
+        assert!(worktree.live(&second.terminal).unwrap());
+        assert_eq!(
+            crate::watch_report::read(&first.id).unwrap().unwrap().did,
+            ["smoke round 1 only"]
+        );
+        assert_eq!(
+            crate::watch_report::read(&second.id).unwrap().unwrap().did,
+            ["smoke round 2 only"]
+        );
+        println!(
+            "real resident proof: terminal={}, session={}, executor_pid={pid}, first={}, second={}, reports=2; both reports left the same interactive Agent alive",
+            first.terminal, first.session, first.id, second.id
+        );
+    }
+
     #[test]
     fn ending_a_session_keeps_its_terminal_shell_and_the_operators_process() {
         use afkconvoy_core::line::Line;

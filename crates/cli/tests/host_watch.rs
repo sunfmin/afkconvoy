@@ -1434,9 +1434,9 @@ fn resident_rounds_queue_while_busy_revalidate_recover_and_keep_reports_separate
     assert_eq!(state(&world)["pending"][0]["episode"], episodes[0]["episode"]);
     assert_eq!(state(&world)["pending"][1]["episode"], episodes[1]["episode"]);
     assert_eq!(sent(&world, &first).len(), 1, "busy input remains untouched");
-    let mut paused = world.paused();
-    paused.as_array_mut().unwrap().retain(|p| p["harness"] != "dsh");
-    std::fs::write(world.paused_path(), paused.to_string()).unwrap();
+    let mut paused_items = world.paused();
+    paused_items.as_array_mut().unwrap().retain(|p| p["harness"] != "dsh");
+    std::fs::write(world.paused_path(), paused_items.to_string()).unwrap();
     until(&world, "recovered episode removed before delivery", || {
         let s = state(&world);
         (s["pending"].as_array()?.len() == 1
