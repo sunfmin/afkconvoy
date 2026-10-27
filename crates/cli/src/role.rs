@@ -155,12 +155,16 @@ impl Staged {
         let handed = handed_said(&history, &records, &urls);
         let verdicts = records.into_iter().zip(urls).zip(history.readings);
         let labels = labels.to_vec();
-        let kit = crate::kit::running()?.0.range();
+        // A checkout that names a harness offers that harness's models alone.
+        // One that names none offers the host kit, in its order.
+        let kit = match fleet.pinned {
+            Some(_) => fleet.runnable()?.range(),
+            None => crate::kit::running()?.0.range(),
+        };
         let ranges = casting::stage_ranges(&kept.team, workflow, &kit);
         // A worker in a role runs the issue's casting within its role's
         // range — its range's first where it matches nothing held
-        // (docs/adr/0020). This host's chosen harness, where a switch chose
-        // one, wins over it.
+        // (docs/adr/0020). A checkout that names a harness runs that harness.
         let (work, role) = by;
         let cast =
             casting::unmatched_in(fleet.cast_in(role, &labels, Some(issue))?, &labels, &ranges);
@@ -538,7 +542,9 @@ pub fn current(repo: &Repo, bound: &Bound, labels: &RepoLabels) -> Option<Team> 
 /// asked for, each with what calls for it: the host kit's first, every
 /// harness of each role's range (`casting::range`). No team (`current`) calls for the first alone.
 pub fn called_for(repo: &Repo, team: Option<&Team>) -> Vec<(Harness, Vec<String>)> {
-    let _ = repo;
+    if let Ok(Some(pinned)) = crate::named_harness::named(repo) {
+        return vec![(pinned, vec![format!("the harness {} this checkout names", pinned.key())])];
+    }
     let Ok(kit) = crate::kit::load() else { return vec![] };
     let mut called = vec![];
     if let Some(first) = kit.first() {

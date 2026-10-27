@@ -182,6 +182,10 @@ pub fn tick(
     let (mut set, mut flows) = fleet.rebuild(&open, Some(&me.instance))?;
     let _health_events = crate::health::reconcile(&mut fleet, me, agent, &open, &flows, &set)?;
     fleet.invalidate_selection();
+    // A checkout that names a harness, or that just cleared one, continues
+    // a worker still on another harness. A harness that cannot start, or a
+    // continuation that does not land, waits for the next tick.
+    let _ = crate::named_harness::converge(&mut fleet, me, agent);
     // A roster entry that names no model the host kit holds is the team's to
     // correct: one issue is opened for it in the team's repo. One that cannot
     // be opened costs the tick nothing; the next tries again.

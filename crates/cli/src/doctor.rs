@@ -169,6 +169,7 @@ kinds! {
     TeamUnread: Critical, "the team this repo names cannot be read";
     TeamFaulty: Critical, "has a fault at its head";
     NothingSafe: Warning, "has no harness on this host it holds limits for";
+    NamedHarness: Warning, "names a harness no worker of this checkout starts on";
     RosterUnmatched: Warning, "matches nothing in the host kit";
     LockUnworked: Critical, "stands and cannot be worked";
     StateUnread: Critical, "the fleet's state cannot be read";
@@ -1296,6 +1297,7 @@ pub fn findings(seen: &Seen) -> Vec<Finding> {
     found.extend(health_findings());
     found.extend(seen.config.and_then(config_finding));
     found.extend(seen.config.and_then(|config| retired_concurrency_finding(seen.checkout, config)));
+    found.extend(crate::named_harness::findings(seen.checkout));
     found.extend(log_findings(seen.run));
     found.extend(broken_finding(seen.run));
     match seen.state {
@@ -1334,7 +1336,12 @@ fn read_host(repo: &Repo, config: Option<&Config>) -> Host {
             let team = role::current(repo, bound, &config.unwrap().labels());
             role::called_for(repo, team.as_ref())
         }
-        None => vec![(default, vec![])],
+        None => match crate::named_harness::named(repo) {
+            Ok(Some(pinned)) => {
+                vec![(pinned, vec![format!("the harness {} this checkout names", pinned.key())])]
+            }
+            _ => vec![(default, vec![])],
+        },
     };
     let checked = role::check(&launches, &called).unwrap_or_default();
     let launch = |checked: Checked| Launch { checked };
@@ -1948,6 +1955,7 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String], look: &Look) ->
     }
     let mut fleet = fleet_json(&run);
     fleet["concurrency"] = crate::concurrency::json_of(repo);
+    fleet["harness"] = crate::named_harness::json_of(repo);
     fleet["github_api"] = match crate::gh::GitHub::of(repo).and_then(|gh| gh.quota_status()) {
         Ok(status) => status,
         Err(error) => json!({"error":format!("{error:#}")}),

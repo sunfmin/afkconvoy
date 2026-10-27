@@ -14,6 +14,7 @@ use std::sync::{Mutex, MutexGuard};
 
 use afkconvoy_core::checkouts;
 use afkconvoy_core::config::RepoName;
+use afkconvoy_core::harness::Harness;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -42,8 +43,9 @@ pub struct Listed {
 
 /// One checkout on the list: its root, what the `run` that started it named
 /// for its fleet instance alone, the concurrency it says on this host
-/// (`concurrency`), which its fleet instance reads at each tick, and its
-/// tracker (`tracker_of`).
+/// (`concurrency`), which its fleet instance reads at each tick, its
+/// tracker (`tracker_of`), and the harness its workers start on
+/// (`named_harness`), where it names one.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Entry {
     pub checkout: PathBuf,
@@ -56,6 +58,15 @@ pub struct Entry {
     /// checkout's own: none, and it is its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tracker: Option<RepoName>,
+    /// `--harness`: the harness this checkout's workers start on. None, and
+    /// they start on the host kit's first eligible harness.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness: Option<Harness>,
+    /// The key the last successful converge landed this checkout's workers
+    /// on. `Some("")` is the host kit. Absent means a converge has not
+    /// landed yet, which is not the same as having landed on the host kit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness_applied: Option<String>,
 }
 
 /// What the `run` of a checkout the list holds no entry of yet asked of it,
@@ -68,6 +79,8 @@ pub struct Asked {
     pub concurrency: Option<NonZeroUsize>,
     /// `--tracker` (`crate::tracker`).
     pub tracker: Option<RepoName>,
+    /// `--harness` (`named_harness`).
+    pub harness: Option<Harness>,
 }
 
 /// What each `run` asked in this process, by its checkout's root.
@@ -266,7 +279,14 @@ mod tests {
 
     fn entry(checkout: &str) -> Entry {
         let checkout = PathBuf::from(checkout);
-        Entry { checkout, named: Named::default(), concurrency: None, tracker: None }
+        Entry {
+            checkout,
+            named: Named::default(),
+            concurrency: None,
+            tracker: None,
+            harness: None,
+            harness_applied: None,
+        }
     }
 
     #[test]
@@ -293,7 +313,14 @@ mod tests {
         let added = list.change(|listed| {
             let checkout = PathBuf::from("/b");
             let named = named.clone();
-            listed.checkouts.push(Entry { checkout, named, concurrency, tracker: None });
+            listed.checkouts.push(Entry {
+                checkout,
+                named,
+                concurrency,
+                tracker: None,
+                harness: None,
+                harness_applied: None,
+            });
             listed.checkouts.len()
         });
         assert_eq!(added.unwrap(), 2);
@@ -309,7 +336,17 @@ mod tests {
         );
         assert_eq!(
             list.read().unwrap().checkouts,
-            [entry("/a"), Entry { checkout: "/b".into(), named, concurrency, tracker: None }]
+            [
+                entry("/a"),
+                Entry {
+                    checkout: "/b".into(),
+                    named,
+                    concurrency,
+                    tracker: None,
+                    harness: None,
+                    harness_applied: None,
+                }
+            ]
         );
         // a concurrency of no slot is none: the list cannot be read
         std::fs::write(list.file(), r#"{"checkouts": [{"checkout": "/a", "concurrency": 0}]}"#)
