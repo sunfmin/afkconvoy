@@ -448,7 +448,6 @@ impl Fleet {
         let heartbeats = self.scan.beats();
         let (landings, slow_gate) = slow_gate::seen(self, &self.listing.records, &base)?;
         let cut = crate::cut::seen(self, &stages, issues, &base)?;
-
         let seen = Observed {
             unworked_blockers: &unworked_blockers,
             handoffs: &handoffs,
@@ -466,7 +465,6 @@ impl Fleet {
             landing: &stages.landing(&self.scan.claims),
             begun: &stages.begun(),
             patrols: &patrol::seen(self, &stages, &open.issues)?,
-
             waiting: &stages.waiting(self, open),
             landings: &landings,
             slow_gate: &slow_gate,

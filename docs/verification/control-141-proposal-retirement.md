@@ -18,7 +18,7 @@ Issue: [sunfmin/control#141](https://github.com/sunfmin/control/issues/141). Aud
 | hostvitals | sunfmin/product-team |
 | product-team | unbound |
 
-There is no other affected configured team. Product-team migration [control#140](https://github.com/sunfmin/control/issues/140) landed in [product-team#37](https://github.com/sunfmin/product-team/pull/37), commit `c9f0facde97321db4c5977482ed8e89cab838fef`. Its team file has no proposal configuration and its separate precedent file is deleted; no compatibility stub remains to retire. All four roles receive the team rules through the existing rules path.
+There is no other affected configured team. A read of hidden and branch-layout proposal claim refs on all five bound repos found no active proposal claim at audit time. Product-team migration [control#140](https://github.com/sunfmin/control/issues/140) landed in [product-team#37](https://github.com/sunfmin/product-team/pull/37), commit `c9f0facde97321db4c5977482ed8e89cab838fef`. Its team file has no proposal configuration and its separate precedent file is deleted; no compatibility stub remains to retire. All four roles receive the team rules through the existing rules path.
 
 The installed `afkconvoy 0.5.24 check --team sunfmin/product-team` loaded that exact commit, with `rules: true`, `precedents: null`, and roles builder, lead, reviewer and timekeeper. The changed binary's same check loads it with the separate `precedents` field absent. A local `check --dir` without the team's repo identity cannot resolve its relative role paths; the verification uses the published team identity instead.
 
@@ -52,4 +52,4 @@ Control ADR 0006's corresponding amendment is owned by [control#143](https://git
 
 Seven CLI integration scenarios in `crates/cli/tests/retired_proposals.rs` pass: repeated human ruling-to-resume with zero proposals; explicit legacy config refusal; owned worker stop with work/branch/history retained; live and stale peer protection; idempotent PR disposition and no ongoing polling; failed stop retry while an ordinary issue fills the concurrency slot; and same-host startup takeover followed by retirement without a replacement proposal.
 
-Existing consult, operator/watch, rework, issue, patrol and cut tests remain in the full gate. The final gate result is recorded below after the landing turn.
+Existing consult, operator/watch, rework, issue, patrol and cut tests remain in the full gate. The landing turn records the full gate result for the exact merge commit on the remote and in the PR landing receipt.

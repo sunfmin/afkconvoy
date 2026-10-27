@@ -544,7 +544,6 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
         locks: lock::standing(seen.issues, config),
         flowing: vec![],
         patrols: vec![],
-
         slow_gate: slow(seen.landings, config.gate_seconds(), seen.slow_gate),
         held_back: vec![],
         caster: None,
@@ -555,7 +554,6 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
     for patrol in seen.patrols {
         set.patrols.push(patrol::row(patrol, me, seen.heartbeats, now, locked));
     }
-
     set.cut = seen.cut.map(|cut| cut::row(cut, me, seen.heartbeats, now, locked));
     set.waiting_on_human = waiting(seen, &issues, &claims, &set.patrols, set.cut.as_ref());
     for issue in &issues {
@@ -760,7 +758,6 @@ mod tests {
             landing: &[],
             begun: &[],
             patrols: &[],
-
             waiting: &[],
             landings: &[],
             slow_gate: &Reported::NONE,
@@ -806,7 +803,6 @@ mod tests {
             landing: &[],
             begun: &[],
             patrols: &[],
-
             waiting: &[],
             landings: &[],
             slow_gate: &Reported::NONE,
@@ -844,7 +840,6 @@ mod tests {
             landing: &[],
             begun: &[],
             patrols: &[],
-
             waiting: &[
                 (4, Waits::Escalated(back()), Some(900)),
                 (3, Waits::Escalated(back()), Some(400)),
@@ -888,7 +883,6 @@ mod tests {
             issue(5, READY),
             issue(6, READY),
         ];
-
         let no_flows = FlowLabels::default();
         let seen = |issues, claims| Observed {
             unworked_blockers: &[],
@@ -907,7 +901,6 @@ mod tests {
             landing: &[],
             begun: &[],
             patrols: &[],
-
             waiting: &[],
             landings: &[],
             slow_gate: &Reported::NONE,
@@ -989,7 +982,6 @@ mod tests {
             landing: &[],
             begun: &[],
             patrols: &[],
-
             waiting: &[],
             landings: &[],
             slow_gate: &Reported::NONE,
@@ -1105,7 +1097,6 @@ mod tests {
             landing: &[],
             begun: &[5, 6, 7, 8, 9, 10, 11, 12],
             patrols: &[],
-
             waiting: &[],
             landings: &[],
             slow_gate: &Reported::NONE,
@@ -1189,7 +1180,6 @@ mod tests {
             landing: &[8, 9, 10],
             begun: &[],
             patrols: &[],
-
             waiting: &[],
             landings: &[],
             slow_gate: &Reported::NONE,
@@ -1248,7 +1238,6 @@ mod tests {
             landing: &[],
             begun: &[],
             patrols: &[],
-
             waiting: &[],
             landings: &[],
             slow_gate: &Reported::NONE,
@@ -1299,7 +1288,6 @@ mod tests {
             landing: &[],
             begun: &[],
             patrols: &[],
-
             waiting: &[],
             landings: &[],
             slow_gate: &Reported::NONE,
@@ -1333,7 +1321,6 @@ mod tests {
             landing: &[],
             begun: &[],
             patrols: &[],
-
             waiting: &[],
             landings: &[],
             slow_gate: &Reported::NONE,
@@ -1376,7 +1363,6 @@ mod tests {
                     landing: &[],
                     begun: &[],
                     patrols: &[],
-
                     waiting: &[],
                     landings: &[],
                     slow_gate: &Reported::NONE,

@@ -848,7 +848,6 @@ mod tests {
             locks: vec![],
             flowing: vec![],
             patrols: vec![],
-
             slow_gate: None,
             held_back: vec![],
             caster: None,
