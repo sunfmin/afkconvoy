@@ -970,6 +970,19 @@ mod tests {
         assert!(odd.unwrap_err().contains("AFKCONVOY_WRITES is \"yes\""));
     }
 
+    /// The limits of a watch started with a consult's facts, whose
+    /// home folder is /Users/kim.
+    fn watch() -> Limits {
+        let facts = Facts { on: On::Watch("#7"), ..facts(false, true) };
+        let mut env = facts.env();
+        assert!(env.iter().all(|(name, _)| *name != STAGE_ENV), "a watch has no stage");
+        env.push(("HOME", "/Users/kim".to_string()));
+        Limits::read(|name| {
+            env.iter().find(|(known, _)| *known == name).map(|(_, value)| value.clone())
+        })
+        .unwrap()
+    }
+
     #[test]
     fn a_watch_is_the_operator_on_its_host_whatever_its_facts_say() {
         // Started with a consult's facts, it is no consult all the same.
