@@ -283,6 +283,18 @@ fn terminal_create(st: &mut State) -> ! {
     st.list("terminals")
         .push(json!({"handle": handle, "worktreePath": path, "command": command, "line": given,
         "title": title, "sent": [], "open": true, "screen": screen}));
+    // A real terminal runs the acknowledgement before its harness. Exercise
+    // the same lost-create-receipt recovery path without starting a model.
+    if title.as_deref() == Some("afkconvoy watch") {
+        let journal = std::env::var_os("XDG_CACHE_HOME")
+            .map(std::path::PathBuf::from)
+            .unwrap()
+            .join("afkconvoy/watch/terminal.json");
+        let record: Value = serde_json::from_slice(&std::fs::read(journal).unwrap()).unwrap();
+        let transcript = Path::new(record["watch"]["transcript"].as_str().unwrap());
+        std::fs::create_dir(transcript.with_extension("claim")).unwrap();
+        std::fs::write(transcript.with_extension("terminal"), format!("{handle}\n")).unwrap();
+    }
     if let Some(reports) = st.doc["startup_working_reports"].as_u64() {
         let terminal = st.list("terminals").last_mut().unwrap();
         terminal["startup_working_reports_left"] = json!(reports);
@@ -431,6 +443,8 @@ fn terminal_list(st: &State) -> ! {
         .enumerate()
         .map(|(i, t)| {
             json!({"handle": t["handle"], "worktreePath": t["worktreePath"],
+                "title": t["title"], "ptyId": t["ptyId"].as_str().unwrap_or(t["handle"].as_str().unwrap()),
+                "incarnationId": t["incarnationId"].as_str().unwrap_or("fake-runtime"),
                 "connected": t["connected"].as_bool().unwrap_or(true), "writable": true,
                 "lastOutputAt": t["lastOutputAt"].as_u64().unwrap_or(i as u64)})
         })

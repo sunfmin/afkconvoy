@@ -1258,6 +1258,29 @@ impl Worktree {
         Ok(rows.iter().any(|row| row["handle"] == terminal))
     }
 
+    /// Public terminal metadata for watch recovery. An incomplete query is
+    /// never evidence that a session disappeared.
+    pub(crate) fn watch_terminals(&self) -> Result<Vec<Value>> {
+        let listed = orca(&["terminal", "list", "--worktree", &self.selector()])?;
+        anyhow::ensure!(listed["truncated"] != true, "orca's terminal list is truncated");
+        let rows = listed["terminals"]
+            .as_array()
+            .ok_or_else(|| anyhow!("orca terminal list returned no terminals array"))?;
+        anyhow::ensure!(
+            listed["hostScope"]["omittedHostIds"].as_array().is_none_or(|ids| ids.is_empty()),
+            "orca's terminal list omits execution hosts"
+        );
+        anyhow::ensure!(
+            rows.iter().all(|row| {
+                (row["worktreePath"].is_null()
+                    || row["worktreePath"] == self.path.display().to_string())
+                    && (row["executionHostId"].is_null() || row["executionHostId"] == "local")
+            }),
+            "watch terminal ownership cannot be confirmed on this local directory and host"
+        );
+        Ok(rows.clone())
+    }
+
     /// A session sharing a directory with the operator uses only its own
     /// pane's runtime report and output, never the directory's lead agent.
     pub(crate) fn terminal_health(&self, terminal: &str, now: u64) -> Result<(WorkerState, Value)> {
