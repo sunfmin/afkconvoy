@@ -13,6 +13,14 @@ use tempfile::TempDir;
 
 pub const BASE: &str = "main";
 
+/// Opt-in fixture timings, captured by nextest with `--success-output final`.
+/// The environment belongs to the test driver, never to a world's host.
+fn fixture_timing(part: &str, began: Instant) {
+    if std::env::var_os("CONVOY_FIXTURE_TIMINGS").is_some() {
+        eprintln!("fixture timing: {part} {:.6}s", began.elapsed().as_secs_f64());
+    }
+}
+
 /// The config every world starts with, committed on the base branch.
 pub const CONFIG: &str =
     "```yaml\nbase_branch: main\ngate_command: ./gate.sh\ngate_seconds: 600\n```\n";
@@ -87,6 +95,7 @@ impl World {
     /// Claude Code alone, on no model: it leaves no choice to make, so no
     /// caster is started (`hold_every_harness` holds the others).
     pub fn new() -> World {
+        let began = Instant::now();
         let dir = TempDir::new().unwrap();
         let root = dir.path().canonicalize().unwrap();
         let (bare, clone, bin) = (root.join("remote.git"), root.join("clone"), root.join("bin"));
@@ -139,6 +148,7 @@ impl World {
             .collect();
         let profile = "export AFKCONVOY_TEST_LOGIN=1\necho 'a line an rc file printed'\n";
         write(&world.home(), ".profile", &format!("{exported}{profile}"));
+        fixture_timing("world setup", began);
         world
     }
 
@@ -527,6 +537,7 @@ impl World {
     /// Puts another repo on the stand-in GitHub as `name` (`owner/repo`), with
     /// `files` committed on its default branch → its checkout, to commit more to.
     pub fn repo(&self, name: &str, files: &[(&str, &str)]) -> PathBuf {
+        let began = Instant::now();
         let dir = self.root.join("github").join(name);
         std::fs::create_dir_all(&dir).unwrap();
         git(&dir, &["init", "-q", "-b", BASE]);
@@ -539,6 +550,7 @@ impl World {
             git(&dir, &["commit", "-q", "-m", "files"]);
         }
         self.with_gh(|gh| gh["repos"][name] = json!(dir));
+        fixture_timing("repo setup", began);
         dir
     }
 
