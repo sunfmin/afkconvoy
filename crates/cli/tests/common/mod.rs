@@ -21,6 +21,74 @@ pub fn fixture_timing(part: &str, began: Instant) {
     }
 }
 
+/// A long-lived fixture command and the process group it owns. The root is
+/// never reaped before drop, so its group id cannot be reused by another job.
+/// Inherited descriptors remain intact until the owned processes exit.
+pub struct FixtureProcess {
+    child: Child,
+}
+
+impl FixtureProcess {
+    pub fn spawn(command: &mut Command) -> Self {
+        use std::os::unix::process::CommandExt;
+        Self { child: command.process_group(0).spawn().unwrap() }
+    }
+
+    pub fn id(&self) -> u32 {
+        self.child.id()
+    }
+}
+
+impl Drop for FixtureProcess {
+    fn drop(&mut self) {
+        let group = self.child.id() as libc::pid_t;
+        // SAFETY: spawn established this private group, whose root we have
+        // not reaped. Never signal the test runner's or the gate's group.
+        unsafe { libc::kill(-group, libc::SIGKILL) };
+        let _ = self.child.wait();
+        let until = Instant::now() + Duration::from_secs(5);
+        loop {
+            // Zombies own no descriptors. Waiting for their adoption/reaping
+            // by pid 1 would hang on systems whose init leaves them around.
+            let listed = Command::new("ps").args(["-axo", "pgid=,stat="]).output().unwrap();
+            assert!(listed.status.success(), "cannot confirm fixture process exit");
+            let alive = String::from_utf8_lossy(&listed.stdout).lines().any(|line| {
+                let mut fields = line.split_whitespace();
+                fields.next().and_then(|id| id.parse::<libc::pid_t>().ok()) == Some(group)
+                    && fields.next().is_some_and(|state| !state.starts_with('Z'))
+            });
+            if !alive {
+                break;
+            }
+            if Instant::now() >= until {
+                let message = format!("fixture process group {group} did not exit");
+                if std::thread::panicking() {
+                    eprintln!("{message}");
+                    break;
+                }
+                panic!("{message}");
+            }
+            // A child forked as the first signal was delivered must end too.
+            // SAFETY: remaining members keep this owned group id reserved.
+            unsafe { libc::kill(-group, libc::SIGKILL) };
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+}
+
+/// A regression driver observes inherited leases before allowing teardown.
+/// Ordinary scenarios have no rendezvous and return immediately.
+pub fn fixture_lease_observed() {
+    let Some(root) = std::env::var_os("CONVOY_FIXTURE_LEASE_PROBE") else { return };
+    let root = PathBuf::from(root);
+    std::fs::write(root.join("ready"), "").unwrap();
+    let until = Instant::now() + Duration::from_secs(30);
+    while !root.join("release").exists() {
+        assert!(Instant::now() < until, "fixture lease was never observed");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 /// The config every world starts with, committed on the base branch.
 pub const CONFIG: &str =
     "```yaml\nbase_branch: main\ngate_command: ./gate.sh\ngate_seconds: 600\n```\n";
