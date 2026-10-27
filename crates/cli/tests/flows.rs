@@ -57,6 +57,8 @@ fn delivery_creation_preserves_separate_tracker_repo_label_and_selected_workflow
     let world = bound();
     world.name_origin(&world.clone, "acme/dev");
     world.say_tracker(&world.clone, "acme/tracker");
+    // Starting a fleet creates its repo label in the tracker.
+    world.with_tracker(|gh| gh["labels"].as_array_mut().unwrap().push(json!("repo:acme/dev")));
     let delivery = world
         .afk(&[
             "delivery",
