@@ -4439,12 +4439,16 @@ fn run(
             plan["selection"] = fleet.selection();
             plan["codex_workers"] = json!(codex_launch::workers(&fleet.repo));
             for issue in plan["frontier"].as_array_mut().into_iter().flatten() {
-                if issue["cast"]["harness"] == "codex" {
-                    issue["codex"] = codex_launch::planned(
-                        issue["cast"]["model"].as_str(),
-                        issue["cast"]["why"] == "casting",
-                    );
+                let Some(key) = issue["cast"]["harness"].as_str().map(str::to_string) else {
+                    continue;
+                };
+                let Some(harness) = Harness::read(&key) else { continue };
+                if harness.session().is_none() {
+                    continue;
                 }
+                let model = issue["cast"]["model"].as_str().map(str::to_string);
+                let explicit = issue["cast"]["why"] == "casting";
+                issue[key] = codex_launch::planned(harness, model.as_deref(), explicit);
             }
             if let Ok(team) = flows.team() {
                 plan["selection"]["roles"] = json!(

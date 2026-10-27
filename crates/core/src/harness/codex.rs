@@ -365,6 +365,149 @@ pub(super) fn watch(command: &str, worktree: &str, kept: &str, model: Option<&st
     line.done()
 }
 
+/// Codex keeps each session apart from every other. These names are the
+/// facts a worker start, the directory the host keeps, a watch start and a
+/// caster ask the harness for (docs/adr/0013).
+pub(super) const SESSION: super::Session = super::Session {
+    fresh: "codex",
+    note: "convoy-codex-home",
+    config: ".codex/config.toml",
+    record: "convoy-codex-launch.json",
+};
+
+/// The key of the user's config that names the model of an ordinary session.
+const PREFERENCE_MODEL: &str = "model";
+/// The key of the user's config that names the effort of that model.
+const EFFORT: &str = "model_reasoning_effort";
+const USER_SOURCE: &str = "user_selection";
+const DEFAULT_SOURCE: &str = "codex_default";
+const CAST_SOURCE: &str = "casting";
+
+fn config_text(text: &str, file: &str) -> Result<toml::Table, String> {
+    text.parse().map_err(|_| format!("cannot parse {file}; fix its TOML"))
+}
+
+/// The model an automatic start uses. An explicit model is that model.
+/// Otherwise the user's, and it must be one the host kit lists.
+pub(super) fn automatic_model(
+    explicit: Option<&str>,
+    text: &str,
+    file: &str,
+    listed: &[String],
+) -> Result<(Option<String>, &'static str), String> {
+    if let Some(model) = explicit {
+        return Ok((Some(model.to_string()), CAST_SOURCE));
+    }
+    match config_text(text, file)?.get(PREFERENCE_MODEL) {
+        Some(toml::Value::String(model)) if !model.trim().is_empty() => {
+            if !listed.iter().any(|listed| listed == model) {
+                return Err(format!(
+                    "Codex user selection `{model}` from {file}:{PREFERENCE_MODEL} is not listed \
+                     by the host kit; confirm the model is available to this Codex login and \
+                     refresh `afkconvoy kit`"
+                ));
+            }
+            Ok((Some(model.clone()), USER_SOURCE))
+        }
+        None => Ok((None, DEFAULT_SOURCE)),
+        _ => Err(format!(
+            "{file}: {PREFERENCE_MODEL} must be a nonempty string; fix it or remove it for \
+             Codex's default"
+        )),
+    }
+}
+
+/// The effort of a start, from the same file as the model, read on its own:
+/// a model the issue names does not skip it.
+pub(super) fn effort(text: &str, file: &str) -> Result<(Option<String>, String), String> {
+    let effort = match config_text(text, file)?.get(EFFORT) {
+        Some(toml::Value::String(effort)) if !effort.trim().is_empty() => Some(effort.clone()),
+        None => None,
+        _ => {
+            return Err(format!(
+                "{file}: {EFFORT} must be a nonempty string; fix it or remove it for Codex's \
+                 default"
+            ));
+        }
+    };
+    let source = match &effort {
+        Some(_) => format!("{file}:{EFFORT}"),
+        None => DEFAULT_SOURCE.to_string(),
+    };
+    Ok((effort, source))
+}
+
+pub(super) fn outside_issue(model: &str) -> String {
+    format!(
+        "Codex user selection `{model}` from ~/{} is outside this issue's role range; update the \
+         role's roster to allow it or choose a model the role allows",
+        SESSION.config
+    )
+}
+
+pub(super) fn outside_role(model: &str, role: &str) -> String {
+    format!(
+        "Codex user selection `{model}` from ~/{} is outside role `{role}`'s range; update the \
+         role's roster to allow it or choose a model the role allows",
+        SESSION.config
+    )
+}
+
+/// What this session saved after it started. `None` when `text` is not Codex's
+/// config: the launch's record stays as it was.
+pub(super) fn saved(file: &str, text: &str) -> Option<super::Saved> {
+    let config: toml::Table = text.parse().ok()?;
+    let model = config.get(PREFERENCE_MODEL).and_then(toml::Value::as_str).map(str::to_string);
+    let effort = config.get(EFFORT).and_then(toml::Value::as_str).map(str::to_string);
+    Some(super::Saved {
+        model: model.clone(),
+        model_source: model.map(|_| format!("session:{file}:{PREFERENCE_MODEL}")),
+        effort: effort.clone(),
+        effort_source: effort.map(|_| format!("session:{file}:{EFFORT}")),
+    })
+}
+
+/// `command` naming `model`, unless it already does. The model is said once.
+pub(super) fn ensure_model(command: &str, model: Option<&str>) -> String {
+    match model {
+        Some(model) if !command.contains(MODEL) => {
+            Line::new().launch(command).fixed(" ").fixed(MODEL).fixed(" ").word(model).done()
+        }
+        _ => command.to_string(),
+    }
+}
+
+/// `line` with the effort, said as Codex takes one key of its configuration.
+pub(super) fn with_effort(line: &str, effort: Option<&str>) -> String {
+    let line = Line::new().launch(line);
+    match effort {
+        Some(effort) => {
+            let value = format!("{EFFORT}={}", toml::Value::String(effort.to_string()));
+            line.fixed(" --config ").word(&value).done()
+        }
+        None => line.done(),
+    }
+}
+
+/// A watch's launch line: the worker's, with search, the model inside the
+/// command, and the effort after it.
+pub(super) fn session_watch(
+    command: &str,
+    worktree: &str,
+    kept: &str,
+    model: Option<&str>,
+    effort: Option<&str>,
+) -> String {
+    let command = format!("{command} --search");
+    let command = match model {
+        Some(model) => {
+            Line::new().launch(&command).fixed(" ").fixed(MODEL).fixed(" ").word(model).done()
+        }
+        None => command,
+    };
+    with_effort(&in_worktree(&command, worktree, kept), effort)
+}
+
 /// Answers both questions Codex would otherwise ask before loading the
 /// directory's own configuration. Adding this never adds a launch command.
 #[spec(fn(Line[@l], &str) -> Line[l])]
@@ -853,5 +996,57 @@ mod tests {
         for unread in [r#"{"toolName":"bash","input":{"command":"ls"}}"#, "{}", "[]", ""] {
             assert!(judged(unread).is_err(), "{unread}");
         }
+    }
+
+    #[test]
+    fn a_session_s_model_effort_and_watch_line_are_codex_s() {
+        assert!(
+            Harness::ALL
+                .iter()
+                .all(|harness| harness.session().is_some() == (*harness == Harness::Codex))
+        );
+        let file = "home/.codex/config.toml";
+        let (model, source) =
+            Harness::Codex.automatic_model(Some("gpt-x"), "", file, &[]).unwrap().unwrap();
+        assert_eq!((model.as_deref(), source), (Some("gpt-x"), "casting"));
+        let (model, source) = Harness::Codex
+            .automatic_model(None, "model = 'gpt-x'\n", file, &["gpt-x".into()])
+            .unwrap()
+            .unwrap();
+        assert_eq!((model.as_deref(), source), (Some("gpt-x"), "user_selection"));
+        let (model, source) = Harness::Codex.automatic_model(None, "", file, &[]).unwrap().unwrap();
+        assert_eq!((model, source), (None, "codex_default"));
+        let missing = Harness::Codex
+            .automatic_model(None, "model = 'nope'\n", file, &[])
+            .unwrap()
+            .unwrap_err();
+        assert!(missing.contains("not listed by the host kit"), "{missing}");
+        assert!(Harness::ClaudeCode.automatic_model(None, "", file, &[]).is_none());
+
+        let (effort, source) =
+            Harness::Codex.effort("model_reasoning_effort = 'high'\n", file).unwrap().unwrap();
+        assert_eq!(effort.as_deref(), Some("high"));
+        assert!(source.ends_with("model_reasoning_effort"), "{source}");
+        let bad = Harness::Codex.effort("model_reasoning_effort = 4\n", file).unwrap().unwrap_err();
+        assert!(bad.contains("must be a nonempty string"), "{bad}");
+
+        let command = Harness::Codex.with_model("codex --yolo --search", "gpt-x");
+        let inner = Harness::Codex.in_worktree(&command, "/wt", "/kept");
+        let line = Harness::Codex.session_watch(
+            "codex --yolo",
+            "/wt",
+            "/kept",
+            Some("gpt-x"),
+            Some("high"),
+        );
+        assert!(line.starts_with(&inner), "{line}");
+        assert!(line.contains(" --search "), "{line}");
+        assert!(line.contains("model_reasoning_effort"), "{line}");
+        let plain = Harness::Codex.session_watch("codex --yolo", "/wt", "/kept", None, None);
+        assert_eq!(plain, Harness::Codex.in_worktree("codex --yolo --search", "/wt", "/kept"));
+        assert_eq!(
+            Harness::Pi.session_watch("agent", "/wt", "/kept", Some("m"), Some("high")),
+            Harness::Pi.watch("agent", "/wt", "/kept", Some("m"))
+        );
     }
 }

@@ -35,9 +35,7 @@ pub fn read_turn(
         roots.push(user_root(&home, harness));
     }
     roots.extend(kept_roots(harness)?);
-    if harness == Harness::Codex
-        && let Some(home) = codex_noted(cwd)
-    {
+    if let Some(home) = session_home(cwd, harness) {
         roots.push(home);
     }
     roots.sort();
@@ -109,13 +107,13 @@ fn kept_roots(harness: Harness) -> Result<Vec<PathBuf>> {
     Ok(roots)
 }
 
-/// Codex's per-worktree home, as the launch wrote it. Absent for every
-/// other harness, and when this directory is not a worktree.
-fn codex_noted(cwd: &Path) -> Option<PathBuf> {
+/// The per-worktree home a harness that keeps a session wrote. Absent for
+/// every other harness, and when this directory is not a worktree.
+fn session_home(cwd: &Path, harness: Harness) -> Option<PathBuf> {
+    let note = harness.session()?.note;
     let git = std::fs::read_to_string(cwd.join(".git")).ok()?;
     let dir = git.trim().strip_prefix("gitdir:")?.trim();
-    let note = Path::new(dir).join(crate::codex_launch::HOME_NOTE);
-    let home = std::fs::read_to_string(note).ok()?;
+    let home = std::fs::read_to_string(Path::new(dir).join(note)).ok()?;
     let home = home.trim();
     if home.is_empty() { None } else { Some(PathBuf::from(home)) }
 }
