@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "afkconvoy"
-version = "0.5.36"
+version = "0.5.37"
 dependencies = [
  "afkconvoy-core",
  "agent-help",
@@ -24,7 +24,7 @@ dependencies = [
 
 [[package]]
 name = "afkconvoy-core"
-version = "0.5.36"
+version = "0.5.37"
 dependencies = [
  "flux-alloc",
  "flux-core",
