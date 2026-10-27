@@ -6,6 +6,7 @@ mod common;
 
 mod admission;
 mod board;
+mod candidates;
 mod casting;
 mod check;
 mod checkout;

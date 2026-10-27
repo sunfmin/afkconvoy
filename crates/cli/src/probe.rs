@@ -238,6 +238,7 @@ pub fn startup(repo: &Repo, now: u64, launches: &Launches) -> Result<Vec<String>
     if let Some(why) = public_tracker(repo, now, false)? {
         return Err(See::Troubleshooting.refusal(why));
     }
+    crate::publication::check(repo).see(See::Troubleshooting)?;
 
     // The probe's own name: two starts probing at once never meet on one ref.
     let token = format!("{now}-{}", crate::unique());
