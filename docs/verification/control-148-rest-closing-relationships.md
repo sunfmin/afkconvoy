@@ -231,6 +231,21 @@ The full repository gate is run by the required landing turn, after the PR is
 open and all changes committed. Its receipt and final outcome are recorded on
 the PR, together with the exact integration-test result.
 
+The complete workspace suite was also run through the host's exclusive queue
+with fail-fast disabled, after integrating the base branch and updating the
+read-only fixture assertions for local identity/quota observations:
+
+```sh
+afkconvoy exclusive -- ~/.cargo/bin/cargo +nightly-2026-09-25 nextest run \
+  --workspace --no-fail-fast --status-level fail --final-status-level slow \
+  --show-progress none
+```
+
+Result: **1,649 passed, 0 failed, 16 skipped in 359.307 seconds**. All 22 quota
+regressions are part of that run. The skipped cases retain their existing
+external-service requirements; no passing count relies on skipping a quota
+fixture. The final landing turn still gates and records its exact merge tree.
+
 ## Original incident still requiring GraphQL reset
 
 This implementation does not establish that the original live #131/#139/#141
