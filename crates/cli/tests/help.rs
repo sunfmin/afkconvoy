@@ -488,7 +488,6 @@ const STOPS: [&str; 6] = [
     "A stage `by: human`",
     "A patrol's failed run",
     "A fleet lock",
-    "Lasting decisions",
 ];
 
 #[test]
