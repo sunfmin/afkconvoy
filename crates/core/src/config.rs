@@ -693,10 +693,12 @@ mod tests {
 
     #[test]
     fn the_two_keys_without_a_default_are_required() {
-        let no_base = Settings { base_branch: None, ..minimal() };
-        assert_eq!(Config::new(no_base), Err(ConfigError::Required("base_branch")));
-        let blank_gate = Settings { gate_command: Some("  ".into()), ..minimal() };
-        assert_eq!(Config::new(blank_gate), Err(ConfigError::Required("gate_command")));
+        for value in [None, Some("".to_string()), Some("  ".to_string())] {
+            let base = Settings { base_branch: value.clone(), ..minimal() };
+            assert_eq!(Config::new(base), Err(ConfigError::Required("base_branch")));
+            let gate = Settings { gate_command: value, ..minimal() };
+            assert_eq!(Config::new(gate), Err(ConfigError::Required("gate_command")));
+        }
     }
 
     #[test]
