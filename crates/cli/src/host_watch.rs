@@ -5,7 +5,7 @@
 //! process holds nothing of it: the watch, its terminal and its transcript are
 //! read back from the host's cache after every restart.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -74,6 +74,14 @@ pub fn directory(settings: &crate::host_settings::Settings) -> Result<PathBuf> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Watch {
     pub id: String,
+    /// One round belongs to a resident executor; this identity stays fixed
+    /// when that executor receives another round. Empty for older runners.
+    #[serde(default)]
+    pub session: String,
+    /// Episode identities, aligned with items. Unlike a finding's identity,
+    /// these change after an observed recovery, even during an active round.
+    #[serde(default)]
+    pub episodes: Vec<String>,
     pub directory: PathBuf,
     /// Whether it started under afkconvoy's own instruction. Kept with the
     /// watch so a later host-setting change cannot change a continuation.
@@ -132,11 +140,14 @@ pub struct Attempt {
 
 /// A watch as `doctor` says it: all but the look, which is the watch's own.
 pub fn watch_json(watch: &Watch) -> Value {
-    json!({"id": watch.id, "directory": watch.directory, "stock": watch.stock, "items": watch.items,
+    json!({"id": watch.id, "session": session_identity(watch), "episodes": watch.episodes,
+        "directory": watch.directory, "stock": watch.stock, "items": watch.items,
         "started": watch.started, "harness": watch.harness, "model": watch.model,
         "model_source": watch.model_source,
         "terminal": watch.terminal, "transcript": watch.transcript, "did": watch.did,
         "reported": watch.report.is_some(), "report": watch.report,
+        "delivery": watch_terminal::delivery_json(watch),
+        "deadline": (watch.started != 0).then(|| watch.started.saturating_add(host_watch::TIME_LIMIT)),
         "attempts": watch.attempts, "ended": watch.ended, "outcome": watch.outcome})
 }
 
@@ -149,6 +160,15 @@ struct State {
     watched: Vec<String>,
     /// Last successful start that took kit research, retained across restarts.
     research_started: Option<u64>,
+    /// A resident session is independent of the round currently executing.
+    resident: Option<Watch>,
+    /// Current observation's episode identities and durable delivery queue.
+    observed: BTreeMap<String, String>,
+    episodes_initialized: bool,
+    covered: Vec<String>,
+    pending: Vec<Queued>,
+    look: Value,
+    looked: Option<u64>,
     running: Option<Watch>,
     last: Option<Watch>,
     history: Vec<Watch>,
@@ -156,24 +176,112 @@ struct State {
     unavailable: Option<String>,
 }
 
+#[derive(Clone, Serialize, Deserialize)]
+struct Queued {
+    item: Item,
+    episode: String,
+}
+
+/// Serializes round transitions with the report command. No read/validate/
+/// write race may accept a report after a timeout or against another round.
+pub(crate) fn state_lock() -> Result<std::fs::File> {
+    let path = cache()?.join("watch/state.lock");
+    std::fs::create_dir_all(path.parent().expect("watch state parent"))?;
+    let lock = std::fs::OpenOptions::new().write(true).create(true).truncate(false).open(path)?;
+    lock.lock()?;
+    Ok(lock)
+}
+
 impl State {
+    /// Refresh the queue from deterministic observations. The active round
+    /// reserves only its own episodes; a recovery and return can queue a new
+    /// episode of that same finding while the old round is still executing.
+    fn observe(&mut self, look: Value, now: u64) {
+        let current = actionable(&look, now);
+        let mut present: BTreeSet<String> = current.iter().map(|i| i.id.clone()).collect();
+        for resource in look["host"]["resources"].as_array().into_iter().flatten() {
+            if let Some(id) = resource["id"].as_str() {
+                present.insert(id.into());
+            }
+        }
+        // Migrate old coverage before adding new episode identities.
+        let legacy = !self.episodes_initialized;
+        if legacy && let Some(round) = self.running.as_ref().or(self.resident.as_ref()) {
+            for (item, episode) in round.items.iter().zip(&round.episodes) {
+                self.observed.insert(item.id.clone(), episode.clone());
+                if round.report.is_some() {
+                    self.covered.push(episode.clone());
+                }
+            }
+        }
+        self.observed.retain(|id, _| present.contains(id));
+        for id in &present {
+            let episode =
+                self.observed.entry(id.clone()).or_insert_with(|| uuid::Uuid::new_v4().to_string());
+            if legacy && self.watched.contains(id) {
+                self.covered.push(episode.clone());
+            }
+        }
+        if let Some(round) = &mut self.running
+            && round.episodes.is_empty()
+        {
+            round.episodes =
+                round.items.iter().filter_map(|i| self.observed.get(&i.id).cloned()).collect();
+        }
+        self.covered.retain(|episode| self.observed.values().any(|id| id == episode));
+        self.watched.retain(|id| present.contains(id));
+        // Research keeps its daily bound, and joins other pending work.
+        let watched: Vec<String> = current
+            .iter()
+            .filter(|item| {
+                let episode = self.observed.get(&item.id);
+                episode.is_some_and(|episode| {
+                    self.covered.contains(episode)
+                        || self.running.as_ref().is_some_and(|r| r.episodes.contains(episode))
+                })
+            })
+            .map(|i| i.id.clone())
+            .collect();
+        let due = host_watch::pending(&current, &watched, false, self.research_started, now);
+        self.pending = due
+            .into_iter()
+            .filter_map(|item| {
+                let episode = self.observed.get(&item.id)?.clone();
+                if self.running.as_ref().is_some_and(|r| r.episodes.contains(&episode)) {
+                    return None;
+                }
+                Some(Queued { item, episode })
+            })
+            .collect();
+        self.until = look["until"].as_u64().or(self.until);
+        self.look = look;
+        self.looked = Some(now);
+        self.episodes_initialized = true;
+    }
+
     /// A start reserves its episodes while the watch runs; only a report
     /// keeps them covered afterwards. Reconcile from retained outcomes so a
     /// restart also repairs coverage left by an older runner. A later report
     /// on the same item wins over an earlier unsuccessful watch.
     fn retry_unreported(&mut self) {
         let mut seen = BTreeSet::new();
+        let mut research_seen = self
+            .running
+            .as_ref()
+            .is_some_and(|r| r.items.iter().any(|i| i.id.starts_with(host_watch::RESEARCH_ITEM)));
         for watch in self.last.iter().chain(self.history.iter().rev()) {
             for item in &watch.items {
                 if seen.insert(&item.id) && watch.report.is_none() {
                     self.watched.retain(|id| id != &item.id);
                 }
             }
-            if watch.report.is_none()
-                && self.research_started == Some(watch.started)
+            if !research_seen
                 && watch.items.iter().any(|item| item.id.starts_with(host_watch::RESEARCH_ITEM))
             {
-                self.research_started = None;
+                research_seen = true;
+                if watch.report.is_none() && self.research_started == Some(watch.started) {
+                    self.research_started = None;
+                }
             }
         }
     }
@@ -190,10 +298,14 @@ fn read() -> Result<State> {
 }
 
 pub(crate) fn running() -> Result<Option<Watch>> {
-    match read()?.running {
-        Some(watch) => Ok(Some(watch)),
-        None => watch_terminal::active(),
+    let state = read()?;
+    if let Some(record) = watch_terminal::read()?
+        && !matches!(record.status, LaunchState::Idle | LaunchState::Ended)
+        && state.running.as_ref().is_none_or(|round| round.id != record.watch.id)
+    {
+        return Ok(Some(record.watch));
     }
+    Ok(state.running)
 }
 
 /// The running watch, shared with what the host runner answers.
@@ -279,18 +391,27 @@ impl Watcher {
         let (mut next_look, mut next_check) = (Instant::now(), Instant::now());
         while !self.ended.load(Ordering::Relaxed) {
             let now = Instant::now();
-            if now >= next_check {
+            let checking = now >= next_check;
+            if checking {
                 next_check = now + CHECK_EVERY;
                 let checked = self.check();
                 self.checking.said(checked, &self.say);
             }
-            // A look is taken only while no watch runs: what it would find
-            // waits for the first look after the watch ends.
-            if now >= next_look && self.shared.running().is_none() {
+            let queued = checking
+                && read().is_ok_and(|s| {
+                    s.running.is_none() && !s.pending.is_empty() && s.unavailable.is_none()
+                });
+            if now >= next_look || queued {
                 next_look = now + CHECK_EVERY;
                 let looked = crate::host_settings::of_host().and_then(|settings| {
-                    next_look = now + Duration::from_secs(settings.watch_every());
-                    self.look(&settings)
+                    let result = self.look(&settings, queued);
+                    let due = read()?
+                        .looked
+                        .unwrap_or_else(crate::clock)
+                        .saturating_add(settings.watch_every());
+                    next_look = Instant::now()
+                        + Duration::from_secs(due.saturating_sub(crate::clock()).max(2));
+                    result
                 });
                 self.looking.said(looked, &self.say);
             }
@@ -311,9 +432,14 @@ impl Watcher {
     }
 
     /// One look at the host, and the watch it calls for.
-    fn look(&self, settings: &crate::host_settings::Settings) -> Result<()> {
+    fn look(&self, settings: &crate::host_settings::Settings, revalidate: bool) -> Result<()> {
+        let _lock = state_lock()?;
         let mut state = read()?;
-        if state.running.is_some() {
+        if !revalidate
+            && state
+                .looked
+                .is_some_and(|last| crate::clock().saturating_sub(last) < settings.watch_every())
+        {
             return Ok(());
         }
         let directory = directory(settings)?;
@@ -324,41 +450,31 @@ impl Watcher {
                 directory.display()
             );
         }
-        let mut look = doctor_look(state.until, &self.ended)?;
-        state.until = look["until"].as_u64().or(state.until);
-        let current = actionable(&look, look["until"].as_u64().unwrap_or_else(crate::clock));
-        let mut episodes = current.clone();
-        for resource in look["host"]["resources"].as_array().into_iter().flatten() {
-            if let Some(id) = resource["id"].as_str() {
-                episodes.push(Item::new(id, "resource episode recovering"));
-            }
-        }
         state.retry_unreported();
-        state.watched = host_watch::covered(&state.watched, &episodes);
-        let mut pending = host_watch::pending(
-            &current,
-            &state.watched,
-            false,
-            state.research_started,
-            crate::clock(),
-        );
-        if pending.is_empty() {
-            state.unavailable = None;
-        } else {
-            crate::resources::evidence(&mut look, &pending)?;
+        let look = doctor_look(state.until, &self.ended)?;
+        state.observe(look, crate::clock());
+        self.say_state(&state);
+        // Commit the observation interval and queue before any launch or
+        // delivery. A restart cannot consume a look without retaining work.
+        self.save(&state)?;
+        if state.running.is_none() && !state.pending.is_empty() {
+            let pending: Vec<Item> = state.pending.iter().map(|q| q.item.clone()).collect();
+            crate::resources::evidence(&mut state.look, &pending)?;
             // Disk evidence can take minutes. A condition that recovered
             // while it was taken must not start a watch from an old look.
             let resources = crate::resources::json(crate::clock())?;
-            pending.retain(|item| {
-                !item.id.starts_with("resource:")
+            state.pending.retain(|q| {
+                !q.item.id.starts_with("resource:")
                     || resources
                         .as_array()
                         .into_iter()
                         .flatten()
-                        .any(|resource| resource["id"] == item.id && resource["active"] == true)
+                        .any(|resource| resource["id"] == q.item.id && resource["active"] == true)
             });
-            if !pending.is_empty() {
-                self.start(&mut state, &directory, settings.watch_dir.is_none(), look, pending)?;
+            if !state.pending.is_empty() {
+                let look = state.look.clone();
+                let items = state.pending.iter().map(|q| q.item.clone()).collect();
+                self.start(&mut state, &directory, settings.watch_dir.is_none(), look, items)?;
             }
         }
         self.save(&state)
@@ -373,6 +489,24 @@ impl Watcher {
         look: Value,
         items: Vec<Item>,
     ) -> Result<()> {
+        if let Some(resident) = &mut state.resident {
+            if resident.directory != directory {
+                // A changed watch directory explicitly resets its session.
+                stop_session(resident)?;
+                let worktree = Worktree::at(resident.directory.clone(), String::new());
+                close(&worktree, &resident.terminal, worktree.live(&resident.terminal)?)?;
+                state.resident = None;
+                self.save(state)?;
+            } else {
+                let worktree = Worktree::at(resident.directory.clone(), String::new());
+                resident.terminal = watch_terminal::locate(resident)?.context(
+                    "resident Terminal is missing; wait for its executor termination check",
+                )?;
+                if !worktree.watch_input_ready(&resident.terminal)? {
+                    return Ok(());
+                }
+            }
+        }
         let ids: BTreeSet<&str> = items.iter().map(|item| item.id.as_str()).collect();
         let earlier = state
             .history
@@ -395,11 +529,13 @@ impl Watcher {
         let now = crate::clock();
         let mut watch = Watch {
             id: format!("{now}-{}", crate::unique()),
+            session: String::new(),
+            episodes: state.pending.iter().map(|q| q.episode.clone()).collect(),
             directory: directory.to_path_buf(),
             stock,
             look,
             items,
-            started: now,
+            started: 0,
             harness: Harness::DEFAULT,
             model: None,
             model_source: None,
@@ -414,6 +550,25 @@ impl Watcher {
             ended: None,
             outcome: None,
         };
+        if let Some(resident) = &state.resident {
+            watch.session = session_identity(resident);
+            watch.harness = resident.harness;
+            watch.model = resident.model.clone();
+            watch.model_source = resident.model_source.clone();
+            watch.terminal = resident.terminal.clone();
+            watch.transcript = resident.transcript.clone();
+            watch.session_started = resident.session_started;
+            write_brief(&watch)?;
+            // The journal is authoritative across a crash between this
+            // intent and the progress file. It retains the new round ID.
+            watch_terminal::begin_round(&watch)?;
+            state.running = Some(watch.clone());
+            state.pending.clear();
+            self.save(state)?;
+            resume_delivery(&mut watch)?;
+            self.round_started(state, watch)?;
+            return Ok(());
+        }
         // Keep a finished watch's screen until its replacement actually starts
         // in that directory. Never close the operator's other terminals.
         let mut closed = BTreeSet::new();
@@ -438,21 +593,7 @@ impl Watcher {
             match start_session(&mut watch) {
                 Ok((terminal, transcript)) => {
                     (watch.terminal, watch.transcript) = (terminal, transcript);
-                    state.watched.extend(watch.items.iter().map(|item| item.id.clone()));
-                    state.watched.sort();
-                    state.watched.dedup();
-                    if watch.items.iter().any(|item| item.id.starts_with(host_watch::RESEARCH_ITEM))
-                    {
-                        state.research_started = Some(now);
-                    }
-                    state.unavailable = None;
-                    (self.say)(What::WatchStarted {
-                        id: watch.id.clone(),
-                        directory: watch.directory.display().to_string(),
-                        harness: watch.harness.key().to_string(),
-                        reasons: watch.items.iter().map(|item| item.reason.clone()).collect(),
-                    });
-                    state.running = Some(watch);
+                    self.round_started(state, watch)?;
                     return Ok(());
                 }
                 Err(error) => {
@@ -469,12 +610,58 @@ impl Watcher {
         Ok(())
     }
 
+    fn round_started(&self, state: &mut State, watch: Watch) -> Result<()> {
+        state.watched.extend(watch.items.iter().map(|item| item.id.clone()));
+        state.watched.sort();
+        state.watched.dedup();
+        if watch.items.iter().any(|item| item.id.starts_with(host_watch::RESEARCH_ITEM)) {
+            state.research_started = Some(watch.started);
+        }
+        state.pending.clear();
+        state.unavailable = None;
+        (self.say)(What::WatchStarted {
+            id: watch.id.clone(),
+            directory: watch.directory.display().to_string(),
+            harness: watch.harness.key().to_string(),
+            reasons: watch.items.iter().map(|item| item.reason.clone()).collect(),
+        });
+        state.resident = Some(watch.clone());
+        state.running = Some(watch);
+        self.say_state(state);
+        self.save(state)
+    }
+
+    fn say_state(&self, state: &State) {
+        let session = state.running.as_ref().or(state.resident.as_ref());
+        (self.say)(What::WatchState {
+            session: session.map(session_identity),
+            round: state.running.as_ref().map(|r| r.id.clone()),
+            terminal: session.map(|r| r.terminal.clone()),
+            status: if state.unavailable.is_some() {
+                "unavailable"
+            } else if state.running.is_some() {
+                "active"
+            } else if state.resident.is_some() {
+                "standby"
+            } else {
+                "absent"
+            }
+            .into(),
+            pending: state.pending.iter().map(|q| format!("{}:{}", q.item.id, q.episode)).collect(),
+        });
+    }
+
     /// Reads the running watch, and ends or continues it where its session
     /// is over, its harness gave out or its hour is up.
     fn check(&self) -> Result<()> {
+        let _lock = state_lock()?;
         let mut state = read()?;
         let kept = state.running.take();
-        let active = watch_terminal::active()?;
+        let record = watch_terminal::read()?;
+        let active = record
+            .as_ref()
+            .filter(|r| !matches!(r.status, LaunchState::Idle | LaunchState::Ended))
+            .map(|r| r.watch.clone());
         let running = match (kept, active) {
             (Some(kept), Some(active))
                 if kept.id == active.id && kept.attempts.len() == active.attempts.len() =>
@@ -485,8 +672,48 @@ impl Watcher {
             (kept, None) => kept,
         };
         let Some(mut watch) = running else {
+            // Reconstruct an idle resident from its launch journal too.
+            if let Some(record) = record.filter(|r| r.status == LaunchState::Idle) {
+                state.resident = Some(record.watch);
+            }
+            if let Some(mut resident) = state.resident.take() {
+                let worktree = Worktree::at(resident.directory.clone(), String::new());
+                match watch_terminal::locate(&resident) {
+                    Ok(Some(terminal)) => {
+                        resident.terminal = terminal;
+                        let text =
+                            std::fs::read_to_string(&resident.transcript).unwrap_or_default();
+                        let screen =
+                            worktree.screen(&resident.terminal, host_watch::EVIDENCE_LINES)?;
+                        let (_, runtime) =
+                            worktree.terminal_health(&resident.terminal, crate::clock())?;
+                        let fault =
+                            crate::health::watch_diagnosis(resident.harness, &screen, &runtime)
+                                .or_else(|| {
+                                    gave_out(resident.harness, &text, host_watch::exited(&text))
+                                });
+                        if let Some(fault) = fault {
+                            stop_session(&resident)?;
+                            crate::health::watch_fault(resident.harness, &fault, crate::clock())?;
+                            close(&worktree, &resident.terminal, true)?;
+                        } else if host_watch::exited(&text).is_some() {
+                            stop_session(&resident)?;
+                        } else {
+                            state.resident = Some(resident);
+                        }
+                        state.unavailable = None;
+                    }
+                    Ok(None) => stop_session(&resident)?,
+                    Err(error) => {
+                        let why = watch_terminal::recovery(&format!("{error:#}"));
+                        watch_terminal::problem(&why)?;
+                        state.unavailable = Some(why);
+                        state.resident = Some(resident);
+                    }
+                }
+            }
             self.shared.set(None);
-            return Ok(());
+            return self.save(&state);
         };
         for item in &watch.items {
             if !state.watched.contains(&item.id) {
@@ -501,14 +728,23 @@ impl Watcher {
         let exited = host_watch::exited(&transcript);
         let now = crate::clock();
         if let Some(report) = crate::watch_report::read(&watch.id)? {
-            stop_session(&watch)?;
             state.unavailable = None;
             for did in &report.did {
                 (self.say)(What::WatchDid { id: watch.id.clone(), did: did.clone() });
             }
             watch.did = report.did.clone();
             watch.report = Some(report);
-            self.finish_said(&mut state, watch, "ended", "it reported; its harness was ended");
+            state.covered.extend(watch.episodes.iter().cloned());
+            state.covered.sort();
+            state.covered.dedup();
+            state.resident = Some(watch.clone());
+            watch_terminal::set_status(&watch, LaunchState::Idle)?;
+            self.finish_said(
+                &mut state,
+                watch,
+                "ended",
+                "the round reported; its resident session awaits input",
+            );
         } else {
             // Recovery precedes every terminal read, input and termination.
             // An uncertain creation or delivery blocks the next launch too.
@@ -525,6 +761,16 @@ impl Watcher {
             let live = match recovered {
                 Ok(live) => live,
                 Err(error) => {
+                    if watch.started != 0 && host_watch::expired(watch.started, now) {
+                        stop_session(&watch)?;
+                        self.finish_said(
+                            &mut state,
+                            watch,
+                            "time_limit",
+                            "the active round expired while delivery recovery was paused",
+                        );
+                        return self.save(&state);
+                    }
                     let why = watch_terminal::recovery(&format!("{error:#}"));
                     watch_terminal::problem(&why)?;
                     state.unavailable = Some(why);
@@ -533,13 +779,13 @@ impl Watcher {
                 }
             };
             state.unavailable = None;
-            if host_watch::expired(watch.started, now) {
+            if watch.started != 0 && host_watch::expired(watch.started, now) {
                 stop_session(&watch)?;
                 self.finish_said(
                     &mut state,
                     watch,
                     "time_limit",
-                    "it reached its hour and did not report",
+                    "the round reached its hour and did not report",
                 );
             } else if !live && let Some(fault) = gave_out(watch.harness, &transcript, exited) {
                 stop_session(&watch)?;
@@ -586,6 +832,7 @@ impl Watcher {
                     "Continue this watch. You have not reported; finish the work and run the exact afkconvoy watched line at the end of your brief.")?;
                         watch.nudged = Some(now);
                     }
+                    state.resident = Some(watch.clone());
                     state.running = Some(watch);
                 }
             }
@@ -658,6 +905,10 @@ impl Watcher {
     }
 
     fn finish_said(&self, state: &mut State, mut watch: Watch, outcome: &str, said: &str) {
+        if watch.report.is_none() {
+            state.resident = None;
+            state.covered.retain(|episode| !watch.episodes.contains(episode));
+        }
         watch.ended = Some(crate::clock());
         watch.outcome = Some(outcome.into());
         (self.say)(What::WatchEnded {
@@ -670,6 +921,7 @@ impl Watcher {
         let over = state.history.len().saturating_sub(HISTORY);
         state.history.drain(..over);
         state.running = None;
+        self.say_state(state);
     }
 }
 
@@ -693,8 +945,12 @@ fn close(worktree: &Worktree, terminal: &str, live: bool) -> Result<()> {
     Ok(())
 }
 
-fn session_identity(watch: &Watch) -> String {
-    format!("{}-{}", watch.id, watch.attempts.len() + 1)
+pub(crate) fn session_identity(watch: &Watch) -> String {
+    if watch.session.is_empty() {
+        format!("{}-{}", watch.id, watch.attempts.len() + 1)
+    } else {
+        watch.session.clone()
+    }
 }
 
 /// Ends the session's uniquely named wrapper and its descendants. Its
@@ -764,6 +1020,15 @@ fn gave_out(harness: Harness, transcript: &str, exited: Option<i32>) -> Option<D
 /// Starts a session of `watch` on its harness: its brief written beside its
 /// transcript, in the host's cache. Answers its terminal and transcript.
 fn start_session(watch: &mut Watch) -> Result<(String, PathBuf)> {
+    let result = launch_session(watch)?;
+    resume_delivery(watch)?;
+    Ok(result)
+}
+
+/// Creates only the owned executor. Round delivery has a separate journal
+/// boundary, so creation recovery cannot silently become a second prompt.
+fn launch_session(watch: &mut Watch) -> Result<(String, PathBuf)> {
+    watch.session = uuid::Uuid::new_v4().to_string();
     if watch.stock {
         std::fs::create_dir_all(&watch.directory).with_context(|| {
             format!("cannot make the stock watch's directory {}", watch.directory.display())
@@ -779,9 +1044,7 @@ fn start_session(watch: &mut Watch) -> Result<(String, PathBuf)> {
     let dir = cache()?.join("watch").join(&watch.id);
     std::fs::create_dir_all(&dir)
         .with_context(|| format!("cannot make the watch's directory {}", dir.display()))?;
-    let brief_file = dir.join(format!("brief-{session}.md"));
-    std::fs::write(&brief_file, brief(watch))
-        .with_context(|| format!("cannot write the watch's brief {}", brief_file.display()))?;
+    write_brief(watch)?;
     let transcript = dir.join(format!("session-{session}.log"));
     watch.transcript = transcript.clone();
     // A watch is started as a worker of an unbound repo is: the operator's
@@ -829,28 +1092,105 @@ fn start_session(watch: &mut Watch) -> Result<(String, PathBuf)> {
                 watch_terminal::locate(watch)?.with_context(|| format!("{error:#}"))?;
         }
     }
-    resume_delivery(watch)?;
     Ok((watch.terminal.clone(), transcript))
 }
 
 /// A Ready launch has not sent input. Sending is written first: a crash or
 /// lost acknowledgement at that boundary must never duplicate a prompt.
 fn resume_delivery(watch: &mut Watch) -> Result<()> {
-    let Some(record) = watch_terminal::read()?.filter(|r| watch_terminal::matches(r, watch)) else {
+    let Some(mut record) = watch_terminal::read()?.filter(|r| watch_terminal::matches(r, watch))
+    else {
         return Ok(()); // a watch retained from before launch journaling
     };
     match record.status {
-        LaunchState::Running | LaunchState::Ended => return Ok(()),
-        LaunchState::Sending => bail!("the watch's first prompt has an uncertain receipt"),
+        LaunchState::Running => {
+            // Crash after the receipt, before the progress file.
+            if record.watch.id == watch.id && watch.started == 0 {
+                watch.started = record.watch.started;
+            }
+            return Ok(());
+        }
+        LaunchState::Idle | LaunchState::Ended => return Ok(()),
+        LaunchState::Sending if record.request.is_none() => {
+            bail!("the watch's first prompt has an uncertain receipt")
+        }
+        LaunchState::Sending => (),
         LaunchState::Creating => bail!("the watch's creation is not yet confirmed"),
         LaunchState::Ready => (),
     }
     let worktree = Worktree::at(watch.directory.clone(), String::new());
-    worktree.await_ready(&watch.terminal, 60, watch.harness, &record.command)?;
-    watch_terminal::set_status(watch, LaunchState::Sending)?;
-    let brief = watch.transcript.with_file_name(format!("brief-{}.md", watch.attempts.len() + 1));
-    worktree.tell_watch(&watch.terminal, &brief_pointer(&brief.display().to_string()))?;
+    if record.status == LaunchState::Ready {
+        worktree.await_ready(&watch.terminal, 60, watch.harness, &record.command)?;
+        if !worktree.watch_input_ready(&watch.terminal)? {
+            bail!("the resident watch is busy; its round remains undelivered");
+        }
+        record.request = Some(uuid::Uuid::new_v4().to_string());
+        record.status = LaunchState::Sending;
+        record.offered = Some(crate::clock());
+        record.watch = watch.clone();
+        write_brief(watch)?;
+        watch_terminal::save(&record)?;
+    }
+    let brief = brief_file(watch)?;
+    let receipt = worktree.send_watch_round(
+        &watch.terminal,
+        &brief_pointer(&brief.display().to_string()),
+        record.request.as_deref().expect("saved request"),
+    )?;
+    record.receipt = Some(receipt.clone());
+    watch_terminal::save(&record)?;
+    let prompt = &receipt["send"]["prompt"];
+    let turn_started = prompt["stages"]
+        .as_array()
+        .is_some_and(|stages| stages.iter().any(|s| s == "turn_started"));
+    let evidence = if turn_started {
+        Some(json!({"kind": "turn_started"}))
+    } else if prompt["observation"] == "unsupported"
+        && prompt["stages"]
+            .as_array()
+            .is_some_and(|stages| stages.iter().any(|s| s == "input_accepted"))
+    {
+        // Same fallback as worker delivery: accepted input alone proves
+        // nothing, but an unobservable provider may show the new turn on
+        // its own Terminal after the previous round returned to input.
+        let screen = worktree.screen(&watch.terminal, 20)?;
+        screen
+            .iter()
+            .any(|line| {
+                let line = line.to_ascii_lowercase();
+                line.contains("working") || line.contains("thinking")
+            })
+            .then(|| json!({"kind": "terminal_evidence", "screen": screen}))
+    } else {
+        None
+    };
+    if receipt["send"]["accepted"] != true || evidence.is_none() {
+        bail!(
+            "watch round {} submission is unproven; retained request {} and receipt {}; no fresh input will be sent",
+            watch.id,
+            record.request.as_deref().unwrap_or("unknown"),
+            receipt
+        );
+    }
+    if watch.started == 0 {
+        watch.started = record.offered.unwrap_or_else(crate::clock);
+    }
+    record.watch = watch.clone();
+    record.execution_evidence = evidence;
+    watch_terminal::save(&record)?;
     watch_terminal::set_status(watch, LaunchState::Running)
+}
+
+fn brief_file(watch: &Watch) -> Result<PathBuf> {
+    Ok(crate::watch_report::directory(&watch.id)?
+        .join(format!("brief-{}.md", watch.attempts.len() + 1)))
+}
+
+fn write_brief(watch: &Watch) -> Result<()> {
+    let path = brief_file(watch)?;
+    std::fs::create_dir_all(path.parent().expect("round directory"))?;
+    std::fs::write(&path, brief(watch))
+        .with_context(|| format!("cannot write watch brief {}", path.display()))
 }
 
 /// What a session of `watch` is told.
@@ -975,7 +1315,7 @@ fn brief(watch: &Watch) -> String {
          kill or restart the host runner. On the new version repeat the check that showed \
          the fault and check the fleets' work goes on. Record the version, the evidence and \
          whether the fault is gone or still present; an upgrade alone proves nothing.\n\n\
-         This watch has one hour from {}, its sessions together; at the hour it is ended. End \
+         This watch round has one hour from {}, its continuations together; at the hour it is ended. End \
          with what held the work back, each thing you did and its evidence, each PR and cut, \
          and what you left — including every human decision — in your report. If landing, \
          cutting or the move has not finished, say what is still \
@@ -985,15 +1325,22 @@ fn brief(watch: &Watch) -> String {
          ## What this watch did before this session\n\n{}\n\n\
          ## What the look answered\n\n`afkconvoy doctor --all --since <until of the look \
          before>` answered:\n\n```json\n{}\n```\n\n\
-         ## Report, then stop\n\n\
+         ## Report this round, then await the next message\n\n\
          Write `{}` as a JSON object with all five keys: `held_back`, `did`, `verified`, \
          `human`, `pending`. The first three and `pending` are lists of nonempty strings; \
          `human` is a list of objects with nonempty `question` and `answer` strings, the \
          exact question left alone and its answer command. Use [] for an empty part. \
-         Printed output is not a report. Your last step is this exact command; once it \
-         records, the host runner ends your harness and keeps this terminal open:\n\n{}\n",
+         Printed output is not a report. Your last step for this round is this exact command. \
+         Once it records, return to your interactive input and wait for the next task message \
+         in this same session. Do not exit the harness, poll, sleep in a tool loop, or request \
+         another model turn while idle. Only this round is complete; the host runner retains \
+         other queued work and gives each later round its own ID, brief and report command:\n\n{}\n",
         answering(&watch.look),
-        crate::log::utc(watch.started),
+        if watch.started == 0 {
+            "its accepted Terminal submission".into()
+        } else {
+            crate::log::utc(watch.started)
+        },
         why.join("\n"),
         said(&watch.earlier),
         said(&sessions),
@@ -1200,6 +1547,19 @@ pub fn json(running: Option<&Watch>) -> Value {
     let mut answer =
         json!({"running": running.map(watch_json), "last": last, "unavailable": unavailable});
     answer["association"] = watch_terminal::json();
+    if let Ok(state) = &state {
+        let session = state.running.as_ref().or(state.resident.as_ref());
+        answer["session"] = json!(session.map(|session| json!({
+            "id": session_identity(session), "terminal": session.terminal,
+            "harness": session.harness, "directory": session.directory,
+            "status": if state.unavailable.is_some() { "unavailable" } else if state.running.is_some() { "active" } else { "standby" },
+            "round": state.running.as_ref().map(|r| &r.id),
+        })));
+        answer["pending"] = json!(state.pending);
+        answer["rounds"] = json!(state.history.iter().map(watch_json).collect::<Vec<_>>());
+        answer["looked"] = json!(state.looked);
+        answer["until"] = json!(state.until);
+    }
     match crate::host_settings::of_host()
         .and_then(|settings| Ok((directory(&settings)?, settings.watch_dir.is_none())))
     {
@@ -1249,6 +1609,177 @@ pub const INSTANCE: &str = "host-watch";
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Uses a real interactive Codex in this worker's visible Terminal, with
+    /// harmless bounded tasks and isolated durable state. Normal scheduling
+    /// is covered by the host-runner CLI scenarios in tests/host_watch.rs.
+    #[test]
+    #[ignore = "requires real local Orca and Codex; set TMPDIR inside this worktree's .afkconvoy-tmp"]
+    fn real_orca_resident_agent_reports_two_rounds_in_one_terminal() {
+        let directory = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let cache = cache().unwrap();
+        assert!(
+            cache.starts_with(directory.join(".afkconvoy-tmp")),
+            "an isolated smoke cache is required"
+        );
+        assert!(read().unwrap().running.is_none() && watch_terminal::active().unwrap().is_none());
+        let binary = directory.join("target/debug/afkconvoy");
+        assert!(binary.is_file(), "build the CLI first");
+        let watcher = Watcher {
+            ended: Arc::new(AtomicBool::new(false)),
+            shared: Shared::default(),
+            say: Box::new(|what| println!("{}", serde_json::to_string(&what).unwrap())),
+            looking: Failing::default(),
+            checking: Failing::default(),
+        };
+        let make = |id: &str| -> Watch {
+            serde_json::from_value(json!({"id": id, "session": "", "directory": directory,
+                "look": {}, "items": [], "started": 0, "session_started": crate::clock(),
+                "harness": "codex", "model": null, "terminal": "", "transcript": ""}))
+            .unwrap()
+        };
+        let mut first = make(&format!("real-first-{}", crate::unique()));
+        launch_session(&mut first).unwrap();
+        struct Cleanup(Watch);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = stop_session(&self.0);
+                let worktree = Worktree::at(self.0.directory.clone(), String::new());
+                let _ = worktree.close_terminal(&self.0.terminal);
+            }
+        }
+        let _cleanup = Cleanup(first.clone());
+        let worktree = Worktree::at(directory.clone(), String::new());
+        worktree.await_ready(&first.terminal, 60, first.harness, "codex").unwrap();
+        let submit = |round: &mut Watch, number: u64| {
+            let dir = crate::watch_report::directory(&round.id).unwrap();
+            std::fs::create_dir_all(&dir).unwrap();
+            let file = dir.join("smoke-report.json");
+            let report = json!({"held_back": [], "did": [format!("smoke round {number} only")],
+                "verified": [format!("interactive round {number} received")], "human": [], "pending": []});
+            std::fs::write(&file, report.to_string()).unwrap();
+            let command = afkconvoy_core::line::Line::new()
+                .fixed("XDG_CACHE_HOME=")
+                .word(&cache.parent().unwrap().display().to_string())
+                .fixed(" ")
+                .word(&binary.display().to_string())
+                .fixed(" watched --watch ")
+                .word(&round.id)
+                .fixed(" --text-file ")
+                .word(&file.display().to_string())
+                .own();
+            let task = format!(
+                "Bounded resident Terminal smoke test, round {number}. Only run this exact shell command, then say 'round {number} reported' and return to interactive input. Do not exit, poll or operate any fleet, repo, other session, network or user data. Wait for my next message in this same Agent session.\n\n{command}\n"
+            );
+            std::fs::write(brief_file(round).unwrap(), task).unwrap();
+            let mut record = watch_terminal::read().unwrap().unwrap();
+            record.watch = round.clone();
+            record.status = LaunchState::Sending;
+            record.request = Some(uuid::Uuid::new_v4().to_string());
+            record.offered = Some(crate::clock());
+            watch_terminal::save(&record).unwrap();
+            let mut state = read().unwrap();
+            state.running = Some(round.clone());
+            watcher.save(&state).unwrap();
+            let until = Instant::now() + Duration::from_secs(90);
+            loop {
+                match resume_delivery(round) {
+                    Ok(()) => break,
+                    Err(_) if crate::watch_report::read(&round.id).unwrap().is_some() => break,
+                    Err(error) => {
+                        assert!(Instant::now() < until, "{error:#}");
+                        std::thread::sleep(Duration::from_millis(500));
+                    }
+                }
+            }
+            let mut state = read().unwrap();
+            state.running = Some(round.clone());
+            watcher.save(&state).unwrap();
+        };
+        let wait_report = |round: &Watch| {
+            let deadline = Instant::now() + Duration::from_secs(180);
+            loop {
+                watcher.check().unwrap();
+                if read()
+                    .unwrap()
+                    .last
+                    .as_ref()
+                    .is_some_and(|last| last.id == round.id && last.report.is_some())
+                {
+                    break;
+                }
+                assert!(Instant::now() < deadline, "round {} did not report", round.id);
+                std::thread::sleep(Duration::from_millis(500));
+            }
+        };
+        let executor = |round: &Watch| {
+            let marker = format!("{}{}", host_watch::SESSION_PROCESS, session_identity(round));
+            let processes = crate::hot::listed_checked().unwrap();
+            let pids: Vec<_> = processes
+                .iter()
+                .filter(|p| p.line.split_whitespace().any(|word| word == marker))
+                .map(|p| p.pid)
+                .collect();
+            assert_eq!(pids.len(), 1, "one actual executor");
+            pids[0]
+        };
+        submit(&mut first, 1);
+        wait_report(&first);
+        let pid = executor(&first);
+        let first_runtime = worktree.terminal_health(&first.terminal, crate::clock()).unwrap().1;
+        let deadline = Instant::now() + Duration::from_secs(90);
+        while !worktree.watch_input_ready(&first.terminal).unwrap() {
+            assert!(Instant::now() < deadline, "first round did not return to input");
+            std::thread::sleep(Duration::from_millis(500));
+        }
+        // Recover solely from durable state before the next round.
+        let resident = read().unwrap().resident.unwrap();
+        assert_eq!(watch_terminal::locate(&resident).unwrap().unwrap(), first.terminal);
+        let mut second = make(&format!("real-second-{}", crate::unique()));
+        second.session = resident.session;
+        second.terminal = resident.terminal;
+        second.transcript = resident.transcript;
+        second.session_started = resident.session_started;
+        watch_terminal::begin_round(&second).unwrap();
+        submit(&mut second, 2);
+        wait_report(&second);
+        assert_eq!(executor(&first), pid, "same Agent wrapper process after both reports");
+        assert!(worktree.live(&second.terminal).unwrap());
+        assert_eq!(
+            crate::watch_report::read(&first.id).unwrap().unwrap().did,
+            ["smoke round 1 only"]
+        );
+        assert_eq!(
+            crate::watch_report::read(&second.id).unwrap().unwrap().did,
+            ["smoke round 2 only"]
+        );
+        let deadline = Instant::now() + Duration::from_secs(90);
+        while !worktree.watch_input_ready(&second.terminal).unwrap() {
+            assert!(Instant::now() < deadline, "second round did not return to input");
+            std::thread::sleep(Duration::from_millis(500));
+        }
+        let second_runtime = worktree.terminal_health(&second.terminal, crate::clock()).unwrap().1;
+        let evidence = json!({"terminal": first.terminal, "session": first.session,
+            "executor_pid": pid, "first": watch_json(&read().unwrap().history[0]),
+            "second": watch_json(read().unwrap().last.as_ref().unwrap()),
+            "first_runtime": first_runtime, "second_runtime": second_runtime,
+            "screen_after_both_reports": worktree.screen(&second.terminal, 35).unwrap(),
+            "input_ready_after_both_reports": true});
+        std::fs::write(
+            directory.join(".afkconvoy-tmp/real-resident-evidence.json"),
+            serde_json::to_vec_pretty(&evidence).unwrap(),
+        )
+        .unwrap();
+        println!(
+            "real resident proof: terminal={}, session={}, executor_pid={pid}, first={}, second={}, reports=2; both reports left the same interactive Agent alive",
+            first.terminal, first.session, first.id, second.id
+        );
+    }
 
     #[test]
     fn ending_a_session_keeps_its_terminal_shell_and_the_operators_process() {

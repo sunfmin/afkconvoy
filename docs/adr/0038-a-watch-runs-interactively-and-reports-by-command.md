@@ -4,6 +4,11 @@ status: accepted
 
 # A watch runs interactively and reports by command
 
+Amended by ADR-0040 (sunfmin/control#145): the watch retains a resident
+interactive session across independent rounds; looks continue while it is
+busy, and reporting leaves the healthy harness standing by. The older rules
+below that stop looks or end a reported harness are superseded.
+
 Amends ADR-0030, ADR-0033, ADR-0035 and ADR-0036 (sunfmin/control#118).
 The watch runs the harness's interactive session in its watch directory,
 trusted and with prompts skipped, in a terminal titled “afkconvoy watch”. Its
