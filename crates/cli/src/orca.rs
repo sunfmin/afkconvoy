@@ -497,12 +497,26 @@ fn repo_list() -> Result<Value> {
     listed.as_ref().expect("set above").clone().map_err(|error| anyhow!(error))
 }
 
-/// A new look begins: the listing is read again in it. A process that is one
-/// look — `doctor`, say — never calls this and reads the listing once; the
-/// host runner is a process of many looks, one per tick and one per start,
-/// and each must see what a `run` registered since.
-pub fn new_look() {
+/// Forgets the listing, so the next read observes it again. A look begins
+/// through `look::begin`, which forgets every observation a look reads once.
+/// Adding a repo orca did not list forgets this listing alone: the look has
+/// not ended, and the quota note stays the one already read.
+pub(crate) fn forget_listing() {
     *REPOS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+}
+
+#[cfg(test)]
+pub(crate) fn hold_listing(value: Value) {
+    *REPOS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Ok(value));
+}
+
+#[cfg(test)]
+pub(crate) fn cached_listing() -> Option<Value> {
+    REPOS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .as_ref()
+        .and_then(|listed| listed.as_ref().ok().cloned())
 }
 
 impl Source {
@@ -542,7 +556,7 @@ fn same_dir(a: &Path, b: &Path) -> bool {
 pub fn watch_directory(directory: &Path) -> Result<()> {
     if Source::at(directory)?.is_none() {
         orca(&["repo", "add", "--path", &directory.display().to_string()])?;
-        new_look();
+        forget_listing();
     }
     Ok(())
 }
