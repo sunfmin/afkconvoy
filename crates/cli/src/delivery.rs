@@ -651,7 +651,7 @@ fn on_target(
     let target = repo
         .fetched(&format!("refs/heads/{}", delivery.final_target))?
         .context("final target disappeared")?;
-    Ok(repo.within(head, &target)?)
+    repo.within(head, &target)
 }
 
 fn observe(
@@ -678,7 +678,7 @@ fn observe(
         tasks: snapshot.tasks.clone(),
     };
     publish(repo, &name, &serde_json::to_string(&settlement)?, false)?;
-    Ok(read_record(repo, &name)?)
+    read_record(repo, &name)
 }
 
 fn settlement_differs(
@@ -814,17 +814,26 @@ fn discover_pr(gh: &GitHub, number: u64) -> Result<Option<crate::gh::DeliveryPr>
     Ok(gh.delivery_prs()?.into_iter().find(|pr| pr.number == number))
 }
 
+/// The part of a handoff answer that is not the delivery's identity.
+struct Shown<'a> {
+    ready: bool,
+    reasons: Vec<String>,
+    gate: Value,
+    settlement: Option<&'a Settlement>,
+    discrepancy: bool,
+}
+
+fn unready(reasons: Vec<String>, gate: Value) -> Shown<'static> {
+    Shown { ready: false, reasons, gate, settlement: None, discrepancy: false }
+}
+
 fn handoff_answer(
     delivery: &Delivery,
     pr: Option<&crate::gh::DeliveryPr>,
     snapshot: &Snapshot,
-    ready: bool,
-    reasons: Vec<String>,
-    gate: Value,
-    settlement: Option<&Settlement>,
-    discrepancy: bool,
+    shown: Shown<'_>,
 ) -> Value {
-    let delivered = settlement.is_some_and(|found| found.complete) && !discrepancy;
+    let delivered = shown.settlement.is_some_and(|found| found.complete) && !shown.discrepancy;
     json!({
         "jira": delivery.jira,
         "delivery": delivery.identity,
@@ -832,11 +841,11 @@ fn handoff_answer(
         "final_target": delivery.final_target,
         "final_pr": pr.map(pr_value).unwrap_or(Value::Null),
         "tasks": snapshot.tasks,
-        "ready": ready,
-        "reasons": reasons,
-        "gate": gate,
-        "settlement": settlement,
-        "discrepancy": discrepancy,
+        "ready": shown.ready,
+        "reasons": shown.reasons,
+        "gate": shown.gate,
+        "settlement": shown.settlement,
+        "discrepancy": shown.discrepancy,
         "delivered": delivered,
         "reviews": "not changed",
     })
@@ -873,11 +882,13 @@ fn handoff(repo: &Repo, gh: &GitHub, delivery: &Delivery, host: &str, now: u64) 
             delivery,
             pr.as_ref(),
             &snapshot,
-            false,
-            reasons,
-            Value::Null,
-            Some(&settlement),
-            discrepancy || !settlement.complete,
+            Shown {
+                ready: false,
+                reasons,
+                gate: Value::Null,
+                settlement: Some(&settlement),
+                discrepancy: discrepancy || !settlement.complete,
+            },
         ));
     }
     if !implemented(&snapshot.tasks) {
@@ -885,27 +896,14 @@ fn handoff(repo: &Repo, gh: &GitHub, delivery: &Delivery, host: &str, now: u64) 
         if let Some(found) = &pr {
             pr = Some(withdraw(gh, found)?);
         }
-        return Ok(handoff_answer(
-            delivery,
-            pr.as_ref(),
-            &snapshot,
-            false,
-            reasons,
-            Value::Null,
-            None,
-            false,
-        ));
+        return Ok(handoff_answer(delivery, pr.as_ref(), &snapshot, unready(reasons, Value::Null)));
     }
     if !has_diff(repo, delivery)? {
         return Ok(handoff_answer(
             delivery,
             pr.as_ref(),
             &snapshot,
-            false,
-            vec!["no meaningful diff from the final target".to_string()],
-            Value::Null,
-            None,
-            false,
+            unready(vec!["no meaningful diff from the final target".to_string()], Value::Null),
         ));
     }
     let gated = aggregate(repo, delivery, host, now)?;
@@ -918,11 +916,12 @@ fn handoff(repo: &Repo, gh: &GitHub, delivery: &Delivery, host: &str, now: u64) 
                 delivery,
                 pr.as_ref(),
                 &snapshot,
-                false,
-                vec!["delivery branch conflicts with the final target; work is unchanged".into()],
-                json!({"status": "conflict"}),
-                None,
-                false,
+                unready(
+                    vec![
+                        "delivery branch conflicts with the final target; work is unchanged".into(),
+                    ],
+                    json!({"status": "conflict"}),
+                ),
             ));
         }
         Aggregate::Red { detail } => {
@@ -933,11 +932,7 @@ fn handoff(repo: &Repo, gh: &GitHub, delivery: &Delivery, host: &str, now: u64) 
                 delivery,
                 pr.as_ref(),
                 &snapshot,
-                false,
-                vec![detail.clone()],
-                json!({"status": "red", "detail": detail}),
-                None,
-                false,
+                unready(vec![detail.clone()], json!({"status": "red", "detail": detail})),
             ));
         }
         Aggregate::Green { tree, command, source } => (tree, command, source),
@@ -955,11 +950,10 @@ fn handoff(repo: &Repo, gh: &GitHub, delivery: &Delivery, host: &str, now: u64) 
             delivery,
             pr.as_ref(),
             &snapshot,
-            false,
-            vec!["inspected state changed before readiness was published".into()],
-            json!({"status": "stale"}),
-            None,
-            false,
+            unready(
+                vec!["inspected state changed before readiness was published".into()],
+                json!({"status": "stale"}),
+            ),
         ));
     }
     let evidence = Evidence {
@@ -986,11 +980,10 @@ fn handoff(repo: &Repo, gh: &GitHub, delivery: &Delivery, host: &str, now: u64) 
             delivery,
             pr.as_ref(),
             &snapshot,
-            false,
-            vec!["evidence no longer certifies the inspected state".into()],
-            json!({"status": "stale"}),
-            None,
-            false,
+            unready(
+                vec!["evidence no longer certifies the inspected state".into()],
+                json!({"status": "stale"}),
+            ),
         ));
     }
     let current = ensure_pr(repo, gh, delivery)?;
@@ -1017,22 +1010,23 @@ fn handoff(repo: &Repo, gh: &GitHub, delivery: &Delivery, host: &str, now: u64) 
             delivery,
             Some(&current),
             &fresh,
-            false,
-            vec!["inspected state changed before readiness was published".into()],
-            json!({"status": "stale", "source": source}),
-            None,
-            false,
+            unready(
+                vec!["inspected state changed before readiness was published".into()],
+                json!({"status": "stale", "source": source}),
+            ),
         ));
     }
     Ok(handoff_answer(
         delivery,
         Some(&current),
         &snapshot,
-        !current.draft && pr_terminal(&current).is_none(),
-        vec![],
-        json!({"status": "green", "source": source, "tree": tree}),
-        None,
-        false,
+        Shown {
+            ready: !current.draft && pr_terminal(&current).is_none(),
+            reasons: vec![],
+            gate: json!({"status": "green", "source": source, "tree": tree}),
+            settlement: None,
+            discrepancy: false,
+        },
     ))
 }
 

@@ -564,7 +564,7 @@ fn tip(world: &World, branch: &str) -> String {
 
 /// Lands one attached task on the delivery branch and lets the fleet settle
 /// the worker's claim, which is what leaves the task implemented.
-fn contribute(world: &World, delivery: &Value, issue: u64, file: &str, text: &str) {
+fn contribute(world: &World, delivery: &Value, issue: u64, file: &str, text: &str, now: u64) {
     let number = issue.to_string();
     let started = world
         .afk(&[
@@ -576,7 +576,7 @@ fn contribute(world: &World, delivery: &Value, issue: u64, file: &str, text: &st
             "--host",
             "h1",
             "--now",
-            "1000",
+            &now.to_string(),
         ])
         .ok();
     let dir = PathBuf::from(started["worktree"].as_str().unwrap());
@@ -597,17 +597,19 @@ fn contribute(world: &World, delivery: &Value, issue: u64, file: &str, text: &st
     let landed = world.afk_in(&dir, &["land", "--issue", &number]).ok();
     assert_eq!(landed["outcome"], "merged", "{landed}");
     assert_eq!(landed["target_branch"], delivery["branch"]);
-    world.afk(&["tick", "--instance", "alpha", "--host", "h1", "--now", "2000"]).ok();
+    world
+        .afk(&["tick", "--instance", "alpha", "--host", "h1", "--now", &(now + 1000).to_string()])
+        .ok();
 }
 
 fn two_tasks(world: &World) -> Value {
     world.set_gate("true");
     world.issue(7, &["ready-for-agent"]);
     let delivery = create(world, Some("7"));
-    contribute(world, &delivery, 7, "seven.txt", "task seven\n");
+    contribute(world, &delivery, 7, "seven.txt", "task seven\n", 1000);
     world.issue(8, &["ready-for-agent"]);
     create(world, Some("8"));
-    contribute(world, &delivery, 8, "eight.txt", "task eight\n");
+    contribute(world, &delivery, 8, "eight.txt", "task eight\n", 3000);
     delivery
 }
 
@@ -615,7 +617,7 @@ fn one_task(world: &World) -> Value {
     world.set_gate("true");
     world.issue(7, &["ready-for-agent"]);
     let delivery = create(world, Some("7"));
-    contribute(world, &delivery, 7, "seven.txt", "task seven\n");
+    contribute(world, &delivery, 7, "seven.txt", "task seven\n", 1000);
     delivery
 }
 
@@ -678,7 +680,7 @@ fn two_tasks_hand_off_one_pr_and_a_human_merge_is_reconstructed_after_restart() 
     let refused = world.afk(&["land", "--issue", "9"]).error();
     assert!(refused.contains("no open PR"), "{refused}");
     assert_eq!(tip(&world, "main"), main);
-    world.afk(&["tick", "--instance", "alpha", "--host", "h1", "--now", "3000"]).ok();
+    world.afk(&["tick", "--instance", "alpha", "--host", "h1", "--now", "5000"]).ok();
     assert_eq!(tip(&world, "main"), main, "a tick does not land the final PR");
 
     let inspected = world.afk(&["delivery", "--jira", JIRA]).ok();
@@ -690,8 +692,11 @@ fn two_tasks_hand_off_one_pr_and_a_human_merge_is_reconstructed_after_restart() 
     assert_eq!(plan["deliveries"][0]["certifies"], true, "{plan}");
     assert_eq!(plan["deliveries"][0]["detail"], "ready for human review");
     assert_eq!(doctor["deliveries"][0]["detail"], plan["deliveries"][0]["detail"]);
-    let page = world.afk(&["panel"]).ok();
-    let html = page.as_str().unwrap();
+    // `panel` prints one HTML document, not a JSON object.
+    let out =
+        world.command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone).arg("panel").output().unwrap();
+    let html = String::from_utf8(out.stdout).unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     assert!(html.contains("Jira deliveries"), "{html}");
     assert!(html.contains(JIRA), "{html}");
 
@@ -782,7 +787,7 @@ fn a_conflict_with_the_final_target_leaves_both_branches_and_withdraws() {
     let ready = handoff(&world);
     assert_eq!(ready["ready"], true, "{ready}");
     let delivery_tip = tip(&world, &branch);
-    commit(&world.clone, "work.txt", "from the final target\n");
+    commit(&world.clone, "seven.txt", "from the final target\n");
     git(&world.clone, &["push", "-q", "origin", "HEAD:main"]);
     let main = tip(&world, "main");
     let conflict = handoff(&world);
@@ -792,7 +797,7 @@ fn a_conflict_with_the_final_target_leaves_both_branches_and_withdraws() {
     assert_eq!(final_prs(&world)[0]["draft"], true);
     assert_eq!(tip(&world, &branch), delivery_tip);
     assert_eq!(tip(&world, "main"), main);
-    assert_eq!(world.remote(&["show", &format!("refs/heads/{branch}:work.txt")]), "task seven");
+    assert_eq!(world.remote(&["show", &format!("refs/heads/{branch}:seven.txt")]), "task seven");
 }
 
 #[test]
