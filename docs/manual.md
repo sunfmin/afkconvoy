@@ -4,7 +4,7 @@
 
 afkconvoy works ready GitHub issues unattended. `afkconvoy run` starts one host runner with a fleet instance per repo. Each dispatches a coding agent per issue in its own git worktree, gates finished PRs and lands them on the configured base or a task's selected target. Fleet state lives in GitHub and the remote.
 
-`afkconvoy --help` gives this guide, each command's one line by who runs it, and each topic's first sentence. `afkconvoy help all` gives the whole manual. `afkconvoy -h` lists commands on one screen.
+`afkconvoy --help` answers the index: this guide, each command by who runs it, and each topic's first sentence. `afkconvoy help all` answers the whole manual. `afkconvoy -h` lists commands on one screen.
 
 ## What it needs
 
