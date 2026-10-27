@@ -15,7 +15,7 @@ It is modelled on the one Cockroach Labs describes in "An experiment in running 
 
 - `team.md`: Names the seven roles, each as `./roles/<name>`: a path from the root of the team's own repo, so that the team names no repo and is pushed, forked or renamed with no edit.
 - `CLAUDE.md`: The team rules: three, given to every worker whatever its role. They say how this team works, and nothing of one codebase or of one role.
-- `docs/demo-rules.md`: The interval rule for hospital-demo with its source link, for that repo alone. The rule for continuing after a base-branch fix lives in the team rules, also with its source.
+- `demo-rules.md`: The interval rule for hospital-demo with its source link, for that repo alone. The rule for continuing after a base-branch fix lives in the team rules, also with its source.
 
 ## The workflows
 
