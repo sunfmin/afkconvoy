@@ -92,6 +92,18 @@ _Avoid_: trunk, main, default branch (a team's or a role's repo is read at its o
 The same-repo branch one task is cut from and lands on, pinned before it is claimed: the selected branch, or the configured base branch. Its stages and continuations retain that destination.
 _Avoid_: delivery branch (a Jira ticket's broader delivery), integration branch (a team's purpose for a branch)
 
+**Jira delivery**:
+One Jira ticket's delivery in one code repo, identified by its full Jira reference, including the site. It owns one delivery branch, one final target branch and one final review PR. Attached tasks contribute through internal task PRs. The same ticket across code repos has a separate delivery in each.
+_Avoid_: Jira workflow, task (one contribution to a delivery)
+
+**Delivery branch**:
+The branch a Jira delivery gathers its attached tasks on. Each attached task resolves it as its target branch; the repo's configured base stays unchanged.
+_Avoid_: task branch (the worker's own source branch)
+
+**Final review PR**:
+A Jira delivery's single PR from its delivery branch to its final target, opened as a Draft once there is a meaningful diff. A human owns colleague review and merging it; ordinary fleet task landing never selects it.
+_Avoid_: task PR (an internal contribution), final task
+
 ### Teams and roles
 
 **Role**:
