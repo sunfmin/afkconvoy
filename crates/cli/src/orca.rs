@@ -1263,7 +1263,8 @@ impl Worktree {
     pub(crate) fn watch_terminals(&self) -> Result<Vec<Value>> {
         let listed = orca(&["terminal", "list", "--worktree", &self.selector()])?;
         anyhow::ensure!(listed["truncated"] != true, "orca's terminal list is truncated");
-        let rows = listed["terminals"].as_array()
+        let rows = listed["terminals"]
+            .as_array()
             .ok_or_else(|| anyhow!("orca terminal list returned no terminals array"))?;
         Ok(rows.clone())
     }

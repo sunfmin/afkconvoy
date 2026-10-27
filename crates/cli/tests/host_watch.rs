@@ -1212,3 +1212,168 @@ fn the_removed_reporting_command_is_not_in_the_manual_or_command_tree() {
     assert!(!help.contains("inspection"));
     assert!(!help.contains("inspected"));
 }
+
+#[test]
+fn a_lost_creation_receipt_recovers_the_acknowledged_terminal_without_another_agent() {
+    let world = World::new();
+    let dir = operator(&world);
+    paused(&world, "pi", "a fault");
+    // The terminal exists and ran its startup acknowledgement, but the
+    // caller receives neither valid JSON nor a creation handle.
+    world.with_orca(|orca| orca["raw_answers"]["terminal create"] = json!("lost receipt"));
+    run(&world, &dir);
+    let watch = until(&world, "recovered creation", || {
+        running(&world).filter(|w| !w["terminal"].as_str().unwrap_or("").is_empty())
+    });
+    assert_eq!(starts(&world).len(), 1);
+    let handle = watch["terminal"].as_str().unwrap();
+    assert!(open(&world, &dir).contains(&handle.into()));
+    let doctor = world.afk(&["doctor"]).json;
+    assert_eq!(doctor["host"]["watch"]["association"]["phase"], "running");
+    assert_eq!(doctor["host"]["watch"]["association"]["terminal"], handle);
+
+    // Lose both the caller's saved ID and its progress file after a hard
+    // runner restart. The launch journal still owns this exact session.
+    world.kill_host_runner("KILL");
+    std::fs::remove_file(world.cache().join("afkconvoy/watch/state.json")).unwrap();
+    run(&world, &dir);
+    until(&world, "the retained watch", || running(&world).filter(|w| w["terminal"] == handle));
+    std::thread::sleep(Duration::from_millis(2200));
+    assert_eq!(starts(&world).len(), 1, "restart/repeated checks never create another agent");
+    let terminal = world.orca()["terminals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["handle"] == handle)
+        .unwrap()
+        .clone();
+    assert_eq!(terminal["sent"].as_array().unwrap().len(), 1, "brief delivered once");
+    assert_eq!(running(&world).unwrap()["id"], watch["id"]);
+    assert!(open(&world, &dir).contains(&OPERATORS.into()));
+}
+
+#[test]
+fn same_name_operator_terminals_block_discovery_without_being_adopted_or_closed() {
+    let world = World::new();
+    let dir = operator(&world);
+    paused(&world, "pi", "a fault");
+    world.with_orca(|orca| {
+        orca["terminals"][0]["title"] = json!("afkconvoy watch");
+        orca["terminals"].as_array_mut().unwrap().push(json!({"handle": "other",
+            "worktreePath": dir, "title": "afkconvoy watch", "open": true, "sent": []}));
+    });
+    run(&world, &dir);
+    let why = until(&world, "ambiguous discovery", || {
+        state(&world)["unavailable"].as_str().map(str::to_string)
+    });
+    assert!(why.contains("unverified terminals"), "{why}");
+    assert!(starts(&world).is_empty());
+    assert_eq!(open(&world, &dir).len(), 2);
+    // A unique title still proves no ownership.
+    world.with_orca(|orca| orca["terminals"][1]["title"] = json!("operator's work"));
+    std::thread::sleep(Duration::from_millis(2200));
+    assert!(starts(&world).is_empty());
+    world.with_orca(|orca| orca["terminals"][0]["title"] = json!("operator"));
+    until(&world, "start after unrelated titles are renamed", || running(&world));
+    assert_eq!(starts(&world).len(), 1);
+    for handle in [OPERATORS, "other"] {
+        let terminal = world.orca()["terminals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["handle"] == handle)
+            .unwrap()
+            .clone();
+        assert_eq!(terminal["open"], true);
+        assert!(terminal["sent"].as_array().unwrap().is_empty());
+    }
+}
+
+#[test]
+fn stale_runtime_handles_reassociate_by_confirmed_pane_identity_and_keep_interactive_input() {
+    let world = World::new();
+    let dir = operator(&world);
+    paused(&world, "pi", "a fault");
+    run(&world, &dir);
+    let watch = until(&world, "watch", || running(&world));
+    world.kill_host_runner("KILL");
+    let old = watch["terminal"].as_str().unwrap();
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            if terminal["handle"] == old {
+                terminal["ptyId"] = json!(old);
+                terminal["handle"] = json!("new-runtime-handle");
+                terminal["screen"] = json!(["unfinished work", "human input retained"]);
+                terminal["title"] = json!("agent changed its title");
+            }
+        }
+        // An unrelated session with the fixed title cannot displace the
+        // exact saved identity, even after a runtime handle changes.
+        orca["terminals"][0]["title"] = json!("afkconvoy watch");
+    });
+    // Multiple discovery candidates are deliberately not guessed between.
+    run(&world, &dir);
+    until(&world, "ambiguous recovery", || {
+        state(&world)["unavailable"]
+            .as_str()
+            .filter(|why| why.contains("multiple watch terminal candidates"))
+            .map(str::to_string)
+    });
+    assert_eq!(starts(&world).len(), 1);
+    world.with_orca(|orca| orca["terminals"][0]["title"] = json!("operator"));
+    until(&world, "reassociated pane", || {
+        running(&world).filter(|w| w["terminal"] == "new-runtime-handle")
+    });
+    assert_eq!(starts(&world).len(), 1);
+    let terminal = world.orca()["terminals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["handle"] == "new-runtime-handle")
+        .unwrap()
+        .clone();
+    assert_eq!(terminal["screen"], json!(["unfinished work", "human input retained"]));
+    assert_eq!(terminal["sent"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn uncertain_creation_and_prompt_receipts_pause_across_restarts_and_accept_an_explicit_report() {
+    for phase in ["creating", "sending"] {
+        let world = World::new();
+        let dir = operator(&world);
+        paused(&world, "pi", "a fault");
+        run(&world, &dir);
+        let watch = until(&world, "watch", || running(&world));
+        world.kill_host_runner("KILL");
+        let file = world.cache().join("afkconvoy/watch/terminal.json");
+        let mut record: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+        record["phase"] = json!(phase);
+        if phase == "creating" {
+            record["terminal"] = Value::Null;
+            record["watch"]["terminal"] = json!("");
+            let transcript = Path::new(watch["transcript"].as_str().unwrap());
+            std::fs::remove_file(transcript.with_extension("terminal")).unwrap();
+            let mut state = state(&world);
+            state["running"]["terminal"] = json!("");
+            std::fs::write(world.cache().join("afkconvoy/watch/state.json"), state.to_string())
+                .unwrap();
+        }
+        std::fs::write(&file, record.to_string()).unwrap();
+        run(&world, &dir);
+        until(&world, "explicit recovery finding", || {
+            state(&world)["unavailable"]
+                .as_str()
+                .filter(|why| why.contains("No replacement is started"))
+                .map(str::to_string)
+        });
+        std::thread::sleep(Duration::from_millis(2200));
+        assert_eq!(starts(&world).len(), 1, "{phase}");
+        assert!(open(&world, &dir).contains(&watch["terminal"].as_str().unwrap().into()));
+        let doctor = world.afk(&["doctor"]).json;
+        assert!(
+            doctor["host"]["watch"]["unavailable"].as_str().unwrap().contains("afkconvoy watched")
+        );
+        printed(&world, &watch, &["inspected and retained the existing work"], Some(0));
+        until(&world, "explicit report settles uncertainty", || ended(&world, "ended"));
+    }
+}

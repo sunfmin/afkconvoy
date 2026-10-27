@@ -500,55 +500,60 @@ impl Watcher {
             };
             state.unavailable = None;
             if host_watch::expired(watch.started, now) {
-            stop_session(&watch)?;
-            self.finish_said(
-                &mut state,
-                watch,
-                "time_limit",
-                "it reached its hour and did not report",
-            );
-        } else if !live && let Some(fault) = gave_out(watch.harness, &transcript, exited) {
-            stop_session(&watch)?;
-            self.go_on(&mut state, watch, fault, now, vec![])?;
-        } else if !live {
-            stop_session(&watch)?;
-            self.finish_said(&mut state, watch, "closed", "its terminal closed; it did not report");
-        } else {
-            let screen = worktree.screen(&watch.terminal, host_watch::EVIDENCE_LINES)?;
-            let (worker, runtime) = worktree.terminal_health(&watch.terminal, now)?;
-            let fault = crate::health::watch_diagnosis(watch.harness, &screen, &runtime)
-                .or_else(|| gave_out(watch.harness, &transcript, exited));
-            if let Some(fault) = fault {
-                stop_session(&watch)?;
-                close(&worktree, &watch.terminal, live)?;
-                self.go_on(&mut state, watch, fault, now, screen)?;
-            } else if exited.is_some() {
                 stop_session(&watch)?;
                 self.finish_said(
                     &mut state,
                     watch,
-                    "not_reported",
-                    "its harness exited; it did not report",
+                    "time_limit",
+                    "it reached its hour and did not report",
+                );
+            } else if !live && let Some(fault) = gave_out(watch.harness, &transcript, exited) {
+                stop_session(&watch)?;
+                self.go_on(&mut state, watch, fault, now, vec![])?;
+            } else if !live {
+                stop_session(&watch)?;
+                self.finish_said(
+                    &mut state,
+                    watch,
+                    "closed",
+                    "its terminal closed; it did not report",
                 );
             } else {
-                let grace = afkconvoy_core::worker::GRACE;
-                let stopped = match worker {
-                    afkconvoy_core::worker::WorkerState::Idle { quiet: Some(quiet) } => {
-                        quiet >= grace
-                    }
-                    afkconvoy_core::worker::WorkerState::Idle { quiet: None } => true,
-                    _ => false,
-                };
-                if stopped
-                    && watch.nudged.is_none()
-                    && now.saturating_sub(watch.session_started.max(watch.started)) >= grace
-                {
-                    worktree.tell_watch(&watch.terminal,
+                let screen = worktree.screen(&watch.terminal, host_watch::EVIDENCE_LINES)?;
+                let (worker, runtime) = worktree.terminal_health(&watch.terminal, now)?;
+                let fault = crate::health::watch_diagnosis(watch.harness, &screen, &runtime)
+                    .or_else(|| gave_out(watch.harness, &transcript, exited));
+                if let Some(fault) = fault {
+                    stop_session(&watch)?;
+                    close(&worktree, &watch.terminal, live)?;
+                    self.go_on(&mut state, watch, fault, now, screen)?;
+                } else if exited.is_some() {
+                    stop_session(&watch)?;
+                    self.finish_said(
+                        &mut state,
+                        watch,
+                        "not_reported",
+                        "its harness exited; it did not report",
+                    );
+                } else {
+                    let grace = afkconvoy_core::worker::GRACE;
+                    let stopped = match worker {
+                        afkconvoy_core::worker::WorkerState::Idle { quiet: Some(quiet) } => {
+                            quiet >= grace
+                        }
+                        afkconvoy_core::worker::WorkerState::Idle { quiet: None } => true,
+                        _ => false,
+                    };
+                    if stopped
+                        && watch.nudged.is_none()
+                        && now.saturating_sub(watch.session_started.max(watch.started)) >= grace
+                    {
+                        worktree.tell_watch(&watch.terminal,
                     "Continue this watch. You have not reported; finish the work and run the exact afkconvoy watched line at the end of your brief.")?;
-                    watch.nudged = Some(now);
+                        watch.nudged = Some(now);
+                    }
+                    state.running = Some(watch);
                 }
-                state.running = Some(watch);
-            }
             }
         }
         self.save(&state)
@@ -775,7 +780,8 @@ fn start_session(watch: &mut Watch) -> Result<(String, PathBuf)> {
             watch.terminal = terminal;
         }
         Err(error) => {
-            watch.terminal = watch_terminal::locate(watch)?.with_context(|| format!("{error:#}"))?;
+            watch.terminal =
+                watch_terminal::locate(watch)?.with_context(|| format!("{error:#}"))?;
         }
     }
     resume_delivery(watch)?;

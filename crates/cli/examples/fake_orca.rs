@@ -286,8 +286,10 @@ fn terminal_create(st: &mut State) -> ! {
     // A real terminal runs the acknowledgement before its harness. Exercise
     // the same lost-create-receipt recovery path without starting a model.
     if title.as_deref() == Some("afkconvoy watch") {
-        let journal = std::env::var_os("XDG_CACHE_HOME").map(std::path::PathBuf::from)
-            .unwrap().join("afkconvoy/watch/terminal.json");
+        let journal = std::env::var_os("XDG_CACHE_HOME")
+            .map(std::path::PathBuf::from)
+            .unwrap()
+            .join("afkconvoy/watch/terminal.json");
         let record: Value = serde_json::from_slice(&std::fs::read(journal).unwrap()).unwrap();
         let transcript = Path::new(record["watch"]["transcript"].as_str().unwrap());
         std::fs::create_dir(transcript.with_extension("claim")).unwrap();

@@ -62,7 +62,6 @@ pub mod host_runner;
 pub mod host_settings;
 pub mod host_sleep;
 pub mod host_watch;
-mod watch_terminal;
 pub mod hot;
 pub mod instance;
 pub mod intake;
@@ -111,6 +110,7 @@ pub mod wake;
 pub mod watch;
 pub mod watch_landing;
 mod watch_report;
+mod watch_terminal;
 pub mod worker_tmp;
 pub mod workflow;
 

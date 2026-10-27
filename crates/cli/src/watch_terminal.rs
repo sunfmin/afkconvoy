@@ -43,8 +43,10 @@ fn file() -> Result<PathBuf> {
 pub(crate) fn read() -> Result<Option<Record>> {
     let path = file()?;
     match std::fs::read(&path) {
-        Ok(bytes) => Ok(Some(serde_json::from_slice(&bytes)
-            .with_context(|| format!("cannot read watch association {}", path.display()))?)),
+        Ok(bytes) => Ok(Some(
+            serde_json::from_slice(&bytes)
+                .with_context(|| format!("cannot read watch association {}", path.display()))?,
+        )),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error.into()),
     }
@@ -81,12 +83,24 @@ pub(crate) fn matches(record: &Record, watch: &Watch) -> bool {
 pub(crate) fn prepare(watch: &Watch, command: &str) -> Result<()> {
     ensure!(active()?.is_none(), "a watch launch is still unresolved; no second agent started");
     let worktree = Worktree::at(watch.directory.clone(), String::new());
-    let candidates: Vec<_> = worktree.watch_terminals()?.into_iter()
-        .filter(|t| t["title"] == TITLE).collect();
-    ensure!(candidates.is_empty(), "unverified terminals named {TITLE}: {}; no agent started",
-        candidates.iter().map(|t| t["handle"].as_str().unwrap_or("unknown")).collect::<Vec<_>>().join(", "));
-    save(&Record { watch: watch.clone(), phase: Phase::Creating, terminal: None, problem: None,
-        command: command.into() })
+    let candidates: Vec<_> =
+        worktree.watch_terminals()?.into_iter().filter(|t| t["title"] == TITLE).collect();
+    ensure!(
+        candidates.is_empty(),
+        "unverified terminals named {TITLE}: {}; no agent started",
+        candidates
+            .iter()
+            .map(|t| t["handle"].as_str().unwrap_or("unknown"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    save(&Record {
+        watch: watch.clone(),
+        phase: Phase::Creating,
+        terminal: None,
+        problem: None,
+        command: command.into(),
+    })
 }
 
 /// Wraps the existing guarded command without interpreting or replacing it.
@@ -112,7 +126,9 @@ pub(crate) fn created(watch: &Watch, handle: &str) -> Result<()> {
     // survive an Orca restart. Retain the intent if this query fails.
     let worktree = Worktree::at(watch.directory.clone(), String::new());
     let rows = worktree.watch_terminals()?;
-    let row = rows.into_iter().find(|row| row["handle"] == handle)
+    let row = rows
+        .into_iter()
+        .find(|row| row["handle"] == handle)
         .context("created watch terminal is not listed; recovery required")?;
     record.watch.terminal = handle.into();
     record.terminal = Some(row);
@@ -130,36 +146,55 @@ pub(crate) fn locate(watch: &Watch) -> Result<Option<String>> {
     let metadata = record.as_ref().and_then(|r| r.terminal.as_ref());
     let exact = if watch.terminal.is_empty() {
         record.as_ref().map_or("", |r| r.watch.terminal.as_str())
-    } else { &watch.terminal };
+    } else {
+        &watch.terminal
+    };
     if !exact.is_empty()
         && let Some(row) = rows.iter().find(|row| row["handle"] == exact)
     {
         if let Some(saved) = metadata {
             for key in ["ptyId", "incarnationId"] {
-                ensure!(saved[key].is_null() || saved[key] == row[key],
-                    "watch terminal {} changed {key}; ownership is unverified", watch.terminal);
+                ensure!(
+                    saved[key].is_null() || saved[key] == row[key],
+                    "watch terminal {} changed {key}; ownership is unverified",
+                    watch.terminal
+                );
             }
         }
         return Ok(Some(exact.to_string()));
     }
     let acknowledged = std::fs::read_to_string(handshake(watch)).ok();
-    let candidates: Vec<_> = rows.iter().filter(|row| {
-        row["title"] == TITLE
-            || metadata.is_some_and(|saved| !saved["ptyId"].is_null() && saved["ptyId"] == row["ptyId"])
-            || acknowledged.as_ref().is_some_and(|handle| row["handle"] == handle.trim())
-    }).collect();
+    let candidates: Vec<_> = rows
+        .iter()
+        .filter(|row| {
+            row["title"] == TITLE
+                || metadata.is_some_and(|saved| {
+                    !saved["ptyId"].is_null() && saved["ptyId"] == row["ptyId"]
+                })
+                || acknowledged.as_ref().is_some_and(|handle| row["handle"] == handle.trim())
+        })
+        .collect();
     if candidates.is_empty() {
         if !watch.terminal.is_empty() {
             return Ok(None);
         }
         bail!("watch creation has no receipt or confirmed terminal; creation will not be repeated");
     }
-    ensure!(candidates.len() == 1, "multiple watch terminal candidates: {}; recovery required",
-        candidates.iter().map(|r| r["handle"].as_str().unwrap_or("unknown")).collect::<Vec<_>>().join(", "));
+    ensure!(
+        candidates.len() == 1,
+        "multiple watch terminal candidates: {}; recovery required",
+        candidates
+            .iter()
+            .map(|r| r["handle"].as_str().unwrap_or("unknown"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
     let row = candidates[0];
-    let owned = metadata.is_some_and(|saved| !saved["ptyId"].is_null()
-        && saved["ptyId"] == row["ptyId"] && saved["incarnationId"] == row["incarnationId"])
-        || acknowledged.as_ref().is_some_and(|handle| row["handle"] == handle.trim());
+    let owned = metadata.is_some_and(|saved| {
+        !saved["ptyId"].is_null()
+            && saved["ptyId"] == row["ptyId"]
+            && saved["incarnationId"] == row["incarnationId"]
+    }) || acknowledged.as_ref().is_some_and(|handle| row["handle"] == handle.trim());
     ensure!(owned, "terminal {} is named {TITLE} but its ownership is unverified", row["handle"]);
     let handle = row["handle"].as_str().context("watch terminal has no handle")?.to_string();
     if let Some(mut record) = record {
@@ -192,7 +227,9 @@ pub(crate) fn problem(why: &str) -> Result<()> {
 }
 
 pub(crate) fn recovery(why: &str) -> String {
-    format!("{why}. No replacement is started and existing work is retained. Run `afkconvoy doctor --all` and `orca terminal list --worktree path:<watch-directory> --json`; inspect candidates with `orca terminal show --terminal <handle> --json`. Rename unrelated same-name terminals with `orca terminal rename --terminal <handle> --title <title> --json`, then let the runner retry. For an uncertain launch or prompt, inspect the existing session and submit its complete report using `afkconvoy watched --watch <id> --text-file <report.json>`; this ends only its marked executor. Keep the brief, transcript and launch claim; do not resend creation or the prompt.")
+    format!(
+        "{why}. No replacement is started and existing work is retained. Run `afkconvoy doctor --all` and `orca terminal list --worktree path:<watch-directory> --json`; inspect candidates with `orca terminal show --terminal <handle> --json`. Rename unrelated same-name terminals with `orca terminal rename --terminal <handle> --title <title> --json`, then let the runner retry. For an uncertain launch or prompt, inspect the existing session and submit its complete report using `afkconvoy watched --watch <id> --text-file <report.json>`; this ends only its marked executor. Keep the brief, transcript and launch claim; do not resend creation or the prompt."
+    )
 }
 
 pub(crate) fn json() -> Value {
@@ -201,6 +238,8 @@ pub(crate) fn json() -> Value {
             "directory": record.watch.directory, "terminal": record.watch.terminal,
             "identity": record.terminal, "phase": record.phase, "problem": record.problem}),
         Ok(None) => json!({"title": TITLE, "phase": "unassociated"}),
-        Err(error) => json!({"title": TITLE, "phase": "uncertain", "problem": recovery(&format!("{error:#}"))}),
+        Err(error) => {
+            json!({"title": TITLE, "phase": "uncertain", "problem": recovery(&format!("{error:#}"))})
+        }
     }
 }
