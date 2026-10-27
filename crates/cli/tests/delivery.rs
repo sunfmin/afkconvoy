@@ -426,8 +426,16 @@ fn discussion_creation_reconstructs_three_tasks_and_lands_only_on_their_two_deli
         assert!(!flows["line"].as_str().unwrap().contains("ready-for-agent"));
         let issue = open_from_flows(&world, &flows);
         assert!(!world.labels(issue).contains(&"ready-for-agent".to_string()));
-        let script = flows["intake_line"].as_str().unwrap().replace("<n>", &issue.to_string());
-        let output = world.command("sh", &world.clone).args(["-c", &script]).output().unwrap();
+        let script = flows["intake_line"]
+            .as_str()
+            .unwrap()
+            .replace("<n>", &issue.to_string())
+            .replacen("afkconvoy", "\"$1\"", 1);
+        let output = world
+            .command("sh", &world.clone)
+            .args(["-c", &script, "sh", env!("CARGO_BIN_EXE_afkconvoy")])
+            .output()
+            .unwrap();
         assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stdout));
         assert!(world.labels(issue).contains(&"ready-for-agent".to_string()));
         tasks.push(issue);
