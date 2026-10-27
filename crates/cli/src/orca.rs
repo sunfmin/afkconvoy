@@ -133,7 +133,7 @@ struct Ending {
 }
 
 impl Ending {
-    fn observe(proc: &crate::hot::Proc, since: Duration) -> Self {
+    fn observe(proc: &crate::hot::Proc, clock: &TerminationTime) -> Self {
         let pid = proc.pid.to_string();
         let metadata = crate::process::output(Command::new("ps").args([
             "-ww",
@@ -153,7 +153,14 @@ impl Ending {
                     proc.line.split_whitespace().next().unwrap_or("unavailable")
                 ),
             };
-        Self { description, since, forced: false, sent: false, logged: false, error: None }
+        Self {
+            description,
+            since: clock.now(),
+            forced: false,
+            sent: false,
+            logged: false,
+            error: None,
+        }
     }
 
     fn signal(&mut self, pid: u32, forced: bool) {
@@ -986,7 +993,7 @@ impl Worktree {
                     || writers.iter().any(|writer| writer.pid == proc.pid)
                 {
                     let record = ending.entry(proc.pid).or_insert_with(|| {
-                        let mut record = Ending::observe(proc, clock.now());
+                        let mut record = Ending::observe(proc, &clock);
                         record.signal(proc.pid, false);
                         record
                     });
