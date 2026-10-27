@@ -146,6 +146,8 @@ pub fn watch_json(watch: &Watch) -> Value {
         "model_source": watch.model_source,
         "terminal": watch.terminal, "transcript": watch.transcript, "did": watch.did,
         "reported": watch.report.is_some(), "report": watch.report,
+        "delivery": watch_terminal::delivery_json(watch),
+        "deadline": (watch.started != 0).then(|| watch.started.saturating_add(host_watch::TIME_LIMIT)),
         "attempts": watch.attempts, "ended": watch.ended, "outcome": watch.outcome})
 }
 

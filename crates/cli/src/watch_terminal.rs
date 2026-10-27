@@ -66,7 +66,36 @@ pub(crate) fn save(record: &Record) -> Result<()> {
     let temporary = path.with_extension(format!("{}.tmp", crate::unique()));
     std::fs::write(&temporary, serde_json::to_vec_pretty(record)?)?;
     std::fs::rename(temporary, path)?;
+    // Keep each round's delivery evidence after the resident journal moves
+    // to another round. This is an archive of the journal, never a second
+    // source from which the scheduler sends input.
+    let round = crate::watch_report::directory(&record.watch.id)?;
+    std::fs::create_dir_all(&round)?;
+    let delivery = delivery_file(&record.watch)?;
+    let temporary = delivery.with_extension(format!("{}.tmp", crate::unique()));
+    std::fs::write(
+        &temporary,
+        serde_json::to_vec_pretty(&json!({
+            "round": record.watch.id, "session": crate::host_watch::session_identity(&record.watch),
+            "terminal": record.watch.terminal, "status": record.status,
+            "request": record.request, "receipt": record.receipt,
+            "offered": record.offered, "started": record.watch.started,
+        }))?,
+    )?;
+    std::fs::rename(temporary, delivery)?;
     Ok(())
+}
+
+fn delivery_file(watch: &Watch) -> Result<PathBuf> {
+    Ok(crate::watch_report::directory(&watch.id)?
+        .join(format!("delivery-{}.json", watch.attempts.len() + 1)))
+}
+
+pub(crate) fn delivery_json(watch: &Watch) -> Value {
+    match delivery_file(watch).and_then(|path| Ok(serde_json::from_slice(&std::fs::read(path)?)?)) {
+        Ok(value) => value,
+        Err(_) => Value::Null,
+    }
 }
 
 pub(crate) fn active() -> Result<Option<Watch>> {
