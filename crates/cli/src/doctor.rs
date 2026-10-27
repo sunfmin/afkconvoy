@@ -1000,7 +1000,7 @@ fn plan_findings(run: &Run, state: &State) -> Vec<Finding> {
 }
 
 /// An issue has waited for a human for long: nothing in the fleet moves it.
-fn waiting_findings(set: &WorkingSet, now: u64) -> Vec<Finding> {
+pub(crate) fn waiting_findings(waiting: &[Waiting], now: u64) -> Vec<Finding> {
     let long = |waiting: &Waiting| {
         let waited = waiting.waited_long(now)?;
         Some(finding(
@@ -1019,7 +1019,7 @@ fn waiting_findings(set: &WorkingSet, now: u64) -> Vec<Finding> {
             waiting.answer.clone(),
         ))
     };
-    set.waiting_on_human.iter().filter_map(long).collect()
+    waiting.iter().filter_map(long).collect()
 }
 
 /// A worktree kept on this host with no claim on its issue: what it holds
@@ -1244,7 +1244,7 @@ pub fn findings(seen: &Seen) -> Vec<Finding> {
             found.extend(plan_findings(seen.run, state));
             found.extend(claim_findings(seen.run, &state.held));
             found.extend(issue_findings(&state.stood, &state.team, seen.now));
-            found.extend(waiting_findings(&state.set, seen.now));
+            found.extend(waiting_findings(&state.set.waiting_on_human, seen.now));
             found.extend(crate::blockers::findings(&state.set.unworked_blockers));
             found.extend(state.unclaimed.iter().map(unclaimed_finding));
             found.extend(state.not_ours.iter().map(not_ours_finding));

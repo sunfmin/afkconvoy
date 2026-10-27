@@ -1627,6 +1627,73 @@ pub const INSTANCE: &str = "host-watch";
 mod tests {
     use super::*;
 
+    const HUMAN_SINCE: u64 = 1_793_036_772;
+
+    fn human_look(now: u64) -> Value {
+        use afkconvoy_core::tracker::Tracker;
+        use afkconvoy_core::waiting::{Back, Said, Waiting, Waits};
+        let mut waiting = Waiting::new(
+            11,
+            &Tracker::Own,
+            "quiet measurement environment",
+            Waits::Escalated(Back::Ready {
+                ready: "ready-for-agent".into(),
+                escalate: "ready-for-human".into(),
+            }),
+            Some(HUMAN_SINCE),
+        );
+        waiting.explain(&[Said {
+            body: "<!--convoy:escalated at=1793036772-->\nNeeds a quiet measurement environment.",
+            url: "https://github.com/sunfmin/control/issues/11#issuecomment-6423248030",
+            at: Some(HUMAN_SINCE),
+        }]);
+        json!({"until": now, "checkouts": [{"checkout": "/bizkernel", "doctor": {
+            "findings": crate::doctor::waiting_findings(std::slice::from_ref(&waiting), now),
+            "waiting_on_human": [waiting], "fleet": {"alive": true}
+        }}]})
+    }
+
+    fn reload(state: &State) -> State {
+        serde_json::from_slice(&serde_json::to_vec(state).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn reported_human_wait_keeps_one_episode_as_doctors_displayed_age_increases() {
+        let first = HUMAN_SINCE + 9 * 3600 + 27 * 60;
+        let later = HUMAN_SINCE + 9 * 3600 + 33 * 60;
+        let look = human_look(first);
+        assert!(
+            look["checkouts"][0]["doctor"]["findings"][0]["what"]
+                .as_str()
+                .unwrap()
+                .contains("9h 27m")
+        );
+        assert!(
+            human_look(later)["checkouts"][0]["doctor"]["findings"][0]["what"]
+                .as_str()
+                .unwrap()
+                .contains("9h 33m")
+        );
+        let mut state = State::default();
+        state.observe(look, first);
+        assert_eq!(state.pending.len(), 1, "one actionable condition for both representations");
+        let episode = state.pending[0].episode.clone();
+        state.covered.push(episode.clone());
+        let mut state = reload(&state);
+        state.observe(human_look(later), later);
+        assert!(state.pending.is_empty(), "the report covers the older wait");
+        assert_eq!(state.observed.values().collect::<Vec<_>>(), [&episode]);
+
+        state.observe(json!({"until": later + 1}), later + 1);
+        state.observe(human_look(later + 2), later + 2);
+        assert_eq!(state.pending.len(), 1, "recovery and return is new work");
+        assert_ne!(state.pending[0].episode, episode);
+        let unreported = state.pending[0].episode.clone();
+        let mut state = reload(&state);
+        state.observe(human_look(later + 300), later + 300);
+        assert_eq!(state.pending[0].episode, unreported, "unreported work stays eligible");
+    }
+
     /// Uses a real interactive Codex in this worker's visible Terminal, with
     /// harmless bounded tasks and isolated durable state. Normal scheduling
     /// is covered by the host-runner CLI scenarios in tests/host_watch.rs.
