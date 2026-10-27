@@ -5,8 +5,8 @@ use crate::gh::{GitHub, Tracker};
 use crate::git::{REMOTE, Repo};
 use crate::lock::standing_locks;
 use afkconvoy_core::config::Config;
-use afkconvoy_core::gate::{GateCommand, Proven, Tree};
-use afkconvoy_core::landing::{Of, merge_message};
+use afkconvoy_core::gate::{GateCommand, Tree};
+use afkconvoy_core::landing::Of;
 use afkconvoy_core::lock::{keeps_off, named};
 use afkconvoy_core::plan::{PullRequest, closing_pr};
 use anyhow::{Result, anyhow, bail};
@@ -20,7 +20,7 @@ pub fn base(repo: &Repo, config: &Config) -> Result<String> {
 }
 
 /// The base branch's own gate declaration certifies its tip.
-fn tip_config(repo: &Repo, tip: &str) -> Result<Config> {
+pub(crate) fn tip_config(repo: &Repo, tip: &str) -> Result<Config> {
     crate::config::parse(&repo.git_raw(&["show", &format!("{tip}:{}", crate::config::FILE)])?)
 }
 
@@ -84,7 +84,7 @@ fn take(
     host: &str,
     now: u64,
     on_red: OnRedBase,
-) -> Result<Option<(Permit, String)>> {
+) -> Result<Option<String>> {
     let mut tried = None;
     loop {
         let gh = GitHub::of(repo)?;
@@ -118,18 +118,7 @@ fn take(
             std::thread::sleep(Duration::from_secs(2));
             continue;
         }
-        let heavy = crate::config::heavy_gate(&config.gate_command)
-            || crate::config::heavy_gate(command.text());
-        let permit = Permit::take(repo, "turn: merge, gate, record, land", heavy, true)?;
-        if base(repo, config)? != tip {
-            drop(permit);
-            continue;
-        }
-        if !repairing && crate::gate::recorded(repo, &tree, &command, now)?.is_none() {
-            drop(permit);
-            continue;
-        }
-        return Ok(Some((permit, tip)));
+        return Ok(Some(tip));
     }
 }
 /// The files a merge in progress in a worktree has left conflicted.
@@ -179,7 +168,7 @@ pub fn merge_in(repo: &Repo, sha: &str, what: &str) -> Result<Vec<String>> {
 /// → its sha, `None` when the two conflict. Made in the object store alone: no
 /// worktree is touched and no branch moves, and a head that changes nothing
 /// against `base` still gets its commit — which is what says the PR joined.
-fn merged_onto(
+pub(crate) fn merged_onto(
     repo: &Repo,
     base: &str,
     head: &str,
@@ -242,6 +231,19 @@ pub fn land(
 ) -> Result<Value> {
     let prs = gh.open_prs()?;
     let Some(pr) = closing_pr(&prs, issue) else {
+        let tip = base(repo, config)?;
+        if let Some(landed) = crate::landing::joins_in(repo, &gh.tracker, &[&tip])?
+            .iter()
+            .rev()
+            .find(|pr| pr.issue() == Some(issue))
+        {
+            if !gh.issue(issue)?.is_closed() {
+                gh.close_issue(issue)?;
+            }
+            return Ok(
+                json!({"issue": issue, "pr": landed.pr, "outcome": "merged", "commit": landed.commit, "detail": "recovered landing from base history; issue settled"}),
+            );
+        }
         bail!("no open PR closes issue #{issue} — if it has already merged, stop");
     };
     join(
@@ -325,81 +327,14 @@ fn run(
         answer["commit"] = json!(current);
         return Ok(answer);
     }
-    let Some((_permit, tip)) = take(repo, config, issue, host, now, on_red)? else {
+    let Some(_tip) = take(repo, config, issue, host, now, on_red)? else {
         answer["outcome"] = json!("base_red");
-        answer["detail"] =
-            json!("the base tip is red; its repair must land before another turn starts");
         return Ok(answer);
     };
-    let locks = standing_locks(&gh, config)?;
-    if issue.map_or(!locks.is_empty(), |n| keeps_off(&locks, n)) {
-        return Ok(locked(answer, &locks));
-    }
-    let mut files = unmerged(repo)?;
-    if files.is_empty() {
-        let head = repo.git(&["rev-parse", "HEAD"])?;
-        repo.git(&["push", "--quiet", REMOTE, &format!("{head}:refs/heads/{}", pr.head_branch)])?;
-        let message = merge_message(&pr.title, pr.number, of, tracker);
-        if let Some(commit) = merged_onto(repo, &tip, &head, &message, now)? {
-            repo.git(&["merge", "--ff-only", "--quiet", &commit])?;
-        } else {
-            files = merge_in(repo, &tip, "the base branch's tip")?;
-        }
-    }
-    answer["merged"] = json!(tip);
-    let acting = Acting::new("land").on_issue(issue).in_checkout(Some(repo.clone()));
-    if !files.is_empty() {
-        answer["status"] = json!("conflict");
-        answer["outcome"] = json!("conflict");
-        answer["recorded"] = json!(false);
-        answer["files"] = json!(files);
-        answer["worktree"] = json!(repo.dir);
-        answer["detail"] =
-            json!(format!("merging the base tip conflicted; no gate ran — {RESOLVE}"));
-        acting.say(crate::clock(), "turn conflict; nothing landed".into());
-        return Ok(answer);
-    }
-    let declared = crate::config::load(&crate::config::file_of(repo))?;
-    let mut gated = crate::gate::gate(repo, &declared, false, host, now)?;
-    for (k, v) in answer.as_object().into_iter().flatten() {
-        gated[k] = v.clone();
-    }
-    acting.say(
-        crate::clock(),
-        format!("turn merged {tip}; gate {}", gated["status"].as_str().unwrap_or("unknown")),
-    );
-    if gated["status"] != "green" || gated["recorded"] != true {
-        gated["outcome"] = json!("gate_red");
-        return Ok(gated);
-    }
-    let commit = repo.git(&["rev-parse", "HEAD"])?;
-    let tree = crate::gate::head_tree(repo)?;
-    let command = GateCommand::new(&declared.gate_command);
-    let run = crate::gate::recorded(repo, &tree, &command, now)?
-        .ok_or_else(|| anyhow!("the turn has no green record"))?;
-    let proven = Proven::by(&tree, &command, &run, now)
-        .ok_or_else(|| anyhow!("the turn's green record no longer stands"))?;
-    if !crate::landing::push_base(repo, &config.base_branch, &commit, &proven)? {
-        gated["outcome"] = json!("target_moved");
-        gated["detail"] = json!(
-            "the base branch moved or refused the push; nothing landed — ask for another turn"
-        );
-        acting.say(crate::clock(), "turn push rejected; another turn is needed".into());
-        return Ok(gated);
-    }
-    if let Some(n) = issue
-        && !gh.issue(n)?.is_closed()
-    {
-        gh.close_issue(n)?;
-    }
-    gated["outcome"] = json!("merged");
-    gated["commit"] = json!(commit);
-    gated["pr"] = json!(pr.number);
-    gated["detail"] =
-        json!(format!("landed on {} on its green recorded gate run — stop", config.base_branch));
-    acting.say(
-        crate::clock(),
-        format!("turn landed PR #{} on {} at {commit}", pr.number, config.base_branch),
-    );
-    Ok(gated)
+    let head = repo.git(&["rev-parse", "HEAD"])?;
+    repo.git(&["push", "--quiet", REMOTE, &format!("{head}:refs/heads/{}", pr.head_branch)])?;
+    crate::candidates::run(
+        crate::candidates::Request { repo, config, tracker, pr, of, host, now },
+        answer,
+    )
 }

@@ -1705,7 +1705,10 @@ fn issues_json(set: &WorkingSet) -> Result<Value> {
 fn exclusive_json(standing: Result<(Vec<Ticket>, bool)>, now: u64) -> Value {
     let ticket = |ticket: &Ticket| {
         json!({"command": ticket.command, "dir": ticket.dir, "issue": ticket.issue,
-            "pid": ticket.pid, "asked": ticket.asked, "ran": ticket.ran})
+            "pid": ticket.pid, "asked": ticket.asked, "ran": ticket.ran,
+            "candidate": ticket.candidate,
+            "validation": ticket.validation,
+            "waiting": if ticket.ran.is_none() { "waiting_for_capacity" } else { "running" }})
     };
     match standing {
         Ok((live, paused)) => {
@@ -1858,6 +1861,8 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String]) -> Result<Exami
         "issues": issues,
         "refusals": state.as_ref().ok().map(|state| &state.refusals),
         "waiting_on_human": waiting,
+        "candidates": config.as_ref().ok().map(|config| crate::candidates::view(repo, config)
+            .unwrap_or_else(|error| json!({"error": error.to_string()}))),
     });
     Ok((answer, found))
 }
