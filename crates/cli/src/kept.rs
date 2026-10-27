@@ -25,8 +25,8 @@ pub fn keep(harness: Harness, host_user: bool) -> Result<PathBuf> {
     let dir = keep_under(&cache()?, home().as_deref(), harness, host_user)?;
     if harness == Harness::Dsh {
         // Prefer the installed program's package to an editable profile copy,
-        // as the shell a worker gets finds it.
-        let asked = crate::orca::ask("command -v dsh-tui", crate::launch::SHELL_TIMEOUT);
+        // as the login shell a worker gets finds it. No terminal is opened.
+        let asked = crate::launch::ask_host("command -v dsh-tui", crate::launch::SHELL_TIMEOUT);
         let (_, path) = asked.ok().flatten().unwrap_or_default();
         if let Ok(program) = std::fs::canonicalize(path.trim())
             && let Some(package) = program.parent().and_then(Path::parent)

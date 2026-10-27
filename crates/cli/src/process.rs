@@ -4,12 +4,39 @@
 //! Only starting is held in turn; children run and are waited for together.
 
 use std::io;
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
 
 /// Starts `command` with its configured streams, without inheriting a pipe
 /// another start is still preparing. Waiting for the child holds no turn.
 pub(crate) fn spawn(command: &mut Command) -> io::Result<Child> {
     starting(|| command.spawn())
+}
+
+/// One pipe for a child's stdout and stderr, created while starting is held
+/// so no other start can inherit it before its close-on-exec flags are set.
+/// The two `Stdio`s share the write end; the caller reads the read end.
+pub(crate) fn merged_stdio() -> io::Result<(Stdio, Stdio, OwnedFd)> {
+    starting(|| {
+        let mut fds = [0; 2];
+        // SAFETY: pipe() writes two fresh descriptors into `fds`.
+        if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: both descriptors came from pipe() and are open.
+        let read = unsafe { OwnedFd::from_raw_fd(fds[0]) };
+        let write = unsafe { OwnedFd::from_raw_fd(fds[1]) };
+        for fd in [read.as_raw_fd(), write.as_raw_fd()] {
+            // SAFETY: the descriptor is open. CLOEXEC keeps it out of a
+            // later start once this turn ends.
+            if unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) } != 0 {
+                return Err(io::Error::last_os_error());
+            }
+        }
+        let stdout = Stdio::from(write.try_clone()?);
+        let stderr = Stdio::from(write);
+        Ok((stdout, stderr, read))
+    })
 }
 
 /// Runs `command` with no input, capturing both output streams. Every caller

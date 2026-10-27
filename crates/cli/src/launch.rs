@@ -6,8 +6,9 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::io::Read;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use afkconvoy_core::gate::key;
@@ -322,12 +323,13 @@ pub fn on_path(program: &str) -> bool {
         })
 }
 
-/// Whether `harness`'s program is found in an orca terminal — the shell a
-/// worker gets (`orca::ask`) — as `type` finds it there. An error says why it
-/// is taken as not installed: it was not found, or could not be looked for.
+/// Whether `harness`'s program is found in the login shell a worker gets
+/// (`ask_host`) — as `type` finds it there, with no terminal opened. An
+/// error says why it is taken as not installed: it was not found, the shell
+/// did not answer in time, or the shell could not be started.
 pub fn found(harness: Harness) -> Result<(), String> {
     let question = format!("type -- '{}'", harness.program());
-    match crate::orca::ask(&question, SHELL_TIMEOUT) {
+    match ask_host(&question, SHELL_TIMEOUT) {
         Ok(Some((true, _))) => Ok(()),
         Ok(Some((false, _))) => Err(format!("`{question}` found nothing")),
         Ok(None) => Err(format!("`{question}` did not answer in time")),
@@ -335,18 +337,18 @@ pub fn found(harness: Harness) -> Result<(), String> {
     }
 }
 
-/// The models `harness` knows on this host, as it says them in an orca
-/// terminal — the shell a worker gets (`orca::ask`) — when its worker launch
-/// command `command` is asked (`Harness::models_question`), with what this
-/// host keeps for it: those its own login runs. An error says why it listed
-/// none — the question failed, timed out, or answered with no model — and
-/// the question.
+/// The models `harness` knows on this host, as it says them in the login
+/// shell a worker gets (`ask_host`) — no terminal opened — when its worker
+/// launch command `command` is asked (`Harness::models_question`), with what
+/// this host keeps for it: those its own login runs. An error says why it
+/// listed none — the question failed, timed out, or answered with no model —
+/// and the question.
 pub fn models(harness: Harness, command: &str) -> Result<Vec<crate::kit::Listed>, String> {
     // The logins are in the directory kept with the host user's skills and
     // rules as they are in the one kept without.
     let kept = crate::kept::keep(harness, false).map_err(|error| format!("{error:#}"))?;
     let question = harness.models_question(command, &kept.display().to_string());
-    let why = match crate::orca::ask(&question, SHELL_TIMEOUT) {
+    let why = match ask_host(&question, SHELL_TIMEOUT) {
         Ok(Some((true, printed))) => match harness.models(&printed) {
             Some(listed) => {
                 let shown = harness.shown(&printed);
@@ -389,10 +391,11 @@ pub enum Answer {
 
 /// Sends `model` of `harness` the one-line probe (`Harness::probe_question`)
 /// through the worker launch command `command`, with what this host keeps for
-/// it, in an orca terminal — the shell a worker gets (`orca::ask`) → whether
-/// it answered within the time limit, how fast, and which model answered
-/// (`answered_as`); why it could not be asked, when it could not. Kit writes
-/// never call this: only worker health and recovery do.
+/// it, in the login shell a worker gets (`ask_host`) — no terminal opened →
+/// whether it answered within the time limit, how fast, and which model
+/// answered (`answered_as`); why it could not be asked, when the shell could
+/// not be started. An empty answer, a non-zero exit, or a timeout is silent.
+/// Kit writes never call this: only worker health and recovery do.
 pub fn probe(harness: Harness, command: &str, model: Option<&str>) -> Answer {
     let kept = match crate::kept::keep(harness, false) {
         Ok(kept) => kept,
@@ -401,7 +404,7 @@ pub fn probe(harness: Harness, command: &str, model: Option<&str>) -> Answer {
     let question =
         harness.probe_question(command, &kept.display().to_string(), model, PROBE_PROMPT);
     let started = Instant::now();
-    match crate::orca::ask(&question, PROBE_TIMEOUT) {
+    match ask_host(&question, PROBE_TIMEOUT) {
         Ok(Some((true, printed))) if !printed.trim().is_empty() => {
             let seconds = started.elapsed().as_secs_f64();
             Answer::Answered(seconds, answered_as(harness, &printed, &kept))
@@ -479,6 +482,114 @@ fn login_shell_program() -> String {
     shell.unwrap_or_else(|| "/bin/zsh".to_string())
 }
 
+/// The home directory a fresh login starts in, or `/` where this process has
+/// none. A question is of the host, never of the directory a command was run
+/// from.
+fn login_home() -> PathBuf {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|home| home.is_dir())
+        .unwrap_or_else(|| PathBuf::from("/"))
+}
+
+/// What a fresh login brings in, and nothing this process set for itself.
+fn fresh_login_env() -> Vec<(OsString, OsString)> {
+    let given = LOGIN_GIVES
+        .iter()
+        .filter_map(|name| std::env::var_os(name).map(|value| (OsString::from(*name), value)));
+    given.chain([(OsString::from("PATH"), OsString::from(LOGIN_PATH))]).collect()
+}
+
+/// Asks `script` of the login shell a worker gets: `$SHELL -lic` (`/bin/zsh`
+/// where `SHELL` is unset), started in the home directory from the
+/// environment a fresh login brings in (`fresh_login_env`), never this
+/// process's. No terminal is opened. stdout and stderr are one stream. The
+/// question's own exit status and what it printed are between its marks
+/// (`question::answer`); rc noise before the first mark is not an answer.
+/// `Ok(None)` when it did not end within `timeout`. An error when the shell
+/// could not be started — that is not a silent answer.
+pub(crate) fn ask_host(script: &str, timeout: Duration) -> Result<Option<(bool, String)>> {
+    let shell = login_shell_program();
+    let typed = afkconvoy_core::question::typed(script);
+    let env = fresh_login_env();
+    match run_login_shell(&login_home(), &shell, &typed, timeout, &env) {
+        Err(error) => bail!("the login shell `{shell}` could not be started: {error}"),
+        Ok(None) => Ok(None),
+        Ok(Some(printed)) => {
+            let text = String::from_utf8_lossy(&printed);
+            let lines: Vec<String> = text.lines().map(str::to_string).collect();
+            Ok(afkconvoy_core::question::answer(&lines))
+        }
+    }
+}
+
+/// Runs `script` as `shell -lic` in `dir`, with `env` alone, stdout and
+/// stderr one stream → the bytes it printed. `Ok(None)` when it did not end
+/// within `timeout`; its process group is killed. `Err` when it could not
+/// be started.
+fn run_login_shell(
+    dir: &Path,
+    shell: &str,
+    script: &str,
+    timeout: Duration,
+    env: &[(OsString, OsString)],
+) -> std::io::Result<Option<Vec<u8>>> {
+    let (stdout, stderr, read) = crate::process::merged_stdio()?;
+    let mut command = Command::new(shell);
+    command
+        .args(["-lic", script])
+        .current_dir(dir)
+        .env_clear()
+        .envs(env.iter().map(|(name, value)| (name, value)))
+        .stdin(Stdio::null())
+        .stdout(stdout)
+        .stderr(stderr)
+        .process_group(0);
+    let mut child = crate::process::spawn(&mut command)?;
+    // Command keeps the write ends (`Stdio::Fd`). They have to close here,
+    // or the reader never sees the end of what the child printed.
+    drop(command);
+    let mut printed = std::fs::File::from(read);
+    let reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = printed.read_to_end(&mut bytes);
+        bytes
+    });
+    let started = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if started.elapsed() >= timeout => {
+                stop_group(&mut child);
+                let _ = reader.join();
+                return Ok(None);
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(10)),
+            Err(error) => {
+                stop_group(&mut child);
+                let _ = reader.join();
+                return Err(error);
+            }
+        }
+    }
+    reader.join().map(Some).map_err(|error| {
+        std::io::Error::other(format!("reading the login shell failed: {error:?}"))
+    })
+}
+
+/// Kills `child` and every process in its group. A timed-out question must
+/// not leave the harness it started.
+fn stop_group(child: &mut Child) {
+    let pid = child.id();
+    if pid > 0 {
+        // SAFETY: a negative pid names the process group, which this child
+        // leads (`process_group(0)`). A group that is already gone is fine.
+        unsafe { libc::kill(-(pid as i32), libc::SIGKILL) };
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
 /// Runs `script` in the user's interactive login shell, started in `dir`
 /// with `env` alone where it is given, else with this process's
 /// environment → whether it exited zero, and the bytes it printed. `None`
@@ -542,12 +653,8 @@ const ENV_FRAME: &str = "AFKCONVOY_ENV";
 /// CLAUDE_CODE_*, ORCA_*, AFKCONVOY_* or TMPDIR. An error where the shell did
 /// not answer within `SHELL_TIMEOUT`.
 pub fn login_environment() -> Result<Vec<(OsString, OsString)>> {
-    let given = LOGIN_GIVES
-        .iter()
-        .filter_map(|name| std::env::var_os(name).map(|value| (OsString::from(name), value)));
-    let given: Vec<_> = given.chain([("PATH".into(), LOGIN_PATH.into())]).collect();
-    let home = std::env::var_os("HOME").map(PathBuf::from).filter(|home| home.is_dir());
-    let home = home.unwrap_or_else(|| PathBuf::from("/"));
+    let given = fresh_login_env();
+    let home = login_home();
     let question = format!("printf '{ENV_FRAME}\\000'; /usr/bin/env -0");
     let shell = login_shell_program();
     let fix = "fix what your shell's rc files do without a terminal, then run again";
@@ -595,5 +702,84 @@ mod tests {
             [("PATH", "/opt/bin:/usr/bin"), ("NOTE", "two\nlines=and an equals"), ("EMPTY", "")]
         );
         assert_eq!(login_answered(b"PATH=/usr/bin\0"), None, "no frame, no environment");
+    }
+
+    /// A shell that runs `-lic` by executing the script, with none of a login's
+    /// rc files: the question's marks are the script's own.
+    fn shell_that_runs(dir: &Path) -> PathBuf {
+        let shell = dir.join("shell");
+        std::fs::write(&shell, "#!/bin/sh\nexec /bin/sh -c \"$2\"\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o755)).unwrap();
+        shell
+    }
+
+    #[test]
+    fn a_host_question_joins_both_streams_and_inherits_nothing_of_this_process() {
+        let dir = tempfile::tempdir().unwrap();
+        let shell = shell_that_runs(dir.path());
+        let script = "printf 'out\\n'; printf 'err\\n' >&2; printf 'only=%s\\n' \"$ONLY\"; \
+                      printf 'cargo=%s\\n' \"$CARGO_MANIFEST_DIR\"; exit 3";
+        let env = [(OsString::from("ONLY"), OsString::from("1"))];
+        let answer = run_login_shell(
+            dir.path(),
+            shell.to_str().unwrap(),
+            &afkconvoy_core::question::typed(script),
+            Duration::from_secs(5),
+            &env,
+        )
+        .unwrap()
+        .unwrap();
+        let text = String::from_utf8_lossy(&answer);
+        let lines: Vec<String> = text.lines().map(str::to_string).collect();
+        assert_eq!(
+            afkconvoy_core::question::answer(&lines),
+            Some((false, "out\nerr\nonly=1\ncargo=".to_string())),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_host_question_that_prints_nothing_is_an_empty_answer() {
+        let dir = tempfile::tempdir().unwrap();
+        let shell = shell_that_runs(dir.path());
+        let answer = run_login_shell(
+            dir.path(),
+            shell.to_str().unwrap(),
+            &afkconvoy_core::question::typed(":"),
+            Duration::from_secs(5),
+            &[],
+        )
+        .unwrap()
+        .unwrap();
+        let lines: Vec<String> =
+            String::from_utf8_lossy(&answer).lines().map(str::to_string).collect();
+        assert_eq!(afkconvoy_core::question::answer(&lines), Some((true, String::new())));
+    }
+
+    #[test]
+    fn a_host_question_that_does_not_end_is_none_and_its_group_is_gone() {
+        let dir = tempfile::tempdir().unwrap();
+        let shell = shell_that_runs(dir.path());
+        let started = Instant::now();
+        let env = [(OsString::from("PATH"), OsString::from("/usr/bin:/bin"))];
+        let answer = run_login_shell(
+            dir.path(),
+            shell.to_str().unwrap(),
+            &afkconvoy_core::question::typed("sleep 30"),
+            Duration::from_millis(300),
+            &env,
+        )
+        .unwrap();
+        assert_eq!(answer, None);
+        assert!(started.elapsed() < Duration::from_secs(5), "the sleep was left running");
+    }
+
+    #[test]
+    fn a_host_question_whose_shell_cannot_start_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let error =
+            run_login_shell(dir.path(), "/no/such/login-shell", ":", Duration::from_secs(1), &[]);
+        assert!(error.is_err(), "{error:?}");
     }
 }

@@ -752,7 +752,8 @@ pub struct Listed {
 /// The models a harness offers through a command; why it offers none.
 type Listing = dyn Fn(Harness, &str) -> Result<Vec<Listed>, String> + Sync;
 
-/// What the host kit is written from: this host, as an orca terminal finds it.
+/// What the host kit is written from: this host, as the login shell a worker
+/// gets finds it. No terminal is opened.
 pub struct Host<'a> {
     /// Whether a harness's program is found; why it is taken as not.
     found: &'a (dyn Fn(Harness) -> Result<(), String> + Sync),
@@ -762,15 +763,8 @@ pub struct Host<'a> {
 }
 
 impl Host<'static> {
-    /// This host, as an orca terminal finds it.
+    /// This host, as the login shell a worker gets finds it.
     fn here(_now: u64) -> Result<Host<'static>> {
-        if !crate::orca::running() {
-            bail!(
-                "the host kit looks for each harness and asks it for its models in an orca \
-                 terminal, and orca is not running: {}",
-                afkconvoy_core::tools::START_ORCA
-            );
-        }
         Ok(Host { found: &crate::launch::found, listed: &crate::launch::models })
     }
 }

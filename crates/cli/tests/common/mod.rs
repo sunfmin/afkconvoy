@@ -1435,7 +1435,10 @@ if [ -f "$root/typesafe-fail" ]; then cat "$root/typesafe-fail" >&2; exit 22; fi
 cat "$root/typesafe-answer"
 "#;
 
-/// The login shell a worker would get, as far as the fleet asks it anything:
+/// The login shell a worker would get, as far as the fleet asks it anything.
+/// A question wrapped between its marks is unwrapped first: the inner script
+/// is what is logged and answered, and the marks are printed around that
+/// answer. Otherwise:
 /// `shell -lic 'alias'`, `shell -lic "type -- '<word>'"`, `shell -lic '<command> --help'` —
 /// where `pi` answers as pi does, `codex` as Codex and every other command as Claude Code —
 /// a model's probe, which prints nothing and fails unless a `probes-answer` beside
@@ -1450,6 +1453,19 @@ cat "$root/typesafe-answer"
 /// the world's profile, then runs what it was asked.
 const SHELL: &str = r#"#!/bin/sh
 root=${0%/*}/..
+# A question is wrapped between marks. Answer the inner script, and print the
+# marks around that answer. The log records the inner script, once.
+case "$2" in
+  *"AFKCONVOY_ ASKED; ("*)
+    inner=$2
+    inner=${inner#*"AFKCONVOY_ ASKED; ( "}
+    inner=${inner%" ); printf '\n%s%s %s\n' AFKCONVOY_ ANSWERED \"\$?\""}
+    captured=$("$0" -lic "$inner" 2>&1)
+    status=$?
+    printf 'AFKCONVOY_ASKED\n%s\n\nAFKCONVOY_ANSWERED %s\n' "$captured" "$status"
+    exit 0
+    ;;
+esac
 echo "$2" >> "$root/shell-asked"
 pwd -P >> "$root/shell-asked-in"
 case "$2" in
