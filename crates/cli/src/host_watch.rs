@@ -254,7 +254,10 @@ impl State {
             })
             .collect();
         self.until = look["until"].as_u64().or(self.until);
-        self.look = look;
+        // A quiet look needs only its interval and episode state. Do not
+        // retain unrelated operator launch configuration in an idle cache;
+        // the complete look belongs only to work awaiting a brief.
+        self.look = if self.pending.is_empty() { Value::Null } else { look };
         self.looked = Some(now);
         self.episodes_initialized = true;
     }
