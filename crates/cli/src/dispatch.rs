@@ -749,7 +749,9 @@ fn brief_with(
         land_command: &crate::own_command().fixed(" land --issue ").number(number).own(),
         wake_command: &crate::own_command().fixed(" wake").own(),
     };
-    worktree.write_brief(&prompt(&fields).map_err(|e| anyhow!(e))?)
+    let mut text = prompt(&fields).map_err(|e| anyhow!(e))?;
+    text.push_str(&crate::delivery::brief(&fleet.repo, number)?);
+    worktree.write_brief(&text)
 }
 
 /// Has orca cut a worktree for issue `number` at the tip the remote has for

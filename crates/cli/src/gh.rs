@@ -88,7 +88,7 @@ pub const WATCH_ISSUES_JQ: &str = ".data.repository.issues.nodes[] | \
     {id: (.fullDatabaseId | tonumber), body, url, at: (.createdAt | fromdateiso8601? // null)}]}";
 /// PRs ordered by most recently updated: watching stops paging once a page
 /// reaches before its lower boundary, including every tie at that boundary.
-pub const WATCH_PRS_JQ: &str = ".[] | {number, title, body, \
+pub const WATCH_PRS_JQ: &str = ".[] | {number, title, body, head_branch: .head.ref, \
     updated: (.updated_at | fromdateiso8601), \
     closed: (.closed_at | fromdateiso8601? // null), \
     merged: (.merged_at | fromdateiso8601? // null), \
@@ -109,6 +109,7 @@ pub struct WatchPr {
     pub number: u64,
     pub title: String,
     pub body: Option<String>,
+    pub head_branch: String,
     pub updated: u64,
     pub closed: Option<u64>,
     pub merged: Option<u64>,
@@ -132,7 +133,22 @@ pub const OPEN_LABELLED_JQ: &str = ".[] | select(.pull_request == null) | \
 /// Same-repository PR heads. No closing-issue relationships are inferred.
 pub const PR_HEADS_JQ: &str = ".[] | select(.head.repo != null and \
     .head.repo.full_name == .base.repo.full_name) | \
-    {number, title: (.title // \"\"), head_branch: .head.ref, head_sha: .head.sha, base_branch: .base.ref}";
+    {number, title: (.title // \"\"), body: (.body // \"\"), head_branch: .head.ref, head_sha: .head.sha, base_branch: .base.ref}";
+
+/// Full history for final-review recovery, including closed and merged PRs.
+pub const DELIVERY_PRS_JQ: &str = ".[] | {number, body: (.body // \"\"), head_branch: .head.ref, base_branch: .base.ref, state, draft, url: .html_url, fork: (.head.repo.full_name != .base.repo.full_name)}";
+
+#[derive(Deserialize)]
+pub struct DeliveryPr {
+    pub number: u64,
+    pub body: String,
+    pub head_branch: String,
+    pub base_branch: String,
+    pub state: String,
+    pub draft: bool,
+    pub url: String,
+    pub fork: bool,
+}
 /// What is read of each comment on an issue or a PR.
 pub const COMMENTS_JQ: &str =
     ".[] | {id, body, url: .html_url, at: (.created_at | fromdateiso8601? // null)}";
@@ -901,7 +917,8 @@ impl GitHub {
                 })
                 .collect::<Result<_>>()?;
             let finished = rows.len() < 100 || rows.iter().any(|row| row.updated < since);
-            prs.extend(rows.into_iter().filter(|row| row.updated >= since && !row.fork));
+            prs.extend(rows.into_iter().filter(|row| row.updated >= since && !row.fork
+                && !crate::delivery::final_pr(&row.head_branch, row.body.as_deref().unwrap_or(""))));
             if finished {
                 break;
             }
@@ -1025,6 +1042,7 @@ impl GitHub {
         struct Row {
             number: u64,
             title: String,
+            body: String,
             head_branch: String,
             head_sha: String,
             base_branch: String,
@@ -1033,7 +1051,7 @@ impl GitHub {
         let out = self.read(&["api", "--paginate", &endpoint, "--jq", PR_HEADS_JQ])?;
         for line in out.lines().filter(|line| !line.trim().is_empty()) {
             let row: Row = serde_json::from_str(line).context("gh api pulls: unexpected answer")?;
-            if row.head_branch == branch {
+            if row.head_branch == branch && !crate::delivery::final_pr(&row.head_branch, &row.body) {
                 return Ok(Some(PullRequest {
                     number: row.number,
                     title: row.title,
@@ -1089,7 +1107,7 @@ impl GitHub {
         let rows: Vec<Row> = serde_json::from_str(&out).context("gh pr list: unexpected answer")?;
         Ok(rows
             .into_iter()
-            .filter(|row| !row.is_cross_repository)
+            .filter(|row| !row.is_cross_repository && !crate::delivery::final_pr(&row.head_ref_name, row.body.as_deref().unwrap_or("")))
             .map(|row| {
                 let linked: Vec<Linked> = row
                     .closing_issues_references
@@ -1258,6 +1276,24 @@ impl GitHub {
         // `gh` says the PR's URL, which ends in its number.
         let number = out.trim().rsplit('/').next().and_then(|number| number.parse().ok());
         number.with_context(|| format!("gh pr create: no PR number in {out:?}"))
+    }
+
+    pub fn repository(&self) -> Result<String> {
+        self.read(&["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"])
+            .map(|name| name.trim().to_string())
+    }
+
+    pub fn delivery_prs(&self) -> Result<Vec<DeliveryPr>> {
+        let endpoint = format!("repos/{OWN}/pulls?state=all&per_page=100");
+        let out = self.read(&["api", "--paginate", &endpoint, "--jq", DELIVERY_PRS_JQ])?;
+        out.lines().filter(|s| !s.trim().is_empty()).map(|line|
+            serde_json::from_str(line).context("gh api: unreadable delivery PR history")
+        ).collect()
+    }
+
+    pub fn open_draft_pr(&self, base: &str, head: &str, title: &str, body: &str) -> Result<()> {
+        self.gh(&["pr", "create", "--draft", "--base", base, "--head", head, "--title", title, "--body", body])?;
+        Ok(())
     }
 
     /// Closes one PR without merging it, with a comment saying why.

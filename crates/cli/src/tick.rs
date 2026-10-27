@@ -140,6 +140,9 @@ pub fn tick(
     let _ = crate::paused::probe(repo, me.instance.as_str(), &me.host, me.now);
     let _ = crate::kit::refresh(repo, me.instance.as_str(), &me.host, me.now);
     let (mut fleet, mut open) = Fleet::read(repo, me.now)?;
+    // Cover interruption after an internal task landed but before final review.
+    // A bad delivery does not prevent unrelated task reconciliation.
+    let delivery_failure = crate::delivery::reconcile(repo, &fleet.gh).err();
     if let Err(error) = crate::legacy::retire_proposals(&mut fleet, me) {
         eprintln!("warning: legacy proposal retirement will retry: {error:#}");
     }
@@ -207,6 +210,9 @@ pub fn tick(
         .into_iter()
         .map(|(issue, error)| Failure::of(Failed::Read(issue), &error))
         .collect();
+    if let Some(error) = delivery_failure {
+        failures.push(Failure::of(Failed::Read(0), &error));
+    }
     let mut blocked = vec![];
     let read = Read { set: &set, flows: &flows };
     let pass = run_pass(&set, bound, set.held(), |step| {
