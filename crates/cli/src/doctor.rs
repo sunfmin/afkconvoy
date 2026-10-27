@@ -1911,6 +1911,7 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String]) -> Result<Exami
         "claims": Value::Array(claims),
         "codex_workers": crate::codex_launch::workers(repo),
         "issues": issues,
+        "targets": crate::target::listing(repo).unwrap_or_else(|error| json!({"error": format!("{error:#}")})),
         "refusals": state.as_ref().ok().map(|state| &state.refusals),
         "waiting_on_human": waiting,
         "candidates": config.as_ref().ok().map(|config| crate::candidates::view(repo, config)

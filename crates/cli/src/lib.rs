@@ -669,6 +669,9 @@ enum Command {
     /// - A label of a workflow the team no longer has is left on the repo: this command creates labels and removes none.
     #[command(next_help_heading = HANDS_WORK, verbatim_doc_comment)]
     Flows {
+        /// Existing Jira delivery identity; opens tasks without a runnable label, then attaches through intake
+        #[arg(long)]
+        delivery: Option<String>,
         #[command(flatten)]
         at: At,
     },
@@ -2282,7 +2285,10 @@ enum Command {
         issue: IssueArg,
         /// The workflow it is to follow, by name: what follows `flow:` in its flow label
         #[arg(long)]
-        workflow: String,
+        workflow: Option<String>,
+        /// Existing Jira delivery identity; overrides inheritance from --from
+        #[arg(long)]
+        delivery: Option<String>,
         /// The role of the worker that takes it in
         #[arg(long, env = ROLE_ENV)]
         role: Option<String>,
@@ -4295,7 +4301,7 @@ fn run(
             let example = example.as_deref().and_then(scaffold::example);
             scaffold::scaffold(what, &dir, &role, example, create.as_ref())
         }
-        Command::Flows { .. } => flows::flows(&checkout?),
+        Command::Flows { delivery, .. } => flows::flows(&checkout?, delivery.as_deref()),
         Command::Skill => Ok(Value::String(SKILL.to_string())),
         Command::Draft { dir, team, yes } => draft::draft(dir, team, yes),
         Command::Show { workflow, issue, team, .. } => {
@@ -4305,7 +4311,11 @@ fn run(
                     let repo = checkout?;
                     let loaded = team::load(team.from(), Some(&repo))?;
                     let gh = gh::GitHub::of(&repo)?;
-                    stage::show_issue(&gh, &loaded.team, issue)
+                    let mut answer = stage::show_issue(&gh, &loaded.team, issue)?;
+                    let target = target::select(&repo, issue, None)?;
+                    answer["target_branch"] = target["target_branch"].clone();
+                    answer["delivery"] = target["delivery"].clone();
+                    Ok(answer)
                 }
                 None => {
                     let (from, checkout) = team.read(checkout)?;
@@ -4375,6 +4385,7 @@ fn run(
             }
             plan["concurrency"] = concurrency::json(&fleet.config);
             plan["tracker"] = json!(fleet.gh.tracker.named());
+            plan["targets"] = target::listing(&repo)?;
             plan["admission"] = admission.json();
             plan["host_kit"] = kit::show(now);
             plan["selection"] = fleet.selection();
@@ -4526,7 +4537,17 @@ fn run(
             }
             steer::send(&repo, &team, issue, &stage, text.read()?)
         }
-        Command::Intake { issue, workflow, role, from, patrol, repair, blocked_by, .. } => {
+        Command::Intake {
+            issue,
+            workflow,
+            delivery,
+            role,
+            from,
+            patrol,
+            repair,
+            blocked_by,
+            ..
+        } => {
             use afkconvoy_core::intake::{By, On};
             let on = match (from, patrol) {
                 (Some(issue), _) => Some(On::Issue(issue)),
@@ -4534,22 +4555,20 @@ fn run(
                 (None, None) => None,
             };
             let by = match (repair, role, on) {
-                (true, None, None) => By::Repair,
+                (true, None, None) => Some(By::Repair),
                 (true, ..) => anyhow::bail!(
                     "the repair worker has no role and is on no issue and no patrol: `--repair` \
                      takes none of them ({ROLE_ENV}, {ISSUE_ENV} and {PATROL_ENV} unset)"
                 ),
-                (false, Some(role), Some(on)) => By::Role { role, on },
-                (false, None, _) => anyhow::bail!(
-                    "an intake names the role of its worker (--role, or {ROLE_ENV} in the \
-                     environment) — or, the repair worker's, `--repair`"
-                ),
+                (false, Some(role), Some(on)) => Some(By::Role { role, on }),
+                (false, None, _) => None,
                 (false, Some(_), None) => anyhow::bail!(
                     "an intake names what its worker is on: the issue (--from, or {ISSUE_ENV} in \
                      the environment) or the patrol (--patrol, or {PATROL_ENV})"
                 ),
             };
-            let taking = intake::Taking { issue: issue.number(), workflow, by, blocked_by };
+            let taking =
+                intake::Taking { issue: issue.number(), workflow, by, blocked_by, delivery, from };
             intake::intake(&checkout?, taking)
         }
         Command::Target { issue, branch, .. } => {
