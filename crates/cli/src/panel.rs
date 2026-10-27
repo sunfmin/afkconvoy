@@ -622,10 +622,15 @@ pub fn read(
     };
     let mut panel = Panel::empty(fleet, me).show(&seen);
     panel.codex_workers = crate::codex_launch::workers(&fleet.repo);
-    panel.candidates = crate::candidates::view(&fleet.repo, &fleet.config)
-        .ok()
-        .and_then(|rows| rows.as_array().cloned())
-        .unwrap_or_default();
+    let prefix = fleet.repo.layout().under("candidates/");
+    panel.candidates = crate::candidates::view(
+        &fleet.repo,
+        &fleet.config,
+        &fleet.records_at_open(&format!("{prefix}*")),
+    )
+    .ok()
+    .and_then(|rows| rows.as_array().cloned())
+    .unwrap_or_default();
     panel.declared = set.declared();
     panel.held = set.mine.len() - panel.declared;
     panel.bound = set.bound(fleet.config.concurrency()) - panel.declared;

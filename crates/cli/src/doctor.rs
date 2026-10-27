@@ -35,10 +35,10 @@ use crate::checkout_list::{List, repo_of};
 use crate::claims::Me;
 use crate::config;
 use crate::fleet::Fleet;
-use crate::gate::{head_tree, recorded};
+use crate::gate::head_tree;
 use crate::git::{REMOTE, Repo};
 use crate::host_runner;
-use crate::judge::leaving;
+use crate::judge::leaving_at_open;
 use crate::launch::Launches;
 use crate::log::{self, Entry, Failed, Log, Tick, What, by_cause};
 use crate::orca::{Source, Under, Worktree};
@@ -479,6 +479,8 @@ pub struct State {
     pub not_ours: Vec<NotOurs>,
     /// The claims on issues GitHub says were deleted or transferred.
     pub on_gone: Vec<OnGone>,
+    /// Candidate state from the same remote listing as the working set.
+    pub candidates: Value,
 }
 
 /// A claim on an issue GitHub answers 410 or 404 for: deleted, or
@@ -1514,7 +1516,7 @@ fn read_held(
         let under = worktree.as_ref().and_then(|worktree| worktree.under().ok().flatten());
         let green = worktree.as_ref().and_then(|worktree| {
             let tree = head_tree(&Repo::new(worktree.path.clone())).ok()?;
-            recorded(&fleet.repo, &tree, &gate, fleet.now).ok()?
+            fleet.recorded_gate(&tree, &gate)
         });
         let at = stood.iter().find(|issue| issue.number == mine.number);
         let stamped = fleet.scan.claim_of(mine.number).and_then(|claim| claim.owner.as_ref());
@@ -1610,6 +1612,13 @@ fn read_state(repo: &Repo, now: u64, run: &mut Run) -> Result<State> {
                 .map(|owner| owner.instance.clone()),
         })
         .collect();
+    let prefix = fleet.repo.layout().under("candidates/");
+    let candidates = crate::candidates::view(
+        &fleet.repo,
+        &fleet.config,
+        &fleet.records_at_open(&format!("{prefix}*")),
+    )
+    .unwrap_or_else(|error| json!({"error": error.to_string()}));
     Ok(State {
         refusals: fleet.selection()["refusals"].clone(),
         set,
@@ -1621,6 +1630,7 @@ fn read_state(repo: &Repo, now: u64, run: &mut Run) -> Result<State> {
         unclaimed,
         not_ours,
         on_gone,
+        candidates,
     })
 }
 
@@ -1634,7 +1644,7 @@ fn read_unclaimed(fleet: &Fleet) -> Vec<Unclaimed> {
     let unclaimed = linked.into_iter().filter(|(issue, _)| fleet.scan.claim_of(*issue).is_none());
     unclaimed
         .filter_map(|(issue, worktree)| {
-            let left = leaving(fleet, issue, &worktree).ok()?.left;
+            let left = leaving_at_open(fleet, issue, &worktree).ok()?.left;
             Some(Unclaimed {
                 issue,
                 kept: left.kept().copied(),
@@ -1931,8 +1941,7 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String], look: &Look) ->
         "issues": issues,
         "refusals": state.as_ref().ok().map(|state| &state.refusals),
         "waiting_on_human": waiting,
-        "candidates": config.as_ref().ok().map(|config| crate::candidates::view(repo, config)
-            .unwrap_or_else(|error| json!({"error": error.to_string()}))),
+        "candidates": state.as_ref().ok().map(|state| &state.candidates),
     });
     Ok((answer, found))
 }
@@ -2216,6 +2225,7 @@ mod tests {
             unclaimed: vec![],
             not_ours: vec![],
             on_gone: vec![],
+            candidates: json!([]),
         }
     }
 

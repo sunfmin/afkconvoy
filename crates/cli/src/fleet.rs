@@ -350,6 +350,42 @@ impl Fleet {
         &self.listing.tags
     }
 
+    /// A branch or fleet ref's sha in this view's remote listing, with its
+    /// commit brought into the local repo when needed.
+    pub fn fetched_at_open(&self, refname: &str) -> Result<Option<String>> {
+        let Some(sha) = self.listing.sha(refname) else { return Ok(None) };
+        self.repo.bring(sha, refname)?;
+        Ok(Some(sha.to_string()))
+    }
+
+    /// The fleet records matching `pattern` in this view's remote listing.
+    pub fn records_at_open(&self, pattern: &str) -> Vec<crate::git::RemoteRecord> {
+        self.listing
+            .records
+            .iter()
+            .filter(|record| match pattern.strip_suffix('*') {
+                Some(prefix) => record.name.starts_with(prefix),
+                None => record.name == pattern,
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// The recorded gate run in this view's remote listing that still stands.
+    pub fn recorded_gate(
+        &self,
+        tree: &afkconvoy_core::gate::Tree,
+        command: &afkconvoy_core::gate::GateCommand,
+    ) -> Option<afkconvoy_core::gate::GreenRun> {
+        crate::gate::recorded_among(
+            &self.listing.records,
+            self.repo.layout(),
+            tree,
+            command,
+            self.now,
+        )
+    }
+
     /// The base branch's tip on the remote, its commits in this repo.
     pub fn base_tip(&self) -> Result<String> {
         let branch = &self.config.base_branch;
@@ -379,7 +415,8 @@ impl Fleet {
         })
     }
 
-    fn task_tip_at_open(&self, issue: u64) -> Result<String> {
+    /// The task tip in this view's remote listing.
+    pub fn task_tip_at_open(&self, issue: u64) -> Result<String> {
         let branch = crate::target::snapshot_branch(
             &self.repo,
             &self.config,

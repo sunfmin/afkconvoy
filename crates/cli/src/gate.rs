@@ -339,9 +339,24 @@ pub fn recorded(
     command: &GateCommand,
     now: u64,
 ) -> Result<Option<GreenRun>> {
-    let found = repo.remote_records(&record_ref(repo.layout(), tree, command))?.pop();
-    let run = found.and_then(|record| GreenRun::recorded(&record.subject, tree, command));
-    Ok(run.filter(|run| run.stands(now)))
+    let found = repo.remote_records(&record_ref(repo.layout(), tree, command))?;
+    Ok(recorded_among(&found, repo.layout(), tree, command, now))
+}
+
+/// The still-valid green run among an existing remote snapshot's records.
+pub fn recorded_among(
+    records: &[crate::git::RemoteRecord],
+    layout: afkconvoy_core::layout::Layout,
+    tree: &Tree,
+    command: &GateCommand,
+    now: u64,
+) -> Option<GreenRun> {
+    let name = record_ref(layout, tree, command);
+    records
+        .iter()
+        .find(|record| record.name == name)
+        .and_then(|record| GreenRun::recorded(&record.subject, tree, command))
+        .filter(|run| run.stands(now))
 }
 
 /// Whether the committed tree of a worktree passes the gate — the one question
