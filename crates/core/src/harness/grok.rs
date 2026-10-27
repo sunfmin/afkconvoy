@@ -465,12 +465,22 @@ pub(crate) fn not_authenticated(answer: &str) -> bool {
     answer.to_ascii_lowercase().contains("not authenticated")
 }
 
+/// One tool call, as Grok hands it to a hook. The event names the tool in
+/// camelCase and again in Claude's snake_case, and the input the same way
+/// (`toolInput` and `tool_input`). Either spelling alone is the call. Both
+/// spellings of one fact have to agree: an alias would reject the event as a
+/// duplicate field, and judging one spelling while the tool runs the other
+/// would let a command past the guard.
 #[derive(Deserialize)]
 struct Described {
-    #[serde(rename = "toolName", alias = "tool_name")]
-    tool_name: String,
-    #[serde(default, rename = "toolInput", alias = "tool_input")]
-    tool_input: Input,
+    #[serde(rename = "toolName")]
+    camel_name: Option<String>,
+    #[serde(rename = "tool_name")]
+    snake_name: Option<String>,
+    #[serde(default, rename = "toolInput")]
+    camel_input: Option<Input>,
+    #[serde(default, rename = "tool_input")]
+    snake_input: Option<Input>,
 }
 
 #[derive(Default, Deserialize)]
@@ -479,10 +489,34 @@ struct Input {
     command: Option<String>,
 }
 
+/// The one value the two spellings give. A spelling that is absent is the
+/// other. Both present and different is not a value.
+fn one_spelling<T: PartialEq, E: Error>(
+    what: &str,
+    camel: Option<T>,
+    snake: Option<T>,
+) -> Result<Option<T>, E> {
+    match (camel, snake) {
+        (Some(camel), Some(snake)) if camel != snake => {
+            Err(E::custom(format!("`{what}` and its other spelling disagree")))
+        }
+        (Some(camel), _) => Ok(Some(camel)),
+        (None, snake) => Ok(snake),
+    }
+}
+
 pub(super) fn call<'de, D: Deserializer<'de>>(described: D) -> Result<Call, D::Error> {
     let described = Described::deserialize(described)?;
-    Ok(match described.tool_input.command {
-        Some(line) if described.tool_name == "run_terminal_command" => Call::Shell(line),
+    let name = one_spelling("toolName", described.camel_name, described.snake_name)?
+        .ok_or_else(|| D::Error::custom("a Grok tool call names no tool"))?;
+    let command = one_spelling(
+        "toolInput",
+        described.camel_input.map(|input| input.command),
+        described.snake_input.map(|input| input.command),
+    )?
+    .flatten();
+    Ok(match command {
+        Some(line) if name == "run_terminal_command" => Call::Shell(line),
         _ => Call::Other,
     })
 }
@@ -669,6 +703,28 @@ hooks = [{ type = "command", command = "role hook", timeout = 5 }]
         );
         let other = r#"{"toolName":"Bash","toolInput":{"command":"git commit"}}"#;
         assert_eq!(call(&mut serde_json::Deserializer::from_str(other)).unwrap(), Call::Other);
+        // Grok 1.0.70 sends both spellings of the same fact on one event.
+        let both = r#"{"hookEventName":"pre_tool_use","hook_event_name":"PreToolUse","toolName":"run_terminal_command","tool_name":"run_terminal_command","toolInput":{"command":"ls"},"tool_input":{"command":"ls"},"cwd":"/wt"}"#;
+        assert_eq!(
+            call(&mut serde_json::Deserializer::from_str(both)).unwrap(),
+            Call::Shell("ls".into())
+        );
+        let read = r#"{"toolName":"read_file","tool_name":"read_file","toolInput":{"target_file":"a"},"tool_input":{"target_file":"a"}}"#;
+        assert_eq!(call(&mut serde_json::Deserializer::from_str(read)).unwrap(), Call::Other);
+        let names = r#"{"toolName":"read_file","tool_name":"run_terminal_command","toolInput":{"command":"ls"},"tool_input":{"command":"ls"}}"#;
+        assert!(
+            call(&mut serde_json::Deserializer::from_str(names))
+                .unwrap_err()
+                .to_string()
+                .contains("disagree")
+        );
+        let commands = r#"{"toolName":"run_terminal_command","tool_name":"run_terminal_command","toolInput":{"command":"ls"},"tool_input":{"command":"rm -rf /"}}"#;
+        assert!(
+            call(&mut serde_json::Deserializer::from_str(commands))
+                .unwrap_err()
+                .to_string()
+                .contains("disagree")
+        );
     }
 
     #[test]
