@@ -33,9 +33,9 @@ impl Api {
     }
     pub(crate) fn of(args: &[&str]) -> Option<Self> {
         match args {
-            ["api", "graphql", ..] | ["pr" | "issue", "list" | "create" | "close" | "edit", ..] => {
-                Some(Self::Graphql)
-            }
+            ["api", "graphql", ..]
+            | ["issue", "view", ..]
+            | ["pr" | "issue", "list" | "create" | "close" | "edit", ..] => Some(Self::Graphql),
             ["api", ..] => Some(Self::Core),
             _ => None,
         }
@@ -125,9 +125,27 @@ impl Scope {
 
     pub(crate) fn save(&self, name: &str, value: &Observation) -> Result<()> {
         std::fs::create_dir_all(&self.dir)?;
+        let lock = std::fs::File::create(self.dir.join("observations.lock"))?;
+        lock.lock()?;
+        let prior = self.read(name)?;
+        // Responses from concurrent requests may arrive out of order. A late
+        // positive observation cannot erase a primary rejection before reset.
+        if prior.remaining == Some(0) && prior.reset > now() && value.remaining != Some(0) {
+            return Ok(());
+        }
+        let mut value = value.clone();
+        if prior.reset == value.reset {
+            value.remaining = match (prior.remaining, value.remaining) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (_, b) => b,
+            };
+        }
+        if name == "secondary" {
+            value.reset = value.reset.max(prior.reset);
+        }
         let file = self.dir.join(format!("{name}.json"));
         let temp = file.with_extension(format!("{}.tmp", crate::unique()));
-        std::fs::write(&temp, serde_json::to_vec(value)?)?;
+        std::fs::write(&temp, serde_json::to_vec(&value)?)?;
         std::fs::rename(temp, file)?;
         Ok(())
     }
@@ -135,8 +153,13 @@ impl Scope {
     pub(crate) fn describe(&self) -> Result<String> {
         let core = self.read("core")?;
         let gql = self.read("graphql")?;
+        let next = [&core, &gql]
+            .into_iter()
+            .filter(|r| r.remaining == Some(0) && r.reset > now())
+            .map(|r| r.reset)
+            .min();
         Ok(format!(
-            "{}/{}: REST core remaining={:?} reset={}; GraphQL remaining={:?} reset={}",
+            "{}/{}: REST core remaining={:?} reset={}; GraphQL remaining={:?} reset={}; next_attempt={next:?}",
             self.host, self.login, core.remaining, core.reset, gql.remaining, gql.reset
         ))
     }
@@ -144,9 +167,23 @@ impl Scope {
     /// The rate-limit endpoint has its own exemption from primary quotas.
     /// An unavailable observation never clears an exhaustion already seen.
     pub(crate) fn observe(&self, gh: &GitHub) -> Result<()> {
-        if let Ok(out) = gh.raw(&["api", "rate_limit", "--hostname", &self.host])
-            && let Ok(doc) = serde_json::from_str::<Value>(&out)
-        {
+        let out = match gh.raw(&["api", "rate_limit", "--hostname", &self.host]) {
+            Ok(out) => out,
+            Err(error) => {
+                if let Some(delay) = secondary(&error.to_string()) {
+                    let reset = now().saturating_add(delay);
+                    self.save("secondary", &Observation { remaining: Some(0), reset })?;
+                    bail!(
+                        "GitHub secondary rate limit on quota observation: both APIs wait until {reset} (Unix seconds); {error}"
+                    );
+                }
+                eprintln!(
+                    "GitHub quota observation unavailable; remaining/reset unknown except prior observations: {error:#}"
+                );
+                return Ok(());
+            }
+        };
+        if let Ok(doc) = serde_json::from_str::<Value>(&out) {
             for api in [Api::Core, Api::Graphql] {
                 let row = &doc["resources"][api.name()];
                 if let (Some(remaining), Some(reset)) =
@@ -155,6 +192,10 @@ impl Scope {
                     self.save(api.name(), &Observation { remaining: Some(remaining), reset })?;
                 }
             }
+        } else {
+            eprintln!(
+                "GitHub quota observation invalid; remaining/reset unknown except prior observations"
+            );
         }
         Ok(())
     }
@@ -167,7 +208,6 @@ pub(crate) fn primary(said: &str) -> bool {
     secondary(said).is_none()
         && (s.contains("api rate limit exceeded")
             || s.contains("api rate limit already exceeded")
-            || s.contains("x-ratelimit-remaining: 0")
             || s.contains("\"type\":\"rate_limited\""))
 }
 
@@ -180,7 +220,91 @@ pub(crate) fn secondary(said: &str) -> Option<u64> {
     }
     let delay = s
         .lines()
-        .find_map(|line| line.trim().strip_prefix("retry-after:")?.trim().parse().ok())
+        .find_map(|line| {
+            let after = line.trim().strip_prefix("retry-after:")?.trim();
+            after.parse().ok().or_else(|| retry_date(after).map(|t| t.saturating_sub(now())))
+        })
         .unwrap_or(60);
     Some(delay)
+}
+
+fn retry_date(date: &str) -> Option<u64> {
+    let parts: Vec<_> = date.split_whitespace().collect();
+    let [_, day, month, year, time, "gmt"] = parts.as_slice() else { return None };
+    let month =
+        ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"]
+            .iter()
+            .position(|m| m == month)?
+            + 1;
+    let day: u8 = day.parse().ok()?;
+    crate::doctor::watching::since(&format!("{year}-{month:02}-{day:02}T{time}Z")).ok()
+}
+
+/// Separate response headers from gh api --include's projected bodies, also
+/// across --paginate pages. Only response headers are captured, never request
+/// headers or authentication material.
+pub(crate) fn response(out: &str) -> (String, String) {
+    let mut body = String::new();
+    let mut headers = String::new();
+    let mut in_headers = false;
+    for line in out.split_inclusive('\n') {
+        if line.starts_with("HTTP/") {
+            in_headers = true;
+        }
+        if in_headers {
+            let lower = line.to_ascii_lowercase();
+            if line.starts_with("HTTP/")
+                || [
+                    "x-ratelimit-remaining:",
+                    "x-ratelimit-reset:",
+                    "x-ratelimit-resource:",
+                    "retry-after:",
+                ]
+                .iter()
+                .any(|key| lower.starts_with(key))
+            {
+                headers.push_str(line);
+            }
+            if line.trim().is_empty() {
+                in_headers = false;
+            }
+        } else {
+            body.push_str(line);
+        }
+    }
+    (body, headers)
+}
+
+impl Scope {
+    pub(crate) fn headers(&self, headers: &str) -> Result<()> {
+        let fields: std::collections::HashMap<_, _> = headers
+            .lines()
+            .filter_map(|l| l.split_once(':'))
+            .map(|(k, v)| (k.trim().to_ascii_lowercase(), v.trim()))
+            .collect();
+        if let (Some(resource), Some(remaining), Some(reset)) = (
+            fields.get("x-ratelimit-resource"),
+            fields.get("x-ratelimit-remaining"),
+            fields.get("x-ratelimit-reset"),
+        ) && ["core", "graphql"].contains(resource)
+        {
+            self.save(
+                resource,
+                &Observation { remaining: Some(remaining.parse()?), reset: reset.parse()? },
+            )?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn json(&self) -> Result<Value> {
+        let core = self.read("core")?;
+        let graphql = self.read("graphql")?;
+        let secondary = self.read("secondary")?;
+        let now = now();
+        Ok(
+            serde_json::json!({"host":self.host,"login":self.login,"core":core,"graphql":graphql,"secondary":secondary,
+            "for_rest_reads":if secondary.reset>now {"wait"}else if core.remaining==Some(0)&&core.reset>now {"graphql when equivalent"}else{"core"},
+            "for_graphql_reads":if secondary.reset>now {"wait"}else if graphql.remaining==Some(0)&&graphql.reset>now {"core when equivalent"}else{"graphql"}}),
+        )
+    }
 }

@@ -65,7 +65,7 @@ A tick's view of the fleet at one moment, derived from fleet state and dropped w
 _Avoid_: session state
 
 **Rebuild**:
-The read-only pass at the top of every tick that derives the working set. Any fleet instance rebuilds the same working set from the same GitHub. It lists the remote once and asks GitHub a fixed number of times, however many issues are open, and however many repos' issues its tracker holds.
+The read-only pass at the top of every tick that derives the working set. Any fleet instance rebuilds the same working set from the same GitHub. Missing facts fail the rebuild rather than forming an empty working set.
 _Avoid_: refresh (a heartbeat is refreshed), resync
 
 **Frontier**:

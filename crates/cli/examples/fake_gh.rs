@@ -49,6 +49,7 @@ const REPO: &str = "repos/{owner}/{repo}/";
 
 fn main() {
     let mut st = State::open_routed("CONVOY_FAKE_GH", "convoy-fake-gh");
+    st.argv.retain(|a| a != "--include");
     let line = st.argv.join(" ");
     let resource = if line.starts_with("api graphql") || line.starts_with("pr list") {
         "graphql"
@@ -59,6 +60,14 @@ fn main() {
     };
     if let Some(said) = st.doc["quota_fail"][resource].as_str() {
         st.finish("", 1, said);
+    }
+    if st.doc["quota_fail"][resource].is_object() {
+        let refusal = &st.doc["quota_fail"][resource];
+        st.finish(
+            refusal["stdout"].as_str().unwrap_or(""),
+            1,
+            refusal["stderr"].as_str().unwrap_or(""),
+        );
     }
     let injected = st.doc["fail"]
         .as_array()
@@ -88,6 +97,29 @@ fn main() {
             st.finish(&st.doc.get("quota").unwrap_or(&default).to_string(), 0, "")
         }
         ["api", "graphql", ..] if line.contains("ConvoyQuotaEquivalent") => equivalent_graph(&st),
+        ["api", "graphql", ..] if line.contains("ConvoyQuotaWrite") => equivalent_write(&mut st),
+        ["api", endpoint, "-H", "Accept: application/vnd.github.diff"] => {
+            let (repo, number) =
+                endpoint.trim_start_matches("repos/").rsplit_once("/pulls/").unwrap();
+            let number = number.parse::<u64>().unwrap();
+            let from = st.doc["repos"][repo].as_str().unwrap();
+            let row = st.doc["prs_of"][repo]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|r| r["number"] == number)
+                .unwrap();
+            st.finish(
+                &fake::git(&[
+                    "-C",
+                    from,
+                    "diff",
+                    &format!("HEAD...{}", row["headRefName"].as_str().unwrap()),
+                ]),
+                0,
+                "",
+            )
+        }
         ["api", endpoint, "--jq", jq] if endpoint.starts_with(&format!("{REPO}pulls?")) => {
             assert_eq!(*jq, WATCH_PRS_JQ);
             let page = endpoint.rsplit("page=").next().unwrap().parse::<usize>().unwrap();
@@ -180,6 +212,29 @@ fn main() {
             st.finish(&visibility, 0, "")
         }
         ["api", "graphql", ..] => open_issues(&st),
+        ["api", "--paginate", endpoint]
+            if endpoint.starts_with("repos/") && !endpoint.starts_with(REPO) =>
+        {
+            let mut parts = endpoint.trim_start_matches("repos/").splitn(3, '/');
+            let repo = format!("{}/{}", parts.next().unwrap(), parts.next().unwrap());
+            if st.doc["repos"][&repo].is_null() {
+                st.finish("", 1, "gh: Not Found (HTTP 404)")
+            }
+            let what = parts.next().unwrap();
+            let rows: Vec<_> = if what.starts_with("pulls?") {
+                st.doc["prs_of"][&repo].as_array().into_iter().flatten().filter(|r|is_open(r)).map(|r|json!({"number":r["number"],"title":r["title"],"body":r["body"],"created_at":stamp(&r["since"]),
+                    "head":{"ref":r["headRefName"],"repo":{"full_name":if is_fork(r){"fork/other"}else{&repo}}},"base":{"repo":{"full_name":repo}}})).collect()
+            } else {
+                st.doc["other_issues"][&repo]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|r| is_open(r))
+                    .map(rest_issue)
+                    .collect()
+            };
+            st.finish(&json!(rows).to_string(), 0, "")
+        }
         ["api", ..] => api(&mut st),
         ["issue", "create", ..] => issue_create(&mut st),
         ["issue", "edit", number, ..] => {
@@ -341,18 +396,26 @@ fn pr_list(st: &mut State) -> ! {
     assert_eq!(st.opt("--json"), Some(PR_FIELDS), "{:?}", st.argv);
     notice_merges(st);
     let bare = st.doc["bare"].as_str().unwrap();
+    let limit = st.opt("--limit").and_then(|s| s.parse::<usize>().ok()).unwrap_or(1000);
     let rows: Vec<Value> = st.doc["prs"]
         .as_array()
         .unwrap()
         .iter()
         .filter(|pr| is_open(pr))
+        .take(limit)
         .map(|pr| {
             // A PR's head is wherever its branch points now, as on GitHub.
             let head = branch_head(pr, bare);
             let head = if head.is_empty() { pr["headRefOid"].clone() } else { json!(head) };
             let linked: Vec<Value> = pr["linked"]
                 .as_array()
-                .map(|numbers| numbers.iter().map(|n| json!({"number": n})).collect())
+                .map(|numbers| {
+                    numbers
+                        .iter()
+                        .take(100)
+                        .map(|n| if n.is_object() { n.clone() } else { json!({"number": n}) })
+                        .collect()
+                })
                 .unwrap_or_default();
             json!({"number": pr["number"], "title": pr["title"], "headRefName": pr["headRefName"],
                 "headRefOid": head, "body": pr["body"], "closingIssuesReferences": linked,
@@ -505,6 +568,13 @@ fn api(st: &mut State) -> ! {
     }
     let jq = st.opt("--jq").map(str::to_string);
     let jq = jq.as_deref();
+    if jq.is_none()
+        && method == "GET"
+        && let ["issues", number] = parts.as_slice()
+    {
+        let Some(row) = issue(st, number) else { st.finish("", 1, "gh: Not Found (HTTP 404)") };
+        st.finish(&rest_issue(row).to_string(), 0, "");
+    }
     if jq.is_none()
         && method == "GET"
         && (path == "issues"
@@ -987,7 +1057,7 @@ fn equivalent_rest(st: &mut State, path: &str, query: &str) -> ! {
 fn graph_issue_row(row: &Value) -> Value {
     let labels: Vec<_> =
         row["labels"].as_array().into_iter().flatten().map(|n| json!({"name":n})).collect();
-    json!({"__typename":if row["pull_request"]==true{"PullRequest"}else{"Issue"},"fullDatabaseId":issue_id(row),
+    json!({"id":format!("issue-{}",row["number"]),"__typename":if row["pull_request"]==true{"PullRequest"}else{"Issue"},"fullDatabaseId":issue_id(row).to_string(),
         "number":row["number"],"title":row["title"],"body":row["body"],"url":format!("https://gh/i/{}",row["number"]),
         "state":if is_open(row){"OPEN"}else{"CLOSED"},"stateReason":row["state_reason"].as_str().map(str::to_uppercase),
         "createdAt":stamp(&row["at"]),"closedAt":stamp(&row["closed_at"]),
@@ -1001,7 +1071,39 @@ fn equivalent_graph(st: &State) -> ! {
         .nth(1)
         .and_then(|s| s.split(')').next())
         .and_then(|s| s.parse::<u64>().ok());
-    let resource = if query.contains("resource: visibility") {
+    let mut resource = if query.contains("resource: pullRequests(") {
+        let rows:Vec<_>=st.doc["prs"].as_array().unwrap().iter().filter(|r|!query.contains("states:[OPEN]")||is_open(r)).map(|r|{
+            let links:Vec<_>=r["linked"].as_array().into_iter().flatten().map(|n|if n.is_object(){n.clone()}else{json!({"number":n})}).collect();
+            json!({"number":r["number"],"title":r["title"],"body":r["body"],"headRefName":r["headRefName"],"headRefOid":r["headRefOid"],"isCrossRepository":is_fork(r),
+                "createdAt":stamp(&r["since"]),"updatedAt":stamp(&r["updated_at"]),"closedAt":stamp(&r["closed_at"]),"mergedAt":stamp(&r["merged_at"]),"baseRepository":{"nameWithOwner":r["of"].as_str().unwrap_or("acme/dev")},
+                "closingIssuesReferences":{"nodes":links.iter().take(100).collect::<Vec<_>>(),"pageInfo":{"hasNextPage":links.len()>100,"endCursor":if links.len()>100{json!("100")}else{Value::Null}}}})
+        }).collect();
+        json!({"nodes":rows})
+    } else if query.contains("resource: closingIssuesReferences(") {
+        let pr = st.doc["prs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["number"] == number.unwrap())
+            .unwrap();
+        let links: Vec<_> = pr["linked"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|n| if n.is_object() { n.clone() } else { json!({"number":n}) })
+            .collect();
+        json!({"nodes":links})
+    } else if query.contains("resource: defaultBranchRef") {
+        let owner = st.argv.iter().find_map(|a| a.strip_prefix("owner=")).unwrap();
+        let repo = st.argv.iter().find_map(|a| a.strip_prefix("repo=")).unwrap();
+        let named = format!("{owner}/{repo}");
+        let from = st.doc["repos"][&named].as_str().unwrap();
+        json!({"target":{"oid":fake::git(&["-C",from,"rev-parse","HEAD"])}})
+    } else if query.contains("resource: id") {
+        json!("repo-node")
+    } else if query.contains("resource: ref(") {
+        json!({"branchProtectionRule":null})
+    } else if query.contains("resource: visibility") {
         json!(st.doc["visibility"].as_str().unwrap_or("private").to_uppercase())
     } else if query.contains("resource: issues(") {
         let rows: Vec<_> = st.doc["issues"]
@@ -1016,10 +1118,10 @@ fn equivalent_graph(st: &State) -> ! {
             .collect();
         json!({"nodes":rows,"pageInfo":{"hasNextPage":false,"endCursor":null}})
     } else if query.contains("resource: labels(") {
-        json!({"nodes":repo_labels(st).iter().map(|n|json!({"name":n})).collect::<Vec<_>>(),"pageInfo":{"hasNextPage":false,"endCursor":null}})
+        json!({"nodes":repo_labels(st).iter().map(|n|json!({"id":format!("label-{n}"),"name":n})).collect::<Vec<_>>(),"pageInfo":{"hasNextPage":false,"endCursor":null}})
     } else if query.contains("resource: comments(") {
         let rows = comments(st, &number.unwrap().to_string());
-        json!({"nodes":rows.iter().map(|r|json!({"fullDatabaseId":r["id"],"body":r["body"],"url":r["url"],"createdAt":stamp(&r["at"])})).collect::<Vec<_>>(),"pageInfo":{"hasNextPage":false,"endCursor":null}})
+        json!({"nodes":rows.iter().map(|r|json!({"fullDatabaseId":r["id"].as_u64().unwrap().to_string(),"body":r["body"],"url":r["url"],"createdAt":stamp(&r["at"])})).collect::<Vec<_>>(),"pageInfo":{"hasNextPage":false,"endCursor":null}})
     } else if query.contains("resource: blockedBy(") {
         json!({"nodes":blockers(st,&number.unwrap().to_string()).iter().map(graph_issue_row).collect::<Vec<_>>(),"pageInfo":{"hasNextPage":false,"endCursor":null}})
     } else if query.contains("resource: issueOrPullRequest(") {
@@ -1033,5 +1135,110 @@ fn equivalent_graph(st: &State) -> ! {
     } else {
         unsupported(st)
     };
+    if query.contains("$endCursor") {
+        let after = st
+            .argv
+            .iter()
+            .find_map(|a| a.strip_prefix("endCursor="))
+            .map(|n| n.parse::<usize>().unwrap())
+            .unwrap_or(0);
+        let rows = resource["nodes"].as_array().expect("connection nodes");
+        let more = rows.len() > after + 100;
+        resource = json!({"nodes":rows.iter().skip(after).take(100).collect::<Vec<_>>(),"pageInfo":{"hasNextPage":more,"endCursor":if more{json!((after+100).to_string())}else{Value::Null}}});
+    }
     st.finish(&json!({"data":{"repository":{"resource":resource}}}).to_string(), 0, "")
+}
+
+/// Decode a JSON/GraphQL string literal; it can contain quotes and newlines.
+fn input(query: &str, key: &str) -> Value {
+    let after = query.split(&format!("{key}:")).nth(1).expect("mutation input");
+    serde_json::Deserializer::from_str(after).into_iter::<Value>().next().unwrap().unwrap()
+}
+fn equivalent_write(st: &mut State) -> ! {
+    let query = st.argv.iter().find_map(|a| a.strip_prefix("query=")).unwrap().to_string();
+    let operation = query.split("Write { ").nth(1).unwrap().split('(').next().unwrap();
+    let data = match operation {
+        "addComment" => {
+            let node = input(&query, "subjectId");
+            let number = node.as_str().unwrap().strip_prefix("issue-").unwrap();
+            let body = input(&query, "body");
+            let id = next_comment_id(st);
+            let at = st.doc["now"].clone();
+            if !st.doc["comments"][number].is_array() {
+                st.doc["comments"][number] = json!([])
+            }
+            st.doc["comments"][number]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({"id":id,"body":body,"html_url":format!("https://gh/c/{id}"),"at":at}));
+            json!({"commentEdge":{"node":{"id":id}}})
+        }
+        "closeIssue" => {
+            let node = input(&query, "issueId");
+            let number =
+                node.as_str().unwrap().strip_prefix("issue-").unwrap().parse::<u64>().unwrap();
+            let row = st.doc["issues"]
+                .as_array_mut()
+                .unwrap()
+                .iter_mut()
+                .find(|r| r["number"] == number)
+                .unwrap();
+            row["state"] = json!("closed");
+            row["state_reason"] = json!("completed");
+            json!({"issue":{"id":node}})
+        }
+        "addLabelsToLabelable" | "removeLabelsFromLabelable" => {
+            let node = input(&query, "labelableId");
+            let number =
+                node.as_str().unwrap().strip_prefix("issue-").unwrap().parse::<u64>().unwrap();
+            let ids = input(&query, "labelIds");
+            let row = st.doc["issues"]
+                .as_array_mut()
+                .unwrap()
+                .iter_mut()
+                .find(|r| r["number"] == number)
+                .unwrap();
+            let labels = row["labels"].as_array_mut().unwrap();
+            for id in ids.as_array().unwrap() {
+                let name = json!(id.as_str().unwrap().strip_prefix("label-").unwrap());
+                if operation.starts_with("add") {
+                    if !labels.contains(&name) {
+                        labels.push(name)
+                    }
+                } else {
+                    labels.retain(|n| n != &name)
+                }
+            }
+            json!({"labelable":{"__typename":"Issue"}})
+        }
+        "createIssue" => {
+            let number = st.doc["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|r| r["number"].as_u64())
+                .max()
+                .unwrap_or(0)
+                + 1;
+            let ids = input(&query, "labelIds");
+            let labels: Vec<_> = ids
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|id| id.as_str().unwrap().strip_prefix("label-").unwrap())
+                .collect();
+            st.doc["issues"].as_array_mut().unwrap().push(json!({"number":number,"title":input(&query,"title"),"body":input(&query,"body"),"state":"open","labels":labels}));
+            json!({"issue":{"number":number}})
+        }
+        "createLabel" => {
+            let name = input(&query, "name");
+            st.list("labels").push(name);
+            json!({"label":{"id":"label-node"}})
+        }
+        _ => unsupported(st),
+    };
+    if st.doc["write_receipt_lost"] == true {
+        st.finish("", 1, "unexpected end of JSON input")
+    }
+    st.finish(&json!({"data":{operation:data}}).to_string(), 0, "")
 }

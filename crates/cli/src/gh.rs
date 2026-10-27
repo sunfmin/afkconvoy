@@ -492,14 +492,38 @@ impl GitHub {
     /// One `gh` call → its stdout, or what it is named by and what `gh` said
     /// of its failing.
     fn call(&self, args: &[&str]) -> Result<Result<String, (String, String)>> {
-        let out = crate::process::output(Command::new("gh").current_dir(&self.dir).args(args))
-            .context("gh could not run")?;
+        let mut command = Command::new("gh");
+        command.current_dir(&self.dir).args(args);
+        let text_body = args.iter().any(|s| {
+            s.contains("application/vnd.github.raw")
+                || s.contains("application/vnd.github.diff")
+                || *s == LABELS_JQ
+        });
+        let included = args.first() == Some(&"api") && !text_body;
+        if included {
+            command.arg("--include");
+        }
+        let out = crate::process::output(&mut command).context("gh could not run")?;
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let (body, headers) = if included {
+            crate::gh_quota::response(&stdout)
+        } else {
+            (stdout.into_owned(), String::new())
+        };
+        if out.status.success()
+            && let Ok(scope) = self.quota.try_lock()
+            && let Some(scope) = scope.as_ref()
+        {
+            scope.headers(&headers)?;
+        }
         if !out.status.success() {
             let what = args.iter().take(2).copied().collect::<Vec<_>>().join(" ");
-            let said = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            let said = format!("{}\n{}", String::from_utf8_lossy(&out.stderr).trim(), headers)
+                .trim()
+                .to_string();
             return Ok(Err((format!("gh {what}"), said)));
         }
-        Ok(Ok(String::from_utf8_lossy(&out.stdout).into_owned()))
+        Ok(Ok(body))
     }
 
     /// One `gh` call that must succeed → its stdout. It is made once: what
@@ -535,7 +559,10 @@ impl GitHub {
     /// authorizes another backend; neither transport errors nor a generic 403 do.
     fn routed(&self, args: &[&str], writing: bool) -> Result<String> {
         let Some(api) = crate::gh_quota::Api::of(args) else { return self.raw(args) };
-        match self.on_api(args, writing) {
+        let made = self.on_api(args, writing).and_then(|out| {
+            if writing { Ok(out) } else { crate::gh_equivalent::complete_listing(self, args, out) }
+        });
+        match made {
             Err(error) if error.is::<PrimaryQuota>() => {
                 let scope = self.quota()?;
                 let why = scope.describe()?;
@@ -545,12 +572,51 @@ impl GitHub {
                     api.other().name(),
                     args.iter().take(2).copied().collect::<Vec<_>>().join(" ")
                 );
-                crate::gh_equivalent::run(self, args, writing).with_context(|| format!(
+                let result = crate::gh_equivalent::run(self, args, writing).with_context(|| format!(
                     "GitHub API fallback for gh {} from {} to {}; {why}; retry after reset (Unix seconds)",
-                    args.iter().take(2).copied().collect::<Vec<_>>().join(" "), api.name(), api.other().name()))
+                    args.iter().take(2).copied().collect::<Vec<_>>().join(" "), api.name(), api.other().name()));
+                self.log_api(args, api.other(), &why, result.as_ref().err());
+                result
             }
             other => other,
         }
+    }
+
+    fn log_api(
+        &self,
+        args: &[&str],
+        api: crate::gh_quota::Api,
+        why: &str,
+        error: Option<&anyhow::Error>,
+    ) {
+        let outcome = format!(
+            "selected {} after primary exhaustion; {why}{}",
+            api.name(),
+            error.map(|e| format!("; {e:#}")).unwrap_or_default()
+        );
+        if let Ok(repo) = Repo::at(&self.dir)
+            && let Ok(log) = crate::log::Log::of(&repo)
+        {
+            let entry = crate::log::Entry {
+                at: crate::gh_quota::now(),
+                instance: String::new(),
+                host: String::new(),
+                what: crate::log::What::Command {
+                    command: "github-api".into(),
+                    on: Some(args.iter().take(2).copied().collect::<Vec<_>>().join(" ")),
+                    by: "quota routing".into(),
+                    outcome,
+                    failed: error.is_some(),
+                },
+            };
+            if let Err(e) = log.append(&entry) {
+                eprintln!("GitHub API selection log could not be written: {e:#}");
+            }
+        }
+    }
+
+    pub(crate) fn quota_status(&self) -> Result<serde_json::Value> {
+        self.quota()?.json()
     }
 
     /// Executes one backend only. Compound equivalents use this entry so a
@@ -585,7 +651,16 @@ impl GitHub {
                 );
             }
             Err(error) if crate::gh_quota::primary(&error.to_string()) => {
+                scope.headers(&error.to_string())?;
                 scope.observe(self)?;
+                let api = if args.first() != Some(&"api")
+                    && scope.read(api.name())?.remaining != Some(0)
+                    && scope.read(api.other().name())?.remaining == Some(0)
+                {
+                    api.other()
+                } else {
+                    api
+                };
                 let known = scope.read(api.name())?;
                 // An error is authoritative even if a later quota observation
                 // already reports points. Bound a missing reset to one minute.
@@ -685,22 +760,13 @@ impl GitHub {
     /// nobody can parse, is unreadable.
     pub fn protection(&self, branch: &str) -> Guard {
         let endpoint = format!("repos/{OWN}/branches/{branch}/protection");
-        let out = match crate::process::output(
-            Command::new("gh").current_dir(&self.dir).args(["api", &endpoint]),
-        ) {
+        let stdout = match self.read(&["api", &endpoint]) {
             Ok(out) => out,
-            Err(error) => return Guard::Unreadable(format!("gh could not run: {error}")),
+            Err(error) if error.to_string().contains("Branch not protected") => {
+                return Guard::Unprotected;
+            }
+            Err(error) => return Guard::Unreadable(format!("{error:#}")),
         };
-        let (stdout, stderr) =
-            (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
-        if !out.status.success() {
-            let said = format!("{stderr}{stdout}");
-            return if said.contains("Branch not protected") {
-                Guard::Unprotected
-            } else {
-                Guard::Unreadable(stderr.trim().to_string())
-            };
-        }
         #[derive(Deserialize)]
         struct Check {
             context: String,
@@ -992,7 +1058,7 @@ impl GitHub {
             head_ref_name: String,
             head_ref_oid: String,
             body: Option<String>,
-            closing_issues_references: Option<Vec<Link>>,
+            closing_issues_references: Vec<Link>,
             is_cross_repository: bool,
             head_repository: Option<Named>,
             head_repository_owner: Option<Owner>,
@@ -1024,7 +1090,6 @@ impl GitHub {
             .map(|row| {
                 let linked: Vec<Linked> = row
                     .closing_issues_references
-                    .unwrap_or_default()
                     .into_iter()
                     .map(|link| Linked {
                         number: link.number,
@@ -1269,17 +1334,22 @@ impl GitHub {
     /// `None` where it has none there.
     pub fn file_of(&self, repo: &RepoName, path: &str) -> Result<Option<String>> {
         let endpoint = format!("repos/{}/contents/{path}", repo.as_str());
-        match self.call(&["api", "-H", "Accept: application/vnd.github.raw", &endpoint])? {
+        match self.read(&["api", "-H", "Accept: application/vnd.github.raw", &endpoint]) {
             Ok(text) => Ok(Some(text)),
-            Err((_, said)) if said.contains("404") => Ok(None),
-            Err((call, said)) => bail!("{call} failed: {said}"),
+            Err(error) if error.to_string().contains("HTTP 404") => Ok(None),
+            Err(error) => Err(error),
         }
     }
 
     /// What PR `number` of another repo, `repo`, changes, as `git diff`
     /// writes it.
     pub fn pr_diff_of(&self, repo: &RepoName, number: u64) -> Result<String> {
-        self.read(&["pr", "diff", &number.to_string(), "--repo", repo.as_str()])
+        self.read(&[
+            "api",
+            &format!("repos/{repo}/pulls/{number}"),
+            "-H",
+            "Accept: application/vnd.github.diff",
+        ])
     }
 
     /// Closes one PR of another repo, `repo`, without merging it, with a

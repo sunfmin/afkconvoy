@@ -1,9 +1,11 @@
 # control#148: REST closing-relationship feasibility
 
-Investigated on 2026-10-27 for sunfmin/control#148. No runtime change is
-implemented here. The incident remains unresolved.
+Investigated on 2026-10-27 for sunfmin/control#148. The original investigation
+below is retained as historical evidence. The watch amended the issue to
+authorize supported quota fallback with explicit capability refusals; the
+implementation and regression evidence follow at the end of this report.
 
-## Decision needed
+## Original decision needed (resolved by the watch ruling)
 
 The requested quota routing is feasible for many GitHub operations. There is
 no documented REST equivalent for the native PR closing relationships that
@@ -130,3 +132,101 @@ completed fix. The third establishes existing behavior a fallback must retain.
 The probes were removed from the final tree rather than leaving deliberately
 red acceptance tests in its suite. Only this report differs from the initial
 tree. The full gate was not run: no implementation or landing is proposed.
+
+## Implementation after the watch ruling
+
+`GitHub::read` and `GitHub::gh` now share primary-quota routing. The adapters
+in `gh_equivalent` preserve each operation's projection and complete its
+collections. `gh_quota` holds only expiring observations, separated by GitHub
+host, authenticated login, and core/GraphQL quota category. No issue, blocker,
+comment, PR relationship or credential is cached. A shared secondary cooldown
+holds both APIs; numeric and HTTP-date Retry-After values are honored. Failed
+writes are never replayed after an ambiguous receipt. Confirmed single REST
+write rejections have explicit GraphQL adapters where authoritative node
+identities can be read first; other writes name their capability boundary.
+
+| Exhausted API | Supported continuation | Required refusal |
+| --- | --- | --- |
+| GraphQL | Complete REST issues, comments/stage records, blockers, labels, PR listings without native relationships, and eligible dispatch with an authoritative absence of relevant open PRs | Any same-repository open PR whose native/manual closing relationships a rebuild, dispatch, ordinary issue turn or settlement needs |
+| REST core | GraphQL tracker visibility, issues, comments, native blockers, labels/locks, PR heads, watch records, branch protection facts, repository heads/text blobs, and supported issue/comment/label mutations | No equivalent adapter or authoritative node identity, incomplete/binary blobs, ambiguous write receipts, or unsafe high-level multi-request writes |
+| Both, or secondary cooldown | A bounded refusal with remaining/reset and next attempt information; subsequent commands recover after expiry | No healthy empty queue, alternate-login attempt, private endpoint or relationship inference |
+
+The ordinary GraphQL rebuild retains its batched read. REST degradation needs
+separate full comments/blocker collections per issue. The old unconditional
+fixed-request-count sentence in the glossary was removed; the domain invariant
+is that missing facts cannot produce a working set. The existing ordinary
+rebuild-cost tests still verify the normal batched path.
+
+`gh pr list` and `gh issue list` can cap their output. At 1,000 rows, or at an
+embedded 100-closing-reference boundary, the common reader replaces that
+listing with complete cursor pagination. Native closing references retain
+repository-qualified identities. Nested connections use their own cursor,
+including blockers and labels. A repeated/missing cursor, null required
+resource or missing raw collection receipt is an error.
+
+A read-only schema probe confirmed Issue.fullDatabaseId, Issue.blockedBy,
+PullRequest.baseRepository and the IssueOrPullRequest union. A live read of
+this issue's id and one comment id confirmed that fullDatabaseId is serialized
+as a decimal string, so the adapters explicitly parse it to the existing
+u64 domain identity. The stand-in models that string representation too.
+No quota was deliberately exhausted and no live issue/PR was changed by tests.
+
+## Real CLI regression evidence
+
+Before implementation, the two initial regressions failed in 0.46 seconds:
+
+```text
+GraphQL exhaustion -> dispatch: gh pr list failed: gh: API rate limit already exceeded
+REST exhaustion -> plan: gh api repos/{owner}/{repo} failed: gh: API rate limit already exceeded
+2 failed; 0 passed
+```
+
+The retained tests are `crates/cli/tests/quota.rs`, registered in the existing
+real-CLI integration suite. They use its real binary, git remote, stand-in gh
+and Orca, full JSON pages and actual command outcomes. The scenarios cover:
+
+- Both directions, initial rejection and quota known before the first call.
+- No repeated exhausted-backend requests across CLI invocations, reset expiry
+  without restart, and separate authentication identities and GitHub hosts.
+- Both APIs exhausted, numeric and HTTP-date secondary cooldowns, response
+  reset headers, ordinary 403/auth failures, and transport failures.
+- Eligible issue 146 dispatch with a full REST zero-open-PR listing.
+- Manual/native links absent from bodies, qualified cross-tracker links after
+  page one, and a relevant PR beyond the 1,000-row listing limit.
+- Blockers past page one in both directions, fleet locks, and a latest stage
+  record past 100 comments in a bound repo.
+- Watching in both directions retains every ending across 101 PRs and an
+  intake record beyond the first 100 comments.
+- One successful GraphQL comment mutation after a confirmed REST rejection,
+  and one applied mutation with a lost receipt that is never sent twice.
+- An ordinary issue turn with REST exhausted that gates, records green,
+  fast-forwards the remote base branch and closes the issue.
+- An ordinary turn with GraphQL exhausted that refuses the native relationship
+  read before running its gate or closing the issue.
+
+Reproduction commands (rustup's cargo, rather than Homebrew cargo):
+
+```sh
+~/.cargo/bin/cargo +nightly-2026-09-25 build -p afkconvoy --examples --quiet
+~/.cargo/bin/cargo +nightly-2026-09-25 test -p afkconvoy --test cli quota:: -- --nocapture
+```
+
+Latest focused run: **20 passed, 0 failed in 3.88 seconds**, following the
+initial two red reproductions. The stand-in emits string GraphQL database
+identities and multiple REST/GraphQL pages; the assertions check dispatch,
+stage/lock/blocker positions, mutation counts and the gated remote commit.
+
+The full repository gate is run by the required landing turn, after the PR is
+open and all changes committed. Its receipt and final outcome are recorded on
+the PR, together with the exact integration-test result.
+
+## Original incident still requiring GraphQL reset
+
+This implementation does not establish that the original live #131/#139/#141
+landings or #146 dispatch can all proceed while GraphQL is exhausted. Existing
+same-repository open PRs can still make their native relationships necessary.
+Those reads now report the operation, missing capability, known quotas and
+reset/retry boundary instead of guessing. The successful fixture for eligible
+issue 146 proves only the supported zero-open-PR case. Installation is a
+separate fleet cut; a landed source change alone does not establish that the
+installed 0.5.25 host runner has been fixed.

@@ -16,10 +16,14 @@ fn field<'a>(args: &'a [&str], name: &str) -> Option<&'a str> {
     args.iter().find_map(|a| a.strip_prefix(name)?.strip_prefix('='))
 }
 fn pages(out: &str) -> Result<Vec<Value>> {
-    serde_json::Deserializer::from_str(out)
+    let pages: Vec<Value> = serde_json::Deserializer::from_str(out)
         .into_iter()
         .collect::<std::result::Result<_, _>>()
-        .context("GitHub equivalent: invalid paginated JSON")
+        .context("GitHub equivalent: invalid paginated JSON")?;
+    if pages.is_empty() {
+        bail!("GitHub equivalent: missing collection receipt; cannot infer empty facts")
+    }
+    Ok(pages)
 }
 fn lines(rows: impl IntoIterator<Item = Value>) -> String {
     rows.into_iter().map(|r| r.to_string()).collect::<Vec<_>>().join("\n")
@@ -37,6 +41,14 @@ fn names(labels: &Value) -> Result<Value> {
             .map(|l| l["name"].as_str().context("GitHub: label without name"))
             .collect::<Result<Vec<_>>>()?
     ))
+}
+fn database_id(value: &Value) -> Result<Value> {
+    let id = value
+        .as_u64()
+        .or_else(|| value.as_str()?.parse::<u64>().ok())
+        .filter(|id| *id > 0)
+        .context("GitHub GraphQL: missing or invalid fullDatabaseId")?;
+    Ok(json!(id))
 }
 fn list(gh: &GitHub, endpoint: &str) -> Result<Vec<Value>> {
     let out = gh.on_api(&["api", "--paginate", endpoint], false)?;
@@ -70,6 +82,16 @@ fn rest_blockers(gh: &GitHub, repo: &str, number: &Value) -> Result<Value> {
 /// Nested connections are completed separately; an absent/null resource is an
 /// error, never an authoritative empty connection.
 fn graph(gh: &GitHub, repo: &str, selection: &str, connection: bool) -> Result<Vec<Value>> {
+    graph_read(gh, repo, selection, connection, false)
+}
+
+fn graph_read(
+    gh: &GitHub,
+    repo: &str,
+    selection: &str,
+    connection: bool,
+    missing_blob: bool,
+) -> Result<Vec<Value>> {
     let (owner, name) = repo.split_once('/').context("GitHub repo must be owner/repo")?;
     let cursor = if connection { ", $endCursor: String" } else { "" };
     let query = format!(
@@ -79,13 +101,18 @@ fn graph(gh: &GitHub, repo: &str, selection: &str, connection: bool) -> Result<V
     let name = format!("repo={name}");
     let query = format!("query={query}");
     let flag = if repo == OWN { "-F" } else { "-f" };
-    let mut args = vec!["api", "graphql", flag, &owner, flag, &name, "-f", &query];
-    if connection {
-        args.push("--paginate");
-    }
-    let out = gh.on_api(&args, false)?;
     let mut rows = vec![];
-    for page in pages(&out)? {
+    let mut after = None::<String>;
+    let mut seen = std::collections::BTreeSet::new();
+    loop {
+        let cursor = after.as_ref().map(|c| format!("endCursor={c}"));
+        let mut args = vec!["api", "graphql", flag, &owner, flag, &name, "-f", &query];
+        if let Some(cursor) = &cursor {
+            args.extend(["-f", cursor]);
+        }
+        let out = gh.on_api(&args, false)?;
+        let page: Value =
+            serde_json::from_str(&out).context("GitHub GraphQL: invalid page receipt")?;
         if page.get("errors").is_some_and(|e| !e.is_null() && e != &json!([])) {
             bail!("GitHub GraphQL returned incomplete facts: {}", page["errors"]);
         }
@@ -94,8 +121,9 @@ fn graph(gh: &GitHub, repo: &str, selection: &str, connection: bool) -> Result<V
             .get("resource")
             .or_else(|| repository["issueOrPullRequest"].get("resource"))
             .or_else(|| repository["issue"].get("resource"))
+            .or_else(|| repository["pullRequest"].get("resource"))
             .context("GitHub GraphQL: missing required resource")?;
-        if resource.is_null() {
+        if resource.is_null() && !missing_blob {
             bail!("GitHub GraphQL: required resource unavailable (not an empty collection)");
         }
         if connection {
@@ -106,15 +134,30 @@ fn graph(gh: &GitHub, repo: &str, selection: &str, connection: bool) -> Result<V
                     .iter()
                     .cloned(),
             );
+            let more = resource["pageInfo"]["hasNextPage"]
+                .as_bool()
+                .context("GitHub GraphQL: missing pagination evidence")?;
+            if !more {
+                break;
+            }
+            let cursor = resource["pageInfo"]["endCursor"]
+                .as_str()
+                .filter(|s| !s.is_empty())
+                .context("GitHub GraphQL: next page missing cursor")?;
+            if !seen.insert(cursor.to_string()) {
+                bail!("GitHub GraphQL: pagination cursor repeated; refusing incomplete facts")
+            }
+            after = Some(cursor.to_string());
         } else {
             rows.push(resource.clone());
+            break;
         }
     }
     Ok(rows)
 }
 
 const LABELS: &str = "labels(first:100) { nodes { name } pageInfo { hasNextPage endCursor } }";
-const ISSUE: &str = "number title body url fullDatabaseId state stateReason createdAt closedAt";
+const ISSUE: &str = "id number title body url fullDatabaseId state stateReason createdAt closedAt";
 const COMMENT: &str = "fullDatabaseId body url createdAt";
 const PR: &str = "number title body headRefName headRefOid isCrossRepository createdAt updatedAt closedAt mergedAt baseRepository { nameWithOwner }";
 
@@ -138,7 +181,7 @@ fn graph_labels(gh: &GitHub, repo: &str, row: &Value) -> Result<Value> {
 
 fn graph_issue(gh: &GitHub, repo: &str, number: u64) -> Result<Value> {
     let issue = format!(
-        "resource: issueOrPullRequest(number:{number}) {{ __typename ... on Issue {{ {ISSUE} {LABELS} }} ... on PullRequest {{ number title body fullDatabaseId state {LABELS} }} }}"
+        "resource: issueOrPullRequest(number:{number}) {{ __typename ... on Issue {{ {ISSUE} {LABELS} }} ... on PullRequest {{ id number title body fullDatabaseId state {LABELS} }} }}"
     );
     graph(gh, repo, &issue, false)?.pop().context("GitHub: missing issue")
 }
@@ -172,6 +215,7 @@ pub(crate) fn run(gh: &GitHub, args: &[&str], writing: bool) -> Result<String> {
     if args.starts_with(&["api", "graphql"])
         || args.starts_with(&["pr", "list"])
         || args.starts_with(&["issue", "list"])
+        || args.starts_with(&["issue", "view"])
     {
         return rest(gh, args);
     }
@@ -179,6 +223,15 @@ pub(crate) fn run(gh: &GitHub, args: &[&str], writing: bool) -> Result<String> {
 }
 
 fn rest(gh: &GitHub, args: &[&str]) -> Result<String> {
+    if args.starts_with(&["issue", "view"]) && opt(args, "--json") == Some("url") {
+        let number: u64 = args.get(2).context("missing issue number")?.parse()?;
+        let repo = opt(args, "--repo").unwrap_or(OWN);
+        let out = gh.on_api(&["api", &format!("repos/{repo}/issues/{number}")], false)?;
+        let row: Value =
+            serde_json::from_str(&out).context("GitHub REST: invalid issue receipt")?;
+        let url = row["html_url"].as_str().context("GitHub REST: missing issue URL")?;
+        return Ok(json!({"url":url}).to_string());
+    }
     if args.starts_with(&["api", "graphql"]) {
         let owner = field(args, "owner").context("GitHub query missing owner")?;
         let name = field(args, "repo").context("GitHub query missing repo")?;
@@ -319,7 +372,8 @@ fn graphql(gh: &GitHub, args: &[&str]) -> Result<String> {
     if let ["issues", number, tail @ ..] = pieces.as_slice() {
         let number: u64 = number.parse().context("GitHub: invalid issue number")?;
         if tail == ["comments"] {
-            return Ok(lines(graph_comments(gh, &repo, number)?.into_iter().map(|r| json!({"id":r["fullDatabaseId"],"body":r["body"],"url":r["url"],"at":time(&r["createdAt"])}))));
+            let rows=graph_comments(gh,&repo,number)?.into_iter().map(|r|Ok(json!({"id":database_id(&r["fullDatabaseId"])? ,"body":r["body"],"url":r["url"],"at":time(&r["createdAt"])}))).collect::<Result<Vec<Value>>>()?;
+            return Ok(lines(rows));
         }
         if tail == ["dependencies", "blocked_by"] {
             let mut rows = vec![];
@@ -334,7 +388,7 @@ fn graphql(gh: &GitHub, args: &[&str]) -> Result<String> {
         if tail.is_empty() {
             // REST closed_by is not available from Issue's ordinary fields.
             // Read the final closure event, with its actor, authoritatively.
-            let mut r = graph_issue(gh, &repo, number)?;
+            let r = graph_issue(gh, &repo, number)?;
             let mut closed_by = Value::Null;
             if r["state"] == "CLOSED" {
                 let selection = format!(
@@ -349,10 +403,13 @@ fn graphql(gh: &GitHub, args: &[&str]) -> Result<String> {
                     .map_or(Value::Null, |r| r["actor"]["login"].clone());
             }
             let labels = graph_labels(gh, &repo, &r)?;
-            let state =
+            let mut state =
                 r["state"].as_str().context("GitHub: missing issue state")?.to_ascii_lowercase();
+            if state == "merged" {
+                state = "closed".into();
+            }
             let reason = r["stateReason"].as_str().map(|s| s.to_ascii_lowercase());
-            return Ok(json!({"id":r["fullDatabaseId"].take(),"title":r["title"],"body":r["body"],"state":state,"state_reason":reason,"labels":labels,"pull_request":r["__typename"]=="PullRequest","closed_by":closed_by}).to_string());
+            return Ok(json!({"id":database_id(&r["fullDatabaseId"])? ,"title":r["title"],"body":r["body"],"state":state,"state_reason":reason,"labels":labels,"pull_request":r["__typename"]=="PullRequest","closed_by":closed_by}).to_string());
         }
     }
     if path == "pulls" {
@@ -378,6 +435,34 @@ fn graphql(gh: &GitHub, args: &[&str]) -> Result<String> {
             .as_str()
             .context("GitHub: missing default branch commit")?
             .to_string());
+    }
+    if let Some(branch) = path.strip_prefix("branches/").and_then(|p| p.strip_suffix("/protection"))
+    {
+        let branch = json!(format!("refs/heads/{}", decode(branch)?));
+        let selection = format!(
+            "resource: ref(qualifiedName:{branch}) {{ branchProtectionRule {{ requiresStatusChecks requiredStatusCheckContexts requiresApprovingReviews restrictsPushes lockBranch }} }}"
+        );
+        let r = graph(gh, &repo, &selection, false)?.pop().context("GitHub: missing branch")?;
+        let rule = &r["branchProtectionRule"];
+        return Ok(json!({"required_status_checks":{"contexts":if rule["requiresStatusChecks"]==true {rule["requiredStatusCheckContexts"].clone()}else{json!([])}},
+            "required_pull_request_reviews":if rule["requiresApprovingReviews"]==true{json!({})}else{Value::Null},
+            "restrictions":if rule["restrictsPushes"]==true{json!({})}else{Value::Null},"lock_branch":{"enabled":rule["lockBranch"]==true}}).to_string());
+    }
+    if let Some(path) = path.strip_prefix("contents/") {
+        let expression = json!(format!("HEAD:{}", decode(path)?));
+        let selection = format!(
+            "resource: object(expression:{expression}) {{ __typename ... on Blob {{ text isBinary isTruncated }} }}"
+        );
+        let r = graph_read(gh, &repo, &selection, false, true)?
+            .pop()
+            .context("GitHub: missing file")?;
+        if r.is_null() {
+            bail!("gh: Not Found (HTTP 404)");
+        }
+        if r["__typename"] != "Blob" || r["isBinary"] != false || r["isTruncated"] != false {
+            bail!("file_of: GraphQL cannot supply the complete text blob; wait for REST reset");
+        }
+        return Ok(r["text"].as_str().context("GitHub: missing file text")?.to_string());
     }
     bail!(
         "gh api {path}: operation has no supported equivalent GraphQL capability; wait for REST core reset"
@@ -405,8 +490,227 @@ fn decode(text: &str) -> Result<String> {
     Ok(String::from_utf8(bytes)?)
 }
 
-fn write(_gh: &GitHub, _args: &[&str]) -> Result<String> {
+fn mutation(gh: &GitHub, operation: &str, input: &str, fields: &str) -> Result<Value> {
+    let query = format!(
+        "query=mutation ConvoyQuotaWrite {{ {operation}(input:{{{input}}}) {{ {fields} }} }}"
+    );
+    // One mutation, once: losing its receipt never starts another mutation.
+    let out = gh.on_api(&["api", "graphql", "-f", &query], true)?;
+    let doc: Value = serde_json::from_str(&out)
+        .context("write receipt invalid; inspect authoritative result before retrying")?;
+    if doc.get("errors").is_some_and(|e| !e.is_null() && e != &json!([])) {
+        bail!(
+            "write outcome uncertain; inspect authoritative result before retrying: {}",
+            doc["errors"]
+        );
+    }
+    let result = &doc["data"][operation];
+    if result.is_null() {
+        bail!("write receipt missing; inspect authoritative result before retrying")
+    }
+    Ok(result.clone())
+}
+
+fn label_ids(gh: &GitHub, repo: &str, names: &[String]) -> Result<Value> {
+    if names.is_empty() {
+        return Ok(json!([]));
+    }
+    let rows = graph(
+        gh,
+        repo,
+        "resource: labels(first:100, after:$endCursor) { nodes { id name } pageInfo { hasNextPage endCursor } }",
+        true,
+    )?;
+    let ids=names.iter().map(|name|{
+        rows.iter().find(|r|r["name"].as_str().is_some_and(|n|n.eq_ignore_ascii_case(name)))
+            .and_then(|r|r["id"].as_str()).with_context(||format!("label {name:?} has no existing GraphQL identity; no partial write attempted"))
+    }).collect::<Result<Vec<_>>>()?;
+    Ok(json!(ids))
+}
+
+fn write(gh: &GitHub, args: &[&str]) -> Result<String> {
+    if args.first() != Some(&"api") || args.get(1) == Some(&"graphql") {
+        bail!(
+            "high-level write has no safe equivalent adapter; inspect authoritative result before retrying after reset"
+        );
+    }
+    let endpoint = args
+        .iter()
+        .find(|s| s.starts_with("repos/"))
+        .context("write endpoint has no equivalent capability")?;
+    let mut parts = endpoint.trim_start_matches("repos/").splitn(3, '/');
+    let repo = format!(
+        "{}/{}",
+        parts.next().context("missing owner")?,
+        parts.next().context("missing repo")?
+    );
+    let path = parts.next().unwrap_or("");
+    let pieces: Vec<_> = path.split('/').collect();
+    let method = opt(args, "--method").or_else(|| opt(args, "-X")).unwrap_or("POST");
+    let text = |name: &str| field(args, name).with_context(|| format!("write missing {name}"));
+    if path == "issues" && method == "POST" {
+        let repo_id = graph(gh, &repo, "resource: id", false)?
+            .pop()
+            .context("GitHub: missing repository id")?;
+        let labels: Vec<_> =
+            args.iter().filter_map(|a| a.strip_prefix("labels[]=").map(str::to_string)).collect();
+        let ids = label_ids(gh, &repo, &labels)?;
+        let input = format!(
+            "repositoryId:{repo_id}, title:{}, body:{}, labelIds:{ids}",
+            json!(text("title")?),
+            json!(text("body")?)
+        );
+        let result = mutation(gh, "createIssue", &input, "issue { number }")?;
+        return Ok(result["issue"]["number"]
+            .as_u64()
+            .context("issue created but number missing; inspect before retrying")?
+            .to_string());
+    }
+    if path == "labels" && method == "POST" {
+        let repo_id = graph(gh, &repo, "resource: id", false)?
+            .pop()
+            .context("GitHub: missing repository id")?;
+        let input = format!(
+            "repositoryId:{repo_id}, name:{}, description:{}, color:{}",
+            json!(text("name")?),
+            json!(text("description")?),
+            json!(text("color")?)
+        );
+        mutation(gh, "createLabel", &input, "label { id }")?;
+        return Ok(String::new());
+    }
+    if let ["issues", number, tail @ ..] = pieces.as_slice() {
+        let number: u64 =
+            number.parse().context("write needs an issue number; no mutation attempted")?;
+        let issue = graph_issue(gh, &repo, number)?;
+        let id = issue["id"]
+            .as_str()
+            .context("GitHub: missing issue node identity; no write attempted")?;
+        if tail == ["comments"] && method == "POST" {
+            mutation(
+                gh,
+                "addComment",
+                &format!("subjectId:{}, body:{}", json!(id), json!(text("body")?)),
+                "commentEdge { node { id } }",
+            )?;
+            return Ok(String::new());
+        }
+        if tail.is_empty()
+            && method == "PATCH"
+            && field(args, "state") == Some("closed")
+            && issue["__typename"] == "Issue"
+        {
+            mutation(
+                gh,
+                "closeIssue",
+                &format!("issueId:{}, stateReason:COMPLETED", json!(id)),
+                "issue { id }",
+            )?;
+            return Ok(String::new());
+        }
+        if tail == ["labels"] && method == "POST" {
+            let names: Vec<_> = args
+                .iter()
+                .filter_map(|a| a.strip_prefix("labels[]=").map(str::to_string))
+                .collect();
+            let ids = label_ids(gh, &repo, &names)?;
+            mutation(
+                gh,
+                "addLabelsToLabelable",
+                &format!("labelableId:{}, labelIds:{ids}", json!(id)),
+                "labelable { __typename }",
+            )?;
+            return Ok(String::new());
+        }
+        if let ["labels", label] = tail
+            && method == "DELETE"
+        {
+            let name = decode(label)?;
+            let held = graph_labels(gh, &repo, &issue)?;
+            if !held.as_array().is_some_and(|labels| {
+                labels.iter().any(|l| l.as_str().is_some_and(|s| s.eq_ignore_ascii_case(&name)))
+            }) {
+                bail!("gh: Label does not exist (HTTP 404)");
+            }
+            let ids = label_ids(gh, &repo, &[name])?;
+            mutation(
+                gh,
+                "removeLabelsFromLabelable",
+                &format!("labelableId:{}, labelIds:{ids}", json!(id)),
+                "labelable { __typename }",
+            )?;
+            return Ok(String::new());
+        }
+    }
     bail!(
-        "write has no verified equivalent adapter; confirmed primary rejection was not retried; inspect the authoritative issue/PR and retry after reset"
+        "write {method} {path} has no supported equivalent GraphQL adapter (database-id dependency/comment edits require an authoritative node identity); confirmed primary rejection was not retried; inspect authoritative result and retry after REST reset"
     )
+}
+
+/// gh list bounds its result and embeds only the first 100 native closing
+/// references. At either boundary, replace its result with a complete paged
+/// query, not a concatenation that can duplicate or lose changing rows.
+/// Small ordinary rebuilds retain their one gh pr list request.
+pub(crate) fn complete_listing(gh: &GitHub, args: &[&str], out: String) -> Result<String> {
+    if !(args.starts_with(&["pr", "list"]) || args.starts_with(&["issue", "list"])) {
+        return Ok(out);
+    }
+    let refs = opt(args, "--json") == Some(gh::PR_FIELDS);
+    let rows: Vec<Value> = if opt(args, "--json") == Some("number") {
+        out.lines()
+            .filter(|s| !s.is_empty())
+            .map(|s| serde_json::from_str(s).context("gh pr list: invalid number"))
+            .collect::<Result<_>>()?
+    } else {
+        serde_json::from_str(&out).context("gh list: invalid receipt")?
+    };
+    if rows.len() < 1000
+        && (!refs
+            || rows
+                .iter()
+                .all(|r| r["closingIssuesReferences"].as_array().is_some_and(|a| a.len() < 100)))
+    {
+        return Ok(out);
+    }
+    let repo = opt(args, "--repo").unwrap_or(OWN);
+    if args[0] == "issue" {
+        return Ok(json!(graph(gh,repo,&format!("resource: issues(states:[OPEN], first:100, after:$endCursor) {{ nodes {{ {ISSUE} }} pageInfo {{ hasNextPage endCursor }} }}"),true)?).to_string());
+    }
+    let merged = opt(args, "--state") == Some("merged");
+    let state = if merged { "[MERGED]" } else { "[OPEN]" };
+    let label =
+        opt(args, "--label").map(|l| format!(", labels:[{}]", json!(l))).unwrap_or_default();
+    let linked = if refs {
+        "closingIssuesReferences(first:100) { nodes { number repository { name owner { login } } } pageInfo { hasNextPage endCursor } } headRepository { name } headRepositoryOwner { login }"
+    } else {
+        ""
+    };
+    let selection = format!(
+        "resource: pullRequests(states:{state}{label}, first:100, after:$endCursor) {{ nodes {{ {PR} {linked} }} pageInfo {{ hasNextPage endCursor }} }}"
+    );
+    let mut rows = graph(gh, repo, &selection, true)?;
+    if merged {
+        return Ok(rows.iter().map(|r| r["number"].to_string()).collect::<Vec<_>>().join("\n"));
+    }
+    for row in &mut rows {
+        if refs {
+            let conn = &row["closingIssuesReferences"];
+            let links = if conn["pageInfo"]["hasNextPage"] == true {
+                let number = row["number"].as_u64().context("PR missing number")?;
+                graph(
+                    gh,
+                    repo,
+                    &format!(
+                        "pullRequest(number:{number}) {{ resource: closingIssuesReferences(first:100, after:$endCursor) {{ nodes {{ number repository {{ name owner {{ login }} }} }} pageInfo {{ hasNextPage endCursor }} }} }}"
+                    ),
+                    true,
+                )?
+            } else {
+                conn["nodes"].as_array().context("PR missing closing references")?.clone()
+            };
+            row["closingIssuesReferences"] = json!(links);
+        }
+        row["since"] = time(&row["createdAt"]);
+    }
+    Ok(json!(rows).to_string())
 }
