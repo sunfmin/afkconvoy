@@ -16,7 +16,12 @@ impl TerminationClock for Clock {
     }
 
     fn sleep(&self, interval: Duration) {
-        self.0.set(self.0.get() + interval);
+        // These four scenarios return the same live terminal forever. Move
+        // to the deadline after the first unsuccessful observation: another
+        // complete OS/runtime refresh must still refuse the replacement.
+        // Replaying fifty identical subprocess polls costs more than sleep
+        // on a loaded host and proves no additional state transition here.
+        self.0.set(self.0.get() + interval.max(Duration::from_secs(5)));
     }
 }
 
