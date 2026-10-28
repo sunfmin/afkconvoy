@@ -422,7 +422,8 @@ pub struct Held {
     /// unread or not checked: only a tick is safe to name then.
     pub stopped_command: Option<&'static str>,
     /// It waits on background work of its own (`judge::waits_on_own_background`).
-    /// A long stop is not a finding while it does, however long the wait.
+    /// A long stop is not a finding while it does, however long the wait,
+    /// including past the gate limit. The since is the worktree's one stamp.
     pub waiting_on_background: bool,
     pub worktree: Option<PathBuf>,
     /// What its worker was started under, in a bound repo.
@@ -717,8 +718,8 @@ fn claim_findings(run: &Run, held: &[Held]) -> Vec<Finding> {
                 ));
             }
             // Waiting on its own background work is not a stop, however long
-            // the terminal has been quiet. The same test the tick's line and
-            // worker health read.
+            // the terminal has been quiet, and past the gate limit too. The
+            // same read of its screen the tick uses; the since is the stamp.
             Some(WorkerState::Idle { quiet: Some(quiet) })
                 if quiet >= STOPPED_LONG && !claim.waiting_on_background =>
             {
@@ -808,9 +809,6 @@ fn log_findings(run: &Run) -> Vec<Finding> {
                 || did.into_iter().flatten().any(|step| recovered(failed, step)))
         });
         for failed in tick.failed() {
-            if matches!(failed.step.as_str(), "tend_train" | "cut_train") {
-                continue;
-            }
             pending.retain(|(_, previous)| !previous.same_step(&failed));
             pending.push((tick.count, failed));
         }
@@ -1858,7 +1856,10 @@ pub fn doctor_with_proxy_rounds(
     rounds: bool,
 ) -> Result<Value> {
     let look = Look::new(now, rounds);
-    let (mut answer, found) = examined(repo, now, host, proxy, &look)?;
+    let (mut answer, mut found) = examined(repo, now, host, proxy, &look)?;
+    // A host finding is said here with this checkout. `doctor --all` says
+    // each once, so `examined` leaves those unnamed.
+    name_fixes(&repo.dir, &mut found);
     let unwell = critical(&found);
     answer["findings"] = serde_json::to_value(found)?;
     if unwell {
@@ -1871,6 +1872,13 @@ pub fn doctor_with_proxy_rounds(
 /// non-zero.
 fn critical(found: &[Finding]) -> bool {
     found.iter().any(|finding| finding.severity == Severity::Critical)
+}
+
+/// Name `checkout` on each afkconvoy command in `found`.
+fn name_fixes(checkout: &Path, found: &mut [Finding]) {
+    for finding in found {
+        finding.fix = crate::checkout::about_checkout(checkout, &finding.fix);
+    }
 }
 
 /// What `doctor` makes of one checkout (`examined`): its answer but for
@@ -1931,6 +1939,11 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String], look: &Look) ->
     found.extend(host_runner::findings());
     found.extend(crate::host_watch::finding());
     found.extend(look.findings.clone());
+    // A finding of this checkout names it. A host finding stays as it was
+    // read, so `doctor --all` can say the same one once.
+    for finding in found.iter_mut().filter(|finding| !finding.of_host) {
+        finding.fix = crate::checkout::about_checkout(&repo.dir, &finding.fix);
+    }
     found.sort_by_key(|finding| finding.severity);
     let (claims, issues, waiting) = match &state {
         Ok(state) => (
@@ -2148,6 +2161,11 @@ pub fn all_since_rounds(
             }
         };
         checkouts.push(json!({"checkout": entry.checkout, "repo": key, "doctor": doctor}));
+    }
+    // Said once, named for the first checkout on the list: the lines are
+    // equal while they are gathered, and each runs from any directory.
+    if let Some(checkout) = listed.first() {
+        name_fixes(&checkout.checkout, &mut of_host);
     }
     of_host.sort_by_key(|finding| finding.severity);
     unwell |= critical(&of_host);
@@ -2605,7 +2623,7 @@ mod tests {
     }
 
     #[test]
-    fn retired_train_steps_do_not_leave_an_actionable_failure_after_upgrade() {
+    fn a_failed_tend_train_or_cut_train_is_that_failed_step() {
         let failed = tick(
             4,
             json!([
@@ -2613,7 +2631,15 @@ mod tests {
                 {"do": "cut_train", "error": "no checkout"}
             ]),
         );
-        assert_eq!(log_findings(&run(vec![failed, tick(5, json!([]))])), []);
+        let found = log_findings(&run(vec![failed, tick(5, json!([]))]));
+        let what: Vec<_> = found.iter().map(|finding| finding.what.as_str()).collect();
+        assert_eq!(
+            what,
+            [
+                "`tend_train` failed in tick 4 and has not recovered",
+                "`cut_train` failed in tick 4 and has not recovered",
+            ]
+        );
     }
 
     #[test]

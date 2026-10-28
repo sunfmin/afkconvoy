@@ -383,6 +383,27 @@ fn read_only(path: &Path) -> Result<()> {
         .with_context(|| format!("cannot set the mode of {}", path.display()))
 }
 
+/// Gives the owner back the write permission on every directory under `path`,
+/// so that it can be removed: a copy is read-only, directories included, and
+/// a test killed before it ends leaves the copies it made where it ran. A
+/// symlink is left as it is, and nothing it names is opened. Best effort: what
+/// cannot be opened, the removal that follows fails on and says.
+pub fn removable(path: &Path) {
+    let Ok(found) = std::fs::symlink_metadata(path) else { return };
+    if !found.is_dir() {
+        return;
+    }
+    let mode = found.permissions().mode();
+    if (mode & 0o200) == 0 {
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode | 0o200));
+    }
+    for entry in std::fs::read_dir(path).into_iter().flatten().flatten() {
+        if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            removable(&entry.path());
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

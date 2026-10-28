@@ -35,8 +35,10 @@ const BRIEF_FILE: &str = "convoy-worker-prompt.md";
 const CASTER_FILE: &str = "convoy-caster";
 /// When the worker here was nudged (epoch seconds), beside the brief.
 const NUDGE_FILE: &str = "convoy-nudged";
-/// When the worker here was first seen waiting on its own background work
-/// (epoch seconds), beside the brief: gone once it is seen waiting on none.
+/// The one since this worker has waited on its own background work (epoch
+/// seconds), beside the brief. The tick line, worker health and a later tick
+/// all name this file. It is gone once the turn is open, or the worker is
+/// seen waiting on none.
 const BACKGROUND_FILE: &str = "convoy-background";
 /// When the worker here was started (epoch seconds), beside the brief.
 const START_FILE: &str = "convoy-started";
@@ -1054,22 +1056,44 @@ impl Worktree {
         })
     }
 
-    /// When the worker here was first seen waiting on its own background
-    /// work — `waiting`, as its screen shows now — recorded `now` when it
-    /// was not; `None`, and the record gone, when it waits on none.
-    pub fn background_since(&self, waiting: bool, now: u64) -> Result<Option<u64>> {
+    /// The one since this worker has waited on its own background work.
+    ///
+    /// `waiting` is what one read of its screen and the exclusive queue just
+    /// answered. `earlier` is a moment already known — when it asked the
+    /// queue — and the stamp stays the earliest of that and the moment first
+    /// written. `None`, and the record gone, when it waits on none: the turn
+    /// is open, or that read showed nothing. Nothing else keeps a since.
+    pub fn background_since(
+        &self,
+        waiting: bool,
+        earlier: Option<u64>,
+        now: u64,
+    ) -> Result<Option<u64>> {
         if !waiting {
             self.forget(BACKGROUND_FILE)?;
             return Ok(None);
         }
         let file = self.note(BACKGROUND_FILE)?;
-        let seen = std::fs::read_to_string(&file).ok();
-        if let Some(since) = seen.and_then(|at| at.trim().parse().ok()) {
-            return Ok(Some(since));
+        let seen: Option<u64> =
+            std::fs::read_to_string(&file).ok().and_then(|at| at.trim().parse().ok());
+        let since = match (seen, earlier) {
+            (Some(seen), Some(earlier)) => seen.min(earlier),
+            (Some(seen), None) => seen,
+            (None, Some(earlier)) => earlier,
+            (None, None) => now,
+        };
+        if seen != Some(since) {
+            std::fs::write(&file, since.to_string())
+                .with_context(|| format!("cannot write {}", file.display()))?;
         }
-        std::fs::write(&file, now.to_string())
-            .with_context(|| format!("cannot write {}", file.display()))?;
-        Ok(Some(now))
+        Ok(Some(since))
+    }
+
+    /// The one since, read and not written. `None` when the turn is open or
+    /// the worker was last seen waiting on none.
+    pub fn background_at(&self) -> Option<u64> {
+        let file = self.note(BACKGROUND_FILE).ok()?;
+        std::fs::read_to_string(file).ok()?.trim().parse().ok()
     }
 
     pub fn record_nudge(&self, at: u64) -> Result<()> {

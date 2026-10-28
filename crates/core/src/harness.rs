@@ -4,13 +4,15 @@
 //! the report to the worker backend, and how a tool call reaches the guard
 //! and is answered are each one harness's own. What is one harness's is in
 //! its module here and nowhere else: nothing outside names a flag, a
-//! variable, a hook event or a path of it.
+//! variable, a hook event or a path of it, nor where it keeps its session,
+//! nor which of its lines start or end a turn (docs/adr/0044).
 
 use serde::{Deserialize, Deserializer};
 
 use crate::guard::Call;
 use crate::line::Line;
 use crate::role::{HARNESS_ENV, MODEL_ENV, Start};
+use crate::turn::Turn;
 
 mod claude_code;
 mod codex;
@@ -18,6 +20,7 @@ mod dsh;
 mod grok;
 mod kimi;
 mod pi;
+mod session;
 
 pub(crate) use grok::not_authenticated as grok_not_authenticated;
 
@@ -57,6 +60,46 @@ pub enum Held<D> {
     File(D),
     /// A directory of this many entries.
     Entries(usize),
+}
+
+/// Where one harness keeps the session of one worktree. The reader opens
+/// the files. A missing directory is no turn.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionPlace {
+    /// The harness directory under a user's home. A directory the fleet
+    /// keeps for the harness, and a home [`Harness::noted_home`] names, are
+    /// already this directory.
+    pub under_home: &'static str,
+    /// How the files of this worktree are laid out under that directory.
+    pub layout: SessionLayout,
+}
+
+/// How the files of one worktree are laid out under the harness directory.
+/// The reader opens them. It does not interpret them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SessionLayout {
+    /// Each file of `extension` directly in `dir` is one session.
+    Files { dir: String, extension: &'static str },
+    /// Each file of `extension` anywhere under `dir` is one session.
+    Tree { dir: String, extension: &'static str },
+    /// Each `dir/*/<name>` is one session. `compressed` means the bytes are zstd.
+    Named { dir: String, name: &'static str, compressed: bool },
+    /// `file` names the session files ([`Harness::indexed_sessions`]).
+    Index { file: String },
+}
+
+/// One file of a session a stand-in writes under the harness directory.
+/// The body is the text [`Harness::recorded_turn`] reads.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionFile {
+    /// Path under the harness directory.
+    pub path: String,
+    /// The session text, before `compressed` storage.
+    pub body: String,
+    /// The body is stored as zstd.
+    pub compressed: bool,
+    /// Before writing, delete every file of this name under the harness directory.
+    pub replaces: Option<String>,
 }
 
 /// Where a probe's answer says which model answered.
@@ -752,6 +795,97 @@ impl Harness {
         }
     }
 
+    /// Where this harness keeps the session of the worktree `cwd`.
+    ///
+    /// [`SessionPlace::under_home`] is that directory under a user's home.
+    /// A directory the fleet keeps for the harness, and a home [`noted_home`]
+    /// names, are already that directory. The reader opens the files
+    /// [`SessionPlace::layout`] names. A missing directory is no turn.
+    pub fn session_place(self, cwd: &str) -> SessionPlace {
+        let (under_home, layout) = match self {
+            Harness::ClaudeCode => (claude_code::HOME, claude_code::session_layout(cwd)),
+            Harness::Pi => (pi::HOME, pi::session_layout(cwd)),
+            Harness::Codex => (codex::HOME, codex::session_layout(cwd)),
+            Harness::Dsh => (dsh::HOME, dsh::session_layout(cwd)),
+            Harness::Kimi => (kimi::HOME, kimi::session_layout(cwd)),
+            Harness::Grok => (grok::HOME, grok::session_layout(cwd)),
+        };
+        SessionPlace { under_home, layout }
+    }
+
+    /// The turn one session file's `text` records for the worktree `cwd`.
+    ///
+    /// `None` when the file is another worktree, or it holds no turn of this
+    /// send. `not_before` is the start proof's bound: a turn that started
+    /// earlier is not this send. A child session does not start or end the
+    /// worker's turn.
+    pub fn recorded_turn(self, cwd: &str, text: &str, not_before: Option<u64>) -> Option<Turn> {
+        match self {
+            Harness::ClaudeCode => claude_code::recorded_turn(cwd, text, not_before),
+            Harness::Pi => pi::recorded_turn(cwd, text, not_before),
+            Harness::Codex => codex::recorded_turn(cwd, text, not_before),
+            Harness::Dsh => dsh::recorded_turn(cwd, text, not_before),
+            Harness::Kimi => kimi::recorded_turn(cwd, text, not_before),
+            Harness::Grok => grok::recorded_turn(cwd, text, not_before),
+        }
+    }
+
+    /// The session files an index names for the worktree `cwd`.
+    ///
+    /// Each path is absolute, or relative to the harness directory. A harness
+    /// that keeps no index names none. The reader opens them. A missing file
+    /// is no turn, and one it cannot read is an error.
+    pub fn indexed_sessions(self, cwd: &str, index: &str) -> Vec<String> {
+        match self {
+            Harness::Kimi => kimi::indexed_sessions(cwd, index),
+            Harness::ClaudeCode | Harness::Pi | Harness::Codex | Harness::Dsh | Harness::Grok => {
+                Vec::new()
+            }
+        }
+    }
+
+    /// The files a stand-in writes under the harness directory so a later
+    /// read sees this turn.
+    ///
+    /// `open` leaves the turn unended. `at` is when it was written, in epoch
+    /// seconds. The body is the text [`recorded_turn`] reads.
+    pub fn session_files(self, cwd: &str, open: bool, at: u64) -> Vec<SessionFile> {
+        match self {
+            Harness::ClaudeCode => claude_code::session_files(cwd, open, at),
+            Harness::Pi => pi::session_files(cwd, open, at),
+            Harness::Codex => codex::session_files(cwd, open, at),
+            Harness::Dsh => dsh::session_files(cwd, open, at),
+            Harness::Kimi => kimi::session_files(cwd, open, at),
+            Harness::Grok => grok::session_files(cwd, open, at),
+        }
+    }
+
+    /// The index after this worktree's turn is recorded, given the `existing`
+    /// index. `""` is an index that was not there. `None` when this harness
+    /// keeps no index. Lines for other worktrees stay.
+    pub fn session_index(self, cwd: &str, existing: &str) -> Option<String> {
+        match self {
+            Harness::Kimi => Some(kimi::session_index(cwd, existing)),
+            Harness::ClaudeCode | Harness::Pi | Harness::Codex | Harness::Dsh | Harness::Grok => {
+                None
+            }
+        }
+    }
+
+    /// The name of a note beside the worktree's git directory.
+    ///
+    /// Its text is another harness directory whose session is also this
+    /// worktree's. `None` when the user's home and the directories the fleet
+    /// keeps are the only places.
+    pub const fn noted_home(self) -> Option<&'static str> {
+        match self {
+            Harness::Codex => Some(codex::HOME_NOTE),
+            Harness::ClaudeCode | Harness::Pi | Harness::Dsh | Harness::Kimi | Harness::Grok => {
+                None
+            }
+        }
+    }
+
     /// The exit code that tells this harness the guard refuses a call: the
     /// call is not made, and what the guard wrote on stderr is shown to the
     /// worker.
@@ -887,5 +1021,212 @@ mod tests {
             "codex --yolo --model 'gpt-x'"
         );
         assert_eq!(Harness::Dsh.with_model("dsh-tui", "ds"), "dsh-tui");
+    }
+
+    const AT: u64 = 1_793_106_373;
+    const CWD: &str = "/Users/sunfmin/Developments/chessmirror";
+
+    #[test]
+    fn each_harness_names_where_it_keeps_a_session() {
+        assert!(matches!(
+            Harness::ClaudeCode.session_place(CWD).layout,
+            SessionLayout::Files { dir, extension: "jsonl" }
+                if dir == "projects/-Users-sunfmin-Developments-chessmirror"
+        ));
+        assert!(matches!(
+            Harness::Pi.session_place(CWD).layout,
+            SessionLayout::Files { dir, extension: "jsonl" }
+                if dir == "sessions/--Users-sunfmin-Developments-chessmirror--"
+        ));
+        assert!(matches!(
+            Harness::Codex.session_place(CWD).layout,
+            SessionLayout::Tree { dir, extension: "jsonl" } if dir == "sessions"
+        ));
+        assert!(matches!(
+            Harness::Dsh.session_place(CWD).layout,
+            SessionLayout::Named { dir, name, compressed: true }
+                if dir == "sessions/--Users-sunfmin-Developments-chessmirror--"
+                    && name == "session.v4.jsonl.zstd"
+        ));
+        assert!(matches!(
+            Harness::Kimi.session_place(CWD).layout,
+            SessionLayout::Index { file } if file == "session_index.jsonl"
+        ));
+        assert!(matches!(
+            Harness::Grok.session_place(CWD).layout,
+            SessionLayout::Named { dir, name, compressed: false }
+                if dir == "sessions/%2FUsers%2Fsunfmin%2FDevelopments%2Fchessmirror"
+                    && name == "events.jsonl"
+        ));
+        for harness in Harness::ALL {
+            let place = harness.session_place(CWD);
+            assert!(!place.under_home.is_empty(), "{}", harness.key());
+        }
+        assert_eq!(Harness::Codex.noted_home(), Some(codex::HOME_NOTE));
+        for harness in Harness::ALL {
+            if harness == Harness::Codex {
+                continue;
+            }
+            assert_eq!(harness.noted_home(), None, "{}", harness.key());
+        }
+    }
+
+    #[test]
+    fn a_long_worktree_keeps_a_short_session_name() {
+        let cwd = format!("/{}", "segment/".repeat(40));
+        assert!(cwd.len() > 255);
+        for harness in Harness::ALL {
+            let place = harness.session_place(&cwd);
+            let dir = match place.layout {
+                SessionLayout::Files { dir, .. } | SessionLayout::Named { dir, .. } => dir,
+                SessionLayout::Tree { dir, .. } | SessionLayout::Index { file: dir } => dir,
+            };
+            for component in dir.split('/') {
+                assert!(component.len() <= 255, "{}: {component}", harness.key());
+            }
+            for file in harness.session_files(&cwd, true, AT) {
+                for component in file.path.split('/') {
+                    assert!(component.len() <= 255, "{}: {component}", harness.key());
+                }
+            }
+        }
+        for harness in [Harness::ClaudeCode, Harness::Pi, Harness::Dsh, Harness::Grok] {
+            let place = harness.session_place(&cwd);
+            let dir = match place.layout {
+                SessionLayout::Files { dir, .. } | SessionLayout::Named { dir, .. } => dir,
+                SessionLayout::Tree { .. } | SessionLayout::Index { .. } => unreachable!(),
+            };
+            let component = dir.rsplit('/').next().unwrap();
+            assert!(component.starts_with("afkconvoy-"), "{}: {component}", harness.key());
+        }
+    }
+
+    #[test]
+    fn an_open_line_keeps_the_worker_busy_and_an_end_makes_it_idle() {
+        use crate::worker::{WorkerState, worker_state};
+        for harness in Harness::ALL {
+            let open = turn_of(harness, true);
+            assert_eq!(worker_state(1, open, AT + 10), WorkerState::Busy, "{} open", harness.key());
+            let closed = turn_of(harness, false);
+            assert!(
+                matches!(worker_state(1, closed, AT + 10), WorkerState::Idle { quiet: Some(_) }),
+                "{} closed: {closed:?}",
+                harness.key()
+            );
+            assert_eq!(
+                turn_of_bound(harness, true, Some(AT + 1)),
+                None,
+                "{} must not prove a start before the bound",
+                harness.key()
+            );
+        }
+    }
+
+    #[test]
+    fn a_child_session_does_not_end_the_workers_turn() {
+        use crate::turn::Turn;
+        use crate::worker::{WorkerState, worker_state};
+        let iso = "2026-10-27T13:06:13Z";
+        let claude = format!(
+            "{}\n{}\n",
+            serde_json::json!({
+                "type": "user",
+                "timestamp": iso,
+                "cwd": CWD,
+                "isSidechain": false
+            }),
+            serde_json::json!({
+                "type": "assistant",
+                "timestamp": iso,
+                "cwd": CWD,
+                "isSidechain": true,
+                "message": {"stop_reason": "end_turn"}
+            })
+        );
+        let claude = Harness::ClaudeCode.recorded_turn(CWD, &claude, None);
+        assert_eq!(claude, Some(Turn::Open { since: AT }));
+        assert_eq!(worker_state(1, claude, AT + 10), WorkerState::Busy);
+
+        let grok = format!(
+            "{}\n{}\n",
+            serde_json::json!({
+                "ts": iso,
+                "type": "turn_started",
+                "session_relationship": "primary"
+            }),
+            serde_json::json!({
+                "ts": iso,
+                "type": "turn_ended",
+                "session_relationship": "subagent"
+            })
+        );
+        let grok = Harness::Grok.recorded_turn(CWD, &grok, None);
+        assert_eq!(grok, Some(Turn::Open { since: AT }));
+        assert_eq!(worker_state(1, grok, AT + 10), WorkerState::Busy);
+
+        let primary = format!(
+            "{}\n{}\n",
+            serde_json::json!({"ts": iso, "type": "turn_started"}),
+            serde_json::json!({"ts": iso, "type": "turn_ended"})
+        );
+        assert_eq!(
+            Harness::Grok.recorded_turn(CWD, &primary, None),
+            Some(Turn::Closed { since: AT })
+        );
+    }
+
+    #[test]
+    fn another_worktree_s_session_is_not_this_turn() {
+        let elsewhere = "/somewhere/else";
+        let claude = Harness::ClaudeCode.session_files(elsewhere, true, AT);
+        assert_eq!(Harness::ClaudeCode.recorded_turn(CWD, &claude[0].body, None), None);
+        let pi = Harness::Pi.session_files(elsewhere, true, AT);
+        assert_eq!(Harness::Pi.recorded_turn(CWD, &pi[0].body, None), None);
+        let codex = Harness::Codex.session_files(elsewhere, true, AT);
+        assert_eq!(Harness::Codex.recorded_turn(CWD, &codex[0].body, None), None);
+        let index = Harness::Kimi.session_index(elsewhere, "").unwrap();
+        assert!(Harness::Kimi.indexed_sessions(CWD, &index).is_empty());
+        let kept = Harness::Kimi.session_index(CWD, &index).unwrap();
+        assert_eq!(Harness::Kimi.indexed_sessions(elsewhere, &kept).len(), 1);
+        assert_eq!(Harness::Kimi.indexed_sessions(CWD, &kept).len(), 1);
+    }
+
+    #[test]
+    fn an_index_names_the_session_file_it_records() {
+        let index = Harness::Kimi.session_index(CWD, "not json\n").unwrap();
+        assert!(index.lines().any(|line| line == "not json"));
+        let named = Harness::Kimi.indexed_sessions(CWD, &index);
+        let written: Vec<_> = Harness::Kimi
+            .session_files(CWD, true, AT)
+            .iter()
+            .map(|file| file.path.clone())
+            .collect();
+        assert_eq!(named, written);
+        let absolute =
+            serde_json::json!({"workDir": CWD, "sessionDir": "/tmp/kimi-session"}).to_string();
+        let expected = std::path::Path::new("/tmp/kimi-session")
+            .join("agents/main/wire.jsonl")
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(Harness::Kimi.indexed_sessions(CWD, &absolute), vec![expected]);
+    }
+
+    /// The turn `harness` records in the files it would write, open when `open`.
+    fn turn_of(harness: Harness, open: bool) -> Option<crate::turn::Turn> {
+        turn_of_bound(harness, open, Some(AT - 2))
+    }
+
+    fn turn_of_bound(
+        harness: Harness,
+        open: bool,
+        not_before: Option<u64>,
+    ) -> Option<crate::turn::Turn> {
+        let mut turns = Vec::new();
+        for file in harness.session_files(CWD, open, AT) {
+            if let Some(turn) = harness.recorded_turn(CWD, &file.body, not_before) {
+                turns.push(turn);
+            }
+        }
+        crate::turn::prefer(&turns)
     }
 }

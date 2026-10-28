@@ -65,6 +65,7 @@ fn lands_on_no_issue(world: &World, name: &str) {
     assert_eq!(world.gh()["issues"], json!([]), "no issue was opened");
     let plan = world.afk(&["plan", "--instance", "me", "--now", "10100"]).ok();
     assert!(plan.get("watches_on_train").is_none(), "no train: {plan}");
+    crate::common::stopped_candidates_gone(world, &checkout);
 }
 
 #[test]

@@ -35,6 +35,17 @@ fn manual() -> String {
 }
 
 #[test]
+fn cut_help_gives_five_hours_at_the_default_and_three_beside_the_gates() {
+    let help = asked(&["help", "cut"]);
+    assert!(help.contains("five hours at the default"), "{help}");
+    assert!(help.contains("three hours beside the two gate limits"), "{help}");
+    assert!(!help.contains("an hour beside"), "{help}");
+    assert!(!help.contains("three hours at the default"), "{help}");
+    assert!(help.contains("Leaving it out means 18000s"), "{help}");
+    assert!(!help.contains("3600"), "{help}");
+}
+
+#[test]
 fn help_explains_the_idle_wait_and_a_closed_blockers_wake() {
     for text in [asked(&["help"]), asked(&["run", "--help"])] {
         assert!(text.contains("25 minutes"), "{text}");
@@ -1189,9 +1200,14 @@ fn kit_and_doctor_print_the_glossarys_research_states_and_kit_gives_both_outcome
 #[test]
 fn the_retired_train_commands_and_lanes_are_absent_from_public_help() {
     let help = manual();
-    for retired in
-        ["--train-lanes", "cut_train", "tend_train", "afkconvoy abandon", "landing train given up"]
-    {
+    for retired in [
+        "--train-lanes",
+        "AFKCONVOY_TRAIN_LANES",
+        "cut_train",
+        "tend_train",
+        "afkconvoy abandon",
+        "landing train given up",
+    ] {
         assert!(!help.contains(retired), "{retired} in help");
     }
 }

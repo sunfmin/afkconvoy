@@ -688,6 +688,9 @@ impl Fleet {
         };
         let mut set = assemble(&seen, me, self.now, &self.config);
         open.issues.explain(&mut set.waiting_on_human);
+        for waiting in &mut set.waiting_on_human {
+            waiting.answer = crate::checkout::about_checkout(&self.repo.dir, &waiting.answer);
+        }
         set.casting = crate::caster::status(self, &open.issues, stages.team().ok());
         match self.config.bound {
             None => self.cast_frontier(&mut set, &open.issues),

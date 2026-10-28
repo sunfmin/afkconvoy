@@ -29,7 +29,7 @@ To watch a running fleet, checking on it every few minutes, run `afkconvoy docto
 
 Every host watches itself: in the operator's directory where `afkconvoy run --watch-dir <dir>` names one, otherwise as the stock watch in afkconvoy's own directory. Its host runner takes that look every five minutes, with no model, and when it holds something an operator would act on, starts one watch — an agent session in that directory, given the look — continued on another harness where its own gives out. `afkconvoy run --help` says when, and `doctor` says the watch running and what the last one did.
 
-A watch is the operator for every repo on the host's checkout list. It trusts worktrees, restarts, nudges, continues or switches workers and changes host settings; once a fleet fault is fixed it hands the escalated issue back with the line `doctor` names and checks the next tick dispatches it. It may change any listed repo in a checkout of its own, land it in that repo's turn with `land --watch`. Where the fix must reach an installed tool, it has that repo's fleet cut a version after landing, lets the host runner move onto it and checks the fault on the new version. Human decisions stay with the human, untouched and listed in the watch's record; what it prints records each fix, PR, cut, check and anything still pending. It acts only on what the fleets own, preserves what cannot be rebuilt and changes no base branch outside a landing turn. Its sessions together have one hour.
+A watch is the operator for every repo on the host's checkout list. It trusts worktrees, restarts, nudges, continues or switches workers; once a fleet fault is fixed it hands the escalated issue back with the line `doctor` names and checks the next tick dispatches it. It may change any listed repo in a checkout of its own, land it in that repo's turn with `land --watch`. Where the fix must reach an installed tool, it has that repo's fleet cut a version after landing and checks the fault on the new version. Human decisions stay with the human, untouched and listed. It acts only on what the fleets own, preserves what cannot be rebuilt and changes no base branch outside a landing turn. Its sessions together have one hour.
 
 And whenever something looks wrong: `afkconvoy doctor` — it changes nothing, and names each fix.
 
@@ -59,6 +59,7 @@ Read `afkconvoy help <topic>` when this guide or a command's help names it: it p
 
 ## Rules to know before you start
 
+- A command with no argument of its own takes the checkout as a path after it, and as `-C <checkout>` when it has one; a fix line and one typed by hand use that form.
 - One fleet instance per host per repo. `run` in a second checkout of a repo on the host's checkout list is refused, naming the first: run it there.
 - `run` returns once its checkout's first tick ended: the host runner ticks on, in the background, until `afkconvoy stop --all` stops it, keeping the checkout list. `afkconvoy stop` takes one checkout off the list. `tick` is one pass that exits.
 - Between ticks a fleet instance sleeps 90 seconds while it has work, or 25 minutes after 3 empty ticks. Commands that change fleet state wake it sooner, including a worker's last `afkconvoy wake`. When a fleet on this host closes an issue or sees it closed, it also wakes every other fleet on the same tracker whose open issues it blocked. That next tick reads GitHub and takes up an issue whose last open blocker closed; its tick log names the closed issue and the fleet instance that saw it. After changing issues with `gh`, run `afkconvoy wake <checkout>` on the fleet's host: `gh` sends no wake.
@@ -501,13 +502,13 @@ With `--all` it reads the checkout list (checkouts.json in the cache directory) 
 - `refusals`: issue number → the harnesses that refused that task, each with `harness` and `evidence`, read from GitHub. Later starts skip them across every stage; the harness stays healthy for other issues.
 - `candidates`: the remote candidate chains for every target branch of this repo, each in order and identified by `target_branch`. Each candidate includes its commit, predecessor, current candidate stage and what it is waiting for; `waiting` distinguishes worktree construction, validation, a predecessor and process exit. An error reading the chain is reported as `{error}`.
 - `codex_workers`: this checkout's Codex sessions, each with issue, worktree, harness, model, effort, model_source, effort_source and codex_home (its private session directory). Automatic starts read the model from your `~/.codex/config.toml` (`user_selection`), an issue's `model:` label keeps casting (`casting`), and no user preference leaves the model null for Codex's native default (`codex_default`). Every start reads the effort from your own Codex config, or uses Codex's model default. Sources stay attached to the session after your config changes; a saved `/model` choice is shown with its session's private config as the source. [`afkconvoy help worker-launch`](help:worker-launch).
-- `waiting_on_human`: as `plan` answers it, and as the panel lists it under "With a human": every open issue nobody holds that waits for a human — escalated, at a stage that is a human's, past the end of its workflow and still open, or reporting a patrol's failed run — each as {issue, title, why, url, since, answer}: `why` is what kind of wait, then the reason the issue’s comment gives, in its first sentence; `url` is that comment (the report itself for an older failed patrol or cut with no reason comment), or null where no comment explains the wait; `answer` is the line that answers it, to run as it is but for what stands between < and >. An escalation with no position gets the team's only flow label filled in; with several workflows, `why` lists the flow labels to choose `<flow label>` from. null when the issues could not be read
+- `waiting_on_human`: as `plan` answers it, and as the panel lists it under "With a human": every open issue nobody holds that waits for a human — escalated, at a stage that is a human's, past the end of its workflow and still open, or reporting a patrol's failed run — each as {issue, title, why, url, since, answer}: `why` is what kind of wait, then the reason the issue’s comment gives, in its first sentence; `url` is that comment (the report itself for an older failed patrol or cut with no reason comment), or null where no comment explains the wait; `answer` is the line that answers it, run as printed apart from what stands between < and >, naming the checkout as that command takes it so the line runs from any directory. An escalation with no position gets the team's only flow label filled in; with several workflows, `why` lists the flow labels to choose `<flow label>` from. null when the issues could not be read
 - `findings`: what is wrong, most severe first — none: []. Each is {severity, what, evidence, fix, see}:
 
   - `severity`: how much it matters, one of those below
   - `what`: the fault, in a sentence
   - `evidence`: what was read that says so
-  - `fix`: one command line to run as it is but for what stands between < and > — or, for a fault in a team's or a role's file, or a key the repo's config leaves out, `<file>: <key>` to edit. For an escalation with no position and several workflows, `what` lists the flow labels to choose `<flow label>` from
+  - `fix`: one command line, run as printed apart from what stands between < and > — it names the checkout as the command takes it, so the line runs from any directory, and `afkconvoy doctor --all` is run from anywhere — or, for a fault in a team's or a role's file, or a key the repo's config leaves out, `<file>: <key>` to edit. For an escalation with no position and several workflows, `what` lists the flow labels to choose `<flow label>` from
   - `see`: the command that prints the help topic explaining it: `afkconvoy help humans` where what it reports waits for a human, else `afkconvoy help troubleshooting`, which has a row for each finding
 
 A finding's `severity` is one of, most first:
@@ -612,7 +613,7 @@ The rebuild asks GitHub twice, side by side with one listing of the remote, howe
 - `caster`: while a caster runs or one is due:
 
   {running_since, due, held, to_cast} — when the one that runs was started (null: none runs), whether a tick starts one now, the frontier's issues held back for it, and every issue a caster started now is given. An uncast issue with a choice to make waits for one, for ten minutes at most from its start: `afkconvoy cast --help`
-- `waiting_on_human`: every open issue nobody holds that waits for a human, lowest number first: {issue, title, why, url, since, answer} — `why`: what kind of wait, then the reason the issue’s comment gives, in its first sentence; `url`: that comment (the report itself for an older failed patrol or cut with no reason comment), or null where no comment explains the wait; since when in epoch seconds where GitHub said, and the line that answers it, to run as it is but for what stands between < and >. An escalation with no position gets the team's only flow label filled in; with several workflows, `why` lists the flow labels to choose `<flow label>` from. They are: an escalated issue, one whose records call for a human, one at a stage that is a human's, one whose workflow ended and that is still open, and the report of a patrol's failed run
+- `waiting_on_human`: every open issue nobody holds that waits for a human, lowest number first: {issue, title, why, url, since, answer} — `why`: what kind of wait, then the reason the issue’s comment gives, in its first sentence; `url`: that comment (the report itself for an older failed patrol or cut with no reason comment), or null where no comment explains the wait; since when in epoch seconds where GitHub said, and the line that answers it, run as printed apart from what stands between < and >, naming the checkout as that command takes it so the line runs from any directory. An escalation with no position gets the team's only flow label filled in; with several workflows, `why` lists the flow labels to choose `<flow label>` from. They are: an escalated issue, one whose records call for a human, one at a stage that is a human's, one whose workflow ended and that is still open, and the report of a patrol's failed run
 - `escalating`: in a bound repo, when there are any: the unclaimed issues a tick hands to a human, with why: {number, title, reason}
 - `mine`: the claims of `--instance`: {number, title, status, pr, declared} — `declared` is true while a verdict declared under the claim waits to be acted on: the claim takes no slot meanwhile. In a bound repo with `due`, the stage a worker is to be started on once the claim's stage has declared, where a role performs one. status is one of those below
 - `peer_live`: other instances' claims within the lease — never touched
@@ -1470,6 +1471,8 @@ The operator, in a checkout of the repo.
 
 What one tick of `run` does: the startup probe, the rebuild, then every transition the working set calls for — on the remote, on GitHub and in orca. It does not wait for the workers it starts, and keeps nothing on this host a later tick needs. Like `plan` it makes no probe while one that passed on this host in the last hour stands, and says so on stderr (`afkconvoy plan --help`) — one that checked the worker launch commands this tick starts its workers with: a changed host kit is probed for. What is checked of each harness's command: `afkconvoy run --help`; the line each harness's worker is started with: [`afkconvoy help worker-launch`](help:worker-launch).
 
+A stopped candidate's worktree is removed on this pass when no process still has it as its working directory. A worktree a process is still in stays for a later tick. The candidate chain is not rewritten. `afkconvoy land --help`.
+
 ##### What it answers
 
 {"did", "errors", "held", "frontier_remaining", "idle", "locks"} — and "held_back_by" when admission held back a worker it would have started
@@ -2058,6 +2061,8 @@ A task uses its pinned target branch (`afkconvoy target --help`), or resolves th
 
 A turn preserves the PR's original head and atomically assigns a candidate merged onto the certified base or its preceding candidate. Each candidate must gate that exact commit in its own worktree, and its gate run is recorded green against it. With free worker lanes, candidates of the same repo validate concurrently; green successors wait for their exact predecessors, then push that commit to the target branch as a fast-forward without another gate. The window, including green waiters and unconfirmed cancellation, is bounded by the host's live worker-lane count. A light gate keeps its repo lane. Committed source changes are pushed to the PR first; candidate merges never move that source branch. The merge message names the PR and issue, watch or cut. Landing closes the issue; the tick settles its claim and source worktree.
 
+Once a candidate has stopped — landed, red, or cancelled with its processes confirmed gone — its worktree is removed. The candidate chain keeps the gate evidence: the phase, the cause and the gate excerpt, and a recorded gate run stays on the remote. A directory left behind after git dropped the registration is removed too, including when a directory inside it is not writable by its owner. A candidate that is building, validating, green and waiting on its predecessor, or cancelling, keeps its worktree. A worktree a process still has as its working directory stays until that process is gone, and a later tick removes it. The issue's, watch's or cut's own worktree is left, and the candidate chain is not rewritten.
+
 The remote candidate record holds original head, predecessor, commit, tree, gate declaration, owner, process group, validation and cancellation. Publication rechecks validity, the PR's actual base, head, predecessor landing, issue blockers, fleet locks and the green record, then atomically fast-forwards the exact tested candidate and its state. No force push, extra merge or aggregate gate is used. Known candidate advances preserve successors; an outside base move or changed PR head invalidates the affected suffix. Cuts, watches, fleet-lock repairs and base certification drain the candidate window and run as serial barriers.
 
 Failure invalidates the dependent suffix before terminating its running gates and children. Their lanes remain occupied until exit is confirmed. Cancellation does not record a dependent worker's gate as failed or increase its rework count. A later turn rebuilds from preserved original heads and the last landed base, respecting issue blockers. Gate startup waits until its group is recorded; inherited kernel lane leases prevent duplicate capacity after runner or owner death. Interrupted cancellation is completed on the owning host; unconfirmed remote processes are not replaced. A successful base push records its landed prefix atomically, and its merge commit lets recovery settle the issue after a crash.
@@ -2438,7 +2443,7 @@ Take the steps of a cut: set the version, land it, tag it, publish and install i
 
 ##### When to run it
 
-The fleet runs it: in a repo that turns cutting on, a tick starts a cut once landed work is past the newest version tag and either the fleet is idle or the oldest landing reaches `busy_after_seconds` (default 3600s). At the bound it starts while busy too, whatever claims or frontier remain, even while admission holds workers back. It cuts from the base branch as it stands; work still in flight goes into a later version. A remote with no version tag and a declared `initial` is cut on an idle tick. No flag, command or fixed schedule starts one.
+The fleet runs it: in a repo that turns cutting on, a tick starts a cut once landed work is past the newest version tag and either the fleet is idle or the oldest landing reaches `busy_after_seconds` (default 18000s). At the bound it starts while busy too, whatever claims or frontier remain, even while admission holds workers back. It cuts from the base branch as it stands; work still in flight goes into a later version. A remote with no version tag and a declared `initial` is cut on an idle tick. No flag, command or fixed schedule starts one.
 
 A human runs it with `--from <step>` once, after a cut failed, to go on from the step that failed: the issue the failure opened gives the exact line, in the checkout the cut kept. A watch may run that line too after fixing the cause; only the four human kinds in `afkconvoy help humans` stay with a human. To have a landed fix cut, the watch wakes the repo's checkout and fixes what holds its fleet back: the next idle tick, or busy tick past the age bound, starts the due cut through these same steps.
 
@@ -2464,13 +2469,13 @@ publish: |
 ```
 
 ```yaml cut
-busy_after_seconds: 3600
+busy_after_seconds: 18000
 ```
 ~~~
 
 `set` and `publish` are required. Optional `initial` declares the first version, exactly X.Y.Z: three whole numbers without leading zeroes, a `v` prefix or a prerelease suffix. Without a version tag and without `initial`, nothing is cut. With it, the next idle tick cuts that exact version, whatever labels earlier PRs carry; after a version tag exists, `initial` is ignored and the usual patch/minor selection applies. No seed tag or manual release is needed.
 
-Optional `busy_after_seconds` bounds how long the oldest landing past the newest tag waits for an idle fleet. Leaving it out means 3600s; zero permits a busy cut at the next tick. Its clock uses the landing commit's time on the base branch, rather than the age of commits on a side branch. Put this key in a second cut block as above: older versions that know cut steps read only the first cut block and skip the addition. All cut blocks form one mapping, and a key declared twice is refused. `plan`'s `cut` row gives `oldest_landing_age_seconds` and `busy_in_seconds`: zero means a busy cut may start now; null means no landing past a version tag.
+Optional `busy_after_seconds` bounds how long the oldest landing past the newest tag waits for an idle fleet. Leaving it out means 18000s; zero permits a busy cut at the next tick. Its clock uses the landing commit's time on the base branch, rather than the age of commits on a side branch. Put this key in a second cut block as above: older versions that know cut steps read only the first cut block and skip the addition. All cut blocks form one mapping, and a key declared twice is refused. `plan`'s `cut` row gives `oldest_landing_age_seconds` and `busy_in_seconds`: zero means a busy cut may start now; null means no landing past a version tag.
 
 Each step is run by `sh -e` in the cut's checkout with the version, `0.5.17`, in `$VERSION`; what it prints goes to the terminal and the cut's log, in the checkout's git dir (`convoy-cut.log`). Its lines run in order, and the first that fails fails the step: the lines after it are not run. Above, a publish that fails is not followed by the upgrade, which would find nothing newer and succeed. A line `set -e` changes nothing of that, and `set -ex` adds each line to the log as it runs. A repo whose file has no such block turns cutting off: nothing is cut. `afkconvoy config` answers the steps as `cut`, and `afkconvoy plan` says where the cut stands, including `initial` while there is no version tag.
 
@@ -2491,7 +2496,7 @@ Its PR lands only through its gated turn. It pushes its own branch and version t
 
 ##### What it reads and writes
 
-It keeps the cut's record in the checkout's git dir (`convoy-cut.json`): the version, the tag it is cut past (`from: null` for an initial cut), the PRs it holds, its PR, where it landed, the step it is at, and each step it took with its seconds — and, where one failed, which and why. The tick reads it, and ends the cut once it says it took every step or failed at one, once its terminal is gone, or once its time ran out: two gate limits (`gate_seconds`) and an hour beside — three hours at the default.
+It keeps the cut's record in the checkout's git dir (`convoy-cut.json`): the version, the tag it is cut past (`from: null` for an initial cut), the PRs it holds, its PR, where it landed, the step it is at, and each step it took with its seconds — and, where one failed, which and why. The tick reads it, and ends the cut once it says it took every step or failed at one, once its terminal is gone, or once its time ran out: three hours beside the two gate limits (`gate_seconds`) — five hours at the default.
 
 A cut's turn and exclusive commands go ahead of waiting worker commands, keeping request order among cuts. They never interrupt a running command. Queue waits count toward the cut's time limit; the gate's own limit starts after its turn is granted. The tick line that starts a cut says whether the fleet was `idle` or `busy`.
 
@@ -4483,7 +4488,7 @@ Every way the fleet stops for an answer, and the command a human or the host's w
 
 `afkconvoy doctor` lists every open issue that waits for a human under `waiting_on_human`, with `why` (what kind of wait, then the first sentence of the reason its comment gives), `url` (that comment, or an older failure report itself), since when and `answer`: the line to run for that issue. `afkconvoy plan` gives the same list; the panel shows it as "With a human". Waiting more than an hour is a finding.
 
-An escalated issue carries the escalate label (`ready-for-human` unless renamed) in place of its flow label. Its comment says why; current comments end with the line to answer. `doctor` gives the current line, even where an older comment has none or names the issue before it moved to the tracker. Run every command below in a checkout of the repo, replacing what stands between < and >.
+An escalated issue carries the escalate label (`ready-for-human` unless renamed) in place of its flow label. Its comment says why; current comments end with the line to answer. `doctor` gives the current line, even where an older comment has none or names the issue before it moved to the tracker. A line `doctor` or `plan` prints is run as printed, apart from what stands between < and >, and already names the checkout. The same commands are below, `<n>` the issue's number.
 
 #### An escalation
 
@@ -4919,7 +4924,7 @@ The shell string every worker of one harness is started with, in a fleet instanc
 _Avoid_: agent command, provider profile
 
 **Worker state**:
-Whether a worker is busy or has stopped. It is busy while the turn its harness took is still open, and stopped once that turn has ended or none was recorded. Stopped never means finished.
+Whether a worker is busy or has stopped. It is busy while the turn its harness took is still open, and stopped once that turn has ended or none was recorded. The harness names the session that records that turn. Stopped never means finished.
 _Avoid_: liveness, status (as under Position)
 
 **Task refusal**:
@@ -5052,7 +5057,7 @@ One command's construction, validation and ordered landing of an open PR's candi
 _Avoid_: landing slot, merge queue
 
 **Candidate**:
-An immutable merge of a PR's original head onto its assigned predecessor, validated in its own worktree. Its predecessor is the certified target tip or the preceding candidate.
+An immutable merge of a PR's original head onto its assigned predecessor, validated in its own worktree. Once the candidate has stopped, that worktree is removed and the candidate chain keeps the gate evidence. Its predecessor is the certified target tip or the preceding candidate.
 _Avoid_: speculative branch, train tip
 
 **Candidate chain**:

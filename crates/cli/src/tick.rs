@@ -141,6 +141,18 @@ pub fn tick(
     let _ = crate::paused::probe(repo, me.instance.as_str(), &me.host, me.now);
     let _ = crate::kit::refresh(repo, me.instance.as_str(), &me.host, me.now);
     let (mut fleet, mut open) = Fleet::read(repo, me.now)?;
+    // The look listed the candidate chain with the rest of the remote.
+    // Removal answers from that listing. The chain already holds the gate's
+    // evidence. A failure leaves the directory for the next tick; the pass
+    // itself still runs.
+    let candidates = repo.layout().under("candidates/");
+    if let Err(error) =
+        crate::candidates::remove_listed(repo, &fleet.records_at_open(&format!("{candidates}*")))
+    {
+        eprintln!(
+            "warning: a stopped candidate worktree will be removed on a later tick: {error:#}"
+        );
+    }
     // Cover interruption after an internal task landed but before final review.
     // A bad delivery does not prevent unrelated task reconciliation.
     let delivery_failure = crate::delivery::reconcile(repo, &fleet.gh).err();
@@ -340,17 +352,26 @@ fn carry_out(
     };
     if let Some(issue) = issue {
         let source = crate::orca::Source::of(&fleet.repo)?;
-        if let Some(worktree) = crate::orca::Worktree::of_issue(&source, issue)?
-            && worktree.state(fleet.now)? != afkconvoy_core::worker::WorkerState::Gone
-            && crate::health::holding(&worktree)
-        {
-            // The same test worker health and `doctor` read. The since is the
-            // stamp that test's record already holds.
-            if crate::judge::waits_on_own_background(&worktree) {
-                let since = crate::health::background_since(&worktree).unwrap_or(fleet.now);
-                return Ok(Outcome::Waiting(since));
+        if let Some(worktree) = crate::orca::Worktree::of_issue(&source, issue)? {
+            let state = worktree.state(fleet.now)?;
+            if state != afkconvoy_core::worker::WorkerState::Gone
+                && crate::health::holding(&worktree)
+            {
+                // An open turn has no since. A later wait starts when seen again.
+                if state == afkconvoy_core::worker::WorkerState::Busy {
+                    worktree.background_since(false, None, fleet.now)?;
+                    return Ok(Outcome::Nothing);
+                }
+                // The stamp worker health's one read wrote. Missing, that
+                // read has not run: one read then answers both.
+                if let Some(since) = worktree.background_at() {
+                    return Ok(Outcome::Waiting(since));
+                }
+                if let Some(background) = crate::judge::own_background(fleet, &worktree, true)? {
+                    return Ok(Outcome::Waiting(background.since));
+                }
+                return Ok(Outcome::Nothing);
             }
-            return Ok(Outcome::Nothing);
         }
     }
     match step {

@@ -552,8 +552,6 @@ fn the_host_settings_outlive_the_host_runner_and_doctor_says_those_in_force() {
         "1500",
         "--gate-lanes",
         "2",
-        "--train-lanes",
-        "3",
     ];
     let hours = ["--host-sleep-hours", "22:00-06:00"];
     let first = world.afk(&[&RUN[..], &named[..], &hours[..]].concat()).ok();
@@ -565,7 +563,7 @@ fn the_host_settings_outlive_the_host_runner_and_doctor_says_those_in_force() {
     assert_eq!(changed["admit_disk"], json!({"from": null, "to": 0}), "{first}");
     assert_eq!(changed["exclusive_seconds"], json!({"from": null, "to": 1500}), "{first}");
     assert_eq!(changed["gate_lanes"], json!({"from": null, "to": 2}));
-    assert_eq!(changed["train_lanes"], json!({"from": null, "to": 3}));
+    assert!(changed.get("train_lanes").is_none(), "{changed}");
     world.kill_host_runner("KILL");
 
     // a host runner started again keeps them, and a `run` that names none
@@ -582,10 +580,30 @@ fn the_host_settings_outlive_the_host_runner_and_doctor_says_those_in_force() {
     assert_eq!(said["exclusive_seconds"], 1500);
     assert_eq!(in_force["exclusive_seconds"], 1500);
     assert_eq!(in_force["gate_lanes"], 2);
-    assert!(in_force["train_lanes"].is_null());
-    assert!(in_force["ignored"].to_string().contains("train_lanes is ignored"));
+    assert!(said.get("train_lanes").is_none(), "{settings}");
+    assert!(
+        in_force.get("train_lanes").is_none() && in_force.get("ignored").is_none(),
+        "{settings}"
+    );
     let before = again["instance"].clone();
-    let changed_live = world.afk(&["run", "--gate-lanes", "4", "--train-lanes", "2"]).ok();
+    let unchanged = world.checkout_list();
+    let refused = world.afk(&["run", "--train-lanes", "2"]).error();
+    assert!(
+        refused.contains("unexpected argument") && refused.contains("--train-lanes"),
+        "{refused}"
+    );
+    assert_eq!(world.checkout_list(), unchanged);
+    let with_variable = world
+        .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
+        .env("AFKCONVOY_TRAIN_LANES", "9")
+        .args(["run", "--gate-lanes", "4"])
+        .output()
+        .unwrap();
+    assert!(with_variable.status.success(), "{}", String::from_utf8_lossy(&with_variable.stderr));
+    let with_variable: Value = serde_json::from_slice(&with_variable.stdout).unwrap();
+    assert!(with_variable["settings"].get("train_lanes").is_none(), "{with_variable}");
+    assert!(world.checkout_list()["settings"].get("train_lanes").is_none());
+    let changed_live = with_variable;
     assert_eq!(changed_live["instance"], before, "settings change no fleet instance");
     assert_eq!(changed_live["host_runner"]["started"], false);
     let back = world.afk(&["run", "--exclusive-seconds", "default"]).ok();
@@ -1275,7 +1293,7 @@ fn a_listed_checkout_whose_probe_no_longer_passes_is_broken_and_doctor_says_when
     assert!(found["what"].as_str().unwrap().contains(&why), "{found}");
     let evidence = found["evidence"].as_str().unwrap();
     assert!(evidence.contains("; the host runner starts it again at "), "{evidence}");
-    assert_eq!(found["fix"], "afkconvoy run");
+    assert_eq!(found["fix"], format!("afkconvoy run '{}'", world.clone.display()));
     let alive_or_not = findings
         .iter()
         .any(|finding| finding["what"].as_str().unwrap().starts_with("no `afkconvoy run`"));
