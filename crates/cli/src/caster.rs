@@ -314,17 +314,13 @@ pub fn cast(repo: &Repo, now: u64) -> Result<Value> {
     let launch = launches.command(first.harness)?;
     crate::probe::announce(&launches.warned());
     let prompt = caster_prompt(&issues, &offered(&kit, team.as_ref(), &offers), &how);
-    let question = if first.harness == afkconvoy_core::harness::Harness::Codex {
-        crate::codex_launch::caster_question(
-            &Worktree::of(repo)?,
-            launch.as_str(),
-            first.model.as_deref(),
-            &prompt,
-        )?
-    } else {
-        let kept = crate::kept::keep(first.harness, false)?.display().to_string();
-        first.harness.prompt_question(launch.as_str(), &kept, first.model.as_deref(), &prompt)
-    };
+    let question = crate::codex_launch::caster_question(
+        first.harness,
+        &Worktree::of(repo)?,
+        launch.as_str(),
+        first.model.as_deref(),
+        &prompt,
+    )?;
     let asked = crate::launch::ask_login_shell_within(&repo.dir, &question, ANSWER_TIMEOUT);
     let Some((true, answer)) = asked else {
         bail!("the host kit's first, `{}`, did not answer the caster", first.harness.key());

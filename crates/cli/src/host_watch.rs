@@ -654,12 +654,8 @@ impl Watcher {
         let mut failures = vec![];
         for candidate in crate::health::watch_candidates()? {
             watch.harness = candidate.harness;
-            (watch.model, watch.model_source) = if candidate.harness == Harness::Codex {
-                let (model, source) = crate::codex_launch::automatic_model(None)?;
-                (model, Some(source.to_string()))
-            } else {
-                (candidate.model, None)
-            };
+            (watch.model, watch.model_source) =
+                crate::codex_launch::watch_selection(candidate.harness, candidate.model)?;
             match start_session(&mut watch) {
                 Ok((terminal, transcript)) => {
                     (watch.terminal, watch.transcript) = (terminal, transcript);
@@ -958,12 +954,8 @@ impl Watcher {
                 continue;
             }
             watch.harness = candidate.harness;
-            (watch.model, watch.model_source) = if candidate.harness == Harness::Codex {
-                let (model, source) = crate::codex_launch::automatic_model(None)?;
-                (model, Some(source.to_string()))
-            } else {
-                (candidate.model, None)
-            };
+            (watch.model, watch.model_source) =
+                crate::codex_launch::watch_selection(candidate.harness, candidate.model)?;
             match start_session(&mut watch) {
                 Ok((terminal, transcript)) => {
                     (watch.terminal, watch.transcript) = (terminal, transcript);
@@ -1140,27 +1132,12 @@ fn launch_session(watch: &mut Watch) -> Result<(String, PathBuf)> {
     let repo = Repo::new(watch.directory.clone());
     let launches = crate::launch::Launches::new(&repo, true)?;
     let command = launches.command(watch.harness)?;
-    let command = if watch.harness == Harness::Codex {
-        format!("{} --search", command.as_str())
-    } else {
-        command.as_str().to_string()
-    };
-    let kept = crate::kept::keep(watch.harness, true)?;
-    let line = if watch.harness == Harness::Codex {
-        crate::codex_launch::watch(
-            &watch.directory,
-            watch.model.as_deref(),
-            watch.model_source.as_deref().unwrap_or("codex_default"),
-            &command,
-        )?
-    } else {
-        watch.harness.watch(
-            command.as_str(),
-            &watch.directory.display().to_string(),
-            &kept.display().to_string(),
-            watch.model.as_deref(),
-        )
-    };
+    let line = crate::codex_launch::watch_line(
+        watch.harness,
+        &watch.directory,
+        watch.model.as_deref(),
+        command.as_str(),
+    )?;
     let line = launches.worker_line(watch.harness, &line);
     let line = format!("export {}=host; {line}", host_watch::WATCH_ENV);
     let line =
