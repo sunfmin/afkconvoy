@@ -98,7 +98,8 @@ pub struct Agent {
 }
 
 /// A worker's selected harness and model, including whether an issue model
-/// label requires casting to take precedence over the user's Codex preference.
+/// label takes precedence over the user's own preference, where the harness
+/// has one.
 pub struct WorkerSelection<'a> {
     pub harness: Harness,
     pub model: Option<&'a str>,
@@ -121,32 +122,14 @@ impl Agent {
         now: u64,
     ) -> Result<String> {
         let WorkerSelection { harness, model, explicit_model } = selection;
-        let (model, model_source) = if harness == Harness::Codex {
-            crate::codex_launch::automatic_model(explicit_model.then_some(model).flatten())?
-        } else {
-            (model.map(str::to_string), "fleet_selection")
-        };
-        let prepared = if harness == Harness::Codex {
-            Some(crate::codex_launch::prepare(
-                worktree,
-                model.as_deref(),
-                command,
-                in_role,
-                model_source,
-            )?)
-        } else {
-            None
-        };
-        let command = prepared.as_ref().map_or_else(
-            || {
-                if in_role {
-                    command.to_string()
-                } else {
-                    harness.in_worktree(command, &worktree.path.display().to_string(), "")
-                }
-            },
-            |(line, _)| line.clone(),
-        );
+        let prepared = crate::codex_launch::prepare_worker(
+            harness,
+            worktree,
+            model,
+            explicit_model,
+            command,
+            in_role,
+        )?;
         let command = match issue {
             Some(issue) => Line::new()
                 .fixed("export ")
@@ -154,17 +137,17 @@ impl Agent {
                 .fixed("=")
                 .number(issue)
                 .fixed(" && ")
-                .launch(&command)
+                .launch(&prepared.command)
                 .done(),
-            None => command,
+            None => prepared.command,
         };
         let terminal = self.start(worktree, harness, &command, None, now)?;
         std::fs::write(
             worktree.note("convoy-worker-model")?,
-            model.as_deref().unwrap_or_default(),
+            prepared.model.as_deref().unwrap_or_default(),
         )?;
-        if let Some((_, settings)) = prepared {
-            crate::codex_launch::record(worktree, &settings)?;
+        if let Some(settings) = &prepared.settings {
+            crate::codex_launch::record(worktree, harness, settings)?;
         }
         worktree.await_ready(
             &terminal,
@@ -428,18 +411,17 @@ fn start(
         }
     };
     let explicit_model = issue.labels.iter().any(|label| label.starts_with("model:"));
-    if harness == Harness::Codex {
-        model = crate::codex_launch::automatic_model(
-            explicit_model.then_some(model.as_deref()).flatten(),
-        )?
-        .0;
+    if let Some((chosen, _)) = crate::codex_launch::automatic_model(
+        harness,
+        explicit_model.then_some(model.as_deref()).flatten(),
+    )? {
+        model = chosen;
         if !explicit_model
-            && let (Some(staged), Some(model)) = (staged.as_ref(), model.as_deref())
-            && !staged.allows_model(model)
+            && let (Some(staged), Some(name)) = (staged.as_ref(), model.as_deref())
+            && !staged.allows_model(name)
+            && let Some(why) = harness.outside_issue(name)
         {
-            bail!(
-                "Codex user selection `{model}` from ~/.codex/config.toml is outside this issue's role range; update the role's roster to allow it or choose a model the role allows"
-            );
+            bail!("{why}");
         }
     }
     // No worker is started on a harness paused on this host.
@@ -574,12 +556,16 @@ fn start(
                         fleet.now,
                     )?,
                     None => {
-                        let launch = match &model {
-                            Some(model) if harness != Harness::Codex => {
-                                harness.with_model(launch, model)
+                        // A harness that keeps a session puts the model on as
+                        // it starts, so the user's model is not stuck behind
+                        // a flag written here.
+                        let launch = if harness.session().is_some() {
+                            launch.to_string()
+                        } else {
+                            match &model {
+                                Some(model) => harness.with_model(launch, model),
+                                None => launch.to_string(),
                             }
-                            Some(_) => launch.to_string(),
-                            None => launch.to_string(),
                         };
                         agent.start_worker(
                             cut,
