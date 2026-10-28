@@ -1,8 +1,9 @@
 //! Remote candidate ownership. Every write extends one ref; a competing
 //! writer's child cannot fast-forward it. Publishing the base and the next
 //! record is one atomic push, so invalidation and publication cannot both win.
-use afkconvoy_core::candidate::{Barrier, Candidate, Chain, Phase, Process, Publication};
+use afkconvoy_core::candidate::{Barrier, Candidate, Chain, Phase, Process, Publication, Slow};
 use afkconvoy_core::config::Config;
+use afkconvoy_core::ending::Ending;
 use afkconvoy_core::gate::{GateCommand, Proven, Tree};
 use afkconvoy_core::landing::{Of, merge_message};
 use afkconvoy_core::lock::keeps_off;
@@ -167,7 +168,7 @@ fn shown(c: &Candidate, branch: &str) -> Value {
         "cause": c.cause,
         "cancelled_by": c.cancelled_by,
     });
-    if c.phase == Phase::Validating
+    if matches!(c.phase, Phase::Validating | Phase::Slow)
         && let Some(excerpt) = c.result.as_ref().and_then(|result| result.get("excerpt"))
     {
         row["excerpt"] = excerpt.clone();
@@ -561,7 +562,10 @@ impl Gate<'_> {
             for c in &mut chain.candidates {
                 if c.id == self.id && c.valid() {
                     c.gate = Some(process.clone());
-                    c.phase = Phase::Validating;
+                    // A round's slow gate starts in `Slow`, and stays there.
+                    if c.phase == Phase::Building {
+                        c.phase = Phase::Validating;
+                    }
                 }
             }
         })?;
@@ -578,9 +582,26 @@ impl Gate<'_> {
     }
 }
 
-fn cancelled(mut answer: Value, c: &Candidate) -> Value {
-    answer["outcome"] =
-        json!(if c.cause.as_deref() == Some("base_moved") { "target_moved" } else { "cancelled" });
+fn cancelled(mut answer: Value, c: &Candidate, chain: &Chain) -> Value {
+    if c.cause.as_deref() == Some("round_red") {
+        let tip = chain.candidates.iter().find(|t| Some(&t.id) == c.cancelled_by.as_ref());
+        answer["outcome"] = json!(Ending::RoundRed);
+        answer["status"] = json!("cancelled");
+        answer["recorded"] = json!(false);
+        answer["candidate"] = json!(c.id);
+        answer["cancelled_by"] = json!(c.cancelled_by);
+        answer["cause"] = json!(c.cause);
+        answer["round_pr"] = json!(tip.map(|t| t.pr));
+        answer["detail"] = json!(
+            "the slow gate ran red on the round at PR `round_pr`, which holds this change; its worker fixes the round: stop"
+        );
+        return answer;
+    }
+    answer["outcome"] = json!(if c.cause.as_deref() == Some("base_moved") {
+        Ending::TargetMoved
+    } else {
+        Ending::Cancelled
+    });
     answer["status"] = json!("cancelled");
     answer["recorded"] = json!(false);
     answer["candidate"] = json!(c.id);
@@ -656,7 +677,7 @@ pub(crate) fn remove_listed(repo: &Repo, records: &[crate::git::RemoteRecord]) -
     }
     let busy = crate::hot::working_directories()?;
     for (path, recorded) in pending {
-        if occupies(&busy, &path) {
+        if crate::hot::occupies(&busy, &path) {
             continue;
         }
         remove_candidate_worktree(repo, &path, &recorded);
@@ -680,17 +701,6 @@ fn candidate_directory(root: &Path, path: &Path, id: &str) -> bool {
         (Ok(parent), Ok(root)) => parent == root,
         _ => false,
     }
-}
-
-/// Whether any process's working directory is `worktree` or a path inside it.
-fn occupies(directories: &[PathBuf], worktree: &Path) -> bool {
-    let worktree = std::fs::canonicalize(worktree).unwrap_or_else(|_| worktree.to_path_buf());
-    directories.iter().any(|cwd| {
-        // The kernel's path and the path we recorded can disagree on a
-        // symlink (`/var` and `/private/var`). Compare the real paths.
-        let cwd = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.clone());
-        cwd == worktree || cwd.starts_with(&worktree)
-    })
 }
 
 /// Drops `path` and, once the directory is gone, its process-scope file.
@@ -747,7 +757,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
     if let Some(n) = issue {
         let blockers = gh.open_blockers(n)?;
         if !blockers.is_empty() {
-            answer["outcome"] = json!("blocked");
+            answer["outcome"] = json!(Ending::Blocked);
             answer["blocked_by"] = json!(blockers);
             return Ok(answer);
         }
@@ -792,7 +802,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
                     crate::account::leave(repo, &gh, issue, clock())?;
                 }
                 let mut result = c.result.clone().unwrap_or(answer);
-                result["outcome"] = json!("merged");
+                result["outcome"] = json!(Ending::Merged);
                 result["commit"] = json!(c.commit);
                 return Ok(result);
             }
@@ -826,7 +836,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
         let mut snapshot = read(repo, config)?;
         let current = snapshot.base.clone();
         if snapshot.chain.candidates.iter().any(|c| c.pr == pr.number && c.active()) {
-            answer["outcome"] = json!("waiting_for_predecessor");
+            answer["outcome"] = json!(Ending::CandidateActive);
             answer["detail"] = json!(
                 "this PR already has an active candidate; its owner alone may validate and publish it"
             );
@@ -841,7 +851,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
         };
         if !repairing && crate::gate::recorded(repo, &base_tree, &base_command, clock())?.is_none()
         {
-            answer["outcome"] = json!("target_moved");
+            answer["outcome"] = json!(Ending::BaseUncertified);
             answer["detail"] = json!(
                 "the base changed before assignment and needs certification; ask for another turn"
             );
@@ -850,7 +860,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
         // A competitor may have used the last window place while we queued.
         if !snapshot.chain.can_assign(limit, barrier) {
             drop(permit);
-            answer["outcome"] = json!("waiting_for_capacity");
+            answer["outcome"] = json!(Ending::WaitingForCapacity);
             answer["detail"] = json!("the bounded candidate window is full; ask for another turn");
             return Ok(answer);
         }
@@ -865,13 +875,21 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
         };
         let Some(commit) = built else {
             if predecessor != current {
-                answer["outcome"] = json!("waiting_for_predecessor");
-                answer["detail"] =
-                    json!("speculative merge conflicts; ask again after its predecessor lands");
+                // The worker resolves it: its branch then carries the candidate ahead.
+                let files = crate::turn::merge_in(repo, &predecessor, "the candidate ahead")?;
+                answer["outcome"] = json!(Ending::SpeculativeConflict);
+                answer["status"] = json!("conflict");
+                answer["files"] = json!(files);
+                answer["recorded"] = json!(false);
+                answer["worktree"] = json!(repo.dir);
+                answer["merging"] = json!(predecessor);
+                answer["detail"] = json!(
+                    "merging onto the candidate ahead conflicts; resolve every file, git add it, COMMIT the merge, and ask for a turn again"
+                );
                 return Ok(answer);
             }
             let files = crate::turn::merge_in(repo, &current, "the base branch's tip")?;
-            answer["outcome"] = json!("conflict");
+            answer["outcome"] = json!(Ending::Conflict);
             answer["status"] = json!("conflict");
             answer["files"] = json!(files);
             answer["recorded"] = json!(false);
@@ -882,14 +900,27 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
         };
         let declared = crate::turn::tip_config(repo, &commit)?;
         if crate::config::heavy_gate(&declared.gate_command) && !heavy {
-            answer["outcome"] = json!("waiting_for_predecessor");
+            answer["outcome"] = json!(Ending::GateLaneChanged);
             answer["detail"] = json!(
                 "the predecessor changed the gate to a worker lane; request a new turn after it lands"
             );
             return Ok(answer);
         }
         let tree = repo.git(&["rev-parse", &format!("{commit}^{{tree}}")])?;
-        let seconds = declared.gate_seconds();
+        // Where the commit splits its gate, the candidate runs the fast gate,
+        // and a round at it the slow one (docs/adr/0048).
+        let (command, seconds, slow) = match &declared.gates {
+            Some(gates) => (
+                gates.fast.command.clone(),
+                gates.fast.seconds,
+                Some(Slow {
+                    command: gates.slow.command.clone(),
+                    seconds: gates.slow.seconds,
+                    whole: declared.gate_command.clone(),
+                }),
+            ),
+            None => (declared.gate_command.clone(), declared.gate_seconds(), None),
+        };
         let c = Candidate {
             id: id.clone(),
             pr: pr.number,
@@ -899,7 +930,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
             predecessor,
             commit,
             tree,
-            command: declared.gate_command,
+            command,
             seconds,
             phase: Phase::Building,
             owner: owner.clone(),
@@ -911,6 +942,8 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
             cause: None,
             stopped: false,
             result: None,
+            slow,
+            slowed: false,
         };
         snapshot.chain.candidates.push(c.clone());
         snapshot.chain.barriers.retain(|b| b.id != id);
@@ -959,22 +992,45 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
     stop_candidate(repo, config, &id)?;
     let current = chain.candidates.iter().find(|c| c.id == id).expect("assigned candidate");
     if current.phase == Phase::Red {
-        result["outcome"] = json!("gate_red");
+        result["outcome"] = json!(Ending::GateRed);
         return Ok(result);
     }
     loop {
         let chain = reconcile(repo, config)?;
         let c = chain.candidates.iter().find(|c| c.id == id).expect("assigned candidate");
+        // A round at a candidate behind this one may have landed it.
+        if c.phase == Phase::Landed {
+            if let Some(n) = issue {
+                gh.close_issue(n)?;
+                crate::account::leave(repo, &gh, n, clock())?;
+            }
+            result["outcome"] = json!(Ending::Merged);
+            result["commit"] = json!(c.commit);
+            result["detail"] = json!(
+                "landed with the round at a candidate behind it, as a fast-forward; source head preserved — stop"
+            );
+            return Ok(result);
+        }
         if !c.valid() {
-            return Ok(cancelled(result, c));
+            return Ok(cancelled(result, c, &chain));
         }
         let locks = crate::lock::standing_locks(&gh, config)?;
         if issue.map_or(!locks.is_empty(), |n| keeps_off(&locks, n)) {
             invalidate(repo, config, &id, "fleet_lock")?;
             return Ok(crate::turn::locked(result, &locks));
         }
+        if chain.round_tip().is_some_and(|tip| tip.id == id) {
+            if let Some(red) = round(Round { repo, config, tracker, id: &id, host, issue }, clock)?
+            {
+                for (key, value) in red.as_object().into_iter().flatten() {
+                    result[key] = value.clone();
+                }
+                return Ok(result);
+            }
+            continue;
+        }
         let base = crate::turn::base(repo, config)?;
-        if c.predecessor != base {
+        if !chain.ripe(&id, &base) {
             std::thread::sleep(EVERY);
             continue;
         }
@@ -982,7 +1038,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
             let blockers = gh.open_blockers(n)?;
             if !blockers.is_empty() {
                 invalidate(repo, config, &id, "issue_blocked")?;
-                result["outcome"] = json!("blocked");
+                result["outcome"] = json!(Ending::Blocked);
                 result["blocked_by"] = json!(blockers);
                 return Ok(result);
             }
@@ -1001,37 +1057,45 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
             );
         }
         let mut snapshot = read(repo, config)?;
-        let Some(c) = snapshot.chain.candidates.iter_mut().find(|c| c.id == id) else {
+        let members: Vec<Candidate> = snapshot.chain.members(&id).into_iter().cloned().collect();
+        let Some(c) = members.last() else {
             bail!("candidate record disappeared");
         };
+        // The whole gate on its tree: its own gate, or its round's two parts.
+        let whole = GateCommand::new(c.slow.as_ref().map_or(&c.command, |slow| &slow.whole));
         let tree = Tree::named(&c.tree);
-        let run = crate::gate::recorded(repo, &tree, &command, clock())?;
-        let head = repo.remote_sha_now(&format!("refs/heads/{}", c.branch))?;
+        let run = crate::gate::recorded(repo, &tree, &whole, clock())?;
+        let mut heads = true;
+        for m in &members {
+            let head = repo.remote_sha_now(&format!("refs/heads/{}", m.branch))?;
+            heads &= head.as_deref() == Some(&m.original_head);
+        }
         let Some(publication) = Publication::new(
-            c.valid(),
-            c.phase == Phase::Green && run.is_some(),
-            c.predecessor == base,
+            members.iter().all(Candidate::valid),
+            snapshot.chain.ripe(&id, &base) && run.is_some(),
+            members.first().is_some_and(|m| m.predecessor == base),
             true,
-            head.as_deref() == Some(&c.original_head),
-            c.stopped,
+            heads,
+            members.iter().all(|m| m.stopped),
         ) else {
             invalidate(repo, config, &id, "publication_evidence_changed")?;
-            return Ok(cancelled(result, c));
+            let chain = read(repo, config)?.chain;
+            let c = chain.candidates.iter().find(|c| c.id == id).expect("assigned candidate");
+            return Ok(cancelled(result, c, &chain));
         };
         let run = run.expect("publication requires green record");
-        let proof = Proven::by(&tree, &command, &run, clock())
+        let proof = Proven::by(&tree, &whole, &run, clock())
             .ok_or_else(|| anyhow!("candidate green record expired"))?;
         let landed = c.commit.clone();
-        c.phase = Phase::Landed;
-        let publishing = c.clone();
+        snapshot.chain.land(&id);
         let next = commit(repo, &snapshot)?;
-        let pushed = publish(repo, config, &publishing, &snapshot, &next, &proof, &publication)?;
+        let pushed = publish(repo, config, &members, &snapshot, &next, &proof, &publication)?;
         if !pushed {
             if crate::turn::base(repo, config)? != base {
                 continue;
             }
             if repo.remote_sha(&refname(repo, config))? == snapshot.sha {
-                result["outcome"] = json!("target_moved");
+                result["outcome"] = json!(Ending::TargetMoved);
                 invalidate(repo, config, &id, "push_rejected")?;
                 return Ok(result);
             }
@@ -1041,55 +1105,157 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
             gh.close_issue(n)?;
             crate::account::leave(repo, &gh, n, clock())?;
         }
-        result["outcome"] = json!("merged");
+        result["outcome"] = json!(Ending::Merged);
         result["commit"] = json!(landed);
+        result["landed"] = json!(members.iter().map(|m| m.pr).collect::<Vec<_>>());
         result["detail"] = json!(
             "landed the exact recorded candidate as a fast-forward; source head preserved — stop"
         );
+        let prs: Vec<String> = members.iter().map(|m| format!("#{}", m.pr)).collect();
         crate::acting::Acting::new("land").on_issue(issue).in_checkout(Some(repo.clone())).say(
             crate::clock(),
-            format!("turn landed PR #{} on {} at {landed}", pr.number, config.base_branch),
+            format!("turn landed PR {} on {} at {landed}", prs.join(", "), config.base_branch),
         );
         drop(permit);
         return Ok(result);
     }
 }
 
+/// What a round's slow gate runs with: the tip's turn.
+struct Round<'a> {
+    repo: &'a Repo,
+    config: &'a Config,
+    tracker: &'a Tracker,
+    id: &'a str,
+    host: &'a str,
+    issue: Option<u64>,
+}
+
+/// Runs the round at the tip `id`: the slow gate, once, on the tip's commit,
+/// in the worktree its fast gate ran in → `None` when the round is green, or
+/// was not this turn's to run; the tip turn's answer when it is red.
+///
+/// Green puts the whole gate on record for the tip's tree, from its fast
+/// and slow runs. Red is not bisected: the worker's branch is brought up to
+/// the round's tip, which holds every change of the round, and the worker
+/// fixes the round from its issues and the failing tests (docs/adr/0048).
+fn round(round: Round<'_>, clock: impl Fn() -> u64) -> Result<Option<Value>> {
+    let Round { repo, config, tracker, id, host, issue } = round;
+    let mut started = false;
+    let chain = change(repo, config, |chain| started = chain.start_round(id))?;
+    if !started {
+        return Ok(None);
+    }
+    let members: Vec<Candidate> = chain.members(id).into_iter().cloned().collect();
+    let tip = members.last().context("round tip disappeared")?.clone();
+    let slow = tip.slow.clone().context("a round needs a slow gate")?;
+    let checkout = Repo::new(PathBuf::from(&tip.worktree));
+    // The fast gate's scope was confirmed free when it stopped; the slow
+    // gate's processes are owned through a scope of their own.
+    let scope = crate::process_scope::path(&tip.worktree);
+    if scope.exists() {
+        ensure!(crate::process_scope::free(&scope)?, "the fast gate's processes are still alive");
+        std::fs::remove_file(&scope)?;
+    }
+    let command = GateCommand::new(&slow.command);
+    let hook = Gate { repo, config, id };
+    let result = crate::gate::candidate_gate(
+        &checkout,
+        &command,
+        host,
+        clock(),
+        Duration::from_secs(slow.seconds),
+        issue,
+        &hook,
+    );
+    let mut result = match result {
+        Ok(result) => result,
+        Err(error) => {
+            invalidate(repo, config, id, "gate_interrupted")?;
+            return Err(error);
+        }
+    };
+    let mut green = result["status"] == "green" && result["recorded"] == true;
+    if green {
+        let tree = Tree::named(&tip.tree);
+        let parts = (&GateCommand::new(&slow.whole), &GateCommand::new(&tip.command), &command);
+        if let Some(why) = crate::gate::record_whole(repo, &tree, parts, issue, clock())? {
+            green = false;
+            result["recorded"] = json!(false);
+            result["not_recorded"] = json!(why);
+        }
+    }
+    let chain = change(repo, config, |chain| chain.finish(id, green, result.clone()))?;
+    cleanup(repo, config, &chain)?;
+    stop_candidate(repo, config, id)?;
+    if chain.candidates.iter().any(|c| c.id == id && c.phase != Phase::Red) {
+        return Ok(None);
+    }
+    let files = crate::turn::merge_in(repo, &tip.commit, "the round's tip")?;
+    result["outcome"] = json!(Ending::GateRed);
+    result["gate"] = json!("slow");
+    result["round"] = json!(
+        members
+            .iter()
+            .map(|m| json!({"pr": m.pr, "issue": m.issue.map(|n| tracker.issue(n))}))
+            .collect::<Vec<_>>()
+    );
+    result["files"] = json!(files);
+    result["detail"] = json!(if files.is_empty() {
+        "the slow gate ran red on the round at this candidate; your branch now holds the round's tip, every change of it: do not split it; read the issues of `round` and the failing tests, fix the round, commit and ask for a turn again"
+    } else {
+        "the slow gate ran red on the round at this candidate; bringing your branch up to the round's tip conflicts: resolve `files`, commit, then fix the round from the issues of `round` and the failing tests, and ask for a turn again"
+    });
+    Ok(Some(result))
+}
+
+/// Publishes `members`, the candidates a landing takes, in one atomic push:
+/// the base fast-forwards from the first one's predecessor to the last one's
+/// commit, the record advances, and every source head is checked unchanged.
 fn publish(
     repo: &Repo,
     config: &Config,
-    candidate: &Candidate,
+    members: &[Candidate],
     snapshot: &Snapshot,
     state: &str,
     proven: &Proven,
     _publication: &Publication,
 ) -> Result<bool> {
-    let commit = &candidate.commit;
-    let head = &candidate.original_head;
-    let branch = &candidate.branch;
-    let base = &candidate.predecessor;
+    let (Some(first), Some(last)) = (members.first(), members.last()) else {
+        bail!("a landing takes at least one candidate");
+    };
+    let base = &first.predecessor;
     let old_state = snapshot.sha.as_deref().context("candidate record disappeared")?;
     ensure!(
-        repo.git(&["rev-parse", &format!("{commit}^{{tree}}")])? == proven.tree(),
+        repo.git(&["rev-parse", &format!("{}^{{tree}}", last.commit)])? == proven.tree(),
         "candidate tree differs from recorded proof"
     );
-    ensure!(
-        repo.git(&["rev-parse", &format!("{commit}^1")])? == *base,
-        "candidate does not fast-forward its expected predecessor"
-    );
+    let mut expected = base;
+    for m in members {
+        ensure!(
+            m.predecessor == *expected
+                && repo.git(&["rev-parse", &format!("{}^1", m.commit)])? == *expected,
+            "candidate does not fast-forward its expected predecessor"
+        );
+        expected = &m.commit;
+    }
     ensure!(
         repo.git(&["rev-parse", &format!("{state}^1")])? == old_state,
         "candidate state does not extend its expected record"
     );
     let state_ref = refname(repo, config);
     let base_ref = format!("refs/heads/{}", config.base_branch);
-    let source_ref = format!("refs/heads/{branch}");
-    crate::publication::push(
-        repo,
-        &[
-            crate::publication::Update { name: &source_ref, old: head, new: head },
-            crate::publication::Update { name: &state_ref, old: old_state, new: state },
-            crate::publication::Update { name: &base_ref, old: base, new: commit },
-        ],
-    )
+    let sources: Vec<String> = members.iter().map(|m| format!("refs/heads/{}", m.branch)).collect();
+    let mut updates: Vec<crate::publication::Update<'_>> = members
+        .iter()
+        .zip(&sources)
+        .map(|(m, name)| crate::publication::Update {
+            name,
+            old: &m.original_head,
+            new: &m.original_head,
+        })
+        .collect();
+    updates.push(crate::publication::Update { name: &state_ref, old: old_state, new: state });
+    updates.push(crate::publication::Update { name: &base_ref, old: base, new: &last.commit });
+    crate::publication::push(repo, &updates)
 }

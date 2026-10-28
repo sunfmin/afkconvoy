@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use afkconvoy_core::config::{Config, Settings};
+use afkconvoy_core::config::{Config, GATES_BLOCK, Gates, Settings};
 use afkconvoy_core::cut;
 use anyhow::{Context, Result, anyhow};
 
@@ -33,7 +33,8 @@ pub fn load(file: &Path) -> Result<Config> {
 }
 
 /// The config in a markdown text: its first ```` ```yaml ```` block, and the
-/// optional gate-budget blocks and the cut settings across its ```` ```yaml cut ```` blocks (`cut::BLOCK`). New
+/// optional gate-budget blocks, the fast and slow gate of its ```` ```yaml gates ```` block
+/// (`GATES_BLOCK`) and the cut settings across its ```` ```yaml cut ```` blocks (`cut::BLOCK`). New
 /// settings can follow the first cut block: older versions read only that
 /// first block and skip additions, while duplicate keys still fail here.
 pub fn parse(markdown: &str) -> Result<Config> {
@@ -55,6 +56,21 @@ pub fn parse(markdown: &str) -> Result<Config> {
         true => None,
     };
     let config = Config::new(settings)?.cutting(steps);
+    let blocks = fenced_all(markdown, GATES_BLOCK);
+    let gates = match blocks.is_empty() {
+        false => Some(
+            serde_yaml::from_str::<Gates>(&blocks.join("\n"))
+                .map_err(anyhow::Error::from)
+                .and_then(|gates| {
+                    gates
+                        .checked(config.gate_seconds(), config.gate_budget_seconds)
+                        .map_err(|why| anyhow!(why))
+                })
+                .context("its ```yaml gates block")?,
+        ),
+        true => None,
+    };
+    let config = config.split(gates);
     // An outer gate/land would ask for the lane a second time before it
     // could even reach the inherited gate wrapper.
     if config.gate_command.split_whitespace().collect::<Vec<_>>().windows(2).any(|pair| {
@@ -231,6 +247,60 @@ mod tests {
         )
         .unwrap();
         assert_eq!(valid.gate_budget_seconds, Some(600));
+    }
+
+    #[test]
+    fn the_gate_split_in_two_is_a_block_of_its_own() {
+        let main = "```yaml\nbase_branch: main\ngate_command: ./gate.sh\ngate_seconds: 3600\ngate_budget_seconds: 600\n```\n";
+        let gates = |fast: &str, slow: &str| {
+            format!(
+                "{main}```yaml gates\nfast:\n  command: ./gate.sh fast\n  {fast}\nslow:\n  command: ./gate.sh slow\n  {slow}\n```\n"
+            )
+        };
+        let split = |fast: &str, slow: &str| parse(&gates(fast, slow));
+        assert_eq!(parse(main).unwrap().gates, None);
+        let config =
+            split("seconds: 600\n  budget_seconds: 120", "seconds: 3000\n  budget_seconds: 480")
+                .unwrap();
+        let fast = config.gate(afkconvoy_core::config::Which::Fast).unwrap();
+        assert_eq!(
+            (fast.command.as_str(), fast.seconds, fast.budget_seconds),
+            ("./gate.sh fast", 600, 120)
+        );
+        assert_eq!(config.gate(afkconvoy_core::config::Which::Slow).unwrap().seconds, 3000);
+        // The whole gate is unchanged: a landing turn still runs it.
+        assert_eq!((config.gate_command.as_str(), config.gate_seconds()), ("./gate.sh", 3600));
+        for (fast, slow, key) in [
+            (
+                "seconds: 0\n  budget_seconds: 0",
+                "seconds: 3000\n  budget_seconds: 480",
+                "fast.seconds",
+            ),
+            (
+                "seconds: 600\n  budget_seconds: 600",
+                "seconds: 3000\n  budget_seconds: 480",
+                "fast.budget_seconds",
+            ),
+            (
+                "seconds: 600\n  budget_seconds: 120",
+                "seconds: 3001\n  budget_seconds: 480",
+                "past gate_seconds",
+            ),
+            (
+                "seconds: 600\n  budget_seconds: 121",
+                "seconds: 3000\n  budget_seconds: 480",
+                "past gate_budget_seconds",
+            ),
+            ("seconds: 600", "seconds: 3000\n  budget_seconds: 480", "budget_seconds"),
+            (
+                "seconds: 600\n  budget_seconds: 120\n  retry: 2",
+                "seconds: 3000\n  budget_seconds: 480",
+                "retry",
+            ),
+        ] {
+            let why = format!("{:#}", split(fast, slow).unwrap_err());
+            assert!(why.contains(key) && why.contains("```yaml gates"), "{key}: {why}");
+        }
     }
 
     #[test]

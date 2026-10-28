@@ -14,9 +14,11 @@
 //! PRs of those, each from a branch of the repo that stands in — or, where it
 //! says `fork`, of a fork, that branch standing in for the fork's; what one
 //! changes is that branch against the default one.
-//! `deleted` and `transferred` {number: how many more calls about it are
-//! answered}: past those, each call about the issue answers 410 — or 404 —
-//! as GitHub does for an issue deleted, or transferred to another repo.
+//! `deleted`, `transferred` and `missing` {number: how many more calls about
+//! it are answered}: past those, each call about the issue answers as GitHub
+//! does for an issue deleted — 410 —, transferred to another repo — a read
+//! of the issue redirected to `acme/elsewhere`, its number 1000 more, and
+//! 404 of any other call —, or never issued — 404.
 //! `envs`: beside each of `calls`, the names of the session's environment it
 //! ran in (`fake::State`).
 //!
@@ -36,9 +38,9 @@ mod fake;
 
 use afkconvoy::gh::{
     BLOCKED_BY_JQ, CARRYING_JQ, CLOSED_JQ, COMMENTS_JQ, COMMENTS_WITH, DELIVERY_PRS_JQ, ISSUE_JQ,
-    LABELS_JQ, LANDED_ISSUES_JQ, LANDED_ISSUES_QUERY, OPEN_ISSUES_JQ, OPEN_ISSUES_QUERY,
-    OPEN_LABELLED_JQ, PR_FIELDS, PR_HEADS_JQ, PR_OF_FIELDS, PR_OF_JQ, VISIBILITY_JQ,
-    WATCH_ISSUES_JQ, WATCH_ISSUES_QUERY, WATCH_PRS_JQ,
+    LABELS_JQ, LANDED_ISSUES_JQ, LANDED_ISSUES_QUERY, OPEN_AND_LANDED_JQ, OPEN_AND_LANDED_QUERY,
+    OPEN_ISSUES_JQ, OPEN_ISSUES_QUERY, OPEN_LABELLED_JQ, PR_FIELDS, PR_HEADS_JQ, PR_OF_FIELDS,
+    PR_OF_JQ, VISIBILITY_JQ, WATCH_ISSUES_JQ, WATCH_ISSUES_QUERY, WATCH_PRS_JQ,
 };
 use std::path::PathBuf;
 
@@ -650,11 +652,15 @@ fn api(st: &mut State) -> ! {
         for (key, said) in [
             ("deleted", "gh: This issue was deleted (HTTP 410)\n"),
             ("transferred", "gh: Not Found (HTTP 404)\n"),
+            ("missing", "gh: Not Found (HTTP 404)\n"),
         ] {
             let Some(left) = st.doc.get_mut(key).and_then(|calls| calls.get_mut(*number)) else {
                 continue;
             };
             match left.as_u64().unwrap_or(0) {
+                0 if key == "transferred" && parts.len() == 2 && method == "GET" => {
+                    st.finish(&moved(number).to_string(), 0, "")
+                }
                 0 => st.finish("", 1, said),
                 more => *left = json!(more - 1),
             }
@@ -988,6 +994,60 @@ fn open_issues(st: &State) -> ! {
             .collect();
         st.finish(&rows.join("\n"), 0, "")
     }
+    if st.argv.contains(&format!("query={OPEN_AND_LANDED_QUERY}")) {
+        assert_eq!(st.opt("--jq"), Some(OPEN_AND_LANDED_JQ));
+        assert!(st.has("--paginate"));
+        let open_rows: Vec<String> = st.doc["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|issue| is_open(issue))
+            .filter(labelled)
+            .map(|issue| {
+                let number = issue["number"].to_string();
+                let edges: Vec<Value> = blockers(st, &number)
+                    .iter()
+                    .map(|blocker| {
+                        json!({"number": blocker["number"],
+                        "state": blocker["state"].as_str().unwrap_or("open").to_uppercase(),
+                        "repo": blocker["repo"], "labels": blocker["labels"]})
+                    })
+                    .collect();
+                let mut with = comments(st, &number);
+                let more = with.len() > COMMENTS_WITH;
+                with.truncate(COMMENTS_WITH);
+                json!({"part": "open", "number": issue["number"], "title": issue["title"],
+                    "body": issue["body"].as_str().unwrap_or(""),
+                    "url": format!("https://gh/i/{number}"), "at": issue["at"],
+                    "labels": issue["labels"],
+                    "blockers": issue["blockers_at_rebuild"].as_array().unwrap_or(&edges),
+                    "blockers_more": issue["blockers_more"].as_bool().unwrap_or(false),
+                    "more": more, "comments": with})
+                .to_string()
+            })
+            .collect();
+        let closed: Vec<&Value> = st.doc["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|issue| !is_open(issue))
+            .filter(labelled)
+            .collect();
+        let mut rows = open_rows;
+        rows.extend(closed.iter().filter(|issue| issue["state_reason"] == "completed").map(
+            |issue| {
+                let mut with = comments(st, &issue["number"].to_string());
+                let more = with.len() > COMMENTS_WITH;
+                with.truncate(COMMENTS_WITH);
+                json!({"part": "landed", "number": issue["number"], "at": issue["closed_at"],
+                "more": more, "comments": with})
+                .to_string()
+            },
+        ));
+        // Every closed issue on the page, before the completed filter.
+        rows.push(json!({"part": "landed_count", "n": closed.len()}).to_string());
+        st.finish(&rows.join("\n"), 0, "")
+    }
     if st.argv.contains(&format!("query={LANDED_ISSUES_QUERY}")) {
         assert_eq!(st.opt("--jq"), Some(LANDED_ISSUES_JQ));
         assert!(st.has("--paginate"));
@@ -1098,6 +1158,15 @@ fn stamp(at: &Value) -> Value {
     at.as_u64()
         .map_or(Value::Null, |at| json!(format!("{}Z", afkconvoy::log::utc(at).replace(' ', "T"))))
 }
+/// A read of issue `number`, transferred: `gh` follows GitHub's redirect,
+/// and answers with the issue as it is in the repo it moved to.
+fn moved(number: &str) -> Value {
+    let to = number.parse::<u64>().unwrap() + 1000;
+    json!({"id": to, "url": format!("https://api.github.com/repos/acme/elsewhere/issues/{to}"),
+        "number": to, "title": "moved", "body": null, "state": "open", "state_reason": null,
+        "labels": [], "pull_request": false, "closed_by": null})
+}
+
 fn rest_issue(row: &Value) -> Value {
     let labels: Vec<_> =
         row["labels"].as_array().into_iter().flatten().map(|n| json!({"name":n})).collect();

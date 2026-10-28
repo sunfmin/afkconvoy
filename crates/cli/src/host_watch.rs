@@ -22,7 +22,7 @@ use serde_json::{Value, json};
 use crate::checkout_list::List;
 use crate::copies::cache;
 use crate::git::Repo;
-use crate::health::Diagnosis;
+use crate::health::{Diagnosis, Overdue};
 use crate::log::{Entry, What};
 use crate::orca::Worktree;
 use crate::watch_report::Report;
@@ -1187,7 +1187,7 @@ fn resume_delivery(watch: &mut Watch) -> Result<()> {
     if record.status == LaunchState::Ready {
         worktree.await_ready(&watch.terminal, 60, watch.harness, &record.command)?;
         if !worktree.watch_input_ready(&watch.terminal)? {
-            bail!("the resident watch is busy; its round remains undelivered");
+            bail!("{}", crate::doctor::Kind::WatchBusy.symptom());
         }
         record.request = Some(uuid::Uuid::new_v4().to_string());
         record.status = LaunchState::Sending;
@@ -1535,11 +1535,12 @@ fn human_wait_aliases(look: &Value) -> BTreeMap<String, String> {
 
 fn findings(items: &mut Vec<Item>, at: &str, findings: &Value) {
     let unavailable = crate::doctor::Kind::WatchUnavailable.symptom();
+    let busy = crate::doctor::Kind::WatchBusy.symptom();
     for finding in findings.as_array().into_iter().flatten() {
         let what = finding["what"].as_str().unwrap_or("a finding");
-        // An `info` finding holds nothing up; that no watch can start is the
-        // operator's to act on, not a watch's.
-        if finding["severity"] == "info" || what.contains(unavailable) {
+        // An `info` finding holds nothing up. A watch that cannot start, and
+        // a resident watch that is busy, are the operator's to act on.
+        if finding["severity"] == "info" || what.contains(unavailable) || what.contains(busy) {
             continue;
         }
         let reason = format!("{what}; evidence: {}; fix: {}", finding["evidence"], finding["fix"]);
@@ -1553,6 +1554,23 @@ fn findings(items: &mut Vec<Item>, at: &str, findings: &Value) {
             });
         push(items, id, reason);
     }
+}
+
+/// Each fleet instance's tick cadence and the worktrees its claims hold, as
+/// its `doctor.fleet.last_tick` and `doctor.claims` in the look say them.
+fn cadence(look: &Value) -> crate::health::Cadence {
+    let mut cadence = crate::health::Cadence::default();
+    for checkout in look["checkouts"].as_array().into_iter().flatten() {
+        let doctor = &checkout["doctor"];
+        let tick = &doctor["fleet"]["last_tick"];
+        let worktrees = doctor["claims"].as_array().into_iter().flatten();
+        cadence.instance(
+            tick["sleep"].as_u64().unwrap_or(0),
+            tick["took"].as_u64().unwrap_or(0),
+            worktrees.filter_map(|claim| claim["worktree"].as_str()).map(PathBuf::from),
+        );
+    }
+    cadence
 }
 
 /// Everything in a look an operator would act on, each by an identity that
@@ -1621,30 +1639,30 @@ pub(crate) fn actionable(look: &Value, now: u64) -> Vec<Item> {
             push(&mut items, format!("step:{at}:{step}"), reason);
         }
     }
-    let health = &look["host"]["host_kit"]["worker_health"];
-    for worker in health["workers"].as_array().into_iter().flatten() {
-        let next = worker["next_check"].as_u64().unwrap_or(u64::MAX);
-        let path = worker["path"].as_str().unwrap_or("unknown");
-        if next <= now {
-            let reason = format!(
-                "the health observation of the worker in {path} was due at {} UTC and is still \
-                 waiting: {}",
-                crate::log::utc(next),
-                worker["error"]
-            );
-            push(&mut items, format!("health:{path}"), reason);
-        }
-    }
-    for failed in health["observations_failed"].as_array().into_iter().flatten() {
-        let next = failed[2].as_u64().unwrap_or(u64::MAX);
-        let path = failed[0].as_str().unwrap_or("unknown");
-        if next <= now {
-            let reason = format!(
-                "the health observation of the worker in {path} failed, and its retry is overdue: {}",
-                failed[1]
-            );
-            push(&mut items, format!("health:{path}"), reason);
-        }
+    let health = crate::health::Health::deserialize(&look["host"]["host_kit"]["worker_health"]);
+    for overdue in health.map(|health| health.overdue(&cadence(look), now)).unwrap_or_default() {
+        let (path, reason) = match overdue {
+            Overdue::Waiting { path, due, error } => {
+                let reason = format!(
+                    "the health observation of the worker in {} was due at {} UTC and is still \
+                     waiting: {}",
+                    path.display(),
+                    crate::log::utc(due),
+                    json!(error)
+                );
+                (path, reason)
+            }
+            Overdue::Retry { path, error } => {
+                let reason = format!(
+                    "the health observation of the worker in {} failed, and its retry is \
+                     overdue: {}",
+                    path.display(),
+                    json!(error)
+                );
+                (path, reason)
+            }
+        };
+        push(&mut items, format!("health:{}", path.display()), reason);
     }
     items
 }
@@ -1688,17 +1706,54 @@ pub fn json(running: Option<&Watch>, rounds: bool) -> Value {
     answer
 }
 
-/// The host's finding where a look called for a watch no harness could start.
+/// The host's finding for its watch. A resident watch whose round is still
+/// undelivered is that watch. A look no harness could start stays the
+/// troubleshooting row for that fact, and only when the host kit's paused
+/// list or worker-health faults say so.
 pub fn finding() -> Option<crate::doctor::Finding> {
-    let why = read().ok().and_then(|state| state.unavailable).or_else(|| {
+    let association = watch_terminal::json();
+    let problem = association["problem"].as_str().map(str::to_string);
+    let unavailable = read().ok().and_then(|state| state.unavailable).or_else(|| {
         watch_terminal::read().err().map(|error| watch_terminal::recovery(&format!("{error:#}")))
-    })?;
-    Some(crate::doctor::finding(
-        crate::doctor::Kind::WatchUnavailable,
-        "no harness can start this host's watch".into(),
-        why,
-        "afkconvoy run --help (WATCH RECOVERY); afkconvoy kit".into(),
-    ))
+    });
+    let busy = crate::doctor::Kind::WatchBusy.symptom();
+    let situation = problem
+        .filter(|text| text.contains(busy))
+        .or_else(|| unavailable.as_ref().filter(|text| text.contains(busy)).cloned());
+    let cannot_start = |why: String| {
+        crate::doctor::finding(
+            crate::doctor::Kind::WatchUnavailable,
+            crate::doctor::Kind::WatchUnavailable.symptom().to_string(),
+            why,
+            "afkconvoy kit".to_string(),
+        )
+    };
+    // The kit's paused list or its faults are the no-harness row. The busy
+    // sentence alone is not.
+    match situation {
+        Some(situation) if !crate::health::no_harness_for_watch() => Some(crate::doctor::finding(
+            crate::doctor::Kind::WatchBusy,
+            busy.to_string(),
+            situation,
+            busy_fix(&association),
+        )),
+        Some(situation) => Some(cannot_start(unavailable.unwrap_or(situation))),
+        None => unavailable.map(cannot_start),
+    }
+}
+
+/// One command listing the terminals in the watch's own directory. A missing
+/// directory stays the `<watch-directory>` placeholder.
+fn busy_fix(association: &Value) -> String {
+    let directory = association["directory"].as_str().filter(|dir| !dir.is_empty());
+    let selector = directory
+        .map(|dir| format!("path:{dir}"))
+        .unwrap_or_else(|| "path:<watch-directory>".to_string());
+    afkconvoy_core::line::Line::new()
+        .fixed("orca terminal list --worktree ")
+        .word(&selector)
+        .fixed(" --json")
+        .own()
 }
 
 /// Says `what` in every listed checkout's tick log: a log that cannot take it
@@ -2202,12 +2257,19 @@ mod tests {
         assert!(!commands.contains("close 8 --repo acme/tracker"));
     }
 
+    /// A worker as worker health records it, observed next at `next_check`.
+    fn observed(path: &str, next_check: u64, error: Option<&str>) -> Value {
+        json!({"path": path, "terminal": "t", "harness": "codex", "snapshots": [],
+            "next_check": next_check, "rate_retries": 0, "source": "rule", "action": "waiting",
+            "error": error})
+    }
+
     #[test]
     fn a_quiet_look_has_nothing_to_act_on() {
         let look = json!({"findings": [], "checkouts": [{"checkout": "/r", "doctor": {
             "findings": [], "waiting_on_human": [], "fleet": {"alive": true, "broken": null,
             "failed_steps": []}, "watching": {"ticks": [{"instance": "a", "failed": false}]}}}],
-            "host": {"host_kit": {"worker_health": {"workers": [{"path": "/w", "next_check": 2000}]}}}});
+            "host": {"host_kit": {"worker_health": {"workers": [observed("/w", 2000, None)]}}}});
         assert!(actionable(&look, 1000).is_empty());
     }
 
@@ -2216,8 +2278,11 @@ mod tests {
         let look = |first: u64, next: u64| {
             json!({"findings": [{"what": "orca is not running", "evidence": "down", "fix": "orca open"},
                 {"what": "no harness can start this host's watch", "evidence": "", "fix": ""},
+                {"what": "the resident watch is busy; its round remains undelivered",
+                    "evidence": "the resident watch is busy; its round remains undelivered",
+                    "fix": "orca terminal list --worktree path:/watch --json"},
                 {"severity": "info", "what": "a key is read and changes nothing"}],
-            "host": {"host_kit": {"worker_health": {"workers": [{"path": "/w", "next_check": next, "error": "stuck"}]}}},
+            "host": {"host_kit": {"worker_health": {"workers": [observed("/w", next, Some("stuck"))]}}},
             "checkouts": [{"checkout": "/r", "doctor": {
             "findings": [{"what": "`dispatch` failed in tick and has not recovered",
                 "evidence": "no", "fix": "afkconvoy tick",
@@ -2247,6 +2312,33 @@ mod tests {
         );
         assert_eq!(ids(&look(950, 990)), first, "the same failure later is the same episode");
         assert!(!ids(&look(850, 1001)).contains(&"health:/w".to_string()), "not due yet");
+    }
+
+    #[test]
+    fn a_tick_gets_its_chance_before_a_health_observation_is_missed() {
+        // The fleet sleeps 90s between ticks, and its last took 10s.
+        let look = |next: u64| {
+            json!({"checkouts": [{"checkout": "/r", "doctor": {
+                "fleet": {"alive": true, "last_tick": {"sleep": 90, "took": 10}},
+                "claims": [{"issue": 7, "worktree": "/w"}]}}],
+            "host": {"host_kit": {"worker_health": {
+                "workers": [observed("/w", next, None)],
+                "observations_failed": [["/f", "no terminal", next]]}}}})
+        };
+        let ids = |look: &Value, now| -> Vec<String> {
+            actionable(look, now).into_iter().map(|item| item.id).collect()
+        };
+        assert!(ids(&look(998), 1000).is_empty(), "the next tick observes it on schedule");
+        assert!(ids(&look(901), 1000).is_empty(), "within its sleep and a tick's time");
+        let missed = actionable(&look(899), 1000);
+        assert_eq!(
+            missed.iter().map(|item| item.id.as_str()).collect::<Vec<_>>(),
+            ["health:/w", "health:/f"],
+            "no tick observed it within that grace"
+        );
+        assert!(
+            missed[0].reason.contains("was due at") && missed[0].reason.contains("still waiting")
+        );
     }
 
     #[test]

@@ -87,18 +87,18 @@ pub struct Staged {
     handed: Option<String>,
 }
 
-/// What a human handed the issue would be told, where `history` — read from
-/// `records`, each with the URL of its comment — has it with its stage's
+/// What a human handed the issue would be told, where `history` — its
+/// records each with the URL of its comment in `urls` — has it with its stage's
 /// consult for a hand-off: the reason and the evidence of the failure the
 /// fleet recorded, or why its records hand it on, with every round of the
 /// rework a breaker stopped. `None` of an `escalate`, and anywhere else.
-fn handed_said(history: &History, records: &[StageRecord], urls: &[String]) -> Option<String> {
+fn handed_said(history: &History, urls: &[String]) -> Option<String> {
     let Position::Consult(stage, _, ConsultOn::HandOff(reason)) = history.place.position else {
         return None;
     };
     if let Reason::Failed(_) = reason {
-        let recorded =
-            records.iter().rev().find(|record| matches!(record.stated, Stated::Failed(_)));
+        let mut records = history.records.iter().rev();
+        let recorded = records.find(|record| matches!(record.stated, Stated::Failed(_)));
         return recorded.map(|record| record.text.clone());
     }
     let reason = reason.said(stage);
@@ -106,7 +106,7 @@ fn handed_said(history: &History, records: &[StageRecord], urls: &[String]) -> O
     let mut said: String =
         chars.next().into_iter().flat_map(char::to_uppercase).chain(chars).collect();
     said.push('.');
-    if let Some(rounds) = history.rounds_said(records, urls) {
+    if let Some(rounds) = history.rounds_said(urls) {
         said.push_str(&format!("\n\n{rounds}"));
     }
     Some(said)
@@ -150,9 +150,9 @@ impl Staged {
                 return Err(See::Workflows.refusal(why));
             }
         };
-        let history = history(workflow, &records);
-        let handed = handed_said(&history, &records, &urls);
-        let verdicts = records.into_iter().zip(urls).zip(history.readings);
+        let history = history(workflow, records);
+        let handed = handed_said(&history, &urls);
+        let verdicts = history.records.into_iter().zip(urls).zip(history.readings);
         let labels = labels.to_vec();
         // A checkout that names a harness offers that harness's models alone.
         // One that names none offers the host kit, in its order.
@@ -359,6 +359,7 @@ impl Staged {
         let gate = own().fixed(" gate --land").own();
         // Another checkout is gated from inside it.
         let gate_alone = crate::own_command().fixed(" gate").own();
+        let fast_gate = fleet.config.gates.as_ref().map(|_| own().fixed(" gate --fast").own());
         if let Some(pr) = self.joins {
             let fields = WorkerFields {
                 number: self.issue,
@@ -373,6 +374,7 @@ impl Staged {
                 ready_label: &fleet.config.ready_label,
                 land_command: &own().fixed(" land --issue ").number(self.issue).own(),
                 wake_command: &own().fixed(" wake").own(),
+                fast_gate_command: fast_gate.as_deref(),
             };
             let landing = Landing { role: &self.role, skill: &self.skill };
             let mut prompt = landing_prompt(&fields, pr, landing).map_err(|e| anyhow!(e))?;
@@ -628,10 +630,9 @@ pub fn check(launches: &Launches, called: &[(Harness, Vec<String>)]) -> Result<V
                 }
             }) {
                 crate::launch::Once::Already => None,
-                crate::launch::Once::Ran(ok, printed) => harness
-                    .takes(proposed.as_str(), ok.then_some(printed.as_str()))
-                    .err()
-                    .map(&said),
+                crate::launch::Once::Ran(ok, printed) => {
+                    harness.takes(proposed.as_str(), ok.then_some(printed.as_str())).err().map(said)
+                }
             }
         } else {
             None
@@ -641,7 +642,7 @@ pub fn check(launches: &Launches, called: &[(Harness, Vec<String>)]) -> Result<V
             callers: callers.clone(),
             command: proposed.as_str().to_string(),
             tool,
-            fault: proposed.fault().map(&said),
+            fault: proposed.fault().map(said),
             flags_fault,
         });
     }

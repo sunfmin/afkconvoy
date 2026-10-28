@@ -283,7 +283,8 @@ pub struct Host {
     pub sleep_hours: Option<Hours>,
     /// Its host kit, every harness in it; why it cannot be read.
     pub kit: Result<Kit, String>,
-    pub worker_health: serde_json::Value,
+    /// Worker health; why it cannot be read.
+    pub worker_health: Result<crate::health::Health, String>,
     pub watch: serde_json::Value,
     /// The harnesses paused on this host, since when and why: no worker is
     /// started on one until a probe finds it working.
@@ -1200,8 +1201,6 @@ fn admission(out: &mut String, host: &Host) {
     };
 }
 
-/// The host kit: every harness in it, in order, with its models in order,
-/// each harness paused, since when and why.
 /// The command lanes: the observation `afkconvoy queue` answers, each of its
 /// lanes with the requests it lists there, running before waiting.
 fn exclusive(out: &mut String, host: &Host) {
@@ -1266,61 +1265,73 @@ fn exclusive(out: &mut String, host: &Host) {
     out.push_str("</section>\n");
 }
 
-fn kit(out: &mut String, host: &Host) {
-    if let Some(faults) = host.worker_health["faults"].as_array().filter(|v| !v.is_empty()) {
+/// What worker health holds of the host kit: each candidate a fault leaves
+/// out, each failed observation and each worker in recovery.
+fn kit_health(out: &mut String, health: &crate::health::Health) {
+    if !health.faults.is_empty() {
         out.push_str("<section data-health-faults><h2>Unavailable candidates</h2><ul>");
-        for fault in faults {
+        for fault in &health.faults {
             let _ = write!(
                 out,
                 "<li>{}: scope {}; model {}; next probe {}; evidence {}</li>",
-                esc(fault["harness"].as_str().unwrap_or("")),
-                esc(fault["scope"].as_str().unwrap_or("")),
-                esc(fault["model"].as_str().unwrap_or("all")),
-                fault["next_check"],
-                esc(&fault["evidence"].to_string())
+                esc(fault.harness.key()),
+                esc(fault.scope.key()),
+                esc(fault.model.as_deref().unwrap_or("all")),
+                fault.next_check,
+                esc(&serde_json::json!(fault.evidence).to_string())
             );
         }
         out.push_str("</ul></section>");
     }
-    if let Some(failed) =
-        host.worker_health["observations_failed"].as_array().filter(|v| !v.is_empty())
-    {
+    if !health.observations_failed.is_empty() {
         let _ = write!(
             out,
             "<section data-health-observation-errors><h2>Waiting for observations</h2><pre>{}</pre></section>",
-            esc(&serde_json::to_string_pretty(failed).unwrap_or_default())
+            esc(&serde_json::to_string_pretty(&health.observations_failed).unwrap_or_default())
         );
     }
-    if let Some(workers) = host.worker_health["workers"].as_array().filter(|w| !w.is_empty()) {
+    if !health.workers.is_empty() {
         out.push_str("<section data-worker-health><h2>Worker recovery</h2><table><tr><th>Worker</th><th>Orca state / outcome / agent type / since (epoch ms)</th><th>Action / successor</th><th>Evidence source</th><th>Next check</th><th>Evidence / failure</th></tr>");
-        for worker in workers {
+        for worker in health.workers.iter().map(|worker| &worker.observed) {
             let _ = write!(
                 out,
                 "<tr><td>{}</td><td>{} / {} / {} / {}{}</td><td>{} {}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
-                esc(worker["path"].as_str().unwrap_or("")),
-                esc(worker["orca"]["state"].as_str().unwrap_or("unknown")),
-                esc(worker["orca"]["outcome"].as_str().unwrap_or("none")),
-                esc(worker["orca"]["agentType"].as_str().unwrap_or("unknown")),
-                worker["orca"]["stateStartedAt"],
-                if worker["harness_mismatch"] == true {
+                esc(&worker.path.to_string_lossy()),
+                esc(worker.orca["state"].as_str().unwrap_or("unknown")),
+                esc(worker.orca["outcome"].as_str().unwrap_or("none")),
+                esc(worker.orca["agentType"].as_str().unwrap_or("unknown")),
+                worker.orca["stateStartedAt"],
+                if worker.harness_mismatch {
                     format!(
                         " (recorded {}; Orca's harness is used)",
-                        esc(worker["recorded_harness"].as_str().unwrap_or("unknown"))
+                        esc(worker.recorded_harness.as_deref().unwrap_or("unknown"))
                     )
                 } else {
                     String::new()
                 },
-                esc(worker["action"].as_str().unwrap_or("")),
-                esc(worker["successor"].as_str().unwrap_or("")),
-                esc(worker["source"].as_str().unwrap_or("")),
-                worker["next_check"],
-                esc(&match worker["operator_reason"].as_str() {
+                esc(&worker.action),
+                esc(worker.successor.as_deref().unwrap_or("")),
+                esc(&worker.source),
+                worker.next_check,
+                esc(&match &worker.operator_reason {
                     Some(reason) => format!("waiting for the operator: {reason}"),
-                    None => format!("{} {}", worker["diagnosis"], worker["error"]),
+                    None => format!(
+                        "{} {}",
+                        serde_json::json!(worker.diagnosis),
+                        serde_json::json!(worker.error)
+                    ),
                 })
             );
         }
         out.push_str("</table></section>");
+    }
+}
+
+/// The host kit: every harness in it, in order, with its models in order,
+/// each harness paused, since when and why.
+fn kit(out: &mut String, host: &Host) {
+    if let Ok(health) = &host.worker_health {
+        kit_health(out, health);
     }
     for pause in &host.paused {
         let _ = writeln!(
@@ -1739,7 +1750,7 @@ mod tests {
             gate_lanes: 1,
             sleep_hours: Some(SLEEP_HOURS),
             kit: Ok(Kit::default()),
-            worker_health: serde_json::json!({}),
+            worker_health: Ok(crate::health::Health::default()),
             watch: serde_json::json!({}),
             paused: vec![],
         }

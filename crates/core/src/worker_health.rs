@@ -1,10 +1,15 @@
-//! Worker health after the rules: Jev judges what a stopped worker's latest
-//! screen shows, and this table turns its typed answers into the class, scope
-//! and action the fleet carries out. Every question, criterion and threshold
-//! is here, and nowhere else. The key command, the call to TypeSafe and the
-//! worker's transitions are the effect layer's.
+//! Worker health: the one decision for a stopped worker. Whatever the
+//! evidence — the harness's own words, a structured error code, or Jev's
+//! answers on its latest screen — it is turned into a class, and the class
+//! alone gives the scope and the action the fleet carries out. Every code,
+//! question, criterion and threshold is here, and nowhere else. The key
+//! command, the call to TypeSafe and the worker's transitions are the effect
+//! layer's.
 
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+
+use crate::harness::Harness;
 
 /// The System One model asked.
 pub const MODEL: &str = "jev-latest";
@@ -21,37 +26,139 @@ pub const NO: u64 = 300;
 const MOST_OPTIONS: usize = 255;
 
 /// Where the fault's evidence leaves the worker: an account and its
-/// harness, or this worker alone.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// harness, one model of it, or this worker alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Scope {
     Account,
+    Model,
     Worker,
 }
 
+impl Scope {
+    /// The word it is written as.
+    pub fn key(self) -> &'static str {
+        match self {
+            Scope::Account => "account",
+            Scope::Model => "model",
+            Scope::Worker => "worker",
+        }
+    }
+}
+
 /// What the fleet does with the worker.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Action {
     /// Look again at the next check, within the hour that bounds a wait.
     Wait,
+    /// Tell it to carry on, a bounded number of times.
+    Retry,
     /// Continue it on the next harness of the kit, its work kept.
     Continue,
+    /// What an older book recorded where a harness's diagnosis knew nothing:
+    /// read as a wait. No decision gives it.
+    Unknown,
     /// Nothing: it is done.
     Complete,
 }
 
-/// One judgment Jev is asked, as a Noul, and the row of the table its yes
-/// stands for.
+/// What a stopped worker is: each class has one scope and one action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Class {
+    /// Its account's usage limit is used up.
+    Quota,
+    /// Its login or key was refused.
+    Authentication,
+    /// Its account, organization or service is disabled.
+    Disabled,
+    /// Its model is not found or not available.
+    Model,
+    /// It was rate limited.
+    RateLimit,
+    /// Its session broke.
+    Session,
+    /// Its harness refuses this issue: a task refusal.
+    Refusal,
+    /// Its selected model is at capacity: a capacity stop, its own.
+    Capacity,
+    /// It asks whether to trust its folder.
+    TrustGap,
+    /// It waits for a person to choose.
+    WaitingHuman,
+    /// It is busy.
+    Working,
+    /// It finished and reported.
+    Complete,
+    /// Its session exited with a failure.
+    Failed,
+}
+
+impl Class {
+    /// The word a book, a log line and `doctor` say the class by.
+    pub fn key(self) -> &'static str {
+        match self {
+            Class::Quota => "quota",
+            Class::Authentication => "authentication",
+            Class::Disabled => "disabled",
+            Class::Model => "model",
+            Class::RateLimit => "rate_limit",
+            Class::Session => "session",
+            Class::Refusal => "refusal",
+            Class::Capacity => "capacity",
+            Class::TrustGap => "trust_gap",
+            Class::WaitingHuman => "waiting_human",
+            Class::Working => "working",
+            Class::Complete => "complete",
+            Class::Failed => "failed",
+        }
+    }
+
+    /// The table: the scope and the action of each class.
+    pub fn row(self) -> (Scope, Action) {
+        match self {
+            Class::Quota | Class::Authentication | Class::Disabled => {
+                (Scope::Account, Action::Continue)
+            }
+            Class::Model => (Scope::Model, Action::Continue),
+            Class::RateLimit | Class::Capacity => (Scope::Worker, Action::Retry),
+            Class::Session | Class::Refusal | Class::Failed => (Scope::Worker, Action::Continue),
+            Class::TrustGap | Class::WaitingHuman | Class::Working => (Scope::Worker, Action::Wait),
+            Class::Complete => (Scope::Worker, Action::Complete),
+        }
+    }
+}
+
+/// The structured error codes the fleet recognizes, and the class of each.
+const CODES: [(&str, Class); 16] = [
+    ("insufficient_quota", Class::Quota),
+    ("usage_limit_reached", Class::Quota),
+    ("quota_exceeded", Class::Quota),
+    ("authentication_error", Class::Authentication),
+    ("invalid_api_key", Class::Authentication),
+    ("login_required", Class::Authentication),
+    ("token_expired", Class::Authentication),
+    ("organization_disabled", Class::Disabled),
+    ("account_disabled", Class::Disabled),
+    ("service_disabled", Class::Disabled),
+    ("model_not_found", Class::Model),
+    ("model_unavailable", Class::Model),
+    ("rate_limit_exceeded", Class::RateLimit),
+    ("too_many_requests", Class::RateLimit),
+    ("session_error", Class::Session),
+    ("session_corrupted", Class::Session),
+];
+
+/// One judgment Jev is asked, as a Noul, and the class its yes stands for.
 struct Question {
     id: &'static str,
     instructions: &'static str,
     yes: &'static str,
     no: &'static str,
-    class: &'static str,
-    scope: Scope,
-    action: Action,
+    class: Class,
 }
 
-/// The table, in the order it is read: the first yes decides, and an
+/// Jev's questions, in the order they are read: the first yes decides, and an
 /// unsettled answer before it leaves the whole check unsettled. A fault the
 /// screen names comes before a person's choice, a choice before work going
 /// on, and work going on before a finished task: a worker is continued on
@@ -64,9 +171,7 @@ const QUESTIONS: [Question; 6] = [
               cannot work until the limit resets or is raised.",
         no: "The agent can still work: at most a warning says its limit is near, or how much \
              of it is left.",
-        class: "quota",
-        scope: Scope::Account,
-        action: Action::Continue,
+        class: Class::Quota,
     },
     Question {
         id: "login_refused",
@@ -74,9 +179,7 @@ const QUESTIONS: [Question; 6] = [
         yes: "The screen says the login expired, authentication failed or an API key was \
               refused.",
         no: "The screen shows no refused login or key.",
-        class: "authentication",
-        scope: Scope::Account,
-        action: Action::Continue,
+        class: Class::Authentication,
     },
     Question {
         id: "trust_prompt",
@@ -84,9 +187,7 @@ const QUESTIONS: [Question; 6] = [
         yes: "The screen asks whether to trust this folder or workspace, and offers to trust \
               it or to exit.",
         no: "The screen asks nothing about trusting the folder.",
-        class: "trust_gap",
-        scope: Scope::Worker,
-        action: Action::Wait,
+        class: Class::TrustGap,
     },
     Question {
         id: "waiting_for_person",
@@ -95,9 +196,7 @@ const QUESTIONS: [Question; 6] = [
               answer before the agent goes on.",
         no: "The screen shows no menu and asks no question: an empty input box for the next \
              instruction is no choice.",
-        class: "waiting_human",
-        scope: Scope::Worker,
-        action: Action::Wait,
+        class: Class::WaitingHuman,
     },
     Question {
         id: "busy",
@@ -105,9 +204,7 @@ const QUESTIONS: [Question; 6] = [
         yes: "The agent is working: it shows a spinner, a timer counting up or a command it \
               started still running.",
         no: "The agent is idle at its prompt, stopped, or waiting for a person.",
-        class: "working",
-        scope: Scope::Worker,
-        action: Action::Wait,
+        class: Class::Working,
     },
     Question {
         id: "finished",
@@ -115,9 +212,7 @@ const QUESTIONS: [Question; 6] = [
         yes: "The agent's last message reports the outcome of its task, and it is idle.",
         no: "The task is still underway, was stopped short by an error or a limit, or no \
              outcome is reported.",
-        class: "complete",
-        scope: Scope::Worker,
-        action: Action::Complete,
+        class: Class::Complete,
     },
 ];
 
@@ -223,28 +318,123 @@ pub fn answers(request: &Value, response: &Value) -> Result<Answers, String> {
     Ok(Answers { nouls, evidence: evidence.to_string() })
 }
 
-/// The row of the table `answers` settle on.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Decision {
-    pub class: &'static str,
-    pub scope: Scope,
-    pub action: Action,
-    /// The line of the screen Jev selected.
-    pub evidence: String,
+/// What the effect layer saw of a stopped worker.
+#[derive(Debug, Clone, Copy)]
+pub enum Evidence<'a> {
+    /// The lines `harness` printed, on its screen or in a runtime message:
+    /// its own words for a task refusal, a capacity stop or an account quota.
+    Words { harness: Harness, lines: &'a [String] },
+    /// A structured error the worker reported: a code the fleet recognizes,
+    /// anywhere in it, or a message in it holding the harness's own words.
+    Error { harness: Option<Harness>, error: &'a Value },
+    /// Jev's answers on the worker's latest screen.
+    Judged(&'a Answers),
+    /// The session exited with a failure, as these lines say.
+    Exited(&'a [String]),
 }
 
-/// The row of the table the answers settle on, read in its order. The
+/// What a stopped worker is, and what the fleet does with it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Decision {
+    pub class: Class,
+    pub scope: Scope,
+    pub action: Action,
+    /// What showed it: a line of the screen, the harness's words or a code.
+    pub evidence: Vec<String>,
+    /// The seconds the error said to wait before trying again.
+    pub retry_after: Option<u64>,
+}
+
+impl Decision {
+    fn of(class: Class, evidence: Vec<String>) -> Decision {
+        let (scope, action) = class.row();
+        Decision { class, scope, action, evidence, retry_after: None }
+    }
+
+    /// How the worker stands: stopped at capacity, at fault where the fleet
+    /// acts on it, or observed where it waits or is done.
+    pub fn status(&self) -> &'static str {
+        match (self.class, self.action) {
+            (Class::Capacity, _) => "stopped",
+            (_, Action::Wait | Action::Unknown | Action::Complete) => "observed",
+            (_, Action::Retry | Action::Continue) => "fault",
+        }
+    }
+}
+
+/// The one decision for a stopped worker. Words or an error that show
+/// nothing the fleet recognizes decide nothing: `Ok(None)`, for the next
+/// evidence. Jev's answers that settle on no question are the reason why.
+pub fn decide(evidence: Evidence) -> Result<Option<Decision>, String> {
+    Ok(match evidence {
+        Evidence::Words { harness, lines } => words(harness, lines),
+        Evidence::Error { harness, error } => errored(harness, error),
+        Evidence::Judged(answers) => Some(judged(answers)?),
+        Evidence::Exited(lines) => Some(Decision::of(Class::Failed, lines.to_vec())),
+    })
+}
+
+/// A harness's own words: a task refusal before a capacity stop, and a
+/// capacity stop before an account quota.
+fn words(harness: Harness, lines: &[String]) -> Option<Decision> {
+    let (class, evidence) = if let Some(evidence) = harness.task_refusal(lines) {
+        (Class::Refusal, evidence)
+    } else if let Some(evidence) = harness.capacity_stop(lines) {
+        (Class::Capacity, evidence)
+    } else {
+        (Class::Quota, harness.account_quota(lines)?)
+    };
+    Some(Decision::of(class, vec![evidence]))
+}
+
+/// A structured error, read conservatively: nested fields first, then a
+/// message holding the harness's words or more JSON, then its own `code`.
+/// A wait it asks for is kept with what is found inside it.
+fn errored(harness: Option<Harness>, error: &Value) -> Option<Decision> {
+    let retry = error
+        .get("retry_after")
+        .or_else(|| error.get("retryAfter"))
+        .or_else(|| error.pointer("/headers/Retry-After"))
+        .or_else(|| error.pointer("/headers/retry-after"))
+        .and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok())));
+    if let Some(fields) = error.as_object() {
+        for (key, nested) in fields {
+            if key != "code"
+                && let Some(found) = errored(harness, nested)
+            {
+                return Some(Decision { retry_after: retry.or(found.retry_after), ..found });
+            }
+        }
+    }
+    if let Some(items) = error.as_array() {
+        for item in items {
+            if let Some(found) = errored(harness, item) {
+                return Some(found);
+            }
+        }
+    }
+    if let Some(text) = error.as_str() {
+        if let Some(harness) = harness
+            && let Some(found) = words(harness, &[text.to_string()])
+        {
+            return Some(found);
+        }
+        if let Ok(parsed) = serde_json::from_str::<Value>(text) {
+            return errored(harness, &parsed);
+        }
+    }
+    let code = error.get("code").and_then(Value::as_str)?;
+    let (_, class) = CODES.iter().find(|(known, _)| *known == code)?;
+    Some(Decision { retry_after: retry, ..Decision::of(*class, vec![code.into()]) })
+}
+
+/// The class Jev's answers settle on, read in the questions' order. The
 /// reason the check stays unsettled otherwise: a question before any yes was
 /// unsettled, or none was a yes.
-pub fn classify(answers: &Answers) -> Result<Decision, String> {
+fn judged(answers: &Answers) -> Result<Decision, String> {
     for (question, probability) in QUESTIONS.iter().zip(&answers.nouls) {
         if *probability >= YES {
-            return Ok(Decision {
-                class: question.class,
-                scope: question.scope,
-                action: question.action,
-                evidence: answers.evidence.clone(),
-            });
+            return Ok(Decision::of(question.class, vec![answers.evidence.clone()]));
         }
         if *probability > NO {
             return Err(format!(
@@ -286,11 +476,13 @@ mod tests {
             asked.as_object_mut().unwrap().remove("state");
             asked["questions"][EVIDENCE].as_object_mut().unwrap().remove("criteria");
             assert_eq!(asked, recorded["asked"], "{name}: asked as it was recorded");
-            let decision = classify(&answers(&request, &case["response"]).unwrap())
-                .unwrap_or_else(|reason| panic!("{name}: {reason}"));
-            assert_eq!(decision.class, case["expected"]["class"], "{name}");
-            assert_eq!(decision.evidence, case["expected"]["evidence"], "{name}");
-            assert!(screen.iter().any(|line| line.contains(&decision.evidence)), "{name}");
+            let answers = answers(&request, &case["response"]).unwrap();
+            let decision = decide(Evidence::Judged(&answers))
+                .unwrap_or_else(|reason| panic!("{name}: {reason}"))
+                .unwrap();
+            assert_eq!(decision.class.key(), case["expected"]["class"], "{name}");
+            assert_eq!(decision.evidence, [case["expected"]["evidence"].as_str().unwrap()]);
+            assert!(screen.iter().any(|line| line.contains(&decision.evidence[0])), "{name}");
         }
         for screen in [
             "usage limit",
@@ -309,26 +501,31 @@ mod tests {
 
     #[test]
     fn the_first_settled_yes_decides_and_an_unsettled_answer_before_it_does_not() {
-        let decided = |nouls| classify(&answered(nouls)).map(|d| (d.class, d.scope, d.action));
+        let decided = |nouls| {
+            decide(Evidence::Judged(&answered(nouls))).map(|d| {
+                let d = d.unwrap();
+                (d.class, d.scope, d.action)
+            })
+        };
         assert_eq!(
             decided([940, 20, 10, 20, 30, 30]),
-            Ok(("quota", Scope::Account, Action::Continue))
+            Ok((Class::Quota, Scope::Account, Action::Continue))
         );
         assert_eq!(
             decided([10, 900, 10, 10, 10, 10]),
-            Ok(("authentication", Scope::Account, Action::Continue))
+            Ok((Class::Authentication, Scope::Account, Action::Continue))
         );
         assert_eq!(
             decided([10, 10, 950, 900, 10, 10]),
-            Ok(("trust_gap", Scope::Worker, Action::Wait))
+            Ok((Class::TrustGap, Scope::Worker, Action::Wait))
         );
         assert_eq!(
             decided([10, 10, 10, 10, 960, 500]),
-            Ok(("working", Scope::Worker, Action::Wait))
+            Ok((Class::Working, Scope::Worker, Action::Wait))
         );
         assert_eq!(
             decided([10, 10, 10, 10, 10, 970]),
-            Ok(("complete", Scope::Worker, Action::Complete))
+            Ok((Class::Complete, Scope::Worker, Action::Complete))
         );
         assert!(
             decided([500, 10, 10, 10, 960, 10])
@@ -336,7 +533,7 @@ mod tests {
                 .contains("`usage_limit` unsettled, at 0.500")
         );
         assert!(decided([10, 10, 10, 10, 10, 10]).unwrap_err().contains("none of its questions"));
-        assert_eq!(decided([300, 300, 300, 300, 700, 300]).map(|d| d.0), Ok("working"));
+        assert_eq!(decided([300, 300, 300, 300, 700, 300]).map(|d| d.0), Ok(Class::Working));
         assert!(decided([301, 10, 10, 10, 960, 10]).is_err());
     }
 
@@ -383,5 +580,85 @@ mod tests {
         assert!(answers(&request, &json!({"answers": answered})).unwrap_err().contains("outside"));
         answered.remove("busy");
         assert!(answers(&request, &json!({"answers": answered})).unwrap_err().contains("`busy`"));
+    }
+
+    fn lines(lines: &[&str]) -> Vec<String> {
+        lines.iter().map(|line| (*line).to_string()).collect()
+    }
+
+    /// An account quota is one class, scope and action, whether the harness
+    /// said it on its screen, in a runtime message, or as a structured code,
+    /// and whether Jev saw it.
+    #[test]
+    fn an_account_quota_is_one_decision_whatever_shows_it() {
+        let screen =
+            lines(&["Usage limit", "reached. Increase your limits to continue using codex."]);
+        let on_screen = decide(Evidence::Words { harness: Harness::Codex, lines: &screen });
+        let pi = r#"429: {"code":"1308","message":"Usage limit reached for 5 hour"}"#;
+        let in_message = decide(Evidence::Error { harness: Some(Harness::Pi), error: &json!(pi) });
+        let code = json!({"error": {"code": "insufficient_quota"}});
+        let as_code = decide(Evidence::Error { harness: None, error: &code });
+        let judged = decide(Evidence::Judged(&answered([940, 20, 10, 20, 30, 30])));
+        for decided in [on_screen, in_message, as_code, judged] {
+            let decision = decided.unwrap().unwrap();
+            assert_eq!(
+                (decision.class, decision.scope, decision.action, decision.status()),
+                (Class::Quota, Scope::Account, Action::Continue, "fault")
+            );
+        }
+        let other = decide(Evidence::Error { harness: Some(Harness::Codex), error: &json!(pi) });
+        assert_eq!(other, Ok(None), "the words of another harness are no quota of this one");
+    }
+
+    #[test]
+    fn each_recognized_code_has_one_class_scope_and_action() {
+        let classes = [
+            ("login_required", Class::Authentication, Scope::Account, Action::Continue),
+            ("account_disabled", Class::Disabled, Scope::Account, Action::Continue),
+            ("model_not_found", Class::Model, Scope::Model, Action::Continue),
+            ("too_many_requests", Class::RateLimit, Scope::Worker, Action::Retry),
+            ("session_corrupted", Class::Session, Scope::Worker, Action::Continue),
+        ];
+        for (code, class, scope, action) in classes {
+            let error = json!({"code": code, "retry_after": "30"});
+            let decision = decide(Evidence::Error { harness: None, error: &error }).unwrap();
+            let decision = decision.unwrap();
+            assert_eq!((decision.class, decision.scope, decision.action), (class, scope, action));
+            assert_eq!((decision.evidence, decision.retry_after), (vec![code.into()], Some(30)));
+        }
+        for (code, class) in CODES {
+            let decision = decide(Evidence::Error { harness: None, error: &json!({"code": code}) });
+            assert_eq!(decision.unwrap().unwrap().class, class, "{code}");
+        }
+        let unknown = json!({"code": "something_else"});
+        assert_eq!(decide(Evidence::Error { harness: None, error: &unknown }), Ok(None));
+    }
+
+    /// A capacity stop belongs to its worker, and a task refusal to its
+    /// issue: neither is an account quota.
+    #[test]
+    fn a_capacity_stop_and_a_task_refusal_stay_what_they_are() {
+        let capacity = lines(&["Selected model is at capacity. Please try a different model."]);
+        let refusal = lines(&[
+            "We take extra care with some cybersecurity requests. If you're doing authorized",
+            "security work, apply for Daybreak to get broader access.",
+        ]);
+        for (screen, class, scope, action, status) in [
+            (capacity, Class::Capacity, Scope::Worker, Action::Retry, "stopped"),
+            (refusal, Class::Refusal, Scope::Worker, Action::Continue, "fault"),
+        ] {
+            let decided = decide(Evidence::Words { harness: Harness::Codex, lines: &screen });
+            let Ok(Some(decision)) = decided else { panic!("{screen:?}: {decided:?}") };
+            assert_eq!(
+                (decision.class, decision.scope, decision.action, decision.status()),
+                (class, scope, action, status)
+            );
+        }
+        let exited = lines(&["exited 1"]);
+        let failed = decide(Evidence::Exited(&exited)).unwrap().unwrap();
+        assert_eq!(
+            (failed.class, failed.scope, failed.action),
+            (Class::Failed, Scope::Worker, Action::Continue)
+        );
     }
 }
