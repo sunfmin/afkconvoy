@@ -4915,7 +4915,7 @@ The shell string every worker of one harness is started with, in a fleet instanc
 _Avoid_: agent command, provider profile
 
 **Worker state**:
-Whether a worker is busy or has stopped. It is busy while the turn its harness took is still open, and stopped once that turn has ended or none was recorded. Stopped never means finished.
+Whether a worker is busy or has stopped. It is busy while the turn its harness took is still open, and stopped once that turn has ended or none was recorded. The harness names the session that records that turn. Stopped never means finished.
 _Avoid_: liveness, status (as under Position)
 
 **Task refusal**:

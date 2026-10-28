@@ -139,7 +139,7 @@ pub const CONFIG: &str =
 pub fn codex_line(_world: &World, dir: &Path) -> String {
     use afkconvoy_core::harness::Harness;
     let notes = PathBuf::from(git(dir, &["rev-parse", "--absolute-git-dir"]));
-    let home = std::fs::read_to_string(notes.join("convoy-codex-home")).unwrap();
+    let home = std::fs::read_to_string(notes.join(Harness::Codex.noted_home().unwrap())).unwrap();
     let model = std::fs::read_to_string(notes.join("convoy-worker-model")).unwrap();
     let command = if model.is_empty() {
         Harness::Codex.stock().to_string()
