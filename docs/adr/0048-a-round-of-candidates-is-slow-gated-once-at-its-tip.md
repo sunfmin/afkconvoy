@@ -43,3 +43,22 @@ A merge onto the candidate ahead that conflicts used to answer `speculative_conf
 - An afkconvoy older than this one lands a repo declaring its gates with the whole gate per candidate, as before; ADR-0047's worry, an older version landing on the slow gate alone, does not arise, and the fleet is upgraded by hand before a repo lands with rounds.
 - A red round costs every candidate in it its landing until the tip's worker fixes it; a change that broke the slow gate holds up the changes fast-gated beside it.
 - A worker's PR may carry other candidates' changes, through a resolved conflict or a red round. Landing it lands them, and their issues are settled from the base history.
+
+## A round is as big as the PRs that are ready (sunfmin/control#244)
+
+At first a round could hold only as many candidates as the host has worker lanes. A candidate's turn held its lane until it landed, and the window was bounded by the same count, so the size of a round and the number of gates running at once were one number. Landing the batch of 2026-10-28 showed both ends of it:
+- Three lanes ran three cold fast gates at once beside a slow gate, at load 75, and tests well under 2 seconds hit the fast gate's 6-second end.
+- One lane made every PR a round of its own.
+
+With one lane a round also started too early: a turn waiting for a lane was not yet on the chain.
+
+Now the lanes bound only the gates running:
+- A turn that asks to land puts itself on the candidate record as **pending** while it waits, and comes off it when it takes a candidate, or ends.
+- A candidate's turn frees its lane once its fast gate is green.
+- The round's tip takes a lane again for the slow gate.
+- The window has no bound of its own, but for barriers and unconfirmed cancellation.
+- A round starts when no turn is pending and every candidate is fast-green.
+
+So a PR that becomes ready while the others are still merging and fast-gating joins their round; one that asks once the slow gate has started joins the next.
+
+A stream of PRs that never stops would hold a round back. No bound is set for that yet: a fleet's workers finish in bursts, and a bound is added once a round is seen waiting on it.
