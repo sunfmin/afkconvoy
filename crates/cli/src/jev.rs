@@ -8,7 +8,7 @@ use std::io::{Read, Write};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use afkconvoy_core::worker_health::{self, Decision};
+use afkconvoy_core::worker_health::{self, Decision, Evidence};
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
 
@@ -23,8 +23,8 @@ const TIMEOUT: Duration = Duration::from_secs(30);
 pub enum Outcome {
     /// The host settings name no Jev key command: nothing was asked.
     NoKey,
-    /// Jev answered: `decision` is the row of the table its answers settle
-    /// on, or why they settle on none.
+    /// Jev answered: `decision` is the one decision its answers settle on,
+    /// or why they settle on none.
     Judged { request: Value, response: Value, decision: Result<Decision, String> },
     /// The key command, the call or its answer failed: an error, never an
     /// answer. `request` is null where none was built.
@@ -55,7 +55,9 @@ pub fn judge(screen: &[String]) -> Outcome {
     };
     match worker_health::answers(&request, &response) {
         Ok(answers) => {
-            Outcome::Judged { decision: worker_health::classify(&answers), request, response }
+            let decision = worker_health::decide(Evidence::Judged(&answers))
+                .and_then(|decision| decision.ok_or_else(|| "Jev decided nothing".to_string()));
+            Outcome::Judged { decision, request, response }
         }
         Err(error) => failed(request, response, error),
     }
