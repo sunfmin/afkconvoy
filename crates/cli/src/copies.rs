@@ -406,6 +406,9 @@ pub fn removable(path: &Path) {
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
+
     use super::*;
 
     #[test]
@@ -421,5 +424,49 @@ mod tests {
         let other = std::thread::spawn(|| cache().unwrap()).join().unwrap();
         assert_ne!(other, own, "another thread's is another");
         assert!(!other.parent().unwrap().exists(), "and gone once its thread ended");
+    }
+
+    #[test]
+    fn removable_gives_the_owner_write_and_clears_no_other_mode_bit() {
+        use std::os::unix::fs::symlink;
+        let root = std::env::temp_dir().join(format!("afkconvoy-removable-{}", std::process::id()));
+        let outside =
+            std::env::temp_dir().join(format!("afkconvoy-removable-out-{}", std::process::id()));
+        let _root = Clean(&root);
+        let _outside = Clean(&outside);
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&outside);
+        let nested = root.join("sealed/nested");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(nested.join("f"), "role").unwrap();
+        std::fs::set_permissions(nested.join("f"), std::fs::Permissions::from_mode(0o444)).unwrap();
+        std::fs::set_permissions(&nested, std::fs::Permissions::from_mode(0o2555)).unwrap();
+        std::fs::set_permissions(root.join("sealed"), std::fs::Permissions::from_mode(0o1555))
+            .unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::set_permissions(&outside, std::fs::Permissions::from_mode(0o555)).unwrap();
+        symlink(&outside, root.join("link")).unwrap();
+
+        removable(&root);
+
+        assert_eq!(mode(&root.join("sealed")), 0o1755);
+        assert_eq!(mode(&nested), 0o2755);
+        assert_eq!(mode(&nested.join("f")), 0o444);
+        assert_eq!(mode(&outside), 0o555, "a symlink is not opened");
+    }
+
+    fn mode(path: &Path) -> u32 {
+        std::fs::symlink_metadata(path).unwrap().permissions().mode() & 0o7777
+    }
+
+    /// Gives the owner write back so the test's directory can be removed.
+    struct Clean<'a>(&'a Path);
+
+    impl Drop for Clean<'_> {
+        fn drop(&mut self) {
+            removable(self.0);
+            let _ = std::fs::set_permissions(self.0, std::fs::Permissions::from_mode(0o755));
+            let _ = std::fs::remove_dir_all(self.0);
+        }
     }
 }

@@ -153,6 +153,12 @@ pub fn tick(
             "warning: a stopped candidate worktree will be removed on a later tick: {error:#}"
         );
     }
+    // A removal orca already answered success for, while the directory remains.
+    // No claim is required: the settle that met it has already released its own.
+    if let Err(error) = crate::orca::finish_failed_removals(&fleet.repo, &fleet.config.base_branch)
+    {
+        eprintln!("warning: a worktree a removal left will be removed on a later tick: {error:#}");
+    }
     // Cover interruption after an internal task landed but before final review.
     // A bad delivery does not prevent unrelated task reconciliation.
     let delivery_failure = crate::delivery::reconcile(repo, &fleet.gh).err();

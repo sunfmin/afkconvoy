@@ -8,7 +8,7 @@ use afkconvoy_core::plan::{PullRequest, closing_pr};
 use afkconvoy_core::settle::{
     Follow, SettleStep, cut_landing, follow, landed_comment, settle_steps,
 };
-use anyhow::{Result, bail};
+use anyhow::{Result, anyhow, bail};
 
 use crate::board::last_word;
 use crate::claims::{Me, release};
@@ -84,6 +84,42 @@ fn follow_base(fleet: &Fleet) -> Result<()> {
     Ok(())
 }
 
+/// Removes the worktree settling `issue` leaves, unless a worker is still in
+/// it or it holds a commit the remote does not. A worker still in it fails
+/// the settle, so the claim stays and a later tick tries again. A commit the
+/// remote does not have stays, and the settle goes on: the claim is released
+/// and nothing records a failed removal, so a later tick does not take it.
+fn remove_settled(fleet: &Fleet, issue: u64, worktree: &Worktree) -> Result<()> {
+    let path = worktree.path.display().to_string();
+    let busy = crate::hot::working_directories()
+        .map_err(|_| anyhow!("a worker is still using {path}; a later tick removes it"))?;
+    if crate::hot::occupies(&busy, &worktree.path) {
+        bail!("a worker is still using {path}; a later tick removes it");
+    }
+    if settled_keeps(fleet, issue, worktree)? {
+        return Ok(());
+    }
+    worktree.remove()
+}
+
+/// Whether settling keeps `worktree`. A worktree git can still read is kept
+/// by `settle_keeps`. One git can no longer read — its registration already
+/// gone — is kept unless the head orca lists is on the remote.
+fn settled_keeps(fleet: &Fleet, issue: u64, worktree: &Worktree) -> Result<bool> {
+    let head = Repo::new(worktree.path.clone()).try_git(&["rev-parse", "HEAD"])?;
+    if head.ok {
+        let leaving = crate::judge::leaving(fleet, issue, worktree)?;
+        return Ok(afkconvoy_core::left::settle_keeps(&leaving.left));
+    }
+    let listed = crate::orca::listed_head(&worktree.path)?;
+    Ok(!crate::orca::commit_is_on_remote(
+        &fleet.repo,
+        &fleet.config.base_branch,
+        &worktree.branch,
+        &listed,
+    ))
+}
+
 /// Settles my claim on `issue`, whose work is on the base branch: what only
 /// the tick can do for it — `land` runs inside the worktree and holds no
 /// instance id. The claim is deleted last, so a settling that failed on the
@@ -150,7 +186,7 @@ pub fn settle(fleet: &mut Fleet, me: &Me, issue: u64) -> Result<()> {
             }
             SettleStep::RemoveWorktree => {
                 if let Some(worktree) = Worktree::of_issue(&Source::of(&fleet.repo)?, issue)? {
-                    worktree.remove()?;
+                    remove_settled(fleet, issue, &worktree)?;
                 }
             }
             // Soft: a checkout that cannot follow never fails the release it rides on.

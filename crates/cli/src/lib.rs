@@ -1795,6 +1795,8 @@ enum Command {
     ///
     /// A stopped candidate's worktree is removed on this pass when no process still has it as its working directory. A worktree a process is still in stays for a later tick. The candidate chain is not rewritten. `afkconvoy land --help`.
     ///
+    /// Settling a claim removes that worker's worktree. Directories the gate left under it that the owner cannot write do not stop the removal: removal gives the owner write on the directories it has to delete, and clears no other mode bit. A removal that leaves the directory is not finished. A later tick removes it, including one git has already unregistered, and orca drops that failed removal once the directory is gone. A worktree a process is still working in stays until a later tick sees that process gone. A worktree that holds a commit the remote does not stays.
+    ///
     /// ## What it answers
     ///
     /// {"did", "errors", "held", "frontier_remaining", "idle", "locks"} — and "held_back_by" when admission held back a worker it would have started
