@@ -862,7 +862,7 @@ fn log_findings(run: &Run) -> Vec<Finding> {
             let repeated = recent.filter(|last| {
                 last.iter().all(|(_, tick)| tick.failed().iter().any(|was| was.same_step(&failed)))
             });
-            let finding = match repeated {
+            match repeated {
                 Some(last) => {
                     let (first, latest) = (last[0].1.count, last[FAILED_TICKS - 1].1.count);
                     finding(
@@ -883,8 +883,7 @@ fn log_findings(run: &Run) -> Vec<Finding> {
                     failed.error.clone(),
                     fix_of(&failed, instance),
                 ),
-            };
-            finding
+            }
         })
         .collect()
 }
