@@ -101,10 +101,12 @@ fn first_eligible() -> Result<Option<Harness>> {
     Ok(kit.first().map(|held| held.harness))
 }
 
-/// Why `harness` cannot start a worker of `repo` now. A model fault that
+/// Why `harness` cannot start a worker of `repo` at `now`. A model fault that
 /// still leaves a placed model does not count, and neither does a harness
 /// with no placed model and no fault: that harness starts on its default model.
-pub fn cannot_start(repo: &Repo, harness: Harness) -> Option<String> {
+/// While a startup probe that checked the current launch commands stands,
+/// this does not ask the harness: the note says what that probe found.
+pub fn cannot_start(repo: &Repo, harness: Harness, now: u64) -> Option<String> {
     let Ok(kit) = crate::kit::load() else {
         return Some("the host kit cannot be read".to_string());
     };
@@ -124,6 +126,9 @@ pub fn cannot_start(repo: &Repo, harness: Harness) -> Option<String> {
             }),
         );
     }
+    if crate::probe::stands(repo, now) {
+        return noted_start_fault(repo, harness, now);
+    }
     let launches = crate::launch::Launches::foreseen(repo);
     match crate::role::startable(&launches, harness, "the harness this checkout names") {
         Ok(()) => None,
@@ -131,13 +136,29 @@ pub fn cannot_start(repo: &Repo, harness: Harness) -> Option<String> {
     }
 }
 
+/// What the standing probe found in the way of starting `harness`. `None`
+/// when it found the harness able to start, or the note is from before
+/// harness results were recorded: asking again would start the harness.
+fn noted_start_fault(repo: &Repo, harness: Harness, now: u64) -> Option<String> {
+    let notes = crate::probe::noted_harnesses(repo, now);
+    let note = notes.iter().find(|note| note.harness() == harness.key())?;
+    if let Some(fault) = note.fault().or(note.flags_fault()) {
+        return Some(fault.to_string());
+    }
+    match note.state() {
+        "missing" => Some(format!("`{}` is missing on this host", harness.key())),
+        "logged_out" => Some(format!("`{}` is logged out on this host", harness.key())),
+        _ => None,
+    }
+}
+
 /// What `doctor` says of a checkout that names a harness no worker of it
 /// starts on: the harness cannot start, or a role holds no limits for it.
-pub fn findings(checkout: &Path) -> Vec<crate::doctor::Finding> {
+pub fn findings(checkout: &Path, now: u64) -> Vec<crate::doctor::Finding> {
     let Ok(repo) = Repo::at(checkout) else { return vec![] };
     let Ok(Some(harness)) = named(&repo) else { return vec![] };
     let mut found = vec![];
-    if let Some(why) = cannot_start(&repo, harness) {
+    if let Some(why) = cannot_start(&repo, harness, now) {
         found.push(one(&repo, harness, &why, "afkconvoy kit"));
     }
     let Ok(config) = crate::config::load(&crate::config::file_of(&repo)) else {
@@ -223,7 +244,7 @@ pub fn converge(
             Err(_) => return Ok(()),
         },
     };
-    if cannot_start(&fleet.repo, target).is_some() {
+    if cannot_start(&fleet.repo, target, fleet.now).is_some() {
         return Ok(());
     }
     let landed = match crate::switch::onto(fleet, me, agent, target) {

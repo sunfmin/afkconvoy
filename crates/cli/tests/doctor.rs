@@ -1132,3 +1132,114 @@ fn watching_pages_prs_and_comments_and_withholds_until_when_a_source_fails() {
     assert_eq!(future.code, 1);
     assert!(future.json["error"].as_str().unwrap().contains("--since is after"));
 }
+
+/// Names `harness` on `checkout` in this world's checkout list.
+fn name_harness(world: &World, checkout: &std::path::Path, harness: &str) {
+    world.say_concurrency(checkout, 1);
+    let file = world.cache().join("afkconvoy/checkouts.json");
+    let mut list: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    for entry in list["checkouts"].as_array_mut().unwrap() {
+        if entry["checkout"] == json!(checkout) {
+            entry["harness"] = json!(harness);
+        }
+    }
+    std::fs::write(file, list.to_string()).unwrap();
+}
+
+fn clear_shell(world: &World) {
+    std::fs::write(world.root.join("shell-asked"), "").unwrap();
+    std::fs::write(world.root.join("shell-asked-in"), "").unwrap();
+}
+
+fn issue_queries_in(doc: &Value) -> Vec<String> {
+    doc["calls"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|call| {
+            call.as_array().unwrap().iter().find_map(|arg| {
+                arg.as_str()
+                    .and_then(|arg| arg.strip_prefix("query="))
+                    .filter(|query| query.contains("issues("))
+                    .map(str::to_string)
+            })
+        })
+        .collect()
+}
+
+fn starts_a_harness(script: &str) -> bool {
+    script.contains("type --")
+        || script.starts_with("kimi ")
+        || script.starts_with("grok ")
+        || script.starts_with("claude ")
+        || script.starts_with("pi ")
+        || script.contains("codex ")
+}
+
+#[test]
+fn a_look_reads_the_login_once_and_starts_no_harness_while_a_probe_stands() {
+    let world = World::new();
+    world.hold_every_harness();
+    let second = world.second_repo();
+    name_harness(&world, &world.clone, "kimi");
+    name_harness(&world, &second, "kimi");
+    world.afk(&["plan", "--now", "1000"]).ok();
+    world.afk_in(&second, &["plan", "--now", "1000"]).ok();
+
+    let look = |now: &str| {
+        clear_shell(&world);
+        let _ = world.gh_calls();
+        let mut gh2: Value =
+            serde_json::from_slice(&std::fs::read(world.root.join("gh2.json")).unwrap()).unwrap();
+        gh2["calls"] = json!([]);
+        std::fs::write(world.root.join("gh2.json"), gh2.to_string()).unwrap();
+
+        let answer = world.afk(&["doctor", "--all", "--now", now]).ok();
+        assert_eq!(answer["checkouts"].as_array().unwrap().len(), 2, "{answer}");
+        let asked = world.shell_asked();
+        let auth: Vec<_> =
+            asked.iter().filter(|script| script.starts_with("gh auth status")).collect();
+        assert_eq!(auth.len(), 1, "{asked:?}");
+        let started: Vec<_> = asked.iter().filter(|script| starts_a_harness(script)).collect();
+        assert!(started.is_empty(), "{asked:?}");
+
+        let calls = world.gh_calls();
+        assert_eq!(
+            issue_queries_of(&calls),
+            vec![afkconvoy::gh::OPEN_ISSUES_QUERY.to_string()],
+            "{calls:?}"
+        );
+        for call in &calls {
+            assert!(
+                !call.iter().any(|arg| {
+                    ["POST", "PATCH", "PUT", "DELETE", "edit", "create", "close", "comment"]
+                        .contains(&arg.as_str())
+                }),
+                "{call:?}"
+            );
+        }
+        let gh2: Value =
+            serde_json::from_slice(&std::fs::read(world.root.join("gh2.json")).unwrap()).unwrap();
+        let second_queries = issue_queries_in(&gh2);
+        assert_eq!(
+            second_queries,
+            vec![afkconvoy::gh::OPEN_ISSUES_QUERY.to_string()],
+            "{second_queries:?}"
+        );
+    };
+    look("1200");
+    look("2000");
+}
+
+fn issue_queries_of(calls: &[Vec<String>]) -> Vec<String> {
+    calls
+        .iter()
+        .filter_map(|call| {
+            call.iter().find_map(|arg| {
+                arg.strip_prefix("query=")
+                    .filter(|query| query.contains("issues("))
+                    .map(str::to_string)
+            })
+        })
+        .collect()
+}

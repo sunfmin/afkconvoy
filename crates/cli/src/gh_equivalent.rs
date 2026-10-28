@@ -222,6 +222,66 @@ pub(crate) fn run(gh: &GitHub, args: &[&str], writing: bool) -> Result<String> {
     graphql(gh, args)
 }
 
+/// The open issues and the day's landings, in the line shape of
+/// `OPEN_AND_LANDED_JQ`. The count is every closed issue on the page, before
+/// the completed filter, so a full page still falls back.
+fn open_and_landed(gh: &GitHub, args: &[&str], repo: &str) -> Result<String> {
+    let labels = args
+        .iter()
+        .filter_map(|a| a.strip_prefix("labels[]="))
+        .map(crate::judge::label_segment)
+        .collect::<Vec<_>>()
+        .join(",");
+    let mut open_endpoint = format!("repos/{repo}/issues?state=open&per_page=100");
+    let mut closed_endpoint = format!("repos/{repo}/issues?state=closed&per_page=100");
+    if !labels.is_empty() {
+        open_endpoint.push_str(&format!("&labels={labels}"));
+        closed_endpoint.push_str(&format!("&labels={labels}"));
+    }
+    if let Some(since) = field(args, "since") {
+        closed_endpoint.push_str(&format!("&since={since}"));
+    }
+    let mut rows = vec![];
+    for r in list(gh, &open_endpoint)? {
+        if !r["pull_request"].is_null() {
+            continue;
+        }
+        rows.push(json!({
+            "part": "open",
+            "number": r["number"],
+            "title": r["title"],
+            "body": r["body"].as_str().unwrap_or(""),
+            "url": r["html_url"],
+            "at": time(&r["created_at"]),
+            "labels": names(&r["labels"])?,
+            "blockers": rest_blockers(gh, repo, &r["number"])?,
+            "blockers_more": false,
+            "more": false,
+            "comments": rest_comments(gh, repo, &r["number"])?
+        }));
+    }
+    let closed = list(gh, &closed_endpoint)?;
+    let mut raw = 0usize;
+    for r in &closed {
+        if !r["pull_request"].is_null() {
+            continue;
+        }
+        raw += 1;
+        if r["state_reason"] != "completed" {
+            continue;
+        }
+        rows.push(json!({
+            "part": "landed",
+            "number": r["number"],
+            "at": time(&r["closed_at"]),
+            "more": false,
+            "comments": rest_comments(gh, repo, &r["number"])?
+        }));
+    }
+    rows.push(json!({"part": "landed_count", "n": raw}));
+    Ok(lines(rows))
+}
+
 fn rest(gh: &GitHub, args: &[&str]) -> Result<String> {
     if args.starts_with(&["issue", "view"]) && opt(args, "--json") == Some("url") {
         let number: u64 = args.get(2).context("missing issue number")?.parse()?;
@@ -237,6 +297,9 @@ fn rest(gh: &GitHub, args: &[&str]) -> Result<String> {
         let name = field(args, "repo").context("GitHub query missing repo")?;
         let repo = format!("{owner}/{name}");
         let query = field(args, "query").unwrap_or("");
+        if query == gh::OPEN_AND_LANDED_QUERY {
+            return open_and_landed(gh, args, &repo);
+        }
         let state = if query == gh::OPEN_ISSUES_QUERY {
             "open"
         } else if query == gh::LANDED_ISSUES_QUERY {

@@ -29,6 +29,18 @@ use crate::stage::Flows;
 use crate::team::{Kept, keep, unknown_patrols};
 use crate::topic::See;
 
+/// The moment a patrol's landings should be counted back from, when a patrol
+/// this repo names bounds how many issues it lands in a day. `None` when it
+/// names no such patrol, or the team cannot be read: the open read then
+/// leaves the landings unasked, and [`seen`] asks if the team loads.
+pub fn landings_since(repo: &Repo, now: u64) -> Option<u64> {
+    let config = crate::config::load(&crate::config::file_of(repo)).ok()?;
+    let bound = config.bound.as_ref().filter(|bound| !bound.patrols.is_empty())?;
+    let team = crate::role::current(repo, bound, &config.labels())?;
+    let patrols = team.patrols_named(&bound.patrols).ok()?;
+    patrols.iter().any(|patrol| patrol.max_landed_a_day.is_some()).then_some(now)
+}
+
 /// What the remote and GitHub say of each patrol the repo names, in the
 /// order it names them. A repo that names none, and one whose team does not
 /// load, has none to run: what is wrong with a team is `check`'s to say. A
@@ -53,7 +65,10 @@ pub fn seen(fleet: &Fleet, read: &Flows, open: &OpenIssues) -> Result<Vec<Seen>>
         }
     }
     let landed = if named.iter().any(|patrol| patrol.max_landed_a_day.is_some()) {
-        fleet.gh.patrol_landings(fleet.now)?
+        match &fleet.patrol_landings {
+            Some(landed) => landed.clone(),
+            None => fleet.gh.patrol_landings(fleet.now)?,
+        }
     } else {
         vec![]
     };

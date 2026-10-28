@@ -69,6 +69,44 @@ pub const LANDED_ISSUES_JQ: &str = ".data.repository.issues.nodes[] | \
     {number, at: (.closedAt | fromdateiso8601? // null), \
     more: .comments.pageInfo.hasNextPage, comments: [.comments.nodes[] | \
     {id: (.fullDatabaseId | tonumber), body, url, at: (.createdAt | fromdateiso8601? // null)}]}";
+/// How many closed issues the open read takes with it. More than this and the
+/// day may run past the page, so the landed read falls back to its own pages.
+pub const LANDED_PAGE: usize = 100;
+/// The open issues and, beside them, the closed issues updated since `$since`,
+/// in one call. The closed connection has no `pageInfo`: `gh api --paginate`
+/// follows the first `endCursor` it finds, and a second one is not a page of
+/// the open issues. A page repeats the closed issues; the reader keeps one of
+/// each. Only a patrol that bounds its landings in a day asks this.
+pub const OPEN_AND_LANDED_QUERY: &str = "query($owner: String!, $repo: String!, \
+    $labels: [String!], $endCursor: String, $since: DateTime!) { \
+    repository(owner: $owner, name: $repo) { \
+    issues(states: OPEN, labels: $labels, first: 40, after: $endCursor, \
+    orderBy: {field: CREATED_AT, direction: DESC}) { \
+    pageInfo { hasNextPage endCursor } \
+    nodes { number title body url createdAt labels(first: 100) { nodes { name } } \
+    blockedBy(first: 10) { pageInfo { hasNextPage } nodes { number state \
+    repository { nameWithOwner } labels(first: 100) { nodes { name } } } } \
+    comments(first: 100) { pageInfo { hasNextPage } \
+    nodes { fullDatabaseId body url createdAt } } } } \
+    landed: issues(states: CLOSED, labels: $labels, filterBy: {since: $since}, \
+    first: 100, orderBy: {field: UPDATED_AT, direction: DESC}) { \
+    nodes { number stateReason closedAt \
+    comments(first: 100) { pageInfo { hasNextPage } \
+    nodes { fullDatabaseId body url createdAt } } } } } }";
+pub const OPEN_AND_LANDED_JQ: &str = ".data.repository as $repo \
+    | ($repo.landed.nodes | length) as $n \
+    | ($repo.issues.nodes[] | {part: \"open\", number, title, body, url, \
+    at: (.createdAt | fromdateiso8601? // null), \
+    labels: [.labels.nodes[].name], blockers: [.blockedBy.nodes[] | select(. != null) | \
+    {number, state, repo: .repository.nameWithOwner, labels: [.labels.nodes[].name]}], \
+    blockers_more: .blockedBy.pageInfo.hasNextPage, \
+    more: .comments.pageInfo.hasNextPage, comments: [.comments.nodes[] | \
+    {id: (.fullDatabaseId | tonumber), body, url, at: (.createdAt | fromdateiso8601? // null)}]}), \
+    ($repo.landed.nodes[] | select(.stateReason == \"COMPLETED\") | \
+    {part: \"landed\", number, at: (.closedAt | fromdateiso8601? // null), \
+    more: .comments.pageInfo.hasNextPage, comments: [.comments.nodes[] | \
+    {id: (.fullDatabaseId | tonumber), body, url, at: (.createdAt | fromdateiso8601? // null)}]}), \
+    {part: \"landed_count\", n: $n}";
 /// Issues updated since a watching agent's last look, open or closed, in
 /// the tracker and scoped to this repo's label. Comments past the first page
 /// are read through the ordinary comments endpoint.
@@ -419,6 +457,60 @@ impl OpenIssues {
 pub struct Open {
     pub issues: OpenIssues,
     pub prs: Vec<PullRequest>,
+}
+
+/// The open issues and the patrol landings of one day, from one issues query.
+/// `landings` is `None` when the closed page may be short of the day.
+struct OpenAndLanded {
+    issues: OpenIssues,
+    landings: Option<Vec<(String, u64)>>,
+}
+
+/// What is open, and the patrol landings read in that same query.
+pub(crate) struct Opened {
+    pub open: Open,
+    /// `None`: this read did not ask, or the closed page may be short of the day.
+    pub landings: Option<Vec<(String, u64)>>,
+}
+
+/// One open issue, as the issues query returns it.
+#[derive(Debug, Deserialize)]
+struct OpenRow {
+    number: u64,
+    title: String,
+    #[serde(default)]
+    body: String,
+    #[serde(default)]
+    url: String,
+    #[serde(default)]
+    at: Option<u64>,
+    labels: Vec<String>,
+    blockers: Vec<BlockedBy>,
+    blockers_more: bool,
+    more: bool,
+    comments: Vec<Comment>,
+}
+
+/// One completed issue, as a landings query returns it.
+#[derive(Debug, Deserialize)]
+struct LandingRow {
+    number: u64,
+    at: Option<u64>,
+    more: bool,
+    comments: Vec<Comment>,
+}
+
+/// One line of the open-and-landed query: an open issue, a landing, or how
+/// many closed issues the page held before the completed filter.
+#[derive(Debug, Deserialize)]
+#[serde(tag = "part")]
+enum IssuePart {
+    #[serde(rename = "open")]
+    Open(OpenRow),
+    #[serde(rename = "landed")]
+    Landed(LandingRow),
+    #[serde(rename = "landed_count")]
+    Count { n: usize },
 }
 
 /// How many times a read is made before it is said that GitHub could not be
@@ -788,14 +880,22 @@ impl GitHub {
 
     /// The GraphQL `query` of the tracker, page after page, each answer read
     /// with `jq`: `query` takes the tracker as `$owner` and `$repo`, and the
-    /// repo label of another as `$labels`.
-    fn query(&self, query: &str, jq: &str) -> Result<String> {
+    /// repo label of another as `$labels`. `fields` are further `-f` values,
+    /// such as `since=`.
+    fn query_with(&self, query: &str, jq: &str, fields: &[String]) -> Result<String> {
         let query = format!("query={query}");
         let variables = variables(&self.tracker);
         let mut args = vec!["api", "graphql", "--paginate"];
         args.extend(variables.iter().map(String::as_str));
+        for field in fields {
+            args.extend(["-f", field]);
+        }
         args.extend(["-f", &query, "--jq", jq]);
         self.read(&args)
+    }
+
+    fn query(&self, query: &str, jq: &str) -> Result<String> {
+        self.query_with(query, jq, &[])
     }
 
     /// Who GitHub lets see the tracker, as it says it (`VISIBILITY_JQ`).
@@ -910,49 +1010,71 @@ impl GitHub {
     /// An issue whose comments or blockers go past the embedded page is
     /// asked about again, for all of that connection.
     pub fn open_issues(&self) -> Result<OpenIssues> {
-        #[derive(Deserialize)]
-        struct Row {
-            number: u64,
-            title: String,
-            #[serde(default)]
-            body: String,
-            #[serde(default)]
-            url: String,
-            #[serde(default)]
-            at: Option<u64>,
-            labels: Vec<String>,
-            blockers: Vec<BlockedBy>,
-            blockers_more: bool,
-            more: bool,
-            comments: Vec<Comment>,
-        }
         let out = self.query(OPEN_ISSUES_QUERY, OPEN_ISSUES_JQ)?;
         let mut open = OpenIssues::default();
         for line in out.lines().filter(|line| !line.trim().is_empty()) {
-            let row: Row =
+            let row: OpenRow =
                 serde_json::from_str(line).context("gh api graphql: unexpected answer")?;
-            // Another repo's issue in the tracker is none of the fleet's.
-            if !self.tracker.holds(&row.labels) {
-                continue;
-            }
-            // Never infer an unblocked issue from the embedded page alone
-            // when GitHub says another page follows. A failed full read
-            // fails the rebuild instead of dispatching through a blocker.
-            let blockers =
-                if row.blockers_more { self.blocked_by(row.number)? } else { row.blockers };
-            let comments = if row.more { self.comments(row.number)? } else { row.comments };
-            open.comments.insert(row.number, comments);
-            open.blockers.insert(row.number, blockers.clone());
-            open.reports
-                .insert(row.number, Comment { id: 0, body: row.body, url: row.url, at: row.at });
-            open.rows.push(Issue {
-                number: row.number,
-                title: row.title,
-                labels: row.labels,
-                open_blockers: self.blockers(blockers),
-            });
+            self.take_open(&mut open, row)?;
         }
         Ok(open)
+    }
+
+    fn take_open(&self, open: &mut OpenIssues, row: OpenRow) -> Result<()> {
+        // Another repo's issue in the tracker is none of the fleet's.
+        if !self.tracker.holds(&row.labels) {
+            return Ok(());
+        }
+        // Never infer an unblocked issue from the embedded page alone
+        // when GitHub says another page follows. A failed full read
+        // fails the rebuild instead of dispatching through a blocker.
+        let blockers = if row.blockers_more { self.blocked_by(row.number)? } else { row.blockers };
+        let comments = if row.more { self.comments(row.number)? } else { row.comments };
+        open.comments.insert(row.number, comments);
+        open.blockers.insert(row.number, blockers.clone());
+        open.reports
+            .insert(row.number, Comment { id: 0, body: row.body, url: row.url, at: row.at });
+        open.rows.push(Issue {
+            number: row.number,
+            title: row.title,
+            labels: row.labels,
+            open_blockers: self.blockers(blockers),
+        });
+        Ok(())
+    }
+
+    /// The open issues, and the patrol landings of the day ending at `now`,
+    /// from one issues query. `None` for the landings when the closed page
+    /// may be short of the day: the caller then reads them on their own pages.
+    fn open_issues_and_landings(&self, now: u64) -> Result<OpenAndLanded> {
+        let since = now.saturating_sub(afkconvoy_core::patrol::DAY);
+        let since = format!("since={}Z", crate::log::utc(since).replace(' ', "T"));
+        let out = self.query_with(OPEN_AND_LANDED_QUERY, OPEN_AND_LANDED_JQ, &[since])?;
+        let mut open = OpenIssues::default();
+        let mut landed_rows = vec![];
+        let mut truncated = false;
+        for line in out.lines().filter(|line| !line.trim().is_empty()) {
+            let part: IssuePart =
+                serde_json::from_str(line).context("gh api graphql: unexpected answer")?;
+            match part {
+                IssuePart::Open(row) => self.take_open(&mut open, row)?,
+                IssuePart::Landed(row) => landed_rows.push(row),
+                IssuePart::Count { n } if n >= LANDED_PAGE => truncated = true,
+                IssuePart::Count { .. } => {}
+            }
+        }
+        if truncated {
+            return Ok(OpenAndLanded { issues: open, landings: None });
+        }
+        let mut seen = BTreeSet::new();
+        let mut landed = vec![];
+        for row in landed_rows {
+            if !seen.insert(row.number) {
+                continue;
+            }
+            landed.extend(self.take_landing(&row, now)?);
+        }
+        Ok(OpenAndLanded { issues: open, landings: Some(landed) })
     }
 
     /// The issues that may hold a closing or a stage/intake record since
@@ -1020,39 +1142,48 @@ impl GitHub {
     /// when a configured patrol has a landing bound. Ownership follows the
     /// latest intake record, regardless of the issue's labels now.
     pub fn patrol_landings(&self, now: u64) -> Result<Vec<(String, u64)>> {
-        #[derive(Deserialize)]
-        struct Row {
-            number: u64,
-            at: Option<u64>,
-            more: bool,
-            comments: Vec<Comment>,
-        }
         let out = self.query(LANDED_ISSUES_QUERY, LANDED_ISSUES_JQ)?;
         let mut landed = vec![];
         for line in out.lines().filter(|line| !line.trim().is_empty()) {
-            let row: Row =
+            let row: LandingRow =
                 serde_json::from_str(line).context("gh api graphql: unexpected answer")?;
-            let Some(at) = row.at else { continue };
-            if now.saturating_sub(at) >= afkconvoy_core::patrol::DAY {
-                continue;
-            }
-            let comments = if row.more { self.comments(row.number)? } else { row.comments };
-            if let Some(patrol) =
-                afkconvoy_core::intake::opened_by(comments.iter().map(|c| c.body.as_str()))
-            {
-                landed.push((patrol, at));
-            }
+            landed.extend(self.take_landing(&row, now)?);
         }
         Ok(landed)
     }
 
+    /// `(patrol, closed at)` when `row` is a patrol's completed issue inside
+    /// the day ending at `now`. Comments past the embedded page are read.
+    fn take_landing(&self, row: &LandingRow, now: u64) -> Result<Option<(String, u64)>> {
+        let Some(at) = row.at else { return Ok(None) };
+        if now.saturating_sub(at) >= afkconvoy_core::patrol::DAY {
+            return Ok(None);
+        }
+        let rest = if row.more { Some(self.comments(row.number)?) } else { None };
+        let comments = rest.as_deref().unwrap_or(row.comments.as_slice());
+        let patrol = afkconvoy_core::intake::opened_by(comments.iter().map(|c| c.body.as_str()));
+        Ok(patrol.map(|patrol| (patrol, at)))
+    }
+
     /// What is open: the issues and the PRs, asked for side by side.
     pub fn open(&self) -> Result<Open> {
-        let (issues, prs) = thread::scope(|scope| {
+        Ok(self.open_with_landings(None)?.open)
+    }
+
+    /// [`open`], and when `now` is set, the patrol landings of the day ending
+    /// then, from the same issues query. `None` for the landings means they
+    /// were not asked, or the closed page may be short of the day.
+    pub(crate) fn open_with_landings(&self, now: Option<u64>) -> Result<Opened> {
+        let (read, prs) = thread::scope(|scope| {
             let prs = scope.spawn(|| self.open_prs());
-            (self.open_issues(), beside(prs))
+            let read = match now {
+                None => self.open_issues().map(|issues| OpenAndLanded { issues, landings: None }),
+                Some(now) => self.open_issues_and_landings(now),
+            };
+            (read, beside(prs))
         });
-        Ok(Open { issues: issues?, prs: prs? })
+        let read = read?;
+        Ok(Opened { open: Open { issues: read.issues, prs: prs? }, landings: read.landings })
     }
 
     /// Every closed issue that carries `label`, each with when it closed, in
@@ -1591,6 +1722,19 @@ impl GitHub {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_landed_page_adds_no_second_end_cursor() {
+        let open = OPEN_ISSUES_QUERY.matches("endCursor").count();
+        assert_eq!(OPEN_AND_LANDED_QUERY.matches("endCursor").count(), open);
+        let landed = OPEN_AND_LANDED_QUERY.split_once("landed:").unwrap().1;
+        assert!(!landed.contains("endCursor"), "{landed}");
+        assert!(OPEN_AND_LANDED_QUERY.contains("first: 100"));
+        assert_eq!(LANDED_PAGE, 100);
+        let nodes = "nodes { number title body url createdAt labels(first: 100) { nodes { name } }";
+        assert!(OPEN_ISSUES_QUERY.contains(nodes));
+        assert!(OPEN_AND_LANDED_QUERY.contains(nodes));
+    }
 
     #[test]
     fn the_tracker_is_named_by_gh_filling_the_checkouts_repo_in_or_by_its_name() {
