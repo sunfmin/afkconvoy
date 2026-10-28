@@ -41,6 +41,8 @@ fn cut_help_gives_five_hours_at_the_default_and_three_beside_the_gates() {
     assert!(help.contains("three hours beside the two gate limits"), "{help}");
     assert!(!help.contains("an hour beside"), "{help}");
     assert!(!help.contains("three hours at the default"), "{help}");
+    assert!(help.contains("Leaving it out means 18000s"), "{help}");
+    assert!(!help.contains("3600"), "{help}");
 }
 
 #[test]
