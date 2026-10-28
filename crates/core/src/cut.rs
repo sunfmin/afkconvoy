@@ -38,9 +38,10 @@ pub const VERSION_ENV: &str = "VERSION";
 /// The word of the marker of the issue a failed cut opens.
 pub const FAILED: &str = "convoy:cut-failed";
 
-/// What a cut is given beside two gate limits — base certification and its merge's gate — for the rest of its steps, publishing and installing
-/// among them, in seconds: an hour.
-pub const BESIDE_THE_GATES: u64 = 3600;
+/// What a cut is given beside two gate limits — base certification and its
+/// merge's gate — for the rest of its steps, publishing and installing among
+/// them, in seconds: three hours.
+pub const BESIDE_THE_GATES: u64 = 3 * 3600;
 
 /// The default age of the oldest landing past the newest tag at which a
 /// busy fleet starts a cut, in seconds.
@@ -798,9 +799,11 @@ mod tests {
     }
 
     #[test]
-    fn a_cut_is_given_two_gate_limits_and_an_hour() {
-        assert_eq!(time_limit(3600), 3 * 3600);
-        assert_eq!(time_limit(600), 1200 + 3600);
+    fn a_cut_is_given_two_gate_limits_and_three_hours() {
+        assert_eq!(BESIDE_THE_GATES, 10_800);
+        // The default gate limit is 3600s, so a cut is given five hours.
+        assert_eq!(time_limit(3600), 18_000);
+        assert_eq!(time_limit(600), 2 * 600 + 10_800);
         assert_eq!(time_limit(u64::MAX), u64::MAX);
     }
 
@@ -842,7 +845,16 @@ mod tests {
         assert_eq!(ending(None, 1000, false, 1001, limit), None);
         let out = Ending::OutOfTime(Step::Land).failure(limit).unwrap();
         assert_eq!(out.step, Step::Land);
-        assert!(out.why.contains("80 minutes"), "{}", out.why);
+        assert!(out.why.contains("its time ran out"), "{}", out.why);
+        assert!(out.why.contains("200 minutes"), "{}", out.why);
+        let said = failure_report(
+            &landing,
+            &out,
+            "h1",
+            "/w/cut",
+            "cd '/w/cut' && afkconvoy cut --from land",
+        );
+        assert!(said.contains("its time ran out"), "{said}");
     }
 
     #[test]
