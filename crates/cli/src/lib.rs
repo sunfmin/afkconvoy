@@ -79,6 +79,7 @@ pub mod launch;
 pub mod legacy;
 pub mod lock;
 pub mod log;
+pub mod look;
 pub mod measure;
 pub mod orca;
 pub mod panel;
