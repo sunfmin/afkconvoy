@@ -1506,9 +1506,6 @@ enum Command {
         /// candidate worktrees of one repo may validate together within this bound.
         #[arg(long, env = "AFKCONVOY_GATE_LANES", value_parser = host_settings::watch_every_or_default)]
         gate_lanes: Option<To<u64>>,
-        /// Obsolete setting, ignored: turns land directly and only --gate-lanes applies.
-        #[arg(long, hide = true, env = "AFKCONVOY_TRAIN_LANES", value_parser = host_settings::watch_every_or_default)]
-        train_lanes: Option<To<u64>>,
         /// Stop after this many ticks
         #[arg(long, hide = true)]
         ticks: Option<u64>,
@@ -3945,7 +3942,6 @@ fn start_of(
         exclusive_seconds,
         jev_key_command,
         gate_lanes,
-        train_lanes,
         ticks,
         second_ms,
         panic_at_tick,
@@ -3978,7 +3974,6 @@ fn start_of(
         admit_inspect_after,
         exclusive_seconds,
         gate_lanes,
-        train_lanes,
         panel,
         watch_dir,
         watch_every,

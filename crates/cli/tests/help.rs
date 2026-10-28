@@ -1189,9 +1189,14 @@ fn kit_and_doctor_print_the_glossarys_research_states_and_kit_gives_both_outcome
 #[test]
 fn the_retired_train_commands_and_lanes_are_absent_from_public_help() {
     let help = manual();
-    for retired in
-        ["--train-lanes", "cut_train", "tend_train", "afkconvoy abandon", "landing train given up"]
-    {
+    for retired in [
+        "--train-lanes",
+        "AFKCONVOY_TRAIN_LANES",
+        "cut_train",
+        "tend_train",
+        "afkconvoy abandon",
+        "landing train given up",
+    ] {
         assert!(!help.contains(retired), "{retired} in help");
     }
 }
