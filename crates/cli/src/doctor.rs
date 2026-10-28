@@ -5,7 +5,9 @@
 //! the remote, orca after each worker; and whether the tracker is public,
 //! which `tracker::findings` asks and judges. It writes nothing anywhere but the
 //! fleet's own cache, and makes no startup probe: it is run beside a live
-//! fleet, often. `findings` is the half that judges what was read, and asks
+//! fleet, often. While a startup probe that checked the kit's current launch
+//! commands still stands, it starts no harness; otherwise it starts each
+//! harness at most once. `findings` is the half that judges what was read, and asks
 //! nothing. Nothing here fixes anything: the fleet's own commands do.
 
 use std::path::{Path, PathBuf};
@@ -16,6 +18,7 @@ use afkconvoy_core::config::{Config, SaidBy};
 use afkconvoy_core::cut;
 use afkconvoy_core::exclusive::Ticket;
 use afkconvoy_core::gate::GateCommand;
+use afkconvoy_core::harness::Harness;
 use afkconvoy_core::lease::{LEASE, stamp_age, stamp_stale};
 use afkconvoy_core::left::{Kept, KeptBecause};
 use afkconvoy_core::patrol::Standing;
@@ -1323,11 +1326,14 @@ pub fn findings(seen: &Seen) -> Vec<Finding> {
 }
 
 /// What this host has of what the fleet of the checkout `repo`, under
-/// `config`, needs, read from its current host kit.
-fn read_host(repo: &Repo, config: Option<&Config>) -> Host {
+/// `config`, needs, read from its current host kit. When `trust` is set, a
+/// startup probe that still stands already checked every harness: none is
+/// started again.
+fn read_host(repo: &Repo, config: Option<&Config>, trust: bool) -> Host {
     let launches = Launches::foreseen(repo);
     let default = launches.default();
-    let looked = tools::look(repo, launches.of(default).ok().flatten().as_ref());
+    let launch = if trust { None } else { launches.of(default).ok().flatten() };
+    let looked = tools::look(repo, launch.as_ref());
     // An unbound repo knows of no harness: nothing calls for its one command's.
     let called = match config.and_then(|config| config.bound.as_ref()) {
         Some(bound) => {
@@ -1341,7 +1347,8 @@ fn read_host(repo: &Repo, config: Option<&Config>) -> Host {
             _ => vec![(default, vec![])],
         },
     };
-    let checked = role::check(&launches, &called).unwrap_or_default();
+    let checked =
+        if trust { trusted(&called) } else { role::check(&launches, &called).unwrap_or_default() };
     let launch = |checked: Checked| Launch { checked };
     Host {
         tools: looked.found,
@@ -1349,6 +1356,31 @@ fn read_host(repo: &Repo, config: Option<&Config>) -> Host {
         orca_unasked: looked.orca_unasked,
         launches: checked.into_iter().map(launch).collect(),
     }
+}
+
+/// The host kit's commands, as a standing startup probe already checked them.
+fn trusted(called: &[(Harness, Vec<String>)]) -> Vec<Checked> {
+    let kit = crate::kit::load().ok();
+    called
+        .iter()
+        .map(|(harness, callers)| {
+            let command = kit
+                .as_ref()
+                .and_then(|kit| kit.command(*harness))
+                .filter(|command| !command.trim().is_empty())
+                .unwrap_or_else(|| harness.stock());
+            Checked {
+                harness: *harness,
+                callers: callers.clone(),
+                command: command.to_string(),
+                // The standing probe already found this command able to start.
+                // Ready is that result; asking it again would start the harness.
+                tool: Tool::of(*harness, command).map(|tool| (tool, Found::Ready)),
+                fault: None,
+                flags_fault: None,
+            }
+        })
+        .collect()
 }
 
 /// The worker launch commands a `run` said it started with: the first word
@@ -1588,8 +1620,19 @@ fn stamped_instance(fleet: &Fleet, host: &str) -> Option<String> {
     newest.map(|owner| owner.instance.clone())
 }
 
-fn read_state(repo: &Repo, now: u64, run: &mut Run) -> Result<State> {
-    let (mut fleet, open) = Fleet::read(repo, now)?;
+/// What the fleet view holds, once it is open. The open runs beside the host
+/// check: neither waits for the other.
+fn finish_state(
+    repo: &Repo,
+    now: u64,
+    run: &mut Run,
+    trust: bool,
+    opened: (Fleet, crate::gh::Open),
+) -> Result<State> {
+    let (mut fleet, open) = opened;
+    if trust {
+        fleet.trust_launches();
+    }
     if run.instance.is_none() {
         run.instance = stamped_instance(&fleet, &run.host);
     }
@@ -1855,6 +1898,7 @@ pub fn doctor_with_proxy_rounds(
     proxy: &[String],
     rounds: bool,
 ) -> Result<Value> {
+    let _budget = crate::launch::budget_once();
     let look = Look::new(now, rounds);
     let (mut answer, mut found) = examined(repo, now, host, proxy, &look)?;
     // A host finding is said here with this checkout. `doctor --all` says
@@ -1922,8 +1966,16 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String], look: &Look) ->
         ticks: entries.filter(|entries| entries.iter().any(Entry::of_run)).map(|_| ticks),
     };
     let config = crate::concurrency::config_of(repo);
-    let seen_host = read_host(repo, config.as_ref().ok());
-    let state = read_state(repo, now, &mut run).map_err(|error| format!("{error:#}"));
+    // The host check and the fleet's remote read do not depend on each other.
+    // Asking them together is what keeps one doctor inside its time.
+    let (trust, seen_host, opened) = std::thread::scope(|scope| {
+        let opened = scope.spawn(|| Fleet::read(repo, now));
+        let trust = crate::probe::stands(repo, now);
+        let seen_host = read_host(repo, config.as_ref().ok(), trust);
+        (trust, seen_host, opened.join().expect("fleet read"))
+    });
+    let state =
+        finish_state(repo, now, &mut run, trust, opened?).map_err(|error| format!("{error:#}"));
     let seen = Seen {
         now,
         host: &seen_host,
@@ -2023,6 +2075,24 @@ fn exclusive_findings(entries: &[Entry], now: u64) -> Vec<Finding> {
         .collect()
 }
 
+/// Watch log lines are the host's. `doctor --all` says each once.
+fn lift_watch_events(answer: &mut Value, lifted: &mut Vec<Value>) {
+    let Some(events) = answer.pointer_mut("/fleet/events").and_then(Value::as_array_mut) else {
+        return;
+    };
+    let mut own = Vec::new();
+    for event in events.drain(..) {
+        if event.get("event").and_then(Value::as_str) == Some("watch") {
+            if !lifted.contains(&event) {
+                lifted.push(event);
+            }
+        } else {
+            own.push(event);
+        }
+    }
+    *events = own;
+}
+
 /// What of `doctor`'s `host` is the host's alone, the same whichever
 /// checkout it is asked in — the host kit, the queue of `exclusive`, the
 /// watch running, the newer afkconvoy the host runner moves onto — by
@@ -2101,6 +2171,7 @@ pub fn all_since_rounds(
     if since.is_some_and(|since| since > now) {
         anyhow::bail!("--since is after this look's time: use the previous answer's `until`");
     }
+    let _budget = crate::launch::budget_once();
     let listed = List::of_host()?.read()?.checkouts;
     let look = Look::new(now, rounds);
     // Each checkout's repo, where it can be read, beside what was made of it.
@@ -2131,8 +2202,10 @@ pub fn all_since_rounds(
         let panicked = || (None, Err(anyhow!("its `doctor` panicked")));
         asking.into_iter().map(|asked| asked.join().unwrap_or_else(|_| panicked())).collect()
     });
-    let once = look.host;
+    let mut once = look.host;
     let mut of_host = look.findings;
+    let mut watch_events = vec![];
+    let say_watch_once = once.get("watch").is_some_and(Value::is_object);
     let mut unwell = false;
     let mut complete = true;
     let mut checkouts = vec![];
@@ -2151,6 +2224,11 @@ pub fn all_since_rounds(
                 if let Some(host) = answer["host"].as_object_mut() {
                     host.retain(|key, _| !once.contains_key(key));
                 }
+                // The watch is the host's. Its log lines are said once, on
+                // `host.watch`, not again in every checkout.
+                if say_watch_once {
+                    lift_watch_events(&mut answer, &mut watch_events);
+                }
                 answer["findings"] = serde_json::to_value(own)?;
                 answer
             }
@@ -2161,6 +2239,10 @@ pub fn all_since_rounds(
             }
         };
         checkouts.push(json!({"checkout": entry.checkout, "repo": key, "doctor": doctor}));
+    }
+    watch_events.sort_by(|left, right| right["at"].as_u64().cmp(&left["at"].as_u64()));
+    if say_watch_once && let Some(watch) = once.get_mut("watch").and_then(Value::as_object_mut) {
+        watch.insert("events".to_string(), Value::Array(watch_events));
     }
     // Said once, named for the first checkout on the list: the lines are
     // equal while they are gathered, and each runs from any directory.

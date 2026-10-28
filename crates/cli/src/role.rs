@@ -590,18 +590,35 @@ pub fn check(launches: &Launches, called: &[(Harness, Vec<String>)]) -> Result<V
         };
 
         let said = |fault: String| launches.said(&fault, *harness, callers);
-        let takes = || harness.takes(proposed.as_str(), proposed.flags().as_deref());
+        // Login is the one start of this program while a doctor budget stands.
+        // A stock command is known to take the fleet's flags, so that finding
+        // needs no second start. A custom command is asked its flags only
+        // when nothing has started the program yet.
+        let tool = tools::harness(&proposed).filter(|_| *harness != launches.default());
+        let stock = proposed.as_str().trim() == harness.stock();
+        let flags_fault = if launches.adds_flags(*harness) && proposed.resolves() && !stock {
+            match crate::launch::once_per_program(harness.program(), "flags", || {
+                match proposed.flags() {
+                    Some(printed) => (true, printed),
+                    None => (false, String::new()),
+                }
+            }) {
+                crate::launch::Once::Already => None,
+                crate::launch::Once::Ran(ok, printed) => harness
+                    .takes(proposed.as_str(), ok.then_some(printed.as_str()))
+                    .err()
+                    .map(&said),
+            }
+        } else {
+            None
+        };
         checked.push(Checked {
             harness: *harness,
             callers: callers.clone(),
             command: proposed.as_str().to_string(),
-            tool: tools::harness(&proposed).filter(|_| *harness != launches.default()),
-            fault: proposed.fault().map(said),
-            flags_fault: if launches.adds_flags(*harness) && proposed.resolves() {
-                takes().err().map(said)
-            } else {
-                None
-            },
+            tool,
+            fault: proposed.fault().map(&said),
+            flags_fault,
         });
     }
     Ok(checked)
