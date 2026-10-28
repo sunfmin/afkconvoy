@@ -653,6 +653,143 @@ fn each_group_the_guide_describes_names_every_command_of_its_own() {
     }
 }
 
+/// The index's checkout rule is the form `-h` prints. A flag of the command's
+/// own, including `--instance` and `--run`, leaves the checkout where that
+/// usage line shows `[CHECKOUT]`. `-C` is only where the usage line shows
+/// `-C`. `scaffold`, `watched` and `draft` name no checkout, and stay so.
+#[test]
+fn the_index_keeps_a_commands_own_flag_from_moving_the_checkout_to_c() {
+    let index = help("--help");
+    let rule = index
+        .lines()
+        .find(|line| line.contains("does not move the checkout to `-C`"))
+        .expect("the index states the checkout rule");
+    for said in [
+        "A flag of the command's own, including `--instance` and `--run`, does not move the \
+         checkout to `-C`",
+        "The checkout is a path after the command whenever that command's usage line shows \
+         `[CHECKOUT]`",
+        "`-C <checkout>` only when that command's usage line shows `-C`",
+        "A fix line and a hand-typed command use that form",
+    ] {
+        assert!(rule.contains(said), "the checkout rule lost {said:?}: {rule}");
+    }
+
+    // The usage line is the form. `[CHECKOUT]` after the command's own flag is
+    // the fix line the rule tells you to type.
+    let forms = [
+        ("heartbeat", "--instance", "afkconvoy heartbeat --instance <instance> <checkout>"),
+        ("tick", "--instance", "afkconvoy tick --instance <instance> <checkout>"),
+        ("over", "--run", "afkconvoy over --run <run> <checkout>"),
+    ];
+    for (command, flag, fix) in forms {
+        let long = asked(&[command, "--help"]);
+        assert!(
+            long.contains("Name it after the command, as `[CHECKOUT]`."),
+            "{command} no longer names the checkout after the command"
+        );
+        let usage = usage_of(command);
+        let flag_at = usage.find(flag).unwrap_or_else(|| panic!("{command} usage lost {flag}"));
+        let checkout_at = usage.find("[CHECKOUT]").unwrap_or_else(|| panic!("{usage}"));
+        assert!(flag_at < checkout_at, "{usage}");
+        assert!(!usage.contains("-C"), "{command} usage offers -C: {usage}");
+        let written = fix_from_usage(&usage);
+        assert_eq!(written, fix, "{usage}");
+    }
+
+    // `-C` is still the usage parser's refusal, before the command reads anything.
+    let probe = probe_dir();
+    let path = probe.to_str().unwrap();
+    for args in [
+        ["heartbeat", "-C", path, "--instance", "alpha"],
+        ["tick", "-C", path, "--instance", "alpha"],
+        ["over", "-C", path, "--run", "rounds"],
+    ] {
+        let (code, error) = ran(&args);
+        assert_eq!(code, 2, "{args:?}: {error}");
+        assert!(error.contains("unexpected argument '-C' found"), "{args:?}: {error}");
+        assert!(error.contains("[CHECKOUT]"), "{args:?}: {error}");
+    }
+    // The path the usage line shows is accepted, after the flag and before it.
+    for args in [
+        vec!["heartbeat", "--instance", "alpha", path],
+        vec!["heartbeat", path, "--instance", "alpha"],
+        vec!["tick", "--instance", "alpha", path],
+        vec!["tick", path, "--instance", "alpha"],
+        vec!["over", "--run", "rounds", path],
+        vec!["over", path, "--run", "rounds"],
+    ] {
+        let (code, error) = ran(&args);
+        assert_eq!(code, 1, "{args:?}: {error}");
+        assert!(error.contains("is not in a git checkout"), "{args:?}: {error}");
+        assert!(!error.contains("unexpected argument"), "{args:?}: {error}");
+    }
+    let _ = std::fs::remove_dir_all(&probe);
+
+    for command in ["recovery", "rule", "show"] {
+        let long = asked(&[command, "--help"]);
+        assert!(
+            long.contains("Name it with `-C <CHECKOUT>`"),
+            "{command} no longer takes the checkout with -C"
+        );
+        let usage = usage_of(command);
+        assert!(usage.contains("-C <CHECKOUT>"), "{usage}");
+        assert!(!usage.contains("[CHECKOUT]"), "{usage}");
+    }
+    for command in ["scaffold", "watched", "draft"] {
+        let usage = usage_of(command);
+        assert!(!usage.contains("[CHECKOUT]") && !usage.contains("-C"), "{command}: {usage}");
+    }
+}
+
+/// The `Usage:` line `-h` prints for `command`.
+fn usage_of(command: &str) -> String {
+    let short = asked(&[command, "-h"]);
+    short
+        .lines()
+        .find(|line| line.starts_with("Usage:"))
+        .unwrap_or_else(|| panic!("{command} -h has no usage line: {short}"))
+        .to_string()
+}
+
+/// The fix line the index's rule writes from a usage line: drop `[OPTIONS]`,
+/// and put `<checkout>` where `[CHECKOUT]` is.
+fn fix_from_usage(usage: &str) -> String {
+    let mut line = usage.trim_start_matches("Usage:").trim().to_string();
+    line = line.replace("[OPTIONS] ", "");
+    line = line.replace("<INSTANCE>", "<instance>");
+    line = line.replace("<RUN>", "<run>");
+    line.replace("[CHECKOUT]", "<checkout>")
+}
+
+/// A directory in no checkout, so a command that accepts the path stops at
+/// finding the checkout and writes nothing.
+fn probe_dir() -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("afkconvoy-222-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let top = Command::new("git").args(["-C"]).arg(&dir).args(["rev-parse", "--show-toplevel"]);
+    let top = top.output().unwrap();
+    assert!(
+        !top.status.success(),
+        "the probe directory is a checkout, so a path-form command would act on it: {}",
+        String::from_utf8_lossy(&top.stdout)
+    );
+    dir
+}
+
+/// `(exit, error)` of `args`. A usage refusal is exit 2; a checkout the
+/// command cannot take is exit 1. Stderr stays empty either way.
+fn ran(args: &[&str]) -> (i32, String) {
+    let out = Command::new(env!("CARGO_BIN_EXE_afkconvoy")).args(args).output().unwrap();
+    assert!(out.stderr.is_empty(), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    let error = serde_json::from_str::<serde_json::Value>(&stdout)
+        .ok()
+        .and_then(|answer| answer["error"].as_str().map(str::to_string))
+        .unwrap_or(stdout);
+    (out.status.code().unwrap(), error)
+}
+
 /// The index says what a bound repo is, and an unbound one, before it first
 /// says either.
 #[test]

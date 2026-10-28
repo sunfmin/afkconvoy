@@ -224,7 +224,7 @@ const SKILL: &str = include_str!("../../../skills/afkconvoy/SKILL.md");
 ///
 /// ## Rules to know before you start
 ///
-/// - A command with no argument of its own takes the checkout as a path after it, and as `-C <checkout>` when it has one; a fix line and one typed by hand use that form.
+/// - A flag of the command's own, including `--instance` and `--run`, does not move the checkout to `-C`. The checkout is a path after the command whenever that command's usage line shows `[CHECKOUT]`, and `-C <checkout>` only when that command's usage line shows `-C`. A fix line and a hand-typed command use that form.
 /// - One fleet instance per host per repo. `run` in a second checkout of a repo on the host's checkout list is refused, naming the first: run it there.
 /// - `run` returns once its checkout's first tick ended: the host runner ticks on, in the background, until `afkconvoy stop --all` stops it, keeping the checkout list. `afkconvoy stop` takes one checkout off the list. `tick` is one pass that exits.
 /// - Between ticks a fleet instance sleeps {const:TICK_BUSY_SECONDS} seconds while it has work, or {const:TICK_IDLE_MINUTES} minutes after {const:TICK_IDLE_AFTER} empty ticks. Commands that change fleet state wake it sooner, including a worker's last `afkconvoy wake`. When a fleet on this host closes an issue or sees it closed, it also wakes every other fleet on the same tracker whose open issues it blocked. That next tick reads GitHub and takes up an issue whose last open blocker closed; its tick log names the closed issue and the fleet instance that saw it. After changing issues with `gh`, run `afkconvoy wake <checkout>` on the fleet's host: `gh` sends no wake.
