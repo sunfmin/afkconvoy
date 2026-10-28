@@ -290,7 +290,7 @@ fn read_fleet(checkout: &Repo, instance: &InstanceId, now: u64) -> Result<(Fleet
 /// still points at its sha → the ones that moved since they were read, each
 /// named; where any did, none was deleted. A push that failed with none
 /// moved is an error.
-fn unput_all(checkout: &Repo, leases: &[(String, String)]) -> Result<Vec<Value>> {
+pub fn unput_all(checkout: &Repo, leases: &[(String, String)]) -> Result<Vec<Value>> {
     if leases.is_empty() {
         return Ok(vec![]);
     }

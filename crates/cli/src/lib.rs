@@ -1599,6 +1599,24 @@ enum Command {
     /// - SIGTERM to the host runner's pid is `stop --all` but for the answer, and the line that says who told it. A second signal ends it at once, as SIGKILL does, with no goodbye.
     /// - `stop` of the last checkout on the list leaves the host runner running, with none: the next `run` hands it its checkout.
     /// - A `run` of a checkout whose fleet instance is stopping is refused until it has stopped. `stop` answers once it has: run it after.
+    ///
+    /// ## Releasing its claims: `--release`
+    ///
+    /// Plain `stop` is the default: there is no drain. The claims stay on the remote, the workers keep working, and the next start on this host takes the claims back (docs/adr/0003). An orphaned claim is still recovered by continuation, and never released.
+    ///
+    /// `stop --release` is the drain an operator names. It is read while the checkout is still on the list, so the tracker is the one its entry says. While the fleet instance — `--instance`, or the one this host's runner holds of the checkout, else the newest its tick log names — still ticks, what it holds is read: a cut it holds is an error, and a claim whose worker declared a verdict, or whose issue is to be settled, is named in `kept` and keeps the checkout on the list, with nothing released. Otherwise the fleet instance is stopped as plain `stop` stops it, and then, in one push, each `claim/<owner>/<tracker>/<n>` it holds and each claim on its patrols' runs is deleted, each only while it is still that instance's, leased to the sha just read. One that moved since it was read is named in `kept`, nothing is released, and the checkout is back on the list: `afkconvoy run` starts its fleet instance again. Once they are gone, each worker is ended: its terminal is closed, and its worktree removed only where it holds no commit past its target and a clean tree; one that does stays, named in the answer. A patrol's checkout is removed as a run's end removes one, unless it left a commit or a change. The issues keep their labels, an open PR stays open, and an issue still ready is back on the frontier. Then the checkout leaves the list, and holding nothing, the fleet instance takes its heartbeat with it. Another host's claims are not touched.
+    ///
+    /// ```json
+    /// {"checkout": "/Users/me/Developments/hkj", "instance": "me-h1-1a2b3c4d", "removed": true,
+    ///  "released": [{"issue": 7, "claim": "refs/convoy/claim/acme/tracker/7",
+    ///                "worktree": "/Users/me/orca/hkj/acme-tracker-7-fix", "worktree_removed": false,
+    ///                "worktree_kept": "it holds an uncommitted change"}],
+    ///  "kept": [], "heartbeat_removed": true, "stop": "stop: …", "host_runner": null}
+    /// ```
+    ///
+    /// Errors of `--release`, as {"error": …} with a non-zero exit, each with nothing released and the checkout on the list as it was: the checkout is not on the list, so its tracker is not said; no fleet instance of it is known on this host — name one, `--instance`; the fleet instance holds the cut, which is a publish and no release ends; the fleet could not be read.
+    ///
+    /// `--all` takes no `--release`: stopping the host runner keeps the list. Off the list the tracker is not said: `scan` and `release` then exit non-zero, saying so, while the remote holds claims named for a tracker.
     #[command(next_help_heading = OPERATOR, verbatim_doc_comment)]
     Stop {
         /// Stop every fleet instance and then the host runner, keeping the checkout list
@@ -3216,7 +3234,7 @@ enum Command {
     /// - `claims`: one per claimed issue, lowest number first: {number, instance, host, ts, sha}. ts is when it was stamped, in epoch seconds; sha is what a take or a release of it is leased to
     /// - `heartbeats`: {<instance id>: <epoch seconds>}
     ///
-    /// Errors: the remote cannot be read; "is not in a git checkout".
+    /// Errors: the remote cannot be read; "is not in a git checkout"; "the tracker is not said" — the checkout is on no checkout list of this host, and the remote holds claims named for another tracker, which would read as no claim.
     ///
     /// ## What trips you up
     ///
@@ -3280,7 +3298,7 @@ enum Command {
     ///
     /// {"released": true, "issue", "ref"} — also when the issue had no claim: already gone counts as released.
     ///
-    /// Errors: the claim is another instance's ("is not this fleet's claim"); it "moved since it was read" — somebody took it meanwhile, and it was left alone; the delete failed.
+    /// Errors: the claim is another instance's ("is not this fleet's claim"); it "moved since it was read" — somebody took it meanwhile, and it was left alone; the delete failed; "the tracker is not said" — the checkout is on no checkout list of this host, and the remote holds claims named for another tracker, so the claim's ref cannot be named.
     ///
     /// ## What trips you up
     ///
