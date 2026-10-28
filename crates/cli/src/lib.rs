@@ -108,6 +108,7 @@ pub mod slow_gate;
 pub mod stage;
 pub mod steer;
 pub mod stop;
+pub mod stop_release;
 pub mod switch;
 pub mod takeover;
 mod target;
@@ -1603,6 +1604,12 @@ enum Command {
         /// Stop every fleet instance and then the host runner, keeping the checkout list
         #[arg(long, conflicts_with = CHECKOUT_ARG)]
         all: bool,
+        /// Release the claims its fleet instance holds and end those workers before taking the checkout off the list
+        #[arg(long, conflicts_with = "all")]
+        release: bool,
+        /// The fleet instance whose claims `--release` releases [default: the one this host's runner holds of the checkout, else the newest its tick log names]
+        #[arg(long, requires = "release", value_parser = InstanceId::parse)]
+        instance: Option<InstanceId>,
         #[command(flatten)]
         at: At,
     },
@@ -4522,6 +4529,9 @@ fn run(
             }
         }
         Command::Stop { all: true, .. } => host_runner::stop_all(),
+        Command::Stop { release: true, instance, .. } => {
+            stop_release::stop_release(&checkout?, instance, now)
+        }
         Command::Stop { .. } => host_runner::stop(&checkout?),
         Command::HostRunner => host_runner::serve(),
         Command::Checkouts => checkouts::checkouts(),
@@ -4777,14 +4787,14 @@ fn run(
         }
         // `Acting::end` sends it, as it does for every command that acts.
         Command::Wake { .. } => Ok(json!({})),
-        Command::Scan { .. } => Ok(Scan::read(&checkout?)?.json()),
+        Command::Scan { .. } => Ok(Scan::read_said(&checkout?)?.json()),
         Command::Claim { issue, who, .. } => {
             let repo = checkout?;
             claims::take(&repo, &mut Scan::read(&repo)?, &who.me(now), issue.number(), Take::Fresh)
         }
         Command::Release { issue, who, .. } => {
             let repo = checkout?;
-            claims::release(&repo, &mut Scan::read(&repo)?, &who.instance, issue.number())
+            claims::release(&repo, &mut Scan::read_said(&repo)?, &who.instance, issue.number())
         }
         Command::Heartbeat { who, .. } => {
             let repo = checkout?;
