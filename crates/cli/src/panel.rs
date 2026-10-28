@@ -1209,9 +1209,9 @@ fn exclusive(out: &mut String, host: &Host) {
     let said = match &host.exclusive {
         Ok(said) => said,
         Err(error) => {
-            let _ = write!(
+            let _ = writeln!(
                 out,
-                "<p>The exclusive queue cannot be read: {}</p></section>\n",
+                "<p>The exclusive queue cannot be read: {}</p></section>",
                 esc(error)
             );
             return;
