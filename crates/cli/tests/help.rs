@@ -909,11 +909,11 @@ fn what_a_command_answers_names_panel_and_a_doctor_with_a_critical_finding() {
         "`guard` answers as a hook does",
         "`exclusive` as its command does",
         "`panel` without `--open` one HTML document",
-        "`panel --open` prints the JSON object `panel --help` describes",
+        "`panel --open` is the JSON object `panel --help` describes",
         "exits 0 with no critical finding, and non-zero with one",
         "printing the same object, not {\"error\"}",
         "Under `--all`, a checkout that could not be asked stays {\"error\", \"see\"}",
-        "as `doctor --help` describes: not what a doctor that read the checkout answers",
+        "as `doctor --help` says: not a doctor that read the checkout",
         "A fleet instance prints nothing",
     ] {
         assert!(answers.contains(said), "lost {said:?}\n{answers}");
