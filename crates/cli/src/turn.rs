@@ -5,6 +5,7 @@ use crate::gh::{GitHub, Tracker};
 use crate::git::{REMOTE, Repo};
 use crate::lock::standing_locks;
 use afkconvoy_core::config::Config;
+use afkconvoy_core::ending::Ending;
 use afkconvoy_core::gate::{GateCommand, Tree};
 use afkconvoy_core::landing::Of;
 use afkconvoy_core::lock::{keeps_off, named};
@@ -247,8 +248,13 @@ fn own_head(repo: &Repo, branch: &str) -> Result<String> {
 const RESOLVE: &str =
     "resolve every file, `git add` it, COMMIT the merge, and ask for a turn again";
 
+/// The help of `land`: each word a turn can answer, as its ending says it.
+pub fn endings_help() -> String {
+    Ending::listed(|word, told| format!("- {word}: {told}."))
+}
+
 pub fn locked(mut answer: Value, locks: &[u64]) -> Value {
-    answer["outcome"] = json!("locked");
+    answer["outcome"] = json!(Ending::Locked);
     answer["locks"] = json!(locks);
     answer["detail"] = json!(format!(
         "a fleet lock stands ({}): no other issue lands; run this again when told to carry on",
@@ -312,7 +318,7 @@ fn land_task(
             }
             crate::account::leave(repo, gh, issue, now)?;
             return Ok(
-                json!({"issue": issue, "pr": landed.pr, "outcome": "merged", "commit": landed.commit, "detail": "recovered landing from base history; issue settled"}),
+                json!({"issue": issue, "pr": landed.pr, "outcome": Ending::Merged, "commit": landed.commit, "detail": "recovered landing from base history; issue settled"}),
             );
         }
         bail!("no open PR closes issue #{issue} — if it has already merged, stop");
@@ -395,7 +401,7 @@ fn run(
     answer["target_branch"] = json!(config.base_branch);
     let files = unmerged(repo)?;
     if !files.is_empty() {
-        answer["outcome"] = json!("conflict");
+        answer["outcome"] = json!(Ending::Conflict);
         answer["status"] = json!("conflict");
         answer["recorded"] = json!(false);
         answer["files"] = json!(files);
@@ -414,12 +420,12 @@ fn run(
             }
             crate::account::leave(repo, &gh, n, now)?;
         }
-        answer["outcome"] = json!("merged");
+        answer["outcome"] = json!(Ending::Merged);
         answer["commit"] = json!(current);
         return Ok(answer);
     }
     let Some(_tip) = take(repo, config, issue, host, now, on_red)? else {
-        answer["outcome"] = json!("base_red");
+        answer["outcome"] = json!(Ending::BaseRed);
         return Ok(answer);
     };
     let head = repo.git(&["rev-parse", "HEAD"])?;
@@ -445,4 +451,51 @@ pub(crate) fn ensure_base(pr: &PullRequest, target: &str) -> Result<()> {
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use super::*;
+
+    /// The words the turn's own code sets as `outcome`: each through an
+    /// ending, never as a bare string.
+    fn returned() -> BTreeSet<&'static str> {
+        let code = [include_str!("turn.rs"), include_str!("candidates.rs")];
+        let mut words = BTreeSet::new();
+        for text in code {
+            let code = text.split("#[cfg(test)]").next().unwrap();
+            for bare in ["[\"outcome\"] = json!(\"", "\"outcome\": \""] {
+                assert!(!code.contains(bare), "an outcome set as a bare word: {bare}");
+            }
+            for e in Ending::ALL {
+                if code.contains(&format!("Ending::{e:?}")) {
+                    words.insert(e.word());
+                }
+            }
+        }
+        words
+    }
+
+    /// The land step teaches each word the turn returns, and no other.
+    #[test]
+    fn the_land_step_teaches_exactly_the_words_a_turn_returns() {
+        let step = afkconvoy_core::prompt::endings();
+        let taught: BTreeSet<&str> =
+            step.lines().filter_map(|line| line.split('"').nth(1)).collect();
+        assert_eq!(taught, returned(), "{step}");
+        assert_eq!(taught.len(), Ending::ALL.len());
+    }
+
+    /// The help of `land` states every word the land step teaches, with the
+    /// same text, and no meaning of its own.
+    #[test]
+    fn the_help_of_land_says_each_word_as_the_land_step_does() {
+        let help = endings_help();
+        for e in Ending::ALL {
+            assert!(help.contains(&format!("- {}: {}.", e.word(), e.told())), "{help}");
+        }
+        assert_eq!(help.lines().count(), Ending::ALL.len());
+    }
 }
