@@ -1273,25 +1273,17 @@ fn retired_concurrency_finding(checkout: &Path, config: &Config) -> Option<Findi
 /// its bound, with no class a rule or Jev settled. Without a key command the
 /// fix names one; with it, the worker's screen is the operator's to read.
 fn health_findings() -> Vec<Finding> {
-    let keyed =
-        crate::host_settings::of_host().is_ok_and(|settings| settings.jev_key_command.is_some());
     crate::health::waiting_for_operator()
         .into_iter()
         .map(|waiting| {
-            let worker = waiting["worker"].as_str().unwrap_or_default();
-            let reason = waiting["reason"].as_str().unwrap_or_default();
-            let screen = waiting["screen_line"].as_str().unwrap_or_default();
-            let fix = if keyed {
-                let terminal = waiting["terminal"].as_str().unwrap_or_default();
-                format!("orca terminal read --terminal {terminal} --screen")
-            } else {
-                "afkconvoy run --jev-key-command '<command>'".into()
-            };
             finding(
                 Kind::WorkerHealth,
-                format!("the worker in {worker}: its worker health is waiting for the operator"),
-                format!("{reason}; its screen ends: {screen}"),
-                fix,
+                format!(
+                    "the worker in {}: its worker health is waiting for the operator",
+                    waiting.worker.display()
+                ),
+                format!("{}; its screen ends: {}", waiting.reason, waiting.screen_line),
+                waiting.fix,
             )
         })
         .collect()
