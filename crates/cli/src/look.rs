@@ -13,6 +13,7 @@
 const ONCE: &[fn()] = &[
     crate::orca::forget_listing,
     crate::orca::forget_running,
+    crate::orca::forget_worktrees,
     crate::gh_quota::forget_note,
     crate::gh::forget_heads,
     #[cfg(test)]
@@ -63,7 +64,8 @@ mod tests {
                 !source.contains("forget_listing")
                     && !source.contains("forget_note")
                     && !source.contains("forget_heads")
-                    && !source.contains("forget_running"),
+                    && !source.contains("forget_running")
+                    && !source.contains("forget_worktrees"),
                 "{name} does not reset an observation itself"
             );
         }
@@ -101,6 +103,8 @@ mod tests {
         assert_eq!(crate::gh::head_held("acme/dev").as_deref(), Some("abc"));
         crate::orca::hold_running(true);
         assert_eq!(crate::orca::running_cached(), Some(true));
+        crate::orca::hold_worktrees(json!({"worktrees": []}));
+        assert!(crate::orca::worktrees_cached().is_some());
         assert!(
             crate::gh_quota::note_held(&dir),
             "a later question answers from the quota note already read"
@@ -124,5 +128,6 @@ mod tests {
         assert!(!crate::gh_quota::rate_held("github.com"), "the rate-limit body is read again");
         assert!(crate::gh::head_held("acme/dev").is_none(), "the next read of HEAD observes again");
         assert!(crate::orca::running_cached().is_none(), "the next read asks orca again");
+        assert!(crate::orca::worktrees_cached().is_none(), "the next read lists worktrees again");
     }
 }

@@ -16,8 +16,8 @@ The login stands for the life of the process: nobody changes `gh`'s login under 
 
 The remote is listed once per checkout when the fleet view opens: the branches, the fleet's refs and the version tags, as one moment, which is the moment the scan already reasons from. A claim's ref, a target, a recorded gate run, a candidate chain and a branch tip in that look are answered from the listing. A write still reads the remote again when it has to be certain of what it just pushed.
 
-Orca's repo list is read once per look. A tracker's public probe is asked once per tracker in that look.
+Orca's repo list is read once per look, and so is its worktree list. A tracker's public probe is asked once per tracker in that look.
 
-`doctor`'s `host.watch` keeps the watch's state and the last round's report. Earlier rounds are answered with `--rounds`, and they remain where the watch already stores them. The host kit in a look keeps the identities, commands and research state a finding judges. The research notes stay on `plan` and on `afkconvoy kit`.
+`doctor`'s `host.watch` keeps the watch's state and the last round's report. `doctor --all` says each watch log line once, on that object, and not again in every checkout. Earlier rounds are answered with `--rounds`, and they remain where the watch already stores them. The host kit in a look keeps the identities, commands and research state a finding judges. The research notes stay on `plan` and on `afkconvoy kit`.
 
 `doctor` still writes nothing but the fleet's cache, and makes no startup probe. While a startup probe that checked the kit's current launch commands still stands, `doctor` starts no harness. Otherwise it starts each harness at most once. A finished candidate — landed, red or cancelled — is one record of its phase, commit, issue, pull request, predecessor and waiting state, with no gate excerpt. A candidate that is gating now may still carry its excerpt. After a child exits, a pipe a grandchild still holds does not keep the look waiting. A finding keeps its kind, severity, wording and fix. `waiting_on_human` keeps its answer line.
