@@ -134,3 +134,73 @@ Fixture speed work belongs to the separate approved issues. No speedup,
 cache-isolated comparison or arbitrary-host guarantee is claimed. The final
 landing candidate may include upstream changes with different test counts;
 its source commit, test counts and step times must accompany its duration.
+
+## The fast gate and the slow gate (sunfmin/control#236)
+
+The gate is split per test at 2 seconds (ADR-0047). Both measurements below
+were made on `Offices-MacBook-Pro.local`, an 8-core, 16-GiB Apple Silicon Mac,
+on 2026-10-28, with the host's fleets stopped by the operator, `target/`
+present from earlier builds, and the run outside the exclusive queue.
+
+### Per-test times, which drew the line
+
+Source `d606bd3412c87c8d763ae30ab0b101ac7f901ed3`. The whole suite ran under
+the gate's own conditions — nextest's default profile, six tests at a time,
+the gate's deep `TMPDIR` — with `--message-format libtest-json-plus`, which
+gives each test's own `exec_time`. Tests ran 13:30:29–13:52:29 UTC. Load
+averages were 16.05 / 35.18 / 46.11 at the start, about 95 midway, from the
+suite's own processes, and 30.96 / 59.16 / 62.68 at the end: these are times
+under the load the suite puts on this host, as a gate's tests run.
+
+| Time of one test | Tests |
+| --- | ---: |
+| under 1 s | 979 |
+| 1–2 s | 79 |
+| 2–3 s | 95 |
+| 3–6 s | 210 |
+| 6–20 s | 427 |
+| 20 s or more | 69 |
+
+1,859 tests ran, 16 of them ignored by existing configuration. The 801 at
+2 seconds or more, 7,678 test-seconds together, are named in
+`.config/slow-tests`: 796 of the CLI's tests binary, 3 of its library's and
+2 of the core library's (the shell-quoting property tests). The 1,058 under
+2 seconds took 196 test-seconds together. `cargo nextest list` then listed
+1,042 tests for the fast gate's filter and 801 for the slow gate's: 1,843,
+every test it lists, each in one.
+
+### Both gates' step times
+
+`./gate.sh`, both gates, on `bf1271c27c15d26eaf99d3d172d23cb444683f03`,
+13:56:40–14:18:14 UTC; load averages 27.34 / 37.26 / 51.65 at the start and
+26.83 / 49.99 / 52.75 at the end. Exit 0.
+
+| Gate | Step | Wall seconds |
+| --- | --- | ---: |
+| fast | fmt | 2 |
+| fast | Flux | 59 |
+| fast | Clippy | 22 |
+| fast | manual | 15 |
+| fast | test build | 8 |
+| fast | fast tests: 1,042 passed, 6 past 2 s, none ended | 31 |
+| **fast** | **total** | **137** |
+| slow | slow tests: 801 passed, 49 past 20 s | 1,157 |
+| **slow** | **total** | **1,157** |
+| both | command, `time -p` | 1,293.66 |
+
+Flux checked all 2,784 core functions with none trusted or ignored, 42.72 s
+by its own summary. The fast gate's six tests past 2 seconds took 2.2–3.1 s,
+under its 6-second end: they are the near-line tests the threefold margin
+leaves alone. The slowest slow test took 60.24 s
+(`switch::ambiguous_normal_work_and_failed_judgments_never_authorize_a_switch`).
+
+The fast gate's budget, 180 s, is these 137 s with about a third more for
+load. The slow gate's, 420 s, is what remains of the whole gate's 600 s; the
+slow gate already takes nearly three times that on this host, as the whole
+gate's landings already exceed its budget there (sunfmin/control#234).
+
+`afkconvoy gate --fast` then ran the fast gate alone on the same tree, warm:
+green in 37 s (fmt 2, Flux 0 with nothing to recheck, Clippy 5, manual 3,
+build 7, fast tests 21). With `walk::running_again_after_a_park_counts_as_no_rework`
+(24 s) taken off the list, `./gate.sh fast` ended it as TIMEOUT at 6.007 s,
+was red, and said to name it in `.config/slow-tests`.

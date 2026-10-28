@@ -150,9 +150,11 @@ impl Took {
     }
 }
 
-/// Evidence that `command` passed on `tree`, finished at `at`. There are two
+/// Evidence that `command` passed on `tree`, finished at `at`. There are three
 /// ways to come by one, and no other: having seen the run's exit code
-/// (`after_run`), or having read the record off the remote (`GreenRun::recorded`).
+/// (`after_run`), having read the record off the remote (`GreenRun::recorded`),
+/// or, for the whole gate, its fast and slow parts' runs on that tree
+/// (`GreenRun::joined`).
 #[derive(Debug, PartialEq, Eq)]
 #[refined_by(tree: int, command: int, at: int)]
 pub struct GreenRun {
@@ -221,6 +223,38 @@ impl GreenRun {
             _ => None,
         };
         Some(GreenRun { tree: tree.key, command: command.key, at, took })
+    }
+
+    /// The whole gate's run on `tree`, from the runs of its two parts there:
+    /// `fast` of `fast_command` and `slow` of `slow_command`, two commands
+    /// that together check what `whole` does (docs/adr/0047). It finished
+    /// when the older part did, and took both parts' seconds on the slow
+    /// part's host. `None` when either run is of another tree or command.
+    #[spec(fn(tree: &Tree[@t], whole: &GateCommand[@w], fast_command: &GateCommand,
+        fast: &GreenRun, slow_command: &GateCommand, slow: &GreenRun)
+        -> Option<GreenRun{g: g.tree == t && g.command == w}>)]
+    pub fn joined(
+        tree: &Tree,
+        whole: &GateCommand,
+        fast_command: &GateCommand,
+        fast: &GreenRun,
+        slow_command: &GateCommand,
+        slow: &GreenRun,
+    ) -> Option<GreenRun> {
+        if fast.tree != tree.key
+            || slow.tree != tree.key
+            || fast.command != fast_command.key
+            || slow.command != slow_command.key
+            || fast_command.key == slow_command.key
+        {
+            return None;
+        }
+        let at = if fast.at < slow.at { fast.at } else { slow.at };
+        let took = match (&fast.took, &slow.took) {
+            (Some(f), Some(s)) => Took::on(&s.host, f.seconds.saturating_add(s.seconds)),
+            _ => None,
+        };
+        Some(GreenRun { tree: tree.key, command: whole.key, at, took })
     }
 
     /// The record `write` makes, naming `issue` when the run was of that
@@ -529,6 +563,25 @@ mod tests {
             ": its run reached the gate limit of 600s and was ended"
         );
         assert_eq!(at_limit(ran(1), 600), "", "a run that ended by itself reached none");
+    }
+
+    #[test]
+    fn the_whole_gate_passes_on_a_tree_whose_fast_and_slow_parts_passed_there() {
+        let (tree, whole) = (tree(), command());
+        let (fast, slow) = (GateCommand::new("./gate.sh fast"), GateCommand::new("./gate.sh slow"));
+        let run = |command: &GateCommand, at| match after_run(&tree, command, ran(0), "mini", at) {
+            Recording::Write(run) => run,
+            other => panic!("{other:?}"),
+        };
+        let (f, s) = (run(&fast, 1000), run(&slow, 2000));
+        let joined = GreenRun::joined(&tree, &whole, &fast, &f, &slow, &s).expect("both passed");
+        assert_eq!(joined.at(), 1000, "as old as the older part");
+        assert_eq!(joined.took().map(|t| (t.seconds(), t.host())), Some((84, "mini")));
+        assert!(Proven::by(&tree, &whole, &joined, 1500).is_some());
+        assert!(GreenRun::joined(&tree, &whole, &fast, &s, &slow, &f).is_none(), "parts swapped");
+        assert!(GreenRun::joined(&tree, &whole, &fast, &f, &fast, &f).is_none(), "one part twice");
+        let other = Tree::named("other");
+        assert!(GreenRun::joined(&other, &whole, &fast, &f, &slow, &s).is_none());
     }
 
     #[test]
