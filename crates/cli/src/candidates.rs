@@ -1,6 +1,7 @@
 //! Remote candidate ownership. Every write extends one ref; a competing
 //! writer's child cannot fast-forward it. Publishing the base and the next
 //! record is one atomic push, so invalidation and publication cannot both win.
+use afkconvoy_core::account::End;
 use afkconvoy_core::candidate::{Barrier, Candidate, Chain, Phase, Process, Publication};
 use afkconvoy_core::config::Config;
 use afkconvoy_core::ending::Ending;
@@ -782,7 +783,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
             if c.phase == Phase::Landed {
                 if let Some(issue) = issue {
                     gh.close_issue(issue)?;
-                    crate::account::leave(repo, &gh, issue, clock())?;
+                    crate::account::leave(repo, &gh, issue, End::Landed, clock())?;
                 }
                 let mut result = c.result.clone().unwrap_or(answer);
                 result["outcome"] = json!(Ending::Merged);
@@ -1032,7 +1033,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
         }
         if let Some(n) = issue {
             gh.close_issue(n)?;
-            crate::account::leave(repo, &gh, n, clock())?;
+            crate::account::leave(repo, &gh, n, End::Landed, clock())?;
         }
         result["outcome"] = json!(Ending::Merged);
         result["commit"] = json!(landed);
