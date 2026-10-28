@@ -1234,14 +1234,15 @@ fn decide(
     // An account quota continues at once, but not through a gate or landing
     // the worker still has running: that work keeps the session until it
     // ends. The fault is already recorded, so a new start skips the harness.
-    if diagnosis.class == "quota" && diagnosis.scope == Scope::Account {
-        if crate::judge::own_background(fleet, worktree, true)?.is_some() {
-            observed.action = "waiting for background work".into();
-            observed.next_check = fleet.now.saturating_add(CHECK_SECONDS);
-            store(book)?;
-            fleet.invalidate_selection();
-            return Ok(());
-        }
+    if diagnosis.class == "quota"
+        && diagnosis.scope == Scope::Account
+        && crate::judge::own_background(fleet, worktree, true)?.is_some()
+    {
+        observed.action = "waiting for background work".into();
+        observed.next_check = fleet.now.saturating_add(CHECK_SECONDS);
+        store(book)?;
+        fleet.invalidate_selection();
+        return Ok(());
     }
     // A fallback never promotes another kit entry. Exclusions last only for
     // this continuation; shared scoped evidence is persisted independently.
