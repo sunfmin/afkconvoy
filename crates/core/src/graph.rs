@@ -16,8 +16,8 @@ struct Back {
 
 /// What `team`'s roster says each of its roles may run, in plain text, as
 /// `show` ends: a row per role in the team's order, each harness and model
-/// it allows in order of preference with what it is good at, and how the
-/// team says to cast among them under it. A role the roster names none for
+/// it allows in order of preference with what it is good at. A role the
+/// roster names none for
 /// may run whatever the host kit holds.
 pub fn roster(team: &Team) -> String {
     let mut width = 0;
@@ -41,9 +41,6 @@ pub fn roster(team: &Team) -> String {
             })
             .collect();
         out.push_str(&format!("  {:<width$}  {}\n", role.name, each.join(" · ")));
-        if let Some(cast) = &entry.cast {
-            out.push_str(&format!("  {:<width$}  cast: {cast}\n", ""));
-        }
     }
     out
 }
@@ -204,7 +201,7 @@ feature — flow:feature — max_rework 3, max_consecutive_rework 2
     }
 
     #[test]
-    fn the_roster_says_what_each_role_may_run_and_how_it_is_cast() {
+    fn the_roster_says_what_each_role_may_run() {
         let team = rostered(
             "  dev:\n    cast: Hard work on opus.\n    run:\n      - { harness: claude-code, \
              model: opus, good_at: hard work }\n      - { harness: pi }\n",
@@ -215,7 +212,6 @@ feature — flow:feature — max_rework 3, max_consecutive_rework 2
 roster
 
   dev       claude-code opus (hard work) · pi any model
-            cast: Hard work on opus.
   reviewer  the host kit whole
 ";
         assert_eq!(drawn, expected, "\n{drawn}");
