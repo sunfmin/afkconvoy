@@ -416,6 +416,29 @@ pub(super) fn shows_background(screen: &[String]) -> bool {
     below.any(|line| background_task(line))
 }
 
+/// Kimi Code's own usage-limit error, reported on sunfmin/control#166.
+/// The provider prefix is part of the words: a bare "5-hour usage limit"
+/// on a screen is not this quota.
+const USAGE_LIMIT: &str = "[provider.api_error] 429 You've reached your 5-hour usage limit";
+
+/// Kimi Code's account-quota screen. The error may wrap; a terminal's
+/// line break is whitespace. The same words on another harness are not it.
+pub(super) fn account_quota(output: &[String]) -> Option<String> {
+    let flat = output.join(" ").split_whitespace().collect::<Vec<_>>().join(" ");
+    if !flat.contains(USAGE_LIMIT) {
+        return None;
+    }
+    Some(
+        output
+            .iter()
+            .find(|line| {
+                line.split_whitespace().collect::<Vec<_>>().join(" ").contains("5-hour usage limit")
+            })
+            .cloned()
+            .unwrap_or_else(|| USAGE_LIMIT.to_string()),
+    )
+}
+
 /// Kimi's footer badge for one or more background shells, not an agent.
 fn background_task(line: &str) -> bool {
     let mut rest = line;
@@ -442,6 +465,25 @@ fn background_task(line: &str) -> bool {
 mod tests {
     use super::*;
     use crate::harness::Harness;
+
+    fn lines(lines: &[&str]) -> Vec<String> {
+        lines.iter().map(|line| (*line).to_string()).collect()
+    }
+
+    #[test]
+    fn its_5_hour_usage_limit_is_an_account_quota_and_a_wrapped_line_still_is() {
+        let line = "Error: [provider.api_error] 429 You've reached your 5-hour usage limit. \
+                    Your quota will reset when the current 5-hour window";
+        let screen = lines(&[line, "ends. To continue now."]);
+        assert_eq!(account_quota(&screen).as_deref(), Some(line));
+        let wrapped =
+            lines(&["Error: [provider.api_error] 429 You've reached your", "5-hour usage limit."]);
+        assert_eq!(account_quota(&wrapped).as_deref(), Some("5-hour usage limit."));
+        assert!(account_quota(&lines(&["429 You've reached your 5-hour usage limit"])).is_none());
+        assert!(Harness::Pi.account_quota(&screen).is_none());
+        assert!(Harness::Codex.account_quota(&screen).is_none());
+        assert!(Harness::ClaudeCode.account_quota(&wrapped).is_none());
+    }
     use crate::role::{Facts, On};
 
     fn start<'a>(model: Option<&'a str>) -> Start<'a> {

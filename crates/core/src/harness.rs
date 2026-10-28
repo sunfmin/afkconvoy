@@ -110,6 +110,19 @@ impl Harness {
         }
     }
 
+    /// The harness's account-quota words on its screen, or in a runtime
+    /// message it prints. Whitespace may wrap. The same words on another
+    /// harness's screen are not this quota: a harness is asked only for its
+    /// own. What it returns is the line that showed them.
+    pub fn account_quota(self, output: &[String]) -> Option<String> {
+        match self {
+            Harness::Codex => codex::account_quota(output),
+            Harness::Pi => pi::account_quota(output),
+            Harness::Kimi => kimi::account_quota(output),
+            _ => None,
+        }
+    }
+
     /// The harness of a worker nothing names one for.
     pub const DEFAULT: Harness = Harness::ClaudeCode;
 
