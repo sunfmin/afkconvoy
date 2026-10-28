@@ -24,6 +24,7 @@ use afkconvoy_core::transition::{
 };
 use afkconvoy_core::verdict::{Verdict, latest_verdict};
 use afkconvoy_core::waiting::{Back, Waits, back};
+use afkconvoy_core::worker::WorkerState;
 use anyhow::{Result, bail};
 use serde_json::{Value, json};
 
@@ -444,6 +445,12 @@ fn ask_after(fleet: &Fleet, me: &Me, issue: u64) -> Result<Option<Asked>> {
         None => None,
     };
     if let Some(settled) = settled_by_state(state) {
+        // An open turn has no since. A later wait starts when it is seen again.
+        if matches!(state, Some(WorkerState::Busy))
+            && let Some(worktree) = &worktree
+        {
+            worktree.background_since(false, None, fleet.now)?;
+        }
         return Ok(Some(Asked::Settled(settled)));
     }
     let (Some(worktree), Some(state)) = (worktree, state) else {
@@ -538,38 +545,37 @@ fn read_own_background(worktree: &Worktree) -> SeenBackground {
 
 /// Whether the worker in `worktree` waits on background work of its own right
 /// now: a shell or a monitor its harness shows still running, or a command of
-/// its in the host's exclusive queue. Writes nothing. Worker health, the
-/// tick's line and `doctor` all read this and no other test.
+/// its in the host's exclusive queue. Writes nothing, so `doctor` can read it
+/// without moving the since. The tick and worker health use `own_background`,
+/// whose stamp is that since.
 pub(crate) fn waits_on_own_background(worktree: &Worktree) -> bool {
     let seen = read_own_background(worktree);
     seen.showing || seen.queued.is_some()
 }
 
 /// The background work the stopped worker in `worktree` started itself and
-/// waits on, as its harness shows it at the end of its screen — or as the
-/// host's `exclusive` queue holds a command of its: since when it
-/// was first seen here, under the gate limit. Read only of a worker
-/// `past_grace` (`stopped::past_grace`) — one with a sign of life is not
-/// waiting, and is seen waiting afresh when it next stops — and soft: a
+/// waits on. One read of its screen and the exclusive queue answers both
+/// whether any shows and since when, and that since is the one stamp
+/// (`Worktree::background_since`): the tick line, worker health and a later
+/// tick all name it. Read only of a worker `past_grace`
+/// (`stopped::past_grace`) — one with a sign of life is not waiting, the
+/// stamp is cleared, and a later wait starts when it is seen again. Soft: a
 /// terminal that cannot be read shows none, and a silence never waits on one.
-/// Whether any shows is `waits_on_own_background`.
+/// `doctor` asks `waits_on_own_background`, which does not write the stamp.
 pub(crate) fn own_background(
     fleet: &Fleet,
     worktree: &Worktree,
     past_grace: bool,
 ) -> Result<Option<Background>> {
     if !past_grace {
-        worktree.background_since(false, fleet.now)?;
+        worktree.background_since(false, None, fleet.now)?;
         return Ok(None);
     }
     let seen = read_own_background(worktree);
-    let since = worktree.background_since(seen.showing, fleet.now)?;
     // A command of its in the host's `exclusive` queue is work it waits on
     // too, since it asked to run: busy, not silent (docs/adr/0019).
-    let since = match (since, seen.queued) {
-        (Some(screen), Some(queued)) => Some(screen.min(queued)),
-        (screen, queued) => screen.or(queued),
-    };
+    let waiting = seen.showing || seen.queued.is_some();
+    let since = worktree.background_since(waiting, seen.queued, fleet.now)?;
     Ok(since.map(|since| Background { since, limit: fleet.config.gate_seconds() }))
 }
 
