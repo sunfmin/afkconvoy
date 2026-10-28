@@ -1195,7 +1195,7 @@ enum Command {
     /// - `free_slots` counts as free the slot of every claim of `--instance` that is `declared`: `mine` may hold more claims than the concurrency, and the frontier does not wait out the grace period of a worker that already declared.
     /// - Fleet state is unchanged. When it probes it still pushes to the remote, and deletes there: it needs push access, and it is not a read-only command. To read without writing anything, run `afkconvoy doctor`.
     /// - A slow gate is read off the recorded gate runs the remote still has: a record is swept a day after its run, a landing with no record or with a record that states no time is passed over, and {const:SLOW_GATE_LANDINGS} landings spread over hosts none of which has {const:SLOW_GATE_LANDINGS} say nothing. After an issue for a slow gate closed, only the landings made since count.
-    /// - A probe that stands is trusted, not checked: a command uninstalled or logged out since, or a rule the remote gained, shows as the error of whatever runs into it — or, for the ref layout, not until the next probe. `run` probes at every start.
+    /// - A probe that stands is trusted, not checked: a command uninstalled or logged out since, or a rule the remote gained, shows as the error of whatever runs into it — or, for the ref layout, not until a probe runs. A noted ref layout moves when two probes that run, one after the other, each see it rejected and the other taken; one rejection leaves the note, and a probe that takes the noted layout clears that streak. A checkout that has noted no layout still settles on hidden refs, or on branches where the remote rejects those. `run` probes at every start.
     ///
     /// ## Worker proxy bypass
     ///
