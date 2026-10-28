@@ -386,7 +386,7 @@ One command's construction, validation and ordered landing of an open PR's candi
 _Avoid_: landing slot, merge queue
 
 **Candidate**:
-An immutable merge of a PR's original head onto its assigned predecessor, validated in its own worktree. Its predecessor is the certified target tip or the preceding candidate.
+An immutable merge of a PR's original head onto its assigned predecessor, validated in its own worktree. Once the candidate has stopped, that worktree is removed and the candidate chain keeps the gate evidence. Its predecessor is the certified target tip or the preceding candidate.
 _Avoid_: speculative branch, train tip
 
 **Candidate chain**:

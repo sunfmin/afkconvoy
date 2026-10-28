@@ -132,6 +132,14 @@ pub fn tick(
     before: Option<&Before>,
 ) -> Result<(Ticked, Fleet)> {
     let _observation = crate::orca::Observation::begin();
+    // A stopped candidate's worktree holds the build the gate ran. The chain
+    // already has the evidence. A failure here leaves the directory for the
+    // next tick; the pass itself still runs.
+    if let Err(error) = crate::candidates::remove_stopped_worktrees(repo) {
+        eprintln!(
+            "warning: a stopped candidate worktree will be removed on a later tick: {error:#}"
+        );
+    }
     // Each harness paused on this host is probed every hour (docs/adr/0020):
     // one that answers is back in the host kit for this tick's rebuild. A
     // probe that cannot be made leaves it paused, and costs the tick nothing.
