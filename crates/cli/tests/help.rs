@@ -35,6 +35,15 @@ fn manual() -> String {
 }
 
 #[test]
+fn cut_help_gives_five_hours_at_the_default_and_three_beside_the_gates() {
+    let help = asked(&["help", "cut"]);
+    assert!(help.contains("five hours at the default"), "{help}");
+    assert!(help.contains("three hours beside the two gate limits"), "{help}");
+    assert!(!help.contains("an hour beside"), "{help}");
+    assert!(!help.contains("three hours at the default"), "{help}");
+}
+
+#[test]
 fn help_explains_the_idle_wait_and_a_closed_blockers_wake() {
     for text in [asked(&["help"]), asked(&["run", "--help"])] {
         assert!(text.contains("25 minutes"), "{text}");
