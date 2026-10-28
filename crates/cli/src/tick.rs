@@ -348,17 +348,26 @@ fn carry_out(
     };
     if let Some(issue) = issue {
         let source = crate::orca::Source::of(&fleet.repo)?;
-        if let Some(worktree) = crate::orca::Worktree::of_issue(&source, issue)?
-            && worktree.state(fleet.now)? != afkconvoy_core::worker::WorkerState::Gone
-            && crate::health::holding(&worktree)
-        {
-            // The same test worker health and `doctor` read. The since is the
-            // stamp that test's record already holds.
-            if crate::judge::waits_on_own_background(&worktree) {
-                let since = crate::health::background_since(&worktree).unwrap_or(fleet.now);
-                return Ok(Outcome::Waiting(since));
+        if let Some(worktree) = crate::orca::Worktree::of_issue(&source, issue)? {
+            let state = worktree.state(fleet.now)?;
+            if state != afkconvoy_core::worker::WorkerState::Gone
+                && crate::health::holding(&worktree)
+            {
+                // An open turn has no since. A later wait starts when seen again.
+                if state == afkconvoy_core::worker::WorkerState::Busy {
+                    worktree.background_since(false, None, fleet.now)?;
+                    return Ok(Outcome::Nothing);
+                }
+                // The stamp worker health's one read wrote. Missing, that
+                // read has not run: one read then answers both.
+                if let Some(since) = worktree.background_at() {
+                    return Ok(Outcome::Waiting(since));
+                }
+                if let Some(background) = crate::judge::own_background(fleet, &worktree, true)? {
+                    return Ok(Outcome::Waiting(background.since));
+                }
+                return Ok(Outcome::Nothing);
             }
-            return Ok(Outcome::Nothing);
         }
     }
     match step {

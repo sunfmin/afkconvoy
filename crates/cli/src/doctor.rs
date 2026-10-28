@@ -421,7 +421,8 @@ pub struct Held {
     /// unread or not checked: only a tick is safe to name then.
     pub stopped_command: Option<&'static str>,
     /// It waits on background work of its own (`judge::waits_on_own_background`).
-    /// A long stop is not a finding while it does, however long the wait.
+    /// A long stop is not a finding while it does, however long the wait,
+    /// including past the gate limit. The since is the worktree's one stamp.
     pub waiting_on_background: bool,
     pub worktree: Option<PathBuf>,
     /// What its worker was started under, in a bound repo.
@@ -716,8 +717,8 @@ fn claim_findings(run: &Run, held: &[Held]) -> Vec<Finding> {
                 ));
             }
             // Waiting on its own background work is not a stop, however long
-            // the terminal has been quiet. The same test the tick's line and
-            // worker health read.
+            // the terminal has been quiet, and past the gate limit too. The
+            // same read of its screen the tick uses; the since is the stamp.
             Some(WorkerState::Idle { quiet: Some(quiet) })
                 if quiet >= STOPPED_LONG && !claim.waiting_on_background =>
             {
