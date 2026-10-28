@@ -378,7 +378,7 @@ The part of the gate a worker passes before it opens or updates its PR: the chec
 _Avoid_: smoke test, pre-check, quick gate
 
 **Slow gate**:
-The part of the gate the fast gate leaves out: every test marked slow, and any check not in the fast gate. Nothing in the fast gate is run again in it. A landing turn still runs the whole gate, both parts.
+The part of the gate the fast gate leaves out: every test marked slow, and any check not in the fast gate. Nothing in the fast gate is run again in it. A landing turn runs it once per round, not per candidate.
 _Avoid_: full gate (the gate, both parts), gate gone slow (a gate whose runs exceed its budget)
 
 **Gate gone slow**:
@@ -400,6 +400,10 @@ _Avoid_: speculative branch, train tip
 **Candidate chain**:
 The ordered candidates of one repo and target branch, each depending on its predecessor. A failed or invalid candidate cancels its dependent suffix; already landed predecessors remain landed.
 _Avoid_: landing train, speculative queue
+
+**Round**:
+One run of the slow gate on a candidate chain's tip, once every candidate of the chain is fast-green, that lands every candidate up to the tip together. A candidate assigned during it waits for the next. A red round is not split to find whose change failed: the tip's worker fixes it whole, from the round's issues and its failing tests, and the round's other candidates stop, their changes carried by the tip's PR.
+_Avoid_: batch (a tick's), bisection, merge train, rollup
 
 **Land**:
 Pushing the exact candidate a turn recorded green onto its target branch as a fast-forward after its predecessor has landed, and closing the issue it completes. Issue workers, a workflow's landing worker, watches and cuts all land in a turn; watches and cuts retain the configured base branch.

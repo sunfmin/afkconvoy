@@ -34,14 +34,14 @@ The two gates are the gate split, not a gate more: their limits add up to no mor
 ## Considered options
 
 - **The tests split by crate or kind: the core crate's, or those that start no process.** One filter, no list. Refused: a quick test of the CLI is still quick, and several of the core's start a shell; what makes a test cost the fast gate is its time, which is what the line measures.
-- **A landing turn that runs the fast gate, then the slow gate.** Each part's limit would bound a landing. Refused for now: an installed afkconvoy that does not know the block would land with the slow gate alone, without formatting, Flux or clippy, until it was upgraded; and the record would need two durations. The gate stays one command to the fleet (ADR-0004), and the block can be read by a landing later.
+- **A landing turn that runs the fast gate, then the slow gate.** Each part's limit would bound a landing. Adopted since, as rounds (ADR-0048), once the fleet is upgraded by hand before a repo lands with them. Refused here at first: an installed afkconvoy that does not know the block would land with the slow gate alone, without formatting, Flux or clippy, until it was upgraded; and the record would need two durations. The gate stays one command to the fleet (ADR-0004), and the block can be read by a landing later.
 - **A fast gate that records green runs a landing believes.** Refused: a green fast gate has not run the slow tests, so it proves nothing a landing may rely on.
 - **The line enforced at 2 seconds.** Refused: a loaded host would flip tests near the line from run to run.
 
 ## Consequences
 
 - A worker learns of formatting, Flux, clippy, manual, build and quick-test failures before opening its PR, from a run that skips the slow tests.
-- A landing still waits on the whole gate. Making the slow gate faster is sunfmin/control#234.
+- A landing still waits on the whole gate. Making the slow gate faster is sunfmin/control#234; running it once per round of candidates, not per candidate, is ADR-0048 (sunfmin/control#240).
 - A slow test added without being marked fails the fast gate past 6 seconds, by name, with what to do; one between 2 and 6 seconds passes, and stays in the fast gate until its time is measured again.
 - The list is measured on one host. Another host's fast gate may run a little slower or faster; the 6-second end is what holds it.
 - An older afkconvoy skips the gates block: it can land and cut the version that reads it, and until then `gate --fast` is unknown to it.
