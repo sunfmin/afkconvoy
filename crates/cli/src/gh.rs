@@ -1563,10 +1563,10 @@ impl GitHub {
         let endpoint = endpoint(&self.tracker, &format!("issues/{number}"));
         let closed =
             self.gh(&["api", "--method", "PATCH", &endpoint, "-f", "state=closed", "--silent"]);
-        if let Err(error) = closed {
-            if !self.issue(number).is_ok_and(|issue| issue.is_closed()) {
-                return Err(error);
-            }
+        if let Err(error) = closed
+            && !self.issue(number).is_ok_and(|issue| issue.is_closed())
+        {
+            return Err(error);
         }
         self.saw_closed(number);
         Ok(())
