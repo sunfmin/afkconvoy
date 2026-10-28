@@ -434,7 +434,9 @@ fn a_stage_that_names_no_consult_escalates_for_the_watch() {
     assert_eq!(started(&world).len(), 2, "no fallback consult starts");
     let waiting = world.afk(&["plan", "--now", "1270"]).ok();
     assert_eq!(waiting["waiting_on_human"][0]["issue"], 7);
-    assert!(waiting["waiting_on_human"][0]["answer"].as_str().unwrap().contains("rule --issue 7"));
+    let answer =
+        format!("afkconvoy rule -C '{}' --issue 7 --text-file <file>", world.clone.display());
+    assert_eq!(waiting["waiting_on_human"][0]["answer"], answer);
     // A watch answers using the same command as a human, without consult facts.
     world.afk(&["rule", "--issue", "7", "--text", "Use the existing v2 schema."]).ok();
     assert_eq!(did(&tick(&world, 1360)), ["dispatch 7 done"]);
@@ -638,7 +640,8 @@ fn an_escalation_says_so_on_the_tick_line_and_names_the_command_that_answers_it(
     assert!(lines[0].starts_with(said) && !lines[0].contains("advanced"), "{lines:?}");
 
     // The comment and the status board end with each way out, the number filled in.
-    let answer = "afkconvoy rule --issue 7 --text-file <file>";
+    let answer =
+        format!("afkconvoy rule -C '{}' --issue 7 --text-file <file>", world.clone.display());
     let ways_out = format!(
         "**To answer it**, in a checkout of this repo:\n- rule on it: the stage `build` runs \
          again under your ruling — `{answer}`\n- close it: the fleet leaves a closed issue \
@@ -703,11 +706,13 @@ fn an_escalation_says_so_on_the_tick_line_and_names_the_command_that_answers_it(
     let with_a_human = with_a_human.split("</section>").next().unwrap();
     assert_eq!(with_a_human.matches("<li class=\"card").count(), 1, "{with_a_human}");
     // labelled with its repo: the list is of every repo on the host
-    let card = "data-issue=\"7\"><span class=\"repo\">clone</span> <span class=\"num\">#7</span> \
-                <span class=\"title\">issue 7</span><span class=\"meta\"><span \
-                class=\"note\">escalated at build: The consult of the stage `build` let it through. — afkconvoy rule --issue 7 --text-file \
-                &lt;file&gt;</span>";
-    assert!(with_a_human.contains(card), "{with_a_human}");
+    let escaped = answer.replace('<', "&lt;").replace('>', "&gt;");
+    let card = format!(
+        "data-issue=\"7\"><span class=\"repo\">clone</span> <span class=\"num\">#7</span> \
+         <span class=\"title\">issue 7</span><span class=\"meta\"><span \
+         class=\"note\">escalated at build: The consult of the stage `build` let it through. — {escaped}</span>"
+    );
+    assert!(with_a_human.contains(&card), "{with_a_human}");
     assert!(with_a_human.contains(&format!("<a href=\"{url}\">Reason</a>")), "{with_a_human}");
     assert!(page.contains("With a human</dt><dd>1<"), "{page}");
     assert!(!page.contains("the fleet leaves alone"), "it is listed once: {page}");

@@ -77,7 +77,7 @@ bounds only the heavy step.
 ## Cutting a version
 
 The fleet cuts each version of afkconvoy itself, once it goes idle with landed
-work past the newest `v*` tag, or the oldest landing has waited 60 minutes
+work past the newest `v*` tag, or the oldest landing has waited five hours
 while busy: it sets the version, lands one commit on the base branch through the
 landing turn — the commit that set the version stays on the cut's branch — tags
 that commit, and publishes and installs it on its host
@@ -112,7 +112,7 @@ The bound is in a second cut block: afkconvoy versions that know cut steps
 but not this key read only the first one and skip this addition.
 
 ```yaml cut
-busy_after_seconds: 3600
+busy_after_seconds: 18000
 ```
 
 - `set -ex` first: `sh` runs on past a line that fails and judges the step by

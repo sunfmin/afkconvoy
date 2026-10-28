@@ -2,7 +2,9 @@
 //! with why, and with the command that answers it. `plan` and `doctor` give
 //! the list and the panel shows it; the comment of an escalation and the
 //! status board end with the same lines, so no two of them can disagree on
-//! what a human is to run.
+//! what a human is to run. The lines here name no checkout: the command that
+//! prints them names it, in the form that command takes, so they run from
+//! any directory.
 
 use serde::Serialize;
 

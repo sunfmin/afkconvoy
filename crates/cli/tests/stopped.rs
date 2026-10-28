@@ -267,6 +267,18 @@ fn read_limits(world: &World) -> Vec<String> {
         .collect()
 }
 
+/// The one since, kept in the worktree's git dir.
+fn background_file(world: &World) -> PathBuf {
+    let dir = worktree(world);
+    PathBuf::from(git(&dir, &["rev-parse", "--absolute-git-dir"])).join("convoy-background")
+}
+
+/// The worker-health record as kept. It holds no copy of the since.
+fn health_record(world: &World) -> Value {
+    let path = world.cache().join("afkconvoy/worker-health.json");
+    serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
+}
+
 /// The worker's terminal shows `screen`.
 fn show(world: &World, screen: &[&str]) {
     world.with_orca(|orca| {
@@ -330,6 +342,56 @@ fn a_worker_waiting_on_its_own_background_work_is_not_silent_until_it_ends() {
     assert_eq!(did(&tick(&world, 2200)), ["judge 7 nothing", "heartbeat done"]);
     assert_eq!(typed(&world).len(), 1);
     assert_eq!(world.claims().len(), 1);
+}
+
+#[test]
+fn a_worker_waiting_on_its_own_background_work_has_one_since() {
+    let world = fleet(1000);
+    report(&world, "done", 1000, 1000);
+    show(&world, &WAITING);
+    world.orca_calls();
+
+    // The tick line, worker health and the stamp name the same moment.
+    // One read of the screen answers both the wait and the since.
+    let ticked = tick(&world, 1300);
+    assert_eq!(ticked["did"][0]["waiting_since"], 1300, "{ticked}");
+    assert_eq!(read_limits(&world).iter().filter(|limit| *limit == "12").count(), 1);
+    assert_eq!(std::fs::read_to_string(background_file(&world)).unwrap().trim(), "1300");
+    assert!(health_record(&world)["workers"][0].get("background").is_none());
+    let doctor = world.afk(&["doctor", "--host", "h1", "--now", "1301"]).json;
+    let worker = &doctor["host"]["host_kit"]["worker_health"]["workers"][0];
+    assert_eq!(worker["action"], "waiting for background work");
+    assert_eq!(worker["background"], 1300, "{worker}");
+
+    // The next tick reads that stamp. It does not read the screen again, and
+    // it does not say the wait began now.
+    world.orca_calls();
+    let again = tick(&world, 1500);
+    assert_eq!(again["did"][0]["waiting_since"], 1300, "{again}");
+    assert_eq!(read_limits(&world).iter().filter(|limit| *limit == "12").count(), 0);
+    let lines = run_line(&world, 1520);
+    let said = "waiting on its own background work #7 (since 1970-01-01 00:21 UTC, 3m ago)";
+    assert!(lines.iter().any(|line| line.contains(said)), "{lines:?}");
+
+    // The turn is open again: no since.
+    report(&world, "working", 1700, 1700);
+    assert_eq!(did(&tick(&world, 1700))[0], "judge 7 nothing");
+    assert!(!background_file(&world).exists(), "an open turn keeps no since");
+    let open = world.afk(&["doctor", "--host", "h1", "--now", "1701"]).json;
+    let worker = &open["host"]["host_kit"]["worker_health"]["workers"][0];
+    assert_eq!(worker["action"], "healthy");
+    assert!(worker.get("background").is_none(), "{worker}");
+
+    // A later wait starts from when it is seen again, not from the old stamp.
+    report(&world, "done", 1800, 1800);
+    show(&world, &WAITING);
+    let later = tick(&world, 2200);
+    assert_eq!(later["did"][0]["waiting_since"], 2200, "{later}");
+    assert_eq!(std::fs::read_to_string(background_file(&world)).unwrap().trim(), "2200");
+    let shown = world.afk(&["doctor", "--host", "h1", "--now", "2201"]).json;
+    let worker = &shown["host"]["host_kit"]["worker_health"]["workers"][0];
+    assert_eq!(worker["background"], 2200, "{worker}");
+    assert!(health_record(&world)["workers"][0].get("background").is_none());
 }
 
 #[test]
@@ -409,7 +471,10 @@ fn a_worker_idle_past_half_an_hour_on_its_landing_gate_is_not_called_stopped() {
     let ended = world.afk(&["doctor", "--host", "h1", "--now", "8200"]).json;
     let stopped = stopped_for(&ended);
     assert_eq!(stopped.len(), 1, "{ended}");
-    assert_eq!(stopped[0]["fix"], "afkconvoy tick --instance alpha");
+    assert_eq!(
+        stopped[0]["fix"],
+        format!("afkconvoy tick '{}' --instance alpha", world.clone.display())
+    );
 }
 
 fn nudge_record(world: &World) -> PathBuf {

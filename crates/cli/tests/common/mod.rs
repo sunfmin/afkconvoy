@@ -139,7 +139,7 @@ pub const CONFIG: &str =
 pub fn codex_line(_world: &World, dir: &Path) -> String {
     use afkconvoy_core::harness::Harness;
     let notes = PathBuf::from(git(dir, &["rev-parse", "--absolute-git-dir"]));
-    let home = std::fs::read_to_string(notes.join("convoy-codex-home")).unwrap();
+    let home = std::fs::read_to_string(notes.join(Harness::Codex.noted_home().unwrap())).unwrap();
     let model = std::fs::read_to_string(notes.join("convoy-worker-model")).unwrap();
     let command = if model.is_empty() {
         Harness::Codex.stock().to_string()
@@ -1894,6 +1894,45 @@ pub fn bookkeeping(line: &str) -> bool {
         rest.split_once(": started (").is_some_and(|(count, _)| count.parse::<u64>().is_ok())
     });
     tick_started || line.starts_with("start: run as ") || line.starts_with("watch: ")
+}
+
+/// The source worktree is still a worktree, and every stopped candidate's
+/// directory is gone. A live candidate is not checked here.
+pub fn stopped_candidates_gone(world: &World, source: &Path) {
+    assert!(source.is_dir(), "the source worktree stays: {}", source.display());
+    let listed = git(&world.clone, &["worktree", "list", "--porcelain"]);
+    assert!(worktree_listed(&listed, source), "the source worktree stays listed:\n{listed}");
+    let text = world.remote(&["show", "-s", "--format=%B", "refs/convoy/candidates/main"]);
+    let chain: Value = serde_json::from_str(&text).unwrap();
+    for candidate in chain["candidates"].as_array().unwrap() {
+        let phase = candidate["phase"].as_str().unwrap();
+        if !matches!(phase, "landed" | "red" | "cancelled") {
+            continue;
+        }
+        let path = PathBuf::from(candidate["worktree"].as_str().unwrap());
+        assert!(!path.exists(), "{phase} candidate worktree {} is gone", path.display());
+        assert!(
+            !worktree_listed(&listed, &path),
+            "{phase} candidate {} is still listed:\n{listed}",
+            path.display()
+        );
+    }
+}
+
+/// Whether `git worktree list --porcelain` names `path`. A symlink in the
+/// path (`/var` and `/private/var`) still counts.
+pub fn worktree_listed(listed: &str, path: &Path) -> bool {
+    let want = path.to_string_lossy();
+    listed.lines().any(|line| {
+        let Some(got) = line.strip_prefix("worktree ") else { return false };
+        if got == want {
+            return true;
+        }
+        match (std::fs::canonicalize(got), std::fs::canonicalize(path)) {
+            (Ok(got), Ok(real)) => got == real,
+            _ => false,
+        }
+    })
 }
 
 /// Runs git in `cwd` and returns its trimmed stdout; a failure fails the test.

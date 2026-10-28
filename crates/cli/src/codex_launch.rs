@@ -14,7 +14,11 @@ use serde_json::{Value, json};
 use crate::orca::Worktree;
 
 const RECORD: &str = "convoy-codex-launch.json";
-pub(crate) const HOME_NOTE: &str = "convoy-codex-home";
+
+/// The note beside a worktree's git directory whose text is this session's home.
+pub(crate) fn home_note() -> &'static str {
+    Harness::Codex.noted_home().expect("Codex keeps a noted session home")
+}
 const EFFORT: &str = "model_reasoning_effort";
 const MODEL: &str = "model";
 
@@ -136,7 +140,7 @@ pub(crate) fn prepare(
         None => command.to_string(),
     };
     let (line, home) = if in_role {
-        let home = std::fs::read_to_string(worktree.note(HOME_NOTE)?)?;
+        let home = std::fs::read_to_string(worktree.note(home_note())?)?;
         (Line::new().launch(&command), PathBuf::from(home))
     } else {
         let (home, _) = crate::kept::for_worker(
