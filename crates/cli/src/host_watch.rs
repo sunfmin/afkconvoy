@@ -1556,6 +1556,27 @@ fn findings(items: &mut Vec<Item>, at: &str, findings: &Value) {
     }
 }
 
+/// How long past its time a worker's health observation is left to a tick:
+/// the sleep and the time of the last tick of the fleet instance whose claim
+/// holds its worktree, as that instance says them. A worktree no claim holds
+/// gets the longest any instance says; with none said, there is no grace.
+fn tick_grace(look: &Value) -> impl Fn(&str) -> u64 {
+    let mut of_worktree = BTreeMap::new();
+    let mut longest = 0;
+    for checkout in look["checkouts"].as_array().into_iter().flatten() {
+        let doctor = &checkout["doctor"];
+        let tick = &doctor["fleet"]["last_tick"];
+        let cadence = tick["sleep"].as_u64().unwrap_or(0) + tick["took"].as_u64().unwrap_or(0);
+        longest = longest.max(cadence);
+        for claim in doctor["claims"].as_array().into_iter().flatten() {
+            if let Some(worktree) = claim["worktree"].as_str() {
+                of_worktree.insert(worktree.to_string(), cadence);
+            }
+        }
+    }
+    move |path: &str| of_worktree.get(path).copied().unwrap_or(longest)
+}
+
 /// Everything in a look an operator would act on, each by an identity that
 /// stays the same while its episode lasts.
 pub(crate) fn actionable(look: &Value, now: u64) -> Vec<Item> {
@@ -1623,10 +1644,11 @@ pub(crate) fn actionable(look: &Value, now: u64) -> Vec<Item> {
         }
     }
     let health = &look["host"]["host_kit"]["worker_health"];
+    let grace = tick_grace(look);
     for worker in health["workers"].as_array().into_iter().flatten() {
         let next = worker["next_check"].as_u64().unwrap_or(u64::MAX);
         let path = worker["path"].as_str().unwrap_or("unknown");
-        if next <= now {
+        if next.saturating_add(grace(path)) <= now {
             let reason = format!(
                 "the health observation of the worker in {path} was due at {} UTC and is still \
                  waiting: {}",
@@ -1639,7 +1661,7 @@ pub(crate) fn actionable(look: &Value, now: u64) -> Vec<Item> {
     for failed in health["observations_failed"].as_array().into_iter().flatten() {
         let next = failed[2].as_u64().unwrap_or(u64::MAX);
         let path = failed[0].as_str().unwrap_or("unknown");
-        if next <= now {
+        if next.saturating_add(grace(path)) <= now {
             let reason = format!(
                 "the health observation of the worker in {path} failed, and its retry is overdue: {}",
                 failed[1]
@@ -2299,6 +2321,33 @@ mod tests {
         );
         assert_eq!(ids(&look(950, 990)), first, "the same failure later is the same episode");
         assert!(!ids(&look(850, 1001)).contains(&"health:/w".to_string()), "not due yet");
+    }
+
+    #[test]
+    fn a_tick_gets_its_chance_before_a_health_observation_is_missed() {
+        // The fleet sleeps 90s between ticks, and its last took 10s.
+        let look = |next: u64| {
+            json!({"checkouts": [{"checkout": "/r", "doctor": {
+                "fleet": {"alive": true, "last_tick": {"sleep": 90, "took": 10}},
+                "claims": [{"issue": 7, "worktree": "/w"}]}}],
+            "host": {"host_kit": {"worker_health": {
+                "workers": [{"path": "/w", "next_check": next, "error": null}],
+                "observations_failed": [["/f", "no terminal", next]]}}}})
+        };
+        let ids = |look: &Value, now| -> Vec<String> {
+            actionable(look, now).into_iter().map(|item| item.id).collect()
+        };
+        assert!(ids(&look(998), 1000).is_empty(), "the next tick observes it on schedule");
+        assert!(ids(&look(901), 1000).is_empty(), "within its sleep and a tick's time");
+        let missed = actionable(&look(899), 1000);
+        assert_eq!(
+            missed.iter().map(|item| item.id.as_str()).collect::<Vec<_>>(),
+            ["health:/w", "health:/f"],
+            "no tick observed it within that grace"
+        );
+        assert!(
+            missed[0].reason.contains("was due at") && missed[0].reason.contains("still waiting")
+        );
     }
 
     #[test]
