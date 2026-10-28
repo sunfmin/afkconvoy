@@ -445,6 +445,7 @@ fn start(
     let mut terminal: Option<String> = None;
     let mut brief_pending = false;
     let mut discarded = None;
+    let mut worker_untold = None;
     let undecided = || anyhow!("a dispatch step ran before the one that feeds it");
     let interrupted = "dispatch ended before the worker took its brief";
     if held {
@@ -577,6 +578,14 @@ fn start(
                         )?
                     }
                 });
+                worker_untold = note_start(
+                    fleet,
+                    number,
+                    staged.as_ref(),
+                    continuing,
+                    harness,
+                    model.as_deref(),
+                );
                 keep_ready(fleet, number, terminal.as_deref().ok_or_else(undecided)?)?;
             }
             // `Agent::start_worker` returns only once its worker is ready.
@@ -619,6 +628,9 @@ fn start(
     if let Some(discarded) = discarded {
         started["discarded"] = discarded;
     }
+    if let Some(error) = worker_untold {
+        started["worker_untold"] = json!(error);
+    }
     if let Some((name, ran)) = &unmatched {
         started["unmatched"] = json!(name);
         // The worker runs: a comment that cannot be written costs only itself.
@@ -627,6 +639,48 @@ fn start(
         }
     }
     Ok(started)
+}
+
+/// Posts the worker-start record when this start is its own row. A landing
+/// worker is not one, and neither is a continuation of the same harness. A
+/// comment that cannot be written costs only itself: the worker has started.
+fn note_start(
+    fleet: &Fleet,
+    number: u64,
+    staged: Option<&Staged>,
+    continuing: Option<&Continuing>,
+    harness: Harness,
+    model: Option<&str>,
+) -> Option<String> {
+    let landing = staged.is_some_and(|staged| staged.prompt() == "join");
+    let from = continuing.map(|continuing| continuing.from.key());
+    if !afkconvoy_core::account::own_row(landing, from, harness.key()) {
+        return None;
+    }
+    let claim = fleet.scan.claim_of(number)?;
+    // A start already on record for this claim and harness is this worker.
+    // Restarting it after it died does not open another row.
+    let comments = match fleet.gh.comments(number) {
+        Ok(comments) => comments,
+        Err(error) => return Some(format!("{error:#}")),
+    };
+    if afkconvoy_core::account::already_noted(
+        comments.iter().map(|comment| comment.body.as_str()),
+        &claim.id,
+        harness.key(),
+    ) {
+        return None;
+    }
+    let body = afkconvoy_core::account::worker_comment(&afkconvoy_core::account::Begun {
+        at: fleet.now,
+        claim: &claim.id,
+        since: claim.since,
+        harness: harness.key(),
+        model,
+        stage: staged.map(Staged::stage),
+        consult: staged.is_some_and(Staged::is_consult),
+    });
+    fleet.gh.comment(number, &body).err().map(|error| format!("{error:#}"))
 }
 
 /// Tells issue `number` that `name`, a name it was given, matches nothing

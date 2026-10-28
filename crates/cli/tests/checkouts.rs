@@ -221,7 +221,16 @@ fn doctor_all_answers_each_checkouts_doctor_and_the_hosts_findings_once() {
     let waiting = &row(&answer, &world.clone)["doctor"]["waiting_on_human"];
     assert_eq!(waiting[0]["issue"], 9, "{waiting}");
     assert_eq!(waiting[0]["why"], "escalated: it needs a decision.");
-    let comment = world.comments(9).pop().unwrap();
+    let comments = world.comments(9);
+    assert_eq!(
+        comments.iter().filter(|body| body.starts_with("<!--convoy:account ")).count(),
+        1,
+        "an escalation leaves one work account: {comments:?}"
+    );
+    let comment = comments
+        .into_iter()
+        .find(|body| body.starts_with("<!--convoy:escalation"))
+        .expect("an escalation comment");
     assert_eq!(waiting[0]["url"], world.comment_url(9, &comment));
     assert_eq!(waiting, &alone["waiting_on_human"]);
     assert_eq!(row(&answer, &clone2)["doctor"]["waiting_on_human"], json!([]));

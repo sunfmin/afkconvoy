@@ -63,9 +63,15 @@ fn excluded(world: &World, number: u64) -> Option<String> {
 
 fn escalation(world: &World) -> String {
     let comments = world.comments(7);
-    let last = comments.last().unwrap();
-    assert!(last.starts_with("<!--convoy:escalation"), "{last}");
-    last.to_string()
+    assert_eq!(
+        comments.iter().filter(|body| body.starts_with("<!--convoy:account ")).count(),
+        1,
+        "an escalation leaves one work account: {comments:?}"
+    );
+    comments
+        .into_iter()
+        .find(|body| body.starts_with("<!--convoy:escalation"))
+        .expect("an escalation comment")
 }
 
 #[test]
@@ -96,7 +102,15 @@ fn a_claim_waiting_on_open_blockers_is_parked_edges_first() {
     assert_eq!(world.state(7), "open");
     assert_eq!(world.labels(7), ["ready-for-agent"], "the ready label is kept");
     assert!(!dir.exists(), "a worktree with no work is removed");
-    assert_eq!(world.comments(7).len(), 2, "the branch record and the verdict: nothing is said");
+    let comments = world.comments(7);
+    assert_eq!(comments.len(), 3, "the branch, the worker, and the verdict: {comments:?}");
+    assert!(comments.iter().any(|body| body.contains("<!--convoy:branch ")), "{comments:?}");
+    assert!(comments.iter().any(|body| body.starts_with("<!--convoy:worker ")), "{comments:?}");
+    assert!(comments.iter().any(|body| body.contains("<!--convoy:verdict ")), "{comments:?}");
+    assert!(
+        !comments.iter().any(|body| body.starts_with("<!--convoy:account ")),
+        "parking is not an end: {comments:?}"
+    );
 
     // off the frontier exactly while a blocker it named is open
     assert_eq!(excluded(&world, 7).as_deref(), Some("open blockers: #41, #43"));

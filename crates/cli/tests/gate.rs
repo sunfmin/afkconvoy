@@ -388,7 +388,8 @@ fn a_turn_believes_a_green_run_kept_on_the_other_layout() {
 
     // Noted hidden believes the same run kept as a branch, and does not run it.
     repo.note_layout(Layout::Hidden).unwrap();
-    let believed = believe(&repo, &command, "mini", 100_000, Duration::from_secs(60)).unwrap();
+    let believed =
+        believe(&repo, &command, "mini", 100_000, Duration::from_secs(60), None).unwrap();
     believes_recorded(believed);
     assert_eq!(std::fs::read_to_string(&ran).unwrap(), "ran\n");
     let later = Tree::named("later-tree-a-cut-commits");
@@ -399,7 +400,8 @@ fn a_turn_believes_a_green_run_kept_on_the_other_layout() {
     // Noted branches believes the same run kept as a hidden ref.
     move_record(&world, &branches, &hidden);
     repo.note_layout(Layout::Branches).unwrap();
-    let believed = believe(&repo, &command, "mini", 100_000, Duration::from_secs(60)).unwrap();
+    let believed =
+        believe(&repo, &command, "mini", 100_000, Duration::from_secs(60), None).unwrap();
     believes_recorded(believed);
     assert_eq!(std::fs::read_to_string(&ran).unwrap(), "ran\n");
 }

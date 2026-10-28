@@ -48,6 +48,15 @@ fn escalations(world: &World) -> usize {
     world.comments(7).iter().filter(|body| body.contains("convoy:escalation")).count()
 }
 
+/// The escalation comment. A work account is written after it and is not this.
+fn escalation_comment(world: &World) -> String {
+    world
+        .comments(7)
+        .into_iter()
+        .find(|body| body.starts_with("<!--convoy:escalation"))
+        .expect("an escalation comment")
+}
+
 fn act(world: &World, command: &str, instance: &str, more: &[&str]) -> common::Answer {
     let mut args = vec![command, "--issue", "7", "--instance", instance, "--now", "1100"];
     args.extend(more);
@@ -140,7 +149,12 @@ fn already_satisfied_with_nothing_on_the_branch_closes_the_issue() {
     assert!(!dir.exists(), "the worktree is removed");
     assert_eq!(world.claims().iter().map(|c| c.0).collect::<Vec<_>>(), [9, 10]);
     assert_eq!(world.labels(7), ["ready-for-agent", "bug"], "nothing is relabelled");
-    assert_eq!(world.comments(7).len(), 3, "…and nothing is commented");
+    let comments = world.comments(7);
+    assert_eq!(
+        comments.iter().filter(|body| body.starts_with("<!--convoy:account ")).count(),
+        1,
+        "closing leaves one work account: {comments:?}"
+    );
 }
 
 #[test]
@@ -181,7 +195,7 @@ fn already_satisfied_with_commits_ahead_and_an_equal_tree_escalates() {
         assert_eq!(world.claims(), []);
         assert!(dir.exists(), "commits past the merge base are evidence even with an equal tree");
         assert_eq!(escalations(&world), 1);
-        assert!(world.comments(7).last().unwrap().contains("commits past the merge base"));
+        assert!(escalation_comment(&world).contains("commits past the merge base"));
     }
 }
 
@@ -205,15 +219,20 @@ fn already_satisfied_over_work_on_the_branch_escalates_and_keeps_the_worktree() 
         assert_eq!(world.labels(7), ["bug", "ready-for-human"]);
         assert!(dir.exists(), "the worktree is evidence");
         assert_eq!(world.open_terminals(), Vec::<String>::new(), "its worker is ended");
-        // the branch record, the verdict, the escalation
+        // the branch record, the worker, the verdict, the escalation, the account
         let comments = world.comments(7);
-        assert_eq!(comments.len(), 3);
-        assert!(comments[2].starts_with("<!--convoy:escalation claim="), "{}", comments[2]);
-        assert!(comments[2].contains("escalated to a human"));
-        assert!(comments[2].contains("its branch holds work") && comments[2].contains(&said));
+        let escalation = escalation_comment(&world);
+        assert!(escalation.starts_with("<!--convoy:escalation claim="), "{escalation}");
+        assert!(escalation.contains("escalated to a human"));
+        assert!(escalation.contains("its branch holds work") && escalation.contains(&said));
         let file = if dirty { "scratch.txt" } else { "work.txt" };
-        assert!(comments[2].contains(file), "{}", comments[2]);
-        assert!(!comments[2].contains("landed.txt"), "{}", comments[2]);
+        assert!(escalation.contains(file), "{escalation}");
+        assert!(!escalation.contains("landed.txt"), "{escalation}");
+        assert_eq!(
+            comments.iter().filter(|body| body.starts_with("<!--convoy:account ")).count(),
+            1,
+            "{comments:?}"
+        );
     }
 }
 
@@ -231,8 +250,8 @@ fn escalate_and_an_unknown_phase_escalate() {
         assert_eq!(did(&tick(&world, 1090)), ["judge 7 done"]);
         assert_eq!(world.claims(), []);
         assert_eq!(world.labels(7), ["bug", "ready-for-human"]);
-        let comments = world.comments(7);
-        assert!(comments[2].contains(says) && comments[2].contains(&said), "{}", comments[2]);
+        let escalation = escalation_comment(&world);
+        assert!(escalation.contains(says) && escalation.contains(&said), "{escalation}");
         assert!(!dir.exists(), "a worktree whose branch holds no work is removed");
         // off the frontier: nothing dispatches it again
         assert_eq!(did(&tick(&world, 1180)), [] as [String; 0]);
@@ -661,12 +680,13 @@ fn escalate_picks_up_from_wherever_it_was_cut_and_comments_once() {
     assert_eq!(answer["worktree"], "removed");
     assert_eq!(world.claims(), []);
     assert_eq!(escalations(&world), 1);
-    assert!(world.comments(7)[1].contains("the schema needs a decision"));
+    let escalation = escalation_comment(&world);
+    assert!(escalation.contains("the schema needs a decision"), "{escalation}");
     let plan = world.afk(&["plan", "--now", "1700"]).ok();
     let waiting = &plan["waiting_on_human"][0];
     assert_eq!(waiting["issue"], 7);
     assert_eq!(waiting["why"], "escalated: the schema needs a decision");
-    assert_eq!(waiting["url"], world.comment_url(7, &world.comments(7)[1]));
+    assert_eq!(waiting["url"], world.comment_url(7, &escalation));
     assert_eq!(
         waiting["answer"],
         "gh issue edit 7 --add-label ready-for-agent --remove-label ready-for-human"
@@ -984,7 +1004,7 @@ fn waiting_for_the_operator_is_named_in_doctor_and_escalates_after_an_hour_on_un
     assert_eq!(world.claims(), []);
     assert!(world.labels(7).contains(&"ready-for-human".to_string()));
     assert_eq!(escalations(&world), 1);
-    let comment = world.comments(7).last().unwrap().clone();
+    let comment = escalation_comment(&world);
     assert!(comment.contains("one hour on unchanged evidence"), "{comment}");
     assert!(comment.contains("no Jev key command is set in the host settings"), "{comment}");
     let doctor = world.afk(&["doctor", "--host", "h1", "--now", "4901"]).json;

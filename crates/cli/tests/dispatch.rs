@@ -269,12 +269,14 @@ fn dispatch_starts_a_worker_on_a_fresh_worktree() {
     assert!(!prompt.contains("{n}") && !prompt.contains("{branch}"));
     assert_eq!(git(worktree, &["status", "--porcelain"]), "", "the brief is not in the worktree");
 
-    // the branch orca cut is recorded on the issue
-    assert_eq!(world.comments(7).len(), 1);
-    assert!(
-        world.comments(7)[0]
-            .starts_with("<!--convoy:branch name=tester/issue-7-add-the-plan-command-->")
-    );
+    // the branch orca cut is recorded on the issue, and the fleet records
+    // the worker it started, which is its own row
+    let comments = world.comments(7);
+    assert_eq!(comments.len(), 2, "{comments:?}");
+    assert!(comments.iter().any(|body| {
+        body.starts_with("<!--convoy:branch name=tester/issue-7-add-the-plan-command-->")
+    }));
+    assert!(comments.iter().any(|body| body.starts_with("<!--convoy:worker ")), "{comments:?}");
 }
 
 #[test]
@@ -490,7 +492,16 @@ fn the_branch_is_recorded_once_however_often_it_is_asked() {
             "body": "<!--convoy:branch name=tester/issue-7-add-the-plan-command-->\nearlier"}]);
     });
     dispatch(&world, "7").ok();
-    assert_eq!(world.comments(7).len(), 1);
+    let comments = world.comments(7);
+    assert_eq!(
+        comments.iter().filter(|body| body.contains("<!--convoy:branch ")).count(),
+        1,
+        "the branch is recorded once: {comments:?}"
+    );
+    assert!(
+        comments.iter().any(|body| body.starts_with("<!--convoy:worker ")),
+        "the worker it started is recorded: {comments:?}"
+    );
 }
 
 #[test]

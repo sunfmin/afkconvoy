@@ -226,6 +226,11 @@ impl Staged {
         self.harness
     }
 
+    /// The stage this worker performs. A landing worker's is `land`.
+    pub fn stage(&self) -> &str {
+        &self.stage
+    }
+
     /// The fleet's selected model for this stage or consult.
     pub fn model(&self) -> Option<&str> {
         self.model.as_deref()

@@ -338,6 +338,7 @@ pub(crate) fn escalate_claim(
                 escalated(fleet, claim, pr, &answer, kept)?
             }
             EscalateStep::Release => {
+                crate::account::leave(&fleet.repo, &fleet.gh, issue, fleet.now)?;
                 delete(&fleet.repo, &mut fleet.scan, issue, &claim.sha)?;
             }
             EscalateStep::RemoveWorktree => {
@@ -399,7 +400,10 @@ pub(crate) fn close_claim(
     transition::close(issue, workless, |step| {
         match step {
             CloseStep::CloseIssue => fleet.gh.close_issue(issue)?,
-            CloseStep::Board => last_word(fleet, claim, Stage::Closed, None, &[])?,
+            CloseStep::Board => {
+                last_word(fleet, claim, Stage::Closed, None, &[])?;
+                crate::account::leave(&fleet.repo, &fleet.gh, issue, fleet.now)?;
+            }
             CloseStep::Release => {
                 delete(&fleet.repo, &mut fleet.scan, issue, &claim.sha)?;
             }

@@ -47,6 +47,7 @@ pub fn certify(repo: &Repo, config: &Config, tip: &str, host: &str, now: u64) ->
         host,
         now,
         Duration::from_secs(config.gate_seconds()),
+        None,
     );
     let removed = repo.git(&["worktree", "remove", "--force", &path.to_string_lossy()]);
     let run = run?;
@@ -291,6 +292,7 @@ fn land_task(
             if !gh.issue(issue)?.is_closed() {
                 gh.close_issue(issue)?;
             }
+            crate::account::leave(repo, gh, issue, now)?;
             return Ok(
                 json!({"issue": issue, "pr": landed.pr, "outcome": "merged", "commit": landed.commit, "detail": "recovered landing from base history; issue settled"}),
             );
@@ -388,10 +390,11 @@ fn run(
     let here = repo.git(&["rev-parse", "HEAD"])?;
     let current = base(repo, config)?;
     if repo.within(&here, &current)? {
-        if let Some(n) = issue
-            && !gh.issue(n)?.is_closed()
-        {
-            gh.close_issue(n)?;
+        if let Some(n) = issue {
+            if !gh.issue(n)?.is_closed() {
+                gh.close_issue(n)?;
+            }
+            crate::account::leave(repo, &gh, n, now)?;
         }
         answer["outcome"] = json!("merged");
         answer["commit"] = json!(current);

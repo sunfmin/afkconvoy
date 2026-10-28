@@ -74,17 +74,24 @@ pub fn marker(word: &str, fields: &[(&str, &str)]) -> String {
 
 /// A comment body → the fields of its first marker of kind `word`.
 pub fn read_marker(word: &str, body: &str) -> Option<Fields> {
+    markers(word, body).into_iter().next()
+}
+
+/// Every marker of kind `word` in `body`, in the order written. One comment
+/// can carry several — a work account keeps each red gate run it has cited.
+pub fn markers(word: &str, body: &str) -> Vec<Fields> {
+    let mut found = vec![];
     let mut rest = body;
     while let Some((_, inside)) = rest.split_once("<!--") {
-        let (text, after) = inside.split_once("-->")?;
+        let Some((text, after)) = inside.split_once("-->") else { break };
         if let Some(stated) = text.trim().strip_prefix(word)
             && (stated.is_empty() || stated.starts_with(char::is_whitespace))
         {
-            return Some(fields(stated));
+            found.push(fields(stated));
         }
         rest = after;
     }
-    None
+    found
 }
 
 /// The record of kind `word` kept in a list of comment bodies, oldest first:
@@ -216,6 +223,17 @@ mod tests {
         assert_eq!(fields.numbers("blocked_by"), [3, 4]);
         assert!(read_marker("convoy:branch", body).is_none());
         assert_eq!(marker("convoy:branch", &[("name", "a/b")]), "<!--convoy:branch name=a/b-->");
+    }
+
+    #[test]
+    fn every_marker_of_a_kind_is_read_back() {
+        let body = "<!--convoy:account-red tree=a at=1-->\n<!--convoy:account end=2-->\n\
+                    <!--convoy:account-red tree=b at=3-->";
+        let reds = markers("convoy:account-red", body);
+        assert_eq!(reds.len(), 2);
+        assert_eq!(reds[0].get("tree"), Some("a"));
+        assert_eq!(reds[1].get("tree"), Some("b"));
+        assert_eq!(markers("convoy:account", body).len(), 1);
     }
 
     #[test]

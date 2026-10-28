@@ -172,6 +172,10 @@ _Avoid_: step (one thing a tick does), phase (candidate lifecycle), state (fleet
 The comment a stage leaves on its issue: what it produced, its verdict, the versions of the role and team it ran under, and the harness its worker ran on, with the model where it was started on one. A human who declares for a stage, rules on it or sends the issue to it leaves one too, which says a human did; so does the fleet, for a stage that runs again because a fleet lock closed. The stage an issue is at is derived from these and stored nowhere.
 _Avoid_: handoff note, log (the tick log; what a gate prints), stage label
 
+**Work account**:
+The one comment the fleet leaves when work on an issue ends, and edits when a later end of that issue is acted on. It states the wall clock from the earliest claim the fleet has recorded for the issue to that end, the workers the fleet started, and the gate runs it timed on that issue's own tree. A worker does not write it. Position, rework and the guard do not read it.
+_Avoid_: summary (the read-only summary a command answers), time log, report (a failure a patrol or a cut opens; what a watch round delivers; what doctor says)
+
 **Position**:
 Where an issue is in its workflow: at a stage a worker is to perform, waiting on a human, with a consult, parked, landing, ended, or escalating. It is derived from the stage records each tick and stored nowhere.
 _Avoid_: state (as under Stage), status (the status board; a key of what a command answers), current stage
