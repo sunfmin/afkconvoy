@@ -7,7 +7,7 @@
 //! variable, a hook event or a path of it, nor where it keeps its session,
 //! nor which of its lines start or end a turn (docs/adr/0044).
 
-use serde::Deserializer;
+use serde::{Deserialize, Deserializer};
 
 use crate::guard::Call;
 use crate::line::Line;
@@ -131,6 +131,14 @@ pub enum Harness {
 impl serde::Serialize for Harness {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.serialize_str(self.key())
+    }
+}
+
+/// A harness is read as that same key. A word that is no harness is refused.
+impl<'de> Deserialize<'de> for Harness {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let key = String::deserialize(deserializer)?;
+        Harness::read(&key).ok_or_else(|| serde::de::Error::custom(Harness::unknown(&key)))
     }
 }
 
