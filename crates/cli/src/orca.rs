@@ -1282,19 +1282,24 @@ impl Worktree {
             return Ok(None);
         }
         let file = self.note(BACKGROUND_FILE)?;
-        let seen: Option<u64> =
-            std::fs::read_to_string(&file).ok().and_then(|at| at.trim().parse().ok());
-        let since = match (seen, earlier) {
-            (Some(seen), Some(earlier)) => seen.min(earlier),
-            (Some(seen), None) => seen,
-            (None, Some(earlier)) => earlier,
-            (None, None) => now,
-        };
-        if seen != Some(since) {
+        let since = self.background_seen(earlier, now);
+        if self.background_at() != Some(since) {
             std::fs::write(&file, since.to_string())
                 .with_context(|| format!("cannot write {}", file.display()))?;
         }
         Ok(Some(since))
+    }
+
+    /// The since `background_since` would keep for a worker waiting on
+    /// background work of its own, read and not written: what `doctor`
+    /// judges a silence by without moving it.
+    pub fn background_seen(&self, earlier: Option<u64>, now: u64) -> u64 {
+        match (self.background_at(), earlier) {
+            (Some(seen), Some(earlier)) => seen.min(earlier),
+            (Some(seen), None) => seen,
+            (None, Some(earlier)) => earlier,
+            (None, None) => now,
+        }
     }
 
     /// The one since, read and not written. `None` when the turn is open or
