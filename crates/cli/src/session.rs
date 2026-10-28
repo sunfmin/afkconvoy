@@ -420,7 +420,7 @@ mod tests {
             let root = home.join(harness.session_place(&cwd_str(&cwd)).under_home);
             let turn = read_root(&root, harness, &cwd, None, Some(AT)).unwrap();
             assert!(
-                matches!(turn, Some(Turn::Closed { since: AT })),
+                matches!(turn, Some(Turn::Closed { since: AT, started: Some(AT) })),
                 "{} closed: {turn:?}",
                 harness.key()
             );
@@ -452,7 +452,12 @@ mod tests {
         for harness in Harness::ALL {
             let root = home.join(harness.session_place(&cwd_str(&cwd)).under_home);
             let turn = read_root(&root, harness, &cwd, None, None).unwrap();
-            assert_eq!(turn, Some(Turn::Closed { since: AT }), "{}", harness.key());
+            assert_eq!(
+                turn,
+                Some(Turn::Closed { since: AT, started: Some(AT) }),
+                "{}",
+                harness.key()
+            );
         }
     }
 
@@ -472,6 +477,83 @@ mod tests {
             .unwrap();
         let turn = read_turn(&cwd, Harness::Codex, None, Some(AT - 2)).unwrap();
         assert_eq!(turn, Some(Turn::Open { since: AT }));
+    }
+
+    #[test]
+    fn the_primary_session_that_started_last_is_the_turn() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let cwd = dir.path().join("work");
+        std::fs::create_dir(&cwd).unwrap();
+        let harness = Harness::Grok;
+        let cwd_text = cwd_str(&cwd);
+        let root = home.join(harness.session_place(&cwd_text).under_home);
+        let killed = grok_body("2026-10-27T13:06:13Z", None, "primary");
+        let finished = grok_body("2026-10-27T13:06:53Z", Some("2026-10-27T13:07:13Z"), "primary");
+        grok_file(&root, &cwd, "earlier", &killed);
+        grok_file(&root, &cwd, "later", &finished);
+        let turn = read_root(&root, harness, &cwd, None, None).unwrap();
+        assert_eq!(turn, harness.recorded_turn(&cwd_text, &finished, None));
+        assert!(matches!(turn, Some(Turn::Closed { .. })));
+        assert!(matches!(harness.recorded_turn(&cwd_text, &killed, None), Some(Turn::Open { .. })));
+
+        let earlier = grok_body("2026-10-27T13:06:13Z", Some("2026-10-27T13:06:33Z"), "primary");
+        let later = grok_body("2026-10-27T13:06:53Z", None, "primary");
+        grok_file(&root, &cwd, "earlier", &earlier);
+        grok_file(&root, &cwd, "later", &later);
+        let turn = read_root(&root, harness, &cwd, None, None).unwrap();
+        assert_eq!(turn, harness.recorded_turn(&cwd_text, &later, None));
+        assert!(matches!(turn, Some(Turn::Open { .. })));
+        assert!(matches!(
+            harness.recorded_turn(&cwd_text, &earlier, None),
+            Some(Turn::Closed { .. })
+        ));
+
+        let child = grok_body("2026-10-27T13:08:00Z", Some("2026-10-27T13:08:10Z"), "subagent");
+        grok_file(&root, &cwd, "child", &child);
+        let turn = read_root(&root, harness, &cwd, None, None).unwrap();
+        assert_eq!(turn, harness.recorded_turn(&cwd_text, &later, None));
+        assert_eq!(harness.recorded_turn(&cwd_text, &child, None), None);
+
+        let stale = grok_body("2026-10-27T14:00:00Z", None, "primary");
+        let stale_path = grok_file(&root, &cwd, "stale", &stale);
+        let file = std::fs::OpenOptions::new().write(true).open(&stale_path).unwrap();
+        file.set_modified(UNIX_EPOCH + std::time::Duration::from_secs(1_000)).unwrap();
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        let turn = read_root(&root, harness, &cwd, Some(now.saturating_sub(30)), None).unwrap();
+        assert_eq!(
+            turn,
+            harness.recorded_turn(&cwd_text, &later, None),
+            "a file last written before the handoff is not this turn"
+        );
+    }
+
+    fn grok_file(root: &Path, cwd: &Path, session: &str, body: &str) -> PathBuf {
+        let place = Harness::Grok.session_place(&cwd_str(cwd));
+        let SessionLayout::Named { dir, name, .. } = place.layout else {
+            panic!("grok keeps a named session");
+        };
+        let path = root.join(dir).join(session).join(name);
+        write_text(&path, body, 0).unwrap();
+        path
+    }
+
+    fn grok_body(start: &str, end: Option<&str>, relationship: &str) -> String {
+        let mut body = format!("{}\n", grok_line(start, "turn_started", relationship));
+        if end.is_none() && relationship == "primary" {
+            body.push_str(&format!(
+                "{}\n",
+                grok_line("2026-10-27T13:06:23Z", "waiting_for_model", relationship)
+            ));
+        }
+        if let Some(end) = end {
+            body.push_str(&format!("{}\n", grok_line(end, "turn_ended", relationship)));
+        }
+        body
+    }
+
+    fn grok_line(at: &str, kind: &str, relationship: &str) -> String {
+        format!(r#"{{"session_relationship":"{relationship}","ts":"{at}","type":"{kind}"}}"#)
     }
 
     #[test]
