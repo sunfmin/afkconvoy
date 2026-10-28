@@ -723,6 +723,10 @@ mod tests {
         assert_eq!(status_command("cargo test"), "cargo test");
         assert_eq!(status_command("sh -c true"), "true");
         assert_eq!(status_command("sh -c touch '/tmp/ran'; sleep 30"), "touch /tmp/ran; sleep 30");
+        assert_eq!(
+            status_command("sh -c touch '/tmp/a ran'; sleep 30"),
+            "touch '/tmp/a ran'; sleep 30"
+        );
 
         let secret = "postgres://user:secret@db.example/app";
         let script = format!(

@@ -331,7 +331,9 @@ fn the_host_s_exclusive_queue_is_shown_what_runs_first_then_what_waits() {
             command.args(args).stdout(Stdio::null()).stderr(Stdio::null()),
         )
     };
-    let touched = format!("touch '{}'; sleep 30", ran.display().to_string().replace('\'', "'\\''"));
+    let path = ran.display().to_string();
+    let shell = format!("'{}'", path.replace('\'', r"'\''"));
+    let touched = format!("touch {shell}; sleep 30");
     let running = exclusive("900", Some("12"), &touched);
     while !ran.exists() {
         std::thread::sleep(Duration::from_millis(20));
@@ -358,7 +360,9 @@ fn the_host_s_exclusive_queue_is_shown_what_runs_first_then_what_waits() {
     let mut first = exclusive["running"].clone();
     assert!(first["ran"].as_u64().is_some(), "{exclusive}");
     first.as_object_mut().unwrap().remove("ran");
-    let command = format!("touch {}; sleep 30", ran.display());
+    // A path with a space or a quote is quoted again, so the one line is still that argument.
+    let shown = if path.contains([' ', '\'']) { shell } else { path };
+    let command = format!("touch {shown}; sleep 30");
     assert_eq!(first, ticket(&command, json!(12), running.id(), 900));
     let mut next = ticket("true", Value::Null, waiting.id(), 950);
     next["ran"] = Value::Null;
