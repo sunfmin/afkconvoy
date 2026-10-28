@@ -1,7 +1,8 @@
 //! Writes the manual, `docs/manual.md`: what `afkconvoy help all` prints, under
 //! a line that says so. The help is the one place afkconvoy is explained, and
 //! the page is nothing but it: it is never edited, and the gate fails while it
-//! is not what this writes.
+//! is not what this writes. It also fails while the help names `docs/adr/`,
+//! a document the reader of the binary cannot open.
 //!
 //!   cargo run -p afkconvoy --example manual               write the page
 //!   cargo run -p afkconvoy --example manual -- --check    fail unless the page is that
@@ -25,10 +26,19 @@ fn main() -> ExitCode {
             path => file = PathBuf::from(path),
         }
     }
-    let page = match afkconvoy::manual().manual() {
-        Ok(manual) => page(&manual),
+    let manual = match afkconvoy::manual().manual() {
+        Ok(manual) => manual,
         Err(error) => return fail(&format!("the manual is broken: {error}")),
     };
+    if let Some(line) = afkconvoy::names_closed_adr(&manual) {
+        let text = manual.lines().nth(line - 1).unwrap_or("");
+        return fail(&format!(
+            "the help names `docs/adr/` at line {line} of `afkconvoy help all`, which a reader \
+             of the binary cannot open: {}. The sentence states the rule; drop the citation.",
+            excerpt(text)
+        ));
+    }
+    let page = page(&manual);
     if !check {
         return match std::fs::write(&file, page) {
             Ok(()) => ExitCode::SUCCESS,
@@ -55,6 +65,23 @@ fn main() -> ExitCode {
 fn fail(why: &str) -> ExitCode {
     eprintln!("manual: {why}");
     ExitCode::FAILURE
+}
+
+/// The stretch of `line` around `docs/adr/`, short enough to read in a gate log.
+fn excerpt(line: &str) -> String {
+    const NEEDLE: &str = "docs/adr/";
+    let at = line.find(NEEDLE).unwrap_or(0);
+    let from = at.saturating_sub(60);
+    let to = (at + NEEDLE.len() + 20).min(line.len());
+    let mut shown = String::new();
+    if from > 0 {
+        shown.push('…');
+    }
+    shown.push_str(&line[from..to]);
+    if to < line.len() {
+        shown.push('…');
+    }
+    shown
 }
 
 /// The whole page: the manual, under a comment that says where it is from.

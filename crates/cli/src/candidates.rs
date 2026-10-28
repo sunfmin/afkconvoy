@@ -583,23 +583,40 @@ pub(crate) struct Request<'a> {
     pub now: u64,
 }
 
-/// Removes the worktree of every stopped candidate in this repo.
+/// Re-reads every candidate chain and removes the worktrees of those that
+/// have stopped.
 ///
-/// A landed, red, or cancelled candidate loses its worktree. One that is
-/// building, validating, green and waiting, or cancelling keeps it. A process
-/// that still has the directory as its working directory keeps it too; the
-/// next call removes it once that process is gone. A directory whose git
-/// registration is already gone is removed as well. Nothing here writes the
-/// candidate chain. An issue's, watch's, or cut's worktree is outside
-/// `convoy-candidates` and is left alone.
+/// A turn that has just written a chain calls this. That write is past the
+/// look's moment, so the listing the look holds is not this chain
+/// (docs/adr/0043).
+pub(crate) fn remove_stopped_worktrees(repo: &Repo) -> Result<()> {
+    let prefix = repo.layout().under("candidates/");
+    let records = repo.remote_records(&format!("{prefix}*"))?;
+    remove_listed(repo, &records)
+}
+
+/// Removes the worktree of every stopped candidate named by `records`.
+///
+/// `records` are candidate chains already read: the look's listing, or a
+/// turn's re-read of the chain it just wrote. A landed, red, or cancelled
+/// candidate loses its worktree. One that is building, validating, green and
+/// waiting, or cancelling keeps it. A process that still has the directory as
+/// its working directory keeps it too; the next call removes it once that
+/// process is gone. A directory whose git registration is already gone is
+/// removed as well. Nothing here reads or writes the candidate chain. An
+/// issue's, watch's, or cut's worktree is outside `convoy-candidates` and is
+/// left alone.
 ///
 /// A process listing that fails removes nothing: it is no evidence the
 /// directory is free.
-pub(crate) fn remove_stopped_worktrees(repo: &Repo) -> Result<()> {
+pub(crate) fn remove_listed(repo: &Repo, records: &[crate::git::RemoteRecord]) -> Result<()> {
     let prefix = repo.layout().under("candidates/");
     let root = repo.common_dir()?.join("convoy-candidates");
     let mut pending = vec![];
-    for record in repo.remote_records(&format!("{prefix}*"))? {
+    for record in records {
+        if !record.name.starts_with(&prefix) {
+            continue;
+        }
         let chain: Chain = serde_json::from_str(&record.subject)?;
         for candidate in &chain.candidates {
             if candidate.active() {

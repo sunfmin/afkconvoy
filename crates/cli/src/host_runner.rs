@@ -1151,13 +1151,15 @@ impl Runner {
     /// is no checkout, or of one whose fleet instance ended before its first
     /// tick — which leaves one on the list there, broken (`ended`). A
     /// checkout whose fleet instance runs already is answered with that
-    /// instance, and `start` changes nothing but its concurrency and its
-    /// tracker; one the host runner is starting is answered as that start
-    /// comes; one on the list whose fleet instance does not run, or is
-    /// broken, starts now with what the list kept of its `run`, and what
-    /// `start` names laid over that. The concurrency and the tracker `start`
-    /// says are the checkout's from now on, whichever it is (`said`,
-    /// `tracker::say`).
+    /// instance, and `start` changes nothing but its concurrency, its
+    /// tracker and its harness; one the host runner is starting is answered
+    /// as that start comes; one on the list whose fleet instance does not
+    /// run, or is broken, starts now with what the list kept of its `run`,
+    /// and what `start` names laid over that. The concurrency, the tracker
+    /// and the harness `start` says are the checkout's from now on,
+    /// whichever it is (`said`, `tracker::say`, `named_harness::say`). A
+    /// harness the host kit does not hold is refused before either of the
+    /// others is written.
     fn add(self: &Arc<Self>, checkout: &Path, start: Start) -> Result<Value> {
         if self.stop.told() || self.moved() {
             bail!(
@@ -1171,7 +1173,7 @@ impl Runner {
         let repo = Repo::at(checkout)?;
         let (root, key) = (repo.dir.clone(), checkout_list::repo_of(&repo)?);
         let tick_log = log::Log::of(&repo)?.file;
-        let (seen, added, concurrency, tracked) = {
+        let (seen, added, concurrency, tracked, harness) = {
             let mut held = self.holding();
             let listed = self.list.read()?.checkouts;
             let known = known(&listed, &held);
@@ -1180,18 +1182,24 @@ impl Runner {
             if matches!(on_list, OnList::No) {
                 checkout_list::forget(&root);
             }
-            let (said, tracked) = match on_list {
-                OnList::Other(_) => (Value::Null, Value::Null),
+            let (said, tracked, harness) = match on_list {
+                OnList::Other(_) => (Value::Null, Value::Null, Value::Null),
                 OnList::Itself | OnList::No => {
                     let kept = listed.iter().find(|entry| entry.checkout == root);
                     let named = kept.map(|entry| entry.named.clone()).unwrap_or_default();
                     let host = start.named.host.clone().or(named.host);
                     let host = host.unwrap_or_else(crate::this_host);
+                    // Before the tracker and the concurrency, so a harness
+                    // the host kit does not hold writes nothing.
+                    let harness = match start.harness {
+                        Some(to) => crate::named_harness::say(&self.list, &repo, to)?,
+                        None => Value::Null,
+                    };
                     let tracked = match start.tracker.clone() {
                         Some(to) => tracker::say(&self.list, &repo, to, &host)?,
                         None => Value::Null,
                     };
-                    (self.said(&repo, start.concurrency)?, tracked)
+                    (self.said(&repo, start.concurrency)?, tracked, harness)
                 }
             };
             let (seen, added) = match on_list {
@@ -1234,7 +1242,7 @@ impl Runner {
                 }
                 OnList::No => (self.start(&mut held, root.clone(), key.clone(), start), true),
             };
-            (seen, added, said, tracked)
+            (seen, added, said, tracked, harness)
         };
         let mut stage = seen.stage();
         // Its probe's warnings are this `run`'s where it waited for its start.
@@ -1252,6 +1260,7 @@ impl Runner {
                 "first_tick": first_tick,
                 "concurrency": concurrency,
                 "tracker": tracked,
+                "harness": harness,
                 "warnings": if waited { stage.warnings.clone() } else { vec![] },
             })),
             Came::Refused(refused) => Ok(refused.clone()),
@@ -1762,10 +1771,17 @@ impl Heard {
                 None => {
                     // With the concurrency and the tracker its `run` asked,
                     // which this process forgets once the list holds them.
-                    let checkout_list::Asked { concurrency, tracker } =
+                    let checkout_list::Asked { concurrency, tracker, harness } =
                         checkout_list::asked_of(&self.root);
                     let checkout = self.root.clone();
-                    listed.checkouts.push(Entry { checkout, named, concurrency, tracker });
+                    listed.checkouts.push(Entry {
+                        checkout,
+                        named,
+                        concurrency,
+                        tracker,
+                        harness,
+                        harness_applied: None,
+                    });
                     true
                 }
             }
@@ -2184,10 +2200,13 @@ pub fn holds(repo: &Repo) -> bool {
 /// a `run` or a `stop` while it holds the host is refused, and so is it,
 /// where another host runner holds the host. What it names of the host
 /// settings, `settings`, holds in this process alone, laid over the host's;
-/// and what it says of its checkout's concurrency and its tracker, where the
-/// list holds no entry of it.
+/// and what it says of its checkout's concurrency, its tracker and its
+/// harness, where the list holds no entry of it.
 pub fn foreground(checkout: &Repo, start: &Start, settings: host_settings::Named) -> Result<Value> {
     host_settings::lay_for_this_process(settings);
+    if let Some(to) = start.harness {
+        crate::named_harness::say(&List::of_host()?, checkout, to)?;
+    }
     if let Some(to) = start.concurrency {
         concurrency::ask(&checkout.dir, to);
     }

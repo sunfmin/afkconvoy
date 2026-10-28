@@ -9,11 +9,13 @@ use serde::{Deserialize, Deserializer};
 use serde_json::Value as Json;
 use toml::Value as Toml;
 
-use super::{Held, Kept, Link};
+use super::session::{self, json_lines};
+use super::{Held, Kept, Link, SessionFile, SessionLayout};
 use crate::guard::Call;
 use crate::line::Line;
 use crate::role::{Rules, Start, Told};
 use crate::team::RULES;
+use crate::turn::{Marker, Note, Turn};
 
 pub(super) const NAME: &str = "Kimi Code";
 pub(super) const KEY: &str = "kimi";
@@ -459,6 +461,117 @@ fn background_task(line: &str) -> bool {
         }
     }
     false
+}
+
+/// The harness directory under a user's home.
+pub(super) const HOME: &str = ".kimi-code";
+
+const INDEX: &str = "session_index.jsonl";
+const WIRE: &str = "agents/main/wire.jsonl";
+
+/// Where Kimi keeps the sessions of every worktree: one index. The index
+/// names each session file.
+pub(super) fn session_layout(_cwd: &str) -> SessionLayout {
+    SessionLayout::Index { file: INDEX.into() }
+}
+
+/// The turn `text`, one session's wire, records. The worktree was named by
+/// the index that pointed here. Kimi records no child session. The wire's
+/// other lines are huge and are not a turn: the type is the whole match, so
+/// a prompt that mentions a turn is not one.
+pub(super) fn recorded_turn(_cwd: &str, text: &str, not_before: Option<u64>) -> Option<Turn> {
+    let notes: Vec<Note> = json_lines(text).filter_map(|value| note(&value)).collect();
+    session::turn_of(&notes, not_before)
+}
+
+fn note(value: &serde_json::Value) -> Option<Note> {
+    let at = session::epoch_number(value["time"].as_u64()?);
+    match value["type"].as_str()? {
+        "agent.turn.started" => Some(Note { marker: Marker::Start, at, child: false }),
+        "agent.turn.ended" | "turn.ended" => Some(Note { marker: Marker::End, at, child: false }),
+        _ => None,
+    }
+}
+
+/// The session files `index` names for `cwd`. A relative session is relative
+/// to the harness directory.
+pub(super) fn indexed_sessions(cwd: &str, index: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for value in json_lines(index) {
+        if value["workDir"].as_str().is_none_or(|dir| !session::same_cwd(dir, cwd)) {
+            continue;
+        }
+        let Some(session) = value["sessionDir"].as_str() else { continue };
+        if session.is_empty() {
+            continue;
+        }
+        let file = std::path::Path::new(session).join(WIRE);
+        out.push(file.to_string_lossy().into_owned());
+    }
+    out
+}
+
+/// `existing` with this worktree's line replaced. Lines for other worktrees,
+/// and a line that is not JSON, stay.
+pub(super) fn session_index(cwd: &str, existing: &str) -> String {
+    let mut kept = String::new();
+    for line in existing.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            kept.push_str(line);
+            kept.push('\n');
+            continue;
+        };
+        if value["workDir"].as_str().is_some_and(|dir| session::same_cwd(dir, cwd)) {
+            continue;
+        }
+        kept.push_str(line);
+        kept.push('\n');
+    }
+    let session = format!("sessions/afkconvoy-{}", session::mark(cwd));
+    kept.push_str(
+        &session::object(vec![
+            ("sessionId", session::mark(cwd).into()),
+            ("sessionDir", session.into()),
+            ("workDir", cwd.into()),
+        ])
+        .to_string(),
+    );
+    kept.push('\n');
+    kept
+}
+
+/// The wire a stand-in writes for this turn. The index is `session_index`.
+pub(super) fn session_files(cwd: &str, open: bool, at: u64) -> Vec<SessionFile> {
+    let ms = at.saturating_mul(1000);
+    let mut body = format!(
+        "{}\n",
+        session::object(vec![
+            ("type", "agent.turn.started".into()),
+            ("time", ms.into()),
+            ("turnId", 0_u64.into()),
+            ("kind", "event".into()),
+        ])
+    );
+    if !open {
+        body.push_str(&format!(
+            "{}\n",
+            session::object(vec![
+                ("type", "agent.turn.ended".into()),
+                ("time", ms.into()),
+                ("turnId", 0_u64.into()),
+                ("outcome", "completed".into()),
+            ])
+        ));
+    }
+    vec![SessionFile {
+        path: format!("sessions/afkconvoy-{}/{WIRE}", session::mark(cwd)),
+        body,
+        compressed: false,
+        replaces: None,
+    }]
 }
 
 #[cfg(test)]

@@ -750,6 +750,53 @@ fn chain_tip(world: &World) -> String {
     world.remote(&["rev-parse", "refs/convoy/candidates/main"])
 }
 
+/// The look's one listing of the remote. It is the only `ls-remote` whose
+/// patterns include the candidate chain.
+const LOOK_LISTING: &str = "ls-remote origin refs/convoy/* refs/heads/* refs/tags/v*";
+
+fn clear_git_log(world: &World) {
+    std::fs::write(world.root.join("git.log"), "").unwrap();
+}
+
+fn lists_candidate_chain(call: &str) -> bool {
+    call.starts_with("ls-remote ")
+        && call
+            .split_whitespace()
+            .any(|arg| arg == "refs/convoy/*" || arg.starts_with("refs/convoy/candidates"))
+}
+
+/// A tick that does not write the candidate chain lists it once, as part of
+/// the look, and does not read that chain on its own.
+fn assert_chain_listed_once(world: &World) {
+    let calls = world.git_calls();
+    let listed: Vec<&String> = calls.iter().filter(|call| lists_candidate_chain(call)).collect();
+    assert_eq!(listed, [&LOOK_LISTING.to_string()], "{calls:#?}");
+    assert!(
+        !calls
+            .iter()
+            .any(|call| call.starts_with("push ") && call.contains("refs/convoy/candidates")),
+        "the tick wrote the candidate chain: {calls:#?}"
+    );
+}
+
+/// The startup probe, when it runs, lists the fleet's refs to sweep litter.
+/// Removal still follows the look, and nothing reads the candidate chain alone.
+fn assert_removal_follows_the_look(world: &World) {
+    let calls = world.git_calls();
+    assert!(
+        !calls.iter().any(|call| {
+            call.split_whitespace().any(|arg| arg.starts_with("refs/convoy/candidates"))
+        }),
+        "the tick read the candidate chain on its own: {calls:#?}"
+    );
+    let look = calls.iter().position(|call| call == LOOK_LISTING);
+    let removed = calls.iter().position(|call| call.starts_with("worktree remove "));
+    assert!(
+        look.is_some_and(|look| removed.is_some_and(|removed| removed > look)),
+        "removal follows the look's listing: {calls:#?}"
+    );
+}
+
 fn tick(world: &World) {
     // The gate records were written at the real clock. A tick dated in 1970
     // treats them as past their day and sweeps them; this tick is now.
@@ -823,9 +870,11 @@ fn a_stopped_candidate_loses_its_worktree_and_a_live_one_keeps_it() {
     assert!(!gates.is_empty(), "the recorded gate run stays on the remote");
     let tip = chain_tip(&world);
     drop(hold);
+    world.watch_git();
     tick(&world);
     assert!(!a_tree.exists(), "a later tick removes the worktree once the process is gone");
     assert!(!listed(&world, &a_tree));
+    assert_removal_follows_the_look(&world);
     assert_eq!(chain_tip(&world), tip, "the candidate chain is not rewritten");
     assert_eq!(
         world.remote(&["for-each-ref", "--format=%(objectname)", "refs/convoy/gate"]),
@@ -839,9 +888,15 @@ fn a_stopped_candidate_loses_its_worktree_and_a_live_one_keeps_it() {
     std::fs::set_permissions(&sealed, std::fs::Permissions::from_mode(0o555)).unwrap();
     assert!(!listed(&world, &a_tree), "the registration is already gone");
     let tip = chain_tip(&world);
+    clear_git_log(&world);
     tick(&world);
     assert!(!a_tree.exists(), "a half-removed worktree is removed");
+    assert_chain_listed_once(&world);
     assert_eq!(chain_tip(&world), tip, "removing a leftover directory does not rewrite the chain");
+    clear_git_log(&world);
+    tick(&world);
+    assert_chain_listed_once(&world);
+    assert_eq!(chain_tip(&world), tip, "a tick that removes nothing leaves the chain");
 }
 
 #[test]
@@ -851,6 +906,7 @@ fn a_red_candidate_and_a_cancelled_one_lose_their_worktrees() {
     let (issue_a, _) = worker(&world, 1, "a");
     let (issue_b, _) = worker(&world, 2, "b");
     let _runner = world.host_held();
+    world.watch_git();
     let aa = start(&world, &issue_a, &world.cache(), 1);
     began(&world, "a");
     let bb = start(&world, &issue_b, &world.cache(), 2);
@@ -866,6 +922,15 @@ fn a_red_candidate_and_a_cancelled_one_lose_their_worktrees() {
     assert!(!listed(&world, &a_tree));
     assert!(!b_tree.exists(), "a cancelled candidate's worktree is gone");
     assert!(!listed(&world, &b_tree));
+    let calls = world.git_calls();
+    let wrote = calls
+        .iter()
+        .rposition(|call| call.starts_with("push ") && call.contains("refs/convoy/candidates/"));
+    let reread = calls.iter().rposition(|call| call == "ls-remote origin refs/convoy/candidates/*");
+    assert!(
+        wrote.is_some_and(|wrote| reread.is_some_and(|reread| reread > wrote)),
+        "a turn reads the chain it just wrote before it returns: {calls:#?}"
+    );
     assert!(listed(&world, &issue_a) && listed(&world, &issue_b), "the issue worktrees stay");
     let state = chain(&world);
     let failed = state["candidates"]
