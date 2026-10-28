@@ -895,6 +895,34 @@ fn the_help_says_skill_prints_text_and_its_own_where_to_put_the_file() {
     assert!(section(&own, "## What it answers").contains("no JSON object"));
 }
 
+/// The index names `panel` and a doctor with a critical finding, beside the
+/// answers that were already not one JSON object. A checkout `doctor --all`
+/// could not ask stays `{"error", "see"}`, which is not a doctor that read it.
+#[test]
+fn what_a_command_answers_names_panel_and_a_doctor_with_a_critical_finding() {
+    let long = manual();
+    let answers = between(guide(&long), "## What a command answers", "## The commands").join(" ");
+    for said in [
+        "`show` a drawing unless asked about an issue",
+        "`help` Markdown as `--help` does",
+        "`skill` the text of a file",
+        "`guard` answers as a hook does",
+        "`exclusive` as its command does",
+        "`panel` without `--open` one HTML document",
+        "`panel --open` prints the JSON object `panel --help` describes",
+        "exits 0 with no critical finding, and non-zero with one",
+        "printing the same object, not {\"error\"}",
+        "Under `--all`, a checkout that could not be asked stays {\"error\", \"see\"}",
+        "as `doctor --help` describes: not what a doctor that read the checkout answers",
+        "A fleet instance prints nothing",
+    ] {
+        assert!(answers.contains(said), "lost {said:?}\n{answers}");
+    }
+    let see = answers.find("{\"error\", \"see\"}").unwrap();
+    let read = answers.find("a doctor that read the checkout").unwrap();
+    assert!(see < read, "{answers}");
+}
+
 /// What a subcommand's `--help` says under each of these headings, in this
 /// order.
 const SECTIONS: [&str; 5] = [
