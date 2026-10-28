@@ -533,7 +533,9 @@ impl Fleet {
         )
     }
 
-    /// The task destination is read from remote fleet state on every use.
+    /// The branch is this process's last listing, or a later exact read. A push
+    /// by this process drops that ref, so the next read is live — `target::pin`
+    /// does, and that is what notices a concurrent selection.
     pub fn task_branch(&self, issue: u64) -> Result<String> {
         crate::target::branch(&self.repo, &self.config, issue)
     }
