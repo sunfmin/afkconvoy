@@ -21,13 +21,24 @@ struct Target {
 
 impl Target {
     fn resolve(&self, repo: &Repo) -> Result<String> {
+        self.resolve_known(repo, &[], &[])
+    }
+
+    /// `resolve`, except a branch ref this look already asked for is not read
+    /// again. `asked` is those ref names; `listed` is what the remote had.
+    fn resolve_known(
+        &self,
+        repo: &Repo,
+        asked: &[&str],
+        listed: &[RemoteRecord],
+    ) -> Result<String> {
         match (&self.branch, &self.delivery) {
             (Some(branch), None) => {
                 ensure!(
                     !crate::delivery::final_pr(branch, ""),
                     "reserved delivery branch requires its delivery reference; attach with afkconvoy delivery --jira <url> --final-target <branch> --issue <n>"
                 );
-                validate(repo, branch)?;
+                validate_known(repo, branch, asked, listed)?;
                 Ok(branch.clone())
             }
             (None, Some(reference)) => crate::delivery::resolve(repo, reference, None),
@@ -44,14 +55,71 @@ fn refname(repo: &Repo, tracker: &Tracker, issue: u64) -> String {
 
 fn existing(repo: &Repo, gh: &GitHub, issue: u64) -> Result<Option<Target>> {
     let name = refname(repo, &gh.tracker, issue);
-    let record = repo.remote_records(&name)?.pop();
     let claim_ref = afkconvoy_core::claims::claim_ref(repo.layout(), &gh.tracker, issue);
-    let claim = repo.remote_records(&claim_ref)?.pop();
-    let target = decode(&gh.tracker.issue(issue), &name, record.as_ref(), claim.as_ref())?;
+    let listed = repo.listed_refs(&[&name, &claim_ref])?;
+    let target = from_listing(repo, &gh.tracker, issue, &listed)?;
     if let Some(target) = &target {
         target.resolve(repo)?;
     }
     Ok(target)
+}
+
+/// The target record in `listed`, if this issue has one. A missing target and
+/// a missing claim are the absence of a pin: no subject is read.
+fn from_listing(
+    repo: &Repo,
+    tracker: &Tracker,
+    issue: u64,
+    listed: &[RemoteRecord],
+) -> Result<Option<Target>> {
+    let name = refname(repo, tracker, issue);
+    let claim_ref = afkconvoy_core::claims::claim_ref(repo.layout(), tracker, issue);
+    let mut records: Vec<RemoteRecord> = listed
+        .iter()
+        .filter(|record| record.name == name || record.name == claim_ref)
+        .cloned()
+        .collect();
+    if records.is_empty() {
+        return Ok(None);
+    }
+    repo.read_record_subjects(&mut records)?;
+    decode(
+        &tracker.issue(issue),
+        &name,
+        records.iter().find(|record| record.name == name),
+        records.iter().find(|record| record.name == claim_ref),
+    )
+}
+
+/// Where issue `issue` lands, as one read of the remote saw it.
+pub struct Seen {
+    pub branch: String,
+    /// Tip of `branch` when this look's listing held `tip_ref`.
+    pub tip: Option<String>,
+    pub tip_ref: String,
+    /// `tip_ref` was among the refs this look asked the remote for, so a
+    /// missing tip is the remote having no such branch.
+    pub asked: bool,
+}
+
+/// The branch issue `issue` lands on, and that branch's tip when the one
+/// listing already held it. The target ref, the claim ref and the configured
+/// base are read together, once.
+pub fn once(repo: &Repo, config: &Config, tracker: &Tracker, issue: u64) -> Result<Seen> {
+    let name = refname(repo, tracker, issue);
+    let claim_ref = afkconvoy_core::claims::claim_ref(repo.layout(), tracker, issue);
+    let base_ref = format!("refs/heads/{}", config.base_branch);
+    let asked_refs = [name.as_str(), claim_ref.as_str(), base_ref.as_str()];
+    let listed = repo.listed_refs(&asked_refs)?;
+    let target = from_listing(repo, tracker, issue, &listed)?;
+    let branch = match target {
+        None => config.base_branch.clone(),
+        Some(target) => target.resolve_known(repo, &asked_refs, &listed)?,
+    };
+    let tip_ref = format!("refs/heads/{branch}");
+    let tip = listed.iter().find(|record| record.name == tip_ref).map(|record| record.sha.clone());
+    let asked = asked_refs.contains(&tip_ref.as_str());
+    Ok(Seen { branch, tip, tip_ref, asked })
 }
 
 fn decode(
@@ -139,13 +207,26 @@ pub fn stamp_claim(
     Ok(format!("{subject}{}", afkconvoy_core::record::write("", &[("target", &sha)])))
 }
 
-fn validate(repo: &Repo, branch: &str) -> Result<()> {
+/// A branch ref named in `asked` is taken from `listed` and not read again.
+/// With nothing asked, the remote is read for the branch.
+fn validate_known(
+    repo: &Repo,
+    branch: &str,
+    asked: &[&str],
+    listed: &[RemoteRecord],
+) -> Result<()> {
+    let name = format!("refs/heads/{branch}");
     ensure!(
-        repo.try_git(&["check-ref-format", &format!("refs/heads/{branch}")])?.ok,
+        repo.try_git(&["check-ref-format", &name])?.ok,
         "invalid target branch {branch:?}; select an existing same-repo branch with afkconvoy target --issue <n> --branch <branch>"
     );
+    let present = if asked.contains(&name.as_str()) {
+        listed.iter().any(|record| record.name == name)
+    } else {
+        repo.remote_sha(&name)?.is_some()
+    };
     ensure!(
-        repo.remote_sha(&format!("refs/heads/{branch}"))?.is_some(),
+        present,
         "the remote has no branch {branch:?}: the task's target branch is missing; restore that branch on origin before continuing this task"
     );
     Ok(())

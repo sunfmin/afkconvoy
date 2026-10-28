@@ -1893,7 +1893,7 @@ enum Command {
     ///
     /// ## When to run it
     ///
-    /// After the PR is open and all changes are committed: `afkconvoy land --issue <n>`. A watch uses `land --watch` for its own PR. Cuts take the same turn automatically.
+    /// After the PR is open and all changes are committed: `afkconvoy land <n>` or `afkconvoy land --issue <n>`. A watch uses `land --watch` for its own PR. Cuts take the same turn automatically.
     ///
     /// ## Who runs it
     ///
@@ -1938,7 +1938,11 @@ enum Command {
     /// - A rejected push ends the turn; no untested merge is silently retried.
     /// - A standalone gate before review lands nothing. Only the landing worker of a bound workflow takes the turn after review.
     /// - A conflict remains in progress. Commit its resolution before asking again.
-    #[command(next_help_heading = WORKER, verbatim_doc_comment)]
+    #[command(
+        next_help_heading = WORKER,
+        verbatim_doc_comment,
+        override_usage = "afkconvoy land <n> | afkconvoy land --issue <n>"
+    )]
     Land {
         /// The issue the PR closes
         #[arg(value_name = "ISSUE", conflicts_with_all = ["train", "issue", "watch"])]
