@@ -48,6 +48,24 @@ fn found<'a>(answer: &'a Value, what: &str) -> Vec<&'a Value> {
     findings.filter(|finding| finding["what"].as_str().unwrap().contains(what)).collect()
 }
 
+/// The checkout, as a fix line quotes a path it inserts.
+fn quoted(world: &World) -> String {
+    format!("'{}'", world.clone.display())
+}
+
+/// The arguments of a fix line, quotes taken off: the line is for a shell.
+fn shell_args(line: &str) -> Vec<String> {
+    line.split_whitespace()
+        .skip(1)
+        .map(|word| {
+            word.strip_prefix('\'')
+                .and_then(|rest| rest.strip_suffix('\''))
+                .unwrap_or(word)
+                .to_string()
+        })
+        .collect()
+}
+
 #[test]
 fn a_blocked_claim_whose_blockers_closed_has_a_working_doctor_fix() {
     let world = World::new();
@@ -66,9 +84,11 @@ fn a_blocked_claim_whose_blockers_closed_has_a_working_doctor_fix() {
     let stopped = found(&answer, "the worker of #7 has been stopped");
     assert_eq!(stopped.len(), 1, "{answer}");
     let fix = stopped[0]["fix"].as_str().unwrap();
-    assert_eq!(fix, "afkconvoy dispatch --issue 7 --instance alpha");
+    assert_eq!(fix, format!("afkconvoy dispatch -C {} --issue 7 --instance alpha", quoted(&world)));
     assert!(!stopped[0]["what"].as_str().unwrap().contains("declared nothing"));
-    let args: Vec<&str> = fix.split_whitespace().skip(1).chain(["--now", "3000"]).collect();
+    let mut words = shell_args(fix);
+    words.extend(["--now".into(), "3000".into()]);
+    let args: Vec<&str> = words.iter().map(String::as_str).collect();
     let continued = world.afk(&args).ok();
     assert_eq!(continued["started"], true, "{continued}");
     assert_eq!(world.open_terminals().len(), 1);
@@ -102,8 +122,15 @@ fn doctor_routes_other_declared_verdicts_and_respects_a_fleet_lock() {
         let stopped = found(&answer, "the worker of #7 has been stopped");
         assert_eq!(stopped.len(), 1, "{answer}");
         let fix = stopped[0]["fix"].as_str().unwrap();
-        assert_eq!(fix, format!("afkconvoy {command} --instance alpha"));
-        let args: Vec<&str> = fix.split_whitespace().skip(1).chain(["--now", "3000"]).collect();
+        let expected = if command.starts_with("park") {
+            format!("afkconvoy park -C {} --issue 7 --instance alpha", quoted(&world))
+        } else {
+            format!("afkconvoy tick {} --instance alpha", quoted(&world))
+        };
+        assert_eq!(fix, expected);
+        let mut words = shell_args(fix);
+        words.extend(["--now".into(), "3000".into()]);
+        let args: Vec<&str> = words.iter().map(String::as_str).collect();
         let acted = world.afk(&args).ok();
         assert!(acted["errors"].is_null() || acted["errors"] == json!([]), "{acted}");
     }
@@ -254,7 +281,10 @@ fn a_fleet_with_no_fault_answers_its_keys_and_no_finding_and_writes_nothing() {
 
     // the one finding is the one this world has: its `run` ended
     assert_eq!(answer["findings"].as_array().unwrap().len(), 1, "{answer}");
-    assert_eq!(found(&answer, "no `afkconvoy run` is alive")[0]["fix"], "afkconvoy run");
+    assert_eq!(
+        found(&answer, "no `afkconvoy run` is alive")[0]["fix"],
+        format!("afkconvoy run {}", quoted(&world))
+    );
 }
 
 #[test]
@@ -351,7 +381,7 @@ fn a_critical_finding_exits_non_zero_with_the_same_answer() {
     assert_eq!(finding["severity"], "critical");
     assert!(finding["what"].as_str().unwrap().contains("alpha holds #3"), "{finding}");
     assert!(finding["evidence"].as_str().unwrap().contains("its heartbeat is 1m old"));
-    assert_eq!(finding["fix"], "afkconvoy run");
+    assert_eq!(finding["fix"], format!("afkconvoy run {}", quoted(&world)));
     assert_eq!(finding["see"], "afkconvoy help troubleshooting");
 }
 
@@ -460,7 +490,7 @@ fn a_tick_that_failed_whole_is_logged_and_three_in_a_row_are_a_finding() {
     assert_eq!(unwell.code, 1);
     let failed = found(&unwell.json, "`tick` failed in each of the last 3 ticks (1 to 3)");
     assert_eq!(failed[0]["severity"], "critical");
-    assert_eq!(failed[0]["fix"], "afkconvoy plan --instance alpha");
+    assert_eq!(failed[0]["fix"], format!("afkconvoy plan {} --instance alpha", quoted(&world)));
     let steps = unwell.json["fleet"]["failed_steps"].as_array().unwrap();
     assert_eq!(steps.len(), 3);
     assert_eq!((&steps[0]["tick"], &steps[0]["do"]), (&json!(3), &json!("tick")));
@@ -496,7 +526,10 @@ fn a_worker_that_fails_to_start_is_a_finding_after_one_tick() {
         let answer = doctor(&world, "1000").json;
         let failures = found(&answer, "`dispatch #3` failed");
         assert_eq!(failures.len(), 1, "{knob}: {answer}");
-        assert_eq!(failures[0]["fix"], "afkconvoy dispatch --issue 3 --instance alpha");
+        assert_eq!(
+            failures[0]["fix"],
+            format!("afkconvoy dispatch -C {} --issue 3 --instance alpha", quoted(&world))
+        );
         assert_eq!(failures[0]["evidence"], answer["fleet"]["failed_steps"][0]["error"]);
     }
 }
@@ -643,7 +676,10 @@ fn a_live_run_is_seen_alive_and_a_claim_whose_worker_is_gone_is_a_finding() {
     assert_eq!(answer["claims"][0]["worker"]["state"], "gone");
     let gone = found(&answer, "the claim on #3 has no worker");
     assert_eq!(gone[0]["severity"], "warning");
-    assert_eq!(gone[0]["fix"], "afkconvoy dispatch --issue 3 --instance alpha");
+    assert_eq!(
+        gone[0]["fix"],
+        format!("afkconvoy dispatch -C {} --issue 3 --instance alpha", quoted(&world))
+    );
 
     // killed, it is seen dead at once, and what it logged is all still there
     let logged = log(&world);
@@ -710,7 +746,8 @@ fn a_bound_repos_claim_says_its_stage_and_role_and_a_head_that_moved_since_is_sa
     let which: Vec<&str> =
         moved.iter().map(|m| m["what"].as_str().unwrap().split(" moved").next().unwrap()).collect();
     assert_eq!(which, ["the team", "the role `dev`"]);
-    assert!(moved.iter().all(|m| m["severity"] == "info" && m["fix"] == "afkconvoy check"));
+    let check = format!("afkconvoy check {}", quoted(&world));
+    assert!(moved.iter().all(|m| m["severity"] == "info" && m["fix"] == check));
     let head = git(&dev, &["rev-parse", "HEAD"]);
     assert!(moved[1]["evidence"].as_str().unwrap().ends_with(&format!("the head is {head}")));
 }
@@ -794,7 +831,7 @@ fn a_team_with_a_fault_and_a_flow_label_that_names_no_workflow_are_findings() {
     world.issue(7, &["flow:bogus"]);
     let answer = doctor(&world, "1000").ok();
     let lost = found(&answer, "#7 follows no workflow of the team");
-    assert_eq!(lost[0]["fix"], "afkconvoy flows");
+    assert_eq!(lost[0]["fix"], format!("afkconvoy flows {}", quoted(&world)));
     assert!(
         lost[0]["evidence"]
             .as_str()
@@ -833,14 +870,18 @@ fn an_issue_long_at_its_stage_and_one_rework_from_its_breaker_are_findings() {
     });
     let answer = doctor(&world, "1700").ok();
     let near = found(&answer, "#3 is one rework from a breaker");
-    assert_eq!(near[0]["fix"], "afkconvoy show --issue 3", "{answer}");
+    assert_eq!(
+        near[0]["fix"],
+        format!("afkconvoy show -C {} --issue 3", quoted(&world)),
+        "{answer}"
+    );
     assert_eq!(found(&answer, "longer than any stage").len(), 0, "100s in: {answer}");
 
     // an hour on, it has been at `build` longer than the 10m `build` took before
     let answer = doctor(&world, "5200").ok();
     let long = found(&answer, "#3 has been at the stage `build` for 1h 0m");
     assert_eq!(long[0]["severity"], "warning", "{answer}");
-    assert_eq!(long[0]["fix"], "afkconvoy show --issue 3");
+    assert_eq!(long[0]["fix"], format!("afkconvoy show -C {} --issue 3", quoted(&world)));
 }
 
 #[test]
