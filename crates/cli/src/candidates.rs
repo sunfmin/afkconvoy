@@ -711,8 +711,13 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
         snapshot.chain.observe_base(&current);
         let predecessor = snapshot.chain.predecessor(&current);
         let message = merge_message(&pr.title, pr.number, of, tracker);
-        let Some(commit) = crate::turn::merged_onto(repo, &predecessor, &original, &message, now)?
-        else {
+        // A cut adds one commit: the set commit stays on the cut's branch.
+        // An issue turn and a watch still land a merge.
+        let built = match of {
+            Of::Cut(_) => crate::turn::cut_onto(repo, &predecessor, &original, &message, now)?,
+            _ => crate::turn::merged_onto(repo, &predecessor, &original, &message, now)?,
+        };
+        let Some(commit) = built else {
             if predecessor != current {
                 answer["outcome"] = json!("waiting_for_predecessor");
                 answer["detail"] =

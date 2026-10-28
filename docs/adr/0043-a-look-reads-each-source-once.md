@@ -8,6 +8,8 @@ status: accepted
 
 One look reads each of these once and answers every later question in that look from what was read.
 
+A look begins through one interface. A tick and a fleet-instance start each call it once. It resets every observation a look reads once: orca's repo list and the quota note. A further once-per-look observation is registered there, so neither call site gains a line. `doctor` does not call it. Host readings stay behind the readings module. The login still stands for the life of the process.
+
 The host's load, its memory and each volume's free disk are read once. Every checkout's admission and its hot-worker limits are computed from that reading.
 
 The login stands for the life of the process: nobody changes `gh`'s login under a running runner. The quota note is observed at most once per look. `doctor` is one look, so once there. Each tick observes again, so the note stays the tick's own instead of whatever response headers arrived earlier in the process. An unreadable note does not fail a read. A look that has already called GitHub reports the note those responses carried and does not ask `rate_limit` for its own sake.

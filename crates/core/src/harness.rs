@@ -136,6 +136,19 @@ impl Harness {
         }
     }
 
+    /// The harness's account-quota words on its screen, or in a runtime
+    /// message it prints. Whitespace may wrap. The same words on another
+    /// harness's screen are not this quota: a harness is asked only for its
+    /// own. What it returns is the line that showed them.
+    pub fn account_quota(self, output: &[String]) -> Option<String> {
+        match self {
+            Harness::Codex => codex::account_quota(output),
+            Harness::Pi => pi::account_quota(output),
+            Harness::Kimi => kimi::account_quota(output),
+            _ => None,
+        }
+    }
+
     /// The harness of a worker nothing names one for.
     pub const DEFAULT: Harness = Harness::ClaudeCode;
 
@@ -389,6 +402,20 @@ impl Harness {
             Harness::Codex => &codex::REPO_RULES,
             Harness::Kimi => &kimi::REPO_RULES,
             Harness::Grok => &grok::REPO_RULES,
+        }
+    }
+
+    /// The role file a worker is told, from the role's directory, beside the
+    /// repo's and the team's. A harness that starts in the worktree names the
+    /// file, because that file is how the role's rules reach the worker
+    /// (ADR-0043). `None`: it starts in the role and loads the file itself,
+    /// and is told no role file.
+    pub const fn role_file(self) -> Option<&'static str> {
+        match self {
+            Harness::Grok => Some(grok::ROLE_FILE),
+            Harness::ClaudeCode | Harness::Pi | Harness::Codex | Harness::Dsh | Harness::Kimi => {
+                None
+            }
         }
     }
 
@@ -981,6 +1008,17 @@ mod tests {
 
             let headless = ["--print", " exec ", "--prompt", "headless"];
             assert!(!headless.iter().any(|mode| line.contains(mode)), "{}: {line}", harness.key());
+        }
+    }
+
+    #[test]
+    fn the_harness_names_the_role_file_a_worker_is_told() {
+        assert_eq!(Harness::Grok.role_file(), Some(crate::team::RULES));
+        for harness in Harness::ALL {
+            if harness == Harness::Grok {
+                continue;
+            }
+            assert_eq!(harness.role_file(), None, "{}", harness.key());
         }
     }
 

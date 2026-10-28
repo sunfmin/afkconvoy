@@ -299,6 +299,12 @@ fn a_watch_s_landed_fix_reaches_the_published_version_through_a_cut() {
     let joined = world.afk_in(&checkout, &["land", "--watch", "--host", "h1"]).ok();
     assert_eq!(joined["recorded"], true);
     assert_eq!(joined["outcome"], "merged");
+    let watch_commit = joined["commit"].as_str().unwrap();
+    assert_eq!(
+        world.remote(&["rev-parse", &format!("{watch_commit}^@")]).lines().count(),
+        2,
+        "a watch still lands a merge commit"
+    );
     assert!(!world.root.join("published").exists(), "joining has installed nothing");
 
     world.afk(&["wake"]).ok();
@@ -311,6 +317,87 @@ fn a_watch_s_landed_fix_reaches_the_published_version_through_a_cut() {
     assert_eq!(published, "1.2.3 v1.2.3\n");
     assert_eq!(world.remote(&["show", "v1.2.3:fixed.txt"]), "worktrees are trusted");
     assert!(failures(&world).is_empty(), "the cut asked for no human");
+}
+
+/// The parents of `commit` on the remote, oldest first as git lists them.
+fn parents(world: &World, commit: &str) -> Vec<String> {
+    world.remote(&["rev-parse", &format!("{commit}^@")]).lines().map(str::to_string).collect()
+}
+
+/// Whether `commit` is an ancestor of `tip` on the remote.
+fn ancestor(world: &World, commit: &str, tip: &str) -> bool {
+    world
+        .command("git", &world.bare)
+        .args(["merge-base", "--is-ancestor", commit, tip])
+        .output()
+        .unwrap()
+        .status
+        .success()
+}
+
+#[test]
+fn a_cut_adds_one_commit_and_leaves_the_set_commit_off_the_base() {
+    let world = initial(false);
+    assert_eq!(cut(&tick_as(&world, "alpha", 10_000)), ["cut done"]);
+    let checkout = checkout(&world);
+    // The base tip is certified while the gate still passes. A red file after
+    // that fails the cut's own turn, and the turn returns, instead of waiting
+    // on a base tip that was never green.
+    assert_eq!(world.afk(&["gate"]).ok()["recorded"], true, "the base tip is gated first");
+    std::fs::write(world.root.join("red"), "red").unwrap();
+    let failed = world.afk_in(&checkout, &["cut", "--host", "h1", "--second-ms", "10"]).ok();
+    assert_eq!(failed["failed"], "gate", "{failed}");
+    let set = git(&checkout, &["rev-parse", "HEAD"]);
+    std::fs::remove_file(world.root.join("red")).unwrap();
+    land(&world, "Add a gadget (#9)");
+    let tip = world.remote(&["rev-parse", BASE]);
+
+    let answer = finish_in_turn(&world, &checkout);
+    let landed = answer["landed"].as_str().unwrap();
+    assert_eq!(world.remote(&["rev-parse", "v1.2.3^{commit}"]), landed);
+    assert_eq!(parents(&world, landed), vec![tip], "one parent, the base tip at land time");
+    assert!(!ancestor(&world, &set, landed), "the set commit stays off the base");
+    assert_eq!(
+        world.remote(&["diff", "--name-only", &format!("{landed}^"), landed]),
+        "VERSION",
+        "the diff against the parent is the version"
+    );
+    assert_eq!(world.remote(&["show", &format!("{landed}:VERSION")]), "1.2.3");
+    assert!(
+        world.remote(&["show", &format!("{landed}:widget.txt")]).contains("Add a gadget"),
+        "a landing already on the tip stays"
+    );
+    let message = world.remote(&["log", "-1", "--format=%B", landed]);
+    assert!(message.contains("By a cut on h1"), "{message}");
+    assert!(message.contains("(#"), "{message}");
+    assert!(message.lines().next().unwrap().ends_with(')'), "{message}");
+}
+
+#[test]
+fn a_cut_that_landed_and_stopped_before_tagging_tags_that_commit() {
+    let world = initial(false);
+    assert_eq!(cut(&tick_as(&world, "alpha", 10_000)), ["cut done"]);
+    let checkout = checkout(&world);
+    let answer = finish_in_turn(&world, &checkout);
+    let landed = answer["landed"].as_str().unwrap().to_string();
+    let pr = answer["pr"].clone();
+    git(&checkout, &["tag", "-d", "v1.2.3"]);
+    git(&world.bare, &["tag", "-d", "v1.2.3"]);
+    let mut record = record(&checkout);
+    record["landed"] = Value::Null;
+    record["pr"] = Value::Null;
+    record["took"] = json!([]);
+    record["at"] = Value::Null;
+    std::fs::write(record_file(&checkout), record.to_string()).unwrap();
+
+    let again = world.afk_in(&checkout, &["cut", "--host", "h1", "--second-ms", "10"]).ok();
+    assert_eq!(again["landed"], landed, "{again}");
+    assert_eq!(again["pr"], pr, "{again}");
+    assert_eq!(world.remote(&["rev-parse", "v1.2.3^{commit}"]), landed);
+    assert_eq!(world.remote(&["rev-parse", BASE]), landed, "tagged the commit it had");
+    assert_eq!(parents(&world, &landed).len(), 1);
+    let message = world.remote(&["log", "-1", "--format=%B", &landed]);
+    assert!(message.contains("By a cut on h1"), "{message}");
 }
 
 /// The first version takes every release step, whether setting it changes
