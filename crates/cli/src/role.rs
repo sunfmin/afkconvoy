@@ -628,10 +628,9 @@ pub fn check(launches: &Launches, called: &[(Harness, Vec<String>)]) -> Result<V
                 }
             }) {
                 crate::launch::Once::Already => None,
-                crate::launch::Once::Ran(ok, printed) => harness
-                    .takes(proposed.as_str(), ok.then_some(printed.as_str()))
-                    .err()
-                    .map(said),
+                crate::launch::Once::Ran(ok, printed) => {
+                    harness.takes(proposed.as_str(), ok.then_some(printed.as_str())).err().map(said)
+                }
             }
         } else {
             None
