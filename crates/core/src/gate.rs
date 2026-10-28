@@ -84,6 +84,26 @@ pub fn record_ref(layout: Layout, tree: &Tree, command: &GateCommand) -> String 
     layout.under(&format!("{GATE_KIND}{}-{:016x}", tree.name, command.key))
 }
 
+/// The green run of `command` on `tree` still believed at `now` among
+/// `records` — each a ref name and the subject of the commit it points at —
+/// from either ref layout. The noted layout's record is the one believed when
+/// both stand. A day-old record, a red run, a run that wrote no record, and a
+/// record of another tree or another command is not believed from either.
+pub fn believed_among(
+    records: &[(&str, &str)],
+    noted: Layout,
+    tree: &Tree,
+    command: &GateCommand,
+    now: u64,
+) -> Option<GreenRun> {
+    [noted, noted.other()].into_iter().find_map(|layout| {
+        let name = record_ref(layout, tree, command);
+        records.iter().find(|(record_name, _)| *record_name == name).and_then(|(_, subject)| {
+            GreenRun::recorded(subject, tree, command).filter(|run| run.stands(now))
+        })
+    })
+}
+
 /// One run of the gate command, as the code that ran it saw it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Ran {
@@ -565,5 +585,75 @@ mod tests {
         assert_eq!(name.len(), "refs/convoy/gate/".len() + 40 + 1 + 16);
         assert_ne!(name, record_ref(Layout::Hidden, &tree(), &GateCommand::new("make check")));
         assert_eq!(key("make test"), key("make test"));
+    }
+
+    /// A record of `run` as the remote would keep it under `layout`.
+    fn kept(layout: Layout, run: &GreenRun) -> (String, String) {
+        let (tree, command) = (tree(), command());
+        (record_ref(layout, &tree, &command), run.write(&tree, &command))
+    }
+
+    fn believes(records: &[(&str, &str)], noted: Layout, now: u64) -> Option<u64> {
+        believed_among(records, noted, &tree(), &command(), now).map(|run| run.at())
+    }
+
+    #[test]
+    fn a_standing_green_run_is_believed_from_either_layout() {
+        let run = written(1000);
+        let hidden = kept(Layout::Hidden, &run);
+        let branches = kept(Layout::Branches, &run);
+        let hidden_only = [(hidden.0.as_str(), hidden.1.as_str())];
+        let branch_only = [(branches.0.as_str(), branches.1.as_str())];
+        assert_eq!(believes(&hidden_only, Layout::Branches, 1000), Some(1000));
+        assert_eq!(believes(&branch_only, Layout::Hidden, 1000), Some(1000));
+        assert_eq!(believes(&hidden_only, Layout::Hidden, 1000 + RECORD_TTL), Some(1000));
+
+        let both = [hidden_only[0], branch_only[0]];
+        let later = written(2000);
+        let later_hidden = kept(Layout::Hidden, &later);
+        let noted_wins = [(later_hidden.0.as_str(), later_hidden.1.as_str()), branch_only[0]];
+        assert_eq!(believes(&both, Layout::Hidden, 1000), Some(1000));
+        assert_eq!(
+            believes(&noted_wins, Layout::Hidden, 2000),
+            Some(2000),
+            "the noted layout wins"
+        );
+    }
+
+    #[test]
+    fn a_day_old_record_a_red_run_and_no_record_are_not_believed_from_the_other_layout() {
+        let run = written(1000);
+        let branches = kept(Layout::Branches, &run);
+        let branch_only = [(branches.0.as_str(), branches.1.as_str())];
+        assert_eq!(believes(&branch_only, Layout::Hidden, 1001 + RECORD_TTL), None, "a day old");
+        assert_eq!(believes(&[], Layout::Hidden, 1000), None, "a run that wrote no record");
+        let red = (branches.0.as_str(), "initial commit");
+        assert_eq!(believes(&[red], Layout::Hidden, 1000), None, "a red run wrote no green record");
+
+        let stale = kept(Layout::Hidden, &run);
+        let fresh = written(1000 + RECORD_TTL);
+        let fresh_branches = kept(Layout::Branches, &fresh);
+        let mixed = [
+            (stale.0.as_str(), stale.1.as_str()),
+            (fresh_branches.0.as_str(), fresh_branches.1.as_str()),
+        ];
+        let now = 1000 + RECORD_TTL + 1;
+        assert_eq!(believes(&mixed, Layout::Hidden, now), Some(fresh.at()));
+    }
+
+    #[test]
+    fn a_record_of_an_earlier_tree_is_not_a_run_of_the_commit_a_cut_lands() {
+        let earlier = tree();
+        let landed = Tree::named("later-tree-a-cut-commits");
+        let command = command();
+        let run = written(1000);
+        let name = record_ref(Layout::Branches, &earlier, &command);
+        let subject = run.write(&earlier, &command);
+        let records = [(name.as_str(), subject.as_str())];
+        assert!(believed_among(&records, Layout::Hidden, &landed, &command, 1000).is_none());
+        assert_eq!(
+            believed_among(&records, Layout::Hidden, &earlier, &command, 1000).map(|run| run.at()),
+            Some(1000)
+        );
     }
 }

@@ -289,7 +289,7 @@ pub fn worker_state(terminals: u64, turn: Option<Turn>, now: u64) -> WorkerState
     }
     match turn {
         Some(Turn::Open { .. }) => WorkerState::Busy,
-        Some(Turn::Closed { since }) => WorkerState::Idle { quiet: stamp_age(since, now) },
+        Some(Turn::Closed { since, .. }) => WorkerState::Idle { quiet: stamp_age(since, now) },
         None => WorkerState::Idle { quiet: None },
     }
 }
@@ -426,8 +426,12 @@ mod tests {
     #[test]
     fn a_workers_state_is_its_session_turn() {
         let open = Turn::Open { since: 900 };
-        let closed = Turn::Closed { since: 940 };
-        assert_eq!(worker_state(0, Some(open), 1000), WorkerState::Gone);
+        let closed = Turn::Closed { since: 940, started: Some(900) };
+        assert_eq!(
+            worker_state(0, Some(open), 1000),
+            WorkerState::Gone,
+            "no live terminal means the worker is gone, even when a killed session never wrote an end"
+        );
         assert_eq!(worker_state(1, Some(open), 1000), WorkerState::Busy);
         assert_eq!(
             worker_state(1, Some(open), 1000 + GRACE),
@@ -441,7 +445,7 @@ mod tests {
         );
         assert_eq!(worker_state(1, None, 1000), WorkerState::Idle { quiet: None });
         assert_eq!(
-            worker_state(1, Some(Turn::Closed { since: 1000 + 10_000 }), 1000),
+            worker_state(1, Some(Turn::Closed { since: 1000 + 10_000, started: Some(1000) }), 1000),
             WorkerState::Idle { quiet: None },
             "a stamp far ahead is not a quiet time"
         );

@@ -4,8 +4,9 @@
 
 use flux_rs::attrs::*;
 
-/// One way of naming every ref the fleet writes. A remote takes the first of
-/// `Layout::ALL` it does not reject; there is no third.
+/// One way of naming every ref the fleet writes. There are two and no third.
+/// A checkout that has noted none takes the first of `Layout::ALL` the remote
+/// does not reject (`choose`). A noted one moves only after two probes (`settle`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Layout {
     /// Refs no branch rule and no push-triggered CI sees.
@@ -70,6 +71,14 @@ impl Layout {
         self.kept(refname).is_some_and(|kept| {
             kept.starts_with(PROBE) || kept.strip_prefix(GATE_KIND).is_some_and(probe_leaf)
         })
+    }
+
+    /// The other of the two layouts.
+    pub fn other(self) -> Layout {
+        match self {
+            Layout::Hidden => Layout::Branches,
+            Layout::Branches => Layout::Hidden,
+        }
     }
 }
 
@@ -157,7 +166,7 @@ impl Chosen {
 /// Settles the layout by asking the remote: `ask` pushes one probe under a
 /// layout and says what came of it. Only a rejection moves on to the branch
 /// layout; a push that reached no verdict is an error, and so is a remote
-/// that rejects both.
+/// that rejects both. A checkout that has noted a layout uses `settle`.
 pub fn choose(mut ask: impl FnMut(Layout) -> Answer) -> Result<Chosen, String> {
     match ask(Layout::Hidden) {
         Answer::Taken => Ok(Chosen { branches: false, rejected: false, rejection: String::new() }),
@@ -165,14 +174,108 @@ pub fn choose(mut ask: impl FnMut(Layout) -> Answer) -> Result<Chosen, String> {
         Answer::Rejected(rejection) => match ask(Layout::Branches) {
             Answer::Taken => Ok(Chosen { branches: true, rejected: true, rejection }),
             Answer::Unreached(why) => Err(unreached(Layout::Branches, &why)),
-            Answer::Rejected(second) => Err(format!(
-                "the remote rejects the fleet's refs under both {} ({rejection}) and {} \
-                 ({second}): there is nowhere to keep a claim",
-                Layout::Hidden.every(""),
-                Layout::Branches.every("")
-            )),
+            Answer::Rejected(second) => Err(both_refused(&rejection, &second)),
         },
     }
+}
+
+/// How many startup probes in a row must see the noted layout rejected, and
+/// the other taken, before the note moves.
+pub const MOVES_AFTER: u32 = 2;
+
+/// What a checkout has noted of its ref layout, and how many startup probes
+/// in a row have seen that layout rejected while the other was taken.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Note {
+    pub layout: Layout,
+    /// Against `layout`. Zero when the last probe took it, or none has refused it.
+    pub streak: u32,
+}
+
+impl Note {
+    /// The note written down as `text`; `None` when it is not one.
+    pub fn read(text: &str) -> Option<Note> {
+        let mut words = text.split_whitespace();
+        let layout = Layout::named(words.next()?)?;
+        let streak = match words.next() {
+            None => 0,
+            Some(word) => word.parse().ok()?,
+        };
+        if words.next().is_some() {
+            return None;
+        }
+        Some(Note { layout, streak })
+    }
+
+    /// How the note is written down. A streak of zero is the layout's name
+    /// alone, which is what a note was before the streak was kept.
+    pub fn write(self) -> String {
+        if self.streak == 0 {
+            format!("{}\n", self.layout.name())
+        } else {
+            format!("{} {}\n", self.layout.name(), self.streak)
+        }
+    }
+}
+
+/// What one startup probe settled: the layout to note, the streak against
+/// that layout, and what the human is told — nothing when the note did not
+/// move onto the branch layout.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Settled {
+    pub layout: Layout,
+    pub streak: u32,
+    pub warning: Option<String>,
+}
+
+/// Settles the ref layout one startup probe asks about.
+///
+/// A checkout that has noted none takes the first layout the remote does not
+/// reject (`choose`). A noted layout is asked first. Taken, the note stays and
+/// the streak clears. Rejected, while the other is taken, the streak grows;
+/// the note moves only once that has happened `MOVES_AFTER` probes in a row,
+/// and only then is a move onto branches reported. A push that reaches no
+/// verdict, or a remote that rejects both, is an error and settles nothing.
+pub fn settle(
+    noted: Option<Note>,
+    mut ask: impl FnMut(Layout) -> Answer,
+) -> Result<Settled, String> {
+    let Some(noted) = noted else {
+        let chosen = choose(&mut ask)?;
+        return Ok(Settled { layout: chosen.layout(), streak: 0, warning: chosen.warning() });
+    };
+    match ask(noted.layout) {
+        Answer::Taken => Ok(keep(noted.layout)),
+        Answer::Unreached(why) => Err(unreached(noted.layout, &why)),
+        Answer::Rejected(rejection) => match ask(noted.layout.other()) {
+            Answer::Unreached(why) => Err(unreached(noted.layout.other(), &why)),
+            Answer::Rejected(second) => {
+                let (hidden, branches) = match noted.layout {
+                    Layout::Hidden => (rejection, second),
+                    Layout::Branches => (second, rejection),
+                };
+                Err(both_refused(&hidden, &branches))
+            }
+            Answer::Taken => {
+                let streak = noted.streak.saturating_add(1);
+                if streak >= MOVES_AFTER {
+                    let layout = noted.layout.other();
+                    let warning = if layout == Layout::Branches {
+                        Chosen { branches: true, rejected: true, rejection }.warning()
+                    } else {
+                        None
+                    };
+                    Ok(Settled { layout, streak: 0, warning })
+                } else {
+                    Ok(Settled { layout: noted.layout, streak, warning: None })
+                }
+            }
+        },
+    }
+}
+
+fn keep(layout: Layout) -> Settled {
+    Settled { layout, streak: 0, warning: None }
 }
 
 fn unreached(layout: Layout, why: &str) -> String {
@@ -180,6 +283,15 @@ fn unreached(layout: Layout, why: &str) -> String {
         "the probe push under {} never reached a verdict from the remote ({why}): that says \
          nothing about where the fleet's refs may be kept",
         layout.every("")
+    )
+}
+
+fn both_refused(hidden: &str, branches: &str) -> String {
+    format!(
+        "the remote rejects the fleet's refs under both {} ({hidden}) and {} ({branches}): \
+         there is nowhere to keep a claim",
+        Layout::Hidden.every(""),
+        Layout::Branches.every("")
     )
 }
 
@@ -492,5 +604,124 @@ mod tests {
             BaseCheck::Warn(text) => assert!(text.contains("HTTP 403") && text.contains("main")),
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn a_note_with_no_streak_is_the_layouts_name() {
+        assert_eq!(Note::read("hidden\n"), Some(Note { layout: Layout::Hidden, streak: 0 }));
+        assert_eq!(Note::read("branches"), Some(Note { layout: Layout::Branches, streak: 0 }));
+        let once = Note { layout: Layout::Hidden, streak: 1 };
+        assert_eq!(once.write(), "hidden 1\n");
+        assert_eq!(Note::read(&once.write()), Some(once));
+        assert_eq!(Note { layout: Layout::Branches, streak: 0 }.write(), "branches\n");
+        assert_eq!(Note::read("hidden 1 extra"), None);
+        assert_eq!(Note::read("tags"), None);
+    }
+
+    fn settled_by(
+        noted: Option<Note>,
+        answers: &[Answer],
+    ) -> (Result<Settled, String>, Vec<Layout>) {
+        let mut asked = vec![];
+        let settled = settle(noted, |layout| {
+            asked.push(layout);
+            answers[asked.len() - 1].clone()
+        });
+        (settled, asked)
+    }
+
+    fn hidden_note(streak: u32) -> Option<Note> {
+        Some(Note { layout: Layout::Hidden, streak })
+    }
+
+    fn branch_note(streak: u32) -> Option<Note> {
+        Some(Note { layout: Layout::Branches, streak })
+    }
+
+    #[test]
+    fn a_checkout_with_no_note_still_settles_on_the_first_layout_the_remote_takes() {
+        let (settled, asked) = settled_by(None, &[Answer::Taken]);
+        let settled = settled.unwrap();
+        assert_eq!(settled, Settled { layout: Layout::Hidden, streak: 0, warning: None });
+        assert_eq!(asked, [Layout::Hidden]);
+
+        let (settled, asked) =
+            settled_by(None, &[Answer::Rejected("hook declined".into()), Answer::Taken]);
+        let settled = settled.unwrap();
+        assert_eq!(settled.layout, Layout::Branches);
+        assert_eq!(settled.streak, 0);
+        let warning = settled.warning.unwrap();
+        assert!(
+            warning.contains("hook declined") && warning.contains("kept as branches"),
+            "{warning}"
+        );
+        assert_eq!(asked, Layout::ALL);
+    }
+
+    #[test]
+    fn one_rejection_of_a_noted_layout_leaves_the_note_and_says_nothing() {
+        let rejected = [Answer::Rejected("failed".into()), Answer::Taken];
+        let (settled, asked) = settled_by(hidden_note(0), &rejected);
+        let settled = settled.unwrap();
+        assert_eq!(settled, Settled { layout: Layout::Hidden, streak: 1, warning: None });
+        assert_eq!(asked, [Layout::Hidden, Layout::Branches]);
+
+        let (settled, asked) = settled_by(branch_note(0), &rejected);
+        let settled = settled.unwrap();
+        assert_eq!(settled, Settled { layout: Layout::Branches, streak: 1, warning: None });
+        assert_eq!(asked, [Layout::Branches, Layout::Hidden], "the noted layout is asked first");
+    }
+
+    #[test]
+    fn two_rejections_of_a_noted_layout_settle_the_other() {
+        let rejected = [Answer::Rejected("failed".into()), Answer::Taken];
+        let (settled, _) = settled_by(hidden_note(1), &rejected);
+        let settled = settled.unwrap();
+        assert_eq!(settled.layout, Layout::Branches);
+        assert_eq!(settled.streak, 0);
+        assert!(settled.warning.unwrap().contains("kept as branches"));
+
+        let (settled, _) = settled_by(branch_note(1), &rejected);
+        let settled = settled.unwrap();
+        assert_eq!(settled, Settled { layout: Layout::Hidden, streak: 0, warning: None });
+    }
+
+    #[test]
+    fn a_probe_that_takes_the_noted_layout_clears_the_streak() {
+        let (settled, asked) = settled_by(hidden_note(1), &[Answer::Taken]);
+        assert_eq!(settled.unwrap(), Settled { layout: Layout::Hidden, streak: 0, warning: None });
+        assert_eq!(asked, [Layout::Hidden], "the other layout was not asked");
+
+        let (settled, asked) = settled_by(branch_note(1), &[Answer::Taken]);
+        assert_eq!(
+            settled.unwrap(),
+            Settled { layout: Layout::Branches, streak: 0, warning: None }
+        );
+        assert_eq!(asked, [Layout::Branches]);
+    }
+
+    #[test]
+    fn a_probe_that_reaches_no_verdict_settles_nothing() {
+        let (settled, asked) = settled_by(hidden_note(1), &[Answer::Unreached("no route".into())]);
+        let error = settled.unwrap_err();
+        assert!(error.contains("never reached a verdict") && error.contains("no route"), "{error}");
+        assert_eq!(asked, [Layout::Hidden]);
+
+        let (settled, asked) = settled_by(
+            branch_note(1),
+            &[Answer::Rejected("no".into()), Answer::Unreached("timeout".into())],
+        );
+        assert!(settled.unwrap_err().contains("refs/convoy/*"), "{asked:?}");
+        assert_eq!(asked, [Layout::Branches, Layout::Hidden]);
+
+        let (settled, _) = settled_by(
+            hidden_note(1),
+            &[Answer::Rejected("no".into()), Answer::Rejected("nor".into())],
+        );
+        let error = settled.unwrap_err();
+        assert!(
+            error.contains("both") && error.contains("refs/convoy/*") && error.contains("nor"),
+            "{error}"
+        );
     }
 }
