@@ -13,11 +13,13 @@ use serde::de::{Error, IgnoredAny};
 use serde::{Deserialize, Deserializer};
 use toml::Value as Toml;
 
-use super::{Held, Kept, Link};
+use super::session::{self, json_lines};
+use super::{Held, Kept, Link, SessionFile, SessionLayout};
 use crate::guard::Call;
 use crate::line::Line;
 use crate::role::{Rules, Start, Told};
 use crate::team::RULES;
+use crate::turn::{Marker, Note, Turn};
 
 pub(super) const NAME: &str = "Grok";
 pub(super) const KEY: &str = "grok";
@@ -522,6 +524,83 @@ pub(super) fn call<'de, D: Deserializer<'de>>(described: D) -> Result<Call, D::E
         Some(line) if name == "run_terminal_command" => Call::Shell(line),
         _ => Call::Other,
     })
+}
+
+/// The harness directory under a user's home.
+pub(super) const HOME: &str = ".grok";
+
+const EVENTS: &str = "events.jsonl";
+
+/// Where Grok keeps the session of `cwd`: one events file in each session
+/// directory under the worktree's directory.
+pub(super) fn session_layout(cwd: &str) -> SessionLayout {
+    SessionLayout::Named {
+        dir: format!("sessions/{}", dir_name(cwd)),
+        name: EVENTS,
+        compressed: false,
+    }
+}
+
+/// The same path → `%2FUsers%2Fsunfmin%2FDevelopments%2Fchessmirror`.
+fn dir_name(cwd: &str) -> String {
+    let mut out = String::new();
+    for byte in cwd.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char);
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    session::stored_name(out, cwd)
+}
+
+/// The turn `text` records. The worktree is the directory the file was in.
+/// A session that is not the primary one is a child.
+pub(super) fn recorded_turn(_cwd: &str, text: &str, not_before: Option<u64>) -> Option<Turn> {
+    let notes: Vec<Note> = json_lines(text).filter_map(|value| note(&value)).collect();
+    session::turn_of(&notes, not_before)
+}
+
+fn note(value: &serde_json::Value) -> Option<Note> {
+    let at = session::parse_iso(value["ts"].as_str()?)?;
+    let child = value["session_relationship"].as_str().is_some_and(|kind| kind != "primary");
+    match value["type"].as_str()? {
+        "turn_started" => Some(Note { marker: Marker::Start, at, child }),
+        "turn_ended" => Some(Note { marker: Marker::End, at, child }),
+        _ => None,
+    }
+}
+
+/// The events file a stand-in writes for this turn, and the summary beside
+/// it. The summary is not the turn.
+pub(super) fn session_files(cwd: &str, open: bool, at: u64) -> Vec<SessionFile> {
+    let iso = session::format_iso(at);
+    let dir = format!("sessions/{}/afkconvoy-turn", dir_name(cwd));
+    let mut body = format!(
+        "{}\n",
+        serde_json::json!({
+            "ts": iso,
+            "type": "turn_started",
+            "turn_number": 1,
+            "session_relationship": "primary"
+        })
+    );
+    if !open {
+        body.push_str(&format!(
+            "{}\n",
+            serde_json::json!({"ts": iso, "type": "turn_ended", "outcome": "completed"})
+        ));
+    }
+    vec![
+        SessionFile { path: format!("{dir}/{EVENTS}"), body, compressed: false, replaces: None },
+        SessionFile {
+            path: format!("{dir}/summary.json"),
+            body: serde_json::json!({"info": {"cwd": cwd, "created_at": iso}}).to_string(),
+            compressed: false,
+            replaces: None,
+        },
+    ]
 }
 
 #[cfg(test)]

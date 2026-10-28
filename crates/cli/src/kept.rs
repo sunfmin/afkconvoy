@@ -261,7 +261,7 @@ pub fn for_worker(
     let (dir, shadowed) = worker_at(base, home(), harness, host_user, role_dir, told, guard)?;
     if harness == Harness::Codex {
         let worker = crate::orca::Worktree::at(worktree.to_path_buf(), String::new());
-        std::fs::write(worker.note(crate::codex_launch::HOME_NOTE)?, &dir)?;
+        std::fs::write(worker.note(crate::codex_launch::home_note())?, &dir)?;
     }
     Ok((dir, shadowed))
 }

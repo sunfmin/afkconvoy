@@ -13,10 +13,12 @@ use flux_rs::attrs::*;
 use serde::de::{Error, IgnoredAny};
 use serde::{Deserialize, Deserializer};
 
-use super::{Held, Kept, Link};
+use super::session::{self, json_lines};
+use super::{Held, Kept, Link, SessionFile, SessionLayout};
 use crate::guard::Call;
 use crate::line::Line;
 use crate::role::Start;
+use crate::turn::{Marker, Note, Turn};
 
 pub(super) const NAME: &str = "Claude Code";
 pub(super) const KEY: &str = "claude-code";
@@ -502,6 +504,72 @@ pub(super) fn shows_background(screen: &[String]) -> bool {
             None => false,
         })
     })
+}
+
+/// The harness directory under a user's home.
+pub(super) const HOME: &str = ".claude";
+
+/// Where Claude Code keeps the session of `cwd`: one JSONL file for each
+/// session, in the project directory it names from the worktree path.
+pub(super) fn session_layout(cwd: &str) -> SessionLayout {
+    SessionLayout::Files { dir: format!("projects/{}", dir_name(cwd)), extension: "jsonl" }
+}
+
+/// `/Users/sunfmin/Developments/chessmirror` → `-Users-sunfmin-Developments-chessmirror`.
+fn dir_name(cwd: &str) -> String {
+    session::stored_name(cwd.replace('/', "-"), cwd)
+}
+
+/// The turn `text` records for `cwd`. A line whose `cwd` is another worktree
+/// is not this one. A sidechain is a child session.
+pub(super) fn recorded_turn(cwd: &str, text: &str, not_before: Option<u64>) -> Option<Turn> {
+    let notes: Vec<Note> = json_lines(text).filter_map(|value| note(cwd, &value)).collect();
+    session::turn_of(&notes, not_before)
+}
+
+fn note(cwd: &str, value: &serde_json::Value) -> Option<Note> {
+    if value["cwd"].as_str().is_some_and(|recorded| !session::same_cwd(recorded, cwd)) {
+        return None;
+    }
+    let child = value["isSidechain"] == true;
+    let at = session::parse_iso(value["timestamp"].as_str()?)?;
+    match value["type"].as_str()? {
+        "user" => Some(Note { marker: Marker::Start, at, child }),
+        "assistant" if value["message"]["stop_reason"] == "end_turn" => {
+            Some(Note { marker: Marker::End, at, child })
+        }
+        _ => None,
+    }
+}
+
+/// One session file a stand-in writes for this turn.
+pub(super) fn session_files(cwd: &str, open: bool, at: u64) -> Vec<SessionFile> {
+    let iso = session::format_iso(at);
+    let user = serde_json::json!({
+        "type": "user",
+        "timestamp": iso,
+        "cwd": cwd,
+        "isSidechain": false,
+        "message": {"role": "user", "content": "brief"}
+    });
+    let mut body = format!("{user}\n");
+    if !open {
+        let end = serde_json::json!({
+            "type": "assistant",
+            "timestamp": iso,
+            "cwd": cwd,
+            "isSidechain": false,
+            "message": {"role": "assistant", "stop_reason": "end_turn"}
+        });
+        body.push_str(&end.to_string());
+        body.push('\n');
+    }
+    vec![SessionFile {
+        path: format!("projects/{}/afkconvoy-turn.jsonl", dir_name(cwd)),
+        body,
+        compressed: false,
+        replaces: None,
+    }]
 }
 
 #[cfg(test)]

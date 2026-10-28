@@ -11,11 +11,13 @@ use flux_rs::attrs::*;
 use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 
-use super::{Held, Kept, Link};
+use super::session::{self, json_lines};
+use super::{Held, Kept, Link, SessionFile, SessionLayout};
 use crate::guard::Call;
 use crate::line::Line;
 use crate::role::Start;
 use crate::team::SKILLS;
+use crate::turn::{Marker, Note, Turn};
 
 pub(super) const NAME: &str = "pi";
 pub(super) const KEY: &str = "pi";
@@ -407,6 +409,77 @@ pub(super) fn call<'de, D: Deserializer<'de>>(described: D) -> Result<Call, D::E
         Some(line) if described.tool_name == SHELL_TOOL => Call::Shell(line),
         _ => Call::Other,
     })
+}
+
+/// The harness directory under a user's home.
+pub(super) const HOME: &str = ".pi/agent";
+
+/// Where pi keeps the session of `cwd`: one JSONL file for each session, in
+/// the directory it names from the worktree path.
+pub(super) fn session_layout(cwd: &str) -> SessionLayout {
+    SessionLayout::Files {
+        dir: format!("sessions/{}", session::wrapped_dir(cwd)),
+        extension: "jsonl",
+    }
+}
+
+/// The turn `text` records for `cwd`. A session header for another worktree
+/// is not this file. pi records no child session.
+pub(super) fn recorded_turn(cwd: &str, text: &str, not_before: Option<u64>) -> Option<Turn> {
+    let mut notes = Vec::new();
+    for value in json_lines(text) {
+        if value["type"] == "session"
+            && value["cwd"].as_str().is_some_and(|recorded| !session::same_cwd(recorded, cwd))
+        {
+            return None;
+        }
+        if let Some(note) = note(&value) {
+            notes.push(note);
+        }
+    }
+    session::turn_of(&notes, not_before)
+}
+
+fn note(value: &Value) -> Option<Note> {
+    if value["type"] != "message" {
+        return None;
+    }
+    let at = session::parse_iso(value["timestamp"].as_str()?)?;
+    match value["message"]["role"].as_str()? {
+        "user" => Some(Note { marker: Marker::Start, at, child: false }),
+        "assistant" => match value["message"]["stopReason"].as_str()? {
+            "stop" | "error" => Some(Note { marker: Marker::End, at, child: false }),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// One session file a stand-in writes for this turn.
+pub(super) fn session_files(cwd: &str, open: bool, at: u64) -> Vec<SessionFile> {
+    let iso = session::format_iso(at);
+    let mut body =
+        format!("{}\n", serde_json::json!({"type": "session", "cwd": cwd, "timestamp": iso}));
+    body.push_str(&format!(
+        "{}\n",
+        serde_json::json!({"type": "message", "timestamp": iso, "message": {"role": "user"}})
+    ));
+    if !open {
+        body.push_str(&format!(
+            "{}\n",
+            serde_json::json!({
+                "type": "message",
+                "timestamp": iso,
+                "message": {"role": "assistant", "stopReason": "stop"}
+            })
+        ));
+    }
+    vec![SessionFile {
+        path: format!("sessions/{}/afkconvoy-turn.jsonl", session::wrapped_dir(cwd)),
+        body,
+        compressed: false,
+        replaces: None,
+    }]
 }
 
 #[cfg(test)]
