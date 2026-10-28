@@ -117,16 +117,45 @@ fn commit(repo: &Repo, snapshot: &Snapshot) -> Result<String> {
 
 fn write(repo: &Repo, config: &Config, snapshot: &Snapshot) -> Result<bool> {
     let next = commit(repo, snapshot)?;
-    let pushed =
-        repo.try_git(&["push", "--quiet", REMOTE, &format!("{next}:{}", refname(repo, config))])?;
-    if pushed.ok {
-        return Ok(true);
+    let mut attempt = 0;
+    loop {
+        let pushed = repo.try_git(&[
+            "push",
+            "--quiet",
+            REMOTE,
+            &format!("{next}:{}", refname(repo, config)),
+        ])?;
+        if pushed.ok {
+            return Ok(true);
+        }
+        if repo.remote_sha(&refname(repo, config))? != snapshot.sha {
+            return Ok(false);
+        }
+        // A remote fault is not contention. Never spin on a rejected record,
+        // but for a lock another push held at that moment (sunfmin/control#246).
+        attempt += 1;
+        if !lock_failure(&pushed.stderr) || attempt >= LOCK_ATTEMPTS {
+            bail!(
+                "candidate record could not be written: {}; run land again",
+                pushed.stderr.trim()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(250 << attempt));
     }
-    // A remote fault is not contention. Never spin on a rejected record.
-    if repo.remote_sha(&refname(repo, config))? == snapshot.sha {
-        bail!("candidate record could not be written: {}; run land again", pushed.stderr.trim());
-    }
-    Ok(false)
+}
+
+/// How many times a record write is tried while the remote's ref lock fails.
+const LOCK_ATTEMPTS: u32 = 5;
+
+/// A push the remote rejected because another push held the ref's lock:
+/// GitHub says `(failed)` or `cannot lock ref`, not a rejected fast-forward.
+fn lock_failure(stderr: &str) -> bool {
+    stderr.lines().any(|line| {
+        let line = line.trim();
+        (line.starts_with("! [remote rejected]") && line.ends_with("(failed)"))
+            || line.contains("cannot lock ref")
+            || line.contains("failed to lock")
+    })
 }
 
 fn change(repo: &Repo, config: &Config, mut edit: impl FnMut(&mut Chain)) -> Result<Chain> {
@@ -1258,4 +1287,23 @@ fn publish(
     updates.push(crate::publication::Update { name: &state_ref, old: old_state, new: state });
     updates.push(crate::publication::Update { name: &base_ref, old: base, new: &last.commit });
     crate::publication::push(repo, &updates)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_ref_lock_held_by_another_push_is_told_from_a_remote_fault() {
+        let held = "To https://github.com/o/r.git\n ! [remote rejected]   31515b8c -> refs/convoy/candidates/main (failed)\nerror: failed to push some refs";
+        assert!(super::lock_failure(held));
+        assert!(super::lock_failure(
+            "error: cannot lock ref 'refs/convoy/candidates/main': is at 1 but expected 2"
+        ));
+        assert!(!super::lock_failure(
+            " ! [remote rejected] HEAD -> refs/convoy/candidates/main (permission denied)"
+        ));
+        assert!(!super::lock_failure(" ! [rejected]        HEAD -> main (non-fast-forward)"));
+        assert!(!super::lock_failure(
+            "fatal: unable to access 'https://github.com/o/r.git/': Could not resolve host"
+        ));
+    }
 }
