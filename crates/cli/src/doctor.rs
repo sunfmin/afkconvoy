@@ -807,9 +807,6 @@ fn log_findings(run: &Run) -> Vec<Finding> {
                 || did.into_iter().flatten().any(|step| recovered(failed, step)))
         });
         for failed in tick.failed() {
-            if matches!(failed.step.as_str(), "tend_train" | "cut_train") {
-                continue;
-            }
             pending.retain(|(_, previous)| !previous.same_step(&failed));
             pending.push((tick.count, failed));
         }
@@ -2617,7 +2614,7 @@ mod tests {
     }
 
     #[test]
-    fn retired_train_steps_do_not_leave_an_actionable_failure_after_upgrade() {
+    fn a_failed_tend_train_or_cut_train_is_that_failed_step() {
         let failed = tick(
             4,
             json!([
@@ -2625,7 +2622,15 @@ mod tests {
                 {"do": "cut_train", "error": "no checkout"}
             ]),
         );
-        assert_eq!(log_findings(&run(vec![failed, tick(5, json!([]))])), []);
+        let found = log_findings(&run(vec![failed, tick(5, json!([]))]));
+        let what: Vec<_> = found.iter().map(|finding| finding.what.as_str()).collect();
+        assert_eq!(
+            what,
+            [
+                "`tend_train` failed in tick 4 and has not recovered",
+                "`cut_train` failed in tick 4 and has not recovered",
+            ]
+        );
     }
 
     #[test]
