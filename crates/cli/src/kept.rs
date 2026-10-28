@@ -247,21 +247,16 @@ pub fn for_worker(
     guard: &str,
 ) -> Result<(String, Vec<String>)> {
     let shared = keep(harness, host_user)?;
-    let base = if harness == Harness::Codex {
-        // /model preferences belong to this session, never another worker.
-        keep_under(
-            &crate::codex_launch::directory(worktree),
-            home().as_deref(),
-            harness,
-            host_user,
-        )?
-    } else {
-        shared
+    // A harness that keeps a session apart gets a fresh directory, so a
+    // choice it saves belongs to this session and to no other worker.
+    let base = match crate::codex_launch::fresh_root(harness, worktree) {
+        Some(root) => keep_under(&root, home().as_deref(), harness, host_user)?,
+        None => shared,
     };
     let (dir, shadowed) = worker_at(base, home(), harness, host_user, role_dir, told, guard)?;
-    if harness == Harness::Codex {
+    if let Some(session) = harness.session() {
         let worker = crate::orca::Worktree::at(worktree.to_path_buf(), String::new());
-        std::fs::write(worker.note(crate::codex_launch::home_note())?, &dir)?;
+        std::fs::write(worker.note(session.note)?, &dir)?;
     }
     Ok((dir, shadowed))
 }

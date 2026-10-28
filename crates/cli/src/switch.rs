@@ -285,7 +285,8 @@ pub(crate) fn auxiliary(
     let command = if caster {
         crate::own_command().fixed(" cast; exit").own()
     } else {
-        if cast.harness == Harness::Codex {
+        if cast.harness.session().is_some() {
+            // The session puts its own model on as it starts.
             agent.command(cast.harness)?.as_str().to_string()
         } else {
             cast.command(agent.command(cast.harness)?.as_str())
