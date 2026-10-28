@@ -167,6 +167,7 @@ kinds! {
     MemoryPressure: Warning, "the host has been under memory pressure";
     KitUnplaced: Warning, "has unplaced models in the host kit";
     WatchUnavailable: Critical, "no harness can start this host's watch";
+    WatchBusy: Critical, "the resident watch is busy; its round remains undelivered";
     NotMoved: Warning, "the host runner did not move onto";
     RosterModelUnmatched: Warning, "names no model the host kit holds";
     TeamUnread: Critical, "the team this repo names cannot be read";
@@ -216,6 +217,7 @@ impl Kind {
                 | Kind::MemoryPressure
                 | Kind::KitUnplaced
                 | Kind::WatchUnavailable
+                | Kind::WatchBusy
                 | Kind::NotMoved
                 | Kind::WorkerHealth
         )

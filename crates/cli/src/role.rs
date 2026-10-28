@@ -631,7 +631,7 @@ pub fn check(launches: &Launches, called: &[(Harness, Vec<String>)]) -> Result<V
                 crate::launch::Once::Ran(ok, printed) => harness
                     .takes(proposed.as_str(), ok.then_some(printed.as_str()))
                     .err()
-                    .map(&said),
+                    .map(said),
             }
         } else {
             None
@@ -641,7 +641,7 @@ pub fn check(launches: &Launches, called: &[(Harness, Vec<String>)]) -> Result<V
             callers: callers.clone(),
             command: proposed.as_str().to_string(),
             tool,
-            fault: proposed.fault().map(&said),
+            fault: proposed.fault().map(said),
             flags_fault,
         });
     }

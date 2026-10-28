@@ -1187,7 +1187,7 @@ fn resume_delivery(watch: &mut Watch) -> Result<()> {
     if record.status == LaunchState::Ready {
         worktree.await_ready(&watch.terminal, 60, watch.harness, &record.command)?;
         if !worktree.watch_input_ready(&watch.terminal)? {
-            bail!("the resident watch is busy; its round remains undelivered");
+            bail!("{}", crate::doctor::Kind::WatchBusy.symptom());
         }
         record.request = Some(uuid::Uuid::new_v4().to_string());
         record.status = LaunchState::Sending;
@@ -1535,11 +1535,12 @@ fn human_wait_aliases(look: &Value) -> BTreeMap<String, String> {
 
 fn findings(items: &mut Vec<Item>, at: &str, findings: &Value) {
     let unavailable = crate::doctor::Kind::WatchUnavailable.symptom();
+    let busy = crate::doctor::Kind::WatchBusy.symptom();
     for finding in findings.as_array().into_iter().flatten() {
         let what = finding["what"].as_str().unwrap_or("a finding");
-        // An `info` finding holds nothing up; that no watch can start is the
-        // operator's to act on, not a watch's.
-        if finding["severity"] == "info" || what.contains(unavailable) {
+        // An `info` finding holds nothing up. A watch that cannot start, and
+        // a resident watch that is busy, are the operator's to act on.
+        if finding["severity"] == "info" || what.contains(unavailable) || what.contains(busy) {
             continue;
         }
         let reason = format!("{what}; evidence: {}; fix: {}", finding["evidence"], finding["fix"]);
@@ -1688,17 +1689,65 @@ pub fn json(running: Option<&Watch>, rounds: bool) -> Value {
     answer
 }
 
-/// The host's finding where a look called for a watch no harness could start.
+/// The host's finding for its watch. A resident watch whose round is still
+/// undelivered is that watch. A look no harness could start stays the
+/// troubleshooting row for that fact, and only when the host kit's paused
+/// list or worker-health faults say so.
 pub fn finding() -> Option<crate::doctor::Finding> {
-    let why = read().ok().and_then(|state| state.unavailable).or_else(|| {
+    let association = watch_terminal::json();
+    let problem = association["problem"].as_str().map(str::to_string);
+    let unavailable = read().ok().and_then(|state| state.unavailable).or_else(|| {
         watch_terminal::read().err().map(|error| watch_terminal::recovery(&format!("{error:#}")))
-    })?;
-    Some(crate::doctor::finding(
-        crate::doctor::Kind::WatchUnavailable,
-        "no harness can start this host's watch".into(),
-        why,
-        "afkconvoy run --help (WATCH RECOVERY); afkconvoy kit".into(),
-    ))
+    });
+    let busy = crate::doctor::Kind::WatchBusy.symptom();
+    let situation = problem
+        .filter(|text| text.contains(busy))
+        .or_else(|| unavailable.as_ref().filter(|text| text.contains(busy)).cloned());
+    let cannot_start = |why: String| {
+        crate::doctor::finding(
+            crate::doctor::Kind::WatchUnavailable,
+            crate::doctor::Kind::WatchUnavailable.symptom().to_string(),
+            why,
+            "afkconvoy kit".to_string(),
+        )
+    };
+    // The kit's paused list or its faults are the no-harness row. The busy
+    // sentence alone is not.
+    match situation {
+        Some(situation) if !kit_cannot_start_watch() => Some(crate::doctor::finding(
+            crate::doctor::Kind::WatchBusy,
+            busy.to_string(),
+            situation,
+            busy_fix(&association),
+        )),
+        Some(situation) => Some(cannot_start(unavailable.unwrap_or(situation))),
+        None => unavailable.map(cannot_start),
+    }
+}
+
+/// Whether the host kit's paused list or its worker-health faults leave no
+/// harness a watch can start on.
+fn kit_cannot_start_watch() -> bool {
+    let paused = !crate::paused::read().is_empty();
+    let faults = crate::health::show()["faults"].as_array().is_some_and(|rows| !rows.is_empty());
+    if !paused && !faults {
+        return false;
+    }
+    crate::health::watch_candidates().map(|candidates| candidates.is_empty()).unwrap_or(true)
+}
+
+/// One command listing the terminals in the watch's own directory. A missing
+/// directory stays the `<watch-directory>` placeholder.
+fn busy_fix(association: &Value) -> String {
+    let directory = association["directory"].as_str().filter(|dir| !dir.is_empty());
+    let selector = directory
+        .map(|dir| format!("path:{dir}"))
+        .unwrap_or_else(|| "path:<watch-directory>".to_string());
+    afkconvoy_core::line::Line::new()
+        .fixed("orca terminal list --worktree ")
+        .word(&selector)
+        .fixed(" --json")
+        .own()
 }
 
 /// Says `what` in every listed checkout's tick log: a log that cannot take it
@@ -2216,6 +2265,9 @@ mod tests {
         let look = |first: u64, next: u64| {
             json!({"findings": [{"what": "orca is not running", "evidence": "down", "fix": "orca open"},
                 {"what": "no harness can start this host's watch", "evidence": "", "fix": ""},
+                {"what": "the resident watch is busy; its round remains undelivered",
+                    "evidence": "the resident watch is busy; its round remains undelivered",
+                    "fix": "orca terminal list --worktree path:/watch --json"},
                 {"severity": "info", "what": "a key is read and changes nothing"}],
             "host": {"host_kit": {"worker_health": {"workers": [{"path": "/w", "next_check": next, "error": "stuck"}]}}},
             "checkouts": [{"checkout": "/r", "doctor": {
