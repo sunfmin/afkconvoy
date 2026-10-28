@@ -7,6 +7,7 @@
 //! a shell line; what a script, a variable or a quoted substitution hides
 //! gets past it. It stops a worker that errs, not one that means to get by.
 
+use crate::account::{ACCOUNT, WORKER};
 use crate::host_watch::{WATCH_ENV, kept};
 use crate::intake::INTAKE_RECORD;
 use crate::patrol::PATROL_ENV;
@@ -402,6 +403,20 @@ impl Limits {
             return Some(
                 "an intake record is written by the fleet's own command and nothing else: take \
                  the issue in with `afkconvoy intake`"
+                    .to_string(),
+            );
+        }
+        if writes && contains(ACCOUNT) {
+            return Some(
+                "a work account is written by the fleet when work on an issue ends, and nothing \
+                 else writes one"
+                    .to_string(),
+            );
+        }
+        if writes && contains(WORKER) {
+            return Some(
+                "a worker start is written by the fleet when it starts the worker, and nothing \
+                 else writes one"
                     .to_string(),
             );
         }
@@ -1267,6 +1282,8 @@ mod tests {
                 "gh api repos/o/r/issues/7/labels -f labels[]=flow:feature",
                 "gh issue comment 7 --body convoy:stage",
                 "gh issue comment 7 --body convoy:intake",
+                "gh issue comment 7 --body convoy:account",
+                "gh issue comment 7 --body convoy:worker",
             ] {
                 let direct = refused(&Call::shell(command), &consult).expect(command);
                 let wrapped = format!("{shell} -c '{command}'");
@@ -1343,6 +1360,18 @@ mod tests {
                 "gh api repos/o/r/issues/7/comments -f body='<!-- convoy:stage stage=x -->'",
             ],
             "`afkconvoy verdict`",
+        );
+    }
+
+    #[test]
+    fn no_worker_writes_a_work_account_or_a_worker_start() {
+        refused_for(
+            &[
+                "gh issue comment 7 --body '<!--convoy:account end=2 start=1-->\nwall'",
+                "gh issue edit 7 --body '<!--convoy:account-red tree=a seconds=1-->'",
+                "gh api repos/o/r/issues/7/comments -f body='<!--convoy:worker at=1 claim=c harness=pi-->'",
+            ],
+            "written by the fleet",
         );
     }
 

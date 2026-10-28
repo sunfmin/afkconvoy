@@ -752,6 +752,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
             if c.phase == Phase::Landed {
                 if let Some(issue) = issue {
                     gh.close_issue(issue)?;
+                    crate::account::leave(repo, &gh, issue, clock())?;
                 }
                 let mut result = c.result.clone().unwrap_or(answer);
                 result["outcome"] = json!("merged");
@@ -901,6 +902,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
         host,
         clock(),
         Duration::from_secs(candidate.seconds),
+        issue,
         &hook,
     );
     let result = match result {
@@ -1000,6 +1002,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
         }
         if let Some(n) = issue {
             gh.close_issue(n)?;
+            crate::account::leave(repo, &gh, n, clock())?;
         }
         result["outcome"] = json!("merged");
         result["commit"] = json!(landed);

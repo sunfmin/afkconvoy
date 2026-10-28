@@ -15,7 +15,8 @@ use crate::record;
 /// outside the tree (a toolchain, a service, the date) is trusted for a day.
 pub const RECORD_TTL: u64 = 86_400;
 
-const GATE: &str = "convoy:gate";
+/// The word a gate record opens with, green or red.
+pub const GATE: &str = "convoy:gate";
 
 /// A string as a number Flux can compare: equal strings give equal keys.
 /// (FNV-1a; a collision would need two trees or two commands hashing alike.)
@@ -191,6 +192,9 @@ impl GreenRun {
         {
             return None;
         }
+        if fields.get("red").is_some() {
+            return None;
+        }
         let at = fields.number("at")?;
         let took = match (fields.number("seconds"), fields.get("host")) {
             (Some(seconds), Some(host)) => Took::on(host, seconds),
@@ -198,6 +202,52 @@ impl GreenRun {
         };
         Some(GreenRun { tree: tree.key, command: command.key, at, took })
     }
+
+    /// The record `write` makes, naming `issue` when the run was of that
+    /// issue's own tree. No issue is the record `write` makes: a base-branch
+    /// certification names none.
+    pub fn write_issued(&self, tree: &Tree, command: &GateCommand, issue: Option<u64>) -> String {
+        let line = self.write(tree, command);
+        match issue {
+            Some(issue) => format!("{line} issue={issue}"),
+            None => line,
+        }
+    }
+}
+
+/// The record of a red run of `command` on `tree` for `issue`, finished at
+/// `at`. It is not a green run: `GreenRun::recorded` reads one back as none.
+/// The ref is not the green ref, which a red run deletes.
+pub fn red_subject(
+    tree: &Tree,
+    command: &GateCommand,
+    seconds: u64,
+    host: &str,
+    at: u64,
+    issue: u64,
+) -> String {
+    let seconds = seconds.to_string();
+    let at = at.to_string();
+    let issue = issue.to_string();
+    record::write(
+        GATE,
+        &[
+            ("tree", tree.name()),
+            ("command", command.text()),
+            ("at", &at),
+            ("seconds", &seconds),
+            ("host", host),
+            ("issue", &issue),
+            ("red", "1"),
+        ],
+    )
+}
+
+/// Where a red run for `issue` is kept until a work account cites it. The
+/// green ref stays one per tree and command; a red one is its own, so an
+/// earlier red survives a later green.
+pub fn red_ref(layout: Layout, issue: u64, at: u64, tree: u64, command: u64) -> String {
+    layout.under(&format!("{GATE_KIND}red-{issue}-{at:016x}-{tree:016x}-{command:016x}"))
 }
 
 /// Whether a run finished at `at` is believed at `now`.
@@ -506,6 +556,13 @@ mod tests {
         let (tree, command) = (tree(), command());
         let subject = written(1000).write(&tree, &command);
         assert!(subject.ends_with(" at=1000 seconds=42 host=mini"), "{subject}");
+        assert_eq!(written(1000).write_issued(&tree, &command, None), subject);
+        let issued = written(1000).write_issued(&tree, &command, Some(7));
+        assert!(issued.ends_with(" host=mini issue=7"), "{issued}");
+        assert_eq!(GreenRun::recorded(&issued, &tree, &command).map(|run| run.at()), Some(1000));
+        let red = red_subject(&tree, &command, 17, "other", 1900, 7);
+        assert!(red.contains(" red=1"), "{red}");
+        assert_eq!(GreenRun::recorded(&red, &tree, &command), None);
         let run = GreenRun::recorded(&subject, &tree, &command).unwrap();
         assert_eq!(run, written(1000), "what was written reads back");
         assert_eq!(run.took().map(|took| (took.seconds(), took.host())), Some((42, "mini")));

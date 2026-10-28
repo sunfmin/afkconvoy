@@ -294,11 +294,13 @@ pub fn advance(
             return Ok(Outcome::HandedOn);
         }
         Advance::End => {
+            crate::account::leave(&fleet.repo, &fleet.gh, issue, fleet.now)?;
             hand_on(fleet, &claim, None, true)?;
             return Ok(Outcome::Done);
         }
         Advance::ConsultClose => {
             fleet.gh.close_issue(issue)?;
+            crate::account::leave(&fleet.repo, &fleet.gh, issue, fleet.now)?;
             hand_on(fleet, &claim, None, false)?;
             return Ok(Outcome::Done);
         }

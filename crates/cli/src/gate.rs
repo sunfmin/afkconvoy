@@ -10,7 +10,8 @@ use std::time::{Duration, Instant};
 
 use afkconvoy_core::config::Config;
 use afkconvoy_core::gate::{
-    GateCommand, GreenRun, Ran, Recording, Tree, after_run, at_limit, record_ref,
+    GateCommand, GreenRun, Ran, Recording, Tree, after_run, at_limit, record_ref, red_ref,
+    red_subject,
 };
 use afkconvoy_core::lock::named;
 use anyhow::{Context, Result, anyhow};
@@ -232,8 +233,9 @@ pub fn run_and_record(
     host: &str,
     now: u64,
     limit: Duration,
+    issue: Option<u64>,
 ) -> Result<GateRun> {
-    controlled_run(repo, command, host, now, limit, None)
+    controlled_run(repo, command, host, now, limit, issue, None)
 }
 
 fn controlled_run(
@@ -242,6 +244,7 @@ fn controlled_run(
     host: &str,
     now: u64,
     limit: Duration,
+    issue: Option<u64>,
     candidate: Option<&crate::candidates::Gate<'_>>,
 ) -> Result<GateRun> {
     let _permit = if crate::exclusive::held() {
@@ -292,7 +295,8 @@ fn controlled_run(
     match after_run(&tree, command, ran, host, now) {
         Recording::Write(green) => {
             // The record is a parentless commit OF the tested tree.
-            let sha = repo.record_commit_of(tree.name(), &green.write(&tree, command))?;
+            let sha =
+                repo.record_commit_of(tree.name(), &green.write_issued(&tree, command, issue))?;
             let pushed =
                 repo.try_git(&["push", "--quiet", "--force", REMOTE, &format!("{sha}:{refname}")])?;
             if !pushed.ok {
@@ -304,6 +308,21 @@ fn controlled_run(
         Recording::Drop => {
             // Soft: none there is what was wanted.
             let _ = repo.try_git(&["push", "--quiet", REMOTE, "--delete", &refname]);
+            // A red run of this issue's tree is kept on its own ref until the
+            // work account cites it. A base-branch certification names no issue.
+            if let Some(issue) = issue {
+                let subject = red_subject(&tree, command, ran.seconds, host, now, issue);
+                let red = red_ref(repo.layout(), issue, now, tree.key(), command.key());
+                if let Ok(sha) = repo.record_commit_of(tree.name(), &subject) {
+                    let _ = repo.try_git(&[
+                        "push",
+                        "--quiet",
+                        "--force",
+                        REMOTE,
+                        &format!("{sha}:{red}"),
+                    ]);
+                }
+            }
         }
         Recording::Leave => {}
     }
@@ -319,9 +338,10 @@ pub(crate) fn candidate_gate(
     host: &str,
     now: u64,
     limit: Duration,
+    issue: Option<u64>,
     candidate: &crate::candidates::Gate<'_>,
 ) -> Result<Value> {
-    let run = controlled_run(repo, command, host, now, limit, Some(candidate))?;
+    let run = controlled_run(repo, command, host, now, limit, issue, Some(candidate))?;
     Ok(
         json!({"status": if run.cancelled { "cancelled" } else if run.ran.green() { "green" } else { "red" },
         "recorded": run.green.is_some() && run.not_recorded.is_none(), "head": run.head,
@@ -386,6 +406,7 @@ pub fn gated(
     host: &str,
     now: u64,
     limit: Duration,
+    issue: Option<u64>,
 ) -> Result<Gated> {
     let tree = head_tree(repo)?;
     if let Some(run) = recorded(repo, &tree, command, now)? {
@@ -405,7 +426,7 @@ pub fn gated(
     if !strays.is_empty() {
         return Err(not_the_commit("it has uncommitted or untracked files", &strays));
     }
-    let run = run_and_record(repo, command, host, now, limit)?;
+    let run = run_and_record(repo, command, host, now, limit, issue)?;
     match run.green {
         Some(green) => Ok(Gated::Green { run: green, source: "run" }),
         None if run.ran.green() => {
@@ -442,7 +463,10 @@ pub fn gate(repo: &Repo, config: &Config, train: bool, host: &str, now: u64) -> 
     }
     let command = GateCommand::new(&config.gate_command);
     let limit = config.gate_seconds();
-    let run = run_and_record(repo, &command, host, now, Duration::from_secs(limit))?;
+    let issue = std::env::var(afkconvoy_core::role::ISSUE_ENV)
+        .ok()
+        .and_then(|raw| afkconvoy_core::record::fleet_number(&raw));
+    let run = run_and_record(repo, &command, host, now, Duration::from_secs(limit), issue)?;
     // A worker's fresh build is what its worktree holds after its first green
     // run — one that built everything — by the train worktree's measure: what
     // its held disk is judged against (`hot`). Best effort: none on record
