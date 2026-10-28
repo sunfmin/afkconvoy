@@ -511,6 +511,21 @@ impl Repo {
         self.remote_sha(refname)
     }
 
+    /// Drops the saved answer for each ref. `publication::push` writes through
+    /// receive-pack, not `git push`, and the next read has to see what it wrote.
+    pub(crate) fn published(&self, refs: &[String]) {
+        let reads = self.reads();
+        let mut seen = lock(&reads.seen);
+        for name in refs {
+            if is_exact(name) {
+                seen.dirty(name);
+            } else {
+                seen.clear();
+                return;
+            }
+        }
+    }
+
     /// Every ref the remote has that matches one of `patterns` — a ref's
     /// name, or `<namespace>/*` — in one call, with no record read yet. An
     /// exact ref already listed is answered from that listing. An error when
