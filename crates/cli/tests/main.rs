@@ -45,6 +45,7 @@ mod lock;
 mod logged;
 mod manual;
 mod migration;
+mod named_harness;
 mod outside;
 mod panel;
 mod park;

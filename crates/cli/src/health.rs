@@ -1286,6 +1286,11 @@ fn decide(
     );
     let mut failures = vec![];
     for candidate in &kit.harnesses {
+        // A checkout that names a harness does not continue onto the next
+        // one in the host kit. A model fault still retries this harness.
+        if fleet.pinned.is_some_and(|pinned| candidate.harness != pinned) {
+            continue;
+        }
         if excluded.contains(&candidate.harness) {
             continue;
         }
@@ -1334,6 +1339,18 @@ fn decide(
         if expired {
             observed.error = Some(format!("no successor started: {}", failures.join("; ")));
             return escalate_observed(observed, fleet, me, issue);
+        }
+        // The named harness is the only candidate. The fault stays on it, the
+        // claim stays, and the tick goes on so plan and doctor can say why.
+        // No other harness of the host kit is started in its place.
+        if fleet.pinned.is_some() {
+            observed.action = "staying".into();
+            observed.error = Some(
+                "this checkout names this harness, so no worker starts on another harness of the \
+                 host kit"
+                    .to_string(),
+            );
+            return Ok(());
         }
         bail!("no successor started; preserving claim and work: {}", failures.join("; "));
     }

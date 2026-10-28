@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use afkconvoy_core::claims::InstanceId;
 use afkconvoy_core::config::RepoName;
+use afkconvoy_core::harness::Harness;
 use anyhow::{Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -19,10 +20,10 @@ use crate::{host_settings, kit};
 
 /// How `run` asks for its checkout's fleet instance: what it named for that
 /// instance alone, kept on the checkout list so that a host runner started
-/// again starts it the same way; what it said of its checkout's concurrency
-/// and its tracker;
-/// and the knobs that exist for the tests. What it named of the host is the
-/// host settings' (`host_settings`), which the instance reads as it goes.
+/// again starts it the same way; what it said of its checkout's concurrency,
+/// its tracker and its harness; and the knobs that exist for the tests. What
+/// it named of the host is the host settings' (`host_settings`), which the
+/// instance reads as it goes.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Start {
     pub named: Named,
@@ -34,6 +35,11 @@ pub struct Start {
     /// at each tick (`tracker`), never with `named`. `None` leaves it as it
     /// is.
     pub tracker: Option<To<RepoName>>,
+    /// `--harness`: the harness this checkout's workers start on, kept with
+    /// its entry on the list and read at each tick (`named_harness`), never
+    /// with `named`. `None` leaves it as it is.
+    #[serde(default)]
+    pub harness: Option<To<Harness>>,
     pub knobs: Knobs,
 }
 
