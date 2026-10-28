@@ -77,6 +77,20 @@ fn patrolled(ticked: &Value) -> Vec<String> {
         .collect()
 }
 
+/// The issues queries among `calls`, in order.
+fn issue_queries(calls: &[Vec<String>]) -> Vec<String> {
+    calls
+        .iter()
+        .filter_map(|call| {
+            call.iter().find_map(|arg| {
+                arg.strip_prefix("query=")
+                    .filter(|query| query.contains("issues("))
+                    .map(str::to_string)
+            })
+        })
+        .collect()
+}
+
 /// How `plan` says the patrols stand, for `instance` at `now`.
 fn planned(world: &World, instance: &str, now: u64) -> Value {
     world.afk(&["plan", "--instance", instance, "--now", &now.to_string()]).ok()
@@ -1184,7 +1198,10 @@ fn a_patrol_waits_for_its_completed_issues_to_leave_the_rolling_day() {
         });
     }
     world.comment(17, "<!--convoy:intake workflow=feature role=dev patrol=audit-->");
+    let _ = world.gh_calls();
     let held = planned(&world, "alpha", 90_000);
+    let queries = issue_queries(&world.gh_calls());
+    assert_eq!(queries, vec![afkconvoy::gh::OPEN_AND_LANDED_QUERY.to_string()], "{queries:?}");
     let patrol = &held["patrols"][0];
     assert_eq!(patrol["standing"], "landed", "{held}");
     assert_eq!(patrol["landed_in_day"], 2);

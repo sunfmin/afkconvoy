@@ -1,5 +1,8 @@
 //! orca, as a subprocess: it owns every worktree, branch and terminal a worker
-//! lives in. Nothing here creates or removes one any other way.
+//! lives in. A removal it already recorded as failed is finished here once the
+//! directory can go (`finish_failed_removals`): listing the worktrees again is
+//! what makes orca drop that record. Nothing here creates a worktree any other
+//! way.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -24,7 +27,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::git::Repo;
+use crate::git::{REMOTE, Repo};
 use crate::worker_tmp;
 
 /// The worker's instructions, kept in the worktree's own git dir: never staged
@@ -630,6 +633,117 @@ fn same_dir(a: &Path, b: &Path) -> bool {
         (Ok(a), Ok(b)) => a == b,
         _ => a == b,
     }
+}
+
+/// The `head` orca lists for the worktree at `path`; empty when it lists none.
+pub(crate) fn listed_head(path: &Path) -> Result<String> {
+    let listed = worktree_list()?;
+    let rows = listed["worktrees"].as_array().cloned().unwrap_or_default();
+    let head = rows.iter().find_map(|row| {
+        let listed = row["path"].as_str()?;
+        same_dir(Path::new(listed), path).then(|| row["head"].as_str().unwrap_or("").to_string())
+    });
+    Ok(head.unwrap_or_default())
+}
+
+/// Whether `head` is a commit this repo has, and is on `origin/<base>` or,
+/// where that remote ref exists, on `origin/<branch>`. An empty head, a head
+/// that is not a commit here, or a remote that cannot be read, is not.
+pub(crate) fn commit_is_on_remote(repo: &Repo, base: &str, branch: &str, head: &str) -> bool {
+    let head = head.trim();
+    if head.is_empty() {
+        return false;
+    }
+    let object = format!("{head}^{{commit}}");
+    if !repo.try_git(&["cat-file", "-e", &object]).is_ok_and(|ran| ran.ok) {
+        return false;
+    }
+    let base_ref = format!("refs/remotes/{REMOTE}/{base}");
+    let branch_ref = format!("refs/remotes/{REMOTE}/{branch}");
+    let has_base = remote_ref(repo, &base_ref);
+    let has_branch = !branch.is_empty() && remote_ref(repo, &branch_ref);
+    if !has_base && !has_branch {
+        return false;
+    }
+    let mut nots = Vec::new();
+    if has_base {
+        nots.push(base_ref);
+    }
+    if has_branch {
+        nots.push(branch_ref);
+    }
+    let mut args = vec!["rev-list", "--count", head, "--not"];
+    args.extend(nots.iter().map(String::as_str));
+    match repo.try_git(&args) {
+        Ok(ran) if ran.ok => ran.stdout == "0",
+        _ => false,
+    }
+}
+
+fn remote_ref(repo: &Repo, name: &str) -> bool {
+    repo.try_git(&["rev-parse", "-q", "--verify", name]).is_ok_and(|ran| ran.ok)
+}
+
+/// Finishes removals orca already answered success for while the directory
+/// remained. Git drops the worktree's registration and then stops on a
+/// directory the owner cannot write; orca records that and still answers
+/// success. A later tick removes the directory, including one git no longer
+/// lists, and asks orca for the list so it drops the failure.
+///
+/// A worktree a process is still working in stays until that process is gone.
+/// One whose head is empty, not a commit here, or holds a commit the remote
+/// does not, stays. Only this checkout's rows. Asking orca to remove the
+/// worktree again is not how a leftover goes: orca refuses a directory git
+/// no longer lists. A candidate worktree is not one of these rows.
+pub(crate) fn finish_failed_removals(repo: &Repo, base: &str) -> Result<()> {
+    let source = Source::of(repo)?;
+    let listed = worktree_list()?;
+    let rows = listed["worktrees"].as_array().cloned().unwrap_or_default();
+    let busy = crate::hot::working_directories()?;
+    let mut finished = false;
+    let mut retired = false;
+    for row in &rows {
+        if row["repoId"].as_str() != Some(source.id.as_str())
+            || row["isMainWorktree"] == true
+            || row["isArchived"] == true
+        {
+            continue;
+        }
+        if !row["removalError"].as_str().is_some_and(|error| !error.is_empty()) {
+            continue;
+        }
+        let Some(path) = row["path"].as_str().map(PathBuf::from).filter(|path| path.is_dir())
+        else {
+            continue;
+        };
+        if crate::hot::occupies(&busy, &path) {
+            continue;
+        }
+        let branch = short_branch(row["branch"].as_str().unwrap_or(""));
+        let head = row["head"].as_str().unwrap_or("");
+        if !commit_is_on_remote(repo, base, branch, head) {
+            continue;
+        }
+        let _ = worker_tmp::retire(&path);
+        retired = true;
+        crate::copies::removable(&path);
+        if std::fs::remove_dir_all(&path).is_err() || path.exists() {
+            eprintln!(
+                "warning: {} is still there and will be removed on a later tick",
+                path.display()
+            );
+            continue;
+        }
+        finished = true;
+    }
+    if retired {
+        let _ = worker_tmp::reclaim();
+    }
+    if finished {
+        forget_worktrees();
+        worktree_list()?;
+    }
+    Ok(())
 }
 
 /// Keeps the stock watch's own directory known to orca, so its terminal can
@@ -1305,12 +1419,31 @@ impl Worktree {
     /// which orca deletes unless it holds changes nothing has merged — and
     /// its worker's `TMPDIR` with it (`worker_tmp`): turned away first, for a
     /// server the worker started, and reclaimed once nothing runs with it.
+    ///
+    /// Directories the owner cannot write are opened first (`copies::removable`):
+    /// git deletes the gitdir and then stops on one, and orca records that and
+    /// still answers success. A directory still there is removed, and the list
+    /// is read again so orca drops the failure. An orca error removes nothing
+    /// further: the caller keeps the claim and a later tick tries again.
     pub fn remove(&self) -> Result<()> {
         // One that cannot be turned costs a server the worker started its
         // directory, and no worktree is kept for that.
         let _ = worker_tmp::retire(&self.path);
+        crate::copies::removable(&self.path);
         orca(&["worktree", "rm", "--worktree", &self.selector(), "--force"])?;
         forget_worktrees();
+        if self.path.exists() {
+            crate::copies::removable(&self.path);
+            std::fs::remove_dir_all(&self.path)
+                .with_context(|| format!("cannot remove {}", self.path.display()))?;
+        }
+        if self.path.exists() {
+            bail!("{} is still there", self.path.display());
+        }
+        // The directory is gone. Orca drops a failure it recorded during the
+        // removal only when it is asked for the list again.
+        forget_worktrees();
+        worktree_list()?;
         let _ = worker_tmp::reclaim();
         Ok(())
     }

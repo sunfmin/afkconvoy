@@ -113,15 +113,11 @@ pub enum Answered {
     Said(String),
 }
 
-/// The answers of a turn that ask only that it be asked for again: nothing
-/// in the tree is to change.
-pub const WAITS: [&str; 5] =
-    ["waiting_for_capacity", "waiting_for_predecessor", "target_moved", "cancelled", "blocked"];
-
 impl Answered {
-    /// Whether the last turn answered a wait (`WAITS`).
+    /// Whether the last turn answered a wait (`Ending::waits`).
     pub fn waits(&self) -> bool {
-        matches!(self, Answered::Said(outcome) if WAITS.contains(&outcome.as_str()))
+        let Answered::Said(outcome) = self else { return false };
+        crate::ending::Ending::ALL.iter().any(|e| e.word() == outcome && e.waits())
     }
 }
 
@@ -324,9 +320,11 @@ mod tests {
         }
         assert!(changing_tree(busy, &Answered::Never), "preparing the branch");
         assert!(!changing_tree(busy, &Answered::Asking), "the turn is queued");
-        for wait in WAITS {
-            assert!(!changing_tree(busy, &Answered::Said(wait.into())), "{wait}");
+        for wait in crate::ending::Ending::ALL.iter().filter(|e| e.waits()) {
+            let said = Answered::Said(wait.word().into());
+            assert!(!changing_tree(busy, &said), "{}", wait.word());
         }
+        assert!(changing_tree(busy, &Answered::Said("error".into())), "a failed ask");
         let conflict = Answered::Said("conflict".into());
         assert!(!changing_tree(None, &conflict), "no worktree");
         assert!(!changing_tree(Some(WorkerState::Gone), &conflict), "gone");

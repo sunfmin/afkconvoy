@@ -1,3 +1,7 @@
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command};
+
 use crate::common;
 
 use common::{World, git};
@@ -256,6 +260,198 @@ fn a_settling_that_failed_keeps_the_claim_and_the_pass_goes_on() {
 
     world.with_orca(|orca| orca["rm_fails"] = json!(false));
     assert_eq!(did(&tick(&world, "1180"))[0], "settle 3 done");
+}
+
+#[test]
+fn a_settled_worktree_goes_when_the_gate_left_a_directory_the_owner_cannot_write() {
+    let world = backlog(&[3]);
+    tick(&world, "1000");
+    let worktree = worker_worktree(&world);
+    let sealed = seal(&worktree);
+    let held = world.root.join("held-role");
+    std::fs::create_dir(&held).unwrap();
+    std::fs::set_permissions(&held, std::fs::Permissions::from_mode(0o555)).unwrap();
+    world.close_issue(3);
+
+    let ticked = tick(&world, "1090");
+    assert_eq!(did(&ticked), ["settle 3 done"], "{ticked}");
+    assert!(ticked["errors"].as_array().unwrap().is_empty(), "{ticked}");
+    assert!(!worktree.exists(), "the worktree is removed");
+    assert!(!sealed.exists());
+    let listed = git(&world.clone, &["worktree", "list", "--porcelain"]);
+    assert!(!common::worktree_listed(&listed, &worktree), "{listed}");
+    assert_eq!(world.claims(), []);
+    assert_no_removal_error(&world);
+    assert_eq!(mode(&held), 0o555, "a role copy outside the worktree stays read-only");
+    std::fs::set_permissions(&held, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[test]
+fn a_later_tick_removes_a_worktree_orca_already_gave_up_on() {
+    let world = backlog(&[3]);
+    tick(&world, "1000");
+    let worktree = worker_worktree(&world);
+    let head = git(&worktree, &["rev-parse", "HEAD"]);
+    seal(&worktree);
+    unregister(&world, &worktree);
+    record_failed_removal(&world, &worktree, &head);
+    world.close_issue(3);
+    world.remote(&["update-ref", "-d", "refs/convoy/claim/3"]);
+
+    let ticked = tick(&world, "1090");
+    assert!(ticked["errors"].as_array().unwrap().is_empty(), "{ticked}");
+    assert!(!worktree.exists(), "the directory a removal left is gone");
+    let listed = git(&world.clone, &["worktree", "list", "--porcelain"]);
+    assert!(!common::worktree_listed(&listed, &worktree), "{listed}");
+    assert_no_removal_error(&world);
+    assert_eq!(world.claims(), []);
+}
+
+#[test]
+fn a_worktree_a_process_is_in_stays_until_that_process_is_gone() {
+    let world = backlog(&[3]);
+    tick(&world, "1000");
+    let worktree = worker_worktree(&world);
+    world.close_issue(3);
+    let _held = Hold(Command::new("sleep").arg("120").current_dir(&worktree).spawn().unwrap());
+
+    let ticked = tick(&world, "1090");
+    assert_eq!(did(&ticked), ["settle 3 failed", "heartbeat done"], "{ticked}");
+    let error = ticked["errors"][0]["error"].as_str().unwrap();
+    assert!(error.contains("still using"), "{error}");
+    assert!(worktree.is_dir(), "a worktree a process is in stays");
+    assert_eq!(world.claims(), alpha(&[3]));
+
+    drop(_held);
+    let again = tick(&world, "1180");
+    assert_eq!(did(&again)[0], "settle 3 done", "{again}");
+    assert!(!worktree.exists(), "the next tick removes it once the process is gone");
+    assert_eq!(world.claims(), []);
+}
+
+#[test]
+fn a_worktree_with_a_commit_the_remote_does_not_have_stays() {
+    let world = backlog(&[3]);
+    tick(&world, "1000");
+    let worktree = worker_worktree(&world);
+    std::fs::write(worktree.join("only-here.txt"), "local").unwrap();
+    git(&worktree, &["add", "only-here.txt"]);
+    git(&worktree, &["commit", "-q", "-m", "only here"]);
+    world.close_issue(3);
+
+    let ticked = tick(&world, "1090");
+    assert_eq!(did(&ticked), ["settle 3 done"], "{ticked}");
+    assert!(ticked["errors"].as_array().unwrap().is_empty(), "{ticked}");
+    assert!(worktree.is_dir(), "a commit the remote does not have stays");
+    let listed = git(&world.clone, &["worktree", "list", "--porcelain"]);
+    assert!(common::worktree_listed(&listed, &worktree), "{listed}");
+    assert_no_removal_error(&world);
+    assert_eq!(world.claims(), []);
+
+    tick(&world, "1180");
+    assert!(worktree.is_dir(), "a later tick does not take it");
+}
+
+#[test]
+fn a_left_removal_with_a_commit_the_remote_does_not_have_stays() {
+    let world = backlog(&[3]);
+    tick(&world, "1000");
+    let worktree = worker_worktree(&world);
+    std::fs::write(worktree.join("only-here.txt"), "local").unwrap();
+    git(&worktree, &["add", "only-here.txt"]);
+    git(&worktree, &["commit", "-q", "-m", "only here"]);
+    let head = git(&worktree, &["rev-parse", "HEAD"]);
+    seal(&worktree);
+    unregister(&world, &worktree);
+    record_failed_removal(&world, &worktree, &head);
+    world.close_issue(3);
+    world.remote(&["update-ref", "-d", "refs/convoy/claim/3"]);
+
+    let ticked = tick(&world, "1090");
+    assert!(ticked["errors"].as_array().unwrap().is_empty(), "{ticked}");
+    assert!(worktree.is_dir(), "a leftover that holds an unpushed commit stays");
+    let orca = world.orca();
+    let row = orca["worktrees"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["path"] == worktree.to_str().unwrap())
+        .unwrap();
+    assert!(!row["removalError"].as_str().unwrap().is_empty());
+}
+
+fn worker_worktree(world: &World) -> PathBuf {
+    let orca = world.orca();
+    let row = orca["worktrees"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["isMainWorktree"] != true && row["linkedIssue"].as_u64().is_some())
+        .unwrap();
+    PathBuf::from(row["path"].as_str().unwrap())
+}
+
+/// A directory the owner cannot write, with a file in it: an empty one does
+/// not stop `git worktree remove`.
+fn seal(worktree: &Path) -> PathBuf {
+    let dir = worktree.join("cache/afkconvoy/copies/role");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("SKILL.md"), "role").unwrap();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+    dir
+}
+
+fn unregister(world: &World, path: &Path) {
+    let out = Command::new("git")
+        .current_dir(&world.clone)
+        .args(["worktree", "remove", "--force"])
+        .arg(path)
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "git removed the worktree despite a sealed directory: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(path.is_dir(), "the directory stays");
+    let listed = git(&world.clone, &["worktree", "list", "--porcelain"]);
+    assert!(!common::worktree_listed(&listed, path), "{listed}");
+}
+
+fn record_failed_removal(world: &World, path: &Path, head: &str) {
+    let text = path.to_string_lossy().into_owned();
+    world.with_orca(|orca| {
+        let row = orca["worktrees"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|row| row["path"] == text)
+            .unwrap();
+        row["removalError"] =
+            json!(format!("Failed to force delete worktree at {text}. Permission denied"));
+        row["head"] = json!(head);
+    });
+}
+
+fn assert_no_removal_error(world: &World) {
+    for row in world.orca()["worktrees"].as_array().unwrap() {
+        let error = row["removalError"].as_str().unwrap_or("");
+        assert!(error.is_empty(), "{row}");
+    }
+}
+
+fn mode(path: &Path) -> u32 {
+    std::fs::metadata(path).unwrap().permissions().mode() & 0o7777
+}
+
+/// Kills the process when dropped, including when an assertion fails.
+struct Hold(Child);
+
+impl Drop for Hold {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
 }
 
 #[test]

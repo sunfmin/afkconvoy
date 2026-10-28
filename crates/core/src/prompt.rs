@@ -1,6 +1,7 @@
 //! The worker prompt: a template, filled by code. No worker is ever started on
 //! a prompt with a placeholder left in it.
 
+use crate::ending::Ending;
 use crate::position::Declared;
 use crate::recovery::Variant;
 use crate::stage_record::{Author, StageRecord, Stated};
@@ -79,13 +80,8 @@ const JOIN_STEP: &str = "\
    ```
    It asks for a turn, makes your PR's merge commit on the current `{base_branch}` tip,
    gates that commit, records green, and pushes that same commit as a fast-forward.
-   On `\"outcome\": \"merged\"`, wake the fleet and stop.
-   On `\"conflict\"`, resolve every listed file, `git add` it, commit the merge and run this again.
-   On `\"gate_red\"`, fix your change, commit and run this again.
-   On `\"target_moved\"`, `\"cancelled\"`, `\"waiting_for_capacity\"`, `\"waiting_for_predecessor\"` or
-   `\"blocked\"`, nothing landed and nothing in your tree is to change: stop, without waking anyone.
-   The fleet asks for the turn again itself, and starts a worker here if it needs the tree changed.
-   On `\"locked\"`, stop without waking anyone until told to carry on.
+   Its answer's `\"outcome\"` is one of these words:
+<endings>
    An unrecorded base tip is gated alone first. Ordinary turns wait while it is red;
    the fleet dispatches a repair whose own turn must still gate green before landing.";
 
@@ -886,8 +882,25 @@ fn steps(template: &str, gate: &str, join: &str, outcomes: &str) -> String {
     let numbered = |step: &str| step.replace("<g>", gate).replace("<j>", join);
     template
         .replace("<gate_step>", &numbered(GATE_STEP))
-        .replace("<join_step>", &numbered(JOIN_STEP))
+        .replace("<join_step>", &numbered(&JOIN_STEP.replace("<endings>", &endings())))
         .replace("<wake>", &WAKE.replace("<outcomes>", outcomes))
+}
+
+/// What the land step tells a worker of each word its turn can answer, as
+/// the turn's endings say it — but of a wait (`Ending::waits`): the worker
+/// stops, and its fleet asks for the turn again.
+pub fn endings() -> String {
+    Ending::listed(|word, told| {
+        let waits = Ending::ALL.iter().any(|e| e.word() == word && e.waits());
+        match told.rsplit_once(": ").filter(|_| waits) {
+            Some((situation, _)) => format!(
+                "   On `\"{word}\"`, {situation}: nothing in your tree is to change. Stop without \
+                 waking anyone; the fleet asks for the turn again itself, and starts a worker \
+                 here if the tree needs changing."
+            ),
+            None => format!("   On `\"{word}\"`, {told}."),
+        }
+    })
 }
 
 /// The line typed at a worker to hand it its brief. The prompt itself, sent as
