@@ -132,14 +132,6 @@ pub fn tick(
     before: Option<&Before>,
 ) -> Result<(Ticked, Fleet)> {
     let _observation = crate::orca::Observation::begin();
-    // A stopped candidate's worktree holds the build the gate ran. The chain
-    // already has the evidence. A failure here leaves the directory for the
-    // next tick; the pass itself still runs.
-    if let Err(error) = crate::candidates::remove_stopped_worktrees(repo) {
-        eprintln!(
-            "warning: a stopped candidate worktree will be removed on a later tick: {error:#}"
-        );
-    }
     // Each harness paused on this host is probed every hour (docs/adr/0020):
     // one that answers is back in the host kit for this tick's rebuild. A
     // probe that cannot be made leaves it paused, and costs the tick nothing.
@@ -149,6 +141,18 @@ pub fn tick(
     let _ = crate::paused::probe(repo, me.instance.as_str(), &me.host, me.now);
     let _ = crate::kit::refresh(repo, me.instance.as_str(), &me.host, me.now);
     let (mut fleet, mut open) = Fleet::read(repo, me.now)?;
+    // The look listed the candidate chain with the rest of the remote.
+    // Removal answers from that listing. The chain already holds the gate's
+    // evidence. A failure leaves the directory for the next tick; the pass
+    // itself still runs.
+    let candidates = repo.layout().under("candidates/");
+    if let Err(error) =
+        crate::candidates::remove_listed(repo, &fleet.records_at_open(&format!("{candidates}*")))
+    {
+        eprintln!(
+            "warning: a stopped candidate worktree will be removed on a later tick: {error:#}"
+        );
+    }
     // Cover interruption after an internal task landed but before final review.
     // A bad delivery does not prevent unrelated task reconciliation.
     let delivery_failure = crate::delivery::reconcile(repo, &fleet.gh).err();
