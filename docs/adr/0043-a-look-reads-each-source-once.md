@@ -8,7 +8,7 @@ status: accepted
 
 One look reads each of these once and answers every later question in that look from what was read.
 
-A look begins through one interface. A tick and a fleet-instance start each call it once. It resets every observation a look reads once: orca's repo list and the quota note. A further once-per-look observation is registered there, so neither call site gains a line. `doctor` does not call it. Host readings stay behind the readings module. The login still stands for the life of the process.
+A look begins through one interface. A tick and a fleet-instance start each call it once. It resets every observation a look reads once: orca's repo list, whether orca is running, the quota note (including a `rate_limit` body), and each repo's HEAD. A further once-per-look observation is registered there, so neither call site gains a line. `doctor` does not call it. Host readings stay behind the readings module. The login still stands for the life of the process.
 
 The host's load, its memory and each volume's free disk are read once. Every checkout's admission and its hot-worker limits are computed from that reading.
 
@@ -20,4 +20,4 @@ Orca's repo list is read once per look. A tracker's public probe is asked once p
 
 `doctor`'s `host.watch` keeps the watch's state and the last round's report. Earlier rounds are answered with `--rounds`, and they remain where the watch already stores them. The host kit in a look keeps the identities, commands and research state a finding judges. The research notes stay on `plan` and on `afkconvoy kit`.
 
-`doctor` still writes nothing but the fleet's cache, and makes no startup probe. A finding keeps its kind, severity, wording and fix. `waiting_on_human` keeps its answer line.
+`doctor` still writes nothing but the fleet's cache, and makes no startup probe. While a startup probe that checked the kit's current launch commands still stands, `doctor` starts no harness. Otherwise it starts each harness at most once. A finished candidate — landed, red or cancelled — is one record of its phase, commit, issue, pull request, predecessor and waiting state, with no gate excerpt. A candidate that is gating now may still carry its excerpt. After a child exits, a pipe a grandchild still holds does not keep the look waiting. A finding keeps its kind, severity, wording and fix. `waiting_on_human` keeps its answer line.

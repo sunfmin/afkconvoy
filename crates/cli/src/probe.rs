@@ -162,20 +162,25 @@ impl Asked {
 /// (`Private`). Says on stderr
 /// that no probe was made. Whatever keeps the note from being read or
 /// compared is the probe's to report: none stands.
-pub fn standing(repo: &Repo, now: u64, launches: &Launches) -> Option<Vec<String>> {
-    let read = || -> Result<(Passed, Asked, Tracker)> {
-        let config = config::load(&repo.dir.join(config::FILE))?;
-        let passed: Passed =
-            serde_json::from_str(&std::fs::read_to_string(repo.note(PASSED_NOTE)?)?)?;
-        // A command that starts no worker asks nothing of the launch commands.
-        let launch = if launches.starts() { launches.key()? } else { passed.asked.launch };
-        Ok((passed, Asked::now(repo, &config, launch)?, tracker_of(repo)?))
-    };
-    let (passed, asked, tracker) = read().ok()?;
+/// The startup probe that still stands for `repo` at `now`, read the way
+/// `standing` reads it. `None` when none stands. Says nothing.
+fn passed_note(repo: &Repo, now: u64, launches: &Launches) -> Option<Passed> {
+    let config = config::load(&repo.dir.join(config::FILE)).ok()?;
+    let text = std::fs::read_to_string(repo.note(PASSED_NOTE).ok()?).ok()?;
+    let passed: Passed = serde_json::from_str(&text).ok()?;
+    // A command that starts no worker asks nothing of the launch commands.
+    let launch = if launches.starts() { launches.key().ok()? } else { passed.asked.launch };
+    let asked = Asked::now(repo, &config, launch).ok()?;
+    let tracker = tracker_of(repo).ok()?;
     if !probe_stands(passed.at, now) || passed.asked != asked || !found_private(repo, &tracker, now)
     {
         return None;
     }
+    Some(passed)
+}
+
+pub fn standing(repo: &Repo, now: u64, launches: &Launches) -> Option<Vec<String>> {
+    let passed = passed_note(repo, now, launches)?;
     eprintln!(
         "note: no startup probe was made: the one that passed on this host {} min ago stands \
          for {} min (`afkconvoy plan --help`)",
@@ -183,6 +188,22 @@ pub fn standing(repo: &Repo, now: u64, launches: &Launches) -> Option<Vec<String
         PROBE_STANDS / 60
     );
     Some(passed.warnings)
+}
+
+/// Whether a startup probe still stands for `repo` at `now`, for a command
+/// that starts no worker (`Launches::foreseen`). It is `standing` without
+/// the note: `doctor` reads it and makes no probe, and says nothing about one.
+///
+/// A command that starts no worker does not compare launch commands inside
+/// `passed_note`. This does: the probe is trusted only when it checked the
+/// commands the kit has now. A doctor then starts no harness.
+pub fn stands(repo: &Repo, now: u64) -> bool {
+    let launches = Launches::foreseen(repo);
+    let Some(passed) = passed_note(repo, now, &launches) else { return false };
+    match launches.key() {
+        Ok(key) => passed.asked.launch == key,
+        Err(_) => false,
+    }
 }
 
 /// Why no checkout is found on a host with no git, which finds one: what a

@@ -77,6 +77,22 @@ pub fn harness(launch: &Proposed) -> Option<(Tool, Found)> {
 /// What `tool` is found to be by its answer to `question`, in a login shell
 /// started in `dir`.
 fn asked(dir: &Path, tool: Tool, question: &str) -> Found {
+    if tool.starts_workers() {
+        // The login question is the one start of this harness in a doctor.
+        // A later question, such as `--help`, does not start it again.
+        return match crate::launch::once_per_program(tool.name(), question, || {
+            ask_login_shell(dir, question).unwrap_or_default()
+        }) {
+            crate::launch::Once::Ran(succeeded, printed) => {
+                if tool.logged_in(succeeded, &printed) {
+                    Found::Ready
+                } else {
+                    Found::LoggedOut
+                }
+            }
+            crate::launch::Once::Already => Found::Ready,
+        };
+    }
     if tool == Tool::Gh {
         // gh auth status itself spends quota, and looks up env-token users
         // through GraphQL. The common entry verifies an override's identity

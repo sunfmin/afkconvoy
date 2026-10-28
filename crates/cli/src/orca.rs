@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::rc::Rc;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use afkconvoy_core::casting::CASTER_WORKTREE;
@@ -459,10 +459,41 @@ fn asked_from() -> PathBuf {
     home.filter(|home| home.is_dir()).unwrap_or_else(|| PathBuf::from("/"))
 }
 
-/// Whether orca is running. An orca that cannot say is not one a worker can
-/// be started through.
+static RUNNING: Mutex<Option<Arc<OnceLock<bool>>>> = Mutex::new(None);
+
+/// Whether orca is running, read once in this look. An orca that cannot say
+/// is not one a worker can be started through. A second ask waits on that
+/// read instead of starting `orca` again.
 pub fn running() -> bool {
-    orca(&["status"]).is_ok_and(|status| status["runtime"]["state"] == "ready")
+    let cell = {
+        let mut running = RUNNING.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        running.get_or_insert_with(|| Arc::new(OnceLock::new())).clone()
+    };
+    *cell
+        .get_or_init(|| orca(&["status"]).is_ok_and(|status| status["runtime"]["state"] == "ready"))
+}
+
+/// Forgets whether orca is running, so the next read asks again. A look
+/// begins through `look::begin`. Adding a repo does not forget this: orca
+/// is running then, and the look has not ended.
+pub(crate) fn forget_running() {
+    *RUNNING.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+}
+
+#[cfg(test)]
+pub(crate) fn hold_running(ready: bool) {
+    let cell = Arc::new(OnceLock::new());
+    cell.set(ready).expect("running cell is unset");
+    *RUNNING.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(cell);
+}
+
+#[cfg(test)]
+pub(crate) fn running_cached() -> Option<bool> {
+    RUNNING
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .as_ref()
+        .and_then(|cell| cell.get().copied())
 }
 
 /// What a start finds of an installed orca: whether it is running, and then

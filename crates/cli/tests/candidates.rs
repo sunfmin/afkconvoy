@@ -262,7 +262,14 @@ fn three_candidates_overlap_finish_out_of_order_and_publish_exact_commits_once()
         3,
         "no duplicate aggregate gate"
     );
-    assert_eq!(world.afk(&["doctor"]).json["candidates"][2]["waiting"], "landed");
+    let landed = world.afk(&["doctor"]).json["candidates"][2].clone();
+    assert_eq!(landed["waiting"], "landed");
+    assert_eq!(landed["phase"], "landed");
+    assert!(landed.get("excerpt").is_none(), "{landed}");
+    assert!(landed.get("result").is_none(), "{landed}");
+    for key in ["phase", "commit", "issue", "pr", "predecessor", "waiting", "target_branch"] {
+        assert!(landed.get(key).is_some(), "{key} missing from {landed}");
+    }
 }
 
 #[test]
