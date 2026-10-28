@@ -1537,6 +1537,10 @@ enum Command {
         /// candidate worktrees of one repo may validate together within this bound.
         #[arg(long, env = "AFKCONVOY_GATE_LANES", value_parser = host_settings::watch_every_or_default)]
         gate_lanes: Option<To<u64>>,
+        /// Slow lanes on this host, above zero, or `default` (1): how many rounds' slow gates
+        /// run at once, beside the worker lanes, where fast gates run.
+        #[arg(long, env = "AFKCONVOY_SLOW_GATE_LANES", value_parser = host_settings::watch_every_or_default)]
+        slow_gate_lanes: Option<To<u64>>,
         /// Stop after this many ticks
         #[arg(long, hide = true)]
         ticks: Option<u64>,
@@ -1697,6 +1701,7 @@ enum Command {
     /// - `host_runner`: the answering runner's `pid` and `version`, plus the identity fields it supplies: `log` (whole path), `panel` (address or null), and `foreground` where applicable. Null with no runner.
     /// - `paused`: whether the runner has paused new grants for a release move; false with no runner.
     /// - `worker`: `{capacity, used, free}`. Capacity is the host setting `gate_lanes`, {const:GATE_LANES} by default; used counts running worker requests, free is capacity minus used, clamped to zero. Eligible reservations do not count as used.
+    /// - `slow`: `{capacity, used, free}` of the slow lanes, where a round's slow gate runs: the host setting `slow_gate_lanes`, 1 by default (`afkconvoy run --help`).
     /// - `repos`: each repo lane with a running or waiting request, sorted by its whole identity, as `{repo, capacity, used, free}`. Each has capacity 1, independent of worker capacity. `repo` is the shared git directory supplied by the ticket, never inferred from a worktree's name.
     /// - `running`, `waiting`: requests in scheduler order within each array: cuts first, then ordinary commands; within each group ascending `asked`, then `number` to break ties. Cut priority never interrupts running commands. There is no priority by lane or repo. A request identifies `number` (runner-local ticket), `pid` (asking process), `command` (one line: the program and the arguments that say what is running; `afkconvoy exclusive -- ./gate.sh` stays as given; a script is named by the program it runs, its `cargo nextest` line or its `afkconvoy exclusive` invocation, and is not shown as the script; no `NAME=value`), `dir` (whole worktree or outside directory), `issue` (number or null; no lookup), `repo` (shared git directory or null for older/outside tickets), `repo_lane` (repo lane identity or null for worker), `is_turn` (whether this is a landing turn), `cut` (whether it has cut priority, false for older tickets), `asked` (request epoch seconds), `ran` (start epoch seconds or null), and `lane` (`worker` or `repo <identity>`).
     /// - Each request adds `elapsed_seconds` (time since `ran`, null while waiting), `waiting_seconds` (time from `asked` to `ran` when running, otherwise to `observed_at`), and `scheduling`: `{number, state, reasons}`. State is `running`, `eligible`, or `waiting`; reasons is empty for running or eligible requests.
@@ -1934,9 +1939,9 @@ enum Command {
     ///
     /// A task uses its pinned target branch (`afkconvoy target --help`), or resolves the configured base when it has no target. Its PR must actually name that base; a wrong base, missing branch or unreadable target refuses without falling back. Each repo and target has its own candidate chain and landed commits. Watches and cuts retain the configured base.
     ///
-    /// A turn preserves the PR's original head and atomically assigns a candidate merged onto the certified base or its preceding candidate. Each candidate must gate that exact commit in its own worktree, and its gate run is recorded green against it. With free worker lanes, candidates of the same repo validate concurrently; green successors wait for their exact predecessors, then push that commit to the target branch as a fast-forward without another gate. The window, including green waiters and unconfirmed cancellation, is bounded by the host's live worker-lane count. A light gate keeps its repo lane. Committed source changes are pushed to the PR first; candidate merges never move that source branch. The merge message names the PR and issue, watch or cut. Landing closes the issue; the tick settles its claim and source worktree.
+    /// A turn preserves the PR's original head and atomically assigns a candidate merged onto the certified base or its preceding candidate. Each candidate must gate that exact commit in its own worktree, and its gate run is recorded green against it. With free worker lanes, candidates of the same repo validate concurrently; green successors wait for their exact predecessors, then push that commit to the target branch as a fast-forward without another gate. A candidate holds a worker lane only while it builds and runs its gate; the window has no bound of its own, but for barriers and unconfirmed cancellation. A light gate keeps its repo lane. Committed source changes are pushed to the PR first; candidate merges never move that source branch. The merge message names the PR and issue, watch or cut. Landing closes the issue; the tick settles its claim and source worktree.
     ///
-    /// Where the candidate's commit declares a ```yaml gates block (`afkconvoy config --help`), the candidate runs the fast gate, not `gate_command`, and waits fast-green for a round. When no candidate of the chain is still building or fast-gating, the turn of the chain's last candidate, the round's tip, runs the slow gate once on its commit, in its worktree; a candidate assigned meanwhile waits for the next round. Green, the whole gate is put on record for the tip's tree from its fast and slow runs, and one atomic push lands every candidate up to the tip; each of their turns answers `merged` and closes its own issue. Red is not split to find whose change failed: the tip's turn answers `gate_red` with `gate` slow and `round`, the round's PRs and issues, and merges the round's tip into its branch, so its worker fixes the round from those issues and the failing tests and asks again; every other candidate of the round answers `round_red` and stops, its change carried by the tip's PR, and its issue is settled from the merge commits on the target branch once that lands. A merge onto the candidate ahead that conflicts is left in the worker's worktree to resolve, as `speculative_conflict`: the worker's branch then carries that candidate.
+    /// Where the candidate's commit declares a ```yaml gates block (`afkconvoy config --help`), the candidate runs the fast gate, not `gate_command`, and waits fast-green for a round. A round is as big as the PRs that are ready: a turn that asks to land is on the candidate record as pending while it waits for a worker lane, and a fast-green candidate frees its lane. When no turn is pending and every candidate of the chain is fast-green, the turn of the chain's last candidate, the round's tip, takes a slow lane and runs the slow gate once on its commit, in its worktree; a PR that asks meanwhile waits for the next round. Green, the whole gate is put on record for the tip's tree from its fast and slow runs, and one atomic push lands every candidate up to the tip; each of their turns answers `merged` and closes its own issue. Red is not split to find whose change failed: the tip's turn answers `gate_red` with `gate` slow and `round`, the round's PRs and issues, and merges the round's tip into its branch, so its worker fixes the round from those issues and the failing tests and asks again; every other candidate of the round answers `round_red` and stops, its change carried by the tip's PR, and its issue is settled from the merge commits on the target branch once that lands. A merge onto the candidate ahead that conflicts is left in the worker's worktree to resolve, as `speculative_conflict`: the worker's branch then carries that candidate.
     ///
     /// Once a candidate has stopped — landed, red, or cancelled with its processes confirmed gone — its worktree is removed. The candidate chain keeps the gate evidence: the phase, the cause and the gate excerpt, and a recorded gate run stays on the remote. A directory left behind after git dropped the registration is removed too, including when a directory inside it is not writable by its owner. A candidate that is building, validating, green and waiting on its predecessor or for a round, slow-gating, or cancelling, keeps its worktree. A worktree a process still has as its working directory stays until that process is gone, and a later tick removes it. The issue's, watch's or cut's own worktree is left, and the candidate chain is not rewritten.
     ///
@@ -2717,7 +2722,7 @@ enum Command {
     ///
     /// ## What it reads and writes
     ///
-    /// Commands use worker lanes, {const:GATE_LANES} by default. `run --gate-lanes N` sets the count live across the host, and `default` restores it. N must be above zero. Independent candidate worktrees of one repo may validate together; ordinary heavy commands retain same-repo exclusion. Heavy gates, tests, benchmarks and builds use these lanes in FIFO order; a light gate takes its repo's own lane. A candidate holds its lane through ordered landing or confirmed cancellation. Inherited kernel leases keep a dead owner's still-running descendants from being replaced.
+    /// Commands use worker lanes, {const:GATE_LANES} by default. `run --gate-lanes N` sets the count live across the host, and `default` restores it. N must be above zero. Independent candidate worktrees of one repo may validate together; ordinary heavy commands retain same-repo exclusion. Heavy gates, tests, benchmarks and builds use these lanes in FIFO order; a light gate takes its repo's own lane. A candidate holds its worker lane while it builds and gates; a round's slow gate takes one of the host's slow lanes, 1 by default, which `run --slow-gate-lanes N` sets live. Each gate is given its share of the host's cores — its cores over the worker and slow lanes together, at least 1 — as `CARGO_BUILD_JOBS` and `NEXTEST_TEST_THREADS`, unless its environment already sets them. Inherited kernel leases keep a dead owner's still-running descendants from being replaced.
     ///
     /// A cut's turn and exclusive commands go ahead of waiting worker commands, known by the cut's own worktree. Cuts keep request order among themselves, and ordinary commands keep theirs. Priority never interrupts a running command or adds a lane. A worker may therefore wait behind a cut's gate or publish step. Its runs line says "runs as a cut, ahead of waiting worker commands".
     ///
@@ -4001,6 +4006,7 @@ fn start_of(
         exclusive_seconds,
         jev_key_command,
         gate_lanes,
+        slow_gate_lanes,
         ticks,
         second_ms,
         panic_at_tick,
@@ -4033,6 +4039,7 @@ fn start_of(
         admit_inspect_after,
         exclusive_seconds,
         gate_lanes,
+        slow_gate_lanes,
         panel,
         watch_dir,
         watch_every,

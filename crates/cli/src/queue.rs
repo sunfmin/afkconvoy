@@ -66,7 +66,7 @@ fn observe(fixed_now: Option<u64>) -> Result<Value> {
         }
         None => ("no_runner", Value::Null, vec![], false),
     };
-    let mut answer = observation_json(&snapshot(&tickets, settings.gate_lanes(), paused, now));
+    let mut answer = observation_json(&snapshot(&tickets, settings.lanes(), paused, now));
     answer["observed_at"] = json!(now);
     answer["status"] = json!(status);
     answer["host_runner"] = runner;

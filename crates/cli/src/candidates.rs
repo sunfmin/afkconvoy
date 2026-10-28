@@ -1160,7 +1160,7 @@ fn round(round: Round<'_>, clock: impl Fn() -> u64) -> Result<Option<Value>> {
     let _lane = if crate::exclusive::held() {
         None
     } else {
-        Some(Permit::candidate(repo, "turn: a round's slow gate", heavy)?)
+        Some(Permit::slow_gate(repo, "turn: a round's slow gate", heavy)?)
     };
     let mut started = false;
     let chain = change(repo, config, |chain| started = chain.start_round(id))?;

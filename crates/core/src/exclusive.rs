@@ -39,6 +39,10 @@ pub struct Ticket {
     /// its repo. Ordinary commands and serial barriers retain exclusion.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub candidate: bool,
+    /// A round's slow gate: it runs in the host's slow lanes, not its worker
+    /// lanes, so fast gates and slow gates are counted apart.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub slow: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub validation: Option<crate::candidate::Validation>,
     /// When it asked to run, in epoch seconds: within each priority the one
@@ -62,7 +66,29 @@ pub fn ahead(queue: &[Ticket], number: u64) -> Option<usize> {
 
 /// Commands contend only with others in the same lane.
 pub fn same_lane(a: &Ticket, b: &Ticket) -> bool {
-    a.repo_lane == b.repo_lane
+    a.repo_lane == b.repo_lane && (a.repo_lane.is_some() || a.slow == b.slow)
+}
+
+/// How many commands a host runs at once in each of its host lanes: its
+/// worker lanes, where fast gates and every other heavy command run, and its
+/// slow lanes, where a round's slow gate runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Lanes {
+    pub worker: u64,
+    pub slow: u64,
+}
+
+impl Lanes {
+    /// The places of the lane `ticket` runs in: a light gate's repo lane has one.
+    pub fn of(self, ticket: &Ticket) -> u64 {
+        if ticket.repo_lane.is_some() {
+            1
+        } else if ticket.slow {
+            self.slow
+        } else {
+            self.worker
+        }
+    }
 }
 
 /// A repo has one identity across its worktrees. Older tickets identify
@@ -74,8 +100,8 @@ pub fn same_repo(a: &Ticket, b: &Ticket) -> bool {
 /// Whether this ticket can start with the host's lane counts. Earlier
 /// requests reserve available lanes in order, but a second request of a
 /// running repo waits without holding another repo back from a free lane.
-pub fn ready(queue: &[Ticket], number: u64, worker_lanes: u64) -> bool {
-    scheduling(queue, worker_lanes, false)
+pub fn ready(queue: &[Ticket], number: u64, lanes: Lanes) -> bool {
+    scheduling(queue, lanes, false)
         .iter()
         .any(|request| request.number == number && matches!(request.state, State::Eligible))
 }
@@ -125,7 +151,7 @@ pub struct Scheduling {
 /// Interpret every request with the very same reservations used to grant a
 /// lane, with cuts before ordinary waiters. A same-repo waiter reserves nothing. Turns exclude each other
 /// across worker and repo lanes too. Pausing prevents every new grant.
-pub fn scheduling(queue: &[Ticket], worker_lanes: u64, paused: bool) -> Vec<Scheduling> {
+pub fn scheduling(queue: &[Ticket], lanes: Lanes, paused: bool) -> Vec<Scheduling> {
     let ordered = in_order(queue.to_vec());
     let mut admitted: Vec<&Ticket> = ordered.iter().filter(|t| t.ran.is_some()).collect();
     let mut decisions: Vec<Scheduling> = admitted
@@ -133,7 +159,7 @@ pub fn scheduling(queue: &[Ticket], worker_lanes: u64, paused: bool) -> Vec<Sche
         .map(|ticket| Scheduling { number: ticket.number, state: State::Running, reasons: vec![] })
         .collect();
     for ticket in ordered.iter().filter(|t| t.ran.is_none()) {
-        let decision = reservation(ticket, &admitted, worker_lanes, paused);
+        let decision = reservation(ticket, &admitted, lanes, paused);
         if matches!(decision.state, State::Eligible) {
             admitted.push(ticket);
         }
@@ -143,13 +169,8 @@ pub fn scheduling(queue: &[Ticket], worker_lanes: u64, paused: bool) -> Vec<Sche
 }
 
 /// One admission decision, with earlier reservations already applied.
-fn reservation(
-    ticket: &Ticket,
-    admitted: &[&Ticket],
-    worker_lanes: u64,
-    paused: bool,
-) -> Scheduling {
-    let limit = if ticket.repo_lane.is_some() { 1 } else { worker_lanes };
+fn reservation(ticket: &Ticket, admitted: &[&Ticket], lanes: Lanes, paused: bool) -> Scheduling {
+    let limit = lanes.of(ticket);
     let occupied: Vec<_> = admitted.iter().copied().filter(|t| same_lane(t, ticket)).collect();
     let own: Vec<_> = admitted
         .iter()
@@ -235,6 +256,7 @@ pub struct Observed {
 pub struct Snapshot {
     pub paused: bool,
     pub worker: Capacity,
+    pub slow: Capacity,
     pub repos: Vec<RepoLane>,
     pub running: Vec<Observed>,
     pub waiting: Vec<Observed>,
@@ -441,19 +463,20 @@ const SETUP: [&str; 15] = [
 /// and waiting arrays each put cuts first, then follow ask time and request number. Repo lanes
 /// are separate from worker capacity and sorted by their whole identity.
 /// Each request's `command` is [`status_command`].
-pub fn snapshot(queue: &[Ticket], worker_lanes: u64, paused: bool, now: u64) -> Snapshot {
+pub fn snapshot(queue: &[Ticket], lanes: Lanes, paused: bool, now: u64) -> Snapshot {
     let ordered = in_order(queue.to_vec());
-    let decisions = scheduling(&ordered, worker_lanes, paused);
+    let decisions = scheduling(&ordered, lanes, paused);
     let mut repos: Vec<String> = ordered.iter().filter_map(|t| t.repo_lane.clone()).collect();
     repos.sort();
     repos.dedup();
     let repos = repos
         .into_iter()
-        .map(|repo| RepoLane { occupancy: occupancy(&ordered, Some(&repo), 1), repo })
+        .map(|repo| RepoLane { occupancy: occupancy(&ordered, Some(&repo), false, 1), repo })
         .collect();
     let mut result = Snapshot {
         paused,
-        worker: occupancy(&ordered, None, worker_lanes),
+        worker: occupancy(&ordered, None, false, lanes.worker),
+        slow: occupancy(&ordered, None, true, lanes.slow),
         repos,
         running: vec![],
         waiting: vec![],
@@ -476,10 +499,15 @@ pub fn snapshot(queue: &[Ticket], worker_lanes: u64, paused: bool, now: u64) -> 
     result
 }
 
-fn occupancy(queue: &[Ticket], repo_lane: Option<&str>, capacity: u64) -> Capacity {
-    let used =
-        queue.iter().filter(|t| t.ran.is_some() && t.repo_lane.as_deref() == repo_lane).count()
-            as u64;
+fn occupancy(queue: &[Ticket], repo_lane: Option<&str>, slow: bool, capacity: u64) -> Capacity {
+    let used = queue
+        .iter()
+        .filter(|t| {
+            t.ran.is_some()
+                && t.repo_lane.as_deref() == repo_lane
+                && (repo_lane.is_some() || t.slow == slow)
+        })
+        .count() as u64;
     Capacity { capacity, used, free: capacity.saturating_sub(used) }
 }
 
@@ -487,6 +515,7 @@ fn occupancy(queue: &[Ticket], repo_lane: Option<&str>, capacity: u64) -> Capaci
 pub fn lane(ticket: &Ticket) -> String {
     match &ticket.repo_lane {
         Some(repo) => format!("repo {repo}"),
+        None if ticket.slow => "slow".to_string(),
         None => "worker".to_string(),
     }
 }
@@ -593,6 +622,7 @@ mod tests {
             repo: None,
             is_turn: false,
             candidate: false,
+            slow: false,
             validation: None,
             asked,
             ran: None,
@@ -647,9 +677,29 @@ mod tests {
         let mut b = ticket(3, "/b/one", 102);
         b.repo = Some("b".into());
         let queue = [a, another_a, b];
-        assert!(!ready(&queue, 2, 2));
-        assert!(ready(&queue, 3, 2));
-        assert!(!ready(&queue, 3, 1));
+        assert!(!ready(&queue, 2, Lanes { worker: 2, slow: 1 }));
+        assert!(ready(&queue, 3, Lanes { worker: 2, slow: 1 }));
+        assert!(!ready(&queue, 3, Lanes { worker: 1, slow: 1 }));
+    }
+
+    #[test]
+    fn a_slow_gate_runs_in_its_own_lanes_beside_the_worker_lanes() {
+        let lanes = Lanes { worker: 2, slow: 1 };
+        let ticket = |number, slow, ran: Option<u64>| Ticket {
+            repo: Some(format!("r{number}")),
+            slow,
+            ran,
+            ..ticket(number, &format!("/r{number}"), 0)
+        };
+        let busy = [ticket(1, false, Some(1)), ticket(2, false, Some(1))];
+        let mut queue = busy.to_vec();
+        queue.push(ticket(3, true, None));
+        assert!(ready(&queue, 3, lanes), "full worker lanes leave the slow lane free");
+        queue.push(ticket(4, true, None));
+        assert!(!ready(&queue, 4, lanes), "one slow lane runs one slow gate");
+        let seen = snapshot(&queue, lanes, false, 5);
+        assert_eq!((seen.worker.used, seen.slow.capacity), (2, 1));
+        assert_eq!(lane(&queue[2]), "slow");
     }
 
     #[test]
@@ -663,13 +713,19 @@ mod tests {
         b.repo = Some("a".into());
         b.is_turn = true;
         b.candidate = true;
-        assert!(ready(&[a.clone(), b.clone()], 2, 2));
-        assert!(!ready(&[a.clone(), b.clone()], 2, 1));
+        assert!(ready(&[a.clone(), b.clone()], 2, Lanes { worker: 2, slow: 1 }));
+        assert!(!ready(&[a.clone(), b.clone()], 2, Lanes { worker: 1, slow: 1 }));
         b.candidate = false;
-        assert!(!ready(&[a.clone(), b.clone()], 2, 2), "ordinary work retains exclusion");
+        assert!(
+            !ready(&[a.clone(), b.clone()], 2, Lanes { worker: 2, slow: 1 }),
+            "ordinary work retains exclusion"
+        );
         a.candidate = false;
         b.candidate = true;
-        assert!(!ready(&[a, b], 2, 2), "a barrier excludes speculative validation");
+        assert!(
+            !ready(&[a, b], 2, Lanes { worker: 2, slow: 1 }),
+            "a barrier excludes speculative validation"
+        );
     }
 
     #[test]
@@ -772,7 +828,7 @@ mod tests {
         runs.command = "afkconvoy exclusive -- ./gate.sh".into();
         let mut waits = ticket(2, "/a", 110);
         waits.command = "sh -c export DATABASE_URL=postgres://secret\ncargo nextest run\n".into();
-        let seen = snapshot(&[runs, waits], 1, false, 150);
+        let seen = snapshot(&[runs, waits], Lanes { worker: 1, slow: 1 }, false, 150);
         assert_eq!(seen.running[0].ticket.command, "afkconvoy exclusive -- ./gate.sh");
         assert_eq!(seen.waiting[0].ticket.command, "cargo nextest run");
         assert_eq!(seen.waiting[0].scheduling.state, State::Waiting);

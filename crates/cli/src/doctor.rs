@@ -1897,7 +1897,7 @@ fn exclusive_json(standing: Result<(Vec<Ticket>, bool)>, now: u64) -> Value {
                 Err(error) => return json!({"error": format!("{error:#}")}),
             };
             let observation =
-                afkconvoy_core::exclusive::snapshot(&live, settings.gate_lanes(), paused, now);
+                afkconvoy_core::exclusive::snapshot(&live, settings.lanes(), paused, now);
             let lane = |repo: Option<&str>| {
                 let each: Vec<_> = observation
                     .running

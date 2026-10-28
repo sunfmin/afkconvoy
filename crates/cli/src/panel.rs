@@ -279,7 +279,7 @@ pub struct Host {
     /// The host's exclusive queue, with running requests before waiters.
     pub exclusive: Vec<Ticket>,
     pub exclusive_paused: bool,
-    pub gate_lanes: u64,
+    pub gate_lanes: afkconvoy_core::exclusive::Lanes,
     /// The hours of its local time a fleet may put it to sleep in; `None`
     /// where its host settings keep it awake.
     pub sleep_hours: Option<Hours>,
@@ -305,7 +305,7 @@ impl Host {
             admission: Admission::read(dir).map_err(|error| format!("{error:#}")),
             exclusive: shared.exclusive,
             exclusive_paused: shared.exclusive_paused,
-            gate_lanes: settings.gate_lanes(),
+            gate_lanes: settings.lanes(),
             sleep_hours: host_settings::host_sleep(),
             kit: crate::kit::load().map_err(|error| format!("{error:#}")),
             worker_health: crate::health::show(),
@@ -1716,7 +1716,7 @@ mod tests {
             admission: Ok(Admission { shares: SHARES, said: vec![], reading, span: 600 }),
             exclusive: vec![],
             exclusive_paused: false,
-            gate_lanes: 1,
+            gate_lanes: afkconvoy_core::exclusive::Lanes { worker: 1, slow: 1 },
             sleep_hours: Some(SLEEP_HOURS),
             kit: Ok(Kit::default()),
             worker_health: Ok(crate::health::Health::default()),

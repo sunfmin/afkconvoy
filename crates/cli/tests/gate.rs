@@ -478,3 +478,17 @@ fn a_workers_first_green_run_records_its_fresh_build_and_a_later_one_leaves_it()
     assert_eq!(world.afk(&["gate"]).ok()["status"], "green");
     assert_eq!(afkconvoy::measure::fresh(&repo).unwrap(), Some(10), "recorded once");
 }
+
+/// A gate beside others on its host is kept to its share of the cores
+/// (sunfmin/control#245): the cores over every worker and slow lane.
+#[test]
+fn a_gate_is_given_its_share_of_the_host_s_cores() {
+    let world = World::new();
+    world.set_gate("echo \"$CARGO_BUILD_JOBS $NEXTEST_TEST_THREADS\" > ../share.txt");
+    world.say_host_settings(serde_json::json!({"gate_lanes": 2, "slow_gate_lanes": 1}));
+    assert_eq!(world.afk(&["gate"]).ok()["status"], "green");
+    let cores = std::thread::available_parallelism().unwrap().get() as u64;
+    let share = (cores / 3).max(1);
+    let said = std::fs::read_to_string(world.root.join("share.txt")).unwrap();
+    assert_eq!(said.trim(), format!("{share} {share}"));
+}
