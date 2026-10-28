@@ -2,8 +2,10 @@
 use crate::acting::Acting;
 use crate::exclusive::Permit;
 use crate::gh::{GitHub, Tracker};
-use crate::git::{REMOTE, Repo};
+use crate::git::Repo;
 use crate::lock::standing_locks;
+use crate::remote::Fresh;
+use crate::remote::Push;
 use afkconvoy_core::config::Config;
 use afkconvoy_core::ending::Ending;
 use afkconvoy_core::gate::{GateCommand, Tree};
@@ -16,7 +18,8 @@ use std::time::Duration;
 
 /// Fetches the base branch as it stands now, including its objects.
 pub fn base(repo: &Repo, config: &Config) -> Result<String> {
-    repo.fetched(&format!("refs/heads/{}", config.base_branch))?
+    repo.remote()
+        .fetched(&format!("refs/heads/{}", config.base_branch), Fresh::Process)?
         .ok_or_else(|| anyhow!("the remote has no branch {:?}", config.base_branch))
 }
 
@@ -62,7 +65,7 @@ pub fn certify(repo: &Repo, config: &Config, tip: &str, host: &str, now: u64) ->
     }
     if !run.ran.green() {
         let red = crate::repair::red_ref(repo, &config.base_branch);
-        repo.git(&["push", "--quiet", "--force", REMOTE, &format!("{tip}:{red}")])?;
+        repo.remote().push(&Push::set(tip, &red).force())?;
         Acting::new("gate").in_checkout(Some(repo.clone())).say(
             crate::clock(),
             format!("base tip {tip} is red; worker turns wait for its repair"),
@@ -235,7 +238,8 @@ pub(crate) fn cut_onto(
 /// of a merge is left as it is.
 fn own_head(repo: &Repo, branch: &str) -> Result<String> {
     let tip = repo
-        .fetched(&format!("refs/heads/{branch}"))?
+        .remote()
+        .fetched(&format!("refs/heads/{branch}"), Fresh::Process)?
         .ok_or_else(|| anyhow!("the remote has no branch {branch:?}"))?;
     let here = repo.git(&["rev-parse", "HEAD"])?;
     let merging = repo.try_git(&["rev-parse", "-q", "--verify", "MERGE_HEAD"])?.ok;
@@ -429,7 +433,7 @@ fn run(
         return Ok(answer);
     };
     let head = repo.git(&["rev-parse", "HEAD"])?;
-    repo.git(&["push", "--quiet", REMOTE, &format!("{head}:refs/heads/{}", pr.head_branch)])?;
+    repo.remote().push(&Push::set(&head, &format!("refs/heads/{}", pr.head_branch)))?;
     crate::candidates::run(
         crate::candidates::Request { repo, config, tracker, pr, of, host, now },
         answer,

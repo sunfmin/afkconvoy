@@ -1,6 +1,9 @@
 //! Read-only migration of a line left by an older release.
 use crate::gh::Tracker;
-use crate::git::{Listing, Repo};
+use crate::git::Repo;
+use crate::remote::Fresh;
+use crate::remote::Listing;
+use crate::remote::Push;
 use afkconvoy_core::config::Config;
 use afkconvoy_core::landing::LandedPr;
 use afkconvoy_core::legacy::{Line, joins_onto, train_refs};
@@ -18,7 +21,8 @@ pub struct Legacy {
 impl Legacy {
     /// The train as the remote has it now.
     pub fn read(repo: &Repo, config: &Config) -> Result<Legacy> {
-        Legacy::listed(repo, config, &repo.listing(&config.base_branch)?)
+        let remote = crate::remote::Remote::open(repo, &config.base_branch)?;
+        Legacy::listed(repo, config, remote.listing()?)
     }
 
     /// The train as `listing` saw it.
@@ -107,12 +111,7 @@ fn recovery(
     }
     let checkout = Repo::new(worktree.path);
     let head = checkout.git(&["rev-parse", "HEAD"])?;
-    checkout.git(&[
-        "push",
-        "--quiet",
-        crate::git::REMOTE,
-        &format!("{head}:refs/heads/{}", worktree.branch),
-    ])?;
+    checkout.remote().push(&Push::set(&head, &format!("refs/heads/{}", worktree.branch)))?;
     let title = format!("Preserve legacy landing {key}");
     let body =
         format!("Preserve work left by an older release.\n\nCloses {}", gh.tracker.issue(issue));
@@ -172,11 +171,10 @@ pub fn migrate(
     host: &str,
     now: u64,
 ) -> Result<serde_json::Value> {
-    use crate::git::REMOTE;
     use afkconvoy_core::gate::{GateCommand, Proven, Tree};
     use serde_json::json;
     let refs = train_refs(repo.layout(), &config.base_branch);
-    let Some(old) = repo.remote_sha(&refs.line)? else {
+    let Some(old) = repo.remote().sha(&refs.line, Fresh::Process)? else {
         return Ok(json!({"outcome":"idle"}));
     };
     let legacy = Legacy::read(repo, config)?;
@@ -185,21 +183,9 @@ pub fn migrate(
         worktree.stop_for_continuation()?;
     }
     let retire = || -> Result<()> {
-        repo.git(&[
-            "push",
-            "--quiet",
-            &format!("--force-with-lease={}:{}", refs.line, old),
-            REMOTE,
-            &format!(":{}", refs.line),
-        ])?;
-        if let Some(red) = repo.remote_sha(&refs.red)? {
-            let _ = repo.try_git(&[
-                "push",
-                "--quiet",
-                &format!("--force-with-lease={}:{}", refs.red, red),
-                REMOTE,
-                &format!(":{}", refs.red),
-            ]);
+        repo.remote().push(&Push::delete(&refs.line).leased(&old))?;
+        if let Some(red) = repo.remote().sha(&refs.red, Fresh::Process)? {
+            let _ = repo.remote().try_push(&Push::delete(&refs.red).leased(&red));
         }
         Ok(())
     };
@@ -281,7 +267,7 @@ pub fn retire_proposals(fleet: &mut crate::fleet::Fleet, me: &crate::claims::Me)
         // Check the remote again before stopping a local worker. A moved
         // claim is another fleet's; releasing below is leased to this sha too.
         let refname = afkconvoy_core::claims::run_ref(fleet.repo.layout(), &claim.key);
-        if fleet.repo.remote_sha(&refname)?.as_deref() != Some(claim.sha.as_str()) {
+        if fleet.remote.sha(&refname, Fresh::Process)?.as_deref() != Some(claim.sha.as_str()) {
             continue;
         }
         if local_owner {
@@ -310,7 +296,7 @@ fn report_proposals(fleet: &crate::fleet::Fleet) -> Result<()> {
     let Some(bound) = &fleet.config.bound else { return Ok(()) };
     let team = &bound.team.repo;
     let refname = fleet.repo.layout().under(&format!("migration/proposals/{}", bound.team));
-    if fleet.repo.remote_sha(&refname)?.is_some() {
+    if fleet.remote.sha(&refname, Fresh::Process)?.is_some() {
         return Ok(());
     }
     for pr in fleet.gh.open_prs_of(team)? {
@@ -345,6 +331,6 @@ fn report_proposals(fleet: &crate::fleet::Fleet) -> Result<()> {
         fleet.gh.gh(&["pr", "comment", &number, "--repo", team.as_str(), "--body", &body])?;
     }
     let sha = fleet.repo.record_commit("convoy:migration retired=proposals")?;
-    fleet.repo.git(&["push", "--quiet", crate::git::REMOTE, &format!("{sha}:{refname}")])?;
+    fleet.remote.push(&Push::set(&sha, &refname))?;
     Ok(())
 }

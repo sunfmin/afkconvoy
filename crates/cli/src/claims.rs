@@ -18,7 +18,10 @@ use afkconvoy_core::tracker::{Claimed, Tracker};
 use anyhow::{Result, bail};
 use serde_json::{Value, json};
 
-use crate::git::{REMOTE, RemoteRecord, Repo};
+use crate::git::Repo;
+use crate::remote::Fresh;
+use crate::remote::Push;
+use crate::remote::RemoteRecord;
 
 /// Who is acting, and when.
 pub struct Me {
@@ -64,7 +67,11 @@ impl Scan {
     /// unreadable must not look like one holding none.
     pub fn read(repo: &Repo) -> Result<Scan> {
         let (layout, tracker) = (repo.layout(), crate::checkout_list::tracker_of(repo)?);
-        Ok(Scan::among(layout, tracker, repo.remote_records(&layout.every(""))?))
+        Ok(Scan::among(
+            layout,
+            tracker,
+            repo.remote().records(&[&layout.every("")], Fresh::Process)?,
+        ))
     }
 
     /// The claims, heartbeats and runs among `records`: the fleet's refs
@@ -163,7 +170,7 @@ pub fn claim_json(claim: &Claim) -> Value {
 fn push_heartbeat(repo: &Repo, scan: &mut Scan, me: &Me) -> Result<()> {
     let sha = repo.record_commit(&write_heartbeat(&me.instance, &me.host, me.now))?;
     let refname = heartbeat_ref(repo.layout(), &me.instance);
-    repo.git(&["push", "--quiet", "--force", REMOTE, &format!("{sha}:{refname}")])?;
+    repo.remote().push(&Push::set(&sha, &refname).force())?;
     let beat = Beat { ts: me.now, host: me.host.clone(), sha };
     scan.heartbeats.insert(me.instance.to_string(), beat);
     Ok(())
@@ -176,8 +183,7 @@ fn push_heartbeat(repo: &Repo, scan: &mut Scan, me: &Me) -> Result<()> {
 pub fn drop_heartbeat(repo: &Repo, scan: &mut Scan, instance: &InstanceId) -> Result<bool> {
     let Some(beat) = scan.heartbeats.get(instance.as_str()) else { return Ok(true) };
     let refname = heartbeat_ref(repo.layout(), instance);
-    let lease = format!("--force-with-lease={refname}:{}", beat.sha);
-    let pushed = repo.try_git(&["push", "--quiet", REMOTE, &lease, &format!(":{refname}")])?;
+    let pushed = repo.remote().try_push(&Push::delete(&refname).leased(&beat.sha))?;
     if pushed.ok {
         scan.heartbeats.remove(instance.as_str());
     }
@@ -265,15 +271,11 @@ fn put(repo: &Repo, scan: &mut Scan, me: &Me, refname: &str, how: Take) -> Resul
         match step {
             ClaimStep::Beat => push_heartbeat(repo, scan, me)?,
             ClaimStep::Push => {
-                let target = format!("{sha}:{refname}");
-                let lease;
-                let mut args = vec!["push", "--quiet", REMOTE];
+                let mut push = Push::set(&sha, refname);
                 if let Some(expected) = how.leased_to() {
-                    lease = format!("--force-with-lease={refname}:{expected}");
-                    args.push(&lease);
+                    push = push.leased(expected);
                 }
-                args.push(&target);
-                pushed = Some(repo.try_git(&args)?);
+                pushed = Some(repo.remote().try_push(&push)?);
             }
         }
     }
@@ -283,7 +285,7 @@ fn put(repo: &Repo, scan: &mut Scan, me: &Me, refname: &str, how: Take) -> Resul
     }
     // Lost only if somebody else's claim is where ours would be.
     let detail = pushed.stderr.trim().to_string();
-    let there = repo.remote_records(refname)?.pop();
+    let there = repo.remote().records(&[refname], Fresh::Process)?.pop();
     let moved = match (&there, how.leased_to()) {
         (None, None) => false,
         (None, Some(_)) => true,
@@ -375,7 +377,7 @@ pub fn retake_run(repo: &Repo, scan: &mut Scan, me: &Me, claim: &RunClaim) -> Re
 fn push_over(repo: &Repo, key: &str, claim: &str) -> Result<String> {
     let refname = over_ref(repo.layout(), key);
     let sha = repo.record_commit(&write_over(claim))?;
-    repo.git(&["push", "--quiet", "--force", REMOTE, &format!("{sha}:{refname}")])?;
+    repo.remote().push(&Push::set(&sha, &refname).force())?;
     Ok(refname)
 }
 
@@ -385,12 +387,7 @@ pub fn drop_run(repo: &Repo, scan: &mut Scan, claim: &RunClaim) -> Result<()> {
     unput(repo, &run_ref(repo.layout(), &claim.key), &claim.sha)?;
     if claim.over {
         // What is left of it names a claim that is gone, and declares nothing.
-        repo.try_git(&[
-            "push",
-            "--quiet",
-            REMOTE,
-            &format!(":{}", over_ref(repo.layout(), &claim.key)),
-        ])?;
+        repo.remote().try_push(&Push::delete(&over_ref(repo.layout(), &claim.key)))?;
     }
     scan.runs.retain(|run| run.key != claim.key);
     Ok(())
@@ -402,7 +399,7 @@ pub fn drop_run(repo: &Repo, scan: &mut Scan, claim: &RunClaim) -> Result<()> {
 pub fn push_ask(repo: &Repo, scan: &mut Scan, name: &str, host: &str, now: u64) -> Result<String> {
     let refname = asked_ref(repo.layout(), name);
     let sha = repo.record_commit(&write_asked(now, host))?;
-    repo.git(&["push", "--quiet", "--force", REMOTE, &format!("{sha}:{refname}")])?;
+    repo.remote().push(&Push::set(&sha, &refname).force())?;
     scan.asks.insert(name.to_string(), Ask { ts: now, sha });
     Ok(refname)
 }
@@ -412,9 +409,10 @@ pub fn push_ask(repo: &Repo, scan: &mut Scan, name: &str, host: &str, now: u64) 
 /// human's, and stands. Already gone counts as deleted.
 pub fn drop_ask(repo: &Repo, scan: &mut Scan, name: &str, ask: &Ask) -> Result<()> {
     let refname = asked_ref(repo.layout(), name);
-    let lease = format!("--force-with-lease={refname}:{}", ask.sha);
-    let pushed = repo.try_git(&["push", "--quiet", REMOTE, &lease, &format!(":{refname}")])?;
-    if !pushed.ok && repo.remote_sha(&refname)?.as_deref() == Some(ask.sha.as_str()) {
+    let pushed = repo.remote().try_push(&Push::delete(&refname).leased(&ask.sha))?;
+    if !pushed.ok
+        && repo.remote().sha(&refname, Fresh::Process)?.as_deref() == Some(ask.sha.as_str())
+    {
         bail!("the ask {refname} is still on the remote: {}", pushed.stderr.trim());
     }
     scan.asks.remove(name);
@@ -433,7 +431,7 @@ pub fn declare_over(repo: &Repo, key: &str) -> Result<Value> {
         );
     }
     let layout = repo.layout();
-    let Some(claim) = repo.remote_records(&run_ref(layout, key))?.pop() else {
+    let Some(claim) = repo.remote().records(&[&run_ref(layout, key)], Fresh::Process)?.pop() else {
         bail!("no run {key:?} is going: there is nothing to declare over");
     };
     let refname = push_over(repo, key, &claim.sha)?;
@@ -444,9 +442,8 @@ pub fn declare_over(repo: &Repo, key: &str) -> Result<Value> {
 /// — so a claim somebody took meanwhile is never deleted from under them.
 /// Already gone counts as released.
 fn unput(repo: &Repo, refname: &str, expected: &str) -> Result<()> {
-    let lease = format!("--force-with-lease={refname}:{expected}");
-    let pushed = repo.try_git(&["push", "--quiet", REMOTE, &lease, &format!(":{refname}")])?;
-    let now_at = if pushed.ok { None } else { repo.remote_sha(refname)? };
+    let pushed = repo.remote().try_push(&Push::delete(refname).leased(expected))?;
+    let now_at = if pushed.ok { None } else { repo.remote().sha(refname, Fresh::Process)? };
     match now_at {
         None => Ok(()),
         Some(sha) if sha == expected => {

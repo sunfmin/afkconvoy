@@ -27,6 +27,8 @@ use crate::config;
 use crate::gh::GitHub;
 use crate::git::{REMOTE, Repo};
 use crate::launch::Launches;
+use crate::remote::Fresh;
+use crate::remote::Push;
 use crate::role;
 use crate::tools;
 use crate::topic::{Explain, See};
@@ -306,7 +308,7 @@ pub fn startup(repo: &Repo, now: u64, launches: &Launches) -> Result<Vec<String>
     let branch = &config.base_branch;
     let mut warnings = vec![];
 
-    if repo.remote_sha(&format!("refs/heads/{branch}"))?.is_none() {
+    if repo.remote().sha(&format!("refs/heads/{branch}"), Fresh::Process)?.is_none() {
         return Err(See::Troubleshooting.refusal(no_base_branch(branch)));
     }
     match base_check(branch, &GitHub::of(repo)?.protection(branch)) {
@@ -317,17 +319,12 @@ pub fn startup(repo: &Repo, now: u64, launches: &Launches) -> Result<Vec<String>
     if let Some(why) = public_tracker(repo, now, false)? {
         return Err(See::Troubleshooting.refusal(why));
     }
-    crate::publication::check(repo).see(See::Troubleshooting)?;
+    crate::remote::check(repo).see(See::Troubleshooting)?;
 
     // The probe's own name: two starts probing at once never meet on one ref.
     let token = format!("{now}-{}", crate::unique());
     let commit = repo.record_commit(PROBE_RECORD)?;
-    let push = |refname: &str| match repo.try_git(&[
-        "push",
-        "--quiet",
-        REMOTE,
-        &format!("{commit}:{refname}"),
-    ]) {
+    let push = |refname: &str| match repo.remote().try_push(&Push::set(&commit, refname)) {
         Ok(ran) => answer(ran.ok, &ran.stderr),
         Err(error) => Answer::Unreached(format!("{error:#}")),
     };
@@ -355,7 +352,7 @@ pub fn startup(repo: &Repo, now: u64, launches: &Launches) -> Result<Vec<String>
     let patterns: Vec<String> = Layout::ALL.into_iter().map(|layout| layout.every("")).collect();
     let patterns: Vec<&str> = patterns.iter().map(String::as_str).collect();
     let mut litter = vec![];
-    for record in repo.remote_records_in(&patterns)? {
+    for record in repo.remote().records(&patterns, Fresh::Process)? {
         let Some(home) = Layout::ALL.into_iter().find(|home| home.kept(&record.name).is_some())
         else {
             continue;
@@ -370,10 +367,8 @@ pub fn startup(repo: &Repo, now: u64, launches: &Launches) -> Result<Vec<String>
         }
     }
     if !litter.is_empty() {
-        let mut args = vec!["push", "--quiet", REMOTE, "--delete"];
-        args.extend(litter.iter().map(String::as_str));
         // Soft: a ref that stays is litter the next start deletes.
-        let _ = repo.try_git(&args);
+        let _ = repo.remote().try_push(&Push::deleting(litter.iter().map(String::as_str)));
     }
     // Recorded so a later doctor can say a harness that is missing, logged
     // out, or unable to take the fleet's flags, without starting it again.
