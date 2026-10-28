@@ -211,7 +211,11 @@ fn the_last_word_is_on_the_board_before_the_claim_is_released() {
         assert_eq!(world.claims(), []);
         assert_eq!((board(&world), board_id(&world)), (last, id));
         let writes = comment_calls(&world);
-        assert!(!writes.iter().any(|call| call.contains("PATCH")), "{writes:?}");
+        let board = format!("/issues/comments/{id}");
+        assert!(
+            !writes.iter().any(|call| call.contains("PATCH") && call.contains(&board)),
+            "the board is left as the cut tick wrote it: {writes:?}"
+        );
     }
 }
 

@@ -25,6 +25,7 @@ use anyhow::{Context, bail};
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use serde_json::{Value, json};
 
+pub mod account;
 pub mod acting;
 pub mod admission;
 pub mod advance;
@@ -2766,6 +2767,7 @@ enum Command {
     /// - adding or removing a flow label, a `stage:` label, the escalate label or the lock label (`gh issue edit --add-label`, `--remove-label`, `gh issue create --label`, and any write of an issue's labels through `gh api`)
     /// - writing a stage record by hand: only `afkconvoy verdict` writes one
     /// - writing an intake record by hand: only `afkconvoy intake` writes one, and it is what puts a flow label on for a worker
+    /// - writing a work account or a worker start by hand: the fleet writes each, and a worker writes neither
     /// - merging a PR (`gh pr merge`, or the merge endpoint through `gh api`)
     /// - pushing the base branch (`git push` with a refspec that lands on it, `--all`, `--mirror`)
     ///

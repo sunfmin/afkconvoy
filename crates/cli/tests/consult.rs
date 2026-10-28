@@ -647,8 +647,16 @@ fn an_escalation_says_so_on_the_tick_line_and_names_the_command_that_answers_it(
          again under your ruling — `{answer}`\n- close it: the fleet leaves a closed issue \
          alone — `gh issue close 7`"
     );
-    let comment = world.comments(7).pop().unwrap();
-    assert!(comment.starts_with("<!--convoy:escalation "), "{comment}");
+    let comments = world.comments(7);
+    assert_eq!(
+        comments.iter().filter(|body| body.starts_with("<!--convoy:account ")).count(),
+        1,
+        "an escalation leaves one work account: {comments:?}"
+    );
+    let comment = comments
+        .into_iter()
+        .find(|body| body.starts_with("<!--convoy:escalation "))
+        .expect("an escalation comment");
     assert!(comment.trim_end().ends_with(&ways_out), "{comment}");
     let url = world.comment_url(7, &comment);
     world.comment(7, "A later status comment is not the reason for escalation.");
@@ -824,8 +832,17 @@ fn a_tripped_breaker_goes_to_its_consult_and_one_tripping_again_to_a_human() {
     declare(&world, "review", "reject", "Still not.");
     assert_eq!(did(&tick(&world, 1540)), ["advance 7 done"]);
     assert!(with_a_human(&world), "{:?}", world.labels(7));
-    assert!(world.comments(7).pop().unwrap().contains("The breaker `max_rework` tripped"));
-    let comment = world.comments(7).pop().unwrap();
+    let comments = world.comments(7);
+    assert_eq!(
+        comments.iter().filter(|body| body.starts_with("<!--convoy:account ")).count(),
+        1,
+        "an escalation leaves one work account: {comments:?}"
+    );
+    let comment = comments
+        .into_iter()
+        .find(|body| body.starts_with("<!--convoy:escalation"))
+        .expect("an escalation comment");
+    assert!(comment.contains("The breaker `max_rework` tripped"), "{comment}");
     let url = world.comment_url(7, &comment);
     world.comment(7, "Another status update.");
     for command in ["plan", "doctor"] {
@@ -877,8 +894,12 @@ fn already_satisfied_over_a_branch_that_holds_work_goes_to_its_consult() {
     declare(&world, "build", "already-satisfied", "Nothing to do.");
     assert_eq!(did(&tick(&world, 1090)), ["advance 7 done"]);
     assert_eq!(world.state(7), "open");
-    assert!(world.comments(7).last().unwrap().contains("half.txt"));
-    assert!(!world.comments(7).last().unwrap().contains("landed.txt"));
+    let evidence = world
+        .comments(7)
+        .into_iter()
+        .find(|body| body.contains("half.txt"))
+        .expect("the comment that names the work");
+    assert!(!evidence.contains("landed.txt"), "{evidence}");
     consulted_on(&world, 1180, "already-satisfied");
 }
 

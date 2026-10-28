@@ -252,7 +252,11 @@ fn the_brief_s_line_declares_from_the_role_s_directory_with_the_commits_of_the_e
         .output()
         .unwrap();
     assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stdout));
-    let record = &world.comments(7)[1];
+    let record = world
+        .comments(7)
+        .into_iter()
+        .find(|body| body.contains("<!--convoy:stage "))
+        .expect("the stage record");
     assert!(record.contains(" stage=build verdict=pass "), "{record}");
     let ran = " role_commit=role-abc team_commit=team-def harness=claude-code-->";
     assert!(record.contains(ran), "{record}");
