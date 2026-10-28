@@ -124,7 +124,10 @@ fn a_tick_opens_one_issue_for_a_slow_gate_and_no_other_while_it_is_open() {
         .unwrap_or_else(|| panic!("{findings}"));
     assert_eq!(finding["severity"], "warning");
     assert_eq!(finding["what"], format!("the gate is slow: #{number} is open for it"));
-    assert_eq!(finding["fix"], format!("afkconvoy show --issue {number}"));
+    assert_eq!(
+        finding["fix"],
+        format!("afkconvoy show -C '{}' --issue {number}", world.clone.display())
+    );
     let said = finding["evidence"].as_str().unwrap();
     assert!(said.contains("on the host mini") && said.contains("gate limit of 600s"), "{said}");
     for (commit, seconds) in &evidence {

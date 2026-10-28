@@ -409,7 +409,10 @@ fn a_worker_idle_past_half_an_hour_on_its_landing_gate_is_not_called_stopped() {
     let ended = world.afk(&["doctor", "--host", "h1", "--now", "8200"]).json;
     let stopped = stopped_for(&ended);
     assert_eq!(stopped.len(), 1, "{ended}");
-    assert_eq!(stopped[0]["fix"], "afkconvoy tick --instance alpha");
+    assert_eq!(
+        stopped[0]["fix"],
+        format!("afkconvoy tick '{}' --instance alpha", world.clone.display())
+    );
 }
 
 fn nudge_record(world: &World) -> PathBuf {
