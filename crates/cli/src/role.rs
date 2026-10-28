@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use afkconvoy_core::casting;
 use afkconvoy_core::claims::Claim;
-use afkconvoy_core::config::{Bound, RepoLabels};
+use afkconvoy_core::config::{Bound, Config, RepoLabels};
 use afkconvoy_core::guard::WritesNothing;
 use afkconvoy_core::harness::Harness;
 use afkconvoy_core::plan::closing_pr;
@@ -544,6 +544,28 @@ pub fn current(repo: &Repo, bound: &Bound, labels: &RepoLabels) -> Option<Team> 
     kept.ok().map(|kept| kept.team)
 }
 
+/// Every harness `doctor` and a startup probe say something of, for the
+/// checkout `repo` under `config`. `default` is what an unbound checkout
+/// with no named harness is asked about, and nothing calls for it.
+pub fn called_on(
+    repo: &Repo,
+    config: Option<&Config>,
+    default: Harness,
+) -> Vec<(Harness, Vec<String>)> {
+    if let Some(config) = config
+        && let Some(bound) = config.bound.as_ref()
+    {
+        let team = current(repo, bound, &config.labels());
+        return called_for(repo, team.as_ref());
+    }
+    match crate::named_harness::named(repo) {
+        Ok(Some(pinned)) => {
+            vec![(pinned, vec![format!("the harness {} this checkout names", pinned.key())])]
+        }
+        _ => vec![(default, vec![])],
+    }
+}
+
 /// Every harness the fleet of the checkout `repo`, bound to `team`, could be
 /// asked for, each with what calls for it: the host kit's first, every
 /// harness of each role's range (`casting::range`). No team (`current`) calls for the first alone.
@@ -593,21 +615,50 @@ pub fn check(launches: &Launches, called: &[(Harness, Vec<String>)]) -> Result<V
         };
 
         let said = |fault: String| launches.said(&fault, *harness, callers);
-        let takes = || harness.takes(proposed.as_str(), proposed.flags().as_deref());
+        // The default harness is asked its flags, and that question is its one
+        // start while a doctor budget stands. Another harness is asked its
+        // login first; its flags are asked only when that start has not
+        // happened. A tick has no budget, and asks both.
+        let tool = if *harness == launches.default() { None } else { tools::harness(&proposed) };
+        let flags_fault = if launches.adds_flags(*harness) && proposed.resolves() {
+            match crate::launch::once_per_program(harness.program(), "flags", || {
+                match proposed.flags() {
+                    Some(printed) => (true, printed),
+                    None => (false, String::new()),
+                }
+            }) {
+                crate::launch::Once::Already => None,
+                crate::launch::Once::Ran(ok, printed) => harness
+                    .takes(proposed.as_str(), ok.then_some(printed.as_str()))
+                    .err()
+                    .map(&said),
+            }
+        } else {
+            None
+        };
         checked.push(Checked {
             harness: *harness,
             callers: callers.clone(),
             command: proposed.as_str().to_string(),
-            tool: tools::harness(&proposed).filter(|_| *harness != launches.default()),
-            fault: proposed.fault().map(said),
-            flags_fault: if launches.adds_flags(*harness) && proposed.resolves() {
-                takes().err().map(said)
-            } else {
-                None
-            },
+            tool,
+            fault: proposed.fault().map(&said),
+            flags_fault,
         });
     }
     Ok(checked)
+}
+
+/// `check`, and the default harness's login, which `check` leaves to the
+/// look that follows it. A startup probe records this. It refuses nothing:
+/// one harness that cannot start does not stop the probe.
+pub fn observe(launches: &Launches, called: &[(Harness, Vec<String>)]) -> Vec<Checked> {
+    let Ok(mut checked) = check(launches, called) else { return vec![] };
+    for row in &mut checked {
+        if row.tool.is_none() {
+            row.tool = launches.of(row.harness).ok().flatten().as_ref().and_then(tools::harness);
+        }
+    }
+    checked
 }
 
 impl Checked {

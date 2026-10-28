@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::rc::Rc;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use afkconvoy_core::casting::CASTER_WORKTREE;
@@ -461,10 +461,41 @@ fn asked_from() -> PathBuf {
     home.filter(|home| home.is_dir()).unwrap_or_else(|| PathBuf::from("/"))
 }
 
-/// Whether orca is running. An orca that cannot say is not one a worker can
-/// be started through.
+static RUNNING: Mutex<Option<Arc<OnceLock<bool>>>> = Mutex::new(None);
+
+/// Whether orca is running, read once in this look. An orca that cannot say
+/// is not one a worker can be started through. A second ask waits on that
+/// read instead of starting `orca` again.
 pub fn running() -> bool {
-    orca(&["status"]).is_ok_and(|status| status["runtime"]["state"] == "ready")
+    let cell = {
+        let mut running = RUNNING.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        running.get_or_insert_with(|| Arc::new(OnceLock::new())).clone()
+    };
+    *cell
+        .get_or_init(|| orca(&["status"]).is_ok_and(|status| status["runtime"]["state"] == "ready"))
+}
+
+/// Forgets whether orca is running, so the next read asks again. A look
+/// begins through `look::begin`. Adding a repo does not forget this: orca
+/// is running then, and the look has not ended.
+pub(crate) fn forget_running() {
+    *RUNNING.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+}
+
+#[cfg(test)]
+pub(crate) fn hold_running(ready: bool) {
+    let cell = Arc::new(OnceLock::new());
+    cell.set(ready).expect("running cell is unset");
+    *RUNNING.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(cell);
+}
+
+#[cfg(test)]
+pub(crate) fn running_cached() -> Option<bool> {
+    RUNNING
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .as_ref()
+        .and_then(|cell| cell.get().copied())
 }
 
 /// What a start finds of an installed orca: whether it is running, and then
@@ -505,6 +536,46 @@ fn repo_list() -> Result<Value> {
 /// not ended, and the quota note stays the one already read.
 pub(crate) fn forget_listing() {
     *REPOS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+}
+
+/// Orca's worktree list, read once and shared with the next ask in this look.
+type WorktreesOnce = Arc<OnceLock<Result<Value, String>>>;
+
+/// Orca's worktree list, one read for this look. A second ask waits on the
+/// first instead of listing again. The lock is not held across `orca`.
+static WORKTREES: Mutex<Option<WorktreesOnce>> = Mutex::new(None);
+
+fn worktree_list() -> Result<Value> {
+    let cell = {
+        let mut listed = WORKTREES.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        listed.get_or_insert_with(|| Arc::new(OnceLock::new())).clone()
+    };
+    let stored =
+        cell.get_or_init(|| orca(&["worktree", "list"]).map_err(|error| format!("{error:#}")));
+    match stored {
+        Ok(value) => Ok(value.clone()),
+        Err(error) => bail!("{error}"),
+    }
+}
+
+pub(crate) fn forget_worktrees() {
+    *WORKTREES.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+}
+
+#[cfg(test)]
+pub(crate) fn hold_worktrees(value: Value) {
+    let cell = Arc::new(OnceLock::new());
+    cell.set(Ok(value)).ok();
+    *WORKTREES.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(cell);
+}
+
+#[cfg(test)]
+pub(crate) fn worktrees_cached() -> Option<Value> {
+    WORKTREES
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .as_ref()
+        .and_then(|cell| cell.get().and_then(|listed| listed.as_ref().ok().cloned()))
 }
 
 #[cfg(test)]
@@ -680,7 +751,7 @@ impl Worktree {
     /// The worktree orca links to issue `number` on this machine: the most
     /// recently active, when a stale leftover sits beside a live one.
     pub fn of_issue(source: &Source, number: u64) -> Result<Option<Worktree>> {
-        let listed = orca(&["worktree", "list"])?;
+        let listed = worktree_list()?;
         let rows = listed["worktrees"].as_array().cloned().unwrap_or_default();
         let mut hits: Vec<&Value> = rows
             .iter()
@@ -703,7 +774,7 @@ impl Worktree {
     /// Every worktree orca links to an issue of this checkout on this machine,
     /// with that issue.
     pub fn linked(source: &Source) -> Result<Vec<(u64, Worktree)>> {
-        let listed = orca(&["worktree", "list"])?;
+        let listed = worktree_list()?;
         let rows = listed["worktrees"].as_array().cloned().unwrap_or_default();
         Ok(rows
             .iter()
@@ -734,7 +805,7 @@ impl Worktree {
     /// Every session worktree, including the fleet's train, caster and
     /// watch: launch evidence applies to those sessions too.
     pub fn of_sessions(source: &Source) -> Result<Vec<(Option<u64>, Worktree)>> {
-        let listed = orca(&["worktree", "list"])?;
+        let listed = worktree_list()?;
         let rows = listed["worktrees"].as_array().cloned().unwrap_or_default();
         Ok(rows
             .iter()
@@ -758,7 +829,7 @@ impl Worktree {
     /// live. A main checkout is no worktree of a fleet's, and is left out.
     pub fn on_host() -> Result<Vec<OnHost>> {
         let repos = repo_list()?;
-        let listed = orca(&["worktree", "list"])?;
+        let listed = worktree_list()?;
         let ps = runtime()?;
         Ok(on_host(&repos, &listed, &ps))
     }
@@ -812,7 +883,7 @@ impl Worktree {
     /// The worktree created under `name` on this machine: linked to no issue,
     /// it is known by the name its directory was created under.
     pub fn named(source: &Source, created_as: &str) -> Result<Option<Worktree>> {
-        let listed = orca(&["worktree", "list"])?;
+        let listed = worktree_list()?;
         let rows = listed["worktrees"].as_array().cloned().unwrap_or_default();
         let mut hits: Vec<&Value> = rows
             .iter()

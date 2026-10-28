@@ -3,9 +3,11 @@
 //! inherit it, holding another command's captured output open until it exits.
 //! Only starting is held in turn; children run and are waited for together.
 
-use std::io;
+use std::io::{self, Read};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 /// Starts `command` with its configured streams, without inheriting a pipe
 /// another start is still preparing. Waiting for the child holds no turn.
@@ -39,13 +41,110 @@ pub(crate) fn merged_stdio() -> io::Result<(Stdio, Stdio, OwnedFd)> {
     })
 }
 
+/// How long a pipe is drained after the direct child has exited. A grandchild
+/// that inherited the write end would otherwise keep `wait_with_output`
+/// blocked after the child is gone.
+const DRAIN_AFTER_EXIT: Duration = Duration::from_secs(2);
+
 /// Runs `command` with no input, capturing both output streams. Every caller
 /// here wants these streams; commands with other streams use `spawn`.
+///
+/// The pipes are read while the child runs, so a full pipe cannot stall it.
+/// Once it has exited, a write end that stays open is drained for
+/// `DRAIN_AFTER_EXIT` and then dropped: the output already written is kept,
+/// and a leaked writer cannot hold the caller.
 pub(crate) fn output(command: &mut Command) -> io::Result<Output> {
-    let child = starting(|| {
+    let mut child = starting(|| {
         command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()
     })?;
-    child.wait_with_output()
+    let stdout = child.stdout.take().ok_or_else(|| io::Error::other("stdout was not piped"))?;
+    let stderr = child.stderr.take().ok_or_else(|| io::Error::other("stderr was not piped"))?;
+    let exited = AtomicBool::new(false);
+    let (stdout, stderr, status) = std::thread::scope(|scope| {
+        let stdout = scope.spawn(|| read_bounded(stdout, &exited));
+        let stderr = scope.spawn(|| read_bounded(stderr, &exited));
+        let status = child.wait();
+        exited.store(true, Ordering::Release);
+        let stdout =
+            stdout.join().unwrap_or_else(|_| Err(io::Error::other("stdout drain panicked")));
+        let stderr =
+            stderr.join().unwrap_or_else(|_| Err(io::Error::other("stderr drain panicked")));
+        (stdout, stderr, status)
+    });
+    Ok(Output { status: status?, stdout: stdout?, stderr: stderr? })
+}
+
+fn set_nonblock(fd: i32) -> io::Result<()> {
+    // SAFETY: the descriptor is open. O_NONBLOCK is flipped on that descriptor alone.
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: the same open descriptor. The new flags keep every bit fcntl returned.
+    if unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+fn poll_in(fd: i32, timeout_ms: i32) -> io::Result<bool> {
+    let mut fds = [libc::pollfd { fd, events: libc::POLLIN, revents: 0 }];
+    loop {
+        // SAFETY: `fds` is one open descriptor and a caller-owned pollfd.
+        let ready = unsafe { libc::poll(fds.as_mut_ptr(), 1, timeout_ms) };
+        if ready < 0 {
+            let error = io::Error::last_os_error();
+            if error.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(error);
+        }
+        return Ok(ready > 0);
+    }
+}
+
+/// Reads `file` until EOF. After `exited` is set, a writer that never closes
+/// the pipe — a grandchild that inherited it — ends the read at
+/// `DRAIN_AFTER_EXIT` instead of holding the caller.
+pub(crate) fn read_bounded(
+    mut file: impl Read + AsRawFd,
+    exited: &AtomicBool,
+) -> io::Result<Vec<u8>> {
+    set_nonblock(file.as_raw_fd())?;
+    let mut buf = [0u8; 8192];
+    let mut got = Vec::new();
+    let mut deadline = None;
+    loop {
+        if let Some(end) = deadline
+            && Instant::now() >= end
+        {
+            return Ok(got);
+        }
+        match file.read(&mut buf) {
+            Ok(0) => return Ok(got),
+            Ok(n) => {
+                got.extend_from_slice(&buf[..n]);
+                if exited.load(Ordering::Acquire) {
+                    deadline.get_or_insert_with(|| Instant::now() + DRAIN_AFTER_EXIT);
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                if !exited.load(Ordering::Acquire) {
+                    poll_in(file.as_raw_fd(), 200)?;
+                    continue;
+                }
+                let end = *deadline.get_or_insert_with(|| Instant::now() + DRAIN_AFTER_EXIT);
+                let left = end.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    return Ok(got);
+                }
+                let slice = left.min(Duration::from_millis(50)).as_millis() as i32;
+                poll_in(file.as_raw_fd(), slice)?;
+            }
+            Err(error) => return Err(error),
+        }
+    }
 }
 
 /// Runs `command` with its configured streams, inheriting them by default.
@@ -112,6 +211,25 @@ mod tests {
             assert_eq!(first.stdout, b"first");
             assert_eq!(second.stdout, b"second");
         });
+    }
+
+    #[test]
+    fn a_grandchild_holding_stdout_does_not_keep_output_waiting() {
+        let dir = tempfile::tempdir().unwrap();
+        let pidfile = dir.path().join("holder");
+        let script = format!("sleep 30 & echo $! > '{}'; printf done", pidfile.display());
+        let started = Instant::now();
+        let out = output(Command::new("sh").args(["-c", &script])).unwrap();
+        if let Ok(pid) = std::fs::read_to_string(&pidfile) {
+            let _ = status(Command::new("kill").arg(pid.trim()));
+        }
+        assert!(out.status.success());
+        assert_eq!(out.stdout, b"done");
+        assert!(
+            started.elapsed() < Duration::from_secs(8),
+            "output waited {:?} after the child exited",
+            started.elapsed()
+        );
     }
 
     #[test]

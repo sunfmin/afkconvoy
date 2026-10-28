@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -69,6 +69,12 @@ fn segment(text: &str) -> String {
 static HOSTS: Mutex<BTreeMap<PathBuf, String>> = Mutex::new(BTreeMap::new());
 static SCOPES: Mutex<BTreeMap<String, Result<Scope, String>>> = Mutex::new(BTreeMap::new());
 static OBSERVED: Mutex<BTreeSet<PathBuf>> = Mutex::new(BTreeSet::new());
+/// One `rate_limit` body, read once and shared with the next ask in this look.
+type RateOnce = Arc<OnceLock<Result<String, String>>>;
+
+/// One `rate_limit` body per host in this look. `observe` and an env-token
+/// login both read the note; the second of them uses this body.
+static RATES: Mutex<BTreeMap<String, RateOnce>> = Mutex::new(BTreeMap::new());
 
 /// Forgets the quota note, so the next read may observe it once. A look
 /// begins through `look::begin`. A process that is one look — `doctor` —
@@ -76,6 +82,41 @@ static OBSERVED: Mutex<BTreeSet<PathBuf>> = Mutex::new(BTreeSet::new());
 /// the process's life: nobody changes `gh`'s login under a running runner.
 pub(crate) fn forget_note() {
     OBSERVED.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clear();
+    RATES.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clear();
+}
+
+/// The `rate_limit` body for `host`, read once in this look. A second ask
+/// waits on that read instead of calling `rate_limit` again.
+fn rate_limit_body(gh: &GitHub, host: &str) -> Result<String> {
+    let cell = {
+        let mut rates = RATES.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        rates.entry(host.to_string()).or_insert_with(|| Arc::new(OnceLock::new())).clone()
+    };
+    let stored = cell.get_or_init(|| match gh.raw(&["api", "rate_limit", "--hostname", host]) {
+        Ok(body) => Ok(body),
+        Err(error) => Err(format!("{error:#}")),
+    });
+    match stored {
+        Ok(body) => Ok(body.clone()),
+        Err(error) => bail!("{error}"),
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn hold_rate(host: &str) {
+    let cell = Arc::new(OnceLock::new());
+    cell.set(Ok("{}".to_string())).expect("rate cell is unset");
+    RATES.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).insert(host.to_string(), cell);
+}
+
+#[cfg(test)]
+pub(crate) fn rate_held(host: &str) -> bool {
+    RATES
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(host)
+        .and_then(|cell| cell.get())
+        .is_some()
 }
 
 #[cfg(test)]
@@ -218,7 +259,7 @@ impl Scope {
                 return Ok(());
             }
         }
-        let out = match gh.raw(&["api", "rate_limit", "--hostname", &self.host]) {
+        let out = match rate_limit_body(gh, &self.host) {
             Ok(out) => out,
             Err(error) => {
                 if let Some(delay) = secondary(&error.to_string()) {
@@ -430,7 +471,7 @@ fn environment_login(gh: &GitHub, host: &str, key: &str) -> Result<String> {
             note.why.unwrap_or_default()
         )
     }
-    let rates = gh.raw(&["api", "rate_limit", "--hostname", host]);
+    let rates = rate_limit_body(gh, host);
     let doc = rates
         .as_ref()
         .ok()
