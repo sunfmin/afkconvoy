@@ -127,16 +127,11 @@ fn settled_keeps(fleet: &Fleet, issue: u64, worktree: &Worktree) -> Result<bool>
 pub fn settle(fleet: &mut Fleet, me: &Me, issue: u64) -> Result<()> {
     let closed = fleet.gh.issue(issue)?.is_closed();
     let base_tip = fleet.task_tip(issue)?;
-    // A landing turn that already left the account is that end. Settling it
-    // does not move the end. A claim still held on an issue a human closed,
-    // or a landing cut short of its account, leaves one here.
     let landed = landing_of(&fleet.repo, &fleet.gh.tracker, &base_tip, issue)?.is_some();
-    let accounted = fleet.gh.comments(issue)?.iter().any(|comment| {
-        afkconvoy_core::record::read_marker(afkconvoy_core::account::ACCOUNT, &comment.body)
-            .is_some()
-    });
-    if !(landed && accounted) {
-        crate::account::leave(&fleet.repo, &fleet.gh, issue, fleet.now)?;
+    let comments = fleet.gh.comments(issue)?;
+    let accounted = afkconvoy_core::account::left(comments.iter().map(|c| c.body.as_str()));
+    if let Some(end) = afkconvoy_core::account::settled_end(landed, accounted) {
+        crate::account::leave(&fleet.repo, &fleet.gh, issue, end, fleet.now)?;
     }
     for step in settle_steps(closed) {
         match step {
