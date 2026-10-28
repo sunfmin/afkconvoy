@@ -186,6 +186,7 @@ pub fn findings(checkout: &Path, now: u64) -> Vec<crate::doctor::Finding> {
 fn one(repo: &Repo, harness: Harness, reason: &str, fix: &str) -> crate::doctor::Finding {
     crate::doctor::finding(
         crate::doctor::Kind::NamedHarness,
+        serde_json::json!(["named-harness", harness]),
         format!(
             "names a harness no worker of this checkout starts on: checkout {}, harness {}, {reason}",
             repo.dir.display(),
