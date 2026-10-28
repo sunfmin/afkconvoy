@@ -127,6 +127,8 @@ mod tests {
             named: Named::default(),
             concurrency: None,
             tracker: None,
+            harness: None,
+            harness_applied: None,
         };
         list.change(|kept| kept.checkouts.push(entry)).unwrap();
         assert_eq!(own(&list, &listed).unwrap(), None, "none said: the default holds");
@@ -154,6 +156,8 @@ mod tests {
                 named: Named::default(),
                 concurrency,
                 tracker: None,
+                harness: None,
+                harness_applied: None,
             });
         })
         .unwrap();

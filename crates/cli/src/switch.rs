@@ -1,10 +1,14 @@
-//! Host kit priority and continuation of existing workers. No repository-local choice is read.
+//! Host kit priority and continuation of existing workers. No repository-local
+//! choice is read. A checkout that names a harness on the checkout list keeps
+//! that name: switch reorders the host kit and does not continue that
+//! checkout's workers onto the kit's new first.
 
 use afkconvoy_core::claims::Claim;
 use afkconvoy_core::harness::Harness;
 use afkconvoy_core::landing_worker::Switch;
 use afkconvoy_core::patrol::claimed;
 use afkconvoy_core::plan::closing_pr;
+use afkconvoy_core::worker::WorkerState;
 use anyhow::{Context, Result, anyhow, bail};
 use serde_json::{Value, json};
 
@@ -67,7 +71,24 @@ pub fn on_host(
     {
         paths.push(repo.dir.clone());
     }
+    let named_paths = crate::checkout_list::List::of_host()
+        .and_then(|list| list.read())
+        .map(|listed| {
+            listed
+                .checkouts
+                .into_iter()
+                .filter(|entry| entry.harness.is_some())
+                .map(|entry| entry.checkout)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
     for path in paths {
+        // A checkout that names a harness keeps it. The kit was already
+        // reordered. Nothing of that checkout's workers is moved, and an
+        // empty answer is not "no claim".
+        if named_paths.iter().any(|named| named == &path) && !matches!(which, Which::Nothing) {
+            continue;
+        }
         let continued = (|| -> Result<Value> {
             let repo = crate::git::Repo::new(path.clone());
             let mut fleet = Fleet::open(&repo, now)?;
@@ -334,4 +355,77 @@ pub(crate) fn switch_issue(
     Ok(json!({"issue": issue, "from": from, "to": to, "worktree": started["worktree"],
         "branch": started["branch"], "terminal": started["terminal"], "pr": pr,
         "stage": started.get("stage"), "skipped": started["skipped"]}))
+}
+
+/// Continues this checkout's workers that are at work on a harness other
+/// than `target`. A worker already on `target`, one with no worktree, one
+/// whose harness cannot be read, and one that is gone are left. Returns
+/// whether every worker that needed to move did. The fleet must already
+/// select `target`: a checkout that names one is pinned to it, and one that
+/// names none selects the host kit's first.
+pub(crate) fn onto(fleet: &mut Fleet, me: &Me, agent: &Agent, target: Harness) -> Result<bool> {
+    let mut landed = true;
+    let source = Source::of(&fleet.repo)?;
+    let issues: Vec<u64> = mine_all(fleet, me).iter().map(|claim| claim.number).collect();
+    for issue in issues {
+        let Some(worktree) = Worktree::of_issue(&source, issue)? else { continue };
+        if !other_than(&worktree, fleet.now, target, &mut landed) {
+            continue;
+        }
+        let on = worktree.harness()?.unwrap_or(target);
+        if switch_issue(fleet, me, agent, issue, on).is_err() {
+            landed = false;
+        }
+    }
+    for name in my_patrols(fleet, me) {
+        let created = afkconvoy_core::patrol::checkout_name(&name);
+        let Some(worktree) = Worktree::named(&source, &created)? else { continue };
+        if !other_than(&worktree, fleet.now, target, &mut landed) {
+            continue;
+        }
+        let on = worktree.harness()?.unwrap_or(target);
+        let said = move |checkout: &Worktree| continuing(Some(checkout), on);
+        if crate::patrol::switch(fleet, me, agent, &name, said).is_err() {
+            landed = false;
+        }
+    }
+    if let Some(worktree) = Worktree::named(&source, afkconvoy_core::casting::CASTER_WORKTREE)?
+        && worktree.terminal()?.is_some()
+        && other_than(&worktree, fleet.now, target, &mut landed)
+        && auxiliary(fleet, agent, &worktree, true).is_err()
+    {
+        landed = false;
+    }
+    if let Some(worktree) = Worktree::of_train(&source)?
+        && worktree.terminal()?.is_some()
+        && other_than(&worktree, fleet.now, target, &mut landed)
+        && auxiliary(fleet, agent, &worktree, false).is_err()
+    {
+        landed = false;
+    }
+    Ok(landed)
+}
+
+/// Whether the worker in `worktree` is at work on a harness other than
+/// `target`. Gone, unreadable, and already there are left. Uncertainty
+/// about the state or the harness leaves `landed` false so the tick retries.
+fn other_than(worktree: &Worktree, now: u64, target: Harness, landed: &mut bool) -> bool {
+    let state = match worktree.state(now) {
+        Ok(state) => state,
+        Err(_) => {
+            *landed = false;
+            return false;
+        }
+    };
+    if matches!(state, WorkerState::Gone) {
+        return false;
+    }
+    match worktree.harness() {
+        Ok(Some(on)) if on != target => true,
+        Ok(_) => false,
+        Err(_) => {
+            *landed = false;
+            false
+        }
+    }
 }

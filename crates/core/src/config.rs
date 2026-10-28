@@ -212,7 +212,8 @@ impl std::fmt::Display for ConfigError {
                 f,
                 "harness: a config names no harness any more (docs/adr/0020): delete the line \
                  `harness: {named}`. A team's `roster` says which harnesses and models each role's \
-                 workers may run, and the host kit (`afkconvoy kit`) which this host can start"
+                 workers may run, and the host kit (`afkconvoy kit`) which this host can start. \
+                 A checkout names one with `afkconvoy run <checkout> --harness`"
             ),
             ConfigError::Unbound(key) => write!(
                 f,
