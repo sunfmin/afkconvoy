@@ -13,7 +13,7 @@ A host's one long-running process of the fleet, holding a fleet instance for eac
 _Avoid_: daemon (a process outside the fleet), server (an MCP server, a model provider's), supervisor
 
 **Checkout list**:
-The checkouts a host's runner works, kept on that host and never pushed. The host runner converges on it: a checkout added is started, and a host runner started again starts every checkout on it. Each checkout on it may say its own **concurrency**, its **tracker** and its **harness** there, which a `run` that names them changes, and its fleet instance reads at each tick — a `run` that starts the host runner says the tracker there before it starts it, so that the host runner's start of the checkout from the list goes by it. A checkout that names no harness starts on the host kit's first eligible one (`docs/adr/0044`).
+The checkouts a host's runner works, kept on that host and never pushed. The host runner converges on it: a checkout added is started, and a host runner started again starts every checkout on it. Each checkout on it may say its own **concurrency**, its **tracker** and its **harness** there, which a `run` that names them changes, and its fleet instance reads at each tick — a `run` that starts the host runner says the tracker there before it starts it, so that the host runner's start of the checkout from the list goes by it. A checkout that names no harness starts on the host kit's first eligible one (`docs/adr/0045`).
 _Avoid_: registry, workspace list, projects (Codex's config key)
 
 **Concurrency**:
@@ -211,7 +211,7 @@ _Avoid_: freeze, pause (a harness paused on a host, as under Host kit), kill swi
 ### Workers
 
 **Harness**:
-The program a worker is a session of: it runs a model, with tools, on the work it is handed. Claude Code, pi, Codex, DeepSeek Harness (DSH), Kimi Code and Grok are harnesses. A checkout that names none follows the host kit's order, which chooses the first eligible one. A checkout names one on its entry on the checkout list (`run --harness`); its workers start on that harness, and the host kit still orders that harness's models. A role's limits and range constrain eligibility. A role that holds no limits for the named harness starts no worker, and no other harness is started in its place (`docs/adr/0044`).
+The program a worker is a session of: it runs a model, with tools, on the work it is handed. Claude Code, pi, Codex, DeepSeek Harness (DSH), Kimi Code and Grok are harnesses. A checkout that names none follows the host kit's order, which chooses the first eligible one. A checkout names one on its entry on the checkout list (`run --harness`); its workers start on that harness, and the host kit still orders that harness's models. A role's limits and range constrain eligibility. A role that holds no limits for the named harness starts no worker, and no other harness is started in its place (`docs/adr/0045`).
 _Avoid_: agent (as under Worker), coding agent (as under Worker), CLI, provider (whose models a harness runs)
 
 **Roster**:

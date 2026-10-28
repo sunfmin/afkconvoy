@@ -471,18 +471,18 @@ fn the_glossary_and_adr_0020_say_a_checkout_can_name_its_harness() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     let glossary = std::fs::read_to_string(root.join("GLOSSARY.md")).unwrap();
     assert!(glossary.contains("run --harness"), "{glossary}");
-    assert!(glossary.contains("docs/adr/0044"), "{glossary}");
+    assert!(glossary.contains("docs/adr/0045"), "{glossary}");
     let yielded = std::fs::read_to_string(
         root.join("docs/adr/0020-an-issue-is-cast-within-its-role-s-range-on-the-host.md"),
     )
     .unwrap();
     assert!(
-        yielded.contains("yielded for a checkout that names a harness by ADR-0044"),
+        yielded.contains("yielded for a checkout that names a harness by ADR-0045"),
         "{yielded}"
     );
     assert!(yielded.contains("never starts by a checkout's named harness"), "{yielded}");
     let recorded = std::fs::read_to_string(
-        root.join("docs/adr/0044-a-checkout-can-name-the-harness-its-workers-start-on.md"),
+        root.join("docs/adr/0045-a-checkout-can-name-the-harness-its-workers-start-on.md"),
     )
     .unwrap();
     assert!(recorded.contains("ADR-0020"), "{recorded}");
