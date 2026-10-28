@@ -277,6 +277,7 @@ fn finish_in_turn(world: &World, checkout: &Path) -> Value {
             .is_empty()
     );
     assert!(world.remote(&["for-each-ref", "--format=%(refname)", "refs/convoy/train"]).is_empty());
+    common::stopped_candidates_gone(world, checkout);
     answer
 }
 
@@ -520,20 +521,20 @@ fn a_busy_fleet_cuts_at_the_age_bound_with_claims_and_a_frontier_left() {
     for issue in 1..=4 {
         world.issue(issue, &["ready-for-agent"]);
     }
-    let before = tick_as(&world, "alpha", landed + 3599);
+    let before = tick_as(&world, "alpha", landed + 17_999);
     assert!(cut(&before).is_empty(), "{before}");
     assert!(!claimed(&world));
-    let plan = planned(&world, "alpha", landed + 3599);
-    assert_eq!(plan["cut"]["oldest_landing_age_seconds"], 3599, "{plan}");
+    let plan = planned(&world, "alpha", landed + 17_999);
+    assert_eq!(plan["cut"]["oldest_landing_age_seconds"], 17_999, "{plan}");
     assert_eq!(plan["cut"]["busy_in_seconds"], 1, "{plan}");
-    let at_bound = tick_as(&world, "alpha", landed + 3600);
+    let at_bound = tick_as(&world, "alpha", landed + 18_000);
     assert_eq!(cut(&at_bound), ["cut done"], "{at_bound}");
     assert_eq!(at_bound["held"], 3, "the cut takes no slot: {at_bound}");
     assert_eq!(at_bound["frontier_remaining"], 1, "{at_bound}");
     assert!(logged(&world).iter().any(|line| line.contains("fleet busy")));
     assert!(claimed(&world));
-    assert_eq!(standing(&world, "beta", landed + 3601), "peer_running");
-    assert!(cut(&tick_as(&world, "beta", landed + 3601)).is_empty());
+    assert_eq!(standing(&world, "beta", landed + 18_001), "peer_running");
+    assert!(cut(&tick_as(&world, "beta", landed + 18_001)).is_empty());
 }
 
 #[test]

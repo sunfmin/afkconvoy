@@ -243,6 +243,15 @@ mod tests {
         assert_eq!(cut.set, "./bump \"$VERSION\"");
         assert_eq!(cut.publish, "./ship\nbrew upgrade x\n");
         assert_eq!(cut.busy_after_seconds, cut::BUSY_AFTER_SECONDS);
+        assert_eq!(
+            parse(&format!("{config}{steps}\n```yaml cut\nbusy_after_seconds: 0\n```\n"))
+                .unwrap()
+                .cut
+                .unwrap()
+                .busy_after_seconds,
+            0,
+            "zero is kept"
+        );
         let steps = format!("{steps}\n```yaml cut\nbusy_after_seconds: 120\n```\n");
         assert_eq!(
             parse(&format!("{config}{steps}")).unwrap().cut.unwrap().busy_after_seconds,
