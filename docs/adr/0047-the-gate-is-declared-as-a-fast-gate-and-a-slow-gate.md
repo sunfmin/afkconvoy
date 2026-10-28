@@ -21,7 +21,7 @@ The fast gate keeps the line honest. It runs its tests under nextest's `fast` pr
 
 A line per test, not a budget for the whole fast gate, was chosen because a budget says only that the fast gate is slow, never which test to move, and a growing suite would breach it a test at a time with nothing for the author of each to do. A line per test tells the author of a slow test that it is slow, the day it is written.
 
-Flux stays in the fast gate. It checks every function of the core crate, which a change to the core can break as easily as the build, and it takes about half a minute on one core. In the slow gate a refinement error would surface only at landing, costing a whole landing turn and its queue wait to learn what the worker could have learnt before opening the PR.
+Flux stays in the fast gate. It checks every function of the core crate, which a change to the core can break as easily as the build, and it took 59 of the fast gate's 137 seconds on this host. In the slow gate a refinement error would surface only at landing, costing a whole landing turn and its queue wait to learn what the worker could have learnt before opening the PR.
 
 The measurement the list was drawn from, and both gates' step times on this host, are in [the gate baseline](../gate-baseline.md).
 
