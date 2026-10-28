@@ -479,7 +479,12 @@ fn the_glossary_and_adr_0020_say_a_checkout_can_name_its_harness() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     let glossary = std::fs::read_to_string(root.join("GLOSSARY.md")).unwrap();
     assert!(glossary.contains("run --harness"), "{glossary}");
-    assert!(glossary.contains("docs/adr/0045"), "{glossary}");
+    assert!(
+        glossary.contains("names no harness starts on the host kit's first eligible one"),
+        "{glossary}"
+    );
+    assert!(glossary.contains("no other harness is started in its place"), "{glossary}");
+    assert!(!glossary.contains("docs/adr/"), "{glossary}");
     let yielded = std::fs::read_to_string(
         root.join("docs/adr/0020-an-issue-is-cast-within-its-role-s-range-on-the-host.md"),
     )
