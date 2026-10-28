@@ -579,24 +579,32 @@ pub(super) fn session_files(cwd: &str, open: bool, at: u64) -> Vec<SessionFile> 
     let dir = format!("sessions/{}/afkconvoy-turn", dir_name(cwd));
     let mut body = format!(
         "{}\n",
-        serde_json::json!({
-            "ts": iso,
-            "type": "turn_started",
-            "turn_number": 1,
-            "session_relationship": "primary"
-        })
+        session::object(vec![
+            ("ts", iso.clone().into()),
+            ("type", "turn_started".into()),
+            ("turn_number", 1_u64.into()),
+            ("session_relationship", "primary".into()),
+        ])
     );
     if !open {
         body.push_str(&format!(
             "{}\n",
-            serde_json::json!({"ts": iso, "type": "turn_ended", "outcome": "completed"})
+            session::object(vec![
+                ("ts", iso.clone().into()),
+                ("type", "turn_ended".into()),
+                ("outcome", "completed".into()),
+            ])
         ));
     }
     vec![
         SessionFile { path: format!("{dir}/{EVENTS}"), body, compressed: false, replaces: None },
         SessionFile {
             path: format!("{dir}/summary.json"),
-            body: serde_json::json!({"info": {"cwd": cwd, "created_at": iso}}).to_string(),
+            body: session::object(vec![(
+                "info",
+                session::object(vec![("cwd", cwd.into()), ("created_at", iso.into())]),
+            )])
+            .to_string(),
             compressed: false,
             replaces: None,
         },

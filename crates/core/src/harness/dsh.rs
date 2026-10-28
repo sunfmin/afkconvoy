@@ -292,16 +292,28 @@ fn note(value: &serde_json::Value) -> Option<Note> {
 /// it is stored compressed.
 pub(super) fn session_files(cwd: &str, open: bool, at: u64) -> Vec<SessionFile> {
     let ms = at.saturating_mul(1000);
-    let mut body =
-        format!("{}\n", serde_json::json!({"type": "turn/start", "time": ms, "data": {"turn": 1}}));
+    let mut body = format!(
+        "{}\n",
+        session::object(vec![
+            ("type", "turn/start".into()),
+            ("time", ms.into()),
+            ("data", session::object(vec![("turn", 1_u64.into())])),
+        ])
+    );
     if !open {
         body.push_str(&format!(
             "{}\n",
-            serde_json::json!({
-                "type": "turn/end",
-                "time": ms,
-                "data": {"turn": 1, "reason": {"kind": "completed"}}
-            })
+            session::object(vec![
+                ("type", "turn/end".into()),
+                ("time", ms.into()),
+                (
+                    "data",
+                    session::object(vec![
+                        ("turn", 1_u64.into()),
+                        ("reason", session::object(vec![("kind", "completed".into())])),
+                    ]),
+                ),
+            ])
         ));
     }
     vec![SessionFile {

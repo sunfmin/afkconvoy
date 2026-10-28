@@ -545,24 +545,29 @@ fn note(cwd: &str, value: &serde_json::Value) -> Option<Note> {
 /// One session file a stand-in writes for this turn.
 pub(super) fn session_files(cwd: &str, open: bool, at: u64) -> Vec<SessionFile> {
     let iso = session::format_iso(at);
-    let user = serde_json::json!({
-        "type": "user",
-        "timestamp": iso,
-        "cwd": cwd,
-        "isSidechain": false,
-        "message": {"role": "user", "content": "brief"}
-    });
+    let user = session::object(vec![
+        ("type", "user".into()),
+        ("timestamp", iso.clone().into()),
+        ("cwd", cwd.into()),
+        ("isSidechain", false.into()),
+        ("message", session::object(vec![("role", "user".into()), ("content", "brief".into())])),
+    ]);
     let mut body = format!("{user}\n");
     if !open {
-        let end = serde_json::json!({
-            "type": "assistant",
-            "timestamp": iso,
-            "cwd": cwd,
-            "isSidechain": false,
-            "message": {"role": "assistant", "stop_reason": "end_turn"}
-        });
-        body.push_str(&end.to_string());
-        body.push('\n');
+        let end = session::object(vec![
+            ("type", "assistant".into()),
+            ("timestamp", iso.into()),
+            ("cwd", cwd.into()),
+            ("isSidechain", false.into()),
+            (
+                "message",
+                session::object(vec![
+                    ("role", "assistant".into()),
+                    ("stop_reason", "end_turn".into()),
+                ]),
+            ),
+        ]);
+        body.push_str(&format!("{end}\n"));
     }
     vec![SessionFile {
         path: format!("projects/{}/afkconvoy-turn.jsonl", dir_name(cwd)),

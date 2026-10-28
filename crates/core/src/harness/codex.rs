@@ -634,28 +634,42 @@ pub(super) fn session_files(cwd: &str, open: bool, at: u64) -> Vec<SessionFile> 
     let (year, month, day) = session::civil_from_days((at / 86_400) as i64);
     let mut body = format!(
         "{}\n",
-        serde_json::json!({
-            "timestamp": iso,
-            "type": "session_meta",
-            "payload": {"cwd": cwd, "id": "afkconvoy"}
-        })
+        session::object(vec![
+            ("timestamp", iso.clone().into()),
+            ("type", "session_meta".into()),
+            ("payload", session::object(vec![("cwd", cwd.into()), ("id", "afkconvoy".into())]),),
+        ])
     );
     body.push_str(&format!(
         "{}\n",
-        serde_json::json!({
-            "timestamp": iso,
-            "type": "event_msg",
-            "payload": {"type": "task_started", "started_at": at, "turn_id": "afkconvoy"}
-        })
+        session::object(vec![
+            ("timestamp", iso.clone().into()),
+            ("type", "event_msg".into()),
+            (
+                "payload",
+                session::object(vec![
+                    ("type", "task_started".into()),
+                    ("started_at", at.into()),
+                    ("turn_id", "afkconvoy".into()),
+                ]),
+            ),
+        ])
     ));
     if !open {
         body.push_str(&format!(
             "{}\n",
-            serde_json::json!({
-                "timestamp": iso,
-                "type": "event_msg",
-                "payload": {"type": "task_complete", "completed_at": at, "turn_id": "afkconvoy"}
-            })
+            session::object(vec![
+                ("timestamp", iso.into()),
+                ("type", "event_msg".into()),
+                (
+                    "payload",
+                    session::object(vec![
+                        ("type", "task_complete".into()),
+                        ("completed_at", at.into()),
+                        ("turn_id", "afkconvoy".into()),
+                    ]),
+                ),
+            ])
         ));
     }
     vec![SessionFile {

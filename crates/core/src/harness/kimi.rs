@@ -532,11 +532,11 @@ pub(super) fn session_index(cwd: &str, existing: &str) -> String {
     }
     let session = format!("sessions/afkconvoy-{}", session::mark(cwd));
     kept.push_str(
-        &serde_json::json!({
-            "sessionId": session::mark(cwd),
-            "sessionDir": session,
-            "workDir": cwd
-        })
+        &session::object(vec![
+            ("sessionId", session::mark(cwd).into()),
+            ("sessionDir", session.into()),
+            ("workDir", cwd.into()),
+        ])
         .to_string(),
     );
     kept.push('\n');
@@ -548,12 +548,22 @@ pub(super) fn session_files(cwd: &str, open: bool, at: u64) -> Vec<SessionFile> 
     let ms = at.saturating_mul(1000);
     let mut body = format!(
         "{}\n",
-        serde_json::json!({"type": "agent.turn.started", "time": ms, "turnId": 0, "kind": "event"})
+        session::object(vec![
+            ("type", "agent.turn.started".into()),
+            ("time", ms.into()),
+            ("turnId", 0_u64.into()),
+            ("kind", "event".into()),
+        ])
     );
     if !open {
         body.push_str(&format!(
             "{}\n",
-            serde_json::json!({"type": "agent.turn.ended", "time": ms, "turnId": 0, "outcome": "completed"})
+            session::object(vec![
+                ("type", "agent.turn.ended".into()),
+                ("time", ms.into()),
+                ("turnId", 0_u64.into()),
+                ("outcome", "completed".into()),
+            ])
         ));
     }
     vec![SessionFile {

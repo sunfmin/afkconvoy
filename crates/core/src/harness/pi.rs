@@ -458,20 +458,36 @@ fn note(value: &Value) -> Option<Note> {
 /// One session file a stand-in writes for this turn.
 pub(super) fn session_files(cwd: &str, open: bool, at: u64) -> Vec<SessionFile> {
     let iso = session::format_iso(at);
-    let mut body =
-        format!("{}\n", serde_json::json!({"type": "session", "cwd": cwd, "timestamp": iso}));
+    let mut body = format!(
+        "{}\n",
+        session::object(vec![
+            ("type", "session".into()),
+            ("cwd", cwd.into()),
+            ("timestamp", iso.clone().into()),
+        ])
+    );
     body.push_str(&format!(
         "{}\n",
-        serde_json::json!({"type": "message", "timestamp": iso, "message": {"role": "user"}})
+        session::object(vec![
+            ("type", "message".into()),
+            ("timestamp", iso.clone().into()),
+            ("message", session::object(vec![("role", "user".into())])),
+        ])
     ));
     if !open {
         body.push_str(&format!(
             "{}\n",
-            serde_json::json!({
-                "type": "message",
-                "timestamp": iso,
-                "message": {"role": "assistant", "stopReason": "stop"}
-            })
+            session::object(vec![
+                ("type", "message".into()),
+                ("timestamp", iso.into()),
+                (
+                    "message",
+                    session::object(vec![
+                        ("role", "assistant".into()),
+                        ("stopReason", "stop".into()),
+                    ]),
+                ),
+            ])
         ));
     }
     vec![SessionFile {

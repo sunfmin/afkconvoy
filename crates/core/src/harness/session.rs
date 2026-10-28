@@ -8,6 +8,8 @@ use crate::turn::{Note, Turn, latest};
 
 /// Epoch seconds of an ISO-8601 stamp in UTC, or `None` when it is not one.
 /// A fractional second is dropped. The offset is `Z` or zero.
+// Compared, not `RangeInclusive::contains`: Flux cannot see that it never panics.
+#[allow(clippy::manual_range_contains)]
 pub(super) fn parse_iso(text: &str) -> Option<u64> {
     let bytes = text.as_bytes();
     if bytes.len() < 20 || bytes[4] != b'-' || bytes[7] != b'-' || bytes[10] != b'T' {
@@ -30,16 +32,14 @@ pub(super) fn parse_iso(text: &str) -> Option<u64> {
     if rest != "Z" && rest != "+00:00" && rest != "-00:00" {
         return None;
     }
-    if !(1..=12).contains(&month)
-        || !(1..=31).contains(&day)
-        || hour > 23
-        || minute > 59
-        || second > 60
-    {
+    if month < 1 || month > 12 || day < 1 || day > 31 || hour > 23 || minute > 59 || second > 60 {
         return None;
     }
     let days = days_from_civil(year, month, day)?;
-    Some(days * 86_400 + u64::from(hour) * 3600 + u64::from(minute) * 60 + u64::from(second))
+    days.checked_mul(86_400)?
+        .checked_add(u64::from(hour).checked_mul(3_600)?)?
+        .checked_add(u64::from(minute).checked_mul(60)?)?
+        .checked_add(u64::from(second))
 }
 
 /// `at` as an ISO-8601 stamp in UTC, whole seconds.
@@ -63,35 +63,70 @@ pub(super) fn number_at(seconds: Option<u64>, timestamp: Option<&str>) -> Option
 }
 
 /// The year, month and day of an epoch day count, for a session laid out by date.
+/// A count whose arithmetic does not fit is the Unix epoch.
 pub(super) fn civil_from_days(days: i64) -> (i32, u32, u32) {
-    let shifted = days + 719_468;
-    let era = if shifted >= 0 { shifted } else { shifted - 146_096 } / 146_097;
-    let day_of_era = (shifted - era * 146_097) as u64;
-    let year_of_era =
-        (day_of_era - day_of_era / 1460 + day_of_era / 36524 - day_of_era / 146096) / 365;
-    let mut year = year_of_era as i64 + era * 400;
-    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
-    let month_index = (5 * day_of_year + 2) / 153;
-    let day = day_of_year - (153 * month_index + 2) / 5 + 1;
-    let month = if month_index < 10 { month_index + 3 } else { month_index - 9 };
-    if month <= 2 {
-        year += 1;
-    }
-    (year as i32, month as u32, day as u32)
+    epoch_day(days).unwrap_or((1970, 1, 1))
 }
 
+/// Howard Hinnant's civil-from-days. Every product is checked: Flux rejects the
+/// bare arithmetic, and a day count that does not fit is not a session day.
+fn epoch_day(days: i64) -> Option<(i32, u32, u32)> {
+    let shifted = days.checked_add(719_468)?;
+    let adjusted = if shifted >= 0 { shifted } else { shifted.checked_sub(146_096)? };
+    let era = adjusted / 146_097;
+    let day_of_era = u64::try_from(shifted.checked_sub(era.checked_mul(146_097)?)?).ok()?;
+    let year_of_era = day_of_era
+        .checked_sub(day_of_era / 1_460)?
+        .checked_add(day_of_era / 36_524)?
+        .checked_sub(day_of_era / 146_096)?
+        / 365;
+    let mut year = i64::try_from(year_of_era).ok()?.checked_add(era.checked_mul(400)?)?;
+    let day_of_year = day_of_era.checked_sub(
+        year_of_era
+            .checked_mul(365)?
+            .checked_add(year_of_era / 4)?
+            .checked_sub(year_of_era / 100)?,
+    )?;
+    let month_index = day_of_year.checked_mul(5)?.checked_add(2)? / 153;
+    let day = day_of_year
+        .checked_sub(month_index.checked_mul(153)?.checked_add(2)? / 5)?
+        .checked_add(1)?;
+    let month =
+        if month_index < 10 { month_index.checked_add(3)? } else { month_index.checked_sub(9)? };
+    if month <= 2 {
+        year = year.checked_add(1)?;
+    }
+    Some((i32::try_from(year).ok()?, u32::try_from(month).ok()?, u32::try_from(day).ok()?))
+}
+
+// Compared, not `RangeInclusive::contains`: Flux cannot see that it never panics.
+#[allow(clippy::manual_range_contains)]
 fn days_from_civil(mut year: i32, month: u32, day: u32) -> Option<u64> {
-    if !(1..=12).contains(&month) || day < 1 {
+    if month < 1 || month > 12 || day < 1 {
         return None;
     }
-    year -= i32::from(month <= 2);
-    let era = if year >= 0 { year } else { year - 399 } / 400;
-    let yoe = (year - era * 400) as u64;
-    let month_index = if month > 2 { month - 3 } else { month + 9 };
-    let day_of_year = (153 * u64::from(month_index) + 2) / 5 + u64::from(day) - 1;
-    let day_of_era = yoe * 365 + yoe / 4 - yoe / 100 + day_of_year;
-    let shifted = i64::from(era) * 146_097 + day_of_era as i64 - 719_468;
+    year = year.checked_sub(i32::from(month <= 2))?;
+    let era = if year >= 0 { year } else { year.checked_sub(399)? } / 400;
+    let yoe = u64::try_from(year.checked_sub(era.checked_mul(400)?)?).ok()?;
+    let month_index = if month > 2 { month.checked_sub(3)? } else { month.checked_add(9)? };
+    let day_of_year = (u64::from(month_index).checked_mul(153)?.checked_add(2)? / 5)
+        .checked_add(u64::from(day))?
+        .checked_sub(1)?;
+    let day_of_era = yoe
+        .checked_mul(365)?
+        .checked_add(yoe / 4)?
+        .checked_sub(yoe / 100)?
+        .checked_add(day_of_year)?;
+    let shifted = i64::from(era)
+        .checked_mul(146_097)?
+        .checked_add(i64::try_from(day_of_era).ok()?)?
+        .checked_sub(719_468)?;
     u64::try_from(shifted).ok()
+}
+
+/// One JSON object, field by field. `json!` unwraps a `Result` Flux cannot prove.
+pub(super) fn object(fields: Vec<(&str, Value)>) -> Value {
+    Value::Object(fields.into_iter().map(|(key, value)| (key.to_string(), value)).collect())
 }
 
 /// The same worktree, ignoring a trailing slash.
@@ -161,5 +196,7 @@ mod tests {
         assert_eq!(parse_iso("2026-10-27T13:06:13.022Z"), Some(AT));
         assert_eq!(format_iso(AT), "2026-10-27T13:06:13Z");
         assert_eq!(parse_iso(&format_iso(AT)), Some(AT));
+        assert_eq!(format_iso(0), "1970-01-01T00:00:00Z");
+        assert_eq!(parse_iso("1970-01-01T00:00:00Z"), Some(0));
     }
 }
