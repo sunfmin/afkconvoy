@@ -1,8 +1,8 @@
-//! A team's roster gives each role a range (docs/adr/0020): a stage's
-//! worker runs its issue's casting within its role's range, a casting no
-//! range of its workflow holds runs each stage's range's first, the caster is
-//! given each stage's range, and a role that can run nothing safely only
-//! waits.
+//! A team's roster gives each role a range (docs/adr/0020): a stage's worker
+//! runs its one `model:` label of the selected harness, or that harness's
+//! user default, within the role's range. A label the range does not hold is
+//! not followed. Automatic casting is gone. A role that can run nothing
+//! safely only waits.
 
 use crate::common;
 
@@ -78,50 +78,58 @@ fn said(planned: &Value, number: u64) -> Value {
 }
 
 #[test]
-fn default_off_and_model_switch_follow_kit_order_in_bound_and_unbound_checkouts() {
+fn a_missing_label_is_the_user_default_and_a_model_switch_does_not_choose_it() {
     let team = TEAM
         .replace("model: opus }", "model: opus }\n      - { harness: claude-code, model: haiku }");
     let world = bound(&team);
     let other = world.second_repo();
     world.issue(7, &["flow:feature"]);
     let planned = world.afk(&PLAN).ok();
-    assert_eq!(planned["host_kit"]["cast"], false);
-    assert_eq!(planned["caster"], Value::Null);
-    assert_eq!(said(&planned, 7)["model"], "opus");
-    assert!(planned["casting"][0]["why"].as_str().unwrap().contains("off on this host"));
+    assert!(planned["host_kit"].get("cast").is_none(), "{planned}");
+    assert!(planned.get("caster").is_none(), "{planned}");
+    assert_eq!(said(&planned, 7)["model"], Value::Null);
+    assert_eq!(said(&planned, 7)["why"], "user_default");
+    assert_eq!(planned["casting"][0]["why"], "the user's default");
+    // Moving a model first inside its harness does not name the worker's model.
     world.afk(&["switch", "--model", "haiku"]).ok();
     let planned = world.afk(&PLAN).ok();
-    assert_eq!(said(&planned, 7)["model"], "haiku", "roster order does not outrank kit order");
+    assert_eq!(said(&planned, 7)["model"], Value::Null);
+    assert_eq!(said(&planned, 7)["why"], "user_default");
     let mut gh = world.gh2();
     gh["issues"] =
         json!([{"number":8,"title":"task", "labels":["ready-for-agent"], "state":"open"}]);
     std::fs::write(world.root.join("gh2.json"), gh.to_string()).unwrap();
-    assert_eq!(world.afk_in(&other, &PLAN).ok()["frontier"][0]["cast"]["model"], "haiku");
+    let unbound = world.afk_in(&other, &PLAN).ok()["frontier"][0]["cast"].clone();
+    assert_eq!(unbound["model"], Value::Null);
+    assert_eq!(unbound["why"], "user_default");
     world.afk(&TICK).ok();
     world.afk_in(&other, &TICK).ok();
     let terminals = world.orca()["terminals"].as_array().unwrap().clone();
     assert_eq!(terminals.len(), 2);
-    assert!(terminals.iter().all(|t| t["command"].as_str().unwrap().ends_with("--model 'haiku'")));
+    assert!(terminals.iter().all(|t| !t["command"].as_str().unwrap().contains("--model")));
     let planned = world.afk(&PLAN).ok();
-    assert_eq!(planned["casting"][0]["running"]["model"], "haiku");
+    assert!(planned["casting"][0]["running"]["model"].is_null(), "{planned}");
     let doctor = world.afk(&["doctor", "--now", "1000"]).json;
-    assert_eq!(doctor["issues"]["casting"][0]["running"]["model"], "haiku");
-    // A manual label still wins within that range, even with no harness label.
+    assert!(doctor["issues"]["casting"][0]["running"]["model"].is_null(), "{doctor}");
+    // One model label of the selected harness is followed, harness label or not.
     world.issue(9, &["flow:feature", "model:opus"]);
-    assert_eq!(said(&world.afk(&PLAN).ok(), 9)["model"], "opus");
+    let followed = said(&world.afk(&PLAN).ok(), 9);
+    assert_eq!(followed["model"], "opus");
+    assert_eq!(followed["why"], "model_label");
 }
 
 #[test]
-fn enabled_casting_does_not_hold_a_bound_issue_whose_selected_harness_has_no_models() {
+fn a_harness_with_no_models_runs_its_user_default_and_cast_is_gone() {
     let world = bound("```yaml\nroles:\n  dev: acme/dev\n  reviewer: acme/reviewer\n```\n");
-    world.afk(&["kit", "--cast", "on"]).ok();
+    assert!(world.afk(&["kit", "--cast", "on"]).error().contains("automatic casting is gone"));
     world.afk(&["switch", "--harness", "codex"]).ok();
     world.issue(7, &["flow:feature"]);
     let planned = world.afk(&PLAN).ok();
-    assert_eq!(planned["caster"], Value::Null);
+    assert!(planned.get("caster").is_none(), "{planned}");
     assert_eq!(said(&planned, 7)["harness"], "codex");
     assert_eq!(said(&planned, 7)["model"], Value::Null);
-    assert!(planned["casting"][0]["why"].as_str().unwrap().contains("no model choice"));
+    assert_eq!(said(&planned, 7)["why"], "user_default");
+    assert_eq!(planned["casting"][0]["why"], "the user's default");
     world.afk(&TICK).ok();
     assert_eq!(world.worktrees().len(), 1);
     assert!(world.caster_asked().is_empty());
@@ -139,41 +147,52 @@ fn bound_and_unbound_checkouts_share_kit_priority_while_role_limits_remain_const
     world.afk_in(&world.root, &["switch", "--harness", "pi"]).ok();
     let bound_plan = world.afk(&PLAN).ok();
     let unbound_plan = world.afk_in(&other, &PLAN).ok();
+    // `model:opus` names nothing pi holds, so the worker runs pi's user default.
     assert_eq!(said(&bound_plan, 7)["harness"], "pi");
-    assert_eq!(said(&bound_plan, 7)["model"], "a/fast");
-    assert_eq!(unbound_plan["frontier"][0]["cast"]["harness"], "pi");
-    // The audit role allows Claude Code alone. Kit priority cannot invent
-    // permission to run pi in that role.
+    assert_eq!(said(&bound_plan, 7)["model"], Value::Null);
+    assert_eq!(said(&bound_plan, 7)["why"], "user_default");
+    assert_eq!(said(&bound_plan, 7)["unmatched"], "`model:opus`");
+    let unbound = &unbound_plan["frontier"][0]["cast"];
+    assert_eq!(unbound["harness"], "pi");
+    assert_eq!(unbound["model"], Value::Null);
+    assert_eq!(unbound["why"], "user_default");
+    // The audit role allows Claude Code alone. A pi label is not followed there.
     assert_eq!(said(&bound_plan, 9)["harness"], "claude-code");
-    assert_eq!(said(&bound_plan, 9)["model"], "haiku");
+    assert_eq!(said(&bound_plan, 9)["model"], Value::Null);
+    assert_eq!(said(&bound_plan, 9)["why"], "user_default");
+    assert_eq!(said(&bound_plan, 9)["unmatched"], "`model:a/fast`");
 }
 
 #[test]
 fn a_stage_s_worker_runs_its_casting_within_its_role_s_range_and_plan_says_which_and_why() {
     let world = bound(TEAM);
+    // `a/fast` is a pi model. The selected harness is Claude Code, so it is not followed.
     world.issue(7, &["flow:feature", "harness:pi", "model:a/fast"]);
-    // `dev`'s range holds no haiku, `reviewer`'s does: its first.
+    // `dev`'s range holds no haiku, though the kit's Claude Code does.
     world.issue(8, &["flow:feature", "harness:claude-code", "model:haiku"]);
-    // `reviewer`'s range holds one harness and one model: whatever the casting.
+    // No model label, including a range that holds one model: the user default.
     world.issue(9, &["flow:audit", "harness:claude-code"]);
     world.issue(10, &["flow:audit"]);
     let planned = world.afk(&PLAN).ok();
-    assert_eq!(
-        said(&planned, 7),
-        json!({"harness": "claude-code", "model": "opus", "why": "first"})
-    );
-    assert_eq!(
-        said(&planned, 8),
-        json!({"harness": "claude-code", "model": "opus", "why": "first"})
-    );
+    let seven = said(&planned, 7);
+    assert_eq!(seven["harness"], "claude-code");
+    assert_eq!(seven["model"], Value::Null);
+    assert_eq!(seven["why"], "user_default");
+    assert_eq!(seven["unmatched"], "`model:a/fast`");
+    let eight = said(&planned, 8);
+    assert_eq!(eight["harness"], "claude-code");
+    assert_eq!(eight["model"], Value::Null);
+    assert_eq!(eight["why"], "user_default");
+    assert_eq!(eight["unmatched"], "`model:haiku`");
+    assert!(eight["notice"].as_str().unwrap().contains("does not hold"), "{eight}");
     for only in [9, 10] {
-        assert_eq!(
-            said(&planned, only),
-            json!({"harness": "claude-code", "model": "haiku", "why": "first"})
-        );
+        let cast = said(&planned, only);
+        assert_eq!(cast["harness"], "claude-code");
+        assert_eq!(cast["model"], Value::Null);
+        assert_eq!(cast["why"], "user_default");
+        assert!(cast.get("unmatched").is_none(), "{cast}");
     }
-    // Nothing has a choice to make but by its casting: no caster.
-    assert_eq!(planned["caster"], Value::Null, "{planned}");
+    assert!(planned.get("caster").is_none(), "{planned}");
     world.afk(&TICK).ok();
     let orca = world.orca();
     let started: Vec<&str> = orca["terminals"]
@@ -183,9 +202,7 @@ fn a_stage_s_worker_runs_its_casting_within_its_role_s_range_and_plan_says_which
         .filter_map(|terminal| terminal["command"].as_str())
         .collect();
     assert_eq!(started.len(), 4, "{started:?}");
-    assert_eq!(started.iter().filter(|line| line.contains(" && pi --approve ")).count(), 0);
-    assert_eq!(started.iter().filter(|line| line.ends_with("--model 'opus'")).count(), 2);
-    assert_eq!(started.iter().filter(|line| line.ends_with("--model 'haiku'")).count(), 2);
+    assert!(started.iter().all(|line| !line.contains("--model")), "{started:?}");
 }
 
 #[test]
@@ -195,55 +212,50 @@ fn casting_outside_the_selected_harness_is_preserved_without_overriding_kit_prio
     world.issue(8, &["flow:audit", "harness:pi", "model:a/fast"]);
     world.issue(9, &["flow:feature", "harness:claude-code", "model:sonnet"]);
     let planned = world.afk(&PLAN).ok();
-    for n in [7, 9] {
-        assert_eq!(
-            said(&planned, n),
-            json!({"harness":"claude-code","model":"opus","why":"first"})
-        );
-    }
-    assert_eq!(said(&planned, 8)["harness"], "claude-code");
+    let seven = said(&planned, 7);
+    assert_eq!(seven["harness"], "claude-code");
+    assert_eq!(seven["model"], Value::Null);
+    assert_eq!(seven["why"], "user_default");
+    assert!(seven.get("unmatched").is_none(), "a harness label is not a model label: {seven}");
+    let nine = said(&planned, 9);
+    assert_eq!(nine["harness"], "claude-code");
+    assert_eq!(nine["model"], Value::Null);
+    assert_eq!(nine["why"], "user_default");
+    assert_eq!(nine["unmatched"], "`model:sonnet`");
+    let eight = said(&planned, 8);
+    assert_eq!(eight["harness"], "claude-code");
+    assert_eq!(eight["model"], Value::Null);
+    assert_eq!(eight["unmatched"], "`model:a/fast`");
     world.afk(&TICK).ok();
     assert_eq!(world.worktrees().len(), 3);
     assert!(world.labels(7).contains(&"harness:codex".to_string()));
     assert!(world.labels(8).contains(&"harness:pi".to_string()));
     assert!(world.labels(9).contains(&"model:sonnet".to_string()));
     assert!(!world.comments(7).iter().any(|c| c.starts_with("<!--convoy:unmatched-->")));
+    assert!(world.comments(9).iter().any(|c| c.contains("The label stays.")));
 }
 #[test]
-fn the_caster_is_given_each_stage_s_range_and_casts_only_issues_with_a_choice_to_make() {
+fn no_label_runs_the_user_default_and_cast_starts_nothing() {
     let world =
         bound(&TEAM.replace(
             "model: opus }",
             "model: opus }\n      - { harness: claude-code, model: haiku }",
         ));
-    world.afk(&["kit", "--cast", "on"]).ok();
+    assert!(world.afk(&["kit", "--cast", "on"]).error().contains("automatic casting is gone"));
     world.issue(7, &["flow:feature"]);
     world.issue(8, &["flow:audit"]);
     let planned = world.afk(&PLAN).ok();
-    assert_eq!(planned["caster"]["to_cast"], json!([7]), "{planned}");
-    let held = said(&planned, 7);
-    assert!(held.as_str().unwrap().starts_with("held for the caster: "), "{planned}");
-    assert_eq!(said(&planned, 8)["why"], "first");
-
-    world.caster_answers(
-        "{\"issue\": 7, \"harness\": \"claude-code\", \"model\": \"haiku\", \"why\": \"A small fix.\"}\n",
-    );
-    let answered = world.afk(&["cast", "--now", "1000"]).ok();
-    assert_eq!(
-        answered["cast"],
-        json!([{"issue": 7, "harness": "claude-code", "model": "haiku", "why": "A small fix."}])
-    );
-    let asked = world.caster_asked();
-    for given in [
-        "- claude-code opus\n",
-        "- claude-code haiku\n",
-        "- dev: Small fixes on pi.\n",
-        "Stage build (dev): claude-code (opus, haiku)\n",
-    ] {
-        assert!(asked.contains(given), "{given:?}\n{asked}");
+    assert!(planned.get("caster").is_none(), "{planned}");
+    for number in [7, 8] {
+        let cast = said(&planned, number);
+        assert_eq!(cast["harness"], "claude-code", "{cast}");
+        assert_eq!(cast["model"], Value::Null, "one model in a range is still the user default");
+        assert_eq!(cast["why"], "user_default");
     }
-    assert!(!asked.contains("## #8") && !asked.contains("codex"), "{asked}");
-    assert_eq!(world.labels(7), ["flow:feature", "model:haiku"]);
+    assert!(world.afk(&["cast", "--now", "1000"]).error().contains("automatic casting is gone"));
+    assert_eq!(world.labels(7), ["flow:feature"]);
+    assert_eq!(world.labels(8), ["flow:audit"]);
+    assert!(world.caster_asked().is_empty());
 }
 
 #[test]
@@ -300,7 +312,7 @@ fn a_role_with_nothing_it_can_run_safely_waits_and_goes_on_once_it_has() {
     let planned = world.afk(&PLAN).ok();
     assert_eq!(
         said(&planned, 8),
-        json!({"harness": "claude-code", "model": "haiku", "why": "casting"}),
+        json!({"harness": "claude-code", "model": "haiku", "why": "model_label"}),
         "{planned}"
     );
     world.afk(&["tick", "--instance", "alpha", "--host", "h1", "--now", "1100"]).ok();
@@ -350,26 +362,12 @@ fn a_role_s_range_leaves_out_a_harness_it_holds_no_limits_for_and_plan_and_check
         planned["left_out"],
         json!([{"role": "dev", "left_out": []}, {"role": "reviewer", "left_out": left_out}])
     );
-    world.afk(&["kit", "--cast", "on"]).ok();
-    // The selected harness has two models: the tick starts its caster.
+    assert!(world.afk(&["kit", "--cast", "on"]).error().contains("automatic casting is gone"));
     let ticked = world.afk(&TICK).ok();
     assert_eq!(ticked["errors"], json!([]), "{ticked}");
-    assert_eq!(ticked["did"][0], json!({"do": "cast", "issue": null, "outcome": "done"}));
+    assert!(!ticked["did"].to_string().contains("\"cast\""), "{ticked}");
+    assert_eq!(world.worktrees().len(), 1, "the issue is dispatched, not held");
 }
-
-/// What the model a roster's draft is asked of answers: a strength for each
-/// model the host kit places — pi's a/slow is `not researched` — and
-/// guidance for `dev`.
-const DRAFTED: &str = concat!(
-    "Here is the draft:\n",
-    "{\"harness\": \"claude-code\", \"model\": \"opus\", \"good_at\": \"hard, wide work\"}\n",
-    "{\"harness\": \"claude-code\", \"model\": \"haiku\", \"good_at\": \"reviews\"}\n",
-    "{\"harness\": \"pi\", \"model\": \"a/fast\", \"good_at\": \"small fixes\"}\n",
-    "{\"harness\": \"codex\", \"model\": null, \"good_at\": \"refactors\"}\n",
-    "{\"harness\": \"dsh\", \"good_at\": \"cheap work\"}\n",
-    "{\"role\": \"dev\", \"cast\": \"Small fixes on pi; the rest on opus.\"}\n",
-    "{\"role\": \"reviewer\", \"cast\": \"Haiku unless the change is wide.\"}\n",
-);
 
 #[test]
 fn a_team_s_roster_is_drafted_from_the_host_kit_into_its_working_tree_and_committed_by_nobody() {
@@ -390,7 +388,6 @@ fn a_team_s_roster_is_drafted_from_the_host_kit_into_its_working_tree_and_commit
             }
         }
     });
-    world.drafter_answers(DRAFTED);
     let team = world.root.join("github/acme/team");
     let dir = team.to_str().unwrap();
     let head = git(&team, &["rev-parse", "HEAD"]);
@@ -400,7 +397,7 @@ fn a_team_s_roster_is_drafted_from_the_host_kit_into_its_working_tree_and_commit
     assert_eq!(answer.code, 0, "{drafted}");
     assert_eq!(drafted["written"], true);
     assert_eq!(drafted["replaces"], false);
-    assert_eq!(drafted["drafted_by"], json!({"harness": "claude-code", "model": "opus"}));
+    assert!(drafted.get("drafted_by").is_none(), "{drafted}");
     assert_eq!(
         drafted["unsaid"],
         json!([
@@ -411,28 +408,16 @@ fn a_team_s_roster_is_drafted_from_the_host_kit_into_its_working_tree_and_commit
         ])
     );
     assert!(answer.stderr.contains("the draft says nothing of what codex is good at"));
+    assert!(world.drafter_asked().is_empty(), "a draft sends no prompt");
+    assert!(!world.shell_asked().iter().any(|line| line.contains("You are")));
 
-    // The host kit's first was asked, of every role and every model in order.
-    let asked = world.drafter_asked();
-    for given in [
-        "- claude-code opus\n- claude-code haiku\n- pi a/fast\n- codex\n- dsh\n- kimi\n- grok\n",
-        "- reviewer: the stage `look` of the workflow `audit`, performing the skill `review`; \
-         the stage `review` of the workflow `feature`, performing the skill `review`. It may \
-         run: claude-code opus, claude-code haiku.\n",
-    ] {
-        assert!(asked.contains(given), "{given:?}\n{asked}");
-    }
-    assert!(asked.contains("do not assess model abilities"));
-    assert!(!asked.contains("for each harness and model above, what it is good at"));
-    let sent = world.shell_asked();
-    assert!(sent.iter().any(|line| line.contains("--model 'opus' --print 'You are")), "{sent:?}");
-
-    // Written into the working tree, and nothing committed.
+    // Written into the working tree, and nothing committed. A model whose
+    // good_at is `not researched` is not placed, so the draft leaves it out.
+    // No `cast` line is written.
     let written = std::fs::read_to_string(team.join("team.md")).unwrap();
     let roster = concat!(
         "roster:\n",
         "  dev:\n",
-        "    cast: \"Small fixes on pi; the rest on opus.\"\n",
         "    run:\n",
         "      - { harness: claude-code, model: \"opus\", good_at: \"hard, wide work\" }\n",
         "      - { harness: claude-code, model: \"haiku\", good_at: \"reviews\" }\n",
@@ -442,7 +427,6 @@ fn a_team_s_roster_is_drafted_from_the_host_kit_into_its_working_tree_and_commit
         "      - { harness: kimi }\n",
         "      - { harness: grok }\n",
         "  reviewer:\n",
-        "    cast: \"Haiku unless the change is wide.\"\n",
         "    run:\n",
         "      - { harness: claude-code, model: \"opus\", good_at: \"hard, wide work\" }\n",
         "      - { harness: claude-code, model: \"haiku\", good_at: \"reviews\" }\n",
@@ -462,9 +446,7 @@ fn a_team_s_roster_is_drafted_from_the_host_kit_into_its_working_tree_and_commit
     assert_eq!(checked["roles"][1]["roster"]["run"].as_array().unwrap().len(), 2, "{checked}");
 
     // Where a roster is, it says what it would change and writes nothing
-    // unconfirmed; `--yes` confirms.
-    // A model's invented strength is ignored; a changed host kit supplies it.
-    world.drafter_answers(&DRAFTED.replace("small fixes", "invented ability"));
+    // unconfirmed; `--yes` confirms. A changed host kit supplies the new line.
     assert_eq!(world.afk(&draft).ok()["written"], false);
     world.with_kit(|kit| kit["harnesses"][1]["models"][0]["good_at"] = json!("one-line fixes"));
 
@@ -527,7 +509,7 @@ fn a_roster_names_a_model_by_any_name_and_one_naming_nothing_is_said_and_opened_
     assert_eq!(planned["unmatched_models"][0]["model"], "opuss", "{planned}");
     assert_eq!(
         said(&planned, 7),
-        json!({"harness": "claude-code", "model": "claude-opus-5-5", "why": "casting"})
+        json!({"harness": "claude-code", "model": "claude-opus-5-5", "why": "model_label"})
     );
     // A tick opens one issue in the team's repo, with its ready label; the
     // next opens none while it is open.

@@ -1331,9 +1331,8 @@ fn kit(out: &mut String, host: &Host) {
     let _ = writeln!(
         out,
         "<section class=\"kit\"><h2>Host kit</h2><p class=\"by\">The harnesses and models this \
-         host can start, in order of preference. Automatic model casting is {}</p>\
+         host can start, in order of preference.</p>\
          <ul class=\"harnesses\">{}</ul></section>",
-        if kit.cast { "on" } else { "off" },
         harnesses.concat(),
     );
 }
@@ -1539,25 +1538,6 @@ fn repo(out: &mut String, at: usize, panel: &Panel) {
         );
     }
 
-    if let Some(caster) = &panel.caster {
-        let running = match caster.running_since {
-            Some(since) => format!(
-                "<b>A caster runs</b>, for {} so far",
-                lasted(panel.now.saturating_sub(since))
-            ),
-            None => "<b>A caster is started</b>".to_string(),
-        };
-        let held: Vec<String> = caster.held.iter().map(|issue| format!("#{issue}")).collect();
-        let held = match held.as_slice() {
-            [] => String::new(),
-            held => format!(
-                ": {} held for it, and dispatched uncast after ten minutes",
-                held.join(", ")
-            ),
-        };
-        let _ = writeln!(out, "<p class=\"tick\" data-caster>{running}{held}.</p>");
-    }
-
     if !panel.casting.is_empty() {
         out.push_str("<details data-model-casting><summary>Model selection</summary><ul>");
         for issue in &panel.casting {
@@ -1567,7 +1547,7 @@ fn repo(out: &mut String, at: usize, panel: &Panel) {
                     out,
                     "; running {} on {}",
                     esc(ran.harness.key()),
-                    esc(ran.model.as_deref().unwrap_or("its login default"))
+                    esc(ran.model.as_deref().unwrap_or("the user's default"))
                 );
             }
             out.push_str("<ul>");
@@ -1577,7 +1557,7 @@ fn repo(out: &mut String, at: usize, panel: &Panel) {
                     "<li>{}: {} on {} — {}",
                     esc(&stage.stage),
                     esc(stage.harness.map(|h| h.key()).unwrap_or("no eligible harness")),
-                    esc(stage.model.as_deref().unwrap_or("its login default")),
+                    esc(stage.model.as_deref().unwrap_or("the user's default")),
                     esc(&stage.why)
                 );
                 for skipped in &stage.skipped {

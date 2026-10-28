@@ -651,13 +651,14 @@ fn the_index_says_what_a_bound_repo_is_before_it_names_one() {
     assert!(next.starts_with("One whose config names none is unbound"), "{next}");
 }
 
-/// `cast`'s one line says what it does in words of its own: the labels it puts
-/// on and who chooses them, and none of the glossary's words for either.
+/// `cast`'s one line says automatic casting is gone, and what a worker runs.
 #[test]
 fn casts_one_line_says_what_it_does_in_plain_words() {
     let short = asked(&["cast", "-h"]);
     let line = short.lines().next().unwrap();
-    for plain in ["model", "harness", "`model:`", "label", "session", "enabled"] {
+    for plain in
+        ["automatic casting is gone", "model", "harness", "`model:`", "label", "user default"]
+    {
         assert!(line.contains(plain), "{line}");
     }
     for term in

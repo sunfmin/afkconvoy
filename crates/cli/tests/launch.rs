@@ -418,7 +418,6 @@ fn kit_with_no_terminal_writes_what_this_host_can_start_and_says_what_it_left_ou
     assert_eq!(
         kit,
         json!({
-            "cast": false,
             "harnesses": [
                 {"harness": "claude-code", "command": "agent",
                     "models": [{"model": "opus"}, {"model": "default", "good_at": "research pending"}]},

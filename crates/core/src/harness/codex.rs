@@ -368,8 +368,8 @@ pub(super) fn watch(command: &str, worktree: &str, kept: &str, model: Option<&st
 }
 
 /// Codex keeps each session apart from every other. These names are the
-/// facts a worker start, the directory the host keeps, a watch start and a
-/// caster ask the harness for (docs/adr/0013).
+/// facts a worker start, the directory the host keeps and a watch start
+/// ask the harness for (docs/adr/0013).
 pub(super) const SESSION: super::Session = super::Session {
     fresh: "codex",
     note: HOME_NOTE,
@@ -383,7 +383,7 @@ const PREFERENCE_MODEL: &str = "model";
 const EFFORT: &str = "model_reasoning_effort";
 const USER_SOURCE: &str = "user_selection";
 const DEFAULT_SOURCE: &str = "codex_default";
-const CAST_SOURCE: &str = "casting";
+const LABEL_SOURCE: &str = "model_label";
 
 fn config_text(text: &str, file: &str) -> Result<toml::Table, String> {
     text.parse().map_err(|_| format!("cannot parse {file}; fix its TOML"))
@@ -398,7 +398,7 @@ pub(super) fn automatic_model(
     listed: &[String],
 ) -> Result<(Option<String>, &'static str), String> {
     if let Some(model) = explicit {
-        return Ok((Some(model.to_string()), CAST_SOURCE));
+        return Ok((Some(model.to_string()), LABEL_SOURCE));
     }
     match config_text(text, file)?.get(PREFERENCE_MODEL) {
         Some(toml::Value::String(model)) if !model.trim().is_empty() => {
@@ -1121,7 +1121,7 @@ mod tests {
         let file = "home/.codex/config.toml";
         let (model, source) =
             Harness::Codex.automatic_model(Some("gpt-x"), "", file, &[]).unwrap().unwrap();
-        assert_eq!((model.as_deref(), source), (Some("gpt-x"), "casting"));
+        assert_eq!((model.as_deref(), source), (Some("gpt-x"), "model_label"));
         let (model, source) = Harness::Codex
             .automatic_model(None, "model = 'gpt-x'\n", file, &["gpt-x".into()])
             .unwrap()

@@ -220,39 +220,6 @@ pub(crate) fn record(worktree: &Worktree, harness: Harness, settings: &Settings)
     Ok(())
 }
 
-/// A caster's one headless call. A harness that keeps a session gets the
-/// same fresh directory and user effort as an interactive worker, and the
-/// call is recorded in its own worktree. Every other harness is asked in
-/// the directory the host keeps.
-pub(crate) fn caster_question(
-    harness: Harness,
-    worktree: &Worktree,
-    command: &str,
-    model: Option<&str>,
-    prompt: &str,
-) -> Result<String> {
-    if harness.session().is_none() {
-        let kept = crate::kept::keep(harness, false)?.display().to_string();
-        return Ok(harness.prompt_question(command, &kept, model, prompt));
-    }
-    let (kept, _) = crate::kept::for_worker(
-        harness,
-        false,
-        &worktree.path,
-        &worktree.path,
-        &Default::default(),
-        "",
-    )?;
-    let question = harness.prompt_question(command, &kept, model, prompt);
-    let (question, settings) = prepare(harness, worktree, model, &question, true, "casting")?;
-    // A human may also run `cast` in an existing worker's worktree. That
-    // helper call must not overwrite the existing worker's launch evidence.
-    if worktree.caster()?.is_some() {
-        record(worktree, harness, &settings)?;
-    }
-    Ok(question)
-}
-
 pub(crate) fn require_in_role(
     harness: Harness,
     model: &str,
@@ -273,6 +240,10 @@ pub(crate) fn recorded(worktree: &Worktree) -> Option<Settings> {
     let session = harness.session()?;
     let mut settings: Settings =
         serde_json::from_slice(&std::fs::read(worktree.note(session.record).ok()?).ok()?).ok()?;
+    // A launch recorded before a model label was called that still says so.
+    if settings.model_source == "casting" {
+        settings.model_source = "model_label".into();
+    }
     if let Some(home) = &settings.codex_home {
         let file = home.join("config.toml");
         if let Ok(text) = std::fs::read_to_string(&file)
@@ -318,7 +289,7 @@ pub(crate) fn planned(harness: Harness, model: Option<&str>, explicit: bool) -> 
         Ok(settings) => json!(settings),
         Err(error) => json!({
             "model": model,
-            "model_source": if explicit { "casting" } else { "user_selection" },
+            "model_source": if explicit { "model_label" } else { "user_selection" },
             "error": format!("{error:#}"),
         }),
     }

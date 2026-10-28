@@ -131,13 +131,13 @@ fn a_running_checkout_names_kimi_and_another_checkout_stays_on_the_host_kit() {
 
     let on_kimi = wait_command(&world, 7, "kimi --auto");
     assert!(on_kimi.contains("kimi --auto"), "{on_kimi}");
-    assert!(on_kimi.contains("--model 'kimi-code/k3'"), "{on_kimi}");
+    assert!(!on_kimi.contains("--model"), "no model label, so the user default: {on_kimi}");
 
     world.issue(8, &["ready-for-agent"]);
     world.issue(9, &["ready-for-agent", "model:kimi-code/k2"]);
-    let first_model = wait_command(&world, 8, "kimi --auto");
-    assert!(first_model.contains("--model 'kimi-code/k3'"), "{first_model}");
-    assert!(first_model.contains("kimi --auto"), "{first_model}");
+    let unlabelled = wait_command(&world, 8, "kimi --auto");
+    assert!(!unlabelled.contains("--model"), "no model label, so the user default: {unlabelled}");
+    assert!(unlabelled.contains("kimi --auto"), "{unlabelled}");
     let labelled = wait_command(&world, 9, "--model 'kimi-code/k2'");
     assert!(labelled.contains("kimi --auto"), "{labelled}");
     assert!(!labelled.contains("claude"), "{labelled}");
@@ -186,6 +186,10 @@ fn a_worker_already_at_work_is_continued_once_and_switch_does_not_move_it() {
     world.afk(&[&TICKING[..], &["--harness", "kimi"]].concat()).ok();
     let moved = wait_command(&world, 7, "kimi --auto");
     assert!(moved.contains("kimi --auto"), "{moved}");
+    assert!(
+        !moved.contains("--model"),
+        "one model in the kit still does not name the start: {moved}"
+    );
     assert_eq!(open_commands(&world, &dir).len(), 1, "one writer");
     assert_eq!(git(&dir, &["rev-parse", "HEAD"]), head);
     assert_eq!(world.claims().len(), 1);
@@ -233,6 +237,7 @@ fn a_worker_already_at_work_is_continued_once_and_switch_does_not_move_it() {
     assert_eq!(harness_of(&world, &world.clone), Value::Null);
     let followed = wait_command(&world, 7, "grok --always-approve");
     assert!(followed.contains("grok"), "{followed}");
+    assert!(!followed.contains("--model"), "no model label, so the user default: {followed}");
     let until = Instant::now() + Duration::from_secs(5);
     while applied(&world, &world.clone).as_deref() != Some("") {
         assert!(Instant::now() < until, "the clear was not recorded: {}", world.checkout_list());
@@ -331,7 +336,10 @@ fn an_account_fault_on_the_named_harness_starts_no_worker_on_the_next() {
     world.issue(7, &["ready-for-agent"]);
     tick(&world, 700);
     let dir = worktree(&world, 7).expect("the named harness started the worker");
-    assert!(open_commands(&world, &dir)[0].contains("kimi --auto"));
+    let commands = open_commands(&world, &dir);
+    let started = &commands[0];
+    assert!(started.contains("kimi --auto"), "{started}");
+    assert!(!started.contains("--model"), "no model label, so the user default: {started}");
     let evidence = KIMI_SCREEN.lines().next().unwrap();
     world.with_orca(|orca| {
         for terminal in orca["terminals"].as_array_mut().unwrap() {

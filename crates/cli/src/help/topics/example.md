@@ -23,7 +23,7 @@ The prose above each yaml block says what its workflow is for: `afkconvoy flows`
 
 - `workflows/fix.md`: Five stages, then the landing.
   - A reviewer that writes nothing: `plan-review` and `code-review` are marked `writes: false`, as `workup` and `discharge` are, and the guard refuses their workers a commit and a push.
-  - A role on another harness: the roster lets the attending run pi first, on pi's own name for its model, so `plan-review` has the plan reviewed by something other than what wrote it; the caster puts its code reviews on Claude Code.
+  - A role on another harness: the roster lets the attending run pi, on pi's own name for its model, so `plan-review` can be reviewed by something other than what wrote it. A model label on the issue follows the same rule; with none, the worker runs that harness's user default.
   - A stage with a consult: `workup` and `treatment` carry `escalate: { to: attending, do: consult }`. Their `escalate` goes first to a worker in that role, which lets through to a human only what nobody decided.
   - Rework and its breakers: a `reject` leads back to an earlier stage, and past `max_rework: 3` or `max_consecutive_rework: 2` the issue escalates.
   - `land: { by: discharge-nurse, do: land }`: the landing turn is taken in the role that audited the record, not by the worker that wrote the code.

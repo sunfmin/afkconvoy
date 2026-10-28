@@ -137,7 +137,9 @@ fn a_kimi_worker_gets_an_isolated_role_home_rules_skills_limits_and_guard() {
         ),
         "{line}"
     );
-    assert!(line.contains("AFKCONVOY_HARNESS='kimi' AFKCONVOY_MODEL='kimi-code/k3'"), "{line}");
+    assert!(line.contains("AFKCONVOY_HARNESS='kimi'"), "{line}");
+    assert!(!line.contains("AFKCONVOY_MODEL="), "{line}");
+    assert!(!line.contains("--model"), "{line}");
     assert!(line.contains(" && kimi --auto --add-dir "), "{line}");
     assert!(line.contains(&format!("--skills-dir '{}/.claude/skills'", role.display())), "{line}");
     assert!(!line.contains("kimi-skills") && !line.contains("agent-skills"), "{line}");
