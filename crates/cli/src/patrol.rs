@@ -163,8 +163,8 @@ pub fn run(fleet: &mut Fleet, me: &Me, agent: &Agent, read: &Flows, row: &Row) -
     let none = || See::Patrols.refusal(format!("the team has no patrol {name:?}"));
     let patrol = kept.team.patrol(name).ok_or_else(none)?;
     let role = kept.team.role_of(&patrol.work);
-    // A patrol has no issue, and so no casting: its role's range's first,
-    // or this host's switch.
+    // A patrol has no issue and no model label: the user default of the
+    // harness its role's range selects.
     let mut cast = fleet.cast_in(role, &[], None)?;
     let harness = cast.harness;
     if harness == afkconvoy_core::harness::Harness::Codex {

@@ -291,8 +291,8 @@ pub fn watch_candidates() -> Result<Vec<crate::kit::Named>> {
         if let Some(held) = kit.harnesses.iter().find(|held| held.harness == harness)
             && !faulted(held)
         {
-            let model = held.placed().next().map(|model| model.model.clone());
-            candidates.push(crate::kit::Named { harness, model });
+            // A watch has no model label. It runs the harness's user default.
+            candidates.push(crate::kit::Named { harness, model: None });
         }
     }
     Ok(candidates)
@@ -672,13 +672,10 @@ pub fn reconcile(
             jobs.push((None, Some(name.to_string()), worktree));
         }
     }
+    // Automatic casting is gone. An old caster worktree is not a worker.
     if let Some(worktree) = Worktree::named(&source, afkconvoy_core::casting::CASTER_WORKTREE)? {
-        if set.caster.is_none() {
-            book.workers.retain(|worker| worker.path != worktree.path);
-            book.observations_failed.retain(|(path, _, _)| *path != worktree.path);
-        } else if set.locks.is_empty() && crate::caster::last(fleet).is_some_and(|c| c.live) {
-            jobs.push((None, Some("@caster".into()), worktree));
-        }
+        book.workers.retain(|worker| worker.path != worktree.path);
+        book.observations_failed.retain(|(path, _, _)| *path != worktree.path);
     }
     let mut events = vec![];
     for (issue, patrol, worktree) in jobs {
@@ -1298,7 +1295,7 @@ fn decide(
         let next = match issue {
             Some(n) => crate::switch::switch_issue(fleet, me, agent, n, observed.harness),
             None if patrol.is_some_and(|p| p.starts_with('@')) => {
-                crate::switch::auxiliary(fleet, agent, worktree, patrol == Some("@caster"))
+                crate::switch::auxiliary(fleet, agent, worktree)
             }
             None => crate::patrol::switch(
                 fleet,

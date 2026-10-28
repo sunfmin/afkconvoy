@@ -284,7 +284,7 @@ fn no_host_kit_has_run_write_it_and_start_its_first_tick_while_a_tick_refuses() 
         json!([{"model": "default", "good_at": "research pending"}, {"model": "opus", "good_at": "research pending"}])
     );
     let workers = started(&world);
-    assert_eq!(workers.len(), 1, "its first tick started a worker");
+    assert_eq!(workers.len(), 1, "its first tick started a worker: {workers:?}");
     assert!(!workers[0].contains("--model"), "the default model starts with no flag");
     assert!(
         !world.shell_asked().iter().any(|asked| asked.contains("Reply with the single word OK."))
@@ -378,7 +378,6 @@ fn kit_with_no_terminal_writes_what_this_host_can_start_and_says_what_it_left_ou
     assert_eq!(
         kit,
         json!({
-            "cast": false,
             "harnesses": [
                 {"harness": "claude-code", "command": "agent",
                     "models": [{"model": "opus"}, {"model": "default", "good_at": "research pending"}]},
