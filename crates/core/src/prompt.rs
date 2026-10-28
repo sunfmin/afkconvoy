@@ -887,9 +887,20 @@ fn steps(template: &str, gate: &str, join: &str, outcomes: &str) -> String {
 }
 
 /// What the land step tells a worker of each word its turn can answer, as
-/// the turn's endings say it.
+/// the turn's endings say it — but of a wait (`Ending::waits`): the worker
+/// stops, and its fleet asks for the turn again.
 pub fn endings() -> String {
-    Ending::listed(|word, told| format!("   On `\"{word}\"`, {told}."))
+    Ending::listed(|word, told| {
+        let waits = Ending::ALL.iter().any(|e| e.word() == word && e.waits());
+        match told.rsplit_once(": ").filter(|_| waits) {
+            Some((situation, _)) => format!(
+                "   On `\"{word}\"`, {situation}: nothing in your tree is to change. Stop without \
+                 waking anyone; the fleet asks for the turn again itself, and starts a worker \
+                 here if the tree needs changing."
+            ),
+            None => format!("   On `\"{word}\"`, {told}."),
+        }
+    })
 }
 
 /// The line typed at a worker to hand it its brief. The prompt itself, sent as

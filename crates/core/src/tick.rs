@@ -27,8 +27,11 @@ pub enum TickStep {
     /// which takes no slot, while no slot is free.
     Judge { issue: u64, start: bool },
     /// Ask after the worker of a claim of mine whose PR is open and not on the
-    /// train yet.
-    Watch { issue: u64 },
+    /// train yet, or ask for its turn again while it waits. `start`: whether a
+    /// worker may be started under the claim — false only for a claim whose
+    /// worker is not changing the tree (`Mine::idle`), which takes no slot,
+    /// while no slot is free.
+    Watch { issue: u64, start: bool },
     /// Carry out what the stage of a claim of mine declared, or ask after its
     /// worker while it has declared nothing.
     Advance { issue: u64 },
@@ -95,6 +98,9 @@ pub enum Outcome {
     /// `Watch` replaced a silent joining worker, the once that is allowed: the
     /// claim is still held.
     Restarted,
+    /// `Watch` asked for the turn of a PR whose last turn answered a wait,
+    /// starting no harness: the claim is still held, and takes no slot.
+    Asked,
     /// There was nothing for it to do.
     Nothing,
     /// A peer holds the issue — it won the race, or its heartbeat came back:
@@ -392,13 +398,14 @@ enum Sweep {
 }
 
 /// The step `sweep` takes for a claim of mine in `status`, when it takes one.
-/// `start`: whether a worker may be started under it again (`TickStep::Judge`).
+/// `start`: whether a worker may be started under it again (`TickStep::Judge`,
+/// `TickStep::Watch`).
 fn ending_step(sweep: Sweep, issue: u64, status: Status, start: bool) -> Option<TickStep> {
     match (sweep, status) {
         (Sweep::Landed, Status::Closed | Status::Landed) => Some(TickStep::Settle { issue }),
         (Sweep::Landed, Status::Gone) => Some(TickStep::Forget { issue }),
         (Sweep::Stopped, Status::NoPr) => Some(TickStep::Judge { issue, start }),
-        (Sweep::Stopped, Status::Landing) => Some(TickStep::Watch { issue }),
+        (Sweep::Stopped, Status::Landing) => Some(TickStep::Watch { issue, start }),
         (Sweep::Stopped, Status::AtStage) => Some(TickStep::Advance { issue }),
         _ => None,
     }
@@ -456,20 +463,21 @@ fn end_claim<F>(
 where
     F: FnMut(TickStep) -> Outcome,
 {
-    let start = !mine.declared || slots.has_free();
+    let start = !mine.slotless() || slots.has_free();
     let Some(step) = ending_step(sweep, mine.number, mine.status, start) else {
         return slots;
     };
     let outcome = carry_out(step);
     did.push((step, outcome));
-    if mine.declared && outcome == Outcome::Continued && slots.has_free() {
+    let started = outcome == Outcome::Continued || outcome == Outcome::Restarted;
+    if mine.slotless() && started && slots.has_free() {
         slots.restart_declared();
     }
     let ended = outcome == Outcome::Done || outcome == Outcome::HandedOn;
     if !ended || slots.held() == 0 {
         return slots;
     }
-    if !mine.declared {
+    if !mine.slotless() {
         slots.free();
     } else if slots.limit() > 0 {
         slots.drop_declared();
@@ -526,7 +534,7 @@ fn ended(did: &[(TickStep, Outcome)], issue: u64, outcome: Outcome) -> bool {
             TickStep::Settle { issue }
             | TickStep::Forget { issue }
             | TickStep::Judge { issue, .. }
-            | TickStep::Watch { issue }
+            | TickStep::Watch { issue, .. }
             | TickStep::Advance { issue }
             | TickStep::Dispatch { issue } => Some(*issue),
             _ => None,
@@ -830,6 +838,7 @@ mod tests {
                     pr: None,
                     due: None,
                     declared: false,
+                    idle: false,
                 })
                 .collect(),
             peer_live: vec![],
@@ -1263,12 +1272,12 @@ mod tests {
                 Watch { .. } => kept,
                 _ => Done,
             });
-            assert_eq!(acts(&pass), [(Watch { issue: 3 }, kept), (Heartbeat, Done)]);
+            assert_eq!(acts(&pass), [(Watch { issue: 3, start: true }, kept), (Heartbeat, Done)]);
             assert!(pass.did_work() && pass.held == 1);
         }
         let pass = run_pass(&set, 1, 1, |_| Done);
         let steps = steps(&pass);
-        assert_eq!(steps, [Watch { issue: 3 }, Dispatch { issue: 5 }, Heartbeat]);
+        assert_eq!(steps, [Watch { issue: 3, start: true }, Dispatch { issue: 5 }, Heartbeat]);
     }
 
     #[test]
@@ -1510,6 +1519,64 @@ mod tests {
         assert_eq!(empty_streak(3, true, 0, 0), 0);
     }
 
+    /// Landing claims whose workers are not changing the tree, under a fleet
+    /// at its bound: none of them takes a slot.
+    fn idle_landings(frontier: &[u64], landing: &[u64]) -> WorkingSet {
+        let mine: Vec<(u64, Status)> = landing.iter().map(|&n| (n, Status::Landing)).collect();
+        let mut set = set(frontier, &mine);
+        for mine in &mut set.mine {
+            mine.idle = true;
+        }
+        set
+    }
+
+    #[test]
+    fn an_idle_landing_takes_no_slot_and_the_frontier_is_dispatched() {
+        let set = idle_landings(&[7, 8], &[1, 2, 3]);
+        assert_eq!(set.slotless(), 3);
+        let bound = set.bound(2);
+        assert_eq!(bound, 5, "the three idle landings take none of the two slots");
+        let pass = run_pass(&set, bound, set.held(), |step| match step {
+            Watch { .. } => Asked,
+            _ => Done,
+        });
+        assert_eq!(
+            acts(&pass),
+            [
+                (Watch { issue: 1, start: true }, Asked),
+                (Watch { issue: 2, start: true }, Asked),
+                (Watch { issue: 3, start: true }, Asked),
+                (Dispatch { issue: 7 }, Done),
+                (Dispatch { issue: 8 }, Done),
+                (Heartbeat, Done),
+            ],
+            "the turns are asked for again, and the claims kept"
+        );
+        assert_eq!((pass.held, pass.bound, pass.frontier_remaining), (5, 5, 0));
+    }
+
+    #[test]
+    fn a_harness_started_under_an_idle_landing_takes_a_free_slot() {
+        // A slot is free: the worker is started to change the tree, and takes it.
+        let set = idle_landings(&[], &[1]);
+        let pass = run_pass(&set, set.bound(1), 1, |step| match step {
+            Watch { start: true, .. } => Continued,
+            _ => Nothing,
+        });
+        assert!(pass.did.contains(&(Watch { issue: 1, start: true }, Continued)));
+        assert_eq!((pass.held, pass.bound), (1, 1));
+        // No slot is free: no harness is started, and the claim is kept.
+        let mut full = idle_landings(&[7], &[1]);
+        full.mine.push(Mine { idle: false, ..full.mine[0].clone() });
+        full.mine[1].number = 2;
+        let pass = run_pass(&full, full.bound(1), 2, |step| match step {
+            Watch { start: true, .. } => Continued,
+            _ => Nothing,
+        });
+        assert!(pass.did.contains(&(Watch { issue: 1, start: false }, Nothing)));
+        assert_eq!((pass.held, pass.bound, pass.frontier_remaining), (2, 2, 1));
+    }
+
     /// A set of three claims with no PR, the last of which declared.
     fn one_declared(frontier: &[u64]) -> WorkingSet {
         let mut set = set(frontier, &[(1, Status::NoPr), (2, Status::NoPr), (3, Status::NoPr)]);
@@ -1520,7 +1587,7 @@ mod tests {
     #[test]
     fn a_claim_whose_worker_declared_takes_no_slot() {
         let set = one_declared(&[7, 8]);
-        assert_eq!(set.declared(), 1);
+        assert_eq!(set.slotless(), 1);
         let bound = set.bound(3);
         assert_eq!(bound, 4, "the declared claim takes none of the three slots");
         // Its worker is within grace: the claim is held, and one more is dispatched.
