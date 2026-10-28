@@ -53,6 +53,9 @@ pub(super) const KEPT: Kept = Kept {
 
 pub(super) const LIMITS: &str = ".grok/config.toml";
 pub(super) const REPO_RULES: [&str; 2] = ["AGENTS.md", RULES];
+/// The role's rules. The session cwd is the worktree, so this file is how
+/// they reach the worker (ADR-0043). The role module reads the name.
+pub(super) const ROLE_FILE: &str = RULES;
 /// Where the generated home writes the repo and team rules. Not the user's
 /// rules directory: that one is named, when the worker is given it, and this
 /// file has to stay the fleet's.

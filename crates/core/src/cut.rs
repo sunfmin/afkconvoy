@@ -333,9 +333,9 @@ pub enum Step {
     Set,
     /// Push the commit on the checkout's branch, and open its PR.
     Pr,
-    /// Merge, gate, record green and land it in its cut's turn.
+    /// Build one commit on the base tip, gate it, record green and land it.
     Gate,
-    /// Recover its landed merge commit on the base branch.
+    /// Recover that landed commit on the base branch.
     Land,
     /// Tag the landed commit `v<version>`, and push the tag.
     Tag,

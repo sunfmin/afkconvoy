@@ -402,5 +402,5 @@ A change the fleet starts to restore a red target tip or finish retained work fr
 _Avoid_: manual repair
 
 **Cut**:
-The run that makes a new version of a repo from its base branch: it sets the version, lands it, tags it, and publishes and installs it. Landed work past the newest version tag starts one when the fleet goes idle or the oldest landing reaches the repo's age bound; an untagged repo's declared initial version starts one when idle. Each cut belongs to one host; a failed cut holds later cuts back until answered, while a patch overtaken by a minor landing ends without tagging and gives way to the minor cut.
+The run that makes a new version of a repo from its base branch: it sets the version, lands one commit on that branch, tags that commit, and publishes and installs it. The commit that set the version stays on the cut's branch. Landed work past the newest version tag starts one when the fleet goes idle or the oldest landing reaches the repo's age bound; an untagged repo's declared initial version starts one when idle. Each cut belongs to one host; a failed cut holds later cuts back until answered, while a patch overtaken by a minor landing ends without tagging and gives way to the minor cut.
 _Avoid_: release (a claim's last step, and `afkconvoy release`), publish (a heartbeat's), deploy

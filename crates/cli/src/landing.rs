@@ -21,9 +21,10 @@ pub fn push_base(repo: &Repo, branch: &str, commit: &str, proven: &Proven) -> Re
 
 /// The joinings among the commits `revs` selects, oldest first, as the fleet
 /// whose tracker is `tracker` reads them. Whatever narrows the walk
-/// (`--grep`) never decides what a commit is.
+/// (`--grep`) never decides what a commit is. A merge is not required: a
+/// cut's landing has one parent, and `read_landings` is what admits it.
 pub fn joins_in(repo: &Repo, tracker: &Tracker, revs: &[&str]) -> Result<Vec<LandedPr>> {
-    let mut args = vec!["log", "--reverse", "--merges", "--format=%H%x09%P%x09%B%x00"];
+    let mut args = vec!["log", "--reverse", "--format=%H%x09%P%x09%B%x00"];
     args.extend(revs);
     let log = repo.git_raw(&args)?;
     let commits: Vec<Logged> = log

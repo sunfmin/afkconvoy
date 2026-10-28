@@ -6,6 +6,8 @@ status: accepted
 
 A turn makes the PR's merge commit on the current target tip, gates that commit, records green, and pushes that same commit to the target branch as a fast-forward. This replaces the landing train of ADR-0004 and the joining step of ADR-0034. The train added no verification after a recorded turn, but needed another worker and a separate lane; the measurements in ADR-0034 show the cost of running those gates together.
 
+A cut's landed commit has one parent (sunfmin/control#178). The turn builds it on the base tip as it stands, gates that tree, and fast-forwards the base branch to that same commit. Its diff against its parent is what the set lines wrote; where the base moved, the parent is the tip at land time and the landings already on it stay. The commit that set the version stays on the cut's branch and is not an ancestor of the base. Issue turns and watches still land as merge commits. A commit with one parent whose subject ends ` (#n)` and whose message has no `By a cut on <host>` line is not a landing. Tags already published stay where they are.
+
 ## Pinned task destinations (sunfmin/control#154)
 
 An issue turn resolves the task's immutable target record before reading its PR or recovering a landing (ADR-0006). The PR's actual base must equal that target, before any already-landed shortcut and again before publication. A base changed during validation invalidates the candidate. Existing source-head verification, green evidence, expected predecessor and atomic publication checks remain required. Each target has its own `candidates/<branch>` record; no candidate or settlement walk uses another target's history. The configured base alone supplies the landings that trigger a cut.

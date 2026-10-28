@@ -47,6 +47,26 @@ pub(super) fn capacity_stop(output: &[String]) -> Option<String> {
     screen.contains(words).then(|| words.to_string())
 }
 
+/// Codex's usage-limit screen, an account quota. The two clauses may wrap
+/// and differ in case; both have to be on the screen. Another harness's
+/// screen that says only that a usage limit was reached is not this one.
+pub(super) fn account_quota(output: &[String]) -> Option<String> {
+    let screen = output.join(" ").split_whitespace().collect::<Vec<_>>().join(" ");
+    let lower = screen.to_lowercase();
+    if !lower.contains("usage limit reached")
+        || !lower.contains("increase your limits to continue using codex")
+    {
+        return None;
+    }
+    Some(
+        output
+            .iter()
+            .find(|line| line.to_lowercase().contains("usage limit reached"))
+            .cloned()
+            .unwrap_or_else(|| output.join("\n")),
+    )
+}
+
 pub(super) const NAME: &str = "Codex";
 pub(super) const KEY: &str = "codex";
 pub(super) const PROGRAM: &str = "codex";
@@ -553,6 +573,33 @@ mod tests {
     use crate::harness::Harness;
     use crate::line::quoted;
     use crate::role::{Facts, On, Told};
+
+    fn lines(lines: &[&str]) -> Vec<String> {
+        lines.iter().map(|line| (*line).to_string()).collect()
+    }
+
+    #[test]
+    fn its_usage_limit_is_an_account_quota_and_a_wrapped_line_still_is() {
+        let line = "■ Usage limit reached. You've reached your usage limit. \
+                    Increase your limits to continue using codex.";
+        assert_eq!(account_quota(&lines(&[line])).as_deref(), Some(line));
+        let wrapped =
+            lines(&["Usage limit", "reached. Increase your limits to", "continue using codex."]);
+        assert_eq!(account_quota(&wrapped).as_deref(), Some(wrapped.join("\n").as_str()));
+        // The watch's transcript spells Codex with a capital and a semicolon.
+        let watched = "Usage limit reached; increase your limits to continue using Codex";
+        assert_eq!(account_quota(&lines(&[watched])).as_deref(), Some(watched));
+        assert!(
+            account_quota(&lines(&["Usage limit reached. Increase your limits to continue."]))
+                .is_none()
+        );
+        assert!(
+            account_quota(&lines(&["Increase your limits to continue using codex."])).is_none()
+        );
+        assert!(Harness::ClaudeCode.account_quota(&lines(&[line])).is_none());
+        assert!(Harness::Kimi.account_quota(&lines(&[line])).is_none());
+        assert!(Harness::Pi.account_quota(&lines(&[line])).is_none());
+    }
 
     /// The hooks that add the guard `/bin/afkconvoy guard` and the report.
     fn added() -> String {

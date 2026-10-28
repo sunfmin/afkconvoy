@@ -103,12 +103,11 @@ pub struct Knobs {
 /// kit, the startup probe. Its startup probe's warnings are
 /// said as `Line::Warning`.
 pub fn hold(checkout: &Repo, start: &Start, holder: Holder) -> Result<Value> {
-    // A start is a look of its own. The host runner is one process, and its
-    // earlier tick already read orca's repos and the quota note; this start
-    // reads each again, so a checkout a `run` registered since is known
+    // A start is a look of its own. The host runner is one process, and an
+    // earlier tick already read what a look reads once; this start reads
+    // each again, so a checkout a `run` registered since is known
     // (docs/adr/0043).
-    crate::orca::new_look();
-    crate::gh_quota::new_look();
+    crate::look::begin();
     if !host_settings::of_host()?.no_host_sleep && !cfg!(target_os = "macos") {
         bail!(
             "this host is not macOS, the one a fleet can put to sleep once every fleet on it is \

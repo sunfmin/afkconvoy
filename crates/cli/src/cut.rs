@@ -484,7 +484,8 @@ impl Cutting<'_> {
             Step::Pr => self.pr(record),
             Step::Gate if record.landed.is_some() => Ok(()),
             Step::Gate => {
-                self.join(record.pr.ok_or_else(|| anyhow!("the cut opened no PR"))?, clock())
+                let number = record.pr.ok_or_else(|| anyhow!("the cut opened no PR"))?;
+                self.join(record.from.as_deref(), number, clock())
             }
             Step::Land => self.land(record, clock),
             Step::Tag => self.tag(record),
@@ -538,6 +539,13 @@ impl Cutting<'_> {
         }))
     }
 
+    /// The cut's landing of PR `number` on the base branch past `from`.
+    fn landed_pr(&self, from: Option<&str>, number: u64) -> Result<Option<LandedPr>> {
+        let base = self.base()?;
+        let joins = self.landings(from, &base)?;
+        Ok(joins.into_iter().rev().find(|join| join.pr == number && matches!(join.of, Of::Cut(_))))
+    }
+
     fn subject(&self, commit: &str) -> Result<String> {
         self.repo.git(&["log", "-1", "--format=%s", commit])
     }
@@ -577,37 +585,46 @@ impl Cutting<'_> {
         Ok(())
     }
 
-    /// Recovers the cut's merge from the base branch after its landing turn.
-    /// An interrupted cut can take another turn if its PR has not landed.
+    /// Recovers the cut's commit from the base branch after its landing turn.
+    /// The set commit is not an ancestor of that branch. An interrupted cut
+    /// can take another turn if its PR has not landed.
     fn land(&self, record: &mut Record, clock: &impl Fn() -> u64) -> Result<()> {
         if record.landed.is_some() {
             return Ok(());
         }
         let number = record.pr.ok_or_else(|| anyhow!("the cut opened no PR"))?;
+        let from = record.from.clone();
         let head = self.repo.git(&["rev-parse", "HEAD"])?;
         loop {
-            let base = self.base()?;
-            if self.repo.within(&head, &base)? {
-                let joins = self.landings(record.from.as_deref(), &base)?;
-                let Some(join) = joins.into_iter().rev().find(|join| join.pr == number) else {
-                    bail!(
-                        "PR #{number} is on {} without a recorded landing commit: it was \
-                         merged outside a turn, and is no landing a cut tags",
-                        self.config.base_branch
-                    );
-                };
+            if let Some(join) = self.landed_pr(from.as_deref(), number)? {
                 record.landed = Some(join.commit);
                 return Ok(());
             }
-            {
-                self.join(number, clock())?;
+            let base = self.base()?;
+            if self.repo.within(&head, &base)? {
+                bail!(
+                    "PR #{number} is on {} without a recorded landing commit: it was \
+                     merged outside a turn, and is no landing a cut tags",
+                    self.config.base_branch
+                );
             }
+            self.join_turn(number, clock())?;
             std::thread::sleep(self.second * LAND_POLL);
         }
     }
 
-    /// Puts PR `number` on the base branch, as the cut's on `host`.
-    fn join(&self, number: u64, now: u64) -> Result<()> {
+    /// Puts PR `number` on the base branch, as the cut's on `host`. A landing
+    /// already there is the one this cut tags: taking the turn again would
+    /// add a second commit.
+    fn join(&self, from: Option<&str>, number: u64, now: u64) -> Result<()> {
+        if self.landed_pr(from, number)?.is_some() {
+            return Ok(());
+        }
+        self.join_turn(number, now)
+    }
+
+    /// Takes the cut's turn for PR `number`.
+    fn join_turn(&self, number: u64, now: u64) -> Result<()> {
         let locks = crate::lock::standing_locks(self.gh, self.config)?;
         if !locks.is_empty() {
             let answer = crate::turn::locked(json!({}), &locks);

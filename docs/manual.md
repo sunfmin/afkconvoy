@@ -2482,8 +2482,8 @@ Its steps, in order, each timed:
 
 1. `set` — runs the `set` lines on the base branch as it stood, and commits what they changed, titled `<repo> <version>`. Lines that change nothing find the version set: by a cut whose end was cut short after its PR landed. Where a cut's PR of that title landed past the tag (anywhere on the base branch for an initial cut), that landing is the one tagged, and the steps up to `tag` are passed by. An initial version already set gets an empty commit and follows the same PR, gate and landing turns steps; otherwise lines that change nothing fail.
 2. `pr` — pushes the commit to a branch of its own, `afkconvoy-cut/v<version>-<started>`, and opens its PR.
-3. `gate` — takes the cut's turn: make its merge commit on the base tip, gate it, record green and land it.
-4. `land` — find the cut's landed merge commit on the base branch; its message says `By a cut on <host>`. It is that commit the cut tags.
+3. `gate` — takes the cut's turn: build one commit on the base tip as it stands, whose diff against that tip is what the set lines wrote, gate that commit, record green and land it by a fast-forward. The commit has one parent. Where the base moved while the cut ran, that parent is the base tip at land time and the landings already on it stay. The commit that set the version stays on the cut's branch.
+4. `land` — find that commit on the base branch. Its message says `By a cut on <host>` and names the cut's PR. It is that commit the cut tags.
 5. `tag` — tags the commit that landed it `v<version>` (annotated), and pushes the tag. The PRs it holds are read again, up to that commit. A patch also checks landings up to the current base branch: where one landed while it ran and carries `release:minor`, it stops at `tag` without tagging or publishing, and opens no failure issue. The next tick releases its claim and starts the minor cut, unless a fleet lock stands. An initial cut holds every PR the base branch's landings name, and keeps its declared version.
 6. `publish` — with the tag checked out, runs the `publish` lines.
 
@@ -2510,7 +2510,7 @@ Errors: the checkout is no cut's, or keeps no cut's record; the repo names no cu
 ##### What trips you up
 
 - One cut runs at a time across a repo's hosts: it is claimed on the remote as a patrol's run is, and the tick that claims it reads the version tags again. A peer's that went silent is unclaimed by the next tick, and a new one starts when idle or past the age bound. A fleet lock and an open cut failure still hold it back.
-- A cut interrupted after landing recovers its merge commit from the base branch's commits and tags that landing.
+- A cut interrupted after landing finds that commit — its message says `By a cut on <host>` — and tags it. A commit with one parent whose subject ends ` (#n)` and whose message has no such line is not a landing.
 - `sh -e` fails a step at a line whose command fails, not at one whose command it tests: a command of an `if` or `while` test, on the left of `&&` or `||`, after `!`, or before the last of a pipe fails nothing. `./packaging/release.sh publish "$VERSION" | tee published` passes whatever `release.sh` did.
 - The cut's commit is made in the checkout's name, by its git config: a repo whose base branch is protected against pushes is as good as any other here, for the cut pushes nothing to it.
 
@@ -5068,5 +5068,5 @@ A change the fleet starts to restore a red target tip or finish retained work fr
 _Avoid_: manual repair
 
 **Cut**:
-The run that makes a new version of a repo from its base branch: it sets the version, lands it, tags it, and publishes and installs it. Landed work past the newest version tag starts one when the fleet goes idle or the oldest landing reaches the repo's age bound; an untagged repo's declared initial version starts one when idle. Each cut belongs to one host; a failed cut holds later cuts back until answered, while a patch overtaken by a minor landing ends without tagging and gives way to the minor cut.
+The run that makes a new version of a repo from its base branch: it sets the version, lands one commit on that branch, tags that commit, and publishes and installs it. The commit that set the version stays on the cut's branch. Landed work past the newest version tag starts one when the fleet goes idle or the oldest landing reaches the repo's age bound; an untagged repo's declared initial version starts one when idle. Each cut belongs to one host; a failed cut holds later cuts back until answered, while a patch overtaken by a minor landing ends without tagging and gives way to the minor cut.
 _Avoid_: release (a claim's last step, and `afkconvoy release`), publish (a heartbeat's), deploy
