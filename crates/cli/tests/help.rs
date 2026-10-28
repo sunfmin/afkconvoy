@@ -166,6 +166,8 @@ fn help_names_no_document_the_reader_cannot_open() {
         "keeps confirmed ownership across restart or upgrade",
         "answers every later question in that look from what was read",
         "selects the last harness to take a worker brief, then the host kit's eligible order",
+        "names no harness starts on the host kit's first eligible one",
+        "no other harness is started in its place",
     ] {
         assert!(glossary.contains(rule), "the glossary lost the rule {rule:?}");
     }
