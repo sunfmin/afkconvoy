@@ -253,7 +253,7 @@ pub fn intake(repo: &Repo, taking: Taking) -> Result<Value> {
 /// Ask `gh` for its URL (following transfers); a failed lookup is not a claim
 /// that the issue is anywhere in particular.
 fn missing_issue(repo: &Repo, gh: &GitHub, number: u64, error: anyhow::Error) -> anyhow::Error {
-    if !crate::gh::gone(&error).is_some_and(|gone| !gone.deleted) {
+    if !crate::gh::gone(&error).is_some_and(|gone| gone.how != crate::gh::Went::Deleted) {
         return error;
     }
     let own = crate::checkout_list::named_repo(repo)

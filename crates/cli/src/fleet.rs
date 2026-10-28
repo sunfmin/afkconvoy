@@ -57,7 +57,8 @@ pub struct Fleet {
     /// tick's line says of them. Every escalation is made through
     /// `judge::escalate_claim`, which is what adds to it.
     pub escalated: Vec<(u64, String)>,
-    /// The issues this view found gone — deleted or transferred — as a step
+    /// The issues this view found gone — deleted, transferred or never
+    /// issued — as a step
     /// met them, each with whether a claim on it was released: what a tick's
     /// line says of them.
     pub forgotten: Vec<(Gone, bool)>,
@@ -617,8 +618,9 @@ impl Fleet {
             })
             .collect();
         // The list holds only open issues: a claim missing from it is asked
-        // about, and is closed, gone — deleted or transferred — or unread.
-        let (mut closed, mut deleted) = (vec![], vec![]);
+        // about, and is closed, gone — deleted, transferred or never issued —
+        // or unread.
+        let (mut closed, mut vanished) = (vec![], vec![]);
         self.unread.clear();
         self.closers.clear();
         for claim in &self.scan.claims {
@@ -631,7 +633,7 @@ impl Fleet {
                     self.closers.extend(read.closed_by.map(|by| (claim.number, by)));
                 }
                 Ok(_) => {}
-                Err(error) if gone(&error).is_some() => deleted.push(claim.number),
+                Err(error) if gone(&error).is_some() => vanished.push(claim.number),
                 Err(error) => self.unread.push((claim.number, error)),
             }
         }
@@ -692,7 +694,7 @@ impl Fleet {
             claims: &self.scan.claims,
             heartbeats: &heartbeats,
             closed: &closed,
-            gone: &deleted,
+            gone: &vanished,
             kept: &kept,
             landed: &landed,
             declared: &declared,

@@ -14,9 +14,11 @@
 //! PRs of those, each from a branch of the repo that stands in — or, where it
 //! says `fork`, of a fork, that branch standing in for the fork's; what one
 //! changes is that branch against the default one.
-//! `deleted` and `transferred` {number: how many more calls about it are
-//! answered}: past those, each call about the issue answers 410 — or 404 —
-//! as GitHub does for an issue deleted, or transferred to another repo.
+//! `deleted`, `transferred` and `missing` {number: how many more calls about
+//! it are answered}: past those, each call about the issue answers as GitHub
+//! does for an issue deleted — 410 —, transferred to another repo — a read
+//! of the issue redirected to `acme/elsewhere`, its number 1000 more, and
+//! 404 of any other call —, or never issued — 404.
 //! `envs`: beside each of `calls`, the names of the session's environment it
 //! ran in (`fake::State`).
 //!
@@ -650,11 +652,15 @@ fn api(st: &mut State) -> ! {
         for (key, said) in [
             ("deleted", "gh: This issue was deleted (HTTP 410)\n"),
             ("transferred", "gh: Not Found (HTTP 404)\n"),
+            ("missing", "gh: Not Found (HTTP 404)\n"),
         ] {
             let Some(left) = st.doc.get_mut(key).and_then(|calls| calls.get_mut(*number)) else {
                 continue;
             };
             match left.as_u64().unwrap_or(0) {
+                0 if key == "transferred" && parts.len() == 2 && method == "GET" => {
+                    st.finish(&moved(number).to_string(), 0, "")
+                }
                 0 => st.finish("", 1, said),
                 more => *left = json!(more - 1),
             }
@@ -1098,6 +1104,15 @@ fn stamp(at: &Value) -> Value {
     at.as_u64()
         .map_or(Value::Null, |at| json!(format!("{}Z", afkconvoy::log::utc(at).replace(' ', "T"))))
 }
+/// A read of issue `number`, transferred: `gh` follows GitHub's redirect,
+/// and answers with the issue as it is in the repo it moved to.
+fn moved(number: &str) -> Value {
+    let to = number.parse::<u64>().unwrap() + 1000;
+    json!({"id": to, "url": format!("https://api.github.com/repos/acme/elsewhere/issues/{to}"),
+        "number": to, "title": "moved", "body": null, "state": "open", "state_reason": null,
+        "labels": [], "pull_request": false, "closed_by": null})
+}
+
 fn rest_issue(row: &Value) -> Value {
     let labels: Vec<_> =
         row["labels"].as_array().into_iter().flatten().map(|n| json!({"name":n})).collect();

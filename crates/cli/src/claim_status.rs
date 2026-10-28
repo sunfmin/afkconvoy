@@ -19,7 +19,7 @@ pub enum ClaimStatus {
     Landed,
     /// The issue is closed: a tick settles the claim and releases it.
     Closed,
-    /// GitHub says the issue was deleted, or transferred to another repo: nothing is left to settle, and the claim is let go.
+    /// GitHub says the issue was deleted, or transferred to another repo, or has no such issue: nothing is left to settle, and the claim is let go.
     Gone,
     /// In a bound repo, a claim on an open issue that is not a landing worker's, whatever PR is open: it was dispatched to a stage, and what that stage declares ends it.
     AtStage,

@@ -659,7 +659,7 @@ A claim's `status`, under `mine`, is one of:
 - `landing`: An open PR closes it, and that PR is not on the base branch yet. In a bound repo, only under a landing worker's claim.
 - `landed`: Its turn put the work on the base branch, and the landing was cut short before the issue was closed: a tick closes it, then settles the claim.
 - `closed`: The issue is closed: a tick settles the claim and releases it.
-- `gone`: GitHub says the issue was deleted, or transferred to another repo: nothing is left to settle, and the claim is let go.
+- `gone`: GitHub says the issue was deleted, or transferred to another repo, or has no such issue: nothing is left to settle, and the claim is let go.
 - `at_stage`: In a bound repo, a claim on an open issue that is not a landing worker's, whatever PR is open: it was dispatched to a stage, and what that stage declares ends it.
 
 The probe's warnings go to stderr. Errors: a command the fleet needs is missing or logged out, or orca is not running or does not know this checkout (the error names each, with the line to run; `claude` is among them when no custom provider is set, as `run` would then start its workers with it); the repo fails the startup probe (the remote has no base branch, its protection refuses the fleet's push, its tracker is public — the error names it, with the line that says a private one — or the remote takes none of the fleet's refs); the config cannot be read; GitHub or the remote cannot be read.
@@ -858,7 +858,7 @@ tick 9: left #97 (closed by @alice) · holding 1/3 · frontier 0 · next now
 tick 9: skipped #320 (blocked by #379, added since tick 8) · holding 1/3 · frontier 0 · next in 90s
 ```
 
-`lost #46`: a claim this instance held is another's now — taken by a takeover, or `(stale: past the lease)`, as a stale claim, this instance's heartbeat being past the lease. `released #231`: its issue was deleted, or `(the issue is gone from this repo)`, transferred. `left #97`: a claim with no PR whose issue was closed, by whoever GitHub says closed it (`closed on GitHub` where it says no one), is settled — nothing of the fleet's landed. `labelled …` and `added since …` say what the tick before saw otherwise. A change the tick does nothing about is in no line; nor is one made before the fleet instance's first tick, which has no tick before it, nor anything of the kind in what `afkconvoy tick` answers.
+`lost #46`: a claim this instance held is another's now — taken by a takeover, or `(stale: past the lease)`, as a stale claim, this instance's heartbeat being past the lease. `released #231`: its issue was deleted, `(the issue was transferred to acme/other#12)`, where GitHub says it moved, or `(there is no such issue)`, a 404 with no move. `left #97`: a claim with no PR whose issue was closed, by whoever GitHub says closed it (`closed on GitHub` where it says no one), is settled — nothing of the fleet's landed. `labelled …` and `added since …` say what the tick before saw otherwise. A change the tick does nothing about is in no line; nor is one made before the fleet instance's first tick, which has no tick before it, nor anything of the kind in what `afkconvoy tick` answers.
 
 `next now` in place of `next in <n>s`: the tick settled an issue, or advanced one without starting what follows, and left a slot free, so what follows — a consult, the landing of a PR, an issue the landing unblocked — is the next tick's to start, and that tick starts with no sleep.
 
@@ -1498,7 +1498,7 @@ Errors: a command the fleet needs is missing or logged out, or orca is not runni
 - `--instance` is required: `run` mints an id, a tick has to be given one. Give every tick of one fleet the same id — a new id holds no claims, and sees the old id's as another instance's.
 - In a bound repo the tick that reads a verdict ends the claim its stage was performed under (`advance`) and, where the verdict leads to a stage a role performs, starts that stage's worker into the slot it freed, under a claim of its own (`dispatch`, on the same issue): a `pass` to the next stage, a `reject` to an earlier one, a ruling that runs a stage again. That worker goes ahead of everything else the tick takes a slot for. Only a fleet over its concurrency has no slot for it: the issue is then on the frontier of the tick after, ahead of the issues no stage has declared on yet.
 - A dispatch reads the issue's blockers once more, just before its claim: the rebuild can be minutes older (settling runs in between), and a blocker added since holds the issue back. Nothing is claimed, no worker starts and no status board is shown; the step says `blocked`, the line `skipped #68 (blocked by #71)`, and the slot it would have taken goes to the next issue on the frontier, in the same tick. The rebuild's own requests are as many as ever.
-- An issue GitHub answers 410 (deleted) or 404 (transferred) for is gone, like a closed one, and costs the tick nothing else. A claim of mine on it is let go (`forget`): released, its worktree removed when it holds nothing the remote does not — else kept, its worker's terminal closed — and nothing written on GitHub. A dispatch that finds it gone, before its claim or after, leaves no claim behind, says `gone` and takes no slot. The line says `released #231 (the issue was deleted)`, or `skipped #231 (…)` of a dispatch that found it gone with no claim to release; `afkconvoy doctor` names a claim on one whose fleet is not running, with its fix.
+- An issue GitHub has no more is gone, like a closed one, and costs the tick nothing else. GitHub says one of three things of it: deleted, answered 410; transferred, its read redirected to the repo it moved to; no such issue, a 404 with no move — a number nobody issued. Only the first two are called deleted or transferred: a 404 with no move is no such issue. A claim of mine on it is let go (`forget`): released, its worktree removed when it holds nothing the remote does not — else kept, its worker's terminal closed — and nothing written on GitHub. A dispatch that finds it gone, before its claim or after, leaves no claim behind, says `gone` and takes no slot. The line says `released #231 (the issue was deleted)`, `(the issue was transferred to acme/other#12)` or `(there is no such issue)`, or `skipped #231 (…)` of a dispatch that found it gone with no claim to release; `afkconvoy doctor` names a claim on one whose fleet is not running, with its fix.
 - The last stage is different: the tick after a `pass` that leads to `land` starts a worker in the workflow's landing role, which gates the PR and lands in a turn; a `pass` to `land` with no open PR to land is handed to a human. A consult and a stage that runs again once a fleet lock closed are the tick after's too.
 - `run` does not sleep across that hop: after a tick that settled an issue or advanced one without starting what follows, and left a slot free, it starts the next tick at once (`next now` in its line), at most 4 ticks back to back. Ticking by hand, the next `tick` is yours to run.
 - The step that ends a piece of work ends its worker too: no worker is left at its prompt once the tick has acted on what it declared. What becomes of the terminal and the worktree:
@@ -1783,7 +1783,7 @@ Of a record, `by` says who left it: `worker` or — asked to rule on the stage's
 - `claim-spent`: a verdict was already declared under its claim: it is not one
 - `unknown-stage`: it names a stage the workflow no longer has: the issue escalates
 
-Errors, as {"error": …} with a non-zero exit: the team has a fault — {"error", "faults"}, as `check` answers it; the team has no workflow of that name, or none at all; the issue has no position — it carries several flow labels, one that names no workflow of the team, or none with no escalation that says which it left; and every error of `check`.
+Errors, as {"error": …} with a non-zero exit: the team has a fault — {"error", "faults"}, as `check` answers it; the team has no workflow of that name, or none at all; the issue has no position — it carries several flow labels, one that names no workflow of the team, or none with no escalation that says which it left; there is no such issue (`no such issue: #7 (HTTP 404)`), or GitHub says it was deleted or transferred; and every error of `check`.
 
 ##### What trips you up
 
@@ -2854,7 +2854,7 @@ It reads the issue's comments and the open PRs on GitHub, the issue's branches o
 - `branch`: {name, candidates, commits_ahead} — the issue's own branches on the remote, and the one a worktree would be recreated at
 - `tier`, `action`, `prompt`, `reason`: what `dispatch` would do, as `dispatch` answers it
 
-Errors: the config, GitHub or the remote cannot be read; the remote has no base branch.
+Errors: the config, GitHub or the remote cannot be read; the remote has no base branch; there is no such issue (`no such issue: #7 (HTTP 404)`), or GitHub says it was deleted or transferred.
 
 ##### What trips you up
 
@@ -4650,7 +4650,7 @@ A warning may be the fleet mid-step: run `doctor` again after a tick before you 
 - `has waited for a human for`: Nothing in the fleet moves that issue. `fix` answers it: [`afkconvoy help humans`](help:humans).
 
 - `is held off by a PR not the fleet's`: No worker starts: it would open a second PR. `fix` closes it, or merge it yourself.
-- `is claimed but GitHub has it no more`: Deleted or transferred: its fleet's next tick releases it. `fix` is for one stopped.
+- `is claimed but GitHub has it no more`: Deleted, transferred, or no such issue: its fleet's next tick releases it. `fix` is for one stopped.
 - `the gate is slow`: On one host, the last 5 landings with a recorded gate run all exceeded the fixed `gate_budget_seconds` when declared, or took more than 80% of the termination gate limit otherwise. Queue waiting is excluded. A warning never ends a gate. Compare the gate logs against the committed baseline: step wall times, Flux functions, and nextest slow tests with full names and seconds; parallel test durations are not gate wall time. A tick opens one issue for the fleet to make the gate faster: `fix` shows it. Raising `gate_seconds` or `gate_budget_seconds` is no fix, nor is deleting or skipping tests.
 - `the host runner did not move onto`: A newer release is installed where the host runner was started from, and it did not start, does not say its version, or the wait for ticks and a running exclusive command to end exceeded ten minutes: `evidence` says why, including which ticks or command held it. The host runner works on, on its own release, and tries that file again once it changes: install it again (`brew reinstall afkconvoy`), and `fix` shows whether it now says its version.
 

@@ -486,7 +486,8 @@ pub struct State {
     /// The open ready issues held off, with no claim, only by an open PR
     /// that is not the fleet's (`plan::NOT_OURS`).
     pub not_ours: Vec<NotOurs>,
-    /// The claims on issues GitHub says were deleted or transferred.
+    /// The claims on issues GitHub says were deleted, transferred or never
+    /// issued.
     pub on_gone: Vec<OnGone>,
     /// Candidate state from the same remote listing as the working set.
     pub candidates: Value,
@@ -494,8 +495,8 @@ pub struct State {
     pub deliveries: Vec<Value>,
 }
 
-/// A claim on an issue GitHub answers 410 or 404 for: deleted, or
-/// transferred to another repo. Its holder's next tick lets it go; until
+/// A claim on an issue GitHub has no more: deleted, transferred to another
+/// repo, or never issued. Its holder's next tick lets it go; until
 /// then it holds a slot of that fleet.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OnGone {
@@ -1134,7 +1135,9 @@ fn on_gone_finding(on: &OnGone) -> Finding {
     let holder = holder.as_deref().unwrap_or("no fleet instance it names");
     finding(
         Kind::ClaimOnGone,
-        format!("#{issue} is claimed but GitHub has it no more: it was deleted or transferred"),
+        format!(
+            "#{issue} is claimed but GitHub has it no more: it was deleted or transferred, or there is no such issue"
+        ),
         format!(
             "GitHub answers 410 or 404 for #{issue}; {claim_ref} is held by {holder}, whose next \
              tick releases it"
