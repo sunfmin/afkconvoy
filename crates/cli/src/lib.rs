@@ -192,7 +192,7 @@ const SKILL: &str = include_str!("../../../skills/afkconvoy/SKILL.md");
 ///
 /// Every host watches itself: in the operator's directory where `afkconvoy run --watch-dir <dir>` names one, otherwise as the stock watch in afkconvoy's own directory. Its host runner takes that look every five minutes, with no model, and when it holds something an operator would act on, starts one watch — an agent session in that directory, given the look — continued on another harness where its own gives out. `afkconvoy run --help` says when, and `doctor` says the watch running and what the last one did.
 ///
-/// A watch is the operator for every repo on the host's checkout list. It trusts worktrees, restarts, nudges, continues or switches workers and changes host settings; once a fleet fault is fixed it hands the escalated issue back with the line `doctor` names and checks the next tick dispatches it. It may change any listed repo in a checkout of its own, land it in that repo's turn with `land --watch`. Where the fix must reach an installed tool, it has that repo's fleet cut a version after landing, lets the host runner move onto it and checks the fault on the new version. Human decisions stay with the human, untouched and listed in the watch's record; what it prints records each fix, PR, cut, check and anything still pending. It acts only on what the fleets own, preserves what cannot be rebuilt and changes no base branch outside a landing turn. Its sessions together have one hour.
+/// A watch is the operator for every repo on the host's checkout list. It trusts worktrees, restarts, nudges, continues or switches workers; once a fleet fault is fixed it hands the escalated issue back with the line `doctor` names and checks the next tick dispatches it. It may change any listed repo in a checkout of its own, land it in that repo's turn with `land --watch`. Where the fix must reach an installed tool, it has that repo's fleet cut a version after landing and checks the fault on the new version. Human decisions stay with the human, untouched and listed. It acts only on what the fleets own, preserves what cannot be rebuilt and changes no base branch outside a landing turn. Its sessions together have one hour.
 ///
 /// And whenever something looks wrong: `afkconvoy doctor` — it changes nothing, and names each fix.
 ///
@@ -222,6 +222,7 @@ const SKILL: &str = include_str!("../../../skills/afkconvoy/SKILL.md");
 ///
 /// ## Rules to know before you start
 ///
+/// - A command with no argument of its own takes the checkout as a path after it, and as `-C <checkout>` when it has one; a fix line and one typed by hand use that form.
 /// - One fleet instance per host per repo. `run` in a second checkout of a repo on the host's checkout list is refused, naming the first: run it there.
 /// - `run` returns once its checkout's first tick ended: the host runner ticks on, in the background, until `afkconvoy stop --all` stops it, keeping the checkout list. `afkconvoy stop` takes one checkout off the list. `tick` is one pass that exits.
 /// - Between ticks a fleet instance sleeps {const:TICK_BUSY_SECONDS} seconds while it has work, or {const:TICK_IDLE_MINUTES} minutes after {const:TICK_IDLE_AFTER} empty ticks. Commands that change fleet state wake it sooner, including a worker's last `afkconvoy wake`. When a fleet on this host closes an issue or sees it closed, it also wakes every other fleet on the same tracker whose open issues it blocked. That next tick reads GitHub and takes up an issue whose last open blocker closed; its tick log names the closed issue and the fleet instance that saw it. After changing issues with `gh`, run `afkconvoy wake <checkout>` on the fleet's host: `gh` sends no wake.
@@ -1030,13 +1031,13 @@ enum Command {
     /// - `refusals`: issue number → the harnesses that refused that task, each with `harness` and `evidence`, read from GitHub. Later starts skip them across every stage; the harness stays healthy for other issues.
     /// - `candidates`: the remote candidate chains for every target branch of this repo, each in order and identified by `target_branch`. Each candidate includes its commit, predecessor, current candidate stage and what it is waiting for; `waiting` distinguishes worktree construction, validation, a predecessor and process exit. An error reading the chain is reported as `{error}`.
     /// - `codex_workers`: this checkout's Codex sessions, each with issue, worktree, harness, model, effort, model_source, effort_source and codex_home (its private session directory). Automatic starts read the model from your `~/.codex/config.toml` (`user_selection`), an issue's `model:` label keeps casting (`casting`), and no user preference leaves the model null for Codex's native default (`codex_default`). Every start reads the effort from your own Codex config, or uses Codex's model default. Sources stay attached to the session after your config changes; a saved `/model` choice is shown with its session's private config as the source. [`afkconvoy help worker-launch`](help:worker-launch).
-    /// - `waiting_on_human`: as `plan` answers it, and as the panel lists it under "With a human": every open issue nobody holds that waits for a human — escalated, at a stage that is a human's, past the end of its workflow and still open, or reporting a patrol's failed run — each as {issue, title, why, url, since, answer}: `why` is what kind of wait, then the reason the issue’s comment gives, in its first sentence; `url` is that comment (the report itself for an older failed patrol or cut with no reason comment), or null where no comment explains the wait; `answer` is the line that answers it, to run as it is but for what stands between < and >. An escalation with no position gets the team's only flow label filled in; with several workflows, `why` lists the flow labels to choose `<flow label>` from. null when the issues could not be read
+    /// - `waiting_on_human`: as `plan` answers it, and as the panel lists it under "With a human": every open issue nobody holds that waits for a human — escalated, at a stage that is a human's, past the end of its workflow and still open, or reporting a patrol's failed run — each as {issue, title, why, url, since, answer}: `why` is what kind of wait, then the reason the issue’s comment gives, in its first sentence; `url` is that comment (the report itself for an older failed patrol or cut with no reason comment), or null where no comment explains the wait; `answer` is the line that answers it, run as printed apart from what stands between < and >, naming the checkout as that command takes it so the line runs from any directory. An escalation with no position gets the team's only flow label filled in; with several workflows, `why` lists the flow labels to choose `<flow label>` from. null when the issues could not be read
     /// - `findings`: what is wrong, most severe first — none: []. Each is {severity, what, evidence, fix, see}:
     ///
     ///   - `severity`: how much it matters, one of those below
     ///   - `what`: the fault, in a sentence
     ///   - `evidence`: what was read that says so
-    ///   - `fix`: one command line to run as it is but for what stands between < and > — or, for a fault in a team's or a role's file, or a key the repo's config leaves out, `<file>: <key>` to edit. For an escalation with no position and several workflows, `what` lists the flow labels to choose `<flow label>` from
+    ///   - `fix`: one command line, run as printed apart from what stands between < and > — it names the checkout as the command takes it, so the line runs from any directory, and `afkconvoy doctor --all` is run from anywhere — or, for a fault in a team's or a role's file, or a key the repo's config leaves out, `<file>: <key>` to edit. For an escalation with no position and several workflows, `what` lists the flow labels to choose `<flow label>` from
     ///   - `see`: the command that prints the help topic explaining it: `afkconvoy help humans` where what it reports waits for a human, else `afkconvoy help troubleshooting`, which has a row for each finding
     ///
     /// A finding's `severity` is one of, most first:
@@ -1136,7 +1137,7 @@ enum Command {
     /// - `caster`: while a caster runs or one is due:
     ///
     ///   {running_since, due, held, to_cast} — when the one that runs was started (null: none runs), whether a tick starts one now, the frontier's issues held back for it, and every issue a caster started now is given. An uncast issue with a choice to make waits for one, for ten minutes at most from its start: `afkconvoy cast --help`
-    /// - `waiting_on_human`: every open issue nobody holds that waits for a human, lowest number first: {issue, title, why, url, since, answer} — `why`: what kind of wait, then the reason the issue’s comment gives, in its first sentence; `url`: that comment (the report itself for an older failed patrol or cut with no reason comment), or null where no comment explains the wait; since when in epoch seconds where GitHub said, and the line that answers it, to run as it is but for what stands between < and >. An escalation with no position gets the team's only flow label filled in; with several workflows, `why` lists the flow labels to choose `<flow label>` from. They are: an escalated issue, one whose records call for a human, one at a stage that is a human's, one whose workflow ended and that is still open, and the report of a patrol's failed run
+    /// - `waiting_on_human`: every open issue nobody holds that waits for a human, lowest number first: {issue, title, why, url, since, answer} — `why`: what kind of wait, then the reason the issue’s comment gives, in its first sentence; `url`: that comment (the report itself for an older failed patrol or cut with no reason comment), or null where no comment explains the wait; since when in epoch seconds where GitHub said, and the line that answers it, run as printed apart from what stands between < and >, naming the checkout as that command takes it so the line runs from any directory. An escalation with no position gets the team's only flow label filled in; with several workflows, `why` lists the flow labels to choose `<flow label>` from. They are: an escalated issue, one whose records call for a human, one at a stage that is a human's, one whose workflow ended and that is still open, and the report of a patrol's failed run
     /// - `escalating`: in a bound repo, when there are any: the unclaimed issues a tick hands to a human, with why: {number, title, reason}
     /// - `mine`: the claims of `--instance`: {number, title, status, pr, declared} — `declared` is true while a verdict declared under the claim waits to be acted on: the claim takes no slot meanwhile. In a bound repo with `due`, the stage a worker is to be started on once the claim's stage has declared, where a role performs one. status is one of those below
     /// - `peer_live`: other instances' claims within the lease — never touched
@@ -3625,6 +3626,28 @@ fn checkout_help(name: &str, positional: bool) -> String {
         "## Which checkout it is about\n\n{named}: a checkout of the repo, or any directory in \
          one, which names that checkout.{own} {none} {worker}"
     )
+}
+
+/// Whether `name` takes its checkout as a path after the command
+/// (`Some(true)`), with `-C` (`Some(false)`), or takes none (`None`). The
+/// same fact `checkout_help` writes into the manual: a fix line uses it, so
+/// the line and a command typed by hand name the checkout the same way.
+pub(crate) fn positional_checkout(name: &str) -> Option<bool> {
+    use std::collections::HashMap;
+    use std::sync::OnceLock;
+    static FORMS: OnceLock<HashMap<String, bool>> = OnceLock::new();
+    FORMS
+        .get_or_init(|| {
+            cli()
+                .get_subcommands()
+                .filter_map(|command| {
+                    let arg = command.get_arguments().find(|arg| arg.get_id() == CHECKOUT_ARG)?;
+                    Some((command.get_name().to_string(), arg.is_positional()))
+                })
+                .collect()
+        })
+        .get(name)
+        .copied()
 }
 
 /// The manual: `--help` answers its index, `help all` it whole, and `help
