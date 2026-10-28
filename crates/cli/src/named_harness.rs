@@ -71,9 +71,11 @@ pub fn ask(root: &Path, to: To<Harness>) {
 /// The harness in force for `repo`, as {in_force, said_by}. `said_by` is
 /// `checkout` where the checkout names one — `in_force` is that harness even
 /// when it cannot start — and `host_kit` where it names none, `in_force`
-/// then the host kit's first eligible harness, or null where none can start.
-/// {error} where the checkout list or, for a checkout that names none, the
-/// host kit cannot be read.
+/// then the host kit's first that pause and health leave, or null where none
+/// remains. A launch command is not asked again here: the selection already
+/// asks the login shell, and asking again would read it a second time on a
+/// plan that trusts its probe. {error} where the checkout list or, for a
+/// checkout that names none, the host kit cannot be read.
 pub fn json_of(repo: &Repo) -> Value {
     match standing(repo) {
         Ok(value) => value,
@@ -85,22 +87,18 @@ fn standing(repo: &Repo) -> Result<Value> {
     match named(repo)? {
         Some(harness) => Ok(json!({"in_force": harness.key(), "said_by": "checkout"})),
         None => {
-            let in_force = first_eligible(repo)?.map(|harness| harness.key());
+            let in_force = first_eligible()?.map(|harness| harness.key());
             Ok(json!({"in_force": in_force, "said_by": "host_kit"}))
         }
     }
 }
 
-/// The host kit's first harness that can start a worker of `repo` now.
-fn first_eligible(repo: &Repo) -> Result<Option<Harness>> {
+/// The host kit's first harness pause and health leave. Whether its launch
+/// command can start is the selection's question (`Fleet::runnable`), asked
+/// once there.
+fn first_eligible() -> Result<Option<Harness>> {
     let (kit, _) = crate::kit::running()?;
-    let launches = crate::launch::Launches::foreseen(repo);
-    for held in &kit.harnesses {
-        if crate::role::startable(&launches, held.harness, "kit priority").is_ok() {
-            return Ok(Some(held.harness));
-        }
-    }
-    Ok(None)
+    Ok(kit.first().map(|held| held.harness))
 }
 
 /// Why `harness` cannot start a worker of `repo` now. A model fault that
