@@ -371,7 +371,9 @@ fn the_host_s_exclusive_queue_is_shown_what_runs_first_then_what_waits() {
     // Not started is waiting in the observation, with no turn's result word.
     assert!(next.get("waiting").is_none(), "{exclusive}");
     assert_eq!(next["scheduling"]["state"], "waiting");
-    assert_eq!(next["scheduling"]["reasons"][0]["kind"], "worker_capacity");
+    let kinds: Vec<_> =
+        next["scheduling"]["reasons"].as_array().unwrap().iter().map(|r| &r["kind"]).collect();
+    assert_eq!(kinds, [&json!("same_repo"), &json!("worker_capacity")], "{exclusive}");
     common::fixture_lease_observed();
     drop(running);
     drop(waiting);
