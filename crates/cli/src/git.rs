@@ -107,6 +107,18 @@ impl Seen {
         self.dirty.insert(name.to_string());
     }
 
+    /// A write to the remote changed `refs`: the next read of each asks the
+    /// remote. `None`, or a name this cache cannot hold, drops every ref.
+    fn wrote(&mut self, refs: Option<&[String]>) {
+        let Some(refs) = refs.filter(|refs| refs.iter().all(|name| is_exact(name))) else {
+            self.clear();
+            return;
+        };
+        for name in refs {
+            self.dirty(name);
+        }
+    }
+
     /// `records` is what `patterns` just listed. A glob prefix becomes complete:
     /// a name under it that was not listed is absent.
     fn remember(&mut self, records: &[RemoteRecord], patterns: &[&str]) {
@@ -392,14 +404,7 @@ impl Repo {
                 Some(patterns) => seen.forget(&patterns),
             }
         } else if cmd == "push" {
-            match refs_pushed(args) {
-                None => seen.clear(),
-                Some(refs) => {
-                    for name in refs {
-                        seen.dirty(&name);
-                    }
-                }
-            }
+            seen.wrote(refs_pushed(args).as_deref());
         }
     }
 
@@ -511,19 +516,15 @@ impl Repo {
         self.remote_sha(refname)
     }
 
-    /// Drops the saved answer for each ref. `publication::push` writes through
-    /// receive-pack, not `git push`, and the next read has to see what it wrote.
-    pub(crate) fn published(&self, refs: &[String]) {
-        let reads = self.reads();
-        let mut seen = lock(&reads.seen);
-        for name in refs {
-            if is_exact(name) {
-                seen.dirty(name);
-            } else {
-                seen.clear();
-                return;
-            }
-        }
+    /// Runs `write`, a write to the remote of `refs` that does not go through
+    /// `git push` (`publication::push` speaks receive-pack), then drops each
+    /// ref like a push does. It drops them whatever `write` returns: a write
+    /// that failed or was refused may still have changed the remote.
+    pub(crate) fn write_remote<T>(&self, refs: &[&str], write: impl FnOnce() -> T) -> T {
+        let wrote = write();
+        let refs: Vec<String> = refs.iter().map(|name| name.to_string()).collect();
+        lock(&self.reads().seen).wrote(Some(&refs));
+        wrote
     }
 
     /// Every ref the remote has that matches one of `patterns` — a ref's
@@ -842,10 +843,23 @@ mod tests {
             &[record("refs/heads/main", "abc"), record("refs/heads/other", "def")],
             &["refs/heads/*"],
         );
-        seen.dirty("refs/heads/main");
+        seen.wrote(refs_pushed(&["push", "--quiet", "origin", "main"]).as_deref());
         assert_eq!(seen.answer("refs/heads/main"), SeenAnswer::Miss);
         assert_eq!(seen.answer("refs/heads/other"), SeenAnswer::Sha("def".into()));
         assert_eq!(seen.answer("refs/heads/gone"), SeenAnswer::Absent);
+    }
+
+    #[test]
+    fn a_push_to_a_destination_it_cannot_name_drops_every_ref() {
+        let mut seen = Seen::default();
+        seen.remember(
+            &[record("refs/heads/main", "abc"), record("refs/convoy/target/7", "def")],
+            &["refs/heads/*", "refs/convoy/target/7"],
+        );
+        seen.wrote(refs_pushed(&["push", "-q", "origin", "HEAD"]).as_deref());
+        assert_eq!(seen.answer("refs/heads/main"), SeenAnswer::Miss);
+        assert_eq!(seen.answer("refs/heads/gone"), SeenAnswer::Miss);
+        assert_eq!(seen.answer("refs/convoy/target/7"), SeenAnswer::Miss);
     }
 
     #[test]
@@ -928,35 +942,84 @@ mod tests {
     /// `turn::certify` pushes the gate record from a worktree `Repo::new` opened
     /// beside the checkout that cached the ref's absence. Both are one repository,
     /// so the parent sees the push.
-    #[test]
-    fn a_worktree_push_drops_the_ref_the_parent_cached() {
-        let root = tempfile::tempdir().unwrap();
-        let bare = root.path().join("remote.git");
-        let main = root.path().join("main");
-        let wt = root.path().join("wt");
-        let git = |dir: &Path, args: &[&str]| {
-            let out = std::process::Command::new("git")
-                .current_dir(dir)
-                .args(args)
-                .env("GIT_AUTHOR_NAME", "afkconvoy")
-                .env("GIT_AUTHOR_EMAIL", "afkconvoy@localhost")
-                .env("GIT_COMMITTER_NAME", "afkconvoy")
-                .env("GIT_COMMITTER_EMAIL", "afkconvoy@localhost")
-                .output()
-                .unwrap();
-            assert!(
-                out.status.success(),
-                "git {} in {}: {}",
-                args.join(" "),
-                dir.display(),
-                String::from_utf8_lossy(&out.stderr)
-            );
-        };
-        git(root.path(), &["init", "--bare", bare.to_str().unwrap()]);
-        git(root.path(), &["init", "-b", "main", main.to_str().unwrap()]);
+    /// A git call outside `Repo`, so no remembered listing hears of it: what
+    /// another process does to the remote.
+    fn git(dir: &Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "afkconvoy")
+            .env("GIT_AUTHOR_EMAIL", "afkconvoy@localhost")
+            .env("GIT_COMMITTER_NAME", "afkconvoy")
+            .env("GIT_COMMITTER_EMAIL", "afkconvoy@localhost")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {} in {}: {}",
+            args.join(" "),
+            dir.display(),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// A checkout `main` under `root` whose origin is a bare repo with `main`
+    /// pushed.
+    fn checkout(root: &Path) -> PathBuf {
+        let bare = root.join("remote.git");
+        let main = root.join("main");
+        git(root, &["init", "--bare", bare.to_str().unwrap()]);
+        git(root, &["init", "-b", "main", main.to_str().unwrap()]);
         git(&main, &["config", "maintenance.auto", "false"]);
         git(&main, &["remote", "add", "origin", bare.to_str().unwrap()]);
         git(&main, &["commit", "--allow-empty", "-m", "init"]);
+        git(&main, &["push", "--quiet", "origin", "main"]);
+        main
+    }
+
+    #[test]
+    fn a_receive_pack_publication_drops_the_refs_it_wrote() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = checkout(root.path());
+        let repo = Repo::new(dir.clone());
+        let record = "refs/convoy/delivery/x";
+        let head = repo.remote_sha("refs/heads/main").unwrap().unwrap();
+        assert_eq!(repo.remote_sha(record).unwrap(), None);
+
+        let sha = repo.record_commit("delivered").unwrap();
+        let zero = "0".repeat(sha.len());
+        let update = crate::publication::Update { name: record, old: &zero, new: &sha };
+        assert!(crate::publication::push(&repo, &[update]).unwrap());
+        assert_eq!(repo.remote_sha(record).unwrap().as_deref(), Some(sha.as_str()));
+
+        // Another process moves main. This process did not write it, so the
+        // look still answers from the listing it read.
+        git(&dir, &["commit", "--allow-empty", "-m", "elsewhere"]);
+        git(&dir, &["push", "--quiet", "origin", "main"]);
+        assert_eq!(repo.remote_sha("refs/heads/main").unwrap(), Some(head));
+    }
+
+    #[test]
+    fn a_ref_another_process_can_move_is_read_now() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = checkout(root.path());
+        let repo = Repo::new(dir.clone());
+        let source = "refs/heads/main";
+        let listed = repo.remote_sha(source).unwrap().unwrap();
+
+        git(&dir, &["commit", "--allow-empty", "-m", "elsewhere"]);
+        git(&dir, &["push", "--quiet", "origin", "main"]);
+        let moved = git(&dir, &["rev-parse", "HEAD"]);
+        assert_eq!(repo.remote_sha(source).unwrap(), Some(listed));
+        assert_eq!(repo.remote_sha_now(source).unwrap(), Some(moved));
+    }
+
+    #[test]
+    fn a_worktree_push_drops_the_ref_the_parent_cached() {
+        let root = tempfile::tempdir().unwrap();
+        let main = checkout(root.path());
+        let wt = root.path().join("wt");
         git(&main, &["worktree", "add", "--detach", wt.to_str().unwrap(), "HEAD"]);
 
         let parent = Repo::new(main);
