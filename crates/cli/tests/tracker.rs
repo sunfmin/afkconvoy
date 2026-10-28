@@ -785,7 +785,13 @@ fn a_bound_repos_tracker_issue_goes_through_its_stages_and_lands_in_a_turn() {
     let joined = world.remote(&["log", "--format=%s%n%b", "--merges", "-1", "main"]);
     assert_eq!(joined, "pr 70 (#70)\nCloses acme/tracker#7");
     assert_eq!(issue_of(&world.tracker(), 7)["state"], "closed");
-    assert_eq!(walked(&tick_at_work(&world, 1450)), ["settle 7 done"]);
+    // The landing worker woke the fleet and stopped at its prompt.
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            terminal["agent"] = json!({"state": "idle", "stateStartedAt": 1400 * 1000});
+        }
+    });
+    assert_eq!(walked(&tick(&world, "1450")), ["settle 7 done"]);
     assert_eq!(world.claims(), []);
 
     // Each stage's record is on the tracker's issue; the repo's are as they were.
