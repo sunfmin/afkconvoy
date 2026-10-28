@@ -192,17 +192,15 @@ const SKILL: &str = include_str!("../../../skills/afkconvoy/SKILL.md");
 ///
 /// To watch a running fleet, checking on it every few minutes, run `afkconvoy doctor --all --since <until of your last look>`. A first look runs `afkconvoy doctor --all` without `--since`; its `until` is where the next look starts.
 ///
-/// Every host watches itself: in the operator's directory where `afkconvoy run --watch-dir <dir>` names one, otherwise as the stock watch in afkconvoy's own directory. Its host runner takes that look every five minutes, with no model, and when it holds something an operator would act on, starts one watch — an agent session in that directory, given the look — continued on another harness where its own gives out. `afkconvoy run --help` says when, and `doctor` says the watch running and what the last one did.
+/// Every host watches itself: in the operator's directory where `afkconvoy run --watch-dir <dir>` names one, otherwise as the stock watch in afkconvoy's own directory. Its host runner takes that look every five minutes, with no model, and when it holds something an operator would act on, starts one watch, continued on another harness where its own gives out. `afkconvoy run --help` says when, and `doctor` says the watch running and what the last one did.
 ///
-/// A watch is the operator for every repo on the host's checkout list. It trusts worktrees, restarts, nudges, continues or switches workers; once a fleet fault is fixed it hands the escalated issue back with the line `doctor` names and checks the next tick dispatches it. It may change any listed repo in a checkout of its own, land it in that repo's turn with `land --watch`. Where the fix must reach an installed tool, it has that repo's fleet cut a version after landing and checks the fault on the new version. Human decisions stay with the human, untouched and listed. It acts only on what the fleets own, preserves what cannot be rebuilt and changes no base branch outside a landing turn. Its sessions together have one hour.
-///
-/// And whenever something looks wrong: `afkconvoy doctor` — it changes nothing, and names each fix.
+/// A watch is the operator for every repo on the host's checkout list. Once a fleet fault is fixed it hands the escalated issue back with the line `doctor` names and checks the next tick dispatches it. It may change any listed repo in a checkout of its own, land it in that repo's turn with `land --watch`. Where the fix must reach an installed tool, it has that repo's fleet cut a version after landing and checks the fault on the new version. Human decisions stay with the human, untouched and listed. It acts only on what the fleets own, preserves what cannot be rebuilt and changes no base branch outside a landing turn. Its sessions together have one hour.
 ///
 /// After rules, Jev judges screens sent to TypeSafe only with `run --jev-key-command`. Without a key or settled answer, workers go to the operator and watch: `help roster`.
 ///
 /// ## What a command answers
 ///
-/// Every command prints exactly one JSON object on stdout. A failure is {"error": …} with a non-zero exit — and "see" beside it, where a topic explains it: the command that prints that topic. Warnings go to stderr. A few print otherwise: `show` a drawing unless asked about an issue, `help` Markdown as `--help` does, `skill` the text of a file, `guard` answers as a hook does, with its exit code, and `exclusive` as its command does. A fleet instance prints nothing: it logs a line as each tick starts and one as it ends, in its tick log.
+/// Every command prints exactly one JSON object on stdout. A failure is {"error": …} with a non-zero exit — and "see" beside it, where a topic explains it: the command that prints that topic. Warnings go to stderr. A few print otherwise: `show` a drawing unless asked about an issue, `help` Markdown as `--help` does, `skill` the text of a file, `guard` answers as a hook does, with its exit code, `exclusive` as its command does, and `panel` without `--open` one HTML document. `panel --open` is the JSON object `panel --help` describes. `doctor` exits 0 with no critical finding, and non-zero with one, printing the same object, not {"error"}. Under `--all`, a checkout that could not be asked stays {"error", "see"}, as `doctor --help` says: not a doctor that read the checkout. A fleet instance prints nothing: it logs a line as each tick starts and one as it ends, in its tick log.
 ///
 /// ## The commands, by who runs them
 ///
@@ -233,7 +231,7 @@ const SKILL: &str = include_str!("../../../skills/afkconvoy/SKILL.md");
 ///
 /// ## Designing a team, for a bound repo
 ///
-/// A bound repo names its team in its config: `team: owner/repo`, or `team: owner/repo/path` for a team in a subdirectory. An issue of it that carries a flow label is walked through that workflow's stages, each performed by a new worker started in the stage's role. A team and a role are each a directory of text files — a whole repo, or a subdirectory of one, so that one repo can hold a team and every role it names — and designing one is editing them. Nothing else holds any of it.
+/// A bound repo names its team in its config: `team: owner/repo`, or `team: owner/repo/path` for a team in a subdirectory. A flow label walks an issue through that workflow's stages, each by a new worker in the stage's role. A team and a role are each a directory of text files, and designing one is editing them. Nothing else holds any of it.
 ///
 /// What those files are, and every key of them, is three topics: [`afkconvoy help team`](help:team) (a team's directory and a role's), [`afkconvoy help workflows`](help:workflows), [`afkconvoy help patrols`](help:patrols).
 ///
