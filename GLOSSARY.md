@@ -253,7 +253,7 @@ The shell string every worker of one harness is started with, in a fleet instanc
 _Avoid_: agent command, provider profile
 
 **Worker state**:
-Whether a worker is busy or has stopped. It is busy while the turn its harness took is still open, and stopped once that turn has ended or none was recorded. The harness names the session that records that turn. Stopped never means finished.
+Whether a worker is busy or has stopped. It is busy while the turn its harness took is still open, and stopped once that turn has ended or none was recorded. Of the primary sessions recorded for one worktree, the one that started last is that turn. The harness names the session that records that turn. Stopped never means finished.
 _Avoid_: liveness, status (as under Position)
 
 **Task refusal**:
@@ -370,7 +370,7 @@ The fixed duration a repo expects its gate to stay within. Recent recorded landi
 _Avoid_: gate limit (the termination bound), learned baseline
 
 **Recorded gate run**:
-The evidence that the gate passed on one committed tree, with how long the run took and on which host, made by the tool that saw the exit code and kept where every host can read it.
+The evidence that the gate passed on one committed tree, with how long the run took and on which host, made by the tool that saw the exit code and kept where every host can read it. A turn believes one from either ref layout while it stands.
 _Avoid_: gate cache, CI status
 
 **Slow gate**:
