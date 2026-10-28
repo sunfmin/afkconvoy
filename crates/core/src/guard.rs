@@ -645,7 +645,7 @@ fn merging() -> String {
 }
 
 /// Whether `word` sets a variable for the command after it.
-fn is_assignment(word: &str) -> bool {
+pub(crate) fn is_assignment(word: &str) -> bool {
     match word.split_once('=') {
         Some((name, _)) => {
             !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
@@ -741,6 +741,14 @@ impl Reading {
                 .push(Command { words: std::mem::take(&mut self.words), input: String::new() });
         }
     }
+}
+
+/// The simple commands of the shell line `line`, each as its words with the
+/// quoting taken off. Nothing is expanded: a variable is the text that names
+/// it. A status answer reads the same words when it names the program a
+/// script runs (`exclusive::status_command`).
+pub(crate) fn simple_commands(line: &str) -> Vec<Vec<String>> {
+    commands(line).into_iter().map(|command| command.words).collect()
 }
 
 /// The simple commands of the shell line `line`, each as its words with the
