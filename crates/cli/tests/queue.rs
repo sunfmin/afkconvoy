@@ -443,13 +443,13 @@ fn queue_is_discoverable_in_operator_help_and_its_contract_is_complete() {
         "reservation",
         "no fixed future start order",
         "not shown as the script",
-        "no environment assignment",
+        "no `NAME=value`",
         "cargo nextest",
     ] {
         assert!(own.contains(required), "queue help omits {required}");
     }
     let doctor = help(&["doctor", "--help"]);
-    for required in ["not shown as the script", "no environment assignment", "cargo nextest"] {
+    for required in ["not shown as the script", "no `NAME=value`", "cargo nextest"] {
         assert!(doctor.contains(required), "doctor help omits {required}");
     }
 }
