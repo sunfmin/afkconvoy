@@ -9,6 +9,7 @@
 
 use flux_rs::attrs::*;
 use serde::{Deserialize, Deserializer};
+use serde_json::Value;
 
 use super::{Held, Kept, Link};
 use crate::guard::Call;
@@ -364,6 +365,40 @@ struct Input {
     command: Option<String>,
 }
 
+/// Z.ai's usage limit on pi's screen, reported on sunfmin/control#163.
+/// An HTTP 429 whose body carries code 1308 and says the usage limit was
+/// reached. The JSON may wrap across lines. The same body on another
+/// harness's screen is not this quota.
+pub(super) fn account_quota(output: &[String]) -> Option<String> {
+    if let Some(line) = output.iter().find(|line| zai_limit(line)) {
+        return Some(line.clone());
+    }
+    let flat = output.join(" ").split_whitespace().collect::<Vec<_>>().join(" ");
+    zai_limit(&flat).then(|| output.join("\n"))
+}
+
+/// Whether `text` is Z.ai's usage-limit error: status 429, then one JSON
+/// body with code 1308 and a usage-limit message. A line the terminal
+/// wrapped is not that body until the screen is joined.
+fn zai_limit(text: &str) -> bool {
+    let Some(start) = text.find('{') else { return false };
+    let status = text[..start]
+        .split(|character: char| !character.is_ascii_digit())
+        .any(|digits| digits == "429");
+    if !status {
+        return false;
+    }
+    let Ok(body) = serde_json::from_str::<Value>(&text[start..]) else { return false };
+    let known_code = body
+        .get("code")
+        .is_some_and(|code| code.as_str() == Some("1308") || code.as_u64() == Some(1308));
+    let explicit_limit = body
+        .get("message")
+        .and_then(Value::as_str)
+        .is_some_and(|message| message.to_lowercase().contains("usage limit reached"));
+    known_code && explicit_limit
+}
+
 /// The tool call `described` to the fleet's extension, as the guard judges
 /// one.
 pub(super) fn call<'de, D: Deserializer<'de>>(described: D) -> Result<Call, D::Error> {
@@ -379,6 +414,35 @@ mod tests {
     use super::*;
     use crate::harness::Harness;
     use crate::role::{Facts, On, Told};
+
+    fn lines(lines: &[&str]) -> Vec<String> {
+        lines.iter().map(|line| (*line).to_string()).collect()
+    }
+
+    #[test]
+    fn zai_s_usage_limit_is_an_account_quota_and_a_wrapped_line_still_is() {
+        let line = "Error: 429: {\"code\":\"1308\",\"message\":\"Usage limit reached for 5 hour. \
+                    Your limit will reset at 2026-10-27 17:52:40\"}";
+        assert_eq!(account_quota(&lines(&[line, "later"])).as_deref(), Some(line));
+        let wrapped = lines(&[
+            "Error: 429: {\"code\":\"1308\",\"message\":\"Usage limit reached for 5 hour. Your limit will reset at",
+            "2026-10-27 17:52:40\"}",
+        ]);
+        assert_eq!(account_quota(&wrapped).as_deref(), Some(wrapped.join("\n").as_str()));
+        let runtime = "429: {\"code\":\"1308\",\"message\":\"Usage limit reached for 5 hour\"}";
+        assert_eq!(account_quota(&lines(&[runtime])).as_deref(), Some(runtime));
+        let numeric = "429: {\"code\":1308,\"message\":\"Usage limit reached for 5 hour\"}";
+        assert_eq!(account_quota(&lines(&[numeric])).as_deref(), Some(numeric));
+        assert!(account_quota(&lines(&[&runtime.replacen("429", "1429", 1)])).is_none());
+        assert!(account_quota(&lines(&[&runtime.replace("1308", "1309")])).is_none());
+        assert!(
+            account_quota(&lines(&[&runtime.replace("Usage limit reached", "slow down")]))
+                .is_none()
+        );
+        assert!(Harness::Codex.account_quota(&lines(&[line])).is_none());
+        assert!(Harness::Kimi.account_quota(&lines(&[runtime])).is_none());
+        assert!(Harness::ClaudeCode.account_quota(&wrapped).is_none());
+    }
 
     fn start<'a>(model: Option<&'a str>) -> Start<'a> {
         Start {
