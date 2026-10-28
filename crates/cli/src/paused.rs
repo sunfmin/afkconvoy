@@ -209,6 +209,7 @@ pub fn findings(now: u64) -> Vec<crate::doctor::Finding> {
         .map(|pause| {
             crate::doctor::finding(
                 crate::doctor::Kind::HarnessPaused,
+                serde_json::json!(["paused", pause.harness]),
                 format!("the harness `{}` is paused on this host", pause.harness.key()),
                 format!("{}; no worker is started on it until then", said(pause, now)),
                 "afkconvoy kit".to_string(),
