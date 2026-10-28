@@ -661,7 +661,7 @@ impl Ticked {
             parts.push(format!("{left_alone} left alone"));
         }
         if declared > 0 {
-            parts.push(format!("{declared} declared"));
+            parts.push(format!("{declared} taking no slot"));
         }
         if taking > concurrency {
             parts.push(format!("{} past the bound", taking - concurrency));

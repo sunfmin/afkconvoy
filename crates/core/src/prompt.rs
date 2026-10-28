@@ -82,10 +82,9 @@ const JOIN_STEP: &str = "\
    On `\"outcome\": \"merged\"`, wake the fleet and stop.
    On `\"conflict\"`, resolve every listed file, `git add` it, commit the merge and run this again.
    On `\"gate_red\"`, fix your change, commit and run this again.
-   On `\"target_moved\"`, nothing landed: ask for a turn again on the new base tip.
-   On `\"cancelled\"`, a predecessor was invalidated: your source branch is preserved. This is not your gate failing; ask for another turn when your issue's blockers permit.
-   On `\"waiting_for_capacity\"` or `\"waiting_for_predecessor\"`, ask for a turn again; no gate failure or rework occurred.
-   On `\"blocked\"`, wait for the named issue dependencies to close before asking again.
+   On `\"target_moved\"`, `\"cancelled\"`, `\"waiting_for_capacity\"`, `\"waiting_for_predecessor\"` or
+   `\"blocked\"`, nothing landed and nothing in your tree is to change: stop, without waking anyone.
+   The fleet asks for the turn again itself, and starts a worker here if it needs the tree changed.
    On `\"locked\"`, stop without waking anyone until told to carry on.
    An unrecorded base tip is gated alone first. Ordinary turns wait while it is red;
    the fleet dispatches a repair whose own turn must still gate green before landing.";
