@@ -2081,14 +2081,19 @@ An unrecorded base tip is gated alone in a separate checkout using its own gate 
 
 {"outcome", "pr", "commit", "merged", "candidate", "predecessor", "target_branch", "status", "recorded", "detail", …}. issue or watch identifies whose PR it is. merged and predecessor name the assigned predecessor; commit is the exact candidate landed. status and recorded describe the gate, with head, command, exit_code, timed_out, seconds and excerpt. doctor and the panel expose the same candidate lifecycle with validation, predecessor, waiting and cancellation cause.
 
-- merged: landed on the base branch, or already present there; stop.
-- gate_red: nothing landed. Fix the change, commit and ask for a turn again. Green without a written record also lands nothing; detail says what prevented recording.
-- conflict: no gate ran and nothing landed. files lists the conflicts and worktree names where the merge remains in progress. Resolve every file, git add it, commit the merge and ask again.
-- target_moved: the fast-forward push was rejected. Nothing landed. Ask for another turn, which reads the new base tip and gates a new merge commit.
-- cancelled: this candidate's predecessor or other evidence was invalidated. cancelled_by identifies the root candidate and cause says predecessor_failed, head_changed, base_moved, owner_died or another cancellation cause. Source work is intact. This is not this worker's red gate; request another turn when its issue blockers permit.
-- waiting_for_capacity or waiting_for_predecessor: a window place or a predecessor is unavailable, or this PR already has an owning turn. Ask again; no gate failure or rework occurred.
-- blocked: blocked_by lists open issue dependencies. Ask again after they close.
-- locked: locks names the fleet locks standing. Stop without waking anyone until told to carry on.
+- merged: the candidate landed on the target branch, or the PR was already on it: wake the fleet and stop.
+- conflict: merging onto the target tip conflicts; no gate ran and nothing landed. `files` lists the conflicts and `worktree` holds the merge in progress: resolve every listed file, `git add` it, commit the merge and run this again.
+- gate_red: the candidate gated red, or green without a written record (`detail` says what prevented recording); nothing landed: fix your change, commit and run this again.
+- base_red: the target tip has no recorded green run and gated red alone; nothing of this PR ran: ask for a turn again once the fleet's repair of that tip has landed.
+- base_uncertified: the target tip moved before a candidate was assigned and has no recorded green run yet; nothing ran: ask for a turn again, which gates that tip alone first.
+- target_moved: the target branch moved outside the candidate chain before this candidate landed, and its fast-forward was rejected or the move invalidated it; nothing landed: ask for a turn again on the new base tip.
+- cancelled: a predecessor or other evidence this candidate depended on was invalidated; `cancelled_by` names the root candidate and `cause` why. Your source branch is preserved and this is not your gate failing: ask for another turn when your issue's blockers permit.
+- candidate_active: this PR already has an active candidate of another turn, which alone validates and lands it; nothing ran: ask for a turn again once that turn has ended; no gate failure or rework occurred.
+- speculative_conflict: merging onto the candidate ahead of this PR conflicts; no gate ran: ask for a turn again after that predecessor lands; no gate failure or rework occurred.
+- gate_lane_changed: the candidate ahead of this PR changes the gate to one that runs in a worker lane, which this turn did not take; nothing ran: ask for a turn again after that predecessor lands; no gate failure or rework occurred.
+- waiting_for_capacity: the bounded candidate window was full; nothing ran: ask for a turn again; no gate failure or rework occurred.
+- blocked: `blocked_by` lists the issue dependencies still open; nothing landed: wait for them to close before asking again.
+- locked: a fleet lock stands, named by `locks`; nothing landed: stop without waking anyone until told to carry on.
 
 Errors are {"error": …} with non-zero exit: no open PR, unreadable config or remote, uncommitted tracked changes, an invalid watch checkout or a green base record that could not be written. detail names what to fix.
 

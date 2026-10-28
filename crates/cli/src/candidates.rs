@@ -3,6 +3,7 @@
 //! record is one atomic push, so invalidation and publication cannot both win.
 use afkconvoy_core::candidate::{Barrier, Candidate, Chain, Phase, Process, Publication};
 use afkconvoy_core::config::Config;
+use afkconvoy_core::ending::Ending;
 use afkconvoy_core::gate::{GateCommand, Proven, Tree};
 use afkconvoy_core::landing::{Of, merge_message};
 use afkconvoy_core::lock::keeps_off;
@@ -579,8 +580,11 @@ impl Gate<'_> {
 }
 
 fn cancelled(mut answer: Value, c: &Candidate) -> Value {
-    answer["outcome"] =
-        json!(if c.cause.as_deref() == Some("base_moved") { "target_moved" } else { "cancelled" });
+    answer["outcome"] = json!(if c.cause.as_deref() == Some("base_moved") {
+        Ending::TargetMoved
+    } else {
+        Ending::Cancelled
+    });
     answer["status"] = json!("cancelled");
     answer["recorded"] = json!(false);
     answer["candidate"] = json!(c.id);
@@ -747,7 +751,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
     if let Some(n) = issue {
         let blockers = gh.open_blockers(n)?;
         if !blockers.is_empty() {
-            answer["outcome"] = json!("blocked");
+            answer["outcome"] = json!(Ending::Blocked);
             answer["blocked_by"] = json!(blockers);
             return Ok(answer);
         }
@@ -792,7 +796,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
                     crate::account::leave(repo, &gh, issue, clock())?;
                 }
                 let mut result = c.result.clone().unwrap_or(answer);
-                result["outcome"] = json!("merged");
+                result["outcome"] = json!(Ending::Merged);
                 result["commit"] = json!(c.commit);
                 return Ok(result);
             }
@@ -826,7 +830,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
         let mut snapshot = read(repo, config)?;
         let current = snapshot.base.clone();
         if snapshot.chain.candidates.iter().any(|c| c.pr == pr.number && c.active()) {
-            answer["outcome"] = json!("waiting_for_predecessor");
+            answer["outcome"] = json!(Ending::CandidateActive);
             answer["detail"] = json!(
                 "this PR already has an active candidate; its owner alone may validate and publish it"
             );
@@ -841,7 +845,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
         };
         if !repairing && crate::gate::recorded(repo, &base_tree, &base_command, clock())?.is_none()
         {
-            answer["outcome"] = json!("target_moved");
+            answer["outcome"] = json!(Ending::BaseUncertified);
             answer["detail"] = json!(
                 "the base changed before assignment and needs certification; ask for another turn"
             );
@@ -850,7 +854,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
         // A competitor may have used the last window place while we queued.
         if !snapshot.chain.can_assign(limit, barrier) {
             drop(permit);
-            answer["outcome"] = json!("waiting_for_capacity");
+            answer["outcome"] = json!(Ending::WaitingForCapacity);
             answer["detail"] = json!("the bounded candidate window is full; ask for another turn");
             return Ok(answer);
         }
@@ -865,13 +869,13 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
         };
         let Some(commit) = built else {
             if predecessor != current {
-                answer["outcome"] = json!("waiting_for_predecessor");
+                answer["outcome"] = json!(Ending::SpeculativeConflict);
                 answer["detail"] =
                     json!("speculative merge conflicts; ask again after its predecessor lands");
                 return Ok(answer);
             }
             let files = crate::turn::merge_in(repo, &current, "the base branch's tip")?;
-            answer["outcome"] = json!("conflict");
+            answer["outcome"] = json!(Ending::Conflict);
             answer["status"] = json!("conflict");
             answer["files"] = json!(files);
             answer["recorded"] = json!(false);
@@ -882,7 +886,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
         };
         let declared = crate::turn::tip_config(repo, &commit)?;
         if crate::config::heavy_gate(&declared.gate_command) && !heavy {
-            answer["outcome"] = json!("waiting_for_predecessor");
+            answer["outcome"] = json!(Ending::GateLaneChanged);
             answer["detail"] = json!(
                 "the predecessor changed the gate to a worker lane; request a new turn after it lands"
             );
@@ -959,7 +963,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
     stop_candidate(repo, config, &id)?;
     let current = chain.candidates.iter().find(|c| c.id == id).expect("assigned candidate");
     if current.phase == Phase::Red {
-        result["outcome"] = json!("gate_red");
+        result["outcome"] = json!(Ending::GateRed);
         return Ok(result);
     }
     loop {
@@ -982,7 +986,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
             let blockers = gh.open_blockers(n)?;
             if !blockers.is_empty() {
                 invalidate(repo, config, &id, "issue_blocked")?;
-                result["outcome"] = json!("blocked");
+                result["outcome"] = json!(Ending::Blocked);
                 result["blocked_by"] = json!(blockers);
                 return Ok(result);
             }
@@ -1031,7 +1035,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
                 continue;
             }
             if repo.remote_sha(&refname(repo, config))? == snapshot.sha {
-                result["outcome"] = json!("target_moved");
+                result["outcome"] = json!(Ending::TargetMoved);
                 invalidate(repo, config, &id, "push_rejected")?;
                 return Ok(result);
             }
@@ -1041,7 +1045,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
             gh.close_issue(n)?;
             crate::account::leave(repo, &gh, n, clock())?;
         }
-        result["outcome"] = json!("merged");
+        result["outcome"] = json!(Ending::Merged);
         result["commit"] = json!(landed);
         result["detail"] = json!(
             "landed the exact recorded candidate as a fast-forward; source head preserved — stop"

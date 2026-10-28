@@ -1926,14 +1926,7 @@ enum Command {
     ///
     /// {"outcome", "pr", "commit", "merged", "candidate", "predecessor", "target_branch", "status", "recorded", "detail", …}. issue or watch identifies whose PR it is. merged and predecessor name the assigned predecessor; commit is the exact candidate landed. status and recorded describe the gate, with head, command, exit_code, timed_out, seconds and excerpt. doctor and the panel expose the same candidate lifecycle with validation, predecessor, waiting and cancellation cause.
     ///
-    /// - merged: landed on the base branch, or already present there; stop.
-    /// - gate_red: nothing landed. Fix the change, commit and ask for a turn again. Green without a written record also lands nothing; detail says what prevented recording.
-    /// - conflict: no gate ran and nothing landed. files lists the conflicts and worktree names where the merge remains in progress. Resolve every file, git add it, commit the merge and ask again.
-    /// - target_moved: the fast-forward push was rejected. Nothing landed. Ask for another turn, which reads the new base tip and gates a new merge commit.
-    /// - cancelled: this candidate's predecessor or other evidence was invalidated. cancelled_by identifies the root candidate and cause says predecessor_failed, head_changed, base_moved, owner_died or another cancellation cause. Source work is intact. This is not this worker's red gate; request another turn when its issue blockers permit.
-    /// - waiting_for_capacity or waiting_for_predecessor: a window place or a predecessor is unavailable, or this PR already has an owning turn. Ask again; no gate failure or rework occurred.
-    /// - blocked: blocked_by lists open issue dependencies. Ask again after they close.
-    /// - locked: locks names the fleet locks standing. Stop without waking anyone until told to carry on.
+    /// {const:LAND_ENDINGS}
     ///
     /// Errors are {"error": …} with non-zero exit: no open PR, unreadable config or remote, uncommitted tracked changes, an invalid watch checkout or a green base record that could not be written. detail names what to fix.
     ///
@@ -3698,6 +3691,7 @@ pub fn manual() -> agent_help::Help {
         .table::<doctor::Severity>("severity")
         .table::<claim_status::ClaimStatus>("claim_status")
         .constant("CONFIG_FILE", config::FILE)
+        .constant("LAND_ENDINGS", turn::endings_help())
         .constant("PANEL_PORT", host_settings::PANEL_PORT)
         .constant("FIRST_START_SETTINGS", first_start::settings_help())
         .constant("FIRST_START_QUESTIONS", first_start::help())
