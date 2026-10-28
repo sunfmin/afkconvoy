@@ -316,6 +316,23 @@ escalate_to: human                 # legacy consult is accepted; both escalate f
 
 An optional `gate_budget_seconds` declares a fixed warning budget: a positive whole number of seconds below `gate_seconds`. It never ends a run. Put it in the first yaml block, or in a separate block opened by ```yaml gate-budget; that block accepts only `gate_budget_seconds`. Declare it once: duplicate keys fail, including across blocks. Older versions skip the separate block and keep their termination limit, so they can land and cut the version that first supports the budget. They keep warning at 80% of that limit until upgraded. The budget is fixed in the repo, with its machine class, baseline version, cache conditions and rationale; it never follows recent runs upward. Queue waiting is outside both durations.
 
+A repo may split its gate in two, in a block of its own opened by the line ```yaml gates: the fast gate, what a worker passes before it opens or updates its PR, and the slow gate, everything else the gate checks. Each says its `command`, its limit `seconds` and its warning budget `budget_seconds`:
+
+~~~text
+```yaml gates
+fast:
+  command: afkconvoy exclusive -- ./gate.sh fast
+  seconds: 600
+  budget_seconds: 300
+slow:
+  command: afkconvoy exclusive -- ./gate.sh slow
+  seconds: 3000
+  budget_seconds: 300
+```
+~~~
+
+The two are the gate split, not a gate more: together they check what `gate_command` checks, which a landing turn still runs whole. So each budget is below its limit, their limits add up to no more than `gate_seconds`, and their budgets to no more than `gate_budget_seconds` where it is declared. `afkconvoy gate --fast` and `--slow` run each alone (`afkconvoy gate --help`). Older versions skip the block.
+
 What is outside these blocks is yours to explain it in — but for a second block opened by the line ```yaml cut, which names the repo's cut steps and turns cutting on (`afkconvoy cut --help`). It is read beside this one; older versions read only this one, and refuse nothing for it.
 
 No command writes this file: write it, commit it, and run `afkconvoy config`.
@@ -328,9 +345,9 @@ Where a budget is declared, the answer also has `gate_budget_seconds`. The last 
 
 A repo whose config names a team is a bound repo, and answers three keys more: {"team", "patrols", "intake_limit"} — the team's directory as owner/repo or owner/repo/path (a whole repo, or a subdirectory of one), which of its patrols run here, by name (default none; `afkconvoy check` holds them against the team's, and `afkconvoy tick --help` says when one runs), how many issues taken in by workers may be open (default 50). A config names no harness: what each worker runs is its team's `roster`'s to say (`afkconvoy help roster`), within what the host kit holds (`afkconvoy kit --help`). A repo that names no team is unbound and answers the seven above and one legacy key: {"escalate_to"}, always `human`. Existing `consult` values still load, but every hand-off escalates for the host's watch to answer. Only a consult explicitly named by a bound repo's stage is asked before escalation (`afkconvoy help humans`).
 
-Where the file names cut steps, the answer has one key more: {"cut": {"set", "publish", "initial"?}} — each as the ```yaml cut block says it. Optional `initial: X.Y.Z` declares the first version to cut when the remote has no version tag; after the first tag it is ignored.
+Where the file names cut steps, the answer has one key more: {"cut": {"set", "publish", "initial"?}} — each as the ```yaml cut block says it. Optional `initial: X.Y.Z` declares the first version to cut when the remote has no version tag; after the first tag it is ignored. Where it splits its gate, one more: {"gates": {"fast", "slow"}}, each {"command", "seconds", "budget_seconds"}.
 
-Errors: the file cannot be read; it has no ```yaml block; a ```yaml cut block has a key but `set`, `publish` and `initial`, lacks a required step, a step names nothing to run, or `initial` is not X.Y.Z; `base_branch` or `gate_command` is missing; a key is unknown or of the wrong type; `gate_seconds` is not a whole number from 1; `gate_budget_seconds` is not a positive whole number below `gate_seconds`, is declared twice, or its separate block has another key; `team` is neither owner/repo nor owner/repo/path; a `harness`, which a config names no more — the error says the line to delete; `patrols` or `intake_limit` is set where no `team` is; `escalate_to` is neither consult nor human, or is set beside `team` — the error names the key. Without `--file`, outside a git checkout: "is not in a git checkout".
+Errors: the file cannot be read; it has no ```yaml block; a ```yaml cut block has a key but `set`, `publish` and `initial`, lacks a required step, a step names nothing to run, or `initial` is not X.Y.Z; `base_branch` or `gate_command` is missing; a key is unknown or of the wrong type; `gate_seconds` is not a whole number from 1; `gate_budget_seconds` is not a positive whole number below `gate_seconds`, is declared twice, or its separate block has another key; the ```yaml gates block lacks `fast` or `slow` or one of their keys, has another key, a gate names nothing to run, has no seconds or a budget not below them, or the two gates' limits or budgets add up past the gate's; `team` is neither owner/repo nor owner/repo/path; a `harness`, which a config names no more — the error says the line to delete; `patrols` or `intake_limit` is set where no `team` is; `escalate_to` is neither consult nor human, or is set beside `team` — the error names the key. Without `--file`, outside a git checkout: "is not in a git checkout".
 
 ##### What trips you up
 
@@ -671,7 +688,7 @@ The probe's warnings go to stderr. Errors: a command the fleet needs is missing 
 - With a lock standing, `free_slots` counts as free the slot of every claim of `--instance` the lock leaves alone: a lock issue does not wait for them.
 - `free_slots` counts as free the slot of every claim of `--instance` that is `declared`: `mine` may hold more claims than the concurrency, and the frontier does not wait out the grace period of a worker that already declared.
 - Fleet state is unchanged. When it probes it still pushes to the remote, and deletes there: it needs push access, and it is not a read-only command. To read without writing anything, run `afkconvoy doctor`.
-- A slow gate is read off the recorded gate runs the remote still has: a record is swept a day after its run, a landing with no record or with a record that states no time is passed over, and 5 landings spread over hosts none of which has 5 say nothing. After an issue for a slow gate closed, only the landings made since count.
+- A gate gone slow is read off the recorded gate runs the remote still has: a record is swept a day after its run, a landing with no record or with a record that states no time is passed over, and 5 landings spread over hosts none of which has 5 say nothing. After an issue for a slow gate closed, only the landings made since count.
 - A probe that stands is trusted, not checked: a command uninstalled or logged out since, or a rule the remote gained, shows as the error of whatever runs into it — or, for the ref layout, not until a probe runs. A noted ref layout moves when two probes that run, one after the other, each see it rejected and the other taken; one rejection leaves the note, and a probe that takes the noted layout clears that streak. A checkout that has noted no layout still settles on hidden refs, or on branches where the remote rejects those. `run` probes at every start.
 
 ##### Worker proxy bypass
@@ -2554,7 +2571,7 @@ Run the gate in this worktree and record a green run
 
 ##### When to run it
 
-Run `gate` on a committed change before workflow review or for diagnosis. Run `gate --land` once an issue PR is open to take the same landing turn as `land --issue <n>`.
+Run `gate` on a committed change before workflow review or for diagnosis. Run `gate --land` once an issue PR is open to take the same landing turn as `land --issue <n>`. Where the repo splits its gate in two, run `gate --fast` before opening or updating a PR, and `gate --slow` to run the rest alone.
 
 ##### Who runs it
 
@@ -2564,11 +2581,13 @@ A worker in its own worktree, or the operator diagnosing a red gate.
 
 The config's gate_command runs on this worktree, with its log streaming to stderr and its gate limit, gate_seconds (default 3600). A green run on the committed tree is recorded with the tree, command, host and elapsed seconds. A dirty worktree or artifacts the gate fails to ignore cannot produce a record. Its first green run records the fresh build for worker disk observations.
 
+With --fast or --slow, the fast gate's or the slow gate's command runs alone, as the ```yaml gates block of the config declares it (`afkconvoy config --help`), under that gate's own limit, `seconds`. Neither is put on record, and neither stands in for the whole gate: a landing turn still runs gate_command. A run past that gate's `budget_seconds` is green and says it is slow. A repo that declares no gates block answers an error.
+
 With --land, open the PR first. One turn makes the PR's merge commit on the current base tip, gates that commit, records green and lands it as a fast-forward. An unrecorded base tip is gated alone first; worker turns wait while it is red and the fleet dispatches its repair. Only the fleet-lock issue's repair may take a turn on a red base. `land --help` describes every outcome.
 
 ##### What it answers
 
-{"status", "recorded", "detail", "exit_code", "timed_out", "seconds", "command", "head"}. status is green or red; recorded is true only for a green run of the committed tree written to the remote. detail says what to do next. seconds times the command. A run that reaches gate_seconds is red with exit_code 124 and timed_out true. uncommitted lists at most 20 paths when green could not certify a committed tree; not_recorded says why a remote refused the record. locks names standing fleet locks on a red run. termination is null unless a signal ended the command outside its limit; then {pid, signal, core_dumped}, with exit_code -1 and timed_out false. Its pid also names its process group. The sender is unknown and repository checks may not have started; inspect harness/tool cancellation and host process logs using that evidence. A shell exit such as 137 alone does not prove a signal. With --land the answer also carries the landing outcome, PR and base tip merged.
+{"status", "recorded", "detail", "exit_code", "timed_out", "seconds", "command", "head"}. status is green or red; recorded is true only for a green run of the committed tree written to the remote. detail says what to do next. seconds times the command. A run that reaches gate_seconds is red with exit_code 124 and timed_out true. uncommitted lists at most 20 paths when green could not certify a committed tree; not_recorded says why a remote refused the record. locks names standing fleet locks on a red run. termination is null unless a signal ended the command outside its limit; then {pid, signal, core_dumped}, with exit_code -1 and timed_out false. Its pid also names its process group. The sender is unknown and repository checks may not have started; inspect harness/tool cancellation and host process logs using that evidence. A shell exit such as 137 alone does not prove a signal. With --land the answer also carries the landing outcome, PR and base tip merged. With --fast or --slow it is {"gate", "status", "recorded", "detail", "exit_code", "timed_out", "seconds", "command", "limit_seconds", "budget_seconds", "over_budget", "termination", "excerpt"}: gate is fast or slow, recorded is always false, over_budget says whether seconds passed budget_seconds, and excerpt is the end of a red run's log.
 
 Errors are {"error": …} with non-zero exit: an unreadable config, an uncommitted landing change, a missing base branch or no open issue PR for this branch. Red is an answer with exit 0; read status and recorded.
 
@@ -2578,6 +2597,7 @@ Errors are {"error": …} with non-zero exit: an unreadable config, an uncommitt
 - A standalone gate lands nothing; a workflow's landing worker lands after its final stage.
 - Resolve every conflict and commit the merge before asking for another turn.
 - The gate limit is gate_seconds in the config, not a flag.
+- A green fast gate is not a green gate: the slow gate's tests have not run. Only the whole gate, at landing, is on record.
 
 ##### Which checkout it is about
 
@@ -2597,6 +2617,8 @@ afkconvoy gate [OPTIONS] [CHECKOUT]
 
 - `[CHECKOUT]`: The checkout it is about, or a directory in it [default: the one it is run in]
 - `--land`: Take the open issue PR's merge, gate, record and landing turn
+- `--fast`: Run the repo's fast gate alone, under its own limit and budget, recording nothing
+- `--slow`: Run the repo's slow gate alone, under its own limit and budget, recording nothing
 - `--host <HOST>`: The host a green run is recorded as made on [default: this machine's name]
 
 ### Run by a worker's hook
@@ -3657,6 +3679,7 @@ What becomes of one issue, from the moment it is the fleet's to the moment it la
 - **A claim**: What marks one issue as one fleet instance's. Creating it succeeds for exactly one instance, so no issue is worked twice. It is live while its owner's heartbeat is; past that another host may take it. `afkconvoy scan --help`, `afkconvoy takeover --help`.
 - **A turn**: One command makes a PR's merge commit on the current base tip, gates it, records green and fast-forwards the base to that same commit. Red, conflict or rejected push lands nothing. `afkconvoy land --help`.
 - **The gate budget**: A fixed duration budget declared as `gate_budget_seconds` in the repo config. Recent recorded landings on one host that all exceed it make a slow gate. It never ends a run; where absent, the warning threshold is 80% of the gate limit. It never learns from past runs.
+- **The fast gate and the slow gate**: A repo may split its gate in two, in its config's ```yaml gates block, each part with its own command, limit and budget. A worker passes the fast gate, `afkconvoy gate --fast`, before it opens or updates its PR; the slow gate holds the rest. A landing turn still runs the whole gate. `afkconvoy config --help`.
 - **The gate limit**: How long the gate may run: `gate_seconds` in the repo's config, 3600 where it sets none. A run that reaches it is ended and is red, for every gate run. `afkconvoy config --help`.
 
 An unrecorded base tip is gated alone first. A red tip holds ordinary turns while the fleet dispatches its own repair, outside product workflows. That repair still takes a turn and gates its complete merge green before landing.
@@ -5052,16 +5075,24 @@ How long the gate may run. A run that reaches it is ended and is red. A repo dec
 _Avoid_: timeout (what a run that reached it did), budget (the warning threshold), baseline (a committed timing observation)
 
 **Gate budget**:
-The fixed duration a repo expects its gate to stay within. Recent recorded landings on one host that all exceed it make a slow gate; exceeding it never ends a run.
+The fixed duration a repo expects its gate to stay within. Recent recorded landings on one host that all exceed it make a gate gone slow; exceeding it never ends a run. The fast gate and the slow gate each have one of their own.
 _Avoid_: gate limit (the termination bound), learned baseline
 
 **Recorded gate run**:
 The evidence that the gate passed on one committed tree, with how long the run took and on which host, made by the tool that saw the exit code and kept where every host can read it. A turn believes one from either ref layout while it stands.
 _Avoid_: gate cache, CI status
 
+**Fast gate**:
+The part of the gate a worker passes before it opens or updates its PR: the checks that are quick, and every test not marked slow. A repo declares it beside the slow gate, each with its own command, limit and budget; together they are the gate. A new test is in it until it is marked slow.
+_Avoid_: smoke test, pre-check, quick gate
+
 **Slow gate**:
-What the gate is when its recent runs for the base branch, on one host, all exceeded the gate budget, or took most of the gate limit where no budget is declared. The fleet opens one issue that says so, and no second while that one is open.
-_Avoid_: regression, drift, creep
+The part of the gate the fast gate leaves out: every test marked slow, and any check not in the fast gate. Nothing in the fast gate is run again in it. A landing turn still runs the whole gate, both parts.
+_Avoid_: full gate (the gate, both parts), gate gone slow (a gate whose runs exceed its budget)
+
+**Gate gone slow**:
+What the gate is when its recent runs for the base branch, on one host, all exceeded the gate budget, or took most of the gate limit where no budget is declared. The fleet opens one issue that says so, labelled `slow-gate`, and no second while that one is open.
+_Avoid_: slow gate (the part of the gate holding the slow tests), regression, drift, creep
 
 **Sync**:
 Bringing a branch up to date by merging into it. Nothing is ever rebased.

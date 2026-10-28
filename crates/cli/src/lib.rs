@@ -413,7 +413,7 @@ enum Command {
     ///
     /// A repo may split its gate in two, in a block of its own opened by the line ```yaml gates: the fast gate, what a worker passes before it opens or updates its PR, and the slow gate, everything else the gate checks. Each says its `command`, its limit `seconds` and its warning budget `budget_seconds`:
     ///
-    /// ~~~markdown
+    /// ~~~text
     /// ```yaml gates
     /// fast:
     ///   command: afkconvoy exclusive -- ./gate.sh fast
