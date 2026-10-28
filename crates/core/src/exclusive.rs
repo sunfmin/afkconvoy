@@ -14,7 +14,8 @@ pub struct Ticket {
     pub number: u64,
     /// The process that waits, or runs the command.
     pub pid: u32,
-    /// The command, as one line.
+    /// The command it was asked to run, its arguments joined. A status
+    /// answer names [`status_command`] of this.
     pub command: String,
     /// The worktree it was run in — or the directory, outside a checkout.
     pub dir: String,
@@ -239,9 +240,207 @@ pub struct Snapshot {
     pub waiting: Vec<Observed>,
 }
 
+/// The command a status answer names: one line, the program and the
+/// arguments that say what is running.
+///
+/// `afkconvoy exclusive -- ./gate.sh` is returned as given. A shell script
+/// (`sh -c`, `bash -lc`, or the same program with a path) is named by the
+/// program that script runs — its `cargo nextest` line, else its
+/// `afkconvoy exclusive` invocation, else the programs it runs — and not by
+/// the script. An environment assignment is left out, on its own line or in
+/// front of the program. The result contains no newline.
+pub fn status_command(command: &str) -> String {
+    if let Some((shell, script)) = invocation_script(command) {
+        return script_line(script, &format!("{shell} -c"));
+    }
+    if command.contains(['\n', '\r']) || leading_assignment(command) {
+        return script_line(command, &first_program(command));
+    }
+    command.to_string()
+}
+
+/// A shell's `-c` script, and that shell's name. The ticket joins arguments
+/// with spaces, so the script keeps the newlines of its one argument.
+fn invocation_script(command: &str) -> Option<(String, &str)> {
+    let mut rest = command;
+    let mut shell: Option<&str> = None;
+    loop {
+        let (word, after) = split_word(rest)?;
+        if shell.is_none() {
+            if is_shell(word) {
+                shell = Some(base(word));
+                rest = after;
+                continue;
+            }
+            if crate::guard::is_assignment(word) || is_prefix_wrapper(word) || word.starts_with('-')
+            {
+                rest = after;
+                continue;
+            }
+            return None;
+        }
+        if is_c_flag(word) {
+            let script = after.trim_start_matches([' ', '\t', '\n', '\r']);
+            return Some((shell.unwrap_or("sh").to_string(), script));
+        }
+        if word.starts_with('-') {
+            rest = after;
+            continue;
+        }
+        return None;
+    }
+}
+
+fn script_line(script: &str, empty: &str) -> String {
+    let chosen = choose(&command_words(script));
+    if chosen.is_empty() { empty.to_string() } else { join_programs(&chosen) }
+}
+
+/// Words of each simple command. One quoted word that is itself a script is
+/// read again, which is how a quoted `sh -c` argument is stored.
+fn command_words(script: &str) -> Vec<Vec<String>> {
+    let commands = crate::guard::simple_commands(script);
+    if let [only] = commands.as_slice()
+        && only.len() == 1
+        && let Some(word) = only.first()
+        && (word.contains('\n') || word.contains(';'))
+    {
+        return crate::guard::simple_commands(word);
+    }
+    commands
+}
+
+fn choose(commands: &[Vec<String>]) -> Vec<Vec<String>> {
+    let real: Vec<Vec<String>> = commands.iter().filter_map(|words| program(words)).collect();
+    if let Some(hit) = real.iter().find(|words| is_nextest(words)) {
+        return vec![hit.clone()];
+    }
+    if let Some(hit) = real.iter().find(|words| is_exclusive(words)) {
+        return vec![hit.clone()];
+    }
+    real
+}
+
+/// The program and its arguments, without a leading assignment or `env`.
+/// A command that only sets up the shell is not a program.
+fn program(words: &[String]) -> Option<Vec<String>> {
+    let mut rest = words;
+    loop {
+        let word = rest.first()?;
+        if word == "env" {
+            rest = skip_env_flags(&rest[1..]);
+            continue;
+        }
+        if crate::guard::is_assignment(word) {
+            rest = &rest[1..];
+            continue;
+        }
+        break;
+    }
+    let name = base(rest.first()?);
+    if SETUP.contains(&name) { None } else { Some(rest.to_vec()) }
+}
+
+/// Flags of a leading `env`, and the value of one that takes an argument.
+/// The program those flags apply to is what remains.
+fn skip_env_flags(mut rest: &[String]) -> &[String] {
+    while let Some((flag, tail)) = rest.split_first() {
+        if !flag.starts_with('-') {
+            break;
+        }
+        rest = tail;
+        if matches!(flag.as_str(), "-u" | "--unset" | "-C" | "--chdir")
+            && let Some((_, after)) = rest.split_first()
+        {
+            rest = after;
+        }
+    }
+    rest
+}
+
+fn is_nextest(words: &[String]) -> bool {
+    words.first().is_some_and(|word| base(word) == "cargo")
+        && words.iter().any(|word| word == "nextest")
+}
+
+fn is_exclusive(words: &[String]) -> bool {
+    words.first().is_some_and(|word| base(word) == "afkconvoy")
+        && words.iter().any(|word| word == "exclusive")
+}
+
+fn leading_assignment(command: &str) -> bool {
+    crate::guard::simple_commands(command).iter().any(|words| {
+        words.first().is_some_and(|word| {
+            word == "export" || word == "env" || crate::guard::is_assignment(word)
+        })
+    })
+}
+
+fn first_program(command: &str) -> String {
+    command
+        .split_whitespace()
+        .find(|word| !word.contains('=') && !is_prefix_wrapper(word) && !is_shell(word))
+        .unwrap_or("sh")
+        .to_string()
+}
+
+fn join_programs(programs: &[Vec<String>]) -> String {
+    programs.iter().map(|words| render(words)).collect::<Vec<_>>().join("; ")
+}
+
+fn render(words: &[String]) -> String {
+    words
+        .iter()
+        .map(|word| {
+            let flat = word.replace(['\n', '\r'], " ");
+            if flat.contains([' ', '\'']) {
+                format!("'{}'", flat.replace('\'', r"'\''"))
+            } else {
+                flat
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn split_word(text: &str) -> Option<(&str, &str)> {
+    let text = text.trim_start_matches([' ', '\t', '\n', '\r']);
+    if text.is_empty() {
+        return None;
+    }
+    let end = text.find([' ', '\t', '\n', '\r']).unwrap_or(text.len());
+    Some((&text[..end], &text[end..]))
+}
+
+fn is_shell(word: &str) -> bool {
+    matches!(base(word), "sh" | "bash" | "zsh" | "dash" | "ksh")
+}
+
+fn is_c_flag(word: &str) -> bool {
+    word.starts_with('-') && !word.starts_with("--") && word.contains('c')
+}
+
+fn is_prefix_wrapper(word: &str) -> bool {
+    matches!(
+        base(word),
+        "sudo" | "env" | "command" | "exec" | "nohup" | "nice" | "time" | "builtin"
+    )
+}
+
+fn base(word: &str) -> &str {
+    word.rsplit(['/', '\\']).next().unwrap_or(word)
+}
+
+/// Commands that prepare a script and are not what it runs.
+const SETUP: [&str; 15] = [
+    "export", "set", "cd", "pushd", "popd", "umask", "hash", "local", "declare", "typeset",
+    "readonly", "unset", "alias", "unalias", ":",
+];
+
 /// Common queue facts for operator output, doctor and the panel. Running
 /// and waiting arrays each put cuts first, then follow ask time and request number. Repo lanes
 /// are separate from worker capacity and sorted by their whole identity.
+/// Each request's `command` is [`status_command`].
 pub fn snapshot(queue: &[Ticket], worker_lanes: u64, paused: bool, now: u64) -> Snapshot {
     let ordered = in_order(queue.to_vec());
     let decisions = scheduling(&ordered, worker_lanes, paused);
@@ -259,7 +458,8 @@ pub fn snapshot(queue: &[Ticket], worker_lanes: u64, paused: bool, now: u64) -> 
         running: vec![],
         waiting: vec![],
     };
-    for (ticket, scheduling) in ordered.into_iter().zip(decisions) {
+    for (mut ticket, scheduling) in ordered.into_iter().zip(decisions) {
+        ticket.command = status_command(&ticket.command);
         let observed = Observed {
             lane: lane(&ticket),
             elapsed_seconds: ticket.ran.map(|ran| now.saturating_sub(ran)),
@@ -514,5 +714,65 @@ mod tests {
         );
         waits.ran = Some(130);
         assert_eq!(ended_line(&waits, "exit 0", 175), "`cargo test` ended (exit 0) after 45s");
+    }
+
+    #[test]
+    fn a_status_command_is_one_line_and_names_the_program() {
+        let gate = "afkconvoy exclusive -- ./gate.sh";
+        assert_eq!(status_command(gate), gate);
+        assert_eq!(status_command("cargo test"), "cargo test");
+        assert_eq!(status_command("sh -c true"), "true");
+        assert_eq!(status_command("sh -c touch '/tmp/ran'; sleep 30"), "touch /tmp/ran; sleep 30");
+
+        let secret = "postgres://user:secret@db.example/app";
+        let script = format!(
+            "sh -c set -eu\n\
+             # comment {secret}\n\
+             export PATH=/usr/bin\n\
+             export DATABASE_URL={secret}\n\
+             cd /work\n\
+             echo preparing\n\
+             cargo build -p afkconvoy --quiet\n\
+             cargo nextest run --workspace --test cli\n"
+        );
+        let named = status_command(&script);
+        assert_eq!(named, "cargo nextest run --workspace --test cli");
+        assert!(!named.contains('\n'), "{named}");
+        assert!(!named.contains(secret), "{named}");
+        assert!(!named.contains("export"), "{named}");
+
+        let exclusive = format!(
+            "bash -lc \nexport DATABASE_URL={secret}\nafkconvoy exclusive -- cargo nextest run --workspace\n"
+        );
+        assert_eq!(
+            status_command(&exclusive),
+            "afkconvoy exclusive -- cargo nextest run --workspace"
+        );
+        assert!(!status_command(&exclusive).contains(secret));
+
+        let prefixed = format!("DATABASE_URL={secret} cargo nextest run --workspace");
+        assert_eq!(status_command(&prefixed), "cargo nextest run --workspace");
+        assert_eq!(
+            status_command("/bin/bash -lc cargo nextest run -p afkconvoy"),
+            "cargo nextest run -p afkconvoy"
+        );
+        let only_env = format!("sh -c export DATABASE_URL={secret}");
+        assert_eq!(status_command(&only_env), "sh -c");
+        assert!(!status_command(&only_env).contains(secret));
+    }
+
+    #[test]
+    fn a_snapshot_names_the_program_and_keeps_the_scheduling() {
+        let mut runs = ticket(1, "/a", 100);
+        runs.ran = Some(100);
+        runs.command = "afkconvoy exclusive -- ./gate.sh".into();
+        let mut waits = ticket(2, "/a", 110);
+        waits.command = "sh -c export DATABASE_URL=postgres://secret\ncargo nextest run\n".into();
+        let seen = snapshot(&[runs, waits], 1, false, 150);
+        assert_eq!(seen.running[0].ticket.command, "afkconvoy exclusive -- ./gate.sh");
+        assert_eq!(seen.waiting[0].ticket.command, "cargo nextest run");
+        assert_eq!(seen.waiting[0].scheduling.state, State::Waiting);
+        assert_eq!(seen.running[0].elapsed_seconds, Some(50));
+        assert!(!seen.waiting[0].ticket.command.contains("postgres"));
     }
 }
