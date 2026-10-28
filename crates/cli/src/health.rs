@@ -1,12 +1,16 @@
-//! Bounded observation, rule and Jev classification, operator fallback and
-//! continuation of stalled workers. Health is host-local evidence, never
-//! another preference. Only kit order chooses successors.
+//! Bounded observation, operator fallback and continuation of stalled
+//! workers. This supplies the evidence `afkconvoy_core::worker_health`
+//! decides on and carries its decision out: it keeps no table of its own.
+//! Health is host-local evidence, never another preference. Only kit order
+//! chooses successors.
 use std::fs::OpenOptions;
 use std::path::PathBuf;
 
 use afkconvoy_core::harness::Harness;
 use afkconvoy_core::plan::{Status, WorkingSet};
 use afkconvoy_core::worker::WorkerState;
+pub use afkconvoy_core::worker_health::{Action, Class, Scope};
+use afkconvoy_core::worker_health::{Decision, Evidence};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -28,26 +32,10 @@ pub const MAX_CONTINUATIONS: u32 = 3;
 pub const RECOVERY_SECONDS: u64 = 3600;
 pub const MAX_QUOTA_WAIT_SECONDS: u64 = RECOVERY_SECONDS;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Scope {
-    Account,
-    Model,
-    Worker,
-}
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Action {
-    Wait,
-    Retry,
-    Continue,
-    Unknown,
-    Complete,
-}
-
-/// The class a rule or Jev's table gives a stopped worker, and what the
-/// fleet does with it. Evidence quotes an actual observation; a confidence
-/// number is deliberately not part of it.
+/// The decision on a stopped worker, as its book keeps it. Evidence quotes
+/// an actual observation; a confidence number is deliberately not part of
+/// it. The class is kept as its word, so a book an older version wrote with
+/// a class no decision gives now is still read.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Diagnosis {
@@ -362,15 +350,7 @@ pub(crate) fn watch_diagnosis(
 /// A session that exited with a failure: its harness failed it, and is held
 /// to have failed that session alone.
 pub fn failed(evidence: Vec<String>) -> Diagnosis {
-    Diagnosis {
-        status: "fault".into(),
-        class: "failed".into(),
-        scope: Scope::Worker,
-        evidence,
-        action: Action::Continue,
-        missing: vec![],
-        retry_after: None,
-    }
+    decided(Evidence::Exited(&evidence)).expect("an exit is always decided")
 }
 
 /// The latest delivery failure, kept beside the worker's brief.
@@ -400,42 +380,36 @@ pub fn has_signal(worktree: &Worktree) -> Result<bool> {
     Ok(!error_of(worktree)?.is_empty())
 }
 
-fn quota(evidence: String) -> Diagnosis {
-    Diagnosis {
-        status: "fault".into(),
-        class: "quota".into(),
-        scope: Scope::Account,
-        evidence: vec![evidence],
-        action: Action::Continue,
-        missing: vec![],
-        retry_after: None,
+impl Diagnosis {
+    /// Whether the decision was `class`.
+    pub fn is(&self, class: Class) -> bool {
+        self.class == class.key()
     }
 }
 
+impl From<Decision> for Diagnosis {
+    fn from(decision: Decision) -> Diagnosis {
+        Diagnosis {
+            status: decision.status().into(),
+            class: decision.class.key().into(),
+            scope: decision.scope,
+            evidence: decision.evidence,
+            action: decision.action,
+            missing: vec![],
+            retry_after: decision.retry_after,
+        }
+    }
+}
+
+/// What the one decision makes of words, an error or an exit: none of them
+/// is ever unsettled, only unrecognized.
+fn decided(evidence: Evidence) -> Option<Diagnosis> {
+    afkconvoy_core::worker_health::decide(evidence).ok().flatten().map(Diagnosis::from)
+}
+
+/// The harness's own words on its screen.
 fn terminal_rule(harness: Harness, output: &[String]) -> Option<Diagnosis> {
-    if let Some(evidence) = harness.task_refusal(output) {
-        return Some(Diagnosis {
-            status: "fault".into(),
-            class: "refusal".into(),
-            scope: Scope::Worker,
-            evidence: vec![evidence],
-            action: Action::Continue,
-            missing: vec![],
-            retry_after: None,
-        });
-    }
-    if let Some(evidence) = harness.capacity_stop(output) {
-        return Some(Diagnosis {
-            status: "stopped".into(),
-            class: "capacity".into(),
-            scope: Scope::Worker,
-            evidence: vec![evidence],
-            action: Action::Retry,
-            missing: vec![],
-            retry_after: None,
-        });
-    }
-    harness.account_quota(output).map(quota)
+    decided(Evidence::Words { harness, lines: output })
 }
 
 /// Conservative structured/error classification. Plain terminal text goes to
@@ -446,63 +420,7 @@ fn classified(value: &Value) -> Option<Diagnosis> {
 }
 
 fn classified_for(harness: Option<Harness>, value: &Value) -> Option<Diagnosis> {
-    let retry = value
-        .get("retry_after")
-        .or_else(|| value.get("retryAfter"))
-        .or_else(|| value.pointer("/headers/Retry-After"))
-        .or_else(|| value.pointer("/headers/retry-after"))
-        .and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok())));
-    if let Some(fields) = value.as_object() {
-        for (key, nested) in fields {
-            if key != "code"
-                && let Some(found) = classified_for(harness, nested)
-            {
-                return Some(Diagnosis { retry_after: retry.or(found.retry_after), ..found });
-            }
-        }
-    }
-    if let Some(items) = value.as_array() {
-        for item in items {
-            if let Some(found) = classified_for(harness, item) {
-                return Some(found);
-            }
-        }
-    }
-    if let Some(text) = value.as_str() {
-        if let Some(harness) = harness
-            && let Some(evidence) = harness.account_quota(&[text.to_string()])
-        {
-            return Some(quota(evidence));
-        }
-        if let Ok(parsed) = serde_json::from_str::<Value>(text) {
-            return classified_for(harness, &parsed);
-        }
-    }
-    let code = value.get("code").and_then(Value::as_str)?;
-    let (class, scope, action) = match code {
-        "insufficient_quota" | "usage_limit_reached" | "quota_exceeded" => {
-            ("quota", Scope::Account, Action::Continue)
-        }
-        "authentication_error" | "invalid_api_key" | "login_required" | "token_expired" => {
-            ("authentication", Scope::Account, Action::Continue)
-        }
-        "organization_disabled" | "account_disabled" | "service_disabled" => {
-            ("disabled", Scope::Account, Action::Continue)
-        }
-        "model_not_found" | "model_unavailable" => ("model", Scope::Model, Action::Continue),
-        "rate_limit_exceeded" | "too_many_requests" => ("rate_limit", Scope::Worker, Action::Retry),
-        "session_error" | "session_corrupted" => ("session", Scope::Worker, Action::Continue),
-        _ => return None,
-    };
-    Some(Diagnosis {
-        status: "fault".into(),
-        class: class.into(),
-        scope,
-        evidence: vec![code.into()],
-        action,
-        missing: vec![],
-        retry_after: retry,
-    })
+    decided(Evidence::Error { harness, error: value })
 }
 
 /// A tick's issue workers being observed, judged or held for the operator.
@@ -948,7 +866,7 @@ fn escalate_observed(
         "error": observed.error,
         "snapshots": observed.snapshots,
     }))?;
-    let why = if observed.diagnosis.as_ref().is_some_and(|d| d.class == "refusal") {
+    let why = if observed.diagnosis.as_ref().is_some_and(|d| d.is(Class::Refusal)) {
         "No eligible harness remains for this issue after task refusal."
     } else {
         "The worker's fault remained unresolved for one hour on unchanged evidence."
@@ -956,7 +874,7 @@ fn escalate_observed(
     let reason = format!(
         "{why} The fleet preserved its work and handed the issue to a human with this evidence:\n\n```json\n{evidence}\n```"
     );
-    if observed.diagnosis.as_ref().is_some_and(|d| d.class == "refusal") {
+    if observed.diagnosis.as_ref().is_some_and(|d| d.is(Class::Refusal)) {
         if let Some(claim) = crate::judge::mine(fleet, me, issue)? {
             let worktree = Worktree::of_issue(&Source::of(&fleet.repo)?, issue)?;
             let pr =
@@ -994,28 +912,6 @@ fn wait_for_operator(
         .saturating_add(CHECK_SECONDS)
         .min(observed.window_started.saturating_add(RECOVERY_SECONDS));
     Ok(())
-}
-
-impl From<afkconvoy_core::worker_health::Decision> for Diagnosis {
-    fn from(decision: afkconvoy_core::worker_health::Decision) -> Diagnosis {
-        use afkconvoy_core::worker_health::{Action as Does, Scope as Over};
-        Diagnosis {
-            status: if decision.action == Does::Continue { "fault" } else { "observed" }.into(),
-            class: decision.class.into(),
-            scope: match decision.scope {
-                Over::Account => Scope::Account,
-                Over::Worker => Scope::Worker,
-            },
-            evidence: vec![decision.evidence],
-            action: match decision.action {
-                Does::Wait => Action::Wait,
-                Does::Continue => Action::Continue,
-                Does::Complete => Action::Complete,
-            },
-            missing: vec![],
-            retry_after: None,
-        }
-    }
 }
 
 /// Returns true while the capacity rule is waiting or has nudged this
@@ -1140,7 +1036,7 @@ fn decide(
     };
     observed.diagnosis = Some(diagnosis.clone());
     observed.operator_reason = None;
-    if diagnosis.class == "capacity" {
+    if diagnosis.is(Class::Capacity) {
         observed.source = "capacity rule".into();
         observed.error = None;
         if capacity_wait(book, observed, worktree, fleet.now)? {
@@ -1149,7 +1045,7 @@ fn decide(
         diagnosis.action = Action::Continue;
         observed.diagnosis = Some(diagnosis.clone());
     }
-    let refusal = diagnosis.class == "refusal";
+    let refusal = diagnosis.is(Class::Refusal);
     if refusal && let Some(issue) = issue {
         fleet.remember_refusal(
             issue,
@@ -1168,7 +1064,7 @@ fn decide(
             return Ok(());
         }
         Action::Wait | Action::Unknown => {
-            let quota = diagnosis.class == "quota" && diagnosis.scope == Scope::Account;
+            let quota = diagnosis.is(Class::Quota) && diagnosis.scope == Scope::Account;
             let within_reset = diagnosis.retry_after.is_some_and(|delay| {
                 delay <= MAX_QUOTA_WAIT_SECONDS
                     && fleet.now.saturating_add(delay)
@@ -1192,7 +1088,7 @@ fn decide(
         Action::Retry if observed.rate_retries < MAX_RATE_RETRIES => {
             observed.rate_retries += 1;
             observed.action = "retrying".into();
-            if diagnosis.class != "rate_limit" {
+            if !diagnosis.is(Class::RateLimit) {
                 worktree.tell(
                     &observed.terminal,
                     "Continue the existing task if ready. Do not restart or discard work.",
@@ -1200,7 +1096,7 @@ fn decide(
             }
             return Ok(());
         }
-        Action::Retry if diagnosis.class != "rate_limit" => {
+        Action::Retry if !diagnosis.is(Class::RateLimit) => {
             observed.action = "waiting".into();
             return Ok(());
         }
@@ -1231,7 +1127,7 @@ fn decide(
     // An account quota continues at once, but not through a gate or landing
     // the worker still has running: that work keeps the session until it
     // ends. The fault is already recorded, so a new start skips the harness.
-    if diagnosis.class == "quota"
+    if diagnosis.is(Class::Quota)
         && diagnosis.scope == Scope::Account
         && crate::judge::own_background(fleet, worktree, true)?.is_some()
     {
@@ -1404,7 +1300,7 @@ mod tests {
         ];
         for (harness, output) in cases {
             let diagnosis = terminal_rule(harness, &output).unwrap();
-            assert_eq!(diagnosis.class, "quota", "{}", harness.key());
+            assert_eq!(diagnosis.class, Class::Quota.key(), "{}", harness.key());
             assert_eq!(diagnosis.scope, Scope::Account);
             assert_eq!(diagnosis.action, Action::Continue);
             assert_eq!(diagnosis.evidence, vec![harness.account_quota(&output).unwrap()]);
@@ -1420,7 +1316,7 @@ mod tests {
     fn a_runtime_account_quota_continues_for_the_harness_that_names_it() {
         let error = r#"429: {"code":"1308","message":"Usage limit reached for 5 hour"}"#;
         let diagnosis = classified_for(Some(Harness::Pi), &json!(error)).unwrap();
-        assert_eq!(diagnosis.class, "quota");
+        assert_eq!(diagnosis.class, Class::Quota.key());
         assert_eq!(diagnosis.scope, Scope::Account);
         assert_eq!(diagnosis.action, Action::Continue);
         assert_eq!(diagnosis.retry_after, None);
