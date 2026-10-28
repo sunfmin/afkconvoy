@@ -91,7 +91,7 @@ fn a_claim_whose_worker_declared_frees_its_slot_for_the_frontier() {
     let gauges = page.split("<dl class=\"gauges\">").nth(1).unwrap().split("</dl>").next();
     let gauges = gauges.unwrap();
     assert!(gauges.contains("<dt>Claims held</dt><dd>2 <small>of 2</small></dd>"), "{gauges}");
-    assert!(gauges.contains("<dt>Declared</dt><dd>1</dd>"), "{gauges}");
+    assert!(gauges.contains("<dt>Taking no slot</dt><dd>1</dd>"), "{gauges}");
 
     // The line says the three claims apart: two of two slots, and one declared.
     assert_eq!(
