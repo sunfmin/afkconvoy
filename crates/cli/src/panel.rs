@@ -373,7 +373,7 @@ fn place(seen: &Seen, number: u64) -> Option<(String, Option<String>)> {
 fn said(step: TickStep, outcome: Outcome) -> Option<(u64, &'static str)> {
     let issue = match step {
         TickStep::Judge { issue, .. }
-        | TickStep::Watch { issue }
+        | TickStep::Watch { issue, .. }
         | TickStep::Advance { issue }
         | TickStep::Escalate { issue }
         | TickStep::Reclaim { issue }
@@ -386,6 +386,7 @@ fn said(step: TickStep, outcome: Outcome) -> Option<(u64, &'static str)> {
         (_, Outcome::Waiting(_)) => "its worker waits on its own background work",
         (_, Outcome::Restarted) => "its worker was replaced this tick",
         (_, Outcome::Continued) => "a worker was started on it again this tick",
+        (_, Outcome::Asked) => "its turn was asked for again this tick",
         (TickStep::Dispatch { .. }, Outcome::Done) => "started this tick",
         (TickStep::Dispatch { .. }, Outcome::Blocked) => "skipped this tick: a blocker is open",
         (TickStep::Reclaim { .. }, Outcome::Done) => "taken from a silent peer this tick",
@@ -637,7 +638,7 @@ pub fn read(
         &fleet.records_at_open(&format!("{delivery_prefix}*")),
     )
     .unwrap_or_else(|error| vec![format!("deliveries could not be read: {error:#}")]);
-    panel.declared = set.declared();
+    panel.declared = set.slotless();
     panel.held = set.mine.len() - panel.declared;
     panel.bound = set.bound(fleet.config.concurrency()) - panel.declared;
     panel.frontier = set.frontier.len();
@@ -1485,7 +1486,7 @@ fn repo(out: &mut String, at: usize, panel: &Panel) {
     );
     gauge(out, "Claims held", panel.held, Some(panel.bound));
     if panel.declared > 0 {
-        gauge(out, "Declared", panel.declared, None);
+        gauge(out, "Taking no slot", panel.declared, None);
     }
     gauge(out, "Queued", panel.queued(), None);
     gauge(out, "With a human", panel.with_a_human(), None);

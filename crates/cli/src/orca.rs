@@ -46,6 +46,11 @@ const START_FILE: &str = "convoy-started";
 const WRITES_NOTHING_FILE: &str = "convoy-writes-nothing";
 /// The comment of the `blocked` verdict a worker was last started again over.
 const ANSWERED_FILE: &str = "convoy-answered";
+/// What the last turn asked for here answered, or the process asking for one
+/// now (`turn_answer`).
+pub(crate) const TURN_FILE: &str = "convoy-turn.json";
+/// What the turns the tick asked for here printed, one after another.
+pub(crate) const TURN_LOG_FILE: &str = "convoy-turn.log";
 /// What a bound repo's worker here was started under (`Under`).
 const UNDER_FILE: &str = "convoy-started-under";
 /// The harness the worker here was last started on, as its key.
