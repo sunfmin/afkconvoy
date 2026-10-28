@@ -1895,7 +1895,10 @@ pub fn doctor_with_proxy_rounds(
 ) -> Result<Value> {
     let _budget = crate::launch::budget_once();
     let look = Look::new(now, rounds);
-    let (mut answer, found) = examined(repo, now, host, proxy, &look)?;
+    let (mut answer, mut found) = examined(repo, now, host, proxy, &look)?;
+    // A host finding is said here with this checkout. `doctor --all` says
+    // each once, so `examined` leaves those unnamed.
+    name_fixes(&repo.dir, &mut found);
     let unwell = critical(&found);
     answer["findings"] = serde_json::to_value(found)?;
     if unwell {
@@ -1908,6 +1911,13 @@ pub fn doctor_with_proxy_rounds(
 /// non-zero.
 fn critical(found: &[Finding]) -> bool {
     found.iter().any(|finding| finding.severity == Severity::Critical)
+}
+
+/// Name `checkout` on each afkconvoy command in `found`.
+fn name_fixes(checkout: &Path, found: &mut [Finding]) {
+    for finding in found {
+        finding.fix = crate::checkout::about_checkout(checkout, &finding.fix);
+    }
 }
 
 /// What `doctor` makes of one checkout (`examined`): its answer but for
@@ -1976,6 +1986,11 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String], look: &Look) ->
     found.extend(host_runner::findings());
     found.extend(crate::host_watch::finding());
     found.extend(look.findings.clone());
+    // A finding of this checkout names it. A host finding stays as it was
+    // read, so `doctor --all` can say the same one once.
+    for finding in found.iter_mut().filter(|finding| !finding.of_host) {
+        finding.fix = crate::checkout::about_checkout(&repo.dir, &finding.fix);
+    }
     found.sort_by_key(|finding| finding.severity);
     let (claims, issues, waiting) = match &state {
         Ok(state) => (
@@ -2222,6 +2237,11 @@ pub fn all_since_rounds(
     watch_events.sort_by(|left, right| right["at"].as_u64().cmp(&left["at"].as_u64()));
     if say_watch_once && let Some(watch) = once.get_mut("watch").and_then(Value::as_object_mut) {
         watch.insert("events".to_string(), Value::Array(watch_events));
+    }
+    // Said once, named for the first checkout on the list: the lines are
+    // equal while they are gathered, and each runs from any directory.
+    if let Some(checkout) = listed.first() {
+        name_fixes(&checkout.checkout, &mut of_host);
     }
     of_host.sort_by_key(|finding| finding.severity);
     unwell |= critical(&of_host);
