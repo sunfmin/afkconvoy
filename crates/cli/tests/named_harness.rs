@@ -14,6 +14,7 @@ use crate::common::{self, World, git};
 const TICKING: [&str; 5] = ["run", "--host", "h1", "--second-ms", "10"];
 
 const KIMI_SCREEN: &str = include_str!("screens/kimi-5-hour-usage-limit-control-166.txt");
+const CODEX_REFUSAL: &str = include_str!("screens/codex-task-refusal-control-98.txt");
 
 fn name(world: &World, checkout: &Path, harness: &str) {
     let file = world.cache().join("afkconvoy/checkouts.json");
@@ -395,6 +396,43 @@ fn an_account_fault_on_the_named_harness_starts_no_worker_on_the_next() {
         .to_string();
     assert!(what.contains(&world.clone.display().to_string()), "{what}");
     assert!(what.contains("kimi") && what.contains("account fault"), "{what}");
+}
+
+#[test]
+fn a_task_refusal_on_the_named_harness_continues_on_no_other() {
+    let world = World::new();
+    world.hold_every_harness();
+    world.kit_researched_models("codex", &["gpt-x"]);
+    name(&world, &world.clone, "codex");
+    world.issue(7, &["ready-for-agent"]);
+    tick(&world, 700);
+    let dir = worktree(&world, 7).expect("the named harness started the worker");
+    let started = open_commands(&world, &dir);
+    assert!(started[0].contains("codex"), "{started:?}");
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            terminal["agent"] = json!({"state": "done", "outcome": "failure"});
+            terminal["screen"] = json!(CODEX_REFUSAL.lines().collect::<Vec<_>>());
+        }
+    });
+
+    tick(&world, 800);
+    let plan = world.afk(&["plan", "--now", "801"]).ok();
+    let worker = &plan["selection"]["health"]["workers"][0];
+    assert_eq!(worker["diagnosis"]["class"], "refusal", "{plan}");
+    let orca = world.orca();
+    let opened: Vec<&str> = orca["terminals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|terminal| terminal["open"] == true)
+        .map(|terminal| terminal["command"].as_str().unwrap_or(""))
+        .collect();
+    assert!(
+        opened.iter().all(|command| command.contains("codex")),
+        "the refused worker is not continued onto another harness: {opened:?}"
+    );
+    assert_eq!(harness_of(&world, &world.clone), json!("codex"));
 }
 
 #[test]
