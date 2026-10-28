@@ -104,6 +104,9 @@ pub struct Proposed {
     resolution: Option<String>,
     /// Where its login shell was asked (`Launches::dir`).
     dir: PathBuf,
+    /// The flags question's answer, shared by every clone of this resolution.
+    /// A probe records what the ask found without asking the shell again.
+    flags_answer: Arc<OnceLock<Option<String>>>,
 }
 
 impl Proposed {
@@ -132,7 +135,9 @@ impl Proposed {
     /// takes, as its harness asks (`Harness::flags_question`); `None` when
     /// that failed.
     pub fn flags(&self) -> Option<String> {
-        login_shell(&self.dir, &self.harness.flags_question(&self.command))
+        self.flags_answer
+            .get_or_init(|| login_shell(&self.dir, &self.harness.flags_question(&self.command)))
+            .clone()
     }
 
     /// Why it cannot start a worker, when it cannot.
@@ -294,7 +299,13 @@ impl Launches {
                 login_shell(&self.dir, &format!("type -- '{}'", word.replace('\'', "'\\''")))
             })
             .filter(|answer| !answer.trim().is_empty());
-        Proposed { harness, command, resolution, dir: self.dir.clone() }
+        Proposed {
+            harness,
+            command,
+            resolution,
+            dir: self.dir.clone(),
+            flags_answer: Arc::new(OnceLock::new()),
+        }
     }
 
     fn validate(&self, proposed: &Proposed) -> Result<()> {

@@ -17,7 +17,7 @@ use afkconvoy_core::layout::{
     Answer, BaseCheck, GATE_KIND, Layout, PROBE_STANDS, answer, base_check, no_base_branch,
     no_gate_records, probe_stands, settle,
 };
-use afkconvoy_core::tools::Tool;
+use afkconvoy_core::tools::{Found, Tool};
 use afkconvoy_core::tracker::{Tracker, is_public, public};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -121,6 +121,57 @@ struct Passed {
     #[serde(flatten)]
     asked: Asked,
     warnings: Vec<String>,
+    /// What the probe found of each harness the fleet could be asked for.
+    /// Empty on a note written before this was recorded: a doctor then
+    /// trusts the probe and says nothing more of those harnesses.
+    #[serde(default)]
+    harnesses: Vec<NotedHarness>,
+}
+
+/// One harness, as the startup probe found it. A doctor that trusts the
+/// probe says this and starts the harness again for nothing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct NotedHarness {
+    /// `Harness::key`.
+    harness: String,
+    /// `ready`, `missing`, `logged_out`, or `absent` when the command names
+    /// no harness tool.
+    state: String,
+    fault: Option<String>,
+    flags_fault: Option<String>,
+}
+
+impl NotedHarness {
+    fn of(checked: &crate::role::Checked) -> Self {
+        let state = match &checked.tool {
+            Some((_, Found::Missing)) => "missing",
+            Some((_, Found::LoggedOut)) => "logged_out",
+            Some((_, Found::Ready)) => "ready",
+            _ => "absent",
+        };
+        Self {
+            harness: checked.harness.key().to_string(),
+            state: state.to_string(),
+            fault: checked.fault.clone(),
+            flags_fault: checked.flags_fault.clone(),
+        }
+    }
+
+    pub(crate) fn harness(&self) -> &str {
+        &self.harness
+    }
+
+    pub(crate) fn state(&self) -> &str {
+        &self.state
+    }
+
+    pub(crate) fn fault(&self) -> Option<&str> {
+        self.fault.as_deref()
+    }
+
+    pub(crate) fn flags_fault(&self) -> Option<&str> {
+        self.flags_fault.as_deref()
+    }
 }
 
 /// What a startup probe is asked about.
@@ -204,6 +255,13 @@ pub fn stands(repo: &Repo, now: u64) -> bool {
         Ok(key) => passed.asked.launch == key,
         Err(_) => false,
     }
+}
+
+/// What the standing probe found of each harness, when one stands.
+/// Empty when none stands, or the note is from before this was recorded.
+pub(crate) fn noted_harnesses(repo: &Repo, now: u64) -> Vec<NotedHarness> {
+    let launches = Launches::foreseen(repo);
+    passed_note(repo, now, &launches).map(|passed| passed.harnesses).unwrap_or_default()
 }
 
 /// Why no checkout is found on a host with no git, which finds one: what a
@@ -317,7 +375,13 @@ pub fn startup(repo: &Repo, now: u64, launches: &Launches) -> Result<Vec<String>
         // Soft: a ref that stays is litter the next start deletes.
         let _ = repo.try_git(&args);
     }
-    let passed = Passed { at: now, asked: Asked::now(repo, &config, launches.key()?)?, warnings };
+    // Recorded so a later doctor can say a harness that is missing, logged
+    // out, or unable to take the fleet's flags, without starting it again.
+    // A fault here does not refuse the probe: one harness must not stop another.
+    let called = role::called_on(repo, Some(&config), launches.default());
+    let harnesses = role::observe(launches, &called).iter().map(NotedHarness::of).collect();
+    let passed =
+        Passed { at: now, asked: Asked::now(repo, &config, launches.key()?)?, warnings, harnesses };
     let note = repo.note(PASSED_NOTE)?;
     std::fs::write(&note, serde_json::to_string(&passed)?)
         .with_context(|| format!("cannot write {}", note.display()))?;

@@ -78,8 +78,10 @@ pub fn harness(launch: &Proposed) -> Option<(Tool, Found)> {
 /// started in `dir`.
 fn asked(dir: &Path, tool: Tool, question: &str) -> Found {
     if tool.starts_workers() {
-        // The login question is the one start of this harness in a doctor.
-        // A later question, such as `--help`, does not start it again.
+        // One doctor starts this program once. Flags of the default harness
+        // are that start; login is the start of any other. The same question
+        // is answered from the first start. A different question does not
+        // start the program again.
         return match crate::launch::once_per_program(tool.name(), question, || {
             ask_login_shell(dir, question).unwrap_or_default()
         }) {

@@ -1329,26 +1329,27 @@ pub fn findings(seen: &Seen) -> Vec<Finding> {
 /// `config`, needs, read from its current host kit. When `trust` is set, a
 /// startup probe that still stands already checked every harness: none is
 /// started again.
-fn read_host(repo: &Repo, config: Option<&Config>, trust: bool) -> Host {
+fn read_host(
+    repo: &Repo,
+    config: Option<&Config>,
+    trust: bool,
+    notes: &[crate::probe::NotedHarness],
+) -> Host {
     let launches = Launches::foreseen(repo);
     let default = launches.default();
     let launch = if trust { None } else { launches.of(default).ok().flatten() };
-    let looked = tools::look(repo, launch.as_ref());
-    // An unbound repo knows of no harness: nothing calls for its one command's.
-    let called = match config.and_then(|config| config.bound.as_ref()) {
-        Some(bound) => {
-            let team = role::current(repo, bound, &config.unwrap().labels());
-            role::called_for(repo, team.as_ref())
-        }
-        None => match crate::named_harness::named(repo) {
-            Ok(Some(pinned)) => {
-                vec![(pinned, vec![format!("the harness {} this checkout names", pinned.key())])]
-            }
-            _ => vec![(default, vec![])],
-        },
+    let called = role::called_on(repo, config, default);
+    let checked = if trust && !notes.is_empty() {
+        // The probe already asked. Repeating it would start the harness.
+        noted(&called, notes)
+    } else if trust {
+        trusted(&called)
+    } else {
+        role::check(&launches, &called).unwrap_or_default()
     };
-    let checked =
-        if trust { trusted(&called) } else { role::check(&launches, &called).unwrap_or_default() };
+    // Flags are this doctor's one start of the default harness when no probe
+    // stands. The login look follows and does not start that program again.
+    let looked = tools::look(repo, launch.as_ref());
     let launch = |checked: Checked| Launch { checked };
     Host {
         tools: looked.found,
@@ -1358,17 +1359,50 @@ fn read_host(repo: &Repo, config: Option<&Config>, trust: bool) -> Host {
     }
 }
 
+/// A harness as the standing probe recorded it (`probe::NotedHarness`).
+fn noted(called: &[(Harness, Vec<String>)], notes: &[crate::probe::NotedHarness]) -> Vec<Checked> {
+    let kit = crate::kit::load().ok();
+    called
+        .iter()
+        .map(|(harness, callers)| {
+            let command = command_of(&kit, *harness);
+            let noted = notes.iter().find(|note| note.harness() == harness.key());
+            let found = match noted.map(crate::probe::NotedHarness::state).unwrap_or("ready") {
+                "missing" => Some(Found::Missing),
+                "logged_out" => Some(Found::LoggedOut),
+                "absent" => None,
+                _ => Some(Found::Ready),
+            };
+            Checked {
+                harness: *harness,
+                callers: callers.clone(),
+                command: command.to_string(),
+                tool: found.and_then(|found| Tool::of(*harness, command).map(|tool| (tool, found))),
+                fault: noted.and_then(crate::probe::NotedHarness::fault).map(str::to_string),
+                flags_fault: noted
+                    .and_then(crate::probe::NotedHarness::flags_fault)
+                    .map(str::to_string),
+            }
+        })
+        .collect()
+}
+
+/// The host kit's command for `harness`, or its stock command.
+fn command_of(kit: &Option<crate::kit::Kit>, harness: Harness) -> &str {
+    kit.as_ref()
+        .and_then(|kit| kit.command(harness))
+        .filter(|command| !command.trim().is_empty())
+        .unwrap_or_else(|| harness.stock())
+}
+
 /// The host kit's commands, as a standing startup probe already checked them.
+/// A note from before harness results were recorded has nothing else to say.
 fn trusted(called: &[(Harness, Vec<String>)]) -> Vec<Checked> {
     let kit = crate::kit::load().ok();
     called
         .iter()
         .map(|(harness, callers)| {
-            let command = kit
-                .as_ref()
-                .and_then(|kit| kit.command(*harness))
-                .filter(|command| !command.trim().is_empty())
-                .unwrap_or_else(|| harness.stock());
+            let command = command_of(&kit, *harness);
             Checked {
                 harness: *harness,
                 callers: callers.clone(),
@@ -1971,11 +2005,15 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String], look: &Look) ->
     let (trust, seen_host, opened) = std::thread::scope(|scope| {
         let opened = scope.spawn(|| Fleet::read(repo, now));
         let trust = crate::probe::stands(repo, now);
-        let seen_host = read_host(repo, config.as_ref().ok(), trust);
+        let notes = if trust { crate::probe::noted_harnesses(repo, now) } else { vec![] };
+        let seen_host = read_host(repo, config.as_ref().ok(), trust, &notes);
         (trust, seen_host, opened.join().expect("fleet read"))
     });
-    let state =
-        finish_state(repo, now, &mut run, trust, opened?).map_err(|error| format!("{error:#}"));
+    // A fleet that cannot be opened is the unread state, not a refusal of
+    // the look: the host is still answered, and the failure is the finding.
+    let state = opened
+        .and_then(|opened| finish_state(repo, now, &mut run, trust, opened))
+        .map_err(|error| format!("{error:#}"));
     let seen = Seen {
         now,
         host: &seen_host,
