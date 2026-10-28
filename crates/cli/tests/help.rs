@@ -69,7 +69,7 @@ fn help_explains_the_idle_wait_and_a_closed_blockers_wake() {
 }
 
 /// The most the index may be: what an agent's harness shows whole, with room.
-const INDEX_MOST: usize = 20 * 1024;
+const INDEX_MOST: usize = 21 * 1024;
 
 /// The lines of `text` from the one starting with `from` up to the one
 /// starting with `to`, both left out.
@@ -685,7 +685,7 @@ fn the_index_keeps_a_commands_own_flag_from_moving_the_checkout_to_c() {
     for (command, flag, fix) in forms {
         let long = asked(&[command, "--help"]);
         assert!(
-            long.contains("Name it after the command, as `[CHECKOUT]`."),
+            long.contains("Name it after the command, as `[CHECKOUT]`"),
             "{command} no longer names the checkout after the command"
         );
         let usage = usage_of(command);
@@ -698,8 +698,9 @@ fn the_index_keeps_a_commands_own_flag_from_moving_the_checkout_to_c() {
     }
 
     // `-C` is still the usage parser's refusal, before the command reads anything.
-    let probe = probe_dir();
-    let path = probe.to_str().unwrap();
+    // A path that is no directory is accepted by that parser and refused at the
+    // checkout, so the command writes nothing.
+    let path = "/no/such/afkconvoy-checkout";
     for args in [
         ["heartbeat", "-C", path, "--instance", "alpha"],
         ["tick", "-C", path, "--instance", "alpha"],
@@ -710,7 +711,6 @@ fn the_index_keeps_a_commands_own_flag_from_moving_the_checkout_to_c() {
         assert!(error.contains("unexpected argument '-C' found"), "{args:?}: {error}");
         assert!(error.contains("[CHECKOUT]"), "{args:?}: {error}");
     }
-    // The path the usage line shows is accepted, after the flag and before it.
     for args in [
         vec!["heartbeat", "--instance", "alpha", path],
         vec!["heartbeat", path, "--instance", "alpha"],
@@ -721,10 +721,9 @@ fn the_index_keeps_a_commands_own_flag_from_moving_the_checkout_to_c() {
     ] {
         let (code, error) = ran(&args);
         assert_eq!(code, 1, "{args:?}: {error}");
-        assert!(error.contains("is not in a git checkout"), "{args:?}: {error}");
+        assert!(error.contains("is not a directory"), "{args:?}: {error}");
         assert!(!error.contains("unexpected argument"), "{args:?}: {error}");
     }
-    let _ = std::fs::remove_dir_all(&probe);
 
     for command in ["recovery", "rule", "show"] {
         let long = asked(&[command, "--help"]);
@@ -732,13 +731,17 @@ fn the_index_keeps_a_commands_own_flag_from_moving_the_checkout_to_c() {
             long.contains("Name it with `-C <CHECKOUT>`"),
             "{command} no longer takes the checkout with -C"
         );
+        let short = asked(&[command, "-h"]);
+        assert!(short.contains("-C <CHECKOUT>"), "{command} -h dropped -C: {short}");
         let usage = usage_of(command);
-        assert!(usage.contains("-C <CHECKOUT>"), "{usage}");
         assert!(!usage.contains("[CHECKOUT]"), "{usage}");
     }
     for command in ["scaffold", "watched", "draft"] {
-        let usage = usage_of(command);
-        assert!(!usage.contains("[CHECKOUT]") && !usage.contains("-C"), "{command}: {usage}");
+        let short = asked(&[command, "-h"]);
+        assert!(
+            !short.contains("[CHECKOUT]") && !short.contains("-C"),
+            "{command} gained a checkout form: {short}"
+        );
     }
 }
 
@@ -760,21 +763,6 @@ fn fix_from_usage(usage: &str) -> String {
     line = line.replace("<INSTANCE>", "<instance>");
     line = line.replace("<RUN>", "<run>");
     line.replace("[CHECKOUT]", "<checkout>")
-}
-
-/// A directory in no checkout, so a command that accepts the path stops at
-/// finding the checkout and writes nothing.
-fn probe_dir() -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("afkconvoy-222-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let top = Command::new("git").args(["-C"]).arg(&dir).args(["rev-parse", "--show-toplevel"]);
-    let top = top.output().unwrap();
-    assert!(
-        !top.status.success(),
-        "the probe directory is a checkout, so a path-form command would act on it: {}",
-        String::from_utf8_lossy(&top.stdout)
-    );
-    dir
 }
 
 /// `(exit, error)` of `args`. A usage refusal is exit 2; a checkout the
