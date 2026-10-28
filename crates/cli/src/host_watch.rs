@@ -2293,7 +2293,9 @@ mod tests {
             ["health:/w", "health:/f"],
             "no tick observed it within that grace"
         );
-        assert!(missed[0].reason.contains("was due at") && missed[0].reason.contains("still waiting"));
+        assert!(
+            missed[0].reason.contains("was due at") && missed[0].reason.contains("still waiting")
+        );
     }
 
     #[test]
