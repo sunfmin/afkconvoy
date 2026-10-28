@@ -470,7 +470,7 @@ fn asked_from() -> PathBuf {
 
 /// Whether orca is running, read once in this look. Adding a repo does
 /// not forget this: orca is running then, and the look has not ended.
-pub(crate) static RUNNING: Reading<bool> = Reading::per_look();
+pub(crate) static RUNNING: Reading<bool> = Reading::per_look("orca running");
 
 /// Whether orca is running, read once in this look. An orca that cannot say
 /// is not one a worker can be started through. A second ask waits on that
@@ -503,7 +503,7 @@ pub struct Source {
 /// Orca's host-wide repo listing, read once in this look. Adding a repo orca
 /// did not list forgets this listing alone: the look has not ended.
 pub(crate) static REPOS: Reading<Result<Value, String>> =
-    Reading::per_look().forgotten_by(&[&["orca", "repo", "add"]]);
+    Reading::per_look("orca repo list").forgotten_by(&[&["orca", "repo", "add"]]);
 
 /// Orca's host-wide repo listing, read once in this look.
 fn repo_list() -> Result<Value> {
@@ -515,8 +515,9 @@ fn repo_list() -> Result<Value> {
 /// Orca's worktree list, read once in this look. Creating or removing a
 /// worktree forgets this list alone: the look has not ended, and the other
 /// readings stay the ones already read.
-pub(crate) static WORKTREES: Reading<Result<Value, String>> = Reading::per_look()
-    .forgotten_by(&[&["orca", "worktree", "create"], &["orca", "worktree", "rm"]]);
+pub(crate) static WORKTREES: Reading<Result<Value, String>> =
+    Reading::per_look("orca worktree list")
+        .forgotten_by(&[&["orca", "worktree", "create"], &["orca", "worktree", "rm"]]);
 
 /// Orca's worktree list, one read for this look. A second ask waits on the
 /// first instead of listing again.

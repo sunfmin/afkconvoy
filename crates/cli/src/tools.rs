@@ -108,7 +108,7 @@ fn asked(dir: &Path, tool: Tool, question: &str) -> Found {
 /// every checkout of one doctor asks the same question, and nobody changes
 /// gh's login under a running runner. The question names the host, so two
 /// hosts stay two answers.
-pub(crate) static GH_LOGIN: Reading<Found> = Reading::per_process();
+pub(crate) static GH_LOGIN: Reading<Found> = Reading::per_process("gh login");
 
 fn gh_found(dir: &Path, question: &str) -> Found {
     GH_LOGIN.read(question, || gh_found_once(dir, question))

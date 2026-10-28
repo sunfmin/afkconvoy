@@ -70,15 +70,15 @@ fn segment(text: &str) -> String {
 static HOSTS: Mutex<BTreeMap<PathBuf, String>> = Mutex::new(BTreeMap::new());
 /// The login's quota scope per host. It stands for the process's life:
 /// nobody changes `gh`'s login under a running runner.
-pub(crate) static SCOPES: Reading<Result<Scope, String>> = Reading::per_process();
+pub(crate) static SCOPES: Reading<Result<Scope, String>> = Reading::per_process("gh quota scope");
 
 /// Whether this look has observed the quota note of a login, per its note
 /// directory. A process that is one look — `doctor` — observes at most once.
-pub(crate) static NOTE: Reading<()> = Reading::per_look();
+pub(crate) static NOTE: Reading<()> = Reading::per_look("gh quota note");
 
 /// One `rate_limit` body per host in this look. `observe` and an env-token
 /// login both read the note; the second of them uses this body.
-pub(crate) static RATES: Reading<Result<String, String>> = Reading::per_look();
+pub(crate) static RATES: Reading<Result<String, String>> = Reading::per_look("gh rate_limit");
 
 /// The `rate_limit` body for `host`, read once in this look. A second ask
 /// waits on that read instead of calling `rate_limit` again.

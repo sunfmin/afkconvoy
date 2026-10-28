@@ -267,7 +267,7 @@ pub(crate) enum HeadMiss {
 /// [`Unreached`], so a later ask in the look still says GitHub could not be
 /// reached and does not read again. A process that is one look — `doctor` —
 /// reads each HEAD once.
-pub(crate) static HEADS: Reading<Result<String, HeadMiss>> = Reading::per_look();
+pub(crate) static HEADS: Reading<Result<String, HeadMiss>> = Reading::per_look("github head");
 
 /// `gh`, run in `dir`: the checkout a command is about, or where none is at
 /// hand the host's temporary directory (`in_no_checkout`). Every issue call

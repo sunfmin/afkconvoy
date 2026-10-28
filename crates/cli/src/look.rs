@@ -34,6 +34,8 @@ pub enum Lifetime {
 /// One source's observation: what it reads, by which key, for how long, and
 /// which of its writes forget it. Declared as a `static` beside the read.
 pub struct Reading<V> {
+    /// What it reads, unique among readings: its cells are kept by it.
+    name: &'static str,
     lifetime: Lifetime,
     /// Each write as the command words it starts with, the tool first:
     /// `["orca", "worktree", "create"]`.
@@ -43,13 +45,13 @@ pub struct Reading<V> {
 
 impl<V> Reading<V> {
     /// A reading forgotten when the next look begins.
-    pub const fn per_look() -> Self {
-        Self { lifetime: Lifetime::Look, forgotten_by: &[], value: PhantomData }
+    pub const fn per_look(name: &'static str) -> Self {
+        Self { name, lifetime: Lifetime::Look, forgotten_by: &[], value: PhantomData }
     }
 
     /// A reading that stands for the life of the process.
-    pub const fn per_process() -> Self {
-        Self { lifetime: Lifetime::Process, forgotten_by: &[], value: PhantomData }
+    pub const fn per_process(name: &'static str) -> Self {
+        Self { name, lifetime: Lifetime::Process, forgotten_by: &[], value: PhantomData }
     }
 
     /// The source's writes that forget this reading, whatever its lifetime.
@@ -79,11 +81,12 @@ impl<V: Clone + Send + Sync + 'static> Reading<V> {
     }
 }
 
-/// Which reading a cell belongs to: the address of its `static`.
-type Id = usize;
+/// Which reading a cell belongs to: its name. Two statics are not promised
+/// two addresses, so a reading is not told by where it is kept.
+type Id = &'static str;
 
 fn id<V>(reading: &'static Reading<V>) -> Id {
-    reading as *const Reading<V> as Id
+    reading.name
 }
 
 /// One cell of a look and what forgets it.
@@ -232,10 +235,10 @@ mod tests {
 
     use serde_json::json;
 
-    static FURTHER: Reading<usize> = Reading::per_look();
-    static STANDING: Reading<usize> = Reading::per_process();
+    static FURTHER: Reading<usize> = Reading::per_look("test further");
+    static STANDING: Reading<usize> = Reading::per_process("test standing");
     static WRITTEN: Reading<usize> =
-        Reading::per_process().forgotten_by(&[&["tool", "make"], &["tool", "drop"]]);
+        Reading::per_process("test written").forgotten_by(&[&["tool", "make"], &["tool", "drop"]]);
 
     #[test]
     fn a_tick_and_a_start_begin_a_look_through_one_call() {
