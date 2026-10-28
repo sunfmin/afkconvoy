@@ -5,10 +5,11 @@
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::ffi::OsString;
-use std::io::Read;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use afkconvoy_core::gate::key;
@@ -23,6 +24,75 @@ use crate::topic::See;
 /// How long the login shell is given to answer.
 pub(crate) const SHELL_TIMEOUT: Duration = Duration::from_secs(20);
 
+/// One doctor's harness budget. While it stands, each harness program is
+/// started at most once in this process, including every checkout of
+/// `doctor --all`. A tick never takes one, so its starts stay unlimited.
+pub(crate) struct HarnessBudget;
+
+static DEPTH: AtomicUsize = AtomicUsize::new(0);
+
+struct Start {
+    question: String,
+    result: OnceLock<(bool, String)>,
+}
+
+static STARTED: Mutex<BTreeMap<String, Arc<Start>>> = Mutex::new(BTreeMap::new());
+
+impl Drop for HarnessBudget {
+    fn drop(&mut self) {
+        if DEPTH.fetch_sub(1, Ordering::AcqRel) == 1 {
+            STARTED.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clear();
+        }
+    }
+}
+
+/// Begins a doctor's harness budget. Dropping the outermost one ends it.
+pub(crate) fn budget_once() -> HarnessBudget {
+    if DEPTH.fetch_add(1, Ordering::AcqRel) == 0 {
+        STARTED.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clear();
+    }
+    HarnessBudget
+}
+
+/// What `once_per_program` did with `program`.
+pub(crate) enum Once {
+    /// `ask` ran, or the same question already had this answer.
+    Ran(bool, String),
+    /// `program` already started for a different question. It was not started again.
+    Already,
+}
+
+/// Runs `ask` at most once per `program` while a doctor budget stands.
+/// The same question is answered from the first start. A different question
+/// does not start the program again. With no budget, `ask` always runs.
+pub(crate) fn once_per_program(
+    program: &str,
+    question: &str,
+    ask: impl FnOnce() -> (bool, String),
+) -> Once {
+    if DEPTH.load(Ordering::Acquire) == 0 {
+        let (ok, printed) = ask();
+        return Once::Ran(ok, printed);
+    }
+    let start = {
+        let mut started = STARTED.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(existing) = started.get(program) {
+            if existing.question != question {
+                return Once::Already;
+            }
+            existing.clone()
+        } else {
+            let start = Arc::new(Start { question: question.to_string(), result: OnceLock::new() });
+            started.insert(program.to_string(), Arc::clone(&start));
+            start
+        }
+    };
+    // The lock is not held across `ask`: another checkout waits on this
+    // start instead of starting the program again.
+    let (ok, printed) = start.result.get_or_init(ask);
+    Once::Ran(*ok, printed.clone())
+}
+
 /// The command a start would give the workers of one harness, with what the
 /// login shell says its first word is: not yet one a worker may be started
 /// with.
@@ -34,6 +104,9 @@ pub struct Proposed {
     resolution: Option<String>,
     /// Where its login shell was asked (`Launches::dir`).
     dir: PathBuf,
+    /// The flags question's answer, shared by every clone of this resolution.
+    /// A probe records what the ask found without asking the shell again.
+    flags_answer: Arc<OnceLock<Option<String>>>,
 }
 
 impl Proposed {
@@ -62,7 +135,9 @@ impl Proposed {
     /// takes, as its harness asks (`Harness::flags_question`); `None` when
     /// that failed.
     pub fn flags(&self) -> Option<String> {
-        login_shell(&self.dir, &self.harness.flags_question(&self.command))
+        self.flags_answer
+            .get_or_init(|| login_shell(&self.dir, &self.harness.flags_question(&self.command)))
+            .clone()
     }
 
     /// Why it cannot start a worker, when it cannot.
@@ -224,7 +299,13 @@ impl Launches {
                 login_shell(&self.dir, &format!("type -- '{}'", word.replace('\'', "'\\''")))
             })
             .filter(|answer| !answer.trim().is_empty());
-        Proposed { harness, command, resolution, dir: self.dir.clone() }
+        Proposed {
+            harness,
+            command,
+            resolution,
+            dir: self.dir.clone(),
+            flags_answer: Arc::new(OnceLock::new()),
+        }
     }
 
     fn validate(&self, proposed: &Proposed) -> Result<()> {
@@ -549,32 +630,37 @@ fn run_login_shell(
     // Command keeps the write ends (`Stdio::Fd`). They have to close here,
     // or the reader never sees the end of what the child printed.
     drop(command);
-    let mut printed = std::fs::File::from(read);
+    let printed = std::fs::File::from(read);
+    let exited = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&exited);
     let reader = std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        let _ = printed.read_to_end(&mut bytes);
-        bytes
+        crate::process::read_bounded(printed, &flag).unwrap_or_default()
     });
     let started = Instant::now();
-    loop {
+    let ended = loop {
         match child.try_wait() {
-            Ok(Some(_)) => break,
+            Ok(Some(_)) => break true,
             Ok(None) if started.elapsed() >= timeout => {
                 stop_group(&mut child);
-                let _ = reader.join();
-                return Ok(None);
+                break false;
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(10)),
             Err(error) => {
                 stop_group(&mut child);
-                let _ = reader.join();
+                let _ = finish_reader(&exited, reader);
                 return Err(error);
             }
         }
-    }
-    reader.join().map(Some).map_err(|error| {
-        std::io::Error::other(format!("reading the login shell failed: {error:?}"))
-    })
+    };
+    let bytes = finish_reader(&exited, reader);
+    Ok(ended.then_some(bytes))
+}
+
+/// Stops `reader` once the child is gone. A grandchild still holding the
+/// pipe cannot keep the question waiting past the drain bound.
+fn finish_reader(exited: &AtomicBool, reader: std::thread::JoinHandle<Vec<u8>>) -> Vec<u8> {
+    exited.store(true, Ordering::Release);
+    reader.join().unwrap_or_default()
 }
 
 /// Kills `child` and every process in its group. A timed-out question must
@@ -609,11 +695,11 @@ fn ask_shell(
         shell.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()),
     )
     .ok()?;
-    let mut printed = child.stdout.take()?;
+    let printed = child.stdout.take()?;
+    let exited = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&exited);
     let reader = std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        let _ = printed.read_to_end(&mut bytes);
-        bytes
+        crate::process::read_bounded(printed, &flag).unwrap_or_default()
     });
     let started = Instant::now();
     let status = loop {
@@ -622,12 +708,13 @@ fn ask_shell(
             None if started.elapsed() >= timeout => {
                 let _ = child.kill();
                 let _ = child.wait();
+                let _ = finish_reader(&exited, reader);
                 return None;
             }
             None => std::thread::sleep(Duration::from_millis(10)),
         }
     };
-    Some((status.success(), reader.join().ok()?))
+    Some((status.success(), finish_reader(&exited, reader)))
 }
 
 /// What login gives every shell of this user, whatever session started it:
@@ -773,6 +860,56 @@ mod tests {
         .unwrap();
         assert_eq!(answer, None);
         assert!(started.elapsed() < Duration::from_secs(5), "the sleep was left running");
+    }
+
+    #[test]
+    fn a_grandchild_holding_stdout_does_not_keep_the_login_question_waiting() {
+        let dir = tempfile::tempdir().unwrap();
+        let shell = shell_that_runs(dir.path());
+        let pidfile = dir.path().join("holder");
+        let script = format!("sleep 30 & echo $! > '{}'; printf done", pidfile.display());
+        let started = Instant::now();
+        let answer = run_login_shell(
+            dir.path(),
+            shell.to_str().unwrap(),
+            &afkconvoy_core::question::typed(&script),
+            Duration::from_secs(5),
+            &[(OsString::from("PATH"), OsString::from("/usr/bin:/bin"))],
+        )
+        .unwrap()
+        .unwrap();
+        if let Ok(pid) = std::fs::read_to_string(&pidfile) {
+            let _ = Command::new("kill").arg(pid.trim()).status();
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(8),
+            "the question waited {:?} after the shell exited",
+            started.elapsed()
+        );
+        let text = String::from_utf8_lossy(&answer);
+        assert!(text.contains("done"), "{text}");
+    }
+
+    #[test]
+    fn a_doctor_budget_starts_a_program_once() {
+        let _budget = budget_once();
+        let mut starts = 0;
+        let first = once_per_program("unit-probe", "login", || {
+            starts += 1;
+            (true, "ok".to_string())
+        });
+        let again = once_per_program("unit-probe", "login", || {
+            starts += 1;
+            (false, "again".to_string())
+        });
+        let other = once_per_program("unit-probe", "flags", || {
+            starts += 1;
+            (true, "flags".to_string())
+        });
+        assert!(matches!(first, Once::Ran(true, ref printed) if printed == "ok"));
+        assert!(matches!(again, Once::Ran(true, ref printed) if printed == "ok"));
+        assert!(matches!(other, Once::Already));
+        assert_eq!(starts, 1);
     }
 
     #[test]
