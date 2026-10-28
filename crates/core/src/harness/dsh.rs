@@ -3,10 +3,12 @@
 use flux_rs::attrs::*;
 use serde::{Deserialize, Deserializer};
 
-use super::{Kept, Link};
+use super::session::{self, json_lines};
+use super::{Kept, Link, SessionFile, SessionLayout};
 use crate::guard::Call;
 use crate::line::Line;
 use crate::role::Start;
+use crate::turn::{Marker, Note, Turn};
 
 pub(super) const KEY: &str = "dsh";
 pub(super) const NAME: &str = "DeepSeek Harness";
@@ -253,6 +255,61 @@ pub(super) fn call<'de, D: Deserializer<'de>>(described: D) -> Result<Call, D::E
         }
         _ => Call::Other,
     })
+}
+
+/// The harness directory under a user's home.
+pub(super) const HOME: &str = ".dsh";
+
+const SESSION_FILE: &str = "session.v4.jsonl.zstd";
+
+/// Where DeepSeek Harness keeps the session of `cwd`: one compressed file
+/// in each session directory under the worktree's directory.
+pub(super) fn session_layout(cwd: &str) -> SessionLayout {
+    SessionLayout::Named {
+        dir: format!("sessions/{}", session::wrapped_dir(cwd)),
+        name: SESSION_FILE,
+        compressed: true,
+    }
+}
+
+/// The turn `text` records. The worktree is the directory the file was in.
+/// DeepSeek Harness records no child session.
+pub(super) fn recorded_turn(_cwd: &str, text: &str, not_before: Option<u64>) -> Option<Turn> {
+    let notes: Vec<Note> = json_lines(text).filter_map(|value| note(&value)).collect();
+    session::turn_of(&notes, not_before)
+}
+
+fn note(value: &serde_json::Value) -> Option<Note> {
+    let at = session::epoch_number(value["time"].as_u64()?);
+    match value["type"].as_str()? {
+        "turn/start" => Some(Note { marker: Marker::Start, at, child: false }),
+        "turn/end" => Some(Note { marker: Marker::End, at, child: false }),
+        _ => None,
+    }
+}
+
+/// One session file a stand-in writes for this turn. The body is the text;
+/// it is stored compressed.
+pub(super) fn session_files(cwd: &str, open: bool, at: u64) -> Vec<SessionFile> {
+    let ms = at.saturating_mul(1000);
+    let mut body =
+        format!("{}\n", serde_json::json!({"type": "turn/start", "time": ms, "data": {"turn": 1}}));
+    if !open {
+        body.push_str(&format!(
+            "{}\n",
+            serde_json::json!({
+                "type": "turn/end",
+                "time": ms,
+                "data": {"turn": 1, "reason": {"kind": "completed"}}
+            })
+        ));
+    }
+    vec![SessionFile {
+        path: format!("sessions/{}/session-afkconvoy/{SESSION_FILE}", session::wrapped_dir(cwd)),
+        body,
+        compressed: true,
+        replaces: None,
+    }]
 }
 
 #[cfg(test)]
