@@ -1,6 +1,7 @@
 //! Recorded landings: proof-checked pushes and recovery from merge history.
 use crate::gh::Tracker;
-use crate::git::{REMOTE, Repo};
+use crate::git::Repo;
+use crate::remote::Push;
 use afkconvoy_core::gate::Proven;
 use afkconvoy_core::landing::{LandedPr, Logged, read_landings};
 use anyhow::{Result, bail};
@@ -15,8 +16,7 @@ pub fn push_base(repo: &Repo, branch: &str, commit: &str, proven: &Proven) -> Re
             proven.tree()
         );
     }
-    let to = format!("{commit}:refs/heads/{branch}");
-    Ok(repo.try_git(&["push", "--quiet", REMOTE, &to])?.ok)
+    Ok(repo.remote().try_push(&Push::set(commit, &format!("refs/heads/{branch}")))?.ok)
 }
 
 /// The joinings among the commits `revs` selects, oldest first, as the fleet
