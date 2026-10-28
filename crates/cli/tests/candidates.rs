@@ -470,7 +470,7 @@ fn semantic_blockers_hold_a_cancelled_successor_and_a_live_lock_blocks_a_waiting
     began(&world, "a");
     let bb = start(&world, &b, &world.cache(), 2);
     until(|| {
-        world.afk(&["doctor"]).json["host"]["exclusive"]["lanes"]["worker"]["waiting"]
+        world.afk(&["doctor"]).json["host"]["exclusive"]["waiting"]
             .as_array()
             .is_some_and(|w| !w.is_empty())
     });
