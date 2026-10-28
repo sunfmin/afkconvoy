@@ -558,6 +558,10 @@ fn worktree_list() -> Result<Value> {
     }
 }
 
+/// Forgets the worktree list, so the next read observes it again. A look
+/// begins through `look::begin`, which forgets every observation a look
+/// reads once. Creating or removing a worktree forgets this list alone:
+/// the look has not ended, and the other observations stay the ones already read.
 pub(crate) fn forget_worktrees() {
     *WORKTREES.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
 }
@@ -733,6 +737,10 @@ impl Worktree {
             args.extend(["--issue", number]);
         }
         let made = orca(&args)?;
+        // The list this look already read does not contain the worktree just
+        // created. A later question, including a host-runner move after the
+        // tick, has to see it.
+        forget_worktrees();
         let path = made["worktree"]["path"].as_str().map(PathBuf::from);
         let Some(path) = path.filter(|path| path.is_dir()) else {
             bail!("orca worktree create returned no usable path: {}", made["worktree"]["path"]);
@@ -1297,6 +1305,7 @@ impl Worktree {
         // directory, and no worktree is kept for that.
         let _ = worker_tmp::retire(&self.path);
         orca(&["worktree", "rm", "--worktree", &self.selector(), "--force"])?;
+        forget_worktrees();
         let _ = worker_tmp::reclaim();
         Ok(())
     }
