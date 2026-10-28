@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 
 use afkconvoy_core::layout::{Layout, Note};
 use anyhow::{Context, Result, bail};
@@ -25,9 +25,11 @@ pub struct Ran {
 #[derive(Debug, Clone)]
 pub struct Repo {
     pub dir: PathBuf,
-    /// What git said of this checkout that holds for as long as it is there,
-    /// and the remote refs this process has already read. Every copy of this
-    /// value shares both, so a fact is asked once.
+    /// What git said of this checkout that holds for as long as it is there.
+    /// Copies of this value share those facts. Remote reads are shared by
+    /// every checkout of the same git common dir, because a worktree's push
+    /// must drop the ref the parent checkout cached (`turn::certify` opens
+    /// the worktree with `Repo::new`).
     fixed: Arc<Fixed>,
 }
 
@@ -37,12 +39,21 @@ struct Fixed {
     common: OnceLock<PathBuf>,
     /// The empty tree's id in the repo's object format (`record_commit`).
     empty_tree: OnceLock<String>,
+    /// Remote reads of this checkout's repository, resolved on the first one.
+    reads: OnceLock<Arc<RemoteReads>>,
+}
+
+/// Remote refs and commit subjects this process has already read of one
+/// repository. Every worktree of that repository shares one, so a push from
+/// any of them drops the ref the others cached.
+#[derive(Debug, Default)]
+struct RemoteReads {
     /// Remote refs already read. A push of a ref, or a raw `git ls-remote`
     /// outside `listed`, drops what a later read must see again.
     seen: Mutex<Seen>,
     /// A commit's subject, by sha. The sha names the subject, so it stays.
     subjects: Mutex<HashMap<String, String>>,
-    /// Shas `bring` has already found present in this repo.
+    /// Shas `bring` has already found present. Objects live in the common store.
     present: Mutex<HashSet<String>>,
 }
 
@@ -146,6 +157,14 @@ impl Seen {
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// The reads of the repository `key` names. `key` is its absolute git common
+/// dir, so every worktree of it in this process is one entry.
+fn shared_reads(key: PathBuf) -> Arc<RemoteReads> {
+    static REPOS: LazyLock<Mutex<HashMap<PathBuf, Arc<RemoteReads>>>> =
+        LazyLock::new(|| Mutex::new(HashMap::new()));
+    lock(&REPOS).entry(key).or_default().clone()
 }
 
 /// The prefix a trailing-star pattern covers (`refs/heads/*` → `refs/heads/`).
@@ -269,10 +288,37 @@ impl Repo {
     /// once: a checkout's repo is the same one for as long as it is there.
     pub fn common_dir(&self) -> Result<&Path> {
         if self.fixed.common.get().is_none() {
-            let dir = self.git(&["rev-parse", "--path-format=absolute", "--git-common-dir"])?;
-            let _ = self.fixed.common.set(PathBuf::from(dir));
+            self.resolve_common()?;
         }
         Ok(self.fixed.common.get().expect("set above"))
+    }
+
+    /// The absolute git common dir. Asked through `run`, not `git`: `git`
+    /// notes a remote read, and resolving the reads would call this again.
+    fn resolve_common(&self) -> Result<PathBuf> {
+        if let Some(common) = self.fixed.common.get() {
+            return Ok(common.clone());
+        }
+        let args = ["rev-parse", "--path-format=absolute", "--git-common-dir"];
+        let ran = run(&self.dir, &args, &[])?;
+        if !ran.ok || ran.stdout.is_empty() {
+            bail!("git {} failed: {}", args.join(" "), ran.stderr.trim());
+        }
+        let dir = PathBuf::from(&ran.stdout);
+        let _ = self.fixed.common.set(dir);
+        Ok(self.fixed.common.get().expect("set above").clone())
+    }
+
+    /// This checkout's remote reads, shared with every worktree of its
+    /// repository. A checkout whose common dir cannot be read keeps its own.
+    fn reads(&self) -> Arc<RemoteReads> {
+        if let Some(reads) = self.fixed.reads.get() {
+            return Arc::clone(reads);
+        }
+        let key = self.resolve_common().unwrap_or_else(|_| self.dir.clone());
+        let reads = shared_reads(key);
+        let _ = self.fixed.reads.set(Arc::clone(&reads));
+        Arc::clone(self.fixed.reads.get().unwrap_or(&reads))
     }
 
     /// The main worktree of this checkout: where its `.git` directory is.
@@ -333,7 +379,13 @@ impl Repo {
     /// A call whose refs this cache cannot name drops every saved ref.
     fn note_remote(&self, args: &[&str]) {
         let Some(cmd) = args.first().copied() else { return };
-        let mut seen = lock(&self.fixed.seen);
+        if cmd != "ls-remote" && cmd != "push" {
+            return;
+        }
+        // Resolve the shared reads before taking `seen`. Resolving runs git,
+        // and that must not happen while `seen` is held.
+        let reads = self.reads();
+        let mut seen = lock(&reads.seen);
         if cmd == "ls-remote" {
             match refs_asked(args) {
                 None => seen.clear(),
@@ -388,12 +440,13 @@ impl Repo {
     /// Whether `sha` is a commit already in this repo. A sha that is here stays
     /// here, so a later bring does not ask again.
     fn object_here(&self, sha: &str) -> Result<bool> {
-        if lock(&self.fixed.present).contains(sha) {
+        let reads = self.reads();
+        if lock(&reads.present).contains(sha) {
             return Ok(true);
         }
         let ok = self.try_git(&["cat-file", "-e", &format!("{sha}^{{commit}}")])?.ok;
         if ok {
-            lock(&self.fixed.present).insert(sha.to_string());
+            lock(&reads.present).insert(sha.to_string());
         }
         Ok(ok)
     }
@@ -449,13 +502,23 @@ impl Repo {
         Ok(found.map(|listed| listed.sha))
     }
 
+    /// The sha the remote has for one ref now, even when this process listed
+    /// it. A check that another process can move the ref — a source branch
+    /// while a candidate is validating — uses this. The saved listing would
+    /// still say what it said when this process read it.
+    pub(crate) fn remote_sha_now(&self, refname: &str) -> Result<Option<String>> {
+        self.note_remote(&["ls-remote", REMOTE, refname]);
+        self.remote_sha(refname)
+    }
+
     /// Every ref the remote has that matches one of `patterns` — a ref's
     /// name, or `<namespace>/*` — in one call, with no record read yet. An
     /// exact ref already listed is answered from that listing. An error when
     /// the remote cannot be read.
     fn listed(&self, patterns: &[&str]) -> Result<Vec<RemoteRecord>> {
         if !patterns.is_empty() && patterns.iter().copied().all(is_exact) {
-            let seen = lock(&self.fixed.seen);
+            let reads = self.reads();
+            let seen = lock(&reads.seen);
             let mut records = Vec::new();
             for pattern in patterns {
                 match seen.answer(pattern) {
@@ -497,7 +560,7 @@ impl Repo {
                 subject: String::new(),
             })
             .collect::<Vec<_>>();
-        lock(&self.fixed.seen).remember(&records, patterns);
+        lock(&self.reads().seen).remember(&records, patterns);
         Ok(records)
     }
 
@@ -583,8 +646,9 @@ impl Repo {
     /// the subject.
     fn subjects(&self, records: &[RemoteRecord]) -> Result<Option<HashMap<String, String>>> {
         let mut missing = Vec::new();
+        let reads = self.reads();
         {
-            let known = lock(&self.fixed.subjects);
+            let known = lock(&reads.subjects);
             for record in records {
                 if !known.contains_key(&record.sha) && !missing.contains(&record.sha.as_str()) {
                     missing.push(record.sha.as_str());
@@ -606,7 +670,7 @@ impl Repo {
             .filter_map(|row| row.split_once('\t'))
             .map(|(sha, subject)| (sha.to_string(), subject.to_string()))
             .collect();
-        let mut known = lock(&self.fixed.subjects);
+        let mut known = lock(&reads.subjects);
         for (sha, subject) in &found {
             known.entry(sha.clone()).or_insert_with(|| subject.clone());
         }
@@ -832,5 +896,52 @@ mod tests {
             refs_asked(&["ls-remote", "origin", "refs/convoy/candidates/main", "refs/heads/main"]),
             Some(vec!["refs/convoy/candidates/main".into(), "refs/heads/main".into()])
         );
+    }
+
+    /// `turn::certify` pushes the gate record from a worktree `Repo::new` opened
+    /// beside the checkout that cached the ref's absence. Both are one repository,
+    /// so the parent sees the push.
+    #[test]
+    fn a_worktree_push_drops_the_ref_the_parent_cached() {
+        let root = tempfile::tempdir().unwrap();
+        let bare = root.path().join("remote.git");
+        let main = root.path().join("main");
+        let wt = root.path().join("wt");
+        let git = |dir: &Path, args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .current_dir(dir)
+                .args(args)
+                .env("GIT_AUTHOR_NAME", "afkconvoy")
+                .env("GIT_AUTHOR_EMAIL", "afkconvoy@localhost")
+                .env("GIT_COMMITTER_NAME", "afkconvoy")
+                .env("GIT_COMMITTER_EMAIL", "afkconvoy@localhost")
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "git {} in {}: {}",
+                args.join(" "),
+                dir.display(),
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        git(root.path(), &["init", "--bare", bare.to_str().unwrap()]);
+        git(root.path(), &["init", "-b", "main", main.to_str().unwrap()]);
+        git(&main, &["config", "maintenance.auto", "false"]);
+        git(&main, &["remote", "add", "origin", bare.to_str().unwrap()]);
+        git(&main, &["commit", "--allow-empty", "-m", "init"]);
+        git(&main, &["worktree", "add", "--detach", wt.to_str().unwrap(), "HEAD"]);
+
+        let parent = Repo::new(main);
+        let child = Repo::new(wt);
+        assert_eq!(parent.common_dir().unwrap(), child.common_dir().unwrap());
+        let gate = "refs/convoy/gate/x";
+        assert_eq!(parent.remote_sha(gate).unwrap(), None);
+
+        let sha = child.record_commit("green").unwrap();
+        let spec = format!("{sha}:{gate}");
+        let pushed = child.try_git(&["push", "--quiet", "--force", "origin", &spec]).unwrap();
+        assert!(pushed.ok, "{}", pushed.stderr);
+        assert_eq!(parent.remote_sha(gate).unwrap().as_deref(), Some(sha.as_str()));
     }
 }
