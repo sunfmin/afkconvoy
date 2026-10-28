@@ -69,10 +69,12 @@ fn segment(text: &str) -> String {
 static HOSTS: Mutex<BTreeMap<PathBuf, String>> = Mutex::new(BTreeMap::new());
 static SCOPES: Mutex<BTreeMap<String, Result<Scope, String>>> = Mutex::new(BTreeMap::new());
 static OBSERVED: Mutex<BTreeSet<PathBuf>> = Mutex::new(BTreeSet::new());
+/// One `rate_limit` body, read once and shared with the next ask in this look.
+type RateOnce = Arc<OnceLock<Result<String, String>>>;
+
 /// One `rate_limit` body per host in this look. `observe` and an env-token
 /// login both read the note; the second of them uses this body.
-static RATES: Mutex<BTreeMap<String, Arc<OnceLock<Result<String, String>>>>> =
-    Mutex::new(BTreeMap::new());
+static RATES: Mutex<BTreeMap<String, RateOnce>> = Mutex::new(BTreeMap::new());
 
 /// Forgets the quota note, so the next read may observe it once. A look
 /// begins through `look::begin`. A process that is one look — `doctor` —

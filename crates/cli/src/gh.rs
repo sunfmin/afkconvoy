@@ -217,10 +217,12 @@ fn carrying_labels(tracker: &Tracker, label: &str) -> String {
     }
 }
 
+/// One HEAD sha, read once and shared with the next ask in this look.
+type HeadOnce = Arc<OnceLock<Result<String, String>>>;
+
 /// One HEAD sha per repo in this look. `forget_heads` drops them. A process
 /// that is one look — `doctor` — never forgets them and reads each HEAD once.
-static HEADS: Mutex<BTreeMap<String, Arc<OnceLock<Result<String, String>>>>> =
-    Mutex::new(BTreeMap::new());
+static HEADS: Mutex<BTreeMap<String, HeadOnce>> = Mutex::new(BTreeMap::new());
 
 /// Forgets every repo HEAD, so the next read observes it again. A look begins
 /// through `look::begin`.

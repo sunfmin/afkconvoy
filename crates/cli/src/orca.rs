@@ -536,9 +536,12 @@ pub(crate) fn forget_listing() {
     *REPOS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
 }
 
+/// Orca's worktree list, read once and shared with the next ask in this look.
+type WorktreesOnce = Arc<OnceLock<Result<Value, String>>>;
+
 /// Orca's worktree list, one read for this look. A second ask waits on the
 /// first instead of listing again. The lock is not held across `orca`.
-static WORKTREES: Mutex<Option<Arc<OnceLock<Result<Value, String>>>>> = Mutex::new(None);
+static WORKTREES: Mutex<Option<WorktreesOnce>> = Mutex::new(None);
 
 fn worktree_list() -> Result<Value> {
     let cell = {
