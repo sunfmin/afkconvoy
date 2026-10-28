@@ -35,6 +35,9 @@ const AS_JSON: &str = " --output-format stream-json";
 
 const USER_DIR: &str = "KIMI_CODE_HOME";
 pub(super) const TRUST: &str = "KIMI_CODE_TRUST_WORKSPACE=1";
+/// Its worktree trust is a variable, not flags: outside a role a launch
+/// adds no flag the command must take.
+pub(super) const TRUST_IS_FLAGS: bool = false;
 pub(super) const ENVIRONMENT: [&str; 3] =
     ["KIMI_CODE_TRUST_WORKSPACE", "KIMI_CODE_NO_AUTO_UPDATE", "KIMI_DISABLE_TELEMETRY"];
 const HOST_SKILLS: [&str; 2] = ["kimi-skills", "agent-skills"];

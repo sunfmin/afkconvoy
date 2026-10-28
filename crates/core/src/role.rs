@@ -139,7 +139,7 @@ pub fn due<'t>(
         Err(why) if team.flows(labels).is_empty() => return Due::Nothing(why),
         Err(why) => return Due::Human(why),
     };
-    let position = history(workflow, records).place.position;
+    let position = history(workflow, records.to_vec()).place.position;
     if let Some((stage, work)) = position.start() {
         return Due::Worker(Entry { workflow, stage, work, role: team.role_of(work) });
     }

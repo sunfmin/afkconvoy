@@ -31,6 +31,9 @@ pub(super) const MODEL: &str = "--model";
 /// On the launch line. Grok 1.0.70 accepts it and `--help` does not name it,
 /// so it is not one of `FLAGS`: the flag check does not require `--help` to.
 pub(super) const TRUST: &str = "--trust";
+/// `TRUST` is a flag `--help` does not name, and not one of `FLAGS`: outside
+/// a role a launch adds no flag it checks the command takes.
+pub(super) const TRUST_IS_FLAGS: bool = false;
 /// `--add-dir` is not one of these. Grok 1.0.60 and later reject
 /// `additionalDirectories` on session create, so the fleet never passes it
 /// (ADR-0043). A command must take `--model`.

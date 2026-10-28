@@ -1,12 +1,16 @@
-//! Bounded observation, rule and Jev classification, operator fallback and
-//! continuation of stalled workers. Health is host-local evidence, never
-//! another preference. Only kit order chooses successors.
+//! Bounded observation, operator fallback and continuation of stalled
+//! workers. This supplies the evidence `afkconvoy_core::worker_health`
+//! decides on and carries its decision out: it keeps no table of its own.
+//! Health is host-local evidence, never another preference. Only kit order
+//! chooses successors.
 use std::fs::OpenOptions;
 use std::path::PathBuf;
 
 use afkconvoy_core::harness::Harness;
 use afkconvoy_core::plan::{Status, WorkingSet};
 use afkconvoy_core::worker::WorkerState;
+pub use afkconvoy_core::worker_health::{Action, Class, Scope};
+use afkconvoy_core::worker_health::{Decision, Evidence};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -28,27 +32,11 @@ pub const MAX_CONTINUATIONS: u32 = 3;
 pub const RECOVERY_SECONDS: u64 = 3600;
 pub const MAX_QUOTA_WAIT_SECONDS: u64 = RECOVERY_SECONDS;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Scope {
-    Account,
-    Model,
-    Worker,
-}
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Action {
-    Wait,
-    Retry,
-    Continue,
-    Unknown,
-    Complete,
-}
-
-/// The class a rule or Jev's table gives a stopped worker, and what the
-/// fleet does with it. Evidence quotes an actual observation; a confidence
-/// number is deliberately not part of it.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// The decision on a stopped worker, as its book keeps it. Evidence quotes
+/// an actual observation; a confidence number is deliberately not part of
+/// it. The class is kept as its word, so a book an older version wrote with
+/// a class no decision gives now is still read.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Diagnosis {
     pub status: String,
@@ -59,28 +47,51 @@ pub struct Diagnosis {
     pub missing: Vec<String>,
     pub retry_after: Option<u64>,
 }
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 struct Book {
     workers: Vec<Observed>,
     faults: Vec<Fault>,
     #[serde(default)]
     capacity_stops: std::collections::BTreeMap<String, u64>,
     #[serde(default)]
-    observations_failed: Vec<(PathBuf, String, u64)>,
+    observations_failed: Vec<FailedObservation>,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct Fault {
+
+/// An observation of the worker in `path` that failed with `error`, retried
+/// at `retry_at`. It is written as the triple `[path, error, retry_at]`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "(PathBuf, String, u64)", into = "(PathBuf, String, u64)")]
+pub struct FailedObservation {
+    pub path: PathBuf,
+    pub error: String,
+    pub retry_at: u64,
+}
+impl From<(PathBuf, String, u64)> for FailedObservation {
+    fn from((path, error, retry_at): (PathBuf, String, u64)) -> Self {
+        FailedObservation { path, error, retry_at }
+    }
+}
+impl From<FailedObservation> for (PathBuf, String, u64) {
+    fn from(failed: FailedObservation) -> Self {
+        (failed.path, failed.error, failed.retry_at)
+    }
+}
+
+/// A harness, or one of its models, left out of selection on its evidence
+/// until its probe answers.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Fault {
     #[serde(deserialize_with = "crate::kit::harness")]
-    harness: Harness,
+    pub harness: Harness,
     #[serde(default)]
     command_key: Option<String>,
-    model: Option<String>,
-    scope: Scope,
+    pub model: Option<String>,
+    pub scope: Scope,
     since: u64,
-    next_check: u64,
-    evidence: Vec<String>,
+    pub next_check: u64,
+    pub evidence: Vec<String>,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct Snapshot {
     at: u64,
     source: String,
@@ -90,29 +101,30 @@ struct Snapshot {
 
 /// One session's capacity episode. A pending wait is counted once; only a
 /// nudge whose receipt proves a new turn allows another stop to count.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 struct Capacity {
     stops: u32,
     retry_at: Option<u64>,
     healthy_since: Option<u64>,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct Observed {
-    path: PathBuf,
-    terminal: String,
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Observed {
+    pub path: PathBuf,
+    pub terminal: String,
     #[serde(deserialize_with = "crate::kit::harness")]
     harness: Harness,
     #[serde(default)]
-    recorded_harness: Option<String>,
+    pub recorded_harness: Option<String>,
     #[serde(default)]
-    harness_mismatch: bool,
+    pub harness_mismatch: bool,
+    /// Orca's record of the worker's terminal, as Orca answered it.
     #[serde(default)]
-    orca: Value,
+    pub orca: Value,
     #[serde(default)]
     command_key: Option<String>,
     model: Option<String>,
     snapshots: Vec<Snapshot>,
-    next_check: u64,
+    pub next_check: u64,
     rate_retries: u32,
     #[serde(default)]
     capacity: Option<Capacity>,
@@ -122,16 +134,16 @@ struct Observed {
     failed_candidates: Vec<(String, u64)>,
     #[serde(default)]
     window_started: u64,
-    diagnosis: Option<Diagnosis>,
+    pub diagnosis: Option<Diagnosis>,
     /// The latest check's request to Jev and TypeSafe's response.
     #[serde(default)]
     judgment: Option<Value>,
     #[serde(default)]
-    operator_reason: Option<String>,
-    source: String,
-    action: String,
-    successor: Option<String>,
-    error: Option<String>,
+    pub operator_reason: Option<String>,
+    pub source: String,
+    pub action: String,
+    pub successor: Option<String>,
+    pub error: Option<String>,
 }
 
 /// A non-secret identity for the launch command/profile. Faults observed on
@@ -161,60 +173,197 @@ fn store(book: &Book) -> Result<()> {
     Ok(std::fs::rename(temporary, file)?)
 }
 
-/// Exposes evidence and pending actions to every read-only surface.
-pub fn show() -> Value {
-    match read() {
-        Ok(book) => {
-            // The since is the worktree's stamp, read here. The observation
-            // keeps none: a copy cleared when the turn opened disagreed with it.
-            let mut value = json!({"workers": book.workers, "faults": book.faults, "observations_failed":book.observations_failed,
-            "observe_seconds": OBSERVE_SECONDS, "check_seconds": CHECK_SECONDS,
-            "max_rate_retries": MAX_RATE_RETRIES,
-            "capacity_stops": book.capacity_stops,
-            "capacity_wait_seconds": CAPACITY_WAIT_SECONDS,
-            "max_capacity_stops": MAX_CAPACITY_STOPS,
-            "capacity_healthy_seconds": CAPACITY_HEALTHY_SECONDS,
-            "max_quota_wait_seconds": MAX_QUOTA_WAIT_SECONDS});
-            if let Some(rows) = value["workers"].as_array_mut() {
-                for row in rows {
-                    if row["action"] != "waiting for background work" {
-                        continue;
-                    }
-                    let Some(path) = row["path"].as_str() else { continue };
-                    let since = Worktree::at(PathBuf::from(path), String::new()).background_at();
-                    if let Some(since) = since {
-                        row["background"] = json!(since);
-                    }
-                }
-            }
-            value
+/// Worker health as every read-only surface reads it: each worker observed,
+/// each fault, each failed observation and the bounds they are kept by. Its
+/// JSON is only its serialisation.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Health {
+    pub workers: Vec<Worker>,
+    pub faults: Vec<Fault>,
+    pub observations_failed: Vec<FailedObservation>,
+    observe_seconds: u64,
+    check_seconds: u64,
+    max_rate_retries: u32,
+    capacity_stops: std::collections::BTreeMap<String, u64>,
+    capacity_wait_seconds: u64,
+    max_capacity_stops: u32,
+    capacity_healthy_seconds: u64,
+    max_quota_wait_seconds: u64,
+}
+
+/// One worker as worker health observed it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Worker {
+    #[serde(flatten)]
+    pub observed: Observed,
+    /// Since when it has waited for background work, by its worktree's stamp.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background: Option<u64>,
+}
+
+/// A worker whose health check waits for the operator: why, the last line
+/// its screen showed, and what fixes it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OperatorWait {
+    pub worker: PathBuf,
+    pub reason: String,
+    pub screen_line: String,
+    pub fix: String,
+}
+
+/// An observation past its time and past a tick's chance to make it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Overdue {
+    /// The worker's next observation, due at `due`, is still waiting.
+    Waiting { path: PathBuf, due: u64, error: Option<String> },
+    /// The worker's observation failed with `error`, and its retry is overdue.
+    Retry { path: PathBuf, error: String },
+}
+
+/// How long past its time an observation is left to a tick: the sleep and
+/// the time of the last tick of the fleet instance whose claim holds its
+/// worktree. A worktree no claim holds gets the longest any instance says;
+/// with none said, there is no grace.
+#[derive(Debug, Clone, Default)]
+pub struct Cadence {
+    of_worktree: std::collections::BTreeMap<PathBuf, u64>,
+    longest: u64,
+}
+impl Cadence {
+    /// A fleet instance that sleeps `sleep` between ticks, whose last tick
+    /// took `took`, holding claims on `worktrees`.
+    pub fn instance(
+        &mut self,
+        sleep: u64,
+        took: u64,
+        worktrees: impl IntoIterator<Item = PathBuf>,
+    ) {
+        let cadence = sleep.saturating_add(took);
+        self.longest = self.longest.max(cadence);
+        for worktree in worktrees {
+            self.of_worktree.insert(worktree, cadence);
         }
-        Err(e) => json!({"error": format!("{e:#}")}),
+    }
+
+    fn grace(&self, path: &std::path::Path) -> u64 {
+        self.of_worktree.get(path).copied().unwrap_or(self.longest)
     }
 }
 
-/// The workers whose health check is waiting for the operator: quiet past
-/// the observation bound, and classed by no rule or settled judgment. Each
-/// carries the reason, its terminal and the last line its screen showed, for
-/// `doctor` and the watch.
-pub fn waiting_for_operator() -> Vec<Value> {
-    let Ok(book) = read() else { return vec![] };
-    book.workers
-        .into_iter()
-        .filter(|worker| worker.action == "waiting for operator")
-        .map(|worker| {
-            let screen_line = worker
-                .snapshots
-                .last()
-                .and_then(|snapshot| {
-                    snapshot.output.iter().rev().find(|line| !line.trim().is_empty())
-                })
-                .cloned()
-                .unwrap_or_default();
-            json!({"worker": worker.path, "terminal": worker.terminal,
-                "reason": worker.operator_reason, "screen_line": screen_line})
+impl Health {
+    /// Every observation past its time by more than its tick's grace at
+    /// `now`: the waiting workers first, then the failed observations.
+    pub fn overdue(&self, cadence: &Cadence, now: u64) -> Vec<Overdue> {
+        let missed =
+            |path: &std::path::Path, due: u64| due.saturating_add(cadence.grace(path)) <= now;
+        let waiting = self
+            .workers
+            .iter()
+            .map(|worker| &worker.observed)
+            .filter(|worker| missed(&worker.path, worker.next_check));
+        let failed =
+            self.observations_failed.iter().filter(|failed| missed(&failed.path, failed.retry_at));
+        waiting
+            .map(|worker| Overdue::Waiting {
+                path: worker.path.clone(),
+                due: worker.next_check,
+                error: worker.error.clone(),
+            })
+            .chain(failed.map(|failed| Overdue::Retry {
+                path: failed.path.clone(),
+                error: failed.error.clone(),
+            }))
+            .collect()
+    }
+}
+
+impl Observed {
+    /// Where its health check waits for the operator: quiet past the
+    /// observation bound, and classed by no rule or settled judgment. With
+    /// a Jev key command (`keyed`) the screen is the operator's to read;
+    /// without one, the fix names one.
+    fn operator_wait(&self, keyed: bool) -> Option<OperatorWait> {
+        if self.action != "waiting for operator" {
+            return None;
+        }
+        let screen_line = self
+            .snapshots
+            .last()
+            .and_then(|snapshot| snapshot.output.iter().rev().find(|line| !line.trim().is_empty()))
+            .cloned()
+            .unwrap_or_default();
+        let fix = if keyed {
+            format!("orca terminal read --terminal {} --screen", self.terminal)
+        } else {
+            "afkconvoy run --jev-key-command '<command>'".into()
+        };
+        Some(OperatorWait {
+            worker: self.path.clone(),
+            reason: self.operator_reason.clone().unwrap_or_default(),
+            screen_line,
+            fix,
         })
-        .collect()
+    }
+}
+
+/// Worker health as it is, for every read-only surface; why it cannot be
+/// read.
+pub fn show() -> Result<Health, String> {
+    let book = read().map_err(|e| format!("{e:#}"))?;
+    let workers = book
+        .workers
+        .into_iter()
+        .map(|observed| {
+            // The since is the worktree's stamp, read here. The observation
+            // keeps none: a copy cleared when the turn opened disagreed with it.
+            let background = (observed.action == "waiting for background work")
+                .then(|| Worktree::at(observed.path.clone(), String::new()).background_at())
+                .flatten();
+            Worker { observed, background }
+        })
+        .collect();
+    Ok(Health {
+        workers,
+        faults: book.faults,
+        observations_failed: book.observations_failed,
+        observe_seconds: OBSERVE_SECONDS,
+        check_seconds: CHECK_SECONDS,
+        max_rate_retries: MAX_RATE_RETRIES,
+        capacity_stops: book.capacity_stops,
+        capacity_wait_seconds: CAPACITY_WAIT_SECONDS,
+        max_capacity_stops: MAX_CAPACITY_STOPS,
+        capacity_healthy_seconds: CAPACITY_HEALTHY_SECONDS,
+        max_quota_wait_seconds: MAX_QUOTA_WAIT_SECONDS,
+    })
+}
+
+/// What `show` answers, as JSON: {"error"} where worker health cannot be read.
+pub fn json(shown: &Result<Health, String>) -> Value {
+    match shown {
+        Ok(health) => json!(health),
+        Err(error) => json!({"error": error}),
+    }
+}
+
+/// The workers whose health check is waiting for the operator, each with
+/// the reason, the last line its screen showed and its fix, for `doctor`.
+pub fn waiting_for_operator() -> Vec<OperatorWait> {
+    let Ok(book) = read() else { return vec![] };
+    let keyed =
+        crate::host_settings::of_host().is_ok_and(|settings| settings.jev_key_command.is_some());
+    book.workers.iter().filter_map(|worker| worker.operator_wait(keyed)).collect()
+}
+
+/// Whether the host kit's paused list or its worker-health faults leave no
+/// harness a watch can start on.
+pub fn no_harness_for_watch() -> bool {
+    let paused = !crate::paused::read().is_empty();
+    let faults = read().is_ok_and(|book| !book.faults.is_empty());
+    if !paused && !faults {
+        return false;
+    }
+    watch_candidates().map(|candidates| candidates.is_empty()).unwrap_or(true)
 }
 
 /// Removes only faults proved at account/model scope. A single stuck session
@@ -362,15 +511,7 @@ pub(crate) fn watch_diagnosis(
 /// A session that exited with a failure: its harness failed it, and is held
 /// to have failed that session alone.
 pub fn failed(evidence: Vec<String>) -> Diagnosis {
-    Diagnosis {
-        status: "fault".into(),
-        class: "failed".into(),
-        scope: Scope::Worker,
-        evidence,
-        action: Action::Continue,
-        missing: vec![],
-        retry_after: None,
-    }
+    decided(Evidence::Exited(&evidence)).expect("an exit is always decided")
 }
 
 /// The latest delivery failure, kept beside the worker's brief.
@@ -400,42 +541,36 @@ pub fn has_signal(worktree: &Worktree) -> Result<bool> {
     Ok(!error_of(worktree)?.is_empty())
 }
 
-fn quota(evidence: String) -> Diagnosis {
-    Diagnosis {
-        status: "fault".into(),
-        class: "quota".into(),
-        scope: Scope::Account,
-        evidence: vec![evidence],
-        action: Action::Continue,
-        missing: vec![],
-        retry_after: None,
+impl Diagnosis {
+    /// Whether the decision was `class`.
+    pub fn is(&self, class: Class) -> bool {
+        self.class == class.key()
     }
 }
 
+impl From<Decision> for Diagnosis {
+    fn from(decision: Decision) -> Diagnosis {
+        Diagnosis {
+            status: decision.status().into(),
+            class: decision.class.key().into(),
+            scope: decision.scope,
+            evidence: decision.evidence,
+            action: decision.action,
+            missing: vec![],
+            retry_after: decision.retry_after,
+        }
+    }
+}
+
+/// What the one decision makes of words, an error or an exit: none of them
+/// is ever unsettled, only unrecognized.
+fn decided(evidence: Evidence) -> Option<Diagnosis> {
+    afkconvoy_core::worker_health::decide(evidence).ok().flatten().map(Diagnosis::from)
+}
+
+/// The harness's own words on its screen.
 fn terminal_rule(harness: Harness, output: &[String]) -> Option<Diagnosis> {
-    if let Some(evidence) = harness.task_refusal(output) {
-        return Some(Diagnosis {
-            status: "fault".into(),
-            class: "refusal".into(),
-            scope: Scope::Worker,
-            evidence: vec![evidence],
-            action: Action::Continue,
-            missing: vec![],
-            retry_after: None,
-        });
-    }
-    if let Some(evidence) = harness.capacity_stop(output) {
-        return Some(Diagnosis {
-            status: "stopped".into(),
-            class: "capacity".into(),
-            scope: Scope::Worker,
-            evidence: vec![evidence],
-            action: Action::Retry,
-            missing: vec![],
-            retry_after: None,
-        });
-    }
-    harness.account_quota(output).map(quota)
+    decided(Evidence::Words { harness, lines: output })
 }
 
 /// Conservative structured/error classification. Plain terminal text goes to
@@ -446,63 +581,7 @@ fn classified(value: &Value) -> Option<Diagnosis> {
 }
 
 fn classified_for(harness: Option<Harness>, value: &Value) -> Option<Diagnosis> {
-    let retry = value
-        .get("retry_after")
-        .or_else(|| value.get("retryAfter"))
-        .or_else(|| value.pointer("/headers/Retry-After"))
-        .or_else(|| value.pointer("/headers/retry-after"))
-        .and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok())));
-    if let Some(fields) = value.as_object() {
-        for (key, nested) in fields {
-            if key != "code"
-                && let Some(found) = classified_for(harness, nested)
-            {
-                return Some(Diagnosis { retry_after: retry.or(found.retry_after), ..found });
-            }
-        }
-    }
-    if let Some(items) = value.as_array() {
-        for item in items {
-            if let Some(found) = classified_for(harness, item) {
-                return Some(found);
-            }
-        }
-    }
-    if let Some(text) = value.as_str() {
-        if let Some(harness) = harness
-            && let Some(evidence) = harness.account_quota(&[text.to_string()])
-        {
-            return Some(quota(evidence));
-        }
-        if let Ok(parsed) = serde_json::from_str::<Value>(text) {
-            return classified_for(harness, &parsed);
-        }
-    }
-    let code = value.get("code").and_then(Value::as_str)?;
-    let (class, scope, action) = match code {
-        "insufficient_quota" | "usage_limit_reached" | "quota_exceeded" => {
-            ("quota", Scope::Account, Action::Continue)
-        }
-        "authentication_error" | "invalid_api_key" | "login_required" | "token_expired" => {
-            ("authentication", Scope::Account, Action::Continue)
-        }
-        "organization_disabled" | "account_disabled" | "service_disabled" => {
-            ("disabled", Scope::Account, Action::Continue)
-        }
-        "model_not_found" | "model_unavailable" => ("model", Scope::Model, Action::Continue),
-        "rate_limit_exceeded" | "too_many_requests" => ("rate_limit", Scope::Worker, Action::Retry),
-        "session_error" | "session_corrupted" => ("session", Scope::Worker, Action::Continue),
-        _ => return None,
-    };
-    Some(Diagnosis {
-        status: "fault".into(),
-        class: class.into(),
-        scope,
-        evidence: vec![code.into()],
-        action,
-        missing: vec![],
-        retry_after: retry,
-    })
+    decided(Evidence::Error { harness, error: value })
 }
 
 /// A tick's issue workers being observed, judged or held for the operator.
@@ -512,7 +591,7 @@ pub fn holding(worktree: &Worktree) -> bool {
         return true;
     }
     read().map_or(true, |book| {
-        book.observations_failed.iter().any(|(path, _, _)| *path == worktree.path)
+        book.observations_failed.iter().any(|failed| failed.path == worktree.path)
             || book.workers.iter().any(|o| {
                 o.path == worktree.path && !["healthy", "continued"].contains(&o.action.as_str())
             })
@@ -571,7 +650,7 @@ pub fn reconcile(
         .workers
         .iter()
         .map(|worker| worker.path.clone())
-        .chain(book.observations_failed.iter().map(|(path, _, _)| path.clone()))
+        .chain(book.observations_failed.iter().map(|failed| failed.path.clone()))
         .collect();
     let gone: std::collections::BTreeSet<_> = paths
         .into_iter()
@@ -582,7 +661,7 @@ pub fn reconcile(
         })
         .collect();
     book.workers.retain(|worker| !gone.contains(&worker.path));
-    book.observations_failed.retain(|(path, _, _)| !gone.contains(path));
+    book.observations_failed.retain(|failed| !gone.contains(&failed.path));
     let kit = crate::kit::load()?;
     probe_due(&mut book, &kit, fleet.now);
     store(&book)?;
@@ -598,7 +677,7 @@ pub fn reconcile(
         }) {
             if let Some(worktree) = Worktree::of_issue(&source, claim.number)? {
                 book.workers.retain(|o| o.path != worktree.path);
-                book.observations_failed.retain(|(path, _, _)| *path != worktree.path);
+                book.observations_failed.retain(|failed| failed.path != worktree.path);
             }
             continue;
         }
@@ -628,7 +707,7 @@ pub fn reconcile(
             && crate::lock::explaining_lock(&fleet.gh, &fleet.config, Some(at))?.is_some()
         {
             book.workers.retain(|o| o.path != worktree.path);
-            book.observations_failed.retain(|(path, _, _)| *path != worktree.path);
+            book.observations_failed.retain(|failed| failed.path != worktree.path);
             continue;
         }
         let busy_without_fault = worktree.agent_report()?.is_null()
@@ -639,7 +718,7 @@ pub fn reconcile(
             book.workers.iter().any(|o| o.path == worktree.path && o.capacity.is_some());
         if state == WorkerState::Gone || (busy_without_fault && !capacity_episode) {
             book.workers.retain(|o| o.path != worktree.path);
-            book.observations_failed.retain(|(path, _, _)| *path != worktree.path);
+            book.observations_failed.retain(|failed| failed.path != worktree.path);
             continue;
         }
         let comments = open.issues.comments(claim.number);
@@ -649,7 +728,7 @@ pub fn reconcile(
         });
         if prohibited_work {
             book.workers.retain(|o| o.path != worktree.path);
-            book.observations_failed.retain(|(path, _, _)| *path != worktree.path);
+            book.observations_failed.retain(|failed| failed.path != worktree.path);
             continue;
         }
         let verdict = afkconvoy_core::verdict::latest_verdict(bodies());
@@ -663,7 +742,7 @@ pub fn reconcile(
         };
         if declared {
             book.workers.retain(|o| o.path != worktree.path);
-            book.observations_failed.retain(|(path, _, _)| *path != worktree.path);
+            book.observations_failed.retain(|failed| failed.path != worktree.path);
             continue;
         }
         jobs.push((Some(claim.number), None, worktree));
@@ -688,7 +767,7 @@ pub fn reconcile(
     // Automatic casting is gone. An old caster worktree is not a worker.
     if let Some(worktree) = Worktree::named(&source, afkconvoy_core::casting::CASTER_WORKTREE)? {
         book.workers.retain(|worker| worker.path != worktree.path);
-        book.observations_failed.retain(|(path, _, _)| *path != worktree.path);
+        book.observations_failed.retain(|failed| failed.path != worktree.path);
     }
     let mut events = vec![];
     for (issue, patrol, worktree) in jobs {
@@ -696,14 +775,14 @@ pub fn reconcile(
             observe(&mut book, fleet, me, agent, &kit, issue, patrol.as_deref(), &worktree);
         if let Err(e) = handled {
             events.push(json!({"worktree": worktree.path, "error": format!("{e:#}")}));
-            book.observations_failed.retain(|(path, _, _)| *path != worktree.path);
-            book.observations_failed.push((
-                worktree.path.clone(),
-                format!("{e:#}"),
-                fleet.now.saturating_add(CHECK_SECONDS),
-            ));
+            book.observations_failed.retain(|failed| failed.path != worktree.path);
+            book.observations_failed.push(FailedObservation {
+                path: worktree.path.clone(),
+                error: format!("{e:#}"),
+                retry_at: fleet.now.saturating_add(CHECK_SECONDS),
+            });
         } else {
-            book.observations_failed.retain(|(path, _, _)| *path != worktree.path);
+            book.observations_failed.retain(|failed| failed.path != worktree.path);
         }
         store(&book)?;
     }
@@ -724,7 +803,7 @@ fn observe(
 ) -> Result<()> {
     let Some(terminal) = worktree.terminal()? else {
         book.workers.retain(|o| o.path != worktree.path);
-        book.observations_failed.retain(|(path, _, _)| *path != worktree.path);
+        book.observations_failed.retain(|failed| failed.path != worktree.path);
         return Ok(());
     };
     let state = worktree.state(fleet.now)?;
@@ -948,7 +1027,7 @@ fn escalate_observed(
         "error": observed.error,
         "snapshots": observed.snapshots,
     }))?;
-    let why = if observed.diagnosis.as_ref().is_some_and(|d| d.class == "refusal") {
+    let why = if observed.diagnosis.as_ref().is_some_and(|d| d.is(Class::Refusal)) {
         "No eligible harness remains for this issue after task refusal."
     } else {
         "The worker's fault remained unresolved for one hour on unchanged evidence."
@@ -956,7 +1035,7 @@ fn escalate_observed(
     let reason = format!(
         "{why} The fleet preserved its work and handed the issue to a human with this evidence:\n\n```json\n{evidence}\n```"
     );
-    if observed.diagnosis.as_ref().is_some_and(|d| d.class == "refusal") {
+    if observed.diagnosis.as_ref().is_some_and(|d| d.is(Class::Refusal)) {
         if let Some(claim) = crate::judge::mine(fleet, me, issue)? {
             let worktree = Worktree::of_issue(&Source::of(&fleet.repo)?, issue)?;
             let pr =
@@ -994,28 +1073,6 @@ fn wait_for_operator(
         .saturating_add(CHECK_SECONDS)
         .min(observed.window_started.saturating_add(RECOVERY_SECONDS));
     Ok(())
-}
-
-impl From<afkconvoy_core::worker_health::Decision> for Diagnosis {
-    fn from(decision: afkconvoy_core::worker_health::Decision) -> Diagnosis {
-        use afkconvoy_core::worker_health::{Action as Does, Scope as Over};
-        Diagnosis {
-            status: if decision.action == Does::Continue { "fault" } else { "observed" }.into(),
-            class: decision.class.into(),
-            scope: match decision.scope {
-                Over::Account => Scope::Account,
-                Over::Worker => Scope::Worker,
-            },
-            evidence: vec![decision.evidence],
-            action: match decision.action {
-                Does::Wait => Action::Wait,
-                Does::Continue => Action::Continue,
-                Does::Complete => Action::Complete,
-            },
-            missing: vec![],
-            retry_after: None,
-        }
-    }
 }
 
 /// Returns true while the capacity rule is waiting or has nudged this
@@ -1142,7 +1199,7 @@ fn decide(
     };
     observed.diagnosis = Some(diagnosis.clone());
     observed.operator_reason = None;
-    if diagnosis.class == "capacity" {
+    if diagnosis.is(Class::Capacity) {
         observed.source = "capacity rule".into();
         observed.error = None;
         if capacity_wait(book, observed, worktree, fleet.now)? {
@@ -1151,7 +1208,7 @@ fn decide(
         diagnosis.action = Action::Continue;
         observed.diagnosis = Some(diagnosis.clone());
     }
-    let refusal = diagnosis.class == "refusal";
+    let refusal = diagnosis.is(Class::Refusal);
     if refusal && let Some(issue) = issue {
         fleet.remember_refusal(
             issue,
@@ -1170,7 +1227,7 @@ fn decide(
             return Ok(());
         }
         Action::Wait | Action::Unknown => {
-            let quota = diagnosis.class == "quota" && diagnosis.scope == Scope::Account;
+            let quota = diagnosis.is(Class::Quota) && diagnosis.scope == Scope::Account;
             let within_reset = diagnosis.retry_after.is_some_and(|delay| {
                 delay <= MAX_QUOTA_WAIT_SECONDS
                     && fleet.now.saturating_add(delay)
@@ -1194,7 +1251,7 @@ fn decide(
         Action::Retry if observed.rate_retries < MAX_RATE_RETRIES => {
             observed.rate_retries += 1;
             observed.action = "retrying".into();
-            if diagnosis.class != "rate_limit" {
+            if !diagnosis.is(Class::RateLimit) {
                 worktree.tell(
                     &observed.terminal,
                     "Continue the existing task if ready. Do not restart or discard work.",
@@ -1202,7 +1259,7 @@ fn decide(
             }
             return Ok(());
         }
-        Action::Retry if diagnosis.class != "rate_limit" => {
+        Action::Retry if !diagnosis.is(Class::RateLimit) => {
             observed.action = "waiting".into();
             return Ok(());
         }
@@ -1233,7 +1290,7 @@ fn decide(
     // An account quota continues at once, but not through a gate or landing
     // the worker still has running: that work keeps the session until it
     // ends. The fault is already recorded, so a new start skips the harness.
-    if diagnosis.class == "quota"
+    if diagnosis.is(Class::Quota)
         && diagnosis.scope == Scope::Account
         && crate::judge::own_background(fleet, worktree, true, crate::judge::Look::Acting)?
             .is_some()
@@ -1407,7 +1464,7 @@ mod tests {
         ];
         for (harness, output) in cases {
             let diagnosis = terminal_rule(harness, &output).unwrap();
-            assert_eq!(diagnosis.class, "quota", "{}", harness.key());
+            assert_eq!(diagnosis.class, Class::Quota.key(), "{}", harness.key());
             assert_eq!(diagnosis.scope, Scope::Account);
             assert_eq!(diagnosis.action, Action::Continue);
             assert_eq!(diagnosis.evidence, vec![harness.account_quota(&output).unwrap()]);
@@ -1423,11 +1480,103 @@ mod tests {
     fn a_runtime_account_quota_continues_for_the_harness_that_names_it() {
         let error = r#"429: {"code":"1308","message":"Usage limit reached for 5 hour"}"#;
         let diagnosis = classified_for(Some(Harness::Pi), &json!(error)).unwrap();
-        assert_eq!(diagnosis.class, "quota");
+        assert_eq!(diagnosis.class, Class::Quota.key());
         assert_eq!(diagnosis.scope, Scope::Account);
         assert_eq!(diagnosis.action, Action::Continue);
         assert_eq!(diagnosis.retry_after, None);
         assert!(classified_for(Some(Harness::Codex), &json!(error)).is_none());
         assert!(classified_for(Some(Harness::Kimi), &json!(error)).is_none());
+    }
+
+    /// A worker as the book records it, observed next at `next_check`.
+    fn observed(path: &str, next_check: u64, action: &str, output: &[&str]) -> Observed {
+        serde_json::from_value(json!({"path": path, "terminal": "term-1", "harness": "codex",
+            "snapshots": [{"at": 1, "source": "orca", "output": output, "progress": ""}],
+            "next_check": next_check, "rate_retries": 0, "source": "rule", "action": action,
+            "operator_reason": "Jev left the table unsettled", "error": null}))
+        .unwrap()
+    }
+
+    fn health(workers: Vec<Observed>, failed: Vec<FailedObservation>) -> Health {
+        Health {
+            workers: workers
+                .into_iter()
+                .map(|observed| Worker { observed, background: None })
+                .collect(),
+            observations_failed: failed,
+            ..Health::default()
+        }
+    }
+
+    #[test]
+    fn an_observation_is_overdue_only_past_its_tick_s_chance() {
+        // The instance holding /w sleeps 90s and its last tick took 10s; one
+        // holding nothing here ticks every 300s.
+        let mut cadence = Cadence::default();
+        cadence.instance(90, 10, [PathBuf::from("/w")]);
+        cadence.instance(280, 20, []);
+        let at = |next: u64| {
+            health(
+                vec![observed("/w", next, "waiting", &[])],
+                vec![FailedObservation {
+                    path: "/f".into(),
+                    error: "no terminal".into(),
+                    retry_at: next,
+                }],
+            )
+        };
+        assert!(
+            at(998).overdue(&cadence, 1000).is_empty(),
+            "the next tick observes it on schedule"
+        );
+        assert!(at(901).overdue(&cadence, 1000).is_empty(), "within its sleep and a tick's time");
+        assert_eq!(
+            at(899).overdue(&cadence, 1000),
+            [Overdue::Waiting { path: "/w".into(), due: 899, error: None }],
+            "a worktree no claim holds gets the longest cadence"
+        );
+        assert_eq!(
+            at(700).overdue(&cadence, 1000),
+            [
+                Overdue::Waiting { path: "/w".into(), due: 700, error: None },
+                Overdue::Retry { path: "/f".into(), error: "no terminal".into() },
+            ]
+        );
+        assert_eq!(
+            at(1000).overdue(&Cadence::default(), 1000).len(),
+            2,
+            "with none said, no grace"
+        );
+    }
+
+    #[test]
+    fn a_worker_waiting_for_the_operator_says_why_its_screen_and_its_fix() {
+        let waiting = observed("/w", 0, "waiting for operator", &["working", "■ stopped", "  "]);
+        let keyless = waiting.operator_wait(false).unwrap();
+        assert_eq!(
+            keyless,
+            OperatorWait {
+                worker: "/w".into(),
+                reason: "Jev left the table unsettled".into(),
+                screen_line: "■ stopped".into(),
+                fix: "afkconvoy run --jev-key-command '<command>'".into(),
+            }
+        );
+        let keyed = waiting.operator_wait(true).unwrap();
+        assert_eq!(keyed.fix, "orca terminal read --terminal term-1 --screen");
+        assert!(observed("/w", 0, "healthy", &[]).operator_wait(false).is_none());
+    }
+
+    #[test]
+    fn the_view_is_written_as_the_book_was() {
+        let failed =
+            FailedObservation { path: "/f".into(), error: "no terminal".into(), retry_at: 7 };
+        let shown = json(&Ok(health(vec![observed("/w", 5, "healthy", &[])], vec![failed])));
+        assert_eq!(shown["observations_failed"], json!([["/f", "no terminal", 7]]));
+        assert!(shown["workers"][0].get("background").is_none(), "{shown}");
+        assert_eq!(shown["workers"][0]["next_check"], 5);
+        let read: Health = serde_json::from_value(shown.clone()).unwrap();
+        assert_eq!(json(&Ok(read)), shown);
+        assert_eq!(json(&Err("unreadable".into())), json!({"error": "unreadable"}));
     }
 }

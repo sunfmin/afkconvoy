@@ -157,6 +157,82 @@ pub struct Config {
     /// it (`Config::cutting`). `None` where the file has no such block.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cut: Option<crate::cut::Steps>,
+    /// The repo's gate split in two (docs/adr/0047): read off a block of
+    /// their own (`GATES_BLOCK`), and laid over it (`Config::split`). `None`
+    /// where the file has no such block.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gates: Option<Gates>,
+}
+
+/// The opening line of the block that splits a repo's gate in two: one of
+/// its own, which an older afkconvoy skips, so the version that reads it can
+/// still be landed and cut by the one before.
+pub const GATES_BLOCK: &str = "```yaml gates";
+
+/// The fast gate and the slow gate: the repo's gate as two, each checking
+/// what the other does not, and together what `gate_command` checks.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Gates {
+    /// What a worker passes before it opens or updates its PR.
+    pub fast: Gate,
+    /// Everything else the gate checks.
+    pub slow: Gate,
+}
+
+/// One of the two gates: what it runs, its limit and its warning budget,
+/// as `gate_command`, `gate_seconds` and `gate_budget_seconds` are the
+/// whole gate's.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Gate {
+    pub command: String,
+    /// The limit: a run still going after it is ended, and red.
+    pub seconds: u64,
+    /// The warning budget: a run past it is said to be slow, and is not red.
+    pub budget_seconds: u64,
+}
+
+impl Gates {
+    /// These gates, or why they cannot be run on, naming the key at fault.
+    /// Neither may name nothing to run, have no time, or a budget not below
+    /// its limit; together they are the gate split, so their limits may not
+    /// add up past `gate_seconds`, nor their budgets past
+    /// `gate_budget_seconds`, where it is declared.
+    pub fn checked(
+        self,
+        gate_seconds: u64,
+        gate_budget_seconds: Option<u64>,
+    ) -> Result<Gates, String> {
+        for (name, gate) in [("fast", &self.fast), ("slow", &self.slow)] {
+            if gate.command.trim().is_empty() {
+                return Err(format!("{name}.command: names nothing to run"));
+            }
+            if gate.seconds == 0 {
+                return Err(format!(
+                    "{name}.seconds: must be a whole number of seconds, at least 1"
+                ));
+            }
+            if gate.budget_seconds == 0 || gate.budget_seconds >= gate.seconds {
+                return Err(format!(
+                    "{name}.budget_seconds: must be a whole number of seconds, at least 1 and below {name}.seconds"
+                ));
+            }
+        }
+        if self.fast.seconds.saturating_add(self.slow.seconds) > gate_seconds {
+            return Err(format!(
+                "fast.seconds and slow.seconds: together {}s, past gate_seconds, {gate_seconds}s: the two gates are the gate split, and neither limit is raised by it",
+                self.fast.seconds.saturating_add(self.slow.seconds)
+            ));
+        }
+        let budgets = self.fast.budget_seconds.saturating_add(self.slow.budget_seconds);
+        if let Some(budget) = gate_budget_seconds.filter(|budget| budgets > *budget) {
+            return Err(format!(
+                "fast.budget_seconds and slow.budget_seconds: together {budgets}s, past gate_budget_seconds, {budget}s: the two gates are the gate split, and neither budget is raised by it"
+            ));
+        }
+        Ok(self)
+    }
 }
 
 /// Why a repo's settings are no config. Each names the key at fault.
@@ -328,11 +404,42 @@ impl Config {
         Config { cut: steps, ..self }
     }
 
+    /// This config with `gates`, the fast and slow gate its file says in a
+    /// block of their own.
+    pub fn split(self, gates: Option<Gates>) -> Config {
+        Config { gates, ..self }
+    }
+
+    /// The gate `which` names: the fast one or the slow one, where the
+    /// repo declares them.
+    pub fn gate(&self, which: Which) -> Option<&Gate> {
+        self.gates.as_ref().map(|gates| match which {
+            Which::Fast => &gates.fast,
+            Which::Slow => &gates.slow,
+        })
+    }
+
     /// The gate limit, in seconds: how long a run of the gate command is
     /// given before it is ended, and red. Never zero.
     #[spec(fn(&Config[@c]) -> u64[c.gate_seconds])]
     pub fn gate_seconds(&self) -> u64 {
         self.gate_seconds
+    }
+}
+
+/// One of the two gates a repo's gate is split into.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Which {
+    Fast,
+    Slow,
+}
+
+impl Which {
+    pub fn word(self) -> &'static str {
+        match self {
+            Which::Fast => "fast",
+            Which::Slow => "slow",
+        }
     }
 }
 
@@ -376,6 +483,7 @@ fn checked(
         escalate_to,
         bound,
         cut: None,
+        gates: None,
     })
 }
 

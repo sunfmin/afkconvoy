@@ -485,7 +485,8 @@ pub struct State {
     /// The open ready issues held off, with no claim, only by an open PR
     /// that is not the fleet's (`plan::NOT_OURS`).
     pub not_ours: Vec<NotOurs>,
-    /// The claims on issues GitHub says were deleted or transferred.
+    /// The claims on issues GitHub says were deleted, transferred or never
+    /// issued.
     pub on_gone: Vec<OnGone>,
     /// Candidate state from the same remote listing as the working set.
     pub candidates: Value,
@@ -493,8 +494,8 @@ pub struct State {
     pub deliveries: Vec<Value>,
 }
 
-/// A claim on an issue GitHub answers 410 or 404 for: deleted, or
-/// transferred to another repo. Its holder's next tick lets it go; until
+/// A claim on an issue GitHub has no more: deleted, transferred to another
+/// repo, or never issued. Its holder's next tick lets it go; until
 /// then it holds a slot of that fleet.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OnGone {
@@ -1143,7 +1144,9 @@ fn on_gone_finding(on: &OnGone) -> Finding {
     let holder = holder.as_deref().unwrap_or("no fleet instance it names");
     finding(
         Kind::ClaimOnGone,
-        format!("#{issue} is claimed but GitHub has it no more: it was deleted or transferred"),
+        format!(
+            "#{issue} is claimed but GitHub has it no more: it was deleted or transferred, or there is no such issue"
+        ),
         format!(
             "GitHub answers 410 or 404 for #{issue}; {claim_ref} is held by {holder}, whose next \
              tick releases it"
@@ -1277,25 +1280,17 @@ fn retired_concurrency_finding(checkout: &Path, config: &Config) -> Option<Findi
 /// its bound, with no class a rule or Jev settled. Without a key command the
 /// fix names one; with it, the worker's screen is the operator's to read.
 fn health_findings() -> Vec<Finding> {
-    let keyed =
-        crate::host_settings::of_host().is_ok_and(|settings| settings.jev_key_command.is_some());
     crate::health::waiting_for_operator()
         .into_iter()
         .map(|waiting| {
-            let worker = waiting["worker"].as_str().unwrap_or_default();
-            let reason = waiting["reason"].as_str().unwrap_or_default();
-            let screen = waiting["screen_line"].as_str().unwrap_or_default();
-            let fix = if keyed {
-                let terminal = waiting["terminal"].as_str().unwrap_or_default();
-                format!("orca terminal read --terminal {terminal} --screen")
-            } else {
-                "afkconvoy run --jev-key-command '<command>'".into()
-            };
             finding(
                 Kind::WorkerHealth,
-                format!("the worker in {worker}: its worker health is waiting for the operator"),
-                format!("{reason}; its screen ends: {screen}"),
-                fix,
+                format!(
+                    "the worker in {}: its worker health is waiting for the operator",
+                    waiting.worker.display()
+                ),
+                format!("{}; its screen ends: {}", waiting.reason, waiting.screen_line),
+                waiting.fix,
             )
         })
         .collect()
