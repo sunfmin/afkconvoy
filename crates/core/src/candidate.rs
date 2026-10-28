@@ -266,13 +266,15 @@ impl Chain {
     /// their failed predecessor.
     pub fn round_red(&mut self, tip: &str) {
         // The tip is already red here: the round is what stands before it.
-        let members: Vec<String> = self
-            .candidates
-            .iter()
-            .take_while(|c| c.id != tip)
-            .filter(|c| c.valid())
-            .map(|c| c.id.clone())
-            .collect();
+        let mut members: Vec<String> = vec![];
+        for c in &self.candidates {
+            if c.id == tip {
+                break;
+            }
+            if c.valid() {
+                members.push(c.id.clone());
+            }
+        }
         for c in &mut self.candidates {
             if members.contains(&c.id) {
                 c.cancelled_by = Some(tip.to_string());
