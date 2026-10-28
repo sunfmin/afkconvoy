@@ -49,9 +49,6 @@ pub enum TickStep {
     /// Run the due patrol at this place among the working set's, into a free
     /// slot.
     Patrol { patrol: usize },
-    /// Kept so an old pass can name it. Automatic casting is gone: a pass
-    /// never takes this step, and carrying it out starts nothing.
-    Cast,
     /// Open the issue that says the gate is slow, while none is open. It
     /// takes no slot.
     SlowGate,
@@ -280,8 +277,7 @@ fn dispatched(did: &[(TickStep, Outcome)], issue: u64) -> bool {
 /// not on the train yet — starting, into the slot its claim freed, the worker
 /// of the stage a verdict led to — end the patrol runs that are over, delete the stale
 /// locks on closed issues, hand to a
-/// human the unclaimed issues that call for one, start a caster where one is due
-/// (none while admission holds), take stale
+/// human the unclaimed issues that call for one, take stale
 /// claims, then the due patrols, then frontier issues into the free slots,
 /// lowest number first — none of
 /// these while admission holds (`WorkingSet::held_back`) —
@@ -843,7 +839,6 @@ mod tests {
             patrols: vec![],
             slow_gate: None,
             held_back: vec![],
-            caster: None,
             casting: vec![],
             cut: None,
         }
@@ -1357,20 +1352,6 @@ mod tests {
         reported.slow_gate = Some(slow(Some(41)));
         assert_eq!(run_pass(&reported, 1, 0, |_| Done).did, [], "one is open: no other");
         assert_eq!(run_pass(&set(&[], &[]), 1, 0, |_| Done).did, []);
-    }
-
-    #[test]
-    fn a_pass_starts_no_caster() {
-        use crate::admission::Hold;
-        use crate::casting::Standing;
-        let mut set = set(&[9], &[]);
-        set.caster =
-            Some(Standing { running_since: None, due: true, held: vec![7], to_cast: vec![7] });
-        let pass = run_pass(&set, 1, 0, |_| Done);
-        assert_eq!(steps(&pass), [Dispatch { issue: 9 }, Heartbeat]);
-        assert_eq!(pass.held, 1);
-        set.held_back = vec![Hold::Memory { free: 3, floor: 10 }];
-        assert!(!steps(&run_pass(&set, 1, 0, |_| Done)).contains(&Cast));
     }
 
     fn cut(standing: crate::cut::Standing) -> Option<crate::cut::Row> {

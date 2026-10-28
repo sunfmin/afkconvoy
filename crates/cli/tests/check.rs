@@ -98,7 +98,7 @@ fn a_well_formed_team_is_accepted_with_what_was_read() {
         json!([
             {"name": "dev", "repo": "acme/dev", "path": "", "commit": head(&world, "acme/dev"),
              "host_user": true, "dsh_profile": "fleet", "skills": ["implement", "land"], "above": [], "limits": [],
-             "roster": {"cast": "Hard work on opus.", "run": [
+             "roster": {"run": [
                  {"harness": "claude-code", "model": "opus", "good_at": "hard work"},
                  {"harness": "claude-code", "model": null, "good_at": null}]},
              "range": [{"harness": "claude-code", "models": ["sonnet", "opus"]}], "left_out": [], "unmatched": null, "nothing_safe": null},
@@ -351,7 +351,7 @@ fn a_roster_entry_names_harnesses_and_models_its_role_may_run_and_nothing_else()
     let read = world.afk(&["check"]).ok();
     assert_eq!(
         read["roles"][0]["roster"],
-        json!({"cast": null, "run": [{"harness": "pi", "model": "openai/gpt-5.5", "good_at": null}]})
+        json!({"run": [{"harness": "pi", "model": "openai/gpt-5.5", "good_at": null}]})
     );
     // The host kit holds no pi: the entry matches nothing, and the role
     // ranges over the host kit whole. `check` names the entry.
