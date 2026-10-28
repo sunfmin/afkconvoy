@@ -76,13 +76,15 @@ pub(super) fn prompt_question(kept: &str, model: Option<&str>, prompt: &str) -> 
 
 /// Starts one watch interactively on the worker profile.
 pub(super) fn watch(command: &str, worktree: &str, kept: &str, model: Option<&str>) -> String {
-    let line = Line::new()
+    let mut line = Line::new()
         .fixed("export DSH_HOME=")
         .word(kept)
         .fixed(" DSH_AGENTS_HOME=")
-        .word(&format!("{kept}/agents"))
-        .fixed(" AFKCONVOY_DSH_MODEL=")
-        .word(model.unwrap_or_default())
+        .word(&format!("{kept}/agents"));
+    if let Some(model) = model {
+        line = line.fixed(" AFKCONVOY_DSH_MODEL=").word(model);
+    }
+    let line = line
         .fixed(" AFKCONVOY_DSH_KEPT=")
         .word(kept)
         .fixed(" AFKCONVOY_HARNESS=dsh AFKCONVOY_GUARD='afkconvoy guard' AFKCONVOY_WORKTREE=")
@@ -200,7 +202,8 @@ pub(super) fn environment(line: Line, start: &Start) -> Line {
             .word(&format!("{}/agents", start.kept))
             .fixed(" DSH_PERMISSION_MODE=danger-full-access"),
     };
-    line.fixed(" AFKCONVOY_DSH_KEPT=")
+    let line = line
+        .fixed(" AFKCONVOY_DSH_KEPT=")
         .word(start.kept)
         .fixed(" DSH_TUI_PROFILE=dsh-tui")
         .fixed(" AFKCONVOY_GUARD=")
@@ -208,9 +211,11 @@ pub(super) fn environment(line: Line, start: &Start) -> Line {
         .fixed(" AFKCONVOY_WORKTREE=")
         .word(start.worktree)
         .fixed(" AFKCONVOY_TEAM_DIR=")
-        .word(start.team_dir)
-        .fixed(" AFKCONVOY_DSH_MODEL=")
-        .word(start.model.unwrap_or(""))
+        .word(start.team_dir);
+    match start.model {
+        Some(model) => line.fixed(" AFKCONVOY_DSH_MODEL=").word(model),
+        None => line,
+    }
 }
 
 #[spec(fn(Line[true], &Start) -> Line[true])]

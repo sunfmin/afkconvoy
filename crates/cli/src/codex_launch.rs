@@ -75,10 +75,10 @@ fn settings(
 }
 
 /// Resolve an automatic model from the user's current Codex preference. A
-/// model label on an issue is explicit and keeps its existing casting.
+/// followed model label is explicit and is recorded as the issue's model label.
 pub(crate) fn automatic_model(explicit: Option<&str>) -> Result<(Option<String>, &'static str)> {
     if let Some(model) = explicit {
-        return Ok((Some(model.to_string()), "casting"));
+        return Ok((Some(model.to_string()), "model_label"));
     }
     let file = user_config();
     let config = config(&file)?;
@@ -202,37 +202,14 @@ pub(crate) fn record(worktree: &Worktree, settings: &Settings) -> Result<()> {
     Ok(())
 }
 
-/// A caster is started by a shell-only auxiliary, then makes one headless
-/// Codex call. It gets the same fresh directory and user effort as an
-/// interactive worker, and records the call in its own worktree.
-pub(crate) fn caster_question(
-    worktree: &Worktree,
-    command: &str,
-    model: Option<&str>,
-    prompt: &str,
-) -> Result<String> {
-    let (kept, _) = crate::kept::for_worker(
-        Harness::Codex,
-        false,
-        &worktree.path,
-        &worktree.path,
-        &Default::default(),
-        "",
-    )?;
-    let question = Harness::Codex.prompt_question(command, &kept, model, prompt);
-    let (question, settings) = prepare(worktree, model, &question, true, "casting")?;
-    // A human may also run `cast` in an existing worker's worktree. That
-    // helper call must not overwrite the existing worker's launch evidence.
-    if worktree.caster()?.is_some() {
-        record(worktree, &settings)?;
-    }
-    Ok(question)
-}
-
 pub(crate) fn recorded(worktree: &Worktree) -> Option<Settings> {
     (worktree.harness().ok().flatten()? == Harness::Codex).then_some(())?;
     let mut settings: Settings =
         serde_json::from_slice(&std::fs::read(worktree.note(RECORD).ok()?).ok()?).ok()?;
+    // A launch recorded before a model label was called that still says so.
+    if settings.model_source == "casting" {
+        settings.model_source = "model_label".into();
+    }
     // /model saves to this session's private config. Surface that choice
     // when present; editing the user's original config still affects only
     // future launches. An incomplete write leaves the launch evidence intact.
@@ -261,7 +238,7 @@ pub(crate) fn planned(model: Option<&str>, explicit: bool) -> Value {
     }) {
         Ok(settings) => json!(settings),
         Err(error) => {
-            json!({"model":model,"model_source":if explicit {"casting"} else {"user_selection"},"error":format!("{error:#}")})
+            json!({"model":model,"model_source":if explicit {"model_label"} else {"user_selection"},"error":format!("{error:#}")})
         }
     }
 }

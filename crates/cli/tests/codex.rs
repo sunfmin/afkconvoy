@@ -467,8 +467,8 @@ fn a_codex_worker_starts_in_its_role_under_a_user_directory_of_the_fleet_s_own()
     );
 
     // The next start follows what the user has by then: a login gone. The
-    // directory is there all the same, and a role whose roster names no
-    // model runs its range's one: the host kit's for Codex.
+    // directory is there all the same. The user's Codex config still names
+    // `gpt-5.5`, which the host kit lists, so the user default passes it.
     std::fs::remove_file(home.join(".codex/auth.json")).unwrap();
     world.issue(8, &["flow:audit"]);
     let ticked = did(&tick(&world, 1100).ok());
@@ -1535,35 +1535,40 @@ fn codex_starts_no_session_with_invalid_user_effort() {
 }
 
 #[test]
-fn a_codex_caster_takes_fresh_user_effort_and_reports_its_actual_call() {
+fn a_codex_worker_takes_fresh_user_effort_and_casting_starts_nothing() {
     let world = World::new();
     world.hold_every_harness();
     world.kit_models("codex", &["fleet-first", "fleet-second"]);
     world.afk(&["switch", "--harness", "codex"]).ok();
-    world.afk(&["kit", "--cast", "on"]).ok();
-    write(&world.home(), ".codex/config.toml", "model_reasoning_effort = 'xhigh'\n");
+    assert!(world.afk(&["kit", "--cast", "on"]).error().contains("automatic casting is gone"));
+    assert!(world.afk(&["cast"]).error().contains("automatic casting is gone"));
+    write(
+        &world.home(),
+        ".codex/config.toml",
+        "model = 'fleet-first'\nmodel_reasoning_effort = 'xhigh'\n",
+    );
     write(&kept(&world), "config.toml", "model = 'stale'\nmodel_reasoning_effort = 'medium'\n");
     world.issue(7, &["ready-for-agent"]);
-    tick(&world, 1000).ok();
-    let caster = world.root.join("wt/convoy-caster");
-    world.caster_answers(
-        "{\"issue\":7,\"harness\":\"codex\",\"model\":\"fleet-first\",\"why\":\"fits\"}\n",
+    assert_eq!(tick(&world, 1000).ok()["errors"], json!([]));
+    assert!(
+        world.worktrees().iter().all(|path| {
+            !path.file_name().is_some_and(|name| name.to_string_lossy().contains("caster"))
+        }),
+        "no caster worktree"
     );
-    world.afk_in(&caster, &["cast", "--now", "1001"]).ok();
-    let first = under_codex(&world, &world.caster_asked());
+    let first = under_codex(&world, &started(&world, &worktree(&world, 7)));
     assert_selection(&first, "fleet-first", Some("xhigh"));
     let plan = world.afk(&["plan", "--instance", "alpha", "--now", "1002"]).ok();
-    let rows = plan["codex_workers"].as_array().unwrap();
-    assert!(
-        rows.iter().any(|row| row["worktree"] == json!(caster) && row["effort"] == "xhigh"),
-        "{rows:?}"
-    );
+    assert!(plan.get("caster").is_none(), "{plan}");
+    assert_eq!(plan["codex_workers"][0]["model"], "fleet-first");
+    assert_eq!(plan["codex_workers"][0]["model_source"], "user_selection");
+    assert_eq!(plan["codex_workers"][0]["effort"], "xhigh");
     write(Path::new(&first[1]), "config.toml", "model_reasoning_effort = 'medium'\n");
-    write(&world.home(), ".codex/config.toml", "model_reasoning_effort = 'high'\n");
-    world.issue(8, &["ready-for-agent"]);
-    world.caster_answers(
-        "{\"issue\":8,\"harness\":\"codex\",\"model\":\"fleet-first\",\"why\":\"fits\"}\n",
+    write(
+        &world.home(),
+        ".codex/config.toml",
+        "model = 'fleet-first'\nmodel_reasoning_effort = 'high'\n",
     );
-    world.afk_in(&caster, &["cast", "--now", "1100"]).ok();
-    assert_selection(&under_codex(&world, &world.caster_asked()), "fleet-first", Some("high"));
+    world.issue(8, &["ready-for-agent"]);
+    assert_selection(&launch(&world, 8, 1100), "fleet-first", Some("high"));
 }

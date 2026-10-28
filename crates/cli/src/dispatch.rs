@@ -97,8 +97,8 @@ pub struct Agent {
     pub ready_timeout: u64,
 }
 
-/// A worker's selected harness and model, including whether an issue model
-/// label requires casting to take precedence over the user's Codex preference.
+/// A worker's selected harness and model. `explicit_model` is set only when
+/// one `model:` label was followed: that id, not the user's Codex preference.
 pub struct WorkerSelection<'a> {
     pub harness: Harness,
     pub model: Option<&'a str>,
@@ -427,7 +427,10 @@ fn start(
             (cast.harness, cast.model, unmatched)
         }
     };
-    let explicit_model = issue.labels.iter().any(|label| label.starts_with("model:"));
+    // A followed label names the model. Anything else, including a label that
+    // was not followed, is the harness's user default and is still checked
+    // against the role's range.
+    let explicit_model = model.is_some();
     if harness == Harness::Codex {
         model = crate::codex_launch::automatic_model(
             explicit_model.then_some(model.as_deref()).flatten(),
@@ -636,33 +639,22 @@ fn start(
     if let Some((name, ran)) = &unmatched {
         started["unmatched"] = json!(name);
         // The worker runs: a comment that cannot be written costs only itself.
-        if let Err(error) = tell_unmatched(fleet, number, name, ran, &issue.labels) {
+        if let Err(error) = tell_unmatched(fleet, number, name, ran) {
             started["unmatched_untold"] = json!(format!("{error:#}"));
         }
     }
     Ok(started)
 }
 
-/// Tells issue `number` that `name`, a name it was given, matches nothing
-/// held, and that the worker runs `ran` instead — once: not where a comment
-/// already says it (`casting::unmatched_told`).
-fn tell_unmatched(
-    fleet: &Fleet,
-    number: u64,
-    name: &str,
-    ran: &Cast,
-    labels: &[String],
-) -> Result<()> {
+/// Tells issue `number` once that `name`, a model label it carries, is not
+/// followed, and that the worker runs the user's default (`casting::unmatched_told`).
+fn tell_unmatched(fleet: &Fleet, number: u64, name: &str, ran: &Cast) -> Result<()> {
     let comments = fleet.gh.comments(number)?;
     if casting::unmatched_told(comments.iter().map(|c| c.body.as_str()), name) {
         return Ok(());
     }
-    let kit = crate::kit::running()?.0.range();
-    let mut holds = casting::holds(&kit);
-    if let Some(unheld) = casting::unheld(labels, &kit) {
-        holds.push_str(&format!(". {}", unheld.why));
-    }
-    fleet.gh.comment(number, &casting::unmatched_comment(name, ran, &holds))
+    let notice = ran.notice.as_deref().unwrap_or("");
+    fleet.gh.comment(number, &casting::unmatched_comment(name, ran, notice))
 }
 
 /// Adds to the brief in `worktree` what of the work of the worker before is

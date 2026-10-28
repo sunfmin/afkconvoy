@@ -422,10 +422,7 @@ fn carry_out(
             None => Ok(Outcome::Nothing),
         },
         TickStep::Cut { busy } => crate::cut::start(fleet, me, agent, busy),
-        TickStep::Cast => match &read.set.caster {
-            Some(caster) => crate::caster::start(fleet, agent, &caster.to_cast),
-            None => Ok(Outcome::Nothing),
-        },
+        TickStep::Cast => Ok(Outcome::Nothing),
         TickStep::SlowGate => match &read.set.slow_gate {
             Some(slow) => slow_gate::open(fleet, me, slow),
             None => Ok(Outcome::Nothing),
@@ -873,11 +870,6 @@ impl Ticked {
                 parts.push(format!("{verb} {}", patrols.join(", ")));
             }
         }
-        if self.pass.did.contains(&(TickStep::Cast, Outcome::Done))
-            && let Some(caster) = &self.set.caster
-        {
-            parts.push(format!("started a caster on {} issues", caster.to_cast.len()));
-        }
         if self.pass.did.contains(&(TickStep::SlowGate, Outcome::Done)) {
             let evidence = self
                 .set
@@ -899,9 +891,6 @@ impl Ticked {
             parts.push("nothing to do".to_string());
         }
         parts.extend(self.holding());
-        if let Some(caster) = self.set.caster.as_ref().filter(|caster| !caster.held.is_empty()) {
-            parts.push(format!("{} held for the caster", caster.held.len()));
-        }
         parts.push(format!("frontier {}", self.pass.frontier_remaining));
         // One cause is said once, however many steps it stopped.
         for (failure, steps) in log::by_cause(&self.failures, |failure| &failure.error) {

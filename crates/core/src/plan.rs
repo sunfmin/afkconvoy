@@ -282,13 +282,12 @@ pub struct WorkingSet {
     /// and the effect layer puts in what it read.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub held_back: Vec<Hold>,
-    /// An unbound repo's caster, while one runs or is due, and the issues
-    /// held back for it. Read of the host kit and this host's caster: what
-    /// assembles the set leaves it out, and the effect layer puts it in.
+    /// Left unset. Automatic casting is gone, so a plan reports no caster
+    /// and holds no issue for one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub caster: Option<crate::casting::Standing>,
-    /// Why each open issue needs model casting or is dispatched without it,
-    /// and the recorded model of its running worker where one is known.
+    /// Whether each open issue's model label is followed, or its worker runs
+    /// the user's default, and the recorded model of a worker already running.
     pub casting: Vec<crate::casting::ModelStatus>,
     /// The repo's cut (docs/adr/0028), as it stands now: whether a pass that
     /// ends idle starts one, or asks after one of mine. Left out of a set

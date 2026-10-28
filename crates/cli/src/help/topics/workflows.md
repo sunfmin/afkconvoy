@@ -22,7 +22,7 @@ land: { by: <role>, do: <skill> }  # required exactly when a pass leads to land
 
 A stage is one skill of one role, performed by one new worker: `by` is a short name of the team file, `do` an entry of that role's `.claude/skills/`. The worker of a stage knows nothing of the one before it but what the stage records say, so a stage that judges never inherits the reasoning of the one that wrote.
 
-A stage names neither a harness nor a model. What its worker runs is its role's range's to say, picked among by the issue's casting ([`afkconvoy help roster`](help:roster)).
+A stage names neither a harness nor a model. What its worker runs is the first harness of its role's range that the host kit holds, and the issue's one model label of that harness, or that harness's user default ([`afkconvoy help roster`](help:roster)).
 
 `writes: false` has the guard refuse the stage's worker a commit and a push: mark every stage that judges so.
 

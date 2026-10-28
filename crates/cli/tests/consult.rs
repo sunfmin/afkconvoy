@@ -219,9 +219,12 @@ fn an_escalate_starts_the_consult_its_stage_names_with_the_history_and_the_reaso
     ] {
         assert!(consult.contains(said), "{said} in {consult}");
     }
-    // A consult runs its own role's range, not the stage's.
-    assert!(commands[0].contains("--model 'opus'"), "{}", commands[0]);
-    assert!(consult.contains("--model 'sonnet'"), "{consult}");
+    // A consult runs its own role, not the stage's. Neither command carries a
+    // model flag: no model label is followed, and a range that holds one
+    // model does not name it.
+    assert!(consult.contains("/copies/acme/reviewer/"), "{consult}");
+    assert!(!commands[0].contains("--model"), "{}", commands[0]);
+    assert!(!consult.contains("--model"), "{consult}");
 
     let dir = worktree(&world);
     let told = brief(&dir);

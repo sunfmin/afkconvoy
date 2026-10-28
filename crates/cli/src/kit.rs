@@ -17,9 +17,9 @@ use serde_json::{Value, json};
 #[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Kit {
-    /// Whether this host starts a caster to choose models. Older kits and
-    /// new hosts both default to off; the kit is its only home.
-    #[serde(default)]
+    /// An old host kit may still say `cast`. It is read and ignored: a write
+    /// drops it, and it does not change a start.
+    #[serde(default, skip_serializing)]
     pub cast: bool,
     /// The harnesses this host can start, in order of preference: the first
     /// is the host kit's first.
@@ -293,14 +293,13 @@ fn show_with_research(now: u64, research: bool) -> Value {
                 .collect();
             json!({
                 "path": file,
-                "cast": kit.cast,
                 "refreshed": refreshed(),
                 "harnesses": harnesses,
                 "paused": paused_said, "worker_health": crate::health::show(),
             })
         }
         Err(error) => {
-            json!({"path": file, "cast": false, "error": format!("{error:#}"), "paused": paused_said})
+            json!({"path": file, "error": format!("{error:#}"), "paused": paused_said})
         }
     }
 }
@@ -441,19 +440,6 @@ pub fn switch_target(harness: Option<Harness>, model: Option<&str>) -> Result<Na
         },
         faults.join("; ")
     )
-}
-
-/// Changes the host's casting setting without probing or ageing the kit.
-pub fn set_cast(enabled: bool) -> Result<Value> {
-    let file = path()?;
-    let _lock = mutation_lock(&file)?;
-    let mut kit = load_at(&file)?;
-    let changed = kit.cast != enabled;
-    kit.cast = enabled;
-    if changed {
-        store_unlocked(&file, &kit, written(&file).unwrap_or_else(crate::clock))?;
-    }
-    Ok(json!({"path": file, "cast": enabled, "changed": changed}))
 }
 
 /// Promotes a harness and optionally one of its models, preserving all
@@ -1000,7 +986,15 @@ mod tests {
     }
 
     #[test]
-    fn rebuild_and_refresh_preserve_cast_and_unresearched_model_priority() {
+    fn a_former_cast_key_is_accepted_and_dropped_when_a_kit_is_written() {
+        let legacy = json!({"cast": true, "harnesses": []});
+        let kit: Kit = serde_json::from_value(legacy).unwrap();
+        assert!(kit.cast);
+        assert!(serde_json::to_value(kit).unwrap().get("cast").is_none());
+    }
+
+    #[test]
+    fn a_written_kit_drops_a_cast_key_and_keeps_unresearched_model_priority() {
         let current = Kit {
             cast: true,
             harnesses: vec![held(Harness::ClaudeCode, "claude", &["sonnet", "default"])],
@@ -1008,7 +1002,6 @@ mod tests {
         };
         for writing in [Writing::Whole, Writing::Refresh] {
             let (kit, _) = composed_as(&current, writing);
-            assert!(kit.cast);
             assert_eq!(
                 kit.harnesses[0]
                     .models
@@ -1021,6 +1014,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let file = root.path().join("kit.json");
         store(&file, &current, 100).unwrap();
+        assert!(!std::fs::read_to_string(&file).unwrap().contains("\"cast\""));
         let stale = Kit {
             cast: false,
             harnesses: vec![held(Harness::ClaudeCode, "claude", &["new", "default", "sonnet"])],
@@ -1028,7 +1022,7 @@ mod tests {
         };
         store(&file, &stale, 200).unwrap();
         let latest = load_at(&file).unwrap();
-        assert!(latest.cast);
+        assert!(!latest.cast);
         assert_eq!(
             latest.harnesses[0].models.iter().map(|model| model.model.as_str()).collect::<Vec<_>>(),
             ["sonnet", "default", "new"]
@@ -1462,7 +1456,7 @@ mod tests {
         let listed = |_: Harness, _: &str| Ok(vec![listed("gpt-first", None)]);
         let host = || Ok(Host { found: &found, listed: &listed });
         let (_, after) = refresh_at(&file, 1001, host).unwrap().unwrap();
-        assert!(after.cast);
+        assert!(!after.cast, "a write drops the cast key");
         assert_eq!(after.harnesses[0].models[0].model, "gpt-first");
         assert!(
             refresh_at(&file, 1002, || panic!("the repaired kit is current")).unwrap().is_none()
