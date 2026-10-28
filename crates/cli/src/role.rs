@@ -87,18 +87,18 @@ pub struct Staged {
     handed: Option<String>,
 }
 
-/// What a human handed the issue would be told, where `history` — read from
-/// `records`, each with the URL of its comment — has it with its stage's
+/// What a human handed the issue would be told, where `history` — its
+/// records each with the URL of its comment in `urls` — has it with its stage's
 /// consult for a hand-off: the reason and the evidence of the failure the
 /// fleet recorded, or why its records hand it on, with every round of the
 /// rework a breaker stopped. `None` of an `escalate`, and anywhere else.
-fn handed_said(history: &History, records: &[StageRecord], urls: &[String]) -> Option<String> {
+fn handed_said(history: &History, urls: &[String]) -> Option<String> {
     let Position::Consult(stage, _, ConsultOn::HandOff(reason)) = history.place.position else {
         return None;
     };
     if let Reason::Failed(_) = reason {
-        let recorded =
-            records.iter().rev().find(|record| matches!(record.stated, Stated::Failed(_)));
+        let mut records = history.records.iter().rev();
+        let recorded = records.find(|record| matches!(record.stated, Stated::Failed(_)));
         return recorded.map(|record| record.text.clone());
     }
     let reason = reason.said(stage);
@@ -106,7 +106,7 @@ fn handed_said(history: &History, records: &[StageRecord], urls: &[String]) -> O
     let mut said: String =
         chars.next().into_iter().flat_map(char::to_uppercase).chain(chars).collect();
     said.push('.');
-    if let Some(rounds) = history.rounds_said(records, urls) {
+    if let Some(rounds) = history.rounds_said(urls) {
         said.push_str(&format!("\n\n{rounds}"));
     }
     Some(said)
@@ -150,9 +150,9 @@ impl Staged {
                 return Err(See::Workflows.refusal(why));
             }
         };
-        let history = history(workflow, &records);
-        let handed = handed_said(&history, &records, &urls);
-        let verdicts = records.into_iter().zip(urls).zip(history.readings);
+        let history = history(workflow, records);
+        let handed = handed_said(&history, &urls);
+        let verdicts = history.records.into_iter().zip(urls).zip(history.readings);
         let labels = labels.to_vec();
         // A checkout that names a harness offers that harness's models alone.
         // One that names none offers the host kit, in its order.
