@@ -152,6 +152,29 @@ impl Drop for Reservation<'_> {
     }
 }
 
+/// One candidate as a look shows it. A finished candidate carries no gate
+/// excerpt. One gating now (`Validating`) may still carry `excerpt`.
+fn shown(c: &Candidate, branch: &str) -> Value {
+    let mut row = json!({
+        "phase": c.phase,
+        "commit": c.commit,
+        "issue": c.issue,
+        "pr": c.pr,
+        "predecessor": c.predecessor,
+        "waiting": c.waiting(),
+        "target_branch": branch,
+        "id": c.id,
+        "cause": c.cause,
+        "cancelled_by": c.cancelled_by,
+    });
+    if c.phase == Phase::Validating
+        && let Some(excerpt) = c.result.as_ref().and_then(|result| result.get("excerpt"))
+    {
+        row["excerpt"] = excerpt.clone();
+    }
+    row
+}
+
 pub(crate) fn view(
     repo: &Repo,
     _config: &Config,
@@ -163,10 +186,7 @@ pub(crate) fn view(
         let branch = record.name.strip_prefix(&prefix).context("invalid candidate ref")?;
         let chain: Chain = serde_json::from_str(&record.subject)?;
         for c in &chain.candidates {
-            let mut row = serde_json::to_value(c)?;
-            row["waiting"] = json!(c.waiting());
-            row["target_branch"] = json!(branch);
-            rows.push(row);
+            rows.push(shown(c, branch));
         }
     }
     Ok(json!(rows))

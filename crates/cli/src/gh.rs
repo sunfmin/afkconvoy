@@ -6,10 +6,10 @@
 //! not the checkout's own repo, the fleet's issues are those that carry its
 //! repo label: the open ones are read by it, and one opened carries it.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
 
@@ -215,6 +215,35 @@ fn carrying_labels(tracker: &Tracker, label: &str) -> String {
         Some(repo) => format!("{label},{}", crate::judge::label_segment(&repo)),
         None => label,
     }
+}
+
+/// One HEAD sha, read once and shared with the next ask in this look.
+type HeadOnce = Arc<OnceLock<Result<String, String>>>;
+
+/// One HEAD sha per repo in this look. `forget_heads` drops them. A process
+/// that is one look — `doctor` — never forgets them and reads each HEAD once.
+static HEADS: Mutex<BTreeMap<String, HeadOnce>> = Mutex::new(BTreeMap::new());
+
+/// Forgets every repo HEAD, so the next read observes it again. A look begins
+/// through `look::begin`.
+pub(crate) fn forget_heads() {
+    HEADS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clear();
+}
+
+#[cfg(test)]
+pub(crate) fn hold_head(repo: &str, sha: &str) {
+    let cell = Arc::new(OnceLock::new());
+    cell.set(Ok(sha.to_string())).expect("head cell is unset");
+    HEADS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).insert(repo.to_string(), cell);
+}
+
+#[cfg(test)]
+pub(crate) fn head_held(repo: &str) -> Option<String> {
+    HEADS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(repo)
+        .and_then(|cell| cell.get().and_then(|stored| stored.as_ref().ok().cloned()))
 }
 
 /// `gh`, run in `dir`: the checkout a command is about, or where none is at
@@ -766,8 +795,26 @@ impl GitHub {
         Ok(self.read(&["api", &endpoint, "--jq", VISIBILITY_JQ])?.trim().to_string())
     }
 
-    /// The commit at the head of the default branch of `repo`.
+    /// The commit at the head of the default branch of `repo`, read once per
+    /// repo in this look (`forget_heads` reads it again). Another checkout
+    /// asking the same repo waits on that read instead of starting another.
     pub fn head_commit(&self, repo: &RepoName) -> Result<String> {
+        let key = repo.to_string();
+        let cell = {
+            let mut heads = HEADS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            heads.entry(key).or_insert_with(|| Arc::new(OnceLock::new())).clone()
+        };
+        let stored = cell.get_or_init(|| match self.read_head(repo) {
+            Ok(sha) => Ok(sha),
+            Err(error) => Err(format!("{error:#}")),
+        });
+        match stored {
+            Ok(sha) => Ok(sha.clone()),
+            Err(error) => bail!("{error}"),
+        }
+    }
+
+    fn read_head(&self, repo: &RepoName) -> Result<String> {
         let out = self.read(&["api", &format!("repos/{repo}/commits/HEAD"), "--jq", ".sha"])?;
         let commit = out.trim();
         let plain = !commit.is_empty() && commit.bytes().all(|b| b.is_ascii_hexdigit());

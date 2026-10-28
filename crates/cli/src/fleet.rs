@@ -70,6 +70,9 @@ pub struct Fleet {
     /// What this view's start and end of a cut said: what a tick's line says
     /// of them, and its log keeps.
     pub cut_said: Vec<crate::log::What>,
+    /// A startup probe that still stands already checked every harness.
+    /// `runnable` then keeps the kit `running` built and starts none again.
+    trust_launches: bool,
 }
 
 /// Why no worker of a role can be started on this host: it holds limits for
@@ -118,7 +121,14 @@ impl Fleet {
             unread: vec![],
             closers: vec![],
             cut_said: vec![],
+            trust_launches: false,
         })
+    }
+
+    /// The startup probe that stands checked these harnesses. Later selection
+    /// in this view starts none of them again.
+    pub fn trust_launches(&mut self) {
+        self.trust_launches = true;
     }
 
     /// The fleet's view, opened for a rebuild → it, and what is open on
@@ -284,7 +294,6 @@ impl Fleet {
     pub fn runnable(&self) -> Result<crate::kit::Kit> {
         if self.runnable.borrow().is_none() {
             let (mut kit, _) = crate::kit::running()?;
-            let launches = crate::launch::Launches::foreseen(&self.repo);
             let mut skipped = vec![];
             let caller = match self.pinned {
                 Some(_) => "the harness this checkout names",
@@ -298,15 +307,20 @@ impl Fleet {
                     kit.harnesses.retain(|held| held.harness == pinned);
                 }
             }
-            kit.harnesses.retain(|held| {
-                match crate::role::startable(&launches, held.harness, caller) {
-                    Ok(()) => true,
-                    Err(e) => {
-                        skipped.push((held.harness, format!("{e:#}")));
-                        false
+            // A standing probe already checked these commands. Trusting it
+            // keeps the named harness and starts nothing.
+            if !self.trust_launches {
+                let launches = crate::launch::Launches::foreseen(&self.repo);
+                kit.harnesses.retain(|held| {
+                    match crate::role::startable(&launches, held.harness, caller) {
+                        Ok(()) => true,
+                        Err(e) => {
+                            skipped.push((held.harness, format!("{e:#}")));
+                            false
+                        }
                     }
-                }
-            });
+                });
+            }
             *self.runnable.borrow_mut() = Some(Runnable { kit, skipped });
         }
         let mut kit = self.runnable.borrow().as_ref().context("runnable kit")?.kit.clone();

@@ -92,7 +92,7 @@ impl Tool {
     }
 
     /// Whether it is a harness: what a worker launch command starts.
-    fn starts_workers(self) -> bool {
+    pub fn starts_workers(self) -> bool {
         matches!(
             self,
             Tool::Claude
