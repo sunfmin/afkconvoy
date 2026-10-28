@@ -167,6 +167,7 @@ kinds! {
     MemoryPressure: Warning, "the host has been under memory pressure";
     KitUnplaced: Warning, "has unplaced models in the host kit";
     WatchUnavailable: Critical, "no harness can start this host's watch";
+    WatchBusy: Critical, "the resident watch is busy; its round remains undelivered";
     NotMoved: Warning, "the host runner did not move onto";
     RosterModelUnmatched: Warning, "names no model the host kit holds";
     TeamUnread: Critical, "the team this repo names cannot be read";
@@ -216,6 +217,7 @@ impl Kind {
                 | Kind::MemoryPressure
                 | Kind::KitUnplaced
                 | Kind::WatchUnavailable
+                | Kind::WatchBusy
                 | Kind::NotMoved
                 | Kind::WorkerHealth
         )
@@ -329,6 +331,9 @@ pub struct Run {
     /// The ticks its log has of that instance, oldest first, each with when
     /// it ended; `None` where there is no log.
     pub ticks: Option<Vec<(u64, Tick)>>,
+    /// The seconds its last tick took, from its start line to its end;
+    /// `None` where the log has no start of it.
+    pub last_took: Option<u64>,
     /// Its last check for host sleep, as its log has it; `None`: it made none.
     pub host_sleep: Option<HostSleepChecked>,
     /// The newest events that reached this host's `run`s, newest first.
@@ -486,7 +491,8 @@ pub struct State {
     /// The open ready issues held off, with no claim, only by an open PR
     /// that is not the fleet's (`plan::NOT_OURS`).
     pub not_ours: Vec<NotOurs>,
-    /// The claims on issues GitHub says were deleted or transferred.
+    /// The claims on issues GitHub says were deleted, transferred or never
+    /// issued.
     pub on_gone: Vec<OnGone>,
     /// Candidate state from the same remote listing as the working set.
     pub candidates: Value,
@@ -494,8 +500,8 @@ pub struct State {
     pub deliveries: Vec<Value>,
 }
 
-/// A claim on an issue GitHub answers 410 or 404 for: deleted, or
-/// transferred to another repo. Its holder's next tick lets it go; until
+/// A claim on an issue GitHub has no more: deleted, transferred to another
+/// repo, or never issued. Its holder's next tick lets it go; until
 /// then it holds a slot of that fleet.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OnGone {
@@ -1134,7 +1140,9 @@ fn on_gone_finding(on: &OnGone) -> Finding {
     let holder = holder.as_deref().unwrap_or("no fleet instance it names");
     finding(
         Kind::ClaimOnGone,
-        format!("#{issue} is claimed but GitHub has it no more: it was deleted or transferred"),
+        format!(
+            "#{issue} is claimed but GitHub has it no more: it was deleted or transferred, or there is no such issue"
+        ),
         format!(
             "GitHub answers 410 or 404 for #{issue}; {claim_ref} is held by {holder}, whose next \
              tick releases it"
@@ -1268,25 +1276,17 @@ fn retired_concurrency_finding(checkout: &Path, config: &Config) -> Option<Findi
 /// its bound, with no class a rule or Jev settled. Without a key command the
 /// fix names one; with it, the worker's screen is the operator's to read.
 fn health_findings() -> Vec<Finding> {
-    let keyed =
-        crate::host_settings::of_host().is_ok_and(|settings| settings.jev_key_command.is_some());
     crate::health::waiting_for_operator()
         .into_iter()
         .map(|waiting| {
-            let worker = waiting["worker"].as_str().unwrap_or_default();
-            let reason = waiting["reason"].as_str().unwrap_or_default();
-            let screen = waiting["screen_line"].as_str().unwrap_or_default();
-            let fix = if keyed {
-                let terminal = waiting["terminal"].as_str().unwrap_or_default();
-                format!("orca terminal read --terminal {terminal} --screen")
-            } else {
-                "afkconvoy run --jev-key-command '<command>'".into()
-            };
             finding(
                 Kind::WorkerHealth,
-                format!("the worker in {worker}: its worker health is waiting for the operator"),
-                format!("{reason}; its screen ends: {screen}"),
-                fix,
+                format!(
+                    "the worker in {}: its worker health is waiting for the operator",
+                    waiting.worker.display()
+                ),
+                format!("{}; its screen ends: {}", waiting.reason, waiting.screen_line),
+                waiting.fix,
             )
         })
         .collect()
@@ -1298,7 +1298,7 @@ pub fn findings(seen: &Seen) -> Vec<Finding> {
     found.extend(health_findings());
     found.extend(seen.config.and_then(config_finding));
     found.extend(seen.config.and_then(|config| retired_concurrency_finding(seen.checkout, config)));
-    found.extend(crate::named_harness::findings(seen.checkout));
+    found.extend(crate::named_harness::findings(seen.checkout, seen.now));
     found.extend(log_findings(seen.run));
     found.extend(broken_finding(seen.run));
     match seen.state {
@@ -1445,6 +1445,23 @@ pub(crate) fn read_log(
         _ => None,
     });
     (Some(newest.instance.clone()), command, ticks.collect())
+}
+
+/// The seconds the last tick of the newest `run` of `host` took, from the
+/// line it started with to the one it ended with, as the log has them.
+fn read_last_took(entries: &[Entry], host: &str) -> Option<u64> {
+    let newest = entries.iter().rev().find(|entry| entry.host == host && entry.of_run())?;
+    let mut own = entries.iter().rev().filter(|entry| entry.instance == newest.instance);
+    let (ended, count) = own.find_map(|entry| match &entry.what {
+        What::Tick(tick) => Some((entry.at, tick.count)),
+        _ => None,
+    })?;
+    own.find_map(|entry| match &entry.what {
+        What::TickStarted { count: started, .. } if *started == count => {
+            Some(ended.saturating_sub(entry.at))
+        }
+        _ => None,
+    })
 }
 
 /// The last check for host sleep the newest `run` of `host` made, as the log
@@ -1790,7 +1807,7 @@ fn fleet_json(run: &Run) -> Value {
     let last_tick = run.last_tick().map(|(ended, tick)| {
         let answer = tick.answer.as_ref();
         json!({"count": tick.count, "ended": ended, "next_due": ended + tick.sleep,
-            "line": tick.line, "did": answer.map(|answer| &answer["did"]),
+            "sleep": tick.sleep, "took": run.last_took, "line": tick.line, "did": answer.map(|answer| &answer["did"]),
             "error": tick.error})
     });
     let mut failed = vec![];
@@ -1988,6 +2005,7 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String], look: &Look) ->
         heartbeat_age: None,
         heartbeats: Heartbeats::default(),
         log_file: log.map(|log| log.file),
+        last_took: read_last_took(entries.as_deref().unwrap_or_default(), host),
         host_sleep: read_host_sleep(entries.as_deref().unwrap_or_default(), host),
         hot: read_hot(entries.as_deref().unwrap_or_default(), host),
         broken: read_broken(
@@ -2357,6 +2375,7 @@ mod tests {
             heartbeats: Heartbeats { found: 1, live: vec!["alpha".into()] },
             log_file: Some(PathBuf::from("/cache/afkconvoy/runs/widgets.jsonl")),
             ticks: Some(ticks),
+            last_took: None,
             host_sleep: None,
             hot: vec![],
             broken: None,
@@ -3282,6 +3301,34 @@ mod tests {
         let events = read_events(&many, "h1");
         assert_eq!(events.len(), EVENTS_SHOWN);
         assert_eq!(events[0].at, 29);
+    }
+
+    #[test]
+    fn the_last_tick_says_the_seconds_it_took_from_its_own_start() {
+        let entry = |at: u64, instance: &str, what: What| Entry {
+            at,
+            instance: instance.into(),
+            host: "h1".into(),
+            what,
+        };
+        let start = What::Start { worker_command: "claude".into(), harness_commands: [].into() };
+        let started = |count| What::TickStarted { count, cause: Cause::Timer, by: None };
+        let mut entries = vec![
+            entry(10, "alpha", start),
+            entry(10, "alpha", started(1)),
+            entry(14, "alpha", What::Tick(tick(1, json!([])).1)),
+            entry(104, "alpha", started(2)),
+            entry(116, "alpha", What::Tick(tick(2, json!([])).1)),
+        ];
+        assert_eq!(read_last_took(&entries, "h1"), Some(12));
+        entries.push(entry(206, "alpha", started(3)));
+        assert_eq!(read_last_took(&entries, "h1"), Some(12), "a tick under way is not the last");
+        let cut: Vec<Entry> = entries.drain(4..).collect();
+        assert_eq!(read_last_took(&cut, "h1"), None, "the log kept no start of it");
+        let mut answer = run(vec![(116, tick(2, json!([])).1)]);
+        answer.last_took = Some(12);
+        let said = &fleet_json(&answer)["last_tick"];
+        assert_eq!((said["sleep"].as_u64(), said["took"].as_u64()), (Some(90), Some(12)));
     }
 
     #[test]

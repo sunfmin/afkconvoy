@@ -69,6 +69,44 @@ pub const LANDED_ISSUES_JQ: &str = ".data.repository.issues.nodes[] | \
     {number, at: (.closedAt | fromdateiso8601? // null), \
     more: .comments.pageInfo.hasNextPage, comments: [.comments.nodes[] | \
     {id: (.fullDatabaseId | tonumber), body, url, at: (.createdAt | fromdateiso8601? // null)}]}";
+/// How many closed issues the open read takes with it. More than this and the
+/// day may run past the page, so the landed read falls back to its own pages.
+pub const LANDED_PAGE: usize = 100;
+/// The open issues and, beside them, the closed issues updated since `$since`,
+/// in one call. The closed connection has no `pageInfo`: `gh api --paginate`
+/// follows the first `endCursor` it finds, and a second one is not a page of
+/// the open issues. A page repeats the closed issues; the reader keeps one of
+/// each. Only a patrol that bounds its landings in a day asks this.
+pub const OPEN_AND_LANDED_QUERY: &str = "query($owner: String!, $repo: String!, \
+    $labels: [String!], $endCursor: String, $since: DateTime!) { \
+    repository(owner: $owner, name: $repo) { \
+    issues(states: OPEN, labels: $labels, first: 40, after: $endCursor, \
+    orderBy: {field: CREATED_AT, direction: DESC}) { \
+    pageInfo { hasNextPage endCursor } \
+    nodes { number title body url createdAt labels(first: 100) { nodes { name } } \
+    blockedBy(first: 10) { pageInfo { hasNextPage } nodes { number state \
+    repository { nameWithOwner } labels(first: 100) { nodes { name } } } } \
+    comments(first: 100) { pageInfo { hasNextPage } \
+    nodes { fullDatabaseId body url createdAt } } } } \
+    landed: issues(states: CLOSED, labels: $labels, filterBy: {since: $since}, \
+    first: 100, orderBy: {field: UPDATED_AT, direction: DESC}) { \
+    nodes { number stateReason closedAt \
+    comments(first: 100) { pageInfo { hasNextPage } \
+    nodes { fullDatabaseId body url createdAt } } } } } }";
+pub const OPEN_AND_LANDED_JQ: &str = ".data.repository as $repo \
+    | ($repo.landed.nodes | length) as $n \
+    | ($repo.issues.nodes[] | {part: \"open\", number, title, body, url, \
+    at: (.createdAt | fromdateiso8601? // null), \
+    labels: [.labels.nodes[].name], blockers: [.blockedBy.nodes[] | select(. != null) | \
+    {number, state, repo: .repository.nameWithOwner, labels: [.labels.nodes[].name]}], \
+    blockers_more: .blockedBy.pageInfo.hasNextPage, \
+    more: .comments.pageInfo.hasNextPage, comments: [.comments.nodes[] | \
+    {id: (.fullDatabaseId | tonumber), body, url, at: (.createdAt | fromdateiso8601? // null)}]}), \
+    ($repo.landed.nodes[] | select(.stateReason == \"COMPLETED\") | \
+    {part: \"landed\", number, at: (.closedAt | fromdateiso8601? // null), \
+    more: .comments.pageInfo.hasNextPage, comments: [.comments.nodes[] | \
+    {id: (.fullDatabaseId | tonumber), body, url, at: (.createdAt | fromdateiso8601? // null)}]}), \
+    {part: \"landed_count\", n: $n}";
 /// Issues updated since a watching agent's last look, open or closed, in
 /// the tracker and scoped to this repo's label. Comments past the first page
 /// are read through the ordinary comments endpoint.
@@ -119,7 +157,7 @@ pub struct WatchPr {
 /// How many comments of an issue come with it (`OPEN_ISSUES_QUERY`).
 pub const COMMENTS_WITH: usize = 100;
 /// What is read of one issue, open or not.
-pub const ISSUE_JQ: &str = "{id, title, body, state, state_reason, labels: [.labels[].name], \
+pub const ISSUE_JQ: &str = "{id, url, title, body, state, state_reason, labels: [.labels[].name], \
     pull_request: (.pull_request != null), closed_by: .closed_by.login}";
 /// What is read of each closed issue that carries one label.
 pub const CLOSED_JQ: &str = ".[] | select(.pull_request == null) | \
@@ -266,6 +304,9 @@ pub struct GitHub {
     /// route wakes; every woken tick reads GitHub for itself.
     closed: Arc<Mutex<BTreeSet<u64>>>,
     quota: Arc<Mutex<Option<crate::gh_quota::Scope>>>,
+    /// The checkout's own repo, as its remote names it, where it does:
+    /// asked once.
+    own: Arc<OnceLock<Option<String>>>,
 }
 
 /// An open PR from another repo's own branch, with when it was opened.
@@ -288,7 +329,7 @@ impl GitHub {
     /// A new read of `tracker` from `dir`, with its closure observations
     /// shared only by this view and its clones.
     pub fn new(dir: PathBuf, tracker: Tracker) -> GitHub {
-        GitHub { dir, tracker, closed: Arc::default(), quota: Arc::default() }
+        GitHub { dir, tracker, closed: Arc::default(), quota: Arc::default(), own: Arc::default() }
     }
 
     /// The issues this view has seen closed, whatever read or write saw it.
@@ -337,6 +378,10 @@ pub struct IssueRead {
     /// What it says, where it says anything.
     #[serde(default)]
     pub body: Option<String>,
+    /// GitHub's API URL of it: of another repo, or another number, where
+    /// GitHub redirected the read because the issue moved.
+    #[serde(default)]
+    pub url: Option<String>,
 }
 
 /// One issue another is recorded as blocked by — a native dependency edge.
@@ -421,6 +466,60 @@ pub struct Open {
     pub prs: Vec<PullRequest>,
 }
 
+/// The open issues and the patrol landings of one day, from one issues query.
+/// `landings` is `None` when the closed page may be short of the day.
+struct OpenAndLanded {
+    issues: OpenIssues,
+    landings: Option<Vec<(String, u64)>>,
+}
+
+/// What is open, and the patrol landings read in that same query.
+pub(crate) struct Opened {
+    pub open: Open,
+    /// `None`: this read did not ask, or the closed page may be short of the day.
+    pub landings: Option<Vec<(String, u64)>>,
+}
+
+/// One open issue, as the issues query returns it.
+#[derive(Debug, Deserialize)]
+struct OpenRow {
+    number: u64,
+    title: String,
+    #[serde(default)]
+    body: String,
+    #[serde(default)]
+    url: String,
+    #[serde(default)]
+    at: Option<u64>,
+    labels: Vec<String>,
+    blockers: Vec<BlockedBy>,
+    blockers_more: bool,
+    more: bool,
+    comments: Vec<Comment>,
+}
+
+/// One completed issue, as a landings query returns it.
+#[derive(Debug, Deserialize)]
+struct LandingRow {
+    number: u64,
+    at: Option<u64>,
+    more: bool,
+    comments: Vec<Comment>,
+}
+
+/// One line of the open-and-landed query: an open issue, a landing, or how
+/// many closed issues the page held before the completed filter.
+#[derive(Debug, Deserialize)]
+#[serde(tag = "part")]
+enum IssuePart {
+    #[serde(rename = "open")]
+    Open(OpenRow),
+    #[serde(rename = "landed")]
+    Landed(LandingRow),
+    #[serde(rename = "landed_count")]
+    Count { n: usize },
+}
+
 /// How many times a read is made before it is said that GitHub could not be
 /// reached, and how long is waited between two of them.
 const TRIES: u32 = 3;
@@ -464,32 +563,63 @@ pub fn unreached(error: &anyhow::Error) -> Option<&Unreached> {
     error.chain().find_map(|cause| cause.downcast_ref())
 }
 
-/// An issue GitHub answered for with 410 or 404: deleted, or transferred to
-/// another repo. Like a closed one, it is never worked again, and it is
+/// An issue GitHub has no more: deleted, transferred to another repo, or
+/// never issued. Like a closed one, it is never worked again, and it is
 /// nothing the rest of the fleet waits on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Gone {
     pub issue: u64,
-    /// 410: it was deleted. 404: it is not in this repo — transferred.
-    pub deleted: bool,
+    pub how: Went,
+}
+
+/// How GitHub says an issue is gone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Went {
+    /// 410: it was deleted.
+    Deleted,
+    /// GitHub moved it: a read of it follows GitHub's redirect into another
+    /// repo, `to` — `owner/repo#n` — where GitHub says.
+    Transferred { to: Option<String> },
+    /// 404, and GitHub says nothing moved: there is no such issue.
+    Missing,
 }
 
 impl Gone {
     /// What happened to it, as a tick's line says why it let go of it:
     /// `released #231 (the issue was deleted)`.
     pub fn said(&self) -> String {
-        match self.deleted {
-            true => "the issue was deleted".to_string(),
-            false => "the issue is gone from this repo".to_string(),
+        match &self.how {
+            Went::Deleted => "the issue was deleted".to_string(),
+            Went::Transferred { to: Some(to) } => format!("the issue was transferred to {to}"),
+            Went::Transferred { to: None } => {
+                "the issue was transferred to another repo".to_string()
+            }
+            Went::Missing => "there is no such issue".to_string(),
+        }
+    }
+
+    /// The word a dispatch's `gone` answers with.
+    pub fn word(&self) -> &'static str {
+        match self.how {
+            Went::Deleted => "deleted",
+            Went::Transferred { .. } => "transferred",
+            Went::Missing => "missing",
         }
     }
 }
 
 impl std::fmt::Display for Gone {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.deleted {
-            true => write!(f, "issue #{} was deleted (HTTP 410)", self.issue),
-            false => write!(f, "issue #{} is not in this repo (HTTP 404): transferred", self.issue),
+        let issue = self.issue;
+        match &self.how {
+            Went::Deleted => write!(f, "issue #{issue} was deleted (HTTP 410)"),
+            Went::Transferred { to: Some(to) } => {
+                write!(f, "issue #{issue} was transferred to {to}")
+            }
+            Went::Transferred { to: None } => {
+                write!(f, "issue #{issue} was transferred to another repo")
+            }
+            Went::Missing => write!(f, "no such issue: #{issue} (HTTP 404)"),
         }
     }
 }
@@ -510,14 +640,23 @@ fn status(said: &str) -> Option<u16> {
     after.get(..3).filter(|code| code.bytes().all(|b| b.is_ascii_digit()))?.parse().ok()
 }
 
-/// `made`, a call about issue `number`, with a failure GitHub answered 410
-/// or 404 raised as `Gone`.
-fn about_issue<T>(number: u64, made: Result<T>) -> Result<T> {
+/// `made`, a read of issue `number` itself, with a failure GitHub answered
+/// 410 raised as `Gone` deleted, and 404 as `Gone` missing: a moved issue's
+/// read follows GitHub's redirect, so a 404 of it is no move.
+fn answered<T>(number: u64, made: Result<T>) -> Result<T> {
     made.map_err(|error| match status(&format!("{error}")) {
-        Some(410) => Gone { issue: number, deleted: true }.into(),
-        Some(404) => Gone { issue: number, deleted: false }.into(),
+        Some(410) => Gone { issue: number, how: Went::Deleted }.into(),
+        Some(404) => Gone { issue: number, how: Went::Missing }.into(),
         _ => error,
     })
+}
+
+/// Where the issue read as `url`, GitHub's API URL of it, is: `owner/repo`
+/// and its number.
+fn located(url: &str) -> Option<(String, u64)> {
+    let path = url.split_once("/repos/")?.1;
+    let (repo, number) = path.rsplit_once("/issues/")?;
+    Some((repo.to_string(), number.parse().ok()?))
 }
 
 /// Whether what `gh` said of a call that failed says it failed in transit:
@@ -788,14 +927,22 @@ impl GitHub {
 
     /// The GraphQL `query` of the tracker, page after page, each answer read
     /// with `jq`: `query` takes the tracker as `$owner` and `$repo`, and the
-    /// repo label of another as `$labels`.
-    fn query(&self, query: &str, jq: &str) -> Result<String> {
+    /// repo label of another as `$labels`. `fields` are further `-f` values,
+    /// such as `since=`.
+    fn query_with(&self, query: &str, jq: &str, fields: &[String]) -> Result<String> {
         let query = format!("query={query}");
         let variables = variables(&self.tracker);
         let mut args = vec!["api", "graphql", "--paginate"];
         args.extend(variables.iter().map(String::as_str));
+        for field in fields {
+            args.extend(["-f", field]);
+        }
         args.extend(["-f", &query, "--jq", jq]);
         self.read(&args)
+    }
+
+    fn query(&self, query: &str, jq: &str) -> Result<String> {
+        self.query_with(query, jq, &[])
     }
 
     /// Who GitHub lets see the tracker, as it says it (`VISIBILITY_JQ`).
@@ -910,49 +1057,71 @@ impl GitHub {
     /// An issue whose comments or blockers go past the embedded page is
     /// asked about again, for all of that connection.
     pub fn open_issues(&self) -> Result<OpenIssues> {
-        #[derive(Deserialize)]
-        struct Row {
-            number: u64,
-            title: String,
-            #[serde(default)]
-            body: String,
-            #[serde(default)]
-            url: String,
-            #[serde(default)]
-            at: Option<u64>,
-            labels: Vec<String>,
-            blockers: Vec<BlockedBy>,
-            blockers_more: bool,
-            more: bool,
-            comments: Vec<Comment>,
-        }
         let out = self.query(OPEN_ISSUES_QUERY, OPEN_ISSUES_JQ)?;
         let mut open = OpenIssues::default();
         for line in out.lines().filter(|line| !line.trim().is_empty()) {
-            let row: Row =
+            let row: OpenRow =
                 serde_json::from_str(line).context("gh api graphql: unexpected answer")?;
-            // Another repo's issue in the tracker is none of the fleet's.
-            if !self.tracker.holds(&row.labels) {
-                continue;
-            }
-            // Never infer an unblocked issue from the embedded page alone
-            // when GitHub says another page follows. A failed full read
-            // fails the rebuild instead of dispatching through a blocker.
-            let blockers =
-                if row.blockers_more { self.blocked_by(row.number)? } else { row.blockers };
-            let comments = if row.more { self.comments(row.number)? } else { row.comments };
-            open.comments.insert(row.number, comments);
-            open.blockers.insert(row.number, blockers.clone());
-            open.reports
-                .insert(row.number, Comment { id: 0, body: row.body, url: row.url, at: row.at });
-            open.rows.push(Issue {
-                number: row.number,
-                title: row.title,
-                labels: row.labels,
-                open_blockers: self.blockers(blockers),
-            });
+            self.take_open(&mut open, row)?;
         }
         Ok(open)
+    }
+
+    fn take_open(&self, open: &mut OpenIssues, row: OpenRow) -> Result<()> {
+        // Another repo's issue in the tracker is none of the fleet's.
+        if !self.tracker.holds(&row.labels) {
+            return Ok(());
+        }
+        // Never infer an unblocked issue from the embedded page alone
+        // when GitHub says another page follows. A failed full read
+        // fails the rebuild instead of dispatching through a blocker.
+        let blockers = if row.blockers_more { self.blocked_by(row.number)? } else { row.blockers };
+        let comments = if row.more { self.comments(row.number)? } else { row.comments };
+        open.comments.insert(row.number, comments);
+        open.blockers.insert(row.number, blockers.clone());
+        open.reports
+            .insert(row.number, Comment { id: 0, body: row.body, url: row.url, at: row.at });
+        open.rows.push(Issue {
+            number: row.number,
+            title: row.title,
+            labels: row.labels,
+            open_blockers: self.blockers(blockers),
+        });
+        Ok(())
+    }
+
+    /// The open issues, and the patrol landings of the day ending at `now`,
+    /// from one issues query. `None` for the landings when the closed page
+    /// may be short of the day: the caller then reads them on their own pages.
+    fn open_issues_and_landings(&self, now: u64) -> Result<OpenAndLanded> {
+        let since = now.saturating_sub(afkconvoy_core::patrol::DAY);
+        let since = format!("since={}Z", crate::log::utc(since).replace(' ', "T"));
+        let out = self.query_with(OPEN_AND_LANDED_QUERY, OPEN_AND_LANDED_JQ, &[since])?;
+        let mut open = OpenIssues::default();
+        let mut landed_rows = vec![];
+        let mut truncated = false;
+        for line in out.lines().filter(|line| !line.trim().is_empty()) {
+            let part: IssuePart =
+                serde_json::from_str(line).context("gh api graphql: unexpected answer")?;
+            match part {
+                IssuePart::Open(row) => self.take_open(&mut open, row)?,
+                IssuePart::Landed(row) => landed_rows.push(row),
+                IssuePart::Count { n } if n >= LANDED_PAGE => truncated = true,
+                IssuePart::Count { .. } => {}
+            }
+        }
+        if truncated {
+            return Ok(OpenAndLanded { issues: open, landings: None });
+        }
+        let mut seen = BTreeSet::new();
+        let mut landed = vec![];
+        for row in landed_rows {
+            if !seen.insert(row.number) {
+                continue;
+            }
+            landed.extend(self.take_landing(&row, now)?);
+        }
+        Ok(OpenAndLanded { issues: open, landings: Some(landed) })
     }
 
     /// The issues that may hold a closing or a stage/intake record since
@@ -1020,39 +1189,48 @@ impl GitHub {
     /// when a configured patrol has a landing bound. Ownership follows the
     /// latest intake record, regardless of the issue's labels now.
     pub fn patrol_landings(&self, now: u64) -> Result<Vec<(String, u64)>> {
-        #[derive(Deserialize)]
-        struct Row {
-            number: u64,
-            at: Option<u64>,
-            more: bool,
-            comments: Vec<Comment>,
-        }
         let out = self.query(LANDED_ISSUES_QUERY, LANDED_ISSUES_JQ)?;
         let mut landed = vec![];
         for line in out.lines().filter(|line| !line.trim().is_empty()) {
-            let row: Row =
+            let row: LandingRow =
                 serde_json::from_str(line).context("gh api graphql: unexpected answer")?;
-            let Some(at) = row.at else { continue };
-            if now.saturating_sub(at) >= afkconvoy_core::patrol::DAY {
-                continue;
-            }
-            let comments = if row.more { self.comments(row.number)? } else { row.comments };
-            if let Some(patrol) =
-                afkconvoy_core::intake::opened_by(comments.iter().map(|c| c.body.as_str()))
-            {
-                landed.push((patrol, at));
-            }
+            landed.extend(self.take_landing(&row, now)?);
         }
         Ok(landed)
     }
 
+    /// `(patrol, closed at)` when `row` is a patrol's completed issue inside
+    /// the day ending at `now`. Comments past the embedded page are read.
+    fn take_landing(&self, row: &LandingRow, now: u64) -> Result<Option<(String, u64)>> {
+        let Some(at) = row.at else { return Ok(None) };
+        if now.saturating_sub(at) >= afkconvoy_core::patrol::DAY {
+            return Ok(None);
+        }
+        let rest = if row.more { Some(self.comments(row.number)?) } else { None };
+        let comments = rest.as_deref().unwrap_or(row.comments.as_slice());
+        let patrol = afkconvoy_core::intake::opened_by(comments.iter().map(|c| c.body.as_str()));
+        Ok(patrol.map(|patrol| (patrol, at)))
+    }
+
     /// What is open: the issues and the PRs, asked for side by side.
     pub fn open(&self) -> Result<Open> {
-        let (issues, prs) = thread::scope(|scope| {
+        Ok(self.open_with_landings(None)?.open)
+    }
+
+    /// [`open`], and when `now` is set, the patrol landings of the day ending
+    /// then, from the same issues query. `None` for the landings means they
+    /// were not asked, or the closed page may be short of the day.
+    pub(crate) fn open_with_landings(&self, now: Option<u64>) -> Result<Opened> {
+        let (read, prs) = thread::scope(|scope| {
             let prs = scope.spawn(|| self.open_prs());
-            (self.open_issues(), beside(prs))
+            let read = match now {
+                None => self.open_issues().map(|issues| OpenAndLanded { issues, landings: None }),
+                Some(now) => self.open_issues_and_landings(now),
+            };
+            (read, beside(prs))
         });
-        Ok(Open { issues: issues?, prs: prs? })
+        let read = read?;
+        Ok(Opened { open: Open { issues: read.issues, prs: prs? }, landings: read.landings })
     }
 
     /// Every closed issue that carries `label`, each with when it closed, in
@@ -1232,16 +1410,57 @@ impl GitHub {
     }
 
     /// One issue, open or closed. An error when it cannot be read: `Gone`
-    /// when GitHub says it was deleted or transferred.
+    /// when GitHub says it was deleted or transferred, or has no such issue.
     pub fn issue(&self, number: u64) -> Result<IssueRead> {
         let endpoint = endpoint(&self.tracker, &format!("issues/{number}"));
-        let out = about_issue(number, self.read(&["api", &endpoint, "--jq", ISSUE_JQ]))?;
+        let out = answered(number, self.read(&["api", &endpoint, "--jq", ISSUE_JQ]))?;
         let issue: IssueRead = serde_json::from_str(&out)
             .with_context(|| format!("gh api issue {number}: unexpected answer"))?;
+        if let Some(to) = self.moved(number, &issue) {
+            return Err(Gone { issue: number, how: Went::Transferred { to: Some(to) } }.into());
+        }
         if issue.is_closed() {
             self.saw_closed(number);
         }
         Ok(issue)
+    }
+
+    /// Where issue `number` is, `owner/repo#n`, when its read `issue` is of
+    /// another repo or number: GitHub redirected the read because it moved.
+    fn moved(&self, number: u64, issue: &IssueRead) -> Option<String> {
+        let (repo, at) = located(issue.url.as_deref()?)?;
+        let here = match self.tracker.named() {
+            Some(named) => Some(named.to_string()),
+            None => self.own().map(str::to_string),
+        };
+        let elsewhere = here.is_some_and(|here| !here.eq_ignore_ascii_case(&repo));
+        (at != number || elsewhere).then(|| format!("{repo}#{at}"))
+    }
+
+    /// The checkout's own repo, `owner/repo`, where its remote names one.
+    fn own(&self) -> Option<&str> {
+        self.own
+            .get_or_init(|| {
+                let repo = Repo::new(self.dir.clone());
+                crate::checkout_list::named_repo(&repo).ok().map(|named| named.to_string())
+            })
+            .as_deref()
+    }
+
+    /// `made`, a call about issue `number`, with a failure GitHub answered
+    /// 410 raised as `Gone` deleted. A 404 says no more than that the call
+    /// found nothing, so the issue is read: `Gone` as that read says —
+    /// transferred where GitHub redirects it, else missing — and the failure
+    /// as it was of one GitHub still has here.
+    fn about_issue<T>(&self, number: u64, made: Result<T>) -> Result<T> {
+        made.map_err(|error| match status(&format!("{error}")) {
+            Some(410) => Gone { issue: number, how: Went::Deleted }.into(),
+            Some(404) => match self.issue(number) {
+                Err(read) if gone(&read).is_some() => read,
+                _ => error,
+            },
+            _ => error,
+        })
     }
 
     /// Every comment on an issue, oldest first: `Gone` of one GitHub says was
@@ -1259,7 +1478,7 @@ impl GitHub {
     fn comments_in(&self, repo: &str, number: u64) -> Result<Vec<Comment>> {
         let endpoint = format!("repos/{repo}/issues/{number}/comments?per_page=100");
         let read = self.read(&["api", "--paginate", &endpoint, "--jq", COMMENTS_JQ]);
-        let out = about_issue(number, read)?;
+        let out = self.about_issue(number, read)?;
         out.lines()
             .filter(|line| !line.trim().is_empty())
             .map(|line| serde_json::from_str(line).context("gh api comments: unexpected answer"))
@@ -1281,7 +1500,7 @@ impl GitHub {
     fn comment_in(&self, repo: &str, number: u64, body: &str) -> Result<()> {
         let endpoint = format!("repos/{repo}/issues/{number}/comments");
         let body = format!("body={body}");
-        about_issue(number, self.gh(&["api", "--method", "POST", &endpoint, "-f", &body]))?;
+        self.about_issue(number, self.gh(&["api", "--method", "POST", &endpoint, "-f", &body]))?;
         Ok(())
     }
 
@@ -1510,7 +1729,7 @@ impl GitHub {
             &format!("issues/{number}/dependencies/blocked_by?per_page=100"),
         );
         let read = self.read(&["api", "--paginate", &endpoint, "--jq", BLOCKED_BY_JQ]);
-        let out = about_issue(number, read)?;
+        let out = self.about_issue(number, read)?;
         out.lines()
             .filter(|line| !line.trim().is_empty())
             .map(|line| serde_json::from_str(line).context("gh api blocked_by: unexpected answer"))
@@ -1593,6 +1812,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_landed_page_adds_no_second_end_cursor() {
+        let open = OPEN_ISSUES_QUERY.matches("endCursor").count();
+        assert_eq!(OPEN_AND_LANDED_QUERY.matches("endCursor").count(), open);
+        let landed = OPEN_AND_LANDED_QUERY.split_once("landed:").unwrap().1;
+        assert!(!landed.contains("endCursor"), "{landed}");
+        assert!(OPEN_AND_LANDED_QUERY.contains("first: 100"));
+        assert_eq!(LANDED_PAGE, 100);
+        let nodes = "nodes { number title body url createdAt labels(first: 100) { nodes { name } }";
+        assert!(OPEN_ISSUES_QUERY.contains(nodes));
+        assert!(OPEN_AND_LANDED_QUERY.contains(nodes));
+    }
+
+    #[test]
     fn the_tracker_is_named_by_gh_filling_the_checkouts_repo_in_or_by_its_name() {
         let own = Tracker::Own;
         assert_eq!(endpoint(&own, "issues/7"), "repos/{owner}/{repo}/issues/7");
@@ -1637,18 +1869,52 @@ mod tests {
     }
 
     #[test]
-    fn an_issue_answered_with_410_or_404_is_gone_and_any_other_failure_is_as_it_was() {
+    fn an_issue_read_answered_with_410_is_deleted_and_with_404_is_no_such_issue() {
         let failed = |said: &str| -> Result<()> { bail!("gh api failed: {said}") };
-        let deleted = about_issue(231, failed("gh: This issue was deleted (HTTP 410)"));
+        let deleted = answered(231, failed("gh: This issue was deleted (HTTP 410)"));
         let error = deleted.unwrap_err().context("the claim cannot be read");
-        assert_eq!(gone(&error), Some(&Gone { issue: 231, deleted: true }));
-        let moved = about_issue(7, failed("gh: Not Found (HTTP 404)")).unwrap_err();
-        assert_eq!(gone(&moved), Some(&Gone { issue: 7, deleted: false }));
+        assert_eq!(gone(&error), Some(&Gone { issue: 231, how: Went::Deleted }));
+        let missing = answered(7, failed("gh: Not Found (HTTP 404)")).unwrap_err();
+        assert_eq!(gone(&missing), Some(&Gone { issue: 7, how: Went::Missing }));
+        assert_eq!(missing.to_string(), "no such issue: #7 (HTTP 404)");
         for said in ["gh: Resource not accessible by integration (HTTP 403)", "gh: no"] {
-            let error = about_issue(7, failed(said)).unwrap_err();
+            let error = answered(7, failed(said)).unwrap_err();
             assert_eq!((gone(&error), error.to_string()), (None, format!("gh api failed: {said}")));
         }
-        assert_eq!(Gone { issue: 231, deleted: true }.said(), "the issue was deleted");
+        assert_eq!(Gone { issue: 231, how: Went::Deleted }.said(), "the issue was deleted");
+        assert_eq!(Gone { issue: 7, how: Went::Missing }.said(), "there is no such issue");
+    }
+
+    #[test]
+    fn an_issue_is_transferred_only_where_its_read_was_redirected_elsewhere() {
+        let gh = GitHub::new(
+            PathBuf::from("/nowhere"),
+            Tracker::Other {
+                tracker: RepoName::read("sunfmin/hkj").unwrap(),
+                repo: RepoName::read("sunfmin/app").unwrap(),
+            },
+        );
+        let read = |url: Option<&str>| IssueRead {
+            id: 1,
+            title: String::new(),
+            state: "open".to_string(),
+            state_reason: None,
+            labels: vec![],
+            pull_request: false,
+            closed_by: None,
+            body: None,
+            url: url.map(str::to_string),
+        };
+        let here = read(Some("https://api.github.com/repos/sunfmin/hkj/issues/22"));
+        assert_eq!(gh.moved(22, &here), None);
+        assert_eq!(gh.moved(22, &read(None)), None);
+        let moved = read(Some("https://api.github.com/repos/sunfmin/control/issues/2"));
+        assert_eq!(gh.moved(22, &moved), Some("sunfmin/control#2".to_string()));
+        let same_number = read(Some("https://api.github.com/repos/sunfmin/control/issues/22"));
+        assert_eq!(gh.moved(22, &same_number), Some("sunfmin/control#22".to_string()));
+        let gone =
+            Gone { issue: 22, how: Went::Transferred { to: Some("sunfmin/control#2".into()) } };
+        assert_eq!(gone.to_string(), "issue #22 was transferred to sunfmin/control#2");
     }
 
     #[test]

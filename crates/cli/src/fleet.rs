@@ -3,8 +3,9 @@
 //!
 //! A rebuild asks the remote once and GitHub a fixed number of times, side by
 //! side: one listing of branch tips and every ref of the fleet
-//! (`Repo::listing`), and what is open on GitHub (`GitHub::open`). Neither
-//! grows with the issues in flight.
+//! (`Repo::listing`), and what is open on GitHub (`GitHub::open`). A patrol
+//! that bounds how many issues it lands in a day is read in that same issues
+//! query. Neither grows with the issues in flight.
 
 use afkconvoy_core::casting::{self, Cast};
 use afkconvoy_core::claims::{Claim, InstanceId};
@@ -57,7 +58,8 @@ pub struct Fleet {
     /// tick's line says of them. Every escalation is made through
     /// `judge::escalate_claim`, which is what adds to it.
     pub escalated: Vec<(u64, String)>,
-    /// The issues this view found gone — deleted or transferred — as a step
+    /// The issues this view found gone — deleted, transferred or never
+    /// issued — as a step
     /// met them, each with whether a claim on it was released: what a tick's
     /// line says of them.
     pub forgotten: Vec<(Gone, bool)>,
@@ -73,6 +75,10 @@ pub struct Fleet {
     /// A startup probe that still stands already checked every harness.
     /// `runnable` then keeps the kit `running` built and starts none again.
     trust_launches: bool,
+    /// Patrol landings of the day, read with the open issues. `None`: this
+    /// view did not ask, or the closed page may be short of the day, and
+    /// `patrol::seen` asks. `Some` includes a day in which nothing landed.
+    pub(crate) patrol_landings: Option<Vec<(String, u64)>>,
 }
 
 /// Why no worker of a role can be started on this host: it holds limits for
@@ -122,6 +128,7 @@ impl Fleet {
             closers: vec![],
             cut_said: vec![],
             trust_launches: false,
+            patrol_landings: None,
         })
     }
 
@@ -136,11 +143,18 @@ impl Fleet {
     /// asked side by side, of the one tracker the view goes by.
     pub fn read(repo: &Repo, now: u64) -> Result<(Fleet, Open)> {
         let gh = GitHub::of(repo)?;
+        // Before the issues query, so a patrol that bounds its day is counted
+        // in that query instead of a second one. A team that cannot be read
+        // leaves the landings unasked.
+        let since = patrol::landings_since(repo, now);
         let (fleet, open) = thread::scope(|scope| {
-            let open = scope.spawn(|| gh.open());
+            let open = scope.spawn(|| gh.open_with_landings(since));
             (Fleet::open_on(repo, gh.clone(), now), beside(open))
         });
-        Ok((fleet?, open?))
+        let mut fleet = fleet?;
+        let opened = open?;
+        fleet.patrol_landings = opened.landings;
+        Ok((fleet, opened.open))
     }
 
     /// The first eligible harness in kit order within the role's range, and
@@ -394,7 +408,7 @@ impl Fleet {
         serde_json::json!({"order": crate::kit::load().map(|k| k.harnesses.iter().map(|h| h.harness).collect::<Vec<_>>()).unwrap_or_default(),
             "eligible": kit.map(|k| k.harnesses.iter().map(|h| h.harness).collect::<Vec<_>>()).unwrap_or_default(),
             "skipped": self.runnable.borrow().as_ref().map(|runnable| &runnable.skipped),
-            "pinned": self.pinned, "health": crate::health::show(), "refusals": *self.refusals.borrow(), "why": why})
+            "pinned": self.pinned, "health": crate::health::json(&crate::health::show()), "refusals": *self.refusals.borrow(), "why": why})
     }
 
     pub(crate) fn invalidate_selection(&self) {
@@ -617,8 +631,9 @@ impl Fleet {
             })
             .collect();
         // The list holds only open issues: a claim missing from it is asked
-        // about, and is closed, gone — deleted or transferred — or unread.
-        let (mut closed, mut deleted) = (vec![], vec![]);
+        // about, and is closed, gone — deleted, transferred or never issued —
+        // or unread.
+        let (mut closed, mut vanished) = (vec![], vec![]);
         self.unread.clear();
         self.closers.clear();
         for claim in &self.scan.claims {
@@ -631,7 +646,7 @@ impl Fleet {
                     self.closers.extend(read.closed_by.map(|by| (claim.number, by)));
                 }
                 Ok(_) => {}
-                Err(error) if gone(&error).is_some() => deleted.push(claim.number),
+                Err(error) if gone(&error).is_some() => vanished.push(claim.number),
                 Err(error) => self.unread.push((claim.number, error)),
             }
         }
@@ -692,7 +707,7 @@ impl Fleet {
             claims: &self.scan.claims,
             heartbeats: &heartbeats,
             closed: &closed,
-            gone: &deleted,
+            gone: &vanished,
             kept: &kept,
             landed: &landed,
             declared: &declared,

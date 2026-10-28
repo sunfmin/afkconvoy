@@ -5,8 +5,10 @@
 //! about. It only looks: nothing is installed, started or added and nobody is
 //! logged in.
 
+use std::collections::BTreeMap;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use afkconvoy_core::tools::{ALWAYS, Found, Tool, refusal, remote_host};
 use anyhow::{Result, bail};
@@ -96,30 +98,48 @@ fn asked(dir: &Path, tool: Tool, question: &str) -> Found {
         };
     }
     if tool == Tool::Gh {
-        // gh auth status itself spends quota, and looks up env-token users
-        // through GraphQL. The common entry verifies an override's identity
-        // before any GitHub effect; don't let this redundant probe block it.
-        if crate::gh_quota::credential_present() {
-            return Found::Ready;
-        }
-        let gh = crate::gh::GitHub::new(dir.to_path_buf(), crate::gh::Tracker::Own);
-        if let Ok(scope) = crate::gh_quota::Scope::of(&gh)
-            && quota_waits(&scope)
-        {
-            return Found::Ready;
-        }
+        // One answer for the life of this process. Every checkout of one
+        // doctor asks the same question, and nobody changes gh's login
+        // under a running runner. A look does not forget it.
+        return gh_found(dir, question);
     }
     let (succeeded, printed) = ask_login_shell(dir, question).unwrap_or_default();
-    if tool == Tool::Gh && !succeeded {
-        let gh = crate::gh::GitHub::new(dir.to_path_buf(), crate::gh::Tracker::Own);
-        if let Ok(scope) = crate::gh_quota::Scope::of(&gh) {
-            let _ = scope.observe(&gh);
-            if quota_waits(&scope) {
-                return Found::Ready;
-            }
+    if tool.logged_in(succeeded, &printed) { Found::Ready } else { Found::LoggedOut }
+}
+
+/// One answer to a `gh` login question, shared by every ask in this process.
+/// The question names the host, so two hosts stay two answers.
+static GH_LOGIN: Mutex<BTreeMap<String, Arc<OnceLock<Found>>>> = Mutex::new(BTreeMap::new());
+
+fn gh_found(dir: &Path, question: &str) -> Found {
+    let cell = {
+        let mut logins = GH_LOGIN.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        logins.entry(question.to_string()).or_insert_with(|| Arc::new(OnceLock::new())).clone()
+    };
+    cell.get_or_init(|| gh_found_once(dir, question)).clone()
+}
+
+fn gh_found_once(dir: &Path, question: &str) -> Found {
+    // gh auth status itself spends quota, and looks up env-token users
+    // through GraphQL. The common entry verifies an override's identity
+    // before any GitHub effect; don't let this redundant probe block it.
+    if crate::gh_quota::credential_present() {
+        return Found::Ready;
+    }
+    let gh = crate::gh::GitHub::new(dir.to_path_buf(), crate::gh::Tracker::Own);
+    if let Ok(scope) = crate::gh_quota::Scope::of(&gh)
+        && quota_waits(&scope)
+    {
+        return Found::Ready;
+    }
+    let (succeeded, printed) = ask_login_shell(dir, question).unwrap_or_default();
+    if !succeeded && let Ok(scope) = crate::gh_quota::Scope::of(&gh) {
+        let _ = scope.observe(&gh);
+        if quota_waits(&scope) {
+            return Found::Ready;
         }
     }
-    if tool.logged_in(succeeded, &printed) { Found::Ready } else { Found::LoggedOut }
+    if Tool::Gh.logged_in(succeeded, &printed) { Found::Ready } else { Found::LoggedOut }
 }
 
 fn quota_waits(scope: &crate::gh_quota::Scope) -> bool {

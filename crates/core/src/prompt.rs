@@ -1,6 +1,7 @@
 //! The worker prompt: a template, filled by code. No worker is ever started on
 //! a prompt with a placeholder left in it.
 
+use crate::ending::Ending;
 use crate::position::Declared;
 use crate::recovery::Variant;
 use crate::stage_record::{Author, StageRecord, Stated};
@@ -79,14 +80,8 @@ const JOIN_STEP: &str = "\
    ```
    It asks for a turn, makes your PR's merge commit on the current `{base_branch}` tip,
    gates that commit, records green, and pushes that same commit as a fast-forward.
-   On `\"outcome\": \"merged\"`, wake the fleet and stop.
-   On `\"conflict\"`, resolve every listed file, `git add` it, commit the merge and run this again.
-   On `\"gate_red\"`, fix your change, commit and run this again.
-   On `\"target_moved\"`, nothing landed: ask for a turn again on the new base tip.
-   On `\"cancelled\"`, a predecessor was invalidated: your source branch is preserved. This is not your gate failing; ask for another turn when your issue's blockers permit.
-   On `\"waiting_for_capacity\"` or `\"waiting_for_predecessor\"`, ask for a turn again; no gate failure or rework occurred.
-   On `\"blocked\"`, wait for the named issue dependencies to close before asking again.
-   On `\"locked\"`, stop without waking anyone until told to carry on.
+   Its answer's `\"outcome\"` is one of these words:
+<endings>
    An unrecorded base tip is gated alone first. Ordinary turns wait while it is red;
    the fleet dispatches a repair whose own turn must still gate green before landing.";
 
@@ -887,8 +882,14 @@ fn steps(template: &str, gate: &str, join: &str, outcomes: &str) -> String {
     let numbered = |step: &str| step.replace("<g>", gate).replace("<j>", join);
     template
         .replace("<gate_step>", &numbered(GATE_STEP))
-        .replace("<join_step>", &numbered(JOIN_STEP))
+        .replace("<join_step>", &numbered(&JOIN_STEP.replace("<endings>", &endings())))
         .replace("<wake>", &WAKE.replace("<outcomes>", outcomes))
+}
+
+/// What the land step tells a worker of each word its turn can answer, as
+/// the turn's endings say it.
+pub fn endings() -> String {
+    Ending::listed(|word, told| format!("   On `\"{word}\"`, {told}."))
 }
 
 /// The line typed at a worker to hand it its brief. The prompt itself, sent as

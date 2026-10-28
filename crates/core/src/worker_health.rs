@@ -35,6 +35,17 @@ pub enum Scope {
     Worker,
 }
 
+impl Scope {
+    /// The word it is written as.
+    pub fn key(self) -> &'static str {
+        match self {
+            Scope::Account => "account",
+            Scope::Model => "model",
+            Scope::Worker => "worker",
+        }
+    }
+}
+
 /// What the fleet does with the worker.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

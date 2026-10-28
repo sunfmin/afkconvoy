@@ -829,8 +829,108 @@ fn a_watch_is_ended_at_its_hour_and_one_no_harness_can_start_is_a_finding() {
     let doctor = world.afk(&["doctor", "--all"]);
     assert_eq!(doctor.code, 1, "{}", doctor.json);
     let findings = doctor.json["findings"].as_array().unwrap();
-    assert!(findings.iter().any(|f| f["what"] == "no harness can start this host's watch"));
+    let finding = findings
+        .iter()
+        .find(|f| f["what"] == "no harness can start this host's watch")
+        .expect("the kit that cannot start keeps that row");
+    assert_eq!(finding["fix"], "afkconvoy kit");
     assert_eq!(doctor.json["host"]["watch"]["unavailable"], json!(why));
+}
+
+#[test]
+fn a_busy_watch_is_that_watch_and_its_fix_is_one_command() {
+    let world = World::new();
+    let dir = operator(&world);
+    world.say_concurrency(&world.clone, 1);
+    let situation = "the resident watch is busy; its round remains undelivered. \
+         No replacement is started and existing work is retained.";
+    let watch_dir = world.cache().join("afkconvoy/watch");
+    std::fs::create_dir_all(&watch_dir).unwrap();
+    std::fs::write(watch_dir.join("state.json"), json!({"unavailable": situation}).to_string())
+        .unwrap();
+    std::fs::write(
+        watch_dir.join("terminal.json"),
+        json!({
+            "watch": {"id": "round-1", "directory": dir, "look": {}, "items": [], "started": 0,
+                "harness": "claude-code", "model": null, "terminal": "watch-term",
+                "transcript": "/tmp/watch.log"},
+            "status": "ready", "terminal": null, "command": "agent", "problem": situation
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let doctor = world.afk(&["doctor", "--all"]);
+    let finding =
+        finding_named(&doctor.json, "the resident watch is busy; its round remains undelivered");
+    assert_eq!(finding["what"], "the resident watch is busy; its round remains undelivered");
+    assert_eq!(finding["evidence"], situation);
+    assert_eq!(doctor.json["host"]["watch"]["association"]["problem"], situation);
+    assert!(doctor.json["host"]["host_kit"]["paused"].as_array().unwrap().is_empty());
+    assert!(!finding["what"].as_str().unwrap().contains("no harness can start"), "{}", finding);
+    let fix = finding["fix"].as_str().unwrap();
+    assert!(!fix.contains(&world.clone.display().to_string()), "{fix}");
+    assert!(fix.contains(&dir.display().to_string()), "{fix}");
+    assert!(!fix.split_whitespace().any(|word| word == "--help"), "{fix}");
+    assert!(!fix.contains(['(', ';', '&', '|', '\n']), "{fix}");
+    let ran = world.command("sh", Path::new("/tmp")).arg("-c").arg(fix).output().unwrap();
+    assert!(ran.status.success(), "{fix}: {}", String::from_utf8_lossy(&ran.stderr));
+    let from = std::fs::canonicalize("/tmp").unwrap();
+    let orca = world.orca();
+    let recorded = orca["from"].as_array().unwrap().last().unwrap();
+    assert_eq!(recorded, &json!(from.display().to_string()));
+    let call = world.orca_calls().last().unwrap().clone();
+    assert_eq!(asked(&call), "terminal list");
+    assert!(call.iter().any(|arg| arg == &format!("path:{}", dir.display())));
+    assert!(
+        !call
+            .iter()
+            .any(|arg| { arg == "--help" || arg.contains(&world.clone.display().to_string()) })
+    );
+
+    world.pause("claude-code", 1, "it refused every prompt");
+    let paused = world.afk(&["doctor", "--all"]);
+    let blocked = finding_named(&paused.json, "no harness can start this host's watch");
+    assert_eq!(blocked["fix"], "afkconvoy kit");
+    assert!(!blocked["what"].as_str().unwrap().contains("the resident watch is busy"));
+
+    let mut paused_items = world.paused();
+    paused_items.as_array_mut().unwrap().clear();
+    std::fs::write(world.paused_path(), paused_items.to_string()).unwrap();
+    let key = command_key("agent");
+    std::fs::write(
+        world.cache().join("afkconvoy/worker-health.json"),
+        json!({"workers": [],
+            "faults": [{"harness": "claude-code", "command_key": key, "model": null,
+                "scope": "account", "since": 1, "next_check": 9_999_999_999_u64,
+                "evidence": ["a fault on record"]}],
+            "observations_failed": []})
+        .to_string(),
+    )
+    .unwrap();
+    let faulted = world.afk(&["doctor", "--all"]);
+    let blocked = finding_named(&faulted.json, "no harness can start this host's watch");
+    assert_eq!(blocked["fix"], "afkconvoy kit");
+    assert!(faulted.json["host"]["host_kit"]["paused"].as_array().unwrap().is_empty());
+    assert!(
+        !faulted.json["host"]["host_kit"]["worker_health"]["faults"].as_array().unwrap().is_empty()
+    );
+}
+
+fn finding_named<'a>(doctor: &'a Value, what: &str) -> &'a Value {
+    doctor["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|finding| finding["what"].as_str().unwrap().contains(what))
+        .unwrap_or_else(|| panic!("no finding {what}: {doctor}"))
+}
+
+fn command_key(command: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    command.hash(&mut hash);
+    format!("{:016x}", hash.finish())
 }
 
 #[test]

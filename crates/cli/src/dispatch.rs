@@ -221,7 +221,7 @@ pub enum StartFrom {
 ///   {"started": false, "claim": "lost", "owner": {…}}   a peer holds the issue
 ///   {"started": false, "skipped": "blocked", "blocked_by": [n…]}
 ///                                  an open blocker, read just before the claim
-///   {"started": false, "gone": "deleted"|"transferred", "released": bool}
+///   {"started": false, "gone": "deleted"|"transferred"|"missing", "released": bool}
 ///                                  GitHub says the issue is gone: a claim held
 ///                                  on it is let go (`forget`)
 ///
@@ -278,7 +278,7 @@ pub(crate) fn dispatch_continuing(
     if !released {
         fleet.forgotten.push((how.clone(), false));
     }
-    let said = if how.deleted { "deleted" } else { "transferred" };
+    let said = how.word();
     forget_starting(fleet, number)?;
     Ok(json!({"issue": number, "started": false, "gone": said, "released": released}))
 }

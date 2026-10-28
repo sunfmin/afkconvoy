@@ -154,6 +154,17 @@ pub(crate) fn working_directories() -> anyhow::Result<Vec<PathBuf>> {
     Ok(dirs)
 }
 
+/// Whether any process's working directory is `worktree` or a path inside it.
+pub(crate) fn occupies(directories: &[PathBuf], worktree: &Path) -> bool {
+    let worktree = std::fs::canonicalize(worktree).unwrap_or_else(|_| worktree.to_path_buf());
+    directories.iter().any(|cwd| {
+        // The kernel's path and the path we recorded can disagree on a
+        // symlink (`/var` and `/private/var`). Compare the real paths.
+        let cwd = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.clone());
+        cwd == worktree || cwd.starts_with(&worktree)
+    })
+}
+
 /// The bytes of memory this host has; `None` where it cannot be read.
 pub fn memory() -> Option<u64> {
     if cfg!(target_os = "macos") {

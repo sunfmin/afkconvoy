@@ -130,6 +130,21 @@ impl Left {
     }
 }
 
+/// Whether settling keeps this worktree. Parking keeps anything dirty.
+/// Settling does not: a dirty tree whose every commit is on the remote is
+/// the gate's leftovers, and the worktree goes. A commit the remote does
+/// not have, or a tree that could not be read, stays.
+pub fn settle_keeps(left: &Left) -> bool {
+    match left.kept() {
+        None => false,
+        Some(kept) => match (kept.because, kept.unpushed) {
+            (KeptBecause::Dirty, Some(0)) => false,
+            (KeptBecause::Dirty, _) => true,
+            (KeptBecause::Unpushed | KeptBecause::Unread, _) => true,
+        },
+    }
+}
+
 #[cfg(flux)]
 #[allow(dead_code)]
 mod rejected {
@@ -167,6 +182,17 @@ mod tests {
             assert_eq!(left.kept(), Some(&Kept { because, unpushed }), "{dirty} {unpushed:?}");
             assert!(left.spare().is_none());
         }
+    }
+
+    #[test]
+    fn a_settled_worktree_stays_only_for_a_commit_the_remote_does_not_have() {
+        let kept = |because, unpushed| Left::Kept(Kept { because, unpushed });
+        assert!(!settle_keeps(&Left::of(&Held { dirty: false, unpushed: Some(0) })));
+        assert!(!settle_keeps(&kept(KeptBecause::Dirty, Some(0))));
+        assert!(settle_keeps(&kept(KeptBecause::Dirty, Some(2))));
+        assert!(settle_keeps(&kept(KeptBecause::Dirty, None)));
+        assert!(settle_keeps(&kept(KeptBecause::Unpushed, Some(1))));
+        assert!(settle_keeps(&kept(KeptBecause::Unread, None)));
     }
 
     #[test]

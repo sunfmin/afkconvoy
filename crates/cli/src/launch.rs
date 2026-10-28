@@ -343,9 +343,9 @@ impl Launches {
     }
 
     /// Whether this launch adds harness flags: every worker in a role, and
-    /// outside one wherever worktree trust is launch configuration.
+    /// outside one wherever its harness says its worktree trust is flags.
     pub fn adds_flags(&self, harness: Harness) -> bool {
-        self.bound || matches!(harness, Harness::ClaudeCode | Harness::Pi | Harness::Codex)
+        self.bound || harness.trust_is_flags()
     }
 
     /// `fault`, of the command of `harness`, as a human is told it: in a
@@ -368,14 +368,39 @@ impl Launches {
         self.warned.take()
     }
 
-    /// Fingerprint the entire kit so any edit invalidates a standing probe.
+    /// Fingerprint of the kit's launch commands, so any edit invalidates a
+    /// standing probe. A command that starts no worker hashes the commands
+    /// the kit holds and asks the login shell nothing: resolving a word
+    /// does not change that text, and a doctor trusts a standing probe
+    /// without starting a harness. A command that starts workers resolves,
+    /// and may discover a missing command, before it hashes what it checked.
     pub fn key(&self) -> Result<Option<u64>> {
+        if !self.starts {
+            return Ok(Some(key(&self.held_commands()?)));
+        }
         let Some(default) = self.of(self.default())? else { return Ok(None) };
         let mut text = default.as_str().to_string();
         for (harness, command) in crate::kit::load()?.commands() {
             text.push_str(&format!("\n{}={command}", harness.key()));
         }
         Ok(Some(key(&text)))
+    }
+
+    /// The launch commands a fingerprint is of, as the kit holds them: the
+    /// default harness's command, then each held command. The same text
+    /// `of` hashes once a missing command has been discovered.
+    fn held_commands(&self) -> Result<String> {
+        let kit = crate::kit::load()?;
+        let harness = self.default();
+        let command = kit
+            .command(harness)
+            .filter(|command| !command.trim().is_empty())
+            .unwrap_or_else(|| harness.stock());
+        let mut text = command.to_string();
+        for (harness, command) in kit.commands() {
+            text.push_str(&format!("\n{}={command}", harness.key()));
+        }
+        Ok(text)
     }
 
     /// First words alone for the run log; commands remain in the host kit.
