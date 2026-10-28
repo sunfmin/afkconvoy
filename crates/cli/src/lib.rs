@@ -1506,9 +1506,6 @@ enum Command {
         /// candidate worktrees of one repo may validate together within this bound.
         #[arg(long, env = "AFKCONVOY_GATE_LANES", value_parser = host_settings::watch_every_or_default)]
         gate_lanes: Option<To<u64>>,
-        /// Obsolete setting, ignored: turns land directly and only --gate-lanes applies.
-        #[arg(long, hide = true, env = "AFKCONVOY_TRAIN_LANES", value_parser = host_settings::watch_every_or_default)]
-        train_lanes: Option<To<u64>>,
         /// Stop after this many ticks
         #[arg(long, hide = true)]
         ticks: Option<u64>,
@@ -1778,6 +1775,8 @@ enum Command {
     ///
     /// What one tick of `run` does: the startup probe, the rebuild, then every transition the working set calls for — on the remote, on GitHub and in orca. It does not wait for the workers it starts, and keeps nothing on this host a later tick needs. Like `plan` it makes no probe while one that passed on this host in the last hour stands, and says so on stderr (`afkconvoy plan --help`) — one that checked the worker launch commands this tick starts its workers with: a changed host kit is probed for. What is checked of each harness's command: `afkconvoy run --help`; the line each harness's worker is started with: [`afkconvoy help worker-launch`](help:worker-launch).
     ///
+    /// A stopped candidate's worktree is removed on this pass when no process still has it as its working directory. A worktree a process is still in stays for a later tick. The candidate chain is not rewritten. `afkconvoy land --help`.
+    ///
     /// ## What it answers
     ///
     /// {"did", "errors", "held", "frontier_remaining", "idle", "locks"} — and "held_back_by" when admission held back a worker it would have started
@@ -1892,6 +1891,8 @@ enum Command {
     /// A task uses its pinned target branch (`afkconvoy target --help`), or resolves the configured base when it has no target. Its PR must actually name that base; a wrong base, missing branch or unreadable target refuses without falling back. Each repo and target has its own candidate chain and landed commits. Watches and cuts retain the configured base.
     ///
     /// A turn preserves the PR's original head and atomically assigns a candidate merged onto the certified base or its preceding candidate. Each candidate must gate that exact commit in its own worktree, and its gate run is recorded green against it. With free worker lanes, candidates of the same repo validate concurrently; green successors wait for their exact predecessors, then push that commit to the target branch as a fast-forward without another gate. The window, including green waiters and unconfirmed cancellation, is bounded by the host's live worker-lane count. A light gate keeps its repo lane. Committed source changes are pushed to the PR first; candidate merges never move that source branch. The merge message names the PR and issue, watch or cut. Landing closes the issue; the tick settles its claim and source worktree.
+    ///
+    /// Once a candidate has stopped — landed, red, or cancelled with its processes confirmed gone — its worktree is removed. The candidate chain keeps the gate evidence: the phase, the cause and the gate excerpt, and a recorded gate run stays on the remote. A directory left behind after git dropped the registration is removed too, including when a directory inside it is not writable by its owner. A candidate that is building, validating, green and waiting on its predecessor, or cancelling, keeps its worktree. A worktree a process still has as its working directory stays until that process is gone, and a later tick removes it. The issue's, watch's or cut's own worktree is left, and the candidate chain is not rewritten.
     ///
     /// The remote candidate record holds original head, predecessor, commit, tree, gate declaration, owner, process group, validation and cancellation. Publication rechecks validity, the PR's actual base, head, predecessor landing, issue blockers, fleet locks and the green record, then atomically fast-forwards the exact tested candidate and its state. No force push, extra merge or aggregate gate is used. Known candidate advances preserve successors; an outside base move or changed PR head invalidates the affected suffix. Cuts, watches, fleet-lock repairs and base certification drain the candidate window and run as serial barriers.
     ///
@@ -2617,7 +2618,7 @@ enum Command {
     ///
     /// ## What it reads and writes
     ///
-    /// It keeps the cut's record in the checkout's git dir (`convoy-cut.json`): the version, the tag it is cut past (`from: null` for an initial cut), the PRs it holds, its PR, where it landed, the step it is at, and each step it took with its seconds — and, where one failed, which and why. The tick reads it, and ends the cut once it says it took every step or failed at one, once its terminal is gone, or once its time ran out: two gate limits (`gate_seconds`) and an hour beside — three hours at the default.
+    /// It keeps the cut's record in the checkout's git dir (`convoy-cut.json`): the version, the tag it is cut past (`from: null` for an initial cut), the PRs it holds, its PR, where it landed, the step it is at, and each step it took with its seconds — and, where one failed, which and why. The tick reads it, and ends the cut once it says it took every step or failed at one, once its terminal is gone, or once its time ran out: three hours beside the two gate limits (`gate_seconds`) — five hours at the default.
     ///
     /// A cut's turn and exclusive commands go ahead of waiting worker commands, keeping request order among cuts. They never interrupt a running command. Queue waits count toward the cut's time limit; the gate's own limit starts after its turn is granted. The tick line that starts a cut says whether the fleet was `idle` or `busy`.
     ///
@@ -3954,7 +3955,6 @@ fn start_of(
         exclusive_seconds,
         jev_key_command,
         gate_lanes,
-        train_lanes,
         ticks,
         second_ms,
         panic_at_tick,
@@ -3987,7 +3987,6 @@ fn start_of(
         admit_inspect_after,
         exclusive_seconds,
         gate_lanes,
-        train_lanes,
         panel,
         watch_dir,
         watch_every,

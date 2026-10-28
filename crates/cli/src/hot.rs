@@ -139,6 +139,21 @@ fn works_in(pid: u32) -> Option<PathBuf> {
     std::fs::read_link(format!("/proc/{pid}/cwd")).ok()
 }
 
+/// The working directory of every process this host can see.
+///
+/// A process whose directory cannot be read is left out: that is not evidence
+/// it works somewhere else. An error from the process list removes nothing
+/// that was waiting on this answer.
+pub(crate) fn working_directories() -> anyhow::Result<Vec<PathBuf>> {
+    let mut dirs = vec![];
+    for proc in listed_checked()? {
+        if let Some(cwd) = works_in(proc.pid) {
+            dirs.push(cwd);
+        }
+    }
+    Ok(dirs)
+}
+
 /// The bytes of memory this host has; `None` where it cannot be read.
 pub fn memory() -> Option<u64> {
     if cfg!(target_os = "macos") {
