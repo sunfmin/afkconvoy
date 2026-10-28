@@ -174,7 +174,7 @@ _Avoid_: handoff note, log (the tick log; what a gate prints), stage label
 
 **Work account**:
 The one comment the fleet leaves when work on an issue ends, and edits when a later end of that issue is acted on. It states the wall clock from the earliest claim the fleet has recorded for the issue to that end, the workers the fleet started, and the gate runs it timed on that issue's own tree. A worker does not write it. Position, rework and the guard do not read it.
-_Avoid_: summary, time log, report
+_Avoid_: summary (the read-only summary a command answers), time log, report (a failure a patrol or a cut opens; what a watch round delivers; what doctor says)
 
 **Position**:
 Where an issue is in its workflow: at a stage a worker is to perform, waiting on a human, with a consult, parked, landing, ended, or escalating. It is derived from the stage records each tick and stored nowhere.

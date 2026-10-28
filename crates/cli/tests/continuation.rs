@@ -371,7 +371,17 @@ fn a_claim_whose_worker_died_is_continued_in_the_worktree_still_here() {
     assert_eq!(open_terminals(&world, &dir).len(), 1);
     assert!(continues(&brief(&dir)));
     assert!(brief(&dir).contains(&format!("**Your branch:** `{BRANCH}`")));
-    assert_eq!(world.comments(7).len(), 1, "its branch was recorded already");
+    let comments = world.comments(7);
+    assert_eq!(
+        comments.iter().filter(|body| body.contains("<!--convoy:branch ")).count(),
+        1,
+        "its branch was recorded already: {comments:?}"
+    );
+    assert_eq!(
+        comments.iter().filter(|body| body.starts_with("<!--convoy:worker ")).count(),
+        1,
+        "a continuation of the same harness is not another row: {comments:?}"
+    );
 }
 
 fn worktree_of(world: &World, issue: u64) -> PathBuf {
@@ -418,8 +428,26 @@ fn with_no_worktree_here_the_pushed_branch_is_recreated_at_its_tip() {
     assert_eq!(world.remote(&["rev-parse", &format!("refs/heads/{BRANCH}")]), pushed);
     // …and the branch orca cut for the new worktree is the issue's own too
     let comments = world.comments(7);
-    assert_eq!(comments.len(), 2);
-    assert!(comments[1].starts_with(&format!("<!--convoy:branch name={BRANCH}-2-->")));
+    assert!(
+        comments
+            .iter()
+            .any(|body| body.starts_with(&format!("<!--convoy:branch name={BRANCH}-2-->"))),
+        "{comments:?}"
+    );
+    assert_eq!(
+        comments.iter().filter(|body| body.starts_with("<!--convoy:branch ")).count(),
+        2,
+        "{comments:?}"
+    );
+    assert_eq!(
+        comments.iter().filter(|body| body.starts_with("<!--convoy:worker ")).count(),
+        1,
+        "recreating the worktree continues the same worker: {comments:?}"
+    );
+    assert!(
+        !comments.iter().any(|body| body.starts_with("<!--convoy:account ")),
+        "a continuation is not an end: {comments:?}"
+    );
     assert_eq!(world.claims().len(), 1);
 }
 

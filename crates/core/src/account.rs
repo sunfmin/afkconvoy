@@ -57,6 +57,23 @@ pub fn own_row(landing: bool, continued_from: Option<&str>, harness: &str) -> bo
     !landing && continued_from != Some(harness)
 }
 
+/// Whether a worker start for `claim` on `harness` is already in `bodies`.
+/// A continuation or a takeover of that worker is not another row. An
+/// account quotes those markers, and a quotation is not a start.
+pub fn already_noted<'a>(
+    bodies: impl IntoIterator<Item = &'a str>,
+    claim: &str,
+    harness: &str,
+) -> bool {
+    bodies.into_iter().any(|body| {
+        if record::read_marker(ACCOUNT, body).is_some() {
+            return false;
+        }
+        let Some(fields) = record::read_marker(WORKER, body) else { return false };
+        fields.get("claim") == Some(claim) && fields.get("harness") == Some(harness)
+    })
+}
+
 /// The comment posted when the fleet starts a worker that [`own_row`] names.
 pub fn worker_comment(begun: &Begun<'_>) -> String {
     let at = begun.at.to_string();
@@ -640,6 +657,12 @@ mod tests {
         assert!(own_row(false, Some("pi"), "codex"));
         assert!(!own_row(true, None, "pi"));
         assert!(own_row(false, None, "pi"));
+        let noted = begun(1000, "c1", 900, "pi", None, Some("build"));
+        assert!(already_noted([noted.as_str()], "c1", "pi"));
+        assert!(!already_noted([noted.as_str()], "c1", "codex"));
+        assert!(!already_noted([noted.as_str()], "c2", "pi"));
+        let account = account(&[hear(1000, &noted)], &[], true, Some(900), 2000).unwrap();
+        assert!(!already_noted([account.as_str()], "c1", "pi"));
     }
 
     #[test]

@@ -336,7 +336,13 @@ fn a_flow_label_that_names_no_workflow_escalates_the_issue_once() {
 
     world.gh_calls();
     assert_eq!(did(&tick(&world, 1090)), [] as [&str; 0]);
-    assert_eq!(world.comments(9).len(), 1);
+    let comments = world.comments(9);
+    assert!(comments.iter().any(|body| body.starts_with("<!--convoy:escalation")), "{comments:?}");
+    assert_eq!(
+        comments.iter().filter(|body| body.starts_with("<!--convoy:account ")).count(),
+        1,
+        "escalating leaves one work account: {comments:?}"
+    );
 }
 
 #[test]
@@ -424,7 +430,12 @@ fn already_satisfied_refuses_an_equal_tree_with_commits_ahead() {
     assert_eq!(world.claims(), []);
     assert!(dir.exists());
     assert!(world.labels(7).contains(&"ready-for-human".to_string()));
-    assert!(world.comments(7).last().unwrap().contains("commits past the merge base"));
+    let escalation = world
+        .comments(7)
+        .into_iter()
+        .find(|body| body.starts_with("<!--convoy:escalation"))
+        .expect("an escalation comment");
+    assert!(escalation.contains("commits past the merge base"), "{escalation}");
 }
 
 #[test]

@@ -672,6 +672,19 @@ fn note_start(
         return None;
     }
     let claim = fleet.scan.claim_of(number)?;
+    // A start already on record for this claim and harness is this worker.
+    // Restarting it after it died does not open another row.
+    let comments = match fleet.gh.comments(number) {
+        Ok(comments) => comments,
+        Err(error) => return Some(format!("{error:#}")),
+    };
+    if afkconvoy_core::account::already_noted(
+        comments.iter().map(|comment| comment.body.as_str()),
+        &claim.id,
+        harness.key(),
+    ) {
+        return None;
+    }
     let body = afkconvoy_core::account::worker_comment(&afkconvoy_core::account::Begun {
         at: fleet.now,
         claim: &claim.id,
