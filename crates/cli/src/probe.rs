@@ -14,8 +14,8 @@ use std::path::Path;
 use afkconvoy_core::config::Config;
 use afkconvoy_core::gate::outlived;
 use afkconvoy_core::layout::{
-    Answer, BaseCheck, GATE_KIND, PROBE_STANDS, answer, base_check, choose, no_base_branch,
-    no_gate_records, probe_stands,
+    Answer, BaseCheck, GATE_KIND, Layout, PROBE_STANDS, answer, base_check, no_base_branch,
+    no_gate_records, probe_stands, settle,
 };
 use afkconvoy_core::tools::Tool;
 use afkconvoy_core::tracker::{Tracker, is_public, public};
@@ -252,11 +252,14 @@ pub fn startup(repo: &Repo, now: u64, launches: &Launches) -> Result<Vec<String>
         Ok(ran) => answer(ran.ok, &ran.stderr),
         Err(error) => Answer::Unreached(format!("{error:#}")),
     };
-    let chosen = choose(|layout| push(&layout.probe("", &token)))
+    // A noted layout is asked first and moves only after two probes in a row
+    // have seen it rejected while the other was taken. One rejection leaves
+    // the note, and a push that reaches no verdict settles nothing.
+    let settled = settle(repo.noted(), |layout| push(&layout.probe("", &token)))
         .map_err(|why| See::Troubleshooting.refusal(why))?;
-    let layout = chosen.layout();
-    warnings.extend(chosen.warning());
-    repo.note_layout(layout)?;
+    warnings.extend(settled.warning);
+    repo.note_settled(settled.layout, settled.streak)?;
+    let layout = settled.layout;
 
     let records = match push(&layout.probe(GATE_KIND, &token)) {
         Answer::Taken => true,
@@ -265,14 +268,25 @@ pub fn startup(repo: &Repo, now: u64, launches: &Launches) -> Result<Vec<String>
             false
         }
     };
-    // Probes — this one's, and any a start killed mid-probe left — and the
-    // gate records no landing would believe any more.
+    // Probes — this one's, on whichever layout it asked, and any a start
+    // killed mid-probe left — and the gate records no landing would believe
+    // any more. A run that still stands stays, including one left on the
+    // layout the note moved off. Gate records of the noted layout are swept
+    // only where that layout takes them.
+    let patterns: Vec<String> = Layout::ALL.into_iter().map(|layout| layout.every("")).collect();
+    let patterns: Vec<&str> = patterns.iter().map(String::as_str).collect();
     let mut litter = vec![];
-    for record in repo.remote_records(&layout.every(""))? {
-        let gate_record = layout.kept(&record.name).is_some_and(|kept| kept.starts_with(GATE_KIND));
+    for record in repo.remote_records_in(&patterns)? {
+        let Some(home) = Layout::ALL.into_iter().find(|home| home.kept(&record.name).is_some())
+        else {
+            continue;
+        };
+        let gate_record = home.kept(&record.name).is_some_and(|kept| kept.starts_with(GATE_KIND));
         // A ref that moved while it was read has no subject yet: not litter.
-        let swept = records && gate_record && !record.subject.is_empty();
-        if layout.is_probe(&record.name) || (swept && outlived(&record.subject, now)) {
+        let readable = gate_record && !record.subject.is_empty() && outlived(&record.subject, now);
+        let noted_takes_records = home == layout && records;
+        let left_behind = home != layout;
+        if home.is_probe(&record.name) || (readable && (noted_takes_records || left_behind)) {
             litter.push(record.name);
         }
     }

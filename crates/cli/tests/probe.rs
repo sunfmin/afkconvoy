@@ -44,6 +44,10 @@ fn warnings(answer: &Answer) -> Vec<&str> {
     answer.stderr.lines().filter(|line| line.starts_with("warning: ")).collect()
 }
 
+fn layout_note(world: &World) -> String {
+    std::fs::read_to_string(world.clone.join(".git/convoy-layout")).unwrap_or_default()
+}
+
 fn did(ticked: &Value) -> Vec<String> {
     let steps = ticked["did"].as_array().unwrap().iter();
     steps
@@ -248,20 +252,135 @@ fn a_remote_that_rejects_hidden_refs_has_every_ref_kept_as_a_branch() {
 }
 
 #[test]
-fn a_remote_that_takes_hidden_refs_again_is_gone_back_to() {
+fn a_remote_that_takes_hidden_refs_again_keeps_the_noted_branch_layout() {
     let world = World::new();
     world.remote_rejects("refs/convoy/");
     plan(&world).ok();
+    assert_eq!(layout_note(&world), "branches\n");
     world.watch_pushes(None);
     world.afk(&["claim", "--issue", "7", "--instance", "alpha", "--now", "1000"]).ok();
     assert_eq!(world.pushes().last().unwrap(), "refs/heads/convoy-claim/7");
 
-    // the rule is lifted (the watching hook replaced the rejecting one), and
-    // the probe that found it no longer stands
+    // Hidden refs work again, and branches still do. The noted layout is asked
+    // first and taken, so the note stays and the hidden layout is not asked.
     let planned = world.afk(&["plan", "--now", "4600"]);
-    assert_eq!(warnings(&planned), [] as [&str; 0]);
+    assert_eq!(warnings(&planned), [] as [&str; 0], "{}", planned.stderr);
+    planned.ok();
     world.afk(&["claim", "--issue", "8", "--instance", "alpha", "--now", "1000"]).ok();
-    assert_eq!(world.pushes().last().unwrap(), "refs/convoy/claim/8");
+    assert_eq!(world.pushes().last().unwrap(), "refs/heads/convoy-claim/8");
+    assert_eq!(layout_note(&world), "branches\n");
+    let probes = world.probes();
+    assert!(probes.iter().all(|name| name.starts_with("refs/heads/convoy-")), "{probes:?}");
+}
+
+#[test]
+fn one_rejection_of_a_noted_hidden_layout_leaves_it_and_two_move_it() {
+    let world = World::new();
+    world.set_gate("true");
+    plan_at(&world, "1000").ok();
+    assert_eq!(layout_note(&world), "hidden\n");
+
+    world.watch_pushes(Some("refs/convoy/"));
+    let once = plan_at(&world, "4600");
+    let said = warnings(&once).join("\n");
+    assert!(!said.contains("kept as branches"), "{said}");
+    once.ok();
+    assert_eq!(layout_note(&world), "hidden 1\n");
+    let probes = world.probes();
+    assert!(probes[0].starts_with("refs/convoy/probe-"), "{probes:?}");
+    assert!(probes[1].starts_with("refs/heads/convoy-probe-"), "{probes:?}");
+
+    // The write is still attempted on the noted layout, and nowhere else.
+    let gated = world.afk(&["gate", "--now", "5000"]).ok();
+    assert_eq!(gated["recorded"], false, "{gated}");
+    let wrote: Vec<_> = world.pushes().into_iter().filter(|name| name.contains("/gate/")).collect();
+    assert!(wrote.iter().any(|name| name.starts_with("refs/convoy/gate/")), "{wrote:?}");
+    assert!(wrote.iter().all(|name| !name.starts_with("refs/heads/convoy-")), "{wrote:?}");
+
+    let twice = plan_at(&world, "8200");
+    assert!(warnings(&twice).join("\n").contains("kept as branches"), "{}", twice.stderr);
+    twice.ok();
+    assert_eq!(layout_note(&world), "branches\n");
+
+    let gated = world.afk(&["gate", "--now", "6000"]).ok();
+    assert_eq!(gated["recorded"], true, "{gated}");
+    let records = refs(&world, "refs/heads/convoy-gate");
+    assert_eq!(records.len(), 1, "{records:?}");
+    assert_eq!(refs(&world, "refs/convoy/gate"), [] as [String; 0]);
+    assert!(
+        refs(&world, "refs/").iter().all(|name| !name.contains("probe-")),
+        "probe litter on either layout is swept: {:?}",
+        refs(&world, "refs/")
+    );
+}
+
+#[test]
+fn a_probe_that_takes_the_noted_layout_clears_the_streak() {
+    let world = World::new();
+    plan_at(&world, "1000").ok();
+    assert_eq!(layout_note(&world), "hidden\n");
+
+    world.watch_pushes(Some("refs/convoy/"));
+    plan_at(&world, "4600").ok();
+    assert_eq!(layout_note(&world), "hidden 1\n");
+
+    world.watch_pushes(None);
+    plan_at(&world, "8200").ok();
+    assert_eq!(layout_note(&world), "hidden\n");
+
+    world.watch_pushes(Some("refs/convoy/"));
+    plan_at(&world, "11800").ok();
+    assert_eq!(layout_note(&world), "hidden 1\n");
+}
+
+#[test]
+fn a_probe_that_reaches_no_verdict_leaves_the_note() {
+    let world = World::new();
+    plan_at(&world, "1000").ok();
+    assert_eq!(layout_note(&world), "hidden\n");
+
+    // The startup check only reads the advertisement, so it passes. The probe
+    // push then dies with no verdict, and the note is left as it was.
+    use std::os::unix::fs::PermissionsExt;
+    let hook = world.bare.join("hooks/pre-receive");
+    std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
+    std::fs::write(&hook, "#!/bin/sh\nkill -9 \"$PPID\"\n").unwrap();
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let error = plan_at(&world, "4600").error();
+    assert!(error.contains("never reached a verdict"), "{error}");
+    assert_eq!(layout_note(&world), "hidden\n");
+}
+
+#[test]
+fn two_rejections_of_a_noted_branch_layout_settle_hidden_refs() {
+    let world = World::new();
+    world.set_gate("true");
+    world.remote_rejects("refs/convoy/");
+    let first = plan_at(&world, "1000");
+    assert!(warnings(&first).join("\n").contains("kept as branches"), "{}", first.stderr);
+    first.ok();
+    assert_eq!(layout_note(&world), "branches\n");
+
+    world.watch_pushes(Some("refs/heads/convoy-"));
+    let once = plan_at(&world, "4600");
+    assert!(!warnings(&once).join("\n").contains("kept as branches"), "{}", once.stderr);
+    once.ok();
+    assert_eq!(layout_note(&world), "branches 1\n");
+    let probes = world.probes();
+    assert!(probes[0].starts_with("refs/heads/convoy-probe-"), "{probes:?}");
+    assert!(probes[1].starts_with("refs/convoy/probe-"), "{probes:?}");
+
+    let twice = plan_at(&world, "8200");
+    assert!(!warnings(&twice).join("\n").contains("kept as branches"), "{}", twice.stderr);
+    twice.ok();
+    assert_eq!(layout_note(&world), "hidden\n");
+
+    let gated = world.afk(&["gate", "--now", "9000"]).ok();
+    assert_eq!(gated["recorded"], true, "{gated}");
+    let records = refs(&world, "refs/convoy/gate");
+    assert_eq!(records.len(), 1, "{records:?}");
+    assert_eq!(refs(&world, "refs/heads/convoy-gate"), [] as [String; 0]);
 }
 
 #[test]

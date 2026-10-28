@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, OnceLock};
 
-use afkconvoy_core::layout::Layout;
+use afkconvoy_core::layout::{Layout, Note};
 use anyhow::{Context, Result, bail};
 
 /// The remote every ref and branch is pushed to and fetched from.
@@ -78,18 +78,33 @@ impl Repo {
     /// worktree, so a worker's command names the refs the fleet does. A repo
     /// no start has probed uses the first layout.
     pub fn layout(&self) -> Layout {
-        let noted = self.note(LAYOUT_NOTE).and_then(|note| Ok(std::fs::read_to_string(note)?));
-        noted.ok().and_then(|name| Layout::named(name.trim())).unwrap_or(Layout::ALL[0])
+        self.noted().map(|note| note.layout).unwrap_or(Layout::ALL[0])
     }
 
-    /// Notes the layout a start settled on.
-    pub fn note_layout(&self, layout: Layout) -> Result<()> {
-        if self.layout() != layout {
-            let note = self.note(LAYOUT_NOTE)?;
-            std::fs::write(&note, format!("{}\n", layout.name()))
-                .with_context(|| format!("cannot write {}", note.display()))?;
+    /// The note of the ref layout, including how many probes in a row have
+    /// seen it rejected; `None` when no start has probed, or the note is not one.
+    pub fn noted(&self) -> Option<Note> {
+        let text = std::fs::read_to_string(self.note(LAYOUT_NOTE).ok()?).ok()?;
+        Note::read(&text)
+    }
+
+    /// Notes the layout a start settled on, and the streak against it.
+    pub fn note_settled(&self, layout: Layout, streak: u32) -> Result<()> {
+        let next = Note { layout, streak };
+        if self.noted() == Some(next) {
+            return Ok(());
         }
+        let note = self.note(LAYOUT_NOTE)?;
+        std::fs::write(&note, next.write())
+            .with_context(|| format!("cannot write {}", note.display()))?;
         Ok(())
+    }
+
+    /// Notes the layout a start settled on, keeping a streak already counted
+    /// against that same layout.
+    pub fn note_layout(&self, layout: Layout) -> Result<()> {
+        let streak = self.noted().filter(|note| note.layout == layout).map(|note| note.streak);
+        self.note_settled(layout, streak.unwrap_or(0))
     }
 
     /// Where a note called `name` is kept on this host: in the repo's git
@@ -245,7 +260,12 @@ impl Repo {
     /// Nothing is written to this checkout's refs or its FETCH_HEAD: worktrees
     /// share both, and a worker's command may be reading the remote meanwhile.
     pub fn remote_records(&self, pattern: &str) -> Result<Vec<RemoteRecord>> {
-        let mut records = self.listed_refs(&[pattern])?;
+        self.remote_records_in(&[pattern])
+    }
+
+    /// `remote_records` for several patterns, in one listing of the remote.
+    pub fn remote_records_in(&self, patterns: &[&str]) -> Result<Vec<RemoteRecord>> {
+        let mut records = self.listed_refs(patterns)?;
         self.read_record_subjects(&mut records)?;
         Ok(records)
     }
