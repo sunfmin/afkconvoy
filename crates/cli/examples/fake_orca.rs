@@ -2,7 +2,7 @@
 //! one JSON file (`CONVOY_FAKE_ORCA`). Worktrees are real git worktrees.
 //!
 //! State: `repos` [{id, path}], `root` (where worktrees are made), `worktrees`
-//! [{path, branch, linkedIssue, repoId, lastActivityAt}], `terminals` [{handle,
+//! [{path, branch, linkedIssue, repoId, lastActivityAt, head?, removalError?}], `terminals` [{handle,
 //! worktreePath, command, title?, sent, open, agent?, lastOutputAt?, screen?}], `calls`,
 //! `envs`: beside each of `calls`, the names of the session's environment it
 //! ran in (`fake::State`), `parents`: the pid that made each call, and `from`:
@@ -25,6 +25,10 @@
 //! `start_screen`, `send_screen`, `prompt_stages` (a receipt without a turn
 //! start); each terminal can also have `menu` and its own `prompt_stages`.
 //! `raw_answers` maps a call's first two words to its stdout, after its effects.
+//! A `worktree list` drops a row whose `removalError` is set once its directory
+//! is gone, which is how real orca forgets a failed removal. A `worktree rm`
+//! whose git remove fails while the directory remains records `removalError`
+//! and still answers success. `rm_fails` still refuses before any delete.
 //! `startup_working_reports`: a quiet screen while the harness reports a
 //! start-up working episode for this many fresh runtime observations.
 //!
@@ -71,7 +75,7 @@ fn main() {
         ["repo", "list", ..] => done(&st, json!({"repos": st.doc["repos"]})),
         ["repo", "add", ..] => repo_add(&mut st),
         ["worktree", "create", ..] => worktree_create(&mut st),
-        ["worktree", "list", ..] => worktree_list(&st),
+        ["worktree", "list", ..] => worktree_list(&mut st),
         ["worktree", "ps", ..] => worktree_ps(&mut st),
         ["worktree", "rm", ..] => worktree_rm(&mut st),
         ["terminal", "create", ..] => terminal_create(&mut st),
@@ -172,27 +176,48 @@ fn worktree_create(st: &mut State) -> ! {
         .unwrap();
     assert!(made.status.success(), "{}", String::from_utf8_lossy(&made.stderr));
     let activity = st.list("calls").len();
+    let head = fake::git(&["-C", &path, "rev-parse", "HEAD"]);
     st.list("worktrees").push(json!({"path": path, "branch": format!("refs/heads/{branch}"),
         "linkedIssue": linked, "repoId": repo["id"], "isMainWorktree": false,
-        "isArchived": false, "lastActivityAt": activity}));
+        "isArchived": false, "lastActivityAt": activity, "head": head.clone()}));
     // as real orca: every worktree it cuts opens on a bare shell of its own
     let handle = format!("term-{}", st.list("terminals").len() + 1);
     st.list("terminals").push(json!({"handle": handle, "worktreePath": path, "command": null,
         "sent": [], "open": true}));
-    let head = fake::git(&["-C", &path, "rev-parse", "HEAD"]);
     done(
         st,
         json!({"worktree": {"path": path, "branch": format!("refs/heads/{branch}"), "head": head}}),
     )
 }
 
-fn worktree_list(st: &State) -> ! {
+fn worktree_list(st: &mut State) -> ! {
+    let mut stored = st.doc["worktrees"].as_array().cloned().unwrap_or_default();
+    let before = stored.len();
+    // as real orca: a failed removal is forgotten once the directory is gone
+    stored.retain(|row| {
+        let gone = row["path"].as_str().is_some_and(|path| !Path::new(path).exists());
+        let failed = row["removalError"].as_str().is_some_and(|error| !error.is_empty());
+        !(gone && failed)
+    });
+    if stored.len() != before {
+        st.doc["worktrees"] = json!(stored);
+    }
     let mut rows = st.doc["worktrees"].as_array().cloned().unwrap_or_default();
     for row in &mut rows {
-        // as real orca: the branch checked out NOW — none on a detached HEAD
-        let path = row["path"].as_str().unwrap().to_string();
-        if Path::new(&path).is_dir() {
-            row["branch"] = json!(fake::git(&["-C", &path, "symbolic-ref", "-q", "HEAD"]));
+        // as real orca: the branch checked out NOW — none on a detached HEAD.
+        // A gitdir already gone leaves a seeded head and branch as they were.
+        let Some(path) = row["path"].as_str() else { continue };
+        if !Path::new(path).is_dir() {
+            continue;
+        }
+        let path = path.to_string();
+        let branch = fake::git(&["-C", &path, "symbolic-ref", "-q", "HEAD"]);
+        if !branch.is_empty() {
+            row["branch"] = json!(branch);
+        }
+        let head = fake::git(&["-C", &path, "rev-parse", "HEAD"]);
+        if !head.is_empty() {
+            row["head"] = json!(head);
         }
     }
     done(st, json!({"worktrees": rows}))
@@ -253,21 +278,40 @@ fn worktree_rm(st: &mut State) -> ! {
         fail(st, "worktree_busy");
     }
     assert!(st.has("--force"), "{:?}", st.argv);
+    let mut failed = false;
     if Path::new(&path).is_dir() {
         let source = st.doc["repos"][0]["path"].as_str().unwrap().to_string();
         let branch = fake::git(&["-C", &path, "symbolic-ref", "-q", "--short", "HEAD"]);
-        fake::git(&["-C", &source, "worktree", "remove", "--force", &path]);
-        // as real orca: the branch goes too, unless it holds what it cannot
-        // prove merged — here, a commit the source's checkout does not have
-        let held = ["-C", &source, "rev-list", "--count", &branch, "--not", "HEAD"];
-        if !branch.is_empty() && fake::git(&held) == "0" {
+        let removed = std::process::Command::new("git")
+            .args(["-C", &source, "worktree", "remove", "--force", &path])
+            .output()
+            .unwrap();
+        // as real orca: git drops the registration and stops on a directory
+        // the owner cannot write. The failure is recorded, the row stays, and
+        // the call still answers success.
+        if !removed.status.success() && Path::new(&path).exists() {
+            failed = true;
+            let detail = String::from_utf8_lossy(&removed.stderr).trim().to_string();
+            for row in st.list("worktrees") {
+                if row["path"] == path.as_str() {
+                    row["removalError"] =
+                        json!(format!("Failed to force delete worktree at {path}. {detail}"));
+                }
+            }
+        } else if !branch.is_empty()
+            && fake::git(&["-C", &source, "rev-list", "--count", &branch, "--not", "HEAD"]) == "0"
+        {
+            // as real orca: the branch goes too, unless it holds what it cannot
+            // prove merged — here, a commit the source's checkout does not have
             fake::git(&["-C", &source, "branch", "-D", &branch]);
         }
     }
-    st.list("worktrees").retain(|row| row["path"] != path.as_str());
-    for terminal in st.list("terminals") {
-        if terminal["worktreePath"] == path.as_str() {
-            terminal["open"] = json!(false);
+    if !failed {
+        st.list("worktrees").retain(|row| row["path"] != path.as_str());
+        for terminal in st.list("terminals") {
+            if terminal["worktreePath"] == path.as_str() {
+                terminal["open"] = json!(false);
+            }
         }
     }
     done(st, json!({"removed": true}))

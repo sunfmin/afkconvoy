@@ -656,7 +656,7 @@ pub(crate) fn remove_listed(repo: &Repo, records: &[crate::git::RemoteRecord]) -
     }
     let busy = crate::hot::working_directories()?;
     for (path, recorded) in pending {
-        if occupies(&busy, &path) {
+        if crate::hot::occupies(&busy, &path) {
             continue;
         }
         remove_candidate_worktree(repo, &path, &recorded);
@@ -680,17 +680,6 @@ fn candidate_directory(root: &Path, path: &Path, id: &str) -> bool {
         (Ok(parent), Ok(root)) => parent == root,
         _ => false,
     }
-}
-
-/// Whether any process's working directory is `worktree` or a path inside it.
-fn occupies(directories: &[PathBuf], worktree: &Path) -> bool {
-    let worktree = std::fs::canonicalize(worktree).unwrap_or_else(|_| worktree.to_path_buf());
-    directories.iter().any(|cwd| {
-        // The kernel's path and the path we recorded can disagree on a
-        // symlink (`/var` and `/private/var`). Compare the real paths.
-        let cwd = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.clone());
-        cwd == worktree || cwd.starts_with(&worktree)
-    })
 }
 
 /// Drops `path` and, once the directory is gone, its process-scope file.
