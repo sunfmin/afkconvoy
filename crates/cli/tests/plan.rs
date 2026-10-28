@@ -66,9 +66,9 @@ fn plan_assembles_the_working_set() {
     assert_eq!(
         plan["mine"],
         json!([
-            {"number": 1, "title": "issue 1", "status": "no_pr", "pr": null, "declared": false},
-            {"number": 4, "title": "issue 4", "status": "landing", "pr": 40, "declared": false},
-            {"number": 6, "title": null, "status": "closed", "pr": null, "declared": false},
+            {"number": 1, "title": "issue 1", "status": "no_pr", "pr": null, "declared": false, "idle": false},
+            {"number": 4, "title": "issue 4", "status": "landing", "pr": 40, "declared": false, "idle": true},
+            {"number": 6, "title": null, "status": "closed", "pr": null, "declared": false, "idle": false},
         ])
     );
     assert_eq!(numbers(&plan["peer_live"]), [2]);
@@ -76,7 +76,7 @@ fn plan_assembles_the_working_set() {
     assert_eq!(plan["stale"][0]["instance"], "dead");
     assert_eq!(plan["stale"][0]["sha"], world.remote(&["rev-parse", "refs/convoy/claim/3"]));
     assert_eq!(numbers(&plan["stale_closed"]), [10]);
-    assert_eq!(plan["free_slots"], 0, "three held under a concurrency of two");
+    assert_eq!(plan["free_slots"], 1, "the idle landing #4 takes none of the two slots");
 }
 
 #[test]
@@ -90,7 +90,7 @@ fn a_pr_from_a_fork_is_read_by_nothing() {
     let plan = world.afk(&["plan", "--instance", "me", "--now", "10000"]).ok();
     assert_eq!(
         plan["mine"][1],
-        json!({"number": 4, "title": "issue 4", "status": "landing", "pr": 40, "declared": false})
+        json!({"number": 4, "title": "issue 4", "status": "landing", "pr": 40, "declared": false, "idle": true})
     );
     assert_eq!(numbers(&plan["frontier"]), [11], "{plan}");
     assert!(!numbers(&plan["excluded"]).contains(&11), "{plan}");
