@@ -330,6 +330,55 @@ fn a_worktree_a_process_is_in_stays_until_that_process_is_gone() {
 }
 
 #[test]
+fn a_landed_worker_idle_at_its_prompt_is_ended_and_its_worktree_removed() {
+    let world = backlog(&[3]);
+    world.set_gate("true");
+    tick(&world, "1000");
+    let worktree = worker_worktree(&world);
+    common::commit(&worktree, "three.txt", "3\n");
+    git(&worktree, &["push", "-q", "origin", "HEAD"]);
+    world.pr(30, 3, &git(&worktree, &["symbolic-ref", "--short", "HEAD"]));
+    let landed = world.afk_in(&worktree, &["land", "--issue", "3", "--now", "1050"]).ok();
+    assert_eq!(landed["outcome"], "merged", "{landed}");
+    let session = Session::start(&world, &worktree);
+    report(&world, "idle", 1);
+
+    let ticked = tick(&world, "1090");
+    assert_eq!(did(&ticked), ["settle 3 done"], "{ticked}");
+    assert!(ticked["errors"].as_array().unwrap().is_empty(), "{ticked}");
+    assert!(session.ended(), "the worker's own session is ended");
+    assert!(open_terminals(&world, &worktree).is_empty(), "its terminal is closed");
+    assert!(!worktree.exists(), "the worktree is removed");
+    assert_eq!(world.claims(), []);
+}
+
+#[test]
+fn a_worker_still_working_keeps_its_worktree() {
+    let world = backlog(&[3]);
+    tick(&world, "1000");
+    let worktree = worker_worktree(&world);
+    let session = Session::start(&world, &worktree);
+    report(&world, "working", 1000);
+    world.close_issue(3);
+
+    let ticked = tick(&world, "1090");
+    assert_eq!(did(&ticked), ["settle 3 failed", "heartbeat done"], "{ticked}");
+    let error = ticked["errors"][0]["error"].as_str().unwrap();
+    assert!(error.contains("a worker is still using"), "{error}");
+    assert!(!session.ended(), "a worker still working is left alone");
+    assert_eq!(open_terminals(&world, &worktree).len(), 1);
+    assert!(worktree.is_dir());
+    assert_eq!(world.claims(), alpha(&[3]));
+
+    report(&world, "idle", 1);
+    let again = tick(&world, "1180");
+    assert_eq!(did(&again)[0], "settle 3 done", "{again}");
+    assert!(session.ended());
+    assert!(!worktree.exists(), "once it stopped, the next tick ends it and removes the worktree");
+    assert_eq!(world.claims(), []);
+}
+
+#[test]
 fn a_worktree_with_a_commit_the_remote_does_not_have_stays() {
     let world = backlog(&[3]);
     tick(&world, "1000");
@@ -445,6 +494,63 @@ fn mode(path: &Path) -> u32 {
 }
 
 /// Kills the process when dropped, including when an assertion fails.
+/// The workers report `state` since `since` (epoch seconds).
+fn report(world: &World, state: &str, since: u64) {
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            terminal["agent"] = json!({"state": state, "stateStartedAt": since * 1000});
+            terminal["lastOutputAt"] = json!(since * 1000);
+        }
+    });
+}
+
+fn open_terminals(world: &World, dir: &Path) -> Vec<Value> {
+    let orca = world.orca();
+    let terminals = orca["terminals"].as_array().unwrap();
+    let here = terminals.iter().filter(|t| t["worktreePath"] == dir.to_str().unwrap());
+    here.filter(|t| t["open"] == true).cloned().collect()
+}
+
+/// A process of the worker's own session: started in its worktree with its
+/// `TMPDIR`, as the harness orca starts for it is. A thread reaps it the
+/// moment it ends, so no zombie stands for it.
+struct Session {
+    pid: u32,
+    reaper: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Session {
+    fn start(world: &World, worktree: &Path) -> Self {
+        let mut child = Command::new("sleep")
+            .arg("120")
+            .current_dir(worktree)
+            .env("TMPDIR", world.tmp(worktree))
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        let reaper = std::thread::spawn(move || {
+            child.wait().unwrap();
+        });
+        Self { pid, reaper: Some(reaper) }
+    }
+
+    fn ended(&self) -> bool {
+        self.reaper.as_ref().is_none_or(|reaper| reaper.is_finished())
+    }
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        if let Some(reaper) = self.reaper.take() {
+            if !reaper.is_finished() {
+                // SAFETY: this pid is the test's own child, not yet reaped.
+                unsafe { libc::kill(self.pid as libc::pid_t, libc::SIGKILL) };
+            }
+            reaper.join().unwrap();
+        }
+    }
+}
+
 struct Hold(Child);
 
 impl Drop for Hold {

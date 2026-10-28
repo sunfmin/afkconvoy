@@ -179,7 +179,7 @@ impl Ending {
         }
     }
 
-    fn log_ended(&mut self, worktree: &Path) {
+    fn log_ended(&mut self, worktree: &Path, command: &str) {
         if !self.sent || self.logged {
             return;
         }
@@ -190,7 +190,7 @@ impl Ending {
             instance: String::new(),
             host: crate::this_host(),
             what: crate::log::What::Command {
-                command: "start".to_string(),
+                command: command.to_string(),
                 on: Some(worktree.display().to_string()),
                 by: "fleet".to_string(),
                 outcome: format!("ended old worker {}, after {signal}", self.description),
@@ -1157,6 +1157,21 @@ impl Worktree {
     /// End the old agent before a continuation can rewrite its brief or
     /// start another writer. Include descendants that escaped the terminal.
     pub(crate) fn stop_for_continuation(&self) -> Result<()> {
+        self.end_worker("start", "no replacement was started")
+    }
+
+    /// Ends the session the fleet started here for an issue whose work has
+    /// landed, before settling removes the worktree: its terminals and
+    /// process tree, confirmed gone.
+    pub(crate) fn end_settled(&self) -> Result<()> {
+        self.end_worker("tick", "a later tick removes it")
+    }
+
+    /// Closes every terminal here and ends the worker's process tree, each
+    /// end confirmed: one still there after SIGKILL is an error, saying
+    /// `consequence`. Each process ended is a line of the tick log, under
+    /// `command`.
+    fn end_worker(&self, command: &str, consequence: &str) -> Result<()> {
         let before = crate::hot::listed_checked()?;
         let pids: Vec<_> = crate::hot::tree(&before, &self.path).iter().map(|p| p.pid).collect();
         self.close_terminals()?;
@@ -1185,7 +1200,7 @@ impl Worktree {
             }
             for (pid, record) in &mut ending {
                 if !processes.iter().any(|proc| proc.pid == *pid) {
-                    record.log_ended(&self.path);
+                    record.log_ended(&self.path, command);
                 }
             }
             let old_alive =
@@ -1213,7 +1228,7 @@ impl Worktree {
                     .collect::<Vec<_>>()
                     .join("; ");
                 bail!(
-                    "old worker termination is unconfirmed in {}; no replacement was started{}",
+                    "old worker termination is unconfirmed in {}; {consequence}{}",
                     self.path.display(),
                     if survivors.is_empty() {
                         String::new()
