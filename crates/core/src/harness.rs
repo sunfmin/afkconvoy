@@ -1163,8 +1163,69 @@ mod tests {
         );
         assert_eq!(
             Harness::Grok.recorded_turn(CWD, &primary, None),
-            Some(Turn::Closed { since: AT })
+            Some(Turn::Closed { since: AT, started: Some(AT) })
         );
+    }
+
+    #[test]
+    fn the_primary_session_that_started_last_is_the_turn() {
+        use crate::turn::prefer;
+        use crate::worker::{WorkerState, worker_state};
+
+        let killed = grok_session(AT, None, "primary");
+        let finished = grok_session(AT + 40, Some(AT + 60), "primary");
+        let killed = Harness::Grok.recorded_turn(CWD, &killed, None);
+        let finished = Harness::Grok.recorded_turn(CWD, &finished, None);
+        assert_eq!(killed, Some(Turn::Open { since: AT }));
+        let turn = prefer(&[killed.unwrap(), finished.unwrap()]);
+        assert_eq!(turn, Some(Turn::Closed { since: AT + 60, started: Some(AT + 40) }));
+        assert_eq!(
+            worker_state(1, turn, AT + 70),
+            WorkerState::Idle { quiet: Some(10) },
+            "idle from the end of the session that started last"
+        );
+        assert_eq!(worker_state(0, killed, AT + 70), WorkerState::Gone);
+
+        let earlier = grok_session(AT, Some(AT + 20), "primary");
+        let later = grok_session(AT + 40, None, "primary");
+        let turn = prefer(&[
+            Harness::Grok.recorded_turn(CWD, &earlier, None).unwrap(),
+            Harness::Grok.recorded_turn(CWD, &later, None).unwrap(),
+        ]);
+        assert_eq!(turn, Some(Turn::Open { since: AT + 40 }));
+        assert_eq!(worker_state(1, turn, AT + 100), WorkerState::Busy);
+
+        let child = grok_session(AT + 40, Some(AT + 60), "subagent");
+        assert_eq!(Harness::Grok.recorded_turn(CWD, &child, None), None);
+        let lead = Harness::Grok.recorded_turn(CWD, &later, None);
+        assert_eq!(prefer(&[lead.unwrap()]), Some(Turn::Open { since: AT + 40 }));
+        assert_eq!(worker_state(1, lead, AT + 100), WorkerState::Busy);
+    }
+
+    /// One Grok session. `end` closes it. A relationship other than `primary`
+    /// is a child. An open primary also records `waiting_for_model`, which is
+    /// not an end.
+    fn grok_session(start: u64, end: Option<u64>, relationship: &str) -> String {
+        let mut body = format!("{}\n", grok_line(start, "turn_started", relationship));
+        if end.is_none() && relationship == "primary" {
+            body.push_str(&format!(
+                "{}\n",
+                grok_line(start + 10, "waiting_for_model", relationship)
+            ));
+        }
+        if let Some(end) = end {
+            body.push_str(&format!("{}\n", grok_line(end, "turn_ended", relationship)));
+        }
+        body
+    }
+
+    fn grok_line(at: u64, kind: &str, relationship: &str) -> String {
+        session::object(vec![
+            ("ts", session::format_iso(at).into()),
+            ("type", kind.into()),
+            ("session_relationship", relationship.into()),
+        ])
+        .to_string()
     }
 
     #[test]
