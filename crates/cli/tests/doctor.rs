@@ -300,7 +300,7 @@ fn a_repo_no_fleet_ever_ran_in_has_no_finding_no_log_and_exits_zero() {
     assert_eq!(answer["issues"]["frontier"][0]["number"], 3);
     // with no `run` to say, the command is the one a `run` would use now
     assert_eq!(answer["host"]["worker_commands"][0]["from"], "host_kit");
-    assert_eq!(answer["host"]["exclusive"]["lanes"]["train"], Value::Null);
+    assert_eq!(answer["host"]["exclusive"]["train"], Value::Null);
     // An unbound repo calls for no harness by name: its one command is the
     // host kit's first's, which holds no model here — and neither is found.
     let commands = answer["host"]["worker_commands"].as_array().unwrap();
@@ -345,29 +345,35 @@ fn the_host_s_exclusive_queue_is_shown_what_runs_first_then_what_waits() {
     }
     let exclusive = shown();
     let dir = std::fs::canonicalize(&world.clone).unwrap().display().to_string();
-    let ticket = |command: &str, issue: Value, pid: u32, asked: u64| {
-        json!({
-            "command": command,
-            "dir": dir,
-            "issue": issue,
-            "pid": pid,
-            "asked": asked,
-            "candidate": false,
-            "validation": null,
-            "waiting": "running",
-        })
+    assert_eq!(exclusive["status"], "available", "{exclusive}");
+    assert_eq!(exclusive["observed_at"], 1000, "{exclusive}");
+    assert_eq!(exclusive["worker"], json!({"capacity": 1, "used": 1, "free": 0}), "{exclusive}");
+    let [first] = exclusive["running"].as_array().unwrap().as_slice() else {
+        panic!("one runs: {exclusive}");
     };
-    let mut first = exclusive["running"].clone();
-    assert!(first["ran"].as_u64().is_some(), "{exclusive}");
-    first.as_object_mut().unwrap().remove("ran");
     // A path with a space or a quote is quoted again, so the one line is still that argument.
     let shown = if path.contains([' ', '\'']) { shell } else { path };
-    let command = format!("touch {shown}; sleep 30");
-    assert_eq!(first, ticket(&command, json!(12), running.id(), 900));
-    let mut next = ticket("true", Value::Null, waiting.id(), 950);
-    next["ran"] = Value::Null;
-    next["waiting"] = json!("waiting_for_capacity");
-    assert_eq!(exclusive["waiting"], json!([next]));
+    assert_eq!(first["command"], format!("touch {shown}; sleep 30"));
+    assert_eq!((&first["dir"], &first["issue"]), (&json!(dir), &json!(12)));
+    assert_eq!((&first["pid"], &first["asked"]), (&json!(running.id()), &json!(900)));
+    assert_eq!(
+        (&first["lane"], &first["scheduling"]["state"]),
+        (&json!("worker"), &json!("running"))
+    );
+    assert!(first["ran"].is_u64(), "{exclusive}");
+    let [next] = exclusive["waiting"].as_array().unwrap().as_slice() else {
+        panic!("one waits: {exclusive}");
+    };
+    assert_eq!((&next["command"], &next["dir"]), (&json!("true"), &json!(dir)));
+    assert_eq!((&next["issue"], &next["ran"]), (&Value::Null, &Value::Null));
+    assert_eq!((&next["pid"], &next["asked"]), (&json!(waiting.id()), &json!(950)));
+    assert_eq!(next["waiting_seconds"], 50);
+    // Not started is waiting in the observation, with no turn's result word.
+    assert!(next.get("waiting").is_none(), "{exclusive}");
+    assert_eq!(next["scheduling"]["state"], "waiting");
+    let kinds: Vec<_> =
+        next["scheduling"]["reasons"].as_array().unwrap().iter().map(|r| &r["kind"]).collect();
+    assert_eq!(kinds, [&json!("same_repo"), &json!("worker_capacity")], "{exclusive}");
     common::fixture_lease_observed();
     drop(running);
     drop(waiting);
