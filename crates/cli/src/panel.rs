@@ -277,7 +277,7 @@ pub struct Host {
     pub admission: Result<Admission, String>,
     /// What its host runner says of the exclusive queue; why it cannot.
     pub exclusive: Result<crate::queue::Said, String>,
-    pub gate_lanes: u64,
+    pub gate_lanes: afkconvoy_core::exclusive::Lanes,
     /// The hours of its local time a fleet may put it to sleep in; `None`
     /// where its host settings keep it awake.
     pub sleep_hours: Option<Hours>,
@@ -309,7 +309,7 @@ impl Host {
             now,
             admission: Admission::read(dir).map_err(|error| format!("{error:#}")),
             exclusive,
-            gate_lanes: settings.gate_lanes(),
+            gate_lanes: settings.lanes(),
             sleep_hours: host_settings::host_sleep(),
             kit: crate::kit::load().map_err(|error| format!("{error:#}")),
             worker_health: crate::health::show(),
@@ -1747,7 +1747,7 @@ mod tests {
             now,
             admission: Ok(Admission { shares: SHARES, said: vec![], reading, span: 600 }),
             exclusive: Ok(Some((vec![], Some(false)))),
-            gate_lanes: 1,
+            gate_lanes: afkconvoy_core::exclusive::Lanes { worker: 1, slow: 1 },
             sleep_hours: Some(SLEEP_HOURS),
             kit: Ok(Kit::default()),
             worker_health: Ok(crate::health::Health::default()),
@@ -1851,6 +1851,7 @@ mod tests {
                 repo: repo_lane.map(String::from),
                 is_turn: false,
                 candidate: false,
+                slow: false,
                 validation: None,
                 asked: 900 + number,
                 ran,
@@ -1867,7 +1868,11 @@ mod tests {
         let mut host = host_of(1000);
         host.exclusive = Ok(said.clone());
         let html = render(&page_of(host, vec![]));
-        let observation = crate::queue::observation(said, 1, 1000);
+        let observation = crate::queue::observation(
+            said,
+            afkconvoy_core::exclusive::Lanes { worker: 1, slow: 1 },
+            1000,
+        );
         let section = html.split("<h2>Command lanes</h2>").nth(1).unwrap();
         let section = section.split("</section>").next().unwrap();
         let worker = section.split("<h3>worker lane</h3>").nth(1).unwrap();

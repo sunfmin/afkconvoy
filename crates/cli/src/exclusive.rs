@@ -123,11 +123,16 @@ pub struct Permit {
 
 impl Permit {
     pub fn take(repo: &Repo, command: &str, heavy: bool, is_turn: bool) -> Result<Self> {
-        Self::acquire(repo, command, heavy, is_turn, false)
+        Self::acquire(repo, command, heavy, is_turn, false, false)
     }
 
     pub(crate) fn candidate(repo: &Repo, command: &str, heavy: bool) -> Result<Self> {
-        Self::acquire(repo, command, heavy, true, true)
+        Self::acquire(repo, command, heavy, true, true, false)
+    }
+
+    /// A round's slow gate, in the host's slow lanes, not its worker lanes.
+    pub(crate) fn slow_gate(repo: &Repo, command: &str, heavy: bool) -> Result<Self> {
+        Self::acquire(repo, command, heavy, true, true, true)
     }
 
     fn acquire(
@@ -136,6 +141,7 @@ impl Permit {
         heavy: bool,
         is_turn: bool,
         candidate: bool,
+        slow: bool,
     ) -> Result<Self> {
         if held() {
             bail!("this command already holds a turn");
@@ -151,6 +157,7 @@ impl Permit {
             repo: Some(canonical(repo.common_dir()?)),
             is_turn,
             candidate,
+            slow: slow && heavy,
             validation: None,
             asked: crate::clock(),
             ran: None,
@@ -271,7 +278,7 @@ impl Joined {
         else {
             return 0;
         };
-        let limit = if running.repo_lane.is_some() { 1 } else { settings.gate_lanes() };
+        let limit = settings.lanes().of(running);
         let occupied =
             self.tickets.iter().filter(|t| t.ran.is_some() && same_lane(t, running)).count() as u64;
         self.tickets
@@ -422,7 +429,7 @@ impl Queue {
                                 t.ran.is_some() || crate::slots::repo_available(t).unwrap_or(false)
                             })
                             .collect();
-                        ready(&eligible, number, settings.gate_lanes())
+                        ready(&eligible, number, settings.lanes())
                     } =>
                 {
                     break;
@@ -665,6 +672,7 @@ pub fn exclusive(
         repo: checkout.as_ref().and_then(|repo| repo.common_dir().ok()).map(canonical),
         is_turn: false,
         candidate: false,
+        slow: false,
         validation: None,
         asked: now(),
         ran: None,
@@ -829,6 +837,7 @@ mod tests {
             repo: None,
             is_turn: false,
             candidate: false,
+            slow: false,
             validation: None,
             asked,
             ran: None,

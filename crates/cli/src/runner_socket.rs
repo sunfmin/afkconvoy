@@ -555,6 +555,7 @@ mod tests {
             repo: None,
             is_turn: false,
             candidate: false,
+            slow: false,
             validation: None,
             command: "cargo test".into(),
             asked: 1000,

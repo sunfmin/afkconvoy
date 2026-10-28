@@ -60,6 +60,9 @@ pub struct Settings {
     pub exclusive_seconds: Option<u64>,
     /// `--gate-lanes`: worker commands that may run across different repos.
     pub gate_lanes: Option<u64>,
+    /// `--slow-gate-lanes`: rounds' slow gates that may run at once, beside
+    /// the worker lanes.
+    pub slow_gate_lanes: Option<u64>,
     /// An old checkout list may still name `train_lanes`. It is not a setting:
     /// a known field so `rest` does not keep it, and left out of every write.
     #[serde(default, skip_serializing)]
@@ -101,6 +104,7 @@ pub struct Named {
     pub admit_inspect_after: Option<To<u64>>,
     pub exclusive_seconds: Option<To<u64>>,
     pub gate_lanes: Option<To<u64>>,
+    pub slow_gate_lanes: Option<To<u64>>,
     pub panel: Option<To<u16>>,
     pub watch_dir: Option<To<PathBuf>>,
     pub watch_every: Option<To<u64>>,
@@ -221,6 +225,7 @@ impl Settings {
         lay(&mut self.admit_inspect_after, named.admit_inspect_after.as_ref());
         lay(&mut self.exclusive_seconds, named.exclusive_seconds.as_ref());
         lay(&mut self.gate_lanes, named.gate_lanes.as_ref());
+        lay(&mut self.slow_gate_lanes, named.slow_gate_lanes.as_ref());
         lay(&mut self.panel, named.panel.as_ref());
         lay(&mut self.watch_dir, named.watch_dir.as_ref());
         lay(&mut self.watch_every, named.watch_every.as_ref());
@@ -260,6 +265,24 @@ impl Settings {
 
     pub fn gate_lanes(&self) -> u64 {
         self.gate_lanes.unwrap_or(GATE_LANES).max(1)
+    }
+
+    /// The slow lanes, one where the host says none.
+    pub fn slow_gate_lanes(&self) -> u64 {
+        self.slow_gate_lanes.unwrap_or(1).max(1)
+    }
+
+    /// Both host lanes, as the queue counts them.
+    pub fn lanes(&self) -> afkconvoy_core::exclusive::Lanes {
+        afkconvoy_core::exclusive::Lanes { worker: self.gate_lanes(), slow: self.slow_gate_lanes() }
+    }
+
+    /// The share of this host's cores one gate is given: its cores divided
+    /// by every lane a gate may run in at once, at least one
+    /// (sunfmin/control#245).
+    pub fn gate_share(&self) -> u64 {
+        let cores = std::thread::available_parallelism().map_or(1, |n| n.get() as u64);
+        (cores / (self.gate_lanes() + self.slow_gate_lanes())).max(1)
     }
 
     /// The sleep hours it says, else the default.
@@ -304,6 +327,7 @@ impl Settings {
             "admit_inspect_after": self.admit_inspect_after.unwrap_or(SPAN),
             "exclusive_seconds": self.exclusive_seconds(),
             "gate_lanes": self.gate_lanes(),
+            "slow_gate_lanes": self.slow_gate_lanes(),
             "panel": self.panel_port(),
             "watch_dir": crate::host_watch::directory(self).ok(),
             "watch_every": self.watch_every(),

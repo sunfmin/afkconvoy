@@ -178,7 +178,10 @@ struct Reservation<'a> {
 
 impl Drop for Reservation<'_> {
     fn drop(&mut self) {
-        let _ = change(self.repo, self.config, |chain| chain.barriers.retain(|b| b.id != self.id));
+        let _ = change(self.repo, self.config, |chain| {
+            chain.barriers.retain(|b| b.id != self.id);
+            chain.pending.retain(|b| b.id != self.id);
+        });
     }
 }
 
@@ -507,13 +510,14 @@ fn reconcile(repo: &Repo, config: &Config) -> Result<Chain> {
         }
         let mut updated = snapshot;
         let mut dead_barriers = vec![];
-        for barrier in &updated.chain.barriers {
+        for barrier in updated.chain.barriers.iter().chain(&updated.chain.pending) {
             if !alive(&barrier.owner)? {
                 dead_barriers.push(barrier.id.clone());
             }
         }
         let before = updated.chain.clone();
         updated.chain.barriers.retain(|b| !dead_barriers.contains(&b.id));
+        updated.chain.pending.retain(|b| !dead_barriers.contains(&b.id));
         updated.chain.observe_base(&updated.base);
         for (id, cause) in &invalid {
             updated.chain.invalidate(id, cause);
@@ -801,7 +805,6 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
             .candidates
             .iter()
             .any(|c| c.valid() && crate::config::heavy_gate(&c.command));
-    let limit = if heavy { crate::host_settings::of_host()?.gate_lanes() } else { 1 };
     let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos();
     let id = format!(
         "{:016x}-{stamp}-{}",
@@ -816,7 +819,13 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
         })?;
         Some(Reservation { repo, config, id: id.clone() })
     } else {
-        None
+        // A round waits for every turn that asked to land (sunfmin/control#244).
+        change(repo, config, |chain| {
+            if !chain.pending.iter().any(|b| b.id == id) {
+                chain.pending.push(Barrier { id: id.clone(), owner: owner.clone() });
+            }
+        })?;
+        Some(Reservation { repo, config, id: id.clone() })
     };
     // Do not reserve a host lane while waiting for a barrier/window or for
     // another invocation of this PR. Dead owners are reconciled first.
@@ -842,18 +851,18 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
         }
         if (!barrier && chain.barriers.is_empty())
             || (barrier
-                && chain.can_assign(limit, true)
+                && chain.can_assign(true)
                 && chain.barriers.first().is_some_and(|b| b.id == id))
         {
             break;
         }
         std::thread::sleep(EVERY);
     }
-    let permit = if barrier {
+    let mut permit = Some(if barrier {
         Permit::take(repo, "turn: serial barrier", heavy, true)?
     } else {
         Permit::candidate(repo, "turn: validate candidate, record, land", heavy)?
-    };
+    });
     let path = repo.common_dir()?.join("convoy-candidates").join(&id);
     let candidate = loop {
         let locks = crate::lock::standing_locks(&gh, config)?;
@@ -861,7 +870,6 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
             return Ok(crate::turn::locked(answer, &locks));
         }
         let barrier = barrier || !locks.is_empty();
-        let limit = if heavy { crate::host_settings::of_host()?.gate_lanes() } else { 1 };
         let mut snapshot = read(repo, config)?;
         let current = snapshot.base.clone();
         if snapshot.chain.candidates.iter().any(|c| c.pr == pr.number && c.active()) {
@@ -886,11 +894,11 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
             );
             return Ok(answer);
         }
-        // A competitor may have used the last window place while we queued.
-        if !snapshot.chain.can_assign(limit, barrier) {
+        // A barrier or an unconfirmed cancellation may hold the window.
+        if !snapshot.chain.can_assign(barrier) {
             drop(permit);
             answer["outcome"] = json!(Ending::WaitingForCapacity);
-            answer["detail"] = json!("the bounded candidate window is full; ask for another turn");
+            answer["detail"] = json!("the candidate window is held; ask for another turn");
             return Ok(answer);
         }
         snapshot.chain.observe_base(&current);
@@ -976,6 +984,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
         };
         snapshot.chain.candidates.push(c.clone());
         snapshot.chain.barriers.retain(|b| b.id != id);
+        snapshot.chain.pending.retain(|b| b.id != id);
         if write(repo, config, &snapshot)? {
             break c;
         }
@@ -1024,6 +1033,11 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
         result["outcome"] = json!(Ending::GateRed);
         return Ok(result);
     }
+    // A green candidate waits for its round, or its predecessor, holding no
+    // worker lane: the lanes bound the gates running, not the PRs waiting.
+    if !barrier {
+        permit = None;
+    }
     loop {
         let chain = reconcile(repo, config)?;
         let c = chain.candidates.iter().find(|c| c.id == id).expect("assigned candidate");
@@ -1049,8 +1063,8 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
             return Ok(crate::turn::locked(result, &locks));
         }
         if chain.round_tip().is_some_and(|tip| tip.id == id) {
-            if let Some(red) = round(Round { repo, config, tracker, id: &id, host, issue }, clock)?
-            {
+            let round_of = Round { repo, config, tracker, id: &id, host, issue, heavy };
+            if let Some(red) = round(round_of, clock)? {
                 for (key, value) in red.as_object().into_iter().flatten() {
                     result[key] = value.clone();
                 }
@@ -1158,6 +1172,7 @@ struct Round<'a> {
     id: &'a str,
     host: &'a str,
     issue: Option<u64>,
+    heavy: bool,
 }
 
 /// Runs the round at the tip `id`: the slow gate, once, on the tip's commit,
@@ -1169,7 +1184,13 @@ struct Round<'a> {
 /// the round's tip, which holds every change of the round, and the worker
 /// fixes the round from its issues and the failing tests (docs/adr/0048).
 fn round(round: Round<'_>, clock: impl Fn() -> u64) -> Result<Option<Value>> {
-    let Round { repo, config, tracker, id, host, issue } = round;
+    let Round { repo, config, tracker, id, host, issue, heavy } = round;
+    // The slow gate takes a worker lane again; a barrier still holds its own.
+    let _lane = if crate::exclusive::held() {
+        None
+    } else {
+        Some(Permit::slow_gate(repo, "turn: a round's slow gate", heavy)?)
+    };
     let mut started = false;
     let chain = change(repo, config, |chain| started = chain.start_round(id))?;
     if !started {

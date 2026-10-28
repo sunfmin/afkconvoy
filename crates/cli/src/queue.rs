@@ -67,7 +67,7 @@ fn observe(fixed_now: Option<u64>) -> Result<Value> {
         }
         None => (Value::Null, None),
     };
-    let mut answer = observation(said, settings.gate_lanes(), now);
+    let mut answer = observation(said, settings.lanes(), now);
     answer["host_runner"] = runner;
     Ok(answer)
 }
@@ -79,7 +79,7 @@ pub type Said = Option<(Vec<Ticket>, Option<bool>)>;
 
 /// The one observation of the exclusive queue that `queue`, doctor and the
 /// panel show, of what the host runner `said`.
-pub fn snapshot_of(said: &Said, lanes: u64, now: u64) -> Snapshot {
+pub fn snapshot_of(said: &Said, lanes: afkconvoy_core::exclusive::Lanes, now: u64) -> Snapshot {
     // An older runner that does not say its pause has none to apply.
     let (tickets, paused) = match said {
         Some((tickets, paused)) => (tickets.as_slice(), paused.unwrap_or(false)),
@@ -90,7 +90,7 @@ pub fn snapshot_of(said: &Said, lanes: u64, now: u64) -> Snapshot {
 
 /// `snapshot_of` as `queue` and doctor answer it. A pause the runner did not
 /// say stays null.
-pub(crate) fn observation(said: Said, lanes: u64, now: u64) -> Value {
+pub(crate) fn observation(said: Said, lanes: afkconvoy_core::exclusive::Lanes, now: u64) -> Value {
     let (status, paused) = match &said {
         Some((_, paused)) => ("available", *paused),
         None => ("no_runner", Some(false)),
@@ -116,6 +116,7 @@ fn observation_json(snapshot: &Snapshot) -> Value {
                 request.entry("is_turn").or_insert(json!(false));
                 request.entry("cut").or_insert(json!(false));
                 request.entry("candidate").or_insert(json!(false));
+                request.entry("slow").or_insert(json!(false));
                 request.entry("validation").or_insert(Value::Null);
             }
         }

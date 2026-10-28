@@ -374,6 +374,10 @@ impl World {
             "DSH_AGENTS_HOME",
             "DSH_PROFILE",
             "DSH_PROFILE_DIR",
+            // The share the gate running these tests was given is not the
+            // share of a gate in the world (sunfmin/control#245).
+            "CARGO_BUILD_JOBS",
+            "NEXTEST_TEST_THREADS",
         ] {
             cmd.env_remove(name);
         }

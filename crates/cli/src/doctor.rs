@@ -1884,7 +1884,7 @@ fn issues_json(set: &WorkingSet) -> Result<Value> {
 /// read of the host runner: `None` where none listens.
 fn exclusive_json(said: Result<crate::queue::Said>, now: u64) -> Value {
     let observed = said.and_then(|said| {
-        let lanes = crate::host_settings::of_host()?.gate_lanes();
+        let lanes = crate::host_settings::of_host()?.lanes();
         Ok(crate::queue::observation(said, lanes, now))
     });
     observed.unwrap_or_else(|error| json!({"error": format!("{error:#}")}))

@@ -80,6 +80,25 @@ struct CommandRun {
     cancelled: bool,
 }
 
+/// The variables that keep a gate to its share of the host's cores, where
+/// it runs beside others (sunfmin/control#245).
+const SHARED: [&str; 2] = ["CARGO_BUILD_JOBS", "NEXTEST_TEST_THREADS"];
+
+/// Gives a gate its share of the host: the cores over every lane a gate may
+/// run in at once, as `CARGO_BUILD_JOBS` and `NEXTEST_TEST_THREADS`, each
+/// unless the environment already says it. Gates run side by side would
+/// otherwise each take every core, and a test far under the fast gate's
+/// line would cross its end on load alone.
+fn share(command: &mut Command) {
+    let Ok(settings) = crate::host_settings::of_host() else { return };
+    let share = settings.gate_share().to_string();
+    for name in SHARED {
+        if std::env::var_os(name).is_none() {
+            command.env(name, &share);
+        }
+    }
+}
+
 /// Runs the gate command in a worktree, its log going line by line to this
 /// process's stderr, keeping its status, signal evidence and the end of its
 /// log. A run that reaches the gate limit, `limit`, is killed, with everything
@@ -92,6 +111,7 @@ fn run_command(
 ) -> Result<CommandRun> {
     let mut shell = Command::new("sh");
     crate::exclusive::inherit(&mut shell, repo)?;
+    share(&mut shell);
     if let Some(candidate) = candidate {
         shell.env(crate::candidates::PROCESS_ENV, candidate.process_marker());
     }

@@ -141,6 +141,10 @@ pub struct Chain {
     /// A serial turn reserves its place without occupying a worker lane.
     #[serde(default)]
     pub barriers: Vec<Barrier>,
+    /// The turns that asked to land and hold no candidate yet: a round waits
+    /// for them, as it is as big as the PRs that are ready.
+    #[serde(default)]
+    pub pending: Vec<Barrier>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -150,12 +154,13 @@ pub struct Barrier {
 }
 
 impl Chain {
-    /// A bounded speculative window includes green waiters and unconfirmed
-    /// cancellation. A barrier drains the window and admits no successors.
-    pub fn can_assign(&self, limit: u64, barrier: bool) -> bool {
+    /// The window has no bound of its own: the worker lanes bound how many
+    /// gates run at once, and a round takes every PR that is ready
+    /// (sunfmin/control#244). Unconfirmed cancellation still holds it, and a
+    /// barrier drains it and admits no successors.
+    pub fn can_assign(&self, barrier: bool) -> bool {
         let active: Vec<_> = self.candidates.iter().filter(|c| c.active()).collect();
-        (active.len() as u64) < limit
-            && (!barrier || active.is_empty())
+        (!barrier || active.is_empty())
             && (barrier || self.barriers.is_empty())
             && !active.iter().any(|c| c.barrier || !c.valid())
     }
@@ -235,12 +240,13 @@ impl Chain {
 
     /// The candidate whose turn runs a round's slow gate now: the last valid
     /// candidate, once every valid candidate is fast-green and none is
-    /// slow-gating, where its commit declares a slow gate not yet passed.
-    /// A candidate assigned during the round joins the next one.
+    /// slow-gating, and no turn is pending, where its commit declares a slow
+    /// gate not yet passed. A candidate assigned during the round joins the
+    /// next one.
     pub fn round_tip(&self) -> Option<&Candidate> {
         let valid: Vec<&Candidate> = self.candidates.iter().filter(|c| c.valid()).collect();
         let tip = valid.last()?;
-        let ready = valid.iter().all(|c| c.phase == Phase::Green);
+        let ready = self.pending.is_empty() && valid.iter().all(|c| c.phase == Phase::Green);
         (ready && tip.slow.is_some() && !tip.slowed).then_some(*tip)
     }
 
@@ -472,6 +478,19 @@ mod tests {
     }
 
     #[test]
+    fn a_round_waits_for_every_turn_that_asked_to_land() {
+        let mut chain = Chain { candidates: (0..2).map(split).collect(), ..Chain::default() };
+        chain.finish("c0", true, serde_json::json!({}));
+        chain.finish("c1", true, serde_json::json!({}));
+        let owner = chain.candidates[0].owner.clone();
+        chain.pending.push(Barrier { id: "waiting".into(), owner });
+        assert!(chain.round_tip().is_none(), "a PR still waiting for a lane is in the round");
+        assert!(chain.can_assign(false), "the window is not bounded by the lanes");
+        chain.pending.clear();
+        assert_eq!(chain.round_tip().map(|c| c.id.as_str()), Some("c1"));
+    }
+
+    #[test]
     fn a_red_round_is_not_bisected_its_tip_keeps_the_failure() {
         let mut chain = Chain { candidates: (0..4).map(split).collect(), ..Chain::default() };
         for c in ["c0", "c1", "c2"] {
@@ -522,19 +541,19 @@ mod tests {
         }
         assert_eq!(chain, invalidated);
         assert_eq!(chain.candidates[0].phase, Phase::Red);
-        assert!(!chain.can_assign(3, false), "unconfirmed cancellation keeps the window occupied");
+        assert!(!chain.can_assign(false), "unconfirmed cancellation keeps the window occupied");
     }
 
     #[test]
     fn a_pending_serial_barrier_drains_the_window_without_reserving_capacity() {
         let mut chain = Chain { candidates: vec![candidate(0)], ..Chain::default() };
         chain.barriers.push(Barrier { id: "cut".into(), owner: chain.candidates[0].owner.clone() });
-        assert!(!chain.can_assign(3, false));
-        assert!(!chain.can_assign(3, true));
+        assert!(!chain.can_assign(false));
+        assert!(!chain.can_assign(true));
         chain.candidates[0].phase = Phase::Landed;
         chain.candidates[0].stopped = true;
-        assert!(chain.can_assign(3, true));
-        assert!(!chain.can_assign(3, false));
+        assert!(chain.can_assign(true));
+        assert!(!chain.can_assign(false));
     }
 
     #[test]
@@ -556,15 +575,16 @@ mod tests {
         assert!(explore(split) > 500, "exploration stopped exercising interleavings");
     }
 
-    /// Exactly three assigned candidates, two results per gate, rounds where
-    /// they declare a slow gate, cancellation and exit confirmations, external
-    /// moves and publication. Enumerates every reachable state, not arbitrary
+    /// Exactly three assigned candidates and one pending turn, two results per
+    /// gate, rounds where they declare a slow gate, cancellation and exit
+    /// confirmations, external moves and publication. Enumerates every reachable state, not arbitrary
     /// graph sizes or OS behaviour → how many states it reached.
     fn explore(made: fn(usize) -> Candidate) -> usize {
-        let initial = (
-            Chain { candidates: (0..3).map(made).collect(), ..Chain::default() },
-            "base".to_string(),
-        );
+        let candidates: Vec<Candidate> = (0..3).map(made).collect();
+        let owner = candidates[0].owner.clone();
+        let waiting = vec![Barrier { id: "pending".into(), owner }];
+        let initial =
+            (Chain { candidates, pending: waiting, ..Chain::default() }, "base".to_string());
         let mut pending = VecDeque::from([initial]);
         let mut seen = HashSet::new();
         while let Some((chain, base)) = pending.pop_front() {
@@ -582,6 +602,7 @@ mod tests {
                     // Landings are a prefix: nothing before it is left valid.
                     assert!(chain.candidates[..i].iter().all(|b| !b.valid()));
                 }
+                assert!(c.phase != Phase::Slow || chain.pending.is_empty(), "a round waited");
                 assert!(
                     c.phase != Phase::Slow
                         || chain
@@ -632,6 +653,11 @@ mod tests {
                     next.invalidate(&c.id, "head_changed");
                     pending.push_back((next, base.clone()));
                 }
+            }
+            if !chain.pending.is_empty() {
+                let mut next = chain.clone();
+                next.pending.clear();
+                pending.push_back((next, base.clone()));
             }
             if base != "outside" {
                 let mut next = chain.clone();

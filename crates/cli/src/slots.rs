@@ -158,11 +158,7 @@ impl Slot {
         };
         let owner_bytes = serde_json::to_vec(&owner)?;
         loop {
-            let count = if ticket.repo_lane.is_some() {
-                1
-            } else {
-                crate::host_settings::of_host()?.gate_lanes()
-            };
+            let count = crate::host_settings::of_host()?.lanes().of(ticket);
             for n in 0..count {
                 let path = cache.join(format!("{lane:016x}-{n}"));
                 let mut file = OpenOptions::new()
