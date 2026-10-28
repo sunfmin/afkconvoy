@@ -455,19 +455,25 @@ fn a_rejected_push_ends_the_turn_and_another_turn_gates_the_new_base() {
 fn an_old_stored_train_lanes_key_loads_and_a_run_drops_it() {
     let world = World::new();
     world.say_host_settings(json!({"train_lanes": 0, "gate_lanes": 2, "kept": 1}));
-    assert_eq!(world.checkout_list()["settings"]["train_lanes"], 0);
-    let _runner = world.host_held();
+    {
+        // A foreground hold reads the list and leaves it. Doctor still omits the key.
+        let _runner = world.host_held();
+        let doctor = world.afk(&["doctor"]).json;
+        let settings = &doctor["host"]["settings"];
+        assert_eq!(settings["in_force"]["gate_lanes"], 2);
+        assert!(settings["said"].get("train_lanes").is_none(), "{settings}");
+        assert!(settings["in_force"].get("train_lanes").is_none(), "{settings}");
+        assert!(settings["in_force"].get("ignored").is_none(), "{settings}");
+        assert!(doctor["host"]["exclusive"]["lanes"].get("train").is_none());
+        assert_eq!(world.checkout_list()["settings"]["train_lanes"], 0);
+    }
+    let wrote = world.afk(&["run", "--admit-load", "400"]).ok();
+    assert!(wrote["settings"].get("train_lanes").is_none(), "{wrote}");
     let file = world.checkout_list();
     assert!(file["settings"].get("train_lanes").is_none(), "{file}");
     assert_eq!(file["settings"]["gate_lanes"], 2);
     assert_eq!(file["settings"]["kept"], 1);
-    let doctor = world.afk(&["doctor"]).json;
-    let settings = &doctor["host"]["settings"];
-    assert_eq!(settings["in_force"]["gate_lanes"], 2);
-    assert!(settings["said"].get("train_lanes").is_none(), "{settings}");
-    assert!(settings["in_force"].get("train_lanes").is_none(), "{settings}");
-    assert!(settings["in_force"].get("ignored").is_none(), "{settings}");
-    assert!(doctor["host"]["exclusive"]["lanes"].get("train").is_none());
+    assert_eq!(file["settings"]["admit_load"], 400);
 }
 
 #[test]
