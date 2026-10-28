@@ -117,6 +117,7 @@ pub mod tools;
 pub mod topic;
 pub mod tracker;
 mod turn;
+mod turn_answer;
 pub mod wake;
 pub mod watch;
 pub mod watch_landing;
@@ -4559,7 +4560,9 @@ fn run(
             let gh = gh::GitHub::of(&repo)?;
             let host = host.unwrap_or_else(this_host);
             match issue.or(number) {
-                Some(issue) => turn::land(&repo, &config, &gh, issue, &host, now),
+                Some(issue) => turn_answer::noted(&repo, now, || {
+                    turn::land(&repo, &config, &gh, issue, &host, now)
+                }),
                 None if watch => watch_landing::land(&repo, &config, &gh, &host, now),
                 None => {
                     let _ = merged_timeout;
