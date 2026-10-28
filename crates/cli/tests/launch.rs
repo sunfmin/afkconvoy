@@ -48,11 +48,51 @@ const RUN: [&str; 14] = [
 ];
 const TICK: [&str; 7] = ["tick", "--instance", "alpha", "--host", "h1", "--now", "1000"];
 
-/// The command each worker's terminal was started with.
+/// The command each worker's terminal was started with. A host watch is not
+/// one: `run` writes a kit of unplaced models and its look can start that
+/// watch in the same process, beside the first tick's worker.
 fn started(world: &World) -> Vec<String> {
-    let orca = world.orca();
-    let terminals = orca["terminals"].as_array().unwrap();
-    terminals.iter().map(|t| t["command"].as_str().unwrap().to_string()).collect()
+    worker_commands(&world.orca()["terminals"])
+}
+
+/// `terminals` as orca keeps them, without a host watch (`afkconvoy watch`,
+/// or a command that exports `AFKCONVOY_WATCH=host`).
+fn worker_commands(terminals: &Value) -> Vec<String> {
+    let watch = format!("{}=host", afkconvoy_core::host_watch::WATCH_ENV);
+    terminals
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|terminal| {
+            terminal["title"] != "afkconvoy watch"
+                && !terminal["command"].as_str().unwrap_or("").contains(&watch)
+        })
+        .map(|terminal| terminal["command"].as_str().unwrap().to_string())
+        .collect()
+}
+
+/// The gate counted two terminals when a fresh kit's look started a research
+/// watch beside the first tick's worker. A watch is not that worker. Two
+/// worker commands still are two.
+#[test]
+fn a_host_watch_beside_the_worker_is_not_a_second_worker() {
+    let worker = "export CLAUDE_CODE_SANDBOXED=1 && claude --dangerously-skip-permissions";
+    let watch = format!("export {}=host; {worker}", afkconvoy_core::host_watch::WATCH_ENV);
+    let beside = json!([
+        {"command": worker, "title": null},
+        {"command": watch, "title": "afkconvoy watch"},
+    ]);
+    assert_eq!(worker_commands(&beside), [worker]);
+    let untitled = json!([
+        {"command": worker, "title": null},
+        {"command": watch, "title": null},
+    ]);
+    assert_eq!(worker_commands(&untitled), [worker]);
+    let two = json!([
+        {"command": worker, "title": null},
+        {"command": format!("{worker} --model opus"), "title": null},
+    ]);
+    assert_eq!(worker_commands(&two).len(), 2, "{two}");
 }
 
 fn warnings(answer: &Answer) -> Vec<&str> {
@@ -284,7 +324,7 @@ fn no_host_kit_has_run_write_it_and_start_its_first_tick_while_a_tick_refuses() 
         json!([{"model": "default", "good_at": "research pending"}, {"model": "opus", "good_at": "research pending"}])
     );
     let workers = started(&world);
-    assert_eq!(workers.len(), 1, "its first tick started a worker");
+    assert_eq!(workers.len(), 1, "its first tick started a worker: {workers:?}");
     assert!(!workers[0].contains("--model"), "the default model starts with no flag");
     assert!(
         !world.shell_asked().iter().any(|asked| asked.contains("Reply with the single word OK."))
