@@ -4742,6 +4742,10 @@ _Avoid_: bootstrap, preflight, health check
 One of the two ways every ref the fleet writes is named: hidden refs (`refs/convoy/*`), or — only where the remote rejects those — ordinary branches (`convoy-*`), on which push-triggered CI fires.
 _Avoid_: namespace, fallback mode
 
+**Remote view**:
+A repository's one way to read and write the remote's refs. A read names how fresh it must be: as the view opened (the one listing a fleet's view is read from), current for this process (a ref already read is not asked again until this process writes it), or live, for a check another process may have moved or a write that must be certain. Every write — a push or a receive-pack publication — states the refs it writes, and the view drops exactly those. Nothing else pushes or lists the remote.
+_Avoid_: remote cache, ref cache
+
 **Fleet state**:
 The authoritative record of what is claimed, in flight, landed, parked and escalated. It lives entirely in GitHub — the issues in the fleet's tracker, the PRs, branches and refs in the repo — and no process holds it. A PR whose head is in another repository is no part of it: only a login with write access can push a branch to the repo, so a PR from one of its branches is a collaborator's, and one from a fork is anyone's. The fleet acts as if a fork's PR did not exist — none is landed, taken up, synced, closed, commented on or reported, none holds an issue off.
 _Avoid_: run state, memory (what a host holds resident, as under Hot worker)
