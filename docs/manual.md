@@ -254,7 +254,7 @@ Exactly one JSON object, exit 0:
 - `repos`: each repo lane with a running or waiting request, sorted by its whole identity, as `{repo, capacity, used, free}`. Each has capacity 1, independent of worker capacity. `repo` is the shared git directory supplied by the ticket, never inferred from a worktree's name.
 - `running`, `waiting`: requests in scheduler order within each array: cuts first, then ordinary commands; within each group ascending `asked`, then `number` to break ties. Cut priority never interrupts running commands. There is no priority by lane or repo. A request identifies `number` (runner-local ticket), `pid` (asking process), `command` (one line: the program and the arguments that say what is running; `afkconvoy exclusive -- ./gate.sh` stays as given; a script is named by the program it runs, its `cargo nextest` line or its `afkconvoy exclusive` invocation, and is not shown as the script; no `NAME=value`), `dir` (whole worktree or outside directory), `issue` (number or null; no lookup), `repo` (shared git directory or null for older/outside tickets), `repo_lane` (repo lane identity or null for worker), `is_turn` (whether this is a landing turn), `cut` (whether it has cut priority, false for older tickets), `asked` (request epoch seconds), `ran` (start epoch seconds or null), and `lane` (`worker` or `repo <identity>`).
 - Each request adds `elapsed_seconds` (time since `ran`, null while waiting), `waiting_seconds` (time from `asked` to `ran` when running, otherwise to `observed_at`), and `scheduling`: `{number, state, reasons}`. State is `running`, `eligible`, or `waiting`; reasons is empty for running or eligible requests.
-- `candidate` is true for independent candidate validation. `validation`, null for ordinary or unreported requests, is the turn's display copy of its remote candidate: {id, predecessor, commit, phase, waiting, cancelled_by, cause}. Phase follows building, validating, green, landed, red, cancelling or cancelled. Waiting distinguishes constructing_worktree, validating, waiting_for_predecessor and confirming_process_exit; a waiting queue request without a candidate awaits capacity. Cancellation names its invalidating predecessor and cause. These copies explain current work and authorize no publication; reading queue makes no remote lookup.
+- `candidate` is true for independent candidate validation. `validation`, null for ordinary or unreported requests, is the turn's display copy of its remote candidate: {id, predecessor, commit, phase, waiting, cancelled_by, cause}. Phase follows building, validating, green, slow, landed, red, cancelling or cancelled. Waiting distinguishes constructing_worktree, validating, waiting_for_round, slow_gating, waiting_for_predecessor and confirming_process_exit; a waiting queue request without a candidate awaits capacity. Cancellation names its invalidating predecessor and cause. These copies explain current work and authorize no publication; reading queue makes no remote lookup.
 - Each reason has `kind`, `requests`, `capacity` and `explanation`. Kind `same_repo` means a running or earlier eligible request of this repo excludes this request in its lane, or across lanes when both are turns. `worker_capacity` or `repo_capacity` means all places in that lane are occupied or reserved, with the limit in `capacity`. `paused` means new grants are paused. Other reasons have `capacity: null`. `requests` names each relevant `{number, state}`: `running` holds a place now, `eligible` reserves one earlier in FIFO order; it is empty for a pause. `explanation` states the constraint in words.
 
 Earlier eligible requests reserve capacity in scheduler order, with cuts before ordinary waiters and FIFO within each group. Blocked requests reserve nothing: with three worker lanes, ordinary requests of a running repo can leave two free while waiting, and a different repo can be eligible. Independently owned candidate worktrees of the same repo may validate together; ordinary heavy commands and serial barriers retain same-repo exclusion across worker and repo lanes. Older tickets lacking `repo` use their whole `dir` as the scheduler's fallback identity. `eligible` means allowed by this observation, not guaranteed to start next. Ordering is no fixed future start order or ETA; requests can leave and settings can change.
@@ -316,6 +316,23 @@ escalate_to: human                 # legacy consult is accepted; both escalate f
 
 An optional `gate_budget_seconds` declares a fixed warning budget: a positive whole number of seconds below `gate_seconds`. It never ends a run. Put it in the first yaml block, or in a separate block opened by ```yaml gate-budget; that block accepts only `gate_budget_seconds`. Declare it once: duplicate keys fail, including across blocks. Older versions skip the separate block and keep their termination limit, so they can land and cut the version that first supports the budget. They keep warning at 80% of that limit until upgraded. The budget is fixed in the repo, with its machine class, baseline version, cache conditions and rationale; it never follows recent runs upward. Queue waiting is outside both durations.
 
+A repo may split its gate in two, in a block of its own opened by the line ```yaml gates: the fast gate, what a worker passes before it opens or updates its PR, and the slow gate, everything else the gate checks. Each says its `command`, its limit `seconds` and its warning budget `budget_seconds`:
+
+~~~text
+```yaml gates
+fast:
+  command: afkconvoy exclusive -- ./gate.sh fast
+  seconds: 600
+  budget_seconds: 300
+slow:
+  command: afkconvoy exclusive -- ./gate.sh slow
+  seconds: 3000
+  budget_seconds: 300
+```
+~~~
+
+The two are the gate split, not a gate more: together they check what `gate_command` checks: a landing turn runs the fast gate per candidate and the slow gate once per round (`afkconvoy land --help`), and a base tip with no record is gated with `gate_command` whole. So each budget is below its limit, their limits add up to no more than `gate_seconds`, and their budgets to no more than `gate_budget_seconds` where it is declared. `afkconvoy gate --fast` and `--slow` run each alone (`afkconvoy gate --help`). Older versions skip the block.
+
 What is outside these blocks is yours to explain it in — but for a second block opened by the line ```yaml cut, which names the repo's cut steps and turns cutting on (`afkconvoy cut --help`). It is read beside this one; older versions read only this one, and refuse nothing for it.
 
 No command writes this file: write it, commit it, and run `afkconvoy config`.
@@ -328,9 +345,9 @@ Where a budget is declared, the answer also has `gate_budget_seconds`. The last 
 
 A repo whose config names a team is a bound repo, and answers three keys more: {"team", "patrols", "intake_limit"} — the team's directory as owner/repo or owner/repo/path (a whole repo, or a subdirectory of one), which of its patrols run here, by name (default none; `afkconvoy check` holds them against the team's, and `afkconvoy tick --help` says when one runs), how many issues taken in by workers may be open (default 50). A config names no harness: what each worker runs is its team's `roster`'s to say (`afkconvoy help roster`), within what the host kit holds (`afkconvoy kit --help`). A repo that names no team is unbound and answers the seven above and one legacy key: {"escalate_to"}, always `human`. Existing `consult` values still load, but every hand-off escalates for the host's watch to answer. Only a consult explicitly named by a bound repo's stage is asked before escalation (`afkconvoy help humans`).
 
-Where the file names cut steps, the answer has one key more: {"cut": {"set", "publish", "initial"?}} — each as the ```yaml cut block says it. Optional `initial: X.Y.Z` declares the first version to cut when the remote has no version tag; after the first tag it is ignored.
+Where the file names cut steps, the answer has one key more: {"cut": {"set", "publish", "initial"?}} — each as the ```yaml cut block says it. Optional `initial: X.Y.Z` declares the first version to cut when the remote has no version tag; after the first tag it is ignored. Where it splits its gate, one more: {"gates": {"fast", "slow"}}, each {"command", "seconds", "budget_seconds"}.
 
-Errors: the file cannot be read; it has no ```yaml block; a ```yaml cut block has a key but `set`, `publish` and `initial`, lacks a required step, a step names nothing to run, or `initial` is not X.Y.Z; `base_branch` or `gate_command` is missing; a key is unknown or of the wrong type; `gate_seconds` is not a whole number from 1; `gate_budget_seconds` is not a positive whole number below `gate_seconds`, is declared twice, or its separate block has another key; `team` is neither owner/repo nor owner/repo/path; a `harness`, which a config names no more — the error says the line to delete; `patrols` or `intake_limit` is set where no `team` is; `escalate_to` is neither consult nor human, or is set beside `team` — the error names the key. Without `--file`, outside a git checkout: "is not in a git checkout".
+Errors: the file cannot be read; it has no ```yaml block; a ```yaml cut block has a key but `set`, `publish` and `initial`, lacks a required step, a step names nothing to run, or `initial` is not X.Y.Z; `base_branch` or `gate_command` is missing; a key is unknown or of the wrong type; `gate_seconds` is not a whole number from 1; `gate_budget_seconds` is not a positive whole number below `gate_seconds`, is declared twice, or its separate block has another key; the ```yaml gates block lacks `fast` or `slow` or one of their keys, has another key, a gate names nothing to run, has no seconds or a budget not below them, or the two gates' limits or budgets add up past the gate's; `team` is neither owner/repo nor owner/repo/path; a `harness`, which a config names no more — the error says the line to delete; `patrols` or `intake_limit` is set where no `team` is; `escalate_to` is neither consult nor human, or is set beside `team` — the error names the key. Without `--file`, outside a git checkout: "is not in a git checkout".
 
 ##### What trips you up
 
@@ -498,7 +515,7 @@ With `--all` it reads the checkout list (checkouts.json in the cache directory) 
 - `claims`: each claim of that instance: {issue, title, status, pr, stage, role, held_for, worker, worktree, gate} — status as `plan` gives it; stage and role in a bound repo; held_for in seconds; worker is {state, quiet}, state being busy, stopped or gone, and null when orca could not say; gate is {green_at} when a green gate run is on record for the tree the worktree is at, else null
 - `issues`: as `plan` answers them: {frontier, excluded, escalating, locks, free_slots, patrols} — what a worker can be started on, what waits and why, and what is being handed to a human and why. null when they could not be read
 - `refusals`: issue number → the harnesses that refused that task, each with `harness` and `evidence`, read from GitHub. Later starts skip them across every stage; the harness stays healthy for other issues.
-- `candidates`: the remote candidate chains for every target branch of this repo, each in order and identified by `target_branch`. Each candidate is {phase, commit, issue, pr, predecessor, waiting, target_branch, id, cause, cancelled_by}. `waiting` is `constructing_worktree`, `validating`, `waiting_for_predecessor`, `confirming_process_exit`, `gate_red`, `cancelled` or `landed`. A finished candidate — phase `landed`, `red` or `cancelled` — carries no gate excerpt. A candidate gating now (phase `validating`) may still carry `excerpt`. An error reading the chain is reported as `{error}`.
+- `candidates`: the remote candidate chains for every target branch of this repo, each in order and identified by `target_branch`. Each candidate is {phase, commit, issue, pr, predecessor, waiting, target_branch, id, cause, cancelled_by}. `waiting` is `constructing_worktree`, `validating`, `waiting_for_round` (fast-green, until a round's slow gate lands it), `slow_gating` (the round's tip, running the slow gate), `waiting_for_predecessor`, `confirming_process_exit`, `gate_red`, `cancelled` or `landed`. A finished candidate — phase `landed`, `red` or `cancelled` — carries no gate excerpt. A candidate gating now (phase `validating` or `slow`) may still carry `excerpt`. An error reading the chain is reported as `{error}`.
 - `codex_workers`: this checkout's Codex sessions, each with issue, worktree, harness, model, effort, model_source, effort_source and codex_home (its private session directory). Automatic starts read the model from your `~/.codex/config.toml` (`user_selection`) unless a model label is followed (`model_label`; a stored `casting` is read as that), and no user preference leaves the model null for Codex's native default (`codex_default`). Every start reads the effort from your own Codex config, or uses Codex's model default. Sources stay attached to the session after your config changes; a saved `/model` choice is shown with its session's private config as the source. [`afkconvoy help worker-launch`](help:worker-launch).
 - `waiting_on_human`: as `plan` answers it, and as the panel lists it under "With a human": every open issue nobody holds that waits for a human — escalated, at a stage that is a human's, past the end of its workflow and still open, or reporting a patrol's failed run — each as {issue, title, why, url, since, answer}: `why` is what kind of wait, then the reason the issue’s comment gives, in its first sentence; `url` is that comment (the report itself for an older failed patrol or cut with no reason comment), or null where no comment explains the wait; `answer` is the line that answers it, run as printed apart from what stands between < and >, naming the checkout as that command takes it so the line runs from any directory. An escalation with no position gets the team's only flow label filled in; with several workflows, `why` lists the flow labels to choose `<flow label>` from. null when the issues could not be read
 - `findings`: what is wrong, most severe first — none: []. Each is {severity, what, evidence, fix, see}:
@@ -657,7 +674,7 @@ A claim's `status`, under `mine`, is one of:
 - `landing`: An open PR closes it, and that PR is not on the base branch yet. In a bound repo, only under a landing worker's claim.
 - `landed`: Its turn put the work on the base branch, and the landing was cut short before the issue was closed: a tick closes it, then settles the claim.
 - `closed`: The issue is closed: a tick settles the claim and releases it.
-- `gone`: GitHub says the issue was deleted, or transferred to another repo: nothing is left to settle, and the claim is let go.
+- `gone`: GitHub says the issue was deleted, or transferred to another repo, or has no such issue: nothing is left to settle, and the claim is let go.
 - `at_stage`: In a bound repo, a claim on an open issue that is not a landing worker's, whatever PR is open: it was dispatched to a stage, and what that stage declares ends it.
 
 The probe's warnings go to stderr. Errors: a command the fleet needs is missing or logged out, or orca is not running or does not know this checkout (the error names each, with the line to run; `claude` is among them when no custom provider is set, as `run` would then start its workers with it); the repo fails the startup probe (the remote has no base branch, its protection refuses the fleet's push, its tracker is public — the error names it, with the line that says a private one — or the remote takes none of the fleet's refs); the config cannot be read; GitHub or the remote cannot be read.
@@ -671,7 +688,7 @@ The probe's warnings go to stderr. Errors: a command the fleet needs is missing 
 - With a lock standing, `free_slots` counts as free the slot of every claim of `--instance` the lock leaves alone: a lock issue does not wait for them.
 - `free_slots` counts as free the slot of every claim of `--instance` that is `declared`: `mine` may hold more claims than the concurrency, and the frontier does not wait out the grace period of a worker that already declared.
 - Fleet state is unchanged. When it probes it still pushes to the remote, and deletes there: it needs push access, and it is not a read-only command. To read without writing anything, run `afkconvoy doctor`.
-- A slow gate is read off the recorded gate runs the remote still has: a record is swept a day after its run, a landing with no record or with a record that states no time is passed over, and 5 landings spread over hosts none of which has 5 say nothing. After an issue for a slow gate closed, only the landings made since count.
+- A gate gone slow is read off the recorded gate runs the remote still has: a record is swept a day after its run, a landing with no record or with a record that states no time is passed over, and 5 landings spread over hosts none of which has 5 say nothing. After an issue for a slow gate closed, only the landings made since count.
 - A probe that stands is trusted, not checked: a command uninstalled or logged out since, or a rule the remote gained, shows as the error of whatever runs into it — or, for the ref layout, not until a probe runs. A noted ref layout moves when two probes that run, one after the other, each see it rejected and the other taken; one rejection leaves the note, and a probe that takes the noted layout clears that streak. A checkout that has noted no layout still settles on hidden refs, or on branches where the remote rejects those. `run` probes at every start.
 
 ##### Worker proxy bypass
@@ -856,7 +873,7 @@ tick 9: left #97 (closed by @alice) · holding 1/3 · frontier 0 · next now
 tick 9: skipped #320 (blocked by #379, added since tick 8) · holding 1/3 · frontier 0 · next in 90s
 ```
 
-`lost #46`: a claim this instance held is another's now — taken by a takeover, or `(stale: past the lease)`, as a stale claim, this instance's heartbeat being past the lease. `released #231`: its issue was deleted, or `(the issue is gone from this repo)`, transferred. `left #97`: a claim with no PR whose issue was closed, by whoever GitHub says closed it (`closed on GitHub` where it says no one), is settled — nothing of the fleet's landed. `labelled …` and `added since …` say what the tick before saw otherwise. A change the tick does nothing about is in no line; nor is one made before the fleet instance's first tick, which has no tick before it, nor anything of the kind in what `afkconvoy tick` answers.
+`lost #46`: a claim this instance held is another's now — taken by a takeover, or `(stale: past the lease)`, as a stale claim, this instance's heartbeat being past the lease. `released #231`: its issue was deleted, `(the issue was transferred to acme/other#12)`, where GitHub says it moved, or `(there is no such issue)`, a 404 with no move. `left #97`: a claim with no PR whose issue was closed, by whoever GitHub says closed it (`closed on GitHub` where it says no one), is settled — nothing of the fleet's landed. `labelled …` and `added since …` say what the tick before saw otherwise. A change the tick does nothing about is in no line; nor is one made before the fleet instance's first tick, which has no tick before it, nor anything of the kind in what `afkconvoy tick` answers.
 
 `next now` in place of `next in <n>s`: the tick settled an issue, or advanced one without starting what follows, and left a slot free, so what follows — a consult, the landing of a PR, an issue the landing unblocked — is the next tick's to start, and that tick starts with no sleep.
 
@@ -1496,7 +1513,7 @@ Errors: a command the fleet needs is missing or logged out, or orca is not runni
 - `--instance` is required: `run` mints an id, a tick has to be given one. Give every tick of one fleet the same id — a new id holds no claims, and sees the old id's as another instance's.
 - In a bound repo the tick that reads a verdict ends the claim its stage was performed under (`advance`) and, where the verdict leads to a stage a role performs, starts that stage's worker into the slot it freed, under a claim of its own (`dispatch`, on the same issue): a `pass` to the next stage, a `reject` to an earlier one, a ruling that runs a stage again. That worker goes ahead of everything else the tick takes a slot for. Only a fleet over its concurrency has no slot for it: the issue is then on the frontier of the tick after, ahead of the issues no stage has declared on yet.
 - A dispatch reads the issue's blockers once more, just before its claim: the rebuild can be minutes older (settling runs in between), and a blocker added since holds the issue back. Nothing is claimed, no worker starts and no status board is shown; the step says `blocked`, the line `skipped #68 (blocked by #71)`, and the slot it would have taken goes to the next issue on the frontier, in the same tick. The rebuild's own requests are as many as ever.
-- An issue GitHub answers 410 (deleted) or 404 (transferred) for is gone, like a closed one, and costs the tick nothing else. A claim of mine on it is let go (`forget`): released, its worktree removed when it holds nothing the remote does not — else kept, its worker's terminal closed — and nothing written on GitHub. A dispatch that finds it gone, before its claim or after, leaves no claim behind, says `gone` and takes no slot. The line says `released #231 (the issue was deleted)`, or `skipped #231 (…)` of a dispatch that found it gone with no claim to release; `afkconvoy doctor` names a claim on one whose fleet is not running, with its fix.
+- An issue GitHub has no more is gone, like a closed one, and costs the tick nothing else. GitHub says one of three things of it: deleted, answered 410; transferred, its read redirected to the repo it moved to; no such issue, a 404 with no move — a number nobody issued. Only the first two are called deleted or transferred: a 404 with no move is no such issue. A claim of mine on it is let go (`forget`): released, its worktree removed when it holds nothing the remote does not — else kept, its worker's terminal closed — and nothing written on GitHub. A dispatch that finds it gone, before its claim or after, leaves no claim behind, says `gone` and takes no slot. The line says `released #231 (the issue was deleted)`, `(the issue was transferred to acme/other#12)` or `(there is no such issue)`, or `skipped #231 (…)` of a dispatch that found it gone with no claim to release; `afkconvoy doctor` names a claim on one whose fleet is not running, with its fix.
 - The last stage is different: the tick after a `pass` that leads to `land` starts a worker in the workflow's landing role, which gates the PR and lands in a turn; a `pass` to `land` with no open PR to land is handed to a human. A consult and a stage that runs again once a fleet lock closed are the tick after's too.
 - `run` does not sleep across that hop: after a tick that settled an issue or advanced one without starting what follows, and left a slot free, it starts the next tick at once (`next now` in its line), at most 4 ticks back to back. Ticking by hand, the next `tick` is yours to run.
 - The step that ends a piece of work ends its worker too: no worker is left at its prompt once the tick has acted on what it declared. What becomes of the terminal and the worktree:
@@ -1781,7 +1798,7 @@ Of a record, `by` says who left it: `worker` or — asked to rule on the stage's
 - `claim-spent`: a verdict was already declared under its claim: it is not one
 - `unknown-stage`: it names a stage the workflow no longer has: the issue escalates
 
-Errors, as {"error": …} with a non-zero exit: the team has a fault — {"error", "faults"}, as `check` answers it; the team has no workflow of that name, or none at all; the issue has no position — it carries several flow labels, one that names no workflow of the team, or none with no escalation that says which it left; and every error of `check`.
+Errors, as {"error": …} with a non-zero exit: the team has a fault — {"error", "faults"}, as `check` answers it; the team has no workflow of that name, or none at all; the issue has no position — it carries several flow labels, one that names no workflow of the team, or none with no escalation that says which it left; there is no such issue (`no such issue: #7 (HTTP 404)`), or GitHub says it was deleted or transferred; and every error of `check`.
 
 ##### What trips you up
 
@@ -2065,9 +2082,11 @@ A task uses its pinned target branch (`afkconvoy target --help`), or resolves th
 
 A turn preserves the PR's original head and atomically assigns a candidate merged onto the certified base or its preceding candidate. Each candidate must gate that exact commit in its own worktree, and its gate run is recorded green against it. With free worker lanes, candidates of the same repo validate concurrently; green successors wait for their exact predecessors, then push that commit to the target branch as a fast-forward without another gate. The window, including green waiters and unconfirmed cancellation, is bounded by the host's live worker-lane count. A light gate keeps its repo lane. Committed source changes are pushed to the PR first; candidate merges never move that source branch. The merge message names the PR and issue, watch or cut. Landing closes the issue; the tick settles its claim and source worktree.
 
-Once a candidate has stopped — landed, red, or cancelled with its processes confirmed gone — its worktree is removed. The candidate chain keeps the gate evidence: the phase, the cause and the gate excerpt, and a recorded gate run stays on the remote. A directory left behind after git dropped the registration is removed too, including when a directory inside it is not writable by its owner. A candidate that is building, validating, green and waiting on its predecessor, or cancelling, keeps its worktree. A worktree a process still has as its working directory stays until that process is gone, and a later tick removes it. The issue's, watch's or cut's own worktree is left, and the candidate chain is not rewritten.
+Where the candidate's commit declares a ```yaml gates block (`afkconvoy config --help`), the candidate runs the fast gate, not `gate_command`, and waits fast-green for a round. When no candidate of the chain is still building or fast-gating, the turn of the chain's last candidate, the round's tip, runs the slow gate once on its commit, in its worktree; a candidate assigned meanwhile waits for the next round. Green, the whole gate is put on record for the tip's tree from its fast and slow runs, and one atomic push lands every candidate up to the tip; each of their turns answers `merged` and closes its own issue. Red is not split to find whose change failed: the tip's turn answers `gate_red` with `gate` slow and `round`, the round's PRs and issues, and merges the round's tip into its branch, so its worker fixes the round from those issues and the failing tests and asks again; every other candidate of the round answers `round_red` and stops, its change carried by the tip's PR, and its issue is settled from the merge commits on the target branch once that lands. A merge onto the candidate ahead that conflicts is left in the worker's worktree to resolve, as `speculative_conflict`: the worker's branch then carries that candidate.
 
-The remote candidate record holds original head, predecessor, commit, tree, gate declaration, owner, process group, validation and cancellation. Publication rechecks validity, the PR's actual base, head, predecessor landing, issue blockers, fleet locks and the green record, then atomically fast-forwards the exact tested candidate and its state. No force push, extra merge or aggregate gate is used. Known candidate advances preserve successors; an outside base move or changed PR head invalidates the affected suffix. Cuts, watches, fleet-lock repairs and base certification drain the candidate window and run as serial barriers.
+Once a candidate has stopped — landed, red, or cancelled with its processes confirmed gone — its worktree is removed. The candidate chain keeps the gate evidence: the phase, the cause and the gate excerpt, and a recorded gate run stays on the remote. A directory left behind after git dropped the registration is removed too, including when a directory inside it is not writable by its owner. A candidate that is building, validating, green and waiting on its predecessor or for a round, slow-gating, or cancelling, keeps its worktree. A worktree a process still has as its working directory stays until that process is gone, and a later tick removes it. The issue's, watch's or cut's own worktree is left, and the candidate chain is not rewritten.
+
+The remote candidate record holds original head, predecessor, commit, tree, gate declaration, owner, process group, validation and cancellation. Publication rechecks validity, the PR's actual base, head, predecessor landing, issue blockers, fleet locks and the green record, then atomically fast-forwards the exact tested candidate, or a round's tip with every candidate it lands, and its state. No force push or extra merge is used; a round's slow gate is the one gate of more than one candidate. Known candidate advances preserve successors; an outside base move or changed PR head invalidates the affected suffix. Cuts, watches, fleet-lock repairs and base certification drain the candidate window and run as serial barriers.
 
 Failure invalidates the dependent suffix before terminating its running gates and children. Their lanes remain occupied until exit is confirmed. Cancellation does not record a dependent worker's gate as failed or increase its rework count. A later turn rebuilds from preserved original heads and the last landed base, respecting issue blockers. Gate startup waits until its group is recorded; inherited kernel lane leases prevent duplicate capacity after runner or owner death. Interrupted cancellation is completed on the owning host; unconfirmed remote processes are not replaced. A successful base push records its landed prefix atomically, and its merge commit lets recovery settle the issue after a crash.
 
@@ -2083,13 +2102,14 @@ An unrecorded base tip is gated alone in a separate checkout using its own gate 
 
 - merged: the candidate landed on the target branch, or the PR was already on it: wake the fleet and stop.
 - conflict: merging onto the target tip conflicts; no gate ran and nothing landed. `files` lists the conflicts and `worktree` holds the merge in progress: resolve every listed file, `git add` it, commit the merge and run this again.
-- gate_red: the candidate gated red, or green without a written record (`detail` says what prevented recording); nothing landed: fix your change, commit and run this again.
+- gate_red: the candidate gated red, or green without a written record (`detail` says what prevented recording); nothing landed: fix your change, commit and run this again. Where the slow gate ran red on a round at your candidate, `round` lists its PRs and issues and your branch already holds the round: do not split it; read those issues' requirements and the failing tests, fix the round, commit and run this again.
 - base_red: the target tip has no recorded green run and gated red alone; nothing of this PR ran: ask for a turn again once the fleet's repair of that tip has landed.
 - base_uncertified: the target tip moved before a candidate was assigned and has no recorded green run yet; nothing ran: ask for a turn again, which gates that tip alone first.
 - target_moved: the target branch moved outside the candidate chain before this candidate landed, and its fast-forward was rejected or the move invalidated it; nothing landed: ask for a turn again on the new base tip.
 - cancelled: a predecessor or other evidence this candidate depended on was invalidated; `cancelled_by` names the root candidate and `cause` why. Your source branch is preserved and this is not your gate failing: ask for another turn when your issue's blockers permit.
+- round_red: the slow gate ran red on the round this candidate was fast-green in, at the round's tip, PR `round_pr`; nothing landed and the round is not split. Your change is in that PR, whose worker fixes the round: stop; your issue is settled when that PR lands.
 - candidate_active: this PR already has an active candidate of another turn, which alone validates and lands it; nothing ran: ask for a turn again once that turn has ended; no gate failure or rework occurred.
-- speculative_conflict: merging onto the candidate ahead of this PR conflicts; no gate ran: ask for a turn again after that predecessor lands; no gate failure or rework occurred.
+- speculative_conflict: merging onto the candidate ahead of this PR conflicts; no gate ran and nothing landed. `files` lists the conflicts and `worktree` holds that candidate's merge into your branch in progress: resolve every listed file, `git add` it, commit the merge and run this again; your PR then carries that candidate's change.
 - gate_lane_changed: the candidate ahead of this PR changes the gate to one that runs in a worker lane, which this turn did not take; nothing ran: ask for a turn again after that predecessor lands; no gate failure or rework occurred.
 - waiting_for_capacity: the bounded candidate window was full; nothing ran: ask for a turn again; no gate failure or rework occurred.
 - blocked: `blocked_by` lists the issue dependencies still open; nothing landed: wait for them to close before asking again.
@@ -2554,7 +2574,7 @@ Run the gate in this worktree and record a green run
 
 ##### When to run it
 
-Run `gate` on a committed change before workflow review or for diagnosis. Run `gate --land` once an issue PR is open to take the same landing turn as `land --issue <n>`.
+Run `gate` on a committed change before workflow review or for diagnosis. Run `gate --land` once an issue PR is open to take the same landing turn as `land --issue <n>`. Where the repo splits its gate in two, run `gate --fast` before opening or updating a PR, and `gate --slow` to run the rest alone.
 
 ##### Who runs it
 
@@ -2564,11 +2584,13 @@ A worker in its own worktree, or the operator diagnosing a red gate.
 
 The config's gate_command runs on this worktree, with its log streaming to stderr and its gate limit, gate_seconds (default 3600). A green run on the committed tree is recorded with the tree, command, host and elapsed seconds. A dirty worktree or artifacts the gate fails to ignore cannot produce a record. Its first green run records the fresh build for worker disk observations.
 
+With --fast or --slow, the fast gate's or the slow gate's command runs alone, as the ```yaml gates block of the config declares it (`afkconvoy config --help`), under that gate's own limit, `seconds`. A run here is put on record as neither, and neither stands in for the whole gate: a landing turn runs the fast gate per candidate and the slow gate per round, and records the whole gate only from both on one tree (`afkconvoy land --help`). A run past that gate's `budget_seconds` is green and says it is slow. A repo that declares no gates block answers an error.
+
 With --land, open the PR first. One turn makes the PR's merge commit on the current base tip, gates that commit, records green and lands it as a fast-forward. An unrecorded base tip is gated alone first; worker turns wait while it is red and the fleet dispatches its repair. Only the fleet-lock issue's repair may take a turn on a red base. `land --help` describes every outcome.
 
 ##### What it answers
 
-{"status", "recorded", "detail", "exit_code", "timed_out", "seconds", "command", "head"}. status is green or red; recorded is true only for a green run of the committed tree written to the remote. detail says what to do next. seconds times the command. A run that reaches gate_seconds is red with exit_code 124 and timed_out true. uncommitted lists at most 20 paths when green could not certify a committed tree; not_recorded says why a remote refused the record. locks names standing fleet locks on a red run. termination is null unless a signal ended the command outside its limit; then {pid, signal, core_dumped}, with exit_code -1 and timed_out false. Its pid also names its process group. The sender is unknown and repository checks may not have started; inspect harness/tool cancellation and host process logs using that evidence. A shell exit such as 137 alone does not prove a signal. With --land the answer also carries the landing outcome, PR and base tip merged.
+{"status", "recorded", "detail", "exit_code", "timed_out", "seconds", "command", "head"}. status is green or red; recorded is true only for a green run of the committed tree written to the remote. detail says what to do next. seconds times the command. A run that reaches gate_seconds is red with exit_code 124 and timed_out true. uncommitted lists at most 20 paths when green could not certify a committed tree; not_recorded says why a remote refused the record. locks names standing fleet locks on a red run. termination is null unless a signal ended the command outside its limit; then {pid, signal, core_dumped}, with exit_code -1 and timed_out false. Its pid also names its process group. The sender is unknown and repository checks may not have started; inspect harness/tool cancellation and host process logs using that evidence. A shell exit such as 137 alone does not prove a signal. With --land the answer also carries the landing outcome, PR and base tip merged. With --fast or --slow it is {"gate", "status", "recorded", "detail", "exit_code", "timed_out", "seconds", "command", "limit_seconds", "budget_seconds", "over_budget", "termination", "excerpt"}: gate is fast or slow, recorded is always false, over_budget says whether seconds passed budget_seconds, and excerpt is the end of a red run's log.
 
 Errors are {"error": …} with non-zero exit: an unreadable config, an uncommitted landing change, a missing base branch or no open issue PR for this branch. Red is an answer with exit 0; read status and recorded.
 
@@ -2578,6 +2600,7 @@ Errors are {"error": …} with non-zero exit: an unreadable config, an uncommitt
 - A standalone gate lands nothing; a workflow's landing worker lands after its final stage.
 - Resolve every conflict and commit the merge before asking for another turn.
 - The gate limit is gate_seconds in the config, not a flag.
+- A green fast gate is not a green gate: the slow gate's tests have not run. Only the whole gate, at landing, is on record, from a round's fast and slow runs on one tree or a run of gate_command.
 
 ##### Which checkout it is about
 
@@ -2597,6 +2620,8 @@ afkconvoy gate [OPTIONS] [CHECKOUT]
 
 - `[CHECKOUT]`: The checkout it is about, or a directory in it [default: the one it is run in]
 - `--land`: Take the open issue PR's merge, gate, record and landing turn
+- `--fast`: Run the repo's fast gate alone, under its own limit and budget, recording nothing
+- `--slow`: Run the repo's slow gate alone, under its own limit and budget, recording nothing
 - `--host <HOST>`: The host a green run is recorded as made on [default: this machine's name]
 
 ### Run by a worker's hook
@@ -2852,7 +2877,7 @@ It reads the issue's comments and the open PRs on GitHub, the issue's branches o
 - `branch`: {name, candidates, commits_ahead} — the issue's own branches on the remote, and the one a worktree would be recreated at
 - `tier`, `action`, `prompt`, `reason`: what `dispatch` would do, as `dispatch` answers it
 
-Errors: the config, GitHub or the remote cannot be read; the remote has no base branch.
+Errors: the config, GitHub or the remote cannot be read; the remote has no base branch; there is no such issue (`no such issue: #7 (HTTP 404)`), or GitHub says it was deleted or transferred.
 
 ##### What trips you up
 
@@ -3657,6 +3682,7 @@ What becomes of one issue, from the moment it is the fleet's to the moment it la
 - **A claim**: What marks one issue as one fleet instance's. Creating it succeeds for exactly one instance, so no issue is worked twice. It is live while its owner's heartbeat is; past that another host may take it. `afkconvoy scan --help`, `afkconvoy takeover --help`.
 - **A turn**: One command makes a PR's merge commit on the current base tip, gates it, records green and fast-forwards the base to that same commit. Red, conflict or rejected push lands nothing. `afkconvoy land --help`.
 - **The gate budget**: A fixed duration budget declared as `gate_budget_seconds` in the repo config. Recent recorded landings on one host that all exceed it make a slow gate. It never ends a run; where absent, the warning threshold is 80% of the gate limit. It never learns from past runs.
+- **The fast gate and the slow gate**: A repo may split its gate in two, in its config's ```yaml gates block, each part with its own command, limit and budget. A worker passes the fast gate, `afkconvoy gate --fast`, before it opens or updates its PR; the slow gate holds the rest. A landing turn runs the fast gate on each candidate, and the slow gate once per round, on the candidate chain's tip, landing every candidate up to it together. `afkconvoy config --help`, `afkconvoy land --help`.
 - **The gate limit**: How long the gate may run: `gate_seconds` in the repo's config, 3600 where it sets none. A run that reaches it is ended and is red, for every gate run. `afkconvoy config --help`.
 
 An unrecorded base tip is gated alone first. A red tip holds ordinary turns while the fleet dispatches its own repair, outside product workflows. That repair still takes a turn and gates its complete merge green before landing.
@@ -4649,7 +4675,7 @@ A warning may be the fleet mid-step: run `doctor` again after a tick before you 
 - `has waited for a human for`: Nothing in the fleet moves that issue. `fix` answers it: [`afkconvoy help humans`](help:humans).
 
 - `is held off by a PR not the fleet's`: No worker starts: it would open a second PR. `fix` closes it, or merge it yourself.
-- `is claimed but GitHub has it no more`: Deleted or transferred: its fleet's next tick releases it. `fix` is for one stopped.
+- `is claimed but GitHub has it no more`: Deleted, transferred, or no such issue: its fleet's next tick releases it. `fix` is for one stopped.
 - `the gate is slow`: On one host, the last 5 landings with a recorded gate run all exceeded the fixed `gate_budget_seconds` when declared, or took more than 80% of the termination gate limit otherwise. Queue waiting is excluded. A warning never ends a gate. Compare the gate logs against the committed baseline: step wall times, Flux functions, and nextest slow tests with full names and seconds; parallel test durations are not gate wall time. A tick opens one issue for the fleet to make the gate faster: `fix` shows it. Raising `gate_seconds` or `gate_budget_seconds` is no fix, nor is deleting or skipping tests.
 - `the host runner did not move onto`: A newer release is installed where the host runner was started from, and it did not start, does not say its version, or the wait for ticks and a running exclusive command to end exceeded ten minutes: `evidence` says why, including which ticks or command held it. The host runner works on, on its own release, and tries that file again once it changes: install it again (`brew reinstall afkconvoy`), and `fix` shows whether it now says its version.
 
@@ -5052,16 +5078,24 @@ How long the gate may run. A run that reaches it is ended and is red. A repo dec
 _Avoid_: timeout (what a run that reached it did), budget (the warning threshold), baseline (a committed timing observation)
 
 **Gate budget**:
-The fixed duration a repo expects its gate to stay within. Recent recorded landings on one host that all exceed it make a slow gate; exceeding it never ends a run.
+The fixed duration a repo expects its gate to stay within. Recent recorded landings on one host that all exceed it make a gate gone slow; exceeding it never ends a run. The fast gate and the slow gate each have one of their own.
 _Avoid_: gate limit (the termination bound), learned baseline
 
 **Recorded gate run**:
 The evidence that the gate passed on one committed tree, with how long the run took and on which host, made by the tool that saw the exit code and kept where every host can read it. A turn believes one from either ref layout while it stands.
 _Avoid_: gate cache, CI status
 
+**Fast gate**:
+The part of the gate a worker passes before it opens or updates its PR: the checks that are quick, and every test not marked slow. A repo declares it beside the slow gate, each with its own command, limit and budget; together they are the gate. A new test is in it until it is marked slow.
+_Avoid_: smoke test, pre-check, quick gate
+
 **Slow gate**:
-What the gate is when its recent runs for the base branch, on one host, all exceeded the gate budget, or took most of the gate limit where no budget is declared. The fleet opens one issue that says so, and no second while that one is open.
-_Avoid_: regression, drift, creep
+The part of the gate the fast gate leaves out: every test marked slow, and any check not in the fast gate. Nothing in the fast gate is run again in it. A landing turn runs it once per round, not per candidate.
+_Avoid_: full gate (the gate, both parts), gate gone slow (a gate whose runs exceed its budget)
+
+**Gate gone slow**:
+What the gate is when its recent runs for the base branch, on one host, all exceeded the gate budget, or took most of the gate limit where no budget is declared. The fleet opens one issue that says so, labelled `slow-gate`, and no second while that one is open.
+_Avoid_: slow gate (the part of the gate holding the slow tests), regression, drift, creep
 
 **Sync**:
 Bringing a branch up to date by merging into it. Nothing is ever rebased.
@@ -5078,6 +5112,10 @@ _Avoid_: speculative branch, train tip
 **Candidate chain**:
 The ordered candidates of one repo and target branch, each depending on its predecessor. A failed or invalid candidate cancels its dependent suffix; already landed predecessors remain landed.
 _Avoid_: landing train, speculative queue
+
+**Round**:
+One run of the slow gate on a candidate chain's tip, once every candidate of the chain is fast-green, that lands every candidate up to the tip together. A candidate assigned during it waits for the next. A red round is not split to find whose change failed: the tip's worker fixes it whole, from the round's issues and its failing tests, and the round's other candidates stop, their changes carried by the tip's PR.
+_Avoid_: batch (a tick's), bisection, merge train, rollup
 
 **Land**:
 Pushing the exact candidate a turn recorded green onto its target branch as a fast-forward after its predecessor has landed, and closing the issue it completes. Issue workers, a workflow's landing worker, watches and cuts all land in a turn; watches and cuts retain the configured base branch.

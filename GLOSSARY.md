@@ -366,16 +366,24 @@ How long the gate may run. A run that reaches it is ended and is red. A repo dec
 _Avoid_: timeout (what a run that reached it did), budget (the warning threshold), baseline (a committed timing observation)
 
 **Gate budget**:
-The fixed duration a repo expects its gate to stay within. Recent recorded landings on one host that all exceed it make a slow gate; exceeding it never ends a run.
+The fixed duration a repo expects its gate to stay within. Recent recorded landings on one host that all exceed it make a gate gone slow; exceeding it never ends a run. The fast gate and the slow gate each have one of their own.
 _Avoid_: gate limit (the termination bound), learned baseline
 
 **Recorded gate run**:
 The evidence that the gate passed on one committed tree, with how long the run took and on which host, made by the tool that saw the exit code and kept where every host can read it. A turn believes one from either ref layout while it stands.
 _Avoid_: gate cache, CI status
 
+**Fast gate**:
+The part of the gate a worker passes before it opens or updates its PR: the checks that are quick, and every test not marked slow. A repo declares it beside the slow gate, each with its own command, limit and budget; together they are the gate. A new test is in it until it is marked slow.
+_Avoid_: smoke test, pre-check, quick gate
+
 **Slow gate**:
-What the gate is when its recent runs for the base branch, on one host, all exceeded the gate budget, or took most of the gate limit where no budget is declared. The fleet opens one issue that says so, and no second while that one is open.
-_Avoid_: regression, drift, creep
+The part of the gate the fast gate leaves out: every test marked slow, and any check not in the fast gate. Nothing in the fast gate is run again in it. A landing turn runs it once per round, not per candidate.
+_Avoid_: full gate (the gate, both parts), gate gone slow (a gate whose runs exceed its budget)
+
+**Gate gone slow**:
+What the gate is when its recent runs for the base branch, on one host, all exceeded the gate budget, or took most of the gate limit where no budget is declared. The fleet opens one issue that says so, labelled `slow-gate`, and no second while that one is open.
+_Avoid_: slow gate (the part of the gate holding the slow tests), regression, drift, creep
 
 **Sync**:
 Bringing a branch up to date by merging into it. Nothing is ever rebased.
@@ -392,6 +400,10 @@ _Avoid_: speculative branch, train tip
 **Candidate chain**:
 The ordered candidates of one repo and target branch, each depending on its predecessor. A failed or invalid candidate cancels its dependent suffix; already landed predecessors remain landed.
 _Avoid_: landing train, speculative queue
+
+**Round**:
+One run of the slow gate on a candidate chain's tip, once every candidate of the chain is fast-green, that lands every candidate up to the tip together. A candidate assigned during it waits for the next. A red round is not split to find whose change failed: the tip's worker fixes it whole, from the round's issues and its failing tests, and the round's other candidates stop, their changes carried by the tip's PR.
+_Avoid_: batch (a tick's), bisection, merge train, rollup
 
 **Land**:
 Pushing the exact candidate a turn recorded green onto its target branch as a fast-forward after its predecessor has landed, and closing the issue it completes. Issue workers, a workflow's landing worker, watches and cuts all land in a turn; watches and cuts retain the configured base branch.

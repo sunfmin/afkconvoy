@@ -1,6 +1,6 @@
-//! Letting go of a claim whose issue is gone: GitHub says it was deleted, or
-//! transferred to another repo. Like a closed issue it is never worked again;
-//! unlike one, nothing is left on GitHub to settle.
+//! Letting go of a claim whose issue is gone: GitHub says it was deleted,
+//! transferred to another repo, or never issued. Like a closed issue it is
+//! never worked again; unlike one, nothing is left on GitHub to settle.
 
 use afkconvoy_core::tick::Outcome;
 use afkconvoy_core::transition::{self, ForgetStep};

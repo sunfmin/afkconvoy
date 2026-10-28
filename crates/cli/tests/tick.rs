@@ -734,8 +734,8 @@ fn a_failed_step_shows_in_the_line() {
     assert!(lines[0].starts_with("tick 1: holding 1/2 · frontier 0 · FAILED"), "{lines:?}");
 }
 
-/// Takes issue `number` off the stand-in GitHub as `how` — `deleted` or
-/// `transferred` — once `calls` more calls about it are answered.
+/// Takes issue `number` off the stand-in GitHub as `how` — `deleted`,
+/// `transferred` or `missing` — once `calls` more calls about it are answered.
 fn gone(world: &World, number: u64, how: &str, calls: u64) {
     world.with_gh(|gh| {
         if calls == 0 {
@@ -747,9 +747,11 @@ fn gone(world: &World, number: u64, how: &str, calls: u64) {
 
 #[test]
 fn a_claimed_issue_deleted_between_two_ticks_is_let_go_and_its_slot_refilled() {
-    for (how, said) in
-        [("deleted", "the issue was deleted"), ("transferred", "the issue is gone from this repo")]
-    {
+    for (how, said) in [
+        ("deleted", "the issue was deleted"),
+        ("transferred", "the issue was transferred to acme/elsewhere#1003"),
+        ("missing", "there is no such issue"),
+    ] {
         let world = backlog(&[3, 5, 9]);
         tick(&world, "1000");
         let worktree = world.orca()["worktrees"][0]["path"].as_str().unwrap().to_string();

@@ -524,8 +524,8 @@ pub enum ForgetStep {
     CloseTerminal,
 }
 
-/// Lets go of the claim on `issue`, which GitHub says was deleted or
-/// transferred: release the claim → remove the worktree, when it holds
+/// Lets go of the claim on `issue`, which GitHub says was deleted,
+/// transferred or never issued: release the claim → remove the worktree, when it holds
 /// nothing the remote does not (`spare`), and close its worker's terminal
 /// when it does. Nothing is written on GitHub: the issue, its board and its
 /// labels went together.
