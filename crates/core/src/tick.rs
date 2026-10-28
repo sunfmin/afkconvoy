@@ -49,9 +49,8 @@ pub enum TickStep {
     /// Run the due patrol at this place among the working set's, into a free
     /// slot.
     Patrol { patrol: usize },
-    /// Start a caster, which casts every uncast issue of an unbound repo
-    /// that has a choice to make (`WorkingSet::caster`). It holds no claim
-    /// and takes no slot.
+    /// Kept so an old pass can name it. Automatic casting is gone: a pass
+    /// never takes this step, and carrying it out starts nothing.
     Cast,
     /// Open the issue that says the gate is slow, while none is open. It
     /// takes no slot.
@@ -324,12 +323,6 @@ where
         did.push((step, carry_out(step)));
     }
     let held = hand_over(set, concurrency, held, &mut did, &mut carry_out);
-    // Ahead of the frontier, whose issues it casts: none is dispatched while
-    // it runs. It starts a worker, which admission holds back as any.
-    if set.caster.as_ref().is_some_and(|caster| caster.due) && set.held_back.is_empty() {
-        let step = TickStep::Cast;
-        did.push((step, carry_out(step)));
-    }
     let held = admit(set, concurrency, held, &mut did, &mut carry_out);
     finish_pass(set, held, &mut did, &mut carry_out);
     let left = set.frontier.iter().filter(|issue| !dispatched(&did, issue.number)).count();
@@ -1367,19 +1360,15 @@ mod tests {
     }
 
     #[test]
-    fn a_caster_that_is_due_is_started_ahead_of_the_frontier_and_takes_no_slot() {
+    fn a_pass_starts_no_caster() {
         use crate::admission::Hold;
         use crate::casting::Standing;
         let mut set = set(&[9], &[]);
-        let due = |due| Standing { running_since: None, due, held: vec![7], to_cast: vec![7] };
-        set.caster = Some(due(true));
+        set.caster =
+            Some(Standing { running_since: None, due: true, held: vec![7], to_cast: vec![7] });
         let pass = run_pass(&set, 1, 0, |_| Done);
-        assert_eq!(steps(&pass), [Cast, Dispatch { issue: 9 }, Heartbeat]);
+        assert_eq!(steps(&pass), [Dispatch { issue: 9 }, Heartbeat]);
         assert_eq!(pass.held, 1);
-        // One that runs is not started again, and none while admission holds.
-        set.caster = Some(due(false));
-        assert!(!steps(&run_pass(&set, 1, 0, |_| Done)).contains(&Cast));
-        set.caster = Some(due(true));
         set.held_back = vec![Hold::Memory { free: 3, floor: 10 }];
         assert!(!steps(&run_pass(&set, 1, 0, |_| Done)).contains(&Cast));
     }

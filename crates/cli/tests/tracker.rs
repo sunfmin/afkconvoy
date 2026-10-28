@@ -966,28 +966,23 @@ fn rule_and_send_steer_the_trackers_issue_without_proposing_a_precedent() {
 }
 
 #[test]
-fn cast_labels_the_trackers_issue_and_says_why_there() {
+fn a_model_label_on_the_trackers_issue_is_followed_and_cast_adds_none() {
     let world = world();
     world.hold_every_harness();
     world.kit_models("pi", &["a/fast", "a/slow"]);
     world.afk(&["switch", "--harness", "pi"]).ok();
-    world.afk(&["kit", "--cast", "on"]).ok();
-    tracker_issue(&world, 7, &["ready-for-agent", MINE]);
+    assert!(world.afk(&["kit", "--cast", "on"]).error().contains("automatic casting is gone"));
+    assert!(world.afk(&["cast", "--now", "1000"]).error().contains("automatic casting is gone"));
+    tracker_issue(&world, 7, &["ready-for-agent", MINE, "model:a/fast"]);
     world.issue(7, &["ready-for-agent"]);
     let own = world.gh()["issues"].clone();
-    world.caster_answers(
-        "{\"issue\": 7, \"harness\": \"pi\", \"model\": \"a/fast\", \"why\": \"A one-line fix.\"}\n",
-    );
-    let answered = world.afk(&["cast", "--now", "1000"]).ok();
-    assert_eq!(
-        answered["cast"],
-        json!([{"issue": 7, "harness": "pi", "model": "a/fast", "why": "A one-line fix."}]),
-        "{answered}"
-    );
+    let planned = world.afk(&["plan", "--now", "1000"]).ok();
+    assert_eq!(planned["frontier"][0]["cast"]["harness"], "pi");
+    assert_eq!(planned["frontier"][0]["cast"]["model"], "a/fast");
+    assert_eq!(planned["frontier"][0]["cast"]["why"], "model_label");
     let tracker = world.tracker();
     assert_eq!(issue_of(&tracker, 7)["labels"], json!(["ready-for-agent", MINE, "model:a/fast"]));
-    assert!(comments_of(&tracker, 7).join("\n").contains("A one-line fix."), "{tracker}");
-    assert_eq!(world.gh()["issues"], own);
+    assert_eq!(world.gh()["issues"], own, "nothing is said on the checkout's repo");
     assert_eq!(world.gh()["comments"], json!({}));
     routed(&world);
 }

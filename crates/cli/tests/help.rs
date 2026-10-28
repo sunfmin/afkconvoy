@@ -34,6 +34,19 @@ fn manual() -> String {
     asked(&["help", "all"])
 }
 
+/// `land <n>` and `land --issue <n>` are the one usage both the help and a
+/// missing issue name.
+#[test]
+fn land_help_and_a_missing_issue_name_the_same_forms() {
+    let forms = "afkconvoy land <n> | afkconvoy land --issue <n>";
+    let help = asked(&["land", "--help"]);
+    assert!(help.contains(forms), "{help}");
+    let out = Command::new(env!("CARGO_BIN_EXE_afkconvoy")).arg("land").output().unwrap();
+    assert!(!out.status.success());
+    let said = String::from_utf8(out.stdout).unwrap();
+    assert!(said.contains(forms), "{said}");
+}
+
 #[test]
 fn cut_help_gives_five_hours_at_the_default_and_three_beside_the_gates() {
     let help = asked(&["help", "cut"]);
@@ -651,13 +664,14 @@ fn the_index_says_what_a_bound_repo_is_before_it_names_one() {
     assert!(next.starts_with("One whose config names none is unbound"), "{next}");
 }
 
-/// `cast`'s one line says what it does in words of its own: the labels it puts
-/// on and who chooses them, and none of the glossary's words for either.
+/// `cast`'s one line says automatic casting is gone, and what a worker runs.
 #[test]
 fn casts_one_line_says_what_it_does_in_plain_words() {
     let short = asked(&["cast", "-h"]);
     let line = short.lines().next().unwrap();
-    for plain in ["model", "harness", "`model:`", "label", "session", "enabled"] {
+    for plain in
+        ["automatic casting is gone", "model", "harness", "`model:`", "label", "user default"]
+    {
         assert!(line.contains(plain), "{line}");
     }
     for term in

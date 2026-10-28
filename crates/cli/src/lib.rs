@@ -21,7 +21,7 @@ use afkconvoy_core::role::{
     TEAM_COMMIT_ENV,
 };
 
-use anyhow::Context;
+use anyhow::{Context, bail};
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use serde_json::{Value, json};
 
@@ -258,7 +258,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Write this host's host kit, or enable or disable automatic model casting
+    /// Write this host's host kit. `kit --cast` is refused: automatic casting is gone
     ///
     /// ## When to run it
     ///
@@ -276,18 +276,18 @@ enum Command {
     /// 2. Models. Each harness found is asked for the models its own login runs, in that same login shell, and no terminal is opened. Claude Code is asked through its command with an `initialize` request and no prompt; Codex through its command with `debug models`, its server's list; pi through its command with `--list-models`; Kimi Code through its command with `provider list --json`, under the fleet's isolated home; Grok through its command with `models`, under the fleet's isolated home and with no prompt; DSH through `dsh headless`, whose listing plugin asks `https://api.deepseek.com/models` with DSH's account token from `$DSH_HOME/.credentials.yaml` (default `~/.dsh`), or its `DEEPSEEK_API_KEY` when no account token is held. The server's ids and display names are used, never a bundled catalog. This is the sole credential the fleet reads, through DSH's credential service, only for listing: never printed or stored, and sent only to DeepSeek. Not signed in or a server refusal leaves DSH out with the reason.
     /// 3. Default first. No model is sent a prompt. A harness found and listed is held at once, each model it newly lists `research pending`, which no worker is started on. A harness with no placed model starts its workers on its own login's default model, with no model flag. Codex automatic workers instead read the user's current model preference from `~/.codex/config.toml`, unless an issue has a model label; with no preference they use Codex's native default. `plan` and `doctor` report the kit's `default_model` and `research_pending` independently of that preference.
     /// 4. Names. A model's id is exactly the id its harness lists, and a worker is started on it. Its `names` are the names its listing shows it by (Claude Code's `Opus 5.5`) and the aliases research ties to it with a dated source.
-    /// 5. Order. Established harness and model order is retained, including switches made while listing or research run. New harnesses follow in this fixed order: claude-code, pi, codex, dsh, kimi, grok. New models follow established models; research may rank discoveries without displacing established priority. The first harness and its first placed model are the host kit's first, or its default while none is placed.
-    /// 6. Research. The watch researches listed identities using its web tools, once across harnesses, and writes a JSON file through `afkconvoy kit --research <file>`. The kit itself calls no model. Unplaced models are a doctor finding: a watch started for other work takes them too; research alone starts one at most once a day. A harness with no placed model stays on its default. Sourced research is kept as good_at, names, sources ({url, date}) and researched_at (epoch seconds), and is never refreshed on a schedule. A caster is told good_at (`afkconvoy cast --help`).
+    /// 5. Order. Established harness and model order is retained, including switches made while listing or research run. New harnesses follow in this fixed order: claude-code, pi, codex, dsh, kimi, grok. New models follow established models; research may rank discoveries without displacing established priority. Harness order is this list. A worker's model is its issue's one `model:` label of the selected harness, where that label is followed, otherwise that harness's user default. A harness with no placed model starts with no model flag.
+    /// 6. Research. The watch researches listed identities using its web tools, once across harnesses, and writes a JSON file through `afkconvoy kit --research <file>`. The kit itself calls no model. Unplaced models are a doctor finding: a watch started for other work takes them too; research alone starts one at most once a day. A harness with no placed model stays on its user default. Sourced research is kept as good_at, names, sources ({url, date}) and researched_at (epoch seconds), and is never refreshed on a schedule. `afkconvoy draft` copies good_at into a roster.
     ///
     /// A model named by a roster entry or a `model:` label matches a placed model the host kit holds for its harness when it is its id or one of its names, whatever the case; with the provider prefix left off where that leaves one match (`gpt-6-sol` for pi's `openai-codex/gpt-6-sol`). A name with two matches matches neither, and says which two; one with none says the nearest names.
     ///
-    /// `afkconvoy kit --cast on` enables automatic model casting on this host; `afkconvoy kit --cast off` disables it. These change only `cast` in an existing kit, send no prompt and leave its refresh time unchanged. Run `afkconvoy kit` first on a host without one. New kits and older kits with no setting default off. Every checkout shares this setting, retained through rebuilding, daily refresh and runner restart. With casting off, workers follow matching model labels or the selected harness's first eligible model; with it on, a caster chooses only among multiple models within selected harnesses (`afkconvoy cast --help`).
+    /// `afkconvoy kit --cast` is refused: automatic casting is gone. An old host-kit `cast` key is ignored, changes no start, and is dropped the next time the kit is written. It does not fail `kit` or `check`. A worker's model is its one `model:` label of the selected harness, or that harness's user default (`afkconvoy cast --help`).
     ///
     /// Without --cast or --research it says on stderr where the file is, what it holds — each harness's placed models, or its default model, and those `research pending`, `not researched` or settled — and what was left out.
     ///
     /// ## What it answers
     ///
-    /// With --cast: {path, cast, changed}, the kit file, the resulting boolean and whether it changed. With --research: {path, written, placed, settled, kit}, the host kit file, true, each model placed or settled as {harness, model} in its respective array, and the resulting kit. Otherwise {path, written, kit, left_out}: the file; true; the kit written; and each harness or model not kept, as {harness, model, why} — model absent for a whole harness — why `not installed`, `listing failed`, or `no longer listed`. Run twice with nothing changed, it writes the same kit. Errors: the login shell did not answer within 20 seconds; a kit that cannot be read or written.
+    /// With --cast: an error, automatic casting is gone. With --research: {path, written, placed, settled, kit}, the host kit file, true, each model placed or settled as {harness, model} in its respective array, and the resulting kit. Otherwise {path, written, kit, left_out}: the file; true; the kit written; and each harness or model not kept, as {harness, model, why} — model absent for a whole harness — why `not installed`, `listing failed`, or `no longer listed`. Run twice with nothing changed, it writes the same kit. The written kit has no `cast` key. Errors: the login shell did not answer within 20 seconds; a kit that cannot be read or written.
     ///
     /// A harness with `models` [] or no placed model starts on its default. Automatic command discovery can append a harness with no models; one written by hand or by an older release is also read as it is: a model named in it with no research is started on until research answers for it, when the watch supplies its research. Neither the kit nor `left_out` carries probe evidence any more: an older kit's `probed` fields are read and not written again.
     ///
@@ -307,13 +307,13 @@ enum Command {
     /// {"models":[{"harness":"codex","model":"codex-auto-review","settled":"approval reviewer, unsuited to workers","sources":[{"url":"https://vendor.example/reviewer","date":"2026-10-26"}]}]}
     /// ```
     ///
-    /// Each entry names an exact listed id of a held harness. Name each identity once across harnesses: the same id without its provider prefix shares research, including settlements. Each entry supplies either nonempty good_at describing coding strengths and weaknesses, with optional nonempty sourced names, or a settled reason with no names. Every entry needs at least one HTTP or HTTPS source URL and its publication or update date as a calendar date YYYY-MM-DD. Use primary and high-trust sources, with live web search. The models array ranks newly placed models, after established model priority; harness priority, commands, cast and existing dated research stay as held. Models omitted stay as held for a later watch.
+    /// Each entry names an exact listed id of a held harness. Name each identity once across harnesses: the same id without its provider prefix shares research, including settlements. Each entry supplies either nonempty good_at describing coding strengths and weaknesses, with optional nonempty sourced names, or a settled reason with no names. Every entry needs at least one HTTP or HTTPS source URL and its publication or update date as a calendar date YYYY-MM-DD. Use primary and high-trust sources, with live web search. The models array ranks newly placed models, after established model priority; harness priority, commands and existing dated research stay as held. Models omitted stay as held for a later watch.
     ///
     /// Refusals name the file and fault and write nothing: malformed JSON, unknown fields, unknown harnesses or ids, repeated identities, conflicting outcomes, empty good_at, settled reason or names, missing or malformed dated sources, or a file answering no model awaiting research. Correct the file and run the command again. The answer lists every placement and settlement, including identities shared by another harness. Research does not change when the models were last listed (`refreshed`).
     ///
     /// ## What trips you up
     ///
-    /// A harness or model left out is gone from the file: commands and research are kept only for what is kept. At a worker launch, a known harness with no command is discovered in the worker's login shell and its checked stock command is merged into the kit, without model probes or research. An explicit command always wins. `--worker-command` is gone: a harness's command is the host kit's. A command is an opaque shell string; an unbound repo starts it under nice with its worktree's TMPDIR, adding its harness's model flag for the model an issue's casting or the host kit's first names, and its harness's worktree-trust setup. Codex also receives a session-private user directory and the effort read from the host user's own Codex config at each launch; no saved worker preference selects either. A bound repo adds its role flags ([`afkconvoy help worker-launch`](help:worker-launch)).
+    /// A harness or model left out is gone from the file: commands and research are kept only for what is kept. At a worker launch, a known harness with no command is discovered in the worker's login shell and its checked stock command is merged into the kit, without model probes or research. An explicit command always wins. `--worker-command` is gone: a harness's command is the host kit's. A command is an opaque shell string; an unbound repo starts it under nice with its worktree's TMPDIR, adding its harness's model flag only where a model label is followed, and its harness's worktree-trust setup. With no followed label the worker starts with no model flag, on that harness's user default. Codex also receives a session-private user directory and the effort read from the host user's own Codex config at each launch; no saved worker preference selects either. A bound repo adds its role flags ([`afkconvoy help worker-launch`](help:worker-launch)).
     ///
     /// Writing the kit sends no prompt to any listed model. A listed model that fails when its worker starts is found by worker health, classed `model` at model scope and left out; its hourly recovery probe brings it back. A harness refusing every prompt is paused and has its own hourly recovery probe. Those health probes are the only model probes; kit writes, switches and refreshes make none. A recovery probe asks that same login shell and opens no terminal.
     ///
@@ -322,7 +322,7 @@ enum Command {
     /// A tick — of `run`, or `afkconvoy tick` — writes the host kit again once its file was last written a day ago or more, before anything else: a newly listed model waits for the watch, and a model no longer listed is dropped. A harness that cannot be found or listed is kept, and a pause leaves it out, as above. The file's modification time is when it was last written — by `kit`, by `run` on a host without one, or by a tick — and `plan` and `doctor` answer it as `host_kit.refreshed`. Every fleet of the host shares the file and the lock beside it (kit.refresh): one of them writes it again, once a day, and the others read what it wrote. A refresh that changed the host kit is a line of the run log, `refresh_kit (fleet): the host kit was written again: added claude-code sonnet; dropped claude-code opus`; one that failed is one too, and is tried again an hour later. The pause is the host's running state, in its cache: this file is not changed. `plan`, `doctor` and the panel say which is paused, since when and why.
     #[command(next_help_heading = OPERATOR, verbatim_doc_comment)]
     Kit {
-        /// Enable or disable automatic model casting on this host, without probing
+        /// Refused: automatic casting is gone. An old kit `cast` key is ignored
         #[arg(long, value_parser = ["on", "off"], conflicts_with_all = ["harness", "research"])]
         cast: Option<String>,
         /// Place or settle the watch's sourced model research from a checked JSON file
@@ -332,33 +332,39 @@ enum Command {
         #[arg(long, hide = true, value_parser = kit_harness)]
         harness: Option<Harness>,
     },
-    /// Choose a model within each issue's selected harness and add its `model:` label, in one session when enabled on this host
+    /// A worker's `model:` label or the user default sets its harness model; automatic casting is gone
     ///
     /// ## When to run it
     ///
-    /// Run `afkconvoy cast` in a repo to choose models now. Automatic casting is off by default, including after an upgrade. Enable it with `afkconvoy kit --cast on`; disable it with `afkconvoy kit --cast off`. The setting lives only in this host's kit, shared by all its checkouts.
+    /// Do not. `afkconvoy cast` fails and says automatic casting is gone. So does `afkconvoy kit --cast`. Nothing is chosen, no prompt is sent, and no label is added or removed.
     ///
     /// ## Who runs it
     ///
-    /// The operator, in a checkout. An enabled tick also starts this command in the repo's convoy-caster worktree when an issue on the frontier needs a model.
+    /// The operator, in a checkout. A tick never runs it, and no issue waits.
     ///
     /// ## What it reads and writes
     ///
-    /// Kit order and role eligibility choose the harness first. A choice means that some stage's selected harness holds multiple models in that role's range, with no matching model label already. A harness with zero or one model leaves no choice, regardless of later harnesses. An unbound issue carries the ready label, a bound issue a workflow's flow label; neither carries an epic label. Human casting labels keep an issue out of automatic recasting.
+    /// Nothing. It fails before it reads an issue or writes a label, a comment, or the host kit.
     ///
-    /// With casting off it explains that this host has not enabled it and sends no prompt. No tick holds an issue for casting. Workers still follow matching human model labels, otherwise the selected harness's first eligible model.
+    /// ## What a worker runs
     ///
-    /// With casting on it sends one prompt about eligible issues to the host kit's first, using its login, and waits up to nine minutes. Each issue is offered only its stages' selected harnesses and eligible models still needing a choice, in kit order, with good_at and the roster's cast guidance. The answer is one JSON object per issue and selected harness: {issue, harness, model, why}.
+    /// The host kit's order and the role's range choose the harness. `switch --harness` reorders the kit. A `harness:` label never selects a harness. `switch --model` moves a model first inside its harness and does not choose the model a worker starts on.
     ///
-    /// Answers are checked against that issue's offered models and again against current kit priority, availability and labels. A valid answer adds only a model: label naming the model's id and a comment saying why. It writes no harness: label and removes no label. Legacy harness: labels never select a harness. A model: label applies only within a harness that holds it; other labels survive switches and faults and apply again when their harness is selected. A fallback can add its model beside an earlier caster label. Matching labels are reused without another session; human labels are never recast.
+    /// A worker's model is the issue's one `model:` label when that label names exactly one model of the harness already selected, matched by its id or any name, whatever the case, or with the provider prefix left off where that leaves one match. The worker starts on that model's id. The label is left as written.
+    ///
+    /// Otherwise the worker runs that harness's user default, and the label stays: no `model:` label, a name that matches nothing the harness holds, a name that matches two, two `model:` labels, or a name that matches a model the role's range does not hold. A label that is not followed is said once on the issue, with the nearest names the harness holds, or the two ids. The worker starts on the user default in that same dispatch. Nothing is taken off the issue.
+    ///
+    /// Claude Code, pi, Kimi and Grok start with no model flag. Kimi then uses `default_model` from the user's Kimi config. DSH starts with no model in the worker environment, so the profile's model runs. Codex reads `model` from the user's Codex config when that value is a nonempty string the host kit lists for Codex and passes it; with no such key, Codex starts with no model flag. A Codex `model` that is not a nonempty string, or that the kit does not list, refuses the start. A Codex model named that way and outside the role's range refuses too. An unnamed default cannot be checked against a range, and the worker starts.
+    ///
+    /// A watch, a cut and an inspection have no model label and use the user default. A landing worker follows its issue's label by the same rule. A range that holds one model does not name it.
     ///
     /// ## What it answers
     ///
-    /// {cast, uncast}: cast lists {issue, harness, model, why} for each added model label; uncast lists {issue, why} for unanswered or refused selections. Both are empty when casting is off or nothing needs a model, and said explains why; casting may list each issue's selection explanation. Errors: unreadable kit or team, or no answer from the selected questioner.
+    /// An error: automatic casting is gone. `plan` and `doctor` say, under `casting`, whether a model label was followed (`model_label`) or the user default was used (`user_default`). `needed` is false. `skipped` is empty. They report no caster and no host cast flag. A launch record that already says `casting` is still read as the issue's model label.
     ///
     /// ## What trips you up
     ///
-    /// A tick waits at most ten minutes for its caster, then dispatches an unanswered issue on its range's first model. A changed candidate set opens a new choice; a live caster prevents a second one. Casting sends a real prompt and spends some of the login's allowance. Plan, doctor and panel show the host setting, each issue's casting reason, label matching, skipped models and actual running model. Switch alone leaves healthy workers on their current model; --all explicitly continues them.
+    /// An old host-kit `cast` key and a roster `cast` key do not change a start and do not fail `check` or `kit`. A label that is not followed is said once and left in place. Switch alone leaves healthy workers on their current model; --all explicitly continues them.
     #[command(next_help_heading = OPERATOR, verbatim_doc_comment)]
     Cast {
         #[command(flatten)]
@@ -870,24 +876,24 @@ enum Command {
     ///
     /// It reads the team's files from `--dir` — this directory unless it says another — as `afkconvoy check --dir` does, each role from GitHub, and this host's host kit without the harnesses paused on it. A role named as ./path is read from the repo `--team` names: give it for a team whose roles are in its own repo.
     ///
-    /// 1. It sends the host kit's first — its first harness on its first model, in the login shell a worker gets — one prompt: every harness and model of the host kit in order, and each role with the work the team asks of it and what it may run. It gives the model the host kit's good_at as given and waits up to nine minutes for one line for each role, saying how to cast an issue there. It asks no model to assess model abilities.
-    /// 2. It drafts the team file's `roster` (`afkconvoy help roster`): an entry for each role, its `run` every harness and model of the host kit in the host kit's order, each with the `good_at` from the host kit, and the role's `cast`. A harness the role holds no limits for, while it holds limits for another, is left out of its entry and named in a comment there, so that the draft passes `check` as written; a role left nothing is named in a comment alone.
+    /// 1. It sends no prompt. `good_at` comes from the host kit's research.
+    /// 2. It drafts the team file's `roster` (`afkconvoy help roster`): an entry for each role, its `run` every placed harness and model of the host kit in the host kit's order, each with the `good_at` from the host kit. It writes no `cast` line. A harness the role holds no limits for, while it holds limits for another, is left out of its entry and named in a comment there, so that the draft passes `check` as written; a role left nothing is named in a comment alone. A roster `cast` key already there is not read.
     /// 3. It writes the draft into the team file, team.md, in place of the `roster` there and everything under it, or at the end of its yaml block where it has none. Nothing else of the file changes, and nothing is committed.
     ///
     /// Where the team file holds a roster, it says on stderr each line the draft would take out (-) and put in (+), and writes only once the human at the terminal confirms, or with `--yes`. With no terminal and no `--yes` it writes nothing.
     ///
     /// ## What it answers
     ///
-    /// {"path", "drafted_by", "roster", "replaces", "removed", "added", "unsaid", "written"}: `path` the team file, `drafted_by` the {harness, model} asked, `roster` the draft as written, `replaces` whether the team file held a roster, `removed` and `added` the lines the draft takes out and puts in, `unsaid` what the model said nothing of — each also a warning on stderr, to write in by hand — and `written` whether the team file was written. A roster the same as the draft is not written again.
+    /// {"path", "roster", "replaces", "removed", "added", "unsaid", "written"}: `path` the team file, `roster` the draft as written, `replaces` whether the team file held a roster, `removed` and `added` the lines the draft takes out and puts in, `unsaid` what the host kit's research says nothing of — each also a warning on stderr, to write in by hand — and `written` whether the team file was written. A roster the same as the draft is not written again.
     ///
-    /// Errors: a team that does not load, with every fault, as `check` answers it; a host kit that cannot be read or holds no harness; a model that did not answer.
+    /// Errors: a team that does not load, with every fault, as `check` answers it; a host kit that cannot be read or holds no harness.
     ///
     /// ## What trips you up
     ///
-    /// - Read the draft before committing it: model strengths come from the host kit's sourced research, and how to cast comes from the drafting model. Edit them, take out what a role is not to run, and order what is left as the team prefers — `afkconvoy check --dir` then says whether the team loads.
+    /// - Read the draft before committing it: model strengths come from the host kit's sourced research. Edit them, take out what a role is not to run, and order what is left as the team prefers — `afkconvoy check --dir` then says whether the team loads.
     /// - A team file whose roster has a fault does not load: delete the roster, and draft again.
     /// - The draft is the host kit of the host it runs on. A harness another host holds and this one does not is not in it.
-    /// - Drafting sends the host kit's first a real prompt: it spends some of its login.
+    /// - Drafting sends no prompt.
     #[command(next_help_heading = DESIGNER, verbatim_doc_comment)]
     Draft {
         /// The team's working tree [default: this directory]
@@ -1001,12 +1007,12 @@ enum Command {
     /// - `host`: what this host has of what the fleet needs:
     ///
     ///   - `tools`: each command needed — a harness only where a worker launch command the fleet could be asked for runs it by name: {name, state} — state is ready, missing or logged_out; of orca also not_running, knows_no_checkout (the checkout worktrees are cut from was never added to it) or unasked
-    ///   - `worker_commands`: the host kit commands and their callers. The first eligible kit harness is selected for each role.
-    ///   - `host_kit`: {path, cast, refreshed, harnesses}: where the kit is kept; when it was last written, in epoch seconds — by `kit`, by `run`, or by a tick's daily refresh (`afkconvoy kit --help`); each harness in order, first first, with its full worker launch command, its models in order as {model, names}; `default_model` (it has no placed model, so a worker runs its login's default, with no model flag) and `research_pending` (it holds a model awaiting research). good_at, settled, sources and researched_at stay on the kit and on `plan`'s `host_kit` (`afkconvoy plan --help`); a look does not repeat them. {path, error} when unreadable. `afkconvoy kit` writes it again.
+    ///   - `worker_commands`: the host kit commands and their callers. The first eligible kit harness is selected for each role. A worker's model is its model label where followed, otherwise that harness's user default.
+    ///   - `host_kit`: {path, refreshed, harnesses}: where the kit is kept; when it was last written, in epoch seconds — by `kit`, by `run`, or by a tick's daily refresh (`afkconvoy kit --help`); each harness in order, first first, with its full worker launch command, its models in order as {model, names}; `default_model` (it has no placed model, so a worker runs its login's default, with no model flag) and `research_pending` (it holds a model awaiting research). good_at, settled, sources and researched_at stay on the kit and on `plan`'s `host_kit` (`afkconvoy plan --help`); a look does not repeat them. {path, error} when unreadable. `afkconvoy kit` writes it again.
     ///
     ///     {const:KIT_RESEARCH_STATES}
     ///
-    ///     A harness with `models` [] or no placed model runs on its default model with no model flag, and is no fault. Automatic command discovery, a switch, failed research or a hand-written kit can leave one. `afkconvoy kit` lists them; the watch supplies research through `afkconvoy kit --research <file>`. A tick lists an empty Codex entry without waiting for the daily refresh, with an hour between unsuccessful tries. A roster or casting model that matches nothing placed is still reported as such.
+    ///     A harness with `models` [] or no placed model runs on its default model with no model flag, and is no fault. Automatic command discovery, a switch, failed research or a hand-written kit can leave one. `afkconvoy kit` lists them; the watch supplies research through `afkconvoy kit --research <file>`. A tick lists an empty Codex entry without waiting for the daily refresh, with an hour between unsuccessful tries. A roster model or a model label that matches nothing placed is still reported as such.
     ///   - `settings`: the host settings (`afkconvoy run --help`): {file, said, in_force} — each by its key, the name of the flag of `run` that names it (`hot_cores` for `--hot-cores`), in that flag's units: said is what the host says, null where it says none and the default holds; in_force what holds for this repo's fleet on this host, each default worked out for it — the panel's port {const:PANEL_PORT} where the host says none. {file, error} where the file cannot be read
     ///   - `admission`: whether a tick would start a new worker on this host now, the thresholds in force and what the host reads: as `plan` answers it (`afkconvoy plan --help`), or {error} where a share the host says is wrong. A tick that admission held back is no "started no worker" finding.
     ///   - `exclusive`: the host's queues as {lanes: {worker, repos}, running, waiting, observation}. Each lane has {running, running_all, waiting}, where running is the first active command for older readers and running_all lists every active command; repos lists {repo, queue} for light gates. The top-level running and waiting are the worker lane for older readers — running is the first active command, null with none; waiting is in scheduler order, not a prediction of what starts next; both empty with no host runner. Each is {command, dir, issue, pid, asked, ran}: the worktree it was run in, the issue of its worker, and when it asked and began to run, in epoch seconds. `observation` adds {paused, worker, repos, running, waiting}, with occupancy, durations and scheduling reasons interpreted exactly as `afkconvoy queue --help` documents, at doctor's observation time. {error} when the host runner cannot say it. `afkconvoy queue` reads just the local queue, without this full diagnosis
@@ -1032,7 +1038,7 @@ enum Command {
     /// - `issues`: as `plan` answers them: {frontier, excluded, escalating, locks, free_slots, patrols} — what a worker can be started on, what waits and why, and what is being handed to a human and why. null when they could not be read
     /// - `refusals`: issue number → the harnesses that refused that task, each with `harness` and `evidence`, read from GitHub. Later starts skip them across every stage; the harness stays healthy for other issues.
     /// - `candidates`: the remote candidate chains for every target branch of this repo, each in order and identified by `target_branch`. Each candidate includes its commit, predecessor, current candidate stage and what it is waiting for; `waiting` distinguishes worktree construction, validation, a predecessor and process exit. An error reading the chain is reported as `{error}`.
-    /// - `codex_workers`: this checkout's Codex sessions, each with issue, worktree, harness, model, effort, model_source, effort_source and codex_home (its private session directory). Automatic starts read the model from your `~/.codex/config.toml` (`user_selection`), an issue's `model:` label keeps casting (`casting`), and no user preference leaves the model null for Codex's native default (`codex_default`). Every start reads the effort from your own Codex config, or uses Codex's model default. Sources stay attached to the session after your config changes; a saved `/model` choice is shown with its session's private config as the source. [`afkconvoy help worker-launch`](help:worker-launch).
+    /// - `codex_workers`: this checkout's Codex sessions, each with issue, worktree, harness, model, effort, model_source, effort_source and codex_home (its private session directory). Automatic starts read the model from your `~/.codex/config.toml` (`user_selection`) unless a model label is followed (`model_label`; a stored `casting` is read as that), and no user preference leaves the model null for Codex's native default (`codex_default`). Every start reads the effort from your own Codex config, or uses Codex's model default. Sources stay attached to the session after your config changes; a saved `/model` choice is shown with its session's private config as the source. [`afkconvoy help worker-launch`](help:worker-launch).
     /// - `waiting_on_human`: as `plan` answers it, and as the panel lists it under "With a human": every open issue nobody holds that waits for a human — escalated, at a stage that is a human's, past the end of its workflow and still open, or reporting a patrol's failed run — each as {issue, title, why, url, since, answer}: `why` is what kind of wait, then the reason the issue’s comment gives, in its first sentence; `url` is that comment (the report itself for an older failed patrol or cut with no reason comment), or null where no comment explains the wait; `answer` is the line that answers it, run as printed apart from what stands between < and >, naming the checkout as that command takes it so the line runs from any directory. An escalation with no position gets the team's only flow label filled in; with several workflows, `why` lists the flow labels to choose `<flow label>` from. null when the issues could not be read
     /// - `findings`: what is wrong, most severe first — none: []. Each is {severity, what, evidence, fix, see}:
     ///
@@ -1121,24 +1127,21 @@ enum Command {
     ///
     /// ## What it answers
     ///
-    /// {"frontier", "excluded", "waiting_on_human", "mine", "peer_live", "stale", "stale_closed", "free_slots", "now", "locks", "concurrency", "harness", "tracker", "admission", "host_kit", "worker_no_proxy"} — "held_back" while admission holds; and in a bound repo "intake", "left_out", "unmatched" and "nothing_safe" where they name some, "patrols" where it names some; and "slow_gate" while the gate is slow; and "caster" while one runs or is due; and "cut" in a repo that turns cutting on, or while a cut is going or on the base branch
+    /// {"frontier", "excluded", "waiting_on_human", "mine", "peer_live", "stale", "stale_closed", "free_slots", "now", "locks", "concurrency", "harness", "tracker", "admission", "host_kit", "worker_no_proxy"} — "held_back" while admission holds; and in a bound repo "intake", "left_out", "unmatched" and "nothing_safe" where they name some, "patrols" where it names some; and "slow_gate" while the gate is slow; and "cut" in a repo that turns cutting on, or while a cut is going or on the base branch
     ///
     /// `targets` lists open tracker tasks with issue, tracker_issue, delivery (null when unattached), target_branch, configured_base and pinned. Invalid destinations report error per task without falling back to the configured base.
     ///
     /// `deliveries` lists each Jira delivery with its final PR or pending reason, whether recorded delivery evidence certifies the current delivery head, final-target head and what each attached task came to, and any settlement. Reading writes nothing.
     ///
-    /// - `host_kit`: {path, refreshed, harnesses}: this host's kit file; cast, whether this host enables automatic model casting (false by default); when it was last written, in epoch seconds — by `kit`, by `run`, or by a tick's daily refresh (`afkconvoy kit --help`); each harness in order of preference as {harness, command, models, default_model, research_pending}, each model {model, names, good_at, settled, sources, researched_at}. `default_model` is true when the harness has no placed model, so a worker runs its login's default with no model flag; `research_pending` is true while it holds a model awaiting research. good_at is what a caster is told, or a research marker; settled is a reason research found it unsuitable. The research states are defined in `afkconvoy kit --help`. sources holds dated URLs and researched_at the research time, absent where none succeeded. With an unreadable kit, {path, error}. `afkconvoy kit` writes it again.
+    /// - `host_kit`: {path, refreshed, harnesses}: this host's kit file; when it was last written, in epoch seconds — by `kit`, by `run`, or by a tick's daily refresh (`afkconvoy kit --help`); each harness in order of preference as {harness, command, models, default_model, research_pending}, each model {model, names, good_at, settled, sources, researched_at}. `default_model` is true when the harness has no placed model, so a worker runs its login's default with no model flag; `research_pending` is true while it holds a model awaiting research. good_at is what research says a model is good at, or a research marker; settled is a reason research found it unsuitable. The research states are defined in `afkconvoy kit --help`. sources holds dated URLs and researched_at the research time, absent where none succeeded. With an unreadable kit, {path, error}. `afkconvoy kit` writes it again.
     /// - `frontier`: issues due to dispatch, with their stage and cast {harness, model, why}. A checkout that names none takes the host kit's first eligible harness within role eligibility. One that names a harness starts on that harness, and the host kit orders that harness's models. Model labels only match within the harness in force. `selection` lists kit order, eligible candidates, skipped candidates and health evidence.
-    /// - `codex_workers`: started Codex sessions with their actual model, effort and sources, as `doctor` answers them. A frontier issue whose cast runs Codex also has `codex`: its next-launch model and source from the current user preference, casting label, or Codex native default, plus the effort read now from your own `~/.codex/config.toml` (`codex_default` with no setting). Existing sessions keep their launch evidence or their own saved `/model` choice. [`afkconvoy help worker-launch`](help:worker-launch).
-    /// - `excluded`: every other open issue, with why: {number, title, reason}. An escalated issue says so — "escalated: waits for a ruling" — and not that it lacks the label its escalation took off. A name that matches nothing never excludes an issue: it runs the default, `unmatched` on the frontier. A bound repo's issue at a stage whose role has no harness on this host it holds limits for waits, "<role> has no harness on this host it holds limits for: ", naming what the role holds limits for and what the host kit holds, and is dispatched once the host kit holds one; one that waits for the caster is "held for the caster: "
+    /// - `codex_workers`: started Codex sessions with their actual model, effort and sources, as `doctor` answers them. A frontier issue whose harness is Codex also has `codex`: its next-launch model and source from a followed model label (`model_label`), the current user preference (`user_selection`), or Codex's native default (`codex_default`), plus the effort read now from your own `~/.codex/config.toml` (`codex_default` with no setting). Existing sessions keep their launch evidence or their own saved `/model` choice. [`afkconvoy help worker-launch`](help:worker-launch).
+    /// - `excluded`: every other open issue, with why: {number, title, reason}. An escalated issue says so — "escalated: waits for a ruling" — and not that it lacks the label its escalation took off. A name that matches nothing never excludes an issue: it runs the user default, and the label is said once. A bound repo's issue at a stage whose role has no harness on this host it holds limits for waits, "<role> has no harness on this host it holds limits for: ", naming what the role holds limits for and what the host kit holds, and is dispatched once the host kit holds one. No issue is held for a caster.
     /// - `left_out`: in a bound repo whose team and host kit can be read: each role, in the team's order, with what its range on this host leaves out: {role, left_out: [{harness, why}]} — a harness its roster entry and the host kit allow it and it holds no limits for, while it holds limits for another, why `no limits for pi` (`afkconvoy help roster`)
     /// - `unmatched`: in a bound repo, where some role's roster entry matches nothing in the host kit: {role, why} — the role ranges over the host kit whole, less what it holds no limits for
     /// - `nothing_safe`: in a bound repo, where some role has no harness on this host it holds limits for: {role, why} — its stages wait, and every other stage goes on
     /// - `unmatched_models`: each roster model matching nothing held, {role, harness, model, holds, said}, with the nearest names or the two matches
-    /// - `casting`: each open issue, {number, needed, why, stages, running}. why explains the host setting, human labels, a missing model choice or existing matching labels. stages lists {stage, harness, model, followed, why, skipped}; followed says whether a model: label selected the model, skipped explains earlier models. running is {harness, model} recorded at the existing worker's launch, or null. Doctor answers the same under issues.casting, and the panel shows it under Model selection.
-    /// - `caster`: while a caster runs or one is due:
-    ///
-    ///   {running_since, due, held, to_cast} — when the one that runs was started (null: none runs), whether a tick starts one now, the frontier's issues held back for it, and every issue a caster started now is given. An uncast issue with a choice to make waits for one, for ten minutes at most from its start: `afkconvoy cast --help`
+    /// - `casting`: each open issue, {number, needed, why, stages, running}. why is "its model label" where every stage followed one, "the user's default" where none did, or both where the stages differ. needed is always false. stages lists {stage, harness, model, followed, why, skipped}; followed says whether the one `model:` label was followed, model is that id or null for the user default, and skipped is empty. running is {harness, model} recorded at the existing worker's launch — model null for the user default — or null. Doctor answers the same under issues.casting, and the panel shows it under Model selection. There is no caster.
     /// - `waiting_on_human`: every open issue nobody holds that waits for a human, lowest number first: {issue, title, why, url, since, answer} — `why`: what kind of wait, then the reason the issue’s comment gives, in its first sentence; `url`: that comment (the report itself for an older failed patrol or cut with no reason comment), or null where no comment explains the wait; since when in epoch seconds where GitHub said, and the line that answers it, run as printed apart from what stands between < and >, naming the checkout as that command takes it so the line runs from any directory. An escalation with no position gets the team's only flow label filled in; with several workflows, `why` lists the flow labels to choose `<flow label>` from. They are: an escalated issue, one whose records call for a human, one at a stage that is a human's, one whose workflow ended and that is still open, and the report of a patrol's failed run
     /// - `escalating`: in a bound repo, when there are any: the unclaimed issues a tick hands to a human, with why: {number, title, reason}
     /// - `mine`: the claims of `--instance`: {number, title, status, pr, declared} — `declared` is true while a verdict declared under the claim waits to be acted on: the claim takes no slot meanwhile. In a bound repo with `due`, the stage a worker is to be started on once the claim's stage has declared, where a role performs one. status is one of those below
@@ -1401,6 +1404,7 @@ enum Command {
     /// - The panel is served to this host only, and shows a tick, not this second: between two ticks it changes nothing but its countdown. It costs GitHub no read of its own.
     /// - Every worker launch command comes from the host kit: run `afkconvoy kit` to write it again. It is $XDG_CONFIG_HOME/afkconvoy/kit.json, or $HOME/.config/afkconvoy/kit.json, kept on this host and never pushed. `--worker-command` is gone. On a host with no host kit, `run` writes one as `afkconvoy kit` does, at a terminal or not, asking nothing: it says on stderr where the file is, what it holds and what was left out, and goes on to its first tick. At each worker launch the latest kit is read; a known harness with no entry or command is discovered in the login shell and its checked stock command merged into the kit without model probes. Explicit commands are respected, including errors. A checkout that names none starts on the host kit's first eligible harness. One that names a harness starts on that harness; the host kit still orders that harness's models. A start checks the named harness alone, and does not refuse the checkout because some other harness cannot start.
     /// - The fleet starts every worker launch command under `nice`, with a `TMPDIR` of the worktree's own, adding its harness's model flag where the worker runs a model — and, in a bound repo, what puts the worker in its role, under the guard: [`afkconvoy help worker-launch`](help:worker-launch) says, harness by harness, the line each worker is started with, what each part is for and what loads from where.
+    /// - In a bound repo whose checkout names no harness, before any worker is started, the command of every harness the fleet could be asked for is checked: the first harness in the host kit's order, each harness of each role's range (`afkconvoy help roster`). One that cannot be started refuses the start, named with its harness and the range that calls for it, and no worker at all is started: no harness is ever started in another's place. A range leaves out each harness the role holds no limits for while it holds limits for another, so no worker runs a harness it holds no limits for; `plan` and `check` name each harness left out.
     /// - A role that holds no limits for the harness in force starts no worker of that role, and no other harness is started in its place. `plan` and `doctor` name the checkout, the harness and the missing limits. Where that harness cannot start — `doctor` says `account fault`, or `model fault` once no placed model is left, or that its launch command cannot start — no worker of this checkout starts on the next harness; `plan` and `doctor` say why. A role whose range on this host is empty still refuses no other role: no worker of it is started, its stages wait, and every other stage goes on.
     ///
     /// ## Worker proxy bypass
@@ -1894,7 +1898,7 @@ enum Command {
     ///
     /// ## When to run it
     ///
-    /// After the PR is open and all changes are committed: `afkconvoy land --issue <n>`. A watch uses `land --watch` for its own PR. Cuts take the same turn automatically.
+    /// After the PR is open and all changes are committed: `afkconvoy land <n>` or `afkconvoy land --issue <n>`. A watch uses `land --watch` for its own PR. Cuts take the same turn automatically.
     ///
     /// ## Who runs it
     ///
@@ -1939,7 +1943,11 @@ enum Command {
     /// - A rejected push ends the turn; no untested merge is silently retried.
     /// - A standalone gate before review lands nothing. Only the landing worker of a bound workflow takes the turn after review.
     /// - A conflict remains in progress. Commit its resolution before asking again.
-    #[command(next_help_heading = WORKER, verbatim_doc_comment)]
+    #[command(
+        next_help_heading = WORKER,
+        verbatim_doc_comment,
+        override_usage = "afkconvoy land <n> | afkconvoy land --issue <n>"
+    )]
     Land {
         /// The issue the PR closes
         #[arg(value_name = "ISSUE", conflicts_with_all = ["train", "issue", "watch"])]
@@ -2810,7 +2818,7 @@ enum Command {
     ///
     /// In a bound repo the issue's flow label names its workflow, and the worker performs the stage the issue's stage records put it at — the workflow's first while there are none — in the stage's role, with the verdicts declared so far, and the reason of a rejection, in its brief. The team's repo and each role's are asked for the commit at their head; one the fleet has no copy of yet is cloned and kept, read-only, under the cache directory (copies/<owner>/<repo>/<commit>; `afkconvoy help cache` says where that directory is and what moves it), once however many roles it holds. A role that is a subdirectory of its repo is copied out of that on its own (<commit>-role-<path>; <commit>-role+codex-<path>, with a link to the role's skills where Codex finds them, for a Codex worker), and so is the team's directory, without the directories of its roles and without a `.claude/` at its top (<commit>-team+rules-<path>): a worker is given its role's directory and, of the team's, the team rules (its `CLAUDE.md`) — nothing else above its role, and no neighbour's.
     ///
-    /// The terminal is opened on the worktree as ever, and the line it runs changes to the role's copy, puts the stage's facts in the environment, and starts the worker launch command with what puts the worker in its role: [`afkconvoy help worker-launch`](help:worker-launch) says what, for each harness. The worker's harness and model are its role's range's answer to the issue's casting (`afkconvoy help roster`), with harness priority from this host's kit order.
+    /// The terminal is opened on the worktree as ever, and the line it runs changes to the role's copy, puts the stage's facts in the environment, and starts the worker launch command with what puts the worker in its role: [`afkconvoy help worker-launch`](help:worker-launch) says what, for each harness. The worker's harness is the first eligible one in this host's kit order within its role's range. Its model is the issue's one model label of that harness, or that harness's user default (`afkconvoy help roster`).
     ///
     /// Where the stage declared `escalate` and names a consult, the worker is started as that consult instead: in the consult's role, on a brief that names the skill, the stage that asked and its reason, and the two lines it ends with — `afkconvoy rule`, or `afkconvoy verdict escalate` to let it through to a human. AFKCONVOY_CONSULT is `true` in its environment, the guard refuses its commits, and it runs its own role's range, not the stage's.
     ///
@@ -3524,7 +3532,7 @@ const ACTS: [&str; 26] = [
 ];
 
 /// The commands a worker runs in its own worktree, as its brief, a stage's
-/// consult's, the caster's and a watch's give them: with those that
+/// consult's and a watch's give them: with those that
 /// only read (`ONLY_READ`), the only commands a worker's worktree is taken
 /// for (`checkout::resolve`).
 const IN_ITS_WORKTREE: [&str; 17] = [
@@ -4367,11 +4375,11 @@ fn run(
     let now = fixed_now.unwrap_or_else(clock);
     match command {
         Command::Watched { watch, text_file } => watch_report::record(&watch, &text_file, now),
-        Command::Kit { cast: Some(cast), .. } => kit::set_cast(cast == "on"),
+        Command::Kit { cast: Some(_), .. } => bail!("automatic casting is gone"),
         Command::Kit { research: Some(file), .. } => kit::apply_research(&file, now),
         Command::Kit { harness: Some(harness), .. } => kit::write_one(harness, now),
         Command::Kit { .. } => kit::write(now),
-        Command::Cast { .. } => caster::cast(&checkout?, now),
+        Command::Cast { .. } => bail!("automatic casting is gone"),
         Command::Config { file, .. } => {
             let file = match file {
                 Some(file) => file,
@@ -4487,12 +4495,16 @@ fn run(
             plan["selection"] = fleet.selection();
             plan["codex_workers"] = json!(codex_launch::workers(&fleet.repo));
             for issue in plan["frontier"].as_array_mut().into_iter().flatten() {
-                if issue["cast"]["harness"] == "codex" {
-                    issue["codex"] = codex_launch::planned(
-                        issue["cast"]["model"].as_str(),
-                        issue["cast"]["why"] == "casting",
-                    );
+                let Some(key) = issue["cast"]["harness"].as_str().map(str::to_string) else {
+                    continue;
+                };
+                let Some(harness) = Harness::read(&key) else { continue };
+                if harness.session().is_none() {
+                    continue;
                 }
+                let model = issue["cast"]["model"].as_str().map(str::to_string);
+                let explicit = issue["cast"]["why"] == "model_label";
+                issue[key] = codex_launch::planned(harness, model.as_deref(), explicit);
             }
             if let Ok(team) = flows.team() {
                 plan["selection"]["roles"] = json!(

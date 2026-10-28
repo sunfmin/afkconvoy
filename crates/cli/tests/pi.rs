@@ -365,9 +365,9 @@ fn a_pi_worker_starts_in_its_role_with_what_pi_does_not_load_from_there() {
              AFKCONVOY_WRITES='true' AFKCONVOY_CONSULT='false' AFKCONVOY_BASE_BRANCH='main' \
              AFKCONVOY_ESCALATE_LABEL='ready-for-human' AFKCONVOY_LOCK_LABEL='fleet-lock' \
              AFKCONVOY_ROLE_COMMIT='{dev}' AFKCONVOY_TEAM_COMMIT='{team}' \
-             AFKCONVOY_HARNESS='pi' AFKCONVOY_MODEL='openai/gpt-5.5' && pi --approve --no-skills \
+             AFKCONVOY_HARNESS='pi' && pi --approve --no-skills \
              --skill '{role}/.claude/skills' \
-             --extension '{kept}/afkconvoy.js' --model 'openai/gpt-5.5'",
+             --extension '{kept}/afkconvoy.js'",
             guard = env!("CARGO_BIN_EXE_afkconvoy"),
             role = role.display(),
             kept = kept.display(),
@@ -420,10 +420,10 @@ fn a_pi_worker_starts_in_its_role_with_what_pi_does_not_load_from_there() {
     assert!(kept.join("extensions/orca-agent-status.ts").symlink_metadata().is_err());
     assert_eq!(link("models.json"), home.join(".pi/agent/models.json"));
     assert_eq!(std::fs::read_to_string(kept.join("afkconvoy.js")).unwrap(), EXTENSION);
-    // A role whose roster names no model runs its range's one: the host
-    // kit's for pi.
+    // A role whose roster names no model runs pi's user default: no model flag.
     let line = started(&world, &worktree(&world, 8));
-    assert!(line.contains("--model 'openai/gpt-5.5'"), "{line}");
+    assert!(!line.contains("--model"), "{line}");
+    assert!(!line.contains("AFKCONVOY_MODEL="), "{line}");
     assert!(line.contains(&format!("--extension '{}/afkconvoy.js'", kept.display())), "{line}");
 }
 
@@ -599,8 +599,8 @@ fn a_pi_worker_is_refused_what_a_claude_code_worker_is_by_the_same_guard() {
 
     // The stand-in was started as pi is: in the role's directory, under the
     // fleet's own user directory, its question answered, with the role's
-    // skills, then the host user's, and no others, the fleet's extension,
-    // and the stage's model.
+    // skills, then the host user's, and no others, and the fleet's extension.
+    // No model label is followed, so the user default names no model.
     let ran = under_pi(&world, &writes, &json!([]));
     let role = copy(&world, "acme/dev");
     assert_eq!(
@@ -608,7 +608,7 @@ fn a_pi_worker_is_refused_what_a_claude_code_worker_is_by_the_same_guard() {
         json!({"cwd": role, "userDir": kept(&world), "flags": ["--approve", "--no-skills"],
             "skills": [role.join(".claude/skills"), kept(&world).join("skills")],
             "extensions": [kept(&world).join("afkconvoy.js")],
-            "model": "openai/gpt-5.5", "found": []})
+            "model": null, "found": []})
     );
     // Its rules are its role's, which pi loads itself, and the worktree's
     // and the team's, which the extension adds — once, however many runs

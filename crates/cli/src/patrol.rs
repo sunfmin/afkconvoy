@@ -163,19 +163,18 @@ pub fn run(fleet: &mut Fleet, me: &Me, agent: &Agent, read: &Flows, row: &Row) -
     let none = || See::Patrols.refusal(format!("the team has no patrol {name:?}"));
     let patrol = kept.team.patrol(name).ok_or_else(none)?;
     let role = kept.team.role_of(&patrol.work);
-    // A patrol has no issue, and so no casting: its role's range's first,
-    // or this host's switch.
+    // A patrol has no issue and no model label: the user default of the
+    // harness its role's range selects.
     let mut cast = fleet.cast_in(role, &[], None)?;
     let harness = cast.harness;
-    if harness == afkconvoy_core::harness::Harness::Codex {
-        let (model, _) = crate::codex_launch::automatic_model(None)?;
+    if let Some((model, _)) = crate::codex_launch::automatic_model(harness, None)? {
         if let Some(model) = model.as_deref() {
             let allowed = afkconvoy_core::casting::range(role, &crate::kit::load()?.range())
                 .into_iter()
                 .find(|held| held.harness == harness)
                 .map(|held| held.models.into_iter().map(|model| model.id).collect::<Vec<_>>())
                 .unwrap_or_default();
-            crate::codex_launch::require_role_model(model, &allowed, &role.name)?;
+            crate::codex_launch::require_in_role(harness, model, &allowed, &role.name)?;
         }
         cast.model = model;
     }
@@ -344,15 +343,14 @@ pub(crate) fn switch(
     let role = kept.team.role_of(&patrol.work);
     let mut cast = fleet.cast_in(role, &[], None)?;
     let harness = cast.harness;
-    if harness == afkconvoy_core::harness::Harness::Codex {
-        let (model, _) = crate::codex_launch::automatic_model(None)?;
+    if let Some((model, _)) = crate::codex_launch::automatic_model(harness, None)? {
         if let Some(model) = model.as_deref() {
             let allowed = afkconvoy_core::casting::range(role, &crate::kit::load()?.range())
                 .into_iter()
                 .find(|held| held.harness == harness)
                 .map(|held| held.models.into_iter().map(|model| model.id).collect::<Vec<_>>())
                 .unwrap_or_default();
-            crate::codex_launch::require_role_model(model, &allowed, &role.name)?;
+            crate::codex_launch::require_in_role(harness, model, &allowed, &role.name)?;
         }
         cast.model = model;
     }
