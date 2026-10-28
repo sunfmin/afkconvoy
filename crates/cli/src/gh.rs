@@ -586,6 +586,22 @@ impl GitHub {
         self.routed(args, true)
     }
 
+    /// Installs this look's quota scope from the note on disk, without asking
+    /// `rate_limit`. A read that may refuse spends no round trip on the probe.
+    /// A held login is still refused, and a primary-quota error still observes
+    /// (`quota`, docs/adr/0043).
+    pub(crate) fn note_without_probe(&self) -> Result<()> {
+        if self.quota.lock().unwrap_or_else(|e| e.into_inner()).is_some() {
+            return Ok(());
+        }
+        let made = crate::gh_quota::Scope::of(self)?;
+        let mut held = self.quota.lock().unwrap_or_else(|e| e.into_inner());
+        if held.is_none() {
+            *held = Some(made);
+        }
+        Ok(())
+    }
+
     fn quota(&self) -> Result<crate::gh_quota::Scope> {
         let mut scope = self.quota.lock().unwrap_or_else(|e| e.into_inner());
         if scope.is_none() {

@@ -128,20 +128,6 @@ pub fn on_host(
                     }
                 }
             }
-            if matches!(which, Which::All) {
-                let source = Source::of(&repo)?;
-                if let Some(worktree) =
-                    Worktree::named(&source, afkconvoy_core::casting::CASTER_WORKTREE)?
-                        .filter(|w| w.terminal().ok().flatten().is_some())
-                {
-                    match auxiliary(&fleet, &agent, &worktree, true) {
-                        Ok(value) => moved.push(value),
-                        Err(e) => {
-                            errors.push(json!({"worker": "caster", "error": format!("{e:#}")}))
-                        }
-                    }
-                }
-            }
             if moved.is_empty() && errors.is_empty() && !matches!(which, Which::All) {
                 bail!("no claim on the targeted worker is held on this host");
             }
@@ -268,13 +254,8 @@ pub(crate) fn continuing(worktree: Option<&Worktree>, before: Harness) -> Contin
 }
 
 /// Continues a worker with no issue in the same checkout and with its brief
-/// intact. Train and caster records are untouched.
-pub(crate) fn auxiliary(
-    fleet: &Fleet,
-    agent: &Agent,
-    worktree: &Worktree,
-    caster: bool,
-) -> Result<Value> {
+/// intact. It runs the selected harness's user default: it has no model label.
+pub(crate) fn auxiliary(fleet: &Fleet, agent: &Agent, worktree: &Worktree) -> Result<Value> {
     let cast = fleet.first()?;
     crate::role::startable(&agent.launches, cast.harness, "worker continuation")?;
     let continued = continuing(Some(worktree), cast.harness);
@@ -282,35 +263,25 @@ pub(crate) fn auxiliary(
     if worktree.brief()?.exists() {
         crate::dispatch::continue_brief(fleet, worktree, None, None, &continued)?;
     }
-    let command = if caster {
-        crate::own_command().fixed(" cast; exit").own()
+    let command = if cast.harness.session().is_some() {
+        // The session puts its own model on as it starts.
+        agent.command(cast.harness)?.as_str().to_string()
     } else {
-        if cast.harness.session().is_some() {
-            // The session puts its own model on as it starts.
-            agent.command(cast.harness)?.as_str().to_string()
-        } else {
-            cast.command(agent.command(cast.harness)?.as_str())
-        }
+        cast.command(agent.command(cast.harness)?.as_str())
     };
-    let terminal = if caster {
-        agent.start(worktree, cast.harness, &command, None, fleet.now)?
-    } else {
-        agent.start_worker(
-            worktree,
-            WorkerSelection {
-                harness: cast.harness,
-                model: cast.model.as_deref(),
-                explicit_model: false,
-            },
-            &command,
-            false,
-            None,
-            fleet.now,
-        )?
-    };
-    if !caster {
-        worktree.deliver(&terminal, &worktree.brief()?)?;
-    }
+    let terminal = agent.start_worker(
+        worktree,
+        WorkerSelection {
+            harness: cast.harness,
+            model: cast.model.as_deref(),
+            explicit_model: false,
+        },
+        &command,
+        false,
+        None,
+        fleet.now,
+    )?;
+    worktree.deliver(&terminal, &worktree.brief()?)?;
     Ok(json!({"worktree": worktree.path, "from": continued.from, "to": cast.harness,
             "terminal": terminal, "skipped": fleet.skipped_before(cast.harness, None, None)}))
 }
@@ -393,14 +364,14 @@ pub(crate) fn onto(fleet: &mut Fleet, me: &Me, agent: &Agent, target: Harness) -
     if let Some(worktree) = Worktree::named(&source, afkconvoy_core::casting::CASTER_WORKTREE)?
         && worktree.terminal()?.is_some()
         && other_than(&worktree, fleet.now, target, &mut landed)
-        && auxiliary(fleet, agent, &worktree, true).is_err()
+        && auxiliary(fleet, agent, &worktree).is_err()
     {
         landed = false;
     }
     if let Some(worktree) = Worktree::of_train(&source)?
         && worktree.terminal()?.is_some()
         && other_than(&worktree, fleet.now, target, &mut landed)
-        && auxiliary(fleet, agent, &worktree, false).is_err()
+        && auxiliary(fleet, agent, &worktree).is_err()
     {
         landed = false;
     }

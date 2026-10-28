@@ -94,7 +94,8 @@ fn kit_priority_is_host_wide_idempotent_and_ignores_legacy_repository_choices() 
     world.issue(7, &["ready-for-agent", "harness:pi", "model:another-harness-model"]);
     let plan = world.afk(&["plan", "--now", "1000"]).ok();
     assert_eq!(plan["frontier"][0]["cast"]["harness"], "codex");
-    assert_eq!(plan["frontier"][0]["cast"]["model"], "gpt-x");
+    assert_eq!(plan["frontier"][0]["cast"]["model"], Value::Null);
+    assert_eq!(plan["frontier"][0]["cast"]["why"], "user_default");
     assert!(world.afk(&["switch", "--clear"]).error().contains("--clear"));
     let back = world.afk_in(&other, &["switch", "--harness", "claude-code"]).ok();
     assert_eq!(back["order"], json!(["claude-code", "codex", "pi", "dsh", "kimi", "grok"]));
@@ -653,7 +654,7 @@ fn a_model_fault_does_not_pause_other_models_or_interrupt_a_healthy_peer() {
         }
     });
     tick(&world, 800);
-    assert_eq!(open_commands(&world, &seven), [common::trusted("agent --model 'haiku'")]);
+    assert_eq!(open_commands(&world, &seven), [common::trusted("agent")]);
     assert_eq!(open_commands(&world, &eight), [common::trusted("agent --model 'haiku'")]);
     let plan = world.afk(&["plan", "--now", "801"]).ok();
     let faults = &plan["selection"]["health"]["faults"];
@@ -665,15 +666,17 @@ fn a_model_fault_does_not_pause_other_models_or_interrupt_a_healthy_peer() {
     world.issue(9, &["ready-for-agent"]);
     let plan = world.afk(&["plan", "--now", "801"]).ok();
     let nine = plan["frontier"].as_array().unwrap().iter().find(|i| i["number"] == 9).unwrap();
-    assert_eq!(nine["cast"]["model"], "haiku");
+    assert_eq!(nine["cast"]["model"], Value::Null);
+    assert_eq!(nine["cast"]["why"], "user_default");
     let status = plan["casting"].as_array().unwrap().iter().find(|s| s["number"] == 9).unwrap();
-    assert!(status["stages"][0]["skipped"][0].as_str().unwrap().contains("opus: unavailable"));
+    assert_eq!(status["stages"][0]["skipped"], json!([]));
     world.probes_answer();
     tick(&world, 4400);
     world.issue(10, &["ready-for-agent"]);
     let plan = world.afk(&["plan", "--now", "4401"]).ok();
     let ten = plan["frontier"].as_array().unwrap().iter().find(|i| i["number"] == 10).unwrap();
-    assert_eq!(ten["cast"]["model"], "opus");
+    assert_eq!(ten["cast"]["model"], Value::Null);
+    assert_eq!(ten["cast"]["why"], "user_default");
     assert_eq!(std::fs::read(world.kit_path()).unwrap(), kit);
 }
 
@@ -686,11 +689,15 @@ fn switching_models_leaves_healthy_workers_alone_until_all_continues_them() {
     let dir = worktree(&world, 7);
     std::fs::write(dir.join("unfinished.txt"), "keep this work").unwrap();
     let claims = world.claims();
-    world.afk(&["switch", "--model", "haiku"]).ok();
-    assert_eq!(open_commands(&world, &dir), [common::trusted("agent --model 'opus'")]);
+    let left = world.afk(&["switch", "--model", "haiku"]).ok();
+    assert_eq!(left["switched"], json!([]), "{left}");
+    assert_eq!(open_commands(&world, &dir), [common::trusted("agent")]);
     let moved = world.afk(&["switch", "--model", "haiku", "--all", "--host", "h1"]).ok();
     assert_eq!(moved["failed"], json!([]), "{moved}");
-    assert_eq!(open_commands(&world, &dir), [common::trusted("agent --model 'haiku'")]);
+    assert_eq!(moved["switched"].as_array().unwrap().len(), 1, "{moved}");
+    // The continuation restarts the worker and still does not take the model
+    // `switch --model` moved first: no model label, so the user default.
+    assert_eq!(open_commands(&world, &dir), [common::trusted("agent")]);
     assert_eq!(std::fs::read_to_string(dir.join("unfinished.txt")).unwrap(), "keep this work");
     assert_eq!(world.claims(), claims);
 }

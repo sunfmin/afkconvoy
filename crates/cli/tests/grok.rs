@@ -141,8 +141,10 @@ fn a_grok_worker_gets_an_isolated_role_home_and_keeps_the_role_s_own_files() {
     assert!(line.contains("GROK_CLAUDE_RULES_ENABLED=0"), "{line}");
     assert!(line.contains("GROK_CURSOR_SKILLS_ENABLED=0"), "{line}");
     assert!(!line.contains("GROK_CLAUDE_SKILLS_ENABLED=0"), "{line}");
-    assert!(line.contains("AFKCONVOY_HARNESS='grok' AFKCONVOY_MODEL='grok-4.7'"), "{line}");
-    assert!(line.contains(" && grok --always-approve --trust --model 'grok-4.7'"), "{line}");
+    assert!(line.contains("AFKCONVOY_HARNESS='grok'"), "{line}");
+    assert!(!line.contains("AFKCONVOY_MODEL="), "{line}");
+    assert!(line.contains(" && grok --always-approve --trust"), "{line}");
+    assert!(!line.contains("--model"), "{line}");
     assert!(!line.contains("--skills-dir") && !line.contains("--rules "), "{line}");
     assert!(kept.starts_with(world.cache().join("afkconvoy/harness/grok")), "{kept:?}");
     assert_ne!(kept, world.cache().join("afkconvoy/harness/grok"));

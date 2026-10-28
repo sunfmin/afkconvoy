@@ -17,8 +17,8 @@ roles:
   <short name>: <its directory>    # owner/repo, owner/repo/path or ./path
   <short name>: { dir: <its directory>, host_user: false }   # its own host_user
 roster:                            # optional: `afkconvoy help roster`
-  <short name>: { cast: <how to cast>, run: [{ harness: pi, model: <model>,
-    good_at: <what it does best> }] }   # cast, model and good_at optional
+  <short name>: { cast: <ignored>, run: [{ harness: pi, model: <model>,
+    good_at: <what it does best> }] }   # cast is accepted and ignored; model and good_at optional
 host_user: true                    # default
 dsh_profile: fleet                # fleet (default) or host-user; DSH only
 split: true                        # default; false omits splitting
@@ -84,7 +84,7 @@ The legacy `precedents` key is retired and refused with migration instructions. 
 ## Where to read on
 
 - [`afkconvoy help roles`](help:roles): what goes where in a role, and what makes one good
-- [`afkconvoy help roster`](help:roster): what each role's workers may run, and an issue's casting
+- [`afkconvoy help roster`](help:roster): what each role's workers may run, and an issue's model label
 - [`afkconvoy help workflows`](help:workflows): the stages an issue passes through, and every key of them
 - [`afkconvoy help patrols`](help:patrols): a role run on a schedule, intake and the fleet lock
 - [`afkconvoy help glossary`](help:glossary): each term used here, with its one definition

@@ -149,7 +149,7 @@ fn sourced_settlements_preserve_seven_placed_codex_models_and_survive_relisting(
             {"harness":"codex", "model":"codex-auto-review"}
         ])
     );
-    assert_eq!(applied["kit"]["cast"], true);
+    assert!(applied["kit"].get("cast").is_none());
     assert_eq!(
         &applied["kit"]["harnesses"][1]["models"].as_array().unwrap()[..7],
         &placed.as_array().unwrap()[..7]
@@ -320,7 +320,7 @@ fn partial_research_preserves_defaults_pending_models_established_priority_and_s
         placed["placed"],
         json!([{"harness":"claude-code", "model":"deep"}, {"harness":"pi", "model":"provider/deep"}])
     );
-    assert_eq!(placed["kit"]["cast"], true);
+    assert!(placed["kit"].get("cast").is_none());
     assert_eq!(
         placed["kit"]["harnesses"][0]["models"][0], old,
         "established priority and research survive"

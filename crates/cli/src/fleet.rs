@@ -6,7 +6,7 @@
 //! (`Repo::listing`), and what is open on GitHub (`GitHub::open`). Neither
 //! grows with the issues in flight.
 
-use afkconvoy_core::casting::{self, Cast, ForCaster, HELD_FOR_CASTER, Standing, Why};
+use afkconvoy_core::casting::{self, Cast};
 use afkconvoy_core::claims::{Claim, InstanceId};
 use afkconvoy_core::config::Config;
 use afkconvoy_core::harness::Harness;
@@ -143,12 +143,14 @@ impl Fleet {
         Ok((fleet?, open?))
     }
 
-    /// Select the first eligible harness and model in kit order within the
-    /// role's range. Matching model labels override model order within that
-    /// harness alone; a role without an eligible candidate waits safely.
+    /// The first eligible harness in kit order within the role's range, and
+    /// the model its one `model:` label names of that harness where the range
+    /// holds it. Anything else is that harness's user default. A role without
+    /// an eligible harness waits safely.
     pub fn cast_in(&self, role: &Role, labels: &[String], issue: Option<u64>) -> Result<Cast> {
         let range = self.range_in(role, issue)?;
-        casting::preferred(labels, &range, &range)
+        let kit = crate::kit::load()?.range();
+        casting::preferred(labels, &range, &kit)
             .map_err(|why| anyhow!("the role `{}`: {why}", role.name))
     }
 
@@ -253,7 +255,10 @@ impl Fleet {
         format!("`{}` is not a harness this host kit holds", pinned.key())
     }
 
-    /// Kit order chooses the harness. Labels can only choose a model within it.
+    /// Kit order chooses the harness, unless this checkout names one. One
+    /// `model:` label chooses a model of it where the runnable kit holds that
+    /// model; anything else is the user default. `kit` is the host kit, so a
+    /// name can match a model this start cannot run.
     pub fn cast(&self, labels: &[String], issue: Option<u64>) -> Result<Result<Cast, String>> {
         let kit = self.runnable_for(issue)?;
         let paused = crate::paused::read();
@@ -280,7 +285,8 @@ impl Fleet {
                 .unwrap_or_default();
             return Ok(Err(format!("no eligible harness in the host kit: {why}")));
         }
-        Ok(casting::preferred(labels, &range, &range))
+        let whole = crate::kit::load()?.range();
+        Ok(casting::preferred(labels, &range, &whole))
     }
 
     /// One view's capability snapshot. Failed startability checks skip only
@@ -475,9 +481,8 @@ impl Fleet {
             .collect()
     }
 
-    /// What a worker nothing casts runs —
-    /// a landing whose casting the host kit does not hold: the host kit's
-    /// first, or this host's switch.
+    /// The selected harness's user default: a watch, a cut, an inspection
+    /// and any other start with no model label.
     pub fn first(&self) -> Result<Cast> {
         self.cast(&[], None)?.map_err(|why| anyhow!("{why}: run `afkconvoy kit`"))
     }
@@ -713,9 +718,8 @@ impl Fleet {
         Ok((set, stages))
     }
 
-    /// Apply host priority and the shared model-casting eligibility to the
-    /// unbound frontier. Only an enabled, missing model choice waits, at most
-    /// ten minutes; human labels and ineligible harnesses never hold it back.
+    /// Apply host priority to the unbound frontier. No issue waits for a
+    /// model: its one `model:` label is followed, or it runs the user default.
     fn cast_frontier(&self, set: &mut WorkingSet, open: &OpenIssues) {
         let paused = crate::paused::read();
         let issues = &open.rows;
@@ -726,16 +730,7 @@ impl Fleet {
                 .map(|issue| issue.labels.clone())
                 .unwrap_or_default()
         };
-        let needed =
-            |number| set.casting.iter().any(|status| status.number == number && status.needed);
-        let waits = set.frontier.iter().any(|issue| needed(issue.number));
-        let caster = if waits { crate::caster::last(self) } else { None };
-        let mut standing = Standing {
-            running_since: caster.as_ref().filter(|c| c.running(self.now)).map(|c| c.since),
-            due: false,
-            held: vec![],
-            to_cast: set.casting.iter().filter(|s| s.needed).map(|s| s.number).collect(),
-        };
+        let whole = crate::kit::load().map(|kit| kit.range()).unwrap_or_default();
         let frontier = std::mem::take(&mut set.frontier);
         for mut issue in frontier {
             let range = match self.runnable_for(Some(issue.number)) {
@@ -776,23 +771,9 @@ impl Fleet {
                 });
                 continue;
             }
-            let held =
-                casting::for_caster(issue.number, needed(issue.number), caster.as_ref(), self.now);
-            if matches!(held, ForCaster::Wait | ForCaster::Due) {
-                standing.due |= held == ForCaster::Due;
-                standing.held.push(issue.number);
-                set.excluded.push(Excluded {
-                    number: issue.number,
-                    title: issue.title,
-                    reason: HELD_FOR_CASTER.to_string(),
-                });
-                continue;
-            }
-            match casting::preferred(&labels, &range, &range) {
-                Ok(mut cast) => {
-                    if held == ForCaster::Late {
-                        cast.why = Why::Uncast;
-                    }
+            let kit = if whole.is_empty() { range.clone() } else { whole.clone() };
+            match casting::preferred(&labels, &range, &kit) {
+                Ok(cast) => {
                     issue.cast = Some(cast);
                     set.frontier.push(issue);
                 }
@@ -804,17 +785,11 @@ impl Fleet {
             }
         }
         set.excluded.sort_by_key(|excluded| excluded.number);
-        if standing.running_since.is_some() || !standing.held.is_empty() {
-            set.caster = Some(standing);
-        }
     }
 
-    /// Apply kit priority within each due role's constraints. Missing models
-    /// across its workflow's selected harnesses wait only when casting is on;
-    /// ranges with no safe candidate wait for recovery, independently.
+    /// Apply kit priority within each due role's constraints. A role with no
+    /// safe harness waits for recovery. No issue waits for a model.
     fn cast_bound_frontier(&self, set: &mut WorkingSet, open: &OpenIssues, stages: &Flows) {
-        let Ok(kit) = self.runnable() else { return };
-        let kit = kit.range();
         let Ok(team) = stages.team() else { return };
         let positions = stages.positions();
         let issues = &open.rows;
@@ -826,16 +801,6 @@ impl Fleet {
                 .unwrap_or_default()
         };
         let placed = |number: u64| positions.iter().find(|(at, ..)| *at == number);
-        let needed =
-            |number| set.casting.iter().any(|status| status.number == number && status.needed);
-        let waits = set.frontier.iter().any(|issue| needed(issue.number));
-        let caster = if waits { crate::caster::last(self) } else { None };
-        let mut standing = Standing {
-            running_since: caster.as_ref().filter(|c| c.running(self.now)).map(|c| c.since),
-            due: false,
-            held: vec![],
-            to_cast: set.casting.iter().filter(|s| s.needed).map(|s| s.number).collect(),
-        };
         let frontier = std::mem::take(&mut set.frontier);
         for mut issue in frontier {
             let labels = labels_of(issue.number);
@@ -843,14 +808,13 @@ impl Fleet {
                 set.frontier.push(issue);
                 continue;
             };
-            // No worker due means no role to cast.
+            // No worker due means no role to choose a harness for.
             let Some(role) = due_role(team, workflow, *position) else {
                 set.frontier.push(issue);
                 continue;
             };
-            let ranges = casting::stage_ranges(team, workflow, &kit);
-            // Held back while a harness it is cast to is paused, and while its
-            // role can run nothing safely.
+            // Held back while a harness is paused, and while its role can run
+            // nothing safely.
             if let Err(error) = self.cast_in(role, &labels, Some(issue.number)) {
                 let reason = match (
                     error.downcast_ref::<crate::paused::Held>(),
@@ -866,24 +830,8 @@ impl Fleet {
                     continue;
                 }
             }
-            let held =
-                casting::for_caster(issue.number, needed(issue.number), caster.as_ref(), self.now);
-            if matches!(held, ForCaster::Wait | ForCaster::Due) {
-                standing.due |= held == ForCaster::Due;
-                standing.held.push(issue.number);
-                set.excluded.push(Excluded {
-                    number: issue.number,
-                    title: issue.title,
-                    reason: HELD_FOR_CASTER.to_string(),
-                });
-                continue;
-            }
             match self.cast_in(role, &labels, Some(issue.number)).map_err(|e| format!("{e:#}")) {
                 Ok(cast) => {
-                    let mut cast = casting::unmatched_in(cast, &labels, &ranges);
-                    if held == ForCaster::Late && cast.why == Why::RangeFirst {
-                        cast.why = Why::Uncast;
-                    }
                     issue.cast = Some(cast);
                     set.frontier.push(issue);
                 }
@@ -895,9 +843,6 @@ impl Fleet {
             }
         }
         set.excluded.sort_by_key(|excluded| excluded.number);
-        if standing.running_since.is_some() || !standing.held.is_empty() {
-            set.caster = Some(standing);
-        }
     }
 
     /// Whether the worker of `claim`, in an unbound repo, declared a verdict
