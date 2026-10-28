@@ -2039,7 +2039,7 @@ mod tests {
                 r#"finding:/r:["step","dispatch",null,null]"#,
                 r#"finding:/r:["broken",800]"#,
                 r#"finding:/r:["tick","alpha",[]]"#,
-                r#"finding:/r:["human",{"issue":7,"since":null,"url":null,"why":"escalated","answer":"gh issue view 7"}]"#,
+                r#"finding:/r:["human",{"answer":"gh issue view 7","issue":7,"since":null,"url":null,"why":"escalated"}]"#,
             ],
             "the watch's own findings and an `info` one are not its to act on"
         );
