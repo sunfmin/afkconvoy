@@ -582,6 +582,18 @@ impl Gate<'_> {
     }
 }
 
+/// Closes a landed candidate's issue and writes its work account. The
+/// landing is published: what fails here is said in `settle_error`, and the
+/// tick settles a landed issue still open (sunfmin/control#247), so the turn
+/// still answers `merged`.
+fn settle(repo: &Repo, gh: &GitHub, issue: Option<u64>, now: u64, answer: &mut Value) {
+    let Some(n) = issue else { return };
+    let settled = gh.close_issue(n).and_then(|()| crate::account::leave(repo, gh, n, now));
+    if let Err(error) = settled {
+        answer["settle_error"] = json!(format!("{error:#}"));
+    }
+}
+
 fn cancelled(mut answer: Value, c: &Candidate, chain: &Chain) -> Value {
     if c.cause.as_deref() == Some("round_red") {
         let tip = chain.candidates.iter().find(|t| Some(&t.id) == c.cancelled_by.as_ref());
@@ -797,11 +809,8 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
             chain.candidates.iter().rev().find(|c| c.pr == pr.number && c.original_head == original)
         {
             if c.phase == Phase::Landed {
-                if let Some(issue) = issue {
-                    gh.close_issue(issue)?;
-                    crate::account::leave(repo, &gh, issue, clock())?;
-                }
                 let mut result = c.result.clone().unwrap_or(answer);
+                settle(repo, &gh, issue, clock(), &mut result);
                 result["outcome"] = json!(Ending::Merged);
                 result["commit"] = json!(c.commit);
                 return Ok(result);
@@ -1000,10 +1009,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
         let c = chain.candidates.iter().find(|c| c.id == id).expect("assigned candidate");
         // A round at a candidate behind this one may have landed it.
         if c.phase == Phase::Landed {
-            if let Some(n) = issue {
-                gh.close_issue(n)?;
-                crate::account::leave(repo, &gh, n, clock())?;
-            }
+            settle(repo, &gh, issue, clock(), &mut result);
             result["outcome"] = json!(Ending::Merged);
             result["commit"] = json!(c.commit);
             result["detail"] = json!(
@@ -1101,10 +1107,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
             }
             continue;
         }
-        if let Some(n) = issue {
-            gh.close_issue(n)?;
-            crate::account::leave(repo, &gh, n, clock())?;
-        }
+        settle(repo, &gh, issue, clock(), &mut result);
         result["outcome"] = json!(Ending::Merged);
         result["commit"] = json!(landed);
         result["landed"] = json!(members.iter().map(|m| m.pr).collect::<Vec<_>>());
