@@ -357,6 +357,34 @@ pub(crate) fn candidate_gate(
     )
 }
 
+/// Puts the whole gate, `whole`, on record for `tree` from the records of its
+/// two parts there, `fast` and `slow` → why it is not on record, `None` when
+/// it is. A round's tip whose slow gate passed is a tree the whole gate
+/// passed (docs/adr/0048): the target tip it becomes needs no other run.
+pub(crate) fn record_whole(
+    repo: &Repo,
+    tree: &Tree,
+    (whole, fast, slow): (&GateCommand, &GateCommand, &GateCommand),
+    issue: Option<u64>,
+    now: u64,
+) -> Result<Option<String>> {
+    let (Some(f), Some(s)) = (recorded(repo, tree, fast, now)?, recorded(repo, tree, slow, now)?)
+    else {
+        return Ok(Some(format!(
+            "the fast or the slow gate's run of {} is not on record",
+            tree.name()
+        )));
+    };
+    let Some(run) = GreenRun::joined(tree, whole, fast, &f, slow, &s) else {
+        return Ok(Some("the fast and the slow gate are one command".into()));
+    };
+    let sha = repo.record_commit_of(tree.name(), &run.write_issued(tree, whole, issue))?;
+    let refname = record_ref(repo.layout(), tree, whole);
+    let pushed =
+        repo.try_git(&["push", "--quiet", "--force", REMOTE, &format!("{sha}:{refname}")])?;
+    Ok((!pushed.ok).then(|| pushed.stderr.trim().to_string()))
+}
+
 /// The green run of `command` on `tree` the remote has on record and still
 /// believes at `now`, from either ref layout; `None` when it holds none that
 /// stands. One listing reads both records.
