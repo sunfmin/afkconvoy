@@ -359,6 +359,7 @@ impl Staged {
         let gate = own().fixed(" gate --land").own();
         // Another checkout is gated from inside it.
         let gate_alone = crate::own_command().fixed(" gate").own();
+        let fast_gate = fleet.config.gates.as_ref().map(|_| own().fixed(" gate --fast").own());
         if let Some(pr) = self.joins {
             let fields = WorkerFields {
                 number: self.issue,
@@ -373,6 +374,7 @@ impl Staged {
                 ready_label: &fleet.config.ready_label,
                 land_command: &own().fixed(" land --issue ").number(self.issue).own(),
                 wake_command: &own().fixed(" wake").own(),
+                fast_gate_command: fast_gate.as_deref(),
             };
             let landing = Landing { role: &self.role, skill: &self.skill };
             let mut prompt = landing_prompt(&fields, pr, landing).map_err(|e| anyhow!(e))?;

@@ -1,0 +1,8 @@
+# The slow tests: each took 2 seconds or more on the host the line between the
+# fast gate and the slow gate was drawn on (docs/adr/0047), and runs only in
+# the slow gate; every test not named here runs only in the fast gate.
+# ./gate.sh makes one nextest filter of them.
+#
+# One test a line: its binary, a space, and its whole name, as nextest lists
+# them (`cargo nextest list`). A test the fast gate ends past 6 seconds is
+# added here; one that has become fast may be taken out, with its time.

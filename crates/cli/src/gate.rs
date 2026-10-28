@@ -8,7 +8,7 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use afkconvoy_core::config::Config;
+use afkconvoy_core::config::{Config, Which};
 use afkconvoy_core::gate::{
     GateCommand, GreenRun, Ran, Recording, Tree, after_run, at_limit, believed_among, record_ref,
     red_ref, red_subject,
@@ -537,4 +537,43 @@ pub fn gate(repo: &Repo, config: &Config, train: bool, host: &str, now: u64) -> 
     };
     answer["detail"] = json!(detail);
     Ok(answer)
+}
+
+/// `afkconvoy gate --fast` or `--slow`: one of the two gates the repo's gate
+/// is split into (docs/adr/0047), run alone in the worktree it is called
+/// from, under its own limit, and held to its own budget. Neither is put on
+/// record: what a landing turn proves is the whole gate, `gate_command`.
+pub fn one(repo: &Repo, config: &Config, which: Which) -> Result<Value> {
+    let name = which.word();
+    let gate = config.gate(which).ok_or_else(|| {
+        anyhow!(
+            "this repo declares no {name} gate: its config has no ```yaml gates block \
+             (`afkconvoy config --help`); run `afkconvoy gate`, the whole gate"
+        )
+    })?;
+    let run = run_command(repo, &gate.command, Duration::from_secs(gate.seconds), None)?;
+    let green = run.exit_code == 0 && !run.timed_out && run.termination.is_none();
+    let over_budget = run.seconds > gate.budget_seconds;
+    let detail = match (green, &run.termination) {
+        (true, _) if over_budget => format!(
+            "green, but slow: the {name} gate took {}s, past its budget of {}s — it is not red; \
+             say so on the issue if your change made it slower",
+            run.seconds, gate.budget_seconds
+        ),
+        (true, _) => format!("green in {}s; nothing is on record", run.seconds),
+        (false, Some(termination)) => {
+            format!("the {name} gate is red — {}", termination.description())
+        }
+        (false, None) if run.timed_out => format!(
+            "the {name} gate is red: its run reached its limit of {}s and was ended",
+            gate.seconds
+        ),
+        (false, None) => format!("the {name} gate is red — fix it, commit, and run this again"),
+    };
+    Ok(json!({"gate": name, "status": if green { "green" } else { "red" },
+        "exit_code": run.exit_code, "timed_out": run.timed_out, "seconds": run.seconds,
+        "command": gate.command, "limit_seconds": gate.seconds,
+        "budget_seconds": gate.budget_seconds, "over_budget": over_budget, "recorded": false,
+        "termination": run.termination, "excerpt": if green { vec![] } else { run.excerpt },
+        "detail": detail}))
 }
