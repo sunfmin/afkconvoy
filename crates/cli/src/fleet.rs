@@ -3,8 +3,9 @@
 //!
 //! A rebuild asks the remote once and GitHub a fixed number of times, side by
 //! side: one listing of branch tips and every ref of the fleet
-//! (`Repo::listing`), and what is open on GitHub (`GitHub::open`). Neither
-//! grows with the issues in flight.
+//! (`Repo::listing`), and what is open on GitHub (`GitHub::open`). A patrol
+//! that bounds how many issues it lands in a day is read in that same issues
+//! query. Neither grows with the issues in flight.
 
 use afkconvoy_core::casting::{self, Cast};
 use afkconvoy_core::claims::{Claim, InstanceId};
@@ -73,6 +74,10 @@ pub struct Fleet {
     /// A startup probe that still stands already checked every harness.
     /// `runnable` then keeps the kit `running` built and starts none again.
     trust_launches: bool,
+    /// Patrol landings of the day, read with the open issues. `None`: this
+    /// view did not ask, or the closed page may be short of the day, and
+    /// `patrol::seen` asks. `Some` includes a day in which nothing landed.
+    pub(crate) patrol_landings: Option<Vec<(String, u64)>>,
 }
 
 /// Why no worker of a role can be started on this host: it holds limits for
@@ -122,6 +127,7 @@ impl Fleet {
             closers: vec![],
             cut_said: vec![],
             trust_launches: false,
+            patrol_landings: None,
         })
     }
 
@@ -136,11 +142,18 @@ impl Fleet {
     /// asked side by side, of the one tracker the view goes by.
     pub fn read(repo: &Repo, now: u64) -> Result<(Fleet, Open)> {
         let gh = GitHub::of(repo)?;
+        // Before the issues query, so a patrol that bounds its day is counted
+        // in that query instead of a second one. A team that cannot be read
+        // leaves the landings unasked.
+        let since = patrol::landings_since(repo, now);
         let (fleet, open) = thread::scope(|scope| {
-            let open = scope.spawn(|| gh.open());
+            let open = scope.spawn(|| gh.open_with_landings(since));
             (Fleet::open_on(repo, gh.clone(), now), beside(open))
         });
-        Ok((fleet?, open?))
+        let mut fleet = fleet?;
+        let (open, landings) = open?;
+        fleet.patrol_landings = landings;
+        Ok((fleet, open))
     }
 
     /// The first eligible harness in kit order within the role's range, and

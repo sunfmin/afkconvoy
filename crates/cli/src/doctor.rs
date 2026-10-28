@@ -1298,7 +1298,7 @@ pub fn findings(seen: &Seen) -> Vec<Finding> {
     found.extend(health_findings());
     found.extend(seen.config.and_then(config_finding));
     found.extend(seen.config.and_then(|config| retired_concurrency_finding(seen.checkout, config)));
-    found.extend(crate::named_harness::findings(seen.checkout));
+    found.extend(crate::named_harness::findings(seen.checkout, seen.now));
     found.extend(log_findings(seen.run));
     found.extend(broken_finding(seen.run));
     match seen.state {

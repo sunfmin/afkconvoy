@@ -73,6 +73,11 @@ mod tests {
             !include_str!("doctor.rs").contains("crate::look::begin()"),
             "doctor is one look and does not reset between reads"
         );
+        let (body, _) = include_str!("look.rs").split_once("#[cfg(test)]").unwrap();
+        assert!(
+            !body.contains("GH_LOGIN"),
+            "the login stands for the life of the process and is not forgotten here"
+        );
     }
 
     #[test]
