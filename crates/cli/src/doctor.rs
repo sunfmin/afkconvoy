@@ -329,6 +329,9 @@ pub struct Run {
     /// The ticks its log has of that instance, oldest first, each with when
     /// it ended; `None` where there is no log.
     pub ticks: Option<Vec<(u64, Tick)>>,
+    /// The seconds its last tick took, from its start line to its end;
+    /// `None` where the log has no start of it.
+    pub last_took: Option<u64>,
     /// Its last check for host sleep, as its log has it; `None`: it made none.
     pub host_sleep: Option<HostSleepChecked>,
     /// The newest events that reached this host's `run`s, newest first.
@@ -1447,6 +1450,23 @@ pub(crate) fn read_log(
     (Some(newest.instance.clone()), command, ticks.collect())
 }
 
+/// The seconds the last tick of the newest `run` of `host` took, from the
+/// line it started with to the one it ended with, as the log has them.
+fn read_last_took(entries: &[Entry], host: &str) -> Option<u64> {
+    let newest = entries.iter().rev().find(|entry| entry.host == host && entry.of_run())?;
+    let mut own = entries.iter().rev().filter(|entry| entry.instance == newest.instance);
+    let (ended, count) = own.find_map(|entry| match &entry.what {
+        What::Tick(tick) => Some((entry.at, tick.count)),
+        _ => None,
+    })?;
+    own.find_map(|entry| match &entry.what {
+        What::TickStarted { count: started, .. } if *started == count => {
+            Some(ended.saturating_sub(entry.at))
+        }
+        _ => None,
+    })
+}
+
 /// The last check for host sleep the newest `run` of `host` made, as the log
 /// has it.
 fn read_host_sleep(entries: &[Entry], host: &str) -> Option<HostSleepChecked> {
@@ -1790,7 +1810,7 @@ fn fleet_json(run: &Run) -> Value {
     let last_tick = run.last_tick().map(|(ended, tick)| {
         let answer = tick.answer.as_ref();
         json!({"count": tick.count, "ended": ended, "next_due": ended + tick.sleep,
-            "line": tick.line, "did": answer.map(|answer| &answer["did"]),
+            "sleep": tick.sleep, "took": run.last_took, "line": tick.line, "did": answer.map(|answer| &answer["did"]),
             "error": tick.error})
     });
     let mut failed = vec![];
@@ -1988,6 +2008,7 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String], look: &Look) ->
         heartbeat_age: None,
         heartbeats: Heartbeats::default(),
         log_file: log.map(|log| log.file),
+        last_took: read_last_took(entries.as_deref().unwrap_or_default(), host),
         host_sleep: read_host_sleep(entries.as_deref().unwrap_or_default(), host),
         hot: read_hot(entries.as_deref().unwrap_or_default(), host),
         broken: read_broken(
@@ -2357,6 +2378,7 @@ mod tests {
             heartbeats: Heartbeats { found: 1, live: vec!["alpha".into()] },
             log_file: Some(PathBuf::from("/cache/afkconvoy/runs/widgets.jsonl")),
             ticks: Some(ticks),
+            last_took: None,
             host_sleep: None,
             hot: vec![],
             broken: None,
@@ -3282,6 +3304,34 @@ mod tests {
         let events = read_events(&many, "h1");
         assert_eq!(events.len(), EVENTS_SHOWN);
         assert_eq!(events[0].at, 29);
+    }
+
+    #[test]
+    fn the_last_tick_says_the_seconds_it_took_from_its_own_start() {
+        let entry = |at: u64, instance: &str, what: What| Entry {
+            at,
+            instance: instance.into(),
+            host: "h1".into(),
+            what,
+        };
+        let start = What::Start { worker_command: "claude".into(), harness_commands: [].into() };
+        let started = |count| What::TickStarted { count, cause: Cause::Timer, by: None };
+        let mut entries = vec![
+            entry(10, "alpha", start),
+            entry(10, "alpha", started(1)),
+            entry(14, "alpha", What::Tick(tick(1, json!([])).1)),
+            entry(104, "alpha", started(2)),
+            entry(116, "alpha", What::Tick(tick(2, json!([])).1)),
+        ];
+        assert_eq!(read_last_took(&entries, "h1"), Some(12));
+        entries.push(entry(206, "alpha", started(3)));
+        assert_eq!(read_last_took(&entries, "h1"), Some(12), "a tick under way is not the last");
+        let cut: Vec<Entry> = entries.drain(4..).collect();
+        assert_eq!(read_last_took(&cut, "h1"), None, "the log kept no start of it");
+        let mut answer = run(vec![(116, tick(2, json!([])).1)]);
+        answer.last_took = Some(12);
+        let said = &fleet_json(&answer)["last_tick"];
+        assert_eq!((said["sleep"].as_u64(), said["took"].as_u64()), (Some(90), Some(12)));
     }
 
     #[test]
