@@ -45,8 +45,12 @@ The whole manual is also a page, for reading in a browser: [`docs/manual.md`](do
 ## Develop
 
 ```sh
-./gate.sh     # fmt, clippy, the manual, the tests, and Flux on the core crate
+./gate.sh fast   # fmt, Flux on the core crate, clippy, the manual, the build, and every test not marked slow
+./gate.sh slow   # the tests marked slow, and nothing else
+./gate.sh        # both: the gate
 ```
+
+Pass the fast gate before opening or updating a PR. A test that took 2 seconds or more is marked slow, by name, in [`.config/slow-tests`](.config/slow-tests); a fast gate test still running at 6 seconds is ended, and the gate says to mark it (ADR-0047). Telling the two apart needs nextest: without it only `./gate.sh` runs, every test with `cargo test`.
 
 The gate runs the tests with [cargo-nextest](https://nexte.st) when it is installed (`brew install cargo-nextest`), which takes about a third of the time; without it, it runs them with `cargo test`. Under nextest one test has a limit, 240 seconds, which [`.config/nextest.toml`](.config/nextest.toml) gives: a test that runs past it is ended and fails by name, as `TIMEOUT`. `cargo test` has no limit for one test, and the gate says so when it runs them that way.
 
