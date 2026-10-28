@@ -263,7 +263,8 @@ pub(crate) fn auxiliary(fleet: &Fleet, agent: &Agent, worktree: &Worktree) -> Re
     if worktree.brief()?.exists() {
         crate::dispatch::continue_brief(fleet, worktree, None, None, &continued)?;
     }
-    let command = if cast.harness == Harness::Codex {
+    let command = if cast.harness.session().is_some() {
+        // The session puts its own model on as it starts.
         agent.command(cast.harness)?.as_str().to_string()
     } else {
         cast.command(agent.command(cast.harness)?.as_str())
