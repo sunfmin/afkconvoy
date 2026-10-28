@@ -20,10 +20,11 @@ use crate::claims::{Me, Take, take};
 use crate::fleet::Fleet;
 use crate::forget::forget;
 use crate::gh::{IssueRead, gone};
-use crate::git::{REMOTE, Repo};
+use crate::git::Repo;
 use crate::launch::Launches;
 use crate::orca::{Source, Worktree};
 use crate::recovery::{Survey, own_heads, survey};
+use crate::remote::{Fresh, Push};
 use crate::role::Staged;
 
 /// A dispatch is incomplete until its worker has taken the brief. Keep it
@@ -713,7 +714,8 @@ pub(crate) fn continue_brief(
         .unwrap_or_else(|| fleet.config.base_branch.clone());
     let base = fleet
         .repo
-        .fetched(&format!("refs/heads/{branch}"))?
+        .remote()
+        .fetched(&format!("refs/heads/{branch}"), Fresh::Process)?
         .ok_or_else(|| anyhow!("target branch {branch:?} disappeared"))?;
     let log = Repo::new(worktree.path.clone()).git(&[
         "log",
@@ -791,7 +793,8 @@ fn brief_with(
 fn cut_at(fleet: &Fleet, issue: &IssueRead, number: u64, branch: &str) -> Result<Worktree> {
     let sha = fleet
         .repo
-        .fetched(&format!("refs/heads/{branch}"))?
+        .remote()
+        .fetched(&format!("refs/heads/{branch}"), Fresh::Process)?
         .ok_or_else(|| anyhow!("the remote has no branch {branch:?}"))?;
     let source = Source::of(&fleet.repo)?;
     let name = fleet.gh.tracker.worktree_name(number, &issue.title);
@@ -811,7 +814,7 @@ fn discard_attempt(fleet: &Fleet, number: u64) -> Result<Value> {
         fleet.gh.close_pr(*pr, why)?;
     }
     for branch in &own {
-        fleet.repo.git(&["push", "--quiet", REMOTE, &format!(":refs/heads/{branch}")])?;
+        fleet.remote.push(&Push::delete(&format!("refs/heads/{branch}")))?;
     }
     if let Some(worktree) = &worktree {
         worktree.remove()?;
