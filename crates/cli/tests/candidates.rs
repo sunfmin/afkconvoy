@@ -751,7 +751,14 @@ fn chain_tip(world: &World) -> String {
 }
 
 fn tick(world: &World) {
-    world.afk(&["tick", "--instance", "alpha", "--host", "h1", "--now", "20000"]).ok();
+    // The gate records were written at the real clock. A tick dated in 1970
+    // treats them as past their day and sweeps them; this tick is now.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        .to_string();
+    world.afk(&["tick", "--instance", "alpha", "--host", "h1", "--now", &now]).ok();
 }
 
 /// Kills the process it holds, however the test ends.
