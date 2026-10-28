@@ -221,7 +221,7 @@ pub enum StartFrom {
 ///   {"started": false, "claim": "lost", "owner": {…}}   a peer holds the issue
 ///   {"started": false, "skipped": "blocked", "blocked_by": [n…]}
 ///                                  an open blocker, read just before the claim
-///   {"started": false, "gone": "deleted"|"transferred", "released": bool}
+///   {"started": false, "gone": "deleted"|"transferred"|"missing", "released": bool}
 ///                                  GitHub says the issue is gone: a claim held
 ///                                  on it is let go (`forget`)
 ///
@@ -278,7 +278,7 @@ pub(crate) fn dispatch_continuing(
     if !released {
         fleet.forgotten.push((how.clone(), false));
     }
-    let said = if how.deleted { "deleted" } else { "transferred" };
+    let said = how.word();
     forget_starting(fleet, number)?;
     Ok(json!({"issue": number, "started": false, "gone": said, "released": released}))
 }
@@ -767,6 +767,8 @@ fn brief_with(
     prompt: impl FnOnce(&WorkerFields) -> Result<String, String>,
 ) -> Result<PathBuf> {
     let path = worktree.path.display().to_string();
+    let fast_gate =
+        fleet.config.gates.as_ref().map(|_| crate::own_command().fixed(" gate --fast").own());
     let fields = WorkerFields {
         number,
         tracker: &fleet.gh.tracker,
@@ -780,6 +782,7 @@ fn brief_with(
         ready_label: &fleet.config.ready_label,
         land_command: &crate::own_command().fixed(" land --issue ").number(number).own(),
         wake_command: &crate::own_command().fixed(" wake").own(),
+        fast_gate_command: fast_gate.as_deref(),
     };
     let mut text = prompt(&fields).map_err(|e| anyhow!(e))?;
     text.push_str(&crate::delivery::brief(&fleet.repo, number)?);

@@ -123,7 +123,7 @@ pub fn rule(repo: &Repo, team: &Team, number: u64, text: String) -> Result<Value
     let issue = Unheld::read(repo, number, instead)?;
     let workflow =
         issue.workflow(team).map_err(|why| anyhow!("issue #{number} cannot be ruled on: {why}"))?;
-    let position = history(workflow, &issue.records()).place.position;
+    let position = history(workflow, issue.records()).place.position;
     let Some(stage) = position.stage() else {
         bail!(
             "issue #{number} cannot be ruled on: it has left the stages of its workflow, so \
@@ -193,7 +193,7 @@ pub fn declare(
     let issue = Unheld::read(repo, number, instead)?;
     let workflow = workflow_of(team, &issue.labels)
         .map_err(|why| anyhow!("issue #{number} has no stage to declare for: {why}"))?;
-    let place = history(workflow, &issue.records()).place;
+    let place = history(workflow, issue.records()).place;
     let at = place.position.stage().map(|stage| stage.name.as_str());
     if at != Some(stage) {
         let is = at.map_or("at no stage: it has left them".to_string(), |at| {

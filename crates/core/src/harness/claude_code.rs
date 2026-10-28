@@ -44,6 +44,9 @@ pub(super) const PROVIDER: &str = "ANTHROPIC_BASE_URL";
 /// setting do not accept workspace trust, even when both settings are given.
 /// This does not write a trust entry in the host user's config.
 pub(super) const TRUST: &str = "CLAUDE_CODE_SANDBOXED=1";
+/// Its worktree trust outside a role is the permission-bypass and settings
+/// flags `in_worktree` adds: a launch checks the command takes `FLAGS`.
+pub(super) const TRUST_IS_FLAGS: bool = true;
 const BYPASS: &str = "--dangerously-skip-permissions";
 
 /// Starts Claude Code with its worktree trusted and its unattended warning

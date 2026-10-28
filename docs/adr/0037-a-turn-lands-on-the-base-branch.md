@@ -67,3 +67,7 @@ There were **no train-worker repair runs** in that window: no train `land` retur
 The replacement covers both observed missing-record certifications in a separate checkout, in worker lanes. It covers the red-tip case with the operator repair and its own turn. Unrecorded legacy history, including old worker fixes with no surviving issue PR, is preserved through recovery PRs. Earlier afkconvoy train landings at 11:44:22 and 11:51:08 UTC ran on 0.5.20; they are not observations of #110.
 
 Legacy recovery is resumable through issue-linked Orca workspaces. Conflicts and red gates retain those workspaces for a worker; retries reuse them. Migration returns on a red base instead of blocking the tick that must dispatch its repair. A final recovery PR preserves the original line's history, including a closed or rewritten PR head and commits an older train worker made.
+
+## Rounds (sunfmin/control#240)
+
+Amended by ADR-0048. Where a candidate's commit declares a fast gate and a slow gate (ADR-0047), the candidate is validated by the fast gate, and its green does not land it. A **round** runs the slow gate once, on the commit of the chain's tip, when every candidate of the chain is fast-green, and its green lands every candidate up to the tip in the one atomic publication described above, which now verifies each of their source heads. That is an aggregate gate, which this ADR had none of: it is the one gate of more than one candidate. A candidate whose commit declares no gates keeps every rule above.

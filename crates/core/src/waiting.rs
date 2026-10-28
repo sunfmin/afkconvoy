@@ -233,7 +233,7 @@ pub fn back(team: &Team, workflow: Option<&Workflow>, records: &[StageRecord]) -
             team.workflows.iter().map(|workflow| workflow.flow_label().to_string()).collect();
         return Back::Flow { labels, escalate: team.escalate_label.clone() };
     };
-    match history(workflow, records).place.position.stage() {
+    match history(workflow, records.to_vec()).place.position.stage() {
         Some(stage) => Back::Rule { stage: stage.name.clone() },
         None => Back::Send,
     }
@@ -258,7 +258,7 @@ pub fn waits(
         Due::Worker(_) | Due::Consult(_) | Due::Lander(_) => None,
         Due::Human(_) => Some(Waits::Escalated(back(team, workflow, records))),
         Due::Nothing(_) => {
-            let read = history(workflow?, records);
+            let read = history(workflow?, records.to_vec());
             let mut verdicts = vec![];
             // The two a workflow leads on from: what else a stage
             // may declare, `afkconvoy verdict --help` says.

@@ -158,7 +158,7 @@ pub struct WatchPr {
 /// How many comments of an issue come with it (`OPEN_ISSUES_QUERY`).
 pub const COMMENTS_WITH: usize = 100;
 /// What is read of one issue, open or not.
-pub const ISSUE_JQ: &str = "{id, title, body, state, state_reason, labels: [.labels[].name], \
+pub const ISSUE_JQ: &str = "{id, url, title, body, state, state_reason, labels: [.labels[].name], \
     pull_request: (.pull_request != null), closed_by: .closed_by.login}";
 /// What is read of each closed issue that carries one label.
 pub const CLOSED_JQ: &str = ".[] | select(.pull_request == null) | \
@@ -280,6 +280,9 @@ pub struct GitHub {
     /// route wakes; every woken tick reads GitHub for itself.
     closed: Arc<Mutex<BTreeSet<u64>>>,
     quota: Arc<Mutex<Option<crate::gh_quota::Scope>>>,
+    /// The checkout's own repo, as its remote names it, where it does:
+    /// asked once.
+    own: Arc<OnceLock<Option<String>>>,
 }
 
 /// An open PR from another repo's own branch, with when it was opened.
@@ -302,7 +305,7 @@ impl GitHub {
     /// A new read of `tracker` from `dir`, with its closure observations
     /// shared only by this view and its clones.
     pub fn new(dir: PathBuf, tracker: Tracker) -> GitHub {
-        GitHub { dir, tracker, closed: Arc::default(), quota: Arc::default() }
+        GitHub { dir, tracker, closed: Arc::default(), quota: Arc::default(), own: Arc::default() }
     }
 
     /// The issues this view has seen closed, whatever read or write saw it.
@@ -351,6 +354,10 @@ pub struct IssueRead {
     /// What it says, where it says anything.
     #[serde(default)]
     pub body: Option<String>,
+    /// GitHub's API URL of it: of another repo, or another number, where
+    /// GitHub redirected the read because the issue moved.
+    #[serde(default)]
+    pub url: Option<String>,
 }
 
 /// One issue another is recorded as blocked by — a native dependency edge.
@@ -532,32 +539,63 @@ pub fn unreached(error: &anyhow::Error) -> Option<&Unreached> {
     error.chain().find_map(|cause| cause.downcast_ref())
 }
 
-/// An issue GitHub answered for with 410 or 404: deleted, or transferred to
-/// another repo. Like a closed one, it is never worked again, and it is
+/// An issue GitHub has no more: deleted, transferred to another repo, or
+/// never issued. Like a closed one, it is never worked again, and it is
 /// nothing the rest of the fleet waits on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Gone {
     pub issue: u64,
-    /// 410: it was deleted. 404: it is not in this repo — transferred.
-    pub deleted: bool,
+    pub how: Went,
+}
+
+/// How GitHub says an issue is gone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Went {
+    /// 410: it was deleted.
+    Deleted,
+    /// GitHub moved it: a read of it follows GitHub's redirect into another
+    /// repo, `to` — `owner/repo#n` — where GitHub says.
+    Transferred { to: Option<String> },
+    /// 404, and GitHub says nothing moved: there is no such issue.
+    Missing,
 }
 
 impl Gone {
     /// What happened to it, as a tick's line says why it let go of it:
     /// `released #231 (the issue was deleted)`.
     pub fn said(&self) -> String {
-        match self.deleted {
-            true => "the issue was deleted".to_string(),
-            false => "the issue is gone from this repo".to_string(),
+        match &self.how {
+            Went::Deleted => "the issue was deleted".to_string(),
+            Went::Transferred { to: Some(to) } => format!("the issue was transferred to {to}"),
+            Went::Transferred { to: None } => {
+                "the issue was transferred to another repo".to_string()
+            }
+            Went::Missing => "there is no such issue".to_string(),
+        }
+    }
+
+    /// The word a dispatch's `gone` answers with.
+    pub fn word(&self) -> &'static str {
+        match self.how {
+            Went::Deleted => "deleted",
+            Went::Transferred { .. } => "transferred",
+            Went::Missing => "missing",
         }
     }
 }
 
 impl std::fmt::Display for Gone {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.deleted {
-            true => write!(f, "issue #{} was deleted (HTTP 410)", self.issue),
-            false => write!(f, "issue #{} is not in this repo (HTTP 404): transferred", self.issue),
+        let issue = self.issue;
+        match &self.how {
+            Went::Deleted => write!(f, "issue #{issue} was deleted (HTTP 410)"),
+            Went::Transferred { to: Some(to) } => {
+                write!(f, "issue #{issue} was transferred to {to}")
+            }
+            Went::Transferred { to: None } => {
+                write!(f, "issue #{issue} was transferred to another repo")
+            }
+            Went::Missing => write!(f, "no such issue: #{issue} (HTTP 404)"),
         }
     }
 }
@@ -578,14 +616,23 @@ fn status(said: &str) -> Option<u16> {
     after.get(..3).filter(|code| code.bytes().all(|b| b.is_ascii_digit()))?.parse().ok()
 }
 
-/// `made`, a call about issue `number`, with a failure GitHub answered 410
-/// or 404 raised as `Gone`.
-fn about_issue<T>(number: u64, made: Result<T>) -> Result<T> {
+/// `made`, a read of issue `number` itself, with a failure GitHub answered
+/// 410 raised as `Gone` deleted, and 404 as `Gone` missing: a moved issue's
+/// read follows GitHub's redirect, so a 404 of it is no move.
+fn answered<T>(number: u64, made: Result<T>) -> Result<T> {
     made.map_err(|error| match status(&format!("{error}")) {
-        Some(410) => Gone { issue: number, deleted: true }.into(),
-        Some(404) => Gone { issue: number, deleted: false }.into(),
+        Some(410) => Gone { issue: number, how: Went::Deleted }.into(),
+        Some(404) => Gone { issue: number, how: Went::Missing }.into(),
         _ => error,
     })
+}
+
+/// Where the issue read as `url`, GitHub's API URL of it, is: `owner/repo`
+/// and its number.
+fn located(url: &str) -> Option<(String, u64)> {
+    let path = url.split_once("/repos/")?.1;
+    let (repo, number) = path.rsplit_once("/issues/")?;
+    Some((repo.to_string(), number.parse().ok()?))
 }
 
 /// Whether what `gh` said of a call that failed says it failed in transit:
@@ -1334,16 +1381,57 @@ impl GitHub {
     }
 
     /// One issue, open or closed. An error when it cannot be read: `Gone`
-    /// when GitHub says it was deleted or transferred.
+    /// when GitHub says it was deleted or transferred, or has no such issue.
     pub fn issue(&self, number: u64) -> Result<IssueRead> {
         let endpoint = endpoint(&self.tracker, &format!("issues/{number}"));
-        let out = about_issue(number, self.read(&["api", &endpoint, "--jq", ISSUE_JQ]))?;
+        let out = answered(number, self.read(&["api", &endpoint, "--jq", ISSUE_JQ]))?;
         let issue: IssueRead = serde_json::from_str(&out)
             .with_context(|| format!("gh api issue {number}: unexpected answer"))?;
+        if let Some(to) = self.moved(number, &issue) {
+            return Err(Gone { issue: number, how: Went::Transferred { to: Some(to) } }.into());
+        }
         if issue.is_closed() {
             self.saw_closed(number);
         }
         Ok(issue)
+    }
+
+    /// Where issue `number` is, `owner/repo#n`, when its read `issue` is of
+    /// another repo or number: GitHub redirected the read because it moved.
+    fn moved(&self, number: u64, issue: &IssueRead) -> Option<String> {
+        let (repo, at) = located(issue.url.as_deref()?)?;
+        let here = match self.tracker.named() {
+            Some(named) => Some(named.to_string()),
+            None => self.own().map(str::to_string),
+        };
+        let elsewhere = here.is_some_and(|here| !here.eq_ignore_ascii_case(&repo));
+        (at != number || elsewhere).then(|| format!("{repo}#{at}"))
+    }
+
+    /// The checkout's own repo, `owner/repo`, where its remote names one.
+    fn own(&self) -> Option<&str> {
+        self.own
+            .get_or_init(|| {
+                let repo = Repo::new(self.dir.clone());
+                crate::checkout_list::named_repo(&repo).ok().map(|named| named.to_string())
+            })
+            .as_deref()
+    }
+
+    /// `made`, a call about issue `number`, with a failure GitHub answered
+    /// 410 raised as `Gone` deleted. A 404 says no more than that the call
+    /// found nothing, so the issue is read: `Gone` as that read says —
+    /// transferred where GitHub redirects it, else missing — and the failure
+    /// as it was of one GitHub still has here.
+    fn about_issue<T>(&self, number: u64, made: Result<T>) -> Result<T> {
+        made.map_err(|error| match status(&format!("{error}")) {
+            Some(410) => Gone { issue: number, how: Went::Deleted }.into(),
+            Some(404) => match self.issue(number) {
+                Err(read) if gone(&read).is_some() => read,
+                _ => error,
+            },
+            _ => error,
+        })
     }
 
     /// Every comment on an issue, oldest first: `Gone` of one GitHub says was
@@ -1361,7 +1449,7 @@ impl GitHub {
     fn comments_in(&self, repo: &str, number: u64) -> Result<Vec<Comment>> {
         let endpoint = format!("repos/{repo}/issues/{number}/comments?per_page=100");
         let read = self.read(&["api", "--paginate", &endpoint, "--jq", COMMENTS_JQ]);
-        let out = about_issue(number, read)?;
+        let out = self.about_issue(number, read)?;
         out.lines()
             .filter(|line| !line.trim().is_empty())
             .map(|line| serde_json::from_str(line).context("gh api comments: unexpected answer"))
@@ -1383,7 +1471,7 @@ impl GitHub {
     fn comment_in(&self, repo: &str, number: u64, body: &str) -> Result<()> {
         let endpoint = format!("repos/{repo}/issues/{number}/comments");
         let body = format!("body={body}");
-        about_issue(number, self.gh(&["api", "--method", "POST", &endpoint, "-f", &body]))?;
+        self.about_issue(number, self.gh(&["api", "--method", "POST", &endpoint, "-f", &body]))?;
         Ok(())
     }
 
@@ -1612,7 +1700,7 @@ impl GitHub {
             &format!("issues/{number}/dependencies/blocked_by?per_page=100"),
         );
         let read = self.read(&["api", "--paginate", &endpoint, "--jq", BLOCKED_BY_JQ]);
-        let out = about_issue(number, read)?;
+        let out = self.about_issue(number, read)?;
         out.lines()
             .filter(|line| !line.trim().is_empty())
             .map(|line| serde_json::from_str(line).context("gh api blocked_by: unexpected answer"))
@@ -1752,18 +1840,52 @@ mod tests {
     }
 
     #[test]
-    fn an_issue_answered_with_410_or_404_is_gone_and_any_other_failure_is_as_it_was() {
+    fn an_issue_read_answered_with_410_is_deleted_and_with_404_is_no_such_issue() {
         let failed = |said: &str| -> Result<()> { bail!("gh api failed: {said}") };
-        let deleted = about_issue(231, failed("gh: This issue was deleted (HTTP 410)"));
+        let deleted = answered(231, failed("gh: This issue was deleted (HTTP 410)"));
         let error = deleted.unwrap_err().context("the claim cannot be read");
-        assert_eq!(gone(&error), Some(&Gone { issue: 231, deleted: true }));
-        let moved = about_issue(7, failed("gh: Not Found (HTTP 404)")).unwrap_err();
-        assert_eq!(gone(&moved), Some(&Gone { issue: 7, deleted: false }));
+        assert_eq!(gone(&error), Some(&Gone { issue: 231, how: Went::Deleted }));
+        let missing = answered(7, failed("gh: Not Found (HTTP 404)")).unwrap_err();
+        assert_eq!(gone(&missing), Some(&Gone { issue: 7, how: Went::Missing }));
+        assert_eq!(missing.to_string(), "no such issue: #7 (HTTP 404)");
         for said in ["gh: Resource not accessible by integration (HTTP 403)", "gh: no"] {
-            let error = about_issue(7, failed(said)).unwrap_err();
+            let error = answered(7, failed(said)).unwrap_err();
             assert_eq!((gone(&error), error.to_string()), (None, format!("gh api failed: {said}")));
         }
-        assert_eq!(Gone { issue: 231, deleted: true }.said(), "the issue was deleted");
+        assert_eq!(Gone { issue: 231, how: Went::Deleted }.said(), "the issue was deleted");
+        assert_eq!(Gone { issue: 7, how: Went::Missing }.said(), "there is no such issue");
+    }
+
+    #[test]
+    fn an_issue_is_transferred_only_where_its_read_was_redirected_elsewhere() {
+        let gh = GitHub::new(
+            PathBuf::from("/nowhere"),
+            Tracker::Other {
+                tracker: RepoName::read("sunfmin/hkj").unwrap(),
+                repo: RepoName::read("sunfmin/app").unwrap(),
+            },
+        );
+        let read = |url: Option<&str>| IssueRead {
+            id: 1,
+            title: String::new(),
+            state: "open".to_string(),
+            state_reason: None,
+            labels: vec![],
+            pull_request: false,
+            closed_by: None,
+            body: None,
+            url: url.map(str::to_string),
+        };
+        let here = read(Some("https://api.github.com/repos/sunfmin/hkj/issues/22"));
+        assert_eq!(gh.moved(22, &here), None);
+        assert_eq!(gh.moved(22, &read(None)), None);
+        let moved = read(Some("https://api.github.com/repos/sunfmin/control/issues/2"));
+        assert_eq!(gh.moved(22, &moved), Some("sunfmin/control#2".to_string()));
+        let same_number = read(Some("https://api.github.com/repos/sunfmin/control/issues/22"));
+        assert_eq!(gh.moved(22, &same_number), Some("sunfmin/control#22".to_string()));
+        let gone =
+            Gone { issue: 22, how: Went::Transferred { to: Some("sunfmin/control#2".into()) } };
+        assert_eq!(gone.to_string(), "issue #22 was transferred to sunfmin/control#2");
     }
 
     #[test]

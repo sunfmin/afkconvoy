@@ -32,6 +32,9 @@ pub(super) const STOCK: &str = "pi";
 /// worker's brief for its answer.
 const APPROVE: &str = "--approve";
 pub(super) const TRUST: &str = APPROVE;
+/// Its worktree trust is a flag (`APPROVE`): a launch checks the command
+/// takes `FLAGS`.
+pub(super) const TRUST_IS_FLAGS: bool = true;
 
 /// Answers pi's worktree approval question on the launch line.
 pub(super) fn in_worktree(command: &str) -> String {

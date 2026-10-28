@@ -4,6 +4,15 @@ status: accepted
 
 # The gate limit is declared, and a slow gate is an issue
 
+## Two gates, each with its own limit and budget (sunfmin/control#236)
+
+A repo may split its gate into a fast gate and a slow gate, each declaring
+its own command, limit and budget in a ```` ```yaml gates ```` block
+(ADR-0047). Their limits add up to no more than `gate_seconds`, and their
+budgets to no more than `gate_budget_seconds`: the split raises neither. A
+landing still runs `gate_command` whole, and the gate gone slow is still read
+off its recorded runs against `gate_budget_seconds`.
+
 ## Fixed warning budget (sunfmin/control#150)
 
 A repo may now declare `gate_budget_seconds`, a positive whole number below
