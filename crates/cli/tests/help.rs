@@ -161,6 +161,40 @@ fn printed(topic: &str, text: &str) -> String {
     format!("# `afkconvoy help {topic}`\n\n{}\n", text.trim_end())
 }
 
+/// Help names no decision record. The reader has the binary and its help,
+/// and cannot open `docs/adr/`. Each sentence that lost a citation still
+/// states the rule the citation sat beside.
+#[test]
+fn help_names_no_document_the_reader_cannot_open() {
+    for args in [["help", "glossary"], ["plan", "--help"], ["run", "--help"]] {
+        let said = asked(&args);
+        assert!(!said.contains("docs/adr/"), "{args:?} names a document the reader cannot open");
+    }
+    let glossary = asked(&["help", "glossary"]);
+    for rule in [
+        "a trimmed Rust port of the `afk-fleet` skill",
+        "moves onto it by itself between ticks once no exclusive command runs",
+        "a repo config names none",
+        "the repo names a tracker's `<owner>/<tracker>#<n>`",
+        "keeps confirmed ownership across restart or upgrade",
+        "answers every later question in that look from what was read",
+        "selects the last harness to take a worker brief, then the host kit's eligible order",
+        "names no harness starts on the host kit's first eligible one",
+        "no other harness is started in its place",
+    ] {
+        assert!(glossary.contains(rule), "the glossary lost the rule {rule:?}");
+    }
+    let plan = asked(&["plan", "--help"]);
+    assert!(plan.contains("repo labels of more than one repo"), "{plan}");
+    let run = asked(&["run", "--help"]);
+    assert!(
+        run.contains(
+            "while PRs, branches, the gate and their landing turns stay the checkout's own repo's."
+        ),
+        "run's tracker paragraph lost its rule"
+    );
+}
+
 /// The glossary is a topic, and the file itself: nothing else is edited for
 /// what `help glossary` prints to change.
 #[test]
