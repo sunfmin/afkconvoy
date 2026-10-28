@@ -1444,10 +1444,15 @@ fn push(items: &mut Vec<Item>, id: String, reason: String) {
     }
 }
 
+/// A finding's identity scoped to where it was found: a checkout's to its
+/// checkout, a host's to the host. A resource's holds its scope already.
 fn scoped_finding_id(at: &str, id: &str) -> String {
-    match id.strip_prefix("checkout:") {
-        Some(identity) => format!("finding:{at}:{identity}"),
-        None => id.to_string(),
+    if let Some(identity) = id.strip_prefix("checkout:") {
+        format!("finding:{at}:{identity}")
+    } else if let Some(identity) = id.strip_prefix("host:") {
+        format!("finding:host:{identity}")
+    } else {
+        id.to_string()
     }
 }
 
@@ -2028,9 +2033,9 @@ mod tests {
         assert_eq!(
             first,
             [
-                r#"host:["tool","orca"]"#,
+                r#"finding:host:["tool","orca"]"#,
                 r#"kit-research:host:["kit-unplaced","codex"]"#,
-                r#"host:["health-overdue","/w"]"#,
+                r#"finding:host:["health-overdue","/w"]"#,
                 r#"finding:/r:["step","dispatch",null,null]"#,
                 r#"finding:/r:["broken",800]"#,
                 r#"finding:/r:["tick","alpha",[]]"#,
