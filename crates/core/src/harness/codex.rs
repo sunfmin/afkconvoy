@@ -27,11 +27,13 @@ use flux_rs::attrs::*;
 use serde::de::{Error, IgnoredAny};
 use serde::{Deserialize, Deserializer};
 
-use super::{Held, Kept, Link};
+use super::session::{self, json_lines};
+use super::{Held, Kept, Link, SessionFile, SessionLayout};
 use crate::guard::Call;
 use crate::line::Line;
 use crate::role::{Rules, Start, Told};
 use crate::team::RULES;
+use crate::turn::{Marker, Note, Turn};
 
 /// Codex's task-refusal screen reported on sunfmin/control#98, 2026-10-26.
 pub(super) fn task_refusal(output: &[String]) -> Option<String> {
@@ -370,7 +372,7 @@ pub(super) fn watch(command: &str, worktree: &str, kept: &str, model: Option<&st
 /// caster ask the harness for (docs/adr/0013).
 pub(super) const SESSION: super::Session = super::Session {
     fresh: "codex",
-    note: "convoy-codex-home",
+    note: HOME_NOTE,
     config: ".codex/config.toml",
     record: "convoy-codex-launch.json",
 };
@@ -708,6 +710,117 @@ pub(super) fn call<'de, D: Deserializer<'de>>(described: D) -> Result<Call, D::E
         Some(line) if described.tool_name == SHELL_TOOL => Call::Shell(line),
         _ => Call::Other,
     })
+}
+
+/// The harness directory under a user's home.
+pub(super) const HOME: &str = ".codex";
+
+/// The note beside a worktree's git directory whose text is the home Codex
+/// kept for that worktree. The launch writes it; the reader opens it.
+pub(super) const HOME_NOTE: &str = "convoy-codex-home";
+
+/// Where Codex keeps a session of any worktree: every JSONL file under
+/// [`SESSIONS`]. Which worktree a file is belongs to the file.
+pub(super) fn session_layout(_cwd: &str) -> SessionLayout {
+    SessionLayout::Tree { dir: SESSIONS.into(), extension: "jsonl" }
+}
+
+/// The turn `text` records for `cwd`. A file with no session header for this
+/// worktree is not it. Codex records no child session.
+pub(super) fn recorded_turn(cwd: &str, text: &str, not_before: Option<u64>) -> Option<Turn> {
+    let mut saw_cwd = false;
+    let mut notes = Vec::new();
+    for value in json_lines(text) {
+        if value["type"] == "session_meta" {
+            let recorded = value["payload"]["cwd"].as_str().unwrap_or("");
+            if !session::same_cwd(recorded, cwd) {
+                return None;
+            }
+            saw_cwd = true;
+        }
+        if let Some(note) = note(&value) {
+            notes.push(note);
+        }
+    }
+    if !saw_cwd {
+        return None;
+    }
+    session::turn_of(&notes, not_before)
+}
+
+fn note(value: &serde_json::Value) -> Option<Note> {
+    let payload = &value["payload"];
+    match payload["type"].as_str()? {
+        "task_started" => {
+            let at =
+                session::number_at(payload["started_at"].as_u64(), value["timestamp"].as_str())?;
+            Some(Note { marker: Marker::Start, at, child: false })
+        }
+        "task_complete" => {
+            let at =
+                session::number_at(payload["completed_at"].as_u64(), value["timestamp"].as_str())?;
+            Some(Note { marker: Marker::End, at, child: false })
+        }
+        "turn_aborted" => {
+            let at = session::parse_iso(value["timestamp"].as_str()?)?;
+            Some(Note { marker: Marker::End, at, child: false })
+        }
+        _ => None,
+    }
+}
+
+/// One session file a stand-in writes for this turn. An older file of the
+/// same name, from another day, is replaced.
+pub(super) fn session_files(cwd: &str, open: bool, at: u64) -> Vec<SessionFile> {
+    let iso = session::format_iso(at);
+    let name = format!("rollout-afkconvoy-{}.jsonl", session::mark(cwd));
+    let (year, month, day) = session::civil_from_days((at / 86_400) as i64);
+    let mut body = format!(
+        "{}\n",
+        session::object(vec![
+            ("timestamp", iso.clone().into()),
+            ("type", "session_meta".into()),
+            ("payload", session::object(vec![("cwd", cwd.into()), ("id", "afkconvoy".into())]),),
+        ])
+    );
+    body.push_str(&format!(
+        "{}\n",
+        session::object(vec![
+            ("timestamp", iso.clone().into()),
+            ("type", "event_msg".into()),
+            (
+                "payload",
+                session::object(vec![
+                    ("type", "task_started".into()),
+                    ("started_at", at.into()),
+                    ("turn_id", "afkconvoy".into()),
+                ]),
+            ),
+        ])
+    ));
+    if !open {
+        body.push_str(&format!(
+            "{}\n",
+            session::object(vec![
+                ("timestamp", iso.into()),
+                ("type", "event_msg".into()),
+                (
+                    "payload",
+                    session::object(vec![
+                        ("type", "task_complete".into()),
+                        ("completed_at", at.into()),
+                        ("turn_id", "afkconvoy".into()),
+                    ]),
+                ),
+            ])
+        ));
+    }
+    vec![SessionFile {
+        path: format!("{SESSIONS}/{year:04}/{month:02}/{day:02}/{name}"),
+        body,
+        compressed: false,
+        replaces: Some(name),
+    }]
 }
 
 #[cfg(test)]

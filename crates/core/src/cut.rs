@@ -38,13 +38,15 @@ pub const VERSION_ENV: &str = "VERSION";
 /// The word of the marker of the issue a failed cut opens.
 pub const FAILED: &str = "convoy:cut-failed";
 
-/// What a cut is given beside two gate limits — base certification and its merge's gate — for the rest of its steps, publishing and installing
-/// among them, in seconds: an hour.
-pub const BESIDE_THE_GATES: u64 = 3600;
+/// What a cut is given beside two gate limits — base certification and its
+/// merge's gate — for the rest of its steps, publishing and installing among
+/// them, in seconds: three hours.
+pub const BESIDE_THE_GATES: u64 = 3 * 3600;
 
 /// The default age of the oldest landing past the newest tag at which a
-/// busy fleet starts a cut, in seconds.
-pub const BUSY_AFTER_SECONDS: u64 = 3600;
+/// busy fleet starts a cut, in seconds: five hours where the repo omits
+/// `busy_after_seconds`.
+pub const BUSY_AFTER_SECONDS: u64 = 18_000;
 
 fn busy_after_seconds() -> u64 {
     BUSY_AFTER_SECONDS
@@ -776,31 +778,49 @@ mod tests {
 
     #[test]
     fn the_age_bound_starts_a_busy_cut_but_cannot_bypass_its_claim_failure_or_lock() {
+        assert_eq!(BUSY_AFTER_SECONDS, 18_000, "omitting the key waits five hours");
         let seen = Seen { oldest_landing: Some(1000), ..seen() };
-        let before = row(&seen, None, &[], 4599, false);
-        assert_eq!(before.oldest_landing_age_seconds, Some(3599));
+        let bound = 1000 + BUSY_AFTER_SECONDS;
+        let before = row(&seen, None, &[], bound - 1, false);
+        assert_eq!(before.oldest_landing_age_seconds, Some(BUSY_AFTER_SECONDS - 1));
         assert_eq!(before.busy_in_seconds, Some(1));
         assert!(!starts(&before, 8, 4, true));
-        let due = row(&seen, None, &[], 4600, false);
+        let due = row(&seen, None, &[], bound, false);
         assert!(starts(&due, 8, 4, true));
-        let locked = row(&seen, None, &[], 4600, true);
+        let locked = row(&seen, None, &[], bound, true);
         assert!(!starts(&locked, 8, 4, false));
-        let failed = row(&Seen { failure: Some(9), ..seen.clone() }, None, &[], 4600, false);
+        let failed = row(&Seen { failure: Some(9), ..seen.clone() }, None, &[], bound, false);
         assert!(!starts(&failed, 8, 4, false));
         let running = row(
             &Seen { claim: Some(claim("peer")), ..seen },
             None,
-            &[("peer".into(), 4600)],
-            4600,
+            &[("peer".into(), bound)],
+            bound,
             false,
         );
         assert!(!starts(&running, 8, 4, false));
     }
 
     #[test]
-    fn a_cut_is_given_two_gate_limits_and_an_hour() {
-        assert_eq!(time_limit(3600), 3 * 3600);
-        assert_eq!(time_limit(600), 1200 + 3600);
+    fn zero_starts_a_busy_cut_at_the_landing_and_another_bound_is_kept() {
+        let landed = Seen { oldest_landing: Some(1000), ..seen() };
+        let zero = Seen { busy_after_seconds: 0, ..landed.clone() };
+        let at = row(&zero, None, &[], 1000, false);
+        assert_eq!(at.busy_in_seconds, Some(0));
+        assert!(starts(&at, 8, 4, true), "zero permits a busy cut at the next tick");
+        let kept = Seen { busy_after_seconds: 120, ..landed };
+        let early = row(&kept, None, &[], 1119, false);
+        assert_eq!((early.oldest_landing_age_seconds, early.busy_in_seconds), (Some(119), Some(1)));
+        assert!(!starts(&early, 8, 4, true));
+        assert!(starts(&row(&kept, None, &[], 1120, false), 8, 4, true));
+    }
+
+    #[test]
+    fn a_cut_is_given_two_gate_limits_and_three_hours() {
+        assert_eq!(BESIDE_THE_GATES, 10_800);
+        // The default gate limit is 3600s, so a cut is given five hours.
+        assert_eq!(time_limit(3600), 18_000);
+        assert_eq!(time_limit(600), 2 * 600 + 10_800);
         assert_eq!(time_limit(u64::MAX), u64::MAX);
     }
 
@@ -842,7 +862,16 @@ mod tests {
         assert_eq!(ending(None, 1000, false, 1001, limit), None);
         let out = Ending::OutOfTime(Step::Land).failure(limit).unwrap();
         assert_eq!(out.step, Step::Land);
-        assert!(out.why.contains("80 minutes"), "{}", out.why);
+        assert!(out.why.contains("its time ran out"), "{}", out.why);
+        assert!(out.why.contains("200 minutes"), "{}", out.why);
+        let said = failure_report(
+            &landing,
+            &out,
+            "h1",
+            "/w/cut",
+            "cd '/w/cut' && afkconvoy cut --from land",
+        );
+        assert!(said.contains("its time ran out"), "{said}");
     }
 
     #[test]

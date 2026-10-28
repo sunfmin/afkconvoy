@@ -9,6 +9,7 @@ use afkconvoy_core::lock::keeps_off;
 use afkconvoy_core::plan::PullRequest;
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use serde_json::{Value, json};
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::exclusive::Permit;
@@ -582,10 +583,134 @@ pub(crate) struct Request<'a> {
     pub now: u64,
 }
 
+/// Re-reads every candidate chain and removes the worktrees of those that
+/// have stopped.
+///
+/// A turn that has just written a chain calls this. That write is past the
+/// look's moment, so the listing the look holds is not this chain
+/// (docs/adr/0043).
+pub(crate) fn remove_stopped_worktrees(repo: &Repo) -> Result<()> {
+    let prefix = repo.layout().under("candidates/");
+    let records = repo.remote_records(&format!("{prefix}*"))?;
+    remove_listed(repo, &records)
+}
+
+/// Removes the worktree of every stopped candidate named by `records`.
+///
+/// `records` are candidate chains already read: the look's listing, or a
+/// turn's re-read of the chain it just wrote. A landed, red, or cancelled
+/// candidate loses its worktree. One that is building, validating, green and
+/// waiting, or cancelling keeps it. A process that still has the directory as
+/// its working directory keeps it too; the next call removes it once that
+/// process is gone. A directory whose git registration is already gone is
+/// removed as well. Nothing here reads or writes the candidate chain. An
+/// issue's, watch's, or cut's worktree is outside `convoy-candidates` and is
+/// left alone.
+///
+/// A process listing that fails removes nothing: it is no evidence the
+/// directory is free.
+pub(crate) fn remove_listed(repo: &Repo, records: &[crate::git::RemoteRecord]) -> Result<()> {
+    let prefix = repo.layout().under("candidates/");
+    let root = repo.common_dir()?.join("convoy-candidates");
+    let mut pending = vec![];
+    for record in records {
+        if !record.name.starts_with(&prefix) {
+            continue;
+        }
+        let chain: Chain = serde_json::from_str(&record.subject)?;
+        for candidate in &chain.candidates {
+            if candidate.active() {
+                continue;
+            }
+            let path = PathBuf::from(&candidate.worktree);
+            if !candidate_directory(&root, &path, &candidate.id) {
+                continue;
+            }
+            if path.exists() || crate::process_scope::path(&candidate.worktree).exists() {
+                pending.push((path, candidate.worktree.clone()));
+            }
+        }
+    }
+    if pending.is_empty() {
+        return Ok(());
+    }
+    let busy = crate::hot::working_directories()?;
+    for (path, recorded) in pending {
+        if occupies(&busy, &path) {
+            continue;
+        }
+        remove_candidate_worktree(repo, &path, &recorded);
+    }
+    // A removal that deleted the directory and left the registration, or the
+    // reverse, converges here. A worktree that is still on disk stays listed.
+    let _ = repo.try_git(&["worktree", "prune"]);
+    Ok(())
+}
+
+/// `path` is this repo's candidate directory for `id`, and nothing else.
+fn candidate_directory(root: &Path, path: &Path, id: &str) -> bool {
+    if path.file_name().and_then(|name| name.to_str()) != Some(id) {
+        return false;
+    }
+    let Some(parent) = path.parent() else { return false };
+    if parent == root {
+        return true;
+    }
+    match (std::fs::canonicalize(parent), std::fs::canonicalize(root)) {
+        (Ok(parent), Ok(root)) => parent == root,
+        _ => false,
+    }
+}
+
+/// Whether any process's working directory is `worktree` or a path inside it.
+fn occupies(directories: &[PathBuf], worktree: &Path) -> bool {
+    let worktree = std::fs::canonicalize(worktree).unwrap_or_else(|_| worktree.to_path_buf());
+    directories.iter().any(|cwd| {
+        // The kernel's path and the path we recorded can disagree on a
+        // symlink (`/var` and `/private/var`). Compare the real paths.
+        let cwd = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.clone());
+        cwd == worktree || cwd.starts_with(&worktree)
+    })
+}
+
+/// Drops `path` and, once the directory is gone, its process-scope file.
+///
+/// Directories are opened for removal first (`copies::removable`): git deletes
+/// the gitdir before the worktree, and stops on a directory the owner cannot
+/// write, leaving the registration gone and the directory behind.
+fn remove_candidate_worktree(repo: &Repo, path: &Path, recorded: &str) {
+    crate::copies::removable(path);
+    let text = path.to_string_lossy();
+    let _ = repo.try_git(&["worktree", "remove", "--force", text.as_ref()]);
+    if path.exists() {
+        crate::copies::removable(path);
+        let _ = std::fs::remove_dir_all(path);
+    }
+    if path.exists() {
+        eprintln!(
+            "warning: candidate worktree {} is still there and will be removed on a later tick",
+            path.display()
+        );
+        return;
+    }
+    let _ = std::fs::remove_file(crate::process_scope::path(recorded));
+}
+
+/// Removes stopped candidate worktrees when the turn ends, including when it
+/// is cancelled. A turn killed outright leaves them for the next tick.
+struct Reap<'a>(&'a Repo);
+
+impl Drop for Reap<'_> {
+    fn drop(&mut self) {
+        let _ = remove_stopped_worktrees(self.0);
+    }
+}
+
 /// The source head has been pushed and the base certified by the caller.
 /// Assignment happens only after capacity is granted, by one atomic record.
 pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
     let Request { repo, config, tracker, pr, of, host, now } = request;
+    let _reap = Reap(repo);
     let began = std::time::Instant::now();
     let clock = || now.saturating_add(began.elapsed().as_secs());
     let gh = GitHub::of(repo)?;
@@ -902,10 +1027,6 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
             crate::clock(),
             format!("turn landed PR #{} on {} at {landed}", pr.number, config.base_branch),
         );
-        // Candidate artifacts are disposable only after success. Failed ones
-        // retain their evidence; source worktrees are never removed here.
-        let _ = repo.git(&["worktree", "remove", "--force", &path.to_string_lossy()]);
-        let _ = std::fs::remove_file(crate::process_scope::path(&candidate.worktree));
         drop(permit);
         return Ok(result);
     }

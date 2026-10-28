@@ -121,8 +121,6 @@ struct Observed {
     #[serde(default)]
     failed_candidates: Vec<(String, u64)>,
     #[serde(default)]
-    background: Option<u64>,
-    #[serde(default)]
     window_started: u64,
     diagnosis: Option<Diagnosis>,
     /// The latest check's request to Jev and TypeSafe's response.
@@ -167,14 +165,29 @@ fn store(book: &Book) -> Result<()> {
 pub fn show() -> Value {
     match read() {
         Ok(book) => {
-            json!({"workers": book.workers, "faults": book.faults, "observations_failed":book.observations_failed,
+            // The since is the worktree's stamp, read here. The observation
+            // keeps none: a copy cleared when the turn opened disagreed with it.
+            let mut value = json!({"workers": book.workers, "faults": book.faults, "observations_failed":book.observations_failed,
             "observe_seconds": OBSERVE_SECONDS, "check_seconds": CHECK_SECONDS,
             "max_rate_retries": MAX_RATE_RETRIES,
             "capacity_stops": book.capacity_stops,
             "capacity_wait_seconds": CAPACITY_WAIT_SECONDS,
             "max_capacity_stops": MAX_CAPACITY_STOPS,
             "capacity_healthy_seconds": CAPACITY_HEALTHY_SECONDS,
-            "max_quota_wait_seconds": MAX_QUOTA_WAIT_SECONDS})
+            "max_quota_wait_seconds": MAX_QUOTA_WAIT_SECONDS});
+            if let Some(rows) = value["workers"].as_array_mut() {
+                for row in rows {
+                    if row["action"] != "waiting for background work" {
+                        continue;
+                    }
+                    let Some(path) = row["path"].as_str() else { continue };
+                    let since = Worktree::at(PathBuf::from(path), String::new()).background_at();
+                    if let Some(since) = since {
+                        row["background"] = json!(since);
+                    }
+                }
+            }
+            value
         }
         Err(e) => json!({"error": format!("{e:#}")}),
     }
@@ -506,10 +519,6 @@ pub fn holding(worktree: &Worktree) -> bool {
     })
 }
 
-pub fn background_since(worktree: &Worktree) -> Option<u64> {
-    read().ok()?.workers.into_iter().find(|o| o.path == worktree.path)?.background
-}
-
 /// Recovery probes are scoped exactly like the evidence. A successful probe
 /// re-enables future starts, never moves a healthy successor back.
 fn probe_due(book: &mut Book, kit: &Kit, now: u64) {
@@ -611,6 +620,10 @@ pub fn reconcile(
             Ok(state) => state,
             Err(_) => continue,
         };
+        // An open turn has no since. A later wait starts when it is seen again.
+        if state == WorkerState::Busy {
+            worktree.background_since(false, None, fleet.now)?;
+        }
         if let afkconvoy_core::stopped::Nudged::At(at) = worktree.nudged()?
             && crate::lock::explaining_lock(&fleet.gh, &fleet.config, Some(at))?.is_some()
         {
@@ -726,6 +739,11 @@ fn observe(
     // cannot observe never reports one, and a turn the session has ended is
     // idle however the runtime last labeled it.
     let working = state == WorkerState::Busy && signal.is_empty();
+    // An open turn has no since, including a patrol's or a caster's, which
+    // the claim loop above does not see. A later wait starts when seen again.
+    if state == WorkerState::Busy {
+        worktree.background_since(false, None, fleet.now)?;
+    }
     let harness = worktree.harness()?.unwrap_or(Harness::DEFAULT);
     let recorded = worktree.recorded_harness()?;
     let mismatch = recorded.is_some_and(|h| h != harness);
@@ -781,7 +799,6 @@ fn observe(
             capacity: None,
             continuations: 0,
             failed_candidates: vec![],
-            background: None,
             window_started: fleet.now,
             diagnosis: None,
             judgment: None,
@@ -847,7 +864,6 @@ fn observe(
         // The runtime was just checked. A read-only watch must not mistake
         // this healthy observation for a check that is already overdue.
         observed.next_check = fleet.now.saturating_add(CHECK_SECONDS);
-        observed.background = None;
         book.workers.push(observed);
         return Ok(());
     }
@@ -1089,19 +1105,13 @@ fn decide(
     });
     let failed = observed.orca["state"] == "done" && observed.orca["outcome"] == "failure";
     if !failed && rule.is_none() {
-        // Record since when, then decide by the one test the tick's line and
-        // `doctor` read. The record is what the line names; it is not a second test.
-        let background = crate::judge::own_background(fleet, worktree, true)?;
-        if crate::judge::waits_on_own_background(worktree)
-            && let Some(background) = background
-        {
+        // One read stamps the since the tick line and a later tick name.
+        if crate::judge::own_background(fleet, worktree, true)?.is_some() {
             observed.action = "waiting for background work".into();
-            observed.background = Some(background.since);
             observed.next_check = fleet.now.saturating_add(CHECK_SECONDS);
             return Ok(());
         }
     }
-    observed.background = None;
     let quiet = fleet.now.saturating_sub(observed.snapshots.first().map_or(fleet.now, |s| s.at));
     if !failed && rule.is_none() && (state == WorkerState::Busy || quiet < OBSERVE_SECONDS) {
         observed.action = if state == WorkerState::Busy { "healthy" } else { "observing" }.into();
@@ -1224,18 +1234,15 @@ fn decide(
     // An account quota continues at once, but not through a gate or landing
     // the worker still has running: that work keeps the session until it
     // ends. The fault is already recorded, so a new start skips the harness.
-    if diagnosis.class == "quota" && diagnosis.scope == Scope::Account {
-        let waiting = crate::judge::own_background(fleet, worktree, true)?;
-        if crate::judge::waits_on_own_background(worktree)
-            && let Some(waiting) = waiting
-        {
-            observed.action = "waiting for background work".into();
-            observed.background = Some(waiting.since);
-            observed.next_check = fleet.now.saturating_add(CHECK_SECONDS);
-            store(book)?;
-            fleet.invalidate_selection();
-            return Ok(());
-        }
+    if diagnosis.class == "quota"
+        && diagnosis.scope == Scope::Account
+        && crate::judge::own_background(fleet, worktree, true)?.is_some()
+    {
+        observed.action = "waiting for background work".into();
+        observed.next_check = fleet.now.saturating_add(CHECK_SECONDS);
+        store(book)?;
+        fleet.invalidate_selection();
+        return Ok(());
     }
     // A fallback never promotes another kit entry. Exclusions last only for
     // this continuation; shared scoped evidence is persisted independently.

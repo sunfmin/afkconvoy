@@ -60,8 +60,10 @@ pub struct Settings {
     pub exclusive_seconds: Option<u64>,
     /// `--gate-lanes`: worker commands that may run across different repos.
     pub gate_lanes: Option<u64>,
-    /// `--train-lanes`: train gates that may run across different repos.
-    pub train_lanes: Option<u64>,
+    /// An old checkout list may still name `train_lanes`. It is not a setting:
+    /// a known field so `rest` does not keep it, and left out of every write.
+    #[serde(default, skip_serializing)]
+    train_lanes: Option<u64>,
     /// `--panel`: the port the host runner serves the panel on; `PANEL_PORT`
     /// where the host says none.
     pub panel: Option<u16>,
@@ -99,7 +101,6 @@ pub struct Named {
     pub admit_inspect_after: Option<To<u64>>,
     pub exclusive_seconds: Option<To<u64>>,
     pub gate_lanes: Option<To<u64>>,
-    pub train_lanes: Option<To<u64>>,
     pub panel: Option<To<u16>>,
     pub watch_dir: Option<To<PathBuf>>,
     pub watch_every: Option<To<u64>>,
@@ -220,7 +221,6 @@ impl Settings {
         lay(&mut self.admit_inspect_after, named.admit_inspect_after.as_ref());
         lay(&mut self.exclusive_seconds, named.exclusive_seconds.as_ref());
         lay(&mut self.gate_lanes, named.gate_lanes.as_ref());
-        lay(&mut self.train_lanes, named.train_lanes.as_ref());
         lay(&mut self.panel, named.panel.as_ref());
         lay(&mut self.watch_dir, named.watch_dir.as_ref());
         lay(&mut self.watch_every, named.watch_every.as_ref());
@@ -304,7 +304,6 @@ impl Settings {
             "admit_inspect_after": self.admit_inspect_after.unwrap_or(SPAN),
             "exclusive_seconds": self.exclusive_seconds(),
             "gate_lanes": self.gate_lanes(),
-            "ignored": self.train_lanes.map(|_| "train_lanes is ignored: turns land directly; only gate_lanes applies"),
             "panel": self.panel_port(),
             "watch_dir": crate::host_watch::directory(self).ok(),
             "watch_every": self.watch_every(),
@@ -587,5 +586,30 @@ mod tests {
         let changed = Value::Object(change(&list, &named).unwrap());
         assert_eq!(changed, json!({"host_sleep_hours": {"from": "22:00-06:00", "to": null}}));
         assert!(answered["in_force"]["hot_cores"].as_f64().unwrap() >= 1.0);
+    }
+
+    #[test]
+    fn an_old_train_lanes_key_loads_and_the_next_write_drops_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let list = List::at(dir.path().join("checkouts.json"));
+        let kept = r#"{"settings": {"train_lanes": 0, "gate_lanes": 2, "said_by_another": 1}}"#;
+        std::fs::write(list.file(), kept).unwrap();
+        let read = list.read().unwrap();
+        assert_eq!(read.settings.gate_lanes, Some(2));
+        assert_eq!(read.settings.train_lanes, Some(0), "an old file still loads");
+        let readings = crate::admission::Readings::new();
+        let answered = json(&list, dir.path(), &readings);
+        assert!(answered["said"].get("train_lanes").is_none(), "{answered}");
+        assert!(answered["in_force"].get("train_lanes").is_none(), "{answered}");
+        assert!(answered["in_force"].get("ignored").is_none(), "{answered}");
+        assert_eq!(answered["in_force"]["gate_lanes"], 2);
+        let named = Named { admit_load: Some(To::Value(400)), ..Named::default() };
+        change(&list, &named).unwrap();
+        let text: Value =
+            serde_json::from_str(&std::fs::read_to_string(list.file()).unwrap()).unwrap();
+        assert!(text["settings"].get("train_lanes").is_none(), "{text}");
+        assert_eq!(text["settings"]["gate_lanes"], 2);
+        assert_eq!(text["settings"]["admit_load"], 400);
+        assert_eq!(text["settings"]["said_by_another"], 1);
     }
 }

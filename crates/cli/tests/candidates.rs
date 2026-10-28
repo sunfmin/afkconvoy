@@ -1,6 +1,6 @@
 //! Real binary, real remotes and kernel processes. Gates wait on controlled
 //! release files; assertions inspect refs, original heads and child exit.
-use crate::common::{World, commit, git};
+use crate::common::{World, commit, git, worktree_listed};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -703,6 +703,256 @@ done
     assert!(
         !world.remote(&["ls-tree", "--name-only", "refs/heads/main"]).lines().any(|f| f == "a.txt")
     );
+}
+
+fn worktrees(world: &World) -> String {
+    git(&world.clone, &["worktree", "list", "--porcelain"])
+}
+
+fn listed(world: &World, path: &Path) -> bool {
+    worktree_listed(&worktrees(world), path)
+}
+
+fn candidate_path(world: &World, issue: u64) -> PathBuf {
+    let row = chain(world)["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|candidate| candidate["issue"] == issue)
+        .unwrap()
+        .clone();
+    PathBuf::from(row["worktree"].as_str().unwrap())
+}
+
+/// The gate leaves a mode 0555 directory behind. It is gitignored, so the run
+/// is still of the committed tree.
+fn seal_gate(world: &World) {
+    let script = std::fs::read_to_string(world.clone.join("gate.sh")).unwrap();
+    let script = script.replace(
+        "test ! -f \"$root/fail-$name\"\n",
+        "mkdir -p sealed && chmod 0555 sealed\ntest ! -f \"$root/fail-$name\"\n",
+    );
+    assert!(script.contains("chmod 0555 sealed"), "the gate script was not rewritten");
+    commit(&world.clone, ".gitignore", "sealed/\n");
+    commit(&world.clone, "gate.sh", &script);
+    git(&world.clone, &["push", "-q", "origin", "HEAD"]);
+    assert_eq!(world.afk(&["gate"]).ok()["recorded"], true);
+    // The base gate ran in the clone and left its own sealed directory. The
+    // candidate worktrees are what the product removes; this one is the test's.
+    let sealed = world.clone.join("sealed");
+    if sealed.is_dir() {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&sealed, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+}
+
+fn chain_tip(world: &World) -> String {
+    world.remote(&["rev-parse", "refs/convoy/candidates/main"])
+}
+
+/// The look's one listing of the remote. It is the only `ls-remote` whose
+/// patterns include the candidate chain.
+const LOOK_LISTING: &str = "ls-remote origin refs/convoy/* refs/heads/* refs/tags/v*";
+
+fn clear_git_log(world: &World) {
+    std::fs::write(world.root.join("git.log"), "").unwrap();
+}
+
+fn lists_candidate_chain(call: &str) -> bool {
+    call.starts_with("ls-remote ")
+        && call
+            .split_whitespace()
+            .any(|arg| arg == "refs/convoy/*" || arg.starts_with("refs/convoy/candidates"))
+}
+
+/// A tick that does not write the candidate chain lists it once, as part of
+/// the look, and does not read that chain on its own.
+fn assert_chain_listed_once(world: &World) {
+    let calls = world.git_calls();
+    let listed: Vec<&String> = calls.iter().filter(|call| lists_candidate_chain(call)).collect();
+    assert_eq!(listed, [&LOOK_LISTING.to_string()], "{calls:#?}");
+    assert!(
+        !calls
+            .iter()
+            .any(|call| call.starts_with("push ") && call.contains("refs/convoy/candidates")),
+        "the tick wrote the candidate chain: {calls:#?}"
+    );
+}
+
+/// The startup probe, when it runs, lists the fleet's refs to sweep litter.
+/// Removal still follows the look, and nothing reads the candidate chain alone.
+fn assert_removal_follows_the_look(world: &World) {
+    let calls = world.git_calls();
+    assert!(
+        !calls.iter().any(|call| {
+            call.split_whitespace().any(|arg| arg.starts_with("refs/convoy/candidates"))
+        }),
+        "the tick read the candidate chain on its own: {calls:#?}"
+    );
+    let look = calls.iter().position(|call| call == LOOK_LISTING);
+    let removed = calls.iter().position(|call| call.starts_with("worktree remove "));
+    assert!(
+        look.is_some_and(|look| removed.is_some_and(|removed| removed > look)),
+        "removal follows the look's listing: {calls:#?}"
+    );
+}
+
+fn tick(world: &World) {
+    // The gate records were written at the real clock. A tick dated in 1970
+    // treats them as past their day and sweeps them; this tick is now.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        .to_string();
+    world.afk(&["tick", "--instance", "alpha", "--host", "h1", "--now", &now]).ok();
+}
+
+/// Kills the process it holds, however the test ends.
+struct Hold(Child);
+
+impl Drop for Hold {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+#[test]
+fn a_stopped_candidate_loses_its_worktree_and_a_live_one_keeps_it() {
+    use std::os::unix::fs::PermissionsExt;
+    let world = world(2);
+    seal_gate(&world);
+    let (issue_a, _) = worker(&world, 1, "a");
+    let (issue_b, _) = worker(&world, 2, "b");
+    let _runner = world.host_held();
+    let aa = start(&world, &issue_a, &world.cache(), 1);
+    began(&world, "a");
+    let bb = start(&world, &issue_b, &world.cache(), 2);
+    began(&world, "b");
+    let a_tree = candidate_path(&world, 1);
+    let b_tree = candidate_path(&world, 2);
+    assert_eq!(chain(&world)["candidates"][0]["phase"], "validating");
+    assert!(listed(&world, &a_tree), "a validating candidate stays listed");
+    assert!(listed(&world, &b_tree), "a validating candidate stays listed");
+    release(&world, "b", false);
+    green(&world, 2);
+    let sealed = b_tree.join("sealed");
+    let mode = std::fs::metadata(&sealed).unwrap().permissions().mode();
+    assert_eq!(mode & 0o777, 0o555, "the gate left a directory the owner cannot write");
+    assert!(
+        listed(&world, &b_tree),
+        "a green candidate waiting on its predecessor keeps its worktree"
+    );
+    let hold = Hold(Command::new("sleep").arg("300").current_dir(&a_tree).spawn().unwrap());
+    release(&world, "a", false);
+    let landed_a = finish(aa);
+    let landed_b = finish(bb);
+    assert_eq!(landed_a["outcome"], "merged", "{landed_a}");
+    assert_eq!(landed_b["outcome"], "merged", "{landed_b}");
+    assert!(a_tree.is_dir(), "a worktree a process is working in stays");
+    assert!(listed(&world, &a_tree));
+    assert!(!b_tree.exists(), "a landed candidate's worktree is gone, sealed directory included");
+    assert!(!listed(&world, &b_tree));
+    assert!(listed(&world, &issue_a) && listed(&world, &issue_b), "the issue worktrees stay");
+    let state = chain(&world);
+    for (issue, landed) in [(1, &landed_a), (2, &landed_b)] {
+        let candidate = state["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|candidate| candidate["issue"] == issue)
+            .unwrap();
+        assert_eq!(candidate["phase"], "landed");
+        assert_eq!(candidate["commit"], landed["commit"]);
+    }
+    let gates = world.remote(&["for-each-ref", "--format=%(objectname)", "refs/convoy/gate"]);
+    assert!(!gates.is_empty(), "the recorded gate run stays on the remote");
+    let tip = chain_tip(&world);
+    drop(hold);
+    world.watch_git();
+    tick(&world);
+    assert!(!a_tree.exists(), "a later tick removes the worktree once the process is gone");
+    assert!(!listed(&world, &a_tree));
+    assert_removal_follows_the_look(&world);
+    assert_eq!(chain_tip(&world), tip, "the candidate chain is not rewritten");
+    assert_eq!(
+        world.remote(&["for-each-ref", "--format=%(objectname)", "refs/convoy/gate"]),
+        gates
+    );
+    assert!(issue_a.is_dir() && issue_b.is_dir());
+    std::fs::create_dir_all(&a_tree).unwrap();
+    let sealed = a_tree.join("sealed");
+    std::fs::create_dir(&sealed).unwrap();
+    std::fs::write(sealed.join("kept"), "kept").unwrap();
+    std::fs::set_permissions(&sealed, std::fs::Permissions::from_mode(0o555)).unwrap();
+    assert!(!listed(&world, &a_tree), "the registration is already gone");
+    let tip = chain_tip(&world);
+    clear_git_log(&world);
+    tick(&world);
+    assert!(!a_tree.exists(), "a half-removed worktree is removed");
+    assert_chain_listed_once(&world);
+    assert_eq!(chain_tip(&world), tip, "removing a leftover directory does not rewrite the chain");
+    clear_git_log(&world);
+    tick(&world);
+    assert_chain_listed_once(&world);
+    assert_eq!(chain_tip(&world), tip, "a tick that removes nothing leaves the chain");
+}
+
+#[test]
+fn a_red_candidate_and_a_cancelled_one_lose_their_worktrees() {
+    let world = world(2);
+    seal_gate(&world);
+    let (issue_a, _) = worker(&world, 1, "a");
+    let (issue_b, _) = worker(&world, 2, "b");
+    let _runner = world.host_held();
+    world.watch_git();
+    let aa = start(&world, &issue_a, &world.cache(), 1);
+    began(&world, "a");
+    let bb = start(&world, &issue_b, &world.cache(), 2);
+    began(&world, "b");
+    let a_tree = candidate_path(&world, 1);
+    let b_tree = candidate_path(&world, 2);
+    release(&world, "a", true);
+    let red = finish(aa);
+    let cancelled = finish(bb);
+    assert_eq!(red["outcome"], "gate_red", "{red}");
+    assert_eq!(cancelled["outcome"], "cancelled", "{cancelled}");
+    assert!(!a_tree.exists(), "a red candidate's worktree is gone");
+    assert!(!listed(&world, &a_tree));
+    assert!(!b_tree.exists(), "a cancelled candidate's worktree is gone");
+    assert!(!listed(&world, &b_tree));
+    let calls = world.git_calls();
+    let wrote = calls
+        .iter()
+        .rposition(|call| call.starts_with("push ") && call.contains("refs/convoy/candidates/"));
+    let reread = calls.iter().rposition(|call| call == "ls-remote origin refs/convoy/candidates/*");
+    assert!(
+        wrote.is_some_and(|wrote| reread.is_some_and(|reread| reread > wrote)),
+        "a turn reads the chain it just wrote before it returns: {calls:#?}"
+    );
+    assert!(listed(&world, &issue_a) && listed(&world, &issue_b), "the issue worktrees stay");
+    let state = chain(&world);
+    let failed = state["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|candidate| candidate["issue"] == 1)
+        .unwrap();
+    let suffix = state["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|candidate| candidate["issue"] == 2)
+        .unwrap();
+    assert_eq!(failed["phase"], "red");
+    assert!(failed["result"]["excerpt"].is_array(), "the chain keeps the gate excerpt: {failed}");
+    assert_eq!(failed["result"]["exit_code"], 1, "{failed}");
+    assert!(failed["cause"].as_str().is_some_and(|cause| !cause.is_empty()), "{failed}");
+    assert_eq!(suffix["phase"], "cancelled");
+    assert_eq!(suffix["cancelled_by"], failed["id"]);
+    assert!(suffix["cause"].as_str().is_some_and(|cause| !cause.is_empty()), "{suffix}");
+    assert_eq!(suffix["cause"], "predecessor_failed");
 }
 
 #[test]
