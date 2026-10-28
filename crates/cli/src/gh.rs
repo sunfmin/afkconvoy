@@ -218,7 +218,16 @@ fn carrying_labels(tracker: &Tracker, label: &str) -> String {
 }
 
 /// One HEAD sha, read once and shared with the next ask in this look.
-type HeadOnce = Arc<OnceLock<Result<String, String>>>;
+/// A transit failure stays [`Unreached`], so a later ask in the look still
+/// says GitHub could not be reached and does not read again.
+type HeadOnce = Arc<OnceLock<Result<String, HeadMiss>>>;
+
+/// Why a repo's HEAD was not read. A transit failure keeps its type.
+#[derive(Debug, Clone)]
+enum HeadMiss {
+    Unreached(Unreached),
+    Other(String),
+}
 
 /// One HEAD sha per repo in this look. `forget_heads` drops them. A process
 /// that is one look — `doctor` — never forgets them and reads each HEAD once.
@@ -806,11 +815,15 @@ impl GitHub {
         };
         let stored = cell.get_or_init(|| match self.read_head(repo) {
             Ok(sha) => Ok(sha),
-            Err(error) => Err(format!("{error:#}")),
+            Err(error) => Err(match unreached(&error) {
+                Some(miss) => HeadMiss::Unreached(miss.clone()),
+                None => HeadMiss::Other(format!("{error:#}")),
+            }),
         });
         match stored {
             Ok(sha) => Ok(sha.clone()),
-            Err(error) => bail!("{error}"),
+            Err(HeadMiss::Unreached(miss)) => Err(miss.clone().into()),
+            Err(HeadMiss::Other(error)) => bail!("{error}"),
         }
     }
 
