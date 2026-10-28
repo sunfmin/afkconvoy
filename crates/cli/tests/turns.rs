@@ -184,7 +184,7 @@ fn two_worker_lanes_bound_candidates_and_leave_capacity_available_across_repos()
     let (a, b) = (World::new(), World::new());
     heavy(&a);
     heavy(&b);
-    a.say_host_settings(json!({"gate_lanes": 2, "train_lanes": 2}));
+    a.say_host_settings(json!({"gate_lanes": 2}));
     let one = a.worker(1, "held.txt", "one");
     let another = a.worker(2, "second.txt", "second");
     let other_repo = b.worker(3, "held.txt", "other repo");
@@ -198,11 +198,7 @@ fn two_worker_lanes_bound_candidates_and_leave_capacity_available_across_repos()
     assert!(!another.join("held.txt").exists(), "the second turn has not merged yet");
     let doctor = a.afk(&["doctor"]).json;
     assert_eq!(doctor["host"]["settings"]["in_force"]["gate_lanes"], 2);
-    assert!(
-        doctor["host"]["settings"]["in_force"]["ignored"]
-            .as_str()
-            .is_some_and(|s| s.contains("ignored"))
-    );
+    assert!(doctor["host"]["settings"]["in_force"].get("ignored").is_none());
     std::fs::write(a.root.join("release"), "").unwrap();
     std::fs::write(b.root.join("release"), "").unwrap();
     assert_eq!(finish(first)["outcome"], "merged");
@@ -456,16 +452,28 @@ fn a_rejected_push_ends_the_turn_and_another_turn_gates_the_new_base() {
 }
 
 #[test]
-fn an_old_stored_train_lane_count_is_ignored_and_the_runner_starts() {
+fn an_old_stored_train_lanes_key_loads_and_a_run_drops_it() {
     let world = World::new();
-    world.say_host_settings(json!({"train_lanes": 0, "gate_lanes": 2}));
-    let _runner = world.host_held();
-    let doctor = world.afk(&["doctor"]).json;
-    let settings = &doctor["host"]["settings"]["in_force"];
-    assert_eq!(settings["gate_lanes"], 2);
-    assert!(settings.get("train_lanes").is_none());
-    assert!(settings["ignored"].as_str().unwrap().contains("train_lanes is ignored"));
-    assert!(doctor["host"]["exclusive"]["lanes"].get("train").is_none());
+    world.say_host_settings(json!({"train_lanes": 0, "gate_lanes": 2, "kept": 1}));
+    {
+        // A foreground hold reads the list and leaves it. Doctor still omits the key.
+        let _runner = world.host_held();
+        let doctor = world.afk(&["doctor"]).json;
+        let settings = &doctor["host"]["settings"];
+        assert_eq!(settings["in_force"]["gate_lanes"], 2);
+        assert!(settings["said"].get("train_lanes").is_none(), "{settings}");
+        assert!(settings["in_force"].get("train_lanes").is_none(), "{settings}");
+        assert!(settings["in_force"].get("ignored").is_none(), "{settings}");
+        assert!(doctor["host"]["exclusive"]["lanes"].get("train").is_none());
+        assert_eq!(world.checkout_list()["settings"]["train_lanes"], 0);
+    }
+    let wrote = world.afk(&["run", "--admit-load", "400"]).ok();
+    assert!(wrote["settings"].get("train_lanes").is_none(), "{wrote}");
+    let file = world.checkout_list();
+    assert!(file["settings"].get("train_lanes").is_none(), "{file}");
+    assert_eq!(file["settings"]["gate_lanes"], 2);
+    assert_eq!(file["settings"]["kept"], 1);
+    assert_eq!(file["settings"]["admit_load"], 400);
 }
 
 #[test]

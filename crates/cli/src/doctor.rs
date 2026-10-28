@@ -421,7 +421,8 @@ pub struct Held {
     /// unread or not checked: only a tick is safe to name then.
     pub stopped_command: Option<&'static str>,
     /// It waits on background work of its own (`judge::waits_on_own_background`).
-    /// A long stop is not a finding while it does, however long the wait.
+    /// A long stop is not a finding while it does, however long the wait,
+    /// including past the gate limit. The since is the worktree's one stamp.
     pub waiting_on_background: bool,
     pub worktree: Option<PathBuf>,
     /// What its worker was started under, in a bound repo.
@@ -716,8 +717,8 @@ fn claim_findings(run: &Run, held: &[Held]) -> Vec<Finding> {
                 ));
             }
             // Waiting on its own background work is not a stop, however long
-            // the terminal has been quiet. The same test the tick's line and
-            // worker health read.
+            // the terminal has been quiet, and past the gate limit too. The
+            // same read of its screen the tick uses; the since is the stamp.
             Some(WorkerState::Idle { quiet: Some(quiet) })
                 if quiet >= STOPPED_LONG && !claim.waiting_on_background =>
             {
@@ -807,9 +808,6 @@ fn log_findings(run: &Run) -> Vec<Finding> {
                 || did.into_iter().flatten().any(|step| recovered(failed, step)))
         });
         for failed in tick.failed() {
-            if matches!(failed.step.as_str(), "tend_train" | "cut_train") {
-                continue;
-            }
             pending.retain(|(_, previous)| !previous.same_step(&failed));
             pending.push((tick.count, failed));
         }
@@ -2617,7 +2615,7 @@ mod tests {
     }
 
     #[test]
-    fn retired_train_steps_do_not_leave_an_actionable_failure_after_upgrade() {
+    fn a_failed_tend_train_or_cut_train_is_that_failed_step() {
         let failed = tick(
             4,
             json!([
@@ -2625,7 +2623,15 @@ mod tests {
                 {"do": "cut_train", "error": "no checkout"}
             ]),
         );
-        assert_eq!(log_findings(&run(vec![failed, tick(5, json!([]))])), []);
+        let found = log_findings(&run(vec![failed, tick(5, json!([]))]));
+        let what: Vec<_> = found.iter().map(|finding| finding.what.as_str()).collect();
+        assert_eq!(
+            what,
+            [
+                "`tend_train` failed in tick 4 and has not recovered",
+                "`cut_train` failed in tick 4 and has not recovered",
+            ]
+        );
     }
 
     #[test]
