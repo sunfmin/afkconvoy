@@ -666,6 +666,19 @@ impl Harness {
         }
     }
 
+    /// Whether `worktree_trust` is flags the worker launch command must take:
+    /// outside a role, a launch checks the command takes `flags` only then.
+    pub const fn trust_is_flags(self) -> bool {
+        match self {
+            Harness::ClaudeCode => claude_code::TRUST_IS_FLAGS,
+            Harness::Pi => pi::TRUST_IS_FLAGS,
+            Harness::Codex => codex::TRUST_IS_FLAGS,
+            Harness::Dsh => dsh::TRUST_IS_FLAGS,
+            Harness::Kimi => kimi::TRUST_IS_FLAGS,
+            Harness::Grok => grok::TRUST_IS_FLAGS,
+        }
+    }
+
     /// Starts a worker in its worktree, outside a role, already trusting it
     /// in this harness's own way. Codex also gets its own user directory.
     pub fn in_worktree(self, command: &str, worktree: &str, kept: &str) -> String {
@@ -1139,6 +1152,13 @@ mod tests {
             assert!(line.contains(harness.worktree_trust()), "{}: {line}", harness.key());
             assert!(line.contains("agent"), "{}: {line}", harness.key());
         }
+    }
+
+    #[test]
+    fn each_harness_says_whether_its_worktree_trust_is_flags() {
+        let flags: Vec<Harness> =
+            Harness::ALL.into_iter().filter(|harness| harness.trust_is_flags()).collect();
+        assert_eq!(flags, [Harness::ClaudeCode, Harness::Pi, Harness::Codex]);
     }
 
     #[test]
