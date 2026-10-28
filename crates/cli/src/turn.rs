@@ -278,11 +278,29 @@ fn land_task(
     now: u64,
 ) -> Result<Value> {
     let mut routed = crate::config::load(&repo.dir.join(crate::config::FILE))?;
-    routed.base_branch = crate::target::branch(repo, config, issue)?;
+    // One look: the target, the claim and the base, beside the open PRs.
+    // Finding no PR does not read any of those again.
+    let (prs, looked) = std::thread::scope(|scope| {
+        let prs = scope.spawn(|| {
+            gh.note_without_probe()?;
+            gh.open_prs()
+        });
+        let looked = scope.spawn(|| crate::target::once(repo, config, &gh.tracker, issue));
+        (crate::gh::beside(prs), crate::gh::beside(looked))
+    });
+    let looked = looked?;
+    routed.base_branch = looked.branch;
     let config = &routed;
-    let prs = gh.open_prs()?;
+    let prs = prs?;
     let Some(pr) = closing_pr(&prs, issue) else {
-        let tip = base(repo, config)?;
+        let tip = match (&looked.tip, looked.asked) {
+            (Some(sha), _) => {
+                repo.bring(sha, &looked.tip_ref)?;
+                sha.clone()
+            }
+            (None, true) => bail!("the remote has no branch {:?}", config.base_branch),
+            (None, false) => base(repo, config)?,
+        };
         if let Some(landed) = crate::landing::joins_in(repo, &gh.tracker, &[&tip])?
             .iter()
             .rev()

@@ -265,9 +265,21 @@ impl Repo {
 
     /// `remote_records` for several patterns, in one listing of the remote.
     pub fn remote_records_in(&self, patterns: &[&str]) -> Result<Vec<RemoteRecord>> {
-        let mut records = self.listed(patterns)?;
-        self.read_records(&mut records)?;
+        let mut records = self.listed_refs(patterns)?;
+        self.read_record_subjects(&mut records)?;
         Ok(records)
+    }
+
+    /// The refs named by `patterns`, in one read of the remote, with no record
+    /// read yet. A ref the remote does not have is absent, not an error.
+    pub(crate) fn listed_refs(&self, patterns: &[&str]) -> Result<Vec<RemoteRecord>> {
+        self.listed(patterns)
+    }
+
+    /// The subject of each of `records`, fetched by ref name when its commit
+    /// is not here yet. Nothing is fetched when `records` is empty.
+    pub(crate) fn read_record_subjects(&self, records: &mut [RemoteRecord]) -> Result<()> {
+        self.read_records(records)
     }
 
     /// Reads the record each of `records` carries: the subject of its commit,

@@ -1,8 +1,8 @@
 //! A team's roster drafted from a host kit (docs/adr/0020): each role of the
 //! team given the harnesses and models the host kit holds, in its order, with
-//! what the host kit says each is good at and how to cast among
-//! them. A human reads the draft, edits it and commits it; the fleet never
-//! changes a team's roster.
+//! what the host kit says each is good at. A human reads the draft, edits it
+//! and commits it; the fleet never changes a team's roster. Drafting sends
+//! no prompt.
 
 use serde::Deserialize;
 
@@ -19,14 +19,6 @@ pub struct Strength {
     pub good_at: String,
 }
 
-/// What the drafting model says of how to cast an issue among what one role
-/// may run.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct Guidance {
-    pub role: String,
-    pub cast: String,
-}
-
 /// What a role is drafted to run: the host kit's `range`, in its order, less
 /// each harness the role holds no limits for while it holds limits for
 /// another (`team::unlimited`) — which `check` would refuse.
@@ -38,61 +30,6 @@ pub fn allowed(role: &Role, range: &[Held]) -> Vec<Held> {
         }
     }
     allowed
-}
-
-/// Each harness and model `range` holds, as a drafter and a reader are told
-/// it: `pi a/fast`, or a harness alone where it holds no model.
-fn each(range: &[Held]) -> Vec<String> {
-    let mut each = vec![];
-    for held in range {
-        if held.models.is_empty() {
-            each.push(held.harness.key().to_string());
-        }
-        for model in held.ids() {
-            each.push(format!("{} {model}", held.harness.key()));
-        }
-    }
-    each
-}
-
-/// What the prompt's first line opens with: how a drafter's prompt is told
-/// from another.
-pub const DRAFT_PROMPT_OPENS: &str = "You are drafting the roster of a team of coding agents";
-
-/// The prompt the host kit's first model is sent: every harness and model of
-/// `range` in order, each role of `team` with the work the team asks of it
-/// and what it is drafted to run, and the JSON lines to answer with.
-pub fn draft_prompt(team: &Team, range: &[Held]) -> String {
-    let mut prompt = format!(
-        "{DRAFT_PROMPT_OPENS}: for each role, which harnesses and models its workers may run, \
-         in order of preference, and how an issue is to be cast \
-         among them. A human reads the draft and edits it.\n\nHarnesses and models this host \
-         holds, in order of preference:\n"
-    );
-    for said in each(range) {
-        prompt.push_str(&format!("- {said}\n"));
-    }
-    prompt.push_str("\nRoles, each with the work the team asks of it and what it may run:\n");
-    let duties = team.duties();
-    for role in &team.roles {
-        let mut asked: Vec<String> = vec![];
-        for (name, by, skill) in &duties {
-            if name == &role.name {
-                asked.push(format!("{by}, performing the skill `{skill}`"));
-            }
-        }
-        let asked = if asked.is_empty() { "no work yet".to_string() } else { asked.join("; ") };
-        let may = each(&allowed(role, range));
-        let may = if may.is_empty() { "nothing".to_string() } else { may.join(", ") };
-        prompt.push_str(&format!("- {}: {asked}. It may run: {may}.\n", role.name));
-    }
-    prompt.push_str(
-        "\nUse the host kit's good_at as given; do not assess model abilities. \
-         Answer with one JSON object a line and nothing else: for each role, how to cast \
-         an issue among what it may run, in one or two sentences: \
-         {\"role\": \"dev\", \"cast\": \"...\"}.\n",
-    );
-    prompt
 }
 
 /// `text` as a yaml scalar in double quotes, whatever it holds, on one line.
@@ -135,11 +72,10 @@ fn allowance(key: &str, model: Option<&str>, good: Option<&str>) -> String {
 
 /// The draft of `team`'s roster on a host kit of `range`, as the team file's
 /// `roster` key and everything under it: each role an entry of what it is
-/// drafted to run (`allowed`), with what `strengths` say each is good at and
-/// the `guidance` given for it, and a comment naming each harness of the host
-/// kit it is drafted none of. A role drafted nothing is named in a comment
-/// alone.
-pub fn draft(team: &Team, range: &[Held], strengths: &[Strength], guidance: &[Guidance]) -> String {
+/// drafted to run (`allowed`), with what `strengths` say each is good at,
+/// and a comment naming each harness of the host kit it is drafted none of.
+/// A role drafted nothing is named in a comment alone. No `cast` key is written.
+pub fn draft(team: &Team, range: &[Held], strengths: &[Strength]) -> String {
     let mut draft = String::new();
     for role in &team.roles {
         let allowed = allowed(role, range);
@@ -158,12 +94,7 @@ pub fn draft(team: &Team, range: &[Held], strengths: &[Strength], guidance: &[Gu
             ));
             continue;
         }
-        draft.push_str(&format!("  {}:\n", role.name));
-        let cast = guidance.iter().find(|said| said.role == role.name);
-        if let Some(cast) = cast {
-            draft.push_str(&format!("    cast: {}\n", quoted(&cast.cast)));
-        }
-        draft.push_str("    run:\n");
+        draft.push_str(&format!("  {}:\n    run:\n", role.name));
         for held in &allowed {
             let key = held.harness.key();
             if held.models.is_empty() {
@@ -186,15 +117,9 @@ pub fn draft(team: &Team, range: &[Held], strengths: &[Strength], guidance: &[Gu
     format!("{ROSTER_KEY}:{}\n{draft}", if none { " {}" } else { "" })
 }
 
-/// Each harness and model of `range` the `strengths` say nothing of, and each
-/// role of `team` drafted something the `guidance` says nothing for: what the
-/// draft holds no words of.
-pub fn unsaid(
-    team: &Team,
-    range: &[Held],
-    strengths: &[Strength],
-    guidance: &[Guidance],
-) -> Vec<String> {
+/// Each harness and model of `range` the `strengths` say nothing of: what the
+/// draft holds no words of. A roster `cast` key is not asked for.
+pub fn unsaid(range: &[Held], strengths: &[Strength]) -> Vec<String> {
     let mut unsaid = vec![];
     for held in range {
         let key = held.harness.key();
@@ -205,12 +130,6 @@ pub fn unsaid(
             if good_at(strengths, key, Some(model)).is_none() {
                 unsaid.push(format!("what {key} {model} is good at"));
             }
-        }
-    }
-    for role in &team.roles {
-        let drafted = !allowed(role, range).is_empty();
-        if drafted && !guidance.iter().any(|said| said.role == role.name) {
-            unsaid.push(format!("how to cast for {}", role.name));
         }
     }
     unsaid
@@ -256,11 +175,9 @@ mod tests {
             },
             Strength { harness: "dsh".into(), model: None, good_at: "cheap work".into() },
         ];
-        let guidance = vec![Guidance { role: "dev".into(), cast: "Small fixes on pi.".into() }];
-        let draft = draft(&team, &range(), &strengths, &guidance);
+        let draft = draft(&team, &range(), &strengths);
         let dev = concat!(
             "  dev:\n",
-            "    cast: \"Small fixes on pi.\"\n",
             "    run:\n",
             "      - { harness: claude-code, model: \"opus\", good_at: \"hard \\\"wide\\\" work\" }\n",
             "      - { harness: claude-code, model: \"haiku\" }\n",
@@ -276,13 +193,10 @@ mod tests {
         let roster = draft.strip_prefix("roster:\n").unwrap();
         let loaded = rostered(roster).unwrap();
         let entry = loaded.role("dev").unwrap().roster.clone().unwrap();
-        assert_eq!(entry.cast.as_deref(), Some("Small fixes on pi."));
+        assert_eq!(entry.cast, None);
         assert_eq!(entry.run.len(), 4);
         assert_eq!(entry.run[0].good_at.as_deref(), Some("hard \"wide\" work"));
-        assert_eq!(
-            unsaid(&team, &range(), &strengths, &guidance)[0],
-            "what claude-code haiku is good at"
-        );
+        assert_eq!(unsaid(&range(), &strengths)[0], "what claude-code haiku is good at");
     }
 
     #[test]
@@ -290,7 +204,7 @@ mod tests {
         let mut team = team();
         team.roles[0].limits = vec![Harness::Pi];
         let name = team.roles[0].name.clone();
-        let draft = draft(&team, &range(), &[], &[]);
+        let draft = draft(&team, &range(), &[]);
         let entry = format!(
             "  {name}:\n    run:\n      - {{ harness: pi, model: \"a/fast\" }}\n    # left out: \
              claude-code, dsh, which the role holds no limits for\n"
@@ -301,16 +215,12 @@ mod tests {
         for role in &mut team.roles {
             role.limits = vec![Harness::Codex];
         }
-        let draft = super::draft(&team, &range(), &[], &[]);
+        let draft = super::draft(&team, &range(), &[]);
         assert!(
             draft.starts_with(&format!("roster: {{}}\n  # {name}: drafted nothing")),
             "{draft}"
         );
         assert!(rostered(&format!("{}\n", draft.strip_prefix("roster:").unwrap())).is_ok());
-        let prompt = draft_prompt(&team, &range());
-        assert!(prompt.starts_with(DRAFT_PROMPT_OPENS), "{prompt}");
-        assert!(prompt.contains("- pi a/fast\n- dsh\n"), "{prompt}");
-        assert!(prompt.contains(&format!("- {name}: ")), "{prompt}");
-        assert!(prompt.contains("It may run: nothing."), "{prompt}");
+        assert!(unsaid(&range(), &[]).iter().all(|said| !said.contains("cast")));
     }
 }

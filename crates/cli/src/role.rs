@@ -48,8 +48,7 @@ pub struct Staged {
     /// Whether the worker is the stage's consult: it rules on the stage's
     /// `escalate`, and writes no code whatever the stage may.
     consult: bool,
-    /// The harness the worker is a session of: what its role's range makes
-    /// of the issue's casting (`Fleet::cast_in`).
+    /// The harness the worker is a session of (`Fleet::cast_in`).
     harness: Harness,
     model: Option<String>,
     /// Models this role allows on the selected harness.
@@ -162,12 +161,11 @@ impl Staged {
             None => crate::kit::running()?.0.range(),
         };
         let ranges = casting::stage_ranges(&kept.team, workflow, &kit);
-        // A worker in a role runs the issue's casting within its role's
-        // range — its range's first where it matches nothing held
-        // (docs/adr/0020). A checkout that names a harness runs that harness.
+        // A worker in a role runs the issue's one model label where that
+        // harness holds it, or that harness's user default (docs/adr/0020).
+        // A checkout that names a harness runs that harness.
         let (work, role) = by;
-        let cast =
-            casting::unmatched_in(fleet.cast_in(role, &labels, Some(issue))?, &labels, &ranges);
+        let cast = fleet.cast_in(role, &labels, Some(issue))?;
         let (harness, model) = (cast.harness, cast.model.clone());
         let (role, skill, role_copy, host_user, dsh_profile) = (
             role.name.clone(),
