@@ -20,6 +20,9 @@ serde_yaml = "0.9"
 zstd = "0.13"
 toml = "0.8"
 signal-hook = "0.3"
+# A rebuild's read keeps each issue's stage history beside the team whose
+# workflow it borrows (`stage::Flows`).
+self_cell = "1"
 
 [target.'cfg(unix)'.dependencies]
 # What a process wrote to disk and where it works, as the kernel says them

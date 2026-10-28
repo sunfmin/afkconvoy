@@ -11,8 +11,8 @@ use afkconvoy_core::plan::{PullRequest, closing_pr, label_bar};
 use afkconvoy_core::position::{Declared, Failure, Position};
 use afkconvoy_core::role::{Due, due, followed, workflow_of};
 use afkconvoy_core::stage_record::{
-    Advance, Author, StageRecord, Stated, Unconsulted, advance, history, label_moves, lands,
-    stage_records, unconsulted,
+    Advance, Author, History, StageRecord, Stated, Unconsulted, advance, history, label_moves,
+    lands, stage_records, unconsulted,
 };
 use afkconvoy_core::team::{FlowLabels, LAND, Team, Workflow};
 use afkconvoy_core::tick::Outcome;
@@ -149,8 +149,7 @@ pub fn put_to_consults(fleet: &Fleet, flows: &Flows, open: &OpenIssues) -> Resul
         }
         let Ok(workflow) = followed(team, &issue.labels, bodies()) else { continue };
         let (records, _) = records_in(comments);
-        let read = history(workflow, &records);
-        let Some(unconsulted) = unconsulted(&read, &records) else { continue };
+        let Some(unconsulted) = unconsulted(&history(workflow, records)) else { continue };
         if let Unconsulted::Record(stage) = unconsulted {
             let said = comments.get(at).map_or("", |comment| comment.body.as_str());
             // The comment of the escalation, but for its marker.
@@ -202,7 +201,8 @@ pub fn consult_send(
         );
     }
     let (records, _) = records_in(&comments);
-    if !matches!(history(workflow, &records).place.position, Position::Consult(..)) {
+    let read = history(workflow, records);
+    if !matches!(read.place.position, Position::Consult(..)) {
         bail!("issue #{number} is not with its stage's consult; nothing was written");
     }
     let Some(claim) = Scan::read(repo)?.claim_of(number).map(|claim| claim.id.clone()) else {
@@ -224,7 +224,7 @@ pub fn consult_send(
         blocked_by: vec![],
         text,
     };
-    let standing = records.iter().any(|standing| standing.claim() == record.claim());
+    let standing = read.records.iter().any(|standing| standing.claim() == record.claim());
     if !standing {
         gh.comment(number, &record.comment())?;
     }
@@ -270,7 +270,7 @@ pub fn show_issue(gh: &GitHub, team: &Team, number: u64) -> Result<Value> {
     let workflow = followed(team, &issue.labels, comments.iter().map(|c| c.body.as_str()))
         .map_err(|why| anyhow!("issue #{number} has no position: {why}"))?;
     let (records, urls) = records_among(&comments);
-    let history = history(workflow, &records);
+    let history = history(workflow, records);
     let place = &history.place;
     let follows = place
         .takes(Declared::Pass)
@@ -281,7 +281,8 @@ pub fn show_issue(gh: &GitHub, team: &Team, number: u64) -> Result<Value> {
         let left = place.consecutive_rework_left(stage);
         in_a_row.insert(stage.name.clone(), json!({"had": had, "left": left}));
     }
-    let records: Vec<Value> = records
+    let records: Vec<Value> = history
+        .records
         .iter()
         .zip(&urls)
         .zip(&history.readings)
@@ -313,10 +314,11 @@ pub fn show_issue(gh: &GitHub, team: &Team, number: u64) -> Result<Value> {
 }
 
 /// One issue that follows a workflow, as a rebuild read it.
-struct Flowing {
+struct Flowing<'t> {
     number: u64,
     labels: Vec<String>,
-    records: Vec<StageRecord>,
+    /// What its stage records come to.
+    stages: Stages<'t>,
     /// The URL of each record's comment.
     urls: Vec<String>,
     /// When each record's comment was written, where GitHub said.
@@ -325,6 +327,49 @@ struct Flowing {
     taken_in: bool,
     /// The patrol that opened it, when one did (`intake::opened_by`).
     opened_by: Option<String>,
+}
+
+/// What the stage records of an issue that carries a flow label come to.
+enum Stages<'t> {
+    /// It follows this workflow, and its records read as this history.
+    Follows(&'t Workflow, History<'t>),
+    /// It follows no one workflow, for this reason — or the team did not
+    /// load: its records read as nothing.
+    Unfollowed(String, Vec<StageRecord>),
+}
+
+impl<'t> Stages<'t> {
+    /// Reads `records` in the workflow of `team` that `labels` name, where
+    /// the team loaded and they name one.
+    fn read(team: Option<&'t Team>, labels: &[String], records: Vec<StageRecord>) -> Self {
+        let team = team.ok_or_else(|| "the team did not load".to_string());
+        match team.and_then(|team| workflow_of(team, labels)) {
+            Ok(workflow) => Stages::Follows(workflow, history(workflow, records)),
+            Err(why) => Stages::Unfollowed(why, records),
+        }
+    }
+
+    /// The workflow the issue follows and its history in it, or why it
+    /// follows none.
+    fn follows(&self) -> Result<(&'t Workflow, &History<'t>), String> {
+        match self {
+            Stages::Follows(workflow, history) => Ok((workflow, history)),
+            Stages::Unfollowed(why, _) => Err(why.clone()),
+        }
+    }
+
+    /// The history of the issue in the workflow it follows.
+    fn history(&self) -> Option<&History<'t>> {
+        self.follows().ok().map(|(_, history)| history)
+    }
+
+    /// The stage records, oldest first.
+    fn records(&self) -> &[StageRecord] {
+        match self {
+            Stages::Follows(_, history) => &history.records,
+            Stages::Unfollowed(_, records) => records,
+        }
+    }
 }
 
 /// What a claim's stage records call for, with what a tick says of it.
@@ -367,14 +412,26 @@ pub struct Stood {
 }
 
 /// One rebuild's read of a bound repo's issues that follow a workflow: the
-/// team as it stands, and the stage records of each. Everything a tick
-/// derives of a position, it derives from this one read.
+/// team as it stands, and the history of each in the workflow it follows,
+/// read once. Everything a tick derives of a position, it derives from this
+/// one read.
 pub struct Flows {
-    /// The team, or why it does not load. `None` in an unbound repo, where
-    /// nothing was read.
-    team: Option<Result<Kept, Unkept>>,
-    issues: Vec<Flowing>,
+    read: Read,
 }
+
+/// The issues read: each one's history borrows the workflow it follows from
+/// the team.
+type Issues<'t> = Vec<Flowing<'t>>;
+
+self_cell::self_cell!(
+    /// The team, or why it does not load — `None` in an unbound repo, where
+    /// nothing was read — and the issues read in it.
+    struct Read {
+        owner: Option<Result<Kept, Unkept>>,
+        #[covariant]
+        dependent: Issues,
+    }
+);
 
 /// Why a rebuild has no team.
 enum Unkept {
@@ -392,7 +449,7 @@ impl Flows {
     /// leaves without a position are said so, one by one.
     pub fn read(fleet: &Fleet, open: &OpenIssues) -> Result<Flows> {
         let Some(bound) = fleet.config.bound.as_ref() else {
-            return Ok(Flows { team: None, issues: vec![] });
+            return Ok(Flows { read: Read::new(None, |_| vec![]) });
         };
         let labels = fleet.config.labels();
         let team = Copies::of_host()
@@ -401,26 +458,43 @@ impl Flows {
                 Some(read) => Unkept::Unreached(read.clone()),
                 None => Unkept::Unloaded(format!("{error:#}")),
             });
-        let flow_labels = team.as_ref().map(|kept| kept.team.flow_labels()).unwrap_or_default();
-        let flowing = open.rows.iter().filter(|issue| {
-            !afkconvoy_core::plan::is_repair(&issue.labels)
-                && !flow_labels.among(&issue.labels).is_empty()
+        let read = Read::new(Some(team), |team| {
+            let team = match team {
+                Some(Ok(kept)) => Some(&kept.team),
+                _ => None,
+            };
+            let flow_labels = team.map(Team::flow_labels).unwrap_or_default();
+            let flowing = open.rows.iter().filter(|issue| {
+                !afkconvoy_core::plan::is_repair(&issue.labels)
+                    && !flow_labels.among(&issue.labels).is_empty()
+            });
+            let mut issues = vec![];
+            for issue in flowing {
+                let comments = open.comments(issue.number);
+                let (records, said) = records_in(comments);
+                let urls = said.iter().map(|comment| comment.url.clone()).collect();
+                let at = said.iter().map(|comment| comment.at).collect();
+                let bodies = || comments.iter().map(|comment| comment.body.as_str());
+                let taken_in =
+                    team.is_some_and(|team| taken_in(team, &issue.labels, bodies()).is_some());
+                let opened_by = opened_by(bodies());
+                let (number, labels) = (issue.number, issue.labels.clone());
+                let stages = Stages::read(team, &labels, records);
+                issues.push(Flowing { number, labels, stages, urls, at, taken_in, opened_by });
+            }
+            issues
         });
-        let mut issues = vec![];
-        for issue in flowing {
-            let comments = open.comments(issue.number);
-            let (records, said) = records_in(comments);
-            let urls = said.iter().map(|comment| comment.url.clone()).collect();
-            let at = said.iter().map(|comment| comment.at).collect();
-            let bodies = || comments.iter().map(|comment| comment.body.as_str());
-            let taken_in = team
-                .as_ref()
-                .is_ok_and(|kept| taken_in(&kept.team, &issue.labels, bodies()).is_some());
-            let opened_by = opened_by(bodies());
-            let (number, labels) = (issue.number, issue.labels.clone());
-            issues.push(Flowing { number, labels, records, urls, at, taken_in, opened_by });
-        }
-        Ok(Flows { team: Some(team), issues })
+        Ok(Flows { read })
+    }
+
+    /// The issues read.
+    fn issues(&self) -> &[Flowing<'_>] {
+        self.read.borrow_dependent()
+    }
+
+    /// Issue `number`, where it was read.
+    fn issue(&self, number: u64) -> Option<&Flowing<'_>> {
+        self.issues().iter().find(|issue| issue.number == number)
     }
 
     /// The flow labels of the team as this rebuild read it: none where it
@@ -436,7 +510,7 @@ impl Flows {
 
     /// The team as this rebuild read it, with the copies it was read from.
     pub fn kept(&self) -> Result<&Kept> {
-        match &self.team {
+        match self.read.borrow_owner() {
             Some(Ok(kept)) => Ok(kept),
             Some(Err(Unkept::Unreached(read))) => Err(read.clone().into()),
             Some(Err(Unkept::Unloaded(why))) => Err(anyhow!("{why}")),
@@ -446,25 +520,26 @@ impl Flows {
 
     /// The patrol that opened each issue read that one opened.
     pub fn opened(&self) -> Vec<String> {
-        self.issues.iter().filter_map(|issue| issue.opened_by.clone()).collect()
+        self.issues().iter().filter_map(|issue| issue.opened_by.clone()).collect()
     }
 
     /// Where each issue read is in the workflow it follows, with that
     /// workflow. An issue that follows no one workflow has no position.
     pub fn positions(&self) -> Vec<(u64, &Workflow, Position<'_>)> {
-        let Ok(team) = self.team() else { return vec![] };
-        let placed = |issue: &Flowing| {
-            let workflow = workflow_of(team, &issue.labels).ok()?;
-            Some((issue.number, workflow, history(workflow, &issue.records).place.position))
-        };
-        self.issues.iter().filter_map(placed).collect()
+        let mut placed = vec![];
+        for issue in self.issues() {
+            if let Ok((workflow, history)) = issue.stages.follows() {
+                placed.push((issue.number, workflow, history.place.position));
+            }
+        }
+        placed
     }
 
     /// Where each issue read stands. None where the team did not load: what
     /// its issues follow cannot be said.
     pub fn stood(&self) -> Vec<Stood> {
         let Ok(team) = self.team() else { return vec![] };
-        let stood = |issue: &Flowing| {
+        let stood = |issue: &Flowing<'_>| {
             let flow_labels: Vec<String> =
                 team.flows(&issue.labels).into_iter().map(str::to_string).collect();
             let mut stood = Stood {
@@ -478,11 +553,11 @@ impl Flows {
                 recorded: issue.at.iter().flatten().copied().collect(),
                 opened_by: issue.opened_by.clone(),
             };
-            let workflow = match workflow_of(team, &issue.labels) {
-                Ok(workflow) => workflow,
+            let (workflow, history) = match issue.stages.follows() {
+                Ok(follows) => follows,
                 Err(why) => return Stood { workflow: Err(why), ..stood },
             };
-            let place = history(workflow, &issue.records).place;
+            let place = &history.place;
             stood.workflow = Ok(workflow.name.clone());
             let (stage, work) = match place.position {
                 Position::Landing => (Some(LAND.to_string()), workflow.land.as_ref()),
@@ -498,45 +573,44 @@ impl Flows {
             }
             stood
         };
-        self.issues.iter().map(stood).collect()
+        self.issues().iter().map(stood).collect()
     }
 
     /// How many of the issues read — the open ones that follow a workflow — a
     /// worker took in: what the repo's `intake_limit` is held against.
     pub fn taken_in(&self) -> usize {
-        self.issues.iter().filter(|issue| issue.taken_in).count()
+        self.issues().iter().filter(|issue| issue.taken_in).count()
     }
 
     /// What is due on each issue read (`role::due`), for the frontier. `prs`
     /// are the open PRs: the one that closes an issue is what its landing
     /// worker joins.
     pub fn due(&self, prs: &[PullRequest]) -> Vec<(u64, Due<'_>)> {
-        let due = |issue: &Flowing| match self.team() {
+        let due = |issue: &Flowing<'_>| match self.team() {
             Ok(team) => {
                 let pr = closing_pr(prs, issue.number).map(|pr| pr.number);
-                due(team, &issue.labels, &issue.records, pr)
+                due(team, &issue.labels, issue.stages.records(), pr)
             }
             Err(why) => {
                 let first = format!("{why:#}").lines().next().unwrap_or_default().to_string();
                 Due::Nothing(format!("its position cannot be derived: {first}"))
             }
         };
-        self.issues.iter().map(|issue| (issue.number, due(issue))).collect()
+        self.issues().iter().map(|issue| (issue.number, due(issue))).collect()
     }
 
     /// The issues read that have a stage record: a worker was started on
     /// each before.
     pub fn begun(&self) -> Vec<u64> {
-        let begun = |issue: &&Flowing| !issue.records.is_empty();
-        self.issues.iter().filter(begun).map(|issue| issue.number).collect()
+        let begun = |issue: &&Flowing<'_>| !issue.stages.records().is_empty();
+        self.issues().iter().filter(begun).map(|issue| issue.number).collect()
     }
 
     /// The stage issue `number` is at — `land` once its last one passed to
     /// the landing train. `None` once its workflow has ended, and for an
     /// issue with no position.
     pub fn at(&self, number: u64) -> Option<String> {
-        let (.., position) = self.positions().into_iter().find(|(at, ..)| *at == number)?;
-        match position {
+        match self.issue(number)?.stages.history()?.place.position {
             Position::Landing => Some(LAND.to_string()),
             at => at.stage().map(|stage| stage.name.clone()),
         }
@@ -546,26 +620,19 @@ impl Flows {
     /// `claim` (`History::verdict_under`): what is declared under a claim is
     /// carried out as it is read, and ends it.
     pub fn declared(&self, number: u64, claim: &str) -> bool {
-        let Some(issue) = self.issues.iter().find(|issue| issue.number == number) else {
-            return false;
-        };
-        let Ok(team) = self.team() else { return false };
-        let Ok(workflow) = workflow_of(team, &issue.labels) else { return false };
-        history(workflow, &issue.records).verdict_under(&issue.records, claim).is_some()
+        let history = self.issue(number).and_then(|issue| issue.stages.history());
+        history.is_some_and(|history| history.verdict_under(claim).is_some())
     }
 
     /// The issues read that are among `claims` under a landing worker's
     /// claim (`stage_record::lands`).
     pub fn landing(&self, claims: &[Claim]) -> Vec<u64> {
-        let Ok(team) = self.team() else { return vec![] };
-        let lands = |issue: &&Flowing| {
+        let lands = |issue: &&Flowing<'_>| {
             let claim = claims.iter().find(|claim| claim.number == issue.number);
-            let workflow = workflow_of(team, &issue.labels).ok();
-            claim.zip(workflow).is_some_and(|(claim, workflow)| {
-                lands(&history(workflow, &issue.records), &issue.records, &claim.id)
-            })
+            let history = issue.stages.history();
+            claim.zip(history).is_some_and(|(claim, history)| lands(history, &claim.id))
         };
-        self.issues.iter().filter(lands).map(|issue| issue.number).collect()
+        self.issues().iter().filter(lands).map(|issue| issue.number).collect()
     }
 
     /// What the stage records of issue `number` call for of the claim
@@ -580,15 +647,15 @@ impl Flows {
             waits_at: None,
             consulted: false,
         };
-        let Some(issue) = self.issues.iter().find(|issue| issue.number == number) else {
+        let Some(issue) = self.issue(number) else {
             return Ok(unfollowed("it carries no flow label".to_string()));
         };
-        let workflow = match workflow_of(self.team()?, &issue.labels) {
-            Ok(workflow) => workflow,
+        self.team()?;
+        let history = match issue.stages.follows() {
+            Ok((_, history)) => history,
             Err(why) => return Ok(unfollowed(why)),
         };
-        let history = history(workflow, &issue.records);
-        let verdict = history.verdict_under(&issue.records, claim);
+        let verdict = history.verdict_under(claim);
         let waits_at = match history.place.position {
             Position::Waiting(stage) => Some(stage.name.clone()),
             _ => None,
@@ -596,29 +663,27 @@ impl Flows {
         Ok(Called {
             waits_at,
             consulted: matches!(history.place.position, Position::Consult(..)),
-            advance: advance(&history, &issue.records, claim),
+            advance: advance(history, claim),
             stage: history.place.position.stage().map(|stage| stage.name.clone()),
             said: verdict.and_then(|at| issue.urls.get(at).cloned()),
-            rounds: history.rounds_said(&issue.records, &issue.urls),
+            rounds: history.rounds_said(&issue.urls),
         })
     }
 
     /// The stage of issue `number` whose consult a hand-off for `reason`
     /// goes to (`Place::consults`); `None` where it goes to a human.
     pub fn consults(&self, number: u64, failure: Failure) -> Option<String> {
-        let issue = self.issues.iter().find(|issue| issue.number == number)?;
-        let workflow = workflow_of(self.team().ok()?, &issue.labels).ok()?;
-        let place = history(workflow, &issue.records).place;
+        let (workflow, read) = self.issue(number)?.stages.follows().ok()?;
         // The stage it is at, or the one whose verdict the failure refutes.
-        let refuted = issue.records.iter().rev().find(|record| {
+        let refuted = read.records.iter().rev().find(|record| {
             matches!(record.by, Author::Worker { consult: false, .. })
                 && matches!(record.stated, Stated::Declared(_))
         });
-        let at = place.position.stage().map(|stage| stage.name.clone());
+        let at = read.place.position.stage().map(|stage| stage.name.clone());
         [at, refuted.map(|record| record.stage.clone())].into_iter().flatten().find(|stage| {
-            let mut records = issue.records.clone();
+            let mut records = read.records.clone();
             records.push(StageRecord::failed(stage, failure, ""));
-            matches!(history(workflow, &records).place.position, Position::Consult(..))
+            matches!(history(workflow, records).place.position, Position::Consult(..))
         })
     }
 
@@ -627,39 +692,34 @@ impl Flows {
     /// where GitHub said. `None` where the issue's last word is no such
     /// `escalate`.
     pub fn stage_escalate(&self, number: u64) -> Option<(String, Option<u64>)> {
-        let issue = self.issues.iter().find(|issue| issue.number == number)?;
-        let workflow = workflow_of(self.team().ok()?, &issue.labels).ok()?;
-        let at = history(workflow, &issue.records).stage_escalate(&issue.records)?;
-        Some((issue.records.get(at)?.stage.clone(), issue.at.get(at).copied().flatten()))
+        let issue = self.issue(number)?;
+        let history = issue.stages.history()?;
+        let at = history.stage_escalate()?;
+        Some((history.records.get(at)?.stage.clone(), issue.at.get(at).copied().flatten()))
     }
 
     /// Whether `record` is the last stage record issue `number` was read
     /// with: what was left once is not left again.
     pub fn ends_with(&self, number: u64, record: &StageRecord) -> bool {
-        let issue = self.issues.iter().find(|issue| issue.number == number);
-        issue.is_some_and(|issue| issue.records.last() == Some(record))
+        self.issue(number).is_some_and(|issue| issue.stages.records().last() == Some(record))
     }
 
     /// Every round of the rework a breaker stopped on issue `number`, as the
     /// human it is handed to is told it; `None` where no breaker did.
     pub fn rounds(&self, number: u64) -> Option<String> {
-        let issue = self.issues.iter().find(|issue| issue.number == number)?;
-        let workflow = workflow_of(self.team().ok()?, &issue.labels).ok()?;
-        history(workflow, &issue.records).rounds_said(&issue.records, &issue.urls)
+        let issue = self.issue(number)?;
+        issue.stages.history()?.rounds_said(&issue.urls)
     }
 
     /// Why the stage records of issue `number` hand it to a human, in the few
     /// words a tick's line has room for: the stage it stopped at, where it
     /// is at one, and what stopped it there.
     pub fn brief(&self, number: u64) -> String {
-        let issue = self.issues.iter().find(|issue| issue.number == number);
-        let workflow = issue
-            .zip(self.team().ok())
-            .map(|(issue, team)| (workflow_of(team, &issue.labels), &issue.records));
-        let Some((Ok(workflow), records)) = workflow else {
+        let history = self.issue(number).and_then(|issue| issue.stages.history());
+        let Some(history) = history else {
             return "it follows no one workflow".to_string();
         };
-        match history(workflow, records).place.position {
+        match history.place.position {
             Position::Escalating(stage, reason) => format!("{}: {}", stage.name, reason.brief()),
             Position::Landing => "nothing to land in a turn with".to_string(),
             at => match at.stage() {
@@ -678,9 +738,10 @@ impl Flows {
     pub fn waiting(&self, fleet: &Fleet, open: &Open) -> Vec<(u64, Waits, Option<u64>)> {
         let mut found = vec![];
         let team = self.team().ok();
-        for issue in &self.issues {
+        for issue in self.issues() {
             let pr = closing_pr(&open.prs, issue.number).map(|pr| pr.number);
-            let waits = team.and_then(|team| waits(team, &issue.labels, &issue.records, pr));
+            let records = issue.stages.records();
+            let waits = team.and_then(|team| waits(team, &issue.labels, records, pr));
             if let Some(waits) = waits {
                 found.push((issue.number, waits, issue.at.last().copied().flatten()));
             }
@@ -719,13 +780,14 @@ impl Flows {
     /// are read only to say what to write. An issue whose labels name no one
     /// workflow of the team has no position, and is left as it is.
     pub fn bring(&self, fleet: &Fleet, number: u64) -> Result<Outcome> {
-        let Some(issue) = self.issues.iter().find(|issue| issue.number == number) else {
+        let Some(issue) = self.issue(number) else {
             return Ok(Outcome::Nothing);
         };
-        let Ok(workflow) = workflow_of(self.team()?, &issue.labels) else {
+        self.team()?;
+        let Some(history) = issue.stages.history() else {
             return Ok(Outcome::Nothing);
         };
-        let position = history(workflow, &issue.records).place.position;
+        let position = history.place.position;
         let moves = label_moves(&issue.labels, position);
         if let Some(label) = &moves.add {
             fleet.gh.add_label(issue.number, label)?;
