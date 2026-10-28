@@ -4185,9 +4185,11 @@ pub fn main(args: impl IntoIterator<Item = OsString>) -> ExitCode {
         };
     }
     // A checkout named is one the command is about, whether it needs one or
-    // not: where it cannot be had, the command is refused before it starts.
+    // not: where it cannot be had, the command is refused before it starts. A
+    // wake is about the checkout it is run in, named or not: in none, it has
+    // no fleet to wake and no tick log to say so in.
     let ran = match checkout {
-        Err(error) if named.is_some() => Err(error),
+        Err(error) if named.is_some() || matches!(cli.command, Command::Wake { .. }) => Err(error),
         checkout => {
             let in_it = checkout.as_ref().ok().cloned();
             let acting = cli.command.acting().map(|acting| acting.in_checkout(in_it));
