@@ -302,9 +302,10 @@ fn command_words(script: &str) -> Vec<Vec<String>> {
     let commands = crate::guard::simple_commands(script);
     if let [only] = commands.as_slice()
         && only.len() == 1
-        && (only[0].contains('\n') || only[0].contains(';'))
+        && let Some(word) = only.first()
+        && (word.contains('\n') || word.contains(';'))
     {
-        return crate::guard::simple_commands(&only[0]);
+        return crate::guard::simple_commands(word);
     }
     commands
 }
@@ -327,14 +328,7 @@ fn program(words: &[String]) -> Option<Vec<String>> {
     loop {
         let word = rest.first()?;
         if word == "env" {
-            rest = &rest[1..];
-            while rest.first().is_some_and(|flag| flag.starts_with('-')) {
-                let flag = rest[0].as_str();
-                rest = &rest[1..];
-                if matches!(flag, "-u" | "--unset" | "-C" | "--chdir") && !rest.is_empty() {
-                    rest = &rest[1..];
-                }
-            }
+            rest = skip_env_flags(&rest[1..]);
             continue;
         }
         if crate::guard::is_assignment(word) {
@@ -345,6 +339,23 @@ fn program(words: &[String]) -> Option<Vec<String>> {
     }
     let name = base(rest.first()?);
     if SETUP.contains(&name) { None } else { Some(rest.to_vec()) }
+}
+
+/// Flags of a leading `env`, and the value of one that takes an argument.
+/// The program those flags apply to is what remains.
+fn skip_env_flags(mut rest: &[String]) -> &[String] {
+    while let Some((flag, tail)) = rest.split_first() {
+        if !flag.starts_with('-') {
+            break;
+        }
+        rest = tail;
+        if matches!(flag.as_str(), "-u" | "--unset" | "-C" | "--chdir")
+            && let Some((_, after)) = rest.split_first()
+        {
+            rest = after;
+        }
+    }
+    rest
 }
 
 fn is_nextest(words: &[String]) -> bool {
