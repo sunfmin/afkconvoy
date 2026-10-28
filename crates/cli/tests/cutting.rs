@@ -277,6 +277,7 @@ fn finish_in_turn(world: &World, checkout: &Path) -> Value {
             .is_empty()
     );
     assert!(world.remote(&["for-each-ref", "--format=%(refname)", "refs/convoy/train"]).is_empty());
+    common::stopped_candidates_gone(world, checkout);
     answer
 }
 
