@@ -341,7 +341,7 @@ fn a_landed_worker_idle_at_its_prompt_is_ended_and_its_worktree_removed() {
     let landed = world.afk_in(&worktree, &["land", "--issue", "3", "--now", "1050"]).ok();
     assert_eq!(landed["outcome"], "merged", "{landed}");
     let session = Session::start(&world, &worktree);
-    report(&world, "idle", 1);
+    report(&world, "idle", 1060);
 
     let ticked = tick(&world, "1090");
     assert_eq!(did(&ticked), ["settle 3 done"], "{ticked}");
@@ -370,7 +370,7 @@ fn a_worker_still_working_keeps_its_worktree() {
     assert!(worktree.is_dir());
     assert_eq!(world.claims(), alpha(&[3]));
 
-    report(&world, "idle", 1);
+    report(&world, "idle", 1100);
     let again = tick(&world, "1180");
     assert_eq!(did(&again)[0], "settle 3 done", "{again}");
     assert!(session.ended());
@@ -514,6 +514,13 @@ fn open_terminals(world: &World, dir: &Path) -> Vec<Value> {
 /// A process of the worker's own session: started in its worktree with its
 /// `TMPDIR`, as the harness orca starts for it is. A thread reaps it the
 /// moment it ends, so no zombie stands for it.
+#[test]
+#[ignore = "a worker's session starts this as its process"]
+fn session_helper() {
+    std::fs::write(std::env::var_os("SESSION_READY").unwrap(), "").unwrap();
+    std::thread::sleep(std::time::Duration::from_secs(120));
+}
+
 struct Session {
     pid: u32,
     reaper: Option<std::thread::JoinHandle<()>>,
@@ -521,16 +528,27 @@ struct Session {
 
 impl Session {
     fn start(world: &World, worktree: &Path) -> Self {
-        let mut child = Command::new("sleep")
-            .arg("120")
+        // Not a system binary: `ps` reads the environment of this one.
+        let ready = worktree.join(".afkconvoy-tmp/session-ready");
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "tick::session_helper", "--ignored"])
             .current_dir(worktree)
             .env("TMPDIR", world.tmp(worktree))
+            .env("SESSION_READY", &ready)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
             .spawn()
             .unwrap();
         let pid = child.id();
         let reaper = std::thread::spawn(move || {
             child.wait().unwrap();
         });
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !ready.exists() {
+            assert!(std::time::Instant::now() < until, "the session never started");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
         Self { pid, reaper: Some(reaper) }
     }
 
