@@ -459,6 +459,20 @@ pub struct Open {
     pub prs: Vec<PullRequest>,
 }
 
+/// The open issues and the patrol landings of one day, from one issues query.
+/// `landings` is `None` when the closed page may be short of the day.
+struct OpenAndLanded {
+    issues: OpenIssues,
+    landings: Option<Vec<(String, u64)>>,
+}
+
+/// What is open, and the patrol landings read in that same query.
+pub(crate) struct Opened {
+    pub open: Open,
+    /// `None`: this read did not ask, or the closed page may be short of the day.
+    pub landings: Option<Vec<(String, u64)>>,
+}
+
 /// One open issue, as the issues query returns it.
 #[derive(Debug, Deserialize)]
 struct OpenRow {
@@ -1032,10 +1046,7 @@ impl GitHub {
     /// The open issues, and the patrol landings of the day ending at `now`,
     /// from one issues query. `None` for the landings when the closed page
     /// may be short of the day: the caller then reads them on their own pages.
-    fn open_issues_and_landings(
-        &self,
-        now: u64,
-    ) -> Result<(OpenIssues, Option<Vec<(String, u64)>>)> {
+    fn open_issues_and_landings(&self, now: u64) -> Result<OpenAndLanded> {
         let since = now.saturating_sub(afkconvoy_core::patrol::DAY);
         let since = format!("since={}Z", crate::log::utc(since).replace(' ', "T"));
         let out = self.query_with(OPEN_AND_LANDED_QUERY, OPEN_AND_LANDED_JQ, &[since])?;
@@ -1053,7 +1064,7 @@ impl GitHub {
             }
         }
         if truncated {
-            return Ok((open, None));
+            return Ok(OpenAndLanded { issues: open, landings: None });
         }
         let mut seen = BTreeSet::new();
         let mut landed = vec![];
@@ -1063,7 +1074,7 @@ impl GitHub {
             }
             landed.extend(self.take_landing(&row, now)?);
         }
-        Ok((open, Some(landed)))
+        Ok(OpenAndLanded { issues: open, landings: Some(landed) })
     }
 
     /// The issues that may hold a closing or a stage/intake record since
@@ -1156,26 +1167,23 @@ impl GitHub {
 
     /// What is open: the issues and the PRs, asked for side by side.
     pub fn open(&self) -> Result<Open> {
-        Ok(self.open_with_landings(None)?.0)
+        Ok(self.open_with_landings(None)?.open)
     }
 
     /// [`open`], and when `now` is set, the patrol landings of the day ending
     /// then, from the same issues query. `None` for the landings means they
     /// were not asked, or the closed page may be short of the day.
-    pub(crate) fn open_with_landings(
-        &self,
-        now: Option<u64>,
-    ) -> Result<(Open, Option<Vec<(String, u64)>>)> {
+    pub(crate) fn open_with_landings(&self, now: Option<u64>) -> Result<Opened> {
         let (read, prs) = thread::scope(|scope| {
             let prs = scope.spawn(|| self.open_prs());
             let read = match now {
-                None => self.open_issues().map(|issues| (issues, None)),
+                None => self.open_issues().map(|issues| OpenAndLanded { issues, landings: None }),
                 Some(now) => self.open_issues_and_landings(now),
             };
             (read, beside(prs))
         });
-        let (issues, landed) = read?;
-        Ok((Open { issues, prs: prs? }, landed))
+        let read = read?;
+        Ok(Opened { open: Open { issues: read.issues, prs: prs? }, landings: read.landings })
     }
 
     /// Every closed issue that carries `label`, each with when it closed, in

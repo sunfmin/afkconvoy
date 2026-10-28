@@ -151,9 +151,9 @@ impl Fleet {
             (Fleet::open_on(repo, gh.clone(), now), beside(open))
         });
         let mut fleet = fleet?;
-        let (open, landings) = open?;
-        fleet.patrol_landings = landings;
-        Ok((fleet, open))
+        let opened = open?;
+        fleet.patrol_landings = opened.landings;
+        Ok((fleet, opened.open))
     }
 
     /// The first eligible harness in kit order within the role's range, and
