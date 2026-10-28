@@ -408,7 +408,7 @@ impl Fleet {
         serde_json::json!({"order": crate::kit::load().map(|k| k.harnesses.iter().map(|h| h.harness).collect::<Vec<_>>()).unwrap_or_default(),
             "eligible": kit.map(|k| k.harnesses.iter().map(|h| h.harness).collect::<Vec<_>>()).unwrap_or_default(),
             "skipped": self.runnable.borrow().as_ref().map(|runnable| &runnable.skipped),
-            "pinned": self.pinned, "health": crate::health::show(), "refusals": *self.refusals.borrow(), "why": why})
+            "pinned": self.pinned, "health": crate::health::json(&crate::health::show()), "refusals": *self.refusals.borrow(), "why": why})
     }
 
     pub(crate) fn invalidate_selection(&self) {

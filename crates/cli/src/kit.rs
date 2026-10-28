@@ -295,7 +295,7 @@ fn show_with_research(now: u64, research: bool) -> Value {
                 "path": file,
                 "refreshed": refreshed(),
                 "harnesses": harnesses,
-                "paused": paused_said, "worker_health": crate::health::show(),
+                "paused": paused_said, "worker_health": crate::health::json(&crate::health::show()),
             })
         }
         Err(error) => {
