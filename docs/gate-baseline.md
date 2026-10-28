@@ -198,3 +198,9 @@ The fast gate's budget, 180 s, is these 137 s with about a third more for
 load. The slow gate's, 420 s, is what remains of the whole gate's 600 s; the
 slow gate already takes nearly three times that on this host, as the whole
 gate's landings already exceed its budget there (sunfmin/control#234).
+
+`afkconvoy gate --fast` then ran the fast gate alone on the same tree, warm:
+green in 37 s (fmt 2, Flux 0 with nothing to recheck, Clippy 5, manual 3,
+build 7, fast tests 21). With `walk::running_again_after_a_park_counts_as_no_rework`
+(24 s) taken off the list, `./gate.sh fast` ended it as TIMEOUT at 6.007 s,
+was red, and said to name it in `.config/slow-tests`.
