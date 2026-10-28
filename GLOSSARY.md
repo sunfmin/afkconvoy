@@ -370,7 +370,7 @@ The fixed duration a repo expects its gate to stay within. Recent recorded landi
 _Avoid_: gate limit (the termination bound), learned baseline
 
 **Recorded gate run**:
-The evidence that the gate passed on one committed tree, with how long the run took and on which host, made by the tool that saw the exit code and kept where every host can read it.
+The evidence that the gate passed on one committed tree, with how long the run took and on which host, made by the tool that saw the exit code and kept where every host can read it. A turn believes one from either ref layout while it stands.
 _Avoid_: gate cache, CI status
 
 **Slow gate**:

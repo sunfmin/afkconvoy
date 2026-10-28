@@ -10,8 +10,9 @@ use std::time::{Duration, Instant};
 
 use afkconvoy_core::config::Config;
 use afkconvoy_core::gate::{
-    GateCommand, GreenRun, Ran, Recording, Tree, after_run, at_limit, record_ref,
+    GateCommand, GreenRun, Ran, Recording, Tree, after_run, at_limit, believed_among, record_ref,
 };
+use afkconvoy_core::layout::Layout;
 use afkconvoy_core::lock::named;
 use anyhow::{Context, Result, anyhow};
 use serde::Serialize;
@@ -274,6 +275,7 @@ fn controlled_run(
         clean_after: after.is_empty(),
         seconds: command_run.seconds,
     };
+    // A new record is written on the noted layout and not also on the other.
     let refname = record_ref(repo.layout(), &tree, command);
     let strays = if before.is_empty() { after } else { before };
     let mut run = GateRun {
@@ -302,8 +304,12 @@ fn controlled_run(
             run.green = Some(green);
         }
         Recording::Drop => {
-            // Soft: none there is what was wanted.
-            let _ = repo.try_git(&["push", "--quiet", REMOTE, "--delete", &refname]);
+            // Soft: none there is what was wanted. Both layouts, so a red run
+            // is not believed from the one the record was left on.
+            for layout in Layout::ALL {
+                let name = record_ref(layout, &tree, command);
+                let _ = repo.try_git(&["push", "--quiet", REMOTE, "--delete", &name]);
+            }
         }
         Recording::Leave => {}
     }
@@ -332,18 +338,24 @@ pub(crate) fn candidate_gate(
 }
 
 /// The green run of `command` on `tree` the remote has on record and still
-/// believes at `now`; `None` when it holds none that stands.
+/// believes at `now`, from either ref layout; `None` when it holds none that
+/// stands. One listing reads both records.
 pub fn recorded(
     repo: &Repo,
     tree: &Tree,
     command: &GateCommand,
     now: u64,
 ) -> Result<Option<GreenRun>> {
-    let found = repo.remote_records(&record_ref(repo.layout(), tree, command))?;
-    Ok(recorded_among(&found, repo.layout(), tree, command, now))
+    let noted = repo.layout();
+    let names: Vec<String> =
+        Layout::ALL.into_iter().map(|layout| record_ref(layout, tree, command)).collect();
+    let patterns: Vec<&str> = names.iter().map(String::as_str).collect();
+    let found = repo.remote_records_in(&patterns)?;
+    Ok(recorded_among(&found, noted, tree, command, now))
 }
 
-/// The still-valid green run among an existing remote snapshot's records.
+/// The still-valid green run among an existing remote snapshot's records,
+/// from either ref layout. The noted layout's record wins when both stand.
 pub fn recorded_among(
     records: &[crate::git::RemoteRecord],
     layout: afkconvoy_core::layout::Layout,
@@ -351,12 +363,9 @@ pub fn recorded_among(
     command: &GateCommand,
     now: u64,
 ) -> Option<GreenRun> {
-    let name = record_ref(layout, tree, command);
-    records
-        .iter()
-        .find(|record| record.name == name)
-        .and_then(|record| GreenRun::recorded(&record.subject, tree, command))
-        .filter(|run| run.stands(now))
+    let pairs: Vec<(&str, &str)> =
+        records.iter().map(|record| (record.name.as_str(), record.subject.as_str())).collect();
+    believed_among(&pairs, layout, tree, command, now)
 }
 
 /// Whether the committed tree of a worktree passes the gate — the one question
@@ -376,10 +385,12 @@ pub enum Gated {
 }
 
 /// Answers from the green run on record for the worktree's tree and the
-/// command — which is left as it is, no new record written — else by a run
-/// made now on `host` under the gate limit, `limit`, which is put on record in
-/// its turn. A run made now answers only when it was a run of the committed
-/// tree: otherwise this is an error, and nothing lands.
+/// command, from either ref layout — which is left as it is, no new record
+/// written — else by a run made now on `host` under the gate limit, `limit`,
+/// which is put on record on the noted layout. A run made now answers only
+/// when it was a run of the committed tree: otherwise this is an error, and
+/// nothing lands. A record of another tree, including the commit a cut lands,
+/// is not a run of this one.
 pub fn gated(
     repo: &Repo,
     command: &GateCommand,
