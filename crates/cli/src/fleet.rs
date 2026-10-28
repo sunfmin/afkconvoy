@@ -35,6 +35,9 @@ struct Runnable {
 
 pub struct Fleet {
     pub repo: Repo,
+    /// The harness this checkout names, where it names one (`named_harness`).
+    /// None, and the host kit's order chooses the first eligible harness.
+    pub pinned: Option<Harness>,
     /// Candidates excluded for this continuation only, never a preference.
     pub avoiding: Vec<Harness>,
     runnable: std::cell::RefCell<Option<Runnable>>,
@@ -98,11 +101,13 @@ impl Fleet {
         // As this checkout's fleet instance goes by it on this host: read
         // anew at each view, so a concurrency said since holds now.
         let config = crate::concurrency::config_of(&repo)?;
+        let pinned = crate::named_harness::named(&repo)?;
 
         let listing = repo.listing(&config.base_branch)?;
         let scan = Scan::among(repo.layout(), gh.tracker.clone(), listing.records.clone());
         Ok(Fleet {
             repo,
+            pinned,
             avoiding: vec![],
             runnable: std::cell::RefCell::new(None),
             refusals: std::cell::RefCell::new(Default::default()),
@@ -149,9 +154,9 @@ impl Fleet {
 
     /// The role's permitted range in current kit order, with health and
     /// startability exclusions applied after its permissions are resolved.
+    /// A checkout that names a harness is that harness alone: no other
+    /// harness of the range is offered in its place.
     pub fn range_in(&self, role: &Role, issue: Option<u64>) -> Result<Vec<casting::Held>> {
-        let kit = self.runnable_for(issue)?;
-        let kit = kit.range();
         // Apply the role to the whole kit before excluding unhealthy
         // candidates. Temporary unavailability is never an unmatched roster
         // entry and cannot broaden the role's permissions.
@@ -160,6 +165,32 @@ impl Fleet {
             return Err(NothingSafe(why).into());
         }
         let allowed = casting::range(role, &whole);
+        if let Some(pinned) = self.pinned {
+            let checkout = self.repo.dir.display();
+            let key = pinned.key();
+            if !whole.iter().any(|held| held.harness == pinned) {
+                return Err(NothingSafe(format!(
+                    "checkout {checkout} names harness {key}: no eligible harness: `{key}` is not a harness this host kit holds"
+                ))
+                .into());
+            }
+            if let Some(why) = afkconvoy_core::team::unlimited(role, pinned) {
+                return Err(NothingSafe(format!(
+                    "checkout {checkout} names harness {key}: no eligible harness: the role `{}` holds no limits for `{key}`: {why}",
+                    role.name
+                ))
+                .into());
+            }
+            if !allowed.iter().any(|held| held.harness == pinned) {
+                return Err(NothingSafe(format!(
+                    "checkout {checkout} names harness {key}: no eligible harness: `{key}` is outside the roster range of role `{}`",
+                    role.name
+                ))
+                .into());
+            }
+        }
+        let kit = self.runnable_for(issue)?;
+        let kit = kit.range();
         let mut range = vec![];
         for available in &kit {
             if let Some(held) = allowed.iter().find(|h| h.harness == available.harness) {
@@ -171,9 +202,55 @@ impl Fleet {
             }
         }
         if range.is_empty() {
-            return Err(NothingSafe(format!("the role `{}` has no currently eligible harness in its range; waiting for recovery", role.name)).into());
+            if let Some(pinned) = self.pinned {
+                let why = self.pinned_unavailable(pinned, issue);
+                return Err(NothingSafe(format!(
+                    "checkout {} names harness {}: no eligible harness: {why}",
+                    self.repo.dir.display(),
+                    pinned.key()
+                ))
+                .into());
+            }
+            return Err(NothingSafe(format!(
+                "the role `{}` has no currently eligible harness in its range; waiting for recovery",
+                role.name
+            ))
+            .into());
         }
         Ok(range)
+    }
+
+    /// Why the harness this checkout names cannot start, once the runnable
+    /// view has been filled.
+    fn pinned_unavailable(&self, pinned: Harness, issue: Option<u64>) -> String {
+        if let Some(issue) = issue {
+            let refused = self.refusals.borrow().get(&issue).and_then(|refusals| {
+                refusals
+                    .iter()
+                    .find(|refusal| refusal.harness == pinned)
+                    .map(|r| r.evidence.clone())
+            });
+            if let Some(evidence) = refused {
+                return format!("{} refused this task: {evidence}", pinned.key());
+            }
+        }
+        if let Some(why) = self.runnable.borrow().as_ref().and_then(|runnable| {
+            runnable
+                .skipped
+                .iter()
+                .find(|(harness, _)| *harness == pinned)
+                .map(|(_, why)| why.clone())
+        }) {
+            return why;
+        }
+        if let Some(why) = crate::health::fault_reason(pinned) {
+            return why;
+        }
+        if let Some(pause) = crate::paused::read().into_iter().find(|pause| pause.harness == pinned)
+        {
+            return format!("`{}` is paused on this host: {}", pinned.key(), pause.why);
+        }
+        format!("`{}` is not a harness this host kit holds", pinned.key())
     }
 
     /// Kit order chooses the harness. Labels can only choose a model within it.
@@ -181,10 +258,18 @@ impl Fleet {
         let kit = self.runnable_for(issue)?;
         let paused = crate::paused::read();
         let range = kit.range();
-        if range.is_empty() && !paused.is_empty() {
-            return Err(crate::paused::Held::every(&paused, self.now).into());
-        }
         if range.is_empty() {
+            if let Some(pinned) = self.pinned {
+                let why = self.pinned_unavailable(pinned, issue);
+                return Ok(Err(format!(
+                    "checkout {} names harness {}: no eligible harness: {why}",
+                    self.repo.dir.display(),
+                    pinned.key()
+                )));
+            }
+            if !paused.is_empty() {
+                return Err(crate::paused::Held::every(&paused, self.now).into());
+            }
             let why = self
                 .runnable
                 .borrow()
@@ -202,12 +287,26 @@ impl Fleet {
     /// that candidate; they never rewrite the kit or remote casting.
     pub fn runnable(&self) -> Result<crate::kit::Kit> {
         if self.runnable.borrow().is_none() {
-            let mut kit = crate::kit::running()?.0;
+            let (mut kit, _) = crate::kit::running()?;
             let mut skipped = vec![];
+            let caller = match self.pinned {
+                Some(_) => "the harness this checkout names",
+                None => "kit priority",
+            };
+            if let Some(pinned) = self.pinned {
+                if !kit.harnesses.iter().any(|held| held.harness == pinned) {
+                    skipped.push((pinned, self.why_absent(pinned)));
+                    kit.harnesses.clear();
+                } else {
+                    kit.harnesses.retain(|held| held.harness == pinned);
+                }
+            }
+            // A standing probe already checked these commands. Trusting it
+            // keeps the named harness and starts nothing.
             if !self.trust_launches {
                 let launches = crate::launch::Launches::foreseen(&self.repo);
                 kit.harnesses.retain(|held| {
-                    match crate::role::startable(&launches, held.harness, "kit priority") {
+                    match crate::role::startable(&launches, held.harness, caller) {
                         Ok(()) => true,
                         Err(e) => {
                             skipped.push((held.harness, format!("{e:#}")));
@@ -221,6 +320,19 @@ impl Fleet {
         let mut kit = self.runnable.borrow().as_ref().context("runnable kit")?.kit.clone();
         kit.harnesses.retain(|held| !self.avoiding.contains(&held.harness));
         Ok(kit)
+    }
+
+    /// Why the harness this checkout names is not among those the host can
+    /// start now: an account or model fault, a pause, or not in the host kit.
+    fn why_absent(&self, pinned: Harness) -> String {
+        if let Some(why) = crate::health::fault_reason(pinned) {
+            return why;
+        }
+        if let Some(pause) = crate::paused::read().into_iter().find(|pause| pause.harness == pinned)
+        {
+            return format!("`{}` is paused on this host: {}", pinned.key(), pause.why);
+        }
+        format!("`{}` is not a harness this host kit holds", pinned.key())
     }
 
     /// Eligible on this issue, across every stage and host. The full kit is
@@ -263,10 +375,20 @@ impl Fleet {
 
     pub fn selection(&self) -> serde_json::Value {
         let kit = self.runnable();
+        let why = match self.pinned {
+            Some(pinned) => format!(
+                "this checkout names {}; the host kit orders that harness's models",
+                pinned.key()
+            ),
+            None => {
+                "first eligible harness in kit order; role limits and issue refusals still apply"
+                    .to_string()
+            }
+        };
         serde_json::json!({"order": crate::kit::load().map(|k| k.harnesses.iter().map(|h| h.harness).collect::<Vec<_>>()).unwrap_or_default(),
             "eligible": kit.map(|k| k.harnesses.iter().map(|h| h.harness).collect::<Vec<_>>()).unwrap_or_default(),
             "skipped": self.runnable.borrow().as_ref().map(|runnable| &runnable.skipped),
-            "health": crate::health::show(), "refusals": *self.refusals.borrow(), "why": "first eligible harness in kit order; role limits and issue refusals still apply"})
+            "pinned": self.pinned, "health": crate::health::show(), "refusals": *self.refusals.borrow(), "why": why})
     }
 
     pub(crate) fn invalidate_selection(&self) {
@@ -288,6 +410,10 @@ impl Fleet {
         role: Option<&Role>,
         issue: Option<u64>,
     ) -> Vec<serde_json::Value> {
+        // A named harness has no earlier kit harness standing in for it.
+        if self.pinned == Some(to) {
+            return vec![];
+        }
         let refusals = issue.and_then(|n| self.refusals(n).ok()).unwrap_or_default();
         let whole = crate::kit::load().map(|kit| kit.range()).unwrap_or_default();
         let allowed = role.map_or_else(|| whole.clone(), |role| casting::range(role, &whole));
@@ -623,6 +749,22 @@ impl Fleet {
                     continue;
                 }
             };
+            if range.is_empty()
+                && let Some(pinned) = self.pinned
+            {
+                let why = self.pinned_unavailable(pinned, Some(issue.number));
+                let title = issue.title;
+                set.excluded.push(Excluded {
+                    number: issue.number,
+                    title,
+                    reason: format!(
+                        "checkout {} names harness {}: no eligible harness: {why}",
+                        self.repo.dir.display(),
+                        pinned.key()
+                    ),
+                });
+                continue;
+            }
             let labels = labels_of(issue.number);
             let paused_held = (range.is_empty() && !paused.is_empty())
                 .then(|| crate::paused::Held::every(&paused, self.now));

@@ -33,7 +33,7 @@ pub fn checkouts() -> Result<Value> {
 /// How the checkout `listed` names stands, as `holding` — what the host
 /// runner said it holds, `None` where none runs — and its tick log have it →
 /// {checkout, repo, instance, state, broken, idle, holding, frontier,
-/// concurrency, ticked, tick_log}.
+/// concurrency, harness, ticked, tick_log}.
 ///
 /// Its state is `broken` where its tick log says its fleet instance is, as
 /// `doctor` reads it (`read_broken`) of the host its `run` named; else
@@ -84,6 +84,10 @@ fn standing(listed: &Entry, holding: Option<&Holding>) -> Value {
         "frontier": stood.map(|(_, frontier)| frontier),
         "concurrency": match &repo {
             Some(repo) => concurrency::json_of(repo),
+            None => json!({"error": format!("{} is no git checkout", root.display())}),
+        },
+        "harness": match &repo {
+            Some(repo) => crate::named_harness::json_of(repo),
             None => json!({"error": format!("{} is no git checkout", root.display())}),
         },
         "tracker": listed.tracker,
