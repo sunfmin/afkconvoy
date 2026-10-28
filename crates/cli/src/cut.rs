@@ -29,8 +29,7 @@ use crate::git::Repo;
 use crate::landing::joins_in;
 use crate::log::What;
 use crate::orca::{Source, Worktree};
-use crate::remote::Fresh;
-use crate::remote::Push;
+use crate::remote::{Fresh, Push};
 use crate::stage::Flows;
 
 /// How many seconds the step `land` waits between two looks at the base branch.

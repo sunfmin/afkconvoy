@@ -23,8 +23,7 @@ use crate::gh::GitHub;
 use crate::git::Repo;
 use crate::lock::standing_locks;
 use crate::measure;
-use crate::remote::Fresh;
-use crate::remote::Push;
+use crate::remote::{Fresh, Push};
 
 /// What keeps a worktree from being exactly a commit: its uncommitted and
 /// untracked paths as `git status --porcelain` lists them, and — given the

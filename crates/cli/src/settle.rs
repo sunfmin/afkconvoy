@@ -18,8 +18,7 @@ use crate::git::{REMOTE, Repo};
 use crate::landing::joins_in;
 use crate::orca::{Source, Worktree};
 use crate::recovery::own_heads;
-use crate::remote::Fresh;
-use crate::remote::Push;
+use crate::remote::{Fresh, Push};
 
 /// The joining on the base branch that landed `issue` of `tracker` — the
 /// newest merge commit there a PR joined a train with that closes it — and

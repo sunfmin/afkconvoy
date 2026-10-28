@@ -12,9 +12,7 @@ use serde_json::{Value, json};
 
 use crate::gh::GitHub;
 use crate::git::Repo;
-use crate::remote::Fresh;
-use crate::remote::Push;
-use crate::remote::RemoteRecord;
+use crate::remote::{Fresh, Push, RemoteRecord};
 
 const BRANCH_PREFIX: &str = "delivery/jira-";
 const MARKER: &str = "<!--convoy:delivery ";

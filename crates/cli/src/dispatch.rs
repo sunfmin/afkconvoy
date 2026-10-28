@@ -24,8 +24,7 @@ use crate::git::Repo;
 use crate::launch::Launches;
 use crate::orca::{Source, Worktree};
 use crate::recovery::{Survey, own_heads, survey};
-use crate::remote::Fresh;
-use crate::remote::Push;
+use crate::remote::{Fresh, Push};
 use crate::role::Staged;
 
 /// A dispatch is incomplete until its worker has taken the brief. Keep it

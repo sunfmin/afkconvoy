@@ -1,9 +1,7 @@
 //! Read-only migration of a line left by an older release.
 use crate::gh::Tracker;
 use crate::git::Repo;
-use crate::remote::Fresh;
-use crate::remote::Listing;
-use crate::remote::Push;
+use crate::remote::{Fresh, Listing, Push};
 use afkconvoy_core::config::Config;
 use afkconvoy_core::landing::LandedPr;
 use afkconvoy_core::legacy::{Line, joins_onto, train_refs};

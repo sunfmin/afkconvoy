@@ -19,9 +19,7 @@ use anyhow::{Result, bail};
 use serde_json::{Value, json};
 
 use crate::git::Repo;
-use crate::remote::Fresh;
-use crate::remote::Push;
-use crate::remote::RemoteRecord;
+use crate::remote::{Fresh, Push, RemoteRecord};
 
 /// Who is acting, and when.
 pub struct Me {

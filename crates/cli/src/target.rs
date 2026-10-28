@@ -7,9 +7,7 @@ use serde_json::{Value, json};
 
 use crate::gh::GitHub;
 use crate::git::Repo;
-use crate::remote::Fresh;
-use crate::remote::Push;
-use crate::remote::{Listing, RemoteRecord};
+use crate::remote::{Fresh, Listing, Push, RemoteRecord};
 use afkconvoy_core::tracker::Tracker;
 
 #[derive(Serialize, Deserialize, PartialEq, Eq)]

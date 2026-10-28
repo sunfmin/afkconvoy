@@ -16,8 +16,7 @@ use std::time::Duration;
 use crate::exclusive::Permit;
 use crate::gh::{GitHub, Tracker};
 use crate::git::Repo;
-use crate::remote::Fresh;
-use crate::remote::Push;
+use crate::remote::{Fresh, Push};
 
 const EVERY: Duration = Duration::from_millis(100);
 
