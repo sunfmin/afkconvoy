@@ -467,7 +467,7 @@ fn reconcile(repo: &Repo, config: &Config) -> Result<Chain> {
         let snapshot = read(repo, config)?;
         let mut invalid = vec![];
         for c in snapshot.chain.candidates.iter().filter(|c| c.valid()) {
-            if repo.remote_sha(&format!("refs/heads/{}", c.branch))?.as_deref()
+            if repo.remote_sha_now(&format!("refs/heads/{}", c.branch))?.as_deref()
                 != Some(&c.original_head)
             {
                 invalid.push((c.id.clone(), "head_changed"));
@@ -1006,7 +1006,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
         };
         let tree = Tree::named(&c.tree);
         let run = crate::gate::recorded(repo, &tree, &command, clock())?;
-        let head = repo.remote_sha(&format!("refs/heads/{}", c.branch))?;
+        let head = repo.remote_sha_now(&format!("refs/heads/{}", c.branch))?;
         let Some(publication) = Publication::new(
             c.valid(),
             c.phase == Phase::Green && run.is_some(),

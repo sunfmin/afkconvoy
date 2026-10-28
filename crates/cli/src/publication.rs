@@ -181,6 +181,7 @@ pub(crate) fn push(repo: &Repo, updates: &[Update<'_>]) -> Result<bool> {
     command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit());
     let mut child = crate::process::spawn(&mut command)
         .context("conditional publication transport could not start")?;
+    let names: Vec<String> = updates.iter().map(|update| update.name.to_string()).collect();
     let exchange = (|| -> Result<bool> {
         let mut input = child.stdin.take().context("receive-pack has no input")?;
         let mut output = BufReader::new(child.stdout.take().context("receive-pack has no output")?);
@@ -223,6 +224,9 @@ pub(crate) fn push(repo: &Repo, updates: &[Update<'_>]) -> Result<bool> {
         output.read_to_end(&mut rest)?;
         Ok(unpacked && updates.iter().all(|u| accepted.iter().any(|name| name == u.name)))
     })();
+    // The exchange may have written, or refused because the remote moved.
+    // Either way the saved listing of these refs is no longer the remote.
+    repo.published(&names);
     if exchange.is_err() {
         let _ = child.kill();
     }
