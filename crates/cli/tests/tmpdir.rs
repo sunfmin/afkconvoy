@@ -2,7 +2,7 @@ use crate::common::{World, git};
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 
 use serde_json::Value;
 
@@ -14,27 +14,38 @@ fn dispatch(world: &World, issue: u64) -> PathBuf {
 }
 
 /// A real process whose environment ps can read, standing in for a shared
-/// server. Reaped even if the regression assertion fails.
-struct Server(Child);
+/// server: daemonized, as sccache's is — handed to pid 1, working outside
+/// any worktree — so ending a worker's own processes leaves it be. Ended
+/// even if the regression assertion fails.
+struct Server(i32);
 
 impl Server {
     fn start(tmp: &Path) -> Self {
-        Self(
-            Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", "tmpdir::a_server", "--ignored"])
-                .env("TMPDIR", tmp)
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .spawn()
-                .unwrap(),
-        )
+        let exe = std::env::current_exe().unwrap();
+        let out = Command::new("/bin/sh")
+            .args(["-c", "\"$0\" --exact tmpdir::a_server --ignored >/dev/null 2>&1 & echo $!"])
+            .arg(exe)
+            .current_dir("/")
+            .env("TMPDIR", tmp)
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        Self(String::from_utf8(out.stdout).unwrap().trim().parse().unwrap())
+    }
+
+    fn runs(&self) -> bool {
+        // SAFETY: signal 0 only asks whether the process exists.
+        unsafe { libc::kill(self.0, 0) == 0 }
     }
 }
 
 impl Drop for Server {
     fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
+        // SAFETY: the pid is the server this test started, which pid 1 reaps.
+        unsafe { libc::kill(self.0, libc::SIGKILL) };
+        while self.runs() {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
 }
 
@@ -57,7 +68,7 @@ fn a_failed_process_listing_never_removes_a_live_servers_tmpdir() {
         let world = World::new();
         let worktree = dispatch(&world, 7);
         let tmp = world.tmp(&worktree);
-        let mut server = Server::start(&tmp);
+        let server = Server::start(&tmp);
         can_compile(&tmp);
         git(&world.clone, &["worktree", "remove", "--force", worktree.to_str().unwrap()]);
 
@@ -65,7 +76,7 @@ fn a_failed_process_listing_never_removes_a_live_servers_tmpdir() {
         std::fs::write(&ps, format!("#!/bin/sh\n{answer}\n")).unwrap();
         std::fs::set_permissions(&ps, std::fs::Permissions::from_mode(0o755)).unwrap();
         dispatch(&world, 8); // make reclaims old links, best effort
-        assert!(server.0.try_wait().unwrap().is_none(), "the server still runs");
+        assert!(server.runs(), "the server still runs");
         assert!(tmp.symlink_metadata().is_ok(), "{answer}: removed a live server's link");
 
         std::fs::remove_file(ps).unwrap();

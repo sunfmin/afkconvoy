@@ -71,3 +71,7 @@ Legacy recovery is resumable through issue-linked Orca workspaces. Conflicts and
 ## Rounds (sunfmin/control#240)
 
 Amended by ADR-0048. Where a candidate's commit declares a fast gate and a slow gate (ADR-0047), the candidate is validated by the fast gate, and its green does not land it. A **round** runs the slow gate once, on the commit of the chain's tip, when every candidate of the chain is fast-green, and its green lands every candidate up to the tip in the one atomic publication described above, which now verifies each of their source heads. That is an aggregate gate, which this ADR had none of: it is the one gate of more than one candidate. A candidate whose commit declares no gates keeps every rule above.
+
+## Fast gates (sunfmin/control#237)
+
+Amended by ADR-0049. Same-repo isolation holds for ordinary heavy commands, but not between fast gates: a worker's fast gate runs in the fast lane, beside the other fast gates of its repo up to the host's `fast_lanes`, each in its own worktree, and takes no repo lease. A landing turn's fast gate is part of the turn and keeps the turn's worker lane.

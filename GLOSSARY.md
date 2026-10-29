@@ -37,7 +37,7 @@ A fleet instance whose loop panicked or ended in an error — its tracker found 
 _Avoid_: crashed, dead (a heartbeat past the lease), down (a harness that refuses every prompt)
 
 **Host settings**:
-What a host says for every fleet instance on it — whether it may be put to sleep and its sleep hours, the limits past which a worker is hot, the shares admission holds back at, the bound on an exclusive command holding others up, the number of worker lanes, the panel's port, the operator's directory a watch starts in and how often the host runner looks, the command that supplies a TypeSafe key for Jev's worker-health judgments — kept beside the checkout list and changed by any `run` that names one, for every fleet instance on the host at once.
+What a host says for every fleet instance on it — whether it may be put to sleep and its sleep hours, the limits past which a worker is hot, the shares admission holds back at, the bound on an exclusive command holding others up, the number of worker lanes and of fast lanes, the panel's port, the operator's directory a watch starts in and how often the host runner looks, the command that supplies a TypeSafe key for Jev's worker-health judgments — kept beside the checkout list and changed by any `run` that names one, for every fleet instance on the host at once.
 _Avoid_: global config, runner flags
 
 **Tick**:
@@ -296,7 +296,7 @@ One bounded task delivered to the host's watch, with its own identity, brief, de
 _Avoid_: session (the Agent can execute many rounds)
 
 **Exclusive queue**:
-The host runner's FIFO queue for heavy commands across its fleets. Commands run in worker lanes, as many as the host settings allow; independently owned candidate worktrees of one repo may validate together. A light gate takes a turn in its repo's own lane.
+The host runner's FIFO queue for heavy commands across its fleets. Commands run in worker lanes, as many as the host settings allow; independently owned candidate worktrees of one repo may validate together. A light gate takes a turn in its repo's own lane. A worker's fast gate takes the fast lane.
 _Avoid_: gate queue
 
 **Nudge**:
@@ -384,6 +384,10 @@ _Avoid_: gate cache, CI status
 **Fast gate**:
 The part of the gate a worker passes before it opens or updates its PR: the checks that are quick, and every test not marked slow. A repo declares it beside the slow gate, each with its own command, limit and budget; together they are the gate. A new test is in it until it is marked slow.
 _Avoid_: smoke test, pre-check, quick gate
+
+**Fast lane**:
+The places of the exclusive queue that only a worker's fast gate takes, as many as the host settings say. No slow gate, turn or other command holds one, and fast gates of one repo run side by side in it, each in its own worktree.
+_Avoid_: fast queue, priority lane
 
 **Slow gate**:
 The part of the gate the fast gate leaves out: every test marked slow, and any check not in the fast gate. Nothing in the fast gate is run again in it. A landing turn runs it once per round, not per candidate.
