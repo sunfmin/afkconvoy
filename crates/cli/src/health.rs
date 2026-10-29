@@ -1160,7 +1160,9 @@ fn decide(
     let failed = observed.orca["state"] == "done" && observed.orca["outcome"] == "failure";
     if !failed && rule.is_none() {
         // One read stamps the since the tick line and a later tick name.
-        if crate::judge::own_background(fleet, worktree, true)?.is_some() {
+        if crate::judge::own_background(fleet, worktree, true, crate::judge::Look::Acting)?
+            .is_some()
+        {
             observed.action = "waiting for background work".into();
             observed.next_check = fleet.now.saturating_add(CHECK_SECONDS);
             return Ok(());
@@ -1290,7 +1292,8 @@ fn decide(
     // ends. The fault is already recorded, so a new start skips the harness.
     if diagnosis.is(Class::Quota)
         && diagnosis.scope == Scope::Account
-        && crate::judge::own_background(fleet, worktree, true)?.is_some()
+        && crate::judge::own_background(fleet, worktree, true, crate::judge::Look::Acting)?
+            .is_some()
     {
         observed.action = "waiting for background work".into();
         observed.next_check = fleet.now.saturating_add(CHECK_SECONDS);
