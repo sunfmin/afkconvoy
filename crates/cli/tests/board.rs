@@ -47,6 +47,16 @@ fn at_work(world: &World, now: u64) {
     });
 }
 
+/// The workers' turns ended at `now`.
+fn idle(world: &World, now: u64) {
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            terminal["agent"] = json!({"state": "idle", "stateStartedAt": now * 1000});
+            terminal["lastOutputAt"] = json!(now * 1000);
+        }
+    });
+}
+
 /// The worker stopped, long enough ago to be past any grace.
 fn stopped(world: &World) {
     world.with_orca(|orca| {
@@ -113,6 +123,8 @@ fn one_comment_follows_a_claim_from_claimed_to_merged() {
     let landed = world.afk_in(&dir, &["land", "--issue", "7", "--now", "1100"]).ok();
     assert_eq!(landed["outcome"], "merged");
     assert_eq!(landed["recorded"], true);
+    // It woke the fleet and stopped at its prompt: settling ends it.
+    idle(&world, 1150);
     assert_eq!(did(&tick(&world, 1180)), ["settle 7 done"]);
     let merged = board(&world);
     assert_eq!(ticked(&merged).len(), 4);
