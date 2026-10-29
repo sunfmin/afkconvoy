@@ -1527,10 +1527,18 @@ impl GitHub {
         out.trim().parse().with_context(|| format!("gh api issues: no number in {out:?}"))
     }
 
-    /// Closes one issue as completed.
+    /// Closes one issue as completed. A close GitHub refuses while it closes
+    /// the issue itself — a merged PR that says `Closes` it — is a close: what
+    /// is asked is that the issue be closed (sunfmin/control#247).
     pub fn close_issue(&self, number: u64) -> Result<()> {
         let endpoint = endpoint(&self.tracker, &format!("issues/{number}"));
-        self.gh(&["api", "--method", "PATCH", &endpoint, "-f", "state=closed", "--silent"])?;
+        let closed =
+            self.gh(&["api", "--method", "PATCH", &endpoint, "-f", "state=closed", "--silent"]);
+        if let Err(error) = closed
+            && !self.issue(number).is_ok_and(|issue| issue.is_closed())
+        {
+            return Err(error);
+        }
         self.saw_closed(number);
         Ok(())
     }

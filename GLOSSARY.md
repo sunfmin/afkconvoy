@@ -410,7 +410,7 @@ The ordered candidates of one repo and target branch, each depending on its pred
 _Avoid_: landing train, speculative queue
 
 **Round**:
-One run of the slow gate on a candidate chain's tip, once every candidate of the chain is fast-green, that lands every candidate up to the tip together. A candidate assigned during it waits for the next. A red round is not split to find whose change failed: the tip's worker fixes it whole, from the round's issues and its failing tests, and the round's other candidates stop, their changes carried by the tip's PR.
+One run of the slow gate on a candidate chain's tip, once every PR that asked to land is a fast-green candidate, that lands every candidate up to the tip together. Its size is the PRs that are ready, not the host's worker lanes. A PR that asks during it waits for the next. A red round is not split to find whose change failed: the tip's worker fixes it whole, from the round's issues and its failing tests, and the round's other candidates stop, their changes carried by the tip's PR.
 _Avoid_: batch (a tick's), bisection, merge train, rollup
 
 **Land**:

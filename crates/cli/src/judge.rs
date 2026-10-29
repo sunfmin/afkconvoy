@@ -696,7 +696,22 @@ pub(crate) fn own_background(
         Look::Acting => worktree.background_since(waiting, seen.queued, fleet.now)?,
         Look::Reporting => waiting.then(|| worktree.background_seen(seen.queued, fleet.now)),
     };
-    Ok(since.map(|since| Background { since, limit: fleet.config.gate_seconds() }))
+    let limit = fleet.config.gate_seconds();
+    // A land turn with a candidate on the chain waits on the chain, which
+    // keeps its own time: past one gate's limit, as a round's members wait
+    // for its slow gate, it is not silent. On 2026-10-29 a member restarted
+    // so ended its round's slow gate (sunfmin/control#244).
+    let prefix = fleet.repo.layout().under("candidates/");
+    if waiting
+        && crate::candidates::landing(
+            &fleet.records_at_open(&format!("{prefix}*")),
+            &prefix,
+            &worktree.branch,
+        )
+    {
+        return Ok(Some(Background { since: fleet.now, limit }));
+    }
+    Ok(since.map(|since| Background { since, limit }))
 }
 
 /// The end of a silent worker's screen, for the reason its claim is escalated

@@ -60,6 +60,9 @@ pub struct Settings {
     pub exclusive_seconds: Option<u64>,
     /// `--gate-lanes`: worker commands that may run across different repos.
     pub gate_lanes: Option<u64>,
+    /// `--slow-gate-lanes`: rounds' slow gates that may run at once, beside
+    /// the worker lanes.
+    pub slow_gate_lanes: Option<u64>,
     /// `--fast-lanes`: fast gates that may run at once on the host, whatever
     /// their repo, beside the worker lanes (docs/adr/0049).
     pub fast_lanes: Option<u64>,
@@ -76,6 +79,10 @@ pub struct Settings {
     pub watch_every: Option<u64>,
     /// `--jev-key-command`: a shell command whose stdout is the TypeSafe key.
     pub jev_key_command: Option<String>,
+    /// `--host-name`: the name this host goes by in every record it owns, so
+    /// that its records stay its own when the network renames it. A `run`
+    /// that finds none keeps the name the host has then (`pin_host_name`).
+    pub host_name: Option<String>,
     /// What another afkconvoy says beside them, kept as it is.
     #[serde(flatten)]
     rest: Map<String, Value>,
@@ -106,11 +113,13 @@ pub struct Named {
     pub admit_inspect_after: Option<To<u64>>,
     pub exclusive_seconds: Option<To<u64>>,
     pub gate_lanes: Option<To<u64>>,
+    pub slow_gate_lanes: Option<To<u64>>,
     pub fast_lanes: Option<To<u64>>,
     pub panel: Option<To<u16>>,
     pub watch_dir: Option<To<PathBuf>>,
     pub watch_every: Option<To<u64>>,
     pub jev_key_command: Option<To<String>>,
+    pub host_name: Option<To<String>>,
 }
 
 /// What a `run` sets one setting to: a value of its own, or back to its
@@ -227,11 +236,13 @@ impl Settings {
         lay(&mut self.admit_inspect_after, named.admit_inspect_after.as_ref());
         lay(&mut self.exclusive_seconds, named.exclusive_seconds.as_ref());
         lay(&mut self.gate_lanes, named.gate_lanes.as_ref());
+        lay(&mut self.slow_gate_lanes, named.slow_gate_lanes.as_ref());
         lay(&mut self.fast_lanes, named.fast_lanes.as_ref());
         lay(&mut self.panel, named.panel.as_ref());
         lay(&mut self.watch_dir, named.watch_dir.as_ref());
         lay(&mut self.watch_every, named.watch_every.as_ref());
         lay(&mut self.jev_key_command, named.jev_key_command.as_ref());
+        lay(&mut self.host_name, named.host_name.as_ref());
         self
     }
 
@@ -269,13 +280,32 @@ impl Settings {
         self.gate_lanes.unwrap_or(GATE_LANES).max(1)
     }
 
+    /// The slow lanes, one where the host says none.
+    pub fn slow_gate_lanes(&self) -> u64 {
+        self.slow_gate_lanes.unwrap_or(1).max(1)
+    }
+
     pub fn fast_lanes(&self) -> u64 {
         self.fast_lanes.unwrap_or(FAST_LANES).max(1)
     }
 
-    /// The worker lanes and the fast lane, as the queue is scheduled by them.
+    /// The worker lanes, the fast lane and the slow lanes, as the queue is
+    /// scheduled by them.
     pub fn lanes(&self) -> afkconvoy_core::exclusive::Lanes {
-        afkconvoy_core::exclusive::Lanes { worker: self.gate_lanes(), fast: self.fast_lanes() }
+        afkconvoy_core::exclusive::Lanes {
+            worker: self.gate_lanes(),
+            fast: self.fast_lanes(),
+            slow: self.slow_gate_lanes(),
+        }
+    }
+
+    /// The share of this host's cores one gate's tests are given: its cores
+    /// divided by every lane a gate may run in at once, at least one
+    /// (sunfmin/control#245).
+    pub fn gate_share(&self) -> u64 {
+        let cores = std::thread::available_parallelism().map_or(1, |n| n.get() as u64);
+        let lanes = self.gate_lanes() + self.fast_lanes() + self.slow_gate_lanes();
+        (cores / lanes).max(1)
     }
 
     /// The sleep hours it says, else the default.
@@ -320,17 +350,53 @@ impl Settings {
             "admit_inspect_after": self.admit_inspect_after.unwrap_or(SPAN),
             "exclusive_seconds": self.exclusive_seconds(),
             "gate_lanes": self.gate_lanes(),
+            "slow_gate_lanes": self.slow_gate_lanes(),
             "fast_lanes": self.fast_lanes(),
             "panel": self.panel_port(),
             "watch_dir": crate::host_watch::directory(self).ok(),
             "watch_every": self.watch_every(),
             "jev_key_command": self.jev_key_command,
+            "host_name": self.host_name.clone().unwrap_or_else(system_host_name),
         });
         match in_force {
             Value::Object(in_force) => in_force,
             _ => unreachable!("built as an object"),
         }
     }
+}
+
+/// `--host-name` as said: a nonempty name, or `default`.
+pub fn host_name_or_default(said: &str) -> Result<To<String>, String> {
+    To::parse(said, |said| match said.trim() {
+        "" => Err("the host name is empty; name one, or `default`".into()),
+        name => Ok(name.to_string()),
+    })
+}
+
+/// The name the system gives this host now, which a network may change.
+pub fn system_host_name() -> String {
+    gethostname::gethostname().to_string_lossy().into()
+}
+
+/// The name this host goes by in the records it owns: the one its settings
+/// keep, else the system's. Read once per process.
+pub fn host_name() -> String {
+    static NAME: OnceLock<String> = OnceLock::new();
+    let name = || of_host().ok().and_then(|settings| settings.host_name);
+    NAME.get_or_init(|| name().unwrap_or_else(system_host_name)).clone()
+}
+
+/// Keeps the system's name for this host in `list`, where its settings keep
+/// none: a `run` does, so that a later rename by the network leaves its
+/// records its own (a reboot onto another network renamed
+/// `Offices-MacBook-Pro.local` to `Offices-MBP.lan`).
+pub fn pin_host_name(list: &List) -> Result<()> {
+    if list.read()?.settings.host_name.is_some() {
+        return Ok(());
+    }
+    list.change(|listed| {
+        listed.settings.host_name.get_or_insert_with(system_host_name);
+    })
 }
 
 /// What `run --foreground` named of the host settings: laid over the host's
@@ -418,6 +484,7 @@ pub const EXCLUSIVE_SECONDS_ENV: &str = "AFKCONVOY_EXCLUSIVE_SECONDS";
 pub const WATCH_DIR_ENV: &str = "AFKCONVOY_WATCH_DIR";
 pub const WATCH_EVERY_ENV: &str = "AFKCONVOY_WATCH_EVERY";
 pub const JEV_KEY_COMMAND_ENV: &str = "AFKCONVOY_JEV_KEY_COMMAND";
+pub const HOST_NAME_ENV: &str = "AFKCONVOY_HOST_NAME";
 
 /// Sleep hours as the file keeps them: as they are said, `22:00-06:00`.
 mod hours {
@@ -573,6 +640,29 @@ mod tests {
     }
 
     #[test]
+    fn a_run_keeps_the_host_s_name_once_and_a_name_said_holds_over_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let list = List::at(dir.path().join("checkouts.json"));
+        pin_host_name(&list).unwrap();
+        assert_eq!(list.read().unwrap().settings.host_name, Some(system_host_name()));
+        let named = Named {
+            host_name: Some(host_name_or_default("old.local").unwrap()),
+            ..Named::default()
+        };
+        let changed = Value::Object(change(&list, &named).unwrap());
+        assert_eq!(changed["host_name"]["to"], "old.local");
+        pin_host_name(&list).unwrap();
+        assert_eq!(list.read().unwrap().settings.host_name.as_deref(), Some("old.local"));
+        let readings = crate::admission::Readings::new();
+        assert_eq!(json(&list, dir.path(), &readings)["in_force"]["host_name"], "old.local");
+        assert!(host_name_or_default(" ").is_err());
+        let reset = Named { host_name: Some(To::Default), ..Named::default() };
+        change(&list, &reset).unwrap();
+        pin_host_name(&list).unwrap();
+        assert_eq!(list.read().unwrap().settings.host_name, Some(system_host_name()));
+    }
+
+    #[test]
     fn a_change_is_written_beside_the_checkouts_and_one_that_names_nothing_writes_nothing() {
         let dir = tempfile::tempdir().unwrap();
         let list = List::at(dir.path().join("checkouts.json"));
@@ -611,7 +701,7 @@ mod tests {
         let list = List::at(dir.path().join("checkouts.json"));
         assert_eq!(
             Settings::default().lanes(),
-            afkconvoy_core::exclusive::Lanes { worker: GATE_LANES, fast: FAST_LANES }
+            afkconvoy_core::exclusive::Lanes { worker: GATE_LANES, fast: FAST_LANES, slow: 1 }
         );
         let kept = r#"{"settings": {"train_lanes": 0, "gate_lanes": 2, "fast_lanes": 3, "said_by_another": 1}}"#;
         std::fs::write(list.file(), kept).unwrap();

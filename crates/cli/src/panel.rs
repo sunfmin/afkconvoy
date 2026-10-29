@@ -275,7 +275,8 @@ pub struct Host {
     pub admission: Result<Admission, String>,
     /// What its host runner says of the exclusive queue; why it cannot.
     pub exclusive: Result<crate::queue::Said, String>,
-    /// How many commands may run at once in its worker lanes and fast lane.
+    /// How many commands may run at once in its worker lanes, fast lane and
+    /// slow lanes.
     pub lanes: afkconvoy_core::exclusive::Lanes,
     /// The hours of its local time a fleet may put it to sleep in; `None`
     /// where its host settings keep it awake.
@@ -1769,7 +1770,7 @@ mod tests {
             now,
             admission: Ok(Admission { shares: SHARES, said: vec![], reading, span: 600 }),
             exclusive: Ok(Some((vec![], Some(false)))),
-            lanes: afkconvoy_core::exclusive::Lanes { worker: 1, fast: 1 },
+            lanes: afkconvoy_core::exclusive::Lanes { worker: 1, fast: 1, slow: 1 },
             sleep_hours: Some(SLEEP_HOURS),
             kit: Ok(Kit::default()),
             worker_health: Ok(crate::health::Health::default()),
@@ -1917,7 +1918,7 @@ mod tests {
         let html = render(&page_of(host, vec![]));
         let observation = crate::queue::observation(
             said,
-            afkconvoy_core::exclusive::Lanes { worker: 1, fast: 1 },
+            afkconvoy_core::exclusive::Lanes { worker: 1, fast: 1, slow: 1 },
             1000,
         );
         let section = html.split("<h2>Command lanes</h2>").nth(1).unwrap();

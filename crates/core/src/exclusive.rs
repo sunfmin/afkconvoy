@@ -6,7 +6,9 @@
 //!
 //! A worker's fast gate runs in a lane of its own (docs/adr/0049): no slow
 //! gate, turn or other command holds a place it needs, and fast gates of one
-//! repo run side by side, as many at once as the host says.
+//! repo run side by side, as many at once as the host says. A slow gate
+//! runs in a slow lane of its own (docs/adr/0048): a round's slow gate is
+//! counted apart from the worker lanes, where the round's turns wait.
 
 use serde::{Deserialize, Serialize};
 
@@ -65,12 +67,14 @@ pub enum Gate {
     Slow,
 }
 
-/// How many commands the host lets run at once: in the worker lanes, and in
-/// the fast lane, which only fast gates take.
+/// How many commands the host lets run at once: in the worker lanes, in
+/// the fast lane, which only fast gates take, and in the slow lanes, which
+/// only slow gates take.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Lanes {
     pub worker: u64,
     pub fast: u64,
+    pub slow: u64,
 }
 
 /// What a request is, as `queue`, doctor and the panel tell them apart.
@@ -114,6 +118,11 @@ pub fn is_fast(ticket: &Ticket) -> bool {
     ticket.gate == Some(Gate::Fast)
 }
 
+/// Whether `ticket` runs in the slow lanes: a slow gate's alone.
+pub fn is_slow(ticket: &Ticket) -> bool {
+    ticket.gate == Some(Gate::Slow)
+}
+
 /// How many of `queue` are ahead of its ticket `number`: it runs once none
 /// is. `None`: `number` is in it no more.
 pub fn ahead(queue: &[Ticket], number: u64) -> Option<usize> {
@@ -127,11 +136,14 @@ pub fn ahead(queue: &[Ticket], number: u64) -> Option<usize> {
 }
 
 /// Commands contend only with others in the same lane. Fast gates share
-/// the fast lane, whatever their repo; every other command keeps its lane.
+/// the fast lane, whatever their repo; slow gates share the slow lanes;
+/// every other command keeps its lane.
 pub fn same_lane(a: &Ticket, b: &Ticket) -> bool {
     match (is_fast(a), is_fast(b)) {
         (true, true) => true,
-        (false, false) => a.repo_lane == b.repo_lane,
+        (false, false) => {
+            a.repo_lane == b.repo_lane && (a.repo_lane.is_some() || is_slow(a) == is_slow(b))
+        }
         _ => false,
     }
 }
@@ -271,6 +283,8 @@ pub fn limit(ticket: &Ticket, lanes: Lanes) -> u64 {
         lanes.fast
     } else if ticket.repo_lane.is_some() {
         1
+    } else if is_slow(ticket) {
+        lanes.slow
     } else {
         lanes.worker
     }
@@ -319,6 +333,7 @@ pub struct Snapshot {
     pub paused: bool,
     pub worker: Capacity,
     pub fast: Capacity,
+    pub slow: Capacity,
     pub repos: Vec<RepoLane>,
     pub running: Vec<Observed>,
     pub waiting: Vec<Observed>,
@@ -539,6 +554,7 @@ pub fn snapshot(queue: &[Ticket], lanes: Lanes, paused: bool, now: u64) -> Snaps
         paused,
         worker: occupancy(&ordered, "worker", lanes.worker),
         fast: occupancy(&ordered, "fast", lanes.fast),
+        slow: occupancy(&ordered, "slow", lanes.slow),
         repos,
         running: vec![],
         waiting: vec![],
@@ -575,6 +591,7 @@ pub fn lane(ticket: &Ticket) -> String {
     }
     match &ticket.repo_lane {
         Some(repo) => format!("repo {repo}"),
+        None if is_slow(ticket) => "slow".to_string(),
         None => "worker".to_string(),
     }
 }
@@ -688,10 +705,30 @@ mod tests {
         }
     }
 
-    const ONE: Lanes = Lanes { worker: 1, fast: 1 };
+    const ONE: Lanes = Lanes { worker: 1, fast: 1, slow: 1 };
 
     fn lanes(worker: u64) -> Lanes {
-        Lanes { worker, fast: 1 }
+        Lanes { worker, fast: 1, slow: 1 }
+    }
+
+    #[test]
+    fn a_slow_gate_runs_in_its_own_lanes_beside_the_worker_lanes() {
+        let lanes = Lanes { worker: 2, fast: 1, slow: 1 };
+        let ticket = |number, slow: bool, ran: Option<u64>| Ticket {
+            repo: Some(format!("r{number}")),
+            gate: slow.then_some(Gate::Slow),
+            ran,
+            ..ticket(number, &format!("/r{number}"), 0)
+        };
+        let busy = [ticket(1, false, Some(1)), ticket(2, false, Some(1))];
+        let mut queue = busy.to_vec();
+        queue.push(ticket(3, true, None));
+        assert!(ready(&queue, 3, lanes), "full worker lanes leave the slow lane free");
+        queue.push(ticket(4, true, None));
+        assert!(!ready(&queue, 4, lanes), "one slow lane runs one slow gate");
+        let seen = snapshot(&queue, lanes, false, 5);
+        assert_eq!((seen.worker.used, seen.slow.capacity), (2, 1));
+        assert_eq!(lane(&queue[2]), "slow");
     }
 
     #[test]
@@ -796,7 +833,7 @@ mod tests {
         let second = gate(2, "/a/two", Gate::Fast, 101);
         let third = gate(3, "/a/three", Gate::Fast, 102);
         let queue = [first, second, third];
-        let two = Lanes { worker: 1, fast: 2 };
+        let two = Lanes { worker: 1, fast: 2, slow: 1 };
         let decisions = scheduling(&queue, two, false);
         assert!(matches!(decisions[1].state, State::Eligible));
         assert!(matches!(decisions[2].state, State::Waiting));
@@ -808,7 +845,7 @@ mod tests {
         }
         assert!(matches!(decisions[2].reasons[0].kind, ConstraintKind::FastCapacity));
         assert_eq!(decisions[2].reasons[0].capacity, Some(2));
-        let three = Lanes { worker: 1, fast: 3 };
+        let three = Lanes { worker: 1, fast: 3, slow: 1 };
         assert!(ready(&queue, 3, three));
     }
 
@@ -831,13 +868,14 @@ mod tests {
             kinds,
             [
                 (Kind::FastGate, "fast"),
-                (Kind::SlowGate, "worker"),
+                (Kind::SlowGate, "slow"),
                 (Kind::Turn, "worker"),
                 (Kind::Command, "worker")
             ]
         );
         assert_eq!((seen.fast.used, seen.fast.free), (1, 0));
-        assert_eq!((seen.worker.used, seen.worker.free), (1, 0));
+        assert_eq!((seen.worker.used, seen.worker.free), (0, 1), "the slow gate's lane is its own");
+        assert_eq!((seen.slow.used, seen.slow.free), (1, 0));
         let wire = serde_json::to_value(&seen.running[0]).unwrap();
         assert_eq!(wire["gate"], "fast");
         assert_eq!(wire["kind"], "fast_gate");
