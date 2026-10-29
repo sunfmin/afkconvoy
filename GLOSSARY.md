@@ -310,7 +310,7 @@ _Avoid_: notification, callback, done signal
 ### Claims
 
 **Claim**:
-The atomic lock marking one issue as owned by one fleet instance. Its creation succeeds for exactly one instance. It takes one slot of the concurrency while its worker is at work, and none once a verdict is declared under it: it is still held until that verdict is acted on, and a worker started under it again takes a slot as any start does.
+The atomic lock marking one issue as owned by one fleet instance. Its creation succeeds for exactly one instance. It takes one slot of the concurrency while its worker is at work, and none once a verdict is declared under it: it is still held until that verdict is acted on, and a worker started under it again takes a slot as any start does. A landing claim's worker is at work only while it is changing the tree — resolving a conflict, fixing a red gate, or still preparing the branch for the turn. Gone or idle, or with its turn queued, waiting on a predecessor or last answering a wait, it takes no slot: the claim is still held until the PR lands or it ends otherwise, the tick asks for the turn again without starting a harness, and a worker it starts because the turn needs the tree changed takes a slot as any start does.
 _Avoid_: assignee, assignment, lock (the fleet lock)
 
 **Heartbeat**:

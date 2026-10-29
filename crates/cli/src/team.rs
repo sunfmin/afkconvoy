@@ -731,7 +731,7 @@ fn roster_entry(entry: &team::Entry) -> Value {
             json!({"harness": allowed.harness, "model": allowed.model, "good_at": allowed.good_at})
         })
         .collect();
-    json!({"cast": entry.cast, "run": run})
+    json!({"run": run})
 }
 
 /// Each harness `role`'s range on a host whose host kit holds `kit` leaves

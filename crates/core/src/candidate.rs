@@ -244,6 +244,20 @@ impl Chain {
         (ready && tip.slow.is_some() && !tip.slowed).then_some(*tip)
     }
 
+    /// The candidate whose running slow gate `id` waits on: the tip of the
+    /// round now slow-gating, where `id` is valid and at or before it. A
+    /// candidate behind it, or one with no round running, waits for the next.
+    pub fn round_of(&self, id: &str) -> Option<&Candidate> {
+        let mut member = false;
+        for c in self.candidates.iter().filter(|c| c.valid()) {
+            member = member || c.id == id;
+            if c.phase == Phase::Slow {
+                return member.then_some(c);
+            }
+        }
+        None
+    }
+
     /// Starts the round at `id` when it is the round's tip → whether it did.
     /// Its gate process is a new one, to be confirmed gone again.
     pub fn start_round(&mut self, id: &str) -> bool {
@@ -456,11 +470,15 @@ mod tests {
         assert!(chain.start_round("c2"));
         assert_eq!(chain.candidates[2].waiting(), "slow_gating");
         assert_eq!(chain.candidates[0].waiting(), "waiting_for_round");
+        let round = |chain: &Chain, id| chain.round_of(id).map(|c| c.id.clone());
+        assert_eq!(round(&chain, "c0").as_deref(), Some("c2"));
+        assert_eq!(round(&chain, "c2").as_deref(), Some("c2"));
         // A candidate assigned during the round waits for the next one.
         let mut later = split(3);
         later.phase = Phase::Green;
         chain.candidates.push(later);
         assert!(chain.round_tip().is_none());
+        assert_eq!(round(&chain, "c3"), None, "it waits for the next round");
         chain.finish("c2", true, serde_json::json!({}));
         assert!(chain.candidates[2].slowed);
         assert!(chain.ripe("c2", "base"));
