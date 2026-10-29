@@ -3,17 +3,18 @@
 //! cooldown. Reads of this note precede requests, including in a later tick or
 //! another CLI process. Losing a note costs a rejected request, never a fact.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::Mutex;
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::gh::GitHub;
+use crate::look::Reading;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Api {
@@ -67,66 +68,27 @@ fn segment(text: &str) -> String {
 }
 
 static HOSTS: Mutex<BTreeMap<PathBuf, String>> = Mutex::new(BTreeMap::new());
-static SCOPES: Mutex<BTreeMap<String, Result<Scope, String>>> = Mutex::new(BTreeMap::new());
-static OBSERVED: Mutex<BTreeSet<PathBuf>> = Mutex::new(BTreeSet::new());
-/// One `rate_limit` body, read once and shared with the next ask in this look.
-type RateOnce = Arc<OnceLock<Result<String, String>>>;
+/// The login's quota scope per host. It stands for the process's life:
+/// nobody changes `gh`'s login under a running runner.
+pub(crate) static SCOPES: Reading<Result<Scope, String>> = Reading::per_process("gh quota scope");
+
+/// Whether this look has observed the quota note of a login, per its note
+/// directory. A process that is one look — `doctor` — observes at most once.
+pub(crate) static NOTE: Reading<()> = Reading::per_look("gh quota note");
 
 /// One `rate_limit` body per host in this look. `observe` and an env-token
 /// login both read the note; the second of them uses this body.
-static RATES: Mutex<BTreeMap<String, RateOnce>> = Mutex::new(BTreeMap::new());
-
-/// Forgets the quota note, so the next read may observe it once. A look
-/// begins through `look::begin`. A process that is one look — `doctor` —
-/// never forgets it and observes at most once. The login scope stands for
-/// the process's life: nobody changes `gh`'s login under a running runner.
-pub(crate) fn forget_note() {
-    OBSERVED.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clear();
-    RATES.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clear();
-}
+pub(crate) static RATES: Reading<Result<String, String>> = Reading::per_look("gh rate_limit");
 
 /// The `rate_limit` body for `host`, read once in this look. A second ask
 /// waits on that read instead of calling `rate_limit` again.
 fn rate_limit_body(gh: &GitHub, host: &str) -> Result<String> {
-    let cell = {
-        let mut rates = RATES.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        rates.entry(host.to_string()).or_insert_with(|| Arc::new(OnceLock::new())).clone()
-    };
-    let stored = cell.get_or_init(|| match gh.raw(&["api", "rate_limit", "--hostname", host]) {
-        Ok(body) => Ok(body),
-        Err(error) => Err(format!("{error:#}")),
-    });
-    match stored {
-        Ok(body) => Ok(body.clone()),
-        Err(error) => bail!("{error}"),
-    }
-}
-
-#[cfg(test)]
-pub(crate) fn hold_rate(host: &str) {
-    let cell = Arc::new(OnceLock::new());
-    cell.set(Ok("{}".to_string())).expect("rate cell is unset");
-    RATES.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).insert(host.to_string(), cell);
-}
-
-#[cfg(test)]
-pub(crate) fn rate_held(host: &str) -> bool {
     RATES
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .get(host)
-        .and_then(|cell| cell.get())
-        .is_some()
-}
-
-#[cfg(test)]
-pub(crate) fn hold_note(dir: &std::path::Path) {
-    OBSERVED.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).insert(dir.to_path_buf());
-}
-
-#[cfg(test)]
-pub(crate) fn note_held(dir: &std::path::Path) -> bool {
-    OBSERVED.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).contains(dir)
+        .read(host, || match gh.raw(&["api", "rate_limit", "--hostname", host]) {
+            Ok(body) => Ok(body),
+            Err(error) => Err(format!("{error:#}")),
+        })
+        .map_err(|error| anyhow::anyhow!(error))
 }
 
 /// The GitHub host a checkout uses, read once per checkout in this process.
@@ -165,13 +127,9 @@ impl Scope {
     /// The login's quota scope on this host, discovered once in this process.
     pub(crate) fn of(gh: &GitHub) -> Result<Self> {
         let host = host(gh);
-        let mut scopes = SCOPES.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some(scope) = scopes.get(&host) {
-            return scope.clone().map_err(|error| anyhow::anyhow!(error));
-        }
-        let made = Self::discover(gh, &host).map_err(|error| format!("{error:#}"));
-        scopes.insert(host, made.clone());
-        made.map_err(|error| anyhow::anyhow!(error))
+        SCOPES
+            .read(&host, || Self::discover(gh, &host).map_err(|error| format!("{error:#}")))
+            .map_err(|error| anyhow::anyhow!(error))
     }
 
     fn discover(gh: &GitHub, host: &str) -> Result<Self> {
@@ -253,11 +211,10 @@ impl Scope {
     /// An unavailable observation never clears an exhaustion already seen.
     /// At most one observation is made for this login in this look.
     pub(crate) fn observe(&self, gh: &GitHub) -> Result<()> {
-        {
-            let mut observed = OBSERVED.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            if !observed.insert(self.dir.clone()) {
-                return Ok(());
-            }
+        let mut first = false;
+        NOTE.read(&self.dir.to_string_lossy(), || first = true);
+        if !first {
+            return Ok(());
         }
         let out = match rate_limit_body(gh, &self.host) {
             Ok(out) => out,

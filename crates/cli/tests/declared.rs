@@ -91,12 +91,12 @@ fn a_claim_whose_worker_declared_frees_its_slot_for_the_frontier() {
     let gauges = page.split("<dl class=\"gauges\">").nth(1).unwrap().split("</dl>").next();
     let gauges = gauges.unwrap();
     assert!(gauges.contains("<dt>Claims held</dt><dd>2 <small>of 2</small></dd>"), "{gauges}");
-    assert!(gauges.contains("<dt>Declared</dt><dd>1</dd>"), "{gauges}");
+    assert!(gauges.contains("<dt>Taking no slot</dt><dd>1</dd>"), "{gauges}");
 
     // The line says the three claims apart: two of two slots, and one declared.
     assert_eq!(
         run_line(&world, "1120"),
-        ["tick 1: nothing to do · holding 2/2 · 1 declared · frontier 1 · next in 90s"]
+        ["tick 1: nothing to do · holding 2/2 · 1 taking no slot · frontier 1 · next in 90s"]
     );
 
     // Once the grace runs out it is acted on as ever, and frees no slot it never took.
