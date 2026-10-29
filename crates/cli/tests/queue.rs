@@ -316,6 +316,23 @@ fn paused_and_old_ticket_metadata_are_reported_without_guessing_and_clock_skew_c
 }
 
 #[test]
+fn an_older_runner_that_omits_its_pause_still_reads_with_the_pause_unknown() {
+    let local = Local::new();
+    local.settings(2);
+    let mut older = response(vec![ticket(1, "/a/.git", 900, Some(950), false)]);
+    older.as_object_mut().unwrap().remove("exclusive_paused");
+    let received = local.answer(older);
+    let (code, answer) = local.query();
+    assert_eq!(code, 0, "{answer}");
+    received.recv().unwrap();
+    assert_eq!(answer["status"], "available");
+    assert_eq!(answer["paused"], Value::Null, "an unsaid pause is not invented: {answer}");
+    assert_eq!(answer["worker"], json!({"capacity": 2, "used": 1, "free": 1}));
+    assert_eq!(answer["running"][0]["lane"], "worker");
+    assert_eq!(answer["repos"], json!([]));
+}
+
+#[test]
 fn failed_or_unsupported_observations_never_fabricate_an_empty_queue() {
     for reply in [
         "not json\n".to_string(),
@@ -323,7 +340,8 @@ fn failed_or_unsupported_observations_never_fabricate_an_empty_queue() {
         "{\"error\":\"unsupported\"}\n".to_string(),
         "{}\n".to_string(),
         "{\"exclusive\":null}\n".to_string(),
-        "{\"exclusive\":[],\"host_runner\":{\"pid\":1,\"version\":\"older\"}}\n".to_string(),
+        "{\"exclusive_paused\":false,\"host_runner\":{\"pid\":1,\"version\":\"older\"}}\n"
+            .to_string(),
     ] {
         let local = Local::new();
         let received = local.serve(move |mut stream| {
@@ -402,15 +420,13 @@ fn the_real_scheduler_admits_another_repo_while_a_same_repo_waits_with_two_free_
     assert_eq!(after["worker"], json!({"capacity": 3, "used": 2, "free": 1}));
     assert_eq!(after["waiting"].as_array().unwrap().len(), 1);
     let doctor = world.afk(&["--now", "200", "doctor"]).json;
-    let common = &doctor["host"]["exclusive"]["observation"];
-    for field in ["worker", "repos", "paused", "running", "waiting"] {
+    let common = &doctor["host"]["exclusive"];
+    for field in ["status", "worker", "repos", "paused", "running", "waiting"] {
         assert_eq!(common[field], after[field], "doctor and queue disagree on {field}: {doctor}");
     }
-    assert_eq!(
-        doctor["host"]["exclusive"]["lanes"]["worker"]["running_all"].as_array().unwrap().len(),
-        2,
-        "legacy doctor projection remains available"
-    );
+    for gone in ["lanes", "observation"] {
+        assert!(common.get(gone).is_none(), "doctor keeps a second shape: {doctor}");
+    }
 }
 
 #[test]
