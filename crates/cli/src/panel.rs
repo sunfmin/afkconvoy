@@ -1839,12 +1839,12 @@ mod tests {
         ];
         let html = render(&page_of(host_of(1000), vec![acme]));
         assert!(
-            html.contains("<code>c1</code> · predecessor <code>m0</code> · waiting_for_round ·  · in the round slow-gating at <code>c2</code></li>"),
+            html.contains("<code>c1</code> · predecessor <code>m0</code> · waiting_for_round ·   · in the round slow-gating at <code>c2</code></li>"),
             "{html}"
         );
         assert!(
             html.contains(
-                "<code>c3</code> · predecessor <code>m0</code> · waiting_for_round · </li>"
+                "<code>c3</code> · predecessor <code>m0</code> · waiting_for_round ·  </li>"
             ),
             "{html}"
         );
