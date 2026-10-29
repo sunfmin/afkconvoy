@@ -8,11 +8,11 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use afkconvoy_core::casting::Cast;
 use afkconvoy_core::config::Config;
 use afkconvoy_core::cut::{
     self, CHECKOUT, CLAIM_KEY, Failure, MINOR_LABEL, Record, Row, Seen, Standing, Step, Tag, Took,
 };
+use afkconvoy_core::harness::Harness;
 use afkconvoy_core::landing::{LandedPr, Of};
 use afkconvoy_core::line::Line;
 use afkconvoy_core::plan::Issue;
@@ -167,11 +167,11 @@ pub fn start(fleet: &mut Fleet, me: &Me, agent: &Agent, busy: bool) -> Result<Ou
         return Ok(Outcome::Nothing);
     }
     // Before the claim: a host kit that holds no harness starts nothing.
-    let first = fleet.first()?;
+    let first = fleet.first_harness()?;
     let Some(claim) = take_run(&fleet.repo, &mut fleet.scan, me, CLAIM_KEY)? else {
         return Ok(Outcome::Lost);
     };
-    let started = started(fleet, me, agent, &first);
+    let started = started(fleet, me, agent, first);
     if !matches!(started, Ok(Some(_)))
         && let Err(kept) = drop_run(&fleet.repo, &mut fleet.scan, &claim)
     {
@@ -189,7 +189,7 @@ pub fn start(fleet: &mut Fleet, me: &Me, agent: &Agent, busy: bool) -> Result<Ou
 
 /// What `start` does once it holds the claim → the cut's record, its
 /// checkout cut and its terminal started; `None` where nothing is left to cut.
-fn started(fleet: &Fleet, me: &Me, agent: &Agent, first: &Cast) -> Result<Option<Record>> {
+fn started(fleet: &Fleet, me: &Me, agent: &Agent, first: Harness) -> Result<Option<Record>> {
     let base = fleet.base_tip()?;
     let Some(record) = pick(fleet, &base, me.now)? else { return Ok(None) };
     let source = Source::of(&fleet.repo)?;
@@ -201,7 +201,7 @@ fn started(fleet: &Fleet, me: &Me, agent: &Agent, first: &Cast) -> Result<Option
     let path = checkout.path.display().to_string();
     let command = crate::own_command_in(&path).fixed(" cut; exit").own();
     let title = format!("afkconvoy cut v{}", record.version);
-    agent.start(&checkout, first.harness, &command, Some(&title), me.now)?;
+    agent.start(&checkout, first, &command, Some(&title), me.now)?;
     Ok(Some(record))
 }
 

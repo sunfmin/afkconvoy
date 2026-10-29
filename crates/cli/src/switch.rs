@@ -13,7 +13,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use serde_json::{Value, json};
 
 use crate::claims::Me;
-use crate::dispatch::{Agent, Continuing, StartFrom, WorkerSelection, dispatch_continuing};
+use crate::dispatch::{Agent, Continuing, StartFrom, dispatch_continuing};
 use crate::fleet::Fleet;
 use crate::judge::mine;
 use crate::orca::{Source, Worktree};
@@ -173,7 +173,7 @@ pub enum Which {
 /// is stopped, and ownership is checked before any continuation.
 pub fn switch(fleet: &mut Fleet, me: &Me, agent: &Agent, which: Which) -> Result<Value> {
     // What a worker started before any switch kept its harness ran on.
-    let before = fleet.first().map_or(Harness::DEFAULT, |first| first.harness);
+    let before = fleet.first_harness().unwrap_or(Harness::DEFAULT);
     match &which {
         Which::Issue(issue) => {
             if mine(fleet, me, *issue)?.is_none() {
@@ -256,34 +256,20 @@ pub(crate) fn continuing(worktree: Option<&Worktree>, before: Harness) -> Contin
 /// Continues a worker with no issue in the same checkout and with its brief
 /// intact. It runs the selected harness's user default: it has no model label.
 pub(crate) fn auxiliary(fleet: &Fleet, agent: &Agent, worktree: &Worktree) -> Result<Value> {
-    let cast = fleet.first()?;
-    crate::role::startable(&agent.launches, cast.harness, "worker continuation")?;
-    let continued = continuing(Some(worktree), cast.harness);
+    let chosen = fleet.first()?;
+    let harness = chosen.harness();
+    crate::role::startable(&agent.launches, harness, "worker continuation")?;
+    let continued = continuing(Some(worktree), harness);
     worktree.stop_for_continuation()?;
     if worktree.brief()?.exists() {
         crate::dispatch::continue_brief(fleet, worktree, None, None, &continued)?;
     }
-    let command = if cast.harness.session().is_some() {
-        // The session puts its own model on as it starts.
-        agent.command(cast.harness)?.as_str().to_string()
-    } else {
-        cast.command(agent.command(cast.harness)?.as_str())
-    };
-    let terminal = agent.start_worker(
-        worktree,
-        WorkerSelection {
-            harness: cast.harness,
-            model: cast.model.as_deref(),
-            explicit_model: false,
-        },
-        &command,
-        false,
-        None,
-        fleet.now,
-    )?;
+    let command = chosen.start_line(agent.command(harness)?.as_str());
+    let terminal =
+        agent.start_worker(worktree, (&chosen).into(), &command, false, None, fleet.now)?;
     worktree.deliver(&terminal, &worktree.brief()?)?;
-    Ok(json!({"worktree": worktree.path, "from": continued.from, "to": cast.harness,
-            "terminal": terminal, "skipped": fleet.skipped_before(cast.harness, None, None)}))
+    Ok(json!({"worktree": worktree.path, "from": continued.from, "to": harness,
+            "terminal": terminal, "skipped": fleet.skipped_before(harness, None, None)}))
 }
 
 /// Moves the worker of my claim on `issue` onto what it runs now — this host's

@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use afkconvoy_core::harness::Harness;
 use afkconvoy_core::line::Line;
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -60,6 +60,19 @@ fn listed(harness: Harness) -> Result<Vec<String>> {
         .find(|held| held.harness == harness)
         .map(|held| held.models.iter().map(|seen| seen.model.clone()).collect())
         .unwrap_or_default())
+}
+
+/// The user config `harness` reads its user default from, read once for a
+/// worker selection (`selection::select`). `None`: it reads none.
+pub(crate) fn user_config(
+    harness: Harness,
+) -> Result<Option<afkconvoy_core::selection::UserConfig>> {
+    if harness.session().is_none() {
+        return Ok(None);
+    }
+    let (text, file) = read_config(harness)?;
+    let listed = listed(harness)?;
+    Ok(Some(afkconvoy_core::selection::UserConfig { harness: Some(harness), text, file, listed }))
 }
 
 /// The model an automatic start uses. `None`: this harness has no user
@@ -118,26 +131,26 @@ pub(crate) fn fresh_root(harness: Harness, worktree: &Path) -> Option<PathBuf> {
     )))
 }
 
-/// Resolves the model and the effort and returns the line a worker runs.
-/// A harness with no session of its own is started as `command`, on the
-/// fleet's model.
+/// Reads the effort and returns the line a worker runs. `command` already
+/// names the model its worker selection chose (`Selection::start_line`),
+/// with `source`, where it came from. A harness with no session of its own
+/// is started as `command`.
 pub(crate) fn prepare_worker(
     harness: Harness,
     worktree: &Worktree,
     model: Option<&str>,
-    explicit: bool,
+    source: Option<&str>,
     command: &str,
     in_role: bool,
 ) -> Result<Prepared> {
-    let Some((model, model_source)) =
-        automatic_model(harness, explicit.then_some(model).flatten())?
-    else {
+    let model = model.map(str::to_string);
+    let Some(model_source) = source.filter(|_| harness.session().is_some()) else {
         let command = if in_role {
             command.to_string()
         } else {
             harness.in_worktree(command, &worktree.path.display().to_string(), "")
         };
-        return Ok(Prepared { model: model.map(str::to_string), command, settings: None });
+        return Ok(Prepared { model, command, settings: None });
     };
     let (command, settings) =
         prepare(harness, worktree, model.as_deref(), command, in_role, model_source)?;
@@ -157,10 +170,9 @@ fn prepare(
 ) -> Result<(String, Settings)> {
     let session = harness.session().context("the harness keeps no session of its own")?;
     let (effort, effort_source) = effort(harness)?;
-    let command = harness.ensure_model(command, model);
     let (line, home) = if in_role {
         let home = std::fs::read_to_string(worktree.note(session.note)?)?;
-        (Line::new().launch(&command), PathBuf::from(home))
+        (Line::new().launch(command), PathBuf::from(home))
     } else {
         let (home, _) = crate::kept::for_worker(
             harness,
@@ -170,7 +182,7 @@ fn prepare(
             &Default::default(),
             "",
         )?;
-        let command = harness.in_worktree(&command, &worktree.path.display().to_string(), &home);
+        let command = harness.in_worktree(command, &worktree.path.display().to_string(), &home);
         (Line::new().launch(&command), PathBuf::from(home))
     };
     let settings = Settings {
@@ -218,21 +230,6 @@ pub(crate) fn record(worktree: &Worktree, harness: Harness, settings: &Settings)
     let Some(session) = harness.session() else { return Ok(()) };
     std::fs::write(worktree.note(session.record)?, serde_json::to_vec(settings)?)?;
     Ok(())
-}
-
-pub(crate) fn require_in_role(
-    harness: Harness,
-    model: &str,
-    allowed: &[String],
-    role: &str,
-) -> Result<()> {
-    if allowed.iter().any(|allowed| allowed == model) {
-        return Ok(());
-    }
-    match harness.outside_role(model, role) {
-        Some(why) => bail!(why),
-        None => Ok(()),
-    }
 }
 
 pub(crate) fn recorded(worktree: &Worktree) -> Option<Settings> {

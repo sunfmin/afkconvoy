@@ -2,28 +2,19 @@
 //! harness, or that harness's user default. Automatic casting is gone, so
 //! nothing is held and no caster is started.
 
-use afkconvoy_core::casting::{self, Held, ModelRun, ModelStage, ModelStatus, Why};
+use afkconvoy_core::casting::{ModelRun, ModelStage, ModelStatus, Why};
 use afkconvoy_core::role::workflow_of;
-use afkconvoy_core::team::{Performer, Team};
+use afkconvoy_core::selection::Unsafe;
+use afkconvoy_core::team::{Performer, Role, Team};
 use afkconvoy_core::worker::WorkerState;
 
 use crate::fleet::Fleet;
 use crate::orca::{Source, Worktree};
 
-/// Each stage's eligible range in kit order. Permissions are cut against the
-/// whole kit before temporary health exclusions, exactly as at dispatch.
-fn ranges(
-    fleet: &Fleet,
-    team: Option<&Team>,
-    labels: &[String],
-    number: u64,
-) -> Vec<(String, Vec<Held>)> {
-    let Some(team) = team else {
-        return vec![(
-            "worker".into(),
-            fleet.runnable_for(Some(number)).map(|kit| kit.range()).unwrap_or_default(),
-        )];
-    };
+/// Each stage's role, by the stage's name and its role's: one `worker` of no
+/// role in an unbound repo.
+fn roles<'t>(team: Option<&'t Team>, labels: &[String]) -> Vec<(String, Option<&'t Role>)> {
+    let Some(team) = team else { return vec![("worker".into(), None)] };
     let Ok(workflow) = workflow_of(team, labels) else { return vec![] };
     workflow
         .stages()
@@ -31,12 +22,43 @@ fn ranges(
         .filter_map(|stage| {
             let Performer::Role(work) = &stage.by else { return None };
             let role = team.role_of(work);
-            Some((
-                format!("{} ({})", stage.name, role.name),
-                fleet.range_in(role, Some(number)).unwrap_or_default(),
-            ))
+            Some((format!("{} ({})", stage.name, role.name), Some(role)))
         })
         .collect()
+}
+
+/// What a stage's worker runs, as its worker selection says: the one
+/// dispatch makes, from the same facts.
+fn stage_of(
+    fleet: &Fleet,
+    stage: String,
+    role: Option<&Role>,
+    labels: &[String],
+    number: u64,
+) -> ModelStage {
+    let unsafe_stage = |why: String| ModelStage {
+        stage: stage.clone(),
+        harness: None,
+        model: None,
+        followed: false,
+        why,
+        skipped: vec![],
+    };
+    let (cast, model, refused) = match fleet.select(role, labels, Some(number)) {
+        Ok(Ok(chosen)) => (chosen.cast, chosen.model, None),
+        Ok(Err(Unsafe::Refused { cast, why })) => (cast, None, Some(why)),
+        Ok(Err(why)) => return unsafe_stage(why.said().to_string()),
+        Err(error) => return unsafe_stage(format!("{error:#}")),
+    };
+    let followed = cast.why == Why::ModelLabel;
+    let mut why = match &cast.notice {
+        Some(notice) => format!("{}: {notice}", cast.why.said()),
+        None => cast.why.said().to_string(),
+    };
+    if let Some(refused) = refused {
+        why = format!("{why}, which refuses the start: {refused}");
+    }
+    ModelStage { stage, harness: Some(cast.harness), model, followed, why, skipped: vec![] }
 }
 
 /// What a worker of each open issue runs. `needed` is never set: automatic
@@ -46,41 +68,15 @@ pub fn status(
     open: &crate::gh::OpenIssues,
     team: Option<&Team>,
 ) -> Vec<ModelStatus> {
-    let whole = crate::kit::load().map(|kit| kit.range()).unwrap_or_default();
     let source = Source::of(&fleet.repo).ok();
     let mut statuses: Vec<ModelStatus> = open
         .rows
         .iter()
         .map(|issue| {
             let labels = &issue.labels;
-            let ranges = ranges(fleet, team, labels, issue.number);
-            let stages: Vec<ModelStage> = ranges
-                .iter()
-                .map(|(stage, range)| match casting::preferred(labels, range, &whole) {
-                    Ok(cast) => {
-                        let followed = cast.why == Why::ModelLabel;
-                        let why = match &cast.notice {
-                            Some(notice) => format!("{}: {notice}", cast.why.said()),
-                            None => cast.why.said().to_string(),
-                        };
-                        ModelStage {
-                            stage: stage.clone(),
-                            harness: Some(cast.harness),
-                            model: cast.model,
-                            followed,
-                            why,
-                            skipped: vec![],
-                        }
-                    }
-                    Err(why) => ModelStage {
-                        stage: stage.clone(),
-                        harness: None,
-                        model: None,
-                        followed: false,
-                        why,
-                        skipped: vec![],
-                    },
-                })
+            let stages: Vec<ModelStage> = roles(team, labels)
+                .into_iter()
+                .map(|(stage, role)| stage_of(fleet, stage, role, labels, issue.number))
                 .collect();
             let named: Vec<_> = stages.iter().filter(|stage| stage.harness.is_some()).collect();
             let why = if named.is_empty() {
