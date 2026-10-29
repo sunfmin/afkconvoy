@@ -37,6 +37,7 @@ use crate::fleet::Fleet;
 use crate::git::Repo;
 use crate::orca::{Source, Worktree};
 use crate::park::{park_claim, standings};
+use crate::remote::Fresh;
 use crate::team::keep;
 
 /// A worktree's git progress since its merge base with the base branch on
@@ -142,7 +143,7 @@ fn leaving_with(fleet: &Fleet, issue: u64, worktree: &Worktree, at_open: bool) -
     known.extend(if at_open {
         fleet.fetched_at_open(&branch)?
     } else {
-        fleet.repo.fetched(&branch)?
+        fleet.remote.fetched(&branch, Fresh::Process)?
     });
     let repo = Repo::new(worktree.path.clone());
     let dirty = !repo.git_raw(&["status", "--porcelain"])?.trim().is_empty();

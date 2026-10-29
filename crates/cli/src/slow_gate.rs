@@ -16,7 +16,8 @@ use anyhow::Result;
 use crate::claims::{Me, drop_run, take_run};
 use crate::fleet::Fleet;
 use crate::gh::GitHub;
-use crate::git::{RemoteRecord, Repo};
+use crate::git::Repo;
+use crate::remote::RemoteRecord;
 
 /// How many commits down the base branch a landing is looked for. A recorded
 /// gate run is swept a day after it was made, so the landings that still have
