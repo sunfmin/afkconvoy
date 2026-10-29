@@ -195,7 +195,7 @@ pub fn tick(
     }
     for issue in &open.issues.rows {
         // Dispatch reports a resolution failure against its issue; successful
-        // discovery must precede casting and the caster's choice of range.
+        // discovery must precede the choice of range.
         let _ = agent.discover_casting(&issue.labels);
     }
     let (mut set, mut flows) = fleet.rebuild(&open, Some(&me.instance))?;
@@ -429,7 +429,6 @@ fn carry_out(
             None => Ok(Outcome::Nothing),
         },
         TickStep::Cut { busy } => crate::cut::start(fleet, me, agent, busy),
-        TickStep::Cast => Ok(Outcome::Nothing),
         TickStep::SlowGate => match &read.set.slow_gate {
             Some(slow) => slow_gate::open(fleet, me, slow),
             None => Ok(Outcome::Nothing),
@@ -458,7 +457,6 @@ fn words(step: TickStep) -> (&'static str, Option<u64>) {
         TickStep::Dispatch { issue } => ("dispatch", Some(issue)),
         TickStep::EndCut => ("end_cut", None),
         TickStep::Cut { .. } => ("cut", None),
-        TickStep::Cast => ("cast", None),
         TickStep::SlowGate => ("slow_gate", None),
         TickStep::Board { issue, .. } => ("board", Some(issue)),
         TickStep::StageLabel { issue } => ("stage_label", Some(issue)),

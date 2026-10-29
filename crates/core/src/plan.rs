@@ -149,7 +149,7 @@ pub struct Dispatchable {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stage: Option<String>,
     /// In an unbound repo, the harness and model its worker would run, and
-    /// why (`casting::cast`); `None` of a bound repo's issue, the stock
+    /// why (`casting::preferred`); `None` of a bound repo's issue, the stock
     /// consult's, and any while the host kit cannot be read.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cast: Option<crate::casting::Cast>,
@@ -296,10 +296,6 @@ pub struct WorkingSet {
     /// and the effect layer puts in what it read.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub held_back: Vec<Hold>,
-    /// Left unset. Automatic casting is gone, so a plan reports no caster
-    /// and holds no issue for one.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub caster: Option<crate::casting::Standing>,
     /// Whether each open issue's model label is followed, or its worker runs
     /// the user's default, and the recorded model of a worker already running.
     pub casting: Vec<crate::casting::ModelStatus>,
@@ -572,7 +568,6 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
             seen.slow_gate,
         ),
         held_back: vec![],
-        caster: None,
         casting: vec![],
         cut: None,
     };
