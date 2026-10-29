@@ -327,12 +327,8 @@ fn controlled_run(
             // The record is a parentless commit OF the tested tree.
             let sha =
                 repo.record_commit_of(tree.name(), &green.write_issued(&tree, command, issue))?;
-            let pushed =
-                repo.try_git(&["push", "--quiet", "--force", REMOTE, &format!("{sha}:{refname}")])?;
-            if !pushed.ok {
-                // Soft: a record that cannot be written costs the landing a run of the gate.
-                run.not_recorded = Some(pushed.stderr.trim().to_string());
-            }
+            // Soft: a record that cannot be written costs the landing a run of the gate.
+            run.not_recorded = push_record(repo, &sha, &refname)?;
             run.green = Some(green);
         }
         Recording::Drop => {
@@ -408,9 +404,38 @@ pub(crate) fn record_whole(
     };
     let sha = repo.record_commit_of(tree.name(), &run.write_issued(tree, whole, issue))?;
     let refname = record_ref(repo.layout(), tree, whole);
-    let pushed =
-        repo.try_git(&["push", "--quiet", "--force", REMOTE, &format!("{sha}:{refname}")])?;
-    Ok((!pushed.ok).then(|| pushed.stderr.trim().to_string()))
+    push_record(repo, &sha, &refname)
+}
+
+/// A push GitHub rejected for a fault of its own, not of the push.
+fn remote_fault(stderr: &str) -> bool {
+    stderr.contains("remote unpack failed") || crate::candidates::lock_failure(stderr)
+}
+
+/// How many times a gate record's push is tried.
+const RECORD_ATTEMPTS: u32 = 5;
+
+/// Pushes the record `sha` to `refname` → why it could not, `None` once it
+/// is there. A record's push is a force push of one commit, so trying it
+/// again is safe. A rejection that is GitHub's own fault — it could not
+/// write the pack (`remote unpack failed`), or another push held the ref's
+/// lock — is tried again; any other is not. On 2026-10-29 two candidates
+/// whose fast gate was green went red for the first, cancelling every
+/// candidate behind them.
+fn push_record(repo: &Repo, sha: &str, refname: &str) -> Result<Option<String>> {
+    let mut attempt = 0;
+    loop {
+        let pushed =
+            repo.try_git(&["push", "--quiet", "--force", REMOTE, &format!("{sha}:{refname}")])?;
+        if pushed.ok {
+            return Ok(None);
+        }
+        attempt += 1;
+        if !remote_fault(&pushed.stderr) || attempt >= RECORD_ATTEMPTS {
+            return Ok(Some(pushed.stderr.trim().to_string()));
+        }
+        std::thread::sleep(Duration::from_millis(250 << attempt));
+    }
 }
 
 /// The green run of `command` on `tree` the remote has on record and still
@@ -632,4 +657,20 @@ pub fn one(repo: &Repo, config: &Config, which: Which) -> Result<Value> {
         "budget_seconds": gate.budget_seconds, "over_budget": over_budget, "recorded": false,
         "termination": run.termination, "excerpt": if green { vec![] } else { run.excerpt },
         "detail": detail}))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_pack_github_could_not_write_is_its_fault_and_a_refused_push_is_not() {
+        let unpack = "remote: fatal: unable to rename temporary '*.pack' file\n\
+                      error: remote unpack failed: index-pack failed\n \
+                      ! [remote rejected]   d5531db -> refs/convoy/gate/47 (unpacker error)";
+        assert!(remote_fault(unpack));
+        assert!(remote_fault(" ! [remote rejected]   d5531db -> refs/convoy/gate/47 (failed)"));
+        assert!(!remote_fault("fatal: 'origin' does not appear to be a git repository"));
+        assert!(!remote_fault(" ! [remote rejected] d5531db -> refs/convoy/gate/47 (protected)"));
+    }
 }

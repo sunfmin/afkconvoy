@@ -149,7 +149,7 @@ const LOCK_ATTEMPTS: u32 = 5;
 
 /// A push the remote rejected because another push held the ref's lock:
 /// GitHub says `(failed)` or `cannot lock ref`, not a rejected fast-forward.
-fn lock_failure(stderr: &str) -> bool {
+pub(crate) fn lock_failure(stderr: &str) -> bool {
     stderr.lines().any(|line| {
         let line = line.trim();
         (line.starts_with("! [remote rejected]") && line.ends_with("(failed)"))
