@@ -11,6 +11,7 @@ use serde_json::{Value, json};
 use crate::fleet::Fleet;
 use crate::judge::progress;
 use crate::orca::{Source, Worktree};
+use crate::remote::Fresh;
 
 /// What one issue's dead worker left, and the start it selects.
 pub struct Survey {
@@ -29,7 +30,7 @@ pub struct Survey {
 pub fn own_heads(fleet: &Fleet, number: u64, worktree: Option<&Worktree>) -> Result<Vec<String>> {
     let comments = fleet.gh.comments(number)?;
     let recorded = recorded_branches(comments.iter().map(|c| c.body.as_str()));
-    let heads = fleet.repo.remote_heads()?;
+    let heads = fleet.remote.heads(Fresh::Process)?;
     Ok(own_branches(&heads, &recorded, worktree.map(|worktree| worktree.branch.as_str())))
 }
 
@@ -44,7 +45,7 @@ pub fn survey(fleet: &Fleet, number: u64) -> Result<Survey> {
     };
     let mut candidates = vec![];
     for name in own_heads(fleet, number, worktree.as_ref())? {
-        let tip = fleet.repo.fetched(&format!("refs/heads/{name}"))?;
+        let tip = fleet.remote.fetched(&format!("refs/heads/{name}"), Fresh::Process)?;
         let commits_ahead = match tip {
             Some(tip) => {
                 let counted =

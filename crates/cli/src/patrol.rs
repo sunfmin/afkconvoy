@@ -23,8 +23,9 @@ use crate::copies::Copies;
 use crate::dispatch::{Agent, Continuing, WorkerSelection};
 use crate::fleet::Fleet;
 use crate::gh::OpenIssues;
-use crate::git::{REMOTE, Repo};
+use crate::git::Repo;
 use crate::orca::{Source, Worktree};
+use crate::remote::{Fresh, Push};
 use crate::stage::Flows;
 use crate::team::{Kept, keep, unknown_patrols};
 use crate::topic::See;
@@ -201,10 +202,10 @@ pub fn run(fleet: &mut Fleet, me: &Me, agent: &Agent, read: &Flows, row: &Row) -
     };
     // A peer's run may have started and ended since the rebuild read the remote.
     let recorded = run_ref(fleet.repo.layout(), name);
-    let last = fleet.repo.remote_records(&recorded)?.pop();
+    let last = fleet.remote.records(&[&recorded], Fresh::Process)?.pop();
     let last = last.and_then(|record| read_run(&record.subject));
     // …and answered the ask it is due by: one standing still passes the schedule.
-    let ask = fleet.repo.remote_records(&asked_ref(fleet.repo.layout(), name))?.pop();
+    let ask = fleet.remote.records(&[&asked_ref(fleet.repo.layout(), name)], Fresh::Process)?.pop();
     let ask =
         ask.and_then(|record| Some(Ask { ts: read_asked(&record.subject)?, sha: record.sha }));
     if ask.is_none()
@@ -257,7 +258,7 @@ pub fn run(fleet: &mut Fleet, me: &Me, agent: &Agent, read: &Flows, row: &Row) -
     // The record carries the runs of the day before it: they are counted from it alone.
     let ran = Ran::after(last.as_ref(), me.now, ask.is_some());
     let sha = fleet.repo.record_commit(&write_run(&ran))?;
-    fleet.repo.git(&["push", "--quiet", "--force", REMOTE, &format!("{sha}:{recorded}")])?;
+    fleet.remote.push(&Push::set(&sha, &recorded).force())?;
     fleet.scan.last_runs.insert(name.to_string(), ran);
     if let Some(ask) = &ask {
         drop_ask(&fleet.repo, &mut fleet.scan, name, ask)?;
