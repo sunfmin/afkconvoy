@@ -198,6 +198,7 @@ pub fn findings() -> Vec<crate::doctor::Finding> {
             }
             Some(crate::doctor::finding(
                 crate::doctor::Kind::KitUnplaced,
+                serde_json::json!(["kit-unplaced", held.harness]),
                 format!("the harness `{}` has unplaced models in the host kit", held.harness.key()),
                 format!(
                     "{}; {}; the watch researches models and writes its checked research",
