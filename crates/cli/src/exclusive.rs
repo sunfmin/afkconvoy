@@ -20,8 +20,8 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, mpsc};
 use std::time::{Duration, Instant};
 
 use afkconvoy_core::exclusive::{
-    Ticket, ahead, at_once_line, ended_line, in_order, queued_since, ready, rejoins_line,
-    runs_line, same_lane, same_repo, waits_line,
+    Gate, Ticket, ahead, at_once_line, ended_line, in_order, is_fast, limit, queued_since, ready,
+    rejoins_line, runs_line, same_lane, same_repo, waits_line,
 };
 use afkconvoy_core::role::ISSUE_ENV;
 use anyhow::{Result, bail};
@@ -54,6 +54,21 @@ fn is_cut(repo: &Repo) -> bool {
     repo.dir.file_name().and_then(|name| name.to_str()).is_some_and(|name| {
         afkconvoy_core::worker::is_worktree_named(name, afkconvoy_core::cut::CHECKOUT)
     })
+}
+
+/// Which of the two gates (docs/adr/0047) the command `exclusive` runs is,
+/// as `gate --fast` and `--slow` say it to the gate's command: `fast` takes
+/// the fast lane (docs/adr/0049). It is said to that `exclusive` alone, and
+/// not passed on to what its command runs.
+pub const GATE_ENV: &str = "AFKCONVOY_GATE";
+
+/// The gate `exclusive` was told it runs; `None` for any other command.
+fn told_gate() -> Option<Gate> {
+    match std::env::var(GATE_ENV).ok()?.as_str() {
+        "fast" => Some(Gate::Fast),
+        "slow" => Some(Gate::Slow),
+        _ => None,
+    }
 }
 
 /// Only the gate's descendants inherit this lease. Nested `exclusive`
@@ -152,6 +167,7 @@ impl Permit {
             is_turn,
             candidate,
             validation: None,
+            gate: None,
             asked: crate::clock(),
             ran: None,
         };
@@ -271,7 +287,7 @@ impl Joined {
         else {
             return 0;
         };
-        let limit = if running.repo_lane.is_some() { 1 } else { settings.gate_lanes() };
+        let limit = limit(running, settings.lanes());
         let occupied =
             self.tickets.iter().filter(|t| t.ran.is_some() && same_lane(t, running)).count() as u64;
         self.tickets
@@ -288,6 +304,7 @@ impl Joined {
                         && same_repo(t, waiting)
                         && (same_lane(t, waiting) || (t.is_turn && waiting.is_turn))
                         && !(t.candidate && waiting.candidate)
+                        && !(is_fast(t) && is_fast(waiting))
                 });
                 match owner {
                     Some(owner) => owner.number == number,
@@ -422,7 +439,7 @@ impl Queue {
                                 t.ran.is_some() || crate::slots::repo_available(t).unwrap_or(false)
                             })
                             .collect();
-                        ready(&eligible, number, settings.gate_lanes())
+                        ready(&eligible, number, settings.lanes())
                     } =>
                 {
                     break;
@@ -666,6 +683,7 @@ pub fn exclusive(
         is_turn: false,
         candidate: false,
         validation: None,
+        gate: told_gate(),
         asked: now(),
         ran: None,
     };
@@ -721,7 +739,7 @@ fn run_command(
     slot: &crate::slots::Slot,
 ) -> std::io::Result<Option<ExitStatus>> {
     let mut cmd = Command::new(&command[0]);
-    cmd.args(&command[1..]).current_dir(dir);
+    cmd.args(&command[1..]).current_dir(dir).env_remove(GATE_ENV);
     slot.inherit(&mut cmd);
     let mut child = crate::process::spawn(&mut cmd)?;
     let started = Instant::now();
@@ -830,6 +848,7 @@ mod tests {
             is_turn: false,
             candidate: false,
             validation: None,
+            gate: None,
             asked,
             ran: None,
         }

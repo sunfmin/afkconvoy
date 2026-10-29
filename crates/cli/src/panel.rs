@@ -277,7 +277,8 @@ pub struct Host {
     pub admission: Result<Admission, String>,
     /// What its host runner says of the exclusive queue; why it cannot.
     pub exclusive: Result<crate::queue::Said, String>,
-    pub gate_lanes: u64,
+    /// How many commands may run at once in its worker lanes and fast lane.
+    pub lanes: afkconvoy_core::exclusive::Lanes,
     /// The hours of its local time a fleet may put it to sleep in; `None`
     /// where its host settings keep it awake.
     pub sleep_hours: Option<Hours>,
@@ -309,7 +310,7 @@ impl Host {
             now,
             admission: Admission::read(dir).map_err(|error| format!("{error:#}")),
             exclusive,
-            gate_lanes: settings.gate_lanes(),
+            lanes: settings.lanes(),
             sleep_hours: host_settings::host_sleep(),
             kit: crate::kit::load().map_err(|error| format!("{error:#}")),
             worker_health: crate::health::show(),
@@ -922,11 +923,15 @@ fn patrol_says(row: &patrol::Row, now: u64) -> String {
 fn exclusive_says(request: &afkconvoy_core::exclusive::Observed) -> String {
     use afkconvoy_core::exclusive::State;
     let ticket = &request.ticket;
+    let kind = request.kind.word();
     let mut doing = match request.scheduling.state {
-        State::Running => format!("running, for {}", lasted(request.elapsed_seconds.unwrap_or(0))),
-        State::Eligible => {
-            format!("eligible now, waiting for grant, for {}", lasted(request.waiting_seconds))
+        State::Running => {
+            format!("{kind} · running, for {}", lasted(request.elapsed_seconds.unwrap_or(0)))
         }
+        State::Eligible => format!(
+            "{kind} · eligible now, waiting for grant, for {}",
+            lasted(request.waiting_seconds)
+        ),
         State::Waiting => {
             let holders: std::collections::BTreeSet<_> = request
                 .scheduling
@@ -966,7 +971,7 @@ fn exclusive_says(request: &afkconvoy_core::exclusive::Observed) -> String {
                 })
                 .collect();
             format!(
-                "waits behind {} holding or reserving requests, for {} · {}",
+                "{kind} · waits behind {} holding or reserving requests, for {} · {}",
                 holders.len(),
                 lasted(request.waiting_seconds),
                 why.join("; ")
@@ -1216,11 +1221,16 @@ fn exclusive(out: &mut String, host: &Host) {
             return;
         }
     };
-    let observation = crate::queue::snapshot_of(said, host.gate_lanes, host.now);
+    let observation = crate::queue::snapshot_of(said, host.lanes, host.now);
     let _ = write!(
         out,
-        "<p>{} worker lanes · {} used · {} free</p>",
-        observation.worker.capacity, observation.worker.used, observation.worker.free
+        "<p>{} worker lanes · {} used · {} free</p><p>{} fast gate lanes · {} used · {} free</p>",
+        observation.worker.capacity,
+        observation.worker.used,
+        observation.worker.free,
+        observation.fast.capacity,
+        observation.fast.used,
+        observation.fast.free
     );
     match said {
         None => out.push_str("<p>No host runner holds the queue.</p>"),
@@ -1230,9 +1240,9 @@ fn exclusive(out: &mut String, host: &Host) {
         Some((_, Some(true))) => out.push_str("<p>The host runner has paused new grants.</p>"),
         Some((_, Some(false))) => {}
     }
-    // The worker lane, as `lane` names a ticket of no repo lane.
-    let worker = "worker".to_string();
-    let lanes = std::iter::once((worker, None)).chain(
+    // The worker lane, as `lane` names a ticket of no repo lane, and the
+    // fast lane, each shown where a request is in it.
+    let lanes = [("worker".to_string(), None), ("fast".to_string(), None)].into_iter().chain(
         observation.repos.iter().map(|repo| (format!("repo {}", repo.repo), Some(&repo.occupancy))),
     );
     for (lane, occupancy) in lanes {
@@ -1747,7 +1757,7 @@ mod tests {
             now,
             admission: Ok(Admission { shares: SHARES, said: vec![], reading, span: 600 }),
             exclusive: Ok(Some((vec![], Some(false)))),
-            gate_lanes: 1,
+            lanes: afkconvoy_core::exclusive::Lanes { worker: 1, fast: 1 },
             sleep_hours: Some(SLEEP_HOURS),
             kit: Ok(Kit::default()),
             worker_health: Ok(crate::health::Health::default()),
@@ -1852,6 +1862,7 @@ mod tests {
                 is_turn: false,
                 candidate: false,
                 validation: None,
+                gate: None,
                 asked: 900 + number,
                 ran,
             }
@@ -1867,7 +1878,11 @@ mod tests {
         let mut host = host_of(1000);
         host.exclusive = Ok(said.clone());
         let html = render(&page_of(host, vec![]));
-        let observation = crate::queue::observation(said, 1, 1000);
+        let observation = crate::queue::observation(
+            said,
+            afkconvoy_core::exclusive::Lanes { worker: 1, fast: 1 },
+            1000,
+        );
         let section = html.split("<h2>Command lanes</h2>").nth(1).unwrap();
         let section = section.split("</section>").next().unwrap();
         let worker = section.split("<h3>worker lane</h3>").nth(1).unwrap();

@@ -1537,6 +1537,11 @@ enum Command {
         /// candidate worktrees of one repo may validate together within this bound.
         #[arg(long, env = "AFKCONVOY_GATE_LANES", value_parser = host_settings::watch_every_or_default)]
         gate_lanes: Option<To<u64>>,
+        /// Fast gates that may run at once on this host, above zero, or `default`
+        /// ({const:FAST_LANES}). They take a lane of their own, beside the worker lanes: no slow
+        /// gate holds them up, and fast gates of one repo run side by side.
+        #[arg(long, env = "AFKCONVOY_FAST_LANES", value_parser = host_settings::watch_every_or_default)]
+        fast_lanes: Option<To<u64>>,
         /// Stop after this many ticks
         #[arg(long, hide = true)]
         ticks: Option<u64>,
@@ -3725,6 +3730,7 @@ pub fn manual() -> agent_help::Help {
         .constant("FIRST_START_QUESTIONS", first_start::help())
         .constant("EXCLUSIVE_SECONDS", exclusive::SECONDS)
         .constant("GATE_LANES", host_settings::GATE_LANES)
+        .constant("FAST_LANES", host_settings::FAST_LANES)
         .constant("EXCLUSIVE_BOUND_CODE", exclusive::BOUND_CODE)
         .constant("WATCH_EVERY", host_settings::WATCH_EVERY)
         .constant("WATCH_TITLE", watch_terminal::TITLE)
@@ -4001,6 +4007,7 @@ fn start_of(
         exclusive_seconds,
         jev_key_command,
         gate_lanes,
+        fast_lanes,
         ticks,
         second_ms,
         panic_at_tick,
@@ -4033,6 +4040,7 @@ fn start_of(
         admit_inspect_after,
         exclusive_seconds,
         gate_lanes,
+        fast_lanes,
         panel,
         watch_dir,
         watch_every,
