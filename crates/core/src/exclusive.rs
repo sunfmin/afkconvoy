@@ -98,11 +98,14 @@ impl Kind {
 /// What `ticket` is: a fast or a slow gate run alone, a landing turn, or
 /// any other command.
 pub fn kind(ticket: &Ticket) -> Kind {
-    match ticket.gate {
-        Some(Gate::Fast) => Kind::FastGate,
-        Some(Gate::Slow) => Kind::SlowGate,
-        None if ticket.is_turn => Kind::Turn,
-        None => Kind::Command,
+    if is_fast(ticket) {
+        Kind::FastGate
+    } else if ticket.gate == Some(Gate::Slow) {
+        Kind::SlowGate
+    } else if ticket.is_turn {
+        Kind::Turn
+    } else {
+        Kind::Command
     }
 }
 
@@ -525,21 +528,17 @@ const SETUP: [&str; 15] = [
 pub fn snapshot(queue: &[Ticket], lanes: Lanes, paused: bool, now: u64) -> Snapshot {
     let ordered = in_order(queue.to_vec());
     let decisions = scheduling(&ordered, lanes, paused);
-    let mut repos: Vec<String> =
-        ordered.iter().filter(|t| !is_fast(t)).filter_map(|t| t.repo_lane.clone()).collect();
+    let mut repos: Vec<String> = ordered.iter().filter_map(|t| t.repo_lane.clone()).collect();
     repos.sort();
     repos.dedup();
     let repos = repos
         .into_iter()
-        .map(|repo| RepoLane {
-            occupancy: occupancy(&ordered, |t| !is_fast(t) && t.repo_lane == Some(repo.clone()), 1),
-            repo,
-        })
+        .map(|repo| RepoLane { occupancy: occupancy(&ordered, &format!("repo {repo}"), 1), repo })
         .collect();
     let mut result = Snapshot {
         paused,
-        worker: occupancy(&ordered, |t| !is_fast(t) && t.repo_lane.is_none(), lanes.worker),
-        fast: occupancy(&ordered, is_fast, lanes.fast),
+        worker: occupancy(&ordered, "worker", lanes.worker),
+        fast: occupancy(&ordered, "fast", lanes.fast),
         repos,
         running: vec![],
         waiting: vec![],
@@ -563,15 +562,18 @@ pub fn snapshot(queue: &[Ticket], lanes: Lanes, paused: bool, now: u64) -> Snaps
     result
 }
 
-fn occupancy(queue: &[Ticket], in_lane: impl Fn(&Ticket) -> bool, capacity: u64) -> Capacity {
-    let used = queue.iter().filter(|t| t.ran.is_some() && in_lane(t)).count() as u64;
+/// How many places of the lane [`lane`] names `named` are used.
+fn occupancy(queue: &[Ticket], named: &str, capacity: u64) -> Capacity {
+    let used = queue.iter().filter(|t| t.ran.is_some() && lane(t) == named).count() as u64;
     Capacity { capacity, used, free: capacity.saturating_sub(used) }
 }
 
 /// The lane a ticket names in the log, doctor and the panel.
 pub fn lane(ticket: &Ticket) -> String {
+    if is_fast(ticket) {
+        return "fast".to_string();
+    }
     match &ticket.repo_lane {
-        _ if is_fast(ticket) => "fast".to_string(),
         Some(repo) => format!("repo {repo}"),
         None => "worker".to_string(),
     }
