@@ -2374,7 +2374,7 @@ fn start_detached(program: &Path) -> Result<Child> {
     let env = pinned(env, &dir, config);
     let log = opened_log(&dir.join(LOG))?;
     crate::process::spawn(
-        Command::new(program)
+        crate::process::inheriting_nothing(&mut Command::new(program))
             .arg("host-runner")
             .env_clear()
             .envs(env)
