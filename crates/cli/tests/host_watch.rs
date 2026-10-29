@@ -647,7 +647,7 @@ fn one_watch_covers_an_episode_is_kept_across_a_restart_and_is_recorded() {
     let items: Vec<&str> =
         next["items"].as_array().unwrap().iter().map(|i| i["id"].as_str().unwrap()).collect();
     assert_eq!(items.len(), 1, "{items:?}");
-    assert!(items[0].contains("`dsh`"), "{items:?}");
+    assert!(items[0].contains("\"dsh\""), "{items:?}");
     let doctor = world.afk(&["doctor", "--all"]).json;
     assert_eq!(doctor["host"]["watch"]["running"]["id"], next["id"]);
 }

@@ -20,9 +20,10 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::gh::GitHub;
-use crate::git::{REMOTE, Repo};
+use crate::git::Repo;
 use crate::lock::standing_locks;
 use crate::measure;
+use crate::remote::{Fresh, Push};
 
 /// What keeps a worktree from being exactly a commit: its uncommitted and
 /// untracked paths as `git status --porcelain` lists them, and — given the
@@ -84,14 +85,21 @@ struct CommandRun {
 /// process's stderr, keeping its status, signal evidence and the end of its
 /// log. A run that reaches the gate limit, `limit`, is killed, with everything
 /// it started, and is reported as a timeout rather than an outside signal.
+/// `alone` is the one of the two gates run alone, which the command's
+/// `exclusive` is told, so that a fast gate takes the fast lane.
 fn run_command(
     repo: &Repo,
     command: &str,
     limit: Duration,
     candidate: Option<&crate::candidates::Gate<'_>>,
+    alone: Option<Which>,
 ) -> Result<CommandRun> {
     let mut shell = Command::new("sh");
     crate::exclusive::inherit(&mut shell, repo)?;
+    match alone {
+        Some(which) => shell.env(crate::exclusive::GATE_ENV, which.word()),
+        None => shell.env_remove(crate::exclusive::GATE_ENV),
+    };
     if let Some(candidate) = candidate {
         shell.env(crate::candidates::PROCESS_ENV, candidate.process_marker());
     }
@@ -261,7 +269,7 @@ fn controlled_run(
     let head = repo.git(&["rev-parse", "HEAD"])?;
     let tree = head_tree(repo)?;
     let before = off_commit(repo, None)?;
-    let command_run = run_command(repo, command.text(), limit, candidate)?;
+    let command_run = run_command(repo, command.text(), limit, candidate, None)?;
     let ended = match command_run.termination {
         Some(termination) => termination.description(),
         None => format!("gate command ended (exit {})", command_run.exit_code),
@@ -299,8 +307,7 @@ fn controlled_run(
             // The record is a parentless commit OF the tested tree.
             let sha =
                 repo.record_commit_of(tree.name(), &green.write_issued(&tree, command, issue))?;
-            let pushed =
-                repo.try_git(&["push", "--quiet", "--force", REMOTE, &format!("{sha}:{refname}")])?;
+            let pushed = repo.remote().try_push(&Push::set(&sha, &refname).force())?;
             if !pushed.ok {
                 // Soft: a record that cannot be written costs the landing a run of the gate.
                 run.not_recorded = Some(pushed.stderr.trim().to_string());
@@ -312,7 +319,7 @@ fn controlled_run(
             // is not believed from the one the record was left on.
             for layout in Layout::ALL {
                 let name = record_ref(layout, &tree, command);
-                let _ = repo.try_git(&["push", "--quiet", REMOTE, "--delete", &name]);
+                let _ = repo.remote().try_push(&Push::delete(&name));
             }
             // A red run of this issue's tree is kept on its own ref until the
             // work account cites it. A base-branch certification names no issue.
@@ -320,13 +327,7 @@ fn controlled_run(
                 let subject = red_subject(&tree, command, ran.seconds, host, now, issue);
                 let red = red_ref(repo.layout(), issue, now, tree.key(), command.key());
                 if let Ok(sha) = repo.record_commit_of(tree.name(), &subject) {
-                    let _ = repo.try_git(&[
-                        "push",
-                        "--quiet",
-                        "--force",
-                        REMOTE,
-                        &format!("{sha}:{red}"),
-                    ]);
+                    let _ = repo.remote().try_push(&Push::set(&sha, &red).force());
                 }
             }
         }
@@ -380,8 +381,7 @@ pub(crate) fn record_whole(
     };
     let sha = repo.record_commit_of(tree.name(), &run.write_issued(tree, whole, issue))?;
     let refname = record_ref(repo.layout(), tree, whole);
-    let pushed =
-        repo.try_git(&["push", "--quiet", "--force", REMOTE, &format!("{sha}:{refname}")])?;
+    let pushed = repo.remote().try_push(&Push::set(&sha, &refname).force())?;
     Ok((!pushed.ok).then(|| pushed.stderr.trim().to_string()))
 }
 
@@ -398,14 +398,14 @@ pub fn recorded(
     let names: Vec<String> =
         Layout::ALL.into_iter().map(|layout| record_ref(layout, tree, command)).collect();
     let patterns: Vec<&str> = names.iter().map(String::as_str).collect();
-    let found = repo.remote_records_in(&patterns)?;
+    let found = repo.remote().records(&patterns, Fresh::Process)?;
     Ok(recorded_among(&found, noted, tree, command, now))
 }
 
 /// The still-valid green run among an existing remote snapshot's records,
 /// from either ref layout. The noted layout's record wins when both stand.
 pub fn recorded_among(
-    records: &[crate::git::RemoteRecord],
+    records: &[crate::remote::RemoteRecord],
     layout: afkconvoy_core::layout::Layout,
     tree: &Tree,
     command: &GateCommand,
@@ -579,7 +579,8 @@ pub fn one(repo: &Repo, config: &Config, which: Which) -> Result<Value> {
              (`afkconvoy config --help`); run `afkconvoy gate`, the whole gate"
         )
     })?;
-    let run = run_command(repo, &gate.command, Duration::from_secs(gate.seconds), None)?;
+    let run =
+        run_command(repo, &gate.command, Duration::from_secs(gate.seconds), None, Some(which))?;
     let green = run.exit_code == 0 && !run.timed_out && run.termination.is_none();
     let over_budget = run.seconds > gate.budget_seconds;
     let detail = match (green, &run.termination) {

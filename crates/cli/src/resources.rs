@@ -210,9 +210,17 @@ pub fn findings(resources: &Value, now: u64) -> Vec<crate::doctor::Finding> {
                     ),
                 ),
             };
-            let mut finding =
-                crate::doctor::finding(kind, what, r.to_string(), "afkconvoy doctor --all".into());
-            finding.watch_id = r["id"].as_str().map(str::to_string);
+            let mut finding = crate::doctor::finding(
+                kind,
+                serde_json::json!(["resource", r["id"]]),
+                what,
+                r.to_string(),
+                "afkconvoy doctor --all".into(),
+            );
+            // A resource's own id already holds its scope.
+            if let Some(id) = r["id"].as_str() {
+                finding.watch_id = id.to_string();
+            }
             finding
         })
         .collect()

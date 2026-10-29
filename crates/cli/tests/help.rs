@@ -1317,7 +1317,7 @@ fn the_help_of_check_and_of_doctor_describe_the_key_that_names_a_topic() {
     }
     let doctor = asked(&["doctor", "--help"]);
     for part in [
-        "evidence, fix, see}",
+        "evidence, fix, see, watch_id}",
         "- `see`: the command that prints the help topic explaining it",
         "`afkconvoy help humans` where what it reports waits for",
     ] {

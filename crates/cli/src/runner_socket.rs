@@ -556,6 +556,7 @@ mod tests {
             is_turn: false,
             candidate: false,
             validation: None,
+            gate: None,
             command: "cargo test".into(),
             asked: 1000,
             ran: None,
