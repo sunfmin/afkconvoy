@@ -22,6 +22,7 @@ use crate::board::show;
 use crate::claims::{Me, beat, goodbye};
 use crate::dispatch::{Agent, StartFrom, dispatch};
 use crate::fleet::Fleet;
+use crate::fleet_report::FleetReport;
 use crate::forget::forget;
 use crate::gh::{Gone, unreached};
 use crate::git::Repo;
@@ -194,7 +195,7 @@ pub fn tick(
     }
     for issue in &open.issues.rows {
         // Dispatch reports a resolution failure against its issue; successful
-        // discovery must precede casting and the caster's choice of range.
+        // discovery must precede the choice of range.
         let _ = agent.discover_casting(&issue.labels);
     }
     let (mut set, mut flows) = fleet.rebuild(&open, Some(&me.instance))?;
@@ -338,7 +339,7 @@ fn carry_out(
     // ladder can mistake its shell for a harness.
     let retry = match step {
         TickStep::Judge { issue, start: true }
-        | TickStep::Watch { issue }
+        | TickStep::Watch { issue, start: true }
         | TickStep::Advance { issue } => Some(issue),
         _ => None,
     };
@@ -351,9 +352,9 @@ fn carry_out(
     // A shared harness outage is no worker's silence. Keep the claim and
     // progress, including its one nudge, until its pending prompt can probe.
     let issue = match step {
-        TickStep::Judge { issue, .. } | TickStep::Watch { issue } | TickStep::Advance { issue } => {
-            Some(issue)
-        }
+        TickStep::Judge { issue, .. }
+        | TickStep::Watch { issue, .. }
+        | TickStep::Advance { issue } => Some(issue),
         _ => None,
     };
     if let Some(issue) = issue {
@@ -387,7 +388,7 @@ fn carry_out(
         }
         TickStep::Forget { issue } => forget(fleet, me, issue),
         TickStep::Judge { issue, start } => judge(fleet, me, agent, issue, start),
-        TickStep::Watch { issue } => watch(fleet, me, agent, issue),
+        TickStep::Watch { issue, start } => watch(fleet, me, agent, issue, start),
         TickStep::Advance { issue } => advance(fleet, me, agent, read.flows, issue),
         TickStep::Escalate { issue } => {
             let calling = read.set.escalating.iter().find(|calling| calling.number == issue);
@@ -428,7 +429,6 @@ fn carry_out(
             None => Ok(Outcome::Nothing),
         },
         TickStep::Cut { busy } => crate::cut::start(fleet, me, agent, busy),
-        TickStep::Cast => Ok(Outcome::Nothing),
         TickStep::SlowGate => match &read.set.slow_gate {
             Some(slow) => slow_gate::open(fleet, me, slow),
             None => Ok(Outcome::Nothing),
@@ -447,7 +447,7 @@ fn words(step: TickStep) -> (&'static str, Option<u64>) {
         TickStep::Settle { issue } => ("settle", Some(issue)),
         TickStep::Forget { issue } => ("forget", Some(issue)),
         TickStep::Judge { issue, .. } => ("judge", Some(issue)),
-        TickStep::Watch { issue } => ("watch", Some(issue)),
+        TickStep::Watch { issue, .. } => ("watch", Some(issue)),
         TickStep::Advance { issue } => ("advance", Some(issue)),
         TickStep::Escalate { issue } => ("escalate", Some(issue)),
         TickStep::EndPatrol { .. } => ("end_patrol", None),
@@ -457,7 +457,6 @@ fn words(step: TickStep) -> (&'static str, Option<u64>) {
         TickStep::Dispatch { issue } => ("dispatch", Some(issue)),
         TickStep::EndCut => ("end_cut", None),
         TickStep::Cut { .. } => ("cut", None),
-        TickStep::Cast => ("cast", None),
         TickStep::SlowGate => ("slow_gate", None),
         TickStep::Board { issue, .. } => ("board", Some(issue)),
         TickStep::StageLabel { issue } => ("stage_label", Some(issue)),
@@ -599,7 +598,10 @@ impl Ticked {
     /// The panel of `me` after this tick: what its rebuild read, with what the
     /// pass did since.
     pub fn panel(&self, fleet: &Fleet, me: &Me) -> Panel {
-        let mut panel = panel::read(fleet, Some(me), &self.set, &self.flows, &self.pass.did);
+        let admission = Ok(self.admission.clone());
+        let report = FleetReport::admitted(fleet, &self.flows, &self.set, admission);
+        let mut panel =
+            panel::read(fleet, Some(me), &self.set, &self.flows, &self.pass.did, &report);
         panel.declared = self.declared().min(self.pass.held);
         panel.held = self.pass.held - panel.declared;
         panel.bound = self.bound - panel.declared;
@@ -667,7 +669,7 @@ impl Ticked {
             parts.push(format!("{left_alone} left alone"));
         }
         if declared > 0 {
-            parts.push(format!("{declared} declared"));
+            parts.push(format!("{declared} taking no slot"));
         }
         if taking > concurrency {
             parts.push(format!("{} past the bound", taking - concurrency));
@@ -687,6 +689,7 @@ impl Ticked {
                     Outcome::Waiting(_) => "waiting",
                     Outcome::Continued => "continued",
                     Outcome::Restarted => "restarted",
+                    Outcome::Asked => "asked",
                     Outcome::Nothing => "nothing",
                     Outcome::Lost => "lost",
                     Outcome::Blocked => "blocked",
@@ -832,6 +835,7 @@ impl Ticked {
             ("nudged", Outcome::Nudged),
             ("continued", Outcome::Continued),
             ("restarted", Outcome::Restarted),
+            ("asked for a turn again for", Outcome::Asked),
         ] {
             let issues: Vec<String> = self
                 .pass

@@ -101,6 +101,36 @@ pub fn read_join<'a>(bodies: impl IntoIterator<Item = &'a str>) -> LandingRecord
     record
 }
 
+/// What a landing worker's worktree last heard from its turn (`land`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Answered {
+    /// It never asked for one: the worker is still preparing the branch.
+    Never,
+    /// A turn is being asked for right now: queued, waiting on a
+    /// predecessor, or gating.
+    Asking,
+    /// The last turn answered this `outcome`.
+    Said(String),
+}
+
+impl Answered {
+    /// Whether the last turn answered a wait (`Ending::waits`).
+    pub fn waits(&self) -> bool {
+        let Answered::Said(outcome) = self else { return false };
+        crate::ending::Ending::ALL.iter().any(|e| e.word() == outcome && e.waits())
+    }
+}
+
+/// Whether the worker of a landing claim is changing the tree, and its claim
+/// takes a slot: its harness has a turn open, and no turn of the PR's is
+/// being asked for or last answered a wait. Resolving a conflict, fixing a
+/// red gate, or still preparing the branch is changing it.
+pub fn changing_tree(state: Option<WorkerState>, answered: &Answered) -> bool {
+    matches!(state, Some(WorkerState::Busy))
+        && !matches!(answered, Answered::Asking)
+        && !answered.waits()
+}
+
 /// The proof that a PR's join never had its restart, used up by the one
 /// restart it allows. Only `join_route` makes one.
 #[derive(Debug, PartialEq, Eq)]
@@ -280,6 +310,25 @@ mod tests {
 
     fn at(nudged: Nudged, restarted: Option<u64>) -> LandingRoute {
         join_route(STOPPED, &work(), nudged, restarted, (restarted, None), NOW)
+    }
+
+    #[test]
+    fn only_a_busy_worker_with_its_tree_to_change_is_at_work() {
+        let busy = Some(WorkerState::Busy);
+        for answered in ["conflict", "gate_red"] {
+            assert!(changing_tree(busy, &Answered::Said(answered.into())), "{answered}");
+        }
+        assert!(changing_tree(busy, &Answered::Never), "preparing the branch");
+        assert!(!changing_tree(busy, &Answered::Asking), "the turn is queued");
+        for wait in crate::ending::Ending::ALL.iter().filter(|e| e.waits()) {
+            let said = Answered::Said(wait.word().into());
+            assert!(!changing_tree(busy, &said), "{}", wait.word());
+        }
+        assert!(changing_tree(busy, &Answered::Said("error".into())), "a failed ask");
+        let conflict = Answered::Said("conflict".into());
+        assert!(!changing_tree(None, &conflict), "no worktree");
+        assert!(!changing_tree(Some(WorkerState::Gone), &conflict), "gone");
+        assert!(!changing_tree(Some(STOPPED), &conflict), "idle");
     }
 
     #[test]

@@ -149,7 +149,7 @@ pub struct Dispatchable {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stage: Option<String>,
     /// In an unbound repo, the harness and model its worker would run, and
-    /// why (`casting::cast`); `None` of a bound repo's issue, the stock
+    /// why (`casting::preferred`); `None` of a bound repo's issue, the stock
     /// consult's, and any while the host kit cannot be read.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cast: Option<crate::casting::Cast>,
@@ -213,6 +213,19 @@ pub struct Mine {
     /// and is not acted on yet: the claim is held until it is, and takes no
     /// slot meanwhile. Only of a claim with no PR, or at a stage.
     pub declared: bool,
+    /// A landing claim whose worker is not changing the tree: gone or idle,
+    /// or its turn queued, waiting on a predecessor, or answered with a wait
+    /// (`landing_worker::changing_tree`). The claim is held until the PR
+    /// lands or it ends otherwise, and takes no slot meanwhile.
+    pub idle: bool,
+}
+
+impl Mine {
+    /// Whether the claim takes no slot: its worker declared, or it is landing
+    /// and its worker is not changing the tree.
+    pub fn slotless(&self) -> bool {
+        self.declared || self.idle
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -283,10 +296,6 @@ pub struct WorkingSet {
     /// and the effect layer puts in what it read.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub held_back: Vec<Hold>,
-    /// Left unset. Automatic casting is gone, so a plan reports no caster
-    /// and holds no issue for one.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub caster: Option<crate::casting::Standing>,
     /// Whether each open issue's model label is followed, or its worker runs
     /// the user's default, and the recorded model of a worker already running.
     pub casting: Vec<crate::casting::ModelStatus>,
@@ -335,13 +344,14 @@ impl WorkingSet {
         left_alone
     }
 
-    /// How many claims of mine take no slot because a verdict was declared
-    /// under each (`Mine::declared`). Not those a fleet lock has the pass
-    /// leave alone: they are counted there.
-    pub fn declared(&self) -> usize {
+    /// How many claims of mine take no slot (`Mine::slotless`): a verdict was
+    /// declared under each, or each is landing with its worker not changing
+    /// the tree. Not those a fleet lock has the pass leave alone: they are
+    /// counted there.
+    pub fn slotless(&self) -> usize {
         let mut declared: usize = 0;
         for mine in &self.mine {
-            if mine.declared && !self.locked_out(mine.number) {
+            if mine.slotless() && !self.locked_out(mine.number) {
                 declared = declared.saturating_add(1);
             }
         }
@@ -351,13 +361,15 @@ impl WorkingSet {
     /// The claims a pass may hold, in a fleet whose config allows
     /// `concurrency`: one more for each claim of mine whose worker declared a
     /// verdict, which is held only until the grace of its worker runs out —
-    /// the frontier does not wait that out — and, with a fleet lock standing,
+    /// the frontier does not wait that out — one more for each landing claim
+    /// of mine whose worker is not changing the tree, which is held until its
+    /// PR lands, and, with a fleet lock standing,
     /// one more for each claim of mine the pass leaves alone. Nothing reads
     /// what their workers declare until the lock ends, so a lock issue that
     /// waited for one of their slots would wait for the lock it is there to
     /// end.
     pub fn bound(&self, concurrency: usize) -> usize {
-        concurrency.saturating_add(self.left_alone()).saturating_add(self.declared())
+        concurrency.saturating_add(self.left_alone()).saturating_add(self.slotless())
     }
 }
 
@@ -412,6 +424,9 @@ pub struct Observed<'a> {
     /// My claimed issues with a verdict declared under the claim and not
     /// acted on yet (`Mine::declared`).
     pub declared: &'a [u64],
+    /// My claimed issues whose PR is open and whose worker is not changing
+    /// the tree (`Mine::idle`).
+    pub idle: &'a [u64],
     /// What is due on each open issue of a bound repo that carries a flow
     /// label (`role::due`). Empty in an unbound repo.
     pub due: &'a [(u64, Due<'a>)],
@@ -553,7 +568,6 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
             seen.slow_gate,
         ),
         held_back: vec![],
-        caster: None,
         casting: vec![],
         cut: None,
     };
@@ -643,7 +657,8 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
             });
             let at_work = matches!(status, Status::NoPr | Status::AtStage);
             let declared = at_work && seen.declared.contains(&claim.number);
-            set.mine.push(Mine { number: claim.number, title, status, pr, due, declared });
+            let idle = status == Status::Landing && seen.idle.contains(&claim.number);
+            set.mine.push(Mine { number: claim.number, title, status, pr, due, declared, idle });
             continue;
         }
         let instance = claim.owner.as_ref().map(|owner| owner.instance.clone());
@@ -761,6 +776,7 @@ mod tests {
             kept: &[],
             landed: &[],
             declared: &[],
+            idle: &[],
             due: &[],
             flows: &FlowLabels::default(),
             landing: &[],
@@ -806,6 +822,7 @@ mod tests {
             kept: &[1, 2, 3],
             landed: &[],
             declared: &[],
+            idle: &[],
             due: &[],
             flows: &FlowLabels::default(),
             landing: &[],
@@ -843,6 +860,7 @@ mod tests {
             kept: &[],
             landed: &[],
             declared: &[],
+            idle: &[],
             due: &[],
             flows: &FlowLabels::default(),
             landing: &[],
@@ -904,6 +922,7 @@ mod tests {
             kept: &[],
             landed: &[],
             declared: &[],
+            idle: &[],
             due: &[],
             flows: &no_flows,
             landing: &[],
@@ -985,6 +1004,7 @@ mod tests {
             kept: &[],
             landed: &[],
             declared: &[],
+            idle: &[],
             due: &due,
             flows: &FlowLabels::default(),
             landing: &[],
@@ -1100,6 +1120,7 @@ mod tests {
             kept: &[],
             landed: &[],
             declared: &[],
+            idle: &[],
             due: &due,
             flows: &FlowLabels::default(),
             landing: &[],
@@ -1182,6 +1203,7 @@ mod tests {
             kept: &[],
             landed: &[],
             declared: &[],
+            idle: &[],
             due: &[],
             flows: &FlowLabels::default(),
             // #10's PR is gone: its landing worker has nothing to join.
@@ -1241,6 +1263,7 @@ mod tests {
             kept: &[],
             landed: &[9],
             declared: &[],
+            idle: &[],
             due: &[],
             flows: &FlowLabels::default(),
             landing: &[],
@@ -1291,6 +1314,7 @@ mod tests {
             kept: &[],
             landed: &[],
             declared: &[],
+            idle: &[],
             due: &[],
             flows: &FlowLabels::default(),
             landing: &[],
@@ -1324,6 +1348,7 @@ mod tests {
             kept: &[],
             landed: &[],
             declared: &[],
+            idle: &[],
             due: &[],
             flows: &FlowLabels::default(),
             landing: &[],
@@ -1366,6 +1391,7 @@ mod tests {
                     kept: &[],
                     landed: &[],
                     declared: &[],
+                    idle: &[],
                     due: &[],
                     flows: &FlowLabels::default(),
                     landing: &[],
