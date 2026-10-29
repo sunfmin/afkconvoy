@@ -8,13 +8,14 @@ use afkconvoy_core::board::Stage;
 use afkconvoy_core::claims::{Claim, releasable};
 use afkconvoy_core::harness::Harness;
 use afkconvoy_core::left::{Held, Left};
-use afkconvoy_core::plan::closing_pr;
+use afkconvoy_core::plan::{Status, closing_pr};
 use afkconvoy_core::prompt::nudge_line;
 use afkconvoy_core::role::followed;
 use afkconvoy_core::stage_record::stage_records;
 use afkconvoy_core::stopped::{
-    Background, FOOTER_LINES, NudgeStep, Progress, Route, Silent, Tail, Unnudged, Why, Workless,
-    past_grace, route, screen_request, settled_by_state, stalled_reason, standing_verdict,
+    Background, FOOTER_LINES, NudgeStep, Progress, Route, Silence, Silent, Tail, Unnudged, Why,
+    Workless, past_grace, route, screen_request, settled_by_state, silence, stalled_reason,
+    standing_verdict,
 };
 use afkconvoy_core::tick::Outcome;
 use afkconvoy_core::transition;
@@ -440,10 +441,26 @@ enum Asked {
     Stopped(Box<Stopped>),
 }
 
+/// Who reads a worker's silence, and so whether the read moves anything.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Look {
+    /// The tick, worker health and `nudge`: the read stamps the since of the
+    /// worker's own background work (`Worktree::background_since`).
+    Acting,
+    /// `doctor`: the same judgment, writing nothing, so the since stays where
+    /// the tick put it.
+    Reporting,
+}
+
 /// Asks after the worker of my claim on `issue`; `None` when I hold none. A
-/// worker at work, or gone, costs no GitHub read.
-fn ask_after(fleet: &Fleet, me: &Me, issue: u64) -> Result<Option<Asked>> {
+/// worker at work, or gone, costs no GitHub read. A dispatch whose worker has
+/// not taken its brief is no worker to judge: it is continued, never judged
+/// silent (docs/adr/0005).
+fn ask_after(fleet: &Fleet, me: &Me, issue: u64, look: Look) -> Result<Option<Asked>> {
     let Some(claim) = mine(fleet, me, issue)? else { return Ok(None) };
+    if crate::dispatch::incomplete(fleet, issue)? {
+        return Ok(Some(Asked::Settled(Route::Continue)));
+    }
     let worktree = Worktree::of_issue(&Source::of(&fleet.repo)?, issue)?;
     let state = match &worktree {
         Some(worktree) => Some(worktree.state(fleet.now)?),
@@ -451,7 +468,8 @@ fn ask_after(fleet: &Fleet, me: &Me, issue: u64) -> Result<Option<Asked>> {
     };
     if let Some(settled) = settled_by_state(state) {
         // An open turn has no since. A later wait starts when it is seen again.
-        if matches!(state, Some(WorkerState::Busy))
+        if look == Look::Acting
+            && matches!(state, Some(WorkerState::Busy))
             && let Some(worktree) = &worktree
         {
             worktree.background_since(false, None, fleet.now)?;
@@ -462,6 +480,14 @@ fn ask_after(fleet: &Fleet, me: &Me, issue: u64) -> Result<Option<Asked>> {
         bail!("issue #{issue}: a worker that stopped has a worktree and a state");
     };
     let progress = progress(&worktree, &fleet.task_tip(issue)?)?;
+    let handed = worktree.handed(None)?;
+    let nudged = worktree.nudged()?;
+    let past_grace = past_grace(state, &progress, nudged, handed, fleet.now);
+    // Within grace no worker is silent, whatever it declared: a look for its
+    // silence alone reads nothing on GitHub.
+    if look == Look::Reporting && !past_grace {
+        return Ok(Some(Asked::Settled(Route::Leave)));
+    }
     let comments = fleet.gh.comments(issue)?;
     let bodies = || comments.iter().map(|c| c.body.as_str());
     let verdict = latest_verdict(bodies());
@@ -469,42 +495,132 @@ fn ask_after(fleet: &Fleet, me: &Me, issue: u64) -> Result<Option<Asked>> {
         verdict.as_ref().and_then(|verdict| Some(comments.get(verdict.comment)?.url.clone()));
     let verdict = standing_verdict(verdict, said.as_deref(), worktree.answered()?.as_deref());
     let said = said.filter(|_| verdict.is_some());
-    let handed = worktree.handed(None)?;
     // What the worker said is carried out whatever it waits on: its screen is
     // read only when it said nothing.
-    let nudged = worktree.nudged()?;
     let background = match verdict {
         Some(_) => None,
-        None => {
-            let past_grace = past_grace(state, &progress, nudged, handed, fleet.now);
-            own_background(fleet, &worktree, past_grace)?
-        }
+        None => own_background(fleet, &worktree, past_grace, look)?,
     };
     let route = route(state, &progress, verdict.as_ref(), nudged, (handed, background), fleet.now);
     Ok(Some(Asked::Stopped(Box::new(Stopped { claim, worktree, verdict, said, route }))))
 }
 
-/// The command doctor can name for a stopped PR-less claim. Use the same
-/// reading and routing as the tick and `nudge`: a verdict, recent progress,
-/// background work or a prior nudge must never receive a refused nudge fix.
-/// Cases that need the tick's consult or health handling name `tick` itself.
-pub(crate) fn stopped_command(fleet: &Fleet, me: &Me, issue: u64) -> Result<&'static str> {
-    let Some(Asked::Stopped(found)) = ask_after(fleet, me, issue)? else { return Ok("tick") };
-    if crate::health::holding(&found.worktree) {
-        return Ok("tick");
+/// A held claim's worker found silent, with the command the tick runs next
+/// for it: what `doctor` reports a silent worker from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Silenced {
+    /// `nudge` for a worker due its one nudge with no PR; `tick` otherwise —
+    /// the tick nudges a worker at a stage or landing with its own line,
+    /// restarts or escalates one silent past its nudge.
+    pub command: &'static str,
+    /// It was nudged, and stayed silent a grace period more.
+    pub nudged: bool,
+    /// How long it waited on its own background work, past the gate limit.
+    pub waited: Option<u64>,
+    /// It declared a verdict past grace, which the tick has yet to carry out.
+    pub declared: bool,
+}
+
+impl Silenced {
+    fn declared(command: &'static str) -> Silenced {
+        Silenced { command, nudged: false, waited: None, declared: true }
     }
-    Ok(match found.route {
-        Route::Nudge(_) => "nudge",
-        Route::Blocked => {
-            let named = found.verdict.map(|verdict| verdict.blocked_by).unwrap_or_default();
-            match blocked_route(&standings(fleet, issue, &named)?) {
-                Blocked::Redispatch => "dispatch",
-                Blocked::Park(_) => "park",
-                Blocked::Escalate(_) => "tick",
+
+    fn of(silence: Silence, nudge: &'static str) -> Option<Silenced> {
+        match silence {
+            Silence::Nudge(_) => {
+                Some(Silenced { command: nudge, nudged: false, waited: None, declared: false })
             }
+            Silence::Stalled(silent) => Some(Silenced {
+                command: "tick",
+                nudged: silent.nudged,
+                waited: silent.waited,
+                declared: false,
+            }),
+            Silence::Gone | Silence::Lively | Silence::Waiting(_) => None,
         }
-        _ => "tick",
-    })
+    }
+}
+
+/// Whether the worker of my claim on `issue`, at `status`, is silent, through
+/// the read the tick routes it by — writing nothing. `None` for one at work,
+/// gone, within grace, waiting on its own background work inside the gate
+/// limit, held by a shared harness outage, or a dispatch whose worker has not
+/// taken its brief. One with no PR that declared past grace is reported too,
+/// with the command that carries its verdict out.
+pub(crate) fn silenced(
+    fleet: &Fleet,
+    me: &Me,
+    issue: u64,
+    status: Status,
+) -> Result<Option<Silenced>> {
+    if status == Status::NoPr {
+        let Some(Asked::Stopped(found)) = ask_after(fleet, me, issue, Look::Reporting)? else {
+            return Ok(None);
+        };
+        if held_for_report(fleet, &found.worktree)? {
+            return Ok(None);
+        }
+        return Ok(match found.route {
+            Route::Nudge(unnudged) => Silenced::of(Silence::Nudge(unnudged), "nudge"),
+            Route::Stalled(silent) => Silenced::of(Silence::Stalled(silent), "nudge"),
+            Route::Blocked => {
+                let named = found.verdict.map(|verdict| verdict.blocked_by).unwrap_or_default();
+                let command = match blocked_route(&standings(fleet, issue, &named)?) {
+                    Blocked::Redispatch => "dispatch",
+                    Blocked::Park(_) => "park",
+                    Blocked::Escalate(_) => "tick",
+                };
+                Some(Silenced::declared(command))
+            }
+            Route::Close(_) | Route::Escalate(_) => Some(Silenced::declared("tick")),
+            Route::Leave | Route::Waiting(_) | Route::Continue => None,
+        });
+    }
+    if mine(fleet, me, issue)?.is_none() || crate::dispatch::incomplete(fleet, issue)? {
+        return Ok(None);
+    }
+    let Some(worktree) = Worktree::of_issue(&Source::of(&fleet.repo)?, issue)? else {
+        return Ok(None);
+    };
+    let state = worktree.state(fleet.now)?;
+    if settled_by_state(Some(state)).is_some() || held_for_report(fleet, &worktree)? {
+        return Ok(None);
+    }
+    let silence = silence_of(fleet, issue, &worktree, state, None, Look::Reporting)?;
+    Ok(Silenced::of(silence, "tick"))
+}
+
+/// Whether worker health holds the worker in `worktree`, for a report that
+/// runs no observation first. A recorded wait on background work holds only
+/// while that work still shows: the record is as old as the last tick's
+/// observation, and the tick re-observes before it acts.
+fn held_for_report(fleet: &Fleet, worktree: &Worktree) -> Result<bool> {
+    if !crate::health::holding(worktree) {
+        return Ok(false);
+    }
+    if crate::health::holding_past_background(worktree) {
+        return Ok(true);
+    }
+    Ok(own_background(fleet, worktree, true, Look::Reporting)?.is_some())
+}
+
+/// The silence of the stopped worker in `worktree` that declared nothing: its
+/// progress, the nudge and the hand-off recorded here — `handed` whatever it
+/// was handed after it started — and, past grace, its own background work.
+pub(crate) fn silence_of(
+    fleet: &Fleet,
+    issue: u64,
+    worktree: &Worktree,
+    state: WorkerState,
+    handed: Option<u64>,
+    look: Look,
+) -> Result<Silence> {
+    let progress = progress(worktree, &fleet.task_tip(issue)?)?;
+    let (nudged, handed) = (worktree.nudged()?, worktree.handed(handed)?);
+    let past_grace = past_grace(state, &progress, nudged, handed, fleet.now);
+    let background = own_background(fleet, worktree, past_grace, look)?;
+    Ok(silence(state, &progress, nudged, handed, background, fleet.now))
 }
 
 /// Types a nudge at the worker in `worktree` — `line` makes it from where the
@@ -548,16 +664,6 @@ fn read_own_background(worktree: &Worktree) -> SeenBackground {
     }
 }
 
-/// Whether the worker in `worktree` waits on background work of its own right
-/// now: a shell or a monitor its harness shows still running, or a command of
-/// its in the host's exclusive queue. Writes nothing, so `doctor` can read it
-/// without moving the since. The tick and worker health use `own_background`,
-/// whose stamp is that since.
-pub(crate) fn waits_on_own_background(worktree: &Worktree) -> bool {
-    let seen = read_own_background(worktree);
-    seen.showing || seen.queued.is_some()
-}
-
 /// The background work the stopped worker in `worktree` started itself and
 /// waits on. One read of its screen and the exclusive queue answers both
 /// whether any shows and since when, and that since is the one stamp
@@ -566,21 +672,27 @@ pub(crate) fn waits_on_own_background(worktree: &Worktree) -> bool {
 /// (`stopped::past_grace`) — one with a sign of life is not waiting, the
 /// stamp is cleared, and a later wait starts when it is seen again. Soft: a
 /// terminal that cannot be read shows none, and a silence never waits on one.
-/// `doctor` asks `waits_on_own_background`, which does not write the stamp.
+/// `Look::Reporting` reads the since the stamp would hold and writes nothing.
 pub(crate) fn own_background(
     fleet: &Fleet,
     worktree: &Worktree,
     past_grace: bool,
+    look: Look,
 ) -> Result<Option<Background>> {
     if !past_grace {
-        worktree.background_since(false, None, fleet.now)?;
+        if look == Look::Acting {
+            worktree.background_since(false, None, fleet.now)?;
+        }
         return Ok(None);
     }
     let seen = read_own_background(worktree);
     // A command of its in the host's `exclusive` queue is work it waits on
     // too, since it asked to run: busy, not silent (docs/adr/0019).
     let waiting = seen.showing || seen.queued.is_some();
-    let since = worktree.background_since(waiting, seen.queued, fleet.now)?;
+    let since = match look {
+        Look::Acting => worktree.background_since(waiting, seen.queued, fleet.now)?,
+        Look::Reporting => waiting.then(|| worktree.background_seen(seen.queued, fleet.now)),
+    };
     Ok(since.map(|since| Background { since, limit: fleet.config.gate_seconds() }))
 }
 
@@ -599,7 +711,7 @@ pub(crate) fn where_it_stopped(worktree: &Worktree, silent: &Silent) -> Tail {
 /// nudge — at work, heard from within grace, one that declared a verdict, or
 /// one already nudged.
 pub fn nudge(fleet: &mut Fleet, me: &Me, issue: u64) -> Result<Value> {
-    let Some(Asked::Stopped(found)) = ask_after(fleet, me, issue)? else {
+    let Some(Asked::Stopped(found)) = ask_after(fleet, me, issue, Look::Acting)? else {
         bail!(
             "issue #{issue} has no stopped worker of {} on this host to nudge; nothing was sent",
             me.instance
@@ -633,7 +745,7 @@ pub fn judge(
     issue: u64,
     start: bool,
 ) -> Result<Outcome> {
-    let found = match ask_after(fleet, me, issue)? {
+    let found = match ask_after(fleet, me, issue, Look::Acting)? {
         None | Some(Asked::Settled(Route::Leave)) => return Ok(Outcome::Nothing),
         Some(Asked::Settled(_)) if !start => return Ok(Outcome::Nothing),
         Some(Asked::Settled(_)) => {

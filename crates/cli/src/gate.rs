@@ -85,14 +85,21 @@ struct CommandRun {
 /// process's stderr, keeping its status, signal evidence and the end of its
 /// log. A run that reaches the gate limit, `limit`, is killed, with everything
 /// it started, and is reported as a timeout rather than an outside signal.
+/// `alone` is the one of the two gates run alone, which the command's
+/// `exclusive` is told, so that a fast gate takes the fast lane.
 fn run_command(
     repo: &Repo,
     command: &str,
     limit: Duration,
     candidate: Option<&crate::candidates::Gate<'_>>,
+    alone: Option<Which>,
 ) -> Result<CommandRun> {
     let mut shell = Command::new("sh");
     crate::exclusive::inherit(&mut shell, repo)?;
+    match alone {
+        Some(which) => shell.env(crate::exclusive::GATE_ENV, which.word()),
+        None => shell.env_remove(crate::exclusive::GATE_ENV),
+    };
     if let Some(candidate) = candidate {
         shell.env(crate::candidates::PROCESS_ENV, candidate.process_marker());
     }
@@ -262,7 +269,7 @@ fn controlled_run(
     let head = repo.git(&["rev-parse", "HEAD"])?;
     let tree = head_tree(repo)?;
     let before = off_commit(repo, None)?;
-    let command_run = run_command(repo, command.text(), limit, candidate)?;
+    let command_run = run_command(repo, command.text(), limit, candidate, None)?;
     let ended = match command_run.termination {
         Some(termination) => termination.description(),
         None => format!("gate command ended (exit {})", command_run.exit_code),
@@ -572,7 +579,8 @@ pub fn one(repo: &Repo, config: &Config, which: Which) -> Result<Value> {
              (`afkconvoy config --help`); run `afkconvoy gate`, the whole gate"
         )
     })?;
-    let run = run_command(repo, &gate.command, Duration::from_secs(gate.seconds), None)?;
+    let run =
+        run_command(repo, &gate.command, Duration::from_secs(gate.seconds), None, Some(which))?;
     let green = run.exit_code == 0 && !run.timed_out && run.termination.is_none();
     let over_budget = run.seconds > gate.budget_seconds;
     let detail = match (green, &run.termination) {
