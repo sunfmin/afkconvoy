@@ -25,10 +25,11 @@ use afkconvoy_core::tick::{Outcome, TickStep};
 use afkconvoy_core::worker::WorkerState;
 use anyhow::Result;
 
-use crate::admission::Admission;
+use crate::admission::{Admission, Readings};
 use crate::checkout_list;
 use crate::claims::Me;
 use crate::fleet::Fleet;
+use crate::fleet_report::FleetReport;
 use crate::git::Repo;
 use crate::host_runner::SharedNow;
 use crate::hot::{HotNow, held_said};
@@ -294,8 +295,14 @@ pub struct Host {
 impl Host {
     /// The host as it is at `now`, read soft: what cannot be read is said
     /// so, or shows nothing. Admission reads the disk under `dir`; `shared`
-    /// is what its host runner holds for its fleets, `None` where none runs.
-    pub fn read(dir: &Path, now: u64, shared: Result<Option<SharedNow>, String>) -> Host {
+    /// is what its host runner holds for its fleets, `None` where none runs;
+    /// `readings` the look's reading of the host.
+    pub fn read(
+        dir: &Path,
+        now: u64,
+        shared: Result<Option<SharedNow>, String>,
+        readings: &Readings,
+    ) -> Host {
         let settings = host_settings::of_host().unwrap_or_default();
         let (exclusive, watch) = match shared {
             Ok(Some(shared)) => {
@@ -307,7 +314,7 @@ impl Host {
         Host {
             name: crate::this_host(),
             now,
-            admission: Admission::read(dir).map_err(|error| format!("{error:#}")),
+            admission: Admission::read_from(dir, readings).map_err(|error| format!("{error:#}")),
             exclusive,
             gate_lanes: settings.gate_lanes(),
             sleep_hours: host_settings::host_sleep(),
@@ -599,15 +606,17 @@ impl Put<'_, '_> {
 }
 
 /// The panel of the fleet instance `me` — `None`: of nobody — after a rebuild read `set` and
-/// `flows`, and a tick — if one was made — carried out `did`. Asks orca after
-/// the worker of every claim of mine at work; one orca cannot speak of is
-/// shown with no state rather than failing the page.
+/// `flows`, and a tick — if one was made — carried out `did`; its tracker, its
+/// bound, its deliveries and its roles that can run nothing safely as `report`
+/// has them. Asks orca after the worker of every claim of mine at work; one
+/// orca cannot speak of is shown with no state rather than failing the page.
 pub fn read(
     fleet: &Fleet,
     me: Option<&Me>,
     set: &WorkingSet,
     flows: &Flows,
     did: &[(TickStep, Outcome)],
+    report: &FleetReport,
 ) -> Panel {
     let source = Source::of(&fleet.repo).ok();
     let state = |issue: u64| {
@@ -639,23 +648,21 @@ pub fn read(
     .ok()
     .and_then(|rows| rows.as_array().cloned())
     .unwrap_or_default();
-    let delivery_prefix = fleet.repo.layout().under("delivery/");
-    panel.deliveries = crate::delivery::panel_lines(
-        &fleet.repo,
-        fleet.now,
-        &fleet.records_at_open(&format!("{delivery_prefix}*")),
-    )
-    .unwrap_or_else(|error| vec![format!("deliveries could not be read: {error:#}")]);
+    panel.tracker = report.tracker_named();
+    panel.deliveries = match &report.deliveries {
+        Some(Ok(rows)) => rows.iter().map(crate::delivery::panel_line).collect(),
+        Some(Err(error)) => vec![format!("deliveries could not be read: {error}")],
+        None => vec![],
+    };
     panel.declared = set.declared();
     panel.held = set.mine.len() - panel.declared;
-    panel.bound = set.bound(fleet.config.concurrency()) - panel.declared;
+    let concurrency = report.concurrency_in_force().unwrap_or(fleet.config.concurrency());
+    panel.bound = set.bound(concurrency) - panel.declared;
     panel.frontier = set.frontier.len();
     panel.idle = afkconvoy_core::host_sleep::idle(set.held(), panel.frontier) && !set.cut_running();
     panel.cut = set.cut.as_ref().and_then(|row| crate::cut::says(&fleet.repo, row));
     // Soft: a team or a host kit that cannot be read names no role.
-    if let (Ok(team), Ok((kit, _))) = (flows.team(), crate::kit::running()) {
-        panel.nothing_safe = afkconvoy_core::casting::range_faults(team, &kit.range());
-    }
+    panel.nothing_safe = report.nothing_safe().to_vec();
     panel
 }
 
@@ -677,11 +684,14 @@ pub fn printed(
     let mut listed = if named { vec![] } else { checkout_list::List::of_host()?.read()?.checkouts };
     listed.sort_by(|one, other| one.checkout.cmp(&other.checkout));
     let runs = host_runner::runs();
+    // The page is one look: every checkout's report reads the host once.
+    let readings = Readings::new();
     let checkouts = match listed.is_empty() {
         true => {
             let repo = checkout?;
             let entries = logged(&repo);
-            let part = Part::Shown(Box::new(rebuilt(&repo, &entries, instance, host, now)?));
+            let part =
+                Part::Shown(Box::new(rebuilt(&repo, &entries, instance, host, now, &readings)?));
             let broken = broken_in(&entries, host, runs);
             vec![Checkout { dir: repo.dir, part, broken }]
         }
@@ -690,7 +700,8 @@ pub fn printed(
             .map(|entry| {
                 let repo = Repo::at(&entry.checkout);
                 let entries = repo.as_ref().map(logged).unwrap_or_default();
-                let part = repo.and_then(|repo| rebuilt(&repo, &entries, instance, host, now));
+                let part =
+                    repo.and_then(|repo| rebuilt(&repo, &entries, instance, host, now, &readings));
                 let part = part.map_or_else(
                     |error| Part::Unread(format!("{error:#}")),
                     |panel| Part::Shown(Box::new(panel)),
@@ -703,7 +714,7 @@ pub fn printed(
     let dir = checkouts.first().map_or_else(|| PathBuf::from("/"), |first| first.dir.clone());
     // Soft: what the host runner holds for its fleets, where it cannot be read, says why.
     let shared = host_runner::shared().map_err(|error| format!("{error:#}"));
-    Ok(Page { host: Host::read(&dir, now, shared), live: false, checkouts })
+    Ok(Page { host: Host::read(&dir, now, shared, &readings), live: false, checkouts })
 }
 
 /// What the tick log of `repo` on this host holds; nothing where it cannot
@@ -728,6 +739,7 @@ fn rebuilt(
     instance: Option<&InstanceId>,
     host: &str,
     now: u64,
+    readings: &Readings,
 ) -> Result<Panel> {
     let (logged, ..) = doctor::read_log(entries, host);
     let logged = logged.and_then(|logged| InstanceId::parse(&logged).ok());
@@ -735,7 +747,8 @@ fn rebuilt(
     let me = instance.map(|instance| Me { instance, host: host.to_string(), now });
     let (mut fleet, open) = Fleet::read(repo, now)?;
     let (set, flows) = fleet.rebuild(&open, me.as_ref().map(|me| &me.instance))?;
-    let mut panel = read(&fleet, me.as_ref(), &set, &flows, &[]);
+    let report = FleetReport::read(&fleet, &flows, &set, readings);
+    let mut panel = read(&fleet, me.as_ref(), &set, &flows, &[], &report);
     panel.hot = doctor::read_hot(entries, host)
         .into_iter()
         .map(|hot| Hot { worker: hot.worker, since: hot.since, why: hot.why, held: hot.held })

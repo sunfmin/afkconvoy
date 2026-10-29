@@ -22,6 +22,7 @@ use crate::board::show;
 use crate::claims::{Me, beat, goodbye};
 use crate::dispatch::{Agent, StartFrom, dispatch};
 use crate::fleet::Fleet;
+use crate::fleet_report::FleetReport;
 use crate::forget::forget;
 use crate::gh::{Gone, unreached};
 use crate::git::Repo;
@@ -599,7 +600,10 @@ impl Ticked {
     /// The panel of `me` after this tick: what its rebuild read, with what the
     /// pass did since.
     pub fn panel(&self, fleet: &Fleet, me: &Me) -> Panel {
-        let mut panel = panel::read(fleet, Some(me), &self.set, &self.flows, &self.pass.did);
+        let admission = Ok(self.admission.clone());
+        let report = FleetReport::admitted(fleet, &self.flows, &self.set, admission);
+        let mut panel =
+            panel::read(fleet, Some(me), &self.set, &self.flows, &self.pass.did, &report);
         panel.declared = self.declared().min(self.pass.held);
         panel.held = self.pass.held - panel.declared;
         panel.bound = self.bound - panel.declared;

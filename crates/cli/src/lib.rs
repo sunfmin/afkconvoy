@@ -51,6 +51,7 @@ pub mod evidence;
 pub mod exclusive;
 pub mod first_start;
 pub mod fleet;
+pub mod fleet_report;
 pub mod flows;
 pub mod forget;
 pub mod gate;
@@ -4466,70 +4467,25 @@ fn run(
                 None => probe::startup(&repo, now, &launches)?,
             };
             probe::announce(&warnings);
+            // `plan` is one look: its host reading is the report's.
+            let readings = admission::Readings::new();
             let (mut fleet, open) = Fleet::read(&repo, now)?;
             let (mut set, flows) = fleet.rebuild(&open, instance.as_ref())?;
-            let admission = admission::Admission::read(&fleet.repo.dir)?;
-            set.held_back = admission.holds();
+            let report = fleet_report::FleetReport::read(&fleet, &flows, &set, &readings);
+            if let Ok(admission) = &report.admission {
+                set.held_back = admission.holds();
+            }
             let findings = blockers::findings(&set.unworked_blockers);
             let mut plan = serde_json::to_value(set)?;
             plan["findings"] = serde_json::to_value(findings)?;
-            if let Some(bound) = &fleet.config.bound {
-                plan["intake"] = json!({"open": flows.taken_in(), "limit": bound.intake_limit});
-                // What each role's range on this host leaves out, and why.
-                if let (Ok(team), Ok((kit, _))) = (flows.team(), kit::running()) {
-                    let kit = kit.range();
-                    let left_out: Vec<Value> = team
-                        .roles
-                        .iter()
-                        .map(|role| json!({"role": role.name, "left_out": team::left_out_json(role, &kit)}))
-                        .collect();
-                    plan["left_out"] = Value::Array(left_out);
-                    // A roster entry that matches nothing, and a role that
-                    // can run nothing safely: said, never refusing the plan.
-                    let named = |each: Vec<(String, String)>| -> Vec<Value> {
-                        each.into_iter()
-                            .map(|(role, why)| json!({"role": role, "why": why}))
-                            .collect()
-                    };
-                    let unmatched = named(afkconvoy_core::casting::unmatched_entries(team, &kit));
-                    if !unmatched.is_empty() {
-                        plan["unmatched"] = Value::Array(unmatched);
-                    }
-                    let nothing_safe = named(afkconvoy_core::casting::range_faults(team, &kit));
-                    if !nothing_safe.is_empty() {
-                        plan["nothing_safe"] = Value::Array(nothing_safe);
-                    }
-                    plan["unmatched_models"] = serde_json::to_value(
-                        afkconvoy_core::casting::unmatched_models(team, &kit),
-                    )?;
-                }
+            if let Some(plan) = plan.as_object_mut() {
+                plan.extend(report.plan_json()?);
             }
-            plan["concurrency"] = concurrency::json(&fleet.config);
-            plan["harness"] = named_harness::json_of(&fleet.repo);
-            plan["tracker"] = json!(fleet.gh.tracker.named());
             plan["targets"] = fleet.targets(&open.issues)?;
-            let delivery_prefix = fleet.repo.layout().under("delivery/");
-            plan["deliveries"] = json!(crate::delivery::reported(
-                &fleet.repo,
-                now,
-                &fleet.records_at_open(&format!("{delivery_prefix}*")),
-            )?);
-            plan["admission"] = admission.json();
             plan["host_kit"] = kit::show(now);
             plan["selection"] = fleet.selection();
             plan["codex_workers"] = json!(codex_launch::workers(&fleet.repo));
-            for issue in plan["frontier"].as_array_mut().into_iter().flatten() {
-                let Some(key) = issue["cast"]["harness"].as_str().map(str::to_string) else {
-                    continue;
-                };
-                let Some(harness) = Harness::read(&key) else { continue };
-                if harness.session().is_none() {
-                    continue;
-                }
-                let model = issue["cast"]["model"].as_str().map(str::to_string);
-                let explicit = issue["cast"]["why"] == "model_label";
-                issue[key] = codex_launch::planned(harness, model.as_deref(), explicit);
-            }
+            report.put_launches(&mut plan["frontier"]);
             if let Ok(team) = flows.team() {
                 plan["selection"]["roles"] = json!(
                     team.roles.iter().map(|role| fleet.role_selection(role)).collect::<Vec<_>>()
