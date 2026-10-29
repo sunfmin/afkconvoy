@@ -163,9 +163,6 @@ pub struct Panel {
     /// Its workers hot as the tick ended — or, of a rebuild, as its tick log
     /// has them. The page lists them with the host.
     pub hot: Vec<Hot>,
-    /// An unbound repo's caster, while one runs or is due, and the issues
-    /// held back for it.
-    pub caster: Option<afkconvoy_core::casting::Standing>,
     pub casting: Vec<afkconvoy_core::casting::ModelStatus>,
     /// Each role no worker of which can be started on this host, with why
     /// (`casting::nothing_safe`): its stages wait while it lasts.
@@ -427,7 +424,6 @@ impl Panel {
             cut: None,
             now: fleet.now,
             hot: vec![],
-            caster: None,
             casting: vec![],
             nothing_safe: vec![],
             codex_workers: vec![],
@@ -443,7 +439,6 @@ impl Panel {
         let set = seen.set;
         self.lanes = lanes(seen);
         self.locks = set.locks.clone();
-        self.caster = set.caster.clone();
         self.casting = set.casting.clone();
         self.patrols = set.patrols.clone();
         let mut put = Put { panel: &mut self, seen };
@@ -1730,7 +1725,6 @@ mod tests {
             cut: None,
             now,
             hot: vec![],
-            caster: None,
             casting: vec![],
             nothing_safe: vec![],
             codex_workers: vec![],

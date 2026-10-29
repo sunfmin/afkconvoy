@@ -193,7 +193,7 @@ mod tests {
         let roster = draft.strip_prefix("roster:\n").unwrap();
         let loaded = rostered(roster).unwrap();
         let entry = loaded.role("dev").unwrap().roster.clone().unwrap();
-        assert_eq!(entry.cast, None);
+        assert!(!draft.contains("cast:"), "{draft}");
         assert_eq!(entry.run.len(), 4);
         assert_eq!(entry.run[0].good_at.as_deref(), Some("hard \"wide\" work"));
         assert_eq!(unsaid(&range(), &strengths)[0], "what claude-code haiku is good at");

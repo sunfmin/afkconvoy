@@ -129,17 +129,15 @@ pub struct Allowed {
     /// Its harness's own name for the model. `None`: any model the host kit
     /// holds for the harness, or its command as written where it holds none.
     pub model: Option<String>,
-    /// What the model is good at, as a caster is told.
+    /// What the model is good at, as research says.
     pub good_at: Option<String>,
 }
 
 /// A role's entry in its team's roster (docs/adr/0020): the harnesses and
-/// models its workers may run, in order of preference, and how an issue is
-/// to be cast among them. It always allows one at least.
+/// models its workers may run, in order of preference. It always allows one
+/// at least. A `cast` key is read as text and ignored.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Entry {
-    /// How a caster is to cast among them, in the team's words.
-    pub cast: Option<String>,
     pub run: Vec<Allowed>,
 }
 
@@ -1419,7 +1417,7 @@ of its own is added to them, and never stands in their place",
 }
 
 /// Reads the team file's `roster` into each role it gives an entry: a map
-/// of role names, each to its `cast` and its `run`, a list of the harnesses
+/// of role names, each to its `run`, a list of the harnesses
 /// and models the role's workers may run, in order of preference. What is
 /// wrong with the file itself is `team_file`'s to say.
 fn roster_key(faults: &mut Vec<Fault>, sources: &Sources, roles: &mut Roles) {
@@ -1468,7 +1466,7 @@ not {}",
 /// fault, reported.
 fn roster_entry(report: &mut Report, key: &str, node: &Node) -> Option<Entry> {
     let entries = map(report, key, node, &ROSTER_ENTRY_KEYS)?;
-    let cast = text(report, key, entries, "cast").map(str::to_string);
+    let _ignored = text(report, key, entries, "cast");
     let at = under(key, "run");
     let listed = match get(entries, "run") {
         Some(Node::List(listed)) if !listed.is_empty() => listed,
@@ -1513,7 +1511,7 @@ fn roster_entry(report: &mut Report, key: &str, node: &Node) -> Option<Entry> {
         }
         run.push(Allowed { harness, model, good_at });
     }
-    whole.then_some(Entry { cast, run })
+    whole.then_some(Entry { run })
 }
 
 /// Why `role` is not right for `harness`, which its roster entry allows:
@@ -2719,7 +2717,6 @@ land: { by: dev, do: land }
         assert_eq!(
             dev.roster,
             Some(Entry {
-                cast: Some("Hard work on opus.".to_string()),
                 run: vec![
                     allowed(Harness::ClaudeCode, Some("opus"), Some("hard work")),
                     allowed(Harness::Pi, None, None),
