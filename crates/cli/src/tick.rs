@@ -374,7 +374,12 @@ fn carry_out(
                 if let Some(since) = worktree.background_at() {
                     return Ok(Outcome::Waiting(since));
                 }
-                if let Some(background) = crate::judge::own_background(fleet, &worktree, true)? {
+                if let Some(background) = crate::judge::own_background(
+                    fleet,
+                    &worktree,
+                    true,
+                    crate::judge::Look::Acting,
+                )? {
                     return Ok(Outcome::Waiting(background.since));
                 }
                 return Ok(Outcome::Nothing);

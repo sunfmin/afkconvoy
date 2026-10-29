@@ -10,7 +10,7 @@ use afkconvoy_core::position::Failure;
 use afkconvoy_core::prompt::stage_nudge_line;
 use afkconvoy_core::stage_record::{Advance, StageRecord};
 use afkconvoy_core::stopped::{
-    Nudged, Route, Silence, Why, past_grace, settled_by_state, silence, stage_stalled_reason,
+    Nudged, Route, Silence, Why, settled_by_state, stage_stalled_reason,
 };
 use afkconvoy_core::tick::Outcome;
 use afkconvoy_core::transition::{self, HandOnStep, Released};
@@ -21,8 +21,8 @@ use crate::claims::{Me, Take, delete, take};
 use crate::dispatch::{Agent, StartFrom, dispatch};
 use crate::fleet::Fleet;
 use crate::judge::{
-    BLOCKED_BRIEF, Handed, close_claim, escalate_claim, mine, nudge_worker, own_background,
-    progress, refuted_work, where_it_stopped, worktree_and_work, worktree_of,
+    BLOCKED_BRIEF, Handed, Look, close_claim, escalate_claim, mine, nudge_worker, refuted_work,
+    silence_of, where_it_stopped, worktree_and_work, worktree_of,
 };
 use crate::lock::explaining_lock;
 use crate::orca::{Source, Worktree};
@@ -185,11 +185,7 @@ fn ask_after(
     let (Some(worktree), Some(state)) = (worktree, state) else {
         bail!("issue #{issue}: a worker that stopped has a worktree and a state");
     };
-    let progress = progress(&worktree, &fleet.task_tip(issue)?)?;
-    let (nudged, handed) = (worktree.nudged()?, worktree.handed(None)?);
-    let past_grace = past_grace(state, &progress, nudged, handed, fleet.now);
-    let background = own_background(fleet, &worktree, past_grace)?;
-    match silence(state, &progress, nudged, handed, background, fleet.now) {
+    match silence_of(fleet, issue, &worktree, state, None, Look::Acting)? {
         Silence::Lively => Ok(Outcome::Nothing),
         Silence::Waiting(since) => Ok(Outcome::Waiting(since)),
         Silence::Gone => {
