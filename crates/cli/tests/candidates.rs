@@ -2,6 +2,7 @@
 //! release files; assertions inspect refs, original heads and child exit.
 use crate::common::{World, commit, git, worktree_listed};
 use serde_json::{Value, json};
+use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -18,7 +19,48 @@ fn until(mut done: impl FnMut() -> bool) {
     }
 }
 
-fn world(lanes: u64) -> World {
+/// A world whose gates, and what they started, end with a failing test: a
+/// gate outliving it would keep whatever lane lease the test ran under.
+struct Fleet(World);
+
+impl Deref for Fleet {
+    type Target = World;
+    fn deref(&self) -> &World {
+        &self.0
+    }
+}
+
+impl Drop for Fleet {
+    fn drop(&mut self) {
+        // A passing test has already seen its gates end; their pids may be reused.
+        if !std::thread::panicking() {
+            return;
+        }
+        let ours = Command::new("ps")
+            .args(["-p", &std::process::id().to_string(), "-o", "pgid="])
+            .output()
+            .unwrap();
+        let ours = String::from_utf8_lossy(&ours.stdout).trim().to_string();
+        for name in ["a", "b", "c", "d"] {
+            for kind in ["gate", "child"] {
+                let Ok(pid) = std::fs::read_to_string(self.root.join(format!("{kind}-{name}")))
+                else {
+                    continue;
+                };
+                let pid = pid.trim();
+                let group = Command::new("ps").args(["-p", pid, "-o", "pgid="]).output().unwrap();
+                let group = String::from_utf8_lossy(&group.stdout).trim().to_string();
+                if !group.is_empty() && group != ours {
+                    let _ =
+                        Command::new("kill").args(["-KILL", "--", &format!("-{group}")]).status();
+                }
+                let _ = Command::new("kill").args(["-KILL", pid]).status();
+            }
+        }
+    }
+}
+
+fn world(lanes: u64) -> Fleet {
     let world = World::new();
     let root = quote(&world.root);
     let script = format!(
@@ -46,7 +88,7 @@ test ! -f "$root/fail-$name"
     world.set_gate(&command);
     assert_eq!(world.afk(&["gate"]).ok()["recorded"], true);
     world.say_host_settings(json!({"gate_lanes": lanes}));
-    world
+    Fleet(world)
 }
 
 fn start(world: &World, dir: &Path, cache: &Path, n: u64) -> Child {
