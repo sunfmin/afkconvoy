@@ -4,6 +4,7 @@ use crate::exclusive::Permit;
 use crate::gh::{GitHub, Tracker};
 use crate::git::{REMOTE, Repo};
 use crate::lock::standing_locks;
+use afkconvoy_core::account::End;
 use afkconvoy_core::config::Config;
 use afkconvoy_core::ending::Ending;
 use afkconvoy_core::gate::{GateCommand, Tree};
@@ -316,7 +317,7 @@ fn land_task(
             if !gh.issue(issue)?.is_closed() {
                 gh.close_issue(issue)?;
             }
-            crate::account::leave(repo, gh, issue, now)?;
+            crate::account::leave(repo, gh, issue, End::Landed, now)?;
             return Ok(
                 json!({"issue": issue, "pr": landed.pr, "outcome": Ending::Merged, "commit": landed.commit, "detail": "recovered landing from base history; issue settled"}),
             );
@@ -418,7 +419,7 @@ fn run(
             if !gh.issue(n)?.is_closed() {
                 gh.close_issue(n)?;
             }
-            crate::account::leave(repo, &gh, n, now)?;
+            crate::account::leave(repo, &gh, n, End::Landed, now)?;
         }
         answer["outcome"] = json!(Ending::Merged);
         answer["commit"] = json!(current);
