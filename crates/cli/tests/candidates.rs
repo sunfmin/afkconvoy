@@ -116,6 +116,23 @@ fn gone(world: &World, name: &str) {
     }
 }
 
+/// A turn stopped by SIGSTOP until dropped, so a panic never leaves it frozen.
+struct Held(String);
+
+impl Held {
+    fn stop(turn: &Child) -> Held {
+        let pid = turn.id().to_string();
+        assert!(Command::new("kill").args(["-STOP", &pid]).status().unwrap().success());
+        Held(pid)
+    }
+}
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        let _ = Command::new("kill").args(["-CONT", &self.0]).status();
+    }
+}
+
 fn worker(world: &World, n: u64, name: &str) -> (PathBuf, String) {
     let dir = world.worker(n, &format!("{name}.txt"), name);
     let head = git(&dir, &["rev-parse", "HEAD"]);
@@ -361,8 +378,12 @@ fn a_gate_timeout_invalidates_and_terminates_its_running_successor() {
     let _runner = world.host_held();
     let aa = start(&world, &a, &world.cache(), 1);
     began(&world, "a");
+    // a's turn watches its gate limit; frozen, it cannot time a out before b
+    // has begun, however long b takes to start on a loaded host.
+    let held = Held::stop(&aa);
     let bb = start(&world, &b, &world.cache(), 2);
     began(&world, "b");
+    drop(held);
     let failed = finish(aa);
     let cancelled = finish(bb);
     assert_eq!(failed["outcome"], "gate_red", "{failed}");
