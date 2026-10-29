@@ -40,7 +40,7 @@ use crate::fleet::Fleet;
 use crate::gate::head_tree;
 use crate::git::{REMOTE, Repo};
 use crate::host_runner;
-use crate::judge::leaving_at_open;
+use crate::judge::{Silenced, leaving_at_open};
 use crate::launch::Launches;
 use crate::log::{self, Entry, Failed, Log, Tick, What, by_cause};
 use crate::orca::{Source, Under, Worktree};
@@ -59,9 +59,6 @@ const FAILED_TICKS: usize = 3;
 pub(crate) const FAILED_SHOWN: usize = 10;
 /// How many of the events that reached a `run` the answer lists, newest first.
 pub(crate) const EVENTS_SHOWN: usize = 20;
-/// How long a worker is stopped for before it is a finding: past every wait
-/// a tick gives one before it nudges.
-const STOPPED_LONG: u64 = 1800;
 /// How long an issue is at a stage before its stay is held against the
 /// stages before it.
 const STAGE_LONG: u64 = 900;
@@ -425,13 +422,10 @@ pub struct Held {
     pub held_for: Option<u64>,
     /// `None`: orca could not say.
     pub worker: Option<WorkerState>,
-    /// The command checked against the stopped worker's route. `None` when
-    /// unread or not checked: only a tick is safe to name then.
-    pub stopped_command: Option<&'static str>,
-    /// It waits on background work of its own (`judge::waits_on_own_background`).
-    /// A long stop is not a finding while it does, however long the wait,
-    /// including past the gate limit. The since is the worktree's one stamp.
-    pub waiting_on_background: bool,
+    /// Its worker is silent, by the read the tick routes it from
+    /// (`judge::silenced`), with the command the tick runs next for it.
+    /// `None` when it is not, or that could not be read.
+    pub silent: Option<Silenced>,
     pub worktree: Option<PathBuf>,
     /// What its worker was started under, in a bound repo.
     pub under: Option<Under>,
@@ -725,24 +719,37 @@ fn claim_findings(run: &Run, held: &[Held]) -> Vec<Finding> {
                     on(fix, issue, instance),
                 ));
             }
-            // Waiting on its own background work is not a stop, however long
-            // the terminal has been quiet, and past the gate limit too. The
-            // same read of its screen the tick uses; the since is the stamp.
-            Some(WorkerState::Idle { quiet: Some(quiet) })
-                if quiet >= STOPPED_LONG && !claim.waiting_on_background =>
-            {
-                let fix = match claim.stopped_command {
-                    Some(command) if command != "tick" => on(command, issue, instance),
-                    _ => format!("afkconvoy tick --instance {instance}"),
+            // Silent by the tick's own judgment, and no clock of doctor's:
+            // waiting on its own background work is no silence until that
+            // runs past the gate limit, which is one at once.
+            Some(WorkerState::Idle { quiet }) if let Some(silent) = claim.silent => {
+                let fix = match silent.command {
+                    "tick" => format!("afkconvoy tick --instance {instance}"),
+                    command => on(command, issue, instance),
                 };
+                let why = match silent.waited {
+                    None if silent.declared => {
+                        "it declared its verdict, and no tick has carried it out".to_string()
+                    }
+                    Some(waited) => format!(
+                        "it waited {} on background work of its own, past the gate limit",
+                        lasted(waited)
+                    ),
+                    None if silent.nudged => "it stayed silent after its nudge".to_string(),
+                    None => "it declared nothing and showed no sign of life for the grace \
+                             period"
+                        .to_string(),
+                };
+                let stopped = quiet.map(lasted).unwrap_or_else(|| "an unknown time".into());
                 found.push(finding(
                     Kind::WorkerStopped,
                     format!(
-                        "the worker of #{issue} has been stopped for {}, and its claim is still \
-                         at work",
-                        lasted(quiet)
+                        "the worker of #{issue} has been stopped for {stopped}, and its claim is \
+                         still at work"
                     ),
-                    format!("orca reports it stopped, in {place}: look at its terminal there"),
+                    format!(
+                        "{why}; orca reports it stopped, in {place}: look at its terminal there"
+                    ),
                     fix,
                 ).condition(json!(["worker-stopped", issue, claim.worktree])));
             }
@@ -1616,21 +1623,24 @@ fn read_held(
             let tree = head_tree(&Repo::new(worktree.path.clone())).ok()?;
             fleet.recorded_gate(&tree, &gate)
         });
-        let waiting_on_background =
-            worktree.as_ref().is_some_and(crate::judge::waits_on_own_background);
         let at = stood.iter().find(|issue| issue.number == mine.number);
         let stamped = fleet.scan.claim_of(mine.number).and_then(|claim| claim.owner.as_ref());
-        let stopped_command = match (mine.status, worker, stamped) {
-            (Status::NoPr, Some(WorkerState::Idle { quiet: Some(quiet) }), Some(owner))
-                if quiet >= STOPPED_LONG && !set.locked_out(mine.number) =>
-            {
+        // The one read the tick routes a stopped worker from: no clock of
+        // doctor's own decides its silence. A fleet lock leaves only the tick
+        // safe to name.
+        let silent = match (worker, stamped) {
+            (Some(WorkerState::Idle { .. }), Some(owner)) => {
                 InstanceId::parse(&owner.instance).ok().and_then(|instance| {
                     let me = Me { instance, host: owner.host.clone(), now: fleet.now };
-                    crate::judge::stopped_command(fleet, &me, mine.number).ok()
+                    crate::judge::silenced(fleet, &me, mine.number, mine.status).ok().flatten()
                 })
             }
             _ => None,
-        };
+        }
+        .map(|silent| match set.locked_out(mine.number) {
+            true => crate::judge::Silenced { command: "tick", ..silent },
+            false => silent,
+        });
         Held {
             issue: mine.number,
             title: mine.title.clone(),
@@ -1646,8 +1656,7 @@ fn read_held(
                 .or(at.and_then(|at| at.role.clone())),
             held_for: stamped.and_then(|owner| stamp_age(owner.ts, fleet.now)),
             worker,
-            stopped_command,
-            waiting_on_background,
+            silent,
             worktree: worktree.map(|worktree| worktree.path),
             moved: match (&under, team) {
                 (Some(under), Some(team)) => read_moved(team, under),
@@ -2291,6 +2300,7 @@ pub fn all_since_rounds(
 mod tests {
     use afkconvoy_core::patrol::Row;
     use afkconvoy_core::plan::{Dispatchable, Excluded, Mine, PeerClaim};
+    use afkconvoy_core::worker::GRACE;
 
     use super::*;
     use crate::log::Cause;
@@ -2428,8 +2438,7 @@ mod tests {
             role: None,
             held_for: Some(600),
             worker: Some(WorkerState::Busy),
-            stopped_command: None,
-            waiting_on_background: false,
+            silent: None,
             worktree: Some(PathBuf::from(format!("/wt/issue-{issue}"))),
             under: None,
             moved: vec![],
@@ -2631,11 +2640,19 @@ mod tests {
             assert!(before.watch_id.is_some());
             assert_eq!(before.watch_id, after.watch_id);
         };
-        let stopped =
-            |quiet| Held { worker: Some(WorkerState::Idle { quiet: Some(quiet) }), ..held(3) };
+        let stopped = |quiet| Held {
+            worker: Some(WorkerState::Idle { quiet: Some(quiet) }),
+            silent: Some(Silenced {
+                command: "nudge",
+                nudged: false,
+                waited: None,
+                declared: false,
+            }),
+            ..held(3)
+        };
         same(
-            &claim_findings(&run(vec![]), &[stopped(STOPPED_LONG)])[0],
-            &claim_findings(&run(vec![]), &[stopped(STOPPED_LONG + 360)])[0],
+            &claim_findings(&run(vec![]), &[stopped(GRACE)])[0],
+            &claim_findings(&run(vec![]), &[stopped(GRACE + 360)])[0],
         );
         let long = Stood { recorded: vec![NOW - 3300, NOW - 3000, NOW - 2000], ..stood(7) };
         same(
@@ -2656,26 +2673,37 @@ mod tests {
     }
 
     #[test]
-    fn a_worker_stopped_for_long_with_its_claim_at_work_names_the_nudge() {
+    fn a_silent_worker_with_its_claim_at_work_names_what_the_tick_runs_next() {
         let mut state = state();
-        let stopped = |quiet| Held {
-            worker: Some(WorkerState::Idle { quiet }),
-            stopped_command: Some("nudge"),
+        let silent =
+            |command, nudged, waited| Some(Silenced { command, nudged, waited, declared: false });
+        let stopped = |quiet, silent| Held {
+            worker: Some(WorkerState::Idle { quiet: Some(quiet) }),
+            silent,
             ..held(3)
         };
-        state.held = vec![stopped(Some(STOPPED_LONG))];
+        // due its nudge: as soon as the tick judges it silent, with no clock of doctor's
+        state.held = vec![stopped(GRACE, silent("nudge", false, None))];
         let found = found(&host(), &run(vec![]), &state);
         assert_eq!(
-            fixes(&found, "has been stopped for 30m"),
+            fixes(&found, "has been stopped for 5m"),
             ["afkconvoy nudge --issue 3 --instance alpha"]
         );
         assert!(found[0].evidence.contains("/wt/issue-3"), "{found:?}");
-        // a short stop, or one of a runtime that keeps no time, is none
-        state.held = vec![stopped(Some(STOPPED_LONG - 1)), stopped(None)];
-        assert_eq!(self::found(&host(), &run(vec![]), &state), []);
-        // its own background work, however long: the same fact the tick names
-        state.held =
-            vec![Held { waiting_on_background: true, ..stopped(Some(STOPPED_LONG + 7200)) }];
+        assert!(found[0].evidence.starts_with("it declared nothing"), "{found:?}");
+        // silent past its nudge: the tick escalates it
+        state.held = vec![stopped(GRACE * 2, silent("tick", true, None))];
+        let found = self::found(&host(), &run(vec![]), &state);
+        assert_eq!(fixes(&found, "has been stopped for"), ["afkconvoy tick --instance alpha"]);
+        assert!(found[0].evidence.starts_with("it stayed silent after its nudge"), "{found:?}");
+        // its own background work past the gate limit is a silence, however
+        // short the terminal's quiet
+        state.held = vec![stopped(GRACE, silent("tick", false, Some(7200)))];
+        let found = self::found(&host(), &run(vec![]), &state);
+        assert_eq!(fixes(&found, "has been stopped for"), ["afkconvoy tick --instance alpha"]);
+        assert!(found[0].evidence.contains("waited 2h 0m on background work"), "{found:?}");
+        // a worker the tick does not judge silent is none, however long it stopped
+        state.held = vec![stopped(GRACE * 100, None)];
         assert_eq!(self::found(&host(), &run(vec![]), &state), []);
     }
 
