@@ -223,6 +223,19 @@ impl Repo {
         run(&self.dir, args, env)
     }
 
+    /// Is `name` a ref name git takes (`git check-ref-format`)? What git says
+    /// depends on the name alone, so it is asked once a name in a process: a
+    /// tick checks its base branch's name for every issue it reads.
+    pub fn ref_name_ok(&self, name: &str) -> Result<bool> {
+        static SAID: LazyLock<Mutex<HashMap<String, bool>>> = LazyLock::new(Mutex::default);
+        if let Some(&ok) = lock(&SAID).get(name) {
+            return Ok(ok);
+        }
+        let ok = self.try_git(&["check-ref-format", name])?.ok;
+        lock(&SAID).insert(name.to_string(), ok);
+        Ok(ok)
+    }
+
     /// Is `commit` on `tip`'s history (or `tip` itself)?
     pub fn within(&self, commit: &str, tip: &str) -> Result<bool> {
         Ok(self.try_git(&["merge-base", "--is-ancestor", commit, tip])?.ok)
@@ -454,5 +467,17 @@ mod tests {
         assert!(repo.try_git(&["push", "origin", "main"]).is_err());
         assert!(repo.git(&["ls-remote", "origin"]).is_err());
         assert!(repo.git_raw(&["push", "origin", "HEAD"]).is_err());
+    }
+
+    #[test]
+    fn a_ref_name_is_judged_by_git_once_a_process() {
+        let here = Repo::new(std::env::temp_dir());
+        assert!(here.ref_name_ok("refs/heads/judged-once").unwrap());
+        assert!(!here.ref_name_ok("refs/heads/judged..once").unwrap());
+        // No git runs in a directory that is not there: these are remembered.
+        let nowhere = Repo::new(PathBuf::from("/nowhere"));
+        assert!(nowhere.ref_name_ok("refs/heads/judged-once").unwrap());
+        assert!(!nowhere.ref_name_ok("refs/heads/judged..once").unwrap());
+        assert!(nowhere.ref_name_ok("refs/heads/never-judged").is_err());
     }
 }
