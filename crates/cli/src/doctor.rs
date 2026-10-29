@@ -29,7 +29,7 @@ use afkconvoy_core::tracker::Tracker;
 use afkconvoy_core::waiting::{WAITED_LONG, Waiting};
 use afkconvoy_core::worker::WorkerState;
 use anyhow::{Result, anyhow};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use crate::admission::Readings;
@@ -71,7 +71,9 @@ const STAGE_LONG: u64 = 900;
 const NO_LOG: &str = "no log";
 
 /// How much a finding matters, most first: `doctor --help` lists it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, agent_help::Help)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, agent_help::Help,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum Severity {
     /// The fleet does not work, or will not, until it is fixed.
@@ -85,6 +87,9 @@ pub enum Severity {
 /// One thing that is wrong, and what to do about it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Finding {
+    /// What it is a finding of: the watch acts on it by this, never by its
+    /// words.
+    pub kind: Kind,
     pub severity: Severity,
     pub what: String,
     /// What was read that says so.
@@ -97,10 +102,11 @@ pub struct Finding {
     /// says once.
     #[serde(skip)]
     pub of_host: bool,
-    /// Stable condition identity. `checkout:` identities are scoped by the
-    /// watch to this checkout; resource identities already include their scope.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub watch_id: Option<String>,
+    /// The condition's identity, made where it is judged and the same while
+    /// it lasts, however its words change. `checkout:` identities are scoped
+    /// by the watch to this checkout; `host:` and resource identities already
+    /// hold their scope.
+    pub watch_id: String,
 }
 
 /// Names each kind of finding there is, with how much it matters and its
@@ -108,7 +114,8 @@ pub struct Finding {
 macro_rules! kinds {
     ($($kind:ident: $severity:ident, $symptom:literal;)+) => {
         /// One kind of thing `doctor` finds wrong: what a finding is made as.
-        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+        #[serde(rename_all = "snake_case")]
         pub enum Kind {
             $($kind,)+
         }
@@ -180,6 +187,9 @@ kinds! {
     NoWorker: Warning, "has no worker";
     WorkerStopped: Warning, "has been stopped for";
     WorkerHealth: Warning, "worker health is waiting for the operator";
+    HealthOverdue: Warning, "its health observation is overdue";
+    NotAlive: Warning, "its fleet instance is not alive";
+    TickFailed: Warning, "a tick failed since the last look";
     NothingStarted: Warning, "the last tick started no worker";
     NoWorkflow: Warning, "follows no workflow of the team";
     BlockerUnworked: Warning, "waits on a blocker no fleet works";
@@ -220,21 +230,31 @@ impl Kind {
                 | Kind::WatchBusy
                 | Kind::NotMoved
                 | Kind::WorkerHealth
+                | Kind::HealthOverdue
         )
     }
+
+    /// Whether the host's watch answers a finding of this kind: not one that
+    /// says the watch itself cannot start or go on, which is the operator's.
+    pub fn watched(self) -> bool {
+        !matches!(self, Kind::WatchUnavailable | Kind::WatchBusy)
+    }
 }
 
-pub(crate) fn finding(kind: Kind, what: String, evidence: String, fix: String) -> Finding {
+/// A finding of `kind`, of the condition `identity`: what tells it from every
+/// other of its kind, made where it is judged and never from its words.
+pub(crate) fn finding(
+    kind: Kind,
+    identity: Value,
+    what: String,
+    evidence: String,
+    fix: String,
+) -> Finding {
     debug_assert!(what.contains(kind.symptom()), "{kind:?} is not said in: {what}");
     let (severity, see, of_host) = (kind.severity(), kind.see(), kind.of_host());
-    Finding { severity, what, evidence, fix, see, of_host, watch_id: None }
-}
-
-impl Finding {
-    fn condition(mut self, identity: Value) -> Self {
-        self.watch_id = Some(format!("checkout:{identity}"));
-        self
-    }
+    let scope = if of_host { "host" } else { "checkout" };
+    let watch_id = format!("{scope}:{identity}");
+    Finding { kind, severity, what, evidence, fix, see, of_host, watch_id }
 }
 
 /// A human question's source and answer, independent of its displayed age
@@ -261,8 +281,14 @@ impl From<&Waiting> for HumanWait {
 }
 
 impl HumanWait {
+    /// The question's identity, which its finding and its place among those
+    /// waiting on a human share.
+    pub(crate) fn identity(&self) -> Value {
+        json!(["human", self])
+    }
+
     pub(crate) fn watch_id(&self) -> String {
-        format!("checkout:human:{}", serde_json::to_string(self).expect("human wait identity"))
+        format!("checkout:{}", self.identity())
     }
 }
 
@@ -624,7 +650,7 @@ fn host_findings(host: &Host) -> Vec<Finding> {
                 add_checkout(path),
             ),
         };
-        found.push(finding(kind, what, evidence, fix));
+        found.push(finding(kind, json!(["tool", name]), what, evidence, fix));
     }
     for Launch { checked, .. } in &host.launches {
         // A harness that is missing is one finding: its command's are the same.
@@ -640,6 +666,7 @@ fn host_findings(host: &Host) -> Vec<Finding> {
             let Some(why) = why else { continue };
             found.push(finding(
                 kind,
+                json!(["launch", checked.harness, kind]),
                 format!("the worker launch command `{}` {}", checked.command, kind.symptom()),
                 why.clone(),
                 "afkconvoy kit".to_string(),
@@ -660,6 +687,7 @@ fn broken_finding(run: &Run) -> Option<Finding> {
     };
     Some(finding(
         Kind::Broken,
+        json!(["broken", broken.since]),
         format!("the fleet instance of this checkout is broken: {}", broken.why),
         evidence,
         named_line(&broken.why).unwrap_or_else(|| "afkconvoy run".to_string()),
@@ -682,6 +710,7 @@ fn run_findings(run: &Run, held: &[Held]) -> Vec<Finding> {
     };
     vec![finding(
         Kind::NoRun,
+        json!(["not-alive"]),
         format!(
             "no `afkconvoy run` is alive on {} for this repo, and its fleet instance {instance} \
              holds {}: nothing works them",
@@ -718,6 +747,7 @@ fn claim_findings(run: &Run, held: &[Held]) -> Vec<Finding> {
                     claim.held_for.map(lasted).unwrap_or_else(|| "an unknown time".into());
                 found.push(finding(
                     Kind::NoWorker,
+                    json!(["no-worker", issue]),
                     format!("the claim on #{issue} has no worker"),
                     format!(
                         "{evidence}; the claim was stamped {held_for} ago. A tick starts one on \
@@ -738,6 +768,7 @@ fn claim_findings(run: &Run, held: &[Held]) -> Vec<Finding> {
                 };
                 found.push(finding(
                     Kind::WorkerStopped,
+                    json!(["worker-stopped", issue, claim.worktree]),
                     format!(
                         "the worker of #{issue} has been stopped for {}, and its claim is still \
                          at work",
@@ -745,7 +776,7 @@ fn claim_findings(run: &Run, held: &[Held]) -> Vec<Finding> {
                     ),
                     format!("orca reports it stopped, in {place}: look at its terminal there"),
                     fix,
-                ).condition(json!(["worker-stopped", issue, claim.worktree])));
+                ));
             }
             _ => {}
         }
@@ -753,6 +784,7 @@ fn claim_findings(run: &Run, held: &[Held]) -> Vec<Finding> {
         for Moved { which, started, head } in &claim.moved {
             found.push(finding(
                 Kind::Moved,
+                json!(["moved", issue, which, started]),
                 format!(
                     "{which} moved since the stage `{}` of #{issue} started: its worker goes by \
                      the older one, and the next stage by the head",
@@ -826,14 +858,16 @@ fn log_findings(run: &Run) -> Vec<Finding> {
     pending
         .into_iter()
         .map(|(count, failed)| {
+            let identity = json!(["step", failed.step, failed.issue, failed.patrol]);
             let repeated = recent.filter(|last| {
                 last.iter().all(|(_, tick)| tick.failed().iter().any(|was| was.same_step(&failed)))
             });
-            let finding = match repeated {
+            match repeated {
                 Some(last) => {
                     let (first, latest) = (last[0].1.count, last[FAILED_TICKS - 1].1.count);
                     finding(
                         Kind::StepFailed,
+                        identity,
                         format!(
                             "`{}` failed in each of the last {FAILED_TICKS} ticks ({first} to {latest})",
                             failed.named()
@@ -844,12 +878,12 @@ fn log_findings(run: &Run) -> Vec<Finding> {
                 }
                 None => finding(
                     Kind::StepUnrecovered,
+                    identity,
                     format!("`{}` failed in tick {count} and has not recovered", failed.named()),
                     failed.error.clone(),
                     fix_of(&failed, instance),
                 ),
-            };
-            finding.condition(json!(["step", failed.step, failed.issue, failed.patrol]))
+            }
         })
         .collect()
 }
@@ -868,6 +902,7 @@ fn issue_findings(stood: &[Stood], team: &TeamRead, now: u64) -> Vec<Finding> {
             };
             found.push(finding(
                 Kind::NoWorkflow,
+                json!(["no-workflow", number]),
                 format!("#{number} follows no workflow of the team: {why}"),
                 format!(
                     "it carries {}; the team's workflows take {has}",
@@ -884,28 +919,21 @@ fn issue_findings(stood: &[Stood], team: &TeamRead, now: u64) -> Vec<Finding> {
         if let Some((took, here)) =
             took.zip(here).filter(|(took, here)| here > took && *here >= STAGE_LONG)
         {
-            found.push(
-                finding(
-                    Kind::LongAtStage,
-                    format!(
-                        "#{number} has been at the stage `{stage}` for {}, longer than any stage \
+            found.push(finding(
+                Kind::LongAtStage,
+                json!(["long-stage", number, stage, issue.recorded.last()]),
+                format!(
+                    "#{number} has been at the stage `{stage}` for {}, longer than any stage \
                      before it took",
-                        lasted(here)
-                    ),
-                    format!(
-                        "its last stage record is {} old; the longest between two before it is {}",
-                        lasted(here),
-                        lasted(took)
-                    ),
-                    show.clone(),
-                )
-                .condition(json!([
-                    "long-stage",
-                    number,
-                    stage,
-                    issue.recorded.last()
-                ])),
-            );
+                    lasted(here)
+                ),
+                format!(
+                    "its last stage record is {} old; the longest between two before it is {}",
+                    lasted(here),
+                    lasted(took)
+                ),
+                show.clone(),
+            ));
         }
         let mut near = vec![];
         if let (had @ 1.., 0) = issue.rework {
@@ -924,6 +952,7 @@ fn issue_findings(stood: &[Stood], team: &TeamRead, now: u64) -> Vec<Finding> {
         if !near.is_empty() {
             found.push(finding(
                 Kind::NearBreaker,
+                json!(["near-breaker", number]),
                 format!("#{number} is one rework from a breaker: the next one escalates it"),
                 near.join("; "),
                 show,
@@ -953,11 +982,13 @@ fn plan_findings(run: &Run, state: &State) -> Vec<Finding> {
             .zip(tick.bound)
             .is_some_and(|((held, frontier), bound)| frontier > 0 && held < bound as u64);
         if start.is_some() || left {
+            let frontier: Vec<u64> = set.frontier.iter().map(|issue| issue.number).collect();
             found.push(finding(
                 Kind::NothingStarted,
+                json!(["nothing-started", frontier]),
                 format!(
                     "the frontier holds {}, {} slot(s) are free, and the last tick started no worker",
-                    numbered(&set.frontier.iter().map(|issue| issue.number).collect::<Vec<_>>()),
+                    numbered(&frontier),
                     set.free_slots
                 ),
                 format!("tick {}: {}", tick.count, tick.line),
@@ -965,7 +996,7 @@ fn plan_findings(run: &Run, state: &State) -> Vec<Finding> {
                     Some(failed) => fix_of(failed, instance),
                     None => on("dispatch", first.number, instance),
                 },
-            ).condition(json!(["nothing-started", set.frontier.iter().map(|issue| issue.number).collect::<Vec<_>>()]))) ;
+            ));
         }
     }
     if let Some(slow) = &set.slow_gate {
@@ -980,6 +1011,7 @@ fn plan_findings(run: &Run, state: &State) -> Vec<Finding> {
         };
         found.push(finding(
             Kind::SlowGate,
+            json!(["slow-gate"]),
             format!("the gate is slow: {stands}"),
             slow_gate::said(slow),
             fix,
@@ -1012,6 +1044,7 @@ fn plan_findings(run: &Run, state: &State) -> Vec<Finding> {
         };
         found.push(finding(
             Kind::LockUnworked,
+            json!(["lock", lock]),
             format!(
                 "the fleet lock #{lock} stands and cannot be worked: the fleet works nothing \
                  until it closes"
@@ -1045,6 +1078,7 @@ fn plan_findings(run: &Run, state: &State) -> Vec<Finding> {
         };
         found.push(finding(
             kind,
+            json!(["patrol", name]),
             format!("the patrol `{name}` does not run: {why}"),
             evidence,
             fix,
@@ -1055,6 +1089,7 @@ fn plan_findings(run: &Run, state: &State) -> Vec<Finding> {
     {
         found.push(finding(
             Kind::CutFailed,
+            json!(["cut-failed", failure]),
             "the fleet cuts no version: its last cut failed".to_string(),
             format!(
                 "#{failure} says which step failed, why, and the line that goes on from there, \
@@ -1070,8 +1105,9 @@ fn plan_findings(run: &Run, state: &State) -> Vec<Finding> {
 pub(crate) fn waiting_findings(waiting: &[Waiting], now: u64) -> Vec<Finding> {
     let long = |waiting: &Waiting| {
         let waited = waiting.waited_long(now)?;
-        let mut finding = finding(
+        let finding = finding(
             Kind::WaitedLong,
+            HumanWait::from(waiting).identity(),
             format!(
                 "#{} has waited for a human for {}: {}",
                 waiting.issue,
@@ -1085,7 +1121,6 @@ pub(crate) fn waiting_findings(waiting: &[Waiting], now: u64) -> Vec<Finding> {
             ),
             waiting.answer.clone(),
         );
-        finding.watch_id = Some(HumanWait::from(waiting).watch_id());
         Some(finding)
     };
     waiting.iter().filter_map(long).collect()
@@ -1113,6 +1148,7 @@ fn unclaimed_finding(unclaimed: &Unclaimed) -> Finding {
     };
     finding(
         Kind::KeptWorktree,
+        json!(["kept", unclaimed.issue, unclaimed.path]),
         format!("the worktree of #{} is kept with no claim: it holds {holds}", unclaimed.issue),
         format!("{path}, on the branch {branch}"),
         fix,
@@ -1125,6 +1161,7 @@ fn not_ours_finding(held_off: &NotOurs) -> Finding {
     let NotOurs { issue, pr, branch } = held_off;
     finding(
         Kind::NotOurs,
+        json!(["not-ours", issue, pr]),
         format!("#{issue} is held off by a PR not the fleet's: #{pr} is open and closes it"),
         format!(
             "no claim holds it, and #{pr}'s branch {branch} is not one the fleet recorded on it"
@@ -1140,6 +1177,7 @@ fn on_gone_finding(on: &OnGone) -> Finding {
     let holder = holder.as_deref().unwrap_or("no fleet instance it names");
     finding(
         Kind::ClaimOnGone,
+        json!(["gone", issue]),
         format!(
             "#{issue} is claimed but GitHub has it no more: it was deleted or transferred, or there is no such issue"
         ),
@@ -1161,6 +1199,7 @@ fn team_findings(team: &TeamRead) -> Vec<Finding> {
             for (role, why) in nothing_safe {
                 found.push(finding(
                     Kind::NothingSafe,
+                    json!(["nothing-safe", role]),
                     format!(
                         "{role} has no harness on this host it holds limits for: its stages wait"
                     ),
@@ -1171,6 +1210,7 @@ fn team_findings(team: &TeamRead) -> Vec<Finding> {
             for (role, said) in unmatched {
                 found.push(finding(
                     Kind::RosterUnmatched,
+                    json!(["roster-unmatched", role]),
                     format!(
                         "the roster's entry for the role `{role}` matches nothing in the host \
                          kit: it is not followed"
@@ -1183,6 +1223,7 @@ fn team_findings(team: &TeamRead) -> Vec<Finding> {
         }
         TeamRead::Unread(why) => vec![finding(
             Kind::TeamUnread,
+            json!(["team-unread"]),
             "the team this repo names cannot be read: no stage can be started".to_string(),
             why.clone(),
             "afkconvoy check".to_string(),
@@ -1194,6 +1235,7 @@ fn team_findings(team: &TeamRead) -> Vec<Finding> {
                     if fault.key.is_empty() { String::new() } else { format!(": {}", fault.key) };
                 finding(
                     Kind::TeamFaulty,
+                    json!(["team-fault", name, fault.file, fault.key]),
                     format!("the team {name} has a fault at its head: no stage can be started"),
                     fault.problem.clone(),
                     format!("{}{key}", fault.file),
@@ -1209,6 +1251,7 @@ fn team_findings(team: &TeamRead) -> Vec<Finding> {
 fn unmatched_finding(entry: &casting::UnmatchedModel) -> Finding {
     finding(
         Kind::RosterModelUnmatched,
+        json!(["roster-model", entry.role, entry.model, entry.harness]),
         format!(
             "the role `{}` has a roster entry that names no model the host kit holds: {} on {}",
             entry.role,
@@ -1229,6 +1272,7 @@ fn config_finding(config: &Config) -> Option<Finding> {
     let seconds = config.gate_seconds();
     Some(finding(
         Kind::NoGateLimit,
+        json!(["no-gate-limit"]),
         format!(
             "this repo's config declares no gate limit: the gate may run for {seconds}s before \
              anything ends it"
@@ -1263,6 +1307,7 @@ fn retired_concurrency_finding(checkout: &Path, config: &Config) -> Option<Findi
     };
     Some(finding(
         Kind::RetiredConcurrency,
+        json!(["retired-concurrency"]),
         format!(
             "this repo's config names `concurrency: {named}`, which nothing reads any more: this \
              checkout's fleet instance holds up to {in_force} claims at work at once on this host"
@@ -1281,6 +1326,7 @@ fn health_findings() -> Vec<Finding> {
         .map(|waiting| {
             finding(
                 Kind::WorkerHealth,
+                json!(["worker-health", waiting.worker]),
                 format!(
                     "the worker in {}: its worker health is waiting for the operator",
                     waiting.worker.display()
@@ -1316,6 +1362,7 @@ pub fn findings(seen: &Seen) -> Vec<Finding> {
         }
         Err(why) => found.push(finding(
             Kind::StateUnread,
+            json!(["state-unread"]),
             "the fleet's state cannot be read: GitHub, the remote or the config".to_string(),
             why.to_string(),
             named_line(why).unwrap_or_else(|| "afkconvoy scan".to_string()),
@@ -1914,7 +1961,9 @@ pub fn doctor_with_proxy_rounds(
 ) -> Result<Value> {
     let _budget = crate::launch::budget_once();
     let look = Look::new(now, rounds);
-    let (mut answer, mut found) = examined(repo, now, host, proxy, &look)?;
+    let Examined { mut answer, mut found, pace, .. } = examined(repo, now, host, proxy, &look)?;
+    found.extend(overdue_findings(&[pace], now));
+    found.sort_by_key(|finding| finding.severity);
     // A host finding is said here with this checkout. `doctor --all` says
     // each once, so `examined` leaves those unnamed.
     name_fixes(&repo.dir, &mut found);
@@ -1941,7 +1990,83 @@ fn name_fixes(checkout: &Path, found: &mut [Finding]) {
 
 /// What `doctor` makes of one checkout (`examined`): its answer but for
 /// `findings`, and what it found, most severe first.
-type Examined = (Value, Vec<Finding>);
+struct Examined {
+    answer: Value,
+    found: Vec<Finding>,
+    /// Its fleet instance's pace, by which a health observation is overdue.
+    pace: Pace,
+    /// Its fleet instance not alive, where nothing else found says so: a
+    /// finding only of a checkout on the checkout list.
+    not_alive: Option<Finding>,
+}
+
+/// How a fleet instance ticks: the sleep and the time of its last tick, and
+/// the worktrees its claims hold (`health::Cadence`).
+struct Pace {
+    sleep: u64,
+    took: u64,
+    worktrees: Vec<PathBuf>,
+}
+
+/// Each worker health observation past its time and past a tick's chance to
+/// make it, by the pace of every fleet instance `paces` says.
+fn overdue_findings(paces: &[Pace], now: u64) -> Vec<Finding> {
+    match crate::health::show() {
+        Ok(health) => overdue_of(&health, paces, now),
+        Err(_) => vec![],
+    }
+}
+
+fn overdue_of(health: &crate::health::Health, paces: &[Pace], now: u64) -> Vec<Finding> {
+    use crate::health::Overdue;
+    let mut cadence = crate::health::Cadence::default();
+    for pace in paces {
+        cadence.instance(pace.sleep, pace.took, pace.worktrees.iter().cloned());
+    }
+    health
+        .overdue(&cadence, now)
+        .into_iter()
+        .map(|overdue| {
+            let (path, evidence) = match overdue {
+                Overdue::Waiting { path, due, error } => {
+                    let error = error.map(|error| format!(": {error}")).unwrap_or_default();
+                    let said =
+                        format!("it was due at {} UTC and is still waiting{error}", log::utc(due));
+                    (path, said)
+                }
+                Overdue::Retry { path, error } => {
+                    (path, format!("it failed, and its retry is overdue: {error}"))
+                }
+            };
+            finding(
+                Kind::HealthOverdue,
+                json!(["health-overdue", path]),
+                format!("the worker in {}: its health observation is overdue", path.display()),
+                format!("{evidence}; no tick of its fleet instance has made it in time"),
+                "afkconvoy kit".to_string(),
+            )
+        })
+        .collect()
+}
+
+/// A checkout on the checkout list whose fleet instance this host's runner
+/// does not hold, said by no finding of a broken instance or of claims that
+/// nothing works.
+fn not_alive_finding(run: &Run, found: &[Finding]) -> Option<Finding> {
+    let said = found.iter().any(|finding| matches!(finding.kind, Kind::Broken | Kind::NoRun));
+    if run.alive || run.broken.is_some() || said {
+        return None;
+    }
+    Some(finding(
+        Kind::NotAlive,
+        json!(["not-alive"]),
+        "this checkout is on the checkout list, and its fleet instance is not alive: nothing \
+         works its issues"
+            .to_string(),
+        format!("this host's runner holds no fleet instance of this repo on {}", run.host),
+        "afkconvoy run".to_string(),
+    ))
+}
 
 /// The host's one reading for a look, shared by every checkout.
 struct Look {
@@ -2008,6 +2133,18 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String], look: &Look) ->
         state: state.as_ref().map_err(String::as_str),
     };
     let mut found = findings(&seen);
+    let pace = Pace {
+        sleep: run.last_tick().map(|(_, tick)| tick.sleep).unwrap_or(0),
+        took: run.last_took.unwrap_or(0),
+        worktrees: match &state {
+            Ok(state) => state.held.iter().filter_map(|held| held.worktree.clone()).collect(),
+            Err(_) => vec![],
+        },
+    };
+    let mut not_alive = not_alive_finding(&run, &found);
+    if let Some(finding) = &mut not_alive {
+        finding.fix = crate::checkout::about_checkout(&repo.dir, &finding.fix);
+    }
     found.extend(bounded);
     found.extend(look.trackers.findings(repo));
     found.extend(crate::paused::findings(now));
@@ -2063,7 +2200,7 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String], look: &Look) ->
         "waiting_on_human": waiting,
         "candidates": state.as_ref().ok().map(|state| &state.candidates),
     });
-    Ok((answer, found))
+    Ok(Examined { answer, found, pace, not_alive })
 }
 
 /// Each recent bound outcome is evidence for splitting the work or checking
@@ -2081,6 +2218,7 @@ fn exclusive_findings(entries: &[Entry], now: u64) -> Vec<Finding> {
             }
             Some(finding(
                 Kind::ExclusiveBound,
+                json!(["exclusive-bound", entry.at]),
                 format!("an exclusive command ended at the exclusive bound at {}", entry.at),
                 format!(
                     "{}: {outcome}; check `afkconvoy run --exclusive-seconds` if this was one step",
@@ -2203,14 +2341,20 @@ pub fn all_since_rounds(
                     let repo = Repo::at(&entry.checkout);
                     let key = repo.as_ref().ok().and_then(|repo| repo_of(repo).ok());
                     let examined = repo.and_then(|repo| {
-                        let (mut answer, found) = examined(&repo, now, &host, proxy, look)?;
+                        let mut examined = examined(&repo, now, &host, proxy, look)?;
                         if let Some(since) = since {
-                            answer["watching"] = match watching::read(&repo, &host, since, now) {
-                                Ok(watching) => watching,
-                                Err(error) => crate::error_json(&error),
-                            };
+                            examined.answer["watching"] =
+                                match watching::read(&repo, &host, since, now) {
+                                    Ok(watching) => watching,
+                                    Err(error) => crate::error_json(&error),
+                                };
+                            let ticks = watching::tick_findings(
+                                &examined.answer["watching"],
+                                &examined.found,
+                            );
+                            examined.found.extend(ticks);
                         }
-                        Ok((answer, found))
+                        Ok(examined)
                     });
                     (key, examined)
                 })
@@ -2226,10 +2370,15 @@ pub fn all_since_rounds(
     let mut unwell = false;
     let mut complete = true;
     let mut checkouts = vec![];
+    let mut paces = vec![];
     for (entry, (key, examined)) in listed.iter().zip(asked) {
         let doctor = match examined {
-            Ok((mut answer, found)) => {
+            Ok(Examined { mut answer, mut found, pace, not_alive }) => {
                 complete &= answer["watching"]["error"].is_null();
+                paces.push(pace);
+                // Every checkout here is on the checkout list.
+                found.extend(not_alive);
+                found.sort_by_key(|finding| finding.severity);
                 let (host_found, own): (Vec<Finding>, Vec<Finding>) =
                     found.into_iter().partition(|finding| finding.of_host);
                 for finding in host_found {
@@ -2261,6 +2410,7 @@ pub fn all_since_rounds(
     if say_watch_once && let Some(watch) = once.get_mut("watch").and_then(Value::as_object_mut) {
         watch.insert("events".to_string(), Value::Array(watch_events));
     }
+    of_host.extend(overdue_findings(&paces, now));
     // Said once, named for the first checkout on the list: the lines are
     // equal while they are gathered, and each runs from any directory.
     if let Some(checkout) = listed.first() {
@@ -2622,7 +2772,6 @@ mod tests {
     fn changing_durations_tick_counts_and_free_slots_keep_their_condition_identity() {
         let same = |before: &Finding, after: &Finding| {
             assert_ne!(before.what, after.what, "doctor keeps its current presentation");
-            assert!(before.watch_id.is_some());
             assert_eq!(before.watch_id, after.watch_id);
         };
         let stopped =
@@ -2770,38 +2919,96 @@ mod tests {
     }
 
     #[test]
-    fn unrecovered_steps_keep_their_watch_item_whatever_their_severity() {
-        let items = |ticks: Vec<(u64, Tick)>, failure: Value| {
-            let findings = log_findings(&run(ticks));
-            let look = json!({"findings": [], "checkouts": [{"checkout": "/r", "doctor": {
-                "findings": findings, "waiting_on_human": [],
-                "fleet": {"alive": true, "broken": null, "failed_steps": [failure]},
-                "watching": {"ticks": []}}}],
-                "host": {"host_kit": {"worker_health": {"workers": []}}}});
-            crate::host_watch::actionable(&look, NOW)
-        };
+    fn an_unrecovered_step_keeps_its_identity_whatever_its_severity() {
         let failed = |count| json!({"tick": count, "do": "advance", "issue": 160, "error": "no live terminal"});
-
-        let items_once = items(vec![tick(21, json!([failed(21)]))], failed(21));
-        let step = items_once.iter().find(|item| item.id == "step:/r:advance").unwrap();
-        assert_eq!(
-            step.reason,
-            "`advance` failed in tick 21 and has not recovered: \"no live terminal\""
-        );
+        let once = log_findings(&run(vec![tick(21, json!([failed(21)]))]));
+        assert_eq!(once.len(), 1);
+        assert_eq!(once[0].kind, Kind::StepUnrecovered);
+        assert_eq!(once[0].evidence, "no live terminal");
 
         let repeated = vec![
             tick(21, json!([failed(21)])),
             tick(22, json!([failed(22)])),
             tick(23, json!([failed(23)])),
         ];
-        let findings = log_findings(&run(repeated.clone()));
-        assert_eq!(findings[0].severity, Severity::Critical);
-        let items_repeated = items(repeated, failed(23));
-        assert!(items_repeated.iter().any(|item| item.id == "step:/r:advance"));
+        let again = log_findings(&run(repeated));
+        assert_eq!(again.len(), 1);
+        assert_eq!(again[0].kind, Kind::StepFailed);
+        assert_eq!(again[0].severity, Severity::Critical);
+        assert_ne!(again[0].what, once[0].what, "its words change");
+        assert_eq!(again[0].watch_id, once[0].watch_id, "its condition does not");
+        assert_eq!(once[0].watch_id, r#"checkout:["step","advance",160,null]"#);
     }
 
     #[test]
-    fn a_recovered_step_leaves_neither_a_finding_nor_a_watch_item() {
+    fn a_health_observation_is_overdue_only_past_its_ticks_chance() {
+        // The instance holding /w sleeps 90s between ticks, and its last took 10s.
+        let paces = [Pace { sleep: 90, took: 10, worktrees: vec!["/w".into()] }];
+        let health = |next: u64| -> crate::health::Health {
+            serde_json::from_value(json!({
+                "workers": [{"path": "/w", "terminal": "t", "harness": "codex", "snapshots": [],
+                    "next_check": next, "rate_retries": 0, "source": "rule", "action": "waiting",
+                    "error": "stuck"}],
+                "observations_failed": [["/f", "no terminal", next]]}))
+            .unwrap()
+        };
+        assert_eq!(overdue_of(&health(998), &paces, 1000), [], "the next tick observes it");
+        assert_eq!(overdue_of(&health(901), &paces, 1000), [], "within its sleep and a tick");
+        let missed = overdue_of(&health(899), &paces, 1000);
+        let ids: Vec<_> = missed.iter().map(|finding| finding.watch_id.as_str()).collect();
+        assert_eq!(ids, [r#"host:["health-overdue","/w"]"#, r#"host:["health-overdue","/f"]"#]);
+        assert!(
+            missed.iter().all(|finding| finding.kind == Kind::HealthOverdue && finding.of_host)
+        );
+        assert!(missed[0].evidence.contains("still waiting: stuck"), "{missed:?}");
+        assert!(missed[1].evidence.contains("its retry is overdue: no terminal"), "{missed:?}");
+        let later = overdue_of(&health(800), &paces, 1000);
+        assert_eq!(later[0].watch_id, missed[0].watch_id, "later, the same observation");
+    }
+
+    #[test]
+    fn a_listed_checkout_not_alive_is_one_finding_beside_a_broken_or_claimed_one() {
+        let dead = Run { alive: false, ..run(vec![]) };
+        let found = not_alive_finding(&dead, &[]).unwrap();
+        assert_eq!(
+            (found.kind, found.watch_id.as_str()),
+            (Kind::NotAlive, r#"checkout:["not-alive"]"#)
+        );
+        let no_run = &run_findings(&dead, &[held(3)]);
+        assert_eq!(no_run[0].kind, Kind::NoRun);
+        assert_eq!(no_run[0].watch_id, found.watch_id, "claims held are the same condition");
+        assert_eq!(not_alive_finding(&dead, no_run), None);
+        assert_eq!(not_alive_finding(&run(vec![]), &[]), None, "alive");
+    }
+
+    #[test]
+    fn a_failed_tick_is_a_finding_unless_an_unrecovered_step_says_it() {
+        let step = log_findings(&run(vec![tick(
+            4,
+            json!([{"do": "dispatch", "issue": 3, "error": "busy"}]),
+        )]));
+        let watching = |errors: Value| {
+            json!({"ticks": [{"instance": "alpha", "first": 10, "last": 10, "count": 1,
+                "line": "FAILED", "failed": true, "did": [], "errors": errors}]})
+        };
+        let said = json!([{"do": "dispatch", "issue": 3, "error": "busy"}]);
+        assert_eq!(watching::tick_findings(&watching(said.clone()), &step), []);
+        let whole = watching::tick_findings(&watching(json!([{"error": "gh is down"}])), &step);
+        assert_eq!(whole.len(), 1);
+        assert_eq!(whole[0].kind, Kind::TickFailed);
+        assert_eq!(whole[0].watch_id, r#"checkout:["tick","alpha",[["step","tick",null,null]]]"#);
+        let recovered = watching::tick_findings(&watching(said), &[]);
+        assert_eq!(
+            recovered[0].watch_id,
+            r#"checkout:["tick","alpha",[["step","dispatch",3,null]]]"#
+        );
+        let quiet = json!({"ticks": [{"instance": "alpha", "first": 10, "last": 10, "count": 1,
+            "line": "ok", "failed": false, "did": [], "errors": []}]});
+        assert_eq!(watching::tick_findings(&quiet, &[]), []);
+    }
+
+    #[test]
+    fn a_recovered_step_leaves_no_finding() {
         let failure =
             json!({"tick": 21, "do": "advance", "issue": 160, "error": "no live terminal"});
         let mut ticks = vec![tick(21, json!([failure.clone()]))];
@@ -2811,16 +3018,7 @@ mod tests {
                 json!([{"do": "advance", "issue": 160, "outcome": "nothing"}]);
             ticks.push(recovered);
         }
-        let findings = log_findings(&run(ticks));
-        assert!(findings.iter().all(|finding| !finding.what.contains("failed in tick")));
-
-        let look = json!({"findings": [], "checkouts": [{"checkout": "/r", "doctor": {
-            "findings": findings, "waiting_on_human": [],
-            "fleet": {"alive": true, "broken": null, "failed_steps": [failure]},
-            "watching": {"ticks": []}}}],
-            "host": {"host_kit": {"worker_health": {"workers": []}}}});
-        let items = crate::host_watch::actionable(&look, NOW);
-        assert!(items.iter().all(|item| !item.id.starts_with("step:")), "{items:?}");
+        assert_eq!(log_findings(&run(ticks)), []);
     }
 
     #[test]
