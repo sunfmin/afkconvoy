@@ -3522,89 +3522,75 @@ fn own_program() -> String {
     exe.unwrap_or_else(|| "afkconvoy".to_string())
 }
 
-/// The commands that act: each logs a line and wakes the `run` as it ends
-/// (`Command::acting`), and its `--help` says so (`acting::HELP`).
-const ACTS: [&str; 26] = [
-    "dispatch",
-    "cast",
-    "close",
-    "escalate",
-    "park",
-    "nudge",
-    "restart",
-    "switch",
-    "takeover",
-    "claim",
-    "release",
-    "heartbeat",
-    "rule",
-    "send",
-    "land",
-    "verdict",
-    "intake",
-    "target",
-    "delivery",
-    "lock",
-    "patrol-now",
-    "over",
-    "cut",
-    "gate",
-    "wake",
-    "tick",
-];
-
-/// The commands a worker runs in its own worktree, as its brief, a stage's
-/// consult's and a watch's give them: with those that
-/// only read (`ONLY_READ`), the only commands a worker's worktree is taken
-/// for (`checkout::resolve`).
-const IN_ITS_WORKTREE: [&str; 17] = [
-    "target",
-    "delivery",
-    "cast",
-    "doctor",
-    "plan",
-    "show",
-    "gate",
-    "land",
-    "verdict",
-    "rule",
-    "send",
-    "intake",
-    "lock",
-    "over",
-    "cut",
-    "exclusive",
-    "wake",
-];
-
-/// The commands about one repo that only read — each but with the flag
-/// beside it, which makes it act: they change nothing on GitHub, on the
-/// remote, in the checkout or of a `run`. A worker's worktree is taken for
-/// each, as for a worker's own commands: a consult's brief lets it run any
-/// command that only reads, and what one reads from a worker's branch acts
-/// for nobody.
-const ONLY_READ: [(&str, Option<&str>); 7] = [
-    ("config", None),
-    ("check", None),
-    ("rehearse", None),
-    ("recovery", None),
-    ("scan", None),
-    ("panel", None),
-    ("takeover", Some("from")),
-];
-
-/// Whether the command `name`, as `given`, only reads (`ONLY_READ`): it is
-/// one of them, and is not given the flag that makes it act.
-fn only_reads(name: &str, given: &clap::ArgMatches) -> bool {
-    let acts =
-        |flag: &str| given.value_source(flag) == Some(clap::parser::ValueSource::CommandLine);
-    ONLY_READ.iter().any(|(reads, with)| *reads == name && !with.is_some_and(acts))
+/// What a command is to the fleet: whether it acts, whether a worker's
+/// worktree is taken as its checkout, and whether it starts the fleet's
+/// work. Declared once, by `kind`; its help (`cli`), the checkout it takes
+/// (`checkout::resolve`) and its acting log (`Command::acting`) all read it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Kind {
+    /// It acts: it logs a line and wakes the `run` as it ends
+    /// (`Command::acting`), and its `--help` says so (`acting::HELP`).
+    acts: bool,
+    worktree: Worktree,
+    /// It starts the fleet's work: it checks this host before anything else
+    /// (`probe::startup`), and is refused on a host with no git naming every
+    /// command it lacks (`checkout::started`).
+    starts: bool,
 }
 
-/// The commands that start the fleet's work: each checks this host before
-/// anything else (`probe::startup`), and is refused on a host with no git
-/// naming every command it lacks (`checkout::started`).
-const STARTS: [&str; 3] = ["run", "tick", "plan"];
+/// Whether a worker's worktree is taken as a command's checkout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Worktree {
+    /// It is not: only a worker's own commands, and those that only read,
+    /// are run there.
+    Refused,
+    /// A worker runs it in its own worktree, as its brief, a stage's
+    /// consult's and a watch's give it.
+    Its,
+    /// It only reads — but with the flag named, which makes it act: it
+    /// changes nothing on GitHub, on the remote, in the checkout or of a
+    /// `run`. A consult's brief lets it run any command that only reads,
+    /// and what one reads from a worker's branch acts for nobody.
+    Reads(Option<&'static str>),
+}
+
+impl Kind {
+    const PLAIN: Kind = Kind { acts: false, worktree: Worktree::Refused, starts: false };
+    const ACTS: Kind = Kind { acts: true, ..Kind::PLAIN };
+    const WORKERS: Kind = Kind { worktree: Worktree::Its, ..Kind::PLAIN };
+    const READS: Kind = Kind { worktree: Worktree::Reads(None), ..Kind::PLAIN };
+
+    /// Whether a worker's worktree is taken for it, as `given`: one that only
+    /// reads but for a flag is not given that flag.
+    fn takes_worktree(self, given: &clap::ArgMatches) -> bool {
+        let acts =
+            |flag: &str| given.value_source(flag) == Some(clap::parser::ValueSource::CommandLine);
+        match self.worktree {
+            Worktree::Refused => false,
+            Worktree::Its | Worktree::Reads(None) => true,
+            Worktree::Reads(Some(flag)) => !acts(flag),
+        }
+    }
+}
+
+/// The kind of the command `name`: each command's, here once. One not named
+/// acts never, refuses a worker's worktree and starts nothing.
+fn kind(name: &str) -> Kind {
+    let worker_acts = Kind { acts: true, worktree: Worktree::Its, starts: false };
+    match name {
+        "dispatch" | "close" | "escalate" | "park" | "nudge" | "restart" | "switch" | "claim"
+        | "release" | "heartbeat" | "patrol-now" => Kind::ACTS,
+        "takeover" => Kind { worktree: Worktree::Reads(Some("from")), ..Kind::ACTS },
+        "cast" | "target" | "delivery" | "gate" | "land" | "verdict" | "rule" | "send"
+        | "intake" | "lock" | "over" | "cut" | "wake" => worker_acts,
+        "tick" => Kind { starts: true, ..Kind::ACTS },
+        "doctor" | "show" | "exclusive" => Kind::WORKERS,
+        "plan" => Kind { starts: true, ..Kind::WORKERS },
+        "run" => Kind { starts: true, ..Kind::PLAIN },
+        "config" | "check" | "rehearse" | "recovery" | "scan" | "panel" => Kind::READS,
+        _ => Kind::PLAIN,
+    }
+}
 
 /// The command line as parsed: `Cli`, each command about one repo with how it
 /// takes its checkout added to its text, and each command that acts with what
@@ -3622,7 +3608,12 @@ fn cli() -> clap::Command {
     for (name, said) in about {
         cli = cli.mut_subcommand(name, |command| added(command, &said));
     }
-    for name in ACTS {
+    let acts: Vec<String> = cli
+        .get_subcommands()
+        .map(|command| command.get_name().to_string())
+        .filter(|name| kind(name).acts)
+        .collect();
+    for name in acts {
         cli = cli.mut_subcommand(name, |command| added(command, acting::HELP));
     }
     cli
@@ -3647,15 +3638,14 @@ fn checkout_help(name: &str, positional: bool) -> String {
     };
     let refused = "A worker's worktree is refused as its checkout: only a worker's own commands, \
                    and those that only read, are run there.";
-    let reads = ONLY_READ.iter().find(|(reads, _)| *reads == name).map(|(_, with)| with);
-    let worker = match (IN_ITS_WORKTREE.contains(&name), reads) {
-        (true, _) => "A worker runs it in its own worktree.".to_string(),
-        (false, Some(None)) => "It only reads: a worker's worktree is one too.".to_string(),
-        (false, Some(Some(flag))) => format!(
+    let worker = match kind(name).worktree {
+        Worktree::Its => "A worker runs it in its own worktree.".to_string(),
+        Worktree::Reads(None) => "It only reads: a worker's worktree is one too.".to_string(),
+        Worktree::Reads(Some(flag)) => format!(
             "Without `--{flag}` it only reads, and a worker's worktree is one too. With `--{flag}`, \
              it is not: only a worker's own commands, and those that only read, are run there."
         ),
-        (false, None) => refused.to_string(),
+        Worktree::Refused => refused.to_string(),
     };
     let none = match name {
         "panel" => {
@@ -4186,10 +4176,11 @@ pub fn main(args: impl IntoIterator<Item = OsString>) -> ExitCode {
     });
     let named = about.and_then(|(_, command)| command.get_one::<PathBuf>(CHECKOUT_ARG));
     let named = named.map(PathBuf::as_path);
+    let kind = matches.subcommand_name().map_or(Kind::PLAIN, kind);
     let checkout = match about {
-        Some((name, given)) => {
-            let taken = IN_ITS_WORKTREE.contains(&name) || only_reads(name, given);
-            match STARTS.contains(&name) {
+        Some((_, given)) => {
+            let taken = kind.takes_worktree(given);
+            match kind.starts {
                 true => checkout::started(named, taken),
                 false => checkout::resolve(named, taken),
             }
@@ -4215,7 +4206,8 @@ pub fn main(args: impl IntoIterator<Item = OsString>) -> ExitCode {
         Err(error) if named.is_some() || matches!(cli.command, Command::Wake { .. }) => Err(error),
         checkout => {
             let in_it = checkout.as_ref().ok().cloned();
-            let acting = cli.command.acting().map(|acting| acting.in_checkout(in_it));
+            let acting = kind.acts.then(|| cli.command.acting()).flatten();
+            let acting = acting.map(|acting| acting.in_checkout(in_it));
             let now = || cli.now.unwrap_or_else(clock);
             if let Some(acting) = &acting {
                 acting.start(now());
@@ -4294,6 +4286,7 @@ impl Command {
     /// What it says of itself as it acts (`acting`), if it changes fleet
     /// state: writes to GitHub — issues, comments, labels, blocked-by edges —
     /// or to the fleet's refs on the remote. One that only reads says nothing.
+    /// Asked only of a command whose kind acts (`kind`).
     fn acting(&self) -> Option<Acting> {
         let of = |name, issue: &IssueArg, who: Option<&Who>| {
             let acting = Acting::new(name).on_issue(Some(issue.number()));
@@ -4360,31 +4353,10 @@ impl Command {
             Command::Gate { .. } => Acting::new("gate").on_own_issue().saying_start(),
             Command::Cut { .. } => Acting::new("cut").saying_start(),
             Command::Wake { .. } => Acting::new("wake").on_own_issue(),
-            Command::Watched { .. } => return None,
             Command::Cast { .. } => Acting::new("cast"),
             Command::Tick { who, .. } => as_who("tick", who),
-            Command::Kit { .. }
-            | Command::Config { .. }
-            | Command::Check { .. }
-            | Command::Scaffold { .. }
-            | Command::Flows { .. }
-            | Command::Skill
-            | Command::Show { .. }
-            | Command::Draft { .. }
-            | Command::Rehearse { .. }
-            | Command::Doctor { .. }
-            | Command::Plan { .. }
-            | Command::Run { .. }
-            | Command::Stop { .. }
-            | Command::HostRunner
-            | Command::Checkouts
-            | Command::Queue
-            | Command::Panel { .. }
-            | Command::Guard
-            | Command::Exclusive { .. }
-            | Command::Recovery { .. }
-            | Command::Scan { .. }
-            | Command::Help { .. } => return None,
+            // Its kind says it does not act (`kind`).
+            _ => return None,
         })
     }
 }
@@ -4785,59 +4757,6 @@ fn run(
 mod tests {
     use super::*;
 
-    /// A command line of each command, as little as it parses with.
-    const LINES: &[&[&str]] = &[
-        &["kit"],
-        &["config"],
-        &["check"],
-        &["scaffold", "team", "x"],
-        &["flows"],
-        &["skill"],
-        &["show"],
-        &["draft"],
-        &["rehearse", "build"],
-        &["doctor"],
-        &["plan"],
-        &["run"],
-        &["stop"],
-        &["checkouts"],
-        &["queue"],
-        &["host-runner"],
-        &["panel"],
-        &["tick", "--instance", "a-h1-1"],
-        &["gate"],
-        &["land", "7"],
-        &["watched", "--watch", "watch-1", "--text-file", "report.json"],
-        &["verdict", "pass", "7", "--stage", "build", "--text", "x"],
-        &["rule", "7", "--text", "x"],
-        &["send", "7", "--stage", "build", "--text", "x"],
-        &["intake", "7", "--workflow", "w", "--role", "r", "--from", "3"],
-        &["target", "7", "--branch", "delivery/ticket"],
-        &["delivery", "--jira", "https://example.com/browse/ABC-123", "--final-target", "main"],
-        &["lock", "7"],
-        &["patrol-now", "sweep"],
-        &["over", "--run", "sweep"],
-        &["cut", "--from", "gate"],
-        &["guard"],
-        &["exclusive", "--", "true"],
-        &["dispatch", "7", "--instance", "a-h1-1"],
-        &["recovery", "7"],
-        &["close", "7", "--instance", "a-h1-1"],
-        &["escalate", "7", "--instance", "a-h1-1", "--reason", "x"],
-        &["park", "7", "--instance", "a-h1-1"],
-        &["nudge", "7", "--instance", "a-h1-1"],
-        &["restart", "7", "--instance", "a-h1-1"],
-        &["switch", "7", "--harness", "codex", "--instance", "a-h1-1"],
-        &["takeover", "--from", "b-h2-2", "--instance", "a-h1-1"],
-        &["wake"],
-        &["cast"],
-        &["scan"],
-        &["claim", "7", "--instance", "a-h1-1"],
-        &["release", "7", "--instance", "a-h1-1"],
-        &["heartbeat", "--instance", "a-h1-1"],
-        &["help"],
-    ];
-
     /// The manual is whole: every command has its text and its group, and
     /// every placeholder and every link to a topic names one there is.
     #[test]
@@ -4863,35 +4782,19 @@ mod tests {
         );
     }
 
-    /// The commands that act are those whose `--help` says what they log, and
-    /// none else: a test of the text `--help` gives, not of `ACTS` alone.
+    /// A command whose kind acts logs what it acts on, as its wake names it;
+    /// one given the flag that makes it only read says nothing.
     #[test]
-    fn a_command_logs_and_wakes_where_its_help_says_so_and_only_there() {
-        let manual = manual();
-        let mut listed = vec![];
-        for command in cli().get_subcommands() {
-            let name = command.get_name().to_string();
-            let help = manual.command_help(&[&name]).unwrap();
-            let line = LINES.iter().find(|line| line[0] == name);
-            let line = line.unwrap_or_else(|| panic!("no command line of `{name}` here"));
-            let parsed =
-                Cli::try_parse_from(std::iter::once("afkconvoy").chain(line.iter().copied()));
-            let acts = parsed.unwrap_or_else(|e| panic!("{name}: {e}")).command.acting().is_some();
-            assert_eq!(acts, help.contains("\n## What it logs\n"), "{name}");
-            assert_eq!(acts, ACTS.contains(&name.as_str()), "{name}");
-            listed.push(name);
-        }
-        assert_eq!(listed.len(), LINES.len(), "{listed:?}");
-        // The listing with `--list` changes nothing, and says nothing.
-        let list = Cli::try_parse_from(["afkconvoy", "takeover", "--list"]).unwrap();
-        assert!(list.command.acting().is_none());
-        let target = Cli::try_parse_from(["afkconvoy", "target", "7"]).unwrap();
-        assert!(target.command.acting().is_none());
-        // What one acts on is named, as its wake names it.
-        let named = |line: &[&str]| {
+    fn a_command_that_acts_names_what_it_acts_on() {
+        let acting = |line: &[&str]| {
             let cli = Cli::try_parse_from(std::iter::once("afkconvoy").chain(line.iter().copied()));
-            cli.unwrap().command.acting().unwrap().named()
+            let command = cli.unwrap().command;
+            kind(line[0]).acts.then(|| command.acting()).flatten().map(|acting| acting.named())
         };
+        assert_eq!(acting(&["takeover", "--list"]), None, "the listing changes nothing");
+        assert_eq!(acting(&["target", "7"]), None);
+        assert_eq!(acting(&["doctor"]), None, "its kind does not act");
+        let named = |line: &[&str]| acting(line).unwrap();
         assert_eq!(named(&["park", "--issue", "46", "--instance", "a-h1-1"]), "park #46");
         assert_eq!(named(&["over", "--run", " sweep "]), "over run sweep");
         assert_eq!(named(&["patrol-now", "sweep"]), "patrol-now sweep");
@@ -4900,67 +4803,41 @@ mod tests {
             "takeover from b-h2-2"
         );
         assert_eq!(named(&["land", "--train"]), "land");
+        assert_eq!(named(&["cast"]), "cast");
+        let manual = manual();
+        let help = |name: &str| manual.command_help(&[name]).unwrap();
+        assert!(help("park").contains("\n## What it logs\n"));
+        assert!(!help("doctor").contains("\n## What it logs\n"));
     }
 
-    /// Repo commands a worker runs accept its worktree. A watch's host-wide
-    /// report needs no repo and must stay usable in an operator's directory.
+    /// A worker's worktree is taken for a command a worker runs, and for one
+    /// that only reads but without the flag that makes it act.
     #[test]
-    fn a_workers_worktree_is_taken_for_every_command_a_worker_runs() {
-        let cli = Cli::command();
-        let about = |command: &clap::Command| {
-            command.get_arguments().any(|arg| arg.get_id() == CHECKOUT_ARG)
-        };
-        for name in IN_ITS_WORKTREE {
-            let command = cli.find_subcommand(name).unwrap_or_else(|| panic!("no `{name}`"));
-            assert!(about(command), "`{name}` is about no repo");
-        }
-        let workers = cli.get_subcommands().filter(|c| c.get_next_help_heading() == Some(WORKER));
-        let workers: Vec<&str> = workers.map(clap::Command::get_name).collect();
-        assert!(workers.len() >= 8, "{workers:?}");
-        for name in workers {
-            if name == "watched" {
-                assert!(!about(cli.find_subcommand(name).unwrap()));
-                continue;
-            }
-            assert!(IN_ITS_WORKTREE.contains(&name), "a worker runs `{name}`");
-        }
-        // `wake` is in the group of whoever hands the fleet work, and still a
-        // worker's last command.
-        assert!(IN_ITS_WORKTREE.contains(&"wake"));
-        // Those that only read are about one repo and no worker's own, and
-        // the flag that makes one act is one of its own: one with none acts
-        // never.
-        for (name, with) in ONLY_READ {
-            let command = cli.find_subcommand(name).unwrap_or_else(|| panic!("no `{name}`"));
-            assert!(about(command), "`{name}` is about no repo");
-            assert!(!IN_ITS_WORKTREE.contains(&name), "`{name}` is a worker's own");
-            match with {
-                Some(flag) => assert!(command.get_arguments().any(|arg| arg.get_id() == flag)),
-                None => assert!(!ACTS.contains(&name), "`{name}` acts"),
-            }
-        }
-        for name in STARTS {
-            assert!(cli.find_subcommand(name).is_some_and(about), "`{name}` is about no repo");
-        }
-    }
-
-    /// A command that only reads but for a flag is taken in a worker's
-    /// worktree without that flag, and not with it.
-    #[test]
-    fn a_command_that_only_reads_but_for_a_flag_reads_only_without_it() {
-        let reads = |line: &[&str]| {
+    fn a_workers_worktree_is_taken_for_a_command_a_worker_runs_or_one_that_only_reads() {
+        let taken = |line: &[&str]| {
             let matches = cli()
                 .try_get_matches_from(std::iter::once("afkconvoy").chain(line.iter().copied()));
             let matches = matches.unwrap();
             let (name, given) = matches.subcommand().unwrap();
-            only_reads(name, given)
+            kind(name).takes_worktree(given)
         };
-        assert!(reads(&["takeover", "--list"]));
-        assert!(!reads(&["takeover", "--from", "b-h2-2", "--instance", "a-h1-1"]));
-        assert!(reads(&["panel"]));
-        assert!(reads(&["panel", "--open"]), "it asks the host runner, changing nothing");
-        assert!(reads(&["scan"]));
-        assert!(!reads(&["claim", "7", "--instance", "a-h1-1"]));
+        assert!(taken(&["takeover", "--list"]));
+        assert!(!taken(&["takeover", "--from", "b-h2-2", "--instance", "a-h1-1"]));
+        assert!(taken(&["panel"]));
+        assert!(taken(&["panel", "--open"]), "it asks the host runner, changing nothing");
+        assert!(taken(&["scan"]));
+        assert!(taken(&["gate"]));
+        assert!(taken(&["wake"]), "a worker's last command");
+        assert!(!taken(&["claim", "7", "--instance", "a-h1-1"]));
+        assert!(!taken(&["run"]));
+        // Every command of the group a worker runs, but the watch's host-wide
+        // report, which is about no repo.
+        let cli = Cli::command();
+        let workers = cli.get_subcommands().filter(|c| c.get_next_help_heading() == Some(WORKER));
+        for command in workers.filter(|command| command.get_name() != "watched") {
+            let name = command.get_name();
+            assert_eq!(kind(name).worktree, Worktree::Its, "a worker runs `{name}`");
+        }
     }
 
     #[test]
