@@ -698,6 +698,7 @@ impl Fleet {
                 declared.push(claim.number);
             }
         }
+        let idle = self.idle_landings(me, prs, &closed);
         let heartbeats = self.scan.beats();
         let (landings, slow_gate) = slow_gate::seen(self, &self.listing().records, &base)?;
         let cut = crate::cut::seen(self, &stages, issues, &base)?;
@@ -713,6 +714,7 @@ impl Fleet {
             kept: &kept,
             landed: &landed,
             declared: &declared,
+            idle: &idle,
             due: &stages.due(prs),
             flows: &stages.flow_labels(),
             landing: &stages.landing(&self.scan.claims),
@@ -735,6 +737,38 @@ impl Fleet {
             Some(_) => self.cast_bound_frontier(&mut set, &open.issues, &stages),
         }
         Ok((set, stages))
+    }
+
+    /// My claims whose PR is open and whose worker is not changing the tree
+    /// (`landing_worker::changing_tree`): each takes no slot. One whose
+    /// worker could not be asked after takes one, as it did.
+    fn idle_landings(
+        &self,
+        me: Option<&InstanceId>,
+        prs: &[afkconvoy_core::plan::PullRequest],
+        closed: &[u64],
+    ) -> Vec<u64> {
+        let mine = self.scan.claims.iter().filter(|claim| {
+            me.is_some_and(|me| claim.is_held_by(me))
+                && !closed.contains(&claim.number)
+                && closing_pr(prs, claim.number).is_some()
+        });
+        let mut idle = vec![];
+        for claim in mine {
+            let at_work = || -> Result<bool> {
+                let source = Source::of(&self.repo)?;
+                let Some(worktree) = Worktree::of_issue(&source, claim.number)? else {
+                    return Ok(false);
+                };
+                let state = worktree.state(self.now)?;
+                let answered = crate::turn_answer::read(&worktree)?;
+                Ok(afkconvoy_core::landing_worker::changing_tree(Some(state), &answered))
+            };
+            if matches!(at_work(), Ok(false)) {
+                idle.push(claim.number);
+            }
+        }
+        idle
     }
 
     /// Apply host priority to the unbound frontier. No issue waits for a

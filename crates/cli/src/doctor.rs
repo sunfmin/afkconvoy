@@ -32,11 +32,12 @@ use anyhow::{Result, anyhow};
 use serde::Serialize;
 use serde_json::{Map, Value, json};
 
-use crate::admission::{Admission, Readings};
+use crate::admission::Readings;
 use crate::checkout_list::{List, repo_of};
 use crate::claims::Me;
 use crate::config;
 use crate::fleet::Fleet;
+use crate::fleet_report::FleetReport;
 use crate::gate::head_tree;
 use crate::git::{REMOTE, Repo};
 use crate::host_runner;
@@ -1530,8 +1531,13 @@ fn read_events(entries: &[Entry], host: &str) -> Vec<Event> {
 
 /// The team the config of the checkout `repo` names, where it is `bound`,
 /// as it stands at its head → with the team itself, where it loaded: what a
-/// stage in flight is held against.
-fn read_team(repo: &Repo, bound: bool) -> (TeamRead, Option<team::Loaded>) {
+/// stage in flight is held against. What its roles make of the host kit is
+/// the fleet report's `roles`: none where it read none.
+fn read_team(
+    repo: &Repo,
+    bound: bool,
+    roles: Option<&crate::fleet_report::Roles>,
+) -> (TeamRead, Option<team::Loaded>) {
     if !bound {
         return (TeamRead::Unbound, None);
     }
@@ -1540,23 +1546,16 @@ fn read_team(repo: &Repo, bound: bool) -> (TeamRead, Option<team::Loaded>) {
             let workflows = loaded.team.workflows.iter();
             let flow_labels = workflows.map(|workflow| workflow.flow_label().to_string()).collect();
             // A host kit that cannot be read is a finding of its own.
-            let kit = crate::kit::running().map(|(kit, _)| kit.range());
-            let (nothing_safe, unmatched) = match &kit {
-                Ok(kit) => (
-                    casting::range_faults(&loaded.team, kit),
-                    casting::unmatched_entries(&loaded.team, kit),
-                ),
-                Err(_) => (vec![], vec![]),
-            };
+            let roles = roles.cloned();
             (
                 TeamRead::Loaded {
                     flow_labels,
-                    nothing_safe,
-                    unmatched,
-                    unmatched_models: kit
+                    nothing_safe: roles
                         .as_ref()
-                        .map(|kit| casting::unmatched_models(&loaded.team, kit))
+                        .map(|r| r.nothing_safe.clone())
                         .unwrap_or_default(),
+                    unmatched: roles.as_ref().map(|r| r.unmatched.clone()).unwrap_or_default(),
+                    unmatched_models: roles.map(|r| r.unmatched_models).unwrap_or_default(),
                 },
                 Some(loaded),
             )
@@ -1678,7 +1677,8 @@ fn finish_state(
     run: &mut Run,
     trust: bool,
     opened: (Fleet, crate::gh::Open),
-) -> Result<State> {
+    readings: &Readings,
+) -> Result<(State, FleetReport)> {
     let (mut fleet, open) = opened;
     if trust {
         fleet.trust_launches();
@@ -1697,7 +1697,8 @@ fn finish_state(
     };
     let (set, flows) = fleet.rebuild(&open, instance.as_ref())?;
     let stood = flows.stood();
-    let (team, loaded) = read_team(repo, fleet.config.bound.is_some());
+    let report = FleetReport::read(&fleet, &flows, &set, readings);
+    let (team, loaded) = read_team(repo, fleet.config.bound.is_some(), report.roles.as_ref());
     let held = read_held(&fleet, &set, &stood, loaded.as_ref());
     let unclaimed = read_unclaimed(&fleet);
     let ready_label = fleet.config.ready_label.clone();
@@ -1731,14 +1732,8 @@ fn finish_state(
         &fleet.records_at_open(&format!("{prefix}*")),
     )
     .unwrap_or_else(|error| json!({"error": error.to_string()}));
-    let delivery_prefix = fleet.repo.layout().under("delivery/");
-    let deliveries = crate::delivery::reported(
-        &fleet.repo,
-        now,
-        &fleet.records_at_open(&format!("{delivery_prefix}*")),
-    )
-    .unwrap_or_else(|error| vec![json!({ "error": format!("{error:#}") })]);
-    Ok(State {
+    let deliveries = report.deliveries_json();
+    let state = State {
         refusals: fleet.selection()["refusals"].clone(),
         targets: fleet.targets(&open.issues)?,
         set,
@@ -1752,7 +1747,8 @@ fn finish_state(
         on_gone,
         candidates,
         deliveries,
-    })
+    };
+    Ok((state, report))
 }
 
 /// The worktrees on this host whose issue holds no claim, each with what it
@@ -1996,9 +1992,13 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String], look: &Look) ->
     });
     // A fleet that cannot be opened is the unread state, not a refusal of
     // the look: the host is still answered, and the failure is the finding.
-    let state = opened
-        .and_then(|opened| finish_state(repo, now, &mut run, trust, opened))
+    let read = opened
+        .and_then(|opened| finish_state(repo, now, &mut run, trust, opened, &look.readings))
         .map_err(|error| format!("{error:#}"));
+    let (state, report) = match read {
+        Ok((state, report)) => (Ok(state), report),
+        Err(error) => (Err(error), FleetReport::unopened(repo, &look.readings)),
+    };
     let seen = Seen {
         now,
         host: &seen_host,
@@ -2030,10 +2030,7 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String], look: &Look) ->
     };
     let mut host = host_json(&seen_host);
     host["worker_no_proxy"] = launches.proxy_json();
-    host["admission"] = match Admission::read_from(&repo.dir, &look.readings) {
-        Ok(admission) => admission.json(),
-        Err(error) => json!({"error": format!("{error:#}")}),
-    };
+    host["admission"] = report.admission_json();
     host["settings"] = match List::of_host() {
         Ok(list) => crate::host_settings::json(&list, &repo.dir, &look.readings),
         Err(error) => json!({"error": format!("{error:#}")}),
@@ -2042,16 +2039,13 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String], look: &Look) ->
         host.extend(look.host.clone());
     }
     let mut fleet = fleet_json(&run);
-    fleet["concurrency"] = crate::concurrency::json_of(repo);
-    fleet["harness"] = crate::named_harness::json_of(repo);
+    fleet["concurrency"] = report.concurrency.clone();
+    fleet["harness"] = report.harness.clone();
     fleet["github_api"] = match crate::gh::GitHub::of(repo).and_then(|gh| gh.quota_status()) {
         Ok(status) => status,
         Err(error) => json!({"error":format!("{error:#}")}),
     };
-    fleet["tracker"] = match List::of_host() {
-        Ok(list) => crate::tracker::json_of(&list, repo),
-        Err(error) => json!({"error": format!("{error:#}")}),
-    };
+    fleet["tracker"] = report.tracker.clone();
     let deliveries = match &state {
         Ok(state) => state.deliveries.clone(),
         Err(error) => vec![json!({ "error": error })],
@@ -2369,7 +2363,6 @@ mod tests {
             patrols: vec![],
             slow_gate: None,
             held_back: vec![],
-            caster: None,
             casting: vec![],
             cut: None,
         }
@@ -3008,6 +3001,7 @@ mod tests {
             pr: None,
             due: None,
             declared: false,
+            idle: false,
         }];
         state.held = vec![held(9)];
         assert_eq!(self::found(&host(), &run(vec![]), &state), []);

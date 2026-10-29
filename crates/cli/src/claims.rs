@@ -72,6 +72,37 @@ impl Scan {
         ))
     }
 
+    /// `read`, for a command an operator runs on the claims themselves —
+    /// `scan`, `release`: where the checkout says no tracker at all, being on
+    /// no checkout list of this host, and the remote holds claims on the
+    /// issues of another tracker, an error saying the tracker is not said.
+    /// Read as its own repo's, a claim named for that tracker would be
+    /// reported absent, or released when it is not.
+    pub fn read_said(repo: &Repo) -> Result<Scan> {
+        let list = crate::checkout_list::List::of_host()?;
+        if crate::checkout_list::said(&list, repo)?.is_some() {
+            return Scan::read(repo);
+        }
+        let layout = repo.layout();
+        let records = repo.remote_records(&layout.every(""))?;
+        let elsewhere: Vec<&str> = records
+            .iter()
+            .filter_map(|record| layout.kept(&record.name)?.strip_prefix(CLAIM_KIND))
+            .filter(|key| key.contains('/') && Tracker::Own.claimed(key) == Claimed::Elsewhere)
+            .filter_map(|key| key.rsplit_once('/').map(|(tracker, _)| tracker))
+            .collect();
+        if let Some(tracker) = elsewhere.first() {
+            bail!(
+                "the tracker is not said: {} is on no checkout list of this host, and the remote \
+                 holds claims on the issues of {tracker}, which are named for their tracker. Run \
+                 it while the checkout is on the list — `afkconvoy run --tracker <owner>/<repo>` \
+                 puts it there",
+                repo.dir.display()
+            );
+        }
+        Ok(Scan::among(layout, Tracker::Own, records))
+    }
+
     /// The claims, heartbeats and runs among `records`: the fleet's refs
     /// under `layout`, as one read of the remote saw them, its claims on
     /// issues those of `tracker`.

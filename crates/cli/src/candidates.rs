@@ -151,7 +151,7 @@ impl Drop for Reservation<'_> {
 
 /// One candidate as a look shows it. A finished candidate carries no gate
 /// excerpt. One gating now (`Validating`) may still carry `excerpt`.
-fn shown(c: &Candidate, branch: &str) -> Value {
+fn shown(chain: &Chain, c: &Candidate, branch: &str) -> Value {
     let mut row = json!({
         "phase": c.phase,
         "commit": c.commit,
@@ -163,6 +163,7 @@ fn shown(c: &Candidate, branch: &str) -> Value {
         "id": c.id,
         "cause": c.cause,
         "cancelled_by": c.cancelled_by,
+        "round": chain.round_of(&c.id).map(|tip| &tip.id),
     });
     if matches!(c.phase, Phase::Validating | Phase::Slow)
         && let Some(excerpt) = c.result.as_ref().and_then(|result| result.get("excerpt"))
@@ -183,7 +184,7 @@ pub(crate) fn view(
         let branch = record.name.strip_prefix(&prefix).context("invalid candidate ref")?;
         let chain: Chain = serde_json::from_str(&record.subject)?;
         for c in &chain.candidates {
-            rows.push(shown(c, branch));
+            rows.push(shown(&chain, c, branch));
         }
     }
     Ok(json!(rows))
