@@ -240,14 +240,25 @@ impl Chain {
 
     /// The candidate whose turn runs a round's slow gate now: the last valid
     /// candidate, once every valid candidate is fast-green and none is
-    /// slow-gating, and no turn is pending, where its commit declares a slow
-    /// gate not yet passed. A candidate assigned during the round joins the
-    /// next one.
+    /// slow-gating, and no pending turn may still join it, where its commit
+    /// declares a slow gate not yet passed. A candidate assigned during the
+    /// round joins the next one.
     pub fn round_tip(&self) -> Option<&Candidate> {
         let valid: Vec<&Candidate> = self.candidates.iter().filter(|c| c.valid()).collect();
         let tip = valid.last()?;
-        let ready = self.pending.is_empty() && valid.iter().all(|c| c.phase == Phase::Green);
+        let ready = !self.joinable() && valid.iter().all(|c| c.phase == Phase::Green);
         (ready && tip.slow.is_some() && !tip.slowed).then_some(*tip)
+    }
+
+    /// Whether a pending turn may still join the round: one is pending, and
+    /// no barrier, on the chain or waiting, admits no successors. A round
+    /// that waited for turns a barrier holds back would hold the barrier
+    /// back in turn: the watch's serial landing of 2026-10-29, fast-green,
+    /// waited for six pending turns that waited for it.
+    pub fn joinable(&self) -> bool {
+        !self.pending.is_empty()
+            && self.barriers.is_empty()
+            && !self.candidates.iter().any(|c| c.valid() && c.barrier)
     }
 
     /// Starts the round at `id` when it is the round's tip → whether it did.
@@ -557,6 +568,20 @@ mod tests {
     }
 
     #[test]
+    fn a_fast_green_barrier_starts_its_round_beside_turns_it_holds_back() {
+        let mut chain = Chain { candidates: vec![split(0)], ..Chain::default() };
+        let owner = chain.candidates[0].owner.clone();
+        chain.pending.push(Barrier { id: "waiting".into(), owner: owner.clone() });
+        chain.finish("c0", true, serde_json::json!({"fast": "green"}));
+        assert!(chain.round_tip().is_none(), "a pending turn may still join");
+        chain.candidates[0].barrier = true;
+        assert_eq!(chain.round_tip().map(|c| c.id.as_str()), Some("c0"));
+        chain.candidates[0].barrier = false;
+        chain.barriers.push(Barrier { id: "cut".into(), owner });
+        assert_eq!(chain.round_tip().map(|c| c.id.as_str()), Some("c0"), "a cut waits");
+    }
+
+    #[test]
     fn an_external_push_of_an_unfinished_candidate_does_not_settle_its_prefix() {
         let mut chain = Chain { candidates: (0..3).map(candidate).collect(), ..Chain::default() };
         chain.finish("c1", true, serde_json::json!({"green": true}));
@@ -602,7 +627,7 @@ mod tests {
                     // Landings are a prefix: nothing before it is left valid.
                     assert!(chain.candidates[..i].iter().all(|b| !b.valid()));
                 }
-                assert!(c.phase != Phase::Slow || chain.pending.is_empty(), "a round waited");
+                assert!(c.phase != Phase::Slow || !chain.joinable(), "a round waited");
                 assert!(
                     c.phase != Phase::Slow
                         || chain
