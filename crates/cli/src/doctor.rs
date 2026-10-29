@@ -728,6 +728,9 @@ fn claim_findings(run: &Run, held: &[Held]) -> Vec<Finding> {
                     command => on(command, issue, instance),
                 };
                 let why = match silent.waited {
+                    None if silent.declared => {
+                        "it declared its verdict, and no tick has carried it out".to_string()
+                    }
                     Some(waited) => format!(
                         "it waited {} on background work of its own, past the gate limit",
                         lasted(waited)
@@ -1623,16 +1626,21 @@ fn read_held(
         let at = stood.iter().find(|issue| issue.number == mine.number);
         let stamped = fleet.scan.claim_of(mine.number).and_then(|claim| claim.owner.as_ref());
         // The one read the tick routes a stopped worker from: no clock of
-        // doctor's own decides its silence.
+        // doctor's own decides its silence. A fleet lock leaves only the tick
+        // safe to name.
         let silent = match (worker, stamped) {
-            (Some(WorkerState::Idle { .. }), Some(owner)) if !set.locked_out(mine.number) => {
+            (Some(WorkerState::Idle { .. }), Some(owner)) => {
                 InstanceId::parse(&owner.instance).ok().and_then(|instance| {
                     let me = Me { instance, host: owner.host.clone(), now: fleet.now };
                     crate::judge::silenced(fleet, &me, mine.number, mine.status).ok().flatten()
                 })
             }
             _ => None,
-        };
+        }
+        .map(|silent| match set.locked_out(mine.number) {
+            true => crate::judge::Silenced { command: "tick", ..silent },
+            false => silent,
+        });
         Held {
             issue: mine.number,
             title: mine.title.clone(),
@@ -2635,7 +2643,12 @@ mod tests {
         };
         let stopped = |quiet| Held {
             worker: Some(WorkerState::Idle { quiet: Some(quiet) }),
-            silent: Some(Silenced { command: "nudge", nudged: false, waited: None }),
+            silent: Some(Silenced {
+                command: "nudge",
+                nudged: false,
+                waited: None,
+                declared: false,
+            }),
             ..held(3)
         };
         same(
@@ -2663,7 +2676,8 @@ mod tests {
     #[test]
     fn a_silent_worker_with_its_claim_at_work_names_what_the_tick_runs_next() {
         let mut state = state();
-        let silent = |command, nudged, waited| Some(Silenced { command, nudged, waited });
+        let silent =
+            |command, nudged, waited| Some(Silenced { command, nudged, waited, declared: false });
         let stopped = |quiet, silent| Held {
             worker: Some(WorkerState::Idle { quiet: Some(quiet) }),
             silent,

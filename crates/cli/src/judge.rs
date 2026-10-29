@@ -516,15 +516,26 @@ pub struct Silenced {
     pub nudged: bool,
     /// How long it waited on its own background work, past the gate limit.
     pub waited: Option<u64>,
+    /// It declared a verdict past grace, which the tick has yet to carry out.
+    pub declared: bool,
 }
 
 impl Silenced {
+    fn declared(command: &'static str) -> Silenced {
+        Silenced { command, nudged: false, waited: None, declared: true }
+    }
+
     fn of(silence: Silence, nudge: &'static str) -> Option<Silenced> {
         match silence {
-            Silence::Nudge(_) => Some(Silenced { command: nudge, nudged: false, waited: None }),
-            Silence::Stalled(silent) => {
-                Some(Silenced { command: "tick", nudged: silent.nudged, waited: silent.waited })
+            Silence::Nudge(_) => {
+                Some(Silenced { command: nudge, nudged: false, waited: None, declared: false })
             }
+            Silence::Stalled(silent) => Some(Silenced {
+                command: "tick",
+                nudged: silent.nudged,
+                waited: silent.waited,
+                declared: false,
+            }),
             Silence::Gone | Silence::Lively | Silence::Waiting(_) => None,
         }
     }
@@ -533,8 +544,9 @@ impl Silenced {
 /// Whether the worker of my claim on `issue`, at `status`, is silent, through
 /// the read the tick routes it by — writing nothing. `None` for one at work,
 /// gone, within grace, waiting on its own background work inside the gate
-/// limit, held by a shared harness outage, one that declared, or a dispatch
-/// whose worker has not taken its brief.
+/// limit, held by a shared harness outage, or a dispatch whose worker has not
+/// taken its brief. One with no PR that declared past grace is reported too,
+/// with the command that carries its verdict out.
 pub(crate) fn silenced(
     fleet: &Fleet,
     me: &Me,
@@ -551,7 +563,17 @@ pub(crate) fn silenced(
         return Ok(match found.route {
             Route::Nudge(unnudged) => Silenced::of(Silence::Nudge(unnudged), "nudge"),
             Route::Stalled(silent) => Silenced::of(Silence::Stalled(silent), "nudge"),
-            _ => None,
+            Route::Blocked => {
+                let named = found.verdict.map(|verdict| verdict.blocked_by).unwrap_or_default();
+                let command = match blocked_route(&standings(fleet, issue, &named)?) {
+                    Blocked::Redispatch => "dispatch",
+                    Blocked::Park(_) => "park",
+                    Blocked::Escalate(_) => "tick",
+                };
+                Some(Silenced::declared(command))
+            }
+            Route::Close(_) | Route::Escalate(_) => Some(Silenced::declared("tick")),
+            Route::Leave | Route::Waiting(_) | Route::Continue => None,
         });
     }
     if mine(fleet, me, issue)?.is_none() || crate::dispatch::incomplete(fleet, issue)? {
