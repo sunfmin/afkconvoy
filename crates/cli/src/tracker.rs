@@ -197,6 +197,7 @@ impl Public {
         let checkout = repo.dir.display().to_string();
         vec![finding(
             Kind::PublicTracker,
+            serde_json::json!(["public-tracker", named]),
             format!(
                 "this checkout's tracker, {named}, is public: its fleet instance works nothing, as \
                  anyone can comment on its issues"
