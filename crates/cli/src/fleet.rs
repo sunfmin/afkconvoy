@@ -3,7 +3,7 @@
 //!
 //! A rebuild asks the remote once and GitHub a fixed number of times, side by
 //! side: one listing of branch tips and every ref of the fleet
-//! (`Repo::listing`), and what is open on GitHub (`GitHub::open`). A patrol
+//! (`Remote::open`), and what is open on GitHub (`GitHub::open`). A patrol
 //! that bounds how many issues it lands in a day is read in that same issues
 //! query. Neither grows with the issues in flight.
 
@@ -22,9 +22,10 @@ use std::thread;
 
 use crate::claims::Scan;
 use crate::gh::{GitHub, Gone, Open, OpenIssues, beside, gone};
-use crate::git::{Listing, Repo};
+use crate::git::Repo;
 use crate::orca::{Source, Worktree};
 use crate::patrol;
+use crate::remote::{Fresh, Listing, Remote};
 use crate::settle::cut_landing_of;
 use crate::slow_gate;
 use crate::stage::Flows;
@@ -50,9 +51,10 @@ pub struct Fleet {
     pub config: Config,
     pub gh: GitHub,
     pub scan: Scan,
-    /// The base branch and the fleet's refs as the remote had them when this
-    /// view was opened: what `scan` was read from.
-    listing: Listing,
+    /// The remote, opened on the base branch and the fleet's refs as it had
+    /// them when this view was opened: what `scan` was read from, and what a
+    /// `Fresh::Opened` read answers.
+    pub remote: Remote,
     pub now: u64,
     /// The issues this view escalated, each with why in a few words: what a
     /// tick's line says of them. Every escalation is made through
@@ -109,8 +111,9 @@ impl Fleet {
         let config = crate::concurrency::config_of(&repo)?;
         let pinned = crate::named_harness::named(&repo)?;
 
-        let listing = repo.listing(&config.base_branch)?;
-        let scan = Scan::among(repo.layout(), gh.tracker.clone(), listing.records.clone());
+        let remote = Remote::open(&repo, &config.base_branch)?;
+        let scan =
+            Scan::among(repo.layout(), gh.tracker.clone(), remote.listing()?.records.clone());
         Ok(Fleet {
             repo,
             pinned,
@@ -120,7 +123,7 @@ impl Fleet {
             config,
             gh,
             scan,
-            listing,
+            remote,
             now,
             escalated: vec![],
             forgotten: vec![],
@@ -495,6 +498,11 @@ impl Fleet {
             .collect()
     }
 
+    /// The listing this view was opened on.
+    fn listing(&self) -> &Listing {
+        self.remote.listing().expect("a fleet's view of the remote is opened listed")
+    }
+
     /// The selected harness's user default: a watch, a cut, an inspection
     /// and any other start with no model label.
     pub fn first(&self) -> Result<Cast> {
@@ -504,20 +512,18 @@ impl Fleet {
     /// Every version tag the remote had when this view was opened, each with
     /// the commit it is on.
     pub fn version_tags(&self) -> &[(String, String)] {
-        &self.listing.tags
+        &self.listing().tags
     }
 
     /// A branch or fleet ref's sha in this view's remote listing, with its
     /// commit brought into the local repo when needed.
     pub fn fetched_at_open(&self, refname: &str) -> Result<Option<String>> {
-        let Some(sha) = self.listing.sha(refname) else { return Ok(None) };
-        self.repo.bring(sha, refname)?;
-        Ok(Some(sha.to_string()))
+        self.remote.fetched(refname, Fresh::Opened)
     }
 
     /// The fleet records matching `pattern` in this view's remote listing.
-    pub fn records_at_open(&self, pattern: &str) -> Vec<crate::git::RemoteRecord> {
-        self.listing
+    pub fn records_at_open(&self, pattern: &str) -> Vec<crate::remote::RemoteRecord> {
+        self.listing()
             .records
             .iter()
             .filter(|record| match pattern.strip_suffix('*') {
@@ -535,7 +541,7 @@ impl Fleet {
         command: &afkconvoy_core::gate::GateCommand,
     ) -> Option<afkconvoy_core::gate::GreenRun> {
         crate::gate::recorded_among(
-            &self.listing.records,
+            &self.listing().records,
             self.repo.layout(),
             tree,
             command,
@@ -546,12 +552,10 @@ impl Fleet {
     /// The base branch's tip on the remote, its commits in this repo.
     pub fn base_tip(&self) -> Result<String> {
         let branch = &self.config.base_branch;
-        let tip = self
-            .listing
-            .base
-            .as_ref()
-            .ok_or_else(|| anyhow!("the remote has no branch {branch:?}"))?;
-        self.repo.bring(tip, &self.listing.base_ref)?;
+        let listing = self.listing();
+        let tip =
+            listing.base.as_ref().ok_or_else(|| anyhow!("the remote has no branch {branch:?}"))?;
+        self.repo.bring(tip, &listing.base_ref)?;
         Ok(tip.clone())
     }
 
@@ -562,7 +566,7 @@ impl Fleet {
             &self.config,
             &self.gh.tracker,
             &open.rows,
-            &self.listing,
+            self.listing(),
         )
     }
 
@@ -578,7 +582,7 @@ impl Fleet {
         if branch == self.config.base_branch {
             return self.base_tip();
         }
-        self.repo.fetched(&format!("refs/heads/{branch}"))?.ok_or_else(|| {
+        self.remote.fetched(&format!("refs/heads/{branch}"), Fresh::Process)?.ok_or_else(|| {
             anyhow!(
                 "target branch {branch:?} disappeared; restore it before continuing task {issue}"
             )
@@ -592,17 +596,15 @@ impl Fleet {
             &self.config,
             &self.gh.tracker,
             issue,
-            &self.listing.records,
+            &self.listing().records,
         )?;
         let name = format!("refs/heads/{branch}");
-        let (_, tip) = self.listing.heads.iter().find(|(r, _)| r == &name).ok_or_else(|| {
+        self.remote.fetched(&name, Fresh::Opened)?.ok_or_else(|| {
             anyhow!(
                 "target branch {branch:?} is missing; restore it before continuing {}",
                 self.gh.tracker.issue(issue)
             )
-        })?;
-        self.repo.bring(tip, &name)?;
-        Ok(tip.clone())
+        })
     }
 
     /// Rebuilds the working set of `me` from `open` and the remote as this
@@ -698,7 +700,7 @@ impl Fleet {
         }
         let idle = self.idle_landings(me, prs, &closed);
         let heartbeats = self.scan.beats();
-        let (landings, slow_gate) = slow_gate::seen(self, &self.listing.records, &base)?;
+        let (landings, slow_gate) = slow_gate::seen(self, &self.listing().records, &base)?;
         let cut = crate::cut::seen(self, &stages, issues, &base)?;
         let seen = Observed {
             unworked_blockers: &unworked_blockers,

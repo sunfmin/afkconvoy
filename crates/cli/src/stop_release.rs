@@ -21,8 +21,9 @@ use serde_json::{Value, json};
 use crate::checkout_list::{self, Asked, Entry, List};
 use crate::claims::{Me, goodbye};
 use crate::fleet::Fleet;
-use crate::git::{REMOTE, Repo};
+use crate::git::Repo;
 use crate::orca::{Source, Worktree};
+use crate::remote::{Fresh, Push};
 
 /// What the fleet instance holds, as one read of the fleet saw it.
 struct Held {
@@ -157,7 +158,7 @@ fn released(
         if run.over {
             // What its worker declared names a claim that is gone.
             let over = afkconvoy_core::claims::over_ref(layout, &run.key);
-            let _ = checkout.try_git(&["push", "--quiet", REMOTE, &format!(":{over}")]);
+            let _ = checkout.remote().try_push(&Push::delete(&over));
         }
         let ended = source.as_ref().map_err(|e| anyhow::anyhow!("{e:#}")).and_then(|source| {
             let worktree = Worktree::named(source, &afkconvoy_core::patrol::checkout_name(patrol))?;
@@ -294,19 +295,16 @@ pub fn unput_all(checkout: &Repo, leases: &[(String, String)]) -> Result<Vec<Val
     if leases.is_empty() {
         return Ok(vec![]);
     }
-    let mut args: Vec<String> = ["push", "--quiet", "--atomic", REMOTE].map(String::from).to_vec();
-    for (refname, sha) in leases {
-        args.push(format!("--force-with-lease={refname}:{sha}"));
-    }
-    args.extend(leases.iter().map(|(refname, _)| format!(":{refname}")));
-    let args: Vec<&str> = args.iter().map(String::as_str).collect();
-    let pushed = checkout.try_git(&args)?;
+    let push = leases.iter().fold(Push::default().atomic(), |push, (refname, sha)| {
+        push.and_delete(refname).leased(sha)
+    });
+    let pushed = checkout.remote().try_push(&push)?;
     if pushed.ok {
         return Ok(vec![]);
     }
     let mut moved = vec![];
     for (refname, sha) in leases {
-        let now_at = checkout.remote_sha(refname)?;
+        let now_at = checkout.remote().sha(refname, Fresh::Process)?;
         if now_at.as_deref() != Some(sha.as_str()) {
             let why = match &now_at {
                 Some(now_at) => {
