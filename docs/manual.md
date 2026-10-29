@@ -4988,8 +4988,7 @@ An issue's one `model:` label. It names the model a worker of the selected harne
 _Avoid_: casting (the removed automatic choice, as in "automatic casting is gone"), caster (the removed chooser; help may say there is none), assignment (a GitHub assignee), routing, dispatch (starting a worker)
 
 **Worker selection**:
-The one decision of what a worker runs: its harness, its model, whether a model label named that model, and what an unfollowed label is told — or why nothing is safe, as the user is told it. It is made from facts gathered once for the start: the host kit whole, what of it can start now and why the rest cannot, the checkout's named harness, the pauses, the role, the issue's labels and the harness's **default model** where its user config names one. Dispatch, switch, a patrol, plan and the panel each ask it, and it says how the model goes on the start line of every harness.
-_Avoid_: cast (what the model label alone decided), casting
+The one decision of what a worker runs: its harness, its model, whether a model label named that model, and what an unfollowed label is told — or why nothing is safe, as the user is told it. It is made from facts gathered once for the start: the host kit whole, what of it can start now and why the rest cannot, the checkout's named harness, the pauses, the role, the issue's labels and the harness's **default model** where the user's Codex config names one. Dispatch, switch, a patrol, plan and the panel each ask it, and it says how the model goes on the start line of every harness.
 
 **Worker**:
 A session of one harness, started in one role to perform one stage of one issue — or, after its last stage, to land its PR in a turn — in that issue's worktree, and to report through GitHub. In an unbound repo it has no role and owns its issue from start to landing. It is ended — its terminal closed — by the step that ends what it was started for: its stage, its claim, or its run.
