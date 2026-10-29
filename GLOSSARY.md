@@ -352,7 +352,7 @@ The file a fleet instance keeps on its own host: one line as it starts, a line a
 _Avoid_: state file, journal, history
 
 **Finding**:
-One thing `doctor` says is wrong with the fleet on this host, with how bad it is, what shows it, its fix — a line to run, or a file and the key in it to edit — and the help topic that explains it. `doctor` fixes none itself.
+One thing `doctor` says is wrong with the fleet on this host, of one **kind**, with how bad it is, what shows it, its fix — a line to run, or a file and the key in it to edit — the help topic that explains it, and the identity of its condition, made where it is judged and unchanged by its words. `doctor` fixes none itself. The host's watch acts on each finding that is not `info` by its kind and identity: each condition it acts on is one finding.
 _Avoid_: diagnosis (a worker health assessment), alert, warning (one of its severities), error (what a command that failed answers with)
 
 ### Landing
