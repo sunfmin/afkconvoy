@@ -283,7 +283,7 @@ impl Settings {
         afkconvoy_core::exclusive::Lanes { worker: self.gate_lanes(), slow: self.slow_gate_lanes() }
     }
 
-    /// The share of this host's cores one gate is given: its cores divided
+    /// The share of this host's cores one gate's tests are given: its cores divided
     /// by every lane a gate may run in at once, at least one
     /// (sunfmin/control#245).
     pub fn gate_share(&self) -> u64 {
