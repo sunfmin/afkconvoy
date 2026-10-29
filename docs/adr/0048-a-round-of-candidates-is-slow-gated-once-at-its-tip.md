@@ -56,7 +56,7 @@ With one lane a round also started too early: a turn waiting for a lane was not 
 Now the lanes bound only the gates running:
 - A turn that asks to land puts itself on the candidate record as **pending** while it waits, and comes off it when it takes a candidate, or ends.
 - A candidate's turn frees its lane once its fast gate is green.
-- The round's tip takes a lane again for the slow gate.
+- The round's tip takes a lane again for the slow gate: a slow lane, of `--slow-gate-lanes`, beside the worker lanes and the fast lane (ADR-0049). A worker's own `gate --slow` takes a slow lane too.
 - The window has no bound of its own, but for barriers and unconfirmed cancellation.
 - A round starts when every candidate is fast-green and no pending turn may still join it. A barrier on the chain, or waiting for it, admits no successors, so the turns pending behind it do not hold the round: on 2026-10-29 the watch's serial landing, fast-green, waited for six pending turns that were waiting for it.
 

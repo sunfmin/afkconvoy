@@ -63,6 +63,9 @@ pub struct Settings {
     /// `--slow-gate-lanes`: rounds' slow gates that may run at once, beside
     /// the worker lanes.
     pub slow_gate_lanes: Option<u64>,
+    /// `--fast-lanes`: fast gates that may run at once on the host, whatever
+    /// their repo, beside the worker lanes (docs/adr/0049).
+    pub fast_lanes: Option<u64>,
     /// An old checkout list may still name `train_lanes`. It is not a setting:
     /// a known field so `rest` does not keep it, and left out of every write.
     #[serde(default, skip_serializing)]
@@ -92,6 +95,8 @@ pub const PANEL_PORT: u16 = 7070;
 pub const WATCH_EVERY: u64 = 300;
 /// The default number of worker lanes on a host.
 pub const GATE_LANES: u64 = 1;
+/// The default number of fast gates that run at once on a host.
+pub const FAST_LANES: u64 = 2;
 
 /// What a `run` named of the host settings; each it left unnamed is `None`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -109,6 +114,7 @@ pub struct Named {
     pub exclusive_seconds: Option<To<u64>>,
     pub gate_lanes: Option<To<u64>>,
     pub slow_gate_lanes: Option<To<u64>>,
+    pub fast_lanes: Option<To<u64>>,
     pub panel: Option<To<u16>>,
     pub watch_dir: Option<To<PathBuf>>,
     pub watch_every: Option<To<u64>>,
@@ -231,6 +237,7 @@ impl Settings {
         lay(&mut self.exclusive_seconds, named.exclusive_seconds.as_ref());
         lay(&mut self.gate_lanes, named.gate_lanes.as_ref());
         lay(&mut self.slow_gate_lanes, named.slow_gate_lanes.as_ref());
+        lay(&mut self.fast_lanes, named.fast_lanes.as_ref());
         lay(&mut self.panel, named.panel.as_ref());
         lay(&mut self.watch_dir, named.watch_dir.as_ref());
         lay(&mut self.watch_every, named.watch_every.as_ref());
@@ -278,17 +285,27 @@ impl Settings {
         self.slow_gate_lanes.unwrap_or(1).max(1)
     }
 
-    /// Both host lanes, as the queue counts them.
-    pub fn lanes(&self) -> afkconvoy_core::exclusive::Lanes {
-        afkconvoy_core::exclusive::Lanes { worker: self.gate_lanes(), slow: self.slow_gate_lanes() }
+    pub fn fast_lanes(&self) -> u64 {
+        self.fast_lanes.unwrap_or(FAST_LANES).max(1)
     }
 
-    /// The share of this host's cores one gate's tests are given: its cores divided
-    /// by every lane a gate may run in at once, at least one
+    /// The worker lanes, the fast lane and the slow lanes, as the queue is
+    /// scheduled by them.
+    pub fn lanes(&self) -> afkconvoy_core::exclusive::Lanes {
+        afkconvoy_core::exclusive::Lanes {
+            worker: self.gate_lanes(),
+            fast: self.fast_lanes(),
+            slow: self.slow_gate_lanes(),
+        }
+    }
+
+    /// The share of this host's cores one gate's tests are given: its cores
+    /// divided by every lane a gate may run in at once, at least one
     /// (sunfmin/control#245).
     pub fn gate_share(&self) -> u64 {
         let cores = std::thread::available_parallelism().map_or(1, |n| n.get() as u64);
-        (cores / (self.gate_lanes() + self.slow_gate_lanes())).max(1)
+        let lanes = self.gate_lanes() + self.fast_lanes() + self.slow_gate_lanes();
+        (cores / lanes).max(1)
     }
 
     /// The sleep hours it says, else the default.
@@ -334,6 +351,7 @@ impl Settings {
             "exclusive_seconds": self.exclusive_seconds(),
             "gate_lanes": self.gate_lanes(),
             "slow_gate_lanes": self.slow_gate_lanes(),
+            "fast_lanes": self.fast_lanes(),
             "panel": self.panel_port(),
             "watch_dir": crate::host_watch::directory(self).ok(),
             "watch_every": self.watch_every(),
@@ -681,7 +699,11 @@ mod tests {
     fn an_old_train_lanes_key_loads_and_the_next_write_drops_it() {
         let dir = tempfile::tempdir().unwrap();
         let list = List::at(dir.path().join("checkouts.json"));
-        let kept = r#"{"settings": {"train_lanes": 0, "gate_lanes": 2, "said_by_another": 1}}"#;
+        assert_eq!(
+            Settings::default().lanes(),
+            afkconvoy_core::exclusive::Lanes { worker: GATE_LANES, fast: FAST_LANES, slow: 1 }
+        );
+        let kept = r#"{"settings": {"train_lanes": 0, "gate_lanes": 2, "fast_lanes": 3, "said_by_another": 1}}"#;
         std::fs::write(list.file(), kept).unwrap();
         let read = list.read().unwrap();
         assert_eq!(read.settings.gate_lanes, Some(2));
@@ -692,6 +714,7 @@ mod tests {
         assert!(answered["in_force"].get("train_lanes").is_none(), "{answered}");
         assert!(answered["in_force"].get("ignored").is_none(), "{answered}");
         assert_eq!(answered["in_force"]["gate_lanes"], 2);
+        assert_eq!(answered["in_force"]["fast_lanes"], 3);
         let named = Named { admit_load: Some(To::Value(400)), ..Named::default() };
         change(&list, &named).unwrap();
         let text: Value =

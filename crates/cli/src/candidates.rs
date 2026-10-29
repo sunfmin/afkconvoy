@@ -1,6 +1,7 @@
 //! Remote candidate ownership. Every write extends one ref; a competing
 //! writer's child cannot fast-forward it. Publishing the base and the next
 //! record is one atomic push, so invalidation and publication cannot both win.
+use afkconvoy_core::account::End;
 use afkconvoy_core::candidate::{Barrier, Candidate, Chain, Phase, Process, Publication, Slow};
 use afkconvoy_core::config::Config;
 use afkconvoy_core::ending::Ending;
@@ -645,7 +646,8 @@ impl Gate<'_> {
 /// still answers `merged`.
 fn settle(repo: &Repo, gh: &GitHub, issue: Option<u64>, now: u64, answer: &mut Value) {
     let Some(n) = issue else { return };
-    let settled = gh.close_issue(n).and_then(|()| crate::account::leave(repo, gh, n, now));
+    let settled =
+        gh.close_issue(n).and_then(|()| crate::account::leave(repo, gh, n, End::Landed, now));
     if let Err(error) = settled {
         answer["settle_error"] = json!(format!("{error:#}"));
     }

@@ -92,8 +92,11 @@ pub(crate) fn recover() -> Result<()> {
     Ok(())
 }
 
+/// A fast gate holds no repo lease: fast gates run in their own worktrees,
+/// side by side whatever their repo (docs/adr/0049).
 fn repo_file(ticket: &Ticket) -> Result<Option<File>> {
-    let Some(repo) = &ticket.repo else {
+    let Some(repo) = ticket.repo.as_ref().filter(|_| !afkconvoy_core::exclusive::is_fast(ticket))
+    else {
         return Ok(None);
     };
     let cache = crate::copies::cache()?.join("worker-slots");
@@ -158,7 +161,8 @@ impl Slot {
         };
         let owner_bytes = serde_json::to_vec(&owner)?;
         loop {
-            let count = crate::host_settings::of_host()?.lanes().of(ticket);
+            let count =
+                afkconvoy_core::exclusive::limit(ticket, crate::host_settings::of_host()?.lanes());
             for n in 0..count {
                 let path = cache.join(format!("{lane:016x}-{n}"));
                 let mut file = OpenOptions::new()
