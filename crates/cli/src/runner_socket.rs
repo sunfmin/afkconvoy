@@ -350,7 +350,10 @@ impl Conversation {
 fn closed(error: &std::io::Error) -> bool {
     matches!(
         error.kind(),
-        ErrorKind::BrokenPipe | ErrorKind::ConnectionReset | ErrorKind::InvalidInput
+        ErrorKind::BrokenPipe
+            | ErrorKind::ConnectionReset
+            | ErrorKind::InvalidInput
+            | ErrorKind::NotConnected
     )
 }
 
@@ -706,6 +709,8 @@ mod tests {
     fn macos_s_invalid_read_of_a_closed_socket_is_a_close_not_an_error() {
         let invalid = std::io::Error::from(ErrorKind::InvalidInput);
         assert!(closed(&invalid));
+        // a write to a line the host runner already closed: ENOTCONN on macOS
+        assert!(closed(&std::io::Error::from(ErrorKind::NotConnected)));
         assert!(!closed(&std::io::Error::from(ErrorKind::InvalidData)));
     }
 }
