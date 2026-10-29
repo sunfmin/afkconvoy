@@ -3007,6 +3007,7 @@ mod tests {
             pr: None,
             due: None,
             declared: false,
+            idle: false,
         }];
         state.held = vec![held(9)];
         assert_eq!(self::found(&host(), &run(vec![]), &state), []);
