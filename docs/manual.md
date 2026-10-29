@@ -251,19 +251,20 @@ Exactly one JSON object, exit 0:
 - `host_runner`: the answering runner's `pid` and `version`, plus the identity fields it supplies: `log` (whole path), `panel` (address or null), and `foreground` where applicable. Null with no runner.
 - `paused`: whether the runner has paused new grants for a release move; false with no runner; null where an older runner does not say it, which pauses nothing.
 - `worker`: `{capacity, used, free}`. Capacity is the host setting `gate_lanes`, 1 by default; used counts running worker requests, free is capacity minus used, clamped to zero. Eligible reservations do not count as used.
+- `fast`: `{capacity, used, free}` of the fast lane, which only a worker's fast gate takes (`afkconvoy gate --fast`). Capacity is the host setting `fast_lanes`, 2 by default; used counts running fast gates. It is independent of worker capacity: no slow gate, turn or other command holds a place in it.
 - `repos`: each repo lane with a running or waiting request, sorted by its whole identity, as `{repo, capacity, used, free}`. Each has capacity 1, independent of worker capacity. `repo` is the shared git directory supplied by the ticket, never inferred from a worktree's name.
-- `running`, `waiting`: requests in scheduler order within each array: cuts first, then ordinary commands; within each group ascending `asked`, then `number` to break ties. Cut priority never interrupts running commands. There is no priority by lane or repo. A request identifies `number` (runner-local ticket), `pid` (asking process), `command` (one line: the program and the arguments that say what is running; `afkconvoy exclusive -- ./gate.sh` stays as given; a script is named by the program it runs, its `cargo nextest` line or its `afkconvoy exclusive` invocation, and is not shown as the script; no `NAME=value`), `dir` (whole worktree or outside directory), `issue` (number or null; no lookup), `repo` (shared git directory or null for older/outside tickets), `repo_lane` (repo lane identity or null for worker), `is_turn` (whether this is a landing turn), `cut` (whether it has cut priority, false for older tickets), `asked` (request epoch seconds), `ran` (start epoch seconds or null), and `lane` (`worker` or `repo <identity>`).
+- `running`, `waiting`: requests in scheduler order within each array: cuts first, then ordinary commands; within each group ascending `asked`, then `number` to break ties. Cut priority never interrupts running commands. There is no priority by lane or repo. A request identifies `number` (runner-local ticket), `pid` (asking process), `command` (one line: the program and the arguments that say what is running; `afkconvoy exclusive -- ./gate.sh` stays as given; a script is named by the program it runs, its `cargo nextest` line or its `afkconvoy exclusive` invocation, and is not shown as the script; no `NAME=value`), `dir` (whole worktree or outside directory), `issue` (number or null; no lookup), `repo` (shared git directory or null for older/outside tickets), `repo_lane` (repo lane identity or null for worker), `is_turn` (whether this is a landing turn), `cut` (whether it has cut priority, false for older tickets), `asked` (request epoch seconds), `ran` (start epoch seconds or null), `gate` (`fast` or `slow` for a gate a worker runs alone, `gate --fast` or `--slow`; null otherwise), `kind` (`fast_gate`, `slow_gate`, `turn` or `command`: a landing turn is a `turn`, whichever gate it runs) and `lane` (`worker`, `fast` or `repo <identity>`).
 - Each request adds `elapsed_seconds` (time since `ran`, null while waiting), `waiting_seconds` (time from `asked` to `ran` when running, otherwise to `observed_at`), and `scheduling`: `{number, state, reasons}`. State is `running`, `eligible`, or `waiting`; reasons is empty for running or eligible requests.
 - `candidate` is true for independent candidate validation. `validation`, null for ordinary or unreported requests, is the turn's display copy of its remote candidate: {id, predecessor, commit, phase, waiting, cancelled_by, cause}. Phase follows building, validating, green, slow, landed, red, cancelling or cancelled. Waiting distinguishes constructing_worktree, validating, waiting_for_round, slow_gating, waiting_for_predecessor and confirming_process_exit; a waiting queue request without a candidate awaits capacity. Cancellation names its invalidating predecessor and cause. These copies explain current work and authorize no publication; reading queue makes no remote lookup.
-- Each reason has `kind`, `requests`, `capacity` and `explanation`. Kind `same_repo` means a running or earlier eligible request of this repo excludes this request in its lane, or across lanes when both are turns. `worker_capacity` or `repo_capacity` means all places in that lane are occupied or reserved, with the limit in `capacity`. `paused` means new grants are paused. Other reasons have `capacity: null`. `requests` names each relevant `{number, state}`: `running` holds a place now, `eligible` reserves one earlier in FIFO order; it is empty for a pause. `explanation` states the constraint in words.
+- Each reason has `kind`, `requests`, `capacity` and `explanation`. Kind `same_repo` means a running or earlier eligible request of this repo excludes this request in its lane, or across lanes when both are turns. `worker_capacity`, `fast_capacity` or `repo_capacity` means all places in that lane are occupied or reserved, with the limit in `capacity`. `paused` means new grants are paused. Other reasons have `capacity: null`. `requests` names each relevant `{number, state}`: `running` holds a place now, `eligible` reserves one earlier in FIFO order; it is empty for a pause. `explanation` states the constraint in words.
 
-Earlier eligible requests reserve capacity in scheduler order, with cuts before ordinary waiters and FIFO within each group. Blocked requests reserve nothing: with three worker lanes, ordinary requests of a running repo can leave two free while waiting, and a different repo can be eligible. Independently owned candidate worktrees of the same repo may validate together; ordinary heavy commands and serial barriers retain same-repo exclusion across worker and repo lanes. Older tickets lacking `repo` use their whole `dir` as the scheduler's fallback identity. `eligible` means allowed by this observation, not guaranteed to start next. Ordering is no fixed future start order or ETA; requests can leave and settings can change.
+Earlier eligible requests reserve capacity in scheduler order, with cuts before ordinary waiters and FIFO within each group. Blocked requests reserve nothing: with three worker lanes, ordinary requests of a running repo can leave two free while waiting, and a different repo can be eligible. Independently owned candidate worktrees of the same repo may validate together, and so may fast gates of the same repo, never with `same_repo` as a reason; ordinary heavy commands and serial barriers retain same-repo exclusion across worker and repo lanes. Older tickets lacking `repo` use their whole `dir` as the scheduler's fallback identity. `eligible` means allowed by this observation, not guaranteed to start next. Ordering is no fixed future start order or ETA; requests can leave and settings can change.
 
 Errors: unreadable host settings, an inaccessible socket, a runner holding the host but not listening, a closed connection, no response within the bound, a runner error, or an unsupported or unreadable response (including missing queue or runner identity fields). These print `{"error": ...}` with exit 1 and a next action: inspect the host runner log and run the command again; `afkconvoy doctor --all` provides a full diagnosis. An unsupported response needs a host runner of this release. A failed observation never becomes an empty queue.
 
 ##### What trips you up
 
-`afkconvoy doctor` shows this same observation as `host.exclusive`, and the panel's command lanes are its lanes: the worker lane and each repo lane, with the same running and waiting requests. It reports current queued commands only. For historical gate outcomes, use `afkconvoy doctor --all --since <time>`; `afkconvoy doctor --help` explains its interval boundaries. Commands that bypass the exclusive queue are absent. Request numbers belong to this runner and may change after it is replaced.
+`afkconvoy doctor` shows this same observation as `host.exclusive`, and the panel's command lanes are its lanes: the worker lane, the fast lane and each repo lane, with the same running and waiting requests, each named by its kind. It reports current queued commands only. For historical gate outcomes, use `afkconvoy doctor --all --since <time>`; `afkconvoy doctor --help` explains its interval boundaries. Commands that bypass the exclusive queue are absent. Request numbers belong to this runner and may change after it is replaced.
 
 ##### Usage
 
@@ -957,6 +958,8 @@ afkconvoy run [OPTIONS] [CHECKOUT]
   - Environment: `AFKCONVOY_JEV_KEY_COMMAND`
 - `--gate-lanes <GATE_LANES>`: Worker lanes on this host, above zero, or `default` (1). Independent candidate worktrees of one repo may validate together within this bound
   - Environment: `AFKCONVOY_GATE_LANES`
+- `--fast-lanes <FAST_LANES>`: Fast gates that may run at once on this host, above zero, or `default` (2). They take a lane of their own, beside the worker lanes: no slow gate holds them up, and fast gates of one repo run side by side
+  - Environment: `AFKCONVOY_FAST_LANES`
 
 #### `afkconvoy stop`
 
@@ -2022,6 +2025,8 @@ A worker, in its own worktree. Anyone else on the host may too: the queue is the
 
 Commands use worker lanes, 1 by default. `run --gate-lanes N` sets the count live across the host, and `default` restores it. N must be above zero. Independent candidate worktrees of one repo may validate together; ordinary heavy commands retain same-repo exclusion. Heavy gates, tests, benchmarks and builds use these lanes in FIFO order; a light gate takes its repo's own lane. A candidate holds its lane through ordered landing or confirmed cancellation. Inherited kernel leases keep a dead owner's still-running descendants from being replaced.
 
+A worker's fast gate, run by `afkconvoy gate --fast`, takes the fast lane instead: `gate --fast` tells its command's `exclusive` that it runs the fast gate, through `AFKCONVOY_GATE`, which `exclusive` does not pass on to its command. Fast gates contend only with each other, up to the host setting `fast_lanes`, 2 by default (`run --fast-lanes N`); no slow gate, turn or other command holds a place they need, and fast gates of one repo run side by side, each in its own worktree. A slow gate run alone, `gate --slow`, keeps the worker lanes.
+
 A cut's turn and exclusive commands go ahead of waiting worker commands, known by the cut's own worktree. Cuts keep request order among themselves, and ordinary commands keep theirs. Priority never interrupts a running command or adds a lane. A worker may therefore wait behind a cut's gate or publish step. Its runs line says "runs as a cut, ahead of waiting worker commands".
 
 The queue is the host runner's (`afkconvoy run --help`), held in its process: `exclusive` asks it on its socket, naming its checkout, and stays on the line while it waits and while its command runs. A process that leaves it — its command ended, or it was killed while waiting or running — frees its place for the next. The command runs in the directory `exclusive` is run in, or with `-C <dir>` in that one, as named: a checkout of the repo or a directory in one, and not that checkout's top.
@@ -2574,7 +2579,7 @@ Run the gate in this worktree and record a green run
 
 ##### When to run it
 
-Run `gate` on a committed change before workflow review or for diagnosis. Run `gate --land` once an issue PR is open to take the same landing turn as `land --issue <n>`. Where the repo splits its gate in two, run `gate --fast` before opening or updating a PR, and `gate --slow` to run the rest alone.
+Run `gate` on a committed change before workflow review or for diagnosis. Run `gate --land` once an issue PR is open to take the same landing turn as `land --issue <n>`. Where the repo splits its gate in two, run `gate --fast` before opening or updating a PR, and `gate --slow` to run the rest alone. A fast gate waits on no slow gate or landing turn: it takes the host's fast lane (`afkconvoy exclusive --help`).
 
 ##### Who runs it
 
@@ -4749,7 +4754,7 @@ A fleet instance whose loop panicked or ended in an error — its tracker found 
 _Avoid_: crashed, dead (a heartbeat past the lease), down (a harness that refuses every prompt)
 
 **Host settings**:
-What a host says for every fleet instance on it — whether it may be put to sleep and its sleep hours, the limits past which a worker is hot, the shares admission holds back at, the bound on an exclusive command holding others up, the number of worker lanes, the panel's port, the operator's directory a watch starts in and how often the host runner looks, the command that supplies a TypeSafe key for Jev's worker-health judgments — kept beside the checkout list and changed by any `run` that names one, for every fleet instance on the host at once.
+What a host says for every fleet instance on it — whether it may be put to sleep and its sleep hours, the limits past which a worker is hot, the shares admission holds back at, the bound on an exclusive command holding others up, the number of worker lanes and of fast lanes, the panel's port, the operator's directory a watch starts in and how often the host runner looks, the command that supplies a TypeSafe key for Jev's worker-health judgments — kept beside the checkout list and changed by any `run` that names one, for every fleet instance on the host at once.
 _Avoid_: global config, runner flags
 
 **Tick**:
@@ -5000,7 +5005,7 @@ One bounded task delivered to the host's watch, with its own identity, brief, de
 _Avoid_: session (the Agent can execute many rounds)
 
 **Exclusive queue**:
-The host runner's FIFO queue for heavy commands across its fleets. Commands run in worker lanes, as many as the host settings allow; independently owned candidate worktrees of one repo may validate together. A light gate takes a turn in its repo's own lane.
+The host runner's FIFO queue for heavy commands across its fleets. Commands run in worker lanes, as many as the host settings allow; independently owned candidate worktrees of one repo may validate together. A light gate takes a turn in its repo's own lane. A worker's fast gate takes the fast lane.
 _Avoid_: gate queue
 
 **Nudge**:
@@ -5088,6 +5093,10 @@ _Avoid_: gate cache, CI status
 **Fast gate**:
 The part of the gate a worker passes before it opens or updates its PR: the checks that are quick, and every test not marked slow. A repo declares it beside the slow gate, each with its own command, limit and budget; together they are the gate. A new test is in it until it is marked slow.
 _Avoid_: smoke test, pre-check, quick gate
+
+**Fast lane**:
+The places of the exclusive queue that only a worker's fast gate takes, as many as the host settings say. No slow gate, turn or other command holds one, and fast gates of one repo run side by side in it, each in its own worktree.
+_Avoid_: fast queue, priority lane
 
 **Slow gate**:
 The part of the gate the fast gate leaves out: every test marked slow, and any check not in the fast gate. Nothing in the fast gate is run again in it. A landing turn runs it once per round, not per candidate.
