@@ -77,7 +77,9 @@ So the gate runs through the host's exclusive queue (ADR-0019), in every
 checkout — a worker's standalone gate or landing turn, and a gate in a
 temporary checkout that certifies the base branch: by default one command
 at a time across its fleets. The host's `gate_lanes` setting may allow more. The workers keep editing while their gates
-wait.
+wait. A worker's fast gate, `afkconvoy gate --fast`, waits on none of these: it
+takes the host's fast lane, beside the other fast gates up to the host's
+`fast_lanes` setting, whatever their repo (ADR-0049).
 
 - Run `afkconvoy gate` as it is. Never wrap it in another `afkconvoy exclusive`:
   its own would wait behind it, on itself, until the gate limit.
