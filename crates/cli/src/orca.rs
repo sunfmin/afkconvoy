@@ -261,6 +261,17 @@ fn runtime_row(ps: &Value, path: &Path) -> Value {
         .unwrap_or(Value::Null)
 }
 
+/// Whether orca's runtime row still shows this agent running. Orca keeps an
+/// ended session's row as `done` with no live pty, across restarts and for a
+/// worktree cut again at the same path: that one is over.
+fn agent_running(agent: &Value) -> bool {
+    match agent["state"].as_str() {
+        Some("exited" | "stopped" | "closed" | "gone") => false,
+        Some("done") => agent["hasLivePty"] == true,
+        _ => true,
+    }
+}
+
 /// The top-level runtime observation belonging to exactly this terminal.
 fn pane_agent(row: &Value, terminal: &Value) -> Value {
     let pane = format!(
@@ -1194,11 +1205,7 @@ impl Worktree {
             // tick's earlier observation of the running agent.
             let report = runtime_row(&runtime_live()?, &self.path);
             let agents = report["agents"].as_array();
-            let agent_alive = agents.is_some_and(|agents| {
-                agents.iter().any(|a| {
-                    !matches!(a["state"].as_str(), Some("exited" | "stopped" | "closed" | "gone"))
-                })
-            });
+            let agent_alive = agents.is_some_and(|agents| agents.iter().any(agent_running));
             if self.terminal()?.is_none() && writers.is_empty() && !old_alive && !agent_alive {
                 return Ok(());
             }
@@ -1873,6 +1880,16 @@ impl Worktree {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_done_agent_with_no_live_pty_has_ended_and_one_with_a_pty_has_not() {
+        let ended = serde_json::json!({"state": "done", "mainAgent": {"state": "done"}});
+        assert!(!super::agent_running(&ended), "orca's leftover row of a session gone");
+        let idle = serde_json::json!({"state": "done", "hasLivePty": true});
+        assert!(super::agent_running(&idle), "a session at its prompt still writes");
+        assert!(super::agent_running(&serde_json::json!({"state": "working"})));
+        assert!(!super::agent_running(&serde_json::json!({"state": "exited"})));
+    }
+
     use super::*;
 
     #[test]
