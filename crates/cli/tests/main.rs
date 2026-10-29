@@ -43,7 +43,6 @@ mod lander;
 mod launch;
 mod lock;
 mod logged;
-mod manual;
 mod migration;
 mod named_harness;
 mod outside;

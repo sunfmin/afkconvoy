@@ -4869,10 +4869,11 @@ mod tests {
         agent_help::check(&manual()).unwrap_or_else(|faults| panic!("{faults}"));
     }
 
-    /// The manual check refuses help that names `docs/adr/`. The sentence
-    /// that held the citation still states the rule; the path does not.
+    /// The help never names `docs/adr/`, a document its reader cannot open.
+    /// The sentence that held the citation still states the rule; the path
+    /// does not.
     #[test]
-    fn the_manual_check_fails_if_help_names_a_closed_document() {
+    fn the_help_never_names_a_closed_document() {
         let cited = "so a repo config names none (`docs/adr/0025`).\nThe rest stays.\n";
         assert_eq!(names_closed_adr(cited), Some(1));
         assert_eq!(names_closed_adr("so a repo config names none.\n"), None);
