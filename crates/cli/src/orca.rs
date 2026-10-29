@@ -33,9 +33,6 @@ use crate::worker_tmp;
 /// The worker's instructions, kept in the worktree's own git dir: never staged
 /// by the worker's `git add -A`, gone when the worktree is.
 const BRIEF_FILE: &str = "convoy-worker-prompt.md";
-/// When the caster here was started (epoch seconds), and the issues it was
-/// given, beside the brief.
-const CASTER_FILE: &str = "convoy-caster";
 /// When the worker here was nudged (epoch seconds), beside the brief.
 const NUDGE_FILE: &str = "convoy-nudged";
 /// The one since this worker has waited on its own background work (epoch
@@ -1109,24 +1106,6 @@ impl Worktree {
             let _ = self.git_dir.set(PathBuf::from(dir));
         }
         Ok(self.git_dir.get().expect("set above").join(name))
-    }
-
-    /// When the caster here was started, and the issues it was given.
-    pub fn caster(&self) -> Result<Option<(u64, Vec<u64>, String)>> {
-        let kept = std::fs::read_to_string(self.note(CASTER_FILE)?).unwrap_or_default();
-        if let Ok((since, given, context)) = serde_json::from_str(&kept) {
-            return Ok(Some((since, given, context)));
-        }
-        let mut words = kept.split_whitespace().map(str::parse::<u64>);
-        let Some(Ok(since)) = words.next() else { return Ok(None) };
-        Ok(Some((since, words.filter_map(Result::ok).collect(), String::new())))
-    }
-
-    /// Records that the caster here was started at `since`, given `given`.
-    pub fn record_caster(&self, since: u64, given: &[u64], context: &str) -> Result<()> {
-        let file = self.note(CASTER_FILE)?;
-        std::fs::write(&file, serde_json::to_vec(&(since, given, context))?)
-            .with_context(|| format!("cannot write {}", file.display()))
     }
 
     fn forget(&self, name: &str) -> Result<()> {
