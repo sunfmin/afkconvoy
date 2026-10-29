@@ -1705,7 +1705,8 @@ fn resident_rounds_queue_while_busy_revalidate_recover_and_keep_reports_separate
     paused_items.as_array_mut().unwrap().retain(|p| p["harness"] != "pi");
     std::fs::write(world.paused_path(), paused_items.to_string()).unwrap();
     until(&world, "pi's observed recovery", || {
-        (!state(&world)["observed"].as_object()?.keys().any(|id| id.contains("`pi`"))).then_some(())
+        (!state(&world)["observed"].as_object()?.keys().any(|id| id.contains(r#""pi""#)))
+            .then_some(())
     });
     paused(&world, "pi", "a new episode");
     let third = until(&world, "the new episode", || running(&world));
