@@ -14,9 +14,15 @@
 # runs there outside that queue: other fleets' work, and the human's. Six at a
 # time, the suite takes about the sum of its tests' times over six: a second
 # taken off any test is a sixth of a second off the gate.
+#
+# The slow gate runs every one of its tests, past a failure (`fail-fast`): a
+# round's slow gate takes twenty minutes, and the worker who fixes a red round
+# (docs/adr/0048) is told every test it broke at once, not the first of them.
+# On 2026-10-30 a round's slow gate stopped at its 274th test of 811.
 [profile.default]
 slow-timeout = { period = "20s", terminate-after = 12 }
 test-threads = 6
+fail-fast = false
 
 # The fast gate's tests (./gate.sh fast, docs/adr/0047): every test but those
 # .config/slow-tests names, each of which took 2 seconds or more on the host
@@ -27,3 +33,4 @@ test-threads = 6
 # profile above.
 [profile.fast]
 slow-timeout = { period = "2s", terminate-after = 3 }
+fail-fast = true
