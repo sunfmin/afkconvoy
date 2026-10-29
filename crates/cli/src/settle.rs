@@ -18,6 +18,7 @@ use crate::git::{REMOTE, Repo};
 use crate::landing::joins_in;
 use crate::orca::{Source, Worktree};
 use crate::recovery::own_heads;
+use crate::remote::{Fresh, Push};
 
 /// The joining on the base branch that landed `issue` of `tracker` — the
 /// newest merge commit there a PR joined a train with that closes it — and
@@ -65,7 +66,7 @@ fn follow_base(fleet: &Fleet) -> Result<()> {
     let base = &fleet.config.base_branch;
     let local = format!("refs/heads/{base}");
     let before = main.try_git(&["rev-parse", "-q", "--verify", &local])?;
-    let Some(tip) = main.fetched(&local)?.filter(|_| before.ok) else {
+    let Some(tip) = main.remote().fetched(&local, Fresh::Process)?.filter(|_| before.ok) else {
         return Ok(());
     };
     let here = main.try_git(&["symbolic-ref", "-q", "--short", "HEAD"])?.stdout;
@@ -171,16 +172,9 @@ pub fn settle(fleet: &mut Fleet, me: &Me, issue: u64) -> Result<()> {
                 let worktree = Worktree::of_issue(&Source::of(&fleet.repo)?, issue)?;
                 for branch in own_heads(fleet, issue, worktree.as_ref())? {
                     let head = format!("refs/heads/{branch}");
-                    let Some(tip) = fleet.repo.fetched(&head)? else { continue };
+                    let Some(tip) = fleet.remote.fetched(&head, Fresh::Process)? else { continue };
                     if fleet.repo.try_git(&["merge-base", "--is-ancestor", &tip, &base_tip])?.ok {
-                        let lease = format!("--force-with-lease={head}:{tip}");
-                        fleet.repo.git(&[
-                            "push",
-                            "--quiet",
-                            &lease,
-                            REMOTE,
-                            &format!(":{head}"),
-                        ])?;
+                        fleet.remote.push(&Push::delete(&head).leased(&tip))?;
                     }
                 }
             }
