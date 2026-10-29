@@ -46,9 +46,9 @@ fn seed(world: &World) {
 }
 
 fn workers_waiting(world: &World) -> usize {
-    world.afk(&["doctor"]).json["host"]["exclusive"]["lanes"]["worker"]["waiting"]
+    world.afk(&["doctor"]).json["host"]["exclusive"]["waiting"]
         .as_array()
-        .map_or(0, Vec::len)
+        .map_or(0, |waiting| waiting.iter().filter(|request| request["lane"] == "worker").count())
 }
 
 #[test]
@@ -68,9 +68,9 @@ fn two_turns_land_in_order_with_a_record_of_each_landed_tree_and_no_line() {
     until(|| started.exists());
     let b = start(&world, &two, &world.cache(), 2);
     until(|| {
-        world.afk(&["doctor"]).json["host"]["exclusive"]["lanes"]["repos"].as_array().is_some_and(
-            |r| r.iter().any(|r| r["queue"]["waiting"].as_array().is_some_and(|w| !w.is_empty())),
-        )
+        world.afk(&["doctor"]).json["host"]["exclusive"]["waiting"]
+            .as_array()
+            .is_some_and(|w| w.iter().any(|request| !request["repo_lane"].is_null()))
     });
     assert!(!second_started.exists(), "a worker without its turn runs no gate");
     std::fs::write(&release, "").unwrap();
@@ -130,9 +130,9 @@ fn a_missing_base_record_is_gated_alone_before_any_worker_turn() {
     let child = start(&world, &worker, &world.cache(), 1);
     until(|| certifying.exists());
     let doctor = world.afk(&["doctor"]).json;
-    let lanes = &doctor["host"]["exclusive"]["lanes"];
-    assert!(lanes.get("train").is_none(), "{lanes}");
-    assert!(lanes["repos"].as_array().is_some_and(|lanes| !lanes.is_empty()), "{lanes}");
+    let queue = &doctor["host"]["exclusive"];
+    assert!(queue.get("train").is_none(), "{queue}");
+    assert!(queue["repos"].as_array().is_some_and(|lanes| !lanes.is_empty()), "{queue}");
     assert!(!worker_gate.exists());
     std::fs::write(release, "").unwrap();
     assert_eq!(finish(child)["outcome"], "merged");
@@ -464,7 +464,7 @@ fn an_old_stored_train_lanes_key_loads_and_a_run_drops_it() {
         assert!(settings["said"].get("train_lanes").is_none(), "{settings}");
         assert!(settings["in_force"].get("train_lanes").is_none(), "{settings}");
         assert!(settings["in_force"].get("ignored").is_none(), "{settings}");
-        assert!(doctor["host"]["exclusive"]["lanes"].get("train").is_none());
+        assert!(doctor["host"]["exclusive"].get("train").is_none());
         assert_eq!(world.checkout_list()["settings"]["train_lanes"], 0);
     }
     let wrote = world.afk(&["run", "--admit-load", "400"]).ok();

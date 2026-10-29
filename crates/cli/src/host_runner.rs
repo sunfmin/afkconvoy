@@ -171,7 +171,7 @@ impl Shared {
         let (exclusive, exclusive_paused) = self.queue.observation()?;
         Ok(SharedNow {
             exclusive,
-            exclusive_paused,
+            exclusive_paused: Some(exclusive_paused),
             installed: self.installed().clone(),
             watch: self.watch.running(),
         })
@@ -195,10 +195,10 @@ impl Shared {
 pub struct SharedNow {
     /// The exclusive queue, in scheduler order.
     pub exclusive: Vec<Ticket>,
-    /// Whether a release move has paused new grants. Default keeps older
-    /// host runners readable by doctor and the panel.
+    /// Whether a release move has paused new grants; `None`: an older host
+    /// runner did not say, and the observation keeps it unknown.
     #[serde(default)]
-    pub exclusive_paused: bool,
+    pub exclusive_paused: Option<bool>,
     /// The afkconvoy installed where the host runner was started from, where
     /// it is newer than the host runner's or does not start; `None`: none is,
     /// or the host runner is of an afkconvoy that does not say it.
