@@ -20,9 +20,10 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::gh::GitHub;
-use crate::git::{REMOTE, Repo};
+use crate::git::Repo;
 use crate::lock::standing_locks;
 use crate::measure;
+use crate::remote::{Fresh, Push};
 
 /// What keeps a worktree from being exactly a commit: its uncommitted and
 /// untracked paths as `git status --porcelain` lists them, and — given the
@@ -114,7 +115,12 @@ fn run_command(
 ) -> Result<CommandRun> {
     let mut shell = Command::new("sh");
     crate::exclusive::inherit(&mut shell, repo)?;
-    share(&mut shell);
+    // A round's slow gate runs alone in its lane, its tests mostly waiting
+    // on the processes they start: twelve at a time, as its profile says
+    // (sunfmin/control#234), not the share a fast gate's tests are held to.
+    if !candidate.is_some_and(|c| c.slow) {
+        share(&mut shell);
+    }
     if let Some(candidate) = candidate {
         shell.env(crate::candidates::PROCESS_ENV, candidate.process_marker());
         // Five cold builds at once on eight cores passed the fast gate's
@@ -336,7 +342,7 @@ fn controlled_run(
             // is not believed from the one the record was left on.
             for layout in Layout::ALL {
                 let name = record_ref(layout, &tree, command);
-                let _ = repo.try_git(&["push", "--quiet", REMOTE, "--delete", &name]);
+                let _ = repo.remote().try_push(&Push::delete(&name));
             }
             // A red run of this issue's tree is kept on its own ref until the
             // work account cites it. A base-branch certification names no issue.
@@ -344,13 +350,7 @@ fn controlled_run(
                 let subject = red_subject(&tree, command, ran.seconds, host, now, issue);
                 let red = red_ref(repo.layout(), issue, now, tree.key(), command.key());
                 if let Ok(sha) = repo.record_commit_of(tree.name(), &subject) {
-                    let _ = repo.try_git(&[
-                        "push",
-                        "--quiet",
-                        "--force",
-                        REMOTE,
-                        &format!("{sha}:{red}"),
-                    ]);
+                    let _ = repo.remote().try_push(&Push::set(&sha, &red).force());
                 }
             }
         }
@@ -425,8 +425,7 @@ const RECORD_ATTEMPTS: u32 = 5;
 fn push_record(repo: &Repo, sha: &str, refname: &str) -> Result<Option<String>> {
     let mut attempt = 0;
     loop {
-        let pushed =
-            repo.try_git(&["push", "--quiet", "--force", REMOTE, &format!("{sha}:{refname}")])?;
+        let pushed = repo.remote().try_push(&Push::set(sha, refname).force())?;
         if pushed.ok {
             return Ok(None);
         }
@@ -451,14 +450,14 @@ pub fn recorded(
     let names: Vec<String> =
         Layout::ALL.into_iter().map(|layout| record_ref(layout, tree, command)).collect();
     let patterns: Vec<&str> = names.iter().map(String::as_str).collect();
-    let found = repo.remote_records_in(&patterns)?;
+    let found = repo.remote().records(&patterns, Fresh::Process)?;
     Ok(recorded_among(&found, noted, tree, command, now))
 }
 
 /// The still-valid green run among an existing remote snapshot's records,
 /// from either ref layout. The noted layout's record wins when both stand.
 pub fn recorded_among(
-    records: &[crate::git::RemoteRecord],
+    records: &[crate::remote::RemoteRecord],
     layout: afkconvoy_core::layout::Layout,
     tree: &Tree,
     command: &GateCommand,

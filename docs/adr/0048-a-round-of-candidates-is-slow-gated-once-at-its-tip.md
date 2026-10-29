@@ -4,7 +4,7 @@ status: accepted
 
 # A round of candidates is slow-gated once at its tip
 
-Amends ADR-0037 and ADR-0047 (sunfmin/control#240).
+Amends ADR-0037 and ADR-0047 (sunfmin/control#240, and sunfmin/control#238, which asked for the same landing).
 
 ADR-0047 split the gate in two and kept a landing on the whole of it: each candidate ran `gate_command`, about 1,300 seconds on `Offices-MacBook-Pro.local`, of which the slow gate's tests were 1,157. Three candidates validating together ran those tests three times, each on a tree that held the one before it.
 
@@ -33,13 +33,14 @@ A merge onto the candidate ahead that conflicts used to answer `speculative_conf
 ## Considered options
 
 - **Bisect a red round.** Refused: each split costs a slow gate run, and the worker learns nothing a reading of the issues and the failing tests would not tell it.
-- **A separate repair worker for a red round.** Refused: the tip's worker already holds the round's tip, its worktree and the failing run; a new worker would start from nothing.
+- **A separate repair worker for a red round.** Refused: the tip's worker already holds the round's tip, its worktree and the failing run; a new worker would start from nothing. sunfmin/control#238 asked for one, as the fleet starts for a red base tip; the tip's worker is given what that worker would be: every issue of the round and the failing output, with no bisection.
 - **Hold a red round's other candidates until the tip's fix lands.** Refused: their turns would wait unbounded on another worker, and their window places would stay taken. Their changes are already in the tip's PR.
 - **A slow gate per candidate, run after its fast gate.** The landing of ADR-0047's considered option. Refused: it runs the slow tests once per candidate, the cost this ADR exists to remove.
 
 ## Consequences
 
 - A chain of three fast-green candidates runs the slow gate once, not three times.
+- `doctor` and the panel say, for each candidate, the round whose slow gate it waits on (`round`, the tip slow-gating now), or none: it waits for the next round.
 - An afkconvoy older than this one lands a repo declaring its gates with the whole gate per candidate, as before; ADR-0047's worry, an older version landing on the slow gate alone, does not arise, and the fleet is upgraded by hand before a repo lands with rounds.
 - A red round costs every candidate in it its landing until the tip's worker fixes it; a change that broke the slow gate holds up the changes fast-gated beside it.
 - A worker's PR may carry other candidates' changes, through a resolved conflict or a red round. Landing it lands them, and their issues are settled from the base history.

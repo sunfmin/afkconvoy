@@ -283,6 +283,7 @@ fn not_moved(installed: &Installed) -> Option<Finding> {
         );
         return Some(finding(
             Kind::NotMoved,
+            json!(["not-moved", installed.path]),
             what,
             installed.held_back.join("; "),
             format!("{} --version", installed.path.display()),
@@ -302,7 +303,13 @@ fn not_moved(installed: &Installed) -> Option<Finding> {
             installed.from
         ),
     };
-    Some(finding(Kind::NotMoved, what, why, format!("{at} --version")))
+    Some(finding(
+        Kind::NotMoved,
+        json!(["not-moved", installed.path]),
+        what,
+        why,
+        format!("{at} --version"),
+    ))
 }
 
 /// One checkout's fleet instance, from its start until its thread ends.

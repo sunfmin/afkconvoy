@@ -214,15 +214,22 @@ pub fn tracker_on(list: &List, repo: &Repo) -> Result<Tracker> {
 /// entry or its main checkout's — where the list holds neither, what its
 /// `run` asked in this process: none, and it is its own repo.
 pub fn said_tracker(list: &List, repo: &Repo) -> Result<Option<RepoName>> {
+    Ok(said(list, repo)?.flatten())
+}
+
+/// What the checkout `repo` says of its tracker on the host of `list`, as
+/// `said_tracker` reads it; `None` where it says nothing at all — the list
+/// holds no entry of it or its main checkout, and no `run` of it asked in
+/// this process — so the tracker is not said, which is not the same as its
+/// own repo said.
+pub fn said(list: &List, repo: &Repo) -> Result<Option<Option<RepoName>>> {
     let main = repo.main_checkout()?;
     let of = |root: &Path| root == repo.dir || root == main;
     let asked = asked();
     let listed = list.read()?;
     Ok(match listed.checkouts.into_iter().find(|entry| of(&entry.checkout)) {
-        Some(entry) => entry.tracker,
-        None => {
-            asked.iter().find(|(root, _)| of(root)).and_then(|(_, asked)| asked.tracker.clone())
-        }
+        Some(entry) => Some(entry.tracker),
+        None => asked.iter().find(|(root, _)| of(root)).map(|(_, asked)| asked.tracker.clone()),
     })
 }
 

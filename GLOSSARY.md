@@ -56,6 +56,10 @@ _Avoid_: bootstrap, preflight, health check
 One of the two ways every ref the fleet writes is named: hidden refs (`refs/convoy/*`), or — only where the remote rejects those — ordinary branches (`convoy-*`), on which push-triggered CI fires.
 _Avoid_: namespace, fallback mode
 
+**Remote view**:
+A repository's one way to read and write the remote's refs. A read names how fresh it must be: as the view opened (the one listing a fleet's view is read from), current for this process (a ref already read is not asked again until this process writes it), or live, for a check another process may have moved or a write that must be certain. Every write — a push or a receive-pack publication — states the refs it writes, and the view drops exactly those. Nothing else pushes or lists the remote.
+_Avoid_: remote cache, ref cache
+
 **Fleet state**:
 The authoritative record of what is claimed, in flight, landed, parked and escalated. It lives entirely in GitHub — the issues in the fleet's tracker, the PRs, branches and refs in the repo — and no process holds it. A PR whose head is in another repository is no part of it: only a login with write access can push a branch to the repo, so a PR from one of its branches is a collaborator's, and one from a fork is anyone's. The fleet acts as if a fork's PR did not exist — none is landed, taken up, synced, closed, commented on or reported, none holds an issue off.
 _Avoid_: run state, memory (what a host holds resident, as under Hot worker)
@@ -310,7 +314,7 @@ _Avoid_: notification, callback, done signal
 ### Claims
 
 **Claim**:
-The atomic lock marking one issue as owned by one fleet instance. Its creation succeeds for exactly one instance. It takes one slot of the concurrency while its worker is at work, and none once a verdict is declared under it: it is still held until that verdict is acted on, and a worker started under it again takes a slot as any start does.
+The atomic lock marking one issue as owned by one fleet instance. Its creation succeeds for exactly one instance. It takes one slot of the concurrency while its worker is at work, and none once a verdict is declared under it: it is still held until that verdict is acted on, and a worker started under it again takes a slot as any start does. A landing claim's worker is at work only while it is changing the tree — resolving a conflict, fixing a red gate, or still preparing the branch for the turn. Gone or idle, or with its turn queued, waiting on a predecessor or last answering a wait, it takes no slot: the claim is still held until the PR lands or it ends otherwise, the tick asks for the turn again without starting a harness, and a worker it starts because the turn needs the tree changed takes a slot as any start does.
 _Avoid_: assignee, assignment, lock (the fleet lock)
 
 **Heartbeat**:
@@ -352,7 +356,7 @@ The file a fleet instance keeps on its own host: one line as it starts, a line a
 _Avoid_: state file, journal, history
 
 **Finding**:
-One thing `doctor` says is wrong with the fleet on this host, with how bad it is, what shows it, its fix — a line to run, or a file and the key in it to edit — and the help topic that explains it. `doctor` fixes none itself.
+One thing `doctor` says is wrong with the fleet on this host, of one **kind**, with how bad it is, what shows it, its fix — a line to run, or a file and the key in it to edit — the help topic that explains it, and the identity of its condition, made where it is judged and unchanged by its words. `doctor` fixes none itself. The host's watch acts on each finding that is not `info` by its kind and identity: each condition it acts on is one finding.
 _Avoid_: diagnosis (a worker health assessment), alert, warning (one of its severities), error (what a command that failed answers with)
 
 ### Landing

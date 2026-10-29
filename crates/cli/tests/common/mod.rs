@@ -406,7 +406,15 @@ impl World {
         let only = self.root.join("path");
         let path = match only.exists() {
             true => only.display().to_string(),
-            false => format!("{}:{}", self.bin.display(), std::env::var("PATH").unwrap()),
+            false => match &*REAL_GIT_DIR {
+                Some(dir) => format!(
+                    "{}:{}:{}",
+                    self.bin.display(),
+                    dir.display(),
+                    std::env::var("PATH").unwrap()
+                ),
+                None => format!("{}:{}", self.bin.display(), std::env::var("PATH").unwrap()),
+            },
         };
         let shown = |path: &Path| path.display().to_string();
         let mut env = vec![
@@ -962,9 +970,7 @@ impl World {
 
     /// Has every `git` call afkconvoy makes from here on logged (`git_calls`).
     pub fn watch_git(&self) {
-        let path = std::env::var_os("PATH").unwrap();
-        let git = std::env::split_paths(&path).map(|dir| dir.join("git")).find(|git| git.is_file());
-        let (git, log) = (git.expect("git is on PATH"), self.root.join("git.log"));
+        let (git, log) = (git_program(), self.root.join("git.log"));
         let script = format!(
             "#!/bin/sh\necho \"$*\" >> '{}'\nexec '{}' \"$@\"\n",
             log.display(),
@@ -998,10 +1004,7 @@ impl World {
                 let built = std::fs::read_link(self.bin.join(stand_in)).unwrap();
                 std::os::unix::fs::symlink(built, only.join(stand_in)).unwrap();
             }
-            let path = std::env::var_os("PATH").unwrap();
-            let git =
-                std::env::split_paths(&path).map(|dir| dir.join("git")).find(|git| git.is_file());
-            let git = git.expect("git is on PATH");
+            let git = git_program();
             write_script(
                 &only.join("git"),
                 &format!("#!/bin/sh\nexec '{}' \"$@\"\n", git.display()),
@@ -1940,9 +1943,42 @@ pub fn worktree_listed(listed: &str, path: &Path) -> bool {
     })
 }
 
+/// Where the git that Apple's `/usr/bin/git` starts is, when that is the git
+/// on PATH: put after the stand-ins on a world's PATH, it is the git the
+/// world runs, and the harness's own. `/usr/bin/git` is a shim that asks
+/// `xcrun` for the developer directory each time it runs, and then starts
+/// the same git: about 16 ms a call where the git alone takes 7 (#234), and
+/// a test of the CLI makes about fifty a tick. A symlink to that git will
+/// not do: it finds its own `git-core` and templates beside the path it was
+/// started as. `None` wherever the git on PATH is another.
+static REAL_GIT_DIR: std::sync::LazyLock<Option<PathBuf>> = std::sync::LazyLock::new(|| {
+    let path = std::env::var_os("PATH")?;
+    let first = std::env::split_paths(&path).map(|dir| dir.join("git")).find(|git| git.is_file());
+    if first? != Path::new("/usr/bin/git") {
+        return None;
+    }
+    let found = Command::new("xcrun").args(["--find", "git"]).output().ok()?;
+    let real = PathBuf::from(String::from_utf8(found.stdout).ok()?.trim());
+    (found.status.success() && real.is_file()).then(|| real.parent().unwrap().to_path_buf())
+});
+
+/// The git a world runs, and so the harness's own: see `REAL_GIT_DIR`.
+pub fn git_program() -> PathBuf {
+    match &*REAL_GIT_DIR {
+        Some(dir) => dir.join("git"),
+        None => {
+            let path = std::env::var_os("PATH").unwrap();
+            let git =
+                std::env::split_paths(&path).map(|dir| dir.join("git")).find(|git| git.is_file());
+            git.expect("git is on PATH")
+        }
+    }
+}
+
 /// Runs git in `cwd` and returns its trimmed stdout; a failure fails the test.
 pub fn git(cwd: &Path, args: &[&str]) -> String {
-    let out = Command::new("git").current_dir(cwd).args(args).envs(GIT_ENV).output().unwrap();
+    let out =
+        Command::new(git_program()).current_dir(cwd).args(args).envs(GIT_ENV).output().unwrap();
     assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
