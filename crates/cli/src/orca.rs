@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use afkconvoy_core::casting::CASTER_WORKTREE;
@@ -28,14 +28,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::git::{REMOTE, Repo};
+use crate::look::Reading;
 use crate::worker_tmp;
 
 /// The worker's instructions, kept in the worktree's own git dir: never staged
 /// by the worker's `git add -A`, gone when the worktree is.
 const BRIEF_FILE: &str = "convoy-worker-prompt.md";
-/// When the caster here was started (epoch seconds), and the issues it was
-/// given, beside the brief.
-const CASTER_FILE: &str = "convoy-caster";
 /// When the worker here was nudged (epoch seconds), beside the brief.
 const NUDGE_FILE: &str = "convoy-nudged";
 /// The one since this worker has waited on its own background work (epoch
@@ -49,6 +47,11 @@ const START_FILE: &str = "convoy-started";
 const WRITES_NOTHING_FILE: &str = "convoy-writes-nothing";
 /// The comment of the `blocked` verdict a worker was last started again over.
 const ANSWERED_FILE: &str = "convoy-answered";
+/// What the last turn asked for here answered, or the process asking for one
+/// now (`turn_answer`).
+pub(crate) const TURN_FILE: &str = "convoy-turn.json";
+/// What the turns the tick asked for here printed, one after another.
+pub(crate) const TURN_LOG_FILE: &str = "convoy-turn.log";
 /// What a bound repo's worker here was started under (`Under`).
 const UNDER_FILE: &str = "convoy-started-under";
 /// The harness the worker here was last started on, as its key.
@@ -300,7 +303,10 @@ pub(crate) fn agent_harness(agent: &Value) -> Option<Harness> {
 /// One `orca … --json` call → its `result` object. An error when orca cannot
 /// be run, exits non-zero, or answers `ok: false` — never an empty answer.
 pub fn orca(args: &[&str]) -> Result<Value> {
-    let asked = Asked::of(args)?;
+    let asked = Asked::of(args);
+    // A write forgets each reading that names it, whatever it answered.
+    crate::look::wrote(&[&["orca"], args].concat());
+    let asked = asked?;
     if !asked.exited_ok || asked.answer["ok"] != true {
         return Err(asked.failure());
     }
@@ -464,41 +470,15 @@ fn asked_from() -> PathBuf {
     home.filter(|home| home.is_dir()).unwrap_or_else(|| PathBuf::from("/"))
 }
 
-static RUNNING: Mutex<Option<Arc<OnceLock<bool>>>> = Mutex::new(None);
+/// Whether orca is running, read once in this look. Adding a repo does
+/// not forget this: orca is running then, and the look has not ended.
+pub(crate) static RUNNING: Reading<bool> = Reading::per_look("orca running");
 
 /// Whether orca is running, read once in this look. An orca that cannot say
 /// is not one a worker can be started through. A second ask waits on that
 /// read instead of starting `orca` again.
 pub fn running() -> bool {
-    let cell = {
-        let mut running = RUNNING.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        running.get_or_insert_with(|| Arc::new(OnceLock::new())).clone()
-    };
-    *cell
-        .get_or_init(|| orca(&["status"]).is_ok_and(|status| status["runtime"]["state"] == "ready"))
-}
-
-/// Forgets whether orca is running, so the next read asks again. A look
-/// begins through `look::begin`. Adding a repo does not forget this: orca
-/// is running then, and the look has not ended.
-pub(crate) fn forget_running() {
-    *RUNNING.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
-}
-
-#[cfg(test)]
-pub(crate) fn hold_running(ready: bool) {
-    let cell = Arc::new(OnceLock::new());
-    cell.set(ready).expect("running cell is unset");
-    *RUNNING.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(cell);
-}
-
-#[cfg(test)]
-pub(crate) fn running_cached() -> Option<bool> {
-    RUNNING
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .as_ref()
-        .and_then(|cell| cell.get().copied())
+    RUNNING.read("", || orca(&["status"]).is_ok_and(|status| status["runtime"]["state"] == "ready"))
 }
 
 /// What a start finds of an installed orca: whether it is running, and then
@@ -522,81 +502,39 @@ pub struct Source {
     pub id: String,
 }
 
-static REPOS: Mutex<Option<Result<Value, String>>> = Mutex::new(None);
+/// Orca's host-wide repo listing, read once in this look. Adding a repo orca
+/// did not list forgets this listing alone: the look has not ended.
+pub(crate) static REPOS: Reading<Result<Value, String>> =
+    Reading::per_look("orca repo list").forgotten_by(&[&["orca", "repo", "add"]]);
 
 /// Orca's host-wide repo listing, read once in this look.
 fn repo_list() -> Result<Value> {
-    let mut listed = REPOS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    if listed.is_none() {
-        *listed = Some(orca(&["repo", "list"]).map_err(|error| format!("{error:#}")));
-    }
-    listed.as_ref().expect("set above").clone().map_err(|error| anyhow!(error))
+    REPOS
+        .read("", || orca(&["repo", "list"]).map_err(|error| format!("{error:#}")))
+        .map_err(|error| anyhow!(error))
 }
 
-/// Forgets the listing, so the next read observes it again. A look begins
-/// through `look::begin`, which forgets every observation a look reads once.
-/// Adding a repo orca did not list forgets this listing alone: the look has
-/// not ended, and the quota note stays the one already read.
-pub(crate) fn forget_listing() {
-    *REPOS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
-}
-
-/// Orca's worktree list, read once and shared with the next ask in this look.
-type WorktreesOnce = Arc<OnceLock<Result<Value, String>>>;
+/// Orca's worktree list, read once in this look. Creating or removing a
+/// worktree forgets this list alone: the look has not ended, and the other
+/// readings stay the ones already read.
+pub(crate) static WORKTREES: Reading<Result<Value, String>> =
+    Reading::per_look("orca worktree list")
+        .forgotten_by(&[&["orca", "worktree", "create"], &["orca", "worktree", "rm"]]);
 
 /// Orca's worktree list, one read for this look. A second ask waits on the
-/// first instead of listing again. The lock is not held across `orca`.
-static WORKTREES: Mutex<Option<WorktreesOnce>> = Mutex::new(None);
-
+/// first instead of listing again.
 fn worktree_list() -> Result<Value> {
-    let cell = {
-        let mut listed = WORKTREES.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        listed.get_or_insert_with(|| Arc::new(OnceLock::new())).clone()
-    };
-    let stored =
-        cell.get_or_init(|| orca(&["worktree", "list"]).map_err(|error| format!("{error:#}")));
-    match stored {
-        Ok(value) => Ok(value.clone()),
-        Err(error) => bail!("{error}"),
-    }
+    WORKTREES.read("", list_worktrees).map_err(|error| anyhow!(error))
 }
 
-/// Forgets the worktree list, so the next read observes it again. A look
-/// begins through `look::begin`, which forgets every observation a look
-/// reads once. Creating or removing a worktree forgets this list alone:
-/// the look has not ended, and the other observations stay the ones already read.
-pub(crate) fn forget_worktrees() {
-    *WORKTREES.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+/// Asks orca for the worktree list anew, which is what makes orca drop a
+/// removal failure it recorded.
+fn worktree_list_again() -> Result<Value> {
+    WORKTREES.again("", list_worktrees).map_err(|error| anyhow!(error))
 }
 
-#[cfg(test)]
-pub(crate) fn hold_worktrees(value: Value) {
-    let cell = Arc::new(OnceLock::new());
-    cell.set(Ok(value)).ok();
-    *WORKTREES.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(cell);
-}
-
-#[cfg(test)]
-pub(crate) fn worktrees_cached() -> Option<Value> {
-    WORKTREES
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .as_ref()
-        .and_then(|cell| cell.get().and_then(|listed| listed.as_ref().ok().cloned()))
-}
-
-#[cfg(test)]
-pub(crate) fn hold_listing(value: Value) {
-    *REPOS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Ok(value));
-}
-
-#[cfg(test)]
-pub(crate) fn cached_listing() -> Option<Value> {
-    REPOS
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .as_ref()
-        .and_then(|listed| listed.as_ref().ok().cloned())
+fn list_worktrees() -> Result<Value, String> {
+    orca(&["worktree", "list"]).map_err(|error| format!("{error:#}"))
 }
 
 impl Source {
@@ -735,8 +673,7 @@ pub(crate) fn finish_failed_removals(repo: &Repo, base: &str) -> Result<()> {
         let _ = worker_tmp::reclaim();
     }
     if finished {
-        forget_worktrees();
-        worktree_list()?;
+        worktree_list_again()?;
     }
     Ok(())
 }
@@ -747,7 +684,6 @@ pub(crate) fn finish_failed_removals(repo: &Repo, base: &str) -> Result<()> {
 pub fn watch_directory(directory: &Path) -> Result<()> {
     if Source::at(directory)?.is_none() {
         orca(&["repo", "add", "--path", &directory.display().to_string()])?;
-        forget_listing();
     }
     Ok(())
 }
@@ -850,11 +786,10 @@ impl Worktree {
         if let Some(number) = &issue {
             args.extend(["--issue", number]);
         }
+        // The list this look already read does not contain the worktree
+        // created here: the create forgets it (`WORKTREES`), so a later
+        // question, including a host-runner move after the tick, sees it.
         let made = orca(&args)?;
-        // The list this look already read does not contain the worktree just
-        // created. A later question, including a host-runner move after the
-        // tick, has to see it.
-        forget_worktrees();
         let path = made["worktree"]["path"].as_str().map(PathBuf::from);
         let Some(path) = path.filter(|path| path.is_dir()) else {
             bail!("orca worktree create returned no usable path: {}", made["worktree"]["path"]);
@@ -1109,24 +1044,6 @@ impl Worktree {
             let _ = self.git_dir.set(PathBuf::from(dir));
         }
         Ok(self.git_dir.get().expect("set above").join(name))
-    }
-
-    /// When the caster here was started, and the issues it was given.
-    pub fn caster(&self) -> Result<Option<(u64, Vec<u64>, String)>> {
-        let kept = std::fs::read_to_string(self.note(CASTER_FILE)?).unwrap_or_default();
-        if let Ok((since, given, context)) = serde_json::from_str(&kept) {
-            return Ok(Some((since, given, context)));
-        }
-        let mut words = kept.split_whitespace().map(str::parse::<u64>);
-        let Some(Ok(since)) = words.next() else { return Ok(None) };
-        Ok(Some((since, words.filter_map(Result::ok).collect(), String::new())))
-    }
-
-    /// Records that the caster here was started at `since`, given `given`.
-    pub fn record_caster(&self, since: u64, given: &[u64], context: &str) -> Result<()> {
-        let file = self.note(CASTER_FILE)?;
-        std::fs::write(&file, serde_json::to_vec(&(since, given, context))?)
-            .with_context(|| format!("cannot write {}", file.display()))
     }
 
     fn forget(&self, name: &str) -> Result<()> {
@@ -1446,7 +1363,6 @@ impl Worktree {
         let _ = worker_tmp::retire(&self.path);
         crate::copies::removable(&self.path);
         orca(&["worktree", "rm", "--worktree", &self.selector(), "--force"])?;
-        forget_worktrees();
         if self.path.exists() {
             crate::copies::removable(&self.path);
             std::fs::remove_dir_all(&self.path)
@@ -1457,8 +1373,7 @@ impl Worktree {
         }
         // The directory is gone. Orca drops a failure it recorded during the
         // removal only when it is asked for the list again.
-        forget_worktrees();
-        worktree_list()?;
+        worktree_list_again()?;
         let _ = worker_tmp::reclaim();
         Ok(())
     }

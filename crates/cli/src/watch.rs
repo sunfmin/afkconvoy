@@ -3,8 +3,8 @@
 
 use afkconvoy_core::claims::Claim;
 use afkconvoy_core::landing_worker::{
-    LandingRecord, LandingRoute, RestartStep, Unrestarted, join_comment, join_route, read_join,
-    stalled_reason,
+    Answered, LandingRecord, LandingRoute, RestartStep, Unrestarted, join_comment, join_route,
+    read_join, stalled_reason,
 };
 use afkconvoy_core::plan::closing_pr;
 use afkconvoy_core::prompt::nudge_line;
@@ -38,7 +38,8 @@ enum Asked {
     /// At work: nothing on GitHub was read.
     AtWork,
     /// Gone, its terminal or its whole worktree: nothing on GitHub was read.
-    Gone,
+    /// The worktree, when there is one, with what its turn last answered.
+    Gone(Option<(Worktree, Answered)>),
     /// Its PR is not open any more: what the claim is now is the next
     /// rebuild's to say.
     NoPr,
@@ -55,7 +56,16 @@ fn ask_after(fleet: &Fleet, me: &Me, issue: u64) -> Result<Option<Asked>> {
     };
     match settled_by_state(state) {
         Some(Route::Leave) => return Ok(Some(Asked::AtWork)),
-        Some(_) => return Ok(Some(Asked::Gone)),
+        Some(_) => {
+            let answered = match worktree {
+                Some(worktree) => {
+                    let answered = crate::turn_answer::read(&worktree)?;
+                    Some((worktree, answered))
+                }
+                None => None,
+            };
+            return Ok(Some(Asked::Gone(answered)));
+        }
         None => {}
     }
     let (Some(worktree), Some(state)) = (worktree, state) else {
@@ -73,6 +83,24 @@ fn ask_after(fleet: &Fleet, me: &Me, issue: u64) -> Result<Option<Asked>> {
     let route =
         join_route(state, &progress, nudged, record.restarted, (handed, background), fleet.now);
     Ok(Some(Asked::Stopped(Box::new(Stopped { claim, pr, worktree, record, comments, route }))))
+}
+
+/// Whether the turn of a landing worktree needs the tree changed before it is
+/// asked for again: it never was — the branch is still being prepared — or
+/// it answered a conflict, a red gate, or anything else but a wait. A turn
+/// being asked for now needs nothing.
+fn needs_harness(answered: &Answered) -> bool {
+    !matches!(answered, Answered::Asking) && !answered.waits()
+}
+
+/// Asks for the turn of `issue` again where its last answered a wait, and
+/// leaves one being asked for: no harness is started either way.
+fn ask_turn(worktree: &Worktree, issue: u64, answered: &Answered) -> Result<Outcome> {
+    if *answered == Answered::Asking {
+        return Ok(Outcome::Nothing);
+    }
+    crate::turn_answer::ask_again(worktree, issue)?;
+    Ok(Outcome::Asked)
 }
 
 /// The join record of `pr`, and the PR's comments it was read from.
@@ -155,24 +183,43 @@ pub fn restart(fleet: &mut Fleet, me: &Me, agent: &Agent, issue: u64) -> Result<
         "terminal": started["terminal"], "prompt": started["prompt"]}))
 }
 
-/// The tick's look at one claim of mine whose PR is joining: a worker that is
-/// gone is continued onto the join, one that stopped climbs the ladder
-/// (`joining::join_route`) → `Done` when that ended the claim. The PR and the
-/// branch are never touched; the worktree goes only with an escalation, and
-/// only when the remote holds all of it.
-pub fn watch(fleet: &mut Fleet, me: &Me, agent: &Agent, issue: u64) -> Result<Outcome> {
+/// The tick's look at one claim of mine whose PR is joining. A worker gone
+/// or stopped whose turn is being asked for is left; one whose last turn
+/// answered a wait has that turn asked for again (`turn_answer::ask_again`),
+/// with no harness started. Otherwise a worker that is gone is continued onto
+/// the join, one that stopped climbs the ladder (`joining::join_route`) →
+/// `Done` when that ended the claim. `start` false: no worker is started —
+/// the claim takes no slot, and none is free. The PR and the branch are never
+/// touched; the worktree goes only with an escalation, and only when the
+/// remote holds all of it.
+pub fn watch(
+    fleet: &mut Fleet,
+    me: &Me,
+    agent: &Agent,
+    issue: u64,
+    start: bool,
+) -> Result<Outcome> {
     let found = match ask_after(fleet, me, issue)? {
         None | Some(Asked::AtWork | Asked::NoPr) => return Ok(Outcome::Nothing),
-        Some(Asked::Gone) => {
+        Some(Asked::Gone(Some((worktree, answered)))) if !needs_harness(&answered) => {
+            return ask_turn(&worktree, issue, &answered);
+        }
+        Some(Asked::Gone(_)) if !start => return Ok(Outcome::Nothing),
+        Some(Asked::Gone(_)) => {
             dispatch(fleet, me, agent, issue, StartFrom::Auto)?;
             return Ok(Outcome::Continued);
         }
         Some(Asked::Stopped(found)) => *found,
     };
+    let answered = crate::turn_answer::read(&found.worktree)?;
+    if !needs_harness(&answered) {
+        return ask_turn(&found.worktree, issue, &answered);
+    }
     let mut found = found;
     match std::mem::replace(&mut found.route, LandingRoute::Leave) {
         LandingRoute::Leave => Ok(Outcome::Nothing),
         LandingRoute::Waiting(since) => Ok(Outcome::Waiting(since)),
+        LandingRoute::Continue | LandingRoute::Restart(_) if !start => Ok(Outcome::Nothing),
         LandingRoute::Continue => {
             dispatch(fleet, me, agent, issue, StartFrom::Auto)?;
             Ok(Outcome::Continued)

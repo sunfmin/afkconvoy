@@ -1111,18 +1111,13 @@ pub fn reported(repo: &Repo, now: u64, records: &[RemoteRecord]) -> Result<Vec<V
     Ok(rows)
 }
 
-pub fn panel_lines(repo: &Repo, now: u64, records: &[RemoteRecord]) -> Result<Vec<String>> {
-    Ok(reported(repo, now, records)?
-        .into_iter()
-        .map(|row| {
-            format!(
-                "{} ({}) · {}",
-                row["jira"].as_str().unwrap_or("delivery"),
-                row["delivery"].as_str().unwrap_or(""),
-                row["detail"].as_str().unwrap_or("unreadable")
-            )
-        })
-        .collect())
+pub fn panel_line(row: &Value) -> String {
+    format!(
+        "{} ({}) · {}",
+        row["jira"].as_str().unwrap_or("delivery"),
+        row["delivery"].as_str().unwrap_or(""),
+        row["detail"].as_str().unwrap_or("unreadable")
+    )
 }
 
 pub fn command(
