@@ -18,7 +18,7 @@ use crate::dispatch::{Agent, StartFrom, dispatch};
 use crate::fleet::Fleet;
 use crate::gh::Comment;
 use crate::judge::{
-    Handed, escalate_claim, mine, nudge_worker, own_background, progress, where_it_stopped,
+    Handed, Look, escalate_claim, mine, nudge_worker, own_background, progress, where_it_stopped,
 };
 use crate::orca::{Source, Worktree};
 
@@ -69,7 +69,7 @@ fn ask_after(fleet: &Fleet, me: &Me, issue: u64) -> Result<Option<Asked>> {
     let progress = progress(&worktree, &fleet.task_tip(issue)?)?;
     let (nudged, handed) = (worktree.nudged()?, worktree.handed(record.restarted)?);
     let past_grace = past_grace(state, &progress, nudged, handed, fleet.now);
-    let background = own_background(fleet, &worktree, past_grace)?;
+    let background = own_background(fleet, &worktree, past_grace, Look::Acting)?;
     let route =
         join_route(state, &progress, nudged, record.restarted, (handed, background), fleet.now);
     Ok(Some(Asked::Stopped(Box::new(Stopped { claim, pr, worktree, record, comments, route }))))
