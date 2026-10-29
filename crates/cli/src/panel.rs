@@ -1533,7 +1533,7 @@ fn repo(out: &mut String, at: usize, panel: &Panel) {
             let text = |key: &str| candidate[key].as_str().unwrap_or("");
             let _ = write!(
                 out,
-                "<li>PR {} · target <code>{}</code> · <code>{}</code> · predecessor <code>{}</code> · {} · {} {}</li>",
+                "<li>PR {} · target <code>{}</code> · <code>{}</code> · predecessor <code>{}</code> · {} · {} {}",
                 candidate["pr"],
                 esc(text("target_branch")),
                 esc(text("id")),
@@ -1542,6 +1542,10 @@ fn repo(out: &mut String, at: usize, panel: &Panel) {
                 esc(text("cause")),
                 esc(text("cancelled_by"))
             );
+            if let Some(tip) = candidate["round"].as_str() {
+                let _ = write!(out, " · in the round slow-gating at <code>{}</code>", esc(tip));
+            }
+            out.push_str("</li>");
         }
         out.push_str("</ul></section>");
     }
@@ -1819,6 +1823,31 @@ mod tests {
         assert!(html.contains("made anew after every tick of any fleet instance on it"));
         page.live = false;
         assert!(render(&page).contains("<code>afkconvoy panel --open</code> says where"));
+    }
+
+    #[test]
+    fn a_candidate_says_the_round_whose_slow_gate_it_waits_on() {
+        let mut acme = part_of("acme", 1000);
+        let row = |id: &str, waiting: &str, round: Option<&str>| {
+            serde_json::json!({"pr": 7, "target_branch": "main", "id": id, "predecessor": "m0",
+                "waiting": waiting, "cause": null, "cancelled_by": null, "round": round})
+        };
+        acme.candidates = vec![
+            row("c1", "waiting_for_round", Some("c2")),
+            row("c2", "slow_gating", Some("c2")),
+            row("c3", "waiting_for_round", None),
+        ];
+        let html = render(&page_of(host_of(1000), vec![acme]));
+        assert!(
+            html.contains("<code>c1</code> · predecessor <code>m0</code> · waiting_for_round ·   · in the round slow-gating at <code>c2</code></li>"),
+            "{html}"
+        );
+        assert!(
+            html.contains(
+                "<code>c3</code> · predecessor <code>m0</code> · waiting_for_round ·  </li>"
+            ),
+            "{html}"
+        );
     }
 
     #[test]
