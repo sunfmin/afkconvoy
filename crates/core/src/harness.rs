@@ -604,15 +604,21 @@ impl Harness {
     /// `model`: its model flag added after it. A harness that takes a model
     /// on no flag of its command (DSH) is started as written.
     pub fn with_model(self, command: &str, model: &str) -> String {
-        let flag = match self {
-            Harness::ClaudeCode => claude_code::MODEL,
-            Harness::Pi => pi::MODEL,
-            Harness::Codex => codex::MODEL,
-            Harness::Kimi => kimi::MODEL,
-            Harness::Grok => grok::MODEL,
-            Harness::Dsh => return command.to_string(),
-        };
+        let Some(flag) = self.model_flag() else { return command.to_string() };
         Line::new().launch(command).fixed(" ").fixed(flag).fixed(" ").word(model).done()
+    }
+
+    /// The flag its worker launch command takes a model by. `None`: DSH,
+    /// whose profile names the model.
+    fn model_flag(self) -> Option<&'static str> {
+        match self {
+            Harness::ClaudeCode => Some(claude_code::MODEL),
+            Harness::Pi => Some(pi::MODEL),
+            Harness::Codex => Some(codex::MODEL),
+            Harness::Kimi => Some(kimi::MODEL),
+            Harness::Grok => Some(grok::MODEL),
+            Harness::Dsh => None,
+        }
     }
 
     /// The models it knows, given what the worker's shell printed for
@@ -787,14 +793,16 @@ impl Harness {
         }
     }
 
-    /// `command` naming `model`, unless it already does. A harness that keeps
-    /// a session puts the model on here, once, as the session starts.
+    /// `command` naming `model`, unless it already does: the model is said
+    /// once, in this harness's way, whether or not it keeps a session
+    /// (`selection::Selection::start_line`).
     pub fn ensure_model(self, command: &str, model: Option<&str>) -> String {
-        match self {
-            Harness::Codex => codex::ensure_model(command, model),
-            Harness::ClaudeCode | Harness::Pi | Harness::Dsh | Harness::Kimi | Harness::Grok => {
-                command.to_string()
+        match (self, model, self.model_flag()) {
+            (Harness::Codex, _, _) => codex::ensure_model(command, model),
+            (_, Some(model), Some(flag)) if !command.contains(flag) => {
+                self.with_model(command, model)
             }
+            _ => command.to_string(),
         }
     }
 

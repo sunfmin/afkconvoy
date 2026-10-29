@@ -3,11 +3,10 @@
 //! harness — or that harness's user default. A `harness:` label never selects
 //! a harness.
 
-use flux_rs::attrs::*;
 use serde::Serialize;
 
 use crate::harness::Harness;
-use crate::team::{Entry, Performer, Role, Team, Workflow};
+use crate::team::{Entry, Role, Team};
 
 /// What the label that names its model starts with: the model is any of its
 /// names on the selected harness (`Held::model`). The label is left as written;
@@ -363,22 +362,6 @@ pub fn unmatched_models(team: &Team, kit: &[Held]) -> Vec<UnmatchedModel> {
         }
     }
     unmatched
-}
-
-/// The range of each stage of `workflow`, one of `team`'s, that a role
-/// performs, on a host whose host kit holds `kit`: each with the stage's
-/// name and its role's, as `<stage> (<role>)`.
-#[spec(fn(&Team[@roles], &Workflow{v: v.roles == roles}, &[Held]) -> Vec<(String, Vec<Held>)>)]
-pub fn stage_ranges(team: &Team, workflow: &Workflow, kit: &[Held]) -> Vec<(String, Vec<Held>)> {
-    let mut ranges = vec![];
-    for stage in workflow.stages() {
-        if let Performer::Role(work) = &stage.by {
-            let role = team.role_of(work);
-            let by = format!("{} ({})", stage.name, role.name);
-            ranges.push((by, range(role, kit)));
-        }
-    }
-    ranges
 }
 
 /// What `entry` allows, as a human is told it: the host kit whole where it
