@@ -15,14 +15,15 @@ use std::time::Duration;
 
 use crate::exclusive::Permit;
 use crate::gh::{GitHub, Tracker};
-use crate::git::{REMOTE, Repo};
+use crate::git::Repo;
+use crate::remote::{Fresh, Push};
 
 const EVERY: Duration = Duration::from_millis(100);
 
 /// Selection must also refuse a candidate left after its claim ended.
 pub(crate) fn has_task(repo: &Repo, issue: u64) -> Result<bool> {
     let prefix = repo.layout().under("candidates/");
-    for record in repo.remote_records(&format!("{prefix}*"))? {
+    for record in repo.remote().records(&[&format!("{prefix}*")], Fresh::Process)? {
         let chain: Chain = serde_json::from_str(&record.subject)?;
         if chain.candidates.iter().any(|c| c.issue == Some(issue) && c.active()) {
             return Ok(true);
@@ -44,13 +45,9 @@ pub(crate) struct Snapshot {
 fn read(repo: &Repo, config: &Config) -> Result<Snapshot> {
     let state_ref = refname(repo, config);
     let base_ref = format!("refs/heads/{}", config.base_branch);
-    let refs = repo.git(&["ls-remote", REMOTE, &state_ref, &base_ref])?;
-    let found = |name: &str| {
-        refs.lines()
-            .filter_map(|line| line.split_once('\t'))
-            .find(|(_, r)| *r == name)
-            .map(|(sha, _)| sha.to_string())
-    };
+    // Live: a write follows this read, and must start from the remote as it is.
+    let refs = repo.remote().refs(&[&state_ref, &base_ref], Fresh::Live)?;
+    let found = |name: &str| refs.iter().find(|r| r.name == name).map(|r| r.sha.clone());
     let sha = found(&state_ref);
     let base = found(&base_ref).ok_or_else(|| {
         anyhow!("target branch {:?} disappeared; restore it before continuing", config.base_branch)
@@ -117,13 +114,12 @@ fn commit(repo: &Repo, snapshot: &Snapshot) -> Result<String> {
 
 fn write(repo: &Repo, config: &Config, snapshot: &Snapshot) -> Result<bool> {
     let next = commit(repo, snapshot)?;
-    let pushed =
-        repo.try_git(&["push", "--quiet", REMOTE, &format!("{next}:{}", refname(repo, config))])?;
+    let pushed = repo.remote().try_push(&Push::set(&next, &refname(repo, config)))?;
     if pushed.ok {
         return Ok(true);
     }
     // A remote fault is not contention. Never spin on a rejected record.
-    if repo.remote_sha(&refname(repo, config))? == snapshot.sha {
+    if repo.remote().sha(&refname(repo, config), Fresh::Process)? == snapshot.sha {
         bail!("candidate record could not be written: {}; run land again", pushed.stderr.trim());
     }
     Ok(false)
@@ -180,7 +176,7 @@ fn shown(chain: &Chain, c: &Candidate, branch: &str) -> Value {
 pub(crate) fn view(
     repo: &Repo,
     _config: &Config,
-    records: &[crate::git::RemoteRecord],
+    records: &[crate::remote::RemoteRecord],
 ) -> Result<Value> {
     let prefix = repo.layout().under("candidates/");
     let mut rows = vec![];
@@ -469,7 +465,7 @@ fn reconcile(repo: &Repo, config: &Config) -> Result<Chain> {
         let snapshot = read(repo, config)?;
         let mut invalid = vec![];
         for c in snapshot.chain.candidates.iter().filter(|c| c.valid()) {
-            if repo.remote_sha_now(&format!("refs/heads/{}", c.branch))?.as_deref()
+            if repo.remote().sha(&format!("refs/heads/{}", c.branch), Fresh::Live)?.as_deref()
                 != Some(&c.original_head)
             {
                 invalid.push((c.id.clone(), "head_changed"));
@@ -502,7 +498,7 @@ fn reconcile(repo: &Repo, config: &Config) -> Result<Chain> {
 pub(crate) fn abandoned(dir: &str) -> Result<()> {
     let repo = Repo::new(dir.into());
     let prefix = repo.layout().under("candidates/");
-    for record in repo.remote_records(&format!("{prefix}*"))? {
+    for record in repo.remote().records(&[&format!("{prefix}*")], Fresh::Process)? {
         let mut config = crate::config::load(&crate::config::file_of(&repo))?;
         config.base_branch =
             record.name.strip_prefix(&prefix).context("invalid candidate ref")?.to_string();
@@ -633,7 +629,7 @@ pub(crate) struct Request<'a> {
 /// (docs/adr/0043).
 pub(crate) fn remove_stopped_worktrees(repo: &Repo) -> Result<()> {
     let prefix = repo.layout().under("candidates/");
-    let records = repo.remote_records(&format!("{prefix}*"))?;
+    let records = repo.remote().records(&[&format!("{prefix}*")], Fresh::Process)?;
     remove_listed(repo, &records)
 }
 
@@ -651,7 +647,7 @@ pub(crate) fn remove_stopped_worktrees(repo: &Repo) -> Result<()> {
 ///
 /// A process listing that fails removes nothing: it is no evidence the
 /// directory is free.
-pub(crate) fn remove_listed(repo: &Repo, records: &[crate::git::RemoteRecord]) -> Result<()> {
+pub(crate) fn remove_listed(repo: &Repo, records: &[crate::remote::RemoteRecord]) -> Result<()> {
     let prefix = repo.layout().under("candidates/");
     let root = repo.common_dir()?.join("convoy-candidates");
     let mut pending = vec![];
@@ -747,7 +743,8 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
     let gh = GitHub::of(repo)?;
     let issue = if let Of::Issue(n) = of { Some(*n) } else { None };
     let original = repo
-        .fetched(&format!("refs/heads/{}", pr.head_branch))?
+        .remote()
+        .fetched(&format!("refs/heads/{}", pr.head_branch), Fresh::Process)?
         .ok_or_else(|| anyhow!("PR head is missing"))?;
     let owner =
         identity(std::process::id())?.ok_or_else(|| anyhow!("cannot identify turn owner"))?;
@@ -1068,7 +1065,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
         let run = crate::gate::recorded(repo, &tree, &whole, clock())?;
         let mut heads = true;
         for m in &members {
-            let head = repo.remote_sha_now(&format!("refs/heads/{}", m.branch))?;
+            let head = repo.remote().sha(&format!("refs/heads/{}", m.branch), Fresh::Live)?;
             heads &= head.as_deref() == Some(&m.original_head);
         }
         let Some(publication) = Publication::new(
@@ -1095,7 +1092,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
             if crate::turn::base(repo, config)? != base {
                 continue;
             }
-            if repo.remote_sha(&refname(repo, config))? == snapshot.sha {
+            if repo.remote().sha(&refname(repo, config), Fresh::Process)? == snapshot.sha {
                 result["outcome"] = json!(Ending::TargetMoved);
                 invalidate(repo, config, &id, "push_rejected")?;
                 return Ok(result);
@@ -1247,16 +1244,16 @@ fn publish(
     let state_ref = refname(repo, config);
     let base_ref = format!("refs/heads/{}", config.base_branch);
     let sources: Vec<String> = members.iter().map(|m| format!("refs/heads/{}", m.branch)).collect();
-    let mut updates: Vec<crate::publication::Update<'_>> = members
+    let mut updates: Vec<crate::remote::Update<'_>> = members
         .iter()
         .zip(&sources)
-        .map(|(m, name)| crate::publication::Update {
+        .map(|(m, name)| crate::remote::Update {
             name,
             old: &m.original_head,
             new: &m.original_head,
         })
         .collect();
-    updates.push(crate::publication::Update { name: &state_ref, old: old_state, new: state });
-    updates.push(crate::publication::Update { name: &base_ref, old: base, new: &last.commit });
-    crate::publication::push(repo, &updates)
+    updates.push(crate::remote::Update { name: &state_ref, old: old_state, new: state });
+    updates.push(crate::remote::Update { name: &base_ref, old: base, new: &last.commit });
+    repo.remote().publish(&updates)
 }

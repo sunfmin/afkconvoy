@@ -181,8 +181,7 @@ pub(crate) fn push(repo: &Repo, updates: &[Update<'_>]) -> Result<bool> {
     command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit());
     let mut child = crate::process::spawn(&mut command)
         .context("conditional publication transport could not start")?;
-    let names: Vec<&str> = updates.iter().map(|update| update.name).collect();
-    let exchange = repo.write_remote(&names, || -> Result<bool> {
+    let exchange = (|| -> Result<bool> {
         let mut input = child.stdin.take().context("receive-pack has no input")?;
         let mut output = BufReader::new(child.stdout.take().context("receive-pack has no output")?);
         let (refs, supports) = advertisement(&mut output)?;
@@ -223,7 +222,7 @@ pub(crate) fn push(repo: &Repo, updates: &[Update<'_>]) -> Result<bool> {
         let mut rest = Vec::new();
         output.read_to_end(&mut rest)?;
         Ok(unpacked && updates.iter().all(|u| accepted.iter().any(|name| name == u.name)))
-    });
+    })();
     if exchange.is_err() {
         let _ = child.kill();
     }
