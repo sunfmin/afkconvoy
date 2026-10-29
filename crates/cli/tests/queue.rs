@@ -341,15 +341,17 @@ fn fast_gates_take_the_fast_lane_beside_a_slow_gate_and_name_their_kind() {
     let (code, answer) = local.query();
     assert_eq!(code, 0, "{answer}");
     received.recv().unwrap();
-    assert_eq!(answer["worker"], json!({"capacity": 1, "used": 1, "free": 0}));
+    // The slow gate runs in its slow lane, leaving the worker lane free.
+    assert_eq!(answer["worker"], json!({"capacity": 1, "used": 0, "free": 1}));
+    assert_eq!(answer["slow"], json!({"capacity": 1, "used": 1, "free": 0}));
     let fast = afkconvoy::host_settings::FAST_LANES;
     assert_eq!(answer["fast"], json!({"capacity": fast, "used": 1, "free": fast - 1}));
     let seen = |number| {
         let request = request(&answer, number);
         (request["kind"].clone(), request["lane"].clone(), request["scheduling"]["state"].clone())
     };
-    assert_eq!(seen(1), (json!("slow_gate"), json!("worker"), json!("running")));
-    assert_eq!(seen(2), (json!("turn"), json!("worker"), json!("waiting")));
+    assert_eq!(seen(1), (json!("slow_gate"), json!("slow"), json!("running")));
+    assert_eq!(seen(2), (json!("turn"), json!("worker"), json!("eligible")));
     assert_eq!(seen(3), (json!("fast_gate"), json!("fast"), json!("running")));
     assert_eq!(seen(4), (json!("fast_gate"), json!("fast"), json!("eligible")), "{answer}");
     let fifth = request(&answer, 5);

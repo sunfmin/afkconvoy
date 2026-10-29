@@ -562,8 +562,11 @@ fn publication_survives_issue_settlement_failure_without_a_duplicate_gate() {
     let (a, head) = worker(&world, 1, "a");
     world.with_gh(|gh| gh["fail"] = json!(["state=closed"]));
     release(&world, "a", false);
-    let failed = start(&world, &a, &world.cache(), 1).wait_with_output().unwrap();
-    assert!(!failed.status.success());
+    // The landing is published: a close that fails does not unsay it
+    // (sunfmin/control#247).
+    let landed = finish(start(&world, &a, &world.cache(), 1));
+    assert_eq!(landed["outcome"], "merged", "{landed}");
+    assert!(landed["settle_error"].as_str().is_some_and(|e| !e.is_empty()), "{landed}");
     let state = chain(&world);
     assert_eq!(state["candidates"][0]["phase"], "landed");
     assert_eq!(
@@ -574,9 +577,28 @@ fn publication_survives_issue_settlement_failure_without_a_duplicate_gate() {
     world.with_gh(|gh| gh["fail"] = json!([]));
     let recovered = finish(start(&world, &a, &world.cache(), 1));
     assert_eq!(recovered["outcome"], "merged");
+    assert!(recovered.get("settle_error").is_none(), "{recovered}");
     assert_eq!(world.state(1), "closed");
     assert_eq!(git(&a, &["rev-parse", "HEAD"]), head);
     assert_eq!(chain(&world)["candidates"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn a_close_refused_while_github_closes_the_issue_itself_is_a_close() {
+    let world = world(1);
+    let (a, _) = worker(&world, 1, "a");
+    // GitHub closes the issue as the merged PR says it, and refuses the
+    // turn's own close at that moment.
+    world.with_gh(|gh| {
+        gh["fail"] = json!(["state=closed"]);
+        let rows = gh["issues"].as_array_mut().unwrap();
+        let issue = rows.iter_mut().find(|row| row["number"] == 1).unwrap();
+        issue["state"] = json!("closed");
+    });
+    release(&world, "a", false);
+    let landed = finish(start(&world, &a, &world.cache(), 1));
+    assert_eq!(landed["outcome"], "merged", "{landed}");
+    assert!(landed.get("settle_error").is_none(), "{landed}");
 }
 
 #[test]
@@ -1230,4 +1252,43 @@ fn a_conflict_with_the_candidate_ahead_is_left_for_the_worker_to_resolve() {
     assert_eq!(finish(aa)["outcome"], "merged");
     assert_eq!(finish(bb)["outcome"], "merged");
     assert_eq!(world.remote(&["show", "refs/heads/main:x.txt"]), "ab");
+}
+
+#[test]
+fn with_one_lane_every_ready_pr_fast_gates_in_turn_and_lands_in_one_round() {
+    let world = split_world(1);
+    let workers: Vec<_> = [(1, "a"), (2, "b"), (3, "c")]
+        .into_iter()
+        .map(|(n, name)| worker(&world, n, name))
+        .collect();
+    let _runner = world.host_held();
+    let aa = start(&world, &workers[0].0, &world.cache(), 1);
+    until(|| started(&world, "fast", "a"));
+    let bb = start(&world, &workers[1].0, &world.cache(), 2);
+    let cc = start(&world, &workers[2].0, &world.cache(), 3);
+    until(|| chain(&world)["pending"].as_array().is_some_and(|p| p.len() == 2));
+    assert!(!started(&world, "fast", "b"), "one lane runs one gate");
+    let_go(&world, "fast", "a", false);
+    // A fast-green candidate frees its lane, and waits for the PRs still pending.
+    until(|| started(&world, "fast", "b") || started(&world, "fast", "c"));
+    assert!(!started(&world, "slow", "a"), "a round waits for every ready PR");
+    let_go(&world, "fast", "b", false);
+    let_go(&world, "fast", "c", false);
+    let tip = if started(&world, "fast", "c") { "c" } else { "b" };
+    until(|| started(&world, "slow", "b") || started(&world, "slow", "c"));
+    assert!(!started(&world, "slow", "a"));
+    let_go(&world, "slow", "b", false);
+    let_go(&world, "slow", "c", false);
+    let answers = [finish(aa), finish(bb), finish(cc)];
+    for answer in &answers {
+        assert_eq!(answer["outcome"], "merged", "{answer}");
+    }
+    let rows = chain(&world)["candidates"].as_array().unwrap().clone();
+    let slowed: Vec<_> = rows.iter().filter(|c| c["slowed"] == true).collect();
+    assert_eq!(slowed.len(), 1, "one slow gate run for the three: {rows:?}");
+    assert_eq!(
+        world.remote(&["rev-parse", "refs/heads/main"]),
+        rows[2]["commit"].as_str().unwrap()
+    );
+    let _ = tip;
 }

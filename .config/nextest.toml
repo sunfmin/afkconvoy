@@ -26,6 +26,7 @@ test-threads = 6
 # test that runs near the line.
 [profile.fast]
 slow-timeout = { period = "2s", terminate-after = 3 }
+fail-fast = true
 
 # The slow gate's tests (./gate.sh slow): those .config/slow-tests names,
 # under the default profile's limit for one test, twelve at a time. Each is a
@@ -35,5 +36,11 @@ slow-timeout = { period = "2s", terminate-after = 3 }
 # real git and not Apple's shim (sunfmin/control#234), the slow gate took
 # 665s at twelve where it had taken 1,157s at six (docs/gate-baseline.md);
 # at sixteen a test that waits 30s for a candidate's transition ran out of it.
+#
+# It runs every one of its tests, past a failure (`fail-fast`): a round's
+# slow gate takes twenty minutes, and the worker who fixes a red round
+# (docs/adr/0048) is told every test it broke at once, not the first of them.
+# On 2026-10-30 a round's slow gate stopped at its 274th test of 811.
 [profile.slow]
 test-threads = 12
+fail-fast = false

@@ -135,10 +135,10 @@ use fleet::Fleet;
 use git::Repo;
 use host_settings::{
     ADMIT_DISK_ENV, ADMIT_INSPECT_AFTER_ENV, ADMIT_LOAD_ENV, ADMIT_MEMORY_ENV,
-    EXCLUSIVE_SECONDS_ENV, HOST_SLEEP_HOURS_ENV, HOT_CORES_ENV, HOT_MEMORY_ENV, HOT_WRITTEN_ENV,
-    JEV_KEY_COMMAND_ENV, NO_HOST_SLEEP_ENV, To, WATCH_DIR_ENV, WATCH_EVERY_ENV, hours_or_default,
-    jev_key_command_or_default, port_or_default, thousandths_or_default, watch_dir_or_default,
-    watch_every_or_default, whole_or_default,
+    EXCLUSIVE_SECONDS_ENV, HOST_NAME_ENV, HOST_SLEEP_HOURS_ENV, HOT_CORES_ENV, HOT_MEMORY_ENV,
+    HOT_WRITTEN_ENV, JEV_KEY_COMMAND_ENV, NO_HOST_SLEEP_ENV, To, WATCH_DIR_ENV, WATCH_EVERY_ENV,
+    hours_or_default, jev_key_command_or_default, port_or_default, thousandths_or_default,
+    watch_dir_or_default, watch_every_or_default, whole_or_default,
 };
 use launch::Launches;
 
@@ -1538,15 +1538,25 @@ enum Command {
         /// worker waits for the operator as with none. `default` removes it [default: none]
         #[arg(long, env = JEV_KEY_COMMAND_ENV, value_name = "COMMAND", value_parser = jev_key_command_or_default)]
         jev_key_command: Option<To<String>>,
+        /// The name this host goes by in the records it owns — candidates, claims, slots, logs —
+        /// above the name the system gives it, which a network may change: a host renamed
+        /// takes its own records for another host's. A `run` that finds none keeps the
+        /// system's name then; `default` lets the next `run` keep it afresh
+        #[arg(long, env = HOST_NAME_ENV, value_name = "NAME", value_parser = boxed_host_name)]
+        host_name: Option<Box<To<String>>>,
         /// Worker lanes on this host, above zero, or `default` ({const:GATE_LANES}). Independent
         /// candidate worktrees of one repo may validate together within this bound.
         #[arg(long, env = "AFKCONVOY_GATE_LANES", value_parser = host_settings::watch_every_or_default)]
         gate_lanes: Option<To<u64>>,
+        /// Slow lanes on this host, above zero, or `default` (1): how many rounds' slow gates
+        /// run at once, beside the worker lanes, where fast gates run.
+        #[arg(long, env = "AFKCONVOY_SLOW_GATE_LANES", value_parser = boxed_lanes)]
+        slow_gate_lanes: Option<Box<To<u64>>>,
         /// Fast gates that may run at once on this host, above zero, or `default`
         /// ({const:FAST_LANES}). They take a lane of their own, beside the worker lanes: no slow
         /// gate holds them up, and fast gates of one repo run side by side.
-        #[arg(long, env = "AFKCONVOY_FAST_LANES", value_parser = host_settings::watch_every_or_default)]
-        fast_lanes: Option<To<u64>>,
+        #[arg(long, env = "AFKCONVOY_FAST_LANES", value_parser = boxed_lanes)]
+        fast_lanes: Option<Box<To<u64>>>,
         /// Stop after this many ticks
         #[arg(long, hide = true)]
         ticks: Option<u64>,
@@ -1731,6 +1741,7 @@ enum Command {
     /// - `host_runner`: the answering runner's `pid` and `version`, plus the identity fields it supplies: `log` (whole path), `panel` (address or null), and `foreground` where applicable. Null with no runner.
     /// - `paused`: whether the runner has paused new grants for a release move; false with no runner; null where an older runner does not say it, which pauses nothing.
     /// - `worker`: `{capacity, used, free}`. Capacity is the host setting `gate_lanes`, {const:GATE_LANES} by default; used counts running worker requests, free is capacity minus used, clamped to zero. Eligible reservations do not count as used.
+    /// - `slow`: `{capacity, used, free}` of the slow lanes, where a round's slow gate runs: the host setting `slow_gate_lanes`, 1 by default (`afkconvoy run --help`).
     /// - `fast`: `{capacity, used, free}` of the fast lane, which only a worker's fast gate takes (`afkconvoy gate --fast`). Capacity is the host setting `fast_lanes`, {const:FAST_LANES} by default; used counts running fast gates. It is independent of worker capacity: no slow gate, turn or other command holds a place in it.
     /// - `repos`: each repo lane with a running or waiting request, sorted by its whole identity, as `{repo, capacity, used, free}`. Each has capacity 1, independent of worker capacity. `repo` is the shared git directory supplied by the ticket, never inferred from a worktree's name.
     /// - `running`, `waiting`: requests in scheduler order within each array: cuts first, then ordinary commands; within each group ascending `asked`, then `number` to break ties. Cut priority never interrupts running commands. There is no priority by lane or repo. A request identifies `number` (runner-local ticket), `pid` (asking process), `command` (one line: the program and the arguments that say what is running; `afkconvoy exclusive -- ./gate.sh` stays as given; a script is named by the program it runs, its `cargo nextest` line or its `afkconvoy exclusive` invocation, and is not shown as the script; no `NAME=value`), `dir` (whole worktree or outside directory), `issue` (number or null; no lookup), `repo` (shared git directory or null for older/outside tickets), `repo_lane` (repo lane identity or null for worker), `is_turn` (whether this is a landing turn), `cut` (whether it has cut priority, false for older tickets), `asked` (request epoch seconds), `ran` (start epoch seconds or null), `gate` (`fast` or `slow` for a gate a worker runs alone, `gate --fast` or `--slow`; null otherwise), `kind` (`fast_gate`, `slow_gate`, `turn` or `command`: a landing turn is a `turn`, whichever gate it runs) and `lane` (`worker`, `fast` or `repo <identity>`).
@@ -1970,9 +1981,9 @@ enum Command {
     ///
     /// A task uses its pinned target branch (`afkconvoy target --help`), or resolves the configured base when it has no target. Its PR must actually name that base; a wrong base, missing branch or unreadable target refuses without falling back. Each repo and target has its own candidate chain and landed commits. Watches and cuts retain the configured base.
     ///
-    /// A turn preserves the PR's original head and atomically assigns a candidate merged onto the certified base or its preceding candidate. Each candidate must gate that exact commit in its own worktree, and its gate run is recorded green against it. With free worker lanes, candidates of the same repo validate concurrently; green successors wait for their exact predecessors, then push that commit to the target branch as a fast-forward without another gate. The window, including green waiters and unconfirmed cancellation, is bounded by the host's live worker-lane count. A light gate keeps its repo lane. Committed source changes are pushed to the PR first; candidate merges never move that source branch. The merge message names the PR and issue, watch or cut. Landing closes the issue; the tick settles its claim and source worktree.
+    /// A turn preserves the PR's original head and atomically assigns a candidate merged onto the certified base or its preceding candidate. Each candidate must gate that exact commit in its own worktree, and its gate run is recorded green against it. With free worker lanes, candidates of the same repo validate concurrently; green successors wait for their exact predecessors, then push that commit to the target branch as a fast-forward without another gate. A candidate holds a worker lane only while it builds and runs its gate; the window has no bound of its own, but for barriers and unconfirmed cancellation. A light gate keeps its repo lane. Committed source changes are pushed to the PR first; candidate merges never move that source branch. The merge message names the PR and issue, watch or cut. Landing closes the issue; the tick settles its claim and source worktree. Once the landing is published, a failure to close the issue or write its work account does not turn the answer into an error: it is `merged`, with the failure in `settle_error`, and the tick settles the issue; a close GitHub refuses while it closes the issue itself, as a merged PR that says `Closes` it, is a close.
     ///
-    /// Where the candidate's commit declares a ```yaml gates block (`afkconvoy config --help`), the candidate runs the fast gate, not `gate_command`, and waits fast-green for a round. When no candidate of the chain is still building or fast-gating, the turn of the chain's last candidate, the round's tip, runs the slow gate once on its commit, in its worktree; a candidate assigned meanwhile waits for the next round. Green, the whole gate is put on record for the tip's tree from its fast and slow runs, and one atomic push lands every candidate up to the tip; each of their turns answers `merged` and closes its own issue. Red is not split to find whose change failed: the tip's turn answers `gate_red` with `gate` slow and `round`, the round's PRs and issues, and merges the round's tip into its branch, so its worker fixes the round from those issues and the failing tests and asks again; every other candidate of the round answers `round_red` and stops, its change carried by the tip's PR, and its issue is settled from the merge commits on the target branch once that lands. A merge onto the candidate ahead that conflicts is left in the worker's worktree to resolve, as `speculative_conflict`: the worker's branch then carries that candidate.
+    /// Where the candidate's commit declares a ```yaml gates block (`afkconvoy config --help`), the candidate runs the fast gate, not `gate_command`, and waits fast-green for a round. A round is as big as the PRs that are ready: a turn that asks to land is on the candidate record as pending while it waits for a worker lane, and a fast-green candidate frees its lane. When no turn is pending and every candidate of the chain is fast-green, the turn of the chain's last candidate, the round's tip, takes a slow lane and runs the slow gate once on its commit, in its worktree; a PR that asks meanwhile waits for the next round. Green, the whole gate is put on record for the tip's tree from its fast and slow runs, and one atomic push lands every candidate up to the tip; each of their turns answers `merged` and closes its own issue. Red is not split to find whose change failed: the tip's turn answers `gate_red` with `gate` slow and `round`, the round's PRs and issues, and merges the round's tip into its branch, so its worker fixes the round from those issues and the failing tests and asks again; every other candidate of the round answers `round_red` and stops, its change carried by the tip's PR, and its issue is settled from the merge commits on the target branch once that lands. A merge onto the candidate ahead that conflicts is left in the worker's worktree to resolve, as `speculative_conflict`: the worker's branch then carries that candidate.
     ///
     /// Once a candidate has stopped — landed, red, or cancelled with its processes confirmed gone — its worktree is removed. The candidate chain keeps the gate evidence: the phase, the cause and the gate excerpt, and a recorded gate run stays on the remote. A directory left behind after git dropped the registration is removed too, including when a directory inside it is not writable by its owner. A candidate that is building, validating, green and waiting on its predecessor or for a round, slow-gating, or cancelling, keeps its worktree. A worktree a process still has as its working directory stays until that process is gone, and a later tick removes it. The issue's, watch's or cut's own worktree is left, and the candidate chain is not rewritten.
     ///
@@ -2753,7 +2764,7 @@ enum Command {
     ///
     /// ## What it reads and writes
     ///
-    /// Commands use worker lanes, {const:GATE_LANES} by default. `run --gate-lanes N` sets the count live across the host, and `default` restores it. N must be above zero. Independent candidate worktrees of one repo may validate together; ordinary heavy commands retain same-repo exclusion. Heavy gates, tests, benchmarks and builds use these lanes in FIFO order; a light gate takes its repo's own lane. A candidate holds its lane through ordered landing or confirmed cancellation. Inherited kernel leases keep a dead owner's still-running descendants from being replaced.
+    /// Commands use worker lanes, {const:GATE_LANES} by default. `run --gate-lanes N` sets the count live across the host, and `default` restores it. N must be above zero. Independent candidate worktrees of one repo may validate together; ordinary heavy commands retain same-repo exclusion. Heavy gates, tests, benchmarks and builds use these lanes in FIFO order; a light gate takes its repo's own lane. A candidate holds its worker lane while it builds and gates; a round's slow gate takes one of the host's slow lanes, 1 by default, which `run --slow-gate-lanes N` sets live. Each gate is given its share of the host's cores — its cores over the worker and slow lanes together, at least 1 — as `CARGO_BUILD_JOBS` and `NEXTEST_TEST_THREADS`, unless its environment already sets them. Inherited kernel leases keep a dead owner's still-running descendants from being replaced.
     ///
     /// A worker's fast gate, run by `afkconvoy gate --fast`, takes the fast lane instead: `gate --fast` tells its command's `exclusive` that it runs the fast gate, through `AFKCONVOY_GATE`, which `exclusive` does not pass on to its command. Fast gates contend only with each other, up to the host setting `fast_lanes`, {const:FAST_LANES} by default (`run --fast-lanes N`); no slow gate, turn or other command holds a place they need, and fast gates of one repo run side by side, each in its own worktree. A slow gate run alone, `gate --slow`, keeps the worker lanes.
     ///
@@ -3554,9 +3565,29 @@ pub fn own_command_in(dir: &str) -> Line {
     Line::new().fixed("cd ").word(dir).fixed(" && ").program(&own_program())
 }
 
+/// `afkconvoy` where the `PATH` finds this very file under that name, so a
+/// brief's lines follow the binary installed there, as a worker's terminal
+/// keeps running them after it moves; else this file's whole path. A brief
+/// that named the path of an install since replaced kept its workers on the
+/// old release (2026-10-29).
 fn own_program() -> String {
-    let exe = std::env::current_exe().ok().and_then(|path| path.to_str().map(str::to_string));
-    exe.unwrap_or_else(|| "afkconvoy".to_string())
+    let Some(exe) = std::env::current_exe().ok() else {
+        return "afkconvoy".to_string();
+    };
+    if on_path("afkconvoy").is_some_and(|found| same_file(&found, &exe)) {
+        return "afkconvoy".to_string();
+    }
+    exe.to_str().map_or_else(|| "afkconvoy".to_string(), str::to_string)
+}
+
+/// The first file the `PATH` finds under `name`.
+fn on_path(name: &str) -> Option<std::path::PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path).map(|dir| dir.join(name)).find(|file| file.is_file())
+}
+
+fn same_file(a: &std::path::Path, b: &std::path::Path) -> bool {
+    matches!((a.canonicalize(), b.canonicalize()), (Ok(a), Ok(b)) if a == b)
 }
 
 /// What a command is to the fleet: whether it acts, whether a worker's
@@ -3940,8 +3971,19 @@ fn ran(
     Some(stage::Ran { role_commit, team_commit, harness, model })
 }
 
+/// `--slow-gate-lanes` and `--fast-lanes`, boxed: `Run` is the largest
+/// command, and clippy bounds it.
+fn boxed_lanes(said: &str) -> Result<Box<To<u64>>, String> {
+    host_settings::watch_every_or_default(said).map(Box::new)
+}
+
+/// `--host-name`, boxed: `Run` is the largest command, and clippy bounds it.
+fn boxed_host_name(said: &str) -> Result<Box<To<String>>, String> {
+    host_settings::host_name_or_default(said).map(Box::new)
+}
+
 pub(crate) fn this_host() -> String {
-    gethostname::gethostname().to_string_lossy().into()
+    host_settings::host_name()
 }
 
 fn removed_worker_command(_: &str) -> Result<String, String> {
@@ -4029,7 +4071,9 @@ fn start_of(
         admit_inspect_after,
         exclusive_seconds,
         jev_key_command,
+        host_name,
         gate_lanes,
+        slow_gate_lanes,
         fast_lanes,
         ticks,
         second_ms,
@@ -4063,11 +4107,13 @@ fn start_of(
         admit_inspect_after,
         exclusive_seconds,
         gate_lanes,
-        fast_lanes,
+        slow_gate_lanes: slow_gate_lanes.map(|lanes| *lanes),
+        fast_lanes: fast_lanes.map(|lanes| *lanes),
         panel,
         watch_dir,
         watch_every,
         jev_key_command,
+        host_name: host_name.map(|name| *name),
     };
     let ready_timeout = agent.ready_timeout;
     let panic_at = panic_at_tick;
@@ -4804,6 +4850,20 @@ mod tests {
 
     /// The manual is whole: every command has its text and its group, and
     /// every placeholder and every link to a topic names one there is.
+    #[test]
+    fn a_link_on_the_path_is_the_file_it_points_at_and_another_file_is_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("afkconvoy-local");
+        std::fs::write(&exe, "").unwrap();
+        let link = dir.path().join("afkconvoy");
+        std::os::unix::fs::symlink(&exe, &link).unwrap();
+        assert!(same_file(&link, &exe));
+        let other = dir.path().join("afkconvoy-old");
+        std::fs::write(&other, "").unwrap();
+        assert!(!same_file(&other, &exe));
+        assert!(!same_file(&dir.path().join("gone"), &exe));
+    }
+
     #[test]
     fn the_manual_is_whole() {
         agent_help::check(&manual()).unwrap_or_else(|faults| panic!("{faults}"));

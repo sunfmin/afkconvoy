@@ -138,11 +138,16 @@ pub struct Permit {
 
 impl Permit {
     pub fn take(repo: &Repo, command: &str, heavy: bool, is_turn: bool) -> Result<Self> {
-        Self::acquire(repo, command, heavy, is_turn, false)
+        Self::acquire(repo, command, heavy, is_turn, false, false)
     }
 
     pub(crate) fn candidate(repo: &Repo, command: &str, heavy: bool) -> Result<Self> {
-        Self::acquire(repo, command, heavy, true, true)
+        Self::acquire(repo, command, heavy, true, true, false)
+    }
+
+    /// A round's slow gate, in the host's slow lanes, not its worker lanes.
+    pub(crate) fn slow_gate(repo: &Repo, command: &str, heavy: bool) -> Result<Self> {
+        Self::acquire(repo, command, heavy, true, true, true)
     }
 
     fn acquire(
@@ -151,6 +156,7 @@ impl Permit {
         heavy: bool,
         is_turn: bool,
         candidate: bool,
+        slow: bool,
     ) -> Result<Self> {
         if held() {
             bail!("this command already holds a turn");
@@ -167,7 +173,7 @@ impl Permit {
             is_turn,
             candidate,
             validation: None,
-            gate: None,
+            gate: (slow && heavy).then_some(afkconvoy_core::exclusive::Gate::Slow),
             asked: crate::clock(),
             ran: None,
         };
@@ -998,7 +1004,8 @@ mod tests {
         let (mut slow, _) = Asker::joins(dir.path(), of_a("slow", 100, Some(Gate::Slow)));
         assert!(slow.next().unwrap()["runs"].is_u64());
         let (mut other, said) = Asker::joins(dir.path(), of_a("cargo test", 101, None));
-        assert_eq!(said["ahead"], 1, "an ordinary command waits on the slow gate");
+        assert_eq!(said["ahead"], 0, "a slow gate in its own lane holds no worker lane");
+        assert!(other.next().unwrap()["runs"].is_u64());
         let (mut first, said) = Asker::joins(dir.path(), of_a("fast 1", 102, Some(Gate::Fast)));
         assert_eq!(said["ahead"], 0, "nothing in the worker lane is ahead of a fast gate");
         assert!(first.next().unwrap()["runs"].is_u64(), "it runs beside the slow gate");
@@ -1007,12 +1014,9 @@ mod tests {
         let (mut third, said) = Asker::joins(dir.path(), of_a("fast 3", 104, Some(Gate::Fast)));
         assert_eq!(said["ahead"], 2);
         assert_eq!(third.next(), None, "the fast lanes are full");
-        assert_eq!(other.next(), None);
         drop(first);
         assert!(third.next().unwrap()["runs"].is_u64(), "a fast lane's place is free");
-        assert_eq!(other.next(), None, "which is no worker lane's");
-        drop(slow);
-        assert!(other.next().unwrap()["runs"].is_u64());
+        drop((slow, other));
     }
 
     #[test]

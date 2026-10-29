@@ -81,6 +81,28 @@ struct CommandRun {
     cancelled: bool,
 }
 
+/// The variable that keeps a gate's tests to its share of the host's cores,
+/// where it runs beside others (sunfmin/control#245).
+const SHARED: [&str; 1] = ["NEXTEST_TEST_THREADS"];
+
+/// Gives a gate's tests their share of the host: the cores over every lane a
+/// gate may run in at once, as `NEXTEST_TEST_THREADS`, unless the environment
+/// already says it. Tests run side by side would otherwise each take every
+/// core, and a test far under the fast gate's line would cross its end on
+/// load alone. Its build is not held to a share: a build is timed by no line
+/// of its own, and one cold build on one core of eight passed the fast
+/// gate's limit before its tests began (2026-10-29), as ADR-0019 says of a
+/// cap on build jobs.
+fn share(command: &mut Command) {
+    let Ok(settings) = crate::host_settings::of_host() else { return };
+    let share = settings.gate_share().to_string();
+    for name in SHARED {
+        if std::env::var_os(name).is_none() {
+            command.env(name, &share);
+        }
+    }
+}
+
 /// Runs the gate command in a worktree, its log going line by line to this
 /// process's stderr, keeping its status, signal evidence and the end of its
 /// log. A run that reaches the gate limit, `limit`, is killed, with everything
@@ -100,8 +122,19 @@ fn run_command(
         Some(which) => shell.env(crate::exclusive::GATE_ENV, which.word()),
         None => shell.env_remove(crate::exclusive::GATE_ENV),
     };
+    // A slow gate runs alone in its lane, its tests mostly waiting
+    // on the processes they start: twelve at a time, as its profile says
+    // (sunfmin/control#234), not the share a fast gate's tests are held to.
+    if !(candidate.is_some_and(|c| c.slow) || alone == Some(Which::Slow)) {
+        share(&mut shell);
+    }
     if let Some(candidate) = candidate {
         shell.env(crate::candidates::PROCESS_ENV, candidate.process_marker());
+        // Five cold builds at once on eight cores passed the fast gate's
+        // limit before their tests began (2026-10-29).
+        if std::env::var_os("CARGO_TARGET_DIR").is_none() {
+            shell.env("CARGO_TARGET_DIR", candidate.target());
+        }
     }
     let scope = candidate
         .map(|c| c.scope().and_then(|path| crate::process_scope::create(&path, &mut shell)))
@@ -307,11 +340,8 @@ fn controlled_run(
             // The record is a parentless commit OF the tested tree.
             let sha =
                 repo.record_commit_of(tree.name(), &green.write_issued(&tree, command, issue))?;
-            let pushed = repo.remote().try_push(&Push::set(&sha, &refname).force())?;
-            if !pushed.ok {
-                // Soft: a record that cannot be written costs the landing a run of the gate.
-                run.not_recorded = Some(pushed.stderr.trim().to_string());
-            }
+            // Soft: a record that cannot be written costs the landing a run of the gate.
+            run.not_recorded = push_record(repo, &sha, &refname)?;
             run.green = Some(green);
         }
         Recording::Drop => {
@@ -381,8 +411,37 @@ pub(crate) fn record_whole(
     };
     let sha = repo.record_commit_of(tree.name(), &run.write_issued(tree, whole, issue))?;
     let refname = record_ref(repo.layout(), tree, whole);
-    let pushed = repo.remote().try_push(&Push::set(&sha, &refname).force())?;
-    Ok((!pushed.ok).then(|| pushed.stderr.trim().to_string()))
+    push_record(repo, &sha, &refname)
+}
+
+/// A push GitHub rejected for a fault of its own, not of the push.
+fn remote_fault(stderr: &str) -> bool {
+    stderr.contains("remote unpack failed") || crate::candidates::lock_failure(stderr)
+}
+
+/// How many times a gate record's push is tried.
+const RECORD_ATTEMPTS: u32 = 5;
+
+/// Pushes the record `sha` to `refname` → why it could not, `None` once it
+/// is there. A record's push is a force push of one commit, so trying it
+/// again is safe. A rejection that is GitHub's own fault — it could not
+/// write the pack (`remote unpack failed`), or another push held the ref's
+/// lock — is tried again; any other is not. On 2026-10-29 two candidates
+/// whose fast gate was green went red for the first, cancelling every
+/// candidate behind them.
+fn push_record(repo: &Repo, sha: &str, refname: &str) -> Result<Option<String>> {
+    let mut attempt = 0;
+    loop {
+        let pushed = repo.remote().try_push(&Push::set(sha, refname).force())?;
+        if pushed.ok {
+            return Ok(None);
+        }
+        attempt += 1;
+        if !remote_fault(&pushed.stderr) || attempt >= RECORD_ATTEMPTS {
+            return Ok(Some(pushed.stderr.trim().to_string()));
+        }
+        std::thread::sleep(Duration::from_millis(250 << attempt));
+    }
 }
 
 /// The green run of `command` on `tree` the remote has on record and still
@@ -605,4 +664,20 @@ pub fn one(repo: &Repo, config: &Config, which: Which) -> Result<Value> {
         "budget_seconds": gate.budget_seconds, "over_budget": over_budget, "recorded": false,
         "termination": run.termination, "excerpt": if green { vec![] } else { run.excerpt },
         "detail": detail}))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_pack_github_could_not_write_is_its_fault_and_a_refused_push_is_not() {
+        let unpack = "remote: fatal: unable to rename temporary '*.pack' file\n\
+                      error: remote unpack failed: index-pack failed\n \
+                      ! [remote rejected]   d5531db -> refs/convoy/gate/47 (unpacker error)";
+        assert!(remote_fault(unpack));
+        assert!(remote_fault(" ! [remote rejected]   d5531db -> refs/convoy/gate/47 (failed)"));
+        assert!(!remote_fault("fatal: 'origin' does not appear to be a git repository"));
+        assert!(!remote_fault(" ! [remote rejected] d5531db -> refs/convoy/gate/47 (protected)"));
+    }
 }

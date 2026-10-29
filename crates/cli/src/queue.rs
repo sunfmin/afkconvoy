@@ -116,6 +116,7 @@ fn observation_json(snapshot: &Snapshot) -> Value {
                 request.entry("is_turn").or_insert(json!(false));
                 request.entry("cut").or_insert(json!(false));
                 request.entry("candidate").or_insert(json!(false));
+                request.entry("slow").or_insert(json!(false));
                 request.entry("validation").or_insert(Value::Null);
                 request.entry("gate").or_insert(Value::Null);
             }

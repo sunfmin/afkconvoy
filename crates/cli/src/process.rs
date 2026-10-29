@@ -9,6 +9,29 @@ use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+/// Has `command` start with no descriptor it would inherit but stdin,
+/// stdout and stderr. A process that outlives its starter — the host
+/// runner — would otherwise hold whatever its starter was handed: a worker
+/// lane's lease, kept by its kernel lock, held the lane for as long as a
+/// host runner a test started lived (2026-10-29). Descriptors marked
+/// close-on-exec are left to exec, and Rust's own pipe among them.
+pub(crate) fn inheriting_nothing(command: &mut Command) -> &mut Command {
+    use std::os::unix::process::CommandExt;
+    // SAFETY: getdtablesize and fcntl and close are async-signal-safe.
+    let limit = unsafe { libc::getdtablesize() };
+    unsafe {
+        command.pre_exec(move || {
+            for fd in 3..limit {
+                let flags = libc::fcntl(fd, libc::F_GETFD);
+                if flags >= 0 && flags & libc::FD_CLOEXEC == 0 {
+                    libc::close(fd);
+                }
+            }
+            Ok(())
+        })
+    }
+}
+
 /// Starts `command` with its configured streams, without inheriting a pipe
 /// another start is still preparing. Waiting for the child holds no turn.
 pub(crate) fn spawn(command: &mut Command) -> io::Result<Child> {
@@ -171,6 +194,22 @@ mod tests {
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn a_start_inheriting_nothing_is_handed_no_descriptor_its_starter_was() {
+        let dir = tempfile::tempdir().unwrap();
+        let lease = std::fs::File::create(dir.path().join("lease")).unwrap();
+        let fd = lease.as_raw_fd();
+        // As a worker's lease is handed on: inheritable.
+        assert_eq!(unsafe { libc::fcntl(fd, libc::F_SETFD, 0) }, 0);
+        let open = |command: &mut Command| {
+            let probe = format!("[ -e /dev/fd/{fd} ] && echo open || echo closed");
+            let out = command.args(["-c", &probe]).output().unwrap();
+            String::from_utf8(out.stdout).unwrap().trim().to_string()
+        };
+        assert_eq!(open(&mut Command::new("sh")), "open");
+        assert_eq!(open(inheriting_nothing(&mut Command::new("sh"))), "closed");
+    }
 
     #[test]
     fn waiting_for_one_child_does_not_hold_back_another_start() {
