@@ -293,7 +293,7 @@ fn the_loop_keeps_the_joining_claim_while_waiting_for_the_operator() {
         "1390",
     ];
     let lines = world.afk_lines(&args).0;
-    assert!(lines[0].contains("nothing to do · holding 1/2"), "{lines:?}");
+    assert!(lines[0].contains("nothing to do · holding 0/2 · 1 taking no slot"), "{lines:?}");
     assert_eq!(world.claims().len(), 1);
     assert!(restarts(&world).is_empty());
 }
