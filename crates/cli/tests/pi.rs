@@ -227,11 +227,13 @@ fn starts(world: &World) -> Vec<common::Answer> {
 }
 
 /// What `doctor` finds of pi: each finding's `what`, and the line that fixes it.
+/// One of pi names it, as `` `pi` ``: a bare "pi" is in many a temporary
+/// directory's random name, a fix line's path among them.
 fn doctor_finds(world: &World) -> Vec<(String, String)> {
     let answer = world.afk(&["doctor", "--host", "h1", "--now", "1000"]).json;
     let text = |value: &Value| value.as_str().unwrap().to_string();
     let findings = answer["findings"].as_array().unwrap().iter();
-    let of_pi = findings.filter(|finding| finding.to_string().contains("pi"));
+    let of_pi = findings.filter(|finding| text(&finding["what"]).contains("`pi`"));
     of_pi.map(|finding| (text(&finding["what"]), text(&finding["fix"]))).collect()
 }
 

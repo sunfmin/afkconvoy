@@ -8,6 +8,7 @@ use afkconvoy_core::plan::{PullRequest, closing_pr};
 use afkconvoy_core::settle::{
     Follow, SettleStep, cut_landing, follow, landed_comment, settle_steps,
 };
+use afkconvoy_core::worker::WorkerState;
 use anyhow::{Result, anyhow, bail};
 
 use crate::board::last_word;
@@ -86,16 +87,25 @@ fn follow_base(fleet: &Fleet) -> Result<()> {
 }
 
 /// Removes the worktree settling `issue` leaves, unless a worker is still in
-/// it or it holds a commit the remote does not. A worker still in it fails
-/// the settle, so the claim stays and a later tick tries again. A commit the
+/// it or it holds a commit the remote does not. The worker the fleet started
+/// here, stopped at its prompt, is its own session: it is ended first. A
+/// worker still working, or any other process still in it, fails the
+/// settle, so the claim stays and a later tick tries again. A commit the
 /// remote does not have stays, and the settle goes on: the claim is released
 /// and nothing records a failed removal, so a later tick does not take it.
 fn remove_settled(fleet: &Fleet, issue: u64, worktree: &Worktree) -> Result<()> {
     let path = worktree.path.display().to_string();
-    let busy = crate::hot::working_directories()
-        .map_err(|_| anyhow!("a worker is still using {path}; a later tick removes it"))?;
+    let still = || anyhow!("a worker is still using {path}; a later tick removes it");
+    if worktree.holds_a_worker() {
+        match worktree.state(fleet.now)? {
+            WorkerState::Busy => return Err(still()),
+            WorkerState::Idle { .. } => worktree.end_settled()?,
+            WorkerState::Gone => {}
+        }
+    }
+    let busy = crate::hot::working_directories().map_err(|_| still())?;
     if crate::hot::occupies(&busy, &worktree.path) {
-        bail!("a worker is still using {path}; a later tick removes it");
+        return Err(still());
     }
     if settled_keeps(fleet, issue, worktree)? {
         return Ok(());
