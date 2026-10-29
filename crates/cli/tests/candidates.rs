@@ -499,8 +499,11 @@ fn publication_survives_issue_settlement_failure_without_a_duplicate_gate() {
     let (a, head) = worker(&world, 1, "a");
     world.with_gh(|gh| gh["fail"] = json!(["state=closed"]));
     release(&world, "a", false);
-    let failed = start(&world, &a, &world.cache(), 1).wait_with_output().unwrap();
-    assert!(!failed.status.success());
+    // The landing is published: a close that fails does not unsay it
+    // (sunfmin/control#247).
+    let landed = finish(start(&world, &a, &world.cache(), 1));
+    assert_eq!(landed["outcome"], "merged", "{landed}");
+    assert!(landed["settle_error"].as_str().is_some_and(|e| !e.is_empty()), "{landed}");
     let state = chain(&world);
     assert_eq!(state["candidates"][0]["phase"], "landed");
     assert_eq!(
@@ -511,9 +514,28 @@ fn publication_survives_issue_settlement_failure_without_a_duplicate_gate() {
     world.with_gh(|gh| gh["fail"] = json!([]));
     let recovered = finish(start(&world, &a, &world.cache(), 1));
     assert_eq!(recovered["outcome"], "merged");
+    assert!(recovered.get("settle_error").is_none(), "{recovered}");
     assert_eq!(world.state(1), "closed");
     assert_eq!(git(&a, &["rev-parse", "HEAD"]), head);
     assert_eq!(chain(&world)["candidates"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn a_close_refused_while_github_closes_the_issue_itself_is_a_close() {
+    let world = world(1);
+    let (a, _) = worker(&world, 1, "a");
+    // GitHub closes the issue as the merged PR says it, and refuses the
+    // turn's own close at that moment.
+    world.with_gh(|gh| {
+        gh["fail"] = json!(["state=closed"]);
+        let rows = gh["issues"].as_array_mut().unwrap();
+        let issue = rows.iter_mut().find(|row| row["number"] == 1).unwrap();
+        issue["state"] = json!("closed");
+    });
+    release(&world, "a", false);
+    let landed = finish(start(&world, &a, &world.cache(), 1));
+    assert_eq!(landed["outcome"], "merged", "{landed}");
+    assert!(landed.get("settle_error").is_none(), "{landed}");
 }
 
 #[test]
