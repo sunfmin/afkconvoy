@@ -587,14 +587,27 @@ fn classified_for(harness: Option<Harness>, value: &Value) -> Option<Diagnosis> 
 /// A tick's issue workers being observed, judged or held for the operator.
 /// Legacy silent worker escalation cannot bypass this decision branch.
 pub fn holding(worktree: &Worktree) -> bool {
+    holds(worktree, &["healthy", "continued"])
+}
+
+/// `holding`, read by a report that runs no observation first: a recorded
+/// wait on background work holds nothing, since the read of the screen the
+/// judgment makes itself says whether that work still runs, and the record
+/// is only as fresh as the last tick.
+pub fn holding_past_background(worktree: &Worktree) -> bool {
+    holds(worktree, &["healthy", "continued", "waiting for background work"])
+}
+
+fn holds(worktree: &Worktree, free: &[&str]) -> bool {
     if has_signal(worktree).unwrap_or(true) {
         return true;
     }
     read().map_or(true, |book| {
         book.observations_failed.iter().any(|failed| failed.path == worktree.path)
-            || book.workers.iter().any(|o| {
-                o.path == worktree.path && !["healthy", "continued"].contains(&o.action.as_str())
-            })
+            || book
+                .workers
+                .iter()
+                .any(|o| o.path == worktree.path && !free.contains(&o.action.as_str()))
     })
 }
 
