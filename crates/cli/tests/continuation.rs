@@ -593,3 +593,20 @@ fn start_fresh_is_the_one_way_to_discard_an_attempt() {
     assert!(!continues(&brief(&new)));
     assert_eq!(world.claims().len(), 1);
 }
+
+#[test]
+fn recovery_of_an_issue_never_issued_says_there_is_no_such_issue() {
+    let world = World::new();
+    world.with_gh(|gh| gh["missing"] = json!({"999999999": 0}));
+    let error = world.afk(&["recovery", "--issue", "999999999"]).error();
+    assert_eq!(error, "no such issue: #999999999 (HTTP 404)");
+}
+
+#[test]
+fn recovery_of_a_transferred_issue_names_where_it_went() {
+    let world = World::new();
+    world.issue(7, &["ready-for-agent"]);
+    world.with_gh(|gh| gh["transferred"] = json!({"7": 0}));
+    let error = world.afk(&["recovery", "--issue", "7"]).error();
+    assert_eq!(error, "issue #7 was transferred to acme/elsewhere#1007");
+}

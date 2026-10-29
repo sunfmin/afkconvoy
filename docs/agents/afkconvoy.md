@@ -33,6 +33,32 @@ The one-hour gate limit still bounds termination, leaving cold builds and host
 competition room to finish. A warning alone fails no validation. Change the
 budget only with a deliberate baseline review; never raise it per run.
 
+The gate is two gates, run one after the other by `./gate.sh` (ADR-0047):
+the fast gate, which a worker passes before it opens or updates its PR, and
+the slow gate, which runs the tests `.config/slow-tests` marks slow. A landing
+turn runs the fast gate on each candidate and the slow gate once per round, at
+the candidate chain's tip (ADR-0048). Older versions skip this block, and land
+on `gate_command`, both; this repo's fleet is upgraded by hand before it
+lands with rounds.
+
+```yaml gates
+fast:
+  command: afkconvoy exclusive -- ./gate.sh fast
+  seconds: 600                    # its limit: room for a cold build
+  budget_seconds: 180             # 137s measured on Offices-MacBook-Pro.local
+slow:
+  command: afkconvoy exclusive -- ./gate.sh slow
+  seconds: 3000                   # with the fast gate's, gate_seconds
+  budget_seconds: 420             # with the fast gate's, gate_budget_seconds
+```
+
+The two limits add up to `gate_seconds` and the two budgets to
+`gate_budget_seconds`: the split raises neither. The fast gate's budget is
+its measured 137 seconds with about a third more for load; the slow gate's is
+what is left of the whole gate's, which its measured 1,157 seconds on the
+8-core host already exceeds — making it faster is sunfmin/control#234. The
+measurement is in [the gate baseline](../gate-baseline.md).
+
 How many claims are at work at once is no key here: each host that works this
 repo says its own, `afkconvoy run <checkout> --concurrency N`, and 3 until it
 does (`docs/adr/0025`).

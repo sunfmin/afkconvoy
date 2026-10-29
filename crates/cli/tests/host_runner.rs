@@ -1089,7 +1089,7 @@ fn the_host_runner_moves_with_claims_and_an_open_pr_after_only_the_running_comma
         .unwrap();
     until("exclusive command started", || {
         let said = world.afk(&["doctor", "--host", "h1"]).json;
-        said["host"]["exclusive"]["running"]["ran"].is_u64().then_some(())
+        said["host"]["exclusive"]["running"][0]["ran"].is_u64().then_some(())
     });
     let worker = world
         .worktrees()
