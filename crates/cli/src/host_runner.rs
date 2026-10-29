@@ -1857,6 +1857,7 @@ pub fn run(
     // Before the checkout is handed over: its fleet instance starts under
     // them, and every other on the host reads them as it goes.
     let changed = host_settings::change(&list, settings)?;
+    host_settings::pin_host_name(&list)?;
     // Kept once no host runner runs: one of an older release would write the
     // list over it, knowing no tracker. One whose entry is gone meanwhile is
     // the host runner's to say, as it is handed the checkout.

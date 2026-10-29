@@ -956,6 +956,8 @@ afkconvoy run [OPTIONS] [CHECKOUT]
   - Environment: `AFKCONVOY_EXCLUSIVE_SECONDS`
 - `--jev-key-command <COMMAND>`: The shell command whose stdout is the TypeSafe key Jev is asked with when it judges a stopped worker's screen, such as one that reads the key from a keychain: a host setting, run afresh for each check. The key is sent only to TypeSafe, and is in no file, answer or log line; a command that fails or prints nothing is an error, and the worker waits for the operator as with none. `default` removes it [default: none]
   - Environment: `AFKCONVOY_JEV_KEY_COMMAND`
+- `--host-name <NAME>`: The name this host goes by in the records it owns — candidates, claims, slots, logs — above the name the system gives it, which a network may change: a host renamed takes its own records for another host's. A `run` that finds none keeps the system's name then; `default` lets the next `run` keep it afresh
+  - Environment: `AFKCONVOY_HOST_NAME`
 - `--gate-lanes <GATE_LANES>`: Worker lanes on this host, above zero, or `default` (1). Independent candidate worktrees of one repo may validate together within this bound
   - Environment: `AFKCONVOY_GATE_LANES`
 - `--slow-gate-lanes <SLOW_GATE_LANES>`: Slow lanes on this host, above zero, or `default` (1): how many rounds' slow gates run at once, beside the worker lanes, where fast gates run

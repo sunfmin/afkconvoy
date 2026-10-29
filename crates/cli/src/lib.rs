@@ -132,10 +132,10 @@ use fleet::Fleet;
 use git::Repo;
 use host_settings::{
     ADMIT_DISK_ENV, ADMIT_INSPECT_AFTER_ENV, ADMIT_LOAD_ENV, ADMIT_MEMORY_ENV,
-    EXCLUSIVE_SECONDS_ENV, HOST_SLEEP_HOURS_ENV, HOT_CORES_ENV, HOT_MEMORY_ENV, HOT_WRITTEN_ENV,
-    JEV_KEY_COMMAND_ENV, NO_HOST_SLEEP_ENV, To, WATCH_DIR_ENV, WATCH_EVERY_ENV, hours_or_default,
-    jev_key_command_or_default, port_or_default, thousandths_or_default, watch_dir_or_default,
-    watch_every_or_default, whole_or_default,
+    EXCLUSIVE_SECONDS_ENV, HOST_NAME_ENV, HOST_SLEEP_HOURS_ENV, HOT_CORES_ENV, HOT_MEMORY_ENV,
+    HOT_WRITTEN_ENV, JEV_KEY_COMMAND_ENV, NO_HOST_SLEEP_ENV, To, WATCH_DIR_ENV, WATCH_EVERY_ENV,
+    hours_or_default, jev_key_command_or_default, port_or_default, thousandths_or_default,
+    watch_dir_or_default, watch_every_or_default, whole_or_default,
 };
 use launch::Launches;
 
@@ -1533,6 +1533,12 @@ enum Command {
         /// worker waits for the operator as with none. `default` removes it [default: none]
         #[arg(long, env = JEV_KEY_COMMAND_ENV, value_name = "COMMAND", value_parser = jev_key_command_or_default)]
         jev_key_command: Option<To<String>>,
+        /// The name this host goes by in the records it owns — candidates, claims, slots, logs —
+        /// above the name the system gives it, which a network may change: a host renamed
+        /// takes its own records for another host's. A `run` that finds none keeps the
+        /// system's name then; `default` lets the next `run` keep it afresh
+        #[arg(long, env = HOST_NAME_ENV, value_name = "NAME", value_parser = boxed_host_name)]
+        host_name: Option<Box<To<String>>>,
         /// Worker lanes on this host, above zero, or `default` ({const:GATE_LANES}). Independent
         /// candidate worktrees of one repo may validate together within this bound.
         #[arg(long, env = "AFKCONVOY_GATE_LANES", value_parser = host_settings::watch_every_or_default)]
@@ -3916,8 +3922,13 @@ fn ran(
     Some(stage::Ran { role_commit, team_commit, harness, model })
 }
 
+/// `--host-name`, boxed: `Run` is the largest command, and clippy bounds it.
+fn boxed_host_name(said: &str) -> Result<Box<To<String>>, String> {
+    host_settings::host_name_or_default(said).map(Box::new)
+}
+
 pub(crate) fn this_host() -> String {
-    gethostname::gethostname().to_string_lossy().into()
+    host_settings::host_name()
 }
 
 fn removed_worker_command(_: &str) -> Result<String, String> {
@@ -4005,6 +4016,7 @@ fn start_of(
         admit_inspect_after,
         exclusive_seconds,
         jev_key_command,
+        host_name,
         gate_lanes,
         slow_gate_lanes,
         ticks,
@@ -4044,6 +4056,7 @@ fn start_of(
         watch_dir,
         watch_every,
         jev_key_command,
+        host_name: host_name.map(|name| *name),
     };
     let ready_timeout = agent.ready_timeout;
     let panic_at = panic_at_tick;
