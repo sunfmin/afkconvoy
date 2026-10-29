@@ -2369,7 +2369,6 @@ mod tests {
             patrols: vec![],
             slow_gate: None,
             held_back: vec![],
-            caster: None,
             casting: vec![],
             cut: None,
         }
