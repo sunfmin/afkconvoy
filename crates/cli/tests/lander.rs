@@ -263,6 +263,12 @@ fn an_issue_walks_a_four_stage_workflow_and_its_landing_worker_lands_in_a_turn()
     assert_eq!(world.state(7), "closed");
     assert_eq!(world.remote(&["show", "refs/heads/main:seven.txt"]), "7");
     assert!(world.remote(&["for-each-ref", "--format=%(refname)", "refs/convoy/train"]).is_empty());
+    // It woke the fleet and stopped at its prompt: settling ends it.
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            terminal["agent"] = json!({"state": "idle", "stateStartedAt": (now + 60) * 1000});
+        }
+    });
     assert_eq!(did(&tick(&world, now + 90)), ["settle 7 done"]);
     assert!(world.claims().is_empty());
     assert_eq!(tick(&world, now + 180)["idle"], true);
