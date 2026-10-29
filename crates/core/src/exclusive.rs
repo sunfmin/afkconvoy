@@ -213,12 +213,7 @@ pub fn scheduling(queue: &[Ticket], lanes: Lanes, paused: bool) -> Vec<Schedulin
 }
 
 /// One admission decision, with earlier reservations already applied.
-fn reservation(
-    ticket: &Ticket,
-    admitted: &[&Ticket],
-    lanes: Lanes,
-    paused: bool,
-) -> Scheduling {
+fn reservation(ticket: &Ticket, admitted: &[&Ticket], lanes: Lanes, paused: bool) -> Scheduling {
     let limit = limit(ticket, lanes);
     let occupied: Vec<_> = admitted.iter().copied().filter(|t| same_lane(t, ticket)).collect();
     let own: Vec<_> = admitted

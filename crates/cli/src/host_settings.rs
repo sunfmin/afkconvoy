@@ -609,7 +609,11 @@ mod tests {
     fn an_old_train_lanes_key_loads_and_the_next_write_drops_it() {
         let dir = tempfile::tempdir().unwrap();
         let list = List::at(dir.path().join("checkouts.json"));
-        let kept = r#"{"settings": {"train_lanes": 0, "gate_lanes": 2, "said_by_another": 1}}"#;
+        assert_eq!(
+            Settings::default().lanes(),
+            afkconvoy_core::exclusive::Lanes { worker: GATE_LANES, fast: FAST_LANES }
+        );
+        let kept = r#"{"settings": {"train_lanes": 0, "gate_lanes": 2, "fast_lanes": 3, "said_by_another": 1}}"#;
         std::fs::write(list.file(), kept).unwrap();
         let read = list.read().unwrap();
         assert_eq!(read.settings.gate_lanes, Some(2));
@@ -620,6 +624,7 @@ mod tests {
         assert!(answered["in_force"].get("train_lanes").is_none(), "{answered}");
         assert!(answered["in_force"].get("ignored").is_none(), "{answered}");
         assert_eq!(answered["in_force"]["gate_lanes"], 2);
+        assert_eq!(answered["in_force"]["fast_lanes"], 3);
         let named = Named { admit_load: Some(To::Value(400)), ..Named::default() };
         change(&list, &named).unwrap();
         let text: Value =

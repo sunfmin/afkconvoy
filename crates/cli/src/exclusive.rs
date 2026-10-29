@@ -986,6 +986,36 @@ mod tests {
     }
 
     #[test]
+    fn fast_gates_of_one_repo_run_beside_a_slow_gate_and_each_other_up_to_the_fast_lanes() {
+        let dir = tempfile::tempdir().unwrap();
+        let queue = Queue { inherited: false, ..Queue::default() };
+        served(dir.path(), &queue);
+        let of_a = |command: &str, asked: u64, gate: Option<Gate>| Ticket {
+            repo: Some("/a/.git".into()),
+            gate,
+            ..ticket(command, asked)
+        };
+        let (mut slow, _) = Asker::joins(dir.path(), of_a("slow", 100, Some(Gate::Slow)));
+        assert!(slow.next().unwrap()["runs"].is_u64());
+        let (mut other, said) = Asker::joins(dir.path(), of_a("cargo test", 101, None));
+        assert_eq!(said["ahead"], 1, "an ordinary command waits on the slow gate");
+        let (mut first, said) = Asker::joins(dir.path(), of_a("fast 1", 102, Some(Gate::Fast)));
+        assert_eq!(said["ahead"], 0, "nothing in the worker lane is ahead of a fast gate");
+        assert!(first.next().unwrap()["runs"].is_u64(), "it runs beside the slow gate");
+        let (mut second, _) = Asker::joins(dir.path(), of_a("fast 2", 103, Some(Gate::Fast)));
+        assert!(second.next().unwrap()["runs"].is_u64(), "and beside a fast gate of its repo");
+        let (mut third, said) = Asker::joins(dir.path(), of_a("fast 3", 104, Some(Gate::Fast)));
+        assert_eq!(said["ahead"], 2);
+        assert_eq!(third.next(), None, "the fast lanes are full");
+        assert_eq!(other.next(), None);
+        drop(first);
+        assert!(third.next().unwrap()["runs"].is_u64(), "a fast lane's place is free");
+        assert_eq!(other.next(), None, "which is no worker lane's");
+        drop(slow);
+        assert!(other.next().unwrap()["runs"].is_u64());
+    }
+
+    #[test]
     fn one_whose_process_dies_as_it_waits_leaves_and_one_that_asked_again_keeps_its_place() {
         let dir = tempfile::tempdir().unwrap();
         let queue = Queue { inherited: false, ..Queue::default() };

@@ -161,10 +161,8 @@ impl Slot {
         };
         let owner_bytes = serde_json::to_vec(&owner)?;
         loop {
-            let count = afkconvoy_core::exclusive::limit(
-                ticket,
-                crate::host_settings::of_host()?.lanes(),
-            );
+            let count =
+                afkconvoy_core::exclusive::limit(ticket, crate::host_settings::of_host()?.lanes());
             for n in 0..count {
                 let path = cache.join(format!("{lane:016x}-{n}"));
                 let mut file = OpenOptions::new()

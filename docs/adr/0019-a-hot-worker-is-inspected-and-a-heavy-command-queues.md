@@ -105,3 +105,7 @@ Tracked as #308–#313.
 ## Amended by ADR-0034
 
 A command holds a turn through merge, gate and join, and train gates use an independent lane. ADR-0034 replaces the earlier queue ordering and explains how one-at-a-time turns now feed the landing train.
+
+## Amended by ADR-0049
+
+A worker's fast gate, run alone by `afkconvoy gate --fast`, queues in a lane of its own, the fast lane, bounded by the host setting `fast_lanes`: no slow gate, turn or other heavy command holds a place it needs. Every other `exclusive` command queues as above.
