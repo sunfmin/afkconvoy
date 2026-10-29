@@ -317,7 +317,6 @@ triage — flow:triage — max_rework 3, max_consecutive_rework 2
 roster
 
   dev       claude-code opus (code) · pi any model
-            cast: A plan on pi.
   reviewer  the host kit whole
 ";
     assert_eq!(shown(&world, &["feature"]), format!("{feature}\n{roster}"));
