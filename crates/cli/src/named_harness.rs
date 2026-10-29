@@ -240,8 +240,8 @@ pub fn converge(
     }
     let target = match named_harness {
         Some(harness) => harness,
-        None => match fleet.first() {
-            Ok(cast) => cast.harness,
+        None => match fleet.first_harness() {
+            Ok(harness) => harness,
             Err(_) => return Ok(()),
         },
     };

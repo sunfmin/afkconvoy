@@ -52,6 +52,7 @@ mod rejected;
 pub mod resources;
 pub mod role;
 pub mod roster;
+pub mod selection;
 pub mod settle;
 pub mod slow_gate;
 pub mod stage_record;
