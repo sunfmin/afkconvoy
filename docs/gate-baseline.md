@@ -306,8 +306,9 @@ and timed by a wrapper first on PATH. They started 14,752 of them: git
 9,674, gh 2,886, orca 1,861, ps 242, about 180 a test. Sampling a tick
 found it in `poll` and `wait4` nearly always: the CLI's own work is
 small, and a test's time is the processes it starts, one after another.
-Of the CPU those took (each one's own user and system time), git took 123
-of 180 s: `push` 36 s (702 calls, 51 ms each), `ls-remote` 31 s (1,552
+Of the CPU those took (each one's own user and system time, in a run
+whose wrapper failed 12 host-runner tests: 69 tests), git took 123 of
+180 s: `push` 36 s (702 calls, 51 ms each), `ls-remote` 31 s (1,552
 calls, 20 ms each). Each push to the world's remote starts six processes
 more (`sh`, `receive-pack`, `pack-objects`, `unpack-objects`, `rev-list`,
 `for-each-ref`), each listing two. 270 of the 702 pushes are the startup
