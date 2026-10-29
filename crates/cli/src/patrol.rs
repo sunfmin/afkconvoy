@@ -3,7 +3,6 @@
 //! end. When a patrol runs and
 //! what makes a run a failed one is the core's (`afkconvoy_core::patrol`).
 
-use afkconvoy_core::casting::Cast;
 use afkconvoy_core::intake::opened_by;
 use afkconvoy_core::lock;
 use afkconvoy_core::patrol::{
@@ -13,6 +12,7 @@ use afkconvoy_core::patrol::{
 };
 use afkconvoy_core::prompt::{PatrolFields, patrol_prompt};
 use afkconvoy_core::role::{Facts, On, Start};
+use afkconvoy_core::selection::Selection;
 use afkconvoy_core::tick::Outcome;
 use afkconvoy_core::tracker::Tracker;
 use anyhow::{Result, anyhow, bail};
@@ -20,7 +20,7 @@ use serde_json::{Value, json};
 
 use crate::claims::{Ask, Me, drop_ask, drop_run, push_ask, take_run};
 use crate::copies::Copies;
-use crate::dispatch::{Agent, Continuing, WorkerSelection};
+use crate::dispatch::{Agent, Continuing};
 use crate::fleet::Fleet;
 use crate::gh::OpenIssues;
 use crate::git::Repo;
@@ -181,19 +181,8 @@ pub fn run(fleet: &mut Fleet, me: &Me, agent: &Agent, read: &Flows, row: &Row) -
     let role = kept.team.role_of(&patrol.work);
     // A patrol has no issue and no model label: the user default of the
     // harness its role's range selects.
-    let mut cast = fleet.cast_in(role, &[], None)?;
-    let harness = cast.harness;
-    if let Some((model, _)) = crate::codex_launch::automatic_model(harness, None)? {
-        if let Some(model) = model.as_deref() {
-            let allowed = afkconvoy_core::casting::range(role, &crate::kit::load()?.range())
-                .into_iter()
-                .find(|held| held.harness == harness)
-                .map(|held| held.models.into_iter().map(|model| model.id).collect::<Vec<_>>())
-                .unwrap_or_default();
-            crate::codex_launch::require_in_role(harness, model, &allowed, &role.name)?;
-        }
-        cast.model = model;
-    }
+    let chosen = fleet.select_in(Some(role), &[], None)?;
+    let harness = chosen.harness();
     kept.role(role, harness)?;
     // Before the claim: a patrol whose harness cannot be started here runs nothing.
     let launch = agent.command(harness)?;
@@ -244,15 +233,8 @@ pub fn run(fleet: &mut Fleet, me: &Me, agent: &Agent, read: &Flows, row: &Row) -
         tracker: &fleet.gh.tracker,
     };
     let brief = checkout.write_brief(&patrol_prompt(&fields).map_err(|e| anyhow!(e))?)?;
-    let line = in_role(fleet, kept, name, &cast, launch.as_str(), &checkout)?;
-    let terminal = agent.start_worker(
-        &checkout,
-        WorkerSelection { harness, model: cast.model.as_deref(), explicit_model: false },
-        &line,
-        true,
-        None,
-        me.now,
-    )?;
+    let line = in_role(fleet, kept, name, &chosen, launch.as_str(), &checkout)?;
+    let terminal = agent.start_worker(&checkout, (&chosen).into(), &line, true, None, me.now)?;
     checkout.deliver(&terminal, &brief)?;
 
     // The record carries the runs of the day before it: they are counted from it alone.
@@ -273,14 +255,14 @@ fn in_role(
     fleet: &Fleet,
     kept: &Kept,
     name: &str,
-    cast: &Cast,
+    chosen: &Selection,
     launch: &str,
     checkout: &Worktree,
 ) -> Result<String> {
     let none = || See::Patrols.refusal(format!("the team has no patrol {name:?}"));
     let patrol = kept.team.patrol(name).ok_or_else(none)?;
     let role = kept.team.role_of(&patrol.work);
-    let harness = cast.harness;
+    let harness = chosen.harness();
     let role_copy = kept.role(role, harness)?;
     let path = checkout.path.display().to_string();
     let team_rules = kept.rules();
@@ -303,7 +285,7 @@ fn in_role(
         role_dir: &role_copy.dir.display().to_string(),
         worktree: &path,
         team_dir: &kept.copy.dir.display().to_string(),
-        model: cast.model.as_deref(),
+        model: chosen.model.as_deref(),
         guard: &crate::own_command().fixed(" guard").own(),
         kept: &kept_dir,
         host_user,
@@ -357,33 +339,15 @@ pub(crate) fn switch(
     let none = || See::Patrols.refusal(format!("the team has no patrol {name:?}"));
     let patrol = kept.team.patrol(name).ok_or_else(none)?;
     let role = kept.team.role_of(&patrol.work);
-    let mut cast = fleet.cast_in(role, &[], None)?;
-    let harness = cast.harness;
-    if let Some((model, _)) = crate::codex_launch::automatic_model(harness, None)? {
-        if let Some(model) = model.as_deref() {
-            let allowed = afkconvoy_core::casting::range(role, &crate::kit::load()?.range())
-                .into_iter()
-                .find(|held| held.harness == harness)
-                .map(|held| held.models.into_iter().map(|model| model.id).collect::<Vec<_>>())
-                .unwrap_or_default();
-            crate::codex_launch::require_in_role(harness, model, &allowed, &role.name)?;
-        }
-        cast.model = model;
-    }
+    let chosen = fleet.select_in(Some(role), &[], None)?;
+    let harness = chosen.harness();
     let skipped = fleet.skipped_before(harness, Some(role), None);
     let launch = agent.command(harness)?;
-    let line = in_role(fleet, &kept, name, &cast, launch.as_str(), &checkout)?;
+    let line = in_role(fleet, &kept, name, &chosen, launch.as_str(), &checkout)?;
     let continuing = said(&checkout);
     checkout.stop_for_continuation()?;
     crate::dispatch::continue_brief(fleet, &checkout, None, None, &continuing)?;
-    let terminal = agent.start_worker(
-        &checkout,
-        WorkerSelection { harness, model: cast.model.as_deref(), explicit_model: false },
-        &line,
-        true,
-        None,
-        me.now,
-    )?;
+    let terminal = agent.start_worker(&checkout, (&chosen).into(), &line, true, None, me.now)?;
     checkout.deliver(&terminal, &checkout.brief()?)?;
     Ok(json!({"patrol": name, "from": continuing.from, "to": harness,
         "worktree": checkout.path, "terminal": terminal, "skipped": skipped}))
