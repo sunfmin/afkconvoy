@@ -122,8 +122,10 @@ step fmt
 # them than of it. It takes about a minute on one core, builds under a
 # directory of its own, times every function it checks (`-Ftimings`) and keeps
 # the file it writes of them out of the tree. A solver query of one function
-# past twenty seconds is stopped, and is an error naming that function
-# (`-Ffixpoint-timeout`): no query holds the gate up longer. Flux checks on
+# past sixty seconds is stopped, and is an error naming that function
+# (`-Ffixpoint-timeout`): no query holds the gate up longer. Twenty was too
+# few beside other gates: stage_record::history, the slowest, takes 3s on an
+# idle host and passed 20s under the load of 2026-10-29. Flux checks on
 # past an error (`-Fcatch-bugs`), so a run names every function that is slow,
 # and still ends with its timings. verify.sh sets them for every run.
 flux_log=$(mktemp)
