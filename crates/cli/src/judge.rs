@@ -557,7 +557,7 @@ pub(crate) fn silenced(
         let Some(Asked::Stopped(found)) = ask_after(fleet, me, issue, Look::Reporting)? else {
             return Ok(None);
         };
-        if crate::health::holding(&found.worktree) {
+        if held_for_report(fleet, &found.worktree)? {
             return Ok(None);
         }
         return Ok(match found.route {
@@ -583,11 +583,25 @@ pub(crate) fn silenced(
         return Ok(None);
     };
     let state = worktree.state(fleet.now)?;
-    if settled_by_state(Some(state)).is_some() || crate::health::holding(&worktree) {
+    if settled_by_state(Some(state)).is_some() || held_for_report(fleet, &worktree)? {
         return Ok(None);
     }
     let silence = silence_of(fleet, issue, &worktree, state, None, Look::Reporting)?;
     Ok(Silenced::of(silence, "tick"))
+}
+
+/// Whether worker health holds the worker in `worktree`, for a report that
+/// runs no observation first. A recorded wait on background work holds only
+/// while that work still shows: the record is as old as the last tick's
+/// observation, and the tick re-observes before it acts.
+fn held_for_report(fleet: &Fleet, worktree: &Worktree) -> Result<bool> {
+    if !crate::health::holding(worktree) {
+        return Ok(false);
+    }
+    if crate::health::holding_past_background(worktree) {
+        return Ok(true);
+    }
+    Ok(own_background(fleet, worktree, true, Look::Reporting)?.is_some())
 }
 
 /// The silence of the stopped worker in `worktree` that declared nothing: its
