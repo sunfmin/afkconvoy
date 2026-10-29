@@ -338,7 +338,7 @@ fn carry_out(
     // ladder can mistake its shell for a harness.
     let retry = match step {
         TickStep::Judge { issue, start: true }
-        | TickStep::Watch { issue }
+        | TickStep::Watch { issue, start: true }
         | TickStep::Advance { issue } => Some(issue),
         _ => None,
     };
@@ -351,9 +351,9 @@ fn carry_out(
     // A shared harness outage is no worker's silence. Keep the claim and
     // progress, including its one nudge, until its pending prompt can probe.
     let issue = match step {
-        TickStep::Judge { issue, .. } | TickStep::Watch { issue } | TickStep::Advance { issue } => {
-            Some(issue)
-        }
+        TickStep::Judge { issue, .. }
+        | TickStep::Watch { issue, .. }
+        | TickStep::Advance { issue } => Some(issue),
         _ => None,
     };
     if let Some(issue) = issue {
@@ -387,7 +387,7 @@ fn carry_out(
         }
         TickStep::Forget { issue } => forget(fleet, me, issue),
         TickStep::Judge { issue, start } => judge(fleet, me, agent, issue, start),
-        TickStep::Watch { issue } => watch(fleet, me, agent, issue),
+        TickStep::Watch { issue, start } => watch(fleet, me, agent, issue, start),
         TickStep::Advance { issue } => advance(fleet, me, agent, read.flows, issue),
         TickStep::Escalate { issue } => {
             let calling = read.set.escalating.iter().find(|calling| calling.number == issue);
@@ -447,7 +447,7 @@ fn words(step: TickStep) -> (&'static str, Option<u64>) {
         TickStep::Settle { issue } => ("settle", Some(issue)),
         TickStep::Forget { issue } => ("forget", Some(issue)),
         TickStep::Judge { issue, .. } => ("judge", Some(issue)),
-        TickStep::Watch { issue } => ("watch", Some(issue)),
+        TickStep::Watch { issue, .. } => ("watch", Some(issue)),
         TickStep::Advance { issue } => ("advance", Some(issue)),
         TickStep::Escalate { issue } => ("escalate", Some(issue)),
         TickStep::EndPatrol { .. } => ("end_patrol", None),
@@ -667,7 +667,7 @@ impl Ticked {
             parts.push(format!("{left_alone} left alone"));
         }
         if declared > 0 {
-            parts.push(format!("{declared} declared"));
+            parts.push(format!("{declared} taking no slot"));
         }
         if taking > concurrency {
             parts.push(format!("{} past the bound", taking - concurrency));
@@ -687,6 +687,7 @@ impl Ticked {
                     Outcome::Waiting(_) => "waiting",
                     Outcome::Continued => "continued",
                     Outcome::Restarted => "restarted",
+                    Outcome::Asked => "asked",
                     Outcome::Nothing => "nothing",
                     Outcome::Lost => "lost",
                     Outcome::Blocked => "blocked",
@@ -832,6 +833,7 @@ impl Ticked {
             ("nudged", Outcome::Nudged),
             ("continued", Outcome::Continued),
             ("restarted", Outcome::Restarted),
+            ("asked for a turn again for", Outcome::Asked),
         ] {
             let issues: Vec<String> = self
                 .pass
