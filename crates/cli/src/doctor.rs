@@ -16,7 +16,6 @@ use afkconvoy_core::casting;
 use afkconvoy_core::claims::{InstanceId, claim_ref};
 use afkconvoy_core::config::{Config, SaidBy};
 use afkconvoy_core::cut;
-use afkconvoy_core::exclusive::Ticket;
 use afkconvoy_core::gate::GateCommand;
 use afkconvoy_core::harness::Harness;
 use afkconvoy_core::lease::{LEASE, stamp_age, stamp_stale};
@@ -1276,25 +1275,17 @@ fn retired_concurrency_finding(checkout: &Path, config: &Config) -> Option<Findi
 /// its bound, with no class a rule or Jev settled. Without a key command the
 /// fix names one; with it, the worker's screen is the operator's to read.
 fn health_findings() -> Vec<Finding> {
-    let keyed =
-        crate::host_settings::of_host().is_ok_and(|settings| settings.jev_key_command.is_some());
     crate::health::waiting_for_operator()
         .into_iter()
         .map(|waiting| {
-            let worker = waiting["worker"].as_str().unwrap_or_default();
-            let reason = waiting["reason"].as_str().unwrap_or_default();
-            let screen = waiting["screen_line"].as_str().unwrap_or_default();
-            let fix = if keyed {
-                let terminal = waiting["terminal"].as_str().unwrap_or_default();
-                format!("orca terminal read --terminal {terminal} --screen")
-            } else {
-                "afkconvoy run --jev-key-command '<command>'".into()
-            };
             finding(
                 Kind::WorkerHealth,
-                format!("the worker in {worker}: its worker health is waiting for the operator"),
-                format!("{reason}; its screen ends: {screen}"),
-                fix,
+                format!(
+                    "the worker in {}: its worker health is waiting for the operator",
+                    waiting.worker.display()
+                ),
+                format!("{}; its screen ends: {}", waiting.reason, waiting.screen_line),
+                waiting.fix,
             )
         })
         .collect()
@@ -1889,46 +1880,14 @@ fn issues_json(set: &WorkingSet) -> Result<Value> {
     Ok(issues)
 }
 
-/// Keep the legacy lane projections and add the common queue observation.
-fn exclusive_json(standing: Result<(Vec<Ticket>, bool)>, now: u64) -> Value {
-    let ticket = |ticket: &Ticket| {
-        json!({"command": ticket.command, "dir": ticket.dir, "issue": ticket.issue,
-            "pid": ticket.pid, "asked": ticket.asked, "ran": ticket.ran,
-            "candidate": ticket.candidate,
-            "validation": ticket.validation,
-            "waiting": if ticket.ran.is_none() { "waiting_for_capacity" } else { "running" }})
-    };
-    match standing {
-        Ok((live, paused)) => {
-            let settings = match crate::host_settings::of_host() {
-                Ok(settings) => settings,
-                Err(error) => return json!({"error": format!("{error:#}")}),
-            };
-            let observation =
-                afkconvoy_core::exclusive::snapshot(&live, settings.gate_lanes(), paused, now);
-            let lane = |repo: Option<&str>| {
-                let each: Vec<_> = observation
-                    .running
-                    .iter()
-                    .chain(&observation.waiting)
-                    .map(|request| &request.ticket)
-                    .filter(|t| t.repo_lane.as_deref() == repo)
-                    .collect();
-                json!({"running": each.iter().find(|t| t.ran.is_some()).map(|t| ticket(t)),
-                    "running_all": each.iter().filter(|t| t.ran.is_some()).map(|t| ticket(t)).collect::<Vec<_>>(),
-                    "waiting": each.iter().filter(|t| t.ran.is_none()).map(|t| ticket(t)).collect::<Vec<_>>()})
-            };
-            let worker = lane(None);
-            let repos: Vec<_> = observation
-                .repos
-                .iter()
-                .map(|repo| json!({"repo": repo.repo, "queue": lane(Some(&repo.repo))}))
-                .collect();
-            json!({"running": worker["running"], "waiting": worker["waiting"],
-                "lanes": {"worker": worker, "repos": repos}, "observation": crate::queue::observation_json(&observation)})
-        }
-        Err(error) => json!({"error": format!("{error:#}")}),
-    }
+/// The queue observation `afkconvoy queue` answers, from what this look
+/// read of the host runner: `None` where none listens.
+fn exclusive_json(said: Result<crate::queue::Said>, now: u64) -> Value {
+    let observed = said.and_then(|said| {
+        let lanes = crate::host_settings::of_host()?.gate_lanes();
+        Ok(crate::queue::observation(said, lanes, now))
+    });
+    observed.unwrap_or_else(|error| json!({"error": format!("{error:#}")}))
 }
 
 /// `afkconvoy doctor`, for the fleet of `host` in the checkout `repo`:
@@ -2164,10 +2123,10 @@ fn lift_watch_events(answer: &mut Value, lifted: &mut Vec<Value>) {
 /// host runner says them, asked once.
 fn host_once(now: u64, readings: &Readings, rounds: bool) -> Map<String, Value> {
     let (exclusive, installed, watch) = match host_runner::shared() {
-        Ok(said) => {
-            let said = said.unwrap_or_default();
-            (Ok((said.exclusive, said.exclusive_paused)), said.installed, said.watch)
+        Ok(Some(said)) => {
+            (Ok(Some((said.exclusive, said.exclusive_paused))), said.installed, said.watch)
         }
+        Ok(None) => (Ok(None), None, None),
         Err(error) => (Err(error), None, None),
     };
     Map::from_iter([

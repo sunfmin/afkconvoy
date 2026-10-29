@@ -17,3 +17,13 @@
 [profile.default]
 slow-timeout = { period = "20s", terminate-after = 12 }
 test-threads = 6
+
+# The fast gate's tests (./gate.sh fast, docs/adr/0047): every test but those
+# .config/slow-tests names, each of which took 2 seconds or more on the host
+# the line was drawn on. A test still running after 6 seconds, three times the
+# line, is ended and fails as TIMEOUT: it is a slow test, and ./gate.sh says to
+# name it in .config/slow-tests. Three times, so a loaded host does not end a
+# test that runs near the line. The slow gate's tests run under the default
+# profile above.
+[profile.fast]
+slow-timeout = { period = "2s", terminate-after = 3 }
