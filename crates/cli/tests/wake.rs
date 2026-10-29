@@ -129,6 +129,20 @@ fn with_no_run_to_wake_a_wake_succeeds_and_does_nothing() {
 }
 
 #[test]
+fn a_wake_outside_a_git_checkout_is_the_error_doctor_answers_there() {
+    let world = World::new();
+    let elsewhere = world.home();
+    let doctor = world.afk_in(&elsewhere, &["doctor"]).error();
+    assert!(doctor.ends_with("is not in a git checkout"), "{doctor}");
+
+    let answer = world.afk_in(&elsewhere, &["wake"]);
+    assert!(answer.stderr.is_empty(), "nothing on stderr: {}", answer.stderr);
+    assert_eq!(answer.error(), doctor);
+    // no checkout, so no tick log to say it in
+    assert!(!world.cache().join("afkconvoy/runs").exists(), "it logged nothing");
+}
+
+#[test]
 fn a_run_that_does_not_answer_costs_the_wake_its_wait_and_no_more() {
     let world = World::new();
     // something listens where the host runner would, and answers nothing:

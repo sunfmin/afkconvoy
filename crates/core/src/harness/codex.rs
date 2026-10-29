@@ -77,6 +77,9 @@ pub(super) const PROGRAM: &str = "codex";
 /// wants a sandbox says a command of its own.
 pub(super) const STOCK: &str = "codex --dangerously-bypass-approvals-and-sandbox";
 pub(super) const TRUST: &str = "trust_level=\"trusted\"";
+/// Its worktree trust is the `--config` flags `in_worktree` adds: a launch
+/// checks the command takes `FLAGS`.
+pub(super) const TRUST_IS_FLAGS: bool = true;
 
 /// Codex's flag for a directory added to the one it was started in.
 const ADD_DIR: &str = "--add-dir";

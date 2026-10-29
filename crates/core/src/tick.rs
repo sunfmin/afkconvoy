@@ -18,8 +18,8 @@ pub enum TickStep {
     /// Settle a claim of mine whose work has landed — its issue is closed, or
     /// the landing was cut short of closing it: clean up, release it last.
     Settle { issue: u64 },
-    /// Let go of a claim of mine whose issue GitHub says was deleted or
-    /// transferred: release it, and end its worker.
+    /// Let go of a claim of mine whose issue GitHub says was deleted,
+    /// transferred or never issued: release it, and end its worker.
     Forget { issue: u64 },
     /// Ask after the worker of a claim of mine with no PR, and settle what it
     /// declared when it stopped. `start`: whether a worker may be started
@@ -101,8 +101,8 @@ pub enum Outcome {
     /// one added since the rebuild: nothing was claimed or started, and no
     /// slot was taken.
     Blocked,
-    /// `Dispatch` found the issue gone — GitHub says it was deleted or
-    /// transferred: nothing was started, a claim it had won was released
+    /// `Dispatch` found the issue gone — GitHub says it was deleted,
+    /// transferred or never issued: nothing was started, a claim it had won was released
     /// again, and no slot was taken.
     Gone,
     /// It failed. Whatever claim it was about is still held.

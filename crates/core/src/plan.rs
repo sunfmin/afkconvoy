@@ -187,8 +187,8 @@ pub enum Status {
     Landed,
     /// The issue is closed: the claim is to be settled and released.
     Closed,
-    /// GitHub says the issue was deleted, or transferred to another repo:
-    /// nothing is left to settle, and the claim is let go.
+    /// GitHub says the issue was deleted, transferred to another repo, or
+    /// never issued: nothing is left to settle, and the claim is let go.
     Gone,
     /// A bound repo's claim on an open issue that is not a landing worker's:
     /// it was dispatched to a stage, and what that stage declares is what
@@ -253,7 +253,8 @@ pub struct WorkingSet {
     /// Claims of peers presumed dead, on closed or gone issues: locks to
     /// delete.
     pub stale_closed: Vec<PeerClaim>,
-    /// The claimed issues GitHub says were deleted or transferred, whoever
+    /// The claimed issues GitHub says were deleted, transferred or never
+    /// issued, whoever
     /// holds the claim, lowest number first.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub gone: Vec<u64>,
@@ -395,7 +396,8 @@ pub struct Observed<'a> {
     pub heartbeats: &'a [(String, u64)],
     /// The claimed issues that are closed (`issues` holds only open ones).
     pub closed: &'a [u64],
-    /// The claimed issues GitHub says were deleted or transferred.
+    /// The claimed issues GitHub says were deleted, transferred or never
+    /// issued.
     pub gone: &'a [u64],
     /// The open issues whose open PR is the fleet's own: its branch is one
     /// the fleet recorded on the issue. Unclaimed, it is a PR an escalation

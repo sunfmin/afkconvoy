@@ -15,6 +15,9 @@ pub(super) const NAME: &str = "DeepSeek Harness";
 pub(super) const PROGRAM: &str = "dsh-tui";
 pub(super) const STOCK: &str = "dsh-tui";
 pub(super) const TRUST: &str = "DSH_PERMISSION_MODE=danger-full-access";
+/// Its worktree trust is a variable, not flags: outside a role a launch
+/// adds no flag the command must take.
+pub(super) const TRUST_IS_FLAGS: bool = false;
 pub(super) const FLAGS: [&str; 1] = ["--patch"];
 
 /// Starts DSH without an approval question for its worktree.

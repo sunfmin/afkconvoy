@@ -1092,3 +1092,11 @@ fn dsh_profile_defaults_to_fleet_and_roles_override_the_team_in_either_direction
         assert_eq!(answer.json["faults"][0]["problem"], "must be fleet or host-user");
     }
 }
+
+#[test]
+fn show_of_an_issue_never_issued_says_there_is_no_such_issue() {
+    let world = bound(&[("team.md", TEAM), ("workflows/feature.md", FEATURE)]);
+    world.with_gh(|gh| gh["missing"] = json!({"999999999": 0}));
+    let error = world.afk(&["show", "--issue", "999999999"]).error();
+    assert_eq!(error, "no such issue: #999999999 (HTTP 404)");
+}

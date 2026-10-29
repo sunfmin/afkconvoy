@@ -22,7 +22,7 @@ use serde_json::{Value, json};
 use crate::checkout_list::List;
 use crate::copies::cache;
 use crate::git::Repo;
-use crate::health::Diagnosis;
+use crate::health::{Diagnosis, Overdue};
 use crate::log::{Entry, What};
 use crate::orca::Worktree;
 use crate::watch_report::Report;
@@ -1556,25 +1556,21 @@ fn findings(items: &mut Vec<Item>, at: &str, findings: &Value) {
     }
 }
 
-/// How long past its time a worker's health observation is left to a tick:
-/// the sleep and the time of the last tick of the fleet instance whose claim
-/// holds its worktree, as that instance says them. A worktree no claim holds
-/// gets the longest any instance says; with none said, there is no grace.
-fn tick_grace(look: &Value) -> impl Fn(&str) -> u64 {
-    let mut of_worktree = BTreeMap::new();
-    let mut longest = 0;
+/// Each fleet instance's tick cadence and the worktrees its claims hold, as
+/// its `doctor.fleet.last_tick` and `doctor.claims` in the look say them.
+fn cadence(look: &Value) -> crate::health::Cadence {
+    let mut cadence = crate::health::Cadence::default();
     for checkout in look["checkouts"].as_array().into_iter().flatten() {
         let doctor = &checkout["doctor"];
         let tick = &doctor["fleet"]["last_tick"];
-        let cadence = tick["sleep"].as_u64().unwrap_or(0) + tick["took"].as_u64().unwrap_or(0);
-        longest = longest.max(cadence);
-        for claim in doctor["claims"].as_array().into_iter().flatten() {
-            if let Some(worktree) = claim["worktree"].as_str() {
-                of_worktree.insert(worktree.to_string(), cadence);
-            }
-        }
+        let worktrees = doctor["claims"].as_array().into_iter().flatten();
+        cadence.instance(
+            tick["sleep"].as_u64().unwrap_or(0),
+            tick["took"].as_u64().unwrap_or(0),
+            worktrees.filter_map(|claim| claim["worktree"].as_str()).map(PathBuf::from),
+        );
     }
-    move |path: &str| of_worktree.get(path).copied().unwrap_or(longest)
+    cadence
 }
 
 /// Everything in a look an operator would act on, each by an identity that
@@ -1643,31 +1639,30 @@ pub(crate) fn actionable(look: &Value, now: u64) -> Vec<Item> {
             push(&mut items, format!("step:{at}:{step}"), reason);
         }
     }
-    let health = &look["host"]["host_kit"]["worker_health"];
-    let grace = tick_grace(look);
-    for worker in health["workers"].as_array().into_iter().flatten() {
-        let next = worker["next_check"].as_u64().unwrap_or(u64::MAX);
-        let path = worker["path"].as_str().unwrap_or("unknown");
-        if next.saturating_add(grace(path)) <= now {
-            let reason = format!(
-                "the health observation of the worker in {path} was due at {} UTC and is still \
-                 waiting: {}",
-                crate::log::utc(next),
-                worker["error"]
-            );
-            push(&mut items, format!("health:{path}"), reason);
-        }
-    }
-    for failed in health["observations_failed"].as_array().into_iter().flatten() {
-        let next = failed[2].as_u64().unwrap_or(u64::MAX);
-        let path = failed[0].as_str().unwrap_or("unknown");
-        if next.saturating_add(grace(path)) <= now {
-            let reason = format!(
-                "the health observation of the worker in {path} failed, and its retry is overdue: {}",
-                failed[1]
-            );
-            push(&mut items, format!("health:{path}"), reason);
-        }
+    let health = crate::health::Health::deserialize(&look["host"]["host_kit"]["worker_health"]);
+    for overdue in health.map(|health| health.overdue(&cadence(look), now)).unwrap_or_default() {
+        let (path, reason) = match overdue {
+            Overdue::Waiting { path, due, error } => {
+                let reason = format!(
+                    "the health observation of the worker in {} was due at {} UTC and is still \
+                     waiting: {}",
+                    path.display(),
+                    crate::log::utc(due),
+                    json!(error)
+                );
+                (path, reason)
+            }
+            Overdue::Retry { path, error } => {
+                let reason = format!(
+                    "the health observation of the worker in {} failed, and its retry is \
+                     overdue: {}",
+                    path.display(),
+                    json!(error)
+                );
+                (path, reason)
+            }
+        };
+        push(&mut items, format!("health:{}", path.display()), reason);
     }
     items
 }
@@ -1736,7 +1731,7 @@ pub fn finding() -> Option<crate::doctor::Finding> {
     // The kit's paused list or its faults are the no-harness row. The busy
     // sentence alone is not.
     match situation {
-        Some(situation) if !kit_cannot_start_watch() => Some(crate::doctor::finding(
+        Some(situation) if !crate::health::no_harness_for_watch() => Some(crate::doctor::finding(
             crate::doctor::Kind::WatchBusy,
             busy.to_string(),
             situation,
@@ -1745,17 +1740,6 @@ pub fn finding() -> Option<crate::doctor::Finding> {
         Some(situation) => Some(cannot_start(unavailable.unwrap_or(situation))),
         None => unavailable.map(cannot_start),
     }
-}
-
-/// Whether the host kit's paused list or its worker-health faults leave no
-/// harness a watch can start on.
-fn kit_cannot_start_watch() -> bool {
-    let paused = !crate::paused::read().is_empty();
-    let faults = crate::health::show()["faults"].as_array().is_some_and(|rows| !rows.is_empty());
-    if !paused && !faults {
-        return false;
-    }
-    crate::health::watch_candidates().map(|candidates| candidates.is_empty()).unwrap_or(true)
 }
 
 /// One command listing the terminals in the watch's own directory. A missing
@@ -2273,12 +2257,19 @@ mod tests {
         assert!(!commands.contains("close 8 --repo acme/tracker"));
     }
 
+    /// A worker as worker health records it, observed next at `next_check`.
+    fn observed(path: &str, next_check: u64, error: Option<&str>) -> Value {
+        json!({"path": path, "terminal": "t", "harness": "codex", "snapshots": [],
+            "next_check": next_check, "rate_retries": 0, "source": "rule", "action": "waiting",
+            "error": error})
+    }
+
     #[test]
     fn a_quiet_look_has_nothing_to_act_on() {
         let look = json!({"findings": [], "checkouts": [{"checkout": "/r", "doctor": {
             "findings": [], "waiting_on_human": [], "fleet": {"alive": true, "broken": null,
             "failed_steps": []}, "watching": {"ticks": [{"instance": "a", "failed": false}]}}}],
-            "host": {"host_kit": {"worker_health": {"workers": [{"path": "/w", "next_check": 2000}]}}}});
+            "host": {"host_kit": {"worker_health": {"workers": [observed("/w", 2000, None)]}}}});
         assert!(actionable(&look, 1000).is_empty());
     }
 
@@ -2291,7 +2282,7 @@ mod tests {
                     "evidence": "the resident watch is busy; its round remains undelivered",
                     "fix": "orca terminal list --worktree path:/watch --json"},
                 {"severity": "info", "what": "a key is read and changes nothing"}],
-            "host": {"host_kit": {"worker_health": {"workers": [{"path": "/w", "next_check": next, "error": "stuck"}]}}},
+            "host": {"host_kit": {"worker_health": {"workers": [observed("/w", next, Some("stuck"))]}}},
             "checkouts": [{"checkout": "/r", "doctor": {
             "findings": [{"what": "`dispatch` failed in tick and has not recovered",
                 "evidence": "no", "fix": "afkconvoy tick",
@@ -2331,7 +2322,7 @@ mod tests {
                 "fleet": {"alive": true, "last_tick": {"sleep": 90, "took": 10}},
                 "claims": [{"issue": 7, "worktree": "/w"}]}}],
             "host": {"host_kit": {"worker_health": {
-                "workers": [{"path": "/w", "next_check": next, "error": null}],
+                "workers": [observed("/w", next, None)],
                 "observations_failed": [["/f", "no terminal", next]]}}}})
         };
         let ids = |look: &Value, now| -> Vec<String> {
