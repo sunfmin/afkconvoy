@@ -84,7 +84,7 @@ impl Scan {
             return Scan::read(repo);
         }
         let layout = repo.layout();
-        let records = repo.remote_records(&layout.every(""))?;
+        let records = repo.remote().records(&[&layout.every("")], Fresh::Process)?;
         let elsewhere: Vec<&str> = records
             .iter()
             .filter_map(|record| layout.kept(&record.name)?.strip_prefix(CLAIM_KIND))

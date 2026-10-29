@@ -90,6 +90,7 @@ impl Wire for Git {
 #[derive(Debug, Clone, Default)]
 pub struct Push {
     force: bool,
+    atomic: bool,
     writes: Vec<Write>,
 }
 
@@ -135,6 +136,12 @@ impl Push {
         self
     }
 
+    /// Every write takes, or none does.
+    pub fn atomic(mut self) -> Push {
+        self.atomic = true;
+        self
+    }
+
     /// The last write takes only while its ref is still at `expected`.
     pub fn leased(mut self, expected: &str) -> Push {
         if let Some(write) = self.writes.last_mut() {
@@ -152,6 +159,9 @@ impl Push {
         let mut args = vec!["push".to_string(), "--quiet".to_string()];
         if self.force {
             args.push("--force".into());
+        }
+        if self.atomic {
+            args.push("--atomic".into());
         }
         for write in &self.writes {
             if let Some(lease) = &write.lease {
@@ -743,6 +753,23 @@ mod tests {
             ]
         );
         assert_eq!(push.refs().collect::<Vec<_>>(), ["refs/convoy/claim/7", "refs/x"]);
+    }
+
+    #[test]
+    fn an_atomic_push_says_so() {
+        let push = Push::default().atomic().and_delete("refs/a").leased("1").and_delete("refs/b");
+        assert_eq!(
+            push.args(),
+            [
+                "push",
+                "--quiet",
+                "--atomic",
+                "--force-with-lease=refs/a:1",
+                "origin",
+                ":refs/a",
+                ":refs/b"
+            ]
+        );
     }
 
     #[test]
