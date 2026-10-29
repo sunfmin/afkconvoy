@@ -225,6 +225,27 @@ pub(crate) fn view(
     Ok(json!(rows))
 }
 
+/// Whether a land turn of `branch` holds a candidate on the chain now: a
+/// valid one of that branch, in `records`, whose turn runs on this host and
+/// is alive. Such a turn waits on the chain — its gate, the candidates ahead,
+/// its round — however long that takes, and holds no lane while it waits for
+/// its round (sunfmin/control#244).
+pub(crate) fn landing(records: &[crate::git::RemoteRecord], prefix: &str, branch: &str) -> bool {
+    let chains = records
+        .iter()
+        .filter(|record| record.name.starts_with(prefix))
+        .filter_map(|record| serde_json::from_str::<Chain>(&record.subject).ok());
+    chains.into_iter().any(|chain| {
+        chain.candidates.iter().any(|c| {
+            c.valid()
+                && c.phase != Phase::Landed
+                && c.branch == branch
+                && c.owner.host == crate::this_host()
+                && identity(c.owner.pid).ok().flatten().as_ref() == Some(&c.owner)
+        })
+    })
+}
+
 /// An unreadable observation never proves death. Kernel start time prevents
 /// PID reuse; host identity is physical, independent of --host.
 #[cfg(target_os = "macos")]
@@ -1322,6 +1343,34 @@ fn publish(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_branch_whose_live_turn_holds_a_valid_candidate_is_landing() {
+        let me = super::identity(std::process::id()).unwrap().unwrap();
+        let chain = |phase: &str, owner: &super::Process, cancelled: Option<&str>| {
+            let c = serde_json::json!({
+                "id": "c0", "pr": 1, "issue": 1, "branch": "b", "original_head": "h",
+                "predecessor": "base", "commit": "m", "tree": "t", "command": "fast",
+                "seconds": 60, "phase": phase, "owner": owner, "gate": null,
+                "descendants": [], "worktree": "w", "barrier": false,
+                "cancelled_by": cancelled, "cause": null, "stopped": false, "result": null,
+            });
+            let subject = serde_json::json!({"candidates": [c]}).to_string();
+            vec![crate::git::RemoteRecord {
+                name: "refs/convoy/candidates/main".into(),
+                sha: "s".into(),
+                subject,
+            }]
+        };
+        let landing = |records: &[crate::git::RemoteRecord], branch| {
+            super::landing(records, "refs/convoy/candidates/", branch)
+        };
+        assert!(landing(&chain("green", &me, None), "b"), "waiting for its round");
+        assert!(!landing(&chain("green", &me, None), "other"), "another branch's");
+        assert!(!landing(&chain("green", &me, Some("c9")), "b"), "cancelled");
+        let dead = super::Process { pid: u32::MAX - 1, ..me.clone() };
+        assert!(!landing(&chain("slow", &dead, None), "b"), "its turn is gone");
+    }
+
     #[test]
     fn a_ref_lock_held_by_another_push_is_told_from_a_remote_fault() {
         let held = "To https://github.com/o/r.git\n ! [remote rejected]   31515b8c -> refs/convoy/candidates/main (failed)\nerror: failed to push some refs";
