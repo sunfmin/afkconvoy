@@ -51,6 +51,7 @@ pub mod evidence;
 pub mod exclusive;
 pub mod first_start;
 pub mod fleet;
+pub mod fleet_report;
 pub mod flows;
 pub mod forget;
 pub mod gate;
@@ -91,9 +92,9 @@ pub mod paused;
 pub mod probe;
 mod process;
 mod process_scope;
-mod publication;
 pub mod queue;
 pub mod recovery;
+pub mod remote;
 mod repair;
 pub mod resources;
 pub mod role;
@@ -108,6 +109,7 @@ pub mod slow_gate;
 pub mod stage;
 pub mod steer;
 pub mod stop;
+pub mod stop_release;
 pub mod switch;
 pub mod takeover;
 mod target;
@@ -117,6 +119,7 @@ pub mod tools;
 pub mod topic;
 pub mod tracker;
 mod turn;
+mod turn_answer;
 pub mod wake;
 pub mod watch;
 pub mod watch_landing;
@@ -491,7 +494,7 @@ enum Command {
     ///
     /// `split` is whether stage briefs offer splitting: true unless the team file says `split: false`. Anything but true or false is a fault (`afkconvoy help team`). `dsh_profile` is `fleet` (default) or `host-user`: which profile DSH workers load, independently of host_user. A role may say its own choice; check answers its effective dsh_profile and refuses every other value.
     ///
-    /// Each of `roles` is {"name", "repo", "path", "commit", "host_user", "dsh_profile", "skills", "above", "limits", "roster", "range", "left_out", "unmatched", "nothing_safe"}: `path` is the role's directory in `repo`, "" for a whole repo; `commit` the one the role's repo was read at; `host_user` whether its workers are given the host user's skills and rules — its own say, `{ dir, host_user, dsh_profile }`, or the team's; a key of that map but those three, or a `host_user` that is not true or false, is a fault; `above` each `CLAUDE.md` and `.claude/` a directory above the role holds in its repo, as a path from the repo's root — but for the team's own `CLAUDE.md`, where the team's directory is above the role: those are the team rules, which a worker is given; `limits` the harnesses the role holds limits for — a hook or a denied permission in its `.claude/settings.json` for claude-code, an entry of its `.pi/extensions/` for pi, a hook in its `.codex/hooks.json` for codex, a `.dsh/cordis.patch.yml` overlay for dsh, a hook or denied permission in its `.kimi-code/limits.toml` for kimi, a hook or denied permission in its `.grok/config.toml` for grok; `roster` its entry in the team's roster, {"cast", "run": [{"harness", "model", "good_at"}]} with null for what it leaves out, and null for a role it names none for; `range` its range on this host, [{"harness", "models"}] in the order a worker takes them — the host kit whole for a role with no entry, or whose entry matches nothing in the host kit, less each harness the role holds no limits for while it holds limits for another, and null where this host has no host kit (`afkconvoy help roster`); `left_out` each harness its entry and the host kit allow it and its range leaves out, [{"harness", "why"}] — why `no limits for pi` — and null where this host has no host kit; `unmatched` what its roster entry allows and the host kit holds, where the entry matches nothing in the host kit — the role then ranges over the host kit whole — and null otherwise; `nothing_safe` why no worker of it can be started on this host, where it holds limits for no harness the host kit holds — its stages wait — and null otherwise. Each of `workflows` is {"name", "flow_label", "max_rework", "max_consecutive_rework", "stages", "land"}, the defaults filled in; each stage is {"name", "by", "do", "writes", "escalate", "pass", "reject"}. `unmatched_models` lists each roster model matching nothing held, as {role, harness, model, holds, said}, with the nearest names or the two matches; a tick opens one issue for each in the team’s repo.
+    /// Each of `roles` is {"name", "repo", "path", "commit", "host_user", "dsh_profile", "skills", "above", "limits", "roster", "range", "left_out", "unmatched", "nothing_safe"}: `path` is the role's directory in `repo`, "" for a whole repo; `commit` the one the role's repo was read at; `host_user` whether its workers are given the host user's skills and rules — its own say, `{ dir, host_user, dsh_profile }`, or the team's; a key of that map but those three, or a `host_user` that is not true or false, is a fault; `above` each `CLAUDE.md` and `.claude/` a directory above the role holds in its repo, as a path from the repo's root — but for the team's own `CLAUDE.md`, where the team's directory is above the role: those are the team rules, which a worker is given; `limits` the harnesses the role holds limits for — a hook or a denied permission in its `.claude/settings.json` for claude-code, an entry of its `.pi/extensions/` for pi, a hook in its `.codex/hooks.json` for codex, a `.dsh/cordis.patch.yml` overlay for dsh, a hook or denied permission in its `.kimi-code/limits.toml` for kimi, a hook or denied permission in its `.grok/config.toml` for grok; `roster` its entry in the team's roster, {"run": [{"harness", "model", "good_at"}]} with null for what it leaves out, and null for a role it names none for; `range` its range on this host, [{"harness", "models"}] in the order a worker takes them — the host kit whole for a role with no entry, or whose entry matches nothing in the host kit, less each harness the role holds no limits for while it holds limits for another, and null where this host has no host kit (`afkconvoy help roster`); `left_out` each harness its entry and the host kit allow it and its range leaves out, [{"harness", "why"}] — why `no limits for pi` — and null where this host has no host kit; `unmatched` what its roster entry allows and the host kit holds, where the entry matches nothing in the host kit — the role then ranges over the host kit whole — and null otherwise; `nothing_safe` why no worker of it can be started on this host, where it holds limits for no harness the host kit holds — its stages wait — and null otherwise. Each of `workflows` is {"name", "flow_label", "max_rework", "max_consecutive_rework", "stages", "land"}, the defaults filled in; each stage is {"name", "by", "do", "writes", "escalate", "pass", "reject"}. `unmatched_models` lists each roster model matching nothing held, as {role, harness, model, holds, said}, with the nearest names or the two matches; a tick opens one issue for each in the team’s repo.
     ///
     /// Each of `patrols` is {"name", "by", "do", "every", "max_open", "max_runs_a_day", "max_landed_a_day", "runs_here"}: `every` in seconds, `max_runs_a_day` null where the file says none. `runs_here` is whether the config of this checkout names the patrol — false with `--team` and `--dir`, which read no config.
     ///
@@ -831,7 +834,7 @@ enum Command {
     ///   reviewer  the host kit whole
     /// ```
     ///
-    /// The first line is the workflow, its flow label and its two breakers. Then one row per stage, in the order its file lists them — an issue enters at the first — with who performs it, as `<role>: <skill>` or `human`, and what else its file sets. Under each stage is where its `pass` leads. A `reject` is said on its stage's row and drawn as the line that leaves that row to the left and comes back in, at the arrow, to the stage it leads to. The last rows are the ends: `land` with who lands, and `done`. Under the drawings, once, is the team's roster: a row per role, each harness and model it may run in order of preference — `any model` where the entry names none — with what it is good at, and how the team says to cast among them under it; `the host kit whole` for a role the roster names no entry for (`afkconvoy help roster`). What a role's range is on this host is `afkconvoy check`'s to answer.
+    /// The first line is the workflow, its flow label and its two breakers. Then one row per stage, in the order its file lists them — an issue enters at the first — with who performs it, as `<role>: <skill>` or `human`, and what else its file sets. Under each stage is where its `pass` leads. A `reject` is said on its stage's row and drawn as the line that leaves that row to the left and comes back in, at the arrow, to the stage it leads to. The last rows are the ends: `land` with who lands, and `done`. Under the drawings, once, is the team's roster: a row per role, each harness and model it may run in order of preference — `any model` where the entry names none — with what it is good at; `the host kit whole` for a role the roster names no entry for (`afkconvoy help roster`). What a role's range is on this host is `afkconvoy check`'s to answer.
     ///
     /// With `--issue`, JSON:
     ///
@@ -1031,7 +1034,7 @@ enum Command {
     ///   - `settings`: the host settings (`afkconvoy run --help`): {file, said, in_force} — each by its key, the name of the flag of `run` that names it (`hot_cores` for `--hot-cores`), in that flag's units: said is what the host says, null where it says none and the default holds; in_force what holds for this repo's fleet on this host, each default worked out for it — the panel's port {const:PANEL_PORT} where the host says none. {file, error} where the file cannot be read
     ///   - `admission`: whether a tick would start a new worker on this host now, the thresholds in force and what the host reads: as `plan` answers it (`afkconvoy plan --help`), or {error} where a share the host says is wrong. A tick that admission held back is no "started no worker" finding.
     ///   - `exclusive`: the host's exclusive queue as the one observation `afkconvoy queue` answers — {observed_at, status, paused, worker, repos, running, waiting} — at doctor's observation time, from the host runner this look asked once: worker capacity, each repo lane, and every request with its `lane`, durations and scheduling exactly as `afkconvoy queue --help` documents. A request not yet started is in `waiting`, with its scheduling state; it is not marked `waiting_for_capacity`, as a landing turn's answer is. Each `command` is the one line `afkconvoy queue --help` describes: the program and the arguments that say what is running. A script is not shown as the script: a `sh -c` test script is named by its `cargo nextest` line, or by its `afkconvoy exclusive` invocation. The line carries no `NAME=value`. `status` is `no_runner`, with empty arrays, where no host runner listens; `paused` is null where an older host runner does not say it. {error} when the host runner cannot say it, never an empty queue. `afkconvoy queue` reads just the local queue, without this full diagnosis
-    ///   - `resources`: resource episodes observed by the host runner, with stable ids, active conditions, since, episode, worker or host readings and evidence. Admission and pressure retain their identities during five minutes of recovery. Resource findings also have watch_id, the episode identity covered by a running or reported watch.
+    ///   - `resources`: resource episodes observed by the host runner, with stable ids, active conditions, since, episode, worker or host readings and evidence. Admission and pressure retain their identities during five minutes of recovery. A resource finding's watch_id is that episode identity, covered by a running or reported watch.
     ///   - `watch`: this host's watch (`afkconvoy run --help`, WATCH): {directory, stock, running, last, unavailable, association}. directory is where the next watch runs and stock whether it uses afkconvoy's instruction. running and last are each {id, directory, stock, items, started, harness, model, terminal, transcript, did, reported, report, attempts, ended, outcome}. items says why it started; transcript holds the session's exit status, not its printed output. reported is whether it called `watched`; report is its complete {held_back, did, verified, human, pending} record, null if it did not report; did is that report's actions. attempts holds each session whose harness gave out: {harness, model, terminal, why, did, screen}; screen is terminal evidence for continuation, never a report. outcome is ended (reported), not_reported (exited without reporting), closed, time_limit or no_harness. running and last are null with none. unavailable says why no harness could start or continue the last requested watch, null where one could. Earlier rounds are left out; `--rounds` adds `rounds`, each the same shape as `last`. `last` keeps the last round's report. `doctor --all` says each watch log line once, as `events` on this object — {at, event, cause, instance}, newest first — and leaves those lines out of every checkout's `fleet.events`.
     ///   - `installed`: the release installed where the host runner was started from, where the host runner moves onto it or did not: {path, version, from, since, wait_expired, held_back, failed} — the file; the release it says, null where it says none; the host runner's own release; when that file answered, in epoch seconds; whether the {const:MOVE_WAIT_SECONDS}s wait expired; what holds the move back, each in words ("/Users/me/Developments/hkj is in a tick", "1 exclusive command(s) running"), [] once nothing does, or the last blockers when the wait expired; and why the move failed — it did not start, or does not say its version — null until one did. null with none: nothing newer is installed there, or no host runner runs (`afkconvoy run --help`)
     /// - `fleet`: the `run` of this host for this repo:
@@ -1052,16 +1055,18 @@ enum Command {
     /// - `claims`: each claim of that instance: {issue, title, status, pr, stage, role, held_for, worker, worktree, gate} — status as `plan` gives it; stage and role in a bound repo; held_for in seconds; worker is {state, quiet}, state being busy, stopped or gone, and null when orca could not say; gate is {green_at} when a green gate run is on record for the tree the worktree is at, else null
     /// - `issues`: as `plan` answers them: {frontier, excluded, escalating, locks, free_slots, patrols} — what a worker can be started on, what waits and why, and what is being handed to a human and why. null when they could not be read
     /// - `refusals`: issue number → the harnesses that refused that task, each with `harness` and `evidence`, read from GitHub. Later starts skip them across every stage; the harness stays healthy for other issues.
-    /// - `candidates`: the remote candidate chains for every target branch of this repo, each in order and identified by `target_branch`. Each candidate is {phase, commit, issue, pr, predecessor, waiting, target_branch, id, cause, cancelled_by}. `waiting` is `constructing_worktree`, `validating`, `waiting_for_round` (fast-green, until a round's slow gate lands it), `slow_gating` (the round's tip, running the slow gate), `waiting_for_predecessor`, `confirming_process_exit`, `gate_red`, `cancelled` or `landed`. A finished candidate — phase `landed`, `red` or `cancelled` — carries no gate excerpt. A candidate gating now (phase `validating` or `slow`) may still carry `excerpt`. An error reading the chain is reported as `{error}`.
+    /// - `candidates`: the remote candidate chains for every target branch of this repo, each in order and identified by `target_branch`. Each candidate is {phase, commit, issue, pr, predecessor, waiting, target_branch, id, cause, cancelled_by, round}. `round` is the id of the candidate whose slow gate it waits on: the tip of the round now slow-gating, for each candidate of that round and the tip itself; null for one behind it or with no round running, which waits for the next round. `waiting` is `constructing_worktree`, `validating`, `waiting_for_round` (fast-green, until a round's slow gate lands it), `slow_gating` (the round's tip, running the slow gate), `waiting_for_predecessor`, `confirming_process_exit`, `gate_red`, `cancelled` or `landed`. A finished candidate — phase `landed`, `red` or `cancelled` — carries no gate excerpt. A candidate gating now (phase `validating` or `slow`) may still carry `excerpt`. An error reading the chain is reported as `{error}`.
     /// - `codex_workers`: this checkout's Codex sessions, each with issue, worktree, harness, model, effort, model_source, effort_source and codex_home (its private session directory). Automatic starts read the model from your `~/.codex/config.toml` (`user_selection`) unless a model label is followed (`model_label`; a stored `casting` is read as that), and no user preference leaves the model null for Codex's native default (`codex_default`). Every start reads the effort from your own Codex config, or uses Codex's model default. Sources stay attached to the session after your config changes; a saved `/model` choice is shown with its session's private config as the source. [`afkconvoy help worker-launch`](help:worker-launch).
     /// - `waiting_on_human`: as `plan` answers it, and as the panel lists it under "With a human": every open issue nobody holds that waits for a human — escalated, at a stage that is a human's, past the end of its workflow and still open, or reporting a patrol's failed run — each as {issue, title, why, url, since, answer}: `why` is what kind of wait, then the reason the issue’s comment gives, in its first sentence; `url` is that comment (the report itself for an older failed patrol or cut with no reason comment), or null where no comment explains the wait; `answer` is the line that answers it, run as printed apart from what stands between < and >, naming the checkout as that command takes it so the line runs from any directory. An escalation with no position gets the team's only flow label filled in; with several workflows, `why` lists the flow labels to choose `<flow label>` from. null when the issues could not be read
-    /// - `findings`: what is wrong, most severe first — none: []. Each is {severity, what, evidence, fix, see}:
+    /// - `findings`: what is wrong, most severe first — none: []. Each is {kind, severity, what, evidence, fix, see, watch_id}:
+    ///   - `kind`: what it is a finding of, in snake_case: the troubleshooting row it is headed by (`no_run`, `step_unrecovered`, `health_overdue`)
     ///
     ///   - `severity`: how much it matters, one of those below
     ///   - `what`: the fault, in a sentence
     ///   - `evidence`: what was read that says so
     ///   - `fix`: one command line, run as printed apart from what stands between < and > — it names the checkout as the command takes it, so the line runs from any directory, and `afkconvoy doctor --all` is run from anywhere — or, for a fault in a team's or a role's file, or a key the repo's config leaves out, `<file>: <key>` to edit. For an escalation with no position and several workflows, `what` lists the flow labels to choose `<flow label>` from
     ///   - `see`: the command that prints the help topic explaining it: `afkconvoy help humans` where what it reports waits for a human, else `afkconvoy help troubleshooting`, which has a row for each finding
+    ///   - `watch_id`: the condition's identity, made where it is judged: the same while the condition lasts, whatever `what` says of it. `checkout:` is one of this checkout, `host:` one of the host; a resource's is its episode identity. The host's watch acts on each finding but an `info` one, or its own, by `kind` and `watch_id`, never by its words
     ///
     /// A finding's `severity` is one of, most first:
     ///
@@ -1074,7 +1079,7 @@ enum Command {
     /// {"host": {"host_kit", "exclusive", "watch", "resources", "installed"}, "findings", "checkouts": [{"checkout", "repo", "doctor"}], "until"}
     ///
     /// - `host`: what of `host` is the host's alone, as above, said once
-    /// - `findings`: the host's findings, said once however many checkouts found them, most severe first: a command missing or logged out, orca not running, a harness paused, the host runner not moved onto a newer afkconvoy
+    /// - `findings`: the host's findings, said once however many checkouts found them, most severe first: a command missing or logged out, orca not running, a harness paused, the host runner not moved onto a newer afkconvoy, a worker health observation overdue by the pace of every fleet instance on the host. A checkout's own findings add, under `--all`, its fleet instance not alive, and, with `--since`, each tick of the interval that failed with what no unrecovered step's finding says
     /// - `checkouts`: each checkout on the list, in its order — [] with none — with the repo its remote `origin` names, null where it is no git checkout any more, and its `doctor`: what `doctor` answers in it — `waiting_on_human` among it — but for the host's, which are above. Each is asked as the fleet of the host its `run` named, unless `--host` names one. {"error", "see"} where it could not be asked
     /// - `until`: this look's boundary in epoch seconds, captured before reading any checkout. Pass it as the next `--since`. Null when a checkout or its interval could not be read: keep the previous boundary and try again.
     ///
@@ -1159,7 +1164,7 @@ enum Command {
     /// - `casting`: each open issue, {number, needed, why, stages, running}. why is "its model label" where every stage followed one, "the user's default" where none did, or both where the stages differ. needed is always false. stages lists {stage, harness, model, followed, why, skipped}; followed says whether the one `model:` label was followed, model is that id or null for the user default, and skipped is empty. running is {harness, model} recorded at the existing worker's launch — model null for the user default — or null. Doctor answers the same under issues.casting, and the panel shows it under Model selection. There is no caster.
     /// - `waiting_on_human`: every open issue nobody holds that waits for a human, lowest number first: {issue, title, why, url, since, answer} — `why`: what kind of wait, then the reason the issue’s comment gives, in its first sentence; `url`: that comment (the report itself for an older failed patrol or cut with no reason comment), or null where no comment explains the wait; since when in epoch seconds where GitHub said, and the line that answers it, run as printed apart from what stands between < and >, naming the checkout as that command takes it so the line runs from any directory. An escalation with no position gets the team's only flow label filled in; with several workflows, `why` lists the flow labels to choose `<flow label>` from. They are: an escalated issue, one whose records call for a human, one at a stage that is a human's, one whose workflow ended and that is still open, and the report of a patrol's failed run
     /// - `escalating`: in a bound repo, when there are any: the unclaimed issues a tick hands to a human, with why: {number, title, reason}
-    /// - `mine`: the claims of `--instance`: {number, title, status, pr, declared} — `declared` is true while a verdict declared under the claim waits to be acted on: the claim takes no slot meanwhile. In a bound repo with `due`, the stage a worker is to be started on once the claim's stage has declared, where a role performs one. status is one of those below
+    /// - `mine`: the claims of `--instance`: {number, title, status, pr, declared, idle} — `declared` is true while a verdict declared under the claim waits to be acted on: the claim takes no slot meanwhile. `idle` is true of a landing claim whose worker is not changing the tree — gone or idle, or its turn queued, waiting on a predecessor or last answering a wait: it takes no slot either, and is held until its PR lands. In a bound repo with `due`, the stage a worker is to be started on once the claim's stage has declared, where a role performs one. status is one of those below
     /// - `peer_live`: other instances' claims within the lease — never touched
     /// - `stale`: other instances' claims past the lease, on open issues — a tick takes them
     /// - `stale_closed`: the same on closed issues — a tick deletes them (each of the three: {number, instance, sha})
@@ -1276,7 +1281,7 @@ enum Command {
     ///
     /// When admission holds back for one reason — load, memory or disk — at every tick for ten minutes (`--admit-inspect-after` sets the host's span), doctor names a finding that starts the host's watch at its next look. Reasons that change start none. Memory pressure (macOS's level at least 2) held for the same span is its own finding, even while admission admits, and never makes a worker hot. Each episode ends after five minutes of recovery. The watch receives the condition, how long it held, admission's reading and shares, and host evidence: for disk, each fleet's worktrees and caches and the largest directories outside them; for load or memory, the fleet's worker process trees and, where `hostvitals` is on the host runner's `PATH` and `hostvitals now` answers, its whole-host findings first, then its rankings of processes and Apps and its remaining readings. Otherwise it receives the fleet's hottest processes outside those trees, with one line saying why hostvitals could not answer. The evidence names its source. hostvitals is optional and is never installed as a dependency; hot-worker sampling stays the fleet's own. It checks admission or pressure itself after acting. Resource readings and scheduled looks continue during a watch; new episodes queue for a later round, and an episode whose watch reported starts nothing again, including across a host runner move. A watch that ends without reporting leaves the episode eligible at the next look that still finds it.
     ///
-    /// WATCH. Every host watches itself. Where its host settings name an operator's directory — `--watch-dir ~/Developments/control`, known to orca — the watch runs there under that directory's own rules, with none of the stock instruction added. Otherwise the stock watch runs in the fleet's own directory, `stock-watch/` under the cache directory (`afkconvoy help cache` says where it is), made, kept and registered with orca when it starts. Its short instruction carried in the binary says: find what holds the fleets' work back, fix it with the watch's authority, check that the work goes on and say what it did. Every watch leaves spending money or needing an account, a credential or a person's hands; what cannot be undone; taking a secret or private data off the host; and changing what a product is for or who it is for with a human, acts on none and lists each in its command report, which `doctor` shows as `report`. Unplaced host kit models are low priority: a watch started for other work takes them too, and they alone start a watch at most once a day, across runner restarts. The watch researches them with its web tools and places them through `afkconvoy kit --research <file>` (`afkconvoy kit --help` gives the checked file format). Its host runner takes a look every {const:WATCH_EVERY} seconds (`--watch-every`): `afkconvoy doctor --all --since <until of its last look>`, the fleet's own code, which runs no model, keeping `until` itself. A look that holds something an operator would act on — an issue waiting on a human, a finding that holds something up, a fleet instance not alive or broken, a failed tick or step, a worker whose health observation is past its time — starts one watch. An observation counts as missed only past a tick's chance to make it: past its time by more than the sleep and the time of the last tick of the fleet instance whose claim holds the worker's worktree, as that instance's `doctor.fleet.last_tick` says them (`sleep`, `took`), or the longest any instance on the host says, for a worktree no claim holds. A fleet that stopped ticking, or a tick that hangs, leaves it missed past that grace. Its episodes stay covered while it runs and after it reports; an episode lasts while each look still holds it. An unreported watch leaves its episodes and daily research reservation eligible at the next look that still finds the work, including after a restart. A watch retains one resident interactive Agent session in the watch directory across independent watch rounds. Each round has its own ID, delivery receipt, report and execution hour, excluding queueing, standby and earlier rounds. It is given its brief as a file in the cache directory — what the look answered, why it started, and what each earlier watch on the same items did — with authority over the fleets of this host and an hour, its continuations together. It runs on the harness this host last started a worker on that took its brief, then the host kit's order, never one paused or with a fault on record, started trusted with prompts skipped, interactively in its terminal titled "afkconvoy watch", with the brief as its first message, as a worker is. A human may watch it and type to it. Its last step is the exact `afkconvoy watched --watch <id> --text-file <report.json>` line at the end of its brief (`afkconvoy watched --help`): the report records what held work back, each action, what it verified, each human question and answer line, and what remains pending. Reporting completes only that round and leaves the healthy Agent and Terminal standing by for the next message. Standby without pending work sends no prompt and runs no model. Only an exit, proven harness or context failure, or explicit reset replaces the owned executor, after confirming it ended. A watch ended without that command says it did not report. Printed output is no record. Worker health observes its own terminal; a stopped watch with no report is nudged. A watch whose harness gives out — a usage limit, capacity stop, refusal or failed exit — is ended and continued on the next harness that can start it, with the same look and terminal evidence of its work so far, one session at a time; the fault is recorded (`host_kit.worker_health`), and that harness is skipped until its hourly probe answers. Looks continue while a round runs. The host runner durably queues new episodes and merges repeated observations of queued, executing and reported episodes. Before the next round, a fresh look removes recovered conditions. Delivery waits for the previous report and the same Terminal's input readiness; busy input is left untouched. An observed recovery and return is a new episode, even during an older round. A host runner started again — after moving onto a newer release, say — keeps the watch it finds running. Its start, its end and each thing it did are lines of every tick log on the checkout list and of the host runner's log; `doctor` says the watch running and the last one, as `host.watch`, and a critical finding where no harness could start or continue it. `--watch-dir default` returns to the stock watch; a running watch and its continuations keep their starting directory and rules. `doctor.host.watch.directory` says the directory the next watch runs in, and `stock` whether it is the stock one, even before a watch starts; each running or last watch says its own directory and `stock` too.
+    /// WATCH. Every host watches itself. Where its host settings name an operator's directory — `--watch-dir ~/Developments/control`, known to orca — the watch runs there under that directory's own rules, with none of the stock instruction added. Otherwise the stock watch runs in the fleet's own directory, `stock-watch/` under the cache directory (`afkconvoy help cache` says where it is), made, kept and registered with orca when it starts. Its short instruction carried in the binary says: find what holds the fleets' work back, fix it with the watch's authority, check that the work goes on and say what it did. Every watch leaves spending money or needing an account, a credential or a person's hands; what cannot be undone; taking a secret or private data off the host; and changing what a product is for or who it is for with a human, acts on none and lists each in its command report, which `doctor` shows as `report`. Unplaced host kit models are low priority: a watch started for other work takes them too, and they alone start a watch at most once a day, across runner restarts. The watch researches them with its web tools and places them through `afkconvoy kit --research <file>` (`afkconvoy kit --help` gives the checked file format). Its host runner takes a look every {const:WATCH_EVERY} seconds (`--watch-every`): `afkconvoy doctor --all --since <until of its last look>`, the fleet's own code, which runs no model, keeping `until` itself. A look that holds something an operator would act on — an issue waiting on a human, or a finding that is not `info` and not of the watch itself: a fleet instance not alive or broken, a failed tick or step, a worker whose health observation is overdue among them — starts one watch. Each condition is one finding of the look, and the watch acts on it by its `kind` and `watch_id`, never its words: a finding said in other words is the same episode. Doctor finds an observation overdue only past a tick's chance to make it: past its time by more than the sleep and the time of the last tick of the fleet instance whose claim holds the worker's worktree, as that instance's `doctor.fleet.last_tick` says them (`sleep`, `took`), or the longest any instance on the host says, for a worktree no claim holds. A fleet that stopped ticking, or a tick that hangs, leaves it missed past that grace. Its episodes stay covered while it runs and after it reports; an episode lasts while each look still holds it. An unreported watch leaves its episodes and daily research reservation eligible at the next look that still finds the work, including after a restart. A watch retains one resident interactive Agent session in the watch directory across independent watch rounds. Each round has its own ID, delivery receipt, report and execution hour, excluding queueing, standby and earlier rounds. It is given its brief as a file in the cache directory — what the look answered, why it started, and what each earlier watch on the same items did — with authority over the fleets of this host and an hour, its continuations together. It runs on the harness this host last started a worker on that took its brief, then the host kit's order, never one paused or with a fault on record, started trusted with prompts skipped, interactively in its terminal titled "afkconvoy watch", with the brief as its first message, as a worker is. A human may watch it and type to it. Its last step is the exact `afkconvoy watched --watch <id> --text-file <report.json>` line at the end of its brief (`afkconvoy watched --help`): the report records what held work back, each action, what it verified, each human question and answer line, and what remains pending. Reporting completes only that round and leaves the healthy Agent and Terminal standing by for the next message. Standby without pending work sends no prompt and runs no model. Only an exit, proven harness or context failure, or explicit reset replaces the owned executor, after confirming it ended. A watch ended without that command says it did not report. Printed output is no record. Worker health observes its own terminal; a stopped watch with no report is nudged. A watch whose harness gives out — a usage limit, capacity stop, refusal or failed exit — is ended and continued on the next harness that can start it, with the same look and terminal evidence of its work so far, one session at a time; the fault is recorded (`host_kit.worker_health`), and that harness is skipped until its hourly probe answers. Looks continue while a round runs. The host runner durably queues new episodes and merges repeated observations of queued, executing and reported episodes. Before the next round, a fresh look removes recovered conditions. Delivery waits for the previous report and the same Terminal's input readiness; busy input is left untouched. An observed recovery and return is a new episode, even during an older round. A host runner started again — after moving onto a newer release, say — keeps the watch it finds running. Its start, its end and each thing it did are lines of every tick log on the checkout list and of the host runner's log; `doctor` says the watch running and the last one, as `host.watch`, and a critical finding where no harness could start or continue it. `--watch-dir default` returns to the stock watch; a running watch and its continuations keep their starting directory and rules. `doctor.host.watch.directory` says the directory the next watch runs in, and `stock` whether it is the stock one, even before a watch starts; each running or last watch says its own directory and `stock` too.
     ///
     /// WATCH RECOVERY. The fixed Terminal name is "{const:WATCH_TITLE}". The host runner records a launch intent before creation and the exact Terminal handle and public pane identity before sending its brief. Normal checks use that exact ID first; a restarted or upgraded runner reuses the confirmed session, its input and unfinished progress. If the ID is missing or stale, it queries Orca's public Terminal list and accepts only a unique candidate proven by its saved pane identity or its own startup acknowledgement. The name alone proves no ownership or uniqueness. Uncertain creation is never repeated. Each round's prompt intent saves a UUID request key before delivery; recovery replays the exact Terminal submission with Orca's supported --retry-request protocol and retains its receipt. An unproven or unsupported delivery pauses rather than sending fresh input; another harness or runner restart cannot bypass that pause. The existing command, model, directory rules and watch guard remain in force. A confirmed missing Terminal ends its watch after the marked executor is confirmed stopped; the next look may start eligible work as usual.
     ///
@@ -1375,7 +1380,7 @@ enum Command {
     /// back: broken since 2026-10-24 09:12:00 UTC, for 75s
     /// ```
     ///
-    /// A tick's line names what it did — lost, escalated, released, left, settled, ended, advanced, unlocked, reclaimed, dispatched, skipped (a frontier issue found blocked just before its claim, with what blocks it), nudged, waiting on its own background work (with since when: `#7 (since 2026-10-20 23:03 UTC, 12m ago)`), continued, restarted — then, when admission held back a worker it would have started, which threshold did (`admission holds back new workers: the load 31.20 is past 28.00, 200% of its 14 cores`), then the claims held out of the concurrency, and the frontier left. The claims a fleet lock has it leave alone take no slot and are counted apart (`holding 1/3 · 2 left alone`), and so are those whose worker declared a verdict not acted on yet (`holding 3/3 · 1 declared`), as are those past the bound — a start took them, or the checkout's concurrency was lowered under them (`holding 3/3 · 1 past the bound`). A step that failed is in the line as `FAILED <step> #<issue>: <why>`, and a tick that could not start as `tick N: FAILED: <why>`; the loop goes on either way. One cause that stopped several steps is said once: `FAILED 7 steps: <why>`.
+    /// A tick's line names what it did — lost, escalated, released, left, settled, ended, advanced, unlocked, reclaimed, dispatched, skipped (a frontier issue found blocked just before its claim, with what blocks it), nudged, waiting on its own background work (with since when: `#7 (since 2026-10-20 23:03 UTC, 12m ago)`), continued, restarted, asked for a turn again for (a landing claim whose last turn answered a wait, asked again with no harness started) — then, when admission held back a worker it would have started, which threshold did (`admission holds back new workers: the load 31.20 is past 28.00, 200% of its 14 cores`), then the claims held out of the concurrency, and the frontier left. The claims a fleet lock has it leave alone take no slot and are counted apart (`holding 1/3 · 2 left alone`), and so are those whose worker declared a verdict not acted on yet, or that are landing with their worker not changing the tree (`holding 3/3 · 1 taking no slot`), as are those past the bound — a start took them, or the checkout's concurrency was lowered under them (`holding 3/3 · 1 past the bound`). A step that failed is in the line as `FAILED <step> #<issue>: <why>`, and a tick that could not start as `tick N: FAILED: <why>`; the loop goes on either way. One cause that stopped several steps is said once: `FAILED 7 steps: <why>`.
     ///
     /// `advanced #12 → review`: the tick read a verdict that left #12 at `review`. Where a role performs that stage the same tick starts its worker, and says so: `dispatched #12`. An issue advanced to no stage — its workflow ended, or it was parked — is named alone.
     ///
@@ -1615,11 +1620,35 @@ enum Command {
     /// - SIGTERM to the host runner's pid is `stop --all` but for the answer, and the line that says who told it. A second signal ends it at once, as SIGKILL does, with no goodbye.
     /// - `stop` of the last checkout on the list leaves the host runner running, with none: the next `run` hands it its checkout.
     /// - A `run` of a checkout whose fleet instance is stopping is refused until it has stopped. `stop` answers once it has: run it after.
+    ///
+    /// ## Releasing its claims: `--release`
+    ///
+    /// Plain `stop` is the default: there is no drain. The claims stay on the remote, the workers keep working, and the next start on this host takes the claims back. An orphaned claim is still recovered by continuation, and never released.
+    ///
+    /// `stop --release` is the drain an operator names. It is read while the checkout is still on the list, so the tracker is the one its entry says. While the fleet instance — `--instance`, or the one this host's runner holds of the checkout, else the newest its tick log names — still ticks, what it holds is read: a cut it holds is an error, and a claim whose worker declared a verdict, or whose issue is to be settled, is named in `kept` and keeps the checkout on the list, with nothing released. Otherwise the fleet instance is stopped as plain `stop` stops it, and then, in one push, each `claim/<owner>/<tracker>/<n>` it holds and each claim on its patrols' runs is deleted, each only while it is still that instance's, leased to the sha just read. One that moved since it was read is named in `kept`, nothing is released, and the checkout is back on the list: `afkconvoy run` starts its fleet instance again. Once they are gone, each worker is ended: its terminal is closed, and its worktree removed only where it holds no commit past its target and a clean tree; one that does stays, named in the answer. A patrol's checkout is removed as a run's end removes one, unless it left a commit or a change. The issues keep their labels, an open PR stays open, and an issue still ready is back on the frontier. Then the checkout leaves the list, and holding nothing, the fleet instance takes its heartbeat with it. Another host's claims are not touched.
+    ///
+    /// ```json
+    /// {"checkout": "/Users/me/Developments/hkj", "instance": "me-h1-1a2b3c4d", "removed": true,
+    ///  "released": [{"issue": 7, "claim": "refs/convoy/claim/acme/tracker/7",
+    ///                "worktree": "/Users/me/orca/hkj/acme-tracker-7-fix", "worktree_removed": false,
+    ///                "worktree_kept": "it holds an uncommitted change"}],
+    ///  "kept": [], "heartbeat_removed": true, "stop": "stop: …", "host_runner": null}
+    /// ```
+    ///
+    /// Errors of `--release`, as {"error": …} with a non-zero exit, each with nothing released and the checkout on the list as it was: the checkout is not on the list, so its tracker is not said; no fleet instance of it is known on this host — name one, `--instance`; the fleet instance holds the cut, which is a publish and no release ends; the fleet could not be read.
+    ///
+    /// `--all` takes no `--release`: stopping the host runner keeps the list. Off the list the tracker is not said: `scan` and `release` then exit non-zero, saying so, while the remote holds claims named for a tracker.
     #[command(next_help_heading = OPERATOR, verbatim_doc_comment)]
     Stop {
         /// Stop every fleet instance and then the host runner, keeping the checkout list
         #[arg(long, conflicts_with = CHECKOUT_ARG)]
         all: bool,
+        /// Release the claims its fleet instance holds and end those workers before taking the checkout off the list
+        #[arg(long, conflicts_with = "all")]
+        release: bool,
+        /// The fleet instance whose claims `--release` releases [default: the one this host's runner holds of the checkout, else the newest its tick log names]
+        #[arg(long, requires = "release", value_parser = InstanceId::parse)]
+        instance: Option<InstanceId>,
         #[command(flatten)]
         at: At,
     },
@@ -1752,7 +1781,7 @@ enum Command {
     /// - With a human, across every repo: each fleet instance that is broken, with why, since when and when the host runner starts it again; then every open issue that waits for a human, labelled with its repo, with what kind of wait and the first sentence of the reason its comment gives, a Reason link to that comment (the report itself for an older failed patrol or cut), and the line that answers it: what `doctor` answers as `waiting_on_human`.
     /// - Each repo: a row at the top names every checkout, each with whether its fleet instance is idle, its claims held of its bound and its frontier, and links to its part. Each part then shows:
     ///   - Claims held: the claims of its fleet instance that take a slot, of the concurrency
-    ///   - `Declared`: shown while there are any: the claims whose worker declared a verdict not acted on yet, which take no slot
+    ///   - `Taking no slot`: shown while there are any: the claims whose worker declared a verdict not acted on yet, or that are landing with their worker not changing the tree, which take no slot
     ///   - a lane: one per workflow; an unbound repo has one, `backlog`, with the two stages `work` and `land`
     ///   - a stage: the number in its stop is the workers at it; under it the issues at work — each with its worker's state: busy, stopped and for how long, or no worker — then the queued, which are the frontier, and in a bound repo those held back there, with why
     ///   - `Patrols`: in a bound repo that names patrols: each, with what it is doing or what holds it back — one held by its `max_runs_a_day` says until when, as a time of day in UTC and how long from now
@@ -1816,7 +1845,7 @@ enum Command {
     ///
     /// {"did", "errors", "held", "frontier_remaining", "idle", "locks"} — and "held_back_by" when admission held back a worker it would have started
     ///
-    /// - `did`: each step taken: {do, issue, outcome}. do is settle, forget, judge, watch, advance, escalate, end_patrol, patrol, end_cut, unlock, reclaim, dispatch, cast, slow_gate, cut, board, stage_label or heartbeat; outcome is done, nudged, waiting, continued, restarted, nothing, lost, blocked, gone or failed. A step whose worker waits on its own background work says since when it was first seen to (epoch seconds): {do, issue, outcome, waiting_since}. A step on a patrol has a null issue and names it: {do, issue, patrol, outcome}. An `advance` that read a verdict and left the issue at a stage names it: {do, issue, outcome, stage} — `land` once the last stage passed to a landing turn. A step that escalated its issue says why, in a few words: {do, issue, outcome, escalated}. A `slow_gate` step also has `evidence`, naming the warning threshold, termination limit, host and recorded run durations; the tick log retains it and prints the same evidence when opening the issue. A `dispatch` that found an open blocker says which: {do, issue, outcome: "blocked", blocked_by}
+    /// - `did`: each step taken: {do, issue, outcome}. do is settle, forget, judge, watch, advance, escalate, end_patrol, patrol, end_cut, unlock, reclaim, dispatch, slow_gate, cut, board, stage_label or heartbeat; outcome is done, nudged, waiting, continued, restarted, nothing, lost, blocked, gone or failed. A step whose worker waits on its own background work says since when it was first seen to (epoch seconds): {do, issue, outcome, waiting_since}. A step on a patrol has a null issue and names it: {do, issue, patrol, outcome}. An `advance` that read a verdict and left the issue at a stage names it: {do, issue, outcome, stage} — `land` once the last stage passed to a landing turn. A step that escalated its issue says why, in a few words: {do, issue, outcome, escalated}. A `slow_gate` step also has `evidence`, naming the warning threshold, termination limit, host and recorded run durations; the tick log retains it and prints the same evidence when opening the issue. A `dispatch` that found an open blocker says which: {do, issue, outcome: "blocked", blocked_by}
     /// - `errors`: each step that failed: {do, issue, error}, with `patrol` as in `did` — and `see`, where a help topic explains what refused it: the command that prints the topic. A claimed issue the rebuild could not read is {do: "read", issue, error}: the rest of the tick is made, with it taken for open
     /// - `held`: the claims the instance holds after the pass, a patrol's run still going among them
     /// - `frontier_remaining`: the frontier issues it left undispatched
@@ -1856,7 +1885,8 @@ enum Command {
     /// - Upgrade: a retired team key `precedents` is refused with migration instructions. Before upgrading a configured team, migrate its effective rules and source links into their owning documents and remove that key. Existing proposal claims take no concurrency slot and cannot keep a fleet from idle. A tick stops only its verified local owned worker, or releases a stale remote claim without stopping any worker. Worktrees, branches, PRs and ruling comments are retained. Once per checkout/team binding it reads legacy open PRs from the team's own branches and comments their links and disposition for ordinary content migration; it neither closes nor merges them. A failed retirement retries while normal issues continue.
     ///
     /// - With a fleet lock standing a tick works lock issues only (`afkconvoy lock --help`). It dispatches nothing else, runs no patrol, takes no stale claim of another issue, hands no other issue to a human, and leaves alone every claim of its own on another issue whose PR is not on the base branch: no judge, no watch, no advance, no nudge. What those workers declared is acted on by the first tick after the last lock issue closed. Their claims take no slot meanwhile, so `held` may pass the concurrency by as many; the line of `run` shows them apart, as `left alone`.
-    /// - A claim whose worker declared a verdict under it takes no slot either: the slot is free the tick it is read, though the claim is held until the verdict is acted on — once its worker has been quiet the grace period, as ever. A verdict on the issue from before the claim was created is not one declared under it. So `held` may pass the concurrency by as many, and the line of `run` shows them apart, as `declared`. Where acting on the verdict starts a worker under the claim again — every blocker closed, a gone worker continued — that start waits for a free slot as any dispatch does, and is made by a later tick while none is free.
+    /// - A claim whose worker declared a verdict under it takes no slot either: the slot is free the tick it is read, though the claim is held until the verdict is acted on — once its worker has been quiet the grace period, as ever. A verdict on the issue from before the claim was created is not one declared under it. So `held` may pass the concurrency by as many, and the line of `run` shows them apart, as `taking no slot`. Where acting on the verdict starts a worker under the claim again — every blocker closed, a gone worker continued — that start waits for a free slot as any dispatch does, and is made by a later tick while none is free.
+    /// - A landing claim — its PR open and not on the base branch — takes a slot only while its worker is changing the tree: resolving a `conflict`, fixing a `gate_red`, or still preparing the branch for the turn. While its worker is gone or idle, or its turn is being asked for, or the last turn answered a wait — any outcome but `merged`, `conflict`, `gate_red` and `locked` (`afkconvoy land --help`) — it takes none, and is still held until the PR lands. Its worker stops on a wait; the tick asks for the turn again itself (`asked for a turn again for #7` in its line), in the worktree, with no harness started, and the answer is the next tick's to read. Where the turn needs the tree changed, the tick starts a worker there, and that start waits for a free slot as any dispatch does.
     /// - What a closed lock explains is run again, not carried out. In a bound repo, a stage whose own worker declared `escalate` before the lock closed and was not acted on since — and one whose worker stayed silent past a nudge sent before it closed — is not handed to its consult or to a human: the fleet leaves a stage record (`verdict=lock-closed by=fleet`), the claim is released (`advance`, `done`), and the next tick starts a worker on that stage, whose brief says a lock stood. It is no rework. A `pass`, a `blocked` and an `already-satisfied` stand as they are. What landed is still settled.
     /// - A step that failed is not a failed command: the exit is 0 and the failure is in `errors`. Read `errors`, not the exit code.
     /// - A read of GitHub that failed in transit — an answer cut short, a 5xx, a connection reset, a timeout — is made again, twice more and a second apart, before anything is said. One that still fails is `GitHub could not be reached: <the call>: <what gh said>`. A 404 or a 403 is GitHub's answer, and is not asked for again.
@@ -3237,7 +3267,7 @@ enum Command {
     /// - `claims`: one per claimed issue, lowest number first: {number, instance, host, ts, sha}. ts is when it was stamped, in epoch seconds; sha is what a take or a release of it is leased to
     /// - `heartbeats`: {<instance id>: <epoch seconds>}
     ///
-    /// Errors: the remote cannot be read; "is not in a git checkout".
+    /// Errors: the remote cannot be read; "is not in a git checkout"; "the tracker is not said" — the checkout is on no checkout list of this host, and the remote holds claims named for another tracker, which would read as no claim.
     ///
     /// ## What trips you up
     ///
@@ -3301,7 +3331,7 @@ enum Command {
     ///
     /// {"released": true, "issue", "ref"} — also when the issue had no claim: already gone counts as released.
     ///
-    /// Errors: the claim is another instance's ("is not this fleet's claim"); it "moved since it was read" — somebody took it meanwhile, and it was left alone; the delete failed.
+    /// Errors: the claim is another instance's ("is not this fleet's claim"); it "moved since it was read" — somebody took it meanwhile, and it was left alone; the delete failed; "the tracker is not said" — the checkout is on no checkout list of this host, and the remote holds claims named for another tracker, so the claim's ref cannot be named.
     ///
     /// ## What trips you up
     ///
@@ -3521,89 +3551,75 @@ fn own_program() -> String {
     exe.unwrap_or_else(|| "afkconvoy".to_string())
 }
 
-/// The commands that act: each logs a line and wakes the `run` as it ends
-/// (`Command::acting`), and its `--help` says so (`acting::HELP`).
-const ACTS: [&str; 26] = [
-    "dispatch",
-    "cast",
-    "close",
-    "escalate",
-    "park",
-    "nudge",
-    "restart",
-    "switch",
-    "takeover",
-    "claim",
-    "release",
-    "heartbeat",
-    "rule",
-    "send",
-    "land",
-    "verdict",
-    "intake",
-    "target",
-    "delivery",
-    "lock",
-    "patrol-now",
-    "over",
-    "cut",
-    "gate",
-    "wake",
-    "tick",
-];
-
-/// The commands a worker runs in its own worktree, as its brief, a stage's
-/// consult's and a watch's give them: with those that
-/// only read (`ONLY_READ`), the only commands a worker's worktree is taken
-/// for (`checkout::resolve`).
-const IN_ITS_WORKTREE: [&str; 17] = [
-    "target",
-    "delivery",
-    "cast",
-    "doctor",
-    "plan",
-    "show",
-    "gate",
-    "land",
-    "verdict",
-    "rule",
-    "send",
-    "intake",
-    "lock",
-    "over",
-    "cut",
-    "exclusive",
-    "wake",
-];
-
-/// The commands about one repo that only read — each but with the flag
-/// beside it, which makes it act: they change nothing on GitHub, on the
-/// remote, in the checkout or of a `run`. A worker's worktree is taken for
-/// each, as for a worker's own commands: a consult's brief lets it run any
-/// command that only reads, and what one reads from a worker's branch acts
-/// for nobody.
-const ONLY_READ: [(&str, Option<&str>); 7] = [
-    ("config", None),
-    ("check", None),
-    ("rehearse", None),
-    ("recovery", None),
-    ("scan", None),
-    ("panel", None),
-    ("takeover", Some("from")),
-];
-
-/// Whether the command `name`, as `given`, only reads (`ONLY_READ`): it is
-/// one of them, and is not given the flag that makes it act.
-fn only_reads(name: &str, given: &clap::ArgMatches) -> bool {
-    let acts =
-        |flag: &str| given.value_source(flag) == Some(clap::parser::ValueSource::CommandLine);
-    ONLY_READ.iter().any(|(reads, with)| *reads == name && !with.is_some_and(acts))
+/// What a command is to the fleet: whether it acts, whether a worker's
+/// worktree is taken as its checkout, and whether it starts the fleet's
+/// work. Declared once, by `kind`; its help (`cli`), the checkout it takes
+/// (`checkout::resolve`) and its acting log (`Command::acting`) all read it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Kind {
+    /// It acts: it logs a line and wakes the `run` as it ends
+    /// (`Command::acting`), and its `--help` says so (`acting::HELP`).
+    acts: bool,
+    worktree: Worktree,
+    /// It starts the fleet's work: it checks this host before anything else
+    /// (`probe::startup`), and is refused on a host with no git naming every
+    /// command it lacks (`checkout::started`).
+    starts: bool,
 }
 
-/// The commands that start the fleet's work: each checks this host before
-/// anything else (`probe::startup`), and is refused on a host with no git
-/// naming every command it lacks (`checkout::started`).
-const STARTS: [&str; 3] = ["run", "tick", "plan"];
+/// Whether a worker's worktree is taken as a command's checkout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Worktree {
+    /// It is not: only a worker's own commands, and those that only read,
+    /// are run there.
+    Refused,
+    /// A worker runs it in its own worktree, as its brief, a stage's
+    /// consult's and a watch's give it.
+    Its,
+    /// It only reads — but with the flag named, which makes it act: it
+    /// changes nothing on GitHub, on the remote, in the checkout or of a
+    /// `run`. A consult's brief lets it run any command that only reads,
+    /// and what one reads from a worker's branch acts for nobody.
+    Reads(Option<&'static str>),
+}
+
+impl Kind {
+    const PLAIN: Kind = Kind { acts: false, worktree: Worktree::Refused, starts: false };
+    const ACTS: Kind = Kind { acts: true, ..Kind::PLAIN };
+    const WORKERS: Kind = Kind { worktree: Worktree::Its, ..Kind::PLAIN };
+    const READS: Kind = Kind { worktree: Worktree::Reads(None), ..Kind::PLAIN };
+
+    /// Whether a worker's worktree is taken for it, as `given`: one that only
+    /// reads but for a flag is not given that flag.
+    fn takes_worktree(self, given: &clap::ArgMatches) -> bool {
+        let acts =
+            |flag: &str| given.value_source(flag) == Some(clap::parser::ValueSource::CommandLine);
+        match self.worktree {
+            Worktree::Refused => false,
+            Worktree::Its | Worktree::Reads(None) => true,
+            Worktree::Reads(Some(flag)) => !acts(flag),
+        }
+    }
+}
+
+/// The kind of the command `name`: each command's, here once. One not named
+/// acts never, refuses a worker's worktree and starts nothing.
+fn kind(name: &str) -> Kind {
+    let worker_acts = Kind { acts: true, worktree: Worktree::Its, starts: false };
+    match name {
+        "dispatch" | "close" | "escalate" | "park" | "nudge" | "restart" | "switch" | "claim"
+        | "release" | "heartbeat" | "patrol-now" => Kind::ACTS,
+        "takeover" => Kind { worktree: Worktree::Reads(Some("from")), ..Kind::ACTS },
+        "cast" | "target" | "delivery" | "gate" | "land" | "verdict" | "rule" | "send"
+        | "intake" | "lock" | "over" | "cut" | "wake" => worker_acts,
+        "tick" => Kind { starts: true, ..Kind::ACTS },
+        "doctor" | "show" | "exclusive" => Kind::WORKERS,
+        "plan" => Kind { starts: true, ..Kind::WORKERS },
+        "run" => Kind { starts: true, ..Kind::PLAIN },
+        "config" | "check" | "rehearse" | "recovery" | "scan" | "panel" => Kind::READS,
+        _ => Kind::PLAIN,
+    }
+}
 
 /// The command line as parsed: `Cli`, each command about one repo with how it
 /// takes its checkout added to its text, and each command that acts with what
@@ -3621,7 +3637,12 @@ fn cli() -> clap::Command {
     for (name, said) in about {
         cli = cli.mut_subcommand(name, |command| added(command, &said));
     }
-    for name in ACTS {
+    let acts: Vec<String> = cli
+        .get_subcommands()
+        .map(|command| command.get_name().to_string())
+        .filter(|name| kind(name).acts)
+        .collect();
+    for name in acts {
         cli = cli.mut_subcommand(name, |command| added(command, acting::HELP));
     }
     cli
@@ -3646,15 +3667,14 @@ fn checkout_help(name: &str, positional: bool) -> String {
     };
     let refused = "A worker's worktree is refused as its checkout: only a worker's own commands, \
                    and those that only read, are run there.";
-    let reads = ONLY_READ.iter().find(|(reads, _)| *reads == name).map(|(_, with)| with);
-    let worker = match (IN_ITS_WORKTREE.contains(&name), reads) {
-        (true, _) => "A worker runs it in its own worktree.".to_string(),
-        (false, Some(None)) => "It only reads: a worker's worktree is one too.".to_string(),
-        (false, Some(Some(flag))) => format!(
+    let worker = match kind(name).worktree {
+        Worktree::Its => "A worker runs it in its own worktree.".to_string(),
+        Worktree::Reads(None) => "It only reads: a worker's worktree is one too.".to_string(),
+        Worktree::Reads(Some(flag)) => format!(
             "Without `--{flag}` it only reads, and a worker's worktree is one too. With `--{flag}`, \
              it is not: only a worker's own commands, and those that only read, are run there."
         ),
-        (false, None) => refused.to_string(),
+        Worktree::Refused => refused.to_string(),
     };
     let none = match name {
         "panel" => {
@@ -4185,10 +4205,11 @@ pub fn main(args: impl IntoIterator<Item = OsString>) -> ExitCode {
     });
     let named = about.and_then(|(_, command)| command.get_one::<PathBuf>(CHECKOUT_ARG));
     let named = named.map(PathBuf::as_path);
+    let kind = matches.subcommand_name().map_or(Kind::PLAIN, kind);
     let checkout = match about {
-        Some((name, given)) => {
-            let taken = IN_ITS_WORKTREE.contains(&name) || only_reads(name, given);
-            match STARTS.contains(&name) {
+        Some((_, given)) => {
+            let taken = kind.takes_worktree(given);
+            match kind.starts {
                 true => checkout::started(named, taken),
                 false => checkout::resolve(named, taken),
             }
@@ -4214,7 +4235,8 @@ pub fn main(args: impl IntoIterator<Item = OsString>) -> ExitCode {
         Err(error) if named.is_some() || matches!(cli.command, Command::Wake { .. }) => Err(error),
         checkout => {
             let in_it = checkout.as_ref().ok().cloned();
-            let acting = cli.command.acting().map(|acting| acting.in_checkout(in_it));
+            let acting = kind.acts.then(|| cli.command.acting()).flatten();
+            let acting = acting.map(|acting| acting.in_checkout(in_it));
             let now = || cli.now.unwrap_or_else(clock);
             if let Some(acting) = &acting {
                 acting.start(now());
@@ -4293,6 +4315,7 @@ impl Command {
     /// What it says of itself as it acts (`acting`), if it changes fleet
     /// state: writes to GitHub — issues, comments, labels, blocked-by edges —
     /// or to the fleet's refs on the remote. One that only reads says nothing.
+    /// Asked only of a command whose kind acts (`kind`).
     fn acting(&self) -> Option<Acting> {
         let of = |name, issue: &IssueArg, who: Option<&Who>| {
             let acting = Acting::new(name).on_issue(Some(issue.number()));
@@ -4359,31 +4382,10 @@ impl Command {
             Command::Gate { .. } => Acting::new("gate").on_own_issue().saying_start(),
             Command::Cut { .. } => Acting::new("cut").saying_start(),
             Command::Wake { .. } => Acting::new("wake").on_own_issue(),
-            Command::Watched { .. } => return None,
             Command::Cast { .. } => Acting::new("cast"),
             Command::Tick { who, .. } => as_who("tick", who),
-            Command::Kit { .. }
-            | Command::Config { .. }
-            | Command::Check { .. }
-            | Command::Scaffold { .. }
-            | Command::Flows { .. }
-            | Command::Skill
-            | Command::Show { .. }
-            | Command::Draft { .. }
-            | Command::Rehearse { .. }
-            | Command::Doctor { .. }
-            | Command::Plan { .. }
-            | Command::Run { .. }
-            | Command::Stop { .. }
-            | Command::HostRunner
-            | Command::Checkouts
-            | Command::Queue
-            | Command::Panel { .. }
-            | Command::Guard
-            | Command::Exclusive { .. }
-            | Command::Recovery { .. }
-            | Command::Scan { .. }
-            | Command::Help { .. } => return None,
+            // Its kind says it does not act (`kind`).
+            _ => return None,
         })
     }
 }
@@ -4466,70 +4468,25 @@ fn run(
                 None => probe::startup(&repo, now, &launches)?,
             };
             probe::announce(&warnings);
+            // `plan` is one look: its host reading is the report's.
+            let readings = admission::Readings::new();
             let (mut fleet, open) = Fleet::read(&repo, now)?;
             let (mut set, flows) = fleet.rebuild(&open, instance.as_ref())?;
-            let admission = admission::Admission::read(&fleet.repo.dir)?;
-            set.held_back = admission.holds();
+            let report = fleet_report::FleetReport::read(&fleet, &flows, &set, &readings);
+            if let Ok(admission) = &report.admission {
+                set.held_back = admission.holds();
+            }
             let findings = blockers::findings(&set.unworked_blockers);
             let mut plan = serde_json::to_value(set)?;
             plan["findings"] = serde_json::to_value(findings)?;
-            if let Some(bound) = &fleet.config.bound {
-                plan["intake"] = json!({"open": flows.taken_in(), "limit": bound.intake_limit});
-                // What each role's range on this host leaves out, and why.
-                if let (Ok(team), Ok((kit, _))) = (flows.team(), kit::running()) {
-                    let kit = kit.range();
-                    let left_out: Vec<Value> = team
-                        .roles
-                        .iter()
-                        .map(|role| json!({"role": role.name, "left_out": team::left_out_json(role, &kit)}))
-                        .collect();
-                    plan["left_out"] = Value::Array(left_out);
-                    // A roster entry that matches nothing, and a role that
-                    // can run nothing safely: said, never refusing the plan.
-                    let named = |each: Vec<(String, String)>| -> Vec<Value> {
-                        each.into_iter()
-                            .map(|(role, why)| json!({"role": role, "why": why}))
-                            .collect()
-                    };
-                    let unmatched = named(afkconvoy_core::casting::unmatched_entries(team, &kit));
-                    if !unmatched.is_empty() {
-                        plan["unmatched"] = Value::Array(unmatched);
-                    }
-                    let nothing_safe = named(afkconvoy_core::casting::range_faults(team, &kit));
-                    if !nothing_safe.is_empty() {
-                        plan["nothing_safe"] = Value::Array(nothing_safe);
-                    }
-                    plan["unmatched_models"] = serde_json::to_value(
-                        afkconvoy_core::casting::unmatched_models(team, &kit),
-                    )?;
-                }
+            if let Some(plan) = plan.as_object_mut() {
+                plan.extend(report.plan_json()?);
             }
-            plan["concurrency"] = concurrency::json(&fleet.config);
-            plan["harness"] = named_harness::json_of(&fleet.repo);
-            plan["tracker"] = json!(fleet.gh.tracker.named());
             plan["targets"] = fleet.targets(&open.issues)?;
-            let delivery_prefix = fleet.repo.layout().under("delivery/");
-            plan["deliveries"] = json!(crate::delivery::reported(
-                &fleet.repo,
-                now,
-                &fleet.records_at_open(&format!("{delivery_prefix}*")),
-            )?);
-            plan["admission"] = admission.json();
             plan["host_kit"] = kit::show(now);
             plan["selection"] = fleet.selection();
             plan["codex_workers"] = json!(codex_launch::workers(&fleet.repo));
-            for issue in plan["frontier"].as_array_mut().into_iter().flatten() {
-                let Some(key) = issue["cast"]["harness"].as_str().map(str::to_string) else {
-                    continue;
-                };
-                let Some(harness) = Harness::read(&key) else { continue };
-                if harness.session().is_none() {
-                    continue;
-                }
-                let model = issue["cast"]["model"].as_str().map(str::to_string);
-                let explicit = issue["cast"]["why"] == "model_label";
-                issue[key] = codex_launch::planned(harness, model.as_deref(), explicit);
-            }
+            report.put_launches(&mut plan["frontier"]);
             if let Ok(team) = flows.team() {
                 plan["selection"]["roles"] = json!(
                     team.roles.iter().map(|role| fleet.role_selection(role)).collect::<Vec<_>>()
@@ -4550,6 +4507,9 @@ fn run(
             }
         }
         Command::Stop { all: true, .. } => host_runner::stop_all(),
+        Command::Stop { release: true, instance, .. } => {
+            stop_release::stop_release(&checkout?, instance, now)
+        }
         Command::Stop { .. } => host_runner::stop(&checkout?),
         Command::HostRunner => host_runner::serve(),
         Command::Checkouts => checkouts::checkouts(),
@@ -4587,7 +4547,9 @@ fn run(
             let gh = gh::GitHub::of(&repo)?;
             let host = host.unwrap_or_else(this_host);
             match issue.or(number) {
-                Some(issue) => turn::land(&repo, &config, &gh, issue, &host, now),
+                Some(issue) => turn_answer::noted(&repo, now, || {
+                    turn::land(&repo, &config, &gh, issue, &host, now)
+                }),
                 None if watch => watch_landing::land(&repo, &config, &gh, &host, now),
                 None => {
                     let _ = merged_timeout;
@@ -4809,14 +4771,14 @@ fn run(
         }
         // `Acting::end` sends it, as it does for every command that acts.
         Command::Wake { .. } => Ok(json!({})),
-        Command::Scan { .. } => Ok(Scan::read(&checkout?)?.json()),
+        Command::Scan { .. } => Ok(Scan::read_said(&checkout?)?.json()),
         Command::Claim { issue, who, .. } => {
             let repo = checkout?;
             claims::take(&repo, &mut Scan::read(&repo)?, &who.me(now), issue.number(), Take::Fresh)
         }
         Command::Release { issue, who, .. } => {
             let repo = checkout?;
-            claims::release(&repo, &mut Scan::read(&repo)?, &who.instance, issue.number())
+            claims::release(&repo, &mut Scan::read_said(&repo)?, &who.instance, issue.number())
         }
         Command::Heartbeat { who, .. } => {
             let repo = checkout?;
@@ -4828,59 +4790,6 @@ fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// A command line of each command, as little as it parses with.
-    const LINES: &[&[&str]] = &[
-        &["kit"],
-        &["config"],
-        &["check"],
-        &["scaffold", "team", "x"],
-        &["flows"],
-        &["skill"],
-        &["show"],
-        &["draft"],
-        &["rehearse", "build"],
-        &["doctor"],
-        &["plan"],
-        &["run"],
-        &["stop"],
-        &["checkouts"],
-        &["queue"],
-        &["host-runner"],
-        &["panel"],
-        &["tick", "--instance", "a-h1-1"],
-        &["gate"],
-        &["land", "7"],
-        &["watched", "--watch", "watch-1", "--text-file", "report.json"],
-        &["verdict", "pass", "7", "--stage", "build", "--text", "x"],
-        &["rule", "7", "--text", "x"],
-        &["send", "7", "--stage", "build", "--text", "x"],
-        &["intake", "7", "--workflow", "w", "--role", "r", "--from", "3"],
-        &["target", "7", "--branch", "delivery/ticket"],
-        &["delivery", "--jira", "https://example.com/browse/ABC-123", "--final-target", "main"],
-        &["lock", "7"],
-        &["patrol-now", "sweep"],
-        &["over", "--run", "sweep"],
-        &["cut", "--from", "gate"],
-        &["guard"],
-        &["exclusive", "--", "true"],
-        &["dispatch", "7", "--instance", "a-h1-1"],
-        &["recovery", "7"],
-        &["close", "7", "--instance", "a-h1-1"],
-        &["escalate", "7", "--instance", "a-h1-1", "--reason", "x"],
-        &["park", "7", "--instance", "a-h1-1"],
-        &["nudge", "7", "--instance", "a-h1-1"],
-        &["restart", "7", "--instance", "a-h1-1"],
-        &["switch", "7", "--harness", "codex", "--instance", "a-h1-1"],
-        &["takeover", "--from", "b-h2-2", "--instance", "a-h1-1"],
-        &["wake"],
-        &["cast"],
-        &["scan"],
-        &["claim", "7", "--instance", "a-h1-1"],
-        &["release", "7", "--instance", "a-h1-1"],
-        &["heartbeat", "--instance", "a-h1-1"],
-        &["help"],
-    ];
 
     /// The manual is whole: every command has its text and its group, and
     /// every placeholder and every link to a topic names one there is.
@@ -4907,35 +4816,19 @@ mod tests {
         );
     }
 
-    /// The commands that act are those whose `--help` says what they log, and
-    /// none else: a test of the text `--help` gives, not of `ACTS` alone.
+    /// A command whose kind acts logs what it acts on, as its wake names it;
+    /// one given the flag that makes it only read says nothing.
     #[test]
-    fn a_command_logs_and_wakes_where_its_help_says_so_and_only_there() {
-        let manual = manual();
-        let mut listed = vec![];
-        for command in cli().get_subcommands() {
-            let name = command.get_name().to_string();
-            let help = manual.command_help(&[&name]).unwrap();
-            let line = LINES.iter().find(|line| line[0] == name);
-            let line = line.unwrap_or_else(|| panic!("no command line of `{name}` here"));
-            let parsed =
-                Cli::try_parse_from(std::iter::once("afkconvoy").chain(line.iter().copied()));
-            let acts = parsed.unwrap_or_else(|e| panic!("{name}: {e}")).command.acting().is_some();
-            assert_eq!(acts, help.contains("\n## What it logs\n"), "{name}");
-            assert_eq!(acts, ACTS.contains(&name.as_str()), "{name}");
-            listed.push(name);
-        }
-        assert_eq!(listed.len(), LINES.len(), "{listed:?}");
-        // The listing with `--list` changes nothing, and says nothing.
-        let list = Cli::try_parse_from(["afkconvoy", "takeover", "--list"]).unwrap();
-        assert!(list.command.acting().is_none());
-        let target = Cli::try_parse_from(["afkconvoy", "target", "7"]).unwrap();
-        assert!(target.command.acting().is_none());
-        // What one acts on is named, as its wake names it.
-        let named = |line: &[&str]| {
+    fn a_command_that_acts_names_what_it_acts_on() {
+        let acting = |line: &[&str]| {
             let cli = Cli::try_parse_from(std::iter::once("afkconvoy").chain(line.iter().copied()));
-            cli.unwrap().command.acting().unwrap().named()
+            let command = cli.unwrap().command;
+            kind(line[0]).acts.then(|| command.acting()).flatten().map(|acting| acting.named())
         };
+        assert_eq!(acting(&["takeover", "--list"]), None, "the listing changes nothing");
+        assert_eq!(acting(&["target", "7"]), None);
+        assert_eq!(acting(&["doctor"]), None, "its kind does not act");
+        let named = |line: &[&str]| acting(line).unwrap();
         assert_eq!(named(&["park", "--issue", "46", "--instance", "a-h1-1"]), "park #46");
         assert_eq!(named(&["over", "--run", " sweep "]), "over run sweep");
         assert_eq!(named(&["patrol-now", "sweep"]), "patrol-now sweep");
@@ -4944,67 +4837,41 @@ mod tests {
             "takeover from b-h2-2"
         );
         assert_eq!(named(&["land", "--train"]), "land");
+        assert_eq!(named(&["cast"]), "cast");
+        let manual = manual();
+        let help = |name: &str| manual.command_help(&[name]).unwrap();
+        assert!(help("park").contains("\n## What it logs\n"));
+        assert!(!help("doctor").contains("\n## What it logs\n"));
     }
 
-    /// Repo commands a worker runs accept its worktree. A watch's host-wide
-    /// report needs no repo and must stay usable in an operator's directory.
+    /// A worker's worktree is taken for a command a worker runs, and for one
+    /// that only reads but without the flag that makes it act.
     #[test]
-    fn a_workers_worktree_is_taken_for_every_command_a_worker_runs() {
-        let cli = Cli::command();
-        let about = |command: &clap::Command| {
-            command.get_arguments().any(|arg| arg.get_id() == CHECKOUT_ARG)
-        };
-        for name in IN_ITS_WORKTREE {
-            let command = cli.find_subcommand(name).unwrap_or_else(|| panic!("no `{name}`"));
-            assert!(about(command), "`{name}` is about no repo");
-        }
-        let workers = cli.get_subcommands().filter(|c| c.get_next_help_heading() == Some(WORKER));
-        let workers: Vec<&str> = workers.map(clap::Command::get_name).collect();
-        assert!(workers.len() >= 8, "{workers:?}");
-        for name in workers {
-            if name == "watched" {
-                assert!(!about(cli.find_subcommand(name).unwrap()));
-                continue;
-            }
-            assert!(IN_ITS_WORKTREE.contains(&name), "a worker runs `{name}`");
-        }
-        // `wake` is in the group of whoever hands the fleet work, and still a
-        // worker's last command.
-        assert!(IN_ITS_WORKTREE.contains(&"wake"));
-        // Those that only read are about one repo and no worker's own, and
-        // the flag that makes one act is one of its own: one with none acts
-        // never.
-        for (name, with) in ONLY_READ {
-            let command = cli.find_subcommand(name).unwrap_or_else(|| panic!("no `{name}`"));
-            assert!(about(command), "`{name}` is about no repo");
-            assert!(!IN_ITS_WORKTREE.contains(&name), "`{name}` is a worker's own");
-            match with {
-                Some(flag) => assert!(command.get_arguments().any(|arg| arg.get_id() == flag)),
-                None => assert!(!ACTS.contains(&name), "`{name}` acts"),
-            }
-        }
-        for name in STARTS {
-            assert!(cli.find_subcommand(name).is_some_and(about), "`{name}` is about no repo");
-        }
-    }
-
-    /// A command that only reads but for a flag is taken in a worker's
-    /// worktree without that flag, and not with it.
-    #[test]
-    fn a_command_that_only_reads_but_for_a_flag_reads_only_without_it() {
-        let reads = |line: &[&str]| {
+    fn a_workers_worktree_is_taken_for_a_command_a_worker_runs_or_one_that_only_reads() {
+        let taken = |line: &[&str]| {
             let matches = cli()
                 .try_get_matches_from(std::iter::once("afkconvoy").chain(line.iter().copied()));
             let matches = matches.unwrap();
             let (name, given) = matches.subcommand().unwrap();
-            only_reads(name, given)
+            kind(name).takes_worktree(given)
         };
-        assert!(reads(&["takeover", "--list"]));
-        assert!(!reads(&["takeover", "--from", "b-h2-2", "--instance", "a-h1-1"]));
-        assert!(reads(&["panel"]));
-        assert!(reads(&["panel", "--open"]), "it asks the host runner, changing nothing");
-        assert!(reads(&["scan"]));
-        assert!(!reads(&["claim", "7", "--instance", "a-h1-1"]));
+        assert!(taken(&["takeover", "--list"]));
+        assert!(!taken(&["takeover", "--from", "b-h2-2", "--instance", "a-h1-1"]));
+        assert!(taken(&["panel"]));
+        assert!(taken(&["panel", "--open"]), "it asks the host runner, changing nothing");
+        assert!(taken(&["scan"]));
+        assert!(taken(&["gate"]));
+        assert!(taken(&["wake"]), "a worker's last command");
+        assert!(!taken(&["claim", "7", "--instance", "a-h1-1"]));
+        assert!(!taken(&["run"]));
+        // Every command of the group a worker runs, but the watch's host-wide
+        // report, which is about no repo.
+        let cli = Cli::command();
+        let workers = cli.get_subcommands().filter(|c| c.get_next_help_heading() == Some(WORKER));
+        for command in workers.filter(|command| command.get_name() != "watched") {
+            let name = command.get_name();
+            assert_eq!(kind(name).worktree, Worktree::Its, "a worker runs `{name}`");
+        }
     }
 
     #[test]

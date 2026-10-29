@@ -183,6 +183,6 @@ step build
 }
 fi
 if [ -n "$slow" ]; then
-run_tests default "$slow_tests"
+run_tests slow "$slow_tests"
 step slow-tests
 fi

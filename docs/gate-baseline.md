@@ -204,3 +204,72 @@ green in 37 s (fmt 2, Flux 0 with nothing to recheck, Clippy 5, manual 3,
 build 7, fast tests 21). With `walk::running_again_after_a_park_counts_as_no_rework`
 (24 s) taken off the list, `./gate.sh fast` ended it as TIMEOUT at 6.007 s,
 was red, and said to name it in `.config/slow-tests`.
+
+## What the slow gate spends its time on (sunfmin/control#234)
+
+Measured on `Offices-MacBook-Pro.local` (8 cores, 16 GiB) on 2026-10-29,
+through the host's exclusive queue, with other fleets' workers running
+beside it outside that queue: these are loaded observations, and their load
+averages are given with them.
+
+### Where a test's time goes
+
+Every slow test is a test of the CLI, and the CLI spends a tick waiting on
+the processes it starts. Sampling running ticks (`sample`) found them in
+`poll` and `wait4` nearly always, not in afkconvoy's own code. A traced
+`park::a_blocker_nothing_will_resolve_escalates`, whose eight cases each run
+two ticks and a scan, started per case about 95 `git`, 34 `gh`, 19 `orca`
+and 3 `ps`; `switch::ambiguous_normal_work_and_failed_judgments_never_authorize_a_switch`
+started 816 `git` in all.
+
+`git` on this host's PATH is `/usr/bin/git`, Apple's shim, which asks
+`xcrun` for the developer directory every time it runs and then starts the
+real git: 16 ms a call where the git it starts takes 7 ms
+(`git check-ref-format`, 100 calls). A world now puts the directory of that
+git (`xcrun --find git`) after its stand-ins on its PATH, and the harness's
+own git calls use it too; where the git on PATH is not the shim nothing
+changes. The same 31 slow tests (`park::` and `switch::a…`), run twice each
+way, interleaved, six at a time:
+
+| | Wall seconds | CPU seconds (user + sys) |
+| --- | ---: | ---: |
+| through the shim | 56.0, 57.5 | 183.7, 188.4 |
+| the real git | 42.0, 39.5 | 125.9, 120.8 |
+
+### Tests at a time
+
+Six at a time, those 31 tests kept about three of the eight cores busy
+(121 CPU seconds in 40). 79 slow tests (`park::`, `switch::`, `candidates::`),
+with the real git:
+
+| Tests at a time | Wall seconds | Load at the end |
+| ---: | ---: | --- |
+| 6 | 167.0, 138.2 | 79.63, 77.01 |
+| 12 | 117.2, 115.0 | 114.63, 92.49 |
+| 16 | red at 63.5 | 95.98 |
+
+At sixteen, `candidates::a_gate_timeout_invalidates_and_terminates_its_running_successor`
+waited out its 30 seconds for a candidate's transition. The slow gate runs
+its tests under its own nextest profile, `slow`, twelve at a time; the fast
+gate and the default profile keep six.
+
+### The slow gate
+
+`./gate.sh slow` on `c807c01278c5e2557f58b22edfb21af8598b6b8f` (the real
+git), twelve at a time, 17:35:44–17:46:50 UTC; load averages 28.53 / 28.45 /
+23.13 at the start and 116.00 / 112.66 / 77.37 at the end. Exit 0.
+
+| Step | Wall seconds |
+| --- | ---: |
+| slow tests: 804 passed, 76 past 20 s | 666 |
+| command, `time -p` | 665.41 |
+
+That is 1,157 seconds before (above), on the same host. It is still past
+the slow gate's budget of 420 seconds there: the time left is the processes
+each test starts, which this change does not remove.
+
+The same tree six at a time, started straight after at load 116, ended red
+after 289 seconds on
+`host_runner::stop_all_stops_every_fleet_instance_then_the_host_runner_and_keeps_the_list`,
+which found the host runner's pid still alive just after `stop` answered;
+it passed in the twelve-at-a-time run, and no git or thread count is in it.

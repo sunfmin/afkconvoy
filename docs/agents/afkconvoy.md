@@ -56,8 +56,10 @@ The two limits add up to `gate_seconds` and the two budgets to
 `gate_budget_seconds`: the split raises neither. The fast gate's budget is
 its measured 137 seconds with about a third more for load; the slow gate's is
 what is left of the whole gate's, which its measured 1,157 seconds on the
-8-core host already exceeds — making it faster is sunfmin/control#234. The
-measurement is in [the gate baseline](../gate-baseline.md).
+8-core host already exceeded. Its worlds running the real git and not
+Apple's shim, twelve tests at a time, it took 665 seconds there
+(sunfmin/control#234): still past it. The measurements are in
+[the gate baseline](../gate-baseline.md).
 
 How many claims are at work at once is no key here: each host that works this
 repo says its own, `afkconvoy run <checkout> --concurrency N`, and 3 until it

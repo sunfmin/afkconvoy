@@ -11,6 +11,7 @@ use anyhow::Result;
 
 use crate::gh::GitHub;
 use crate::git::Repo;
+use crate::remote::Fresh;
 
 /// Leaves the work account on `issue` for its `end` at `now`, or edits the
 /// one already there: the one place the fleet writes it. An end that leaves
@@ -22,12 +23,12 @@ pub fn leave(repo: &Repo, gh: &GitHub, issue: u64, end: End, now: u64) -> Result
     }
     let comments = gh.comments(issue)?;
     let name = claim_ref(repo.layout(), &gh.tracker, issue);
-    let held = repo.remote_records(&name)?;
+    let held = repo.remote().records(&[&name], Fresh::Process)?;
     let claimed = !held.is_empty();
     let held_since = held
         .first()
         .and_then(|record| Claim::read(issue, &record.subject, record.sha.clone()).since);
-    let recorded = repo.remote_records(&repo.layout().every(GATE_KIND))?;
+    let recorded = repo.remote().records(&[&repo.layout().every(GATE_KIND)], Fresh::Process)?;
     let gates: Vec<&str> = recorded.iter().map(|record| record.subject.as_str()).collect();
     let heard: Vec<Heard<'_>> = comments
         .iter()

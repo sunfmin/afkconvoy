@@ -23,7 +23,17 @@ test-threads = 6
 # the line was drawn on. A test still running after 6 seconds, three times the
 # line, is ended and fails as TIMEOUT: it is a slow test, and ./gate.sh says to
 # name it in .config/slow-tests. Three times, so a loaded host does not end a
-# test that runs near the line. The slow gate's tests run under the default
-# profile above.
+# test that runs near the line.
 [profile.fast]
 slow-timeout = { period = "2s", terminate-after = 3 }
+
+# The slow gate's tests (./gate.sh slow): those .config/slow-tests names,
+# under the default profile's limit for one test, twelve at a time. Each is a
+# test of the CLI that spends most of its time waiting on the processes it
+# starts, not running: six at a time kept about three of
+# Offices-MacBook-Pro.local's 8 cores busy. There, its worlds running the
+# real git and not Apple's shim (sunfmin/control#234), the slow gate took
+# 665s at twelve where it had taken 1,157s at six (docs/gate-baseline.md);
+# at sixteen a test that waits 30s for a candidate's transition ran out of it.
+[profile.slow]
+test-threads = 12

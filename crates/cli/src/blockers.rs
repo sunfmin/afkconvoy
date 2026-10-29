@@ -168,17 +168,17 @@ pub fn evidence(rows: &[UnworkedBlocker]) -> String {
 
 pub fn findings(rows: &[UnworkedBlocker]) -> Vec<crate::doctor::Finding> {
     rows.iter()
-        .map(|row| crate::doctor::Finding {
-            severity: crate::doctor::Severity::Warning,
-            what: format!(
-                "issue #{} waits on a blocker no fleet works: {}#{}",
-                row.issue, row.repo, row.blocker
-            ),
-            evidence: row.reason.clone(),
-            fix: row.fix.clone(),
-            see: crate::topic::See::Troubleshooting,
-            of_host: false,
-            watch_id: None,
+        .map(|row| {
+            crate::doctor::finding(
+                crate::doctor::Kind::BlockerUnworked,
+                serde_json::json!(["blocker", row.issue, row.repo, row.blocker]),
+                format!(
+                    "issue #{} waits on a blocker no fleet works: {}#{}",
+                    row.issue, row.repo, row.blocker
+                ),
+                row.reason.clone(),
+                row.fix.clone(),
+            )
         })
         .collect()
 }

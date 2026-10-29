@@ -131,7 +131,9 @@ fn a_busy_fleet_shows_every_issue_once_where_it_is() {
         assert_eq!(cards, 1, "#{issue}");
     }
     let gauges = page.part("dl", "gauges");
-    for said in ["Claims held</dt><dd>3 <small>of 3", "Queued</dt><dd>3<"] {
+    for said in
+        ["Claims held</dt><dd>1 <small>of 3", "Taking no slot</dt><dd>2<", "Queued</dt><dd>3<"]
+    {
         assert!(gauges.contains(said), "{said}: {gauges}");
     }
     assert!(page.html.contains("Fleet instance <b>alpha</b> on h1, landing on <b>main</b>"));
