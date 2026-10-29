@@ -219,7 +219,7 @@ fn validate_known(
 ) -> Result<()> {
     let name = format!("refs/heads/{branch}");
     ensure!(
-        repo.try_git(&["check-ref-format", &name])?.ok,
+        repo.ref_name_ok(&name)?,
         "invalid target branch {branch:?}; select an existing same-repo branch with afkconvoy target --issue <n> --branch <branch>"
     );
     let present = if asked.contains(&name.as_str()) {

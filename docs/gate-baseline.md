@@ -280,3 +280,64 @@ From sunfmin/control#243 the gate has no `manual` step: `docs/manual.md`
 and the example that wrote and checked it are deleted, and the help is the
 manual. The 13 to 15 seconds the step took in the runs above are no longer
 in the fast gate.
+
+## What the gate spent its time on in its slow landings (sunfmin/control#263)
+
+`Offices-MBP.lan` (8 cores, 16 GiB) recorded five landings past the 600 s
+budget: 873, 678, 675, 636 and 601 seconds. Two of them left their whole
+output, through the exclusive queue, on 2026-10-29:
+
+| Landing | Fast gate | Slow gate | Recorded |
+| --- | --- | ---: | ---: |
+| `6eb61105` | fmt 2, Flux 41, Clippy 16, manual 19, build 32, fast tests 80: 190 s, beside the round's other candidate's fast gate (194 s) | 482 s, 815 passed, 36 past 20 s | 675 s |
+| `28b8b0a6` | fmt 1, Flux 29, Clippy 15, build 32, fast tests 80: 157 s | 479 s, 815 passed, 34 past 20 s | 636 s |
+
+The slow gate is three quarters of it. Its slowest test took 41 s
+(`switch::ambiguous_normal_work_and_failed_judgments_never_authorize_a_switch`),
+so no test holds its end back: it is the sum of its tests' times over
+twelve. The fast gate's tests took 80 s there and 20–23 s at six at a time
+in a quiet queue: the 60 s between is what ran beside the landing.
+
+### Where a slow test's time goes
+
+Every eighth of the slow tests (81, `.config/slow-tests` lines 3, 13, 23, …)
+were run with each `git`, `gh`, `orca` and `ps` the CLI started counted
+and timed by a wrapper first on PATH. They started 14,752 of them: git
+9,674, gh 2,886, orca 1,861, ps 242, about 180 a test. Sampling a tick
+found it in `poll` and `wait4` nearly always: the CLI's own work is
+small, and a test's time is the processes it starts, one after another.
+Of the CPU those took (each one's own user and system time), git took 123
+of 180 s: `push` 36 s (702 calls, 51 ms each), `ls-remote` 31 s (1,552
+calls, 20 ms each). Each push to the world's remote starts six processes
+more (`sh`, `receive-pack`, `pack-objects`, `unpack-objects`, `rev-list`,
+`for-each-ref`), each listing two. 270 of the 702 pushes are the startup
+probe a world's first `tick`, `plan` or `run` makes, as on a host that
+never probed.
+
+The calls repeated, word for word, in one process and directory:
+`check-ref-format refs/heads/main` 775 of 912 — a tick checks its base
+branch's name for every issue it reads —, `remote get-url origin` 429 of
+713 and `rev-parse --absolute-git-dir` 248 of 626. Only the first is a
+fact of the call alone; the others come from a checkout looked up again
+(`Repo::at`), whose origin a long-running host runner must not take as
+fixed. From this change git is asked of a ref name once in a process
+(`Repo::ref_name_ok`): the same 81 tests started 13,936 processes, 143
+`check-ref-format` among them.
+
+### Before and after
+
+The same 81 tests, the build before the change and after it in turns,
+through the exclusive queue, at load averages 45–55 from other work on the
+host:
+
+| | Nextest seconds | User + system CPU seconds |
+| --- | ---: | ---: |
+| before | 49.9, 49.5 | 252.5, 253.6 |
+| after | 49.1, 49.3 | 235.6, 236.6 |
+
+Seven percent less CPU, the same time: at that load the tests waited on
+the processes' starts, not the CPU. Under a landing's own load the slow
+gate fills the host (load 116 at its end, above), and there less CPU is
+less time. What would take more off is starting fewer processes in a
+tick — the probe of a fresh world, the remote listings a write must be
+certain of (ADR 0043) — and is the fleet's behaviour, not the gate's.

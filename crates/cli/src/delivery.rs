@@ -158,7 +158,7 @@ fn decode(repo: &Repo, id: &str, record: Option<&RemoteRecord>) -> Result<Delive
         "contradictory delivery at {name}; restore its immutable record"
     );
     ensure!(
-        repo.try_git(&["check-ref-format", &format!("refs/heads/{}", delivery.final_target)])?.ok,
+        repo.ref_name_ok(&format!("refs/heads/{}", delivery.final_target))?,
         "invalid final target in delivery {id}; restore its immutable record"
     );
     Ok(delivery)
@@ -227,7 +227,7 @@ fn create(
         "delivery creation requires a private tracker; configure afkconvoy run --tracker <owner/private-repo>"
     );
     ensure!(
-        repo.try_git(&["check-ref-format", &format!("refs/heads/{final_target}")])?.ok
+        repo.ref_name_ok(&format!("refs/heads/{final_target}"))?
             && !final_pr(final_target, "")
             && !final_target.starts_with("convoy-"),
         "invalid final target {final_target:?}; name an existing code branch on origin"
