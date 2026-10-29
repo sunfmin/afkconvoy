@@ -273,3 +273,10 @@ after 289 seconds on
 `host_runner::stop_all_stops_every_fleet_instance_then_the_host_runner_and_keeps_the_list`,
 which found the host runner's pid still alive just after `stop` answered;
 it passed in the twelve-at-a-time run, and no git or thread count is in it.
+
+## The manual step is gone (sunfmin/control#243)
+
+From sunfmin/control#243 the gate has no `manual` step: `docs/manual.md`
+and the example that wrote and checked it are deleted, and the help is the
+manual. The 13 to 15 seconds the step took in the runs above are no longer
+in the fast gate.

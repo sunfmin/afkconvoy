@@ -957,13 +957,15 @@ fn scaffold_shows_a_team_and_its_roles_in_one_repo_first() {
     assert!(said.contains("\"team_line\": \"reviewer: ./roles/reviewer\""));
 }
 
-/// The README points readers to the binary's help and the generated page.
+/// The README points readers to the binary's help, the one manual: no page
+/// of it is kept beside the code (sunfmin/control#243).
 #[test]
-fn the_readme_points_to_the_help_and_its_generated_manual() {
-    for entry in ["afkconvoy --help", "afkconvoy help <topic>", "(docs/manual.md)"] {
+fn the_readme_points_to_the_help_as_the_whole_manual() {
+    for entry in ["afkconvoy --help", "afkconvoy help <topic>", "afkconvoy help all"] {
         assert!(README.contains(entry), "the README lost {entry:?}");
     }
-    assert!(repository().join("docs/manual.md").is_file());
+    assert!(!README.contains("docs/manual.md"));
+    assert!(!repository().join("docs/manual.md").exists());
 }
 
 #[test]

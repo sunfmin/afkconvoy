@@ -164,10 +164,6 @@ slowest
 step flux
 cargo clippy --workspace --all-targets --quiet -- -D warnings
 step clippy
-# The manual is the help topics as one page, and is never edited: a topic
-# changed and the page not written again fails here, with the command to run.
-cargo run --quiet -p afkconvoy --example manual -- --check
-step manual
 # The tests are built first, under the TMPDIR the gate was given: a build
 # that is the first to reach sccache after its server went idle starts one,
 # which binds its socket under its TMPDIR, and under the one below no socket

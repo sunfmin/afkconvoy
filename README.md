@@ -40,7 +40,7 @@ afkconvoy --help
 
 It answers the index of the tool's own manual, in Markdown, written for a human and for an agent alike: the guide — what it needs, what to run first — then every command and every topic by its line. `afkconvoy <command> --help` says the rest of a command, `afkconvoy help <topic>` prints a topic, and `afkconvoy help all` the whole manual, the only place afkconvoy is explained. Nothing here repeats it.
 
-The whole manual is also a page, for reading in a browser: [`docs/manual.md`](docs/manual.md), generated from it.
+To read the whole manual, run `afkconvoy help all`; there is no copy of it outside the binary.
 
 ## Develop
 
@@ -63,8 +63,6 @@ Flux on the core crate needs the checker that [`crates/core/Cargo.toml`](crates/
 - **`z3`**, at the version under `[package.metadata.checker]`: from [Z3's releases](https://github.com/Z3Prover/z3/releases), or `brew install z3` while Homebrew's is that version. Only the version is compared: `z3` reports nothing of its build.
 
 The decisions live in `crates/core` as pure functions checked by [Flux](https://github.com/flux-rs/flux) (`./verify.sh`); `crates/cli` carries them out through `git`, `gh` and `orca` ([ADR-0007](docs/adr/0007-refinement-types-on-a-pure-core.md)).
-
-**The manual** is generated, and never edited: after changing the help — the guide, a command's, a topic, or `GLOSSARY.md` — run `cargo run -p afkconvoy --example manual` and commit what it wrote to [`docs/manual.md`](docs/manual.md). The gate fails while the page is not what that command writes.
 
 **Cutting a release** is the fleet's: once it goes idle with landed work past the newest `v*` tag, it cuts the next version itself — sets it, lands it through a landing turn, tags it, and publishes and installs it on its host (`afkconvoy cut --help`). `afkconvoy plan` says when the next cut starts. Its steps are the ```` ```yaml cut ```` block of [`docs/agents/afkconvoy.md`](docs/agents/afkconvoy.md), the one place they are written: steps of [`packaging/release.sh`](packaging/release.sh), then Homebrew's. They run on a Mac, and on nothing of GitHub Actions: this repository is private and its Actions has no budget. The archives and the formula go to [`sunfmin/homebrew-tap`](https://github.com/sunfmin/homebrew-tap), which Homebrew downloads from because this repository is private.
 
