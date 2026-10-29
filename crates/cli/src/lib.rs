@@ -3527,9 +3527,29 @@ pub fn own_command_in(dir: &str) -> Line {
     Line::new().fixed("cd ").word(dir).fixed(" && ").program(&own_program())
 }
 
+/// `afkconvoy` where the `PATH` finds this very file under that name, so a
+/// brief's lines follow the binary installed there, as a worker's terminal
+/// keeps running them after it moves; else this file's whole path. A brief
+/// that named the path of an install since replaced kept its workers on the
+/// old release (2026-10-29).
 fn own_program() -> String {
-    let exe = std::env::current_exe().ok().and_then(|path| path.to_str().map(str::to_string));
-    exe.unwrap_or_else(|| "afkconvoy".to_string())
+    let Some(exe) = std::env::current_exe().ok() else {
+        return "afkconvoy".to_string();
+    };
+    if on_path("afkconvoy").is_some_and(|found| same_file(&found, &exe)) {
+        return "afkconvoy".to_string();
+    }
+    exe.to_str().map_or_else(|| "afkconvoy".to_string(), str::to_string)
+}
+
+/// The first file the `PATH` finds under `name`.
+fn on_path(name: &str) -> Option<std::path::PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path).map(|dir| dir.join(name)).find(|file| file.is_file())
+}
+
+fn same_file(a: &std::path::Path, b: &std::path::Path) -> bool {
+    matches!((a.canonicalize(), b.canonicalize()), (Ok(a), Ok(b)) if a == b)
 }
 
 /// The commands that act: each logs a line and wakes the `run` as it ends
@@ -4904,6 +4924,20 @@ mod tests {
 
     /// The manual is whole: every command has its text and its group, and
     /// every placeholder and every link to a topic names one there is.
+    #[test]
+    fn a_link_on_the_path_is_the_file_it_points_at_and_another_file_is_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("afkconvoy-local");
+        std::fs::write(&exe, "").unwrap();
+        let link = dir.path().join("afkconvoy");
+        std::os::unix::fs::symlink(&exe, &link).unwrap();
+        assert!(same_file(&link, &exe));
+        let other = dir.path().join("afkconvoy-old");
+        std::fs::write(&other, "").unwrap();
+        assert!(!same_file(&other, &exe));
+        assert!(!same_file(&dir.path().join("gone"), &exe));
+    }
+
     #[test]
     fn the_manual_is_whole() {
         agent_help::check(&manual()).unwrap_or_else(|faults| panic!("{faults}"));
