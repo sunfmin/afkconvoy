@@ -3,6 +3,7 @@
 
 use std::time::UNIX_EPOCH;
 
+use afkconvoy_core::account::End;
 use afkconvoy_core::blocked::{Blocked, blocked_route};
 use afkconvoy_core::board::Stage;
 use afkconvoy_core::claims::{Claim, releasable};
@@ -339,8 +340,10 @@ pub(crate) fn escalate_claim(
                 let kept = leaving.as_ref().and_then(|leaving| leaving.left.kept().copied());
                 escalated(fleet, claim, pr, &answer, kept)?
             }
+            EscalateStep::Account => {
+                crate::account::leave(&fleet.repo, &fleet.gh, issue, End::Escalated, fleet.now)?
+            }
             EscalateStep::Release => {
-                crate::account::leave(&fleet.repo, &fleet.gh, issue, fleet.now)?;
                 delete(&fleet.repo, &mut fleet.scan, issue, &claim.sha)?;
             }
             EscalateStep::RemoveWorktree => {
@@ -402,9 +405,9 @@ pub(crate) fn close_claim(
     transition::close(issue, workless, |step| {
         match step {
             CloseStep::CloseIssue => fleet.gh.close_issue(issue)?,
-            CloseStep::Board => {
-                last_word(fleet, claim, Stage::Closed, None, &[])?;
-                crate::account::leave(&fleet.repo, &fleet.gh, issue, fleet.now)?;
+            CloseStep::Board => last_word(fleet, claim, Stage::Closed, None, &[])?,
+            CloseStep::Account => {
+                crate::account::leave(&fleet.repo, &fleet.gh, issue, End::Closed, fleet.now)?
             }
             CloseStep::Release => {
                 delete(&fleet.repo, &mut fleet.scan, issue, &claim.sha)?;
