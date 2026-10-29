@@ -117,6 +117,11 @@ fn run_command(
     share(&mut shell);
     if let Some(candidate) = candidate {
         shell.env(crate::candidates::PROCESS_ENV, candidate.process_marker());
+        // Five cold builds at once on eight cores passed the fast gate's
+        // limit before their tests began (2026-10-29).
+        if std::env::var_os("CARGO_TARGET_DIR").is_none() {
+            shell.env("CARGO_TARGET_DIR", candidate.target());
+        }
     }
     let scope = candidate
         .map(|c| c.scope().and_then(|path| crate::process_scope::create(&path, &mut shell)))

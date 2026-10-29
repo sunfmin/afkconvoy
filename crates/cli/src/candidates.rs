@@ -558,6 +558,13 @@ pub(crate) struct Gate<'a> {
 }
 
 impl Gate<'_> {
+    /// Where the candidate's gate builds: the target directory of the
+    /// worktree its turn runs in, which that worker's own gate has just
+    /// built. A candidate's worktree is new, and a build there is cold.
+    pub fn target(&self) -> std::path::PathBuf {
+        self.repo.dir.join("target")
+    }
+
     pub fn scope(&self) -> Result<std::path::PathBuf> {
         let chain = read(self.repo, self.config)?.chain;
         let candidate = chain
