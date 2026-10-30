@@ -447,7 +447,7 @@ enum Command {
     ///
     /// Where the file names cut steps, the answer has one key more: {"cut": {"set", "publish", "initial"?}} — each as the ```yaml cut block says it. Optional `initial: X.Y.Z` declares the first version to cut when the remote has no version tag; after the first tag it is ignored. Where it splits its gate, one more: {"gates": {"fast", "slow"}}, each {"command", "seconds", "budget_seconds"}.
     ///
-    /// Errors: the file cannot be read; it has no ```yaml block; a ```yaml cut block has a key but `set`, `publish` and `initial`, lacks a required step, a step names nothing to run, or `initial` is not X.Y.Z; `base_branch` or `gate_command` is missing; a key is unknown or of the wrong type; `gate_seconds` is not a whole number from 1; `gate_budget_seconds` is not a positive whole number below `gate_seconds`, is declared twice, or its separate block has another key; the ```yaml gates block lacks `fast` or `slow` or one of their keys, has another key, a gate names nothing to run, has no seconds or a budget not below them, or the two gates' limits or budgets add up past the gate's; `team` is neither owner/repo nor owner/repo/path; a `harness`, which a config names no more — the error says the line to delete; `patrols` or `intake_limit` is set where no `team` is; `escalate_to` is neither consult nor human, or is set beside `team` — the error names the key. Without `--file`, outside a git checkout: "is not in a git checkout".
+    /// Errors: the file cannot be read; it has no ```yaml block; a ```yaml cut block has a key but `set`, `publish` and `initial`, lacks a required step, a step names nothing to run, or `initial` is not X.Y.Z; `base_branch` or `gate_command` is missing; a key is unknown or of the wrong type; `gate_seconds` is not a whole number from 1; `gate_budget_seconds` is not a positive whole number below `gate_seconds`, is declared twice, or its separate block has another key; the ```yaml gates block lacks `fast` or `slow` or one of their keys, has another key, a gate names nothing to run, has no seconds or a budget not below them, or the two gates' limits or budgets add up past the gate's; `team` is neither owner/repo nor owner/repo/path; a `harness`, which a config names no more — the error says the line to delete; `patrols` or `intake_limit` is set where no `team` is; `escalate_to` is neither consult nor human, or is set beside `team` — the error names the key. Without `--file`, outside a git checkout: "is not in a git checkout", or git's own words for a checkout it refuses.
     ///
     /// ## What trips you up
     ///
@@ -691,7 +691,7 @@ enum Command {
     /// - `keep_off`: as above; the escalate label is the config's
     /// - `created`: the ready label, when this run created it; else empty
     ///
-    /// Errors, as {"error": …} with a non-zero exit: the team has a fault — {"error", "faults"}, as `check` answers it; the team's repo cannot be read; the config cannot be read; "is not in a git checkout"; GitHub refused to list or create a label.
+    /// Errors, as {"error": …} with a non-zero exit: the team has a fault — {"error", "faults"}, as `check` answers it; the team's repo cannot be read; the config cannot be read; "is not in a git checkout", or git's own words for a checkout it refuses; GitHub refused to list or create a label.
     ///
     /// ## What trips you up
     ///
@@ -735,7 +735,7 @@ enum Command {
     ///
     /// {"woke": false, "detail"} — no fleet instance heard it. With no host runner on this host, `detail` is "no host runner runs on this host, so no fleet instance heard it: start one with `afkconvoy run <checkout>`". Otherwise the host runner holds no fleet instance of this repo, holds it broken — waiting to be started again — or did not answer within {const:WAKE_ANSWER_SECONDS} seconds: `detail` says which, with the line that fixes it — `afkconvoy run <checkout>`, or ask `afkconvoy doctor`.
     ///
-    /// It exits 0 with each of them. Errors: only "is not in a git checkout". Failing to wake anybody is not an error, and costs at most the {const:WAKE_ANSWER_SECONDS} seconds it waits.
+    /// It exits 0 with each of them. Errors: only "is not in a git checkout", or git's own words for a checkout it refuses. Failing to wake anybody is not an error, and costs at most the {const:WAKE_ANSWER_SECONDS} seconds it waits.
     ///
     /// ## What trips you up
     ///
@@ -1088,7 +1088,7 @@ enum Command {
     ///
     /// {table:severity}
     ///
-    /// It exits 0 with no critical finding, and non-zero with one — printing the same object, not {"error"} — so that a script can gate on it. Errors: "is not in a git checkout". Whatever else cannot be read is itself a finding.
+    /// It exits 0 with no critical finding, and non-zero with one — printing the same object, not {"error"} — so that a script can gate on it. Errors: "is not in a git checkout", or git's own words for a checkout it refuses. Whatever else cannot be read is itself a finding.
     ///
     /// With `--all`:
     ///
@@ -2149,7 +2149,7 @@ enum Command {
     /// - declared: false: this stage already has a record under this claim: nothing was written, and `standing` is the verdict that record declared
     /// - `woke`: whether a `run` on this host was told, as `afkconvoy wake` answers
     ///
-    /// Errors, as {"error": …} with a non-zero exit: a word that is none of the five verdicts; no text, or an empty one; `--blocked-by` with another verdict than `blocked`; a worker's on an issue that is not claimed; one of `--role-commit` and `--team-commit` (or AFKCONVOY_ROLE_COMMIT and AFKCONVOY_TEAM_COMMIT) without the other; a `--harness` (or AFKCONVOY_HARNESS) that names no harness, or one with no commit; "is not in a git checkout".
+    /// Errors, as {"error": …} with a non-zero exit: a word that is none of the five verdicts; no text, or an empty one; `--blocked-by` with another verdict than `blocked`; a worker's on an issue that is not claimed; one of `--role-commit` and `--team-commit` (or AFKCONVOY_ROLE_COMMIT and AFKCONVOY_TEAM_COMMIT) without the other; a `--harness` (or AFKCONVOY_HARNESS) that names no harness, or one with no commit; "is not in a git checkout", or git's own words for a checkout it refuses.
     ///
     /// A human's is refused, with nothing written, when the issue "is claimed" — its stage is its worker's, and a worker's record names both commits; when it is at another stage, or has left its stages; when the verdict "cannot be declared" there; with `--blocked-by`; and when the issue carries no one flow label.
     ///
@@ -2399,7 +2399,7 @@ enum Command {
     /// - taken: false: the issue follows that workflow already: nothing was written
     /// - `standing`: how it came in: {"by": "worker", "role", "from", "url"} with the comment of its intake record — `patrol` in place of `from` where a patrol's worker took it in, "repair": true in place of both where the repair worker did — or {"by": "human"}
     ///
-    /// Errors, as {"error": …} with a non-zero exit: the intake limit is reached — the error says the count and the limit; the team has no workflow of that name — the error lists the ones it has; the team has no such role, or no such patrol; the repo is unbound; the issue is closed, is a pull request, already carries the flow label of another workflow, or carries the repo label of another repo — it is that repo's to work — or, in a repo that is its own tracker, any repo label; the role, or both the issue the worker is on and its patrol, is neither in the environment nor given, and `--repair` is not given; `--repair` with a role, an issue or a patrol, given or in the environment; both `--from` and `--patrol` are given; `--blocked-by` names the issue itself, a pull request, or an issue that cannot be read; the team has a fault; "is not in a git checkout".
+    /// Errors, as {"error": …} with a non-zero exit: the intake limit is reached — the error says the count and the limit; the team has no workflow of that name — the error lists the ones it has; the team has no such role, or no such patrol; the repo is unbound; the issue is closed, is a pull request, already carries the flow label of another workflow, or carries the repo label of another repo — it is that repo's to work — or, in a repo that is its own tracker, any repo label; the role, or both the issue the worker is on and its patrol, is neither in the environment nor given, and `--repair` is not given; `--repair` with a role, an issue or a patrol, given or in the environment; both `--from` and `--patrol` are given; `--blocked-by` names the issue itself, a pull request, or an issue that cannot be read; the team has a fault; "is not in a git checkout", or git's own words for a checkout it refuses.
     ///
     /// ## What trips you up
     ///
@@ -2558,7 +2558,7 @@ enum Command {
     /// - `locks`: every fleet lock standing now, lowest number first
     /// - `woke`: whether a `run` on this host was told, as `afkconvoy wake` answers
     ///
-    /// Errors, as {"error": …} with a non-zero exit: the issue is closed; there is no such issue; the issue carries the repo label of another repo — or, in a repo that is its own tracker, any repo label; the config cannot be read; "is not in a git checkout".
+    /// Errors, as {"error": …} with a non-zero exit: the issue is closed; there is no such issue; the issue carries the repo label of another repo — or, in a repo that is its own tracker, any repo label; the config cannot be read; "is not in a git checkout", or git's own words for a checkout it refuses.
     ///
     /// ## What trips you up
     ///
@@ -2619,7 +2619,7 @@ enum Command {
     /// - a run of it is still going: ask again once it has ended;
     /// - the repo runs no patrol of that name: the config's `patrols` lists those it runs.
     ///
-    /// Also: "is not in a git checkout"; the config, the team, the remote or GitHub cannot be read; the remote does not take the push.
+    /// Also: "is not in a git checkout", or git's own words for a checkout it refuses; the config, the team, the remote or GitHub cannot be read; the remote does not take the push.
     ///
     /// ## What trips you up
     ///
@@ -3302,7 +3302,7 @@ enum Command {
     /// - `claims`: one per claimed issue, lowest number first: {number, instance, host, ts, sha}. ts is when it was stamped, in epoch seconds; sha is what a take or a release of it is leased to
     /// - `heartbeats`: {<instance id>: <epoch seconds>}
     ///
-    /// Errors: the remote cannot be read; "is not in a git checkout"; "the tracker is not said" — the checkout is on no checkout list of this host, and the remote holds claims named for another tracker, which would read as no claim.
+    /// Errors: the remote cannot be read; "is not in a git checkout", or git's own words for a checkout it refuses; "the tracker is not said" — the checkout is on no checkout list of this host, and the remote holds claims named for another tracker, which would read as no claim.
     ///
     /// ## What trips you up
     ///
