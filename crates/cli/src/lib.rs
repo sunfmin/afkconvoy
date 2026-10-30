@@ -82,6 +82,7 @@ pub mod legacy;
 pub mod lock;
 pub mod log;
 pub mod look;
+pub mod machine;
 pub mod measure;
 pub mod named_harness;
 pub mod orca;
@@ -120,6 +121,7 @@ pub mod topic;
 pub mod tracker;
 mod turn;
 mod turn_answer;
+mod unbound_issue;
 pub mod wake;
 pub mod watch;
 pub mod watch_landing;
@@ -786,7 +788,7 @@ enum Command {
     /// - The directory is named as the skill is: `afkconvoy`, holding `SKILL.md`.
     #[command(next_help_heading = SETS_UP, verbatim_doc_comment)]
     Skill,
-    /// Draw a team's workflows as graphs, or say where one issue is in its workflow
+    /// Draw a team's workflows as graphs, or say where one issue is in its workflow — in an unbound repo, on its one path
     ///
     /// ## When to run it
     ///
@@ -800,15 +802,19 @@ enum Command {
     ///
     /// Or `afkconvoy show 7`: a workflow is not named by a number, so one given is an issue's.
     ///
+    /// In an unbound repo, to ask where an issue stands on the one path every issue there takes — ready, held back, claimed, landing, waiting on a human, or closed. An unbound repo has no workflow to draw: `show` with no issue there is refused.
+    ///
     /// ## Who runs it
     ///
-    /// The operator, or whoever designs the team: in a checkout of a bound repo, or anywhere with `--team` or `--dir`.
+    /// The operator, or whoever designs the team: in a checkout of a bound repo, or anywhere with `--team` or `--dir`. With an issue, also the operator in a checkout of an unbound repo.
     ///
     /// ## What it reads and writes
     ///
     /// It writes nothing. It reads a team as `check` does, with the same `--team` and `--dir`: the team's files, and every role's repo from GitHub. See `afkconvoy check --help`. With a workflow's name it draws that one; with none, every workflow of the team.
     ///
     /// With `--issue` it also reads, in a checkout of the issue's repo, the issue's labels and its comments. The workflow is the one the issue's flow label names — for an escalated issue, whose flow label was swapped out, the one its escalation's comment says it left. The position is read off the issue's stage records — the comments `afkconvoy verdict`, `rule` and `send` write — and off nothing else: not its `stage:` label, which the fleet writes for humans to filter by and never reads. How it came in is read off its intake record, the comment `afkconvoy intake` writes.
+    ///
+    /// In an unbound repo, with no `--team` or `--dir`, it reads no team: it reads what `afkconvoy plan` reads — the open issues and their labels, blockers and comments, the open PRs, and the claims and heartbeats on the remote — as of no fleet instance, every claim a peer's.
     ///
     /// ## What it answers
     ///
@@ -858,6 +864,14 @@ enum Command {
     /// - `claim-spent`: a verdict was already declared under its claim: it is not one
     /// - `unknown-stage`: it names a stage the workflow no longer has: the issue escalates
     ///
+    /// In an unbound repo, with an issue, JSON:
+    ///
+    /// {"issue", "workflow": null, "stands", "claim", "pr", "delivery", "target_branch"}
+    ///
+    /// - `stands`: {"is", …}, where the issue is on its one path, from the same facts a tick acts on. `is` is `ready`: a worker can be started on it now; `held`, with the `reason` `plan` gives it in `excluded` — no ready label, an epic label, open blockers, a fleet lock, an open linked PR not the fleet's; `claimed`: a fleet instance holds it, its worker at work; `landing`: a fleet instance holds it and its PR is the fleet's, which waits to land in a turn; `waiting_on_human`, escalated or a failed run's report, with the `why`, `url` and `answer` of its row in `plan`'s `waiting_on_human`; or `closed`, with GitHub's `state_reason` and `closed_by`
+    /// - `claim`: {"instance", "live"} while a fleet instance holds the issue: which one, and whether its heartbeat is within the lease — a claim that is not is work for a live fleet instance to take. Null while none does
+    /// - `pr`: the open PR that closes the issue, {"number", "branch", "fleet"}, `fleet` whether its branch is one the fleet recorded on the issue: only such a PR is landed by the fleet. Null while there is none
+    ///
     /// Errors, as {"error": …} with a non-zero exit: the team has a fault — {"error", "faults"}, as `check` answers it; the team has no workflow of that name, or none at all; the issue has no position — it carries several flow labels, one that names no workflow of the team, or none with no escalation that says which it left; there is no such issue (`no such issue: #7 (HTTP 404)`), or GitHub says it was deleted or transferred; and every error of `check`.
     ///
     /// ## What trips you up
@@ -872,7 +886,8 @@ enum Command {
         #[arg(value_name = "WORKFLOW|ISSUE")]
         workflow: Option<String>,
         /// Say instead where this issue is, from its stage records: its position, what
-        /// follows, and the rework it has left
+        /// follows, and the rework it has left — in an unbound repo, where it stands on its
+        /// one path, from what a tick reads
         #[arg(long, conflicts_with = "workflow")]
         issue: Option<u64>,
         #[command(flatten)]
@@ -1037,6 +1052,7 @@ enum Command {
     ///   - `resources`: resource episodes observed by the host runner, with stable ids, active conditions, since, episode, worker or host readings and evidence. Admission and pressure retain their identities during five minutes of recovery. A resource finding's watch_id is that episode identity, covered by a running or reported watch.
     ///   - `watch`: this host's watch (`afkconvoy run --help`, WATCH): {directory, stock, running, last, unavailable, association}. directory is where the next watch runs and stock whether it uses afkconvoy's instruction. running and last are each {id, directory, stock, items, started, harness, model, terminal, transcript, did, reported, report, attempts, ended, outcome}. items says why it started; transcript holds the session's exit status, not its printed output. reported is whether it called `watched`; report is its complete {held_back, did, verified, human, pending} record, null if it did not report; did is that report's actions. attempts holds each session whose harness gave out: {harness, model, terminal, why, did, screen}; screen is terminal evidence for continuation, never a report. outcome is ended (reported), not_reported (exited without reporting), closed, time_limit or no_harness. running and last are null with none. unavailable says why no harness could start or continue the last requested watch, null where one could. Earlier rounds are left out; `--rounds` adds `rounds`, each the same shape as `last`. `last` keeps the last round's report. `doctor --all` says each watch log line once, as `events` on this object — {at, event, cause, instance}, newest first — and leaves those lines out of every checkout's `fleet.events`.
     ///   - `installed`: the release installed where the host runner was started from, where the host runner moves onto it or did not: {path, version, from, since, wait_expired, held_back, failed} — the file; the release it says, null where it says none; the host runner's own release; when that file answered, in epoch seconds; whether the {const:MOVE_WAIT_SECONDS}s wait expired; what holds the move back, each in words ("/Users/me/Developments/hkj is in a tick", "1 exclusive command(s) running"), [] once nothing does, or the last blockers when the wait expired; and why the move failed — it did not start, or does not say its version — null until one did. null with none: nothing newer is installed there, or no host runner runs (`afkconvoy run --help`)
+    ///   - `other_accounts`: the host runner of every other account on this machine, each the host runner of a host of its own: [{account, uid, pid, program, cores, memory_bytes, processes}] — the account and its uid; the host runner's pid and the file it was started from; and what every process of that account uses of the machine now: cores, their %CPU summed over 100; memory_bytes, resident; and how many processes. Read from the process table alone, which any account may read: nothing of the other account's files, socket or checkouts. [] where there is none; {error} where `ps` could not say. Where this account has no host runner of its own, each is also a finding beside `exclusive`'s `no_runner`
     /// - `fleet`: the `run` of this host for this repo:
     ///
     ///   - `alive`: whether one is running now: this host's runner, asked on its socket naming this checkout, holds a fleet instance of this repo
@@ -4488,9 +4504,18 @@ fn run(
                 // An issue is of the checkout's repo, whichever team reads it.
                 Some(issue) => {
                     let repo = checkout?;
-                    let loaded = team::load(team.from(), Some(&repo))?;
-                    let gh = gh::GitHub::of(&repo)?;
-                    let mut answer = stage::show_issue(&gh, &loaded.team, issue)?;
+                    let from = team.from();
+                    // An unbound repo has no team: its issues take its one path.
+                    let unbound = matches!(from, team::From::Config)
+                        && config::load(&config::file_of(&repo))?.bound.is_none();
+                    let mut answer = match unbound {
+                        true => unbound_issue::show(&repo, now, issue)?,
+                        false => {
+                            let loaded = team::load(from, Some(&repo))?;
+                            let gh = gh::GitHub::of(&repo)?;
+                            stage::show_issue(&gh, &loaded.team, issue)?
+                        }
+                    };
                     let target = target::select(&repo, issue, None)?;
                     answer["target_branch"] = target["target_branch"].clone();
                     answer["delivery"] = target["delivery"].clone();
