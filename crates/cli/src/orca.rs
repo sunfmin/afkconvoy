@@ -1074,8 +1074,13 @@ impl Worktree {
     /// work here is over is ended, whatever it is doing. One with no terminal
     /// is as wanted.
     pub fn close_terminals(&self) -> Result<()> {
+        self.close_any().map(|_| ())
+    }
+
+    /// `close_terminals` → whether there was a terminal here to close.
+    fn close_any(&self) -> Result<bool> {
         if self.terminal()?.is_none() {
-            return Ok(());
+            return Ok(false);
         }
         orca(&["terminal", "close", "--worktree", &self.selector(), "--all"])?;
         if OBSERVATION.with(|slot| slot.borrow().is_some()) && self.terminal()?.is_none() {
@@ -1083,7 +1088,7 @@ impl Worktree {
             // that starts later in this tick. Other workers keep their view.
             self.observed_terminals(0);
         }
-        Ok(())
+        Ok(true)
     }
 
     /// End the old agent before a continuation can rewrite its brief or
@@ -1418,13 +1423,15 @@ impl Worktree {
         // A failed close must not turn a continuation into a second writer.
         // Check again even after an acknowledged close: Orca may still be
         // ending the previous terminal. Leave the worker's progress markers
-        // intact until its replacement can actually be started.
-        if self.recorded_harness()?.is_some() {
+        // intact until its replacement can actually be started. Where there
+        // was no terminal to close, the look that found none is that check.
+        let closed = if self.recorded_harness()?.is_some() {
             self.stop_for_continuation()?;
+            true
         } else {
-            self.close_terminals()?;
-        }
-        if self.terminal()?.is_some() {
+            self.close_any()?
+        };
+        if closed && self.terminal()?.is_some() {
             bail!(
                 "the previous worker in {} still has a terminal after close; \
                  no replacement was started",

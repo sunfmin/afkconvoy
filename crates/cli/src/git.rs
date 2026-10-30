@@ -39,8 +39,6 @@ pub struct Repo {
 struct Fixed {
     /// The repo's git dir (`common_dir`).
     common: OnceLock<PathBuf>,
-    /// The empty tree's id in the repo's object format (`record_commit`).
-    empty_tree: OnceLock<String>,
     /// Remote reads of this checkout's repository, resolved on the first one.
     reads: OnceLock<Arc<RemoteReads>>,
 }
@@ -57,6 +55,9 @@ pub(crate) struct RemoteReads {
     subjects: Mutex<HashMap<String, String>>,
     /// A commit's whole message, by sha (`Repo::message`): it stays too.
     messages: Mutex<HashMap<String, String>>,
+    /// The empty tree's id in the repository's object format
+    /// (`record_commit`), which it keeps for as long as it is there.
+    empty_tree: OnceLock<String>,
     /// Shas `bring` has already found present. Objects live in the common store.
     present: Mutex<HashSet<String>>,
 }
@@ -68,6 +69,7 @@ impl RemoteReads {
             seen: Mutex::default(),
             subjects: Mutex::default(),
             messages: Mutex::default(),
+            empty_tree: OnceLock::new(),
             present: Mutex::default(),
         }
     }
@@ -333,11 +335,12 @@ impl Repo {
     /// sha, which is what gets pushed to a ref. It drags no history along, and
     /// is written under the fleet's identity, whoever's machine this is.
     pub fn record_commit(&self, record: &str) -> Result<String> {
-        if self.fixed.empty_tree.get().is_none() {
+        let reads = self.reads();
+        if reads.empty_tree.get().is_none() {
             let tree = self.git(&["hash-object", "-t", "tree", "/dev/null"])?;
-            let _ = self.fixed.empty_tree.set(tree);
+            let _ = reads.empty_tree.set(tree);
         }
-        self.record_commit_of(self.fixed.empty_tree.get().expect("set above"), record)
+        self.record_commit_of(reads.empty_tree.get().expect("set above"), record)
     }
 
     /// A parentless commit of `tree` whose subject is `record`: a record that
