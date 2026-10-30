@@ -643,7 +643,9 @@ pub(crate) fn finish_failed_removals(repo: &Repo, base: &str) -> Result<()> {
     let source = Source::of(repo)?;
     let listed = worktree_list()?;
     let rows = listed["worktrees"].as_array().cloned().unwrap_or_default();
-    let busy = crate::hot::working_directories()?;
+    // Every process of the host is listed only for a row that needs it: a
+    // tick that finds no failed removal starts no `ps` (sunfmin/control#311).
+    let mut busy = None;
     let mut finished = false;
     let mut retired = false;
     for row in &rows {
@@ -660,7 +662,10 @@ pub(crate) fn finish_failed_removals(repo: &Repo, base: &str) -> Result<()> {
         else {
             continue;
         };
-        if crate::hot::occupies(&busy, &path) {
+        if busy.is_none() {
+            busy = Some(crate::hot::working_directories()?);
+        }
+        if crate::hot::occupies(busy.as_deref().unwrap_or_default(), &path) {
             continue;
         }
         let branch = short_branch(row["branch"].as_str().unwrap_or(""));
