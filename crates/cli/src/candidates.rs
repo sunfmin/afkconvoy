@@ -100,17 +100,19 @@ fn announce(chain: &Chain) {
 
 /// No force push, including the state ref. Its first parent is the previous
 /// record. Extra parents retain every candidate and its preserved source head.
+/// The chain goes to git on stdin: as an argument it passed macOS's `ARG_MAX`
+/// once it held 258 candidates, and nothing landed (sunfmin/control#308).
 fn commit(repo: &Repo, snapshot: &Snapshot) -> Result<String> {
     let tree = repo.git(&["hash-object", "-t", "tree", "/dev/null"])?;
     let text = serde_json::to_string(&snapshot.chain)?;
-    let mut args = vec!["commit-tree", &tree, "-m", &text];
+    let mut args = vec!["commit-tree", &tree, "-F", "-"];
     if let Some(sha) = &snapshot.sha {
         args.extend(["-p", sha]);
     }
     for c in &snapshot.chain.candidates {
         args.extend(["-p", &c.commit]);
     }
-    repo.git(&args)
+    repo.git_with_input(&args, &text)
 }
 
 fn write(repo: &Repo, config: &Config, snapshot: &Snapshot) -> Result<bool> {
