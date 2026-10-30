@@ -4,6 +4,10 @@ Every term afkconvoy's help uses, each with its one definition and the words to 
 
 ### The fleet
 
+**Host**:
+One user account on one machine, and what the fleet keeps for it there: its host runner, its checkout list and host settings, its host kit, its exclusive lanes and its panel. A machine shared by several accounts holds a host of each, each working its own checkouts and seeing nothing of the others' but their processes: `doctor` names the host runners of the other accounts on its machine, read from the process table alone.
+_Avoid_: machine (the hardware every host on it shares)
+
 **Fleet instance**:
 One repo's fleet in its host's host runner, and everything it owns: the workers it started and the claims it holds, under an id minted when it starts. One host runs at most one per repo.
 _Avoid_: launcher, coordinator, node, process (the host runner is the process)
@@ -135,7 +139,7 @@ The rules every role of a team works under, whatever its own rules add. They say
 _Avoid_: global rules, shared rules
 
 **Admission**:
-Whether a tick starts new workers on its host: not while the host is past a share of its load, below its share of memory free, or low on free disk under the checkout. What it holds back stays on the frontier for the next tick; workers already running and the worker a declared verdict starts are never held back. The shares have defaults taken from the host's cores, memory and disk, and the host can say its own in its host settings. Holding back for one reason — the load, memory or disk — at every tick past a span (ten minutes, or the host's own) calls for the host's watch, once an **episode**: the episode ends once admission has admitted for five minutes. Holding back for reasons that change starts none. Memory pressure is observed independently: held past the same span, it calls for the host's watch for memory, once an episode ending after five minutes without pressure; it changes no admission decision.
+Whether a tick starts new workers on its host: not while the host is past a share of its load, below its share of memory free, or low on free disk under the checkout. Its readings are the machine's, shared with the host runners of the other accounts on it: their workers load it and fill its memory as this host's do. What it holds back stays on the frontier for the next tick; workers already running and the worker a declared verdict starts are never held back. The shares have defaults taken from the host's cores, memory and disk, and the host can say its own in its host settings. Holding back for one reason — the load, memory or disk — at every tick past a span (ten minutes, or the host's own) calls for the host's watch, once an **episode**: the episode ends once admission has admitted for five minutes. Holding back for reasons that change starts none. Memory pressure is observed independently: held past the same span, it calls for the host's watch for memory, once an episode ending after five minutes without pressure; it changes no admission decision.
 _Avoid_: throttling, backpressure
 
 **Host user's skills and rules**:
@@ -147,7 +151,7 @@ What a DSH worker loads of bundles, plugins, MCP servers, patches, themes and se
 _Avoid_: provider profile, persona
 
 **Bound repo**:
-A repo whose config names a team. An unbound repo has no roles and one fixed path for every issue: one worker, then a turn that lands its PR.
+A repo whose config names a team. An unbound repo has no roles and one fixed path for every issue: one worker, then a turn that lands its PR. It has no position and no workflow to draw: `show <issue>` there says where the issue stands on that path — ready, held back and why, claimed and by which fleet instance, landing with the fleet's PR, waiting on a human, or closed — from the facts a tick acts on.
 _Avoid_: team mode, managed repo
 
 **Guard**:

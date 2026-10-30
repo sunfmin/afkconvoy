@@ -62,11 +62,12 @@ fn shown(path: &Path) -> String {
 }
 
 /// Asserts that each line of the host runner's log is one event, stamped in
-/// UTC.
+/// UTC with its zone named: `2026-10-30T13:56:16Z `.
 fn each_line_stamped(world: &World) {
     let text = std::fs::read_to_string(world.cache().join("afkconvoy/host-runner.log")).unwrap();
     for line in text.lines() {
-        let stamped = line.starts_with("20") && line.len() > 20 && line.as_bytes()[19] == b' ';
+        let bytes = line.as_bytes();
+        let stamped = line.len() > 21 && bytes[10] == b'T' && &line[19..21] == "Z ";
         assert!(stamped, "{line:?} in:\n{text}");
     }
 }

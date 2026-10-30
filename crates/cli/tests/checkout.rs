@@ -65,6 +65,30 @@ fn a_command_run_outside_any_checkout_is_about_the_one_it_names() {
 }
 
 #[test]
+fn a_checkout_git_refuses_is_refused_in_git_s_words() {
+    let world = World::new();
+    let answer = |args: &[&str]| {
+        let out = world
+            .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.root)
+            .env("GIT_TEST_ASSUME_DIFFERENT_OWNER", "1")
+            .args(args)
+            .output()
+            .unwrap();
+        let printed: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_ne!(out.status.code(), Some(0), "{printed}");
+        printed["error"].as_str().unwrap().to_string()
+    };
+    // a checkout owned by another account is one git will not read, not none
+    let error = answer(&["config", path(&world.clone)]);
+    assert!(!error.contains("is not in a git checkout"), "{error}");
+    assert!(error.contains("detected dubious ownership"), "{error}");
+    assert!(error.contains("safe.directory"), "{error}");
+    // …while a directory outside any checkout is still none
+    let error = answer(&["config", path(&world.root)]);
+    assert!(error.ends_with("is not in a git checkout"), "{error}");
+}
+
+#[test]
 fn a_directory_inside_a_checkout_names_the_checkout() {
     let world = World::new();
     let inside = world.clone.join("docs/agents");

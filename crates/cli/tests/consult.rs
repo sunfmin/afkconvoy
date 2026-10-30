@@ -228,7 +228,7 @@ fn an_escalate_starts_the_consult_its_stage_names_with_the_history_and_the_reaso
 
     let dir = worktree(&world);
     let told = brief(&dir);
-    let own = format!("cd '{}' && {}", dir.display(), env!("CARGO_BIN_EXE_afkconvoy"));
+    let own = format!("cd '{}' && afkconvoy", dir.display());
     for said in [
         "started in your role as a **consult**",
         "- **Stage that asked:** `build`, of the workflow `feature`\n",

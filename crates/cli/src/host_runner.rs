@@ -464,11 +464,12 @@ impl RunnerLog {
     }
 }
 
-/// `line` as the host runner's log keeps it: stamped in UTC, and what spans
+/// `line` as the host runner's log keeps it: stamped in UTC, the stamp naming
+/// its zone (`2026-10-30T13:56:16Z`), and what spans
 /// several lines, as an error may, folded into one.
 fn stamped(line: &str) -> String {
     let parts: Vec<&str> = line.lines().map(str::trim).filter(|part| !part.is_empty()).collect();
-    format!("{} {}", log::utc(crate::clock()), parts.join(" "))
+    format!("{} {}", log::stamp(crate::clock()), parts.join(" "))
 }
 
 /// An answer the host runner gave that is an error: `run` prints it as it
@@ -500,6 +501,13 @@ fn watch_said(what: &log::What) -> String {
 pub fn pid() -> Option<u32> {
     let pid = holder_of(&cache().ok()?.join(LOCK))?;
     u32::try_from(pid).ok()
+}
+
+/// The release of this host's runner, as its lock says the last one to hold
+/// it; `None` where none ever did, or it said none.
+pub fn version() -> Option<String> {
+    let text = std::fs::read_to_string(cache().ok()?.join(LOCK)).ok()?;
+    serde_json::from_str::<Value>(&text).ok()?["version"].as_str().map(str::to_string)
 }
 
 /// The host runner's log: host-runner.log in the cache directory.
@@ -943,7 +951,7 @@ fn found_at(path: &Path, log: &RunnerLog) -> Option<Installed> {
 /// and given `VERSION_SAID_WITHIN`: `afkconvoy 0.6.0` is `0.6.0`. Errors: it
 /// could not be started, said nothing in time and was ended, ended in an
 /// error, or said no version.
-fn version_of(path: &Path) -> Result<String> {
+pub(crate) fn version_of(path: &Path) -> Result<String> {
     let mut child = crate::process::spawn(
         Command::new(path)
             .arg("--version")

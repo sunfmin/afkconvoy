@@ -233,6 +233,9 @@ impl World {
         for (name, script) in [("pmset", PMSET), ("sysctl", SYSCTL), ("ioreg", IOREG), ("df", DF)] {
             write_script(&bin.join(name), script);
         }
+        // The machine is this account's alone, and its `afkconvoy` this build.
+        write_script(&bin.join("ps"), PS);
+        std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_afkconvoy"), bin.join("afkconvoy")).unwrap();
         let world = World {
             repository_templates: std::sync::atomic::AtomicBool::new(false),
             termination_clock: std::sync::atomic::AtomicBool::new(false),
@@ -1471,10 +1474,10 @@ impl World {
         let text = std::fs::read_to_string(file).unwrap_or_default();
         let stamped = |line: &str| {
             let bytes = line.as_bytes();
-            bytes.len() > 20 && bytes[4] == b'-' && bytes[10] == b' ' && bytes[19] == b' '
+            bytes.len() > 21 && bytes[4] == b'-' && bytes[10] == b'T' && &bytes[19..21] == b"Z "
         };
         let unstamped =
-            |line: &str| if stamped(line) { line[20..].to_string() } else { line.into() };
+            |line: &str| if stamped(line) { line[21..].to_string() } else { line.into() };
         text.lines().map(unstamped).collect()
     }
 
@@ -1735,6 +1738,20 @@ const DF: &str = r#"#!/bin/sh
 echo "$*" >> "${0%/*}/../df.log"
 echo "Filesystem 1024-blocks Used Available Capacity Mounted on"
 echo "/dev/stand-in 1048576000 524288000 524288000 50% /"
+"#;
+
+/// The stand-in `ps`: the real one, but where asked for the uids of the
+/// machine's processes it lists this account's alone, and then the rows in
+/// `other-accounts`: of another account's, as a test says them.
+const PS: &str = r#"#!/bin/sh
+case "$*" in
+*uid=*)
+    me=$(id -u)
+    /bin/ps "$@" | awk -v me="$me" '$1 == me'
+    cat "${0%/*}/../other-accounts" 2>/dev/null
+    ;;
+*) exec /bin/ps "$@" ;;
+esac
 "#;
 
 /// The stand-in `ioreg`: the keyboard and mouse untouched for the seconds in

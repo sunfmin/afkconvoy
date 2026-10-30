@@ -342,3 +342,65 @@ gate fills the host (load 116 at its end, above), and there less CPU is
 less time. What would take more off is starting fewer processes in a
 tick — the probe of a fresh world, the remote listings a write must be
 certain of (ADR 0043) — and is the fleet's behaviour, not the gate's.
+
+## A waiting turn polled the remote beside the gate (sunfmin/control#309)
+
+`Offices-MBP.lan` recorded five landings past the 600 s budget: 799, 731,
+972, 1,847 and 780 seconds. No log of them was kept. The whole gate on their
+newest, `80e4a145867eca6d9112980c089264dab6d8ab68`, run through the
+exclusive queue on 2026-10-30 at 16:25 UTC, started at load 10.38 and was
+green in 643 s: fmt 2, Flux 42, Clippy 19, build 8, fast tests 19, slow
+tests 553. The slow gate is still six sevenths of it.
+
+### Where a slow test's time goes now
+
+Every eighth slow test (102, `.config/slow-tests` lines 3, 11, 19, …), traced
+as in sunfmin/control#263, started 24,902 processes: git 15,068, gh 4,518,
+orca 2,988, ps 513. The commands repeated word for word in one process
+and directory were 5,000 of them. The largest:
+
+| Command | Calls | Repeated in one process |
+| --- | ---: | ---: |
+| `ls-remote origin refs/convoy/candidates/main refs/heads/main` | 576 | 558 |
+| `show -s --format=%B <sha>` (a candidate record) | 572 | 374 |
+| `ls-remote origin refs/heads/issue-N` | 342 | 313 |
+| `ps axeww -o pid=,ppid=,rss=,time=,command=` | 467 | 241 |
+
+One `land` process asked for the candidate chain live 80 times. A turn
+waiting on the chain — for its round, its predecessor, or another turn of its
+PR — read it every 100 ms. Each read was two live listings of the chain,
+one of each valid candidate's branch, and its record's message. A
+candidate's gate asked whether it was cancelled at every 50 ms look at
+the gate, and that ask is the same read. On a real remote each listing is a
+connection to GitHub: 0.8–1.1 s and 0.14 CPU seconds here. So a turn running
+its gate, and every turn waiting on it, kept connecting to GitHub for as
+long as the gate ran, beside it.
+
+From this change a waiting turn waits twice as long after each read that
+found the chain unchanged, from 100 ms up to a second, and from 100 ms again
+once it changes. A candidate's gate asks once a second. A record's message
+is read once per sha in a process (`Repo::message`), as subjects already are.
+
+### Before and after
+
+The two builds, `80e4a145` and this change, in turns through the exclusive
+queue, twelve at a time, on 2026-10-30 from 16:45 UTC, at load averages
+45–94 from other work on the host:
+
+| Tests | Build | Nextest seconds | User + system CPU seconds |
+| --- | --- | ---: | ---: |
+| the 102 above | before | 77.6, 77.3 | 413, 401 |
+| | after | 75.0, 76.0 | 390, 389 |
+| the 68 slow tests of `candidates`, `turns`, `lander`, `cutting`, `slow_gate` | before | 94.6, 94.7 | 577, 580 |
+| | after | 86.6, 87.3 | 528, 531 |
+
+Three percent off the sample, eight off the landing tests, in time and in
+CPU alike. A landing's own gate gains more than its tests: there the reads
+were connections to GitHub, made the whole time the gate ran. This was not
+measured on a real landing.
+
+What is left is the processes a tick starts, each repeated read a smaller
+share than these: the repeated `ps` listing (151 ms each under the gate's
+load, 30 ms on an idle host), an issue's comments read again in one tick
+(478 of 726), `remote get-url origin` (601 of 1,040) and
+`rev-parse --absolute-git-dir` (521 of 1,096).
