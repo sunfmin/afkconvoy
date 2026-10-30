@@ -102,3 +102,17 @@ fn a_watch_handing_an_unbound_issue_back_moves_it_as_a_humans_answer_would() {
     assert_eq!(plan["waiting_on_human"][0]["issue"], 7);
     assert_eq!(plan["frontier"], json!([]));
 }
+
+#[test]
+fn show_says_an_escalated_unbound_issue_waits_on_a_human_with_its_answer() {
+    let world = escalated("");
+    let plan = world.afk(&["plan", "--now", "1180"]).ok();
+    let shown = world.afk(&["show", "7", "--now", "1180"]).ok();
+    let waiting = &plan["waiting_on_human"][0];
+    assert_eq!(
+        shown["stands"],
+        json!({"is": "waiting_on_human", "why": waiting["why"], "url": waiting["url"],
+            "answer": waiting["answer"]})
+    );
+    assert_eq!(shown["claim"], Value::Null);
+}
