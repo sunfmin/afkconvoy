@@ -315,7 +315,7 @@ mod tests {
     #[test]
     fn only_a_busy_worker_with_its_tree_to_change_is_at_work() {
         let busy = Some(WorkerState::Busy);
-        for answered in ["conflict", "gate_red"] {
+        for answered in ["conflict", "speculative_conflict", "gate_red"] {
             assert!(changing_tree(busy, &Answered::Said(answered.into())), "{answered}");
         }
         assert!(changing_tree(busy, &Answered::Never), "preparing the branch");
