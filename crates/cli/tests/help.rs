@@ -1160,6 +1160,7 @@ fn a_help_names_every_key_its_command_answers_with() {
     world.set_gate("true");
     world.issue(7, &["ready-for-agent"]);
     world.issue(8, &["ready-for-agent"]);
+    world.list_checkout(&world.clone);
     let mut seen = BTreeSet::new();
     let mut check = |args: &[&str], marks: &[&str]| {
         let command = args[0];

@@ -657,9 +657,9 @@ enum Command {
     ///
     /// ## What it reads and writes
     ///
-    /// It reads the config of the checkout and the labels its tracker has — the checkout's own repo, until its host says another (`afkconvoy run --tracker`). In a bound repo it also reads the team as `afkconvoy check` does — the team's files and every role's repo, from GitHub at the head of each default branch — and, to count, the comments of every open issue that carries a flow label.
+    /// It reads the config of the checkout and the labels its tracker has. The tracker is the one this host's checkout list says for the checkout, or for the checkout it is a worktree of — the checkout's own repo, until its host says another (`afkconvoy run --tracker`). Where the list holds no entry of it — another account on a shared machine, a fresh clone — the tracker is not said, and it is refused: name it with `--tracker <owner>/<repo>`, the checkout's own repo where that is its tracker. On an entry, a `--tracker` the entry does not say is refused, naming both. In a bound repo it also reads the team as `afkconvoy check` does — the team's files and every role's repo, from GitHub at the head of each default branch — and, to count, the comments of every open issue that carries a flow label.
     ///
-    /// It writes one thing: each label its lines name that the tracker lacks. In a bound repo that is the flow label of every workflow of the team — `flow:<workflow>`, or the one its file's `label` names; in an unbound one, the ready label. It puts no label on any issue and opens none. Everything is read first: a team with a fault creates nothing.
+    /// It writes one thing: each label its lines name that the tracker lacks. In a bound repo that is the flow label of every workflow of the team — `flow:<workflow>`, or the one its file's `label` names; in an unbound one, the ready label; and, where `--tracker` names another repo off the list, the repo label. It puts no label on any issue and opens none. Everything is read first: a team with a fault creates nothing.
     ///
     /// With `--delivery <identity>`, it first validates an existing same-repo Jira delivery. Its `line` keeps the tracker and repo label but omits the runnable flow or ready label. Run that line, then its `intake_line` with the returned issue number: intake attaches the delivery before adding the selected workflow's label (or the unbound repo's ready label). Both steps run in this code repo's checkout. The answer includes `delivery`; each workflow, or the unbound answer, includes `intake_line`. An invalid or cross-repo delivery refuses before creating labels. Without --delivery, today's ordinary creation line is unchanged.
     ///
@@ -691,7 +691,7 @@ enum Command {
     /// - `keep_off`: as above; the escalate label is the config's
     /// - `created`: the ready label, when this run created it; else empty
     ///
-    /// Errors, as {"error": …} with a non-zero exit: the team has a fault — {"error", "faults"}, as `check` answers it; the team's repo cannot be read; the config cannot be read; "is not in a git checkout", or git's own words for a checkout it refuses; GitHub refused to list or create a label.
+    /// Errors, as {"error": …} with a non-zero exit: "the tracker is not said" — the checkout is on no checkout list of this host, and no `--tracker` names it; a `--tracker` its entry does not say; the team has a fault — {"error", "faults"}, as `check` answers it; the team's repo cannot be read; the config cannot be read; "is not in a git checkout", or git's own words for a checkout it refuses; GitHub refused to list or create a label.
     ///
     /// ## What trips you up
     ///
@@ -708,6 +708,9 @@ enum Command {
         /// Existing Jira delivery identity; opens tasks without a runnable label, then attaches through intake
         #[arg(long)]
         delivery: Option<String>,
+        /// The tracker, where this host's checkout list holds no entry of the checkout: the repo its fleet reads its issues in, the checkout's own where that is its tracker
+        #[arg(long, value_name = "OWNER/REPO", value_parser = tracker::repo_named)]
+        tracker: Option<RepoName>,
         #[command(flatten)]
         at: At,
     },
@@ -4496,7 +4499,9 @@ fn run(
             let example = example.as_deref().and_then(scaffold::example);
             scaffold::scaffold(what, &dir, &role, example, create.as_ref())
         }
-        Command::Flows { delivery, .. } => flows::flows(&checkout?, delivery.as_deref()),
+        Command::Flows { delivery, tracker, .. } => {
+            flows::flows(&checkout?, delivery.as_deref(), tracker.as_ref())
+        }
         Command::Skill => Ok(Value::String(SKILL.to_string())),
         Command::Draft { dir, team, yes } => draft::draft(dir, team, yes),
         Command::Show { workflow, issue, team, .. } => {

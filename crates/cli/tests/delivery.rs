@@ -408,6 +408,7 @@ fn open_from_flows(world: &World, flows: &Value) -> u64 {
 fn discussion_creation_reconstructs_three_tasks_and_lands_only_on_their_two_deliveries() {
     let world = World::new();
     world.set_gate("true");
+    world.list_checkout(&world.clone);
     let first = create(&world, None);
     let second = world
         .afk(&[
@@ -502,6 +503,7 @@ fn invalid_context_and_existing_evidence_refuse_before_a_runnable_label() {
     let world = World::new();
     world.issue(7, &[]);
     world.issue(8, &[]);
+    world.list_checkout(&world.clone);
     let delivery = create(&world, None);
     let id = delivery["delivery"].as_str().unwrap();
     for invalid in ["missing", "0000000000000000"] {
