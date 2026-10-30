@@ -370,7 +370,7 @@ fn a_pi_worker_starts_in_its_role_with_what_pi_does_not_load_from_there() {
              AFKCONVOY_HARNESS='pi' && pi --approve --no-skills \
              --skill '{role}/.claude/skills' \
              --extension '{kept}/afkconvoy.js'",
-            guard = env!("CARGO_BIN_EXE_afkconvoy"),
+            guard = "afkconvoy",
             role = role.display(),
             kept = kept.display(),
             worktree = dir.display(),
@@ -704,7 +704,7 @@ fn a_tool_call_is_refused_when_the_guard_cannot_be_reached() {
     let answers = |line: &str| under_pi(&world, line, &calls)["answers"].clone();
     assert_eq!(answers(&line), json!([{"ran": true}, {"ran": true}]));
 
-    let guard = format!("AFKCONVOY_GUARD='{} guard'", env!("CARGO_BIN_EXE_afkconvoy"));
+    let guard = "AFKCONVOY_GUARD='afkconvoy guard'";
     assert!(line.contains(&guard), "{line}");
     let refused = |(from, with): (&str, &str), why: &str| {
         assert!(line.contains(from), "{from}: {line}");
