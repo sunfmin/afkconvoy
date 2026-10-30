@@ -764,9 +764,11 @@ pub(crate) fn remove_stopped_worktrees(repo: &Repo) -> Result<()> {
 /// `records` are candidate chains already read: the look's listing, or a
 /// turn's re-read of the chain it just wrote. A landed, red, or cancelled
 /// candidate loses its worktree. One that is building, validating, green and
-/// waiting, or cancelling keeps it. A process that still has the directory as
-/// its working directory keeps it too; the next call removes it once that
-/// process is gone. A directory whose git registration is already gone is
+/// waiting, or cancelling keeps it. So does one whose turn, another process,
+/// still runs: a cancelled turn still runs git there before it answers
+/// (sunfmin/control#312), and removes it itself when it returns. A process
+/// that still has the directory as its working directory keeps it too; the
+/// next call removes it once that process is gone. A directory whose git registration is already gone is
 /// removed as well. Nothing here reads or writes the candidate chain. An
 /// issue's, watch's, or cut's worktree is outside `convoy-candidates` and is
 /// left alone.
@@ -790,7 +792,9 @@ pub(crate) fn remove_listed(repo: &Repo, records: &[crate::remote::RemoteRecord]
             if !candidate_directory(&root, &path, &candidate.id) {
                 continue;
             }
-            if path.exists() || crate::process_scope::path(&candidate.worktree).exists() {
+            if (path.exists() || crate::process_scope::path(&candidate.worktree).exists())
+                && !another_turn_runs(&candidate.owner)?
+            {
                 pending.push((path, candidate.worktree.clone()));
             }
         }
@@ -809,6 +813,12 @@ pub(crate) fn remove_listed(repo: &Repo, records: &[crate::remote::RemoteRecord]
     // reverse, converges here. A worktree that is still on disk stays listed.
     let _ = repo.try_git(&["worktree", "prune"]);
     Ok(())
+}
+
+/// Whether `owner`, a candidate's turn, is a process other than this one
+/// still running on this host. The worktree is that turn's until it returns.
+fn another_turn_runs(owner: &Process) -> Result<bool> {
+    Ok(owner.host == crate::this_host() && owner.pid != std::process::id() && alive(owner)?)
 }
 
 /// `path` is this repo's candidate directory for `id`, and nothing else.

@@ -9,14 +9,17 @@ use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 
 pub(crate) fn path(worktree: &str) -> PathBuf {
     PathBuf::from(format!("{worktree}.processes"))
 }
 
 pub(crate) fn create(path: &Path, command: &mut Command) -> Result<File> {
-    let file = OpenOptions::new().create_new(true).read(true).write(true).open(path)?;
+    let file =
+        OpenOptions::new().create_new(true).read(true).write(true).open(path).with_context(
+            || format!("cannot create the gate's process scope {}", path.display()),
+        )?;
     // SAFETY: this live descriptor is shared by the gate and its descendants.
     ensure!(
         unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_SH) } == 0,
@@ -36,7 +39,11 @@ pub(crate) fn create(path: &Path, command: &mut Command) -> Result<File> {
 }
 
 pub(crate) fn free(path: &Path) -> Result<bool> {
-    let file = OpenOptions::new().read(true).write(true).open(path)?;
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .with_context(|| format!("cannot open the gate's process scope {}", path.display()))?;
     // SAFETY: nonblocking observation of this scope's kernel lease.
     if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
         return Ok(true);
@@ -49,7 +56,8 @@ pub(crate) fn free(path: &Path) -> Result<bool> {
 }
 
 pub(crate) fn owns(pid: u32, path: &Path) -> Result<bool> {
-    let meta = std::fs::metadata(path)?;
+    let meta = std::fs::metadata(path)
+        .with_context(|| format!("cannot read the gate's process scope {}", path.display()))?;
     owns_file(pid, meta.dev(), meta.ino())
 }
 

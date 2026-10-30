@@ -300,7 +300,7 @@ impl Repo {
         let out = crate::process::output(
             Command::new("git").current_dir(&self.dir).args(args).env("LC_ALL", "C"),
         )
-        .context("git could not run")?;
+        .with_context(|| could_not_run(args, &self.dir))?;
         if !out.status.success() {
             bail!("git {} failed: {}", args.join(" "), String::from_utf8_lossy(&out.stderr).trim());
         }
@@ -315,7 +315,7 @@ impl Repo {
             Command::new("git").current_dir(&self.dir).args(args).env("LC_ALL", "C"),
             input.as_bytes(),
         )
-        .context("git could not run")?;
+        .with_context(|| could_not_run(args, &self.dir))?;
         if !out.status.success() {
             bail!("git {} failed: {}", args.join(" "), String::from_utf8_lossy(&out.stderr).trim());
         }
@@ -455,6 +455,12 @@ const RECORD_IDENTITY: [(&str, &str); 4] = [
     ("GIT_COMMITTER_EMAIL", "afkconvoy@localhost"),
 ];
 
+/// What a git call that could not start says: which call, and the directory
+/// it was to run in, which a cancelled candidate's removal may have taken.
+fn could_not_run(args: &[&str], dir: &Path) -> String {
+    format!("git {} could not run in {}", args.join(" "), dir.display())
+}
+
 /// git's messages are read — a ref the remote lacks, a push the server turned
 /// down — so they are asked for in one language whatever the machine's locale.
 pub(crate) fn run(dir: &Path, args: &[&str], env: &[(&str, &str)]) -> Result<Ran> {
@@ -465,7 +471,7 @@ pub(crate) fn run(dir: &Path, args: &[&str], env: &[(&str, &str)]) -> Result<Ran
             .env("LC_ALL", "C")
             .envs(env.iter().copied()),
     )
-    .context("git could not run")?;
+    .with_context(|| could_not_run(args, dir))?;
     Ok(Ran {
         ok: out.status.success(),
         stdout: String::from_utf8_lossy(&out.stdout).trim().to_string(),
