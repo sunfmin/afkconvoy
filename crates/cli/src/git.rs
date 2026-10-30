@@ -213,6 +213,21 @@ impl Repo {
         self.note_settled(layout, streak.unwrap_or(0))
     }
 
+    /// This checkout's own git dir, not the one its worktrees share: a linked
+    /// worktree's is named by its `.git` file, read with no git started, as a
+    /// tick asks of every worktree it looks at (sunfmin/control#311). git is
+    /// asked where there is no such file or it names no directory.
+    pub fn git_dir(&self) -> Result<PathBuf> {
+        let linked = std::fs::read_to_string(self.dir.join(".git")).ok().and_then(|file| {
+            let dir = self.dir.join(file.strip_prefix("gitdir: ")?.trim_end_matches(['\r', '\n']));
+            dir.is_dir().then_some(dir)
+        });
+        match linked {
+            Some(dir) => Ok(dir),
+            None => Ok(PathBuf::from(self.git(&["rev-parse", "--absolute-git-dir"])?)),
+        }
+    }
+
     /// Where a note called `name` is kept on this host: in the repo's git
     /// dir, which every worktree of it shares.
     pub fn note(&self, name: &str) -> Result<PathBuf> {
@@ -495,6 +510,37 @@ mod tests {
         git(&main, &["worktree", "add", "-q", "--detach", wt.to_str().unwrap(), "HEAD"]);
         let (parent, child) = (Repo::new(main), Repo::new(wt));
         assert!(Arc::ptr_eq(&parent.reads(), &child.reads()));
+    }
+
+    /// A worktree's own git dir is read from its `.git` file, and is the one
+    /// git names; the main checkout's is git's answer.
+    #[test]
+    fn a_checkouts_own_git_dir_is_the_one_git_names() {
+        let root = tempfile::tempdir().unwrap();
+        let main = root.path().join("main");
+        let wt = root.path().join("wt");
+        git(root.path(), &["init", "-q", "-b", "main", main.to_str().unwrap()]);
+        git(
+            &main,
+            &[
+                "-c",
+                "user.name=a",
+                "-c",
+                "user.email=a@b",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "init",
+            ],
+        );
+        git(&main, &["worktree", "add", "-q", "--detach", wt.to_str().unwrap(), "HEAD"]);
+        for dir in [main, wt] {
+            let repo = Repo::new(dir);
+            let said = repo.git(&["rev-parse", "--absolute-git-dir"]).unwrap();
+            let read = repo.git_dir().unwrap();
+            assert_eq!(read.canonicalize().unwrap(), Path::new(&said).canonicalize().unwrap());
+        }
     }
 
     #[test]
