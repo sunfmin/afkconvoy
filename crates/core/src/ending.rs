@@ -112,9 +112,17 @@ impl Ending {
     }
 
     /// Whether the ending only asks that the turn be asked for again: nothing
-    /// in the tree is to change, and the fleet asks for it itself.
+    /// in the tree is to change, and the fleet asks for it itself. A
+    /// speculative conflict leaves a merge in the worker's tree to resolve.
     pub fn waits(self) -> bool {
-        !matches!(self, Ending::Merged | Ending::Conflict | Ending::GateRed | Ending::Locked)
+        !matches!(
+            self,
+            Ending::Merged
+                | Ending::Conflict
+                | Ending::SpeculativeConflict
+                | Ending::GateRed
+                | Ending::Locked
+        )
     }
 
     /// One line per ending, each as `line` writes its word and what it says.
