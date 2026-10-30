@@ -147,7 +147,7 @@ fn added_settings(command: &str) -> String {
     let added = command.rsplit(" --settings '").next().unwrap().split('\'').next().unwrap();
     let settings: Value = serde_json::from_str(added).unwrap();
     let hooks = |event: &str| settings["hooks"][event][0]["hooks"].clone();
-    let guard = format!("{} guard", env!("CARGO_BIN_EXE_afkconvoy"));
+    let guard = "afkconvoy guard";
     assert_eq!(hooks("PreToolUse")[0], json!({"type": "command", "command": guard}));
     for event in ["PreToolUse", "SessionStart", "UserPromptSubmit", "PostToolUse", "Stop"] {
         let told = hooks(event);
@@ -162,9 +162,10 @@ fn added_settings(command: &str) -> String {
 
 /// What the guard a worker was started with by `command` answers the Bash
 /// call `line`: the hook its settings name, run as Claude Code runs one — in
-/// the worker's directory and environment, the call described on stdin →
-/// its exit code and what it said on stderr.
-fn guarded(command: &str, line: &str) -> (i32, String) {
+/// the worker's directory and environment, with the world's PATH that finds
+/// its `afkconvoy`, the call described on stdin → its exit code and what it
+/// said on stderr.
+fn guarded(world: &World, command: &str, line: &str) -> (i32, String) {
     use std::io::Write;
     use std::process::{Command, Stdio};
     let mut steps = command.split(" && ");
@@ -178,6 +179,7 @@ fn guarded(command: &str, line: &str) -> (i32, String) {
     let mut child = Command::new("/bin/sh")
         .args(["-c", &format!("{enter} && {facts} && {hook}")])
         .env_clear()
+        .envs(world.login_env().into_iter().filter(|(name, _)| name == "PATH"))
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -286,7 +288,7 @@ fn a_flow_labelled_issue_is_dispatched_to_its_first_stage_with_the_worker_in_its
         assert!(!brief.contains(how), "the brief says nothing of how: {how}");
     }
     // But for the gate: a stage that may commit hands on no red PR.
-    let gate = format!("   cd '{}' && {} gate\n", dir.display(), env!("CARGO_BIN_EXE_afkconvoy"));
+    let gate = format!("   cd '{}' && afkconvoy gate\n", dir.display());
     assert!(brief.contains("## The gate, before a `pass`\n"), "{brief}");
     assert!(brief.contains(&gate), "{gate}\n{brief}");
     let sent = terminals[0]["sent"].as_array().unwrap();
@@ -342,16 +344,16 @@ fn every_worker_is_started_under_the_guard_whatever_its_role_s_repo_holds() {
             ("gh pr merge 70", "merging a PR is refused"),
             ("git push origin HEAD:main", "pushes the base branch `main`"),
         ] {
-            let (code, said) = guarded(worker, line);
+            let (code, said) = guarded(&world, worker, line);
             assert_eq!(code, 2, "{line}: {said}");
             assert!(said.contains(reason), "{line}: {said}");
         }
-        assert_eq!(guarded(worker, "cargo test").0, 0);
+        assert_eq!(guarded(&world, worker, "cargo test").0, 0);
     }
     // The stage `build` may commit; `look` is marked `writes: false`.
     let committing = "git commit -am step && git push origin HEAD";
-    assert_eq!(guarded(&build, committing), (0, String::new()));
-    let (code, said) = guarded(&look, committing);
+    assert_eq!(guarded(&world, &build, committing), (0, String::new()));
+    let (code, said) = guarded(&world, &look, committing);
     assert_eq!(code, 2);
     assert!(said.contains("the stage `look` is marked `writes: false`"), "{said}");
 }

@@ -191,7 +191,8 @@ fn doctor_all_answers_each_checkouts_doctor_and_the_hosts_findings_once() {
     assert_eq!(
         keys(&answer["host"]),
         BTreeSet::from(
-            ["exclusive", "host_kit", "installed", "resources", "watch"].map(String::from)
+            ["exclusive", "host_kit", "installed", "other_accounts", "resources", "watch"]
+                .map(String::from)
         )
     );
 
