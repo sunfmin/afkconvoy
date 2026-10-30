@@ -371,6 +371,42 @@ impl WorkingSet {
     pub fn bound(&self, concurrency: usize) -> usize {
         concurrency.saturating_add(self.left_alone()).saturating_add(self.slotless())
     }
+
+    /// Where open issue `number` stands, in a set assembled of nobody — every
+    /// claim a peer's. `None`: the set holds no such open issue.
+    pub fn stands(&self, number: u64) -> Option<Stands<'_>> {
+        // Every open issue is on the frontier or kept off it.
+        if self.frontier.iter().any(|issue| issue.number == number) {
+            return Some(Stands::Ready);
+        }
+        let mut excluded = self.excluded.iter().chain(&self.escalating);
+        let reason = &excluded.find(|row| row.number == number)?.reason;
+        if let Some(waiting) = self.waiting_on_human.iter().find(|row| row.issue == number) {
+            return Some(Stands::Waiting(waiting));
+        }
+        let live = self.peer_live.iter().find(|row| row.number == number);
+        if let Some(claim) = live {
+            return Some(Stands::Claimed { claim, live: true });
+        }
+        if let Some(claim) = self.stale.iter().find(|row| row.number == number) {
+            return Some(Stands::Claimed { claim, live: false });
+        }
+        Some(Stands::Held(reason))
+    }
+}
+
+/// Where one open issue stands among the facts a pass acts on.
+#[derive(Debug)]
+pub enum Stands<'s> {
+    /// It waits for a human: escalated, or the report of a failed run.
+    Waiting(&'s Waiting),
+    /// A fleet instance holds it: `live` while its heartbeat is within the
+    /// lease, and otherwise its claim is work to take.
+    Claimed { claim: &'s PeerClaim, live: bool },
+    /// A worker can be started on it now.
+    Ready,
+    /// It is kept off the frontier, for this reason.
+    Held(&'s str),
 }
 
 /// With a fleet lock standing, takes every issue that is not one off the
