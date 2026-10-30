@@ -55,6 +55,8 @@ pub(crate) struct RemoteReads {
     pub(crate) seen: Mutex<Seen>,
     /// A commit's subject, by sha. The sha names the subject, so it stays.
     subjects: Mutex<HashMap<String, String>>,
+    /// A commit's whole message, by sha (`Repo::message`): it stays too.
+    messages: Mutex<HashMap<String, String>>,
     /// Shas `bring` has already found present. Objects live in the common store.
     present: Mutex<HashSet<String>>,
 }
@@ -65,6 +67,7 @@ impl RemoteReads {
             wire,
             seen: Mutex::default(),
             subjects: Mutex::default(),
+            messages: Mutex::default(),
             present: Mutex::default(),
         }
     }
@@ -325,6 +328,19 @@ impl Repo {
             bail!("git commit-tree failed: {}", ran.stderr.trim());
         }
         Ok(ran.stdout)
+    }
+
+    /// The whole message of the commit `sha`, which is here. A sha already
+    /// read is not asked again: the sha names the message, and a turn waiting
+    /// on a record reads the same one many times.
+    pub(crate) fn message(&self, sha: &str) -> Result<String> {
+        let reads = self.reads();
+        if let Some(message) = lock(&reads.messages).get(sha) {
+            return Ok(message.clone());
+        }
+        let message = self.git(&["show", "-s", "--format=%B", sha])?;
+        lock(&reads.messages).insert(sha.to_string(), message.clone());
+        Ok(message)
     }
 
     /// The subject of each of `records`, fetched by ref name when its commit
