@@ -209,7 +209,7 @@ fn the_worker_brief_and_the_join_brief_carry_the_wake_line() {
         let git_dir = git(Path::new(&dir), &["rev-parse", "--absolute-git-dir"]);
         std::fs::read_to_string(Path::new(&git_dir).join("convoy-worker-prompt.md")).unwrap()
     };
-    let line = format!("\n{} wake\n", env!("CARGO_BIN_EXE_afkconvoy"));
+    let line = "\nafkconvoy wake\n";
 
     let whole = brief(&dispatch("7"));
     assert!(whole.contains("2. **Implement**"), "the whole brief");

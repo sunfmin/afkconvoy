@@ -391,7 +391,7 @@ fn a_codex_worker_starts_in_its_role_under_a_user_directory_of_the_fleet_s_own()
     let (role, dir) = (role_copy(&world, "acme/dev"), worktree(&world, 7));
     let kept = PathBuf::from(&under_codex(&world, &started(&world, &dir))[1]);
     assert!(kept.starts_with(dir.join(".afkconvoy-tmp")), "{}", kept.display());
-    let guard = format!("{} guard", env!("CARGO_BIN_EXE_afkconvoy"));
+    let guard = "afkconvoy guard";
     let line = started(&world, &dir);
     assert_eq!(
         line,
@@ -799,7 +799,7 @@ fn a_tool_call_is_refused_when_the_guard_cannot_be_reached() {
     world.issue(8, &["flow:feature"]);
     assert_eq!(did(&tick(&world, 1000).ok())[0], "dispatch 8 done");
     let line = started(&world, &worktree(&world, 8));
-    let guard = format!("$({} guard ", env!("CARGO_BIN_EXE_afkconvoy"));
+    let guard = "$(afkconvoy guard ";
     assert!(line.contains(&guard), "{line}");
     // Codex makes a call whose hook fails in any way but one: each of these
     // ends in that one — the exit code that refuses, and a reason.
