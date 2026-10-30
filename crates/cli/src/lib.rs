@@ -121,6 +121,7 @@ pub mod topic;
 pub mod tracker;
 mod turn;
 mod turn_answer;
+mod unbound_issue;
 pub mod wake;
 pub mod watch;
 pub mod watch_landing;
@@ -787,7 +788,7 @@ enum Command {
     /// - The directory is named as the skill is: `afkconvoy`, holding `SKILL.md`.
     #[command(next_help_heading = SETS_UP, verbatim_doc_comment)]
     Skill,
-    /// Draw a team's workflows as graphs, or say where one issue is in its workflow
+    /// Draw a team's workflows as graphs, or say where one issue is in its workflow — in an unbound repo, on its one path
     ///
     /// ## When to run it
     ///
@@ -801,15 +802,19 @@ enum Command {
     ///
     /// Or `afkconvoy show 7`: a workflow is not named by a number, so one given is an issue's.
     ///
+    /// In an unbound repo, to ask where an issue stands on the one path every issue there takes — ready, held back, claimed, landing, waiting on a human, or closed. An unbound repo has no workflow to draw: `show` with no issue there is refused.
+    ///
     /// ## Who runs it
     ///
-    /// The operator, or whoever designs the team: in a checkout of a bound repo, or anywhere with `--team` or `--dir`.
+    /// The operator, or whoever designs the team: in a checkout of a bound repo, or anywhere with `--team` or `--dir`. With an issue, also the operator in a checkout of an unbound repo.
     ///
     /// ## What it reads and writes
     ///
     /// It writes nothing. It reads a team as `check` does, with the same `--team` and `--dir`: the team's files, and every role's repo from GitHub. See `afkconvoy check --help`. With a workflow's name it draws that one; with none, every workflow of the team.
     ///
     /// With `--issue` it also reads, in a checkout of the issue's repo, the issue's labels and its comments. The workflow is the one the issue's flow label names — for an escalated issue, whose flow label was swapped out, the one its escalation's comment says it left. The position is read off the issue's stage records — the comments `afkconvoy verdict`, `rule` and `send` write — and off nothing else: not its `stage:` label, which the fleet writes for humans to filter by and never reads. How it came in is read off its intake record, the comment `afkconvoy intake` writes.
+    ///
+    /// In an unbound repo, with no `--team` or `--dir`, it reads no team: it reads what `afkconvoy plan` reads — the open issues and their labels, blockers and comments, the open PRs, and the claims and heartbeats on the remote — as of no fleet instance, every claim a peer's.
     ///
     /// ## What it answers
     ///
@@ -859,6 +864,14 @@ enum Command {
     /// - `claim-spent`: a verdict was already declared under its claim: it is not one
     /// - `unknown-stage`: it names a stage the workflow no longer has: the issue escalates
     ///
+    /// In an unbound repo, with an issue, JSON:
+    ///
+    /// {"issue", "workflow": null, "stands", "claim", "pr", "delivery", "target_branch"}
+    ///
+    /// - `stands`: {"is", …}, where the issue is on its one path, from the same facts a tick acts on. `is` is `ready`: a worker can be started on it now; `held`, with the `reason` `plan` gives it in `excluded` — no ready label, an epic label, open blockers, a fleet lock, an open linked PR not the fleet's; `claimed`: a fleet instance holds it, its worker at work; `landing`: a fleet instance holds it and its PR is the fleet's, which waits to land in a turn; `waiting_on_human`, escalated or a failed run's report, with the `why`, `url` and `answer` of its row in `plan`'s `waiting_on_human`; or `closed`, with GitHub's `state_reason` and `closed_by`
+    /// - `claim`: {"instance", "live"} while a fleet instance holds the issue: which one, and whether its heartbeat is within the lease — a claim that is not is work for a live fleet instance to take. Null while none does
+    /// - `pr`: the open PR that closes the issue, {"number", "branch", "fleet"}, `fleet` whether its branch is one the fleet recorded on the issue: only such a PR is landed by the fleet. Null while there is none
+    ///
     /// Errors, as {"error": …} with a non-zero exit: the team has a fault — {"error", "faults"}, as `check` answers it; the team has no workflow of that name, or none at all; the issue has no position — it carries several flow labels, one that names no workflow of the team, or none with no escalation that says which it left; there is no such issue (`no such issue: #7 (HTTP 404)`), or GitHub says it was deleted or transferred; and every error of `check`.
     ///
     /// ## What trips you up
@@ -873,7 +886,8 @@ enum Command {
         #[arg(value_name = "WORKFLOW|ISSUE")]
         workflow: Option<String>,
         /// Say instead where this issue is, from its stage records: its position, what
-        /// follows, and the rework it has left
+        /// follows, and the rework it has left — in an unbound repo, where it stands on its
+        /// one path, from what a tick reads
         #[arg(long, conflicts_with = "workflow")]
         issue: Option<u64>,
         #[command(flatten)]
@@ -4490,9 +4504,18 @@ fn run(
                 // An issue is of the checkout's repo, whichever team reads it.
                 Some(issue) => {
                     let repo = checkout?;
-                    let loaded = team::load(team.from(), Some(&repo))?;
-                    let gh = gh::GitHub::of(&repo)?;
-                    let mut answer = stage::show_issue(&gh, &loaded.team, issue)?;
+                    let from = team.from();
+                    // An unbound repo has no team: its issues take its one path.
+                    let unbound = matches!(from, team::From::Config)
+                        && config::load(&config::file_of(&repo))?.bound.is_none();
+                    let mut answer = match unbound {
+                        true => unbound_issue::show(&repo, now, issue)?,
+                        false => {
+                            let loaded = team::load(from, Some(&repo))?;
+                            let gh = gh::GitHub::of(&repo)?;
+                            stage::show_issue(&gh, &loaded.team, issue)?
+                        }
+                    };
                     let target = target::select(&repo, issue, None)?;
                     answer["target_branch"] = target["target_branch"].clone();
                     answer["delivery"] = target["delivery"].clone();
