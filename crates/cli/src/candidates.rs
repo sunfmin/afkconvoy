@@ -43,13 +43,18 @@ impl Waiting {
 
     /// Waits after reading `chain`.
     fn after(&mut self, chain: &Chain) {
+        std::thread::sleep(self.wait(chain));
+    }
+
+    /// How long to wait after reading `chain`.
+    fn wait(&mut self, chain: &Chain) -> Duration {
         if self.seen.as_ref() == Some(chain) {
             self.next = (self.next * 2).min(AT_MOST);
         } else {
             self.seen = Some(chain.clone());
             self.next = EVERY;
         }
-        std::thread::sleep(self.next);
+        self.next
     }
 }
 
@@ -1404,6 +1409,25 @@ mod tests {
         assert!(!landing(&chain("green", &me, Some("c9")), "b"), "cancelled");
         let dead = super::Process { pid: u32::MAX - 1, ..me.clone() };
         assert!(!landing(&chain("slow", &dead, None), "b"), "its turn is gone");
+    }
+
+    #[test]
+    fn a_wait_on_a_chain_that_does_not_change_grows_to_a_second_and_a_change_starts_it_again() {
+        use std::time::Duration;
+        let ms = Duration::from_millis;
+        let mut waiting = super::Waiting::new();
+        let still = super::Chain::default();
+        let waits: Vec<_> = (0..6).map(|_| waiting.wait(&still)).collect();
+        assert_eq!(waits, [ms(100), ms(200), ms(400), ms(800), ms(1000), ms(1000)]);
+        let moved = super::Chain {
+            pending: vec![super::Barrier {
+                id: "b".into(),
+                owner: super::identity(std::process::id()).unwrap().unwrap(),
+            }],
+            ..super::Chain::default()
+        };
+        assert_eq!(waiting.wait(&moved), ms(100));
+        assert_eq!(waiting.wait(&moved), ms(200));
     }
 
     #[test]
