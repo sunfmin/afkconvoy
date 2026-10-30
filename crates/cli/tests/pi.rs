@@ -705,7 +705,7 @@ fn a_tool_call_is_refused_when_the_guard_cannot_be_reached() {
     assert_eq!(answers(&line), json!([{"ran": true}, {"ran": true}]));
 
     let guard = "AFKCONVOY_GUARD='afkconvoy guard'";
-    assert!(line.contains(&guard), "{line}");
+    assert!(line.contains(guard), "{line}");
     let refused = |(from, with): (&str, &str), why: &str| {
         assert!(line.contains(from), "{from}: {line}");
         let answers = answers(&line.replace(from, with));
@@ -717,12 +717,12 @@ fn a_tool_call_is_refused_when_the_guard_cannot_be_reached() {
     };
     // A guard that is not there, one that fails saying nothing, one that
     // cannot read the stage, and one that never answers its name.
-    refused((&guard, "AFKCONVOY_GUARD='/nowhere/afkconvoy guard'"), "/nowhere/afkconvoy");
-    refused((&guard, "AFKCONVOY_GUARD='exit 1'"), "afkconvoy guard: it could not be asked");
+    refused((guard, "AFKCONVOY_GUARD='/nowhere/afkconvoy guard'"), "/nowhere/afkconvoy");
+    refused((guard, "AFKCONVOY_GUARD='exit 1'"), "afkconvoy guard: it could not be asked");
     refused(("AFKCONVOY_STAGE='build' ", ""), "AFKCONVOY_STAGE is not set");
     refused(("AFKCONVOY_HARNESS='pi'", "AFKCONVOY_HARNESS='aider'"), "`aider` is no harness");
     // With no line to ask it by, the extension refuses by throwing.
-    let unset = refused((&guard, "AFKCONVOY_NO_GUARD=''"), "AFKCONVOY_GUARD is not set");
+    let unset = refused((guard, "AFKCONVOY_NO_GUARD=''"), "AFKCONVOY_GUARD is not set");
     assert_eq!(unset[0]["threw"], true);
 
     // An extension that is not there is no session at all.

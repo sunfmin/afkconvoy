@@ -414,7 +414,7 @@ fn a_codex_worker_starts_in_its_role_under_a_user_directory_of_the_fleet_s_own()
             worktree = dir.display(),
             dev = head(&world, "acme/dev"),
             team = head(&world, "acme/team"),
-            hook = hook(&guard).replace('\'', "'\\''"),
+            hook = hook(guard).replace('\'', "'\\''"),
         )
     );
     // Nothing was asked at its terminal: both of its questions are answered
@@ -456,7 +456,7 @@ fn a_codex_worker_starts_in_its_role_under_a_user_directory_of_the_fleet_s_own()
             "--config",
             "project_root_markers=[]",
             "--config",
-            &hook(&guard),
+            &hook(guard),
             "--config",
             "features.memories=false",
             "--config",
@@ -800,7 +800,7 @@ fn a_tool_call_is_refused_when_the_guard_cannot_be_reached() {
     assert_eq!(did(&tick(&world, 1000).ok())[0], "dispatch 8 done");
     let line = started(&world, &worktree(&world, 8));
     let guard = "$(afkconvoy guard ";
-    assert!(line.contains(&guard), "{line}");
+    assert!(line.contains(guard), "{line}");
     // Codex makes a call whose hook fails in any way but one: each of these
     // ends in that one — the exit code that refuses, and a reason.
     let refused = |(from, with): (&str, &str), why: &str| {
@@ -813,9 +813,9 @@ fn a_tool_call_is_refused_when_the_guard_cannot_be_reached() {
     };
     // A guard that is not there, one that fails saying nothing, one that
     // cannot read the stage, and one that never answers its name.
-    refused((&guard, "$(/nowhere/afkconvoy guard "), "/nowhere/afkconvoy");
-    refused((&guard, "$(exit 1 "), "afkconvoy guard: it could not be asked");
-    refused((&guard, "$(exit 2 "), "afkconvoy guard: it could not be asked");
+    refused((guard, "$(/nowhere/afkconvoy guard "), "/nowhere/afkconvoy");
+    refused((guard, "$(exit 1 "), "afkconvoy guard: it could not be asked");
+    refused((guard, "$(exit 2 "), "afkconvoy guard: it could not be asked");
     refused(("AFKCONVOY_STAGE='build' ", ""), "AFKCONVOY_STAGE is not set");
     refused(("AFKCONVOY_HARNESS='codex'", "AFKCONVOY_HARNESS='aider'"), "`aider` is no harness");
     // What is no description of a tool call is refused too.
