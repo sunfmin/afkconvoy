@@ -464,11 +464,12 @@ impl RunnerLog {
     }
 }
 
-/// `line` as the host runner's log keeps it: stamped in UTC, and what spans
+/// `line` as the host runner's log keeps it: stamped in UTC, the stamp naming
+/// its zone (`2026-10-30T13:56:16Z`), and what spans
 /// several lines, as an error may, folded into one.
 fn stamped(line: &str) -> String {
     let parts: Vec<&str> = line.lines().map(str::trim).filter(|part| !part.is_empty()).collect();
-    format!("{} {}", log::utc(crate::clock()), parts.join(" "))
+    format!("{} {}", log::stamp(crate::clock()), parts.join(" "))
 }
 
 /// An answer the host runner gave that is an error: `run` prints it as it

@@ -50,7 +50,7 @@ pub fn since(raw: &str) -> Result<u64, String> {
             - 719_468;
     let at =
         u64::try_from(days * 86_400 + hour * 3600 + minute * 60 + second).map_err(|_| bad())?;
-    if format!("{}Z", log::utc(at).replace(' ', "T")) != raw {
+    if log::stamp(at) != raw {
         return Err(bad());
     }
     Ok(at)
@@ -471,7 +471,7 @@ mod tests {
         assert_eq!(since("1970-01-01T00:00:00Z"), Ok(0));
         assert_eq!(since("2026-10-25T11:42:00Z"), Ok(1_792_928_520));
         for at in [0, 951_782_400, 1_792_928_520, 253_402_300_799] {
-            assert_eq!(since(&format!("{}Z", log::utc(at).replace(' ', "T"))), Ok(at));
+            assert_eq!(since(&log::stamp(at)), Ok(at));
             assert_eq!(since(&at.to_string()), Ok(at));
         }
         for raw in [

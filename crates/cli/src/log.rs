@@ -486,6 +486,13 @@ pub fn utc(at: u64) -> String {
     format!("{year}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02}")
 }
 
+/// The time `at`, in epoch seconds, as a stamp that names its zone:
+/// `2026-10-20T23:03:00Z`. A stamp read on a host in another zone is not
+/// taken for that host's time.
+pub fn stamp(at: u64) -> String {
+    format!("{}Z", utc(at).replace(' ', "T"))
+}
+
 /// `failed` with every failure of one cause told once: the first of each
 /// `error`, in the order they failed, with how many failed of it.
 pub fn by_cause<T>(failed: &[T], error: impl Fn(&T) -> &str) -> Vec<(&T, usize)> {
@@ -908,6 +915,12 @@ mod tests {
         tick.error = Some("gh pr list failed".into());
         assert_eq!(tick.failed()[0].named(), "tick");
         assert!(!tick.dispatched());
+    }
+
+    #[test]
+    fn a_stamp_names_its_zone() {
+        assert_eq!(utc(1_792_537_380), "2026-10-20 23:03:00");
+        assert_eq!(stamp(1_792_537_380), "2026-10-20T23:03:00Z");
     }
 
     #[test]
