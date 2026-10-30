@@ -1066,7 +1066,7 @@ impl GitHub {
     /// may be short of the day: the caller then reads them on their own pages.
     fn open_issues_and_landings(&self, now: u64) -> Result<OpenAndLanded> {
         let since = now.saturating_sub(afkconvoy_core::patrol::DAY);
-        let since = format!("since={}Z", crate::log::utc(since).replace(' ', "T"));
+        let since = format!("since={}", crate::log::stamp(since));
         let out = self.query_with(OPEN_AND_LANDED_QUERY, OPEN_AND_LANDED_JQ, &[since])?;
         let mut open = OpenIssues::default();
         let mut landed_rows = vec![];
@@ -1100,7 +1100,7 @@ impl GitHub {
     /// through every result without a search result cap.
     pub fn watching_issues(&self, since: u64) -> Result<Vec<WatchIssue>> {
         let query = format!("query={WATCH_ISSUES_QUERY}");
-        let since = format!("since={}Z", crate::log::utc(since).replace(' ', "T"));
+        let since = format!("since={}", crate::log::stamp(since));
         let variables = variables(&self.tracker);
         let mut args = vec!["api", "graphql", "--paginate"];
         args.extend(variables.iter().map(String::as_str));
