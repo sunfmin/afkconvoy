@@ -404,3 +404,79 @@ share than these: the repeated `ps` listing (151 ms each under the gate's
 load, 30 ms on an idle host), an issue's comments read again in one tick
 (478 of 726), `remote get-url origin` (601 of 1,040) and
 `rev-parse --absolute-git-dir` (521 of 1,096).
+
+## Processes a tick started for facts it already had (sunfmin/control#311)
+
+`Offices-MBP.lan` recorded five landings past the 600 s budget: 753, 716,
+947, 761 and 737 seconds. No log of them was kept. On `5e10346f` the fast
+gate took 149 s through the exclusive queue at load 24 (fmt 1, Flux 43,
+Clippy 4, build 11, fast tests 90) and the slow gate 534 s: the slow gate
+is still three quarters of it. The fast tests took 19 s at load 4 straight
+after: their 90 s were the work beside them.
+
+### Where a slow test's time goes now
+
+Every eighth slow test (103, `.config/slow-tests` lines 3, 11, 19, …),
+traced as in sunfmin/control#263, started 18,584 processes in 106 s: git
+11,076, gh 4,155, orca 2,892, ps 461. The run took 205 s of user CPU and
+287 s of system CPU: starting processes, not the CLI's own work. With the
+workspace's crates built at `opt-level` 1 the sample was 2% faster (70.2
+and 69.4 s, against 71.3 and 70.9 s), and its cold build took 126 s: that
+is not where the time goes. Each process's call stack, written by a hook
+in `process::output`, named the callers:
+
+| Command | Calls | Caller |
+| --- | ---: | --- |
+| `ps axeww -o pid=,ppid=,rss=,time=,command=` | 404, 42 s | half from `orca::finish_failed_removals`, at every tick |
+| `rev-parse --absolute-git-dir` | 805 | `Worktree::note`, for each worktree a tick looks at |
+| `sysctl -n hw.memsize` | 497 | `hot::memory`, 178 of them again in one process |
+| `hash-object -t tree /dev/null` | 334 | `Repo::record_commit`, once per `Repo` value |
+| `orca terminal list` | 656 | 140 of them `Worktree::start` asking again after a close that found none |
+
+`ps axeww` writes every process's environment: 105 ms a call under the
+suite's own load. `finish_failed_removals` listed them all before it looked
+for a worktree whose removal had failed, and nearly every tick has none.
+
+From this change it lists them only on finding one. A worktree's own git
+dir is read from its `.git` file, and git is asked only where there is no
+such file (`Repo::git_dir`). The host's memory is asked once a process. The
+empty tree's id is kept with the repository's remote reads, which every
+`Repo` of it in a process shares. A start whose close found no terminal
+lists none again.
+
+### Before and after
+
+The sample above, `5e10346f` and this change in turns, through the
+exclusive queue, at load averages 10–112 from this and other work on the
+host:
+
+| Build | Nextest seconds | User + system CPU seconds |
+| --- | ---: | ---: |
+| before | 76.2, 75.5, 76.1, 75.6 | 380, 368, 368, 368 |
+| `finish_failed_removals` only | 72.4, 72.1 | 348, 348 |
+| this change | 71.9, 71.8 | 345, 344 |
+
+The whole slow gate's tests (818), on 2026-10-31, `5e10346f` straight before
+this change, twelve at a time, at load averages 52–84:
+
+| Build | Nextest seconds | Sum of the tests' own seconds | User + system CPU seconds |
+| --- | ---: | ---: | ---: |
+| before | 533.7 | 6,337 | 2,952 |
+| this change | 496.5 | 5,895 | 2,737 |
+
+Seven percent off the slow gate, in time and in CPU alike. That puts the
+whole gate near the budget, not under it, on a host with other fleets'
+work beside it.
+
+What is left is still processes a command starts. Each command that runs
+`gh` asks `gh config get user` and `gh api rate_limit` first (870 calls in
+400 of the sample's 588 CLI processes). The admission readings start
+`sysctl` and `df`: 1,800 calls, but those are the stand-ins a world sets its
+load and disk through. A dispatch reads its issue's comments four times
+(`recovery::own_heads`, `dispatch::start`, `note_start`, `board::post`).
+`remote get-url origin` is asked again in one start (`probe::Asked::now`,
+`tools::look`, `checkout_list::repo_of`: 763 calls in 290 processes),
+where a long-running host runner must not take the origin as fixed. A run
+of the `candidates::`, `lander::` and `turns::` slow tests at load 90–105
+failed 2 of 5 times on `5e10346f`, a cancelled candidate's `land` answering
+a missing-file error (sunfmin/control#312).
