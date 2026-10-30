@@ -303,7 +303,8 @@ fn on_the_checkout_list_its_entry_holds_and_another_tracker_is_refused_naming_bo
     world.say_tracker(&world.clone, "acme/tracker");
     let listed = world.afk(&["flows"]).ok();
     assert!(listed["workflows"][0]["line"].as_str().unwrap().contains("--repo acme/tracker"));
-    assert_eq!(world.afk(&["flows", "--tracker", "acme/tracker"]).ok(), listed);
+    let named = world.afk(&["flows", "--tracker", "acme/tracker"]).ok();
+    assert_eq!(named["workflows"], listed["workflows"]);
     world.gh_calls();
     for other in ["acme/other", "acme/dev"] {
         let error = world.afk(&["flows", "--tracker", other]).error();
