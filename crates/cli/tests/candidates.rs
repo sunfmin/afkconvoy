@@ -1292,3 +1292,50 @@ fn with_one_lane_every_ready_pr_fast_gates_in_turn_and_lands_in_one_round() {
     );
     let _ = tip;
 }
+
+/// A record past `ARG_MAX` is written all the same, and the ended candidates
+/// nothing holds any more are not carried into it (sunfmin/control#308).
+#[test]
+fn a_record_past_arg_max_is_written_and_drops_the_candidates_nothing_holds() {
+    let world = world(1);
+    let (a, _) = worker(&world, 1, "a");
+    release(&world, "a", false);
+    let landed = world.afk_in(&a, &["land", "--issue", "1"]).ok();
+    assert_eq!(landed["outcome"], "merged", "{landed}");
+    let mut seed = chain(&world);
+    let template = seed["candidates"][0].clone();
+    // Its owner's pid: a process this test saw exit.
+    let mut exited = Command::new("true").spawn().unwrap();
+    let dead = exited.id();
+    exited.wait().unwrap();
+    let pad = "x".repeat(4096);
+    let ended: Vec<Value> = (0..300)
+        .map(|n| {
+            let mut c = template.clone();
+            c["id"] = json!(format!("ended-{n}"));
+            c["owner"]["pid"] = json!(dead);
+            c["worktree"] = json!(world.root.join(format!("gone-{n}")));
+            c["result"] = json!({"pad": pad});
+            c
+        })
+        .collect();
+    seed["candidates"] = json!(ended);
+    let text = seed.to_string();
+    assert!(text.len() > 1_048_576, "the record is past macOS's ARG_MAX");
+    let file = world.root.join("seed.json");
+    std::fs::write(&file, &text).unwrap();
+    let state = world.remote(&["rev-parse", "refs/convoy/candidates/main"]);
+    let tree = world.remote(&["hash-object", "-t", "tree", "/dev/null"]);
+    let seeded = world.remote(&["commit-tree", &tree, "-p", &state, "-F", file.to_str().unwrap()]);
+    world.remote(&["update-ref", "refs/convoy/candidates/main", &seeded]);
+
+    let (b, _) = worker(&world, 2, "b");
+    release(&world, "b", false);
+    let landed = world.afk_in(&b, &["land", "--issue", "2"]).ok();
+    assert_eq!(landed["outcome"], "merged", "{landed}");
+    let kept = chain(&world)["candidates"].as_array().unwrap().clone();
+    assert!(!kept.iter().any(|c| c["id"].as_str().unwrap().starts_with("ended-")), "{kept:?}");
+    assert!(kept.iter().any(|c| c["issue"] == 2 && c["phase"] == "landed"), "{kept:?}");
+    let history = world.remote(&["rev-list", "refs/convoy/candidates/main"]);
+    assert!(history.lines().any(|sha| sha == seeded), "the seeded record stays reachable");
+}

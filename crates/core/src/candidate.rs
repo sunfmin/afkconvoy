@@ -346,6 +346,23 @@ impl Chain {
         }
     }
 
+    /// Drops every ended candidate `released` says nothing holds any more,
+    /// unless a candidate kept depends on it: as its predecessor, or as the
+    /// root that cancelled it. An active one is always kept.
+    pub fn prune(&mut self, released: impl Fn(&Candidate) -> bool) {
+        let mut kept: Vec<Candidate> = vec![];
+        let mut needed: Vec<String> = vec![];
+        for c in self.candidates.drain(..).rev() {
+            if c.active() || needed.contains(&c.commit) || needed.contains(&c.id) || !released(&c) {
+                needed.push(c.predecessor.clone());
+                needed.extend(c.cancelled_by.clone());
+                kept.push(c);
+            }
+        }
+        kept.reverse();
+        self.candidates = kept;
+    }
+
     /// An ordinary advance to a known candidate preserves its successors.
     /// An external base move invalidates all candidates rooted elsewhere.
     /// Atomic publication already records the landed prefix before issue
@@ -472,6 +489,28 @@ mod tests {
     fn split(n: usize) -> Candidate {
         let slow = Slow { command: "slow".into(), seconds: 60, whole: "whole".into() };
         Candidate { command: "fast".into(), slow: Some(slow), ..candidate(n) }
+    }
+
+    #[test]
+    fn an_ended_candidate_nothing_holds_is_pruned_unless_a_kept_one_depends_on_it() {
+        let ended = |n, phase| Candidate { phase, stopped: true, ..candidate(n) };
+        let mut chain = Chain {
+            candidates: vec![
+                ended(0, Phase::Landed),
+                Candidate { predecessor: "base".into(), ..ended(1, Phase::Red) },
+                Candidate { cancelled_by: Some("c1".into()), ..ended(2, Phase::Cancelled) },
+                ended(3, Phase::Landed),
+                candidate(4),
+            ],
+            ..Chain::default()
+        };
+        // c2 is still held; c1 cancelled it, and c4 stands on c3.
+        chain.prune(|c| c.id != "c2");
+        let ids: Vec<_> = chain.candidates.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, ["c1", "c2", "c3", "c4"]);
+        chain.candidates.retain(|c| c.id != "c4");
+        chain.prune(|_| true);
+        assert!(chain.candidates.is_empty(), "{:?}", chain.candidates);
     }
 
     #[test]
