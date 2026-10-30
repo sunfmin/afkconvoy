@@ -77,13 +77,32 @@ const DRAIN_AFTER_EXIT: Duration = Duration::from_secs(2);
 /// `DRAIN_AFTER_EXIT` and then dropped: the output already written is kept,
 /// and a leaked writer cannot hold the caller.
 pub(crate) fn output(command: &mut Command) -> io::Result<Output> {
-    let mut child = starting(|| {
-        command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()
-    })?;
+    output_given(command, None)
+}
+
+/// As `output`, with `input` written to the command's stdin and then closed:
+/// for text too long for an argument, which the OS bounds by `ARG_MAX`.
+pub(crate) fn output_with_input(command: &mut Command, input: &[u8]) -> io::Result<Output> {
+    output_given(command, Some(input))
+}
+
+fn output_given(command: &mut Command, input: Option<&[u8]>) -> io::Result<Output> {
+    let stdin = if input.is_some() { Stdio::piped() } else { Stdio::null() };
+    let mut child =
+        starting(|| command.stdin(stdin).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn())?;
+    let writer = child.stdin.take();
     let stdout = child.stdout.take().ok_or_else(|| io::Error::other("stdout was not piped"))?;
     let stderr = child.stderr.take().ok_or_else(|| io::Error::other("stderr was not piped"))?;
     let exited = AtomicBool::new(false);
     let (stdout, stderr, status) = std::thread::scope(|scope| {
+        if let (Some(mut writer), Some(input)) = (writer, input) {
+            // A child that exits before reading it all closes the pipe; its
+            // status says what went wrong, not the broken write.
+            scope.spawn(move || {
+                use std::io::Write;
+                let _ = writer.write_all(input);
+            });
+        }
         let stdout = scope.spawn(|| read_bounded(stdout, &exited));
         let stderr = scope.spawn(|| read_bounded(stderr, &exited));
         let status = child.wait();
@@ -194,6 +213,16 @@ mod tests {
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn input_past_arg_max_reaches_the_command_whole() {
+        // macOS's ARG_MAX is 1 MiB; a candidate record was refused there
+        // as an argument (sunfmin/control#308).
+        let input = "x".repeat(2 << 20);
+        let out = output_with_input(Command::new("wc").arg("-c"), input.as_bytes()).unwrap();
+        assert!(out.status.success());
+        assert_eq!(String::from_utf8(out.stdout).unwrap().trim(), (2 << 20).to_string());
+    }
 
     #[test]
     fn a_start_inheriting_nothing_is_handed_no_descriptor_its_starter_was() {
