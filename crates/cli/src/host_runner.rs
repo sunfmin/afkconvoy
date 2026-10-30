@@ -502,6 +502,13 @@ pub fn pid() -> Option<u32> {
     u32::try_from(pid).ok()
 }
 
+/// The release of this host's runner, as its lock says the last one to hold
+/// it; `None` where none ever did, or it said none.
+pub fn version() -> Option<String> {
+    let text = std::fs::read_to_string(cache().ok()?.join(LOCK)).ok()?;
+    serde_json::from_str::<Value>(&text).ok()?["version"].as_str().map(str::to_string)
+}
+
 /// The host runner's log: host-runner.log in the cache directory.
 pub fn log_path() -> Result<PathBuf> {
     Ok(cache()?.join(LOG))
@@ -943,7 +950,7 @@ fn found_at(path: &Path, log: &RunnerLog) -> Option<Installed> {
 /// and given `VERSION_SAID_WITHIN`: `afkconvoy 0.6.0` is `0.6.0`. Errors: it
 /// could not be started, said nothing in time and was ended, ended in an
 /// error, or said no version.
-fn version_of(path: &Path) -> Result<String> {
+pub(crate) fn version_of(path: &Path) -> Result<String> {
     let mut child = crate::process::spawn(
         Command::new(path)
             .arg("--version")

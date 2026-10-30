@@ -288,6 +288,50 @@ fn a_fleet_with_no_fault_answers_its_keys_and_no_finding_and_writes_nothing() {
 }
 
 #[test]
+fn another_accounts_host_runner_on_this_machine_is_named_from_the_process_table() {
+    let world = World::new();
+    write(
+        &world.root,
+        "other-accounts",
+        "  70001 felix   4100   1.5  20480 /opt/homebrew/bin/afkconvoy host-runner\n\
+         \x20 70001 felix   4200 148.5 1048576 cargo build\n",
+    );
+    let answer = doctor(&world, "1000").ok();
+    assert_eq!(
+        answer["host"]["other_accounts"],
+        json!([{"account": "felix", "uid": 70001, "pid": 4100,
+            "program": "/opt/homebrew/bin/afkconvoy", "cores": 1.5,
+            "memory_bytes": (20480 + 1048576) * 1024, "processes": 2}]),
+        "{answer}"
+    );
+    // This world's account runs no host runner: the fleet may be felix's.
+    assert_eq!(answer["host"]["exclusive"]["status"], "no_runner", "{answer}");
+    let said = found(&answer, "works on this machine under another account");
+    assert_eq!(said.len(), 1, "{answer}");
+    assert_eq!(said[0]["severity"], "info");
+    assert!(said[0]["what"].as_str().unwrap().contains("felix (pid 4100)"), "{answer}");
+    assert_eq!(said[0]["fix"], "su - felix -c 'afkconvoy doctor --all'");
+}
+
+#[test]
+fn an_afkconvoy_first_on_path_of_another_release_is_a_warning() {
+    use std::os::unix::fs::PermissionsExt;
+    let world = World::new();
+    let first = world.root.join("bin/afkconvoy");
+    std::fs::remove_file(&first).unwrap();
+    std::fs::write(&first, "#!/bin/sh\necho 'afkconvoy 0.0.1'\n").unwrap();
+    std::fs::set_permissions(&first, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let answer = doctor(&world, "1000").ok();
+    let said = found(&answer, "is first on PATH");
+    assert_eq!(said.len(), 1, "{answer}");
+    assert_eq!(said[0]["severity"], "warning");
+    let what = said[0]["what"].as_str().unwrap();
+    assert!(what.starts_with(&format!("afkconvoy 0.0.1, at {}", first.display())), "{what}");
+    assert!(what.contains(&format!("would start afkconvoy {}", afkconvoy::VERSION)), "{what}");
+    assert_eq!(said[0]["fix"], "which -a afkconvoy");
+}
+
+#[test]
 fn a_repo_no_fleet_ever_ran_in_has_no_finding_no_log_and_exits_zero() {
     let world = World::new();
     world.issue(3, &["ready-for-agent"]);
