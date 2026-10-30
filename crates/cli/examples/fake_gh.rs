@@ -1155,8 +1155,7 @@ fn issue<'a>(st: &'a State, number: &str) -> Option<&'a Value> {
 }
 
 fn stamp(at: &Value) -> Value {
-    at.as_u64()
-        .map_or(Value::Null, |at| json!(format!("{}Z", afkconvoy::log::utc(at).replace(' ', "T"))))
+    at.as_u64().map_or(Value::Null, |at| json!(afkconvoy::log::stamp(at)))
 }
 /// A read of issue `number`, transferred: `gh` follows GitHub's redirect,
 /// and answers with the issue as it is in the repo it moved to.

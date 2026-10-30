@@ -1458,10 +1458,10 @@ impl World {
         let text = std::fs::read_to_string(file).unwrap_or_default();
         let stamped = |line: &str| {
             let bytes = line.as_bytes();
-            bytes.len() > 20 && bytes[4] == b'-' && bytes[10] == b' ' && bytes[19] == b' '
+            bytes.len() > 21 && bytes[4] == b'-' && bytes[10] == b'T' && &bytes[19..21] == b"Z "
         };
         let unstamped =
-            |line: &str| if stamped(line) { line[20..].to_string() } else { line.into() };
+            |line: &str| if stamped(line) { line[21..].to_string() } else { line.into() };
         text.lines().map(unstamped).collect()
     }
 
