@@ -19,7 +19,39 @@ use crate::gh::{GitHub, Tracker};
 use crate::git::Repo;
 use crate::remote::{Fresh, Push};
 
+/// How long a turn waiting on the chain first waits before it reads it again.
 const EVERY: Duration = Duration::from_millis(100);
+
+/// The longest it waits between two reads (`Waiting`).
+const AT_MOST: Duration = Duration::from_secs(1);
+
+/// A turn waiting on the chain: for its round, its predecessor or another
+/// turn of its PR. Each read asks the remote live and starts git, so a wait
+/// that sees nothing change grows, twice as long each time up to `AT_MOST`,
+/// and a change starts it again at `EVERY`. Those reads ran beside the gate
+/// a turn waits on, and in this repo's tests beside the other tests'
+/// (sunfmin/control#309).
+struct Waiting {
+    seen: Option<Chain>,
+    next: Duration,
+}
+
+impl Waiting {
+    fn new() -> Waiting {
+        Waiting { seen: None, next: EVERY }
+    }
+
+    /// Waits after reading `chain`.
+    fn after(&mut self, chain: &Chain) {
+        if self.seen.as_ref() == Some(chain) {
+            self.next = (self.next * 2).min(AT_MOST);
+        } else {
+            self.seen = Some(chain.clone());
+            self.next = EVERY;
+        }
+        std::thread::sleep(self.next);
+    }
+}
 
 /// Selection must also refuse a candidate left after its claim ended.
 pub(crate) fn has_task(repo: &Repo, issue: u64) -> Result<bool> {
@@ -58,7 +90,7 @@ fn read(repo: &Repo, config: &Config) -> Result<Snapshot> {
         repo.bring(sha, &state_ref)?;
     }
     let chain = match &sha {
-        Some(sha) => serde_json::from_str(&repo.git(&["show", "-s", "--format=%B", sha])?)?,
+        Some(sha) => serde_json::from_str(&repo.message(sha)?)?,
         None => Chain::default(),
     };
     announce(&chain);
@@ -870,6 +902,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
     };
     // Do not reserve a host lane while waiting for a barrier/window or for
     // another invocation of this PR. Dead owners are reconciled first.
+    let mut waiting = Waiting::new();
     loop {
         let chain = reconcile(repo, config)?;
         if let Some(c) =
@@ -883,7 +916,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
                 return Ok(result);
             }
             if c.active() {
-                std::thread::sleep(EVERY);
+                waiting.after(&chain);
                 continue;
             }
         }
@@ -894,7 +927,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
         {
             break;
         }
-        std::thread::sleep(EVERY);
+        waiting.after(&chain);
     }
     let mut permit = Some(if barrier {
         Permit::take(repo, "turn: serial barrier", heavy, true)?
@@ -1076,6 +1109,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
     if !barrier {
         permit = None;
     }
+    let mut waiting = Waiting::new();
     loop {
         let chain = reconcile(repo, config)?;
         let c = chain.candidates.iter().find(|c| c.id == id).expect("assigned candidate");
@@ -1109,7 +1143,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
         }
         let base = crate::turn::base(repo, config)?;
         if !chain.ripe(&id, &base) {
-            std::thread::sleep(EVERY);
+            waiting.after(&chain);
             continue;
         }
         if let Some(n) = issue {
