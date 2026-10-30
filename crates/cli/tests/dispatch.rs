@@ -265,7 +265,7 @@ fn dispatch_starts_a_worker_on_a_fresh_worktree() {
     assert!(prompt.contains(
         "The next command holds one turn through merge, gate, recording green and landing."
     ));
-    assert!(prompt.contains(&format!("{} land --issue 7\n", env!("CARGO_BIN_EXE_afkconvoy"))));
+    assert!(prompt.contains("afkconvoy land --issue 7\n"));
     assert!(!prompt.contains("{n}") && !prompt.contains("{branch}"));
     assert_eq!(git(worktree, &["status", "--porcelain"]), "", "the brief is not in the worktree");
 

@@ -19,7 +19,44 @@ use crate::gh::{GitHub, Tracker};
 use crate::git::Repo;
 use crate::remote::{Fresh, Push};
 
+/// How long a turn waiting on the chain first waits before it reads it again.
 const EVERY: Duration = Duration::from_millis(100);
+
+/// The longest it waits between two reads (`Waiting`).
+const AT_MOST: Duration = Duration::from_secs(1);
+
+/// A turn waiting on the chain: for its round, its predecessor or another
+/// turn of its PR. Each read asks the remote live and starts git, so a wait
+/// that sees nothing change grows, twice as long each time up to `AT_MOST`,
+/// and a change starts it again at `EVERY`. Those reads ran beside the gate
+/// a turn waits on, and in this repo's tests beside the other tests'
+/// (sunfmin/control#309).
+struct Waiting {
+    seen: Option<Chain>,
+    next: Duration,
+}
+
+impl Waiting {
+    fn new() -> Waiting {
+        Waiting { seen: None, next: EVERY }
+    }
+
+    /// Waits after reading `chain`.
+    fn after(&mut self, chain: &Chain) {
+        std::thread::sleep(self.wait(chain));
+    }
+
+    /// How long to wait after reading `chain`.
+    fn wait(&mut self, chain: &Chain) -> Duration {
+        if self.seen.as_ref() == Some(chain) {
+            self.next = (self.next * 2).min(AT_MOST);
+        } else {
+            self.seen = Some(chain.clone());
+            self.next = EVERY;
+        }
+        self.next
+    }
+}
 
 /// Selection must also refuse a candidate left after its claim ended.
 pub(crate) fn has_task(repo: &Repo, issue: u64) -> Result<bool> {
@@ -58,7 +95,7 @@ fn read(repo: &Repo, config: &Config) -> Result<Snapshot> {
         repo.bring(sha, &state_ref)?;
     }
     let chain = match &sha {
-        Some(sha) => serde_json::from_str(&repo.git(&["show", "-s", "--format=%B", sha])?)?,
+        Some(sha) => serde_json::from_str(&repo.message(sha)?)?,
         None => Chain::default(),
     };
     announce(&chain);
@@ -883,6 +920,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
     };
     // Do not reserve a host lane while waiting for a barrier/window or for
     // another invocation of this PR. Dead owners are reconciled first.
+    let mut waiting = Waiting::new();
     loop {
         let chain = reconcile(repo, config)?;
         if let Some(c) =
@@ -896,7 +934,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
                 return Ok(result);
             }
             if c.active() {
-                std::thread::sleep(EVERY);
+                waiting.after(&chain);
                 continue;
             }
         }
@@ -907,7 +945,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
         {
             break;
         }
-        std::thread::sleep(EVERY);
+        waiting.after(&chain);
     }
     let mut permit = Some(if barrier {
         Permit::take(repo, "turn: serial barrier", heavy, true)?
@@ -1089,6 +1127,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
     if !barrier {
         permit = None;
     }
+    let mut waiting = Waiting::new();
     loop {
         let chain = reconcile(repo, config)?;
         let c = chain.candidates.iter().find(|c| c.id == id).expect("assigned candidate");
@@ -1122,7 +1161,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
         }
         let base = crate::turn::base(repo, config)?;
         if !chain.ripe(&id, &base) {
-            std::thread::sleep(EVERY);
+            waiting.after(&chain);
             continue;
         }
         if let Some(n) = issue {
@@ -1383,6 +1422,25 @@ mod tests {
         assert!(!landing(&chain("green", &me, Some("c9")), "b"), "cancelled");
         let dead = super::Process { pid: u32::MAX - 1, ..me.clone() };
         assert!(!landing(&chain("slow", &dead, None), "b"), "its turn is gone");
+    }
+
+    #[test]
+    fn a_wait_on_a_chain_that_does_not_change_grows_to_a_second_and_a_change_starts_it_again() {
+        use std::time::Duration;
+        let ms = Duration::from_millis;
+        let mut waiting = super::Waiting::new();
+        let still = super::Chain::default();
+        let waits: Vec<_> = (0..6).map(|_| waiting.wait(&still)).collect();
+        assert_eq!(waits, [ms(100), ms(200), ms(400), ms(800), ms(1000), ms(1000)]);
+        let moved = super::Chain {
+            pending: vec![super::Barrier {
+                id: "b".into(),
+                owner: super::identity(std::process::id()).unwrap().unwrap(),
+            }],
+            ..super::Chain::default()
+        };
+        assert_eq!(waiting.wait(&moved), ms(100));
+        assert_eq!(waiting.wait(&moved), ms(200));
     }
 
     #[test]

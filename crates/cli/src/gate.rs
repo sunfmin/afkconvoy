@@ -103,6 +103,14 @@ fn share(command: &mut Command) {
     }
 }
 
+/// How often a candidate's gate asks whether the candidate was cancelled.
+/// Each ask reads the chain live from the remote — over the network, on a
+/// real one — and starts git, all beside the gate it is asked of; asked at
+/// every look at the gate (50 ms), they took the host's cores from it
+/// (sunfmin/control#309). The turn that cancels a candidate on this host
+/// signals its gate itself (`candidates::cleanup`).
+const CANCELLED_EVERY: Duration = Duration::from_secs(1);
+
 /// Runs the gate command in a worktree, its log going line by line to this
 /// process's stderr, keeping its status, signal evidence and the end of its
 /// log. A run that reaches the gate limit, `limit`, is killed, with everything
@@ -185,11 +193,16 @@ fn run_command(
     };
     let started = Instant::now();
     let mut cancelled = false;
+    let mut asked: Option<Instant> = None;
     let (exit_code, timed_out, termination) = loop {
         while let Ok(line) = read.try_recv() {
             keep(line);
         }
-        if let Some(candidate) = candidate
+        let ask = candidate.filter(|_| asked.is_none_or(|at| at.elapsed() >= CANCELLED_EVERY));
+        if ask.is_some() {
+            asked = Some(Instant::now());
+        }
+        if let Some(candidate) = ask
             && candidate.cancelled()?
         {
             cancelled = true;

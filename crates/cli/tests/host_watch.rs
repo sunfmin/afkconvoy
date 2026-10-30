@@ -936,8 +936,6 @@ fn command_key(command: &str) -> String {
 #[test]
 fn a_report_is_complete_durable_and_carried_into_the_next_brief() {
     let world = World::new();
-    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_afkconvoy"), world.root.join("bin/afkconvoy"))
-        .unwrap();
     let dir = operator(&world);
     paused(&world, "pi", "a fault");
     run(&world, &dir);
