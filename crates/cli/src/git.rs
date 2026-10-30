@@ -105,10 +105,15 @@ impl Repo {
             bail!("{} is not a directory", dir.display());
         }
         let ran = run(dir, &["rev-parse", "--show-toplevel"], &[])?;
-        if !ran.ok {
+        if ran.ok {
+            return Ok(Repo::new(PathBuf::from(ran.stdout)));
+        }
+        // Only that answer means no checkout: any other is git refusing one
+        // (sunfmin/control#304), which it alone can say why.
+        if ran.stderr.starts_with("fatal: not a git repository") {
             bail!("{} is not in a git checkout", dir.display());
         }
-        Ok(Repo::new(PathBuf::from(ran.stdout)))
+        bail!("git refused {}: {}", dir.display(), ran.stderr.trim())
     }
 
     /// The checkout whose top directory is `dir`.
