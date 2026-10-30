@@ -151,7 +151,7 @@ What a DSH worker loads of bundles, plugins, MCP servers, patches, themes and se
 _Avoid_: provider profile, persona
 
 **Bound repo**:
-A repo whose config names a team. An unbound repo has no roles and one fixed path for every issue: one worker, then a turn that lands its PR.
+A repo whose config names a team. An unbound repo has no roles and one fixed path for every issue: one worker, then a turn that lands its PR. It has no position and no workflow to draw: `show <issue>` there says where the issue stands on that path — ready, held back and why, claimed and by which fleet instance, landing with the fleet's PR, waiting on a human, or closed — from the facts a tick acts on.
 _Avoid_: team mode, managed repo
 
 **Guard**:
