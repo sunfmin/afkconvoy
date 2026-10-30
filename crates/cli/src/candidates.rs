@@ -100,21 +100,23 @@ fn announce(chain: &Chain) {
 
 /// No force push, including the state ref. Its first parent is the previous
 /// record. Extra parents retain every candidate and its preserved source head.
-/// A candidate nobody holds any more is not carried on (sunfmin/control#308):
-/// the previous record, its first parent, keeps its commit reachable.
+/// The chain goes to git on stdin: as an argument it passed macOS's `ARG_MAX`
+/// once it held 258 candidates, and nothing landed (sunfmin/control#308).
+/// A candidate nothing holds any more is not carried on: the previous
+/// record, its first parent, keeps its commit reachable.
 fn commit(repo: &Repo, snapshot: &Snapshot) -> Result<String> {
     let tree = repo.git(&["hash-object", "-t", "tree", "/dev/null"])?;
     let mut chain = snapshot.chain.clone();
     chain.prune(released);
     let text = serde_json::to_string(&chain)?;
-    let mut args = vec!["commit-tree", &tree, "-m", &text];
+    let mut args = vec!["commit-tree", &tree, "-F", "-"];
     if let Some(sha) = &snapshot.sha {
         args.extend(["-p", sha]);
     }
     for c in &chain.candidates {
         args.extend(["-p", &c.commit]);
     }
-    repo.git(&args)
+    repo.git_with_input(&args, &text)
 }
 
 /// Nothing holds an ended candidate any more: its owner, a turn of this host,

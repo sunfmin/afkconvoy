@@ -282,6 +282,21 @@ impl Repo {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     }
 
+    /// One git call that must succeed, `input` on its stdin → its stdout,
+    /// trimmed: for text no argument may carry, past the OS's `ARG_MAX`.
+    pub fn git_with_input(&self, args: &[&str], input: &str) -> Result<String> {
+        local(args)?;
+        let out = crate::process::output_with_input(
+            Command::new("git").current_dir(&self.dir).args(args).env("LC_ALL", "C"),
+            input.as_bytes(),
+        )
+        .context("git could not run")?;
+        if !out.status.success() {
+            bail!("git {} failed: {}", args.join(" "), String::from_utf8_lossy(&out.stderr).trim());
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    }
+
     /// One git call that must succeed → its stdout, trimmed.
     pub fn git(&self, args: &[&str]) -> Result<String> {
         let ran = self.try_git(args)?;
