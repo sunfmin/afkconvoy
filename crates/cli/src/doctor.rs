@@ -173,6 +173,7 @@ kinds! {
     WatchUnavailable: Critical, "no harness can start this host's watch";
     WatchBusy: Critical, "the resident watch is busy; its round remains undelivered";
     NotMoved: Warning, "the host runner did not move onto";
+    PathStale: Warning, "is first on PATH";
     RosterModelUnmatched: Warning, "names no model the host kit holds";
     TeamUnread: Critical, "the team this repo names cannot be read";
     TeamFaulty: Critical, "has a fault at its head";
@@ -204,6 +205,7 @@ kinds! {
     RetiredConcurrency: Info, "which nothing reads any more";
     KeptWorktree: Info, "is kept with no claim";
     NoGateLimit: Info, "declares no gate limit";
+    OtherAccount: Info, "works on this machine under another account";
 }
 
 impl Kind {
@@ -226,15 +228,18 @@ impl Kind {
                 | Kind::WatchUnavailable
                 | Kind::WatchBusy
                 | Kind::NotMoved
+                | Kind::PathStale
+                | Kind::OtherAccount
                 | Kind::WorkerHealth
                 | Kind::HealthOverdue
         )
     }
 
     /// Whether the host's watch answers a finding of this kind: not one that
-    /// says the watch itself cannot start or go on, which is the operator's.
+    /// says the watch itself cannot start or go on, nor the PATH of the shell
+    /// `doctor` was run in, which are the operator's.
     pub fn watched(self) -> bool {
-        !matches!(self, Kind::WatchUnavailable | Kind::WatchBusy)
+        !matches!(self, Kind::WatchUnavailable | Kind::WatchBusy | Kind::PathStale)
     }
 }
 
@@ -2259,10 +2264,17 @@ fn lift_watch_events(answer: &mut Value, lifted: &mut Vec<Value>) {
 
 /// What of `doctor`'s `host` is the host's alone, the same whichever
 /// checkout it is asked in — the host kit, the queue of `exclusive`, the
-/// watch running, the newer afkconvoy the host runner moves onto — by
-/// its key: `doctor --all` says it once. All but the host kit are as the
-/// host runner says them, asked once.
-fn host_once(now: u64, readings: &Readings, rounds: bool) -> Map<String, Value> {
+/// watch running, the newer afkconvoy the host runner moves onto, the host
+/// runners of the other accounts on the machine — by
+/// its key: `doctor --all` says it once. All but the host kit and the other
+/// accounts, read from the process table, are as the host runner says
+/// them, asked once.
+fn host_once(
+    now: u64,
+    readings: &Readings,
+    rounds: bool,
+    others: &Result<Vec<crate::machine::Runner>>,
+) -> Map<String, Value> {
     let (exclusive, installed, watch) = match host_runner::shared() {
         Ok(Some(said)) => {
             (Ok(Some((said.exclusive, said.exclusive_paused))), said.installed, said.watch)
@@ -2280,14 +2292,18 @@ fn host_once(now: u64, readings: &Readings, rounds: bool) -> Map<String, Value> 
         ("exclusive".to_string(), exclusive_json(exclusive, now)),
         ("installed".to_string(), serde_json::to_value(installed).unwrap_or_default()),
         ("watch".to_string(), crate::host_watch::json(watch.as_ref(), rounds)),
+        ("other_accounts".to_string(), crate::machine::json(others)),
     ])
 }
 
 impl Look {
     fn new(now: u64, rounds: bool) -> Look {
         let readings = Readings::new();
-        let host = host_once(now, &readings, rounds);
+        let others = crate::machine::other_runners();
+        let host = host_once(now, &readings, rounds, &others);
         let mut findings = crate::resources::findings(&host["resources"], now);
+        findings.extend(crate::machine::findings(&others, host_runner::runs()));
+        findings.extend(crate::machine::path_findings());
         findings.extend(crate::kit_research::findings());
         Look { readings, host, findings, trackers: crate::tracker::Public::default() }
     }
@@ -2298,7 +2314,7 @@ impl Look {
 /// fleet of `host` — else of the host its `run` named, else of this machine
 /// — under the network settings `proxy` names:
 ///
-///   {"host": {"host_kit", "exclusive", "watch", "installed"}, "findings",
+///   {"host": {"host_kit", "exclusive", "watch", "installed", "other_accounts"}, "findings",
 ///    "checkouts": [{"checkout", "repo", "doctor"}]}
 ///
 /// What is the host's is said once, at the top: the part of `host` that is
