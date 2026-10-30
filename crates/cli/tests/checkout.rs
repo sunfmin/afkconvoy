@@ -92,6 +92,7 @@ fn a_checkout_git_refuses_is_refused_in_git_s_words() {
 fn a_directory_inside_a_checkout_names_the_checkout() {
     let world = World::new();
     let inside = world.clone.join("docs/agents");
+    world.list_checkout(&world.clone);
     let here = world.afk(&["config"]).ok();
     assert_eq!(world.afk_in(&world.root, &["config", path(&inside)]).ok(), here);
     assert_eq!(world.afk_in(&inside, &["config"]).ok(), here);
@@ -241,6 +242,7 @@ fn every_command_a_workers_brief_gives_it_takes_its_worktree() {
         [] as [String; 0]
     );
     let target = world.second_repo();
+    world.list_checkout(&target);
     let flows = world.afk_in(&worktree, &["flows", path(&target)]).ok();
     assert_eq!(flows["ready_label"], "ready-for-agent");
     assert!(world.afk_in(&worktree, &["flows"]).error().contains("worker's worktree"));
