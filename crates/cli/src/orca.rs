@@ -643,7 +643,9 @@ pub(crate) fn finish_failed_removals(repo: &Repo, base: &str) -> Result<()> {
     let source = Source::of(repo)?;
     let listed = worktree_list()?;
     let rows = listed["worktrees"].as_array().cloned().unwrap_or_default();
-    let busy = crate::hot::working_directories()?;
+    // Every process of the host is listed only for a row that needs it: a
+    // tick that finds no failed removal starts no `ps` (sunfmin/control#311).
+    let mut busy = None;
     let mut finished = false;
     let mut retired = false;
     for row in &rows {
@@ -660,7 +662,10 @@ pub(crate) fn finish_failed_removals(repo: &Repo, base: &str) -> Result<()> {
         else {
             continue;
         };
-        if crate::hot::occupies(&busy, &path) {
+        if busy.is_none() {
+            busy = Some(crate::hot::working_directories()?);
+        }
+        if crate::hot::occupies(busy.as_deref().unwrap_or_default(), &path) {
             continue;
         }
         let branch = short_branch(row["branch"].as_str().unwrap_or(""));
@@ -1047,12 +1052,11 @@ impl Worktree {
     }
 
     /// A note about the worker here, kept in the worktree's own git dir: this
-    /// machine's, like the worker itself, and gone when the worktree is. git
-    /// is asked where that is once.
+    /// machine's, like the worker itself, and gone when the worktree is. It
+    /// is found once (`Repo::git_dir`).
     pub(crate) fn note(&self, name: &str) -> Result<PathBuf> {
         if self.git_dir.get().is_none() {
-            let dir = Repo::new(self.path.clone()).git(&["rev-parse", "--absolute-git-dir"])?;
-            let _ = self.git_dir.set(PathBuf::from(dir));
+            let _ = self.git_dir.set(Repo::new(self.path.clone()).git_dir()?);
         }
         Ok(self.git_dir.get().expect("set above").join(name))
     }
@@ -1070,8 +1074,13 @@ impl Worktree {
     /// work here is over is ended, whatever it is doing. One with no terminal
     /// is as wanted.
     pub fn close_terminals(&self) -> Result<()> {
+        self.close_any().map(|_| ())
+    }
+
+    /// `close_terminals` → whether there was a terminal here to close.
+    fn close_any(&self) -> Result<bool> {
         if self.terminal()?.is_none() {
-            return Ok(());
+            return Ok(false);
         }
         orca(&["terminal", "close", "--worktree", &self.selector(), "--all"])?;
         if OBSERVATION.with(|slot| slot.borrow().is_some()) && self.terminal()?.is_none() {
@@ -1079,7 +1088,7 @@ impl Worktree {
             // that starts later in this tick. Other workers keep their view.
             self.observed_terminals(0);
         }
-        Ok(())
+        Ok(true)
     }
 
     /// End the old agent before a continuation can rewrite its brief or
@@ -1414,13 +1423,15 @@ impl Worktree {
         // A failed close must not turn a continuation into a second writer.
         // Check again even after an acknowledged close: Orca may still be
         // ending the previous terminal. Leave the worker's progress markers
-        // intact until its replacement can actually be started.
-        if self.recorded_harness()?.is_some() {
+        // intact until its replacement can actually be started. Where there
+        // was no terminal to close, the look that found none is that check.
+        let closed = if self.recorded_harness()?.is_some() {
             self.stop_for_continuation()?;
+            true
         } else {
-            self.close_terminals()?;
-        }
-        if self.terminal()?.is_some() {
+            self.close_any()?
+        };
+        if closed && self.terminal()?.is_some() {
             bail!(
                 "the previous worker in {} still has a terminal after close; \
                  no replacement was started",

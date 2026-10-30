@@ -27,8 +27,7 @@ struct Note {
 }
 
 fn note_in(repo: &Repo) -> Result<PathBuf> {
-    let dir = repo.git(&["rev-parse", "--absolute-git-dir"])?;
-    Ok(Path::new(&dir).join(TURN_FILE))
+    Ok(repo.git_dir()?.join(TURN_FILE))
 }
 
 fn write(file: &Path, note: &Note) -> Result<()> {
