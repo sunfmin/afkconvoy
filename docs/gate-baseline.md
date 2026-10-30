@@ -418,8 +418,8 @@ after: their 90 s were the work beside them.
 
 Every eighth slow test (103, `.config/slow-tests` lines 3, 11, 19, …),
 traced as in sunfmin/control#263, started 18,584 processes in 106 s: git
-11,076, gh 4,155, orca 2,892, ps 461. The run took 205 s of user CPU and
-287 s of system CPU: starting processes, not the CLI's own work. With the
+11,076, gh 4,155, orca 2,892, ps 461. The run took 209 s of user CPU and
+291 s of system CPU: starting processes, not the CLI's own work. With the
 workspace's crates built at `opt-level` 1 the sample was 2% faster (70.2
 and 69.4 s, against 71.3 and 70.9 s), and its cold build took 126 s: that
 is not where the time goes. Each process's call stack, written by a hook
