@@ -35,8 +35,17 @@ land: { by: dev, do: implement }
 ```
 ";
 
-/// A world whose repo is bound to a team with the workflows `fix` and `note`.
+/// A world whose repo is bound to a team with the workflows `fix` and `note`,
+/// its checkout on the host's checkout list.
 fn bound() -> World {
+    let world = bound_off_the_list();
+    world.list_checkout(&world.clone);
+    world
+}
+
+/// `bound`, its checkout on no checkout list of the host: another account's
+/// clone, or a fresh one.
+fn bound_off_the_list() -> World {
     let world = World::new();
     world.repo(
         "acme/dev",
@@ -218,6 +227,7 @@ fn a_team_with_a_fault_creates_no_label() {
 #[test]
 fn an_unbound_repo_answers_its_ready_label_and_creates_it_when_missing() {
     let world = World::new();
+    world.list_checkout(&world.clone);
     world.with_gh(|gh| gh["labels"] = json!([]));
     let line = "gh issue create --label 'ready-for-agent' --title '<title>' --body-file <file>";
     assert!(run(&world, line).unwrap_err().contains("'ready-for-agent' not found"));
@@ -233,4 +243,76 @@ fn an_unbound_repo_answers_its_ready_label_and_creates_it_when_missing() {
     run(&world, line).unwrap();
     assert_eq!(world.afk(&["plan"]).ok()["frontier"][0]["title"], "a title");
     assert_eq!(world.afk(&["flows"]).ok()["created"], json!([]));
+}
+
+/// Whether any call `gh` was given wrote to GitHub.
+fn wrote(world: &World) -> bool {
+    world.gh_calls().into_iter().any(|call| call.contains(&"--method".to_string()))
+}
+
+#[test]
+fn off_the_checkout_list_the_tracker_is_not_said_and_no_label_is_created() {
+    let world = bound_off_the_list();
+    world.with_gh(|gh| gh["labels"] = json!([]));
+    world.gh_calls();
+    let error = world.afk(&["flows"]).error();
+    assert!(error.contains("the tracker is not said"), "{error}");
+    assert!(error.contains("is on no checkout list of this host"), "{error}");
+    assert!(error.contains("--tracker <owner>/<repo>"), "it names the way on: {error}");
+    assert_eq!(repo_labels(&world), json!([]));
+    assert!(!wrote(&world), "nothing was written");
+}
+
+#[test]
+fn off_the_checkout_list_tracker_names_the_tracker_and_its_labels_are_created_there() {
+    let world = bound_off_the_list();
+    world.name_origin(&world.clone, "acme/dev");
+    world.put_tracker("acme/tracker");
+    world.with_tracker_of("acme/tracker", |gh| gh["labels"] = json!([]));
+    let answer = world.afk(&["flows", "--tracker", "acme/tracker"]).ok();
+    let line = "gh issue create --repo acme/tracker --label 'flow:fix' --label 'repo:acme/dev' \
+                --title '<title>' --body-file <file>";
+    assert_eq!(answer["workflows"][0]["line"], line, "{answer}");
+    assert_eq!(answer["created"], json!(["flow:fix", "flow:note", "repo:acme/dev"]));
+    let labels = world.tracker_of("acme/tracker")["labels"].clone();
+    assert_eq!(labels, json!(["flow:fix", "flow:note", "repo:acme/dev"]));
+    run(&world, line).unwrap();
+    let opened = world.tracker_of("acme/tracker")["issues"][0]["labels"].clone();
+    assert_eq!(opened, json!(["flow:fix", "repo:acme/dev"]));
+    // …and its own repo is left alone.
+    assert_eq!(world.gh()["issues"], json!([]));
+}
+
+#[test]
+fn off_the_checkout_list_tracker_naming_its_own_repo_gives_the_line_of_its_own() {
+    let world = bound_off_the_list();
+    world.name_origin(&world.clone, "acme/dev");
+    let answer = world.afk(&["flows", "--tracker", "Acme/Dev"]).ok();
+    assert_eq!(
+        answer["workflows"][0]["line"],
+        "gh issue create --label 'flow:fix' --title '<title>' --body-file <file>"
+    );
+    world.list_checkout(&world.clone);
+    assert_eq!(world.afk(&["flows"]).ok()["workflows"], answer["workflows"]);
+}
+
+#[test]
+fn on_the_checkout_list_its_entry_holds_and_another_tracker_is_refused_naming_both() {
+    let world = bound();
+    world.name_origin(&world.clone, "acme/dev");
+    world.say_tracker(&world.clone, "acme/tracker");
+    let listed = world.afk(&["flows"]).ok();
+    assert!(listed["workflows"][0]["line"].as_str().unwrap().contains("--repo acme/tracker"));
+    assert_eq!(world.afk(&["flows", "--tracker", "acme/tracker"]).ok(), listed);
+    world.gh_calls();
+    for other in ["acme/other", "acme/dev"] {
+        let error = world.afk(&["flows", "--tracker", other]).error();
+        assert!(error.contains("acme/tracker") && error.contains(other), "{error}");
+    }
+    assert!(!wrote(&world), "nothing was written");
+    // An entry that says its own repo refuses another the same way.
+    let world = bound();
+    world.name_origin(&world.clone, "acme/dev");
+    let error = world.afk(&["flows", "--tracker", "acme/tracker"]).error();
+    assert!(error.contains("acme/dev") && error.contains("acme/tracker"), "{error}");
 }

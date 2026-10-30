@@ -1377,6 +1377,19 @@ impl World {
         std::fs::write(file, list.to_string()).unwrap();
     }
 
+    /// Puts `checkout` on this world's checkout list, as a `run` of it does,
+    /// saying nothing of it: its tracker is its own repo.
+    pub fn list_checkout(&self, checkout: &Path) {
+        let file = self.cache().join("afkconvoy/checkouts.json");
+        let mut list = self.checkout_list();
+        let entries = list["checkouts"].as_array_mut().unwrap();
+        if !entries.iter().any(|entry| entry["checkout"] == json!(checkout)) {
+            entries.push(json!({"checkout": checkout}));
+        }
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(file, list.to_string()).unwrap();
+    }
+
     /// Has the remote of `checkout` be named as the repo `repo` (`owner/repo`)
     /// on GitHub, as an issue of it in another tracker names it: git reads
     /// that name as this world's remote all the same.
