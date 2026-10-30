@@ -825,3 +825,4 @@ afkconvoy-core candidate::tests::exhaust_three_candidates_through_fast_results_r
 afkconvoy-core candidate::tests::exhaust_three_candidates_through_completion_invalidation_exit_and_publication
 afkconvoy::cli tick::a_landed_worker_idle_at_its_prompt_is_ended_and_its_worktree_removed
 afkconvoy::cli tick::a_worker_still_working_keeps_its_worktree
+afkconvoy::cli candidates::a_record_past_arg_max_is_written_and_drops_the_candidates_nothing_holds

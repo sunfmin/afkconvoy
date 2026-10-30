@@ -139,17 +139,30 @@ fn announce(chain: &Chain) {
 /// record. Extra parents retain every candidate and its preserved source head.
 /// The chain goes to git on stdin: as an argument it passed macOS's `ARG_MAX`
 /// once it held 258 candidates, and nothing landed (sunfmin/control#308).
+/// A candidate nothing holds any more is not carried on: the previous
+/// record, its first parent, keeps its commit reachable.
 fn commit(repo: &Repo, snapshot: &Snapshot) -> Result<String> {
     let tree = repo.git(&["hash-object", "-t", "tree", "/dev/null"])?;
-    let text = serde_json::to_string(&snapshot.chain)?;
+    let mut chain = snapshot.chain.clone();
+    chain.prune(released);
+    let text = serde_json::to_string(&chain)?;
     let mut args = vec!["commit-tree", &tree, "-F", "-"];
     if let Some(sha) = &snapshot.sha {
         args.extend(["-p", sha]);
     }
-    for c in &snapshot.chain.candidates {
+    for c in &chain.candidates {
         args.extend(["-p", &c.commit]);
     }
     repo.git_with_input(&args, &text)
+}
+
+/// Nothing holds an ended candidate any more: its owner, a turn of this host,
+/// is observed gone, and its worktree is removed. An owner on another host,
+/// or one not observed, still holds it.
+fn released(c: &Candidate) -> bool {
+    let gone = c.owner.host == crate::this_host()
+        && matches!(identity(c.owner.pid), Ok(found) if found.as_ref() != Some(&c.owner));
+    gone && !Path::new(&c.worktree).exists() && !crate::process_scope::path(&c.worktree).exists()
 }
 
 fn write(repo: &Repo, config: &Config, snapshot: &Snapshot) -> Result<bool> {
