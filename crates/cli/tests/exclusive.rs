@@ -137,12 +137,16 @@ fn a_gate_s_tests_are_held_to_their_share_of_the_cores_only_beside_another_comma
     assert_eq!(world.afk(&["gate"]).ok()["status"], "green");
     assert_eq!(said().trim(), "jobs= tests=", "alone in the queue: every core");
 
-    let held = exclusive(
-        &world,
-        &cache,
-        11,
-        "touch \"$CACHE/held\"; while test ! -f \"$CACHE/release\"; do sleep 0.02; done",
-    );
+    // Another repo's: a command of the gate's own repo would hold it back.
+    let held = world
+        .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.root.join("clone2"))
+        .env("CACHE", &cache)
+        .args(["exclusive", "--", "sh", "-c"])
+        .arg("touch \"$CACHE/held\"; while test ! -f \"$CACHE/release\"; do sleep 0.02; done")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
     until(|| cache.join("held").exists());
     assert_eq!(world.afk(&["gate"]).ok()["status"], "green");
     std::fs::write(cache.join("release"), "").unwrap();
