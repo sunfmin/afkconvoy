@@ -81,25 +81,14 @@ struct CommandRun {
     cancelled: bool,
 }
 
-/// The variable that keeps a gate's tests to its share of the host's cores,
-/// where it runs beside others (sunfmin/control#245).
-const SHARED: [&str; 1] = ["NEXTEST_TEST_THREADS"];
-
-/// Gives a gate's tests their share of the host: the cores over every lane a
-/// gate may run in at once, as `NEXTEST_TEST_THREADS`, unless the environment
-/// already says it. Tests run side by side would otherwise each take every
-/// core, and a test far under the fast gate's line would cross its end on
-/// load alone. Its build is not held to a share: a build is timed by no line
-/// of its own, and one cold build on one core of eight passed the fast
-/// gate's limit before its tests began (2026-10-29), as ADR-0019 says of a
-/// cap on build jobs.
+/// Gives a gate's tests their share of the host's cores where it runs beside
+/// others (`exclusive::share`). That is told once its lane is held: now, in
+/// a turn that holds it, or else by the `exclusive` its command waits in.
 fn share(command: &mut Command) {
-    let Ok(settings) = crate::host_settings::of_host() else { return };
-    let share = settings.gate_share().to_string();
-    for name in SHARED {
-        if std::env::var_os(name).is_none() {
-            command.env(name, &share);
-        }
+    if crate::exclusive::held() {
+        crate::exclusive::share(command, std::process::id());
+    } else {
+        command.env(crate::exclusive::SHARE_ENV, "1");
     }
 }
 
