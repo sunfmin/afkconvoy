@@ -10,6 +10,7 @@ use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::fleet::Fleet;
 use crate::gh::GitHub;
 use crate::git::Repo;
 use crate::remote::{Fresh, Push, RemoteRecord};
@@ -1178,9 +1179,12 @@ pub fn command(
 }
 
 /// Covers the crash window between task publication and final PR creation.
-/// Acting ticks alone call this; plans and inspection remain read-only.
-pub fn reconcile(repo: &Repo, gh: &GitHub) -> Result<()> {
-    for record in repo.remote().records(&[&repo.layout().every("delivery/")], Fresh::Process)? {
+/// Acting ticks alone call this; plans and inspection remain read-only. The
+/// deliveries are those of the tick's listing of the remote (docs/adr/0043):
+/// one written since is reconciled by the next tick.
+pub fn reconcile(fleet: &Fleet) -> Result<()> {
+    let (repo, gh) = (&fleet.repo, &fleet.gh);
+    for record in fleet.records_at_open(&repo.layout().every("delivery/")) {
         let id = repo
             .layout()
             .kept(&record.name)

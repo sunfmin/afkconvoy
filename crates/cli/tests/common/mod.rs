@@ -1717,18 +1717,20 @@ echo "$*" >> "${0%/*}/../pmset.log"
 /// epoch second in `host-woke`, or never slept since it booted; for
 /// `vm.loadavg`, the load in `host-load`, or none; for
 /// `kern.memorystatus_level`, the share of memory free in `host-memory`, or 80%.
+/// Each file is one word, read by the shell itself: a fleet asks for its
+/// host's load and memory at every tick, and a `cat` for each was a process
+/// more each time (sunfmin/control#319).
 const SYSCTL: &str = r#"#!/bin/sh
-echo "$*" >> "${0%/*}/../sysctl.log"
+here=${0%/*}/..
+echo "$*" >> "$here/sysctl.log"
+said() { said=$2; [ -f "$here/$1" ] && read -r said < "$here/$1"; : "${said:=$2}"; }
 case "$*" in
-*vm.loadavg*) echo "{ $(cat "${0%/*}/../host-load" 2>/dev/null || echo 0.00) 0.00 0.00 }" ;;
-*kern.memorystatus_level*) cat "${0%/*}/../host-memory" 2>/dev/null || echo 80 ;;
-*kern.memorystatus_vm_pressure_level*) cat "${0%/*}/../host-pressure" 2>/dev/null || echo 1 ;;
+*vm.loadavg*) said host-load 0.00; echo "{ $said 0.00 0.00 }" ;;
+*kern.memorystatus_level*) said host-memory 80; echo "$said" ;;
+*kern.memorystatus_vm_pressure_level*) said host-pressure 1; echo "$said" ;;
 *hw.memsize*) echo 34359738368 ;;
 *machdep.cpu.brand_string*|*hw.model*|*hw.logicalcpu*) ;;
-*)
-    woke=$(cat "${0%/*}/../host-woke" 2>/dev/null || echo 0)
-    echo "{ sec = $woke, usec = 0 } Sat Oct 18 10:00:00 2026"
-    ;;
+*) said host-woke 0; echo "{ sec = $said, usec = 0 } Sat Oct 18 10:00:00 2026" ;;
 esac
 "#;
 
