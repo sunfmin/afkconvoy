@@ -173,6 +173,7 @@ kinds! {
     WatchUnavailable: Critical, "no harness can start this host's watch";
     WatchBusy: Critical, "the resident watch is busy; its round remains undelivered";
     NotMoved: Warning, "the host runner did not move onto";
+    NotUpgraded: Warning, "is published, newer than the host runner's";
     PathStale: Warning, "is first on PATH";
     RosterModelUnmatched: Warning, "names no model the host kit holds";
     TeamUnread: Critical, "the team this repo names cannot be read";
@@ -228,6 +229,7 @@ impl Kind {
                 | Kind::WatchUnavailable
                 | Kind::WatchBusy
                 | Kind::NotMoved
+                | Kind::NotUpgraded
                 | Kind::PathStale
                 | Kind::OtherAccount
                 | Kind::WorkerHealth
@@ -237,9 +239,14 @@ impl Kind {
 
     /// Whether the host's watch answers a finding of this kind: not one that
     /// says the watch itself cannot start or go on, nor the PATH of the shell
-    /// `doctor` was run in, which are the operator's.
+    /// `doctor` was run in, which are the operator's, nor a release published
+    /// since, which the host runner installs itself and a `brew` of the
+    /// watch's would race on the host that cuts it.
     pub fn watched(self) -> bool {
-        !matches!(self, Kind::WatchUnavailable | Kind::WatchBusy | Kind::PathStale)
+        !matches!(
+            self,
+            Kind::WatchUnavailable | Kind::WatchBusy | Kind::PathStale | Kind::NotUpgraded
+        )
     }
 }
 
