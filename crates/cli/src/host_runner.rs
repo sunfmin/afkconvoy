@@ -68,6 +68,7 @@ use crate::host_sleep::Standings;
 use crate::instance::{self, Named, Start};
 use crate::log::{self, What};
 use crate::panel::Broken;
+use crate::published::Published;
 use crate::runner_socket::{self, Reached, Reply, Request};
 use crate::stop::Stop;
 use crate::tick::{Echo, Holder, Line, Show};
@@ -156,6 +157,7 @@ pub struct Shared {
     pub resources: crate::resources::Shared,
     pub queue: Queue,
     pub installed: Arc<Mutex<Option<Installed>>>,
+    pub published: Arc<Mutex<Option<Published>>>,
     pub blockers: wake::Blockers,
     pub watch: crate::host_watch::Shared,
 }
@@ -173,6 +175,7 @@ impl Shared {
             exclusive,
             exclusive_paused: Some(exclusive_paused),
             installed: self.installed().clone(),
+            published: self.published.lock().unwrap_or_else(|e| e.into_inner()).clone(),
             watch: self.watch.running(),
         })
     }
@@ -204,6 +207,11 @@ pub struct SharedNow {
     /// or the host runner is of an afkconvoy that does not say it.
     #[serde(default)]
     pub installed: Option<Installed>,
+    /// A release of afkconvoy newer than the host runner's, published to the
+    /// tap it was installed from; `None`: none is, it is installed from no
+    /// tap, or the host runner is of an afkconvoy that does not say it.
+    #[serde(default)]
+    pub published: Option<Published>,
     /// The watch running on the host; `None`: none.
     #[serde(default)]
     pub watch: Option<crate::host_watch::Watch>,
@@ -267,8 +275,36 @@ pub fn shared() -> Result<Option<SharedNow>> {
 /// from did not start, or does not say its version. None where no host
 /// runner runs, or it cannot say.
 pub fn findings() -> Vec<Finding> {
-    let installed = shared().ok().flatten().and_then(|shared| shared.installed);
-    installed.as_ref().and_then(not_moved).into_iter().collect()
+    let Some(shared) = shared().ok().flatten() else { return vec![] };
+    let moved = shared.installed.as_ref().and_then(not_moved);
+    moved.into_iter().chain(shared.published.as_ref().map(not_upgraded)).collect()
+}
+
+/// The finding of `published`, a release newer than the host runner's that
+/// it has not moved onto yet.
+fn not_upgraded(published: &Published) -> Finding {
+    let Published { formula, version, installed, from, since, failed } = published;
+    let what = format!(
+        "afkconvoy {version} is published, newer than the host runner's, afkconvoy {from}; \
+         Homebrew has afkconvoy {installed} installed from {formula}"
+    );
+    let due = since + 2 * crate::published::LOOKED_EVERY.as_secs();
+    let evidence = match failed {
+        Some(why) => {
+            format!("first seen at {since}; the last `brew upgrade {formula}` failed: {why}")
+        }
+        None => format!(
+            "first seen at {since}; the host runner installs it by {due}, and moves onto it \
+             between ticks"
+        ),
+    };
+    finding(
+        Kind::NotUpgraded,
+        json!(["not-upgraded", formula, version]),
+        what,
+        evidence,
+        format!("brew update && brew upgrade {formula}"),
+    )
 }
 
 /// The finding of `installed`, where the host runner did not move onto it.
@@ -547,6 +583,11 @@ pub fn serve() -> Result<Value> {
         std::panic::set_hook(Box::new(move |panic| log.say(&panic.to_string())));
     }
     let mut watched = Watched::started();
+    {
+        let log = Arc::clone(&log);
+        let published = Arc::clone(&watched.published);
+        crate::published::learn(watched.path.clone(), published, move |line| log.say(line));
+    }
     // Heard from the first hold of the host on, and across every hold after.
     let mut stop = None;
     loop {
@@ -701,7 +742,11 @@ fn held_host(
         ));
     }
     let held = Mutex::default();
-    let shared = Shared { installed: Arc::clone(&watched.installed), ..Shared::default() };
+    let shared = Shared {
+        installed: Arc::clone(&watched.installed),
+        published: Arc::clone(&watched.published),
+        ..Shared::default()
+    };
     let panel = HostPanel::new(shared.clone());
     // Read once: a port the host settings change to holds from the next start.
     let port = host_settings::of_host().map_or(host_settings::PANEL_PORT, |said| said.panel_port());
@@ -840,6 +885,9 @@ struct Watched {
     /// What it found there, where it is newer than this host runner's
     /// afkconvoy or does not say its version: said on the socket.
     installed: Arc<Mutex<Option<Installed>>>,
+    /// A newer release published to the tap it was installed from, as the
+    /// host runner's looks there find it (`published::learn`).
+    published: Arc<Mutex<Option<Published>>>,
 }
 
 impl Watched {
@@ -848,8 +896,8 @@ impl Watched {
     fn started() -> Watched {
         let path = std::env::current_exe().ok();
         let seen = path.as_deref().and_then(file_at);
-        let installed = Arc::default();
-        Watched { path, seen, looked: Instant::now(), installed }
+        let (installed, published) = (Arc::default(), Arc::default());
+        Watched { path, seen, looked: Instant::now(), installed, published }
     }
 
     fn installed(&self) -> MutexGuard<'_, Option<Installed>> {
@@ -2537,6 +2585,7 @@ mod tests {
             seen: None,
             looked: Instant::now(),
             installed: Arc::clone(&shared.installed),
+            published: Arc::default(),
         };
         assert!(!watched.moves_at(1600), "the old runner gets time to work");
         assert!(watched.moves_at(1601), "the same installed file is tried again");
