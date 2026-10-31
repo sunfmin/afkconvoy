@@ -162,7 +162,7 @@ pub fn tick(
     }
     // Cover interruption after an internal task landed but before final review.
     // A bad delivery does not prevent unrelated task reconciliation.
-    let delivery_failure = crate::delivery::reconcile(repo, &fleet.gh).err();
+    let delivery_failure = crate::delivery::reconcile(&fleet).err();
     if let Err(error) = crate::legacy::retire_proposals(&mut fleet, me) {
         eprintln!("warning: legacy proposal retirement will retry: {error:#}");
     }
