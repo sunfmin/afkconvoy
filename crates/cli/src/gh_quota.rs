@@ -177,6 +177,13 @@ impl Scope {
             return Ok(());
         }
         let mut value = value.clone();
+        // Two rejections in flight at once: `api graphql` says its reset in
+        // its headers, `pr list` says none and is bounded to a minute. The
+        // one saved last does not shorten a reset already known
+        // (sunfmin/control#319).
+        if prior.remaining == Some(0) && prior.reset > now() && value.remaining == Some(0) {
+            value.reset = value.reset.max(prior.reset);
+        }
         if prior.reset == value.reset {
             value.remaining = match (prior.remaining, value.remaining) {
                 (Some(a), Some(b)) => Some(a.min(b)),
@@ -520,4 +527,21 @@ pub(crate) fn credential_present() -> bool {
     ["GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"]
         .iter()
         .any(|name| std::env::var(name).is_ok_and(|value| !value.is_empty()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_rejection_saved_last_does_not_shorten_a_known_reset() {
+        let dir = tempfile::tempdir().unwrap();
+        let scope = Scope { dir: dir.path().into(), host: "github.com".into(), login: "me".into() };
+        let known = now() + 3600;
+        scope.save("graphql", &Observation { remaining: Some(0), reset: known }).unwrap();
+        scope.save("graphql", &Observation { remaining: Some(0), reset: now() + 60 }).unwrap();
+        assert_eq!(scope.read("graphql").unwrap().reset, known);
+        scope.save("graphql", &Observation { remaining: Some(0), reset: known + 60 }).unwrap();
+        assert_eq!(scope.read("graphql").unwrap().reset, known + 60, "a later reset is taken");
+    }
 }
