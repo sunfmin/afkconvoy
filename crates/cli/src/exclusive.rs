@@ -71,6 +71,50 @@ fn told_gate() -> Option<Gate> {
     }
 }
 
+/// Said by a gate's run to the `exclusive` its command takes a lane in: once
+/// that lane is held, give the gate's tests their share of the host's cores
+/// if another command runs in the host's lanes (`share`). Not passed on.
+pub const SHARE_ENV: &str = "AFKCONVOY_GATE_SHARE";
+
+/// The variable that keeps a gate's tests to its share of the host's cores,
+/// where it runs beside others (sunfmin/control#245).
+const SHARED: [&str; 1] = ["NEXTEST_TEST_THREADS"];
+
+/// Gives a gate's tests, run as `command` in the lane of the process `own`,
+/// their share of the host — the cores over every lane a gate may run in at
+/// once — as `NEXTEST_TEST_THREADS`, unless the environment already says it,
+/// and only while another command runs in a worker, fast or slow lane. Tests
+/// run side by side would otherwise each take every core, and a test far
+/// under the fast gate's line would cross its end on load alone
+/// (sunfmin/control#245). A gate alone in the queue keeps every core: held to
+/// a third of 14 cores beside lanes standing idle, a repo's tests took 461
+/// seconds that had taken 311 with all of them (sunfmin/control#318). Its
+/// build is not held to a share: a build is timed by no line of its own, and
+/// one cold build on one core of eight passed the fast gate's limit before
+/// its tests began (2026-10-29), as ADR-0019 says of a cap on build jobs.
+pub(crate) fn share(command: &mut Command, own: u32) {
+    command.env_remove(SHARE_ENV);
+    if !beside_another(own) {
+        return;
+    }
+    let Ok(settings) = crate::host_settings::of_host() else { return };
+    let share = settings.gate_share().to_string();
+    for name in SHARED {
+        if std::env::var_os(name).is_none() {
+            command.env(name, &share);
+        }
+    }
+}
+
+/// Whether a command other than the one of the process `own` runs in this
+/// host's worker, fast or slow lanes; a light gate's repo lane is none of
+/// them. A queue that cannot be read is taken as one beside it.
+fn beside_another(own: u32) -> bool {
+    standing().map_or(true, |tickets| {
+        tickets.iter().any(|t| t.ran.is_some() && t.repo_lane.is_none() && t.pid != own)
+    })
+}
+
 /// Only the gate's descendants inherit this lease. Nested `exclusive`
 /// wrappers use the already held lane instead of waiting on their parent.
 const OWNER_ENV: &str = "AFKCONVOY_EXCLUSIVE_OWNER";
@@ -101,31 +145,29 @@ fn lease_scope(repo: &Repo) -> Result<String> {
     Ok(format!("{repo:016x}:{cache:016x}"))
 }
 
-fn inherited(checkout: Option<&Repo>) -> bool {
-    let Some((owner, scope)) = std::env::var(OWNER_ENV).ok().and_then(|v| {
+/// The process whose lane this one runs in, as a descendant of it: `None`
+/// where it holds none.
+fn inherited(checkout: Option<&Repo>) -> Option<u32> {
+    let (owner, scope) = std::env::var(OWNER_ENV).ok().and_then(|v| {
         let (owner, scope) = v.split_once(':')?;
         Some((owner.parse::<u32>().ok()?, scope.to_string()))
-    }) else {
-        return false;
-    };
+    })?;
     if checkout.and_then(|repo| lease_scope(repo).ok()).as_deref() != Some(&scope) {
-        return false;
+        return None;
     }
     let processes = crate::hot::listed();
     let mut pid = std::process::id();
     for _ in 0..processes.len() {
-        let Some(parent) = processes.iter().find(|p| p.pid == pid).map(|p| p.ppid) else {
-            return false;
-        };
+        let parent = processes.iter().find(|p| p.pid == pid).map(|p| p.ppid)?;
         if parent == owner {
-            return true;
+            return Some(owner);
         }
         if parent <= 1 || parent == pid {
-            return false;
+            return None;
         }
         pid = parent;
     }
-    false
+    None
 }
 
 /// A command owns its lane until this value drops, including merge, gate,
@@ -667,10 +709,12 @@ pub fn exclusive(
     checkout: Option<Repo>,
     now: impl Fn() -> u64,
 ) -> ExitCode {
-    if inherited(checkout.as_ref()) {
-        return match crate::process::status(
-            Command::new(&command[0]).args(&command[1..]).current_dir(dir),
-        ) {
+    if let Some(owner) = inherited(checkout.as_ref()) {
+        let mut nested = Command::new(&command[0]);
+        if std::env::var_os(SHARE_ENV).is_some() {
+            share(&mut nested, owner);
+        }
+        return match crate::process::status(nested.args(&command[1..]).current_dir(dir)) {
             Ok(status) => ExitCode::from(ended(status).0),
             Err(error) => failed(&format!("the nested command could not start: {error}")),
         };
@@ -746,6 +790,9 @@ fn run_command(
 ) -> std::io::Result<Option<ExitStatus>> {
     let mut cmd = Command::new(&command[0]);
     cmd.args(&command[1..]).current_dir(dir).env_remove(GATE_ENV);
+    if std::env::var_os(SHARE_ENV).is_some() {
+        share(&mut cmd, ticket.pid);
+    }
     slot.inherit(&mut cmd);
     let mut child = crate::process::spawn(&mut cmd)?;
     let started = Instant::now();
