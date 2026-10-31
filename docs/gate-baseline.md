@@ -480,3 +480,73 @@ where a long-running host runner must not take the origin as fixed. A run
 of the `candidates::`, `lander::` and `turns::` slow tests at load 90–105
 failed 2 of 5 times on `5e10346f`, a cancelled candidate's `land` answering
 a missing-file error (sunfmin/control#312).
+
+## The fast gate's tests ran one at a time (sunfmin/control#319)
+
+`Offices-MBP.lan` recorded five landings past the 600 s budget: 685, 723,
+683, 717 and 685 seconds. Three left their whole output, each started at
+load 2–9:
+
+| Landing | fmt | Flux | Clippy | build | fast tests | slow tests |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `2d5b4883` | 2 | 29 | 15 | 33 | 88 | 515 |
+| `01d7bd6d` | 1 | 29 | 16 | 32 | 89 | 513 |
+| `bfaae764` | 1 | 29 | 15 | 33 | 90 | 513 |
+
+The 1,098 fast tests took 88–90 s there, and 20.0 s run alone in the queue
+at load 11 on 2026-10-31. afkconvoy 0.5.50, which ran those landings, gave
+every fast gate its share of the host as `NEXTEST_TEST_THREADS`: 8 cores over
+3 worker, 2 fast and 1 slow lane is 1. Each log says the variable was set
+(`ignoring --test-threads because --no-run is specified`). A worker's
+`gate --fast` on 0.5.50, alone in the queue, ran its fast tests in 88 s too.
+sunfmin/control#318 (afkconvoy#690) gives the share only beside another
+lane's command. It is on `main` and in no release yet: once the fleet cuts
+one, a landing alone in the queue runs its fast tests on every core, about
+70 s less than above.
+
+### Where a slow test's time goes now
+
+Every eighth slow test (103), traced as in sunfmin/control#311, with each
+process's resource usage written as it exited: of 370 CPU seconds, the CLI's
+processes took 60 of their own and 258 in the processes they started; 139
+ticks took 1.9 s and 0.78 CPU seconds each. Sixteen tests at a time took as
+long as twelve (60.4 and 60.9 s against 60.7 and 60.3 s): the tests are
+bound by the CPU spent starting processes, and only fewer or cheaper ones
+help.
+
+- Each tick asked its login shell `type -- 'agent'` and `agent --help`
+  twice: once for the fleet's view of what it can start
+  (`Fleet::runnable`), once for the agent that starts it. 787 of the
+  sample's 2,186 login-shell questions were asked again in the process that
+  had asked them. From this change a question is asked once a look, in the
+  directory it is asked in (`launch::ANSWERED`, docs/adr/0043).
+- Each tick listed `refs/convoy/delivery/*` (`delivery::reconcile`) and
+  `refs/convoy/base/red/*` (`repair::tend`) on the remote again, right after
+  its own listing of `refs/convoy/*`: 2 of the 5.6 `ls-remote`s a tick made.
+  Both now read the tick's listing. A glob read at `Fresh::Process` still
+  asks the remote: `candidates::abandoned` runs in the host runner, and must
+  see chains other processes wrote.
+- The stand-in `sysctl` read its files with `cat`: a process more for each
+  of the load and memory readings a tick makes. It reads them with the
+  shell's `read`: 5.4 against 3.5 ms of CPU a call.
+
+### Before and after
+
+`bfaae764` and this change, in turns through the exclusive queue, twelve at
+a time, at load averages 47–77 from this and other work:
+
+| Tests | Build | Nextest seconds | User + system CPU seconds |
+| --- | --- | ---: | ---: |
+| the 103 above | before | 62.5, 61.6, 61.3 | 352, 340, 338 |
+| | after | 58.5, 59.1, 58.8 | 324, 324, 324 |
+| all 819 slow tests | before | 504.6 | 2,783 |
+| | after | 478.8 | 2,641 |
+
+Five percent off the slow gate, in time and CPU alike. With the fast tests
+on every core, the landings above would take about 590 seconds.
+
+What is left is still processes: a fresh world's startup probe (three
+pushes), a claim and its heartbeat pushed apart, `remote get-url origin`
+asked again in one process (333 of 632; a unit test of `repo_of` changes a
+checkout's remote within one process), and an issue's comments read again in
+one process (523 of 903, cheap with the stand-in `gh`).
