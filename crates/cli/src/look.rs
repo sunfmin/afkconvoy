@@ -328,8 +328,9 @@ mod tests {
 
     #[test]
     fn the_sources_read_through_the_look_with_their_lifetimes() {
-        use crate::{gh, gh_quota, orca, tools};
+        use crate::{gh, gh_quota, launch, orca, tools};
         for (name, lifetime) in [
+            ("login shell", launch::ANSWERED.lifetime()),
             ("repos", orca::REPOS.lifetime()),
             ("running", orca::RUNNING.lifetime()),
             ("worktrees", orca::WORKTREES.lifetime()),

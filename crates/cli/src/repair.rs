@@ -32,10 +32,12 @@ pub fn is_for(
     }))
 }
 
+/// Tends each base tip the tick's listing of the remote marks red
+/// (docs/adr/0043): a mark made since is tended by the next tick.
 pub fn tend(fleet: &mut Fleet, me: &Me) -> Result<Outcome> {
     let prefix = red_ref(&fleet.repo, "");
     let mut outcome = Outcome::Nothing;
-    for record in fleet.remote.records(&[&format!("{prefix}*")], Fresh::Process)? {
+    for record in fleet.records_at_open(&format!("{prefix}*")) {
         let Some(branch) = record.name.strip_prefix(&prefix) else { continue };
         let next = tend_on(fleet, me, branch)?;
         if next != Outcome::Nothing {
