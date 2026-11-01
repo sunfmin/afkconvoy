@@ -229,8 +229,9 @@ impl World {
         }
         write_script(&bin.join("shell"), SHELL);
         write_script(&bin.join("curl"), CURL);
-        // The host a fleet would put to sleep: nothing of the one the tests run on.
-        for (name, script) in [("pmset", PMSET), ("sysctl", SYSCTL), ("ioreg", IOREG), ("df", DF)] {
+        // The host a fleet reads: nothing of the one the tests run on. `pmset`
+        // stands in so that nothing a test runs can put that one to sleep.
+        for (name, script) in [("pmset", PMSET), ("sysctl", SYSCTL), ("df", DF)] {
             write_script(&bin.join(name), script);
         }
         // The machine is this account's alone, and its `afkconvoy` this build.
@@ -430,9 +431,6 @@ impl World {
         // No checkout above the world is one of its: a test's directory
         // is in this repo's, when a worker's TMPDIR is in its worktree.
         env.push(("GIT_CEILING_DIRECTORIES".to_string(), shown(self.root.parent().unwrap())));
-        // A `run` keeps its host awake, but where a test says otherwise
-        // (`World::host_sleeps`).
-        env.push(("AFKCONVOY_NO_HOST_SLEEP".to_string(), "true".to_string()));
         // The fleet polls a session file for the turn. The stand-in has
         // already written it when send returns, so a test checks once.
         env.push(("AFKCONVOY_TURN_WAIT_SECONDS".to_string(), "0".to_string()));
@@ -1709,15 +1707,13 @@ esac
 exit 2
 "#;
 
-/// The stand-in `pmset`: `sleepnow` is written to `pmset.log`, and puts
-/// nothing to sleep.
+/// The stand-in `pmset`: what it is asked is written to `pmset.log`, and it
+/// puts nothing to sleep. No fleet asks it anything (docs/adr/0050).
 const PMSET: &str = r#"#!/bin/sh
 echo "$*" >> "${0%/*}/../pmset.log"
 "#;
 
-/// The stand-in `sysctl`: for `kern.waketime`, the host last woke at the
-/// epoch second in `host-woke`, or never slept since it booted; for
-/// `vm.loadavg`, the load in `host-load`, or none; for
+/// The stand-in `sysctl`: for `vm.loadavg`, the load in `host-load`, or none; for
 /// `kern.memorystatus_level`, the share of memory free in `host-memory`, or 80%.
 /// Each file is one word, read by the shell itself: a fleet asks for its
 /// host's load and memory at every tick, and a `cat` for each was a process
@@ -1732,7 +1728,6 @@ case "$*" in
 *kern.memorystatus_vm_pressure_level*) said host-pressure 1; echo "$said" ;;
 *hw.memsize*) echo 34359738368 ;;
 *machdep.cpu.brand_string*|*hw.model*|*hw.logicalcpu*) ;;
-*) said host-woke 0; echo "{ sec = $said, usec = 0 } Sat Oct 18 10:00:00 2026" ;;
 esac
 "#;
 
@@ -1758,31 +1753,10 @@ case "$*" in
 esac
 "#;
 
-/// The stand-in `ioreg`: the keyboard and mouse untouched for the seconds in
-/// `host-untouched`, or an hour.
-const IOREG: &str = r#"#!/bin/sh
-idle=$(cat "${0%/*}/../host-untouched" 2>/dev/null || echo 3600)
-echo "    | |   \"HIDIdleTime\" = ${idle}000000000"
-"#;
-
 impl World {
-    /// Has every `run` of this world put its host to sleep, as one told
-    /// nothing does: the host is the stand-in one (`pmset.log`). Its sleep
-    /// hours are any hour, whenever the test runs, where `command` names no
-    /// others.
-    pub fn host_sleeps(&self, command: &mut Command) {
-        command.env_remove("AFKCONVOY_NO_HOST_SLEEP");
-        command.env("AFKCONVOY_HOST_SLEEP_HOURS", "00:00-24:00");
-    }
-
     /// Has the stand-in host's 1-minute load be `load`, as `sysctl` says it.
     pub fn busy(&self, load: &str) {
         std::fs::write(self.root.join("host-load"), load).unwrap();
-    }
-
-    /// What the stand-in `pmset` was asked, one call a line.
-    pub fn pmset_calls(&self) -> Vec<String> {
-        self.host_calls("pmset")
     }
 
     /// What the named host command stand-in was asked, one call a line.

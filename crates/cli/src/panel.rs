@@ -16,7 +16,6 @@ use std::fmt::Write;
 use std::path::{Path, PathBuf};
 
 use afkconvoy_core::claims::InstanceId;
-use afkconvoy_core::host_sleep::Hours;
 use afkconvoy_core::patrol::{self, Standing};
 use afkconvoy_core::plan::{Excluded, Status, WorkingSet};
 use afkconvoy_core::position::Position;
@@ -257,12 +256,6 @@ impl Checkout {
             Part::Starting | Part::Unread(_) => None,
         }
     }
-
-    /// Whether its fleet instance is idle, as far as the page knows: one
-    /// broken, starting or unread is not known to be.
-    fn idle(&self) -> bool {
-        self.broken.is_none() && self.shown().is_some_and(|panel| panel.idle)
-    }
 }
 
 /// The host, as the page shows it once, above every repo.
@@ -278,9 +271,6 @@ pub struct Host {
     /// How many commands may run at once in its worker lanes, fast lane and
     /// slow lanes.
     pub lanes: afkconvoy_core::exclusive::Lanes,
-    /// The hours of its local time a fleet may put it to sleep in; `None`
-    /// where its host settings keep it awake.
-    pub sleep_hours: Option<Hours>,
     /// Its host kit, every harness in it; why it cannot be read.
     pub kit: Result<Kit, String>,
     /// Worker health; why it cannot be read.
@@ -316,7 +306,6 @@ impl Host {
             admission: Admission::read_from(dir, readings).map_err(|error| format!("{error:#}")),
             exclusive,
             lanes: settings.lanes(),
-            sleep_hours: host_settings::host_sleep(),
             kit: crate::kit::load().map_err(|error| format!("{error:#}")),
             worker_health: crate::health::show(),
             watch: crate::host_watch::json(watch.as_ref(), false),
@@ -657,7 +646,7 @@ pub fn read(
     let concurrency = report.concurrency_in_force().unwrap_or(fleet.config.concurrency());
     panel.bound = set.bound(concurrency) - panel.declared;
     panel.frontier = set.frontier.len();
-    panel.idle = afkconvoy_core::host_sleep::idle(set.held(), panel.frontier) && !set.cut_running();
+    panel.idle = afkconvoy_core::tick::idle(set.held(), panel.frontier) && !set.cut_running();
     panel.cut = set.cut.as_ref().and_then(|row| crate::cut::says(&fleet.repo, row));
     // Soft: a team or a host kit that cannot be read names no role.
     panel.nothing_safe = report.nothing_safe().to_vec();
@@ -1042,7 +1031,7 @@ pub fn render(page: &Page) -> String {
 
 /// The host, once: who made the page, admission's reading, the hot workers
 /// of every repo, the watch running and what the last host watch
-/// found, the exclusive queue, host sleep and the host kit.
+/// found, the exclusive queue and the host kit.
 fn host_part(out: &mut String, page: &Page) {
     let host = &page.host;
     let made = match page.live {
@@ -1150,36 +1139,6 @@ fn host_part(out: &mut String, page: &Page) {
     }
 
     exclusive(out, host);
-
-    let sleep = match host.sleep_hours {
-        None => {
-            "none: its host settings keep it awake, and <code>afkconvoy run --host-sleep</code> \
-                 lets the fleets on it put it to sleep"
-                .to_string()
-        }
-        Some(hours) => {
-            let busy: Vec<String> = page
-                .checkouts
-                .iter()
-                .filter(|checkout| !checkout.idle())
-                .map(|checkout| esc(&checkout.name()))
-                .collect();
-            let now = match busy.as_slice() {
-                [] => "every fleet instance on it is idle now".to_string(),
-                busy => format!("not idle now: {}", busy.join(", ")),
-            };
-            format!(
-                "within its sleep hours, {hours} of its local time, once every fleet instance on it \
-                 has been idle for ten minutes and nobody has used its keyboard or mouse for ten \
-                 minutes — {now}"
-            )
-        }
-    };
-    let _ = writeln!(
-        out,
-        "<p class=\"sleep\" data-kept-awake=\"{}\"><b>Host sleep</b>: {sleep}.</p>",
-        host.sleep_hours.is_none(),
-    );
 
     kit(out, host);
     out.push_str("</section>\n");
@@ -1726,7 +1685,6 @@ fn repo(out: &mut String, at: usize, panel: &Panel) {
 #[cfg(test)]
 mod tests {
     use afkconvoy_core::admission::{Disk, Reading, SHARES};
-    use afkconvoy_core::host_sleep::SLEEP_HOURS;
 
     use super::*;
 
@@ -1771,7 +1729,6 @@ mod tests {
             admission: Ok(Admission { shares: SHARES, said: vec![], reading, span: 600 }),
             exclusive: Ok(Some((vec![], Some(false)))),
             lanes: afkconvoy_core::exclusive::Lanes { worker: 1, fast: 1, slow: 1 },
-            sleep_hours: Some(SLEEP_HOURS),
             kit: Ok(Kit::default()),
             worker_health: Ok(crate::health::Health::default()),
             watch: serde_json::json!({}),
@@ -1836,8 +1793,6 @@ mod tests {
             "{html}"
         );
         assert!(html.contains("id=\"checkout-3\" data-checkout=\"/w/gizmo\"><h2 class=\"name\">gizmo</h2><p class=\"tick\">Its fleet instance's first tick is running."), "{html}");
-        // host sleep names the fleet instances not idle
-        assert!(html.contains("not idle now: acme, gizmo."), "{html}");
         // the page made by one rebuild of each says so, and where the live one is
         assert!(html.contains("made anew after every tick of any fleet instance on it"));
         page.live = false;
@@ -1873,15 +1828,12 @@ mod tests {
     fn nothing_waiting_for_a_human_is_said_so_and_no_checkout_on_the_list_too() {
         let html = render(&page_of(host_of(1000), vec![part_of("acme", 1000)]));
         assert!(html.contains("<p class=\"none\">Nothing waits for a human.</p>"), "{html}");
-        assert!(html.contains("within its sleep hours, 00:00-06:00 of its local time"), "{html}");
-        assert!(html.contains("every fleet instance on it is idle now"), "{html}");
         let html = render(&page_of(host_of(1000), vec![]));
         assert!(html.contains("No checkout is on this host's checkout list"), "{html}");
         let mut host = host_of(1000);
-        host.sleep_hours = None;
         host.admission = Err("sysctl: <none>".into());
         let html = render(&page_of(host, vec![]));
-        assert!(html.contains("data-kept-awake=\"true\"><b>Host sleep</b>: none"), "{html}");
+        assert!(!html.contains("Host sleep"), "{html}");
         assert!(html.contains("the host cannot be read: sysctl: &lt;none&gt;"), "{html}");
     }
 

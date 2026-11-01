@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: superseded by ADR-0050
 ---
 
 # A fleet puts its host to sleep once every fleet on it is idle

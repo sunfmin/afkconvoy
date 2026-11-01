@@ -26,7 +26,6 @@ pub mod graph;
 pub mod guard;
 pub mod harness;
 pub mod host_runner;
-pub mod host_sleep;
 pub mod host_watch;
 pub mod hot;
 pub mod intake;
