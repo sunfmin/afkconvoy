@@ -1031,6 +1031,37 @@ impl Harness {
         }
     }
 
+    /// Where this harness keeps the words of the session of the worktree
+    /// `cwd`: where it keeps the turn, but for Grok, whose turn events hold
+    /// no message.
+    pub fn note_place(self, cwd: &str) -> SessionPlace {
+        match self {
+            Harness::Grok => SessionPlace { under_home: grok::HOME, layout: grok::note_layout(cwd) },
+            Harness::ClaudeCode | Harness::Pi | Harness::Codex | Harness::Dsh | Harness::Kimi => {
+                self.session_place(cwd)
+            }
+        }
+    }
+
+    /// Whether one session file's `text` holds `mark` in a message its model
+    /// was given as the user's. A line the harness only queued is not one,
+    /// nor a tool's output that shows it.
+    pub fn holds_note(self, text: &str, mark: &str) -> bool {
+        session::holds_note(text, mark)
+    }
+
+    /// The files a stand-in writes under the harness directory for `line`,
+    /// typed at a worker in `cwd` while it worked: given to its model when
+    /// `taken`, else only queued. A harness with no stand-in for it writes
+    /// none.
+    pub fn note_files(self, cwd: &str, line: &str, taken: bool, at: u64) -> Vec<SessionFile> {
+        match self {
+            Harness::ClaudeCode => claude_code::note_files(cwd, line, taken, at),
+            Harness::Grok => grok::note_files(cwd, line, taken, at),
+            Harness::Pi | Harness::Codex | Harness::Dsh | Harness::Kimi => Vec::new(),
+        }
+    }
+
     /// The index after this worktree's turn is recorded, given the `existing`
     /// index. `""` is an index that was not there. `None` when this harness
     /// keeps no index. Lines for other worktrees stay.
