@@ -906,7 +906,7 @@ pub fn refused(
 pub fn asking_input(
     call: &Call,
     protected: &str,
-    current: &impl Fn() -> Result<Option<String>, String>,
+    current: &impl Fn(&[String]) -> Result<Option<String>, String>,
 ) -> Result<Option<String>, String> {
     let Call::Shell(line) = call else { return Ok(None) };
     for command in commands(line) {
@@ -940,32 +940,39 @@ pub fn asking_input(
         // terminal send is data, never another target or command.
         let mut words = vec![];
         let mut terminal = None;
+        let mut routing = vec![];
+        let mut help = false;
         let mut args = args.into_iter();
         while let Some(arg) = args.next() {
             if arg == "--terminal" {
                 terminal = args.next();
             } else if let Some(value) = arg.strip_prefix("--terminal=") {
                 terminal = Some(value);
-            } else if [
-                "--text",
-                "--text-file",
-                "--wait-submit",
-                "--retry-request",
-                "--environment",
-                "--pairing-code",
-                "--worktree",
-            ]
-            .contains(&arg)
+            } else if ["--environment", "--pairing-code", "--worktree"].contains(&arg) {
+                routing.push(arg.to_string());
+                if let Some(value) = args.next() {
+                    routing.push(value.to_string());
+                }
+            } else if ["--environment=", "--pairing-code=", "--worktree="]
+                .iter()
+                .any(|flag| arg.starts_with(flag))
             {
+                routing.push(arg.to_string());
+            } else if arg == "--help" {
+                help = true;
+            } else if ["--text", "--text-file", "--wait-submit", "--retry-request"].contains(&arg) {
                 args.next();
             } else if !arg.starts_with('-') {
                 words.push(arg);
             }
         }
-        if words.get(..2) != Some(&["terminal", "send"]) {
+        if help || words.get(..2) != Some(&["terminal", "send"]) {
             continue;
         }
-        let target = terminal.map(str::to_string).map(Some).map(Ok).unwrap_or_else(current)?;
+        let target = match terminal {
+            Some(terminal) => Some(terminal.to_string()),
+            None => current(&routing)?,
+        };
         if target.as_deref() == Some(protected) {
             return Ok(Some("input to the asking session's Terminal is refused: only the host runner's marked deliveries and the operator may supply its input".into()));
         }
@@ -1038,7 +1045,7 @@ mod tests {
 
     #[test]
     fn asking_input_is_refused_through_wrappers_and_shells_but_text_is_data() {
-        let current = || Ok(Some("asks".to_string()));
+        let current = |_: &[String]| Ok(Some("asks".to_string()));
         for line in [
             "orca terminal send --terminal asks --text 'yes' --enter",
             "env X=1 /bin/orca terminal send --terminal=asks --interrupt",
@@ -1056,6 +1063,7 @@ mod tests {
             "orca terminal send --terminal worker --text 'yes' --enter",
             "orca terminal read --terminal asks",
             "orca terminal show --terminal asks",
+            "orca terminal send --terminal asks --help",
             "echo 'orca terminal send --terminal asks'",
             "orca terminal send --terminal worker --text '--terminal asks'",
             "orca terminal send --terminal worker --text 'terminal send'",
@@ -1064,7 +1072,7 @@ mod tests {
         }
         assert_eq!(asking_input(&Call::Other, "asks", &current), Ok(None));
         assert!(
-            asking_input(&Call::shell("orca terminal send --enter"), "asks", &|| Err(
+            asking_input(&Call::shell("orca terminal send --enter"), "asks", &|_| Err(
                 "unread".into()
             ))
             .is_err()

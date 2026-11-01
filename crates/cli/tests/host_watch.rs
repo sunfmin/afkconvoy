@@ -80,7 +80,13 @@ fn guarded_watch(harness: afkconvoy_core::harness::Harness) {
         &std::fs::read(world.cache().join("afkconvoy/watch/terminal.json")).unwrap(),
     )
     .unwrap();
-    crate::asking_guard::check_launch(&world, harness, &dir, journal["command"].as_str().unwrap());
+    crate::asking_guard::check_launch(
+        &world,
+        harness,
+        &dir,
+        journal["command"].as_str().unwrap(),
+        true,
+    );
 }
 
 macro_rules! guarded_watches {

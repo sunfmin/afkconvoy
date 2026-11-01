@@ -12,6 +12,7 @@ use serde_json::{Value, json};
 use crate::common::{World, write};
 
 pub(super) fn prepare(world: &World, harness: Harness) {
+    world.shell_help(Some(&harness.flags().join(" ")));
     write(
         &world.root,
         "capture",
@@ -32,7 +33,13 @@ printf '%s' "${AFKCONVOY_HARNESS-}" > "$CAPTURE/harness"
     }
 }
 
-pub(super) fn check_launch(world: &World, harness: Harness, dir: &Path, line: &str) {
+pub(super) fn check_launch(
+    world: &World,
+    harness: Harness,
+    dir: &Path,
+    line: &str,
+    outside_role: bool,
+) {
     let capture = world.root.join("captured");
     std::fs::create_dir_all(&capture).unwrap();
     let out = world
@@ -81,7 +88,7 @@ pub(super) fn check_launch(world: &World, harness: Harness, dir: &Path, line: &s
             }
         }
     };
-    assert!(guard.contains("--terminal-input-only"), "{guard}");
+    assert_eq!(guard.contains("--terminal-input-only"), outside_role, "{guard}");
     write(&world.cache(), "afkconvoy/asking/terminal.json", &json!({
         "session": {"id":"asking", "directory":dir, "stock":false, "harness":"codex", "model":null,
             "terminal":"asks", "transcript":dir.join("asking.log"), "session_started":1},
@@ -102,6 +109,14 @@ pub(super) fn check_launch(world: &World, harness: Harness, dir: &Path, line: &s
             .args(["-c", &guard])
             .env("AFKCONVOY_HARNESS", harness.key())
             .env("ORCA_TERMINAL_HANDLE", "worker")
+            .envs([
+                ("AFKCONVOY_STAGE", "build"),
+                ("AFKCONVOY_WRITES", "true"),
+                ("AFKCONVOY_CONSULT", "false"),
+                ("AFKCONVOY_BASE_BRANCH", "main"),
+                ("AFKCONVOY_ESCALATE_LABEL", "stuck"),
+                ("AFKCONVOY_LOCK_LABEL", "halt"),
+            ])
             .stdin(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -117,10 +132,26 @@ pub(super) fn check_launch(world: &World, harness: Harness, dir: &Path, line: &s
     }
 }
 
-fn unbound(harness: Harness) {
+fn worker(harness: Harness, bound: bool) {
     let world = World::new();
     prepare(&world, harness);
-    world.issue(7, &["ready-for-agent"]);
+    if bound {
+        world.repo(
+            "acme/dev",
+            &[
+                ("CLAUDE.md", "Build the change"),
+                (".claude/skills/build/SKILL.md", "---\nname: build\ndescription: Build\n---\n"),
+            ],
+        );
+        world.repo("acme/team", &[("team.md", &format!("```yaml\nroles:\n  dev: acme/dev\nroster:\n  dev: {{ run: [{{ harness: {} }}] }}\n```\n", harness.key())),
+            ("workflows/feature.md", "```yaml\nstages:\n  - name: build\n    by: dev\n    do: build\n    on: { pass: done }\n```\n")]);
+        crate::common::commit(
+            &world.clone,
+            "docs/agents/afkconvoy.md",
+            "```yaml\nbase_branch: main\ngate_command: ./gate.sh\nteam: acme/team\n```\n",
+        );
+    }
+    world.issue(7, &[if bound { "flow:feature" } else { "ready-for-agent" }]);
     let started =
         world.afk(&["dispatch", "7", "--instance", "alpha", "--host", "h1", "--now", "1000"]).ok();
     let dir = Path::new(started["worktree"].as_str().unwrap());
@@ -131,17 +162,19 @@ fn unbound(harness: Harness) {
         .iter()
         .find(|terminal| terminal["worktreePath"] == started["worktree"])
         .unwrap();
-    check_launch(&world, harness, dir, terminal["command"].as_str().unwrap());
+    check_launch(&world, harness, dir, terminal["command"].as_str().unwrap(), !bound);
 }
 
 macro_rules! workers {
-    ($($name:ident: $harness:ident),* $(,)?) => { $(
+    ($($name:ident, $bound:ident: $harness:ident),* $(,)?) => { $(
         #[test]
-        fn $name() { unbound(Harness::$harness); }
+        fn $name() { worker(Harness::$harness, false); }
+        #[test]
+        fn $bound() { worker(Harness::$harness, true); }
     )* };
 }
 
 workers! {
-    unbound_claude: ClaudeCode, unbound_pi: Pi, unbound_codex: Codex,
-    unbound_dsh: Dsh, unbound_kimi: Kimi, unbound_grok: Grok,
+    unbound_claude, bound_claude: ClaudeCode, unbound_pi, bound_pi: Pi, unbound_codex, bound_codex: Codex,
+    unbound_dsh, bound_dsh: Dsh, unbound_kimi, bound_kimi: Kimi, unbound_grok, bound_grok: Grok,
 }

@@ -1,8 +1,7 @@
-//! `afkconvoy guard`: what the fleet has every worker of a bound repo ask
-//! before each tool call (docs/adr/0012), with the call described on standard
-//! input and the stage's facts in the environment — the harness that asks
-//! among them. How the call is described and how the answer is given are
-//! that harness's
+//! `afkconvoy guard`: what every worker and the watch ask before each tool
+//! call. All protect the asking Terminal; bound workers also carry their
+//! stage's facts (docs/adr/0012). How the call is described and answered is
+//! the harness's
 //! (`afkconvoy_core::harness`); whether the call is refused is the core's to
 //! say, in one place for every harness (`afkconvoy_core::guard`). Whom a
 //! process a watch would end is, this reads off the host's processes,
@@ -65,9 +64,16 @@ fn decide_on_host(
         crate::asking_terminal::protected().map_err(|error| error.to_string())?
         && std::env::var("ORCA_TERMINAL_HANDLE").ok().as_deref() != Some(terminal.as_str())
     {
-        let current = || {
-            crate::orca::orca(&["terminal", "show"])
-                .map(|shown| shown["terminal"]["handle"].as_str().map(str::to_string))
+        let current = |routing: &[String]| {
+            let mut args = vec!["terminal", "show"];
+            args.extend(routing.iter().map(String::as_str));
+            crate::orca::orca(&args)
+                .and_then(|shown| {
+                    shown["terminal"]["handle"]
+                        .as_str()
+                        .map(|handle| Some(handle.to_string()))
+                        .ok_or_else(|| anyhow::anyhow!("Orca returned no Terminal handle"))
+                })
                 .map_err(|error| format!("cannot identify the input Terminal: {error}"))
         };
         if let Some(why) = afkconvoy_core::guard::asking_input(&call, &terminal, &current)? {
