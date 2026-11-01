@@ -11,6 +11,8 @@ use crate::{account, record};
 /// an account that cannot supply every measure is reported, never partly counted.
 pub struct Issue {
     pub number: u64,
+    /// Whether the issue has closed.
+    pub closed: bool,
     pub url: String,
     pub account: Result<Option<String>, String>,
 }
@@ -137,6 +139,65 @@ pub fn summarize(issues: Vec<Issue>, start: Option<u64>, end: u64) -> Report {
     }
 }
 
+/// Completed stage performances from closed issues' work accounts. Only a
+/// passed stage is a completed performance; escalations and failures are not
+/// representative of how long the work takes. Old accounts retain the start
+/// marker and timed row, so no new record format is needed.
+pub fn stage_durations(issues: &[Issue]) -> BTreeMap<String, Vec<u64>> {
+    let mut stages: BTreeMap<String, Vec<u64>> = BTreeMap::new();
+    for issue in issues.iter().filter(|issue| issue.closed) {
+        let Ok(Some(body)) = &issue.account else { continue };
+        if record::read_marker(account::ACCOUNT, body).is_none() {
+            continue;
+        }
+        let Some((_, rows)) = body.split_once("\nWorkers:\n") else { continue };
+        let Some((workers, _)) = rows.split_once("\nGates:\n") else { continue };
+        for line in workers.lines().filter(|line| line.starts_with("- ")) {
+            if !line.contains(", verdict `pass`.") {
+                continue;
+            }
+            let Some(start) = record::markers(account::WORKER, line).into_iter().next() else {
+                continue;
+            };
+            if start.get("consult").is_some() {
+                continue;
+            }
+            let (Some(stage), Some(at)) = (start.get("stage"), start.number("at")) else {
+                continue;
+            };
+            let Some((_, timed)) = line.split_once("s from ") else { continue };
+            let Some((from, rest)) = timed.split_once(" to ") else { continue };
+            let Some((until, _)) = rest.split_once(',') else { continue };
+            let (Ok(from), Ok(until)) = (from.parse::<u64>(), until.parse::<u64>()) else {
+                continue;
+            };
+            if from != at {
+                continue;
+            }
+            let Some(seconds) = until.checked_sub(from) else { continue };
+            if seconds >= 60 {
+                stages.entry(stage.to_string()).or_default().push(seconds);
+            }
+        }
+    }
+    stages
+}
+
+/// A p95 needs at least twenty completed performances: otherwise its nearest
+/// rank is just the maximum and a single outlier sets the baseline.
+pub fn stage_baselines(issues: &[Issue]) -> BTreeMap<String, (u64, usize)> {
+    stage_durations(issues)
+        .into_iter()
+        .filter_map(|(stage, mut durations)| {
+            if durations.len() < 20 {
+                return None;
+            }
+            durations.sort_unstable();
+            Some((stage, (percentile(&durations, 95)?, durations.len())))
+        })
+        .collect()
+}
+
 fn sample(issue: &Issue, body: &str) -> Result<Sample, String> {
     let fields = record::read_marker(account::ACCOUNT, body).ok_or("invalid account marker")?;
     let start = fields.number("start").ok_or("account start is unknown or invalid")?;
@@ -198,4 +259,28 @@ fn percentile(sorted: &[u64], p: usize) -> Option<u64> {
     let rank =
         (n / 100).saturating_mul(p).saturating_add((n % 100).saturating_mul(p).div_ceil(100));
     sorted.get(rank.checked_sub(1)?).copied()
+}
+
+#[cfg(test)]
+mod stage_tests {
+    use super::*;
+
+    fn issue(number: u64, closed: bool, seconds: u64, verdict: &str) -> Issue {
+        let end = 100 + seconds;
+        let body = format!(
+            "<!--convoy:account start=100 end={end}-->\nWorkers:\n- harness `codex`, the default model, {seconds}s from 100 to {end}, stage `build`, verdict `{verdict}`. Stage record: `<!--convoy:stage stage=build-->`. Start: `<!--convoy:worker at=100 claim=c harness=codex stage=build-->`.\n\nGates:\nNo gate was timed on this issue's tree."
+        );
+        Issue { number, closed, url: String::new(), account: Ok(Some(body)) }
+    }
+
+    #[test]
+    fn baselines_use_completed_passes_of_closed_issues_and_nearest_rank() {
+        let mut issues: Vec<_> = (0..19).map(|n| issue(n, true, 3600, "pass")).collect();
+        assert!(stage_baselines(&issues).is_empty());
+        issues.push(issue(20, true, 7200, "pass"));
+        issues.push(issue(21, false, 9000, "pass"));
+        issues.push(issue(22, true, 100, "escalate"));
+        issues.push(issue(23, true, 30, "pass"));
+        assert_eq!(stage_baselines(&issues).get("build"), Some(&(3600, 20)));
+    }
 }
