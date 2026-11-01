@@ -70,6 +70,23 @@ pub const LANDED_ISSUES_JQ: &str = ".data.repository.issues.nodes[] | \
     {number, at: (.closedAt | fromdateiso8601? // null), \
     more: .comments.pageInfo.hasNextPage, comments: [.comments.nodes[] | \
     {id: (.fullDatabaseId | tonumber), body, url, at: (.createdAt | fromdateiso8601? // null)}]}";
+/// Every issue of the tracker, without filtering by a code repo label.
+pub const REWRITE_ACCOUNTS_QUERY: &str = "query ConvoyRewriteAccounts($owner: String!, $repo: String!, \
+    $endCursor: String) { repository(owner: $owner, name: $repo) { \
+    issues(first: 100, after: $endCursor) { pageInfo { hasNextPage endCursor } \
+    nodes { number url closed labels(first: 100) { nodes { name } } \
+    timelineItems(last: 1, itemTypes: [CLOSED_EVENT]) { nodes { ... on ClosedEvent { \
+    closer { __typename ... on PullRequest { merged } ... on Commit { \
+    associatedPullRequests(first: 10) { nodes { merged } } } } } } } \
+    comments(first: 100) { pageInfo { hasNextPage } \
+    nodes { fullDatabaseId body url createdAt } } } } } }";
+pub const REWRITE_ACCOUNTS_JQ: &str = ".data.repository.issues.nodes[] | {number, url, closed, \
+    labels: [.labels.nodes[].name], more: .comments.pageInfo.hasNextPage, \
+    landed: ([.timelineItems.nodes[].closer | select((.__typename == \"PullRequest\" and .merged == true) or \
+    (.__typename == \"Commit\" and any(.associatedPullRequests.nodes[]?; .merged == true)))] | length > 0), \
+    comments: [.comments.nodes[] | {id: (.fullDatabaseId | tonumber), body, url, \
+    at: (.createdAt | fromdateiso8601? // null)}]}";
+
 /// How many closed issues the open read takes with it. More than this and the
 /// day may run past the page, so the landed read falls back to its own pages.
 pub const LANDED_PAGE: usize = 100;
@@ -409,6 +426,19 @@ pub struct Comment {
     /// When it was written, in epoch seconds.
     #[serde(default)]
     pub at: Option<u64>,
+}
+
+/// A tracker issue and all its comments for account conversion.
+#[derive(Debug, Deserialize)]
+pub struct AccountIssue {
+    pub number: u64,
+    pub url: String,
+    pub closed: bool,
+    #[serde(default)]
+    pub landed: bool,
+    pub labels: Vec<String>,
+    pub more: bool,
+    pub comments: Vec<Comment>,
 }
 
 /// The latest verdict belongs to this claim only when its comment was written
@@ -1176,6 +1206,26 @@ impl GitHub {
             {
                 continue;
             }
+            if issue.more {
+                issue.comments = self.comments(issue.number)?;
+            }
+            issues.push(issue);
+        }
+        Ok(issues)
+    }
+
+    /// Read every issue of this tracker, including the other code repos.
+    pub fn account_issues(&self) -> Result<Vec<AccountIssue>> {
+        let query = format!("query={REWRITE_ACCOUNTS_QUERY}");
+        let variables = variables(&self.tracker);
+        let mut args = vec!["api", "graphql", "--paginate"];
+        args.extend(variables.iter().take(4).map(String::as_str));
+        args.extend(["-f", &query, "--jq", REWRITE_ACCOUNTS_JQ]);
+        let out = self.read(&args)?;
+        let mut issues = Vec::new();
+        for line in out.lines().filter(|line| !line.trim().is_empty()) {
+            let mut issue: AccountIssue =
+                serde_json::from_str(line).context("gh api: invalid tracker accounts")?;
             if issue.more {
                 issue.comments = self.comments(issue.number)?;
             }

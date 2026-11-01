@@ -104,6 +104,7 @@ pub mod recovery;
 pub mod remote;
 mod repair;
 pub mod resources;
+pub mod rewrite_accounts;
 pub mod role;
 pub mod roster_issue;
 pub mod runner_socket;
@@ -221,7 +222,7 @@ const SKILL: &str = include_str!("../../../skills/afkconvoy/SKILL.md");
 ///
 /// Read `afkconvoy <command> --help` before first running it. Commands are grouped by who runs them:
 ///
-/// - **{const:OPERATOR}** — `config`, `check`, `plan` before `run`; `target` to select a task's destination; `delivery` for a Jira delivery; `tick` for one pass, `stop` to stop; `queue` for the local exclusive queue; `doctor --all --since <until of your last look>`, `checkouts`, `panel` to watch (`doctor` names each fix); `accounts` for completion times from work accounts; `kit`, `cast`, `switch` for workers' harnesses and models; `patrol-now` to run a patrol now; `tell` to tell the worker at work on an issue something it must know; `takeover` to take another fleet instance's claims.
+/// - **{const:OPERATOR}** — `config`, `check`, `plan` before `run`; `target` selects a task's destination; `delivery` for a Jira delivery; `tick` for one pass, `stop` to stop; `queue` for the local exclusive queue; `doctor --all --since <until of your last look>`, `checkouts`, `panel` to watch (`doctor` names each fix); `accounts` reads work accounts, `rewrite-accounts` converts old ones; `kit`, `cast`, `switch` for workers' harnesses and models; `patrol-now` runs a patrol; `tell` tells a worker something it must know; `takeover` takes another fleet instance's claims.
 /// - **{const:DESIGNER}** — `scaffold` to start one or a role of it from a skeleton, `draft` to draft its roster from the host kit, then, once `check` accepts it, `show` to review a workflow or to ask where an issue is in it, and `rehearse` to try one out.
 /// - **{const:HANDS_WORK}** — a human or their agent opening decided work. `flows` names the workflow, gives the issue-create line and makes labels. After opening issues, `wake` has the fleet take them up now.
 /// - **{const:SETS_UP}** — `skill` prints the skill file that sends their agent to `afkconvoy --help`.
@@ -287,7 +288,7 @@ enum Command {
     ///
     /// The window includes accounts whose end is between now minus 7 days and now, inclusive. `--days <n>` changes that duration; `--all` includes every account ending by now. Issue closure and update dates do not select the window. Issues with no account are not samples.
     ///
-    /// New accounts carry one authoritative versioned JSON object in a collapsed details block with a fenced json block. Their human text is rendered from that object and is never parsed back. Older accounts are converted from their markers and legacy rows without rewriting the comments; facts absent from their machine-readable evidence stay null.
+    /// Every readable work account carries one authoritative versioned JSON object in a collapsed details block with a fenced json block. Its human text is rendered from that object and is never parsed back. Old prose is converted by `rewrite-accounts` before this command can read it.
     ///
     /// ## What it answers
     ///
@@ -310,11 +311,11 @@ enum Command {
     /// - `issue`: the tracker issue number. `repo`: the code repo, owner/name. `tracker`: the tracker, owner/name. `afkconvoy_version`: the version of the binary that wrote the account.
     /// - `host`: {name, cpu, logical_cpus, memory_bytes}, as reported by the writing host; cpu is its chip name, else its machine model identifier.
     /// - `start`: earliest recorded claim since, retained across later ends. `end`: the end being accounted for. `wall_seconds`: end minus start, null if unknown or reversed.
-    /// - `outcome`: landed, closed (nothing more to do), escalated, ended (the workflow ended), or human-closed (closed by a human while claimed). Legacy accounts have null because they did not record it.
+    /// - `outcome`: landed, closed (nothing more to do), escalated, ended (the workflow ended), or human-closed (closed by a human while claimed). An unknown outcome is null.
     /// - `workers`: a list of {harness, model, role, stage, claim, start, end, seconds, verdict, tokens}. `tokens` is null when usage is unknown; otherwise it maps model names to {input, cache_read, cache_write, output, reasoning}, raw counts with reasoning null when not stated. An empty model name means unknown. Cached input is excluded from input, and reasoning is included in output. A model not explicitly named is null. Role and stage are null where there is none or neither was recorded. Claim is the claim's identity. A bound worker ends at its stage record or failure, else the account end; an unbound worker ends at the account end. Seconds are end minus start. Verdict is its stage record's verdict, null without one. Landing workers are not rows; continuations on the same harness are not new rows.
-    /// - `gates`: a list of {tree, command, lane, `result`, at, seconds, host}. Tree is the tested git tree, command is the exact command, lane is fast, slow or whole when known, `result` is green or red, at is the gate record's epoch timestamp, seconds times the command after its queue turn, and host is the host that ran it. Prior red runs survive later edits after their remote refs disappear. Legacy seconds available only in a legacy row are retained; other metadata without a marker stays null. A legacy lane is null unless its marker names one.
+    /// - `gates`: a list of {tree, command, lane, `result`, at, seconds, host}. Tree is the tested git tree, command is the exact command, lane is fast, slow or whole when known, `result` is green or red, at is the gate record's epoch timestamp, seconds times the command after its queue turn, and host is the host that ran it. Prior red runs survive later edits after their remote refs disappear. For converted records, a lane stays null unless its original marker names one.
     ///
-    /// A legacy worker's start, harness, model, stage and claim come from its worker-start marker; its end, seconds and verdict stay null where only prose stated them. Legacy host hardware, writer version, repo, tracker and outcome stay null. Row counts and wall-clock and gate-second measures keep their earlier summary meaning. The overlapping worker and gate durations do not partition wall_seconds.
+    /// A converted account retains its original evidence in `legacy_evidence`. Worker durations, models and host hardware stated by the old rows are recovered; facts not stated remain null. The overlapping worker and gate durations do not partition wall_seconds.
     ///
     /// ## What trips you up
     ///
@@ -330,6 +331,35 @@ enum Command {
         /// Answer NDJSON: one versioned record per account; unreadable diagnostics on stderr
         #[arg(long)]
         rows: bool,
+        #[command(flatten)]
+        at: At,
+    },
+    /// Convert the tracker’s legacy work accounts into versioned records
+    ///
+    /// ## When to run it
+    ///
+    /// Run once per tracker after upgrading all fleet instances. It needs git and a signed-in gh. Run with no flags first to inspect every old and proposed body and its check.
+    ///
+    /// ## Who runs it
+    ///
+    /// The operator or an agent working on the operator's behalf, in a checkout of a repo using that tracker.
+    ///
+    /// ## What it reads and writes
+    ///
+    /// Reads all issues and comments in the checkout’s tracker. With no flags it writes nothing. With `--backup <directory>` it saves each original in that directory before editing the comment, and skips records it cannot validate. The directory must be kept for recovery. Repeating it skips JSON accounts.
+    ///
+    /// ## What it answers
+    ///
+    /// One JSON object with `dry_run`, `backup`, counts `rewrite` and `left`, and `changes` containing issue, comment, old_body, new_body and check. `before` and `after` show this checkout’s all-time account summaries as currently read and as projected after conversion. It refuses a changed comment or a conflicting backup; run it again after examining the error.
+    ///
+    /// ## What trips you up
+    ///
+    /// Store the backups in a durable private directory. Accounts with unrecognized facts are left as they are and remain unreadable to `accounts` until repaired.
+    #[command(next_help_heading = OPERATOR, verbatim_doc_comment)]
+    RewriteAccounts {
+        /// Save original bodies in this directory and edit validated comments
+        #[arg(long)]
+        backup: Option<std::path::PathBuf>,
         #[command(flatten)]
         at: At,
     },
@@ -3901,7 +3931,7 @@ fn kind(name: &str) -> Kind {
         | "claim" | "release" | "heartbeat" | "patrol-now" => Kind::ACTS,
         "takeover" => Kind { worktree: Worktree::Reads(Some("from")), ..Kind::ACTS },
         "cast" | "target" | "delivery" | "gate" | "land" | "verdict" | "rule" | "send"
-        | "intake" | "lock" | "over" | "cut" | "wake" => worker_acts,
+        | "intake" | "lock" | "over" | "cut" | "wake" | "rewrite-accounts" => worker_acts,
         "tick" => Kind { starts: true, ..Kind::ACTS },
         "doctor" | "show" | "exclusive" | "no-node" => Kind::WORKERS,
         "plan" => Kind { starts: true, ..Kind::WORKERS },
@@ -4739,6 +4769,9 @@ fn run(
         }
         Command::Accounts { days, all, rows, .. } => {
             accounts::accounts(&checkout?, days.unwrap_or(7), all, rows, now)
+        }
+        Command::RewriteAccounts { backup, .. } => {
+            rewrite_accounts::run(&checkout?, backup.as_deref(), now)
         }
         Command::Flows { delivery, tracker, .. } => {
             flows::flows(&checkout?, delivery.as_deref(), tracker.as_ref())

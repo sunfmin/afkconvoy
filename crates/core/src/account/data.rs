@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{account, gate, record};
+use crate::record;
 
 pub const SCHEMA_VERSION: u32 = 1;
 
@@ -20,6 +20,9 @@ pub struct Record {
     pub outcome: Option<String>,
     pub workers: Vec<Worker>,
     pub gates: Vec<Gate>,
+    /// Original evidence retained only when converting a legacy account.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub legacy_evidence: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -56,8 +59,8 @@ pub struct Gate {
     pub host: Option<String>,
 }
 
-/// Read the authoritative JSON block, or convert an old comment once. Never
-/// fall back to prose when a JSON block is damaged or has a future version.
+/// Read the authoritative JSON block only. Damaged blocks and unknown schema
+/// versions are unreadable; prose conversion belongs to the rewrite.
 pub fn read(body: &str, issue: u64) -> Result<Record, String> {
     if let Some((_, rest)) = body.rsplit_once("```json\n") {
         let (json, _) = rest.split_once("\n```").ok_or("unterminated account JSON block")?;
@@ -74,7 +77,7 @@ pub fn read(body: &str, issue: u64) -> Result<Record, String> {
         }
         return Ok(row);
     }
-    legacy(body, issue)
+    Err("account has no JSON block".into())
 }
 
 /// Render only from the record. Escape HTML and fence characters in the JSON
@@ -195,78 +198,4 @@ pub(super) fn gate_of(fields: &record::Fields, result: &str) -> Gate {
         seconds: fields.number("seconds"),
         host: fields.get("host").map(str::to_string),
     }
-}
-
-fn legacy(body: &str, issue: u64) -> Result<Record, String> {
-    let fields = record::read_marker(account::ACCOUNT, body).ok_or("invalid account marker")?;
-    let start = fields.number("start");
-    let end = fields.number("end");
-    let (_, rows) = body.split_once("\nWorkers:\n").ok_or("account has no worker rows")?;
-    let (workers, gates) = rows.split_once("\nGates:\n").ok_or("account has no gate rows")?;
-    let starts = record::markers(account::WORKER, workers);
-    let worker_rows = workers.lines().filter(|line| line.starts_with("- ")).count();
-    if starts.len() != worker_rows
-        || (starts.is_empty() && workers.trim() != "No worker was started.")
-    {
-        return Err("account worker rows cannot be read".into());
-    }
-    let workers: Vec<Worker> = starts
-        .into_iter()
-        .map(|fields| Worker {
-            harness: fields.get("harness").map(str::to_string),
-            model: fields.get("model").map(str::to_string),
-            role: fields.get("role").map(str::to_string),
-            stage: fields.get("stage").map(str::to_string),
-            claim: fields.get("claim").map(str::to_string),
-            start: fields.number("at"),
-            ..Worker::default()
-        })
-        .collect();
-    let reds: Vec<Gate> = record::markers(account::KEPT_RED, gates)
-        .iter()
-        .map(|fields| gate_of(fields, "red"))
-        .collect();
-    let mut runs = vec![];
-    let mut red_index = 0usize;
-    for line in gates.lines().filter(|line| line.starts_with("- ")) {
-        let run = if let Some((_, rest)) = line.split_once("Recorded gate run: `") {
-            rest.strip_suffix("`.")
-                .and_then(|raw| record::read(gate::GATE, raw))
-                .map(|fields| gate_of(&fields, "green"))
-        } else if line.starts_with("- red,") {
-            let run = reds.get(red_index).cloned();
-            red_index = red_index.saturating_add(1);
-            run
-        } else {
-            None
-        };
-        // Earlier comments may have only the seconds in prose. Preserve that
-        // summary measure without inventing metadata those comments lack.
-        let run = run.unwrap_or_else(|| Gate {
-            seconds: line
-                .split_once(", ")
-                .and_then(|(_, rest)| rest.split_once(", "))
-                .and_then(|(time, _)| time.strip_suffix('s'))
-                .and_then(|n| n.parse().ok()),
-            ..Gate::default()
-        });
-        runs.push(run);
-    }
-    if runs.is_empty() && gates.trim() != "No gate was timed on this issue's tree." {
-        return Err("account gate rows cannot be read".into());
-    }
-    Ok(Record {
-        schema_version: SCHEMA_VERSION,
-        issue,
-        repo: None,
-        tracker: None,
-        afkconvoy_version: None,
-        host: Host::default(),
-        start,
-        end,
-        wall_seconds: start.zip(end).and_then(|(start, end)| end.checked_sub(start)),
-        outcome: None,
-        workers,
-        gates: runs,
-    })
 }

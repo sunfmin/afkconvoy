@@ -9,6 +9,7 @@
 use flux_rs::attrs::*;
 
 mod data;
+pub mod rewrite;
 mod tokens;
 pub use tokens::parse as parse_tokens;
 pub use tokens::{Counts, Tokens};
@@ -193,6 +194,9 @@ pub struct Told<'a> {
 /// nothing is claimed now, no worker was started, and no account is there yet.
 pub fn comment(told: &Told<'_>) -> Option<String> {
     let prior = prior_account(told.heard, told.issue);
+    if prior.is_none() && left(told.heard.iter().map(|note| note.body)) {
+        return None;
+    }
     let starts = worker_starts(told.heard);
     if prior.is_none() && starts.is_empty() && !told.claimed {
         return None;
@@ -205,6 +209,7 @@ pub fn comment(told: &Told<'_>) -> Option<String> {
     let kept = prior.as_ref().map(|prior| prior.reds.as_slice()).unwrap_or(&[]);
     let row = Record {
         schema_version: SCHEMA_VERSION,
+        legacy_evidence: prior.as_ref().and_then(|p| p.legacy_evidence.clone()),
         issue: told.issue,
         repo: Some(told.repo.to_string()),
         tracker: Some(told.tracker.to_string()),
@@ -238,6 +243,7 @@ pub fn comment(told: &Told<'_>) -> Option<String> {
 }
 
 struct Prior {
+    legacy_evidence: Option<String>,
     start: Option<u64>,
     reds: Vec<Gate>,
 }
@@ -255,23 +261,12 @@ struct Start {
 
 fn prior_account(heard: &[Heard<'_>], issue: u64) -> Option<Prior> {
     let body = heard.iter().find(|note| record::read_marker(ACCOUNT, note.body).is_some())?;
-    if body.body.contains("```json\n") {
-        let row = read(body.body, issue).ok()?;
-        return Some(Prior {
-            start: row.start,
-            reds: row
-                .gates
-                .into_iter()
-                .filter(|gate| gate.result.as_deref() == Some("red"))
-                .collect(),
-        });
-    }
-    let fields = record::read_marker(ACCOUNT, body.body)?;
-    let reds = record::markers(KEPT_RED, body.body)
-        .iter()
-        .map(|fields| data::gate_of(fields, "red"))
-        .collect();
-    Some(Prior { start: fields.number("start"), reds })
+    let row = read(body.body, issue).ok()?;
+    Some(Prior {
+        legacy_evidence: row.legacy_evidence,
+        start: row.start,
+        reds: row.gates.into_iter().filter(|gate| gate.result.as_deref() == Some("red")).collect(),
+    })
 }
 
 /// The start already written, else the earliest `since` on record. A later
@@ -778,27 +773,9 @@ mod tests {
     }
 
     #[test]
-    fn editing_a_legacy_account_retains_its_start_and_prior_red_runs() {
-        let old = "<!--convoy:account start=100 end=200-->\n\
-            <!--convoy:account-red tree=abc command=check seconds=3 host=mini at=190-->";
-        let body = account(&[hear(200, old)], &[], true, Some(250), 300).unwrap();
-        let row = read(&body, 7).unwrap();
-        assert_eq!(row.start, Some(100));
-        assert_eq!(row.gates.len(), 1);
-        assert_eq!(row.gates[0].seconds, Some(3));
-        let again = account(
-            &[hear(300, &body)],
-            &["convoy:gate tree=abc command=check seconds=3 host=mini at=190 issue=7 red=1"],
-            true,
-            Some(250),
-            400,
-        )
-        .unwrap();
-        assert_eq!(
-            read(&again, 7).unwrap().gates.len(),
-            1,
-            "a remote red and its kept copy are one run"
-        );
+    fn an_unreadable_prior_account_is_not_overwritten() {
+        let old = "<!--convoy:account start=100 end=200-->";
+        assert!(account(&[hear(200, old)], &[], true, Some(250), 300).is_none());
     }
 
     #[test]

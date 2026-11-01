@@ -7,7 +7,7 @@ use std::process::Command;
 use afkconvoy_core::account::{self, End, Heard, Machine};
 use afkconvoy_core::claims::{Claim, claim_ref};
 use afkconvoy_core::layout::GATE_KIND;
-use anyhow::Result;
+use anyhow::{Result, bail};
 
 use crate::gh::GitHub;
 use crate::git::Repo;
@@ -22,6 +22,15 @@ pub fn leave(repo: &Repo, gh: &GitHub, issue: u64, end: End, now: u64) -> Result
         return Ok(());
     }
     let comments = gh.comments(issue)?;
+    for comment in &comments {
+        if afkconvoy_core::record::read_marker(account::ACCOUNT, &comment.body).is_some()
+            && account::read(&comment.body, issue).is_err()
+        {
+            bail!(
+                "issue {issue} has an unreadable work account; convert or repair it before writing another"
+            );
+        }
+    }
     let name = claim_ref(repo.layout(), &gh.tracker, issue);
     let held = repo.remote().records(&[&name], Fresh::Process)?;
     let claimed = !held.is_empty();

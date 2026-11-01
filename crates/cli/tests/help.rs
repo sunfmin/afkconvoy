@@ -971,7 +971,7 @@ fn the_readme_points_to_the_help_as_the_whole_manual() {
 #[test]
 fn the_short_help_is_still_one_screen() {
     let short = help("-h");
-    assert!(short.lines().count() <= 58, "{short}");
+    assert!(short.lines().count() <= 59, "{short}");
     assert!(!short.contains("THE COMMANDS"));
 }
 
