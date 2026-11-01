@@ -32,9 +32,7 @@ impl HostPanel {
     /// The page of a host runner that holds `shared` for its fleets, served
     /// nowhere yet, and with no checkout on it.
     pub fn new(shared: Shared) -> HostPanel {
-        let snapshot = shared.now();
-        let readings = Readings::from_queue(&snapshot.exclusive);
-        let host = Host::read(Path::new("/"), crate::clock(), Ok(Some(snapshot)), &readings);
+        let host = read_host(Path::new("/"), &shared);
         let page = Page { host, live: true, checkouts: vec![] };
         HostPanel {
             live: Live::new(panel::render(&page)),
@@ -111,10 +109,17 @@ impl HostPanel {
     /// Shows the page made of `checkouts` and the host as it is now.
     fn remake(&self, checkouts: &BTreeMap<PathBuf, Checkout>) {
         let dir = checkouts.keys().next().map_or(Path::new("/"), PathBuf::as_path);
-        let snapshot = self.shared.now();
-        let readings = Readings::from_queue(&snapshot.exclusive);
-        let host = Host::read(dir, crate::clock(), Ok(Some(snapshot)), &readings);
+        let host = read_host(dir, &self.shared);
         let page = Page { host, live: true, checkouts: checkouts.values().cloned().collect() };
         self.live.show(panel::render(&page));
     }
+}
+
+/// The panel runs inside the host runner, including before its request
+/// server starts. Its queue is already here; asking itself would time out
+/// during startup and once more for every checkout on the list.
+fn read_host(dir: &Path, shared: &Shared) -> Host {
+    let snapshot = shared.now();
+    let readings = Readings::with_queue(&snapshot.exclusive);
+    Host::read(dir, crate::clock(), Ok(Some(snapshot)), &readings)
 }

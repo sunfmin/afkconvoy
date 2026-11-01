@@ -765,9 +765,7 @@ fn a_patrol_that_leaves_a_commit_has_failed_and_is_reported_to_a_human() {
     assert_eq!(waiting[0]["url"], world.comment_url(number, &comment));
     world.comment(number, "The investigation continues.");
     let doctor = world.afk(&["doctor", "--now", "90000"]).json;
-    let mut doctor_waiting = waiting.clone();
-    doctor_waiting[0]["taken_by"] = Value::Null;
-    assert_eq!(doctor["waiting_on_human"], doctor_waiting);
+    assert_eq!(doctor["waiting_on_human"], *waiting);
     let excluded = plan["excluded"].as_array().unwrap();
     let reason = excluded.iter().find(|issue| issue["number"] == number).unwrap();
     assert_eq!(reason["reason"], "reports a failed run of the patrol `sweep`: waits to be closed");

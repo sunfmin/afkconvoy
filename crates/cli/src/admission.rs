@@ -9,6 +9,7 @@ use std::process::Command;
 use std::sync::Mutex;
 
 use afkconvoy_core::admission::{Disk, Hold, Reading, SHARES, Shares, holds, thresholds};
+use afkconvoy_core::exclusive::Ticket;
 use afkconvoy_core::resources::{Reason, SPAN};
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
@@ -41,18 +42,20 @@ pub struct Readings {
 impl Readings {
     /// Reads the host-wide values once; volumes are read on first use.
     pub fn new() -> Readings {
-        Self::read(queue_load)
+        Self::read(|load| {
+            crate::exclusive::standing().ok().and_then(|queue| queue_load(load, &queue).ok())
+        })
     }
 
-    /// Reads on the host runner from its own queue snapshot. In particular,
-    /// its initial panel must not ask the socket it has not begun serving.
-    pub fn from_queue(tickets: &[afkconvoy_core::exclusive::Ticket]) -> Readings {
-        Self::read(|load| queue_load_from(load, tickets))
+    /// Reads against the runner's existing queue snapshot. Inside the runner
+    /// an RPC to itself can wait for a server that has not started yet.
+    pub(crate) fn with_queue(queue: &[Ticket]) -> Readings {
+        Self::read(|load| queue_load(load, queue).ok())
     }
 
-    fn read(queue: impl FnOnce(u64) -> Result<u64>) -> Readings {
+    fn read(estimate_queue: impl FnOnce(u64) -> Option<u64>) -> Readings {
         let total_load = load().ok();
-        let queue_load = total_load.and_then(|load| queue(load).ok());
+        let queue_load = total_load.and_then(estimate_queue);
         Readings {
             cores: std::thread::available_parallelism().map_or(1, |cores| cores.get() as u64),
             load: total_load.map(|load| load.saturating_sub(queue_load.unwrap_or(0))),
@@ -232,13 +235,9 @@ impl Admission {
 /// Attribute the one-minute load in proportion to CPU currently used by the
 /// running queue trees. This is an estimate: the kernel exposes no per-tree
 /// load average. On an unreadable queue or process table, subtract nothing.
-fn queue_load(load: u64) -> Result<u64> {
-    queue_load_from(load, &crate::exclusive::standing()?)
-}
-
-fn queue_load_from(load: u64, tickets: &[afkconvoy_core::exclusive::Ticket]) -> Result<u64> {
+fn queue_load(load: u64, queue: &[Ticket]) -> Result<u64> {
     let roots: BTreeSet<u32> =
-        tickets.iter().filter(|ticket| ticket.ran.is_some()).map(|ticket| ticket.pid).collect();
+        queue.iter().filter(|ticket| ticket.ran.is_some()).map(|ticket| ticket.pid).collect();
     if roots.is_empty() {
         return Ok(0);
     }

@@ -33,6 +33,13 @@ fn run(world: &World, dir: &Path) -> FixtureProcess {
             && world.cache().join("afkconvoy/host-runner.sock").exists())
         .then_some(())
     });
+    // The lock and listening socket precede panel initialization and the
+    // request-serving thread. A restart must wait for a response, not just
+    // those files, before `run` makes its bounded version request.
+    until(world, "host runner answering requests", || {
+        let answer = world.afk(&["checkouts"]);
+        (answer.code == 0 && answer.json["host_runner"]["pid"] == runner.id()).then_some(())
+    });
     world
         .afk(&[
             "run",

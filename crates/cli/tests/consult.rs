@@ -682,12 +682,10 @@ fn an_escalation_says_so_on_the_tick_line_and_names_the_command_that_answers_it(
         findings.filter(waits).cloned().collect()
     };
     let soon = doctor("4870");
-    let mut doctor_waiting = waiting.clone();
-    doctor_waiting[0]["taken_by"] = Value::Null;
-    assert_eq!(soon["waiting_on_human"], doctor_waiting);
+    assert_eq!(soon["waiting_on_human"], waiting);
     assert_eq!(waited(&soon), [] as [Value; 0], "an hour is not more than an hour");
     let late = doctor("8571");
-    assert_eq!(late["waiting_on_human"], doctor_waiting);
+    assert_eq!(late["waiting_on_human"], waiting);
     let mut warnings = waited(&late);
     let identity = warnings[0].as_object_mut().unwrap().remove("watch_id").unwrap();
     let identity: Value =
