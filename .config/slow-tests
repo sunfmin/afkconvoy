@@ -830,3 +830,5 @@ afkconvoy::cli launch::an_operator_removal_survives_relisting_daily_refresh_and_
 afkconvoy::cli panel::a_fleet_with_nothing_to_do_says_so_at_every_stage
 afkconvoy::cli panel::a_fleet_lock_is_said_first_and_holds_back_all_but_its_issue
 afkconvoy::cli joining::a_running_landing_turn_is_left_alone_with_its_worker_idle
+# Measured 7.64s: three queued deliveries and doctor's recovery observation.
+afkconvoy::cli stopped::a_queued_issue_update_is_retried_without_retyping_and_doctor_names_its_comment

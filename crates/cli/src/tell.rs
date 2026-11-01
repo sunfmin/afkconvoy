@@ -53,6 +53,7 @@ pub fn tell(fleet: &Fleet, host: &str, issue: u64, text: &str) -> Result<Value> 
 
 /// Why no worker of this host is at work on the issue, and the host whose
 /// claim it is where another one holds it.
+#[derive(Debug)]
 pub(crate) struct Absent {
     why: String,
     host: Option<String>,

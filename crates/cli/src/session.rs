@@ -139,7 +139,12 @@ fn posted_in(text: &str, url: &str) -> bool {
                     || value["role"] == "tool";
                 if result
                     && reply.is_some_and(|id| writes.contains(id))
-                    && value.to_string().contains(url)
+                    && value.to_string().match_indices(url).any(|(at, _)| {
+                        value.to_string()[at + url.len()..]
+                            .chars()
+                            .next()
+                            .is_none_or(|next| !next.is_ascii_digit())
+                    })
                 {
                     return true;
                 }
@@ -593,6 +598,10 @@ mod tests {
         ];
         for (call, result) in calls {
             assert!(super::posted_in(&format!("{call}\n{result}\n"), url));
+            assert!(!super::posted_in(
+                &format!("{call}\n{}\n", result.to_string().replace(url, &format!("{url}0"))),
+                url
+            ));
             assert!(!super::posted_in(&result.to_string(), url), "a link alone proves no write");
             let read = call
                 .to_string()

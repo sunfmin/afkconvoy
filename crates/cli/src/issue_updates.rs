@@ -197,10 +197,9 @@ mod tests {
         let repo = crate::git::Repo::new(checkout.clone());
         let fleet = Fleet::open(&repo, crate::clock()).unwrap();
         let host = crate::this_host();
-        assert!(
-            crate::tell::worker(&fleet, &host, issue).unwrap().is_ok(),
-            "a local claimed worker is required"
-        );
+        if let Err(absent) = crate::tell::worker(&fleet, &host, issue).unwrap() {
+            panic!("a local claimed worker is required: {absent:?}");
+        }
         let selector = format!("path:{}", checkout.display());
         let launch = orca(&["agent", "launch", "--agent", "claude", "--worktree", &selector,
             "--surface", "terminal", "--prompt",
