@@ -1565,8 +1565,9 @@ fn held_since(world: &World, pressure: bool) {
     if pressure {
         state["pressure"] = json!(holding);
     } else {
-        state["admission"][world.clone.to_str().unwrap()] =
-            json!({"holding": holding, "stages": []});
+        world.issue(430, &["ready-for-agent"]);
+        state["admission"][world.clone.to_str().unwrap()] = json!({"holding": holding, "stages": [],
+                "waiting": [{"do": "dispatch", "issue": 430}]});
     }
     let file = world.cache().join("afkconvoy/watch/resources.json");
     std::fs::create_dir_all(file.parent().unwrap()).unwrap();
@@ -1583,6 +1584,11 @@ fn admission_held_ten_minutes_starts_a_watch_with_the_host_reading() {
     run(&world, &dir);
     let watch = until(&world, "admission's watch", || running(&world));
     assert!(watch["items"].to_string().contains("resource:admission:"), "{watch}");
+    let doctor = world.afk(&["doctor", "--all"]).json;
+    let findings = doctor["findings"].as_array().unwrap();
+    let admission: Vec<_> = findings.iter().filter(|f| f["kind"] == "admission_held").collect();
+    assert_eq!(admission.len(), 1, "{doctor}");
+    assert!(admission[0].to_string().contains("430"), "{doctor}");
     let told = brief(&world, &starts(&world)[0]);
     for text in ["admission has held back", "load", "600", "reading", "cores", "evidence.md"] {
         assert!(told.contains(text), "missing {text}: {told}");
@@ -1606,6 +1612,32 @@ fn admission_held_ten_minutes_starts_a_watch_with_the_host_reading() {
     run(&world, &dir);
     std::thread::sleep(Duration::from_secs(3));
     assert_eq!(starts(&world).len(), 1, "episode coverage survives a runner replacement");
+}
+
+#[test]
+fn idle_checkout_does_not_inherit_an_old_host_hold_when_work_appears() {
+    let world = World::new();
+    resource_host(&world);
+    world.busy("1000.00");
+    held_since(&world, false);
+    // An older runner recorded a host hold for an idle checkout.
+    let file = world.cache().join("afkconvoy/watch/resources.json");
+    let mut saved: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    saved["admission"][world.clone.to_str().unwrap()]["waiting"] = json!([]);
+    std::fs::write(&file, saved.to_string()).unwrap();
+    world.close_issue(430);
+    let dir = operator(&world);
+    run(&world, &dir);
+    let doctor = world.afk(&["doctor", "--all"]).json;
+    assert!(!doctor["findings"].to_string().contains("admission_held"), "{doctor}");
+    assert!(starts(&world).is_empty());
+    world.with_gh(|gh| gh["issues"][0]["state"] = json!("open"));
+    until(&world, "waiting issue recorded", || {
+        let saved: Value = serde_json::from_slice(&std::fs::read(&file).ok()?).ok()?;
+        (!saved["admission"][world.clone.to_str()?]["waiting"].as_array()?.is_empty()).then_some(())
+    });
+    let doctor = world.afk(&["doctor", "--all"]).json;
+    assert!(!doctor["findings"].to_string().contains("admission_held"), "{doctor}");
 }
 
 #[test]
