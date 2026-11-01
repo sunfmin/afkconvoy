@@ -133,6 +133,42 @@ fn a_landed_worker_leaves_health_and_is_settled_without_another_worker() {
 }
 
 #[test]
+fn a_landing_workers_turn_wait_retires_health_without_an_operator_finding() {
+    for outcome in ["round_red", "waiting_for_capacity"] {
+        let world = gated();
+        let dir = worktree(&world);
+        tick(&world, 1300);
+        tick(&world, 1600);
+        let path = world.cache().join("afkconvoy/worker-health.json");
+        let book: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(book["workers"][0]["action"], "waiting for operator", "{book}");
+
+        let git_dir = PathBuf::from(git(&dir, &["rev-parse", "--absolute-git-dir"]));
+        std::fs::write(
+            git_dir.join("convoy-turn.json"),
+            json!({"outcome": outcome, "at": 1700}).to_string(),
+        )
+        .unwrap();
+        let doctor = world.afk(&["doctor", "--all", "--now", "1800"]).json;
+        assert!(
+            doctor["findings"].as_array().unwrap().iter().all(|finding| {
+                finding["kind"] != "worker-health"
+            }),
+            "{outcome}: {doctor}"
+        );
+        let workers = &doctor["host"]["host_kit"]["worker_health"]["workers"];
+        assert!(workers.as_array().unwrap().iter().all(|w| w["path"] != json!(dir)),
+            "{outcome}: {workers}");
+
+        tick(&world, 1900);
+        let book: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(book["workers"], json!([]), "{outcome}: {book}");
+        assert_eq!(book["observations_failed"], json!([]), "{outcome}: {book}");
+        assert!(!world.root.join("typesafe-request").exists());
+    }
+}
+
+#[test]
 fn landing_retires_existing_health_even_when_its_recovery_window_has_expired() {
     for (waiting, next_tick, broken_gitdir) in
         [(false, 1400, false), (true, 2200, false), (true, 5000, true)]
