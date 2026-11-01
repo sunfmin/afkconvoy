@@ -36,20 +36,26 @@ cat > "$tmp/home/.cargo/bin/getconf" <<'MOCK'
 echo 4
 MOCK
 chmod +x "$tmp/repo/verify.sh" "$tmp/home/.cargo/bin/"*
+absent() {
+    if grep -q "$1" "$tmp/out"; then
+        cat "$tmp/out" >&2
+        exit 1
+    fi
+}
 for scenario in loaded slow pass failure; do
     case "$scenario" in loaded) load=40.00 ;; *) load=1.00 ;; esac
     HOME="$tmp/home" FAKE_LOAD="$load" CASE="$scenario" sh "$tmp/repo/gate.sh" fast >"$tmp/out" 2>&1 && exit 1
     if [ "$scenario" = loaded ]; then
-        ! grep -q 'Name it in .config/slow-tests' "$tmp/out"
+        absent 'Name it in .config/slow-tests'
         grep -qi 'overload' "$tmp/out"
         grep -q '40.00' "$tmp/out"
     elif [ "$scenario" = slow ]; then
         grep -q 'Name it in .config/slow-tests' "$tmp/out"
     elif [ "$scenario" = pass ]; then
-        ! grep -q 'Name it in .config/slow-tests' "$tmp/out"
+        absent 'Name it in .config/slow-tests'
         grep -q 'load fault' "$tmp/out"
     else
-        ! grep -q 'Name it in .config/slow-tests' "$tmp/out"
-        ! grep -q 'load fault' "$tmp/out"
+        absent 'Name it in .config/slow-tests'
+        absent 'load fault'
     fi
 done
