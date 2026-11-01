@@ -875,3 +875,31 @@ fn cut_is_refused_outside_a_cut_s_checkout() {
     let refused = world.afk(&["cut"]).error();
     assert!(refused.contains("no cut's checkout"), "{refused}");
 }
+
+#[test]
+fn cut_needs_leave_the_claim_for_a_host_that_can_cut_without_disclosing_output() {
+    let world = cutting();
+    let permitted = world.root.join("cut-permitted");
+    let config = format!(
+        "{CONFIG}\n{}\n```yaml cut-needs\nchecks:\n  - name: publish-access\n    command: echo secret-marker; echo private-detail >&2; test -f '{}'\n    seconds: 5\n```\n",
+        cut_block(&says_published(&world)),
+        permitted.display()
+    );
+    commit_config(&world, &config, "Declare cut needs");
+    let plan = planned(&world, "alpha", 10_000);
+    assert_eq!(
+        plan["cut"]["not_cutting_here"], "not cutting here: publish-access failed",
+        "{plan}"
+    );
+    let tick = tick_as(&world, "alpha", 10_000);
+    assert!(!claimed(&world), "{tick}");
+    assert!(tick.to_string().contains("not cutting here: publish-access failed"), "{tick}");
+    let doctor = world.afk(&["doctor", "--host", "h1", "--now", "10000"]).ok();
+    assert!(doctor.to_string().contains("not cutting here: publish-access failed"), "{doctor}");
+    assert!(!format!("{plan}{tick}{doctor}{}", logged(&world).join(" ")).contains("secret-marker"));
+    std::fs::write(&permitted, "yes").unwrap();
+    let passing = world.afk(&["tick", "--instance", "beta", "--host", "h2", "--now", "10010"]).ok();
+    assert_eq!(cut(&passing), ["cut done"]);
+    assert!(claimed(&world));
+    assert!(!record(&checkout(&world)).to_string().contains("secret-marker"));
+}
