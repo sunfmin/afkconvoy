@@ -1415,3 +1415,26 @@ fn the_retired_train_commands_and_lanes_are_absent_from_public_help() {
         assert!(!help.contains(retired), "{retired} in help");
     }
 }
+
+#[test]
+fn kit_and_switch_help_explain_operator_removal_and_restoration() {
+    let kit = asked(&["kit", "--help"]);
+    for says in [
+        "afkconvoy kit --remove <harness>",
+        "removed by the operator",
+        "worker-launch discovery leave it out",
+        "Only `afkconvoy switch --harness <harness>` clears the removal",
+        "Removal ends no worker",
+        "only `kit --remove` records the removal that survives a refresh",
+    ] {
+        assert!(kit.contains(says), "kit help lost {says:?}");
+    }
+    let switch = asked(&["switch", "--help"]);
+    for says in [
+        "the switch clears its removal and puts it first",
+        "afkconvoy switch --all --harness <harness>",
+        "restored says whether this switch cleared an operator removal",
+    ] {
+        assert!(switch.contains(says), "switch help lost {says:?}");
+    }
+}

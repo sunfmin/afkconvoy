@@ -1787,7 +1787,11 @@ fn orcas_harness_overrules_a_wrong_record_for_quota_recovery_and_is_shown() {
     tick(&world, 800);
     assert_eq!(open_commands(&world, &dir), [common::trusted("agent")]);
     assert!(!world.root.join("typesafe-request").exists());
-    let health = world.afk(&["doctor", "--now", "801"]).ok();
+    let health = world.afk(&["doctor", "--now", "801"]);
+    // Recovery ran in a standalone tick; no host runner holds the claim.
+    assert_eq!(health.code, 1);
+    let health = health.json;
+    assert!(health["findings"].as_array().unwrap().iter().any(|f| f["kind"] == "no_run"));
     let health = &health["host"]["host_kit"]["worker_health"];
     assert_eq!(health["workers"][0]["harness"], "codex");
     assert_eq!(health["workers"][0]["recorded_harness"], "claude-code");
@@ -1802,4 +1806,25 @@ fn orcas_harness_overrules_a_wrong_record_for_quota_recovery_and_is_shown() {
     let html = String::from_utf8(panel.stdout).unwrap();
     assert!(html.contains("failure") && html.contains("codex") && html.contains("799000"));
     assert!(html.contains("recorded claude-code"));
+}
+
+#[test]
+fn switching_to_a_removed_harness_restores_it_first_and_clears_the_removal() {
+    let world = World::new();
+    hold_every_harness(&world);
+    world.shell_models(&["provider/model"]);
+    world.afk(&["kit", "--remove", "pi", "--now", "700"]).ok();
+
+    let restored = switch(&world, "800", &["--harness", "pi"]).ok();
+    assert_eq!(restored["restored"], true);
+    assert_eq!(restored["added"], true);
+    assert_eq!(restored["start_fault"], Value::Null);
+    assert_eq!(restored["order"][0], "pi");
+    let kit: Value = serde_json::from_slice(&std::fs::read(world.kit_path()).unwrap()).unwrap();
+    assert!(kit.get("removed").is_none(), "{kit}");
+    assert_eq!(kit["harnesses"][0]["harness"], "pi");
+
+    let again = switch(&world, "801", &["--harness", "pi"]).ok();
+    assert_eq!(again["changed"], false);
+    assert_eq!(again["restored"], false);
 }

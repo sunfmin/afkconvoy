@@ -1020,11 +1020,19 @@ impl Harness {
     /// send. `not_before` is the start proof's bound: a turn that started
     /// earlier is not this send. A child session does not start or end the
     /// worker's turn.
-    pub fn recorded_turn(self, cwd: &str, text: &str, not_before: Option<u64>) -> Option<Turn> {
+    /// `brief` is the exact file handed to this worker. A harness that starts
+    /// in a role may identify the session by its initial prompt instead of cwd.
+    pub fn recorded_turn(
+        self,
+        cwd: &str,
+        text: &str,
+        not_before: Option<u64>,
+        brief: Option<&str>,
+    ) -> Option<Turn> {
         match self {
             Harness::ClaudeCode => claude_code::recorded_turn(cwd, text, not_before),
             Harness::Pi => pi::recorded_turn(cwd, text, not_before),
-            Harness::Codex => codex::recorded_turn(cwd, text, not_before),
+            Harness::Codex => codex::recorded_turn(cwd, text, not_before, brief),
             Harness::Dsh => dsh::recorded_turn(cwd, text, not_before),
             Harness::Kimi => kimi::recorded_turn(cwd, text, not_before),
             Harness::Grok => grok::recorded_turn(cwd, text, not_before),
@@ -1050,14 +1058,14 @@ impl Harness {
     }
 
     /// Whether one session file's `text` was prompted with the task brief at
-    /// `brief`, the absolute path of a worktree's `convoy-worker-prompt.md`.
-    /// A harness whose session records the worktree itself names none.
+    /// `brief`, the absolute path in the worktree's own git directory. The
+    /// harness selects the user messages that associate its session with a
+    /// worker, excluding tool output and model replies.
     pub fn names_brief(self, text: &str, brief: &str) -> bool {
         match self {
+            Harness::Codex => codex::names_brief(text, brief),
             Harness::Kimi => kimi::names_brief(text, brief),
-            Harness::ClaudeCode | Harness::Pi | Harness::Codex | Harness::Dsh | Harness::Grok => {
-                false
-            }
+            Harness::ClaudeCode | Harness::Pi | Harness::Dsh | Harness::Grok => false,
         }
     }
 
@@ -1400,7 +1408,7 @@ mod tests {
                 "message": {"stop_reason": "end_turn"}
             })
         );
-        let claude = Harness::ClaudeCode.recorded_turn(CWD, &claude, None);
+        let claude = Harness::ClaudeCode.recorded_turn(CWD, &claude, None, None);
         assert_eq!(claude, Some(Turn::Open { since: AT }));
         assert_eq!(worker_state(1, claude, AT + 10), WorkerState::Busy);
 
@@ -1417,7 +1425,7 @@ mod tests {
                 "session_relationship": "subagent"
             })
         );
-        let grok = Harness::Grok.recorded_turn(CWD, &grok, None);
+        let grok = Harness::Grok.recorded_turn(CWD, &grok, None, None);
         assert_eq!(grok, Some(Turn::Open { since: AT }));
         assert_eq!(worker_state(1, grok, AT + 10), WorkerState::Busy);
 
@@ -1427,7 +1435,7 @@ mod tests {
             serde_json::json!({"ts": iso, "type": "turn_ended"})
         );
         assert_eq!(
-            Harness::Grok.recorded_turn(CWD, &primary, None),
+            Harness::Grok.recorded_turn(CWD, &primary, None, None),
             Some(Turn::Closed { since: AT, started: Some(AT) })
         );
     }
@@ -1439,8 +1447,8 @@ mod tests {
 
         let killed = grok_session(AT, None, "primary");
         let finished = grok_session(AT + 40, Some(AT + 60), "primary");
-        let killed = Harness::Grok.recorded_turn(CWD, &killed, None);
-        let finished = Harness::Grok.recorded_turn(CWD, &finished, None);
+        let killed = Harness::Grok.recorded_turn(CWD, &killed, None, None);
+        let finished = Harness::Grok.recorded_turn(CWD, &finished, None, None);
         assert_eq!(killed, Some(Turn::Open { since: AT }));
         let turn = prefer(&[killed.unwrap(), finished.unwrap()]);
         assert_eq!(turn, Some(Turn::Closed { since: AT + 60, started: Some(AT + 40) }));
@@ -1454,15 +1462,15 @@ mod tests {
         let earlier = grok_session(AT, Some(AT + 20), "primary");
         let later = grok_session(AT + 40, None, "primary");
         let turn = prefer(&[
-            Harness::Grok.recorded_turn(CWD, &earlier, None).unwrap(),
-            Harness::Grok.recorded_turn(CWD, &later, None).unwrap(),
+            Harness::Grok.recorded_turn(CWD, &earlier, None, None).unwrap(),
+            Harness::Grok.recorded_turn(CWD, &later, None, None).unwrap(),
         ]);
         assert_eq!(turn, Some(Turn::Open { since: AT + 40 }));
         assert_eq!(worker_state(1, turn, AT + 100), WorkerState::Busy);
 
         let child = grok_session(AT + 40, Some(AT + 60), "subagent");
-        assert_eq!(Harness::Grok.recorded_turn(CWD, &child, None), None);
-        let lead = Harness::Grok.recorded_turn(CWD, &later, None);
+        assert_eq!(Harness::Grok.recorded_turn(CWD, &child, None, None), None);
+        let lead = Harness::Grok.recorded_turn(CWD, &later, None, None);
         assert_eq!(prefer(&[lead.unwrap()]), Some(Turn::Open { since: AT + 40 }));
         assert_eq!(worker_state(1, lead, AT + 100), WorkerState::Busy);
     }
@@ -1497,11 +1505,11 @@ mod tests {
     fn another_worktree_s_session_is_not_this_turn() {
         let elsewhere = "/somewhere/else";
         let claude = Harness::ClaudeCode.session_files(elsewhere, true, AT);
-        assert_eq!(Harness::ClaudeCode.recorded_turn(CWD, &claude[0].body, None), None);
+        assert_eq!(Harness::ClaudeCode.recorded_turn(CWD, &claude[0].body, None, None), None);
         let pi = Harness::Pi.session_files(elsewhere, true, AT);
-        assert_eq!(Harness::Pi.recorded_turn(CWD, &pi[0].body, None), None);
+        assert_eq!(Harness::Pi.recorded_turn(CWD, &pi[0].body, None, None), None);
         let codex = Harness::Codex.session_files(elsewhere, true, AT);
-        assert_eq!(Harness::Codex.recorded_turn(CWD, &codex[0].body, None), None);
+        assert_eq!(Harness::Codex.recorded_turn(CWD, &codex[0].body, None, None), None);
         let index = Harness::Kimi.session_index(elsewhere, "").unwrap();
         let here = |cwd: &str, index: &str| {
             Harness::Kimi.indexed_sessions(cwd, index).iter().filter(|s| s.here).count()
@@ -1577,7 +1585,7 @@ mod tests {
     ) -> Option<crate::turn::Turn> {
         let mut turns = Vec::new();
         for file in harness.session_files(CWD, open, AT) {
-            if let Some(turn) = harness.recorded_turn(CWD, &file.body, not_before) {
+            if let Some(turn) = harness.recorded_turn(CWD, &file.body, not_before, None) {
                 turns.push(turn);
             }
         }

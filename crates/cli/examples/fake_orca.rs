@@ -46,6 +46,8 @@
 //! `worktree ps` and `terminal show` overwrite that turn from the terminal's
 //! agent: `working` is open at `stateStartedAt`, any other state is closed
 //! then. No agent leaves the send's turn as it stands.
+//! `codex_session_cwd` makes the send's Codex rollout start in that role
+//! directory and record the sent brief pointer as its initial user prompt.
 
 mod fake;
 
@@ -509,7 +511,20 @@ fn terminal_send(st: &mut State) -> ! {
         let cwd = st.doc["terminals"][at]["worktreePath"].as_str().unwrap_or("");
         if !cwd.is_empty() {
             let cwd = Path::new(cwd);
-            record_turn(cwd, false, send_stamp(cwd));
+            let stamp = send_stamp(cwd);
+            record_turn(cwd, false, stamp);
+            if let Some(role) = st.doc["codex_session_cwd"].as_str() {
+                let harness = afkconvoy_core::harness::Harness::Codex;
+                let home = std::env::var("HOME").expect("the world's home");
+                let root = Path::new(&home).join(harness.session_place(role).under_home);
+                let prompt = json!({"type": "response_item", "payload": {
+                    "type": "message", "role": "user", "content": [
+                        {"type": "input_text", "text": sent["text"]}]}});
+                for file in harness.session_files(cwd.to_str().unwrap(), false, stamp) {
+                    let body = file.body.replace(&json!(cwd).to_string(), &json!(role).to_string());
+                    std::fs::write(root.join(file.path), format!("{body}{prompt}\n")).unwrap();
+                }
+            }
         }
     }
     if st.doc["terminals"][at]["startup_working_reports_left"].is_number() {
@@ -561,12 +576,6 @@ fn receipt_started(receipt: &Value) -> bool {
 /// judged on its text, so a fixture that only accepted input writes nothing
 /// even though the handler would otherwise have started a turn.
 fn record_send(st: &State, at: usize, stages: &[Value]) -> bool {
-    if let Some(raw) = st.doc["raw_answers"]["terminal send"].as_str() {
-        let accepted = (raw.contains("\"ok\":true") || raw.contains("\"ok\": true"))
-            && !raw.contains("\"accepted\":false")
-            && !raw.contains("\"accepted\": false");
-        return accepted && raw.contains("turn_started");
-    }
     let forced = |value: &Value| match value {
         Value::Bool(set) => Some(*set),
         _ => None,
@@ -575,6 +584,12 @@ fn record_send(st: &State, at: usize, stages: &[Value]) -> bool {
         forced(&st.doc["terminals"][at]["session_turn"]).or_else(|| forced(&st.doc["session_turn"]))
     {
         return set;
+    }
+    if let Some(raw) = st.doc["raw_answers"]["terminal send"].as_str() {
+        let accepted = (raw.contains("\"ok\":true") || raw.contains("\"ok\": true"))
+            && !raw.contains("\"accepted\":false")
+            && !raw.contains("\"accepted\": false");
+        return accepted && raw.contains("turn_started");
     }
     let explicit =
         st.doc["terminals"][at]["prompt_stages"].is_array() || st.doc["prompt_stages"].is_array();

@@ -137,6 +137,7 @@ fn doctor_shows_the_thresholds_in_force_and_what_the_host_reads() {
 #[test]
 fn a_share_said_wrong_is_refused_and_one_kept_wrong_is_an_error_not_a_default() {
     let world = backlog(&[3]);
+    let before = world.checkout_list();
     let error = world.afk(&["run", "--admit-load", "lots"]).error();
     assert!(error.contains("`lots` is not a whole number, nor `default`"), "{error}");
     // said by the variable that stands for the flag, the same
@@ -150,7 +151,7 @@ fn a_share_said_wrong_is_refused_and_one_kept_wrong_is_an_error_not_a_default() 
     let answer: Value = serde_json::from_slice(&out.stdout).unwrap();
     let error = answer["error"].as_str().unwrap();
     assert!(error.contains("`5%` is not a whole number"), "{error}");
-    assert_eq!(world.checkout_list(), json!({"checkouts": []}), "nothing was written");
+    assert_eq!(world.checkout_list(), before, "nothing was written");
 
     // a file mended wrong by hand holds nothing back by a default
     world.say_host_settings(json!({"hot_cores": -1}));

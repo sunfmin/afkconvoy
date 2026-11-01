@@ -222,6 +222,18 @@ pub(super) fn holds_note(text: &str, mark: &str) -> bool {
         && json_lines(text).any(|line| user_texts(&line).iter().any(|said| said.contains(mark)))
 }
 
+/// The first brief pointer in a user message: whether it names exactly
+/// `brief`. `None` means this message has no pointer. Harnesses choose which
+/// messages may associate their primary session with a worker; this match
+/// is shared by readers whose workers start in a role copy.
+pub(super) fn brief_match(line: &Value, brief: &str) -> Option<bool> {
+    let expected = crate::prompt::brief_pointer(brief);
+    user_texts(line)
+        .into_iter()
+        .find(|said| said.starts_with(crate::prompt::BRIEF_POINTER_PREFIX))
+        .map(|said| said == expected)
+}
+
 /// What one session line gives the model as the user's words. Claude Code
 /// writes a line typed mid-turn as a `queued_command` attachment once its
 /// model has it, and a `queue-operation` line while it only waits in the
