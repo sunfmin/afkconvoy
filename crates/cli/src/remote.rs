@@ -571,7 +571,7 @@ fn tags_of(listed: &[RemoteRecord]) -> Vec<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, VecDeque};
     use std::path::PathBuf;
 
     /// A remote held in memory: its refs, and how many times it was listed.
@@ -579,6 +579,7 @@ mod tests {
     struct Fake {
         refs: Mutex<BTreeMap<String, String>>,
         lists: Mutex<usize>,
+        failures: Mutex<VecDeque<String>>,
     }
 
     impl Fake {
@@ -595,6 +596,10 @@ mod tests {
             lock(&self.refs).insert(name.to_string(), sha.to_string());
         }
 
+        fn fails_next(&self, error: &str) {
+            lock(&self.failures).push_back(error.to_string());
+        }
+
         fn lists(&self) -> usize {
             *lock(&self.lists)
         }
@@ -603,6 +608,9 @@ mod tests {
     impl Wire for Fake {
         fn list(&self, _: &Path, patterns: &[&str]) -> Result<Vec<(String, String)>> {
             *lock(&self.lists) += 1;
+            if let Some(error) = lock(&self.failures).pop_front() {
+                bail!(error);
+            }
             let refs = lock(&self.refs);
             Ok(refs
                 .iter()
@@ -682,6 +690,39 @@ mod tests {
         assert_eq!(remote.sha("refs/heads/trunk", Fresh::Live).unwrap().as_deref(), Some("b"));
         assert_eq!(remote.sha("refs/heads/trunk", Fresh::Process).unwrap().as_deref(), Some("b"));
         assert_eq!(fake.lists(), 2);
+    }
+
+    #[test]
+    fn a_connection_failure_is_read_again() {
+        let fake = Fake::with(&[("refs/heads/trunk", "a")]);
+        fake.fails_next(
+            "git ls-remote origin refs/heads/trunk failed: fatal: unable to access 'https://github.com/sunfmin/afkconvoy.git/': TLS connect error: error:0A000126:SSL routines::unexpected eof while reading",
+        );
+        let remote = remote(&fake);
+        assert_eq!(remote.sha("refs/heads/trunk", Fresh::Live).unwrap().as_deref(), Some("a"));
+        assert_eq!(fake.lists(), 2);
+    }
+
+    #[test]
+    fn an_authentication_failure_is_not_read_again() {
+        let fake = Fake::with(&[("refs/heads/trunk", "a")]);
+        fake.fails_next("git ls-remote origin refs/heads/trunk failed: Authentication failed");
+        let remote = remote(&fake);
+        assert!(remote.sha("refs/heads/trunk", Fresh::Live).is_err());
+        assert_eq!(fake.lists(), 1);
+    }
+
+    #[test]
+    fn a_read_that_keeps_failing_says_how_many_attempts_it_made() {
+        let fake = Fake::with(&[]);
+        for _ in 0..3 {
+            fake.fails_next("git ls-remote origin refs/heads/trunk failed: SSL_ERROR_SYSCALL");
+        }
+        let remote = remote(&fake);
+        let error = remote.sha("refs/heads/trunk", Fresh::Live).unwrap_err().to_string();
+        assert!(error.contains("3 attempts"), "{error}");
+        assert!(error.contains("SSL_ERROR_SYSCALL"), "{error}");
+        assert_eq!(fake.lists(), 3);
     }
 
     #[test]
