@@ -704,7 +704,14 @@ impl Fleet {
             cut: cut.as_ref(),
         };
         let mut set = assemble(&seen, me, self.now, &self.config);
+        if let Some(row) =
+            set.cut.as_mut().filter(|row| row.standing == afkconvoy_core::cut::Standing::Due)
+        {
+            row.not_cutting_here = crate::probe::check_cut_needs(&self.repo, &self.config)?
+                .map(|name| format!("not cutting here: {name} failed"));
+        }
         open.issues.explain(&mut set.waiting_on_human);
+
         for waiting in &mut set.waiting_on_human {
             waiting.answer = crate::checkout::about_checkout(&self.repo.dir, &waiting.answer);
         }

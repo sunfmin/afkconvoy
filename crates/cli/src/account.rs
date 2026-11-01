@@ -73,6 +73,35 @@ pub fn leave(repo: &Repo, gh: &GitHub, issue: u64, end: End, now: u64) -> Result
     }) else {
         return Ok(());
     };
+    let mut row = account::read(&text, issue).map_err(anyhow::Error::msg)?;
+    let prior = comments.iter().find_map(|comment| account::read(&comment.body, issue).ok());
+    let worktree = crate::orca::Source::of(repo)
+        .ok()
+        .and_then(|source| crate::orca::Worktree::of_issue(&source, issue).ok().flatten());
+    for index in 0..row.workers.len() {
+        let before = row.workers.get(index + 1).and_then(|worker| worker.start);
+        let worker = &mut row.workers[index];
+        let old = prior
+            .as_ref()
+            .and_then(|prior| {
+                prior.workers.iter().find(|old| {
+                    old.claim == worker.claim
+                        && old.start == worker.start
+                        && old.harness == worker.harness
+                })
+            })
+            .and_then(|old| old.tokens.clone());
+        worker.tokens = worktree
+            .as_ref()
+            .and_then(|worktree| {
+                let harness = afkconvoy_core::harness::Harness::read(worker.harness.as_deref()?)?;
+                crate::session::tokens(&worktree.path, harness, worker.start?, before)
+                    .ok()
+                    .flatten()
+            })
+            .or(old);
+    }
+    let text = account::render(&row);
     let found = comments.iter().find(|comment| {
         afkconvoy_core::record::read_marker(account::ACCOUNT, &comment.body).is_some()
     });
@@ -81,6 +110,27 @@ pub fn leave(repo: &Repo, gh: &GitHub, issue: u64, end: End, now: u64) -> Result
         Some(comment) => gh.edit_comment(comment.id, &text),
         None => gh.comment(issue, &text),
     }
+}
+
+/// Refresh an existing account after its worker has stopped, while the
+/// worktree and its session records still exist. Keep the original end:
+/// finishing the worker must not lengthen the issue's wall clock.
+pub(crate) fn refresh_stopped(repo: &Repo, gh: &GitHub, issue: u64) -> Result<()> {
+    let comments = gh.comments(issue)?;
+    let Some(row) = comments.iter().find_map(|comment| account::read(&comment.body, issue).ok())
+    else {
+        return Ok(());
+    };
+    let Some(at) = row.end else { return Ok(()) };
+    let end = match row.outcome.as_deref() {
+        Some("landed") => End::Landed,
+        Some("closed") => End::Closed,
+        Some("escalated") => End::Escalated,
+        Some("ended") => End::Ended,
+        Some("human-closed") => End::HumanClosed,
+        _ => return Ok(()),
+    };
+    leave(repo, gh, issue, end, at)
 }
 
 /// Chip name, else model identifier; logical CPUs; memory in bytes. A fact

@@ -1384,6 +1384,7 @@ mod tests {
 
     fn cut(standing: crate::cut::Standing) -> Option<crate::cut::Row> {
         Some(crate::cut::Row {
+            not_cutting_here: None,
             initial: None,
             standing,
             newest_tag: Some("v0.5.16".into()),

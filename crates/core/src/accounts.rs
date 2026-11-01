@@ -73,6 +73,102 @@ pub struct Report {
     gate_seconds: GateSeconds,
     slowest: Vec<Slowest>,
     unreadable: Vec<Unreadable>,
+    tokens: TokenReport,
+}
+
+#[derive(Serialize)]
+struct TokenStats {
+    totals: account::Counts,
+    unknown_workers: usize,
+    p50: Option<u64>,
+    p95: Option<u64>,
+}
+
+#[derive(Serialize)]
+struct TokenReport {
+    #[serde(flatten)]
+    overall: TokenStats,
+    by_harness: BTreeMap<String, TokenStats>,
+    top: Vec<TokenIssue>,
+}
+
+#[derive(Serialize)]
+struct TokenIssue {
+    number: u64,
+    url: String,
+    total: u64,
+}
+
+type TokenSample = (u64, String, account::Counts, usize, bool);
+
+fn token_stats(rows: &[TokenSample]) -> TokenStats {
+    let mut totals = account::Counts::default();
+    let mut values = Vec::new();
+    let mut unknown_workers = 0usize;
+    for (_, _, counts, unknown, known) in rows {
+        totals.add(counts);
+        unknown_workers = unknown_workers.saturating_add(*unknown);
+        if *known {
+            values.push(counts.total());
+        }
+    }
+    values.sort_unstable();
+    TokenStats {
+        totals,
+        unknown_workers,
+        p50: percentile(&values, 50),
+        p95: percentile(&values, 95),
+    }
+}
+
+fn token_report(rows: &[Row]) -> TokenReport {
+    let mut overall = Vec::new();
+    let mut harnesses: BTreeMap<String, Vec<TokenSample>> = BTreeMap::new();
+    for row in rows {
+        if sample(row).is_err() {
+            continue;
+        }
+        let mut total = account::Counts::default();
+        let mut unknown = 0usize;
+        let mut known = false;
+        let mut grouped: BTreeMap<String, (account::Counts, usize, bool)> = BTreeMap::new();
+        for worker in &row.record.workers {
+            let entry = grouped
+                .entry(worker.harness.as_deref().unwrap_or("unknown").to_string())
+                .or_default();
+            if let Some(tokens) = &worker.tokens {
+                known = true;
+                entry.2 = true;
+                for counts in tokens.values() {
+                    total.add(counts);
+                    entry.0.add(counts);
+                }
+            } else {
+                unknown = unknown.saturating_add(1);
+                entry.1 = entry.1.saturating_add(1);
+            }
+        }
+        for (harness, (counts, missing, present)) in grouped {
+            harnesses.entry(harness).or_default().push((
+                row.record.issue,
+                row.url.clone(),
+                counts,
+                missing,
+                present,
+            ));
+        }
+        overall.push((row.record.issue, row.url.clone(), total, unknown, known));
+    }
+    let stats = token_stats(&overall);
+    let by_harness = harnesses.into_iter().map(|(name, rows)| (name, token_stats(&rows))).collect();
+    overall.sort_by_key(|(number, _, counts, _, _)| (std::cmp::Reverse(counts.total()), *number));
+    let mut top = Vec::new();
+    for (number, url, counts, _, known) in overall {
+        if known && top.len() < 5 {
+            top.push(TokenIssue { number, url, total: counts.total() });
+        }
+    }
+    TokenReport { overall: stats, by_harness, top }
 }
 
 #[derive(Serialize)]
@@ -120,6 +216,7 @@ pub struct Unreadable {
 pub fn summarize(issues: Vec<Issue>, start: Option<u64>, end: u64) -> Report {
     let mut samples = vec![];
     let (rows, mut unreadable) = rows(issues, start, end);
+    let tokens = token_report(&rows);
     for row in rows {
         match sample(&row) {
             Ok(sample) => samples.push(sample),
@@ -160,6 +257,7 @@ pub fn summarize(issues: Vec<Issue>, start: Option<u64>, end: u64) -> Report {
         gate_seconds: GateSeconds { p50: gates.p50, p95: gates.p95 },
         slowest,
         unreadable,
+        tokens,
     }
 }
 

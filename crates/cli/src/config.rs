@@ -77,25 +77,30 @@ pub fn parse(markdown: &str) -> Result<Config> {
         true => None,
     };
     let mut config = config.split(gates);
-    let blocks = fenced_all(markdown, "```yaml gate-needs");
-    if !blocks.is_empty() {
-        let needs: GateNeeds =
-            serde_yaml::from_str(&blocks.join("\n")).context("its ```yaml gate-needs block")?;
+    for (block, target) in
+        [("gate-needs", &mut config.gate_needs), ("cut-needs", &mut config.cut_needs)]
+    {
+        let blocks = fenced_all(markdown, &format!("```yaml {block}"));
+        if blocks.is_empty() {
+            continue;
+        }
+        let needs: GateNeeds = serde_yaml::from_str(&blocks.join("\n"))
+            .with_context(|| format!("its ```yaml {block} block"))?;
         let mut names = std::collections::HashSet::new();
         for check in &needs.checks {
             anyhow::ensure!(
                 !check.name.trim().is_empty()
                     && !check.command.trim().is_empty()
                     && check.seconds > 0,
-                "gate-needs: each check needs a name, command and positive seconds"
+                "{block}: each check needs a name, command and positive seconds"
             );
             anyhow::ensure!(
                 names.insert(&check.name),
-                "gate-needs: duplicate check name {}",
+                "{block}: duplicate check name {}",
                 check.name
             );
         }
-        config.gate_needs = needs.checks;
+        *target = needs.checks;
     }
     // An outer gate/land would ask for the lane a second time before it
     // could even reach the inherited gate wrapper.

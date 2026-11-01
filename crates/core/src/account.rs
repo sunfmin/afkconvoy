@@ -10,6 +10,10 @@ use flux_rs::attrs::*;
 
 mod data;
 pub mod rewrite;
+mod tokens;
+pub use tokens::parse as parse_tokens;
+pub use tokens::{Counts, Tokens};
+
 pub use data::{Gate, Host, Record, SCHEMA_VERSION, Worker, read, render};
 
 use crate::gate::GATE;
@@ -381,6 +385,7 @@ fn worker_row(start: &Start, cited: Option<Cite>, end: u64) -> Worker {
         start: Some(start.at),
         end: Some(row_end),
         seconds,
+        tokens: None,
     }
 }
 

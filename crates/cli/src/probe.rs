@@ -63,56 +63,75 @@ fn gate_needs(repo: &Repo, config: &Config, now: u64, trusting: bool) -> Result<
     }
     let _ = std::fs::remove_file(&note);
     for check in &config.gate_needs {
-        use std::hash::{Hash, Hasher};
-        use std::io::Write;
-        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-        let mut hash = std::collections::hash_map::DefaultHasher::new();
-        repo.common_dir()?.hash(&mut hash);
-        check.name.hash(&mut hash);
-        let dir = crate::copies::cache()?.join("gate-needs");
-        std::fs::create_dir_all(&dir)?;
-        let path = dir.join(format!("{:016x}.stderr", hash.finish()));
-        let script = format!("exec 1>/dev/null\n{}", check.command);
-        let mut command = std::process::Command::new("sh");
-        command.args(["-e", "-c", &script]).current_dir(&repo.dir);
-        let (output, timed_out) = crate::process::output_within_with_timeout(
-            &mut command,
-            std::time::Duration::from_secs(check.seconds),
-        )?;
-        // A successful next run also clears the previous failure's output.
-        if !timed_out && output.status.success() {
-            let _ = std::fs::remove_file(&path);
-            continue;
+        if let Some((path, reason)) = run_need(repo, check, "gate-needs")? {
+            let _ = std::fs::remove_file(repo.note(PASSED_NOTE)?);
+            return Ok(Some(format!(
+                "gate need {} failed ({reason}); stderr: {}; fix it in {}: {}",
+                check.name,
+                path.display(),
+                repo.dir.display(),
+                check.command
+            )));
         }
-        let _ = std::fs::remove_file(repo.note(PASSED_NOTE)?);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let lines: Vec<_> = stderr.lines().collect();
-        let tail = lines[lines.len().saturating_sub(20)..].join("\n");
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&path)?;
-        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-        file.write_all(tail.as_bytes())?;
-        let reason = if timed_out {
-            format!("timed out after {}s", check.seconds)
-        } else {
-            output.status.to_string()
-        };
-        return Ok(Some(format!(
-            "gate need {} failed ({reason}); stderr: {}; fix it in {}: {}",
-            check.name,
-            path.display(),
-            repo.dir.display(),
-            check.command
-        )));
     }
     std::fs::write(
         note,
         serde_json::to_string(&NeedsPassed { at: now, checks: config.gate_needs.clone() })?,
     )?;
+    Ok(None)
+}
+
+/// Run one need with stdout discarded and failure stderr kept privately.
+fn run_need(
+    repo: &Repo,
+    check: &GateNeed,
+    kind: &str,
+) -> Result<Option<(std::path::PathBuf, String)>> {
+    use std::hash::{Hash, Hasher};
+    use std::io::Write;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    repo.common_dir()?.hash(&mut hash);
+    check.name.hash(&mut hash);
+    let dir = crate::copies::cache()?.join(kind);
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join(format!("{:016x}.stderr", hash.finish()));
+    let script = format!("exec 1>/dev/null\n{}", check.command);
+    let mut command = std::process::Command::new("sh");
+    command.args(["-e", "-c", &script]).current_dir(&repo.dir);
+    let (output, timed_out) = crate::process::output_within_with_timeout(
+        &mut command,
+        std::time::Duration::from_secs(check.seconds),
+    )?;
+    if !timed_out && output.status.success() {
+        let _ = std::fs::remove_file(&path);
+        return Ok(None);
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let lines: Vec<_> = stderr.lines().collect();
+    let tail = lines[lines.len().saturating_sub(20)..].join("\n");
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&path)?;
+    file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    file.write_all(tail.as_bytes())?;
+    let reason = if timed_out {
+        format!("timed out after {}s", check.seconds)
+    } else {
+        output.status.to_string()
+    };
+    Ok(Some((path, reason)))
+}
+
+pub(crate) fn check_cut_needs(repo: &Repo, config: &Config) -> Result<Option<String>> {
+    for check in &config.cut_needs {
+        if run_need(repo, check, "cut-needs")?.is_some() {
+            return Ok(Some(check.name.clone()));
+        }
+    }
     Ok(None)
 }
 

@@ -281,7 +281,7 @@ mod tests {
                 "outcome": null,
                 "workers": [{"harness": "kimi", "model": null, "role": null, "stage": null,
                     "claim": "b30d44f27dac447c863847352ccade2d6dc6d1f5", "start": 1793539449u64,
-                    "end": 1793541788u64, "seconds": 2339, "verdict": null}],
+                    "end": 1793541788u64, "seconds": 2339, "verdict": null, "tokens": null}],
                 "gates": [
                     {"tree": "00fa9cf826dc9142c59b6638521345b177d617ee", "command": "afkconvoy exclusive -- ./gate.sh", "lane": null, "result": "green", "at": 1793541225u64, "seconds": 483, "host": "FelixMBP14.local"},
                     {"tree": "00fa9cf826dc9142c59b6638521345b177d617ee", "command": "afkconvoy exclusive -- ./gate.sh fast", "lane": null, "result": "green", "at": 1793541225u64, "seconds": 147, "host": "FelixMBP14.local"},

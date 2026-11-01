@@ -296,6 +296,8 @@ enum Command {
     ///
     /// `by_harness` maps the first worker's harness to its `count` and `wall_seconds`, with the same percentiles; `unknown` holds issues with no worker. `multiple_workers` counts issues with more than one worker. `gate_seconds` has p50 and p95 of each issue's sum of timed gate rows, zero when no gate ran. Worker rows and gate rows overlap the wall clock: they are never added into it, and no remainder is computed.
     ///
+    /// `tokens` sums known workers' raw counts as `totals` (input, cache_read, cache_write, output and reasoning); reasoning is part of output, not added to it. `unknown_workers` counts workers with no readable usage. `p50` and `p95` are nearest-rank issue totals over issues with at least one known worker; partial totals still count and unknown workers are reported. `by_harness` gives the same totals, percentiles and unknown count for each harness, grouping each issue's workers of that harness. `top` lists up to five issues by known total, ties by issue number, with number, url and total. No price is applied.
+    ///
     /// `slowest` lists up to five issues in descending wall clock (ties by issue number), each with `number`, `url` and `wall_seconds`. `unreadable` lists `number` and `reason` for accounts with unknown or invalid starts, ends, worker rows or gate seconds, duplicate accounts, or comments that could not be read. They are excluded from all measures. An unreadable end or failed comment read cannot be placed in a window and is reported in every window; an account with a readable end outside the window is excluded.
     ///
     /// A failed issue listing refuses the command with {"error": …} and a non-zero exit. Check `gh auth status`, correct the reported GitHub or checkout-list fault, then run it again.
@@ -310,7 +312,7 @@ enum Command {
     /// - `host`: {name, cpu, logical_cpus, memory_bytes}, as reported by the writing host; cpu is its chip name, else its machine model identifier.
     /// - `start`: earliest recorded claim since, retained across later ends. `end`: the end being accounted for. `wall_seconds`: end minus start, null if unknown or reversed.
     /// - `outcome`: landed, closed (nothing more to do), escalated, ended (the workflow ended), or human-closed (closed by a human while claimed). An unknown outcome is null.
-    /// - `workers`: a list of {harness, model, role, stage, claim, start, end, seconds, verdict}. A model not explicitly named is null. Role and stage are null where there is none or neither was recorded. Claim is the claim's identity. A bound worker ends at its stage record or failure, else the account end; an unbound worker ends at the account end. Seconds are end minus start. Verdict is its stage record's verdict, null without one. Landing workers are not rows; continuations on the same harness are not new rows.
+    /// - `workers`: a list of {harness, model, role, stage, claim, start, end, seconds, verdict, tokens}. `tokens` is null when usage is unknown; otherwise it maps model names to {input, cache_read, cache_write, output, reasoning}, raw counts with reasoning null when not stated. An empty model name means unknown. Cached input is excluded from input, and reasoning is included in output. A model not explicitly named is null. Role and stage are null where there is none or neither was recorded. Claim is the claim's identity. A bound worker ends at its stage record or failure, else the account end; an unbound worker ends at the account end. Seconds are end minus start. Verdict is its stage record's verdict, null without one. Landing workers are not rows; continuations on the same harness are not new rows.
     /// - `gates`: a list of {tree, command, lane, `result`, at, seconds, host}. Tree is the tested git tree, command is the exact command, lane is fast, slow or whole when known, `result` is green or red, at is the gate record's epoch timestamp, seconds times the command after its queue turn, and host is the host that ran it. Prior red runs survive later edits after their remote refs disappear. For converted records, a lane stays null unless its original marker names one.
     ///
     /// A converted account retains its original evidence in `legacy_evidence`. Worker durations, models and host hardware stated by the old rows are recovered; facts not stated remain null. The overlapping worker and gate durations do not partition wall_seconds.
@@ -554,6 +556,8 @@ enum Command {
     ///     command: test "$(compiler --version)" = "1.0"
     ///     seconds: 10
     /// ```
+    /// A separate `yaml cut-needs` block uses the same `checks` form for cutting. Before claiming a due cut, the host runs these checks; a failure leaves the cut for another host and is named in the tick, plan and doctor. Output follows the same privacy rules.
+    ///
     /// Each name is unique and nonempty, each command nonempty, and seconds positive. Each runs with `sh -e` in the checkout. The startup probe refuses a failed or timed-out check; a passing check stands for an hour. A check's stdout is discarded. On failure its last 20 stderr lines are stored in a user-only file in the host cache, overwritten by its next run; the refusal names the file, never its contents.
     ///
     /// Where a budget is declared, the answer also has `gate_budget_seconds`. The last {const:SLOW_GATE_LANDINGS} recorded landings on one host must each exceed it to warn through the existing slow-gate issue and doctor finding. Without it the warning threshold stays {const:SLOW_GATE_PERCENT}% of `gate_seconds`. A warning neither ends nor fails a gate.
@@ -2857,6 +2861,8 @@ enum Command {
     /// ~~~
     ///
     /// `set` and `publish` are required. Optional `initial` declares the first version, exactly X.Y.Z: three whole numbers without leading zeroes, a `v` prefix or a prerelease suffix. Without a version tag and without `initial`, nothing is cut. With it, the next idle tick cuts that exact version, whatever labels earlier PRs carry; after a version tag exists, `initial` is ignored and the usual patch/minor selection applies. No seed tag or manual release is needed.
+    ///
+    /// A repo may declare host checks in a `yaml cut-needs` block (`afkconvoy config --help`). A host whose check fails does not claim a due cut; the tick, plan and doctor name it. Stdout is discarded and failed stderr is private to the host.
     ///
     /// Optional `busy_after_seconds` bounds how long the oldest landing past the newest tag waits for an idle fleet. Leaving it out means {const:CUT_BUSY_AFTER_SECONDS}s; zero permits a busy cut at the next tick. Its clock uses the landing commit's time on the base branch, rather than the age of commits on a side branch. Put this key in a second cut block as above: older versions that know cut steps read only the first cut block and skip the addition. All cut blocks form one mapping, and a key declared twice is refused. `plan`'s `cut` row gives `oldest_landing_age_seconds` and `busy_in_seconds`: zero means a busy cut may start now; null means no landing past a version tag.
     ///

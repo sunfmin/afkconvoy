@@ -812,6 +812,9 @@ impl Ticked {
         let mut answer = json!({"did": did, "errors": errors, "held": self.pass.held,
             "frontier_remaining": self.pass.frontier_remaining, "idle": self.idle(),
             "locks": self.set.locks});
+        if let Some(reason) = self.set.cut.as_ref().and_then(|cut| cut.not_cutting_here.as_ref()) {
+            answer["not_cutting_here"] = json!(reason);
+        }
         if self.pass.held_back(&self.set) {
             answer["held_back_by"] = json!(self.held_back_by());
         }
@@ -980,6 +983,9 @@ impl Ticked {
                 .map(afkconvoy_core::slow_gate::said)
                 .unwrap_or_default();
             parts.push(format!("opened an issue for the slow gate: {evidence}"));
+        }
+        if let Some(name) = self.set.cut.as_ref().and_then(|cut| cut.not_cutting_here.as_ref()) {
+            parts.push(name.clone());
         }
         parts.extend(self.cut_said.iter().filter_map(log::cut_said));
         for update in &self.updates {

@@ -177,7 +177,7 @@ The comment a stage leaves on its issue: what it produced, its verdict, the vers
 _Avoid_: handoff note, log (the tick log; what a gate prints), stage label
 
 **Work account**:
-The one comment the fleet leaves when work on an issue ends, and edits at a later end: one versioned JSON record of its wall clock from the earliest recorded claim, its outcome, the fleet version and host, its workers and the gate runs on its own tree, with unknown facts left unknown and human text rendered from the record. A worker does not write it; position, rework and the guard do not read it.
+The one comment the fleet leaves when work on an issue ends, and edits at a later end: one versioned JSON record of its wall clock from the earliest recorded claim, its outcome, the fleet version and host, its workers, their raw token use by model and the gate runs on its own tree, with unknown facts left unknown and human text rendered from the record. Known worker tokens add into an issue total, with unknown workers counted separately; cached input is counted once and reasoning is part of output. A worker does not write it; position, rework and the guard do not read it.
 _Avoid_: summary (the read-only summary a command answers), time log, report (a failure a patrol or a cut opens; what a watch round delivers; what doctor says)
 
 **Position**:
@@ -442,5 +442,5 @@ A change the fleet starts to restore a red target tip or finish retained work fr
 _Avoid_: manual repair
 
 **Cut**:
-The run that makes a new version of a repo from its base branch: it sets the version, lands one commit on that branch, tags that commit, and publishes and installs it. The commit that set the version stays on the cut's branch. Landed work past the newest version tag starts one when the fleet goes idle or the oldest landing reaches the repo's age bound; an untagged repo's declared initial version starts one when idle. Each cut belongs to one host; a failed cut holds later cuts back until answered, while a patch overtaken by a minor landing ends without tagging and gives way to the minor cut.
+The run that makes a new version of a repo from its base branch: it sets the version, lands one commit on that branch, tags that commit, and publishes and installs it. The commit that set the version stays on the cut's branch. Landed work past the newest version tag starts one when the fleet goes idle or the oldest landing reaches the repo's age bound; an untagged repo's declared initial version starts one when idle. A repo may declare cut needs: host checks that must pass before a host claims a cut. A due cut whose check fails is reported by the tick, plan and doctor, leaving another host free to cut. Each cut belongs to one host; a failed cut holds later cuts back until answered, while a patch overtaken by a minor landing ends without tagging and gives way to the minor cut.
 _Avoid_: release (a claim's last step, and `afkconvoy release`), publish (a heartbeat's), deploy
