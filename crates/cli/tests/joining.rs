@@ -36,6 +36,10 @@ fn worktree(world: &World) -> PathBuf {
 /// and stopped there, short of the landing train.
 fn joining() -> World {
     let world = World::new();
+    joining_in(world)
+}
+
+fn joining_in(world: World) -> World {
     world.issue(7, &["ready-for-agent", "bug"]);
     assert_eq!(did(&tick(&world, 700)), ["dispatch 7 done", "heartbeat done"]);
     let dir = worktree(&world);
@@ -43,6 +47,34 @@ fn joining() -> World {
     git(&dir, &["push", "-q", "origin", "HEAD"]);
     world.pr(70, 7, &git(&dir, &["symbolic-ref", "--short", "HEAD"]));
     world
+}
+
+#[test]
+fn an_idle_unbound_codex_worker_has_its_waiting_turn_asked_again_without_a_harness() {
+    let world = World::new();
+    world.kit_command("codex", afkconvoy_core::harness::Harness::Codex.stock());
+    world.with_kit(|kit| {
+        kit["harnesses"].as_array_mut().unwrap().retain(|held| held["harness"] == "codex");
+    });
+    let world = joining_in(world);
+    let dir = worktree(&world);
+    let notes = PathBuf::from(git(&dir, &["rev-parse", "--absolute-git-dir"]));
+    std::fs::write(
+        notes.join("convoy-turn.json"),
+        json!({"outcome": "waiting_for_capacity", "at": 1000}).to_string(),
+    )
+    .unwrap();
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            terminal["agent"] = json!({"agentType": "codex", "state": "done", "stateStartedAt": 1_050_000});
+        }
+    });
+    let terminals = open_terminals(&world, &dir);
+    let ticked = tick(&world, 1100);
+    assert_eq!(ticked["errors"], json!([]), "{ticked}");
+    assert!(did(&ticked).contains(&"watch 7 asked".to_string()), "{ticked}");
+    assert!(notes.join("convoy-turn.log").exists());
+    assert_eq!(open_terminals(&world, &dir), terminals);
 }
 
 fn brief(dir: &Path) -> String {
