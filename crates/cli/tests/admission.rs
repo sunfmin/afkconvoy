@@ -7,9 +7,47 @@ use crate::common;
 
 use common::World;
 use serde_json::{Value, json};
+use std::process::Stdio;
+use std::time::{Duration, Instant};
 
 /// A load no host of any number of cores is under.
 const PAST_ANY: &str = "100000.00";
+
+#[test]
+fn queue_load_admits_but_load_outside_the_queue_holds() {
+    let world = backlog(&[3, 5]);
+    let _runner = world.host_held();
+    world.busy(PAST_ANY);
+    let marker = world.root.join("running");
+    let mut command = world
+        .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
+        .args(["exclusive", "--", "sh", "-c"])
+        .arg(format!("touch '{}'; sleep 30", marker.display()))
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let start = Instant::now();
+    while !marker.exists() {
+        assert!(start.elapsed() < Duration::from_secs(10));
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let processes = world.root.join("admission-processes");
+    std::fs::write(&processes, format!("{} 1 0.0\n999999 {} 100.0\n", command.id(), command.id()))
+        .unwrap();
+    let admitted = tick(&world, "1000");
+    assert_eq!(dispatched(&admitted), [3, 5], "{admitted}");
+    let doctor = world.afk(&["doctor", "--host", "h1"]).json;
+    assert_eq!(doctor["host"]["admission"]["reading"]["queue_load"], 100000.0);
+    assert_eq!(doctor["host"]["admission"]["reading"]["other_load"], 0.0);
+    std::fs::write(&processes, format!("{} 1 0.0\n999998 1 100.0\n", command.id())).unwrap();
+    world.issue(7, &["ready-for-agent"]);
+    let held = tick(&world, "1090");
+    assert!(dispatched(&held).is_empty(), "{held}");
+    assert!(held["held_back_by"].to_string().contains("load"), "{held}");
+    command.kill().unwrap();
+    let _ = command.wait();
+}
 
 fn backlog(numbers: &[u64]) -> World {
     let world = World::new();
