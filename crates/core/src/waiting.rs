@@ -233,7 +233,11 @@ pub fn back(team: &Team, workflow: Option<&Workflow>, records: &[StageRecord]) -
             team.workflows.iter().map(|workflow| workflow.flow_label().to_string()).collect();
         return Back::Flow { labels, escalate: team.escalate_label.clone() };
     };
-    match history(workflow, records.to_vec()).place.position.stage() {
+    let position = history(workflow, records.to_vec()).place.position;
+    if position.landing() {
+        return Back::Rule { stage: crate::team::LAND.to_string() };
+    }
+    match position.stage() {
         Some(stage) => Back::Rule { stage: stage.name.clone() },
         None => Back::Send,
     }

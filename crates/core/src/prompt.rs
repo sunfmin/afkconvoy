@@ -234,6 +234,12 @@ const LANDING: &str = "\
 **Your role:** `{role}`, which you were started in. Perform its skill `{skill}` as you carry out the
 steps below. You were started in your role's directory, not in the worktree: the commands below
 change to the worktree themselves.
+
+If landing needs another issue fixed first, run `afkconvoy verdict blocked --issue {n} --stage land
+--blocked-by <issues> --text-file <file>` from the worktree, then stop. Name every blocking issue.
+If a human must decide, declare `escalate` with `--stage land` and the reason instead, then stop.
+The fleet releases the claim and keeps the PR and branch. Once blockers close, or a human rules,
+the issue returns to landing.
 ";
 
 /// The brief of a worker started in its role: a fixed form that says what the

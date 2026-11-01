@@ -126,12 +126,33 @@ pub fn park_claim(
 pub fn park(fleet: &mut Fleet, me: &Me, issue: u64) -> Result<Value> {
     let Some(claim) = mine(fleet, me, issue)? else { return Ok(nothing_held(issue)) };
     let comments = fleet.gh.comments(issue)?;
-    let verdict = latest_verdict(comments.iter().map(|c| c.body.as_str()));
     let refused = |why: &str| anyhow!("issue #{issue} is not parkable: {why}; nothing was changed");
-    let Some(verdict) = verdict.filter(|verdict| verdict.phase == Some(Phase::Blocked)) else {
-        return Err(refused("its worker's latest verdict is not `blocked`"));
+    let not_blocked = || refused("its worker's latest verdict is not `blocked`");
+    let named = if fleet.config.bound.is_some() {
+        use afkconvoy_core::position::Declared;
+        use afkconvoy_core::stage_record::{Stated, history, stage_records};
+        let team = crate::team::load(crate::team::From::Config, Some(&fleet.repo))?.team;
+        let labels = fleet.gh.issue(issue)?.labels;
+        let workflow =
+            afkconvoy_core::role::workflow_of(&team, &labels).map_err(|why| refused(&why))?;
+        let records = stage_records(comments.iter().map(|c| c.body.as_str()))
+            .into_iter()
+            .map(|(_, record)| record)
+            .collect();
+        let history = history(workflow, records);
+        let record = history
+            .verdict_under(&claim.id)
+            .and_then(|at| history.records.get(at))
+            .filter(|record| record.stated == Stated::Declared(Declared::Blocked))
+            .ok_or_else(not_blocked)?;
+        record.blocked_by.clone()
+    } else {
+        latest_verdict(comments.iter().map(|c| c.body.as_str()))
+            .filter(|verdict| verdict.phase == Some(Phase::Blocked))
+            .ok_or_else(not_blocked)?
+            .blocked_by
     };
-    let parkable = match blocked_route(&standings(fleet, issue, &verdict.blocked_by)?) {
+    let parkable = match blocked_route(&standings(fleet, issue, &named)?) {
         Blocked::Park(parkable) => parkable,
         Blocked::Redispatch => {
             return Err(refused("every blocker it named is closed — dispatch it again instead"));

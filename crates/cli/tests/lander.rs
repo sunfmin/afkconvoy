@@ -241,6 +241,119 @@ fn a_builder_with_an_open_pr_still_needs_its_workflow_and_worker_health() {
     assert_eq!(book["workers"][0]["action"], "observing", "{book}");
 }
 
+/// A landing worker's declaration, made while stopped at its prompt.
+fn landing_verdict(world: &World, verdict: &str, blocked_by: &[&str]) {
+    let line = [
+        "verdict",
+        verdict,
+        "--issue",
+        "7",
+        "--stage",
+        "land",
+        "--text",
+        "Landing needs an external fix.",
+        "--role-commit",
+        "r1",
+        "--team-commit",
+        "t1",
+    ];
+    assert_eq!(world.afk(&[&line[..], blocked_by].concat()).ok()["declared"], true);
+}
+
+fn no_worker_health(world: &World) {
+    let file = world.cache().join("afkconvoy/worker-health.json");
+    let book: Value = serde_json::from_slice(&std::fs::read(file).unwrap()).unwrap();
+    assert!(book["workers"].as_array().unwrap().is_empty(), "{book}");
+}
+
+#[test]
+fn a_landing_blocked_verdict_parks_and_resumes_landing() {
+    for explicit in [false, true] {
+        let world = bound();
+        let now = through_the_stages(&world);
+        tick(&world, now);
+        let dir = worktree(&world);
+        let head = git(&dir, &["rev-parse", "HEAD"]);
+        world.issue(41, &["flow:feature"]);
+        // Keep the blocker off this instance's frontier, without changing its
+        // eligibility as an issue the fleet can wait for.
+        world
+            .afk(&["claim", "--issue", "41", "--instance", "beta", "--now", &now.to_string()])
+            .ok();
+        stopped(&world, now);
+        landing_verdict(&world, "blocked", &["--blocked-by", "41"]);
+        if explicit {
+            let parked = world
+                .afk(&[
+                    "park",
+                    "--issue",
+                    "7",
+                    "--instance",
+                    "alpha",
+                    "--now",
+                    &(now + 90).to_string(),
+                ])
+                .ok();
+            assert_eq!(parked["action"], "parked", "{parked}");
+        } else {
+            assert_eq!(did(&tick(&world, now + 90)), ["advance 7 done"]);
+        }
+        assert_eq!(world.claims(), [(41, "beta".into())]);
+        assert_eq!(world.edges(7), [41]);
+        assert!(dir.exists(), "the open PR keeps its worktree");
+        assert!(terminals(&world, &dir).is_empty());
+        assert_eq!(git(&dir, &["rev-parse", "HEAD"]), head);
+        assert!(frontier(&world).is_empty());
+        let shown = world.afk(&["show", "--issue", "7"]).ok();
+        assert_eq!(shown["position"]["is"], "parked", "{shown}");
+        assert_eq!(shown["position"]["stage"], "land");
+        assert!(world.comments(7).iter().any(|body| body.contains("**Parked**")));
+        tick(&world, now + 180);
+        no_worker_health(&world);
+
+        world.close(41, "completed");
+        assert_eq!(frontier(&world), [(7, "land".into())]);
+        assert_eq!(did(&tick(&world, now + 270)), ["dispatch 7 done"]);
+        assert!(worker(&world, &dir).contains("AFKCONVOY_STAGE='land'"));
+        assert_eq!(status(&world), "landing");
+    }
+}
+
+#[test]
+fn a_landing_escalate_verdict_waits_for_a_human_and_a_ruling_resumes_landing() {
+    let world = bound();
+    let now = through_the_stages(&world);
+    tick(&world, now);
+    let dir = worktree(&world);
+    let branch = git(&dir, &["symbolic-ref", "--short", "HEAD"]);
+    let head = git(&dir, &["rev-parse", "HEAD"]);
+    stopped(&world, now);
+    landing_verdict(&world, "escalate", &[]);
+    assert_eq!(did(&tick(&world, now + 90)), ["advance 7 done"]);
+    assert!(world.claims().is_empty());
+    assert!(world.labels(7).contains(&"ready-for-human".to_string()));
+    assert!(dir.exists());
+    assert!(terminals(&world, &dir).is_empty());
+    assert_eq!(world.remote(&["rev-parse", &format!("refs/heads/{branch}")]), head);
+    let plan = world.afk(&["plan", "--instance", "alpha"]).ok();
+    let waiting = plan["waiting_on_human"].as_array().unwrap();
+    assert_eq!(waiting.len(), 1, "{plan}");
+    assert_eq!(waiting[0]["issue"], 7);
+    assert!(waiting[0]["answer"].as_str().unwrap().contains("rule --issue 7"));
+    let shown = world.afk(&["show", "--issue", "7"]).ok();
+    assert_eq!(shown["position"]["is"], "escalating", "{shown}");
+    assert_eq!(shown["position"]["stage"], "land");
+    no_worker_health(&world);
+    assert!(did(&tick(&world, now + 180)).is_empty());
+
+    let ruled = world.afk(&["rule", "--issue", "7", "--text", "The external fault is fixed."]).ok();
+    assert_eq!(ruled["stage"], "land", "{ruled}");
+    assert_eq!(frontier(&world), [(7, "land".into())]);
+    assert_eq!(did(&tick(&world, now + 270)), ["dispatch 7 done"]);
+    assert!(worker(&world, &dir).contains("AFKCONVOY_STAGE='land'"));
+    assert_eq!(world.afk_in(&dir, &["land", "--issue", "7"]).ok()["outcome"], "merged");
+}
+
 #[test]
 fn an_issue_walks_a_four_stage_workflow_and_its_landing_worker_lands_in_a_turn() {
     let world = bound();
