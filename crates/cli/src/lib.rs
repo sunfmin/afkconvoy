@@ -1075,7 +1075,7 @@ enum Command {
     ///
     /// `harness` is the harness the worker of the position is a session of, null where no worker acts: the stage's — the one it names, or the default of this checkout's config — for a worker that performs it, and the default for a consult and a landing.
     ///
-    /// `valid` is false for what may not be declared where the issue is: a `reject` from a stage with no `on.reject`, a `ruling` nobody asked for, anything but `ruling` or `escalate`, `close` or `park` from a consult. An invalid verdict escalates the issue at a stage. Landing accepts `blocked` and `escalate`; a ruling resumes escalated landing. Other declarations at landing, anything declared on an ended issue, and anything but a `ruling` on one that is escalating change nothing.
+    /// `valid` is false for what may not be declared where the issue is: a `reject` from a stage with no `on.reject`, a `ruling` nobody asked for, anything but `ruling` or `escalate`, `close` or `park` from a consult. An invalid verdict escalates the issue at a stage. Landing accepts `blocked` and `escalate`; a ruling returns an escalated issue to Landing. Other declarations at landing, anything declared on an ended issue, and anything but a `ruling` on one that is escalating change nothing.
     ///
     /// `rework` is the issue's rework in total: its rejections and its consults' rulings. `consecutive_rework` is, for each stage that may reject, its rejections in a row: a `pass` of that stage starts its count over. A human's `ruling` starts every count over. `breaker` is null, or the breaker this step tripped — "max_rework" or "max_consecutive_rework": the rework that would have passed it is refused and not counted, and the issue escalates at the stage that would have run again.
     ///
@@ -2061,7 +2061,7 @@ enum Command {
     ///
     /// After the PR is open and all changes are committed: `afkconvoy land <n>` or `afkconvoy land --issue <n>`. A watch uses `land --watch` for its own PR. Cuts take the same turn automatically.
     ///
-    /// A bound repo's landing worker can stop with `afkconvoy verdict blocked --issue <n> --stage land --blocked-by <issues> --text-file <file>` when another issue must be fixed first. The fleet parks its claim on open blockers and returns it to Landing when they all close. `verdict escalate --issue <n> --stage land --text-file <file>` hands it to a human, with the PR and branch kept; `afkconvoy rule` resumes landing after the cause is resolved.
+    /// A bound repo's landing worker can stop with `afkconvoy verdict blocked --issue <n> --stage land --blocked-by <issues> --text-file <file>` when another issue must be fixed first. The fleet parks its claim on open blockers and returns it to Landing when they all close. `verdict escalate --issue <n> --stage land --text-file <file>` hands it to a human, with the PR and branch kept; `afkconvoy rule` returns the issue to Landing after the cause is resolved.
     ///
     /// ## Who runs it
     ///
@@ -2234,7 +2234,7 @@ enum Command {
     ///
     /// Opening a PR declares nothing: a stage that wrote one still declares `pass` — after `afkconvoy gate` says green on what it pushed, as its brief tells it.
     ///
-    /// At Landing, a worker declares with `--stage land`: `blocked` names open issues the fleet can wait for and parks the claim, keeping work as `afkconvoy park` does. Once every blocker closes it returns to Landing, without repeating a stage. `escalate` hands it to a human with an answer line, keeping its PR and branch; a human's `afkconvoy rule` resumes landing. Other worker verdicts do not advance Landing.
+    /// At Landing, a worker declares with `--stage land`: `blocked` names open issues the fleet can wait for and parks the claim, keeping work as `afkconvoy park` does. Once every blocker closes it returns to Landing, without repeating a stage. `escalate` hands it to a human with an answer line, keeping its PR and branch; a human's `afkconvoy rule` returns the issue to Landing. Other worker verdicts do not advance Landing.
     ///
     /// A consult also declares `close` or `park`, with its reason in the text. Close ends the issue; park leaves it open for new evidence, off the frontier until explicitly brought back (see `afkconvoy help humans`). Neither adds rework or resets its counts. `escalate` lets through to a human what the consult was asked to rule on. Its ruling uses `afkconvoy rule --help`.
     ///
