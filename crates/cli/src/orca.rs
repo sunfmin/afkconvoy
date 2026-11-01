@@ -1492,6 +1492,7 @@ impl Worktree {
         let file = self.note(START_FILE)?;
         std::fs::write(&file, now.to_string())
             .with_context(|| format!("cannot write {}", file.display()))?;
+        self.forget(TURN_FILE)?;
         Ok(handle.to_string())
     }
 
@@ -1910,7 +1911,8 @@ impl Worktree {
         let earliest = crate::clock().saturating_sub(2);
         crate::harness_down::tell(self, terminal, now, || {
             self.tell_unchecked(terminal, line, 1, None, earliest)
-        })
+        })?;
+        self.forget(TURN_FILE)
     }
 
     fn tell_unchecked(

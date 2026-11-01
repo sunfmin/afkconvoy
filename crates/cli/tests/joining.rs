@@ -136,12 +136,18 @@ fn a_landed_worker_leaves_health_and_is_settled_without_another_worker() {
 fn a_landing_workers_turn_wait_retires_health_without_an_operator_finding() {
     for outcome in ["round_red", "waiting_for_capacity"] {
         let world = gated();
+        world.say_concurrency(&world.clone, 3);
         let dir = worktree(&world);
         tick(&world, 1300);
         tick(&world, 1600);
         let path = world.cache().join("afkconvoy/worker-health.json");
         let book: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(book["workers"][0]["action"], "waiting for operator", "{book}");
+        let before = world.afk(&["doctor", "--all", "--now", "1600"]).json;
+        assert!(
+            before["findings"].as_array().unwrap().iter().any(|f| f["kind"] == "worker_health"),
+            "{before}"
+        );
 
         let git_dir = PathBuf::from(git(&dir, &["rev-parse", "--absolute-git-dir"]));
         std::fs::write(
@@ -151,14 +157,18 @@ fn a_landing_workers_turn_wait_retires_health_without_an_operator_finding() {
         .unwrap();
         let doctor = world.afk(&["doctor", "--all", "--now", "1800"]).json;
         assert!(
-            doctor["findings"].as_array().unwrap().iter().all(|finding| {
-                finding["kind"] != "worker-health"
-            }),
+            doctor["findings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|finding| { finding["kind"] != "worker_health" }),
             "{outcome}: {doctor}"
         );
         let workers = &doctor["host"]["host_kit"]["worker_health"]["workers"];
-        assert!(workers.as_array().unwrap().iter().all(|w| w["path"] != json!(dir)),
-            "{outcome}: {workers}");
+        assert!(
+            workers.as_array().unwrap().iter().all(|w| w["path"] != json!(dir)),
+            "{outcome}: {workers}"
+        );
 
         tick(&world, 1900);
         let book: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
