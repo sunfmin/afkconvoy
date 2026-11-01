@@ -84,6 +84,7 @@ fn gate_needs(repo: &Repo, config: &Config, now: u64, trusting: bool) -> Result<
             let _ = std::fs::remove_file(&path);
             continue;
         }
+        let _ = std::fs::remove_file(repo.note(PASSED_NOTE)?);
         let stderr = String::from_utf8_lossy(&output.stderr);
         let lines: Vec<_> = stderr.lines().collect();
         let tail = lines[lines.len().saturating_sub(20)..].join("\n");
