@@ -1615,6 +1615,30 @@ impl Worktree {
         mark: &str,
         since: u64,
     ) -> Result<Handed> {
+        self.hand_note_wait(terminal, line, mark, since, None)
+    }
+
+    /// A tick polls briefly. Once accepted, keep the send receipt so a later
+    /// tick waits for the queued line rather than typing a duplicate.
+    pub(crate) fn hand_update(
+        &self,
+        terminal: &str,
+        line: &str,
+        mark: &str,
+        since: u64,
+        receipt: &std::path::Path,
+    ) -> Result<Handed> {
+        self.hand_note_wait(terminal, line, mark, since, Some(receipt))
+    }
+
+    fn hand_note_wait(
+        &self,
+        terminal: &str,
+        line: &str,
+        mark: &str,
+        since: u64,
+        receipt: Option<&std::path::Path>,
+    ) -> Result<Handed> {
         let row = runtime_row(&runtime_live()?, &self.path);
         let agent = if row["liveTerminalCount"].as_u64().unwrap_or(0) > 1 {
             let shown = orca(&["terminal", "show", "--terminal", terminal])?;
@@ -1645,15 +1669,24 @@ impl Worktree {
         if crate::session::holds_note(&self.path, harness, since, mark)? {
             return Ok(Handed::Already);
         }
-        let sent = orca(&["terminal", "send", "--terminal", terminal, "--text", line, "--enter"])?;
-        if sent["send"]["accepted"] != true {
-            return Err(self.prompt_failure(
-                terminal,
-                &format!("the terminal did not take the line: {}", sent["send"]),
-            ));
+        let accepted = receipt
+            .and_then(|file| std::fs::read_to_string(file).ok())
+            .is_some_and(|saved| saved == terminal);
+        if !accepted {
+            let sent =
+                orca(&["terminal", "send", "--terminal", terminal, "--text", line, "--enter"])?;
+            if sent["send"]["accepted"] != true {
+                return Err(self.prompt_failure(
+                    terminal,
+                    &format!("the terminal did not take the line: {}", sent["send"]),
+                ));
+            }
+            if let Some(file) = receipt {
+                std::fs::write(file, terminal)?;
+            }
         }
         let typed = Instant::now();
-        let bound = Duration::from_secs(note_wait_seconds());
+        let bound = Duration::from_secs(if receipt.is_some() { 1 } else { note_wait_seconds() });
         let mut sent_now = false;
         loop {
             if crate::session::holds_note(&self.path, harness, since, mark)? {

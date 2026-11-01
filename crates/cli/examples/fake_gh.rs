@@ -1039,7 +1039,7 @@ fn open_issues(st: &State) -> ! {
                 with.truncate(COMMENTS_WITH);
                 json!({"part": "open", "number": issue["number"], "title": issue["title"],
                     "body": issue["body"].as_str().unwrap_or(""),
-                    "url": format!("https://gh/i/{number}"), "at": issue["at"],
+                    "url": format!("https://gh/i/{number}"), "at": issue["at"], "edited": issue["edited"],
                     "labels": issue["labels"],
                     "blockers": issue["blockers_at_rebuild"].as_array().unwrap_or(&edges),
                     "blockers_more": issue["blockers_more"].as_bool().unwrap_or(false),
@@ -1112,7 +1112,7 @@ fn open_issues(st: &State) -> ! {
             with.truncate(COMMENTS_WITH);
             json!({"number": issue["number"], "title": issue["title"],
                 "body": issue["body"].as_str().unwrap_or(""),
-                "url": format!("https://gh/i/{number}"), "at": issue["at"],
+                "url": format!("https://gh/i/{number}"), "at": issue["at"], "edited": issue["edited"],
                 "labels": issue["labels"],
                 "blockers": issue["blockers_at_rebuild"].as_array().unwrap_or(&edges),
                 "blockers_more": issue["blockers_more"].as_bool().unwrap_or(false),

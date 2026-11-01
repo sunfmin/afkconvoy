@@ -567,6 +567,7 @@ fn start(
             DispatchStep::Deliver => {
                 let (cut, handle) =
                     worktree.as_ref().zip(terminal.as_ref()).ok_or_else(undecided)?;
+                crate::issue_updates::starting(cut, issue.body.as_deref().unwrap_or(""))?;
                 match cut.deliver(handle, brief.as_ref().ok_or_else(undecided)?) {
                     Ok(()) => {}
                     Err(error) if error.is::<crate::orca::IdleTimeout>() => brief_pending = true,

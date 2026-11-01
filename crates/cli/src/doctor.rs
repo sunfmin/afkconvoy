@@ -850,6 +850,7 @@ fn recovered(failed: &Failed, step: &Value) -> bool {
     let same = step["do"] == failed.step
         && step["issue"].as_u64() == failed.issue
         && step["patrol"].as_str() == failed.patrol.as_deref();
+    let same = same && step["comment"].as_str() == failed.comment.as_deref();
     let progressed = failed.issue.is_some()
         && step["issue"].as_u64() == failed.issue
         && matches!(
@@ -894,7 +895,11 @@ fn log_findings(run: &Run) -> Vec<Finding> {
     pending
         .into_iter()
         .map(|(count, failed)| {
-            let identity = json!(["step", failed.step, failed.issue, failed.patrol]);
+            let identity = if let Some(comment) = &failed.comment {
+                json!(["step", failed.step, failed.issue, failed.patrol, comment])
+            } else {
+                json!(["step", failed.step, failed.issue, failed.patrol])
+            };
             let repeated = recent.filter(|last| {
                 last.iter().all(|(_, tick)| tick.failed().iter().any(|was| was.same_step(&failed)))
             });
