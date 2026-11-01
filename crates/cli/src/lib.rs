@@ -29,6 +29,8 @@ pub mod accounts;
 pub mod acting;
 pub mod admission;
 pub mod advance;
+mod asking_report;
+mod asking_terminal;
 pub mod blockers;
 pub mod board;
 mod candidates;
@@ -62,6 +64,7 @@ pub mod git;
 pub mod guard;
 pub mod harness_down;
 pub mod health;
+pub mod host_asking;
 pub mod host_evidence;
 pub mod host_panel;
 pub mod host_runner;
@@ -2085,7 +2088,43 @@ enum Command {
         #[command(flatten)]
         at: AtFlag,
     },
-    /// Record what this host's watch did and end its session (a watch's command)
+    /// Report the current human question settled or put aside (the asking session's command)
+    ///
+    /// ## When to run it
+    ///
+    /// After the operator has decided the current question, or asked to put it aside, using the exact line in the asking session's brief:
+    ///
+    /// ```
+    /// afkconvoy asked --question <episode-id> --text-file <report.json>
+    /// ```
+    ///
+    /// A settled report is {"outcome":"settled","url":"<comment-url>"}. Its URL is the issue comment holding the operator's quoted words and their time; the asking session's own words establish no human intent. A put-aside report is {"outcome":"aside"} and has no URL. Put-aside questions stay pending and are listed when the operator asks.
+    ///
+    /// ## Who runs it
+    ///
+    /// The resident asking session, after recording the operator's actual decision on the issue. The operator may repeat its exact command if the receipt was lost.
+    ///
+    /// ## What it reads and writes
+    ///
+    /// It reads the current delivered question on this host and atomically keeps the report in the host cache. It needs no repo or GitHub login. Only the current, delivered, unwithdrawn question may report. The next question is delivered only after this report. The same report may be submitted again; a different one cannot replace it.
+    ///
+    /// ## What it answers
+    ///
+    /// {question, reported: true, report}: the question's episode identity and its record. Errors name the current question's brief and the JSON to fix.
+    ///
+    /// ## What trips you up
+    ///
+    /// Settling requires the link to the operator's quoted words and time, not a summary written by the Agent. Printed output is no report. A recovered question is withdrawn by the host runner and cannot be settled afterwards.
+    #[command(next_help_heading = WORKER, verbatim_doc_comment)]
+    Asked {
+        /// The question's episode id from its brief
+        #[arg(long)]
+        question: String,
+        /// The JSON settlement or put-aside report
+        #[arg(long)]
+        text_file: PathBuf,
+    },
+    /// Record what this host's watch did and complete its round (a watch's command)
     ///
     /// ## When to run it
     ///
@@ -4546,6 +4585,7 @@ fn run(
 ) -> anyhow::Result<Value> {
     let now = fixed_now.unwrap_or_else(clock);
     match command {
+        Command::Asked { question, text_file } => asking_report::record(&question, &text_file),
         Command::Watched { watch, text_file } => watch_report::record(&watch, &text_file, now),
         Command::Kit { cast: Some(_), .. } => bail!("automatic casting is gone"),
         Command::Kit { remove: Some(harness), .. } => kit::remove(harness, now),

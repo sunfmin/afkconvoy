@@ -26,16 +26,20 @@ struct Outbox {
     look: u64,
     observed: BTreeMap<String, String>,
     entries: BTreeMap<String, Entry>,
+    next_sequence: u64,
     last: Option<Sending>,
 }
 
+/// One recorded human decision, shared with the resident asking session.
 #[derive(Clone, Serialize, Deserialize)]
-struct Entry {
-    id: String,
-    condition: String,
-    url: Option<String>,
-    watch: String,
-    human: Human,
+pub struct Entry {
+    pub id: String,
+    pub condition: String,
+    pub url: Option<String>,
+    pub watch: String,
+    pub human: Human,
+    #[serde(default)]
+    pub sequence: u64,
     sent: bool,
     failures: u64,
     attempted_look: Option<u64>,
@@ -97,6 +101,7 @@ pub fn reported(watch: &Watch, report: &Report, observed: &BTreeMap<String, Stri
                 condition,
                 watch: watch.id.clone(),
                 human: human.clone(),
+                sequence: 0,
                 sent: false,
                 failures: 0,
                 attempted_look: None,
@@ -108,12 +113,24 @@ pub fn reported(watch: &Watch, report: &Report, observed: &BTreeMap<String, Stri
             return;
         }
         reconcile(outbox, observed);
-        for (episode, entry) in entries {
-            if outbox.observed.get(&entry.condition) == Some(&episode) {
-                outbox.entries.entry(episode).or_insert(entry);
+        for (episode, mut entry) in entries {
+            if outbox.observed.get(&entry.condition) == Some(&episode)
+                && !outbox.entries.contains_key(&episode)
+            {
+                outbox.next_sequence = outbox.next_sequence.saturating_add(1);
+                entry.sequence = outbox.next_sequence;
+                outbox.entries.insert(episode, entry);
             }
         }
     })
+}
+
+/// The recorded decisions and their current condition episodes, in report order.
+pub fn questions() -> Result<(BTreeMap<String, String>, Vec<Entry>)> {
+    let outbox = read()?;
+    let mut entries: Vec<Entry> = outbox.entries.values().cloned().collect();
+    entries.sort_by_key(|entry| entry.sequence);
+    Ok((outbox.observed, entries))
 }
 
 fn reconcile(outbox: &mut Outbox, observed: &BTreeMap<String, String>) {

@@ -276,6 +276,7 @@ pub struct Host {
     /// Worker health; why it cannot be read.
     pub worker_health: Result<crate::health::Health, String>,
     pub watch: serde_json::Value,
+    pub asking: serde_json::Value,
     /// The harnesses paused on this host, since when and why: no worker is
     /// started on one until a probe finds it working.
     pub paused: Vec<afkconvoy_core::casting::Paused>,
@@ -309,6 +310,7 @@ impl Host {
             kit: crate::kit::load().map_err(|error| format!("{error:#}")),
             worker_health: crate::health::show(),
             watch: crate::host_watch::json(watch.as_ref(), false),
+            asking: crate::host_asking::json(),
             paused: crate::paused::read(),
         }
     }
@@ -1105,6 +1107,21 @@ fn host_part(out: &mut String, page: &Page) {
             );
         }
         out.push_str("</ul></section>");
+    }
+    let asking = &host.asking;
+    let waiting = asking["pending"].as_array().map_or(0, Vec::len);
+    if asking["session"].is_object() || asking["current"].is_object() || waiting > 0 {
+        let _ = write!(
+            out,
+            "<section class=\"hot\" data-asking=\"session\"><b>Asking session</b>: {} · Terminal {} · {} waiting",
+            esc(asking["status"].as_str().unwrap_or("uncertain")),
+            esc(asking["session"]["terminal"].as_str().unwrap_or("none")),
+            waiting,
+        );
+        if let Some(question) = asking["current"]["question"]["human"]["question"].as_str() {
+            let _ = write!(out, "<br>Current: {}", esc(question));
+        }
+        out.push_str("</section>");
     }
     for (key, title) in [("running", "Watch round"), ("last", "Last watch round")] {
         let watch = &host.watch[key];
