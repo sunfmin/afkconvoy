@@ -292,6 +292,15 @@ fn two_conditions_share_one_session_and_are_delivered_one_at_a_time() {
     assert_eq!(terminal["title"], "afkconvoy asks");
     assert_eq!(terminal["worktreePath"], json!(dir));
     assert_eq!(terminal["sent"].as_array().unwrap().len(), 1);
+    assert!(!terminal["command"].as_str().unwrap().contains("--terminal-input-only"));
+    let orca = world.orca();
+    let watch_terminal = orca["terminals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|terminal| terminal["title"] == "afkconvoy watch")
+        .unwrap();
+    assert!(watch_terminal["command"].as_str().unwrap().contains("--terminal-input-only"));
     let brief = asking_brief(&world);
     assert!(brief.contains(first["current"]["question"]["condition"].as_str().unwrap()));
     assert!(brief.contains("https://gh/c/2000"));

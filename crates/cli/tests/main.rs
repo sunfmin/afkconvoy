@@ -7,6 +7,7 @@ mod common;
 mod accounts;
 mod admission;
 mod asking;
+mod asking_guard;
 mod board;
 mod candidates;
 mod casting;

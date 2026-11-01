@@ -65,6 +65,18 @@ pub(super) fn watch(command: &str, kept: &str, model: Option<&str>) -> String {
     line.done()
 }
 
+/// Uses the generated home containing the fleet's hooks.
+pub(super) fn guarded(command: &str, kept: &str) -> String {
+    Line::new()
+        .fixed("export ")
+        .fixed(USER_DIR)
+        .fixed("=")
+        .word(kept)
+        .fixed(" && ")
+        .launch(command)
+        .done()
+}
+
 pub(super) const KEPT: Kept = Kept {
     links: &[Link { home: ".kimi-code/credentials", kept: "credentials" }],
     host_user: &[

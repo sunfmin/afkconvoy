@@ -367,6 +367,7 @@ fn launch(session: &mut Session, state: &State) -> Result<()> {
         &session.directory,
         session.model.as_deref(),
         command.as_str(),
+        None,
     )?;
     let line = launches.worker_line(session.harness, &line);
     let line = format!("export {}=host; {line}", host_watch::WATCH_ENV);

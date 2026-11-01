@@ -162,6 +162,17 @@ pub struct Config {
     /// where the file has no such block.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gates: Option<Gates>,
+    /// Commands a host must pass before it can gate this repo.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub gate_needs: Vec<GateNeed>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GateNeed {
+    pub name: String,
+    pub command: String,
+    pub seconds: u64,
 }
 
 /// The opening line of the block that splits a repo's gate in two: one of
@@ -484,6 +495,7 @@ fn checked(
         bound,
         cut: None,
         gates: None,
+        gate_needs: Vec::new(),
     })
 }
 
