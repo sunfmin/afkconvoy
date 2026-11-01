@@ -269,6 +269,10 @@ enum Command {
     ///
     /// Run `afkconvoy accounts` in a checkout to measure how long its issues took, or compare windows before and after a fleet change. Needs git and a signed-in `gh`; no running fleet or orca is needed.
     ///
+    /// ## Who runs it
+    ///
+    /// The operator, or an agent reading completion times for them, in any checkout or worktree of the repo on the host whose tracker choice is to be read.
+    ///
     /// ## What it reads and writes
     ///
     /// Reads this host's checkout list to find the tracker, then every open and closed issue's work account through `gh`, paging through issues and comments. Where the tracker is another repo, only this repo's repo label's issues belong. An issue carrying several repo labels belongs to none. With no tracker named on the host, the checkout's own repo is its tracker. It writes nothing and starts no worker.
@@ -284,6 +288,10 @@ enum Command {
     /// `slowest` lists up to five issues in descending wall clock (ties by issue number), each with `number`, `url` and `wall_seconds`. `unreadable` lists `number` and `reason` for accounts with unknown or invalid starts, ends, worker rows or gate seconds, duplicate accounts, or comments that could not be read. They are excluded from all measures. An unreadable end or failed comment read cannot be placed in a window and is reported in every window; an account with a readable end outside the window is excluded.
     ///
     /// A failed issue listing refuses the command with {"error": …} and a non-zero exit. Check `gh auth status`, correct the reported GitHub or checkout-list fault, then run it again.
+    ///
+    /// ## What trips you up
+    ///
+    /// The sample is work accounts, including an account on an issue still open after escalation. It does not measure every closed issue. Unknown gate seconds make the account unreadable; no gate row means zero. Read `unreadable` with the count before comparing two windows.
     #[command(next_help_heading = OPERATOR, verbatim_doc_comment)]
     Accounts {
         /// Account ends in the last N days (positive; default 7); conflicts with --all
