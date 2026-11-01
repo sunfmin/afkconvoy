@@ -128,27 +128,32 @@ pub fn park(fleet: &mut Fleet, me: &Me, issue: u64) -> Result<Value> {
     let comments = fleet.gh.comments(issue)?;
     let refused = |why: &str| anyhow!("issue #{issue} is not parkable: {why}; nothing was changed");
     let not_blocked = || refused("its worker's latest verdict is not `blocked`");
-    let named = if fleet.config.bound.is_some() {
-        use afkconvoy_core::stage_record::{Advance, advance, history, stage_records};
-        let team = crate::team::load(crate::team::From::Config, Some(&fleet.repo))?.team;
-        let labels = fleet.gh.issue(issue)?.labels;
-        let workflow =
-            afkconvoy_core::role::workflow_of(&team, &labels).map_err(|why| refused(&why))?;
-        let records = stage_records(comments.iter().map(|c| c.body.as_str()))
-            .into_iter()
-            .map(|(_, record)| record)
-            .collect();
-        let history = history(workflow, records);
-        match advance(&history, &claim.id) {
-            Advance::Blocked(named) => named,
-            _ => return Err(not_blocked()),
-        }
-    } else {
-        latest_verdict(comments.iter().map(|c| c.body.as_str()))
-            .filter(|verdict| verdict.phase == Some(Phase::Blocked))
-            .ok_or_else(not_blocked)?
-            .blocked_by
+    // Repairs in a bound repo run outside its workflows, as they do in a tick.
+    let labels = match &fleet.config.bound {
+        Some(_) => Some(fleet.gh.issue(issue)?.labels),
+        None => None,
     };
+    let named =
+        if let Some(labels) = labels.filter(|labels| !afkconvoy_core::plan::is_repair(labels)) {
+            use afkconvoy_core::stage_record::{Advance, advance, history, stage_records};
+            let team = crate::team::load(crate::team::From::Config, Some(&fleet.repo))?.team;
+            let workflow =
+                afkconvoy_core::role::workflow_of(&team, &labels).map_err(|why| refused(&why))?;
+            let records = stage_records(comments.iter().map(|c| c.body.as_str()))
+                .into_iter()
+                .map(|(_, record)| record)
+                .collect();
+            let history = history(workflow, records);
+            match advance(&history, &claim.id) {
+                Advance::Blocked(named) => named,
+                _ => return Err(not_blocked()),
+            }
+        } else {
+            latest_verdict(comments.iter().map(|c| c.body.as_str()))
+                .filter(|verdict| verdict.phase == Some(Phase::Blocked))
+                .ok_or_else(not_blocked)?
+                .blocked_by
+        };
     let parkable = match blocked_route(&standings(fleet, issue, &named)?) {
         Blocked::Park(parkable) => parkable,
         Blocked::Redispatch => {

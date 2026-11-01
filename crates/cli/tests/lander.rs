@@ -312,7 +312,7 @@ fn a_landing_blocked_verdict_parks_and_resumes_landing() {
         let shown = world.afk(&["show", "--issue", "7"]).ok();
         assert_eq!(shown["position"]["is"], "parked", "{shown}");
         assert_eq!(shown["position"]["stage"], "land");
-        assert!(world.comments(7).iter().any(|body| body.contains("**Parked**")));
+        assert!(world.boards(7).iter().any(|body| body.contains("**Parked**")));
         tick(&world, now + 180);
         no_worker_health(&world);
 
@@ -346,7 +346,8 @@ fn a_landing_escalate_verdict_waits_for_a_human_and_a_ruling_resumes_landing() {
     let waiting = plan["waiting_on_human"].as_array().unwrap();
     assert_eq!(waiting.len(), 1, "{plan}");
     assert_eq!(waiting[0]["issue"], 7);
-    assert!(waiting[0]["answer"].as_str().unwrap().contains("rule --issue 7"));
+    let answer = waiting[0]["answer"].as_str().unwrap();
+    assert!(answer.contains("afkconvoy rule") && answer.contains("--issue 7"), "{waiting:?}");
     let shown = world.afk(&["show", "--issue", "7"]).ok();
     assert_eq!(shown["position"]["is"], "escalating", "{shown}");
     assert_eq!(shown["position"]["stage"], "land");
