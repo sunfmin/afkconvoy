@@ -200,7 +200,7 @@ fn guarded(world: &World, command: &str, line: &str) -> (i32, String) {
     let mut child = Command::new("/bin/sh")
         .args(["-c", &format!("{enter} && {facts} && {hook}")])
         .env_clear()
-        .envs(world.login_env().into_iter().filter(|(name, _)| name == "PATH"))
+        .envs(world.login_env())
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())

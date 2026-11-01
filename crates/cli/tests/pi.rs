@@ -559,7 +559,7 @@ fn under_pi(world: &World, line: &str, calls: &Value) -> Value {
 /// What the guard answers Claude Code for the shell line `shell`, asked as
 /// its hook asks, under the facts of the worker `line` started: its exit
 /// code and what it said.
-fn claude_is_told(line: &str, shell: &str) -> (i32, String) {
+fn claude_is_told(world: &World, line: &str, shell: &str) -> (i32, String) {
     use std::io::Write;
     let mut steps = line.split(" && ");
     let (enter, facts) = (steps.next().unwrap(), steps.next().unwrap());
@@ -570,6 +570,7 @@ fn claude_is_told(line: &str, shell: &str) -> (i32, String) {
     let mut child = Command::new("/bin/sh")
         .args(["-c", &guard])
         .env_clear()
+        .envs(world.login_env())
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -649,7 +650,7 @@ fn a_pi_worker_is_refused_what_a_claude_code_worker_is_by_the_same_guard() {
         let ran = under_pi(&world, line, &json!(calls));
         let answers = ran["answers"].as_array().unwrap();
         for (shell, answer) in refused.iter().zip(answers) {
-            let (code, said) = claude_is_told(line, shell);
+            let (code, said) = claude_is_told(&world, line, shell);
             assert_eq!(code, 2, "{shell}: Claude Code is not refused it");
             assert!(said.starts_with("afkconvoy guard: "), "{shell}: {said}");
             assert_eq!(answer, &json!({"ran": false, "reason": said}), "{shell}");
