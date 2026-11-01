@@ -3917,7 +3917,7 @@ fn kind(name: &str) -> Kind {
         | "claim" | "release" | "heartbeat" | "patrol-now" => Kind::ACTS,
         "takeover" => Kind { worktree: Worktree::Reads(Some("from")), ..Kind::ACTS },
         "cast" | "target" | "delivery" | "gate" | "land" | "verdict" | "rule" | "send"
-        | "intake" | "lock" | "over" | "cut" | "wake" => worker_acts,
+        | "intake" | "lock" | "over" | "cut" | "wake" | "rewrite-accounts" => worker_acts,
         "tick" => Kind { starts: true, ..Kind::ACTS },
         "doctor" | "show" | "exclusive" | "no-node" => Kind::WORKERS,
         "plan" => Kind { starts: true, ..Kind::WORKERS },

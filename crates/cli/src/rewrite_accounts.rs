@@ -31,7 +31,7 @@ pub fn run(repo: &Repo, backup: Option<&Path>, now: u64) -> Result<Value> {
     let mut after = Vec::new();
     for issue in issues {
         let mut bodies = Vec::new();
-        for comment in &issue.comments {
+        for (index, comment) in issue.comments.iter().enumerate() {
             if record::read_marker(account::ACCOUNT, &comment.body).is_none() {
                 continue;
             }
@@ -42,7 +42,26 @@ pub fn run(repo: &Repo, backup: Option<&Path>, now: u64) -> Result<Value> {
             let previous = account::rewrite::legacy(&comment.body, issue.number)
                 .map(|row| account::render(&row))
                 .unwrap_or_else(|_| comment.body.clone());
-            let converted = account::rewrite::convert(&comment.body, issue.number);
+            let converted =
+                account::rewrite::convert(&comment.body, issue.number).map(|mut row| {
+                    if issue.closed && issue.landed {
+                        row.outcome = Some("landed".into());
+                    } else if !issue.closed {
+                        let last = issue.comments[..index].iter().rev().find_map(|note| {
+                            if record::read_marker("convoy:escalation", &note.body).is_some() {
+                                Some(true)
+                            } else if record::read_marker(account::WORKER, &note.body).is_some() {
+                                Some(false)
+                            } else {
+                                None
+                            }
+                        });
+                        if last == Some(true) {
+                            row.outcome = Some("escalated".into());
+                        }
+                    }
+                    row
+                });
             let (new_body, check) = match converted {
                 Ok(row) => (Some(account::render(&row)), "pass".to_string()),
                 Err(reason) => (None, reason),
