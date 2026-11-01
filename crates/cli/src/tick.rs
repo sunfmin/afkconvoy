@@ -334,6 +334,13 @@ fn carry_out(
     step: TickStep,
     blocked: &mut Vec<(u64, Vec<u64>)>,
 ) -> Result<Outcome> {
+    // A turn that answered a wait needs no harness. Worker health may hold
+    // that harness for an operator; it must not hold the turn with it.
+    if let TickStep::Watch { issue, .. } = step
+        && let Some(outcome) = crate::watch::ask_waiting(fleet, me, issue)?
+    {
+        return Ok(outcome);
+    }
     // A terminal left by an incomplete dispatch is no worker to judge for
     // silence. Continue the same claim before health holds or the nudge
     // ladder can mistake its shell for a harness.
