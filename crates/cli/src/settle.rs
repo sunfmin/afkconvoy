@@ -9,7 +9,7 @@ use afkconvoy_core::settle::{
     Follow, SettleStep, cut_landing, follow, landed_comment, settle_steps,
 };
 use afkconvoy_core::worker::WorkerState;
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Result, bail};
 
 use crate::board::last_word;
 use crate::claims::{Me, release};
@@ -89,28 +89,36 @@ fn follow_base(fleet: &Fleet) -> Result<()> {
 /// Removes the worktree settling `issue` leaves, unless a worker is still in
 /// it or it holds a commit the remote does not. The worker the fleet started
 /// here, stopped at its prompt, is its own session: it is ended first. A
-/// worker still working, or any other process still in it, fails the
-/// settle, so the claim stays and a later tick tries again. A commit the
+/// worker still working, or any other process still in it, makes the
+/// settle wait, so the claim stays and a later tick tries again. A commit the
 /// remote does not have stays, and the settle goes on: the claim is released
 /// and nothing records a failed removal, so a later tick does not take it.
-fn remove_settled(fleet: &Fleet, issue: u64, worktree: &Worktree) -> Result<()> {
-    let path = worktree.path.display().to_string();
-    let still = || anyhow!("a worker is still using {path}; a later tick removes it");
+fn remove_settled(fleet: &Fleet, issue: u64, worktree: &Worktree) -> Result<Option<u64>> {
+    let wait = || -> Result<Option<u64>> {
+        let file = worktree.note("convoy-settle-wait")?;
+        let since =
+            std::fs::read_to_string(&file).ok().and_then(|s| s.parse().ok()).unwrap_or(fleet.now);
+        if !file.exists() {
+            std::fs::write(file, since.to_string())?;
+        }
+        Ok(Some(since))
+    };
     if worktree.holds_a_worker() {
         match worktree.state(fleet.now)? {
-            WorkerState::Busy => return Err(still()),
+            WorkerState::Busy => return wait(),
             WorkerState::Idle { .. } => worktree.end_settled()?,
             WorkerState::Gone => {}
         }
     }
-    let busy = crate::hot::working_directories().map_err(|_| still())?;
+    let busy = crate::hot::working_directories()?;
     if crate::hot::occupies(&busy, &worktree.path) {
-        return Err(still());
+        return wait();
     }
     if settled_keeps(fleet, issue, worktree)? {
-        return Ok(());
+        return Ok(None);
     }
-    worktree.remove()
+    worktree.remove()?;
+    Ok(None)
 }
 
 /// Whether settling keeps `worktree`. A worktree git can still read is kept
@@ -135,7 +143,7 @@ fn settled_keeps(fleet: &Fleet, issue: u64, worktree: &Worktree) -> Result<bool>
 /// the tick can do for it — `land` runs inside the worktree and holds no
 /// instance id. The claim is deleted last, so a settling that failed on the
 /// way is the next tick's to finish.
-pub fn settle(fleet: &mut Fleet, me: &Me, issue: u64) -> Result<()> {
+pub fn settle(fleet: &mut Fleet, me: &Me, issue: u64) -> Result<Option<u64>> {
     let closed = fleet.gh.issue(issue)?.is_closed();
     let base_tip = fleet.task_tip(issue)?;
     let landed = landing_of(&fleet.repo, &fleet.gh.tracker, &base_tip, issue)?.is_some();
@@ -185,7 +193,9 @@ pub fn settle(fleet: &mut Fleet, me: &Me, issue: u64) -> Result<()> {
             }
             SettleStep::RemoveWorktree => {
                 if let Some(worktree) = Worktree::of_issue(&Source::of(&fleet.repo)?, issue)? {
-                    remove_settled(fleet, issue, &worktree)?;
+                    if let Some(since) = remove_settled(fleet, issue, &worktree)? {
+                        return Ok(Some(since));
+                    }
                 }
             }
             // Soft: a checkout that cannot follow never fails the release it rides on.
@@ -208,5 +218,5 @@ pub fn settle(fleet: &mut Fleet, me: &Me, issue: u64) -> Result<()> {
             }
         }
     }
-    Ok(())
+    Ok(None)
 }

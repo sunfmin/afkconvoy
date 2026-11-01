@@ -360,19 +360,41 @@ fn settling_waits_for_a_finishing_worker_then_leaves_without_a_failed_tick() {
     report(&world, "working", 1000);
     world.close_issue(391);
 
-    let waiting = tick(&world, "1090");
-    assert_eq!(waiting["errors"], json!([]), "{waiting}");
+    let (lines, _) = world.afk_lines(&[
+        "run",
+        "--foreground",
+        "--instance",
+        "alpha",
+        "--host",
+        "h1",
+        "--now",
+        "1090",
+        "--ticks",
+        "1",
+        "--second-ms",
+        "0",
+    ]);
+    assert!(
+        lines.iter().any(|line| line.contains("settling #391 once its worker leaves")),
+        "{lines:?}"
+    );
     let doctor = world.afk(&["doctor", "--host", "h1", "--now", "1090"]).json;
-    assert!(doctor["fleet"]["last_tick"]["line"]
-        .as_str()
-        .unwrap()
-        .contains("settling #391 once its worker leaves"));
+    assert!(
+        doctor["fleet"]["last_tick"]["line"]
+            .as_str()
+            .unwrap()
+            .contains("settling #391 once its worker leaves")
+    );
     let findings = doctor["findings"].as_array().unwrap();
-    assert!(!findings.iter().any(|finding| matches!(
-        finding["kind"].as_str(),
-        Some("step_unrecovered" | "settle_waiting")
-    )), "{findings:#?}");
-    let all = world.afk(&["doctor", "--all", "--host", "h1", "--since", "1000", "--now", "1090"]).json;
+    assert!(
+        !findings.iter().any(|finding| matches!(
+            finding["kind"].as_str(),
+            Some("step_unrecovered" | "settle_waiting")
+        )),
+        "{findings:#?}"
+    );
+    let all =
+        world.afk(&["doctor", "--all", "--host", "h1", "--since", "1000", "--now", "1090"]).json;
     let findings = all["checkouts"][0]["doctor"]["findings"].as_array().unwrap();
     assert!(!findings.iter().any(|finding| finding["kind"] == "tick_failed"), "{findings:#?}");
     assert!(!session.ended(), "a worker still working is left alone");
@@ -381,7 +403,21 @@ fn settling_waits_for_a_finishing_worker_then_leaves_without_a_failed_tick() {
     assert_eq!(world.claims(), alpha(&[391]));
 
     report(&world, "idle", 1100);
-    tick(&world, "1180");
+    let (lines, _) = world.afk_lines(&[
+        "run",
+        "--foreground",
+        "--instance",
+        "alpha",
+        "--host",
+        "h1",
+        "--now",
+        "1180",
+        "--ticks",
+        "1",
+        "--second-ms",
+        "0",
+    ]);
+    assert!(lines.iter().any(|line| line.contains("left #391")), "{lines:?}");
     let doctor = world.afk(&["doctor", "--host", "h1", "--now", "1180"]).json;
     assert!(doctor["fleet"]["last_tick"]["line"].as_str().unwrap().contains("left #391"));
     assert!(session.ended());
