@@ -629,6 +629,8 @@ impl Ticked {
                     Position::Parked(stage) => format!("parked {}", at(&stage.name)),
                     Position::Escalating(stage, _) => format!("escalating {}", at(&stage.name)),
                     Position::Landing => "landing".to_string(),
+                    Position::LandingParked => "parked at land".to_string(),
+                    Position::LandingEscalating => "escalating at land".to_string(),
                     Position::Ended => "ended".to_string(),
                 };
                 (*number, said)
@@ -1288,6 +1290,9 @@ pub fn run(
         // (docs/adr/0027). A check that cannot be made costs nothing: the
         // tick reads GitHub too, and says why that fails.
         if let Ok(Some(why)) = crate::probe::public_tracker(repo, clock(), true) {
+            return Err(See::Troubleshooting.refusal(why));
+        }
+        if let Some(why) = crate::probe::check_gate_needs(repo, clock())? {
             return Err(See::Troubleshooting.refusal(why));
         }
         count += 1;

@@ -10,7 +10,7 @@ _Avoid_: machine (the hardware every host on it shares)
 
 **Fleet instance**:
 One repo's fleet in its host's host runner, and everything it owns: the workers it started and the claims it holds, under an id minted when it starts. One host runs at most one per repo.
-_Avoid_: launcher, coordinator, node, process (the host runner is the process)
+_Avoid_: launcher, coordinator, node (the Node executable), process (the host runner is the process)
 
 **Host runner**:
 A host's one long-running process of the fleet, holding a fleet instance for each checkout on its host's checkout list. `run` starts it in the background where none runs, and adds its checkout to it either way. `stop` takes one checkout off its list, and `stop --all`, or SIGTERM, stops it and keeps the list. Once a newer release is installed where it was started from, it moves onto it by itself between ticks once no exclusive command runs, on the same list, with its workers and work carried over.
@@ -53,7 +53,7 @@ A tick stopped after its rebuild, which reports what an acting tick would do and
 _Avoid_: dry run, preview
 
 **Startup probe**:
-What `run`, `tick` and `plan` ask of a host and a repo before anything else: that every command the fleet needs is installed and logged in, that orca is running and knows the checkout, that the base branch exists and no rule of its protection refuses a push, that its tracker is not public, where the remote takes the fleet's refs, and whether it takes recorded gate runs. A host or a repo the fleet cannot work is refused here, not at its first tick or landing. `run` makes one at every start; one that passed stands for an hour on the host that made it, while the tracker the checkout says is the one it found private, and `tick` and `plan` make none while it does. A running fleet instance asks again whether its tracker is public as that hour ends, or as it says another.
+What `run`, `tick` and `plan` ask of a host and a repo before anything else: that every command the fleet needs is installed and logged in, that the repo’s declared gate needs pass on this host, that orca is running and knows the checkout, that the base branch exists and no rule of its protection refuses a push, that its tracker is not public, where the remote takes the fleet's refs, and whether it takes recorded gate runs. A host or a repo the fleet cannot work is refused here, not at its first tick or landing. `run` makes one at every start; one that passed stands for an hour on the host that made it, while the tracker the checkout says is the one it found private, and `tick` and `plan` make none while it does. A running fleet instance asks again whether its tracker is public as that hour ends, or as it says another.
 _Avoid_: bootstrap, preflight, health check
 
 **Ref layout**:
@@ -135,7 +135,7 @@ The rules every role of a team works under, whatever its own rules add. They say
 _Avoid_: global rules, shared rules
 
 **Admission**:
-Whether a tick starts new workers on its host: not while the host is past a share of its load, below its share of memory free, or low on free disk under the checkout. Its readings are the machine's, shared with the host runners of the other accounts on it: their workers load it and fill its memory as this host's do. What it holds back stays on the frontier for the next tick; workers already running and the worker a declared verdict starts are never held back. The shares have defaults taken from the host's cores, memory and disk, and the host can say its own in its host settings. Holding back a checkout's work for one reason — the load, memory or disk — at every tick past a span (ten minutes, or the host's own) calls for the host's watch, once an **episode** of that checkout: the span starts when its work is first held, and the episode ends after five minutes without held work. Holding back for reasons that change starts none. Memory pressure is observed independently: held past the same span, it calls for the host's watch for memory, once an episode ending after five minutes without pressure; it changes no admission decision.
+Whether a tick starts new workers on its host: not while the host is past a share of its load outside the exclusive queue, below its share of memory free, or low on free disk under the checkout. The queue's share of the one-minute load is estimated from the current CPU share of its running commands' process trees (ADR-0050). Its readings are the machine's, shared with the host runners of the other accounts on it: their workers load it and fill its memory as this host's do. What it holds back stays on the frontier for the next tick; workers already running and the worker a declared verdict starts are never held back. The shares have defaults taken from the host's cores, memory and disk, and the host can say its own in its host settings. Holding back a checkout's work for one reason — the load, memory or disk — at every tick past a span (ten minutes, or the host's own) calls for the host's watch, once an **episode** of that checkout: the span starts when its work is first held, and the episode ends after five minutes without held work. Holding back for reasons that change starts none. Memory pressure is observed independently: held past the same span, it calls for the host's watch for memory, once an episode ending after five minutes without pressure; it changes no admission decision.
 _Avoid_: throttling, backpressure
 
 **Host user's skills and rules**:
@@ -151,7 +151,7 @@ A repo whose config names a team. An unbound repo has no roles and one fixed pat
 _Avoid_: team mode, managed repo
 
 **Guard**:
-The check made before each thing a worker does, refusing what its role or its stage may not do — and, of a watch, what crosses the bounds of any unattended worker. It stops a worker that errs, not one that means to get past it.
+The check made before each thing a worker does, refusing what its role or its stage may not do — and, of a watch, what crosses the bounds of any unattended worker. Every worker, bound or unbound, and the watch is refused input to the asking session's Terminal. Only the host runner's marked deliveries and the operator supply that input; the asking session itself is exempt by its Terminal identity. It stops a worker that errs, not one that means to get past it.
 _Avoid_: permission (what a harness's own settings deny), sandbox (what a harness may shut a worker's commands in)
 
 ### Workflows
@@ -177,7 +177,7 @@ The comment a stage leaves on its issue: what it produced, its verdict, the vers
 _Avoid_: handoff note, log (the tick log; what a gate prints), stage label
 
 **Work account**:
-The one comment the fleet leaves when work on an issue ends, and edits when a later end of that issue is acted on. It states the wall clock from the earliest claim the fleet has recorded for the issue to that end, the workers the fleet started, and the gate runs it timed on that issue's own tree. A worker does not write it. Position, rework and the guard do not read it.
+The one comment the fleet leaves when work on an issue ends, and edits at a later end: one versioned record of its wall clock from the earliest recorded claim, its outcome, the fleet version and host, its workers and the gate runs on its own tree, with unknown facts left unknown and human text rendered from the record. A worker does not write it; position, rework and the guard do not read it.
 _Avoid_: summary (the read-only summary a command answers), time log, report (a failure a patrol or a cut opens; what a watch round delivers; what doctor says)
 
 **Position**:
@@ -288,6 +288,7 @@ A worker whose processes — every one started with its `TMPDIR`, and every one 
 _Avoid_: hog
 
 **Watch**:
+In a repo several hosts work, each human wait is answered by one host's watch. It takes the wait with a claim on that repo's remote; the others name its holder and leave it alone. Its heartbeat keeps the claim live while the wait stands, even without a worker claim. Past the lease another host's next look takes it over; its holder's next look ends the claim once the wait ends. Only its holding host carries the wait into a round, human report entries, sendings through `--notify-command` and the asking session. A sending or question checks ownership again when it goes out; a host that lost the wait drops the queued item and names its holder in the log. Host conditions stay with their own host.
 The operator on its host, started by its host runner when a **look** holds something an operator would act on. It runs in the operator's directory where one is named, otherwise as the **stock watch** under the stock instruction. The watch retains one interactive Agent session and Terminal across successive **watch rounds**. A human can see it work and type to it. Reporting completes a round and leaves the healthy session standing by; standing by with no pending work calls no model. Only exit, a proven harness fault, an unusable context or an explicit reset replaces it, after confirming its executor ended. Its Terminal is named “afkconvoy watch” for discovery; the name alone proves no ownership. The host runner keeps confirmed ownership across restart or upgrade and pauses uncertain association without replacing or taking an operator's other sessions.
 A look is the host runner's own check of every checkout, every five minutes or as its host settings say, and runs no model. `doctor` is one look; each tick of the host runner is its own. One look reads the host once, the login once for the life of the process, the quota note at most once, each repo's HEAD at most once, whether orca is running once, orca's worktree list once, and each checkout's remote once, and answers every later question in that look from what was read. A doctor starts no harness while a startup probe that checked the current launch commands still stands, and otherwise starts each harness at most once. Looks continue during active rounds. Each actionable condition has an **episode**, lasting until an observed recovery, with resource episodes retaining their existing recovery span. New episodes queue while a round runs. Repeated observations of queued, active or reported episodes do not duplicate delivery; reported human decisions stay covered until their episode ends. Recovered conditions leave the queue before delivery. An unreported round leaves unresolved work eligible at the next look. The host runner keeps the queue, episode coverage, look interval, current round and reports durably; session conversation and an open Terminal are no proof of completion.
 Its authority spans every repo on the host's checkout list: it fixes the host and hands an issue escalated for a fleet fault back once its cause is gone; makes a lasting fix in a checkout of its own of any listed repo, through that repo's landing turn; and, where the fix must reach an installed tool, has that repo cut a version after landing, lets the host runner move onto it and checks the fault on the new version. It answers escalations with the same commands as a human, whose effect and rework counts its answer has. Every watch leaves spending money or needing an account, a credential or a person's hands; what cannot be undone; taking a secret or private data off the host; and changing what a product is for or who it is for with a human, and records each without acting on it.
@@ -324,7 +325,7 @@ _Avoid_: resume, checkpoint restore
 
 **Wake**:
 A signal that ends the sleep between ticks of its host's fleet instance early: every command that changes fleet state sends one as it ends — a worker's last among them, once its outcome is on GitHub — naming itself and what it acted on, and carrying no state. `gh` sends none: whoever hands the fleet work sends one with `afkconvoy wake` after the issues they opened with it. The `run` that hears it answers at once, naming the tick it starts or the tick in progress it follows.
-_Avoid_: notification, callback, done signal
+_Avoid_: notification (a human decision sent through --notify-command), callback, done signal
 
 ### Claims
 
@@ -335,6 +336,10 @@ _Avoid_: assignee, assignment, lock (the fleet lock)
 **Heartbeat**:
 The timestamp a fleet instance publishes for itself while it holds claims, stamped with its host. A claim is live while its owner's heartbeat is within the lease. A land turn stamps its host the same way on the candidate record while its host holds a candidate, a barrier or a pending turn there; that host's members of the chain are live while either stamp of the host is within the lease, and any other host's next turn takes them over once neither is. A `run` told to stop while it holds no claim removes its own; a start removes the dead ones that hold nothing: those of the instances it took from, its own host's past the lease, and anyone's older than a day.
 _Avoid_: ping, keepalive
+
+**Repo nobody works**:
+A repo with an open ready issue of its tracker, carrying its repo label, with no open blocker or claim, ready for more than an hour since the later of readiness and its last blocker closing, and no heartbeat within the lease on its remote. Every host serving that tracker looks, but only the report's opening host asks the operator which host should take it; an unreadable remote establishes no such repo.
+_Avoid_: host is off (the cause is unknown), abandoned repo
 
 **Orphaned claim**:
 A claim of this fleet instance with no PR and no live worker. It is recovered by continuation, never released.

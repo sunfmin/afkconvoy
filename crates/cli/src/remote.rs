@@ -100,6 +100,7 @@ impl Wire for Git {
 pub struct Push {
     force: bool,
     atomic: bool,
+    progress: bool,
     writes: Vec<Write>,
 }
 
@@ -151,6 +152,13 @@ impl Push {
         self
     }
 
+    /// Reports pack progress even when output is captured, so a failed push
+    /// can say how much it had written.
+    pub fn progress(mut self) -> Push {
+        self.progress = true;
+        self
+    }
+
     /// The last write takes only while its ref is still at `expected`.
     pub fn leased(mut self, expected: &str) -> Push {
         if let Some(write) = self.writes.last_mut() {
@@ -172,6 +180,9 @@ impl Push {
         if self.atomic {
             args.push("--atomic".into());
         }
+        if self.progress {
+            args.push("--progress".into());
+        }
         for write in &self.writes {
             if let Some(lease) = &write.lease {
                 args.push(format!("--force-with-lease={}:{lease}", write.name));
@@ -183,6 +194,64 @@ impl Push {
         }
         args
     }
+}
+
+/// Refs of a GitHub repo with no checkout on this host. Keep these reads
+/// behind the remote boundary too; callers read record subjects through gh.
+pub(crate) fn foreign_refs(
+    dir: &Path,
+    url: &str,
+    patterns: &[&str],
+) -> Result<Vec<(String, String)>> {
+    let mut args = vec!["ls-remote", url];
+    args.extend_from_slice(patterns);
+    let ran = crate::git::run(dir, &args, &[])?;
+    ensure!(ran.ok, "remote {url} could not be read: {}", ran.stderr.trim());
+    Ok(ran
+        .stdout
+        .lines()
+        .filter_map(|line| line.split_once('\t'))
+        .map(|(sha, name)| (name.to_string(), sha.to_string()))
+        .collect())
+}
+
+/// The work refs of a repo without a local checkout, shared across trackers
+/// in one look. Report claims use the live read above instead. A report
+/// transition starts a fresh look before rereading these work refs.
+pub(crate) fn foreign_work_refs(dir: &Path, url: &str) -> Result<Vec<(String, String)>> {
+    static WORK: crate::look::Reading<Result<Vec<(String, String)>, String>> =
+        crate::look::Reading::per_look("foreign work refs");
+    WORK.read(url, || {
+        foreign_refs(dir, url, &["refs/convoy/*", "refs/heads/convoy-*"])
+            .map_err(|e| format!("{e:#}"))
+    })
+    .map_err(anyhow::Error::msg)
+}
+
+/// An atomic compare-and-swap on a tracker ref. The object is a parentless
+/// empty-tree record made locally, so pushing it carries no checkout history.
+pub(crate) fn foreign_push(dir: &Path, url: &str, push: &Push) -> Result<bool> {
+    let mut args = push.args();
+    let at = args.iter().position(|arg| arg == REMOTE).expect("push remote");
+    args[at] = url.to_string();
+    let args: Vec<_> = args.iter().map(String::as_str).collect();
+    let ran = crate::git::run(dir, &args, &[])?;
+    if ran.ok {
+        return Ok(true);
+    }
+    // Only a rejected compare-and-swap is a peer winning, never a transport
+    // error. A lost receipt leaves the record for a later look to recover.
+    if ran.stderr.contains("[rejected]") || ran.stderr.contains("[remote rejected]") {
+        for write in &push.writes {
+            if let Some(expected) = &write.lease {
+                let current = foreign_refs(dir, url, &[&write.name])?;
+                if current.first().map_or("", |(_, sha)| sha.as_str()) != expected {
+                    return Ok(false);
+                }
+            }
+        }
+    }
+    bail!("tracker claim push failed: {}", ran.stderr.trim())
 }
 
 impl Remote {
@@ -355,9 +424,21 @@ impl Remote {
     /// Lists `patterns` on the remote now, and keeps the answer.
     fn ask(&self, patterns: &[&str]) -> Result<Vec<RemoteRecord>> {
         let shared = self.shared();
-        let records: Vec<RemoteRecord> = shared
-            .wire
-            .list(&self.repo.dir, patterns)?
+        let mut attempts = 1;
+        let listed = loop {
+            match shared.wire.list(&self.repo.dir, patterns) {
+                Ok(listed) => break listed,
+                Err(error) if !connection_failure(&format!("{error:#}")) => return Err(error),
+                Err(error) if attempts == LIST_ATTEMPTS => {
+                    return Err(anyhow!(
+                        "remote ref read failed after {attempts} attempts: {error:#}"
+                    ));
+                }
+                Err(_) => std::thread::sleep(BETWEEN_LIST_ATTEMPTS),
+            }
+            attempts += 1;
+        };
+        let records: Vec<RemoteRecord> = listed
             .into_iter()
             .map(|(name, sha)| RemoteRecord { name, sha, subject: String::new() })
             .collect();
@@ -365,6 +446,30 @@ impl Remote {
         Ok(records)
     }
 }
+
+/// A read changes nothing on the remote, so a failure in transit is safe to
+/// ask again. Any answer from the remote itself fails at once.
+fn connection_failure(said: &str) -> bool {
+    let said = said.to_ascii_lowercase();
+    [
+        "tls connect error",
+        "unexpected eof",
+        "ssl_error_syscall",
+        "connection reset",
+        "connection refused",
+        "could not resolve host",
+        "timeout",
+        "timed out",
+    ]
+    .iter()
+    .any(|mark| said.contains(mark))
+}
+
+const LIST_ATTEMPTS: usize = 3;
+#[cfg(not(test))]
+const BETWEEN_LIST_ATTEMPTS: Duration = Duration::from_secs(5);
+#[cfg(test)]
+const BETWEEN_LIST_ATTEMPTS: Duration = Duration::ZERO;
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -571,14 +676,50 @@ fn tags_of(listed: &[RemoteRecord]) -> Vec<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, VecDeque};
     use std::path::PathBuf;
+
+    #[test]
+    fn tracker_compare_and_swap_admits_one_host_and_never_releases_a_successor() {
+        let dir = tempfile::tempdir().unwrap();
+        let run = |args: &[&str]| {
+            let ran = crate::git::run(dir.path(), args, &[]).unwrap();
+            assert!(ran.ok, "{}", ran.stderr);
+        };
+        run(&["init", "-q", "--bare", "remote.git"]);
+        run(&["init", "-q", "local"]);
+        let repo = Repo::at(&dir.path().join("local")).unwrap();
+        let remote = dir.path().join("remote.git").display().to_string();
+        let name = "refs/heads/convoy-unworked/acme/repo";
+        let first = repo.record_commit("first host").unwrap();
+        let second = repo.record_commit("second host").unwrap();
+        let (a, b) = std::thread::scope(|scope| {
+            let a = scope.spawn(|| {
+                foreign_push(&repo.dir, &remote, &Push::set(&first, name).leased("")).unwrap()
+            });
+            let b = scope.spawn(|| {
+                foreign_push(&repo.dir, &remote, &Push::set(&second, name).leased("")).unwrap()
+            });
+            (a.join().unwrap(), b.join().unwrap())
+        });
+        assert_ne!(a, b);
+        let won = if a { &first } else { &second };
+        assert_eq!(foreign_refs(&repo.dir, &remote, &[name]).unwrap()[0].1, *won);
+        let successor = repo.record_commit("next host after the lease").unwrap();
+        assert!(
+            foreign_push(&repo.dir, &remote, &Push::set(&successor, name).leased(won)).unwrap()
+        );
+        assert!(!foreign_push(&repo.dir, &remote, &Push::delete(name).leased(won)).unwrap());
+        assert_eq!(foreign_refs(&repo.dir, &remote, &[name]).unwrap()[0].1, successor);
+        assert!(foreign_push(&repo.dir, &remote, &Push::delete(name).leased(&successor)).unwrap());
+    }
 
     /// A remote held in memory: its refs, and how many times it was listed.
     #[derive(Debug, Default)]
     struct Fake {
         refs: Mutex<BTreeMap<String, String>>,
         lists: Mutex<usize>,
+        failures: Mutex<VecDeque<String>>,
     }
 
     impl Fake {
@@ -595,6 +736,10 @@ mod tests {
             lock(&self.refs).insert(name.to_string(), sha.to_string());
         }
 
+        fn fails_next(&self, error: &str) {
+            lock(&self.failures).push_back(error.to_string());
+        }
+
         fn lists(&self) -> usize {
             *lock(&self.lists)
         }
@@ -603,6 +748,9 @@ mod tests {
     impl Wire for Fake {
         fn list(&self, _: &Path, patterns: &[&str]) -> Result<Vec<(String, String)>> {
             *lock(&self.lists) += 1;
+            if let Some(error) = lock(&self.failures).pop_front() {
+                bail!(error);
+            }
             let refs = lock(&self.refs);
             Ok(refs
                 .iter()
@@ -682,6 +830,62 @@ mod tests {
         assert_eq!(remote.sha("refs/heads/trunk", Fresh::Live).unwrap().as_deref(), Some("b"));
         assert_eq!(remote.sha("refs/heads/trunk", Fresh::Process).unwrap().as_deref(), Some("b"));
         assert_eq!(fake.lists(), 2);
+    }
+
+    #[test]
+    fn a_connection_failure_is_read_again() {
+        let fake = Fake::with(&[("refs/heads/trunk", "a")]);
+        fake.fails_next(
+            "git ls-remote origin refs/heads/trunk failed: fatal: unable to access 'https://github.com/sunfmin/afkconvoy.git/': TLS connect error: error:0A000126:SSL routines::unexpected eof while reading",
+        );
+        let remote = remote(&fake);
+        assert_eq!(remote.sha("refs/heads/trunk", Fresh::Live).unwrap().as_deref(), Some("a"));
+        assert_eq!(fake.lists(), 2);
+    }
+
+    #[test]
+    fn an_authentication_failure_is_not_read_again() {
+        let fake = Fake::with(&[("refs/heads/trunk", "a")]);
+        fake.fails_next("git ls-remote origin refs/heads/trunk failed: Authentication failed");
+        let remote = remote(&fake);
+        assert!(remote.sha("refs/heads/trunk", Fresh::Live).is_err());
+        assert_eq!(fake.lists(), 1);
+    }
+
+    #[test]
+    fn a_read_that_keeps_failing_says_how_many_attempts_it_made() {
+        let fake = Fake::with(&[]);
+        for _ in 0..3 {
+            fake.fails_next("git ls-remote origin refs/heads/trunk failed: SSL_ERROR_SYSCALL");
+        }
+        let remote = remote(&fake);
+        let error = remote.sha("refs/heads/trunk", Fresh::Live).unwrap_err().to_string();
+        assert!(error.contains("3 attempts"), "{error}");
+        assert!(error.contains("SSL_ERROR_SYSCALL"), "{error}");
+        assert_eq!(fake.lists(), 3);
+    }
+
+    #[test]
+    fn only_connection_failures_are_read_again() {
+        for said in [
+            "TLS connect error",
+            "unexpected EOF",
+            "SSL_ERROR_SYSCALL",
+            "Connection reset by peer",
+            "Connection refused",
+            "Could not resolve host",
+            "Operation timed out",
+            "TLS handshake timeout",
+        ] {
+            assert!(connection_failure(said), "{said}");
+        }
+        for said in [
+            "Authentication failed",
+            "Repository not found",
+            "The requested URL returned error: 403",
+        ] {
+            assert!(!connection_failure(said), "{said}");
+        }
     }
 
     #[test]

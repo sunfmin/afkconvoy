@@ -344,9 +344,11 @@ fn controlled_run(
     }
     match after_run(&tree, command, ran, host, now) {
         Recording::Write(green) => {
-            // The record is a parentless commit OF the tested tree.
-            let sha =
-                repo.record_commit_of(tree.name(), &green.write_issued(&tree, command, issue))?;
+            let sha = repo.record_commit_on(
+                tree.name(),
+                &run.head,
+                &green.write_issued(&tree, command, issue),
+            )?;
             // Soft: a record that cannot be written costs the landing a run of the gate.
             run.not_recorded = push_record(repo, &sha, &refname)?;
             run.green = Some(green);
@@ -363,10 +365,11 @@ fn controlled_run(
             if let Some(issue) = issue {
                 let subject = red_subject(&tree, command, ran.seconds, host, now, issue);
                 let red = red_ref(repo.layout(), issue, now, tree.key(), command.key());
-                if let Ok(sha) = repo.record_commit_of(tree.name(), &subject) {
-                    let _ = repo
-                        .remote()
-                        .try_push_within(&Push::set(&sha, &red).force(), record_push_limit());
+                if let Ok(sha) = repo.record_commit_on(tree.name(), &run.head, &subject) {
+                    let _ = repo.remote().try_push_within(
+                        &Push::set(&sha, &red).force().progress(),
+                        record_push_limit(),
+                    );
                 }
             }
         }
@@ -399,11 +402,13 @@ pub(crate) fn candidate_gate(
 
 /// Puts the whole gate, `whole`, on record for `tree` from the records of its
 /// two parts there, `fast` and `slow` → why it is not on record, `None` when
-/// it is. A round's tip whose slow gate passed is a tree the whole gate
-/// passed (docs/adr/0048): the target tip it becomes needs no other run.
+/// it is. `head` is the tested commit and the new record's parent. A round's
+/// tip whose slow gate passed is a tree the whole gate passed (docs/adr/0048):
+/// the target tip it becomes needs no other run.
 pub(crate) fn record_whole(
     repo: &Repo,
     tree: &Tree,
+    head: &str,
     (whole, fast, slow): (&GateCommand, &GateCommand, &GateCommand),
     issue: Option<u64>,
     now: u64,
@@ -418,7 +423,7 @@ pub(crate) fn record_whole(
     let Some(run) = GreenRun::joined(tree, whole, fast, &f, slow, &s) else {
         return Ok(Some("the fast and the slow gate are one command".into()));
     };
-    let sha = repo.record_commit_of(tree.name(), &run.write_issued(tree, whole, issue))?;
+    let sha = repo.record_commit_on(tree.name(), head, &run.write_issued(tree, whole, issue))?;
     let refname = record_ref(repo.layout(), tree, whole);
     push_record(repo, &sha, &refname)
 }
@@ -455,17 +460,44 @@ fn record_push_limit() -> Duration {
 fn push_record(repo: &Repo, sha: &str, refname: &str) -> Result<Option<String>> {
     let mut attempt = 0;
     loop {
-        let pushed =
-            repo.remote().try_push_within(&Push::set(sha, refname).force(), record_push_limit())?;
+        let pushed = repo
+            .remote()
+            .try_push_within(&Push::set(sha, refname).force().progress(), record_push_limit())?;
         if pushed.ok {
             return Ok(None);
         }
         attempt += 1;
         if !remote_fault(&pushed.stderr) || attempt >= RECORD_ATTEMPTS {
-            return Ok(Some(pushed.stderr.trim().to_string()));
+            return Ok(Some(push_error(&pushed.stderr)));
         }
         std::thread::sleep(Duration::from_millis(250 << attempt));
     }
+}
+
+/// The last pack size Git's writing progress reported, with its unit.
+fn sent_bytes(stderr: &str) -> Option<&str> {
+    stderr
+        .split(['\r', '\n'])
+        .filter_map(|line| {
+            let writing = line.rsplit_once("Writing objects:")?.1;
+            let (_, bytes) = writing.rsplit_once(',')?;
+            let bytes = bytes.split('|').next()?.trim();
+            (!bytes.is_empty()).then_some(bytes)
+        })
+        .next_back()
+}
+
+fn push_error(stderr: &str) -> String {
+    let stderr = stderr.trim();
+    if !stderr.contains("did not end within") {
+        return stderr.to_string();
+    }
+    let timeout = stderr
+        .rsplit(['\r', '\n'])
+        .find(|line| line.contains("did not end within"))
+        .unwrap_or(stderr);
+    let sent = sent_bytes(stderr).unwrap_or("no pack bytes");
+    format!("{timeout}; Git reported {sent} sent before the push was ended")
 }
 
 /// The green run of `command` on `tree` the remote has on record and still
@@ -703,5 +735,18 @@ mod tests {
         assert!(remote_fault(" ! [remote rejected]   d5531db -> refs/convoy/gate/47 (failed)"));
         assert!(!remote_fault("fatal: 'origin' does not appear to be a git repository"));
         assert!(!remote_fault(" ! [remote rejected] d5531db -> refs/convoy/gate/47 (protected)"));
+    }
+
+    #[test]
+    fn a_timed_out_record_push_reports_gits_last_pack_progress() {
+        let stderr = "Writing objects:  50% (1/2)\r\
+                      Writing objects: 100% (2/2), 12.50 MiB | 1.25 MiB/s\r\
+                      git push --quiet --progress did not end within 1s; its process group was ended";
+        let said = push_error(stderr);
+        assert!(said.contains("did not end within 1s"), "{said}");
+        assert!(said.contains("Git reported 12.50 MiB sent before the push was ended"), "{said}");
+        assert!(!said.contains("Writing objects"), "progress is evidence, not the answer: {said}");
+        assert_eq!(sent_bytes("Writing objects: 50% (1/2)"), None);
+        assert!(push_error("git push did not end within 1s").contains("no pack bytes sent"));
     }
 }

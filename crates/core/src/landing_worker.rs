@@ -114,10 +114,12 @@ pub enum Answered {
 }
 
 impl Answered {
-    /// Whether the last turn answered a wait (`Ending::waits`).
+    /// Whether the last turn answered a wait (`Ending::waits`) or failed
+    /// before giving the worker anything to change; either is asked again.
     pub fn waits(&self) -> bool {
         let Answered::Said(outcome) = self else { return false };
-        crate::ending::Ending::ALL.iter().any(|e| e.word() == outcome && e.waits())
+        outcome == "error"
+            || crate::ending::Ending::ALL.iter().any(|e| e.word() == outcome && e.waits())
     }
 }
 
@@ -324,7 +326,9 @@ mod tests {
             let said = Answered::Said(wait.word().into());
             assert!(!changing_tree(busy, &said), "{}", wait.word());
         }
-        assert!(changing_tree(busy, &Answered::Said("error".into())), "a failed ask");
+        let failed = Answered::Said("error".into());
+        assert!(failed.waits(), "a failed ask is retried");
+        assert!(!changing_tree(busy, &failed), "a failed ask leaves the tree unchanged");
         let conflict = Answered::Said("conflict".into());
         assert!(!changing_tree(None, &conflict), "no worktree");
         assert!(!changing_tree(Some(WorkerState::Gone), &conflict), "gone");

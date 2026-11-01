@@ -88,17 +88,19 @@ pub(crate) fn position(team: &Team, workflow: &Workflow, position: Position) -> 
         Position::Waiting(_) => "waiting",
         Position::Consult(..) => "consult",
         Position::ParkedForEvidence(_) => "parked-for-evidence",
-        Position::Parked(_) => "parked",
+        Position::Parked(_) | Position::LandingParked => "parked",
         Position::Landing => "landing",
         Position::Ended => "ended",
-        Position::Escalating(..) => "escalating",
+        Position::Escalating(..) | Position::LandingEscalating => "escalating",
     };
     let worker = match position {
         Position::Landing => workflow.land.as_ref(),
         _ => position.worker(),
     };
     let by = match position {
-        Position::Waiting(_) | Position::Escalating(..) => Some(HUMAN),
+        Position::Waiting(_) | Position::Escalating(..) | Position::LandingEscalating => {
+            Some(HUMAN)
+        }
         _ => worker.map(|work| team.role_of(work).name.as_str()),
     };
     // What runs is this host's host kit's to say: none, on a host without one.
@@ -112,11 +114,21 @@ pub(crate) fn position(team: &Team, workflow: &Workflow, position: Position) -> 
     let reason = match position {
         Position::Escalating(stage, reason)
         | Position::Consult(stage, _, ConsultOn::HandOff(reason)) => Some(reason.said(stage)),
+        Position::LandingEscalating => {
+            Some(afkconvoy_core::position::LANDING_ESCALATION.to_string())
+        }
         _ => None,
+    };
+    // Landing has left the workflow's stages. Its new waiting positions
+    // name `land` for the declaration they need; ordinary landing keeps
+    // its existing stage-less answer.
+    let stage = match position {
+        Position::LandingParked | Position::LandingEscalating => Some(afkconvoy_core::team::LAND),
+        _ => position.stage().map(|stage| stage.name.as_str()),
     };
     json!({
         "is": is,
-        "stage": position.stage().map(|stage| stage.name.as_str()),
+        "stage": stage,
         "by": by,
         "do": worker.map(|work| work.skill.as_str()),
         "harness": harness,
