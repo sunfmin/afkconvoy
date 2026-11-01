@@ -554,7 +554,7 @@ pub fn prefer(harness: Harness, model: Option<&str>) -> Result<Value> {
         };
         kit.harnesses.insert(0, held);
         let mut raw: Value = serde_json::from_slice(&std::fs::read(&file)?)?;
-        if let Some(removed) = raw["removed"].as_array_mut() {
+        if let Some(removed) = raw.get_mut("removed").and_then(Value::as_array_mut) {
             removed.retain(|removed| removed != &json!(harness));
             if removed.is_empty() {
                 raw.as_object_mut().context("kit must be an object")?.remove("removed");
