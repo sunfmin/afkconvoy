@@ -1763,6 +1763,13 @@ echo "/dev/stand-in 1048576000 524288000 524288000 50% /"
 /// `other-accounts`: of another account's, as a test says them.
 const PS: &str = r#"#!/bin/sh
 case "$*" in
+*pid=,ppid=,pcpu=*)
+    if test -f "${0%/*}/../admission-processes"; then
+        cat "${0%/*}/../admission-processes"
+    else
+        exec /bin/ps "$@"
+    fi
+    ;;
 *uid=*)
     me=$(id -u)
     /bin/ps "$@" | awk -v me="$me" '$1 == me'
