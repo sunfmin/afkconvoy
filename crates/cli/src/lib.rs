@@ -5092,11 +5092,11 @@ mod tests {
         assert!(taken(&["wake"]), "a worker's last command");
         assert!(!taken(&["claim", "7", "--instance", "a-h1-1"]));
         assert!(!taken(&["run"]));
-        // Every command of the group a worker runs, but the watch's host-wide
-        // report, which is about no repo.
+        // The watch and asking session's host-wide reports are about no repo.
         let cli = Cli::command();
         let workers = cli.get_subcommands().filter(|c| c.get_next_help_heading() == Some(WORKER));
-        for command in workers.filter(|command| command.get_name() != "watched") {
+        for command in workers.filter(|command| !["watched", "asked"].contains(&command.get_name()))
+        {
             let name = command.get_name();
             assert_eq!(kind(name).worktree, Worktree::Its, "a worker runs `{name}`");
         }
