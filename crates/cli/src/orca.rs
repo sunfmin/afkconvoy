@@ -33,7 +33,7 @@ use crate::worker_tmp;
 
 /// The worker's instructions, kept in the worktree's own git dir: never staged
 /// by the worker's `git add -A`, gone when the worktree is.
-const BRIEF_FILE: &str = "convoy-worker-prompt.md";
+pub(crate) const BRIEF_FILE: &str = "convoy-worker-prompt.md";
 /// When the worker here was nudged (epoch seconds), beside the brief.
 const NUDGE_FILE: &str = "convoy-nudged";
 /// Each operator's note that reached the worker's model (`afkconvoy tell`).

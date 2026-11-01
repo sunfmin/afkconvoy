@@ -148,11 +148,21 @@ fn kept_roots(harness: Harness) -> Result<Vec<PathBuf>> {
 
 /// The harness directory a launch noted beside the worktree's git directory.
 fn noted(cwd: &Path, name: &str) -> Option<PathBuf> {
-    let git = std::fs::read_to_string(cwd.join(".git")).ok()?;
-    let dir = git.trim().strip_prefix("gitdir:")?.trim();
-    let home = std::fs::read_to_string(Path::new(dir).join(name)).ok()?;
+    let home = std::fs::read_to_string(git_dir(cwd)?.join(name)).ok()?;
     let home = home.trim();
     if home.is_empty() { None } else { Some(PathBuf::from(home)) }
+}
+
+/// The worktree's own git directory, which its `.git` file names.
+fn git_dir(cwd: &Path) -> Option<PathBuf> {
+    let git = std::fs::read_to_string(cwd.join(".git")).ok()?;
+    let dir = git.trim().strip_prefix("gitdir:")?.trim();
+    Some(cwd.join(dir))
+}
+
+/// The task brief the fleet keeps for the worker in `cwd`, as an absolute path.
+fn brief(cwd: &Path) -> Option<String> {
+    Some(cwd_str(&git_dir(cwd)?.join(crate::orca::BRIEF_FILE)))
 }
 
 fn read_root(
@@ -266,16 +276,28 @@ fn read_index<T>(
     mut turn_of: impl FnMut(&str) -> Option<T>,
 ) -> Result<Vec<T>> {
     let Some(text) = read_text(&root.join(file))? else { return Ok(Vec::new()) };
+    let brief = brief(Path::new(cwd));
     let mut turns = Vec::new();
     for session in harness.indexed_sessions(cwd, &text) {
-        let path = PathBuf::from(&session);
+        // A session filed under another directory is this worktree's only
+        // when prompted with its brief. With no start given, as for a tree,
+        // only the last two days of the whole index are opened.
+        let (floor, brief) = if session.here {
+            (since, None)
+        } else {
+            let Some(brief) = &brief else { continue };
+            (Some(tree_floor(since)), Some(brief))
+        };
+        let path = PathBuf::from(&session.file);
         let path = if path.is_absolute() { path } else { root.join(path) };
-        if !fresh(&path, since)? {
+        if !fresh(&path, floor)? {
             continue;
         }
-        if let Some(body) = read_text(&path)?
-            && let Some(turn) = turn_of(&body)
-        {
+        let Some(body) = read_text(&path)? else { continue };
+        if brief.is_some_and(|brief| !harness.names_brief(&body, brief)) {
+            continue;
+        }
+        if let Some(turn) = turn_of(&body) {
             turns.push(turn);
         }
     }
@@ -532,6 +554,52 @@ mod tests {
             .unwrap();
         let turn = read_turn(&cwd, Harness::Codex, None, Some(AT - 2)).unwrap();
         assert_eq!(turn, Some(Turn::Open { since: AT }));
+    }
+
+    /// A Kimi worker starts in its role copy, so its index line names that
+    /// directory; its wire's prompt names the brief in the worktree's git
+    /// dir. Seen on 2026-10-28 (sunfmin/control#381).
+    #[test]
+    fn a_kimi_session_under_the_role_copy_prompted_with_this_brief_is_the_turn() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("kimi-role");
+        let worktree = |name: &str| {
+            let cwd = dir.path().join("orca").join(name);
+            let gitdir = dir.path().join("repo/.git/worktrees").join(name);
+            std::fs::create_dir_all(&cwd).unwrap();
+            std::fs::create_dir_all(&gitdir).unwrap();
+            std::fs::write(cwd.join(".git"), format!("gitdir: {}\n", gitdir.display())).unwrap();
+            (cwd, gitdir.join(crate::orca::BRIEF_FILE))
+        };
+        let (cwd, brief) = worktree("issue-7");
+        let (other, other_brief) = worktree("issue-70");
+        let role = "/cache/afkconvoy/copies/acme/team/abc-role+kimi-roles%2Fbuilder";
+        let index =
+            serde_json::json!({"sessionId": "s", "sessionDir": "sessions/s", "workDir": role});
+        write_text(&root.join("session_index.jsonl"), &format!("{index}\n"), AT).unwrap();
+        let wire = root.join("sessions/s/agents/main/wire.jsonl");
+        let ms = AT * 1000;
+        let prompted = |brief: &Path, started: u64| {
+            let prompt = afkconvoy_core::prompt::brief_pointer(&brief.display().to_string());
+            format!(
+                "{}\n{}\n",
+                serde_json::json!({"type": "turn.prompt", "time": started, "prompt": prompt}),
+                serde_json::json!({"type": "agent.turn.started", "time": started + 130}),
+            )
+        };
+        write_text(&wire, &prompted(&brief, ms), AT).unwrap();
+        let read = |cwd: &Path, not_before| read_root(&root, Harness::Kimi, cwd, None, not_before);
+        assert_eq!(read(&cwd, Some(AT - 2)).unwrap(), Some(Turn::Open { since: AT }));
+        assert_eq!(read(&cwd, Some(AT + 1)).unwrap(), None, "a turn before this send");
+        assert_eq!(read(&other, Some(AT - 2)).unwrap(), None, "another worktree's start");
+
+        write_text(&wire, &prompted(&other_brief, ms), AT).unwrap();
+        assert_eq!(read(&cwd, Some(AT - 2)).unwrap(), None, "another worktree's session");
+        assert_eq!(read(&other, Some(AT - 2)).unwrap(), Some(Turn::Open { since: AT }));
+
+        let unprompted = serde_json::json!({"type": "agent.turn.started", "time": ms});
+        write_text(&wire, &format!("{unprompted}\n"), AT).unwrap();
+        assert_eq!(read(&cwd, Some(AT - 2)).unwrap(), None, "no brief, no worktree");
     }
 
     #[test]
