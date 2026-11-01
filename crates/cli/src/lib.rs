@@ -71,6 +71,7 @@ pub mod host_runner;
 pub mod host_settings;
 pub mod host_watch;
 pub mod hot;
+pub mod human_wait;
 pub mod instance;
 pub mod intake;
 pub mod issue_updates;
@@ -88,6 +89,7 @@ pub mod look;
 pub mod machine;
 pub mod measure;
 pub mod named_harness;
+mod no_node;
 pub mod orca;
 pub mod panel;
 pub mod park;
@@ -128,6 +130,7 @@ pub mod tracker;
 mod turn;
 mod turn_answer;
 mod unbound_issue;
+mod unworked;
 pub mod wake;
 pub mod watch;
 pub mod watch_landing;
@@ -212,7 +215,7 @@ const SKILL: &str = include_str!("../../../skills/afkconvoy/SKILL.md");
 ///
 /// ## What a command answers
 ///
-/// Every command prints exactly one JSON object on stdout. A failure is {"error": …} with a non-zero exit — and "see" beside it, where a topic explains it: the command that prints that topic. Warnings go to stderr. A few print otherwise: `show` a drawing unless asked about an issue, `help` Markdown as `--help` does, `skill` the text of a file, `guard` answers as a hook does, with its exit code, `exclusive` as its command does, `accounts --rows` NDJSON, and `panel` without `--open` one HTML document. `panel --open` is the JSON object `panel --help` describes. `doctor` exits 0 with no critical finding, and non-zero with one, printing the same object, not {"error"}. Under `--all`, a checkout that could not be asked stays {"error", "see"}, as `doctor --help` says: not a doctor that read the checkout. A fleet instance prints nothing: it logs a line as each tick starts and one as it ends, in its tick log.
+/// Every command prints exactly one JSON object on stdout. A failure is {"error": …} with a non-zero exit — and "see" beside it, where a topic explains it: the command that prints that topic. Warnings go to stderr. A few print otherwise: `show` a drawing unless asked about an issue, `help` Markdown as `--help` does, `skill` the text of a file, `guard` answers as a hook does, with its exit code, `exclusive` as its command does, `accounts --rows` NDJSON, and `panel` without `--open` one HTML document. `panel --open` is the JSON object `panel --help` describes. `doctor` exits 0 with no critical finding, and non-zero with one, printing the same object, not {"error"}. Under `--all`, a checkout that could not be asked stays {"error", "see"}, as `doctor --help` says: not a doctor that read the checkout. `no-node` exits 0 for green and 1 for red, printing its validation object in both cases; monitor faults print {"error"}. A fleet instance prints nothing: it logs a line as each tick starts and one as it ends, in its tick log.
 ///
 /// ## The commands, by who runs them
 ///
@@ -222,7 +225,7 @@ const SKILL: &str = include_str!("../../../skills/afkconvoy/SKILL.md");
 /// - **{const:DESIGNER}** — `scaffold` to start one or a role of it from a skeleton, `draft` to draft its roster from the host kit, then, once `check` accepts it, `show` to review a workflow or to ask where an issue is in it, and `rehearse` to try one out.
 /// - **{const:HANDS_WORK}** — a human or their agent opening decided work. `flows` names the workflow, gives the issue-create line and makes labels. After opening issues, `wake` has the fleet take them up now.
 /// - **{const:SETS_UP}** — `skill` prints the skill file that sends their agent to `afkconvoy --help`.
-/// - **{const:WORKER}** — `gate`, `land`, `verdict`, `intake`, `lock`, `over`, `exclusive`, `watched`, `asked`: its prompt names each one as it is needed, and `wake`, above, as its last; `cut` is what a cut's terminal runs, and what you run to go on with a cut that failed. Read them only when you are a worker, or are finding out why one stopped (`rule` is a consult's too).
+/// - **{const:WORKER}** — `gate`, `land`, `verdict`, `intake`, `lock`, `over`, `exclusive`, `no-node`, `watched`, `asked`: its prompt names each one as it is needed, and `wake`, above, as its last; `cut` is what a cut's terminal runs, and what you run to go on with a cut that failed. Read them only when you are a worker, or are finding out why one stopped (`rule` is a consult's too).
 /// - **{const:HUMAN}** — in a bound repo: `rule` to answer an escalated issue, `send` to put an issue at a stage of your choosing. A `by: human` stage waits for your `verdict`, a worker's command too. [`afkconvoy help humans`](help:humans) says what each case asks of you.
 /// - **{const:HOOK}** — `guard`, called before each action of a bound repo's worker. Nobody runs it by hand. Its help explains what the worker is refused and why.
 /// - **{const:BY_HAND}** — `dispatch`, `close`, `escalate`, `park`, `nudge` and `restart`: each is something a tick does on its own, and `recovery` shows what `dispatch` would continue an issue from. Read one when a plan shows a transition the fleet is not making, or you are told to make it yourself.
@@ -512,6 +515,16 @@ enum Command {
     /// ## What it answers
     ///
     /// {"base_branch", "gate_command", "gate_seconds", "ready_label", "epic_labels", "escalate_label", "lock_label"} — every key, the defaults filled in. `gate_seconds` is the gate limit: how many seconds a run of `gate_command` is given, by `afkconvoy gate` and by a landing turn alike, before it is ended and is red (default {const:GATE_SECONDS}). It is written nowhere else: neither command has a flag for it. A config that leaves it out is a finding of `afkconvoy doctor`. `lock_label` is the label of a fleet lock (default fleet-lock): while an open issue carries it, the fleet works lock issues only (`afkconvoy lock --help`). How many claims a fleet instance holds at work at once is no key: it is its checkout's, said on the host that works it (`afkconvoy run --concurrency`), and {const:CONCURRENCY} until that host says otherwise. A config that still names `concurrency` is read all the same, but for that key, which changes nothing: `afkconvoy doctor` reports it as `info`, since nothing is held up, with the file and key to delete. Where the checkout says none and the config names a different number than the one in force, its fix first gives the `afkconvoy run` that keeps that number on the host. `afkconvoy plan` says the concurrency in force, and who says it.
+    ///
+    /// A repo may declare host requirements in a separate block, which older releases read past:
+    ///
+    /// ```yaml gate-needs
+    /// checks:
+    ///   - name: compiler
+    ///     command: test "$(compiler --version)" = "1.0"
+    ///     seconds: 10
+    /// ```
+    /// Each name is unique and nonempty, each command nonempty, and seconds positive. Each runs with `sh -e` in the checkout. The startup probe refuses a failed or timed-out check; a passing check stands for an hour. A check's stdout is discarded. On failure its last 20 stderr lines are stored in a user-only file in the host cache, overwritten by its next run; the refusal names the file, never its contents.
     ///
     /// Where a budget is declared, the answer also has `gate_budget_seconds`. The last {const:SLOW_GATE_LANDINGS} recorded landings on one host must each exceed it to warn through the existing slow-gate issue and doctor finding. Without it the warning threshold stays {const:SLOW_GATE_PERCENT}% of `gate_seconds`. A warning neither ends nor fails a gate.
     ///
@@ -1103,6 +1116,7 @@ enum Command {
     /// It reads this host (the commands the fleet needs, in a login shell; orca), the log this host's `run` keeps of its ticks, the open issues, PRs and stage records on GitHub, whether GitHub says the tracker is public, the claims, heartbeats and recorded gate runs on the remote, and orca after the worker of each claim. It writes nothing on GitHub and nothing on the remote, and makes no startup probe: it is safe beside a live fleet, as often as you like. It fixes nothing either: each finding names the command that does.
     ///
     /// With `--all` it reads the checkout list (checkouts.json in the cache directory) and the same of each checkout on it, all at once.
+    /// It also reads every tracker that list names once for repo-labelled work, including repos absent from this host. A repo nobody works has an open ready issue with no open blocker or claim, ready for more than an hour since the later of its dispatch label being applied and its last blocker closing, and no remote heartbeat within the 1800-second lease. Ready means the repo's ready label, or its team's flow labels. Only an old enough unblocked issue, or an existing report, asks that repo's heartbeat remote. `host.unworked_repos` holds the waiting issues and their seconds, newest heartbeat's host and time (or null), report and opening host, recovery host, and read error. An unreadable remote proves nothing about whether a fleet works it. Doctor opens and closes nothing; the host runner reconciles these reports at its look.
     ///
     /// ## What it answers
     ///
@@ -1196,6 +1210,8 @@ enum Command {
     /// - It says nothing of ticks nobody logged. A `run` logs under your cache directory (`afkconvoy help cache` says where it is) on the host it runs on: run `doctor` there, as the same user. The log is a log: nothing reads it to decide anything, and deleting it loses only what `doctor` could say of the ticks before.
     /// - It makes no startup probe, so it looks for the fleet's refs where this repo's last `plan`, `tick` or `run` found the remote keeps them. In a clone none ever ran in, it looks under refs/convoy/.
     /// - `fix` is the first thing to try, not a promise: read `afkconvoy <command> --help` of the command it names before you run it.
+    ///
+    /// A human wait taken by another host has `taken_by` naming that host and an info finding. It starts no watch round here, is absent from this host's human report entries and sends nothing through `--notify-command` and asks no question. `taken_by` is absent when the wait is available here or held here. Reading doctor changes no claim; the host runner takes available waits before queueing its look.
     ///
     /// ## Worker proxy bypass
     ///
@@ -1367,6 +1383,8 @@ enum Command {
     ///
     /// A fleet instance is broken when its loop panics or ends in an error, or when a start of it ends before its first tick while its checkout is on the list — the host runner's, from the list or after it broke, or a `run`'s: its startup probe no longer passes, say. It harms no other: the host runner and every other fleet instance go on, and its checkout stays on the list. The host runner starts it again after a backoff: {const:BACKOFF_FIRST_MINUTES} minute after it first broke, twice the wait before at each break in a row — one within {const:BACKOFF_MOST_MINUTES} minutes of the start before it — and {const:BACKOFF_MOST_MINUTES} minutes at the most. A `run` of its checkout starts it at once, with what that `run` names laid over what the list kept; a start of it that ends before its first tick is then refused to that `run`, which is told so, and it stays on the list, broken. Only `stop` takes a checkout off the list. It is back once a start of it again has ended its first tick. Broken — with why, since when, and when it is started again — and back are lines of the host runner's log and of its tick log, and `afkconvoy doctor` in its checkout says it is broken, why, and when it is started again. A tick that fails is no break: it is a line of its own, and the loop goes on.
     ///
+    /// A repo can declare gate needs (`afkconvoy config --help`): the startup probe runs each, and a running fleet instance checks again within an hour. A failure breaks the instance. The refusal and `doctor` name the check, its status, the private host-cache file holding its last 20 stderr lines, and the line to fix it. Check output never appears in the tick log, `plan`, `doctor` or an issue; stdout is discarded.
+    ///
     /// Then everything a fleet instance does. It makes the startup probe — at every start, whatever probe passed before — takes every claim stamped with this host — on an issue, on a patrol's run or on a cut — removes the heartbeats that are dead and hold nothing (those of the instances it took from, this host's past the lease, anyone's older than a day) — then ticks: each tick rebuilds the working set from GitHub and the remote and makes every transition it calls for — claims and heartbeats on the remote, workers in orca worktrees, comments, labels and blocked-by edges on issues, status boards, the landing turn's worker. Between ticks it sleeps; a worker's `wake` ends the sleep, and a tick that left the next one a worker to start is followed with no sleep. Before each tick it asks GitHub again whether its tracker is public, once the check that found it private is an hour old — or at once, of a tracker said anew. Public, it ends before the tick, as its startup probe would refuse it, and is broken: it holds no move onto a newer release back, and each start of it again is refused until the tracker is private again or another is said (`--tracker`), which `afkconvoy doctor` names with that line.
     ///
     /// A fleet never puts its host to sleep: an idle host stays awake until something else puts it to sleep. Idle is holding no claim — on an issue, a patrol's run, a cut — and an empty frontier; an escalated issue and a patrol not yet due leave a fleet idle. A cut starts when idle or landed work reaches its age bound, and keeps it from idle while it runs. Every fleet on this host is a fleet instance of its one host runner, which holds how each stands, as each says it as every tick of its begins and ends: in a tick, or between two, at work or quiet. No fleet instance asks another.
@@ -1377,9 +1395,13 @@ enum Command {
     ///
     /// WATCH. Every host watches itself. Where its host settings name an operator's directory — `--watch-dir ~/Developments/control`, known to orca — the watch runs there under that directory's own rules, with none of the stock instruction added. Otherwise the stock watch runs in the fleet's own directory, `stock-watch/` under the cache directory (`afkconvoy help cache` says where it is), made, kept and registered with orca when it starts. Its short instruction carried in the binary says: find what holds the fleets' work back, fix it with the watch's authority, check that the work goes on and say what it did. Every watch leaves spending money or needing an account, a credential or a person's hands; what cannot be undone; taking a secret or private data off the host; and changing what a product is for or who it is for with a human, acts on none and lists each in its command report, which `doctor` shows as `report`. Unplaced host kit models are low priority: a watch started for other work takes them too, and they alone start a watch at most once a day, across runner restarts. The watch researches them with its web tools and places them through `afkconvoy kit --research <file>` (`afkconvoy kit --help` gives the checked file format). Its host runner takes a look every {const:WATCH_EVERY} seconds (`--watch-every`): `afkconvoy doctor --all --since <until of its last look>`, the fleet's own code, which runs no model, keeping `until` itself. A look that holds something an operator would act on — an issue waiting on a human, or a finding that is not `info` and not of the watch itself: a fleet instance not alive or broken, a failed tick or step, a worker whose health observation is overdue among them — starts one watch. Each condition is one finding of the look, and the watch acts on it by its `kind` and `watch_id`, never its words: a finding said in other words is the same episode. Doctor finds an observation overdue only past a tick's chance to make it: past its time by more than the sleep and the time of the last tick of the fleet instance whose claim holds the worker's worktree, as that instance's `doctor.fleet.last_tick` says them (`sleep`, `took`), or the longest any instance on the host says, for a worktree no claim holds. A fleet that stopped ticking, or a tick that hangs, leaves it missed past that grace. Its episodes stay covered while it runs and after it reports; an episode lasts while each look still holds it. An unreported watch leaves its episodes and daily research reservation eligible at the next look that still finds the work, including after a restart. A watch retains one resident interactive Agent session in the watch directory across independent watch rounds. Each round has its own ID, delivery receipt, report and execution hour, excluding queueing, standby and earlier rounds. It is given its brief as a file in the cache directory — what the look answered, why it started, and what each earlier watch on the same items did — with authority over the fleets of this host and an hour, its continuations together. It runs on the harness this host last started a worker on that took its brief, then the host kit's order, never one paused or with a fault on record, started trusted with prompts skipped, interactively in its terminal titled "afkconvoy watch", with the brief as its first message, as a worker is. A human may watch it and type to it. Its last step is the exact `afkconvoy watched --watch <id> --text-file <report.json>` line at the end of its brief (`afkconvoy watched --help`): the report records what held work back, each action, what it verified, each human question and answer line, and what remains pending. Reporting completes only that round and leaves the healthy Agent and Terminal standing by for the next message. Standby without pending work sends no prompt and runs no model. Only an exit, proven harness or context failure, or explicit reset replaces the owned executor, after confirming it ended. A watch ended without that command says it did not report. Printed output is no record. Worker health observes its own terminal; a stopped watch with no report is nudged. A watch whose harness gives out — a usage limit, capacity stop, refusal or failed exit — is ended and continued on the next harness that can start it, with the same look and terminal evidence of its work so far, one session at a time; the fault is recorded (`host_kit.worker_health`), and that harness is skipped until its hourly probe answers. Looks continue while a round runs. The host runner durably queues new episodes and merges repeated observations of queued, executing and reported episodes. Before the next round, a fresh look removes recovered conditions. Delivery waits for the previous report and the same Terminal's input readiness; busy input is left untouched. An observed recovery and return is a new episode, even during an older round. A host runner started again — after moving onto a newer release, say — keeps the watch it finds running. Its start, its end and each thing it did are lines of every tick log on the checkout list and of the host runner's log; `doctor` says the watch running and the last one, as `host.watch`, and a critical finding where no harness could start or continue it. `--watch-dir default` returns to the stock watch; a running watch and its continuations keep their starting directory and rules. `doctor.host.watch.directory` says the directory the next watch runs in, and `stock` whether it is the stock one, even before a watch starts; each running or last watch says its own directory and `stock` too.
     ///
+    /// In a repo worked by several hosts, each human wait is answered by one host's watch. Before queueing it the host runner takes a claim on that repo's remote; the other hosts leave it alone. Its holder keeps a heartbeat published while the wait stands, even with no worker claim. Once the heartbeat is past the lease, {const:LEASE_MINUTES} minutes, another host's next look takes the wait over. The holder's next look removes the claim when the issue no longer waits on a human. Only the holding host carries it into a round and its report outboxes. Each sending through `--notify-command` and each asking-session question re-reads the claim immediately before sending; a host that lost it drops the outbox item and logs the holder's name. Host conditions remain their own host's.
+    ///
     /// ASKING SESSION. Every human entry of a recorded watch report becomes a durable question in a second resident interactive Agent and Terminal beside the watch, in the watch's directory, titled "afkconvoy asks". It starts when the first question is pending and does no watch's work. Its questions use the same episode identities as `--notify-command`: a human wait's `waiting_on_human` identity, or a host condition's finding identity, once per episode across reworded reports, host runner restarts and upgrades. One question is delivered at a time, only when input is ready, with ADR-0040's request key and session-turn proof. Each delivery is marked as the host runner's and names the condition, issue link, watch question and answer line, and how many more wait. Recovery before delivery removes a question; recovery afterwards tells the session it is withdrawn. The session ends its asking turn with the question first, at most 180 characters, so Orca's phone push shows it and a tap opens this Terminal. It clarifies, investigates and consults with the operator, then acts with their authority through the same commands as a human. A settled question is reported by `afkconvoy asked` with the link to the operator's quoted words and their time on its issue; the session's own words establish no human intent. Only then is the next delivered. A question put aside by the operator stays pending and is listed on request. Standby without pending work calls no model; the resident is replaced only on exit, a proven harness fault, an unusable context or an explicit reset. `doctor.host.asking` and the panel show its state, current question and those waiting.
     ///
     /// With `--notify-command <COMMAND>`, the host runner runs that shell command afresh for each human entry of a recorded report, with one JSON object on stdin: `host`, `watch` (the round id), `condition` (the identity from the round's look), `question`, `answer` (the answer line), `url` (the issue source URL, null for a host condition) and `panel` (the URL actually served, null if unavailable). The question and answer leave the host only through the command the operator chose; no channel is built in. With none named nothing is sent; `--notify-command default` removes it. A successful sending is kept beside the reports across runner restarts and upgrades. The same condition is sent once per observed episode, even when later reports reword its question and answer or omit it. A human wait uses the identity of `waiting_on_human` (its issue and source); a host condition uses its finding identity. Only observed recovery ends an episode. A failed command, or one past {const:NOTIFY_SECONDS} seconds, is tried again at the next look, on a separate sender that holds back no look, watch round or tick. {const:NOTIFY_FAILURES} consecutive failures for one entry are a doctor finding. `doctor.host.notify` says the command in force and the last sending: watch, condition, answer, command, start and end times, and outcome.
+    ///
+    /// A repo nobody works is reported across hosts: every look reads the trackers its checkout list names for ready repo-labelled issues, including repos absent from that list. After more than an hour with no open blocker or claim, counted from the later of readiness and the last blocker closing, and with no remote heartbeat within the 1800-second lease, the host runner opens one tracker issue per repo carrying its repo and escalate labels. A tracker claim settles simultaneous looks; only the opening host raises the finding and keeps its watch episode until recovery. The report names the waiting issues, wait and newest heartbeat host and age, or none. A later claim or live heartbeat closes it and names the taking host. Read failures are findings, never evidence that nobody works a repo. The watch must ask which host should take it and must never add the repo to its own checkout list.
     ///
     /// WATCH RECOVERY. The fixed Terminal name is "{const:WATCH_TITLE}". The host runner records a launch intent before creation and the exact Terminal handle and public pane identity before sending its brief. Normal checks use that exact ID first; a restarted or upgraded runner reuses the confirmed session, its input and unfinished progress. If the ID is missing or stale, it queries Orca's public Terminal list and accepts only a unique candidate proven by its saved pane identity or its own startup acknowledgement. The name alone proves no ownership or uniqueness. Uncertain creation is never repeated. Each round's prompt intent saves a UUID request key before delivery; recovery replays the exact Terminal submission with Orca's supported --retry-request protocol and retains its receipt. An unproven or unsupported delivery pauses rather than sending fresh input; another harness or runner restart cannot bypass that pause. The existing command, model, directory rules and watch guard remain in force. A confirmed missing Terminal ends its watch after the marked executor is confirmed stopped; the next look may start eligible work as usual.
     ///
@@ -2910,6 +2932,53 @@ enum Command {
         #[command(flatten)]
         at: AtFlag,
     },
+    /// Run a macOS command tree with Node execution denied and checked
+    ///
+    /// ## When to run it
+    ///
+    /// Wrap the whole repository gate, including native Darwin tests: `afkconvoy no-node -- ./gate.sh`. It runs in the current directory and needs no checkout or fleet. Commands receive no stdin; their stdout and stderr both go to stderr, leaving stdout for one JSON answer.
+    ///
+    /// ## Who runs it
+    ///
+    /// A worker in its own worktree, or anyone running a gate on macOS.
+    ///
+    /// ## What it reads and writes
+    ///
+    /// Writes temporary canary PID and scope files, removed after the run. Reads the command's exit status and this sandbox's reports from the macOS unified log.
+    ///
+    /// ### Dependencies and identity
+    ///
+    /// macOS only. Needs trusted `sandbox-exec`, `log` and `date` on PATH (normally /usr/bin and /bin), readable unified sandbox reports, and a Node binary for the canaries. No sudo or entitlement. `--canary-node PATH` names that binary; otherwise `node` is resolved on PATH before starting. Its resolved basename must be `node`.
+    ///
+    /// One Seatbelt profile allows default operations and denies process-exec whose resolved path matches `/node$`. This covers Node installed outside Homebrew, symlinks, PATH, absolute paths and shebang interpreters. A Bun compatibility link named node resolves to bun and is allowed, including `bun run --bun`. Identity is the resolved filename, not a binary hash: renamed Node binaries are outside this rule, and another executable actually named node is denied too.
+    ///
+    /// ### What it checks
+    ///
+    /// Before and after the command tree, a separate canary process attempts to exec Node in that same sandbox. A fresh nonce tags every denial. After the tree exits, `log show` reads only kernel sandbox reports carrying that nonce. Any report besides the two identified canary PIDs makes the run red, even when the caller ignored the denial or the command failed for another reason. Unrelated processes have no nonce and cause no hit.
+    ///
+    /// Forked descendants inherit the sandbox. An inherited descriptor holds the run open for background descendants, including reparented ones, before the second canary. The command must wait for descendants that deliberately close inherited descriptors. Processes dispatched through launchd/XPC, and Docker workloads, are outside the sandbox. This is a gate check for cooperative commands, not a security boundary against a command trying to evade it.
+    ///
+    /// ## What it answers
+    ///
+    /// One object: `status` green or red, `exit_code` of the command (128 plus signal if signalled), `nonce`, `canaries` with before/after PIDs, and `invocations`, each with caller `process`, `pid` and resolved `path`. Green exits 0; red exits 1. A monitor fault prints {"error"} and exits 1: no unmonitored fallback. Missing tools or reports, malformed reports, sandbox startup or application failure (including nested sandboxes), log read failure, timeout, or interruption all fail closed. Fix the named dependency or command and rerun; nested sandboxes must be run from outside the enclosing sandbox.
+    ///
+    /// Reports may arrive late: the reader retries missing canaries for up to five seconds. `--seconds` bounds the command tree, default 3600. SIGINT/SIGTERM and timeout terminate its process group and fail red; a killed monitor cannot return green.
+    ///
+    /// ## What trips you up
+    ///
+    /// Canaries establish report availability, not lossless logging. If a caller ignores EPERM, logd loses only that attempt's report, and both canary reports survive, this check can miss the attempt. Node still never executed: Seatbelt denied it. Do not interpret green as proof that unified logging lost no events.
+    #[command(next_help_heading = WORKER, verbatim_doc_comment)]
+    NoNode {
+        /// Node binary used for the two deliberate exec attempts
+        #[arg(long)]
+        canary_node: Option<PathBuf>,
+        /// Maximum seconds for the command and its descendants
+        #[arg(long, default_value_t = 3600, value_parser = clap::value_parser!(u64).range(1..))]
+        seconds: u64,
+        /// The command and arguments, after `--`
+        #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
+        command: Vec<OsString>,
+    },
     /// Allow or refuse the tool call described on stdin (a worker's hook, added at launch)
     ///
     /// ## When to run it
@@ -2942,7 +3011,7 @@ enum Command {
     ///
     /// Refused for every worker:
     ///
-    /// - input to the asking session's Terminal (`orca terminal send`, including raw text, Enter, interrupts and retried prompts). The current handle comes from the asking launch journal, never its title or directory. The host runner's own deliveries run outside worker hooks; the asking session itself is exempt by its runtime Terminal identity. Input to another Terminal is unchanged.
+    /// - input to the asking session's Terminal (`orca terminal send`, including raw text, Enter, interrupts and retried prompts). The current handle comes from the asking launch record, never its title or directory. The host runner's own deliveries run outside worker hooks; the asking session itself is exempt by its runtime Terminal identity. Input to another Terminal is unchanged.
     /// - adding or removing a flow label, a `stage:` label, the escalate label or the lock label (`gh issue edit --add-label`, `--remove-label`, `gh issue create --label`, and any write of an issue's labels through `gh api`)
     /// - writing a stage record by hand: only `afkconvoy verdict` writes one
     /// - writing an intake record by hand: only `afkconvoy intake` writes one, and it is what puts a flow label on for a worker
@@ -3817,7 +3886,7 @@ fn kind(name: &str) -> Kind {
         "cast" | "target" | "delivery" | "gate" | "land" | "verdict" | "rule" | "send"
         | "intake" | "lock" | "over" | "cut" | "wake" => worker_acts,
         "tick" => Kind { starts: true, ..Kind::ACTS },
-        "doctor" | "show" | "exclusive" => Kind::WORKERS,
+        "doctor" | "show" | "exclusive" | "no-node" => Kind::WORKERS,
         "plan" => Kind { starts: true, ..Kind::WORKERS },
         "run" => Kind { starts: true, ..Kind::PLAIN },
         "accounts" | "config" | "check" | "rehearse" | "recovery" | "scan" | "panel" => Kind::READS,
@@ -4403,6 +4472,15 @@ pub fn main(args: impl IntoIterator<Item = OsString>) -> ExitCode {
     if let Command::Guard { terminal_input_only } = cli.command {
         return guard::guard(terminal_input_only);
     }
+    if let Command::NoNode { command, canary_node, seconds } = &cli.command {
+        return match no_node::run(command, canary_node.as_deref(), *seconds) {
+            Ok(answer) => {
+                println!("{answer}");
+                if answer["status"] == "green" { ExitCode::SUCCESS } else { ExitCode::FAILURE }
+            }
+            Err(error) => fail(1, &format!("{error:#}")),
+        };
+    }
     if let Command::Help { name } = &cli.command {
         return match help(name.as_deref()) {
             Ok(text) => {
@@ -4933,6 +5011,7 @@ fn run(
         }
         // `main` answers it: a hook's answer is no JSON object.
         Command::Guard { .. } => anyhow::bail!("guard answers with its exit code"),
+        Command::NoNode { .. } => anyhow::bail!("no-node answers with its validation exit code"),
         Command::Exclusive { .. } => {
             anyhow::bail!("exclusive answers with its command's exit code")
         }
