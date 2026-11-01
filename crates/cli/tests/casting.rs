@@ -108,7 +108,8 @@ fn a_switch_reorders_the_kit_and_the_label_still_decides_the_model() {
     assert_eq!(planned["frontier"][0]["cast"]["unmatched"], "`model:haiku`");
     world.afk(&TICK).ok();
     let commands = started(&world);
-    assert_eq!(commands, [pi(None)]);
+    assert_eq!(commands.len(), 1);
+    assert!(commands[0].contains(&pi(None)) && commands[0].contains("AFKCONVOY_GUARD="));
     assert!(!commands[0].contains("--model"));
     assert_eq!(world.labels(7), ["ready-for-agent", "model:haiku"]);
     assert!(world.comments(7).iter().any(|c| c.contains("The label stays.")));
@@ -130,7 +131,9 @@ fn a_paused_harness_falls_through_and_the_label_stays() {
     assert_eq!(planned["frontier"][0]["cast"]["model"], Value::Null);
     assert_eq!(planned["frontier"][0]["cast"]["why"], "user_default");
     world.afk(&TICK).ok();
-    assert_eq!(started(&world), [pi(None)]);
+    let commands = started(&world);
+    assert_eq!(commands.len(), 1);
+    assert!(commands[0].contains(&pi(None)) && commands[0].contains("AFKCONVOY_GUARD="));
     assert_eq!(world.labels(7), ["ready-for-agent", "model:haiku"]);
     std::fs::remove_file(world.paused_path()).unwrap();
     let planned = world.afk(&PLAN).ok();
@@ -271,7 +274,9 @@ fn switching_again_follows_the_label_of_the_harness_now_first() {
     let moved =
         world.afk(&["switch", "7", "--instance", "alpha", "--host", "h1", "--harness", "pi"]).ok();
     assert_eq!(moved["switched"][0]["to"], "pi");
-    assert_eq!(started(&world).last(), Some(&pi(Some("a/slow"))));
+    let commands = started(&world);
+    let command = commands.last().unwrap();
+    assert!(command.contains(&pi(Some("a/slow"))) && command.contains("AFKCONVOY_GUARD="));
     assert!(world.afk(&["switch", "--clear"]).error().contains("--clear"));
     world.issue(8, &["ready-for-agent", "harness:claude-code", "model:haiku"]);
     let plan = world.afk(&PLAN).ok();
