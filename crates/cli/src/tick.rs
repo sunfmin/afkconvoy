@@ -642,6 +642,14 @@ impl Ticked {
         self.set.mine.iter().map(|mine| (mine.number, said(mine.status).to_string())).collect()
     }
 
+    /// Work this pass would start in a free slot if admission admitted it.
+    pub fn admission_waiting(&self) -> Vec<Value> {
+        if !self.pass.held_back(&self.set) {
+            return vec![];
+        }
+        afkconvoy_core::tick::takes(&self.set).into_iter().map(|step| self.named(step)).collect()
+    }
+
     /// What admission read of the host this tick.
     pub fn admission(&self) -> &Admission {
         &self.admission
@@ -1334,7 +1342,13 @@ pub fn run(
                     shown = panel;
                 }
                 let main = repo.main_checkout().unwrap_or_else(|_| repo.dir.clone());
-                shared.resources.ticked(clock(), ticked.admission(), main, ticked.stages())?;
+                shared.resources.ticked(
+                    clock(),
+                    ticked.admission(),
+                    main,
+                    ticked.stages(),
+                    ticked.admission_waiting(),
+                )?;
                 before = Some(ticked.saw(count));
                 let pass = &ticked.pass;
                 // A tick GitHub could not be reached in was not an empty one:

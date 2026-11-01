@@ -592,7 +592,8 @@ fn boards(set: &WorkingSet, did: &[(TickStep, Outcome)]) -> Vec<TickStep> {
 /// names them, then the frontier; issues lowest number first. A patrol runs
 /// once an interval, so it goes ahead of a frontier that is never empty.
 /// Never a stale claim a fleet lock keeps the fleet off.
-fn takes(set: &WorkingSet) -> Vec<TickStep> {
+/// Steps waiting for a slot that admission can hold back.
+pub fn takes(set: &WorkingSet) -> Vec<TickStep> {
     let mut stale: Vec<u64> = vec![];
     for claim in &set.stale {
         if !set.locked_out(claim.number) {

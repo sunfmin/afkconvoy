@@ -20,6 +20,8 @@ const FILE: &str = "watch/resources.json";
 struct Observed {
     holding: Holding,
     stages: Vec<(u64, String)>,
+    #[serde(default)]
+    waiting: Vec<Value>,
 }
 
 #[derive(Default, Clone, Serialize, Deserialize)]
@@ -65,24 +67,18 @@ impl Shared {
         admission: &Admission,
         repo: PathBuf,
         stages: Vec<(u64, String)>,
+        waiting: Vec<Value>,
     ) -> Result<()> {
         self.change(|state| {
-            let reasons = admission.reasons();
-            let shared = state
-                .admission
-                .values()
-                .filter(|observed| {
-                    observed.holding.due(now, 0).is_some_and(|due| reasons.contains(&due.reason))
-                })
-                .min_by_key(|observed| observed.holding.episode())
-                .map(|observed| observed.holding.clone())
-                .unwrap_or_default();
-            let observed = state
-                .admission
-                .entry(repo)
-                .or_insert_with(|| Observed { holding: shared, stages: vec![] });
-            observed.holding.ticked(now, &admission.reasons());
+            let observed = state.admission.entry(repo).or_default();
+            if observed.waiting.is_empty() {
+                // Also clears a host-wide hold saved by an older runner.
+                observed.holding.ticked(now, &[]);
+            }
+            let reasons = if waiting.is_empty() { vec![] } else { admission.reasons() };
+            observed.holding.ticked(now, &reasons);
             observed.stages = stages;
+            observed.waiting = waiting;
             state.pressure.ticked(
                 now,
                 if pressure_level().is_some_and(|n| n >= 2) { &[Reason::Memory] } else { &[] },
@@ -137,14 +133,17 @@ pub fn json(now: u64, readings: &crate::admission::Readings) -> Result<Value> {
         }
         let admission = Admission::read_from(repo, readings)?;
         let mut holding = observed.holding.clone();
-        holding.ticked(now, &admission.reasons());
+        let reasons = if observed.waiting.is_empty() { vec![] } else { admission.reasons() };
+        holding.ticked(now, &reasons);
         if let Some(episode) = holding.episode() {
             let due = holding.due(now, span);
-            conditions.push(json!({"id": format!("resource:admission:{episode}"),
+            conditions.push(
+                json!({"id": format!("resource:admission:{}:{episode}", repo.display()),
                 "kind": "admission", "repo": repo, "episode": episode,
                 "active": due.is_some(), "since": due.map(|due| due.since),
                 "reason": due.map(|due| due.reason), "admission": admission.json(),
-                "stages": observed.stages}));
+                "stages": observed.stages, "waiting": observed.waiting}),
+            );
         }
     }
     let pressure = pressure_level();
