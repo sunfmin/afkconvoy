@@ -527,12 +527,13 @@ impl World {
             .iter()
             .find(|case| case["screen"] == screen)
             .unwrap_or_else(|| panic!("no recorded screen `{screen}`"));
-        self.typesafe_answers(&case["response"]);
+        // The historical recording predates the short question. Its earlier
+        // settled answer decides the class; this extra answer is test data.
+        let mut response = case["response"].clone();
+        response["answers"]["short"] = json!({"type": "noul", "noul": 0.1});
+        self.typesafe_answers(&response);
         let lines = case["lines"].as_array().unwrap();
-        (
-            lines.iter().map(|line| line.as_str().unwrap().to_string()).collect(),
-            case["response"].clone(),
-        )
+        (lines.iter().map(|line| line.as_str().unwrap().to_string()).collect(), response)
     }
 
     /// Give the TypeSafe stand-in this whole response body.

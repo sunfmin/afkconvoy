@@ -1072,7 +1072,7 @@ fn one_jev_request_classes_a_real_finished_screen_and_the_key_goes_nowhere_but_t
     let payload = world.typesafe_payload();
     assert_eq!(payload["model"], "jev-latest");
     assert_eq!(payload["state"], screen.join("\n"));
-    assert_eq!(payload["questions"].as_object().unwrap().len(), 7);
+    assert_eq!(payload["questions"].as_object().unwrap().len(), 8);
     assert!(payload["questions"]["evidence"]["criteria"].get(evidence.as_str().unwrap()).is_some());
     assert_eq!(worker["judgment"]["request"], payload, "the request is kept as it was sent");
     let (arguments, config) = world.typesafe_sent();
