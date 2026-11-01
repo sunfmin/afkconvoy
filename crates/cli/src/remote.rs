@@ -355,9 +355,21 @@ impl Remote {
     /// Lists `patterns` on the remote now, and keeps the answer.
     fn ask(&self, patterns: &[&str]) -> Result<Vec<RemoteRecord>> {
         let shared = self.shared();
-        let records: Vec<RemoteRecord> = shared
-            .wire
-            .list(&self.repo.dir, patterns)?
+        let mut attempts = 1;
+        let listed = loop {
+            match shared.wire.list(&self.repo.dir, patterns) {
+                Ok(listed) => break listed,
+                Err(error) if !connection_failure(&format!("{error:#}")) => return Err(error),
+                Err(error) if attempts == LIST_ATTEMPTS => {
+                    return Err(anyhow!(
+                        "remote ref read failed after {attempts} attempts: {error:#}"
+                    ));
+                }
+                Err(_) => std::thread::sleep(BETWEEN_LIST_ATTEMPTS),
+            }
+            attempts += 1;
+        };
+        let records: Vec<RemoteRecord> = listed
             .into_iter()
             .map(|(name, sha)| RemoteRecord { name, sha, subject: String::new() })
             .collect();
@@ -365,6 +377,30 @@ impl Remote {
         Ok(records)
     }
 }
+
+/// A read changes nothing on the remote, so a failure in transit is safe to
+/// ask again. Any answer from the remote itself fails at once.
+fn connection_failure(said: &str) -> bool {
+    let said = said.to_ascii_lowercase();
+    [
+        "tls connect error",
+        "unexpected eof",
+        "ssl_error_syscall",
+        "connection reset",
+        "connection refused",
+        "could not resolve host",
+        "timeout",
+        "timed out",
+    ]
+    .iter()
+    .any(|mark| said.contains(mark))
+}
+
+const LIST_ATTEMPTS: usize = 3;
+#[cfg(not(test))]
+const BETWEEN_LIST_ATTEMPTS: Duration = Duration::from_secs(5);
+#[cfg(test)]
+const BETWEEN_LIST_ATTEMPTS: Duration = Duration::ZERO;
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -571,7 +607,7 @@ fn tags_of(listed: &[RemoteRecord]) -> Vec<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, VecDeque};
     use std::path::PathBuf;
 
     /// A remote held in memory: its refs, and how many times it was listed.
@@ -579,6 +615,7 @@ mod tests {
     struct Fake {
         refs: Mutex<BTreeMap<String, String>>,
         lists: Mutex<usize>,
+        failures: Mutex<VecDeque<String>>,
     }
 
     impl Fake {
@@ -595,6 +632,10 @@ mod tests {
             lock(&self.refs).insert(name.to_string(), sha.to_string());
         }
 
+        fn fails_next(&self, error: &str) {
+            lock(&self.failures).push_back(error.to_string());
+        }
+
         fn lists(&self) -> usize {
             *lock(&self.lists)
         }
@@ -603,6 +644,9 @@ mod tests {
     impl Wire for Fake {
         fn list(&self, _: &Path, patterns: &[&str]) -> Result<Vec<(String, String)>> {
             *lock(&self.lists) += 1;
+            if let Some(error) = lock(&self.failures).pop_front() {
+                bail!(error);
+            }
             let refs = lock(&self.refs);
             Ok(refs
                 .iter()
@@ -682,6 +726,62 @@ mod tests {
         assert_eq!(remote.sha("refs/heads/trunk", Fresh::Live).unwrap().as_deref(), Some("b"));
         assert_eq!(remote.sha("refs/heads/trunk", Fresh::Process).unwrap().as_deref(), Some("b"));
         assert_eq!(fake.lists(), 2);
+    }
+
+    #[test]
+    fn a_connection_failure_is_read_again() {
+        let fake = Fake::with(&[("refs/heads/trunk", "a")]);
+        fake.fails_next(
+            "git ls-remote origin refs/heads/trunk failed: fatal: unable to access 'https://github.com/sunfmin/afkconvoy.git/': TLS connect error: error:0A000126:SSL routines::unexpected eof while reading",
+        );
+        let remote = remote(&fake);
+        assert_eq!(remote.sha("refs/heads/trunk", Fresh::Live).unwrap().as_deref(), Some("a"));
+        assert_eq!(fake.lists(), 2);
+    }
+
+    #[test]
+    fn an_authentication_failure_is_not_read_again() {
+        let fake = Fake::with(&[("refs/heads/trunk", "a")]);
+        fake.fails_next("git ls-remote origin refs/heads/trunk failed: Authentication failed");
+        let remote = remote(&fake);
+        assert!(remote.sha("refs/heads/trunk", Fresh::Live).is_err());
+        assert_eq!(fake.lists(), 1);
+    }
+
+    #[test]
+    fn a_read_that_keeps_failing_says_how_many_attempts_it_made() {
+        let fake = Fake::with(&[]);
+        for _ in 0..3 {
+            fake.fails_next("git ls-remote origin refs/heads/trunk failed: SSL_ERROR_SYSCALL");
+        }
+        let remote = remote(&fake);
+        let error = remote.sha("refs/heads/trunk", Fresh::Live).unwrap_err().to_string();
+        assert!(error.contains("3 attempts"), "{error}");
+        assert!(error.contains("SSL_ERROR_SYSCALL"), "{error}");
+        assert_eq!(fake.lists(), 3);
+    }
+
+    #[test]
+    fn only_connection_failures_are_read_again() {
+        for said in [
+            "TLS connect error",
+            "unexpected EOF",
+            "SSL_ERROR_SYSCALL",
+            "Connection reset by peer",
+            "Connection refused",
+            "Could not resolve host",
+            "Operation timed out",
+            "TLS handshake timeout",
+        ] {
+            assert!(connection_failure(said), "{said}");
+        }
+        for said in [
+            "Authentication failed",
+            "Repository not found",
+            "The requested URL returned error: 403",
+        ] {
+            assert!(!connection_failure(said), "{said}");
+        }
     }
 
     #[test]
