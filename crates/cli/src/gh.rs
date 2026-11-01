@@ -125,6 +125,19 @@ pub const WATCH_ISSUES_JQ: &str = ".data.repository.issues.nodes[] | \
     labels: [.labels.nodes[].name], more: .comments.pageInfo.hasNextPage, \
     comments: [.comments.nodes[] | \
     {id: (.fullDatabaseId | tonumber), body, url, at: (.createdAt | fromdateiso8601? // null)}]}";
+/// Every issue, open or closed, with account comments. This is a connection,
+/// not search: there is no search-result cap. Long comment threads are read
+/// separately, and their read failures belong to that issue's unreadable row.
+pub const ACCOUNTS_QUERY: &str = "query ConvoyAccounts($owner: String!, $repo: String!, \
+    $labels: [String!], $endCursor: String) { repository(owner: $owner, name: $repo) { \
+    issues(labels: $labels, first: 100, after: $endCursor) { \
+    pageInfo { hasNextPage endCursor } nodes { number url labels(first: 100) { nodes { name } } \
+    comments(first: 100) { pageInfo { hasNextPage } \
+    nodes { fullDatabaseId body url createdAt } } } } } }";
+pub const ACCOUNTS_JQ: &str = ".data.repository.issues.nodes[] | {number, url, \
+    labels: [.labels.nodes[].name], more: .comments.pageInfo.hasNextPage, \
+    comments: [.comments.nodes[] | {id: (.fullDatabaseId | tonumber), body, url, \
+    at: (.createdAt | fromdateiso8601? // null)}]}";
 /// PRs ordered by most recently updated: watching stops paging once a page
 /// reaches before its lower boundary, including every tie at that boundary.
 pub const WATCH_PRS_JQ: &str = ".[] | {number, title, body, head_branch: .head.ref, \
@@ -1135,6 +1148,48 @@ impl GitHub {
                 issue.comments = self.comments(issue.number)?;
             }
             issues.push(issue);
+        }
+        Ok(issues)
+    }
+
+    /// Accounts on this repo's issues. A failed issue-comment read is data
+    /// for the report; a failed issue listing fails the command as a whole.
+    pub fn accounts(&self) -> Result<Vec<afkconvoy_core::accounts::Issue>> {
+        #[derive(Deserialize)]
+        struct Row {
+            number: u64,
+            url: String,
+            labels: Vec<String>,
+            more: bool,
+            comments: Vec<Comment>,
+        }
+        let out = self.query(ACCOUNTS_QUERY, ACCOUNTS_JQ)?;
+        let mut issues = vec![];
+        for line in out.lines().filter(|line| !line.trim().is_empty()) {
+            let row: Row = serde_json::from_str(line).context("gh api: invalid accounts answer")?;
+            if !self.tracker.holds(&row.labels)
+                || afkconvoy_core::tracker::repo_labels(&row.labels).len() > 1
+            {
+                continue;
+            }
+            let comments = if row.more { self.comments(row.number) } else { Ok(row.comments) };
+            let account = comments.map_err(|error| format!("{error:#}")).and_then(|comments| {
+                let mut accounts = comments.into_iter().filter(|comment| {
+                    // Include a damaged opening marker so it is not silently lost.
+                    comment.body.contains("<!--convoy:account ")
+                        || comment.body.contains("<!--convoy:account-->")
+                });
+                let body = accounts.next().map(|comment| comment.body);
+                if accounts.next().is_some() {
+                    return Err("issue has several work accounts".into());
+                }
+                Ok(body)
+            });
+            issues.push(afkconvoy_core::accounts::Issue {
+                number: row.number,
+                url: row.url,
+                account,
+            });
         }
         Ok(issues)
     }

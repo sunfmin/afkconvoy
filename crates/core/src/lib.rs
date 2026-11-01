@@ -8,6 +8,7 @@ extern crate flux_alloc;
 extern crate flux_core;
 
 pub mod account;
+pub mod accounts;
 pub mod admission;
 pub mod before;
 pub mod blocked;
