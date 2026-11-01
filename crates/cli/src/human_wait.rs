@@ -16,10 +16,12 @@ use crate::remote::Fresh;
 /// its claims whose waits ended. The caller must have read all current waits
 /// successfully: an unread checkout is never an empty set of waits.
 pub fn reconcile(repo: &Repo, scan: &mut Scan, me: &Me, waiting: &BTreeSet<u64>) -> Result<()> {
+    let mut ended = BTreeSet::new();
     for claim in scan.waits.clone() {
         if claim.owner.as_ref().is_some_and(|o| o.host == me.host)
             && !waiting.contains(&claim.number)
         {
+            ended.extend(claim.owner.as_ref().map(|o| o.instance.clone()));
             crate::claims::drop_wait(repo, scan, &claim)?;
         }
     }
@@ -31,6 +33,18 @@ pub fn reconcile(repo: &Repo, scan: &mut Scan, me: &Me, waiting: &BTreeSet<u64>)
             Some(claim) => crate::claims::take_wait(repo, scan, me, issue, Take::From(&claim))?,
             None => crate::claims::take_wait(repo, scan, me, issue, Take::Fresh)?,
         }
+    }
+    for instance in ended {
+        if scan.waits.iter().any(|c| c.owner.as_ref().is_some_and(|o| o.instance == instance))
+            || afkconvoy_core::takeover::holds(
+                &afkconvoy_core::takeover::held(&scan.claims, &scan.runs),
+                &instance,
+            )
+        {
+            continue;
+        }
+        let instance = InstanceId::parse(&instance).map_err(anyhow::Error::msg)?;
+        crate::claims::drop_heartbeat(repo, scan, &instance)?;
     }
     renew(repo, scan, &me.host, me.now)
 }

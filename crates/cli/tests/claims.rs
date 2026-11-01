@@ -63,7 +63,9 @@ fn a_wait_alone_beats_and_is_taken_after_the_lease_then_released_when_answered()
     assert_eq!(scan.waits[0].owner.as_ref().unwrap().host, "h2");
     // The old host's cleanup cannot remove the new holder's claim.
     assert_eq!(look("h1", 4000, false).waits.len(), 1);
-    assert!(look("h2", 4000, false).waits.is_empty());
+    let ended = look("h2", 4000, false);
+    assert!(ended.waits.is_empty());
+    assert_eq!(ended.last_beat("h2"), None, "the last wait takes its heartbeat with it");
 }
 
 fn claim(world: &World, issue: &str, instance: &str, now: &str) -> serde_json::Value {
