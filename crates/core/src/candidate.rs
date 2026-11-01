@@ -184,11 +184,18 @@ impl Chain {
     /// The hosts that own a member: a candidate not yet stopped nor
     /// abandoned, a barrier or a pending turn.
     pub fn owners(&self) -> Vec<&str> {
-        let candidates = self.candidates.iter().filter(|c| !c.stopped && !c.abandoned);
-        let mut hosts: Vec<&str> = candidates
-            .map(|c| c.owner.host.as_str())
-            .chain(self.barriers.iter().chain(&self.pending).map(|b| b.owner.host.as_str()))
-            .collect();
+        let mut hosts: Vec<&str> = vec![];
+        for c in &self.candidates {
+            if !c.stopped && !c.abandoned {
+                hosts.push(&c.owner.host);
+            }
+        }
+        for b in &self.barriers {
+            hosts.push(&b.owner.host);
+        }
+        for b in &self.pending {
+            hosts.push(&b.owner.host);
+        }
         hosts.sort_unstable();
         hosts.dedup();
         hosts
@@ -229,12 +236,12 @@ impl Chain {
     pub fn abandon(&mut self, host: &str) {
         self.barriers.retain(|b| b.owner.host != host);
         self.pending.retain(|b| b.owner.host != host);
-        let roots: Vec<String> = self
-            .candidates
-            .iter()
-            .filter(|c| c.owner.host == host && c.valid())
-            .map(|c| c.id.clone())
-            .collect();
+        let mut roots: Vec<String> = vec![];
+        for c in &self.candidates {
+            if c.owner.host == host && c.valid() {
+                roots.push(c.id.clone());
+            }
+        }
         for root in roots {
             self.invalidate(&root, "owner_died");
         }
