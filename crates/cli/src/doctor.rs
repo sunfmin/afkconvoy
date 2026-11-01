@@ -194,7 +194,7 @@ kinds! {
     NothingStarted: Warning, "the last tick started no worker";
     NoWorkflow: Warning, "follows no workflow of the team";
     BlockerUnworked: Warning, "waits on a blocker no fleet works";
-    LongAtStage: Warning, "longer than any stage before it took";
+    LongAtStage: Warning, "longer than its baseline";
     NearBreaker: Warning, "is one rework from a breaker";
     PatrolFailed: Warning, "does not run: its last run failed";
     PatrolFull: Warning, "have reached its `max_open`";
@@ -532,6 +532,7 @@ pub struct State {
     pub refusals: Value,
     pub held: Vec<Held>,
     pub stood: Vec<Stood>,
+    pub stage_baselines: std::collections::BTreeMap<String, (u64, usize)>,
     pub team: TeamRead,
     pub ready_label: String,
     /// The fleet's tracker: a fix that runs `gh issue` names it.
@@ -788,7 +789,7 @@ fn settle_wait_findings(run: &Run, held: &[Held], now: u64) -> Vec<Finding> {
     }).collect()
 }
 
-fn claim_findings(run: &Run, held: &[Held], now: u64) -> Vec<Finding> {
+fn claim_findings(run: &Run, held: &[Held], now: u64, locks: &[u64]) -> Vec<Finding> {
     let mut found = vec![];
     let instance = run.instance.as_deref().unwrap_or_default();
     for claim in held.iter().filter(|claim| claim.at_work()) {
@@ -798,6 +799,7 @@ fn claim_findings(run: &Run, held: &[Held], now: u64) -> Vec<Finding> {
             None => "no worktree".to_string(),
         };
         match claim.worker {
+            _ if !locks.is_empty() && !locks.contains(&issue) => {}
             // With no `run` alive nothing is about to start one: that is the finding.
             Some(WorkerState::Gone) if run.alive && !run.dispatching(claim.held_for, now) => {
                 let (evidence, fix) = match (&claim.worktree, claim.status) {
@@ -978,7 +980,12 @@ fn log_findings(run: &Run) -> Vec<Finding> {
 
 /// An issue long at one stage, one rework from a breaker, or under a flow
 /// label that names no workflow.
-fn issue_findings(stood: &[Stood], team: &TeamRead, now: u64) -> Vec<Finding> {
+fn issue_findings(
+    stood: &[Stood],
+    team: &TeamRead,
+    baselines: &std::collections::BTreeMap<String, (u64, usize)>,
+    now: u64,
+) -> Vec<Finding> {
     let mut found = vec![];
     for issue in stood {
         let number = issue.number;
@@ -1002,21 +1009,27 @@ fn issue_findings(stood: &[Stood], team: &TeamRead, now: u64) -> Vec<Finding> {
         }
         // Only where a worker is owed: a human takes the time they take.
         let (Some(stage), Some(_)) = (&issue.stage, &issue.role) else { continue };
-        let took = issue.recorded.windows(2).map(|pair| pair[1].saturating_sub(pair[0])).max();
+        let fallback = issue
+            .recorded
+            .windows(2)
+            .map(|pair| pair[1].saturating_sub(pair[0]))
+            .filter(|seconds| *seconds >= 60)
+            .max();
+        let baseline = baselines.get(stage).map(|(seconds, count)| (*seconds, format!("the repo p95 for `{stage}` from {count} completed stage performances in closed issues’ work accounts")))
+            .or_else(|| fallback.map(|seconds| (seconds, "the longest between two earlier records on this issue, excluding gaps under a minute".to_string())));
         let here = issue.recorded.last().and_then(|last| stamp_age(*last, now));
-        if let Some((took, here)) =
-            took.zip(here).filter(|(took, here)| here > took && *here >= STAGE_LONG)
+        if let Some(((took, source), here)) =
+            baseline.zip(here).filter(|((took, _), here)| here > took && *here >= STAGE_LONG)
         {
             found.push(finding(
                 Kind::LongAtStage,
                 json!(["long-stage", number, stage, issue.recorded.last()]),
                 format!(
-                    "#{number} has been at the stage `{stage}` for {}, longer than any stage \
-                     before it took",
+                    "#{number} has been at the stage `{stage}` for {}, longer than its baseline",
                     lasted(here)
                 ),
                 format!(
-                    "its last stage record is {} old; the longest between two before it is {}",
+                    "its last stage record is {} old; {source} is {}",
                     lasted(here),
                     lasted(took)
                 ),
@@ -1456,9 +1469,14 @@ pub fn findings(seen: &Seen) -> Vec<Finding> {
             found.extend(run_findings(seen.run, &state.held));
             found.extend(team_findings(&state.team));
             found.extend(plan_findings(seen.run, state));
-            found.extend(claim_findings(seen.run, &state.held, seen.now));
+            found.extend(claim_findings(seen.run, &state.held, seen.now, &state.set.locks));
             found.extend(settle_wait_findings(seen.run, &state.held, seen.now));
-            found.extend(issue_findings(&state.stood, &state.team, seen.now));
+            found.extend(issue_findings(
+                &state.stood,
+                &state.team,
+                &state.stage_baselines,
+                seen.now,
+            ));
             found.extend(waiting_findings(&state.set.waiting_on_human, seen.now));
             found.extend(crate::blockers::findings(&state.set.unworked_blockers));
             found.extend(state.unclaimed.iter().map(unclaimed_finding));
@@ -1776,8 +1794,7 @@ fn read_held(
         let at = stood.iter().find(|issue| issue.number == mine.number);
         let stamped = fleet.scan.claim_of(mine.number).and_then(|claim| claim.owner.as_ref());
         // The one read the tick routes a stopped worker from: no clock of
-        // doctor's own decides its silence. A fleet lock leaves only the tick
-        // safe to name.
+        // doctor's own decides its silence.
         let silent = match (worker, stamped) {
             (Some(WorkerState::Idle { .. }), Some(owner)) => {
                 InstanceId::parse(&owner.instance).ok().and_then(|instance| {
@@ -1786,11 +1803,7 @@ fn read_held(
                 })
             }
             _ => None,
-        }
-        .map(|silent| match set.locked_out(mine.number) {
-            true => crate::judge::Silenced { command: "tick", ..silent },
-            false => silent,
-        });
+        };
         Held {
             issue: mine.number,
             title: mine.title.clone(),
@@ -1898,6 +1911,12 @@ fn finish_state(
         targets: fleet.targets(&open.issues)?,
         set,
         held,
+        stage_baselines: if stood.iter().any(|issue| issue.stage.is_some() && issue.role.is_some())
+        {
+            afkconvoy_core::accounts::stage_baselines(&fleet.gh.accounts()?)
+        } else {
+            Default::default()
+        },
         stood,
         team,
         ready_label,
@@ -2006,7 +2025,15 @@ fn fleet_json(run: &Run) -> Value {
     })
 }
 
-fn held_json(held: &Held) -> Value {
+fn held_json(held: &Held, locks: &[u64]) -> Value {
+    if held.at_work() && !locks.is_empty() && !locks.contains(&held.issue) {
+        return json!({
+            "issue": held.issue, "title": held.title, "status": held.status, "pr": held.pr,
+            "stage": held.stage, "role": held.role, "held_for": held.held_for,
+            "worker": {"state": "waiting_on_lock", "locks": locks}, "worktree": held.worktree,
+            "gate": held.gate.map(|at| json!({"green_at": at})),
+        });
+    }
     let mut worker = held.worker.map(|worker| match worker {
         WorkerState::Gone => json!({"state": "gone"}),
         WorkerState::Busy => json!({"state": "busy"}),
@@ -2281,7 +2308,7 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String], look: &Look) ->
     found.sort_by_key(|finding| finding.severity);
     let (claims, issues, waiting) = match &state {
         Ok(state) => (
-            state.held.iter().map(held_json).collect(),
+            state.held.iter().map(|held| held_json(held, &state.set.locks)).collect(),
             issues_json(&state.set)?,
             serde_json::to_value(&state.set.waiting_on_human)?,
         ),
@@ -2662,6 +2689,7 @@ mod tests {
             set: set(),
             held: vec![],
             stood: vec![],
+            stage_baselines: Default::default(),
             team: TeamRead::Unbound,
             ready_label: "ready-for-agent".into(),
             tracker: Tracker::Own,
@@ -2910,16 +2938,20 @@ mod tests {
         fleet.last_took = Some(10);
         let gone = |age| Held { held_for: Some(age), worker: Some(WorkerState::Gone), ..held(375) };
         for age in [0, 27, 99] {
-            assert_eq!(claim_findings(&fleet, &[gone(age)], NOW), [], "claim stamped {age}s ago");
+            assert_eq!(
+                claim_findings(&fleet, &[gone(age)], NOW, &[]),
+                [],
+                "claim stamped {age}s ago"
+            );
         }
-        assert_eq!(claim_findings(&fleet, &[gone(100)], NOW)[0].kind, Kind::NoWorker);
-        assert_eq!(claim_findings(&fleet, &[gone(101)], NOW)[0].kind, Kind::NoWorker);
+        assert_eq!(claim_findings(&fleet, &[gone(100)], NOW, &[])[0].kind, Kind::NoWorker);
+        assert_eq!(claim_findings(&fleet, &[gone(101)], NOW, &[])[0].kind, Kind::NoWorker);
         assert_eq!(
-            claim_findings(&fleet, &[Held { held_for: None, ..gone(0) }], NOW)[0].kind,
+            claim_findings(&fleet, &[Held { held_for: None, ..gone(0) }], NOW, &[])[0].kind,
             Kind::NoWorker,
             "an unknown stamp retains the finding"
         );
-        assert_eq!(claim_findings(&run(vec![]), &[gone(27)], NOW)[0].kind, Kind::NoWorker);
+        assert_eq!(claim_findings(&run(vec![]), &[gone(27)], NOW, &[])[0].kind, Kind::NoWorker);
     }
 
     #[test]
@@ -2953,13 +2985,13 @@ mod tests {
             ..held(375)
         };
         for now in [began + 41, began + 300] {
-            assert_eq!(claim_findings(&read(&entries), &[gone(now)], now), []);
+            assert_eq!(claim_findings(&read(&entries), &[gone(now)], now, &[]), []);
         }
         let at_start = Held { held_for: Some(41), ..gone(began + 41) };
-        assert_eq!(claim_findings(&read(&entries), &[at_start], began + 41), []);
+        assert_eq!(claim_findings(&read(&entries), &[at_start], began + 41, &[]), []);
         let older = Held { held_for: Some(1000), ..gone(began + 41) };
         assert_eq!(
-            claim_findings(&read(&entries), &[older], began + 41)[0].kind,
+            claim_findings(&read(&entries), &[older], began + 41, &[])[0].kind,
             Kind::NoWorker,
             "a tick that began after an old claim does not hide it"
         );
@@ -2974,7 +3006,7 @@ mod tests {
             What::TickStarted { count: 19, cause: Cause::Woken, by: None },
         ));
         entries.push(entry(began + 90, "alpha", What::Tick(tick(19, json!([])).1)));
-        let found = claim_findings(&read(&entries), &[gone(began + 90)], began + 90);
+        let found = claim_findings(&read(&entries), &[gone(began + 90)], began + 90, &[]);
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].kind, Kind::NoWorker);
         assert_eq!(found[0].fix, "afkconvoy dispatch --issue 375 --instance alpha");
@@ -3010,13 +3042,13 @@ mod tests {
             ..held(3)
         };
         same(
-            &claim_findings(&run(vec![]), &[stopped(GRACE)], NOW)[0],
-            &claim_findings(&run(vec![]), &[stopped(GRACE + 360)], NOW)[0],
+            &claim_findings(&run(vec![]), &[stopped(GRACE)], NOW, &[])[0],
+            &claim_findings(&run(vec![]), &[stopped(GRACE + 360)], NOW, &[])[0],
         );
         let long = Stood { recorded: vec![NOW - 3300, NOW - 3000, NOW - 2000], ..stood(7) };
         same(
-            &issue_findings(std::slice::from_ref(&long), &team(), NOW)[0],
-            &issue_findings(&[long], &team(), NOW + 360)[0],
+            &issue_findings(std::slice::from_ref(&long), &team(), &Default::default(), NOW)[0],
+            &issue_findings(&[long], &team(), &Default::default(), NOW + 360)[0],
         );
         let failed = |count| tick(count, json!([{"do": "dispatch", "issue": 3, "error": "busy"}]));
         let once = log_findings(&run(vec![failed(1)]));
@@ -3064,6 +3096,27 @@ mod tests {
         // a worker the tick does not judge silent is none, however long it stopped
         state.held = vec![stopped(GRACE * 100, None)];
         assert_eq!(self::found(&host(), &run(vec![]), &state), []);
+    }
+
+    #[test]
+    fn a_fleet_lock_hides_only_the_workers_it_leaves_alone() {
+        let silent =
+            Some(Silenced { command: "tick", nudged: true, waited: None, declared: false });
+        let stopped = |issue| Held {
+            worker: Some(WorkerState::Idle { quiet: Some(900) }),
+            silent,
+            ..held(issue)
+        };
+        let gone = Held { worker: Some(WorkerState::Gone), ..held(4) };
+        let claims = [stopped(3), gone, stopped(7)];
+        let found = claim_findings(&run(vec![]), &claims, NOW, &[7]);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].kind, Kind::WorkerStopped);
+        assert!(found[0].what.contains("#7"));
+        assert_eq!(
+            held_json(&claims[0], &[7])["worker"],
+            json!({"state": "waiting_on_lock", "locks": [7]})
+        );
     }
 
     #[test]
@@ -3343,7 +3396,7 @@ mod tests {
             ["afkconvoy show --issue 7"]
         );
         assert!(
-            found[0].evidence.contains("the longest between two before it is 16m"),
+            found[0].evidence.contains("the longest between two earlier records on this issue, excluding gaps under a minute is 16m"),
             "{found:?}"
         );
         // no longer than one before it; with nothing before it; or waiting on a human
@@ -3354,6 +3407,20 @@ mod tests {
         let quick = Stood { recorded: vec![NOW - 400, NOW - 390, NOW - 300], ..stood(7) };
         state.stood = vec![shorter, first, waiting, quick];
         assert_eq!(self::found(&host(), &run(vec![]), &state), []);
+    }
+
+    #[test]
+    fn long_stage_uses_the_repo_baseline_before_earlier_quick_records() {
+        let baselines = [("build".to_string(), (3600, 20))].into();
+        let issue = Stood { recorded: vec![NOW - 1500, NOW - 1440, NOW - 1380], ..stood(7) };
+        assert!(issue_findings(std::slice::from_ref(&issue), &team(), &baselines, NOW).is_empty());
+        let found = issue_findings(&[issue], &team(), &baselines, NOW + 2300);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].kind, Kind::LongAtStage);
+        assert!(found[0].evidence.contains("repo p95 for `build` from 20"));
+        assert!(found[0].evidence.contains("1h"));
+        let quick = Stood { recorded: vec![NOW - 2100, NOW - 2050, NOW - 2000], ..stood(8) };
+        assert!(issue_findings(&[quick], &team(), &Default::default(), NOW).is_empty());
     }
 
     #[test]
