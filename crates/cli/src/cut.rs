@@ -661,6 +661,10 @@ impl Cutting<'_> {
         let landed =
             record.landed.clone().ok_or_else(|| anyhow!("nothing says where it landed"))?;
         let tag = format!("v{}", record.version);
+        let number = record.pr.ok_or_else(|| anyhow!("the cut opened no PR"))?;
+        if self.gh.open_prs()?.iter().any(|pr| pr.number == number) {
+            self.gh.close_pr(number, &format!("Cut landed as {landed}; version {tag}."))?;
+        }
         let from = record.from.as_deref().map(|tag| self.tag_commit(tag)).transpose()?;
         let mut prs = prs_past(self.repo, from.as_deref(), &landed)?;
         prs.retain(|pr| Some(*pr) != record.pr);
