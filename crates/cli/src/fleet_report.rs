@@ -297,7 +297,14 @@ mod tests {
             memory_free: Some(50),
             disk: Some(Disk { free: 1 << 40, size: 1 << 41 }),
         };
-        Admission { shares: SHARES, said: vec![], reading, span: 600 }
+        Admission {
+            shares: SHARES,
+            said: vec![],
+            reading,
+            total_load: reading.load,
+            queue_load: Some(0),
+            span: 600,
+        }
     }
 
     fn queued(number: u64, cast: Option<Cast>) -> Dispatchable {

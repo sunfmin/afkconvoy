@@ -356,9 +356,9 @@ impl Launches {
     }
 
     /// Whether this launch adds harness flags: every worker in a role, and
-    /// outside one wherever its harness says its worktree trust is flags.
+    /// outside one wherever its worktree trust or asking guard needs flags.
     pub fn adds_flags(&self, harness: Harness) -> bool {
-        self.bound || harness.trust_is_flags()
+        self.bound || harness.trust_is_flags() || harness == Harness::Dsh
     }
 
     /// `fault`, of the command of `harness`, as a human is told it: in a

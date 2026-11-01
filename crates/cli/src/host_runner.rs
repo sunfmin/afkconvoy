@@ -551,6 +551,13 @@ pub fn log_path() -> Result<PathBuf> {
     Ok(cache()?.join(LOG))
 }
 
+/// A command or outbox transition that must be visible even outside the
+/// runner's threads, using the same log and timestamp as the runner.
+pub(crate) fn note(line: &str) -> Result<()> {
+    writeln!(opened_log(&log_path()?)?, "{}", stamped(line))?;
+    Ok(())
+}
+
 /// The hidden `afkconvoy host-runner`, as `run` starts it: takes the host,
 /// serves the panel, starts every checkout on its list, and answers on its
 /// socket, until

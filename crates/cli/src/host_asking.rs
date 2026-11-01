@@ -367,6 +367,7 @@ fn launch(session: &mut Session, state: &State) -> Result<()> {
         &session.directory,
         session.model.as_deref(),
         command.as_str(),
+        None,
     )?;
     let line = launches.worker_line(session.harness, &line);
     let line = format!("export {}=host; {line}", host_watch::WATCH_ENV);
@@ -549,6 +550,12 @@ fn resume_delivery(session: &Session) -> Result<()> {
     let question = record.question.as_ref().context("asking delivery has no question")?;
     let brief = brief_file(session, question)?;
     let earliest = record.offered.unwrap_or_else(crate::clock);
+    if !crate::watch_notify::owns(&question.question, "asking question")? {
+        record.question = None;
+        record.status = LaunchState::Idle;
+        asking_terminal::save(&record)?;
+        return Ok(());
+    }
     let sent = worktree.send_watch_round(
         &session.terminal,
         &brief_pointer(&brief.display().to_string()),

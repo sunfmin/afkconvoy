@@ -956,7 +956,8 @@ pub fn brief_pointer(brief: &str) -> String {
 pub fn nudge_line(brief: &str) -> String {
     format!(
         "You stopped without an outcome. Nobody is watching this terminal, so do not wait for a \
-         confirmation or an answer: continue your task brief ({brief}) to the end, and finish \
+         confirmation or an answer: commit and push what passes, carry on with what remains in \
+         your task brief ({brief}), and finish \
          with the outcome it asks for — a PR, or a convoy:verdict marker comment."
     )
 }
@@ -965,7 +966,8 @@ pub fn nudge_line(brief: &str) -> String {
 pub fn stage_nudge_line(brief: &str) -> String {
     format!(
         "You stopped without declaring a verdict. Nobody is watching this terminal, so do not \
-         wait for a confirmation or an answer: continue your task brief ({brief}) to the end, and \
+         wait for a confirmation or an answer: commit and push what passes, carry on with what \
+         remains in your task brief ({brief}), and \
          finish by declaring your stage's verdict with the command it gives."
     )
 }
