@@ -109,6 +109,48 @@ fn an_idle_unbound_codex_worker_has_its_waiting_turn_asked_again_without_a_harne
 }
 
 #[test]
+fn a_blocked_turn_waits_for_a_blocker_to_close_or_the_dependency_list_to_change() {
+    for close in [true, false] {
+        let world = joining();
+        world.issue(8, &[]);
+        world.issue(9, &[]);
+        world.with_gh(|gh| gh["edges"]["7"] = json!([8]));
+        let dir = worktree(&world);
+        let notes = PathBuf::from(git(&dir, &["rev-parse", "--absolute-git-dir"]));
+        world.with_orca(|orca| {
+            for terminal in orca["terminals"].as_array_mut().unwrap() {
+                terminal["agent"] = json!({"state": "done", "stateStartedAt": 1_050_000});
+                terminal["lastOutputAt"] = json!(1_050_000);
+            }
+        });
+        std::fs::write(
+            notes.join("convoy-turn.json"),
+            json!({"outcome": "blocked", "answer": {"outcome": "blocked", "blocked_by": [8]},
+                "dependencies": [{"number": 8}], "at": 1050})
+            .to_string(),
+        )
+        .unwrap();
+        for now in 1500..1503 {
+            let ticked = tick(&world, now);
+            assert_eq!(ticked["errors"], json!([]), "{ticked}");
+            assert!(did(&ticked).contains(&"watch 7 nothing".to_string()), "{ticked}");
+            assert!(
+                !notes.join("convoy-turn.log").exists(),
+                "an unchanged blocked turn was asked again"
+            );
+        }
+        if close {
+            world.close_issue(8);
+        } else {
+            world.with_gh(|gh| gh["edges"]["7"] = json!([8, 9]));
+        }
+        let ticked = tick(&world, 1503);
+        assert!(did(&ticked).contains(&"watch 7 asked".to_string()), "close={close}: {ticked}");
+        assert!(notes.join("convoy-turn.log").exists(), "the changed blocked turn was not asked");
+    }
+}
+
+#[test]
 fn a_fleet_asked_red_turn_hands_its_answer_to_the_idle_worker_on_the_next_tick() {
     let world = World::new();
     // The base passes; the candidate's change makes its gate fail.

@@ -103,7 +103,7 @@ impl Ending {
                 "the bounded candidate window was full; nothing ran: ask for a turn again; no gate failure or rework occurred"
             }
             Ending::Blocked => {
-                "`blocked_by` lists the issue dependencies still open; nothing landed: wait for them to close before asking again"
+                "`blocked_by` lists the issue dependencies still open; nothing landed: the fleet does not ask again while they all stay open and the issue's blocked-by list is unchanged; it asks again once one closes or the list changes"
             }
             Ending::Locked => {
                 "a fleet lock stands, named by `locks`; nothing landed: stop without waking anyone until told to carry on"

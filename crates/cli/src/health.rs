@@ -1512,7 +1512,7 @@ mod tests {
         repo.git(&["init", "-q"]).unwrap();
         assert!(!waiting_on_turn(dir.path()));
         for ending in Ending::ALL {
-            crate::turn_answer::noted(&repo, 1700, || {
+            crate::turn_answer::noted(&repo, None, 1700, || {
                 assert!(waiting_on_turn(dir.path()), "a live Asking process needs no operator");
                 Ok(json!({"outcome": ending.word()}))
             })
