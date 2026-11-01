@@ -8,15 +8,15 @@ use std::time::Duration;
 use afkconvoy_core::claims::InstanceId;
 use afkconvoy_core::config::RepoName;
 use afkconvoy_core::harness::Harness;
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::claims::Me;
 use crate::git::Repo;
 use crate::host_settings::To;
+use crate::kit;
 use crate::tick::{self, Holder, Line, Pacing};
-use crate::{host_settings, kit};
 
 /// How `run` asks for its checkout's fleet instance: what it named for that
 /// instance alone, kept on the checkout list so that a host runner started
@@ -84,9 +84,6 @@ pub struct Knobs {
     pub ticks: Option<u64>,
     /// Milliseconds one second of sleep takes.
     pub second_ms: u64,
-    /// Seconds every fleet on this host must have been idle before it is put
-    /// to sleep.
-    pub host_sleep_after: u64,
     /// Seconds an agent is given to be ready for its prompt.
     pub ready_timeout: u64,
     /// The epoch seconds its clock reads, fixed: the global `--now`.
@@ -98,9 +95,8 @@ pub struct Knobs {
 
 /// Holds the fleet instance of `checkout` as `start` asks, until it is told
 /// to stop or has made `start.knobs.ticks` → what its loop answers.
-/// Everything before its first tick may refuse it: host settings that
-/// cannot be read, or that have a host put to sleep that cannot be, the host
-/// kit, the startup probe. Its startup probe's warnings are
+/// Everything before its first tick may refuse it: the host kit, the
+/// startup probe. Its startup probe's warnings are
 /// said as `Line::Warning`.
 pub fn hold(checkout: &Repo, start: &Start, holder: Holder) -> Result<Value> {
     // A start is a look of its own. The host runner is one process, and an
@@ -108,12 +104,6 @@ pub fn hold(checkout: &Repo, start: &Start, holder: Holder) -> Result<Value> {
     // each again, so a checkout a `run` registered since is known
     // (docs/adr/0043).
     crate::look::begin();
-    if !host_settings::of_host()?.no_host_sleep && !cfg!(target_os = "macos") {
-        bail!(
-            "this host is not macOS, the one a fleet can put to sleep once every fleet on it is \
-             idle: run `afkconvoy run --no-host-sleep`, which keeps it awake, a host setting"
-        );
-    }
     let (named, knobs) = (&start.named, &start.knobs);
     let fixed_now = knobs.now;
     let clock = move || fixed_now.unwrap_or_else(crate::clock);
@@ -131,7 +121,6 @@ pub fn hold(checkout: &Repo, start: &Start, holder: Holder) -> Result<Value> {
     let pacing = Pacing {
         ticks: knobs.ticks,
         second: Duration::from_millis(knobs.second_ms),
-        host_sleep_after: knobs.host_sleep_after,
         panic_at: knobs.panic_at,
     };
     kit::ensure(now)?;

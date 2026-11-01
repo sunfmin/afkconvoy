@@ -64,12 +64,12 @@ use crate::exclusive::Queue;
 use crate::git::Repo;
 use crate::host_panel::HostPanel;
 use crate::host_settings::To;
-use crate::host_sleep::Standings;
 use crate::instance::{self, Named, Start};
 use crate::log::{self, What};
 use crate::panel::Broken;
 use crate::published::Published;
 use crate::runner_socket::{self, Reached, Reply, Request};
+use crate::standings::Standings;
 use crate::stop::Stop;
 use crate::tick::{Echo, Holder, Line, Show};
 use crate::tracker::Checked;
@@ -146,7 +146,7 @@ struct Runner {
 }
 
 /// What the fleet instances of a host share, held by its host runner for
-/// them all (docs/adr/0023): how each stands for host sleep, the one
+/// them all (docs/adr/0023): how each stands, which a move reads, the one
 /// watch on the host and who waits for it, and the exclusive queue; and
 /// the newer afkconvoy installed where it was started from, which it moves
 /// onto; and the wake routes of open blockers across repos on one tracker.
@@ -2560,15 +2560,7 @@ mod tests {
                 },
             )])),
         };
-        let standing = afkconvoy_core::host_sleep::Standing {
-            instance: "alpha".into(),
-            no_host_sleep: true,
-            idle: false,
-            since: 1000,
-            worked: None,
-        };
-        let host =
-            crate::host_sleep::HostSleep::open(standing, &Wakes::default(), &shared.standings, 600);
+        let host = crate::standings::Standing::open("alpha", &shared.standings);
         host.begins();
         assert!(runner.stopped_for_move_at(1599).is_none());
         assert!(!shared.installed().as_ref().unwrap().wait_expired);
@@ -2578,7 +2570,7 @@ mod tests {
         assert_eq!(installed.held_back, ["/checkout is in a tick"]);
         assert!(not_moved(&installed).is_some());
         assert!(!runner.moved() && !stop.told());
-        host.ticked(1600, Some((false, true)));
+        host.ticked(true);
         assert!(host.begins_unless_stopped(&stop), "new ticks resume after expiry");
         let watched = Watched {
             path: None,
@@ -2589,7 +2581,7 @@ mod tests {
         };
         assert!(!watched.moves_at(1600), "the old runner gets time to work");
         assert!(watched.moves_at(1601), "the same installed file is tried again");
-        host.ticked(1601, Some((false, true)));
+        host.ticked(true);
         assert!(runner.stopped_for_move_at(1601).is_some());
         assert!(runner.moved() && stop.told(), "it moves once the long tick ended");
     }

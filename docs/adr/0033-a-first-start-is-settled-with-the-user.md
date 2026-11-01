@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: accepted; its host-sleep question superseded by ADR-0050
 ---
 
 # A first start is settled with the user

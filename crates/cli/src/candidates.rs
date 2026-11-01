@@ -3,14 +3,17 @@
 //! record is one atomic push, so invalidation and publication cannot both win.
 use afkconvoy_core::account::End;
 use afkconvoy_core::candidate::{Barrier, Candidate, Chain, Phase, Process, Publication, Slow};
+use afkconvoy_core::claims::{HEARTBEAT_KIND, read_heartbeat};
 use afkconvoy_core::config::Config;
 use afkconvoy_core::ending::Ending;
 use afkconvoy_core::gate::{GateCommand, Proven, Tree};
 use afkconvoy_core::landing::{Of, merge_message};
+use afkconvoy_core::lease::stamp_stale;
 use afkconvoy_core::lock::keeps_off;
 use afkconvoy_core::plan::PullRequest;
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -361,6 +364,9 @@ pub(crate) fn identity(pid: u32) -> Result<Option<Process>> {
     Ok(Some(Process { host: crate::this_host(), pid, started: fields[..5].join(" ") }))
 }
 
+/// Whether `process` runs: on this host, by its identity. One on another
+/// host cannot be read from here, and counts as running; whether that host
+/// is alive at all is `reconcile`'s to read (`dead_hosts`).
 fn alive(process: &Process) -> Result<bool> {
     if process.host != crate::this_host() {
         return Ok(true);
@@ -562,11 +568,27 @@ pub(crate) fn invalidate(repo: &Repo, config: &Config, id: &str, cause: &str) ->
     cleanup(repo, config, &chain)
 }
 
-fn reconcile(repo: &Repo, config: &Config) -> Result<Chain> {
+/// A turn's look at the chain at `now`, which keeps it true: says this host
+/// is alive (`Chain::beat`), takes over what a dead host owns (`dead_hosts`,
+/// `Chain::abandon`), invalidates a candidate whose PR head moved or whose
+/// owner on this host is gone, drops this host's dead barriers and pending
+/// turns, and stops this host's invalid candidates (`cleanup`): its own too,
+/// when another host took it over while this one was away.
+fn reconcile(repo: &Repo, config: &Config, now: u64) -> Result<Chain> {
+    let here = crate::this_host();
     loop {
         let snapshot = read(repo, config)?;
+        let mut updated = snapshot;
+        let before = updated.chain.clone();
+        updated.chain.beat(&here, now);
+        for (host, heard) in dead_hosts(repo, &updated.chain, &here, now)? {
+            match heard {
+                Some(ts) => updated.chain.heard(&host, ts),
+                None => updated.chain.abandon(&host),
+            }
+        }
         let mut invalid = vec![];
-        for c in snapshot.chain.candidates.iter().filter(|c| c.valid()) {
+        for c in updated.chain.candidates.iter().filter(|c| c.valid()) {
             if repo.remote().sha(&format!("refs/heads/{}", c.branch), Fresh::Live)?.as_deref()
                 != Some(&c.original_head)
             {
@@ -575,14 +597,12 @@ fn reconcile(repo: &Repo, config: &Config) -> Result<Chain> {
                 invalid.push((c.id.clone(), "owner_died"));
             }
         }
-        let mut updated = snapshot;
         let mut dead_barriers = vec![];
         for barrier in updated.chain.barriers.iter().chain(&updated.chain.pending) {
             if !alive(&barrier.owner)? {
                 dead_barriers.push(barrier.id.clone());
             }
         }
-        let before = updated.chain.clone();
         updated.chain.barriers.retain(|b| !dead_barriers.contains(&b.id));
         updated.chain.pending.retain(|b| !dead_barriers.contains(&b.id));
         updated.chain.observe_base(&updated.base);
@@ -595,6 +615,43 @@ fn reconcile(repo: &Repo, config: &Config) -> Result<Chain> {
         cleanup(repo, config, &updated.chain)?;
         return Ok(read(repo, config)?.chain);
     }
+}
+
+/// The hosts but `here` that own a member of `chain` and stamped it no
+/// later than the lease before `now` → each with what the fleet heartbeats
+/// on this repo's remote say instead: the newest stamp of a fleet instance
+/// on it, where that is within the lease, or `None`: the host is dead. The
+/// heartbeats are read live, and only when a host is to be judged by them:
+/// a host whose turns run this version stamps the chain itself.
+fn dead_hosts(
+    repo: &Repo,
+    chain: &Chain,
+    here: &str,
+    now: u64,
+) -> Result<Vec<(String, Option<u64>)>> {
+    let quiet: Vec<&str> = chain
+        .owners()
+        .into_iter()
+        .filter(|host| *host != here && !chain.beats(host, now))
+        .collect();
+    if quiet.is_empty() {
+        return Ok(vec![]);
+    }
+    let prefix = repo.layout().under(HEARTBEAT_KIND);
+    let mut newest: BTreeMap<String, u64> = BTreeMap::new();
+    for record in repo.remote().records(&[&format!("{prefix}*")], Fresh::Live)? {
+        if let Some(beat) = read_heartbeat(&record.subject, record.sha.clone()) {
+            let ts = newest.entry(beat.host).or_insert(beat.ts);
+            *ts = (*ts).max(beat.ts);
+        }
+    }
+    Ok(quiet
+        .into_iter()
+        .map(|host| {
+            let fresh = newest.get(host).copied().filter(|&ts| !stamp_stale(ts, now));
+            (host.to_string(), fresh)
+        })
+        .collect())
 }
 
 /// Used before queue capacity is released after a candidate owner dies.
@@ -625,6 +682,8 @@ pub(crate) struct Gate<'a> {
     /// A round's slow gate: its tests keep the threads its profile gives
     /// them, and are not held to a share of the host's cores.
     pub slow: bool,
+    /// The turn's clock: what each look at the chain is made at.
+    pub clock: &'a dyn Fn() -> u64,
 }
 
 impl Gate<'_> {
@@ -687,7 +746,7 @@ impl Gate<'_> {
     }
 
     pub fn cancelled(&self) -> Result<bool> {
-        let chain = reconcile(self.repo, self.config)?;
+        let chain = reconcile(self.repo, self.config, (self.clock)())?;
         Ok(!chain.candidates.iter().any(|c| c.id == self.id && c.valid()))
     }
 }
@@ -734,6 +793,12 @@ fn cancelled(mut answer: Value, c: &Candidate, chain: &Chain) -> Value {
     answer["detail"] = json!(
         "candidate invalidated; source branch preserved; ask for another turn when its blockers permit; this is not this worker's red gate"
     );
+    if c.cause.as_deref() == Some("owner_died") && c.owner.host == crate::this_host() {
+        answer["detail"] = json!(format!(
+            "another host took this candidate over: no turn on this host said it was alive within the lease ({}s) — it slept, or lost the network — so nothing of it lands, and its gate here was stopped; source branch preserved; ask for another turn",
+            afkconvoy_core::lease::LEASE
+        ));
+    }
     answer
 }
 
@@ -912,27 +977,29 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
         afkconvoy_core::gate::key(&crate::this_host()),
         crate::unique()
     );
-    let _reservation = if barrier {
-        change(repo, config, |chain| {
-            if !chain.barriers.iter().any(|b| b.id == id) {
-                chain.barriers.push(Barrier { id: id.clone(), owner: owner.clone() });
-            }
-        })?;
-        Some(Reservation { repo, config, id: id.clone() })
-    } else {
-        // A round waits for every turn that asked to land (sunfmin/control#244).
-        change(repo, config, |chain| {
-            if !chain.pending.iter().any(|b| b.id == id) {
-                chain.pending.push(Barrier { id: id.clone(), owner: owner.clone() });
-            }
-        })?;
-        Some(Reservation { repo, config, id: id.clone() })
+    // A barrier's place, or a pending turn's: a round waits for every turn
+    // that asked to land (sunfmin/control#244). It says this host is alive.
+    let here = crate::this_host();
+    let reserve = |chain: &mut Chain| {
+        let places = if barrier { &mut chain.barriers } else { &mut chain.pending };
+        if !places.iter().any(|b| b.id == id) {
+            places.push(Barrier { id: id.clone(), owner: owner.clone() });
+        }
+        chain.beat(&here, clock());
     };
+    change(repo, config, reserve)?;
+    let _reservation = Reservation { repo, config, id: id.clone() };
     // Do not reserve a host lane while waiting for a barrier/window or for
     // another invocation of this PR. Dead owners are reconciled first.
     let mut waiting = Waiting::new();
     loop {
-        let chain = reconcile(repo, config)?;
+        let mut chain = reconcile(repo, config, clock())?;
+        // Another host read this one dead while it was away — it slept, or
+        // lost the network — and dropped its place: it takes one again, at
+        // the back.
+        if !chain.barriers.iter().chain(&chain.pending).any(|b| b.id == id) {
+            chain = change(repo, config, reserve)?;
+        }
         if let Some(c) =
             chain.candidates.iter().rev().find(|c| c.pr == pr.number && c.original_head == original)
         {
@@ -1077,6 +1144,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
             cancelled_by: None,
             cause: None,
             stopped: false,
+            abandoned: false,
             result: None,
             slow,
             slowed: false,
@@ -1102,7 +1170,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
     ])?;
     let checkout = Repo::new(path.clone());
     let command = GateCommand::new(&candidate.command);
-    let hook = Gate { repo, config, id: &id, slow: false };
+    let hook = Gate { repo, config, id: &id, slow: false, clock: &clock };
     let result = crate::gate::candidate_gate(
         &checkout,
         &command,
@@ -1139,7 +1207,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
     }
     let mut waiting = Waiting::new();
     loop {
-        let chain = reconcile(repo, config)?;
+        let chain = reconcile(repo, config, clock())?;
         let c = chain.candidates.iter().find(|c| c.id == id).expect("assigned candidate");
         // A round at a candidate behind this one may have landed it.
         if c.phase == Phase::Landed {
@@ -1302,7 +1370,7 @@ fn round(round: Round<'_>, clock: impl Fn() -> u64) -> Result<Option<Value>> {
         std::fs::remove_file(&scope)?;
     }
     let command = GateCommand::new(&slow.command);
-    let hook = Gate { repo, config, id, slow: true };
+    let hook = Gate { repo, config, id, slow: true, clock: &clock };
     let result = crate::gate::candidate_gate(
         &checkout,
         &command,

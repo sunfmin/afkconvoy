@@ -29,7 +29,7 @@ The repo a fleet reads and writes its issues in: its checkout's own, until the c
 _Avoid_: issue repo, backlog (all the issues a repo has open), project (a GitHub Project)
 
 **First start**:
-The start of a checkout not yet on its host's checkout list, whose tracker and concurrency are settled with the user; on a host with no host settings yet, its host sleep is settled too. The agent explains the choices, sets up what needs no decision, and asks the user together for what does.
+The start of a checkout not yet on its host's checkout list, whose tracker and concurrency are settled with the user; on a host with no host settings yet, its operator's directory is asked too. The agent explains the choices, sets up what needs no decision, and asks the user together for what does.
 _Avoid_: onboarding, setup wizard
 
 **Repo label**:
@@ -41,7 +41,7 @@ A fleet instance whose loop panicked or ended in an error — its tracker found 
 _Avoid_: crashed, dead (a heartbeat past the lease), down (a harness that refuses every prompt)
 
 **Host settings**:
-What a host says for every fleet instance on it — whether it may be put to sleep and its sleep hours, the limits past which a worker is hot, the shares admission holds back at, the bound on an exclusive command holding others up, the number of worker lanes and of fast lanes, the panel's port, the operator's directory a watch starts in and how often the host runner looks, the command that supplies a TypeSafe key for Jev's worker-health judgments — kept beside the checkout list and changed by any `run` that names one, for every fleet instance on the host at once.
+What a host says for every fleet instance on it — the limits past which a worker is hot, the shares admission holds back at, the bound on an exclusive command holding others up, the number of worker lanes and of fast lanes, the panel's port, the operator's directory a watch starts in and how often the host runner looks, the command that supplies a TypeSafe key for Jev's worker-health judgments — kept beside the checkout list and changed by any `run` that names one, for every fleet instance on the host at once.
 _Avoid_: global config, runner flags
 
 **Tick**:
@@ -85,12 +85,8 @@ A fleet instance with nothing to do now: it holds no claim — on an issue, a pa
 _Avoid_: drained, done (what a step or a command did), finished (a PR its worker is through with)
 
 **Host sleep**:
-A fleet instance putting its host to sleep: the host's local time is within its sleep hours, every fleet instance on the host has been idle for ten minutes, as its host runner holds how each stands, each has ticked once more and found nothing, no one has used the host's keyboard or mouse for ten minutes, the one that puts it to sleep has worked since the host last woke, and the host settings do not keep it awake. A host woken stays awake until some instance on it has worked again. The fleet never wakes a host: one put to sleep within its sleep hours sleeps on past their end.
-_Avoid_: sleep (the wait between ticks), hibernate, suspend, shutdown
-
-**Sleep hours**:
-The hours of a host's local time its fleets may put it to sleep in: from 00:00 to 06:00 unless its host settings say others (`--host-sleep-hours 22:00-06:00`), the start included and the end not, past midnight where the end comes first, and any hour with `00:00-24:00`. A check for host sleep outside them keeps the host awake, says so, and is followed by the next as they start.
-_Avoid_: quiet hours, night mode
+What a fleet no longer does: put its host to sleep once every fleet on it was idle (ADR-0016, superseded by ADR-0050). No fleet puts its host to sleep; a fleet instance still notices its host waking from a sleep something else caused.
+_Avoid_: sleep (the wait between ticks)
 
 **Base branch**:
 The configured destination of a repo's ordinary tasks, watches and cuts, and the branch from which versions are cut. A task with an explicit target branch leaves it unchanged.
@@ -329,7 +325,7 @@ The atomic lock marking one issue as owned by one fleet instance. Its creation s
 _Avoid_: assignee, assignment, lock (the fleet lock)
 
 **Heartbeat**:
-The timestamp a fleet instance publishes for itself while it holds claims, stamped with its host. A claim is live while its owner's heartbeat is within the lease. A `run` told to stop while it holds no claim removes its own; a start removes the dead ones that hold nothing: those of the instances it took from, its own host's past the lease, and anyone's older than a day.
+The timestamp a fleet instance publishes for itself while it holds claims, stamped with its host. A claim is live while its owner's heartbeat is within the lease. A land turn stamps its host the same way on the candidate record while its host holds a candidate, a barrier or a pending turn there; that host's members of the chain are live while either stamp of the host is within the lease, and any other host's next turn takes them over once neither is. A `run` told to stop while it holds no claim removes its own; a start removes the dead ones that hold nothing: those of the instances it took from, its own host's past the lease, and anyone's older than a day.
 _Avoid_: ping, keepalive
 
 **Orphaned claim**:
@@ -363,7 +359,7 @@ The one web page that shows a human where every fleet of a host stands: the host
 _Avoid_: dashboard, status page, status board (the comment on one issue), UI
 
 **Tick log**:
-The file a fleet instance keeps on its own host: one line as it starts, a line as each tick starts — with why: its timer, a wake and the command that sent it, the fleet instance's start, or a follow-up — and one as it ends — what it did, and what changed on GitHub or by another host since the tick before where it acted on that — plus the lines of the events that reached the fleet instance: a wake heard during a tick, a check for host sleep, the host waking, being told to stop. Every command that changes fleet state, whoever runs it, appends a line of its own to the file of its host and repo as it acts — the command, the issue, who ran it, and how it came out or that it failed — whether a fleet instance is there or not. Each line is appended whole, and only the fleet instance cuts the file back: it keeps every line of the last day, and never fewer than 200 lines nor more than 5000. It is a log and not fleet state: nothing reads it to decide what the fleet does.
+The file a fleet instance keeps on its own host: one line as it starts, a line as each tick starts — with why: its timer, a wake and the command that sent it, the fleet instance's start, or a follow-up — and one as it ends — what it did, and what changed on GitHub or by another host since the tick before where it acted on that — plus the lines of the events that reached the fleet instance: a wake heard during a tick, the host waking, being told to stop. Every command that changes fleet state, whoever runs it, appends a line of its own to the file of its host and repo as it acts — the command, the issue, who ran it, and how it came out or that it failed — whether a fleet instance is there or not. Each line is appended whole, and only the fleet instance cuts the file back: it keeps every line of the last day, and never fewer than 200 lines nor more than 5000. It is a log and not fleet state: nothing reads it to decide what the fleet does.
 _Avoid_: state file, journal, history
 
 **Finding**:

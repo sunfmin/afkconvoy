@@ -1,6 +1,6 @@
 //! The log of a `run`: one line when it starts, one as each tick starts and
 //! one as it ends, and one for each event that reached it — a wake heard
-//! during a tick, a check for host sleep, the host waking, being told to stop
+//! during a tick, the host waking, being told to stop
 //! — in a file under this user's cache directory, for `doctor` to read back.
 //! `run` prints each line too, as it is written (`Entry::said`). Every command
 //! that changes fleet state writes a line of its own to it as it acts
@@ -85,13 +85,6 @@ pub enum What {
         outcome: String,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         failed: bool,
-    },
-    /// A check for host sleep ended: it put the host to sleep, or what kept
-    /// the host awake, each in words.
-    HostSleep {
-        slept: bool,
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        awake: Vec<String>,
     },
     /// The host woke from a sleep, noticed as a rest of this `run` took
     /// `asleep` seconds past what it was to.
@@ -253,12 +246,6 @@ impl Entry {
                 let failed = if *failed { "FAILED: " } else { "" };
                 format!("{command}{on} ({by}): {failed}{outcome}")
             }
-            What::HostSleep { slept: true, .. } => "host sleep: every fleet on this host has \
-                been idle long enough, and ticked once more: put the host to sleep"
-                .to_string(),
-            What::HostSleep { slept: false, awake } => {
-                format!("host sleep: kept awake: {}", awake.join("; "))
-            }
             What::HostWoke { asleep } => format!("host woke: after {asleep}s asleep"),
             What::Stop { line } => format!("stop: {line}"),
             What::Broken { why, since, next } => {
@@ -325,9 +312,6 @@ impl Entry {
                 "wake",
                 format!("{} during tick {during}: tick {} followed", woken(by), during + 1),
             )),
-            What::HostSleep { slept: true, .. } => {
-                Some(("host_sleep", "every fleet on this host was idle".to_string()))
-            }
             What::HostWoke { asleep } => Some(("host_wake", format!("after {asleep}s asleep"))),
             What::Stop { line } => {
                 Some(("stop", format!("told to stop (SIGTERM or SIGINT): {line}")))
@@ -352,7 +336,6 @@ impl Entry {
             What::CutStarted { .. } | What::CutEnded { .. } => Some(("cut", cut_said(&self.what)?)),
             What::TickStarted { .. }
             | What::Tick(_)
-            | What::HostSleep { slept: false, .. }
             | What::Command { .. }
             | What::Hot { .. }
             | What::Cooled { .. }

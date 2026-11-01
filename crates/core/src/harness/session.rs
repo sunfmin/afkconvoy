@@ -134,6 +134,18 @@ pub(super) fn same_cwd(recorded: &str, cwd: &str) -> bool {
     recorded.trim_end_matches('/') == cwd.trim_end_matches('/')
 }
 
+/// Whether `text` names the absolute `path`: an occurrence not preceded by a
+/// character a path holds, so `/a/b` does not name `/x/a/b`.
+pub(super) fn names_path(text: &str, path: &str) -> bool {
+    !path.is_empty()
+        && text.match_indices(path).any(|(at, _)| {
+            text.get(..at).and_then(|before| before.chars().next_back()).is_none_or(|ch| {
+                !(ch.is_alphanumeric()
+                    || matches!(ch, '/' | '.' | '_' | '-' | '~' | '%' | '+' | '@'))
+            })
+        })
+}
+
 /// One path component holds at most this many bytes. A worktree path longer
 /// than that cannot be the harness's own directory name, so the record and
 /// the reader share a short name for it. A path that fits keeps the name the

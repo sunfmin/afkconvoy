@@ -5,13 +5,14 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use afkconvoy_core::before::{Before, Lost};
-use afkconvoy_core::host_sleep::{self, IDLE_WAIT, SLEEP_HOURS, Standing};
 use afkconvoy_core::lease::stamp_age;
 use afkconvoy_core::lock::named;
 use afkconvoy_core::plan::{Status, WorkingSet, handed_by};
 use afkconvoy_core::position::Position;
 use afkconvoy_core::takeover::run_said;
-use afkconvoy_core::tick::{Outcome, Pass, TickStep, empty_streak, pace, run_pass, sleeps_skipped};
+use afkconvoy_core::tick::{
+    Outcome, Pass, TickStep, empty_streak, idle, pace, run_pass, sleeps_skipped,
+};
 use afkconvoy_core::wake::turn;
 use anyhow::{Result, anyhow};
 use serde_json::{Value, json};
@@ -27,8 +28,6 @@ use crate::forget::forget;
 use crate::gh::{Gone, unreached};
 use crate::git::Repo;
 use crate::host_runner::Shared;
-use crate::host_settings;
-use crate::host_sleep::{Checked, HostSleep};
 use crate::hot::{self, Hot};
 use crate::judge::judge;
 use crate::log::{self, Cause, Log};
@@ -37,6 +36,7 @@ use crate::patrol;
 use crate::settle::settle;
 use crate::slow_gate;
 use crate::stage::Flows;
+use crate::standings::Standing;
 use crate::stop::Stop;
 use crate::takeover::{at_start, reclaim, unlock};
 use crate::topic::{self, See};
@@ -611,7 +611,7 @@ impl Ticked {
         panel.held = self.pass.held - panel.declared;
         panel.bound = self.bound - panel.declared;
         panel.frontier = self.pass.frontier_remaining;
-        panel.idle = self.idle().0;
+        panel.idle = self.idle();
         panel
     }
 
@@ -621,15 +621,19 @@ impl Ticked {
         self.bound.saturating_sub(self.concurrency.saturating_add(self.set.left_alone()))
     }
 
-    /// Whether this instance is idle after the tick, and whether it worked in
-    /// it: held a claim — as its rebuild read the claims, or as its pass ended
-    /// — or had something on the base branch. A cut of mine going is work,
-    /// as a claim held is: it takes no slot, and keeps the host awake.
-    pub fn idle(&self) -> (bool, bool) {
+    /// Whether this instance is idle after the tick (GLOSSARY: Idle). A cut
+    /// of mine going is not idle.
+    pub fn idle(&self) -> bool {
         let pass = &self.pass;
-        let cutting = pass.cutting(&self.set);
-        let idle = host_sleep::idle(pass.held, pass.frontier_remaining) && !cutting;
-        (idle, host_sleep::worked(self.set.held().max(pass.held)) || cutting)
+        idle(pass.held, pass.frontier_remaining) && !pass.cutting(&self.set)
+    }
+
+    /// Whether this instance was at work in the tick, as a move onto a newer
+    /// release reads it (`Stands::AtWork`): it held a claim — as its rebuild
+    /// read the claims, or as its pass ended — or a cut of mine is going,
+    /// which takes no slot.
+    pub fn at_work(&self) -> bool {
+        self.set.held().max(self.pass.held) > 0 || self.pass.cutting(&self.set)
     }
 
     /// What the pass's start and end of a cut said, for the log to keep.
@@ -741,7 +745,7 @@ impl Ticked {
             })
             .collect();
         let mut answer = json!({"did": did, "errors": errors, "held": self.pass.held,
-            "frontier_remaining": self.pass.frontier_remaining, "idle": self.idle().0,
+            "frontier_remaining": self.pass.frontier_remaining, "idle": self.idle(),
             "locks": self.set.locks});
         if self.pass.held_back(&self.set) {
             answer["held_back_by"] = json!(self.held_back_by());
@@ -920,37 +924,15 @@ impl Ticked {
 }
 
 /// How `run` paces itself; the knobs exist for the tests. What the host says
-/// of host sleep and of hot workers is its host settings', read as they are
-/// used (`host_settings`).
+/// of hot workers is its host settings', read as they are used
+/// (`host_settings`).
 pub struct Pacing {
     /// Stop after this many ticks [default: never].
     pub ticks: Option<u64>,
     /// How long one second of sleep really takes.
     pub second: Duration,
-    /// How long, in seconds, every fleet on this host must have been idle
-    /// before it is put to sleep [default: `IDLE_WAIT`].
-    pub host_sleep_after: u64,
     /// Panic as this tick ends, its line kept: the tests' broken instance.
     pub panic_at: Option<u64>,
-}
-
-/// What a `run` says at its start of host sleep, when the host settings have
-/// it put its host to sleep as it starts: in which hours, after how long, how
-/// to say other hours or change them back, and how not to.
-fn host_sleep_line(pacing: &Pacing) -> Option<String> {
-    let after = match pacing.host_sleep_after {
-        IDLE_WAIT => "ten minutes".to_string(),
-        seconds => format!("{seconds}s"),
-    };
-    let hours = host_settings::host_sleep()?;
-    let change = match hours {
-        SLEEP_HOURS => "`--host-sleep-hours` says others".to_string(),
-        _ => format!("`--host-sleep-hours default` changes them back to {SLEEP_HOURS}"),
-    };
-    Some(format!(
-        "start: puts this host to sleep within its sleep hours, {hours}, once every fleet on it \
-         has been idle {after} ({change}, `--no-host-sleep` keeps it awake)"
-    ))
 }
 
 /// What a start says it took, when it took or lost anything.
@@ -1043,7 +1025,7 @@ pub enum Line<'l> {
     /// Kept in its tick log (`Said::keep`).
     Kept(&'l log::Entry),
     /// Said and kept nowhere, as `run` printed and never logged it: what its
-    /// start took, host sleep's terms.
+    /// start took.
     Said(&'l str),
     /// What it warns of: its startup probe's warnings, a worker launch
     /// command with no unattended flag, what it cannot do and does without —
@@ -1063,7 +1045,7 @@ pub type Show = Arc<dyn Fn(Panel) + Send + Sync>;
 /// What holds a fleet instance's loop — the host runner: the stop it obeys,
 /// where its lines go, the wakes heard for it through the host runner
 /// (docs/adr/0023), what the host runner holds for all its fleet instances
-/// (how each stands for host sleep, the watch running, the exclusive
+/// (how each stands, the watch running, the exclusive
 /// queue), and where its part of the panel goes: `None` where none is
 /// shown, and none is made.
 pub struct Holder {
@@ -1140,23 +1122,6 @@ impl hot::Hears for Said {
     }
 }
 
-/// Makes the check for host sleep that is due, if one is (`HostSleep::check`),
-/// and says how it ended → whether the next tick is due now, the check waiting on it.
-fn check_host(host: &mut HostSleep, said: &Said, stop: &Stop, clock: &Clock) -> bool {
-    let Some(checked) = host.check(clock(), clock.as_ref(), stop) else { return false };
-    let (slept, awake) = match checked {
-        Checked::TickNow => return true,
-        Checked::Stopped => return false,
-        Checked::Awake(awake) => (false, awake.iter().map(|awake| awake.said()).collect()),
-        Checked::Slept => (true, vec![]),
-        Checked::Failed(error) => {
-            (false, vec![format!("the host could not be put to sleep: {error}")])
-        }
-    };
-    said.keep(clock(), log::What::HostSleep { slept, awake });
-    false
-}
-
 /// `afkconvoy run`: tick after tick of the fleet of the checkout `repo`,
 /// sleeping in between — a sleep a worker's
 /// `afkconvoy wake` ends early, and that is skipped after a tick that left the
@@ -1173,10 +1138,10 @@ fn check_host(host: &mut HostSleep, said: &Said, stop: &Stop, clock: &Clock) -> 
 /// written (`Said`); nothing here ever reads the log. It watches what each
 /// worker's processes take, and says as one turns hot and as it stops being
 /// hot (`hot::watch`, docs/adr/0019). Resource conditions are kept for the
-/// host watch's next look. Unless host settings keep it awake, it puts the
-/// host to sleep once every fleet on it has been idle long enough, within
-/// the host's sleep hours, as its host runner holds how each stands
-/// (`HostSleep`, docs/adr/0016, 0023). It obeys `holder`'s stop — whoever holds the
+/// host watch's next look. It says how it stands as each tick begins and
+/// ends, among the others its host runner holds (`Standing`, docs/adr/0023),
+/// and begins no tick while a move holds them back (docs/adr/0032). It never
+/// puts the host to sleep (docs/adr/0050). It obeys `holder`'s stop — whoever holds the
 /// process listens for the signals — and says each line to its echo. It
 /// ends in an error as its tracker is found public (`probe::public_tracker`).
 pub fn run(
@@ -1220,19 +1185,9 @@ pub fn run(
     }
     let mut cause = Cause::Start;
     let mut by = None;
-    if let Some(line) = host_sleep_line(pacing) {
-        said.say(&line);
-    }
-    let standing = Standing {
-        instance: me.instance.as_str().to_string(),
-        no_host_sleep: host_settings::kept_awake(),
-        idle: false,
-        since: me.now,
-        worked: None,
-    };
-    let mut host = HostSleep::open(standing, &wakes, &shared.standings, pacing.host_sleep_after);
+    let standing = Standing::open(me.instance.as_str(), &shared.standings);
     loop {
-        if !host.begins_unless_stopped(&stop) {
+        if !standing.begins_unless_stopped(&stop) {
             said.keep(clock(), log::What::Stop { line: stop_line(repo, me) });
             return Ok(json!({"stopped": true, "ticks": count, "instance": me.instance.as_str()}));
         }
@@ -1243,7 +1198,7 @@ pub fn run(
         // A tracker made public ends this fleet instance before it works
         // anything more — within the hour a check that found it private
         // stands, and at once of one said anew — as a start's probe refuses
-        // one: it is broken, keeps no host awake, and each start of it again
+        // one: it is broken, and each start of it again
         // is refused until the tracker is private or another is said
         // (docs/adr/0027). A check that cannot be made costs nothing: the
         // tick reads GitHub too, and says why that fails.
@@ -1292,7 +1247,8 @@ pub fn run(
             },
         );
         wakes.ended();
-        let idle = ticked.as_ref().ok().map(|(ticked, _)| ticked.idle());
+        // A tick that failed whole is at work: it may have held claims.
+        let at_work = ticked.as_ref().map_or(true, |(ticked, _)| ticked.at_work());
         let mut cut_said = vec![];
         let (line, sleep, logged) = match ticked {
             Ok((ticked, panel)) => {
@@ -1341,33 +1297,19 @@ pub fn run(
         let tick = log::Tick { count, sleep, line, bound, answer, error };
         said.keep(clock(), log::What::Tick(tick));
         // Resource observations and logging finish before a release move.
-        host.ticked(clock(), idle);
+        standing.ticked(at_work);
         if pacing.panic_at == Some(count) {
             panic!("told to panic as tick {count} ended (--panic-at-tick)");
         }
-        let mut due_now = check_host(&mut host, &said, &stop, &clock);
         if pacing.ticks.is_some_and(|ticks| count >= ticks) {
             return Ok(json!({"stopped": true, "ticks": count, "instance": me.instance.as_str()}));
         }
-        // A check that falls due while it sleeps is made then, whether a
-        // tick is due or not.
-        let mut left = pacing.second * sleep as u32;
         cause = if sleep == 0 { Cause::FollowUp } else { Cause::Timer };
-        while !due_now {
-            let until = host.due().map(|due| Duration::from_secs(due.saturating_sub(clock())));
-            let nap = until.map_or(left, |until| until.min(left));
-            let rested = rest(&wakes, &stop, nap, (&said, &clock));
-            let slept = rested == Rested::Slept;
-            if let Rested::Woken(woken) = rested
-                && sleep > 0
-            {
-                (cause, by) = (Cause::Woken, woken);
-            }
-            if !slept || nap == left {
-                break;
-            }
-            left -= nap;
-            due_now = check_host(&mut host, &said, &stop, &clock);
+        if let Rested::Woken(woken) =
+            rest(&wakes, &stop, pacing.second * sleep as u32, (&said, &clock))
+            && sleep > 0
+        {
+            (cause, by) = (Cause::Woken, woken);
         }
         if stop.told() {
             said.keep(clock(), log::What::Stop { line: stop_line(repo, me) });

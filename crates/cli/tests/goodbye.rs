@@ -3,13 +3,9 @@ use crate::common;
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
 
+use afkconvoy_core::lease::{FORGOTTEN, LEASE};
 use common::{World, bookkeeping};
 use serde_json::{Value, json};
-
-/// The lease, and a day: what a heartbeat that holds nothing outlives on its
-/// own host, and on another.
-const LEASE: u64 = 4500;
-const DAY: u64 = 86_400;
 
 /// A `run` with nothing fixed: who it runs as, and when, is each test's.
 const RUN: [&str; 6] = ["run", "--tracker", "default", "--foreground", "--host", "h1"];
@@ -112,7 +108,7 @@ fn a_start_sweeps_its_hosts_heartbeats_past_the_lease_and_anyones_past_a_day() {
     assert_eq!(heartbeats(&world), json!({"idle": later - 60, "peer": 1000}));
 
     // a day on, whichever host stamped it
-    let lines = start_at(&world, "gamma", 1001 + DAY);
+    let lines = start_at(&world, "gamma", 1001 + FORGOTTEN);
     assert_eq!(lines[0], "start: swept 2 dead heartbeat(s) that held nothing");
     assert_eq!(heartbeats(&world), json!({}));
 }

@@ -115,12 +115,11 @@ fn run_adds_its_checkout_and_answers_once_its_first_tick_ended() {
     assert_eq!(entry.said(), first_tick);
     assert_eq!(entry.instance, answer["instance"].as_str().unwrap());
 
-    // on the list, with what its `run` named for it alone; beside it, the
-    // host setting its environment named, which its answer says it changed
+    // on the list, with what its `run` named for it alone; it named no host
+    // setting, and its answer says it changed none
     let list = world.checkout_list();
     assert_eq!(list["checkouts"], json!([{"checkout": world.clone, "named": {"host": "h1"}}]));
-    assert_eq!(list["settings"]["no_host_sleep"], true, "AFKCONVOY_NO_HOST_SLEEP=true");
-    assert_eq!(answer["settings"], json!({"no_host_sleep": {"from": false, "to": true}}));
+    assert_eq!(answer["settings"], json!({}));
     let log = world.runner_log();
     let pid = &answer["host_runner"]["pid"];
     let started = format!(
@@ -554,11 +553,8 @@ fn the_host_settings_outlive_the_host_runner_and_doctor_says_those_in_force() {
         "--gate-lanes",
         "2",
     ];
-    let hours = ["--host-sleep-hours", "22:00-06:00"];
-    let first = world.afk(&[&RUN[..], &named[..], &hours[..]].concat()).ok();
+    let first = world.afk(&[&RUN[..], &named[..]].concat()).ok();
     let changed = &first["settings"];
-    let night = json!({"from": null, "to": "22:00-06:00"});
-    assert_eq!(changed["host_sleep_hours"], night, "{first}");
     assert_eq!(changed["hot_cores"], json!({"from": null, "to": 2.5}), "{first}");
     assert_eq!(changed["hot_memory"], json!({"from": null, "to": 8.0}), "{first}");
     assert_eq!(changed["admit_disk"], json!({"from": null, "to": 0}), "{first}");
@@ -615,27 +611,7 @@ fn the_host_settings_outlive_the_host_runner_and_doctor_says_those_in_force() {
     assert_eq!((&said["admit_load"], &in_force["admit_load"]), (&Value::Null, &json!(200)));
     assert_eq!(said["hot_written"], Value::Null);
     assert!(in_force["hot_written"].as_f64().unwrap() >= 1.0, "{settings}");
-    assert_eq!(in_force["no_host_sleep"], true, "{settings}");
-    let night = (&json!("22:00-06:00"), &json!("22:00-06:00"));
-    assert_eq!((&said["host_sleep_hours"], &in_force["host_sleep_hours"]), night);
-
-    // hours that cover nothing are refused, naming what they take, and
-    // change nothing; `default` changes them back
-    let refused = world.afk(&["run", "--host-sleep-hours", "06:00-06:00"]).error();
-    assert!(refused.contains("covers no time of the day"), "{refused}");
-    assert!(refused.contains("HH:MM-HH:MM"), "{refused}");
-    assert_eq!(world.checkout_list()["settings"]["host_sleep_hours"], "22:00-06:00");
-    let back = world.afk(&["run", "--host-sleep-hours", "default"]).ok();
-    let back_to = json!({"host_sleep_hours": {"from": "22:00-06:00", "to": null}});
-    assert_eq!(back["settings"], back_to, "{back}");
-    let settings = &world.afk(&["doctor", "--host", "h1"]).json["host"]["settings"];
-    assert_eq!(settings["in_force"]["host_sleep_hours"], "00:00-06:00", "{settings}");
-
-    // the flag holds over the variable that stands for the other
-    if cfg!(target_os = "macos") {
-        let woken = world.afk(&["run", "--host-sleep"]).ok();
-        assert_eq!(woken["settings"], json!({"no_host_sleep": {"from": true, "to": false}}));
-    }
+    assert!(in_force.get("no_host_sleep").is_none(), "{settings}");
 }
 
 #[test]

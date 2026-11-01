@@ -2,12 +2,14 @@
 
 use flux_rs::attrs::*;
 
-/// A claim is live while its owner's heartbeat is this fresh, in seconds.
-pub const LEASE: u64 = 4500;
+/// A fleet instance is live while its heartbeat is this fresh, in seconds:
+/// half an hour. Past it, whatever it holds — its claims, and its members of
+/// a candidate chain — is any other host's to take.
+pub const LEASE: u64 = 1800;
 /// How far ahead of the reader a stamp may be and still count as "just now".
 pub const SKEW: u64 = 300;
 /// An owner refreshes its heartbeat once it is older than this: a third of the lease.
-pub const BEAT_EVERY: u64 = 1500;
+pub const BEAT_EVERY: u64 = 600;
 
 /// A heartbeat that holds nothing is forgotten once it is this old, in seconds:
 /// a day, whichever host stamped it.
