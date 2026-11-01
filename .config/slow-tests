@@ -243,7 +243,7 @@ afkconvoy::cli doctor::a_tick_that_failed_whole_is_logged_and_three_in_a_row_are
 afkconvoy::cli doctor::a_worker_that_fails_to_start_is_a_finding_after_one_tick
 afkconvoy::cli doctor::a_worktree_kept_with_no_claim_is_named_with_what_it_holds_and_how_to_remove_it
 afkconvoy::cli doctor::an_issue_long_at_its_stage_and_one_rework_from_its_breaker_are_findings
-afkconvoy::cli doctor::doctor_routes_other_declared_verdicts_and_respects_a_fleet_lock
+afkconvoy::cli doctor::doctor_routes_other_declared_verdicts
 afkconvoy::cli doctor::in_a_repo_of_several_roles_a_role_moved_only_when_its_own_directory_changed
 afkconvoy::cli doctor::run_logs_a_line_as_it_starts_one_as_each_tick_starts_and_ends_and_prints_each
 afkconvoy::cli doctor::the_host_s_exclusive_queue_is_shown_what_runs_first_then_what_waits
@@ -870,3 +870,29 @@ afkconvoy::cli joining::fleet_asked_conflicts_are_handed_once_even_after_the_fle
 afkconvoy::cli joining::an_answer_queued_in_the_harness_is_pending_until_the_model_takes_it
 afkconvoy::cli codex::codex_workers_take_fresh_user_service_tier_without_inheriting_session_config
 afkconvoy::cli escalation::a_handed_back_workers_usage_limit_does_not_replay_the_previous_claims_verdict
+afkconvoy::cli tick::settling_waits_for_a_finishing_worker_then_leaves_without_a_failed_tick
+afkconvoy::cli stopped::a_short_worker_is_nudged_once_then_waits_for_the_operator_if_still_short
+# Asking Terminal launch coverage: measured over 2s in the fast gate on FelixMBP14.local.
+afkconvoy::cli asking_guard::bound_claude
+afkconvoy::cli asking_guard::bound_codex
+afkconvoy::cli asking_guard::bound_dsh
+afkconvoy::cli asking_guard::bound_grok
+afkconvoy::cli asking_guard::bound_kimi
+afkconvoy::cli asking_guard::bound_pi
+afkconvoy::cli asking_guard::unbound_claude
+afkconvoy::cli asking_guard::unbound_grok
+afkconvoy::cli host_watch::asking_guard_claude
+afkconvoy::cli host_watch::asking_guard_dsh
+afkconvoy::cli host_watch::asking_guard_grok
+afkconvoy::cli host_watch::asking_guard_kimi
+afkconvoy::cli host_watch::asking_guard_pi
+afkconvoy::cli tick::settling_waits_for_a_finishing_worker_then_leaves_without_a_failed_tick
+afkconvoy::cli tick::a_run_says_left_after_a_finishing_worker_leaves
+afkconvoy::cli tick::a_worktree_a_process_is_in_waits_until_that_process_is_gone
+afkconvoy::cli asking_guard::unbound_codex
+afkconvoy::cli asking_guard::unbound_dsh
+afkconvoy::cli asking_guard::unbound_kimi
+afkconvoy::cli asking_guard::unbound_pi
+# Doctor tests exceeded the fast gate's 6s limit after merging the preceding candidates.
+afkconvoy::cli doctor::a_worker_left_alone_by_a_fleet_lock_waits_until_its_nudge
+afkconvoy::cli doctor::doctor_routes_other_declared_verdicts

@@ -303,6 +303,17 @@ fn added_hooks(guard: &str, report: &str) -> String {
     hooks
 }
 
+/// Adds the fleet's hooks to an otherwise prepared interactive command.
+pub(super) fn guarded(command: &str, guard: &str) -> String {
+    Line::new()
+        .launch(command)
+        .fixed(" ")
+        .fixed(CONFIG)
+        .fixed(" ")
+        .word(&added_hooks(guard, REPORT))
+        .done()
+}
+
 /// The file Codex is told to load a directory's rules from, as one key of
 /// its configuration.
 fn rules_files() -> String {
