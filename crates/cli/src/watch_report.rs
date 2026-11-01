@@ -81,7 +81,7 @@ pub fn read(id: &str) -> Result<Option<Report>> {
 /// replacing it or reporting for an ended/different watch is refused.
 pub fn record(id: &str, file: &Path, now: u64) -> Result<Value> {
     let bytes = std::fs::read(file).with_context(|| format!("cannot read {}", file.display()))?;
-    let report: Report = serde_json::from_slice(&bytes).with_context(|| {
+    let mut report: Report = serde_json::from_slice(&bytes).with_context(|| {
         format!("{}: fix the report JSON; see `afkconvoy watched --help`", file.display())
     })?;
     if report
@@ -122,9 +122,16 @@ pub fn record(id: &str, file: &Path, now: u64) -> Result<Value> {
         {
             bail!("watch {id} is not the running watch within its hour; nothing recorded");
         }
-        for human in &report.human {
-            condition(&watch, human)?;
+        let mut human = Vec::new();
+        for entry in report.human {
+            let condition = condition(&watch, &entry)?;
+            if let Some(holder) = crate::human_wait::lost(&condition)? {
+                crate::human_wait::log_drop(&condition, &holder, "report human entry")?;
+            } else {
+                human.push(entry);
+            }
         }
+        report.human = human;
         let temporary = directory.join(format!("report-{}.tmp", crate::unique()));
         std::fs::write(&temporary, serde_json::to_vec_pretty(&report)?)?;
         std::fs::rename(temporary, directory.join("reported.json"))?;

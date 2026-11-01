@@ -133,6 +133,17 @@ pub fn questions() -> Result<(BTreeMap<String, String>, Vec<Entry>)> {
     Ok((outbox.observed, entries))
 }
 
+/// Both outboxes check the live remote immediately before acting, including
+/// replay after a restart. Losing ownership removes the durable source too.
+pub fn owns(entry: &Entry, action: &str) -> Result<bool> {
+    let Some(holder) = crate::human_wait::lost(&entry.condition)? else { return Ok(true) };
+    crate::human_wait::log_drop(&entry.condition, &holder, action)?;
+    change(|outbox| {
+        outbox.entries.remove(&entry.id);
+    })?;
+    Ok(false)
+}
+
 fn reconcile(outbox: &mut Outbox, observed: &BTreeMap<String, String>) {
     outbox.observed = observed.clone();
     outbox.entries.retain(|episode, entry| observed.get(&entry.condition) == Some(episode));
@@ -191,6 +202,9 @@ fn step(ended: &AtomicBool, panel: Option<&str>, bound: Duration) -> Result<()> 
         "watch": entry.watch, "question": entry.human.question, "answer": entry.human.answer,
         "condition": entry.condition, "url": entry.url, "panel": panel,
     });
+    if !owns(&entry, "notification")? {
+        return Ok(());
+    }
     let result = send(&command, &payload, ended, bound);
     change(|outbox| {
         let look = outbox.look;

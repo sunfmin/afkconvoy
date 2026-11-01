@@ -200,6 +200,7 @@ kinds! {
     PatrolFull: Warning, "have reached its `max_open`";
     CutFailed: Warning, "cuts no version: its last cut failed";
     WaitedLong: Warning, "has waited for a human for";
+    WaitTaken: Info, "human wait is taken by";
     NotOurs: Warning, "is held off by a PR not the fleet's";
     ClaimOnGone: Warning, "is claimed but GitHub has it no more";
     SlowGate: Warning, "the gate is slow";
@@ -527,6 +528,8 @@ pub enum TeamRead {
 /// What GitHub, the remote and orca say of the fleet.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct State {
+    /// The live hosts holding human waits, from this look's remote scan.
+    pub wait_holders: std::collections::BTreeMap<u64, String>,
     pub set: WorkingSet,
     pub targets: Value,
     pub refusals: Value,
@@ -1459,7 +1462,32 @@ pub fn findings(seen: &Seen) -> Vec<Finding> {
             found.extend(claim_findings(seen.run, &state.held, seen.now));
             found.extend(settle_wait_findings(seen.run, &state.held, seen.now));
             found.extend(issue_findings(&state.stood, &state.team, seen.now));
-            found.extend(waiting_findings(&state.set.waiting_on_human, seen.now));
+            let local: Vec<_> = state
+                .set
+                .waiting_on_human
+                .iter()
+                .filter(|wait| {
+                    state.wait_holders.get(&wait.issue).is_none_or(|host| host == &seen.run.host)
+                })
+                .cloned()
+                .collect();
+            found.extend(waiting_findings(&local, seen.now));
+            for wait in &state.set.waiting_on_human {
+                if let Some(host) =
+                    state.wait_holders.get(&wait.issue).filter(|host| *host != &seen.run.host)
+                {
+                    found.push(finding(
+                        Kind::WaitTaken,
+                        json!(["wait-taken", wait.issue]),
+                        format!("#{} human wait is taken by {host}'s watch", wait.issue),
+                        format!(
+                            "the claim holder's heartbeat is within the {} second lease",
+                            LEASE
+                        ),
+                        format!("leave this wait to {host}'s watch"),
+                    ));
+                }
+            }
             found.extend(crate::blockers::findings(&state.set.unworked_blockers));
             found.extend(state.unclaimed.iter().map(unclaimed_finding));
             found.extend(state.not_ours.iter().map(not_ours_finding));
@@ -1894,6 +1922,7 @@ fn finish_state(
     .unwrap_or_else(|error| json!({"error": error.to_string()}));
     let deliveries = report.deliveries_json();
     let state = State {
+        wait_holders: crate::human_wait::holders(&fleet.scan, now),
         refusals: fleet.selection()["refusals"].clone(),
         targets: fleet.targets(&open.issues)?,
         set,
@@ -2283,7 +2312,20 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String], look: &Look) ->
         Ok(state) => (
             state.held.iter().map(held_json).collect(),
             issues_json(&state.set)?,
-            serde_json::to_value(&state.set.waiting_on_human)?,
+            Value::Array(
+                state
+                    .set
+                    .waiting_on_human
+                    .iter()
+                    .map(|wait| {
+                        let mut value = json!(wait);
+                        value["taken_by"] = json!(
+                            state.wait_holders.get(&wait.issue).filter(|host| *host != &run.host)
+                        );
+                        value
+                    })
+                    .collect(),
+            ),
         ),
         Err(_) => (vec![], Value::Null, Value::Null),
     };
@@ -2657,6 +2699,7 @@ mod tests {
 
     fn state() -> State {
         State {
+            wait_holders: Default::default(),
             refusals: json!({}),
             targets: json!([]),
             set: set(),

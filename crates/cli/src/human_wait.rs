@@ -142,3 +142,8 @@ pub fn lost(condition: &str) -> Result<Option<String>> {
         None => Ok(Some("no host (the claim ended)".into())),
     }
 }
+
+/// The discarded item and its current holder remain findable after restart.
+pub fn log_drop(condition: &str, holder: &str, action: &str) -> Result<()> {
+    crate::host_runner::note(&format!("human wait {condition}: dropped {action}; held by {holder}"))
+}
