@@ -18,3 +18,4 @@ That knowledge belongs to the harness. A caller asks the harness for the turn re
 - A harness that grows a session place or a line that starts or ends a turn changes its own module. The file walk does not.
 - A child session is the harness's to name. The fold that skips it stays the turn's.
 - A stand-in writes the files the harness describes, so it does not keep a second copy of the place or the lines.
+- Claude Code starts a bound worker in its role copy, so its session is filed under that directory's project, not the worktree's. Its harness names the project tree and associates a primary session with the worktree through its first user prompt's exact brief pointer, using the shared brief matcher also used by Codex. A turn's timestamp must still satisfy the start proof's bound; another worker of the same role copy and a child session cannot prove the start. An unbound session still identifies its worktree by `cwd`.

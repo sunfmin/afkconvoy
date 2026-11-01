@@ -660,6 +660,48 @@ mod tests {
     use crate::role::{Facts, On, Told};
 
     #[test]
+    fn only_the_first_primary_prompt_can_name_a_role_workers_brief() {
+        let harness = Harness::ClaudeCode;
+        let brief = "/repo/.git/worktrees/issue-7/convoy-worker-prompt.md";
+        let pointer = crate::prompt::brief_pointer(brief);
+        let user = |content: serde_json::Value| {
+            serde_json::json!({
+            "type": "user", "isSidechain": false, "message": {"role": "user", "content": content}
+        }).to_string()
+        };
+        let prompt = user(pointer.clone().into());
+        assert!(harness.names_brief(&prompt, brief));
+        let parts = user(serde_json::json!([{"type": "text", "text": pointer}]));
+        assert!(harness.names_brief(&parts, brief));
+        for other in [
+            "/repo/.git/worktrees/issue-70/convoy-worker-prompt.md",
+            "/elsewhere/repo/.git/worktrees/issue-7/convoy-worker-prompt.md",
+        ] {
+            let other = user(crate::prompt::brief_pointer(other).into());
+            assert!(!harness.names_brief(&format!("{other}\n{prompt}"), brief));
+        }
+        let tool = user(serde_json::json!([{"type": "tool_result", "content": pointer}]));
+        let assistant = serde_json::json!({"type": "assistant", "message": {
+            "role": "assistant", "content": pointer}})
+        .to_string();
+        let queued = serde_json::json!({"type": "queue-operation", "content": pointer}).to_string();
+        let child = prompt.replace("\"isSidechain\":false", "\"isSidechain\":true");
+        for non_prompt in [tool, assistant, queued, child] {
+            assert!(!harness.names_brief(&non_prompt, brief), "{non_prompt}");
+        }
+        let earlier = user("an earlier task".into());
+        assert!(!harness.names_brief(&format!("{earlier}\n{prompt}"), brief));
+        let unstamped = serde_json::json!({"type": "user", "message": {
+            "role": "user", "content": pointer}})
+        .to_string();
+        assert_eq!(
+            harness.recorded_turn("/worktree", &unstamped, Some(1), Some(brief)),
+            None,
+            "a matching pointer without a timestamp is no turn"
+        );
+    }
+
+    #[test]
     fn folder_trust_is_session_configuration_beside_permission_bypass_and_both_settings() {
         let outside = Harness::ClaudeCode.in_worktree(STOCK, "/new/worktree", "");
         assert!(outside.starts_with("export CLAUDE_CODE_SANDBOXED=1 && "), "{outside}");
