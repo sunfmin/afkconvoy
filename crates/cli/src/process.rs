@@ -95,6 +95,8 @@ pub(crate) fn output_within(command: &mut Command, limit: Duration) -> io::Resul
         .map(|(output, timed_out)| (!timed_out).then_some(output))
 }
 
+/// As `output`, with whether the command outlived `limit`. Its output is kept
+/// either way, so a caller can report what a timed-out command had written.
 pub(crate) fn output_within_with_timeout(
     command: &mut Command,
     limit: Duration,
