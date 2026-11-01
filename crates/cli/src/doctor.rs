@@ -376,6 +376,9 @@ pub struct Run {
     /// The seconds its last tick took, from its start line to its end;
     /// `None` where the log has no start of it.
     pub last_took: Option<u64>,
+    /// When its tick in progress began; `None` once it ended or where the
+    /// log has no start of it.
+    pub tick_started: Option<u64>,
     /// The newest events that reached this host's `run`s, newest first.
     pub events: Vec<Event>,
     /// The workers its log says are hot: each turned hot, and has not
@@ -426,6 +429,26 @@ pub struct Event {
 impl Run {
     fn last_tick(&self) -> Option<&(u64, Tick)> {
         self.ticks.as_ref().and_then(|ticks| ticks.last())
+    }
+
+    /// A claim is left to the tick that is starting it, however long that
+    /// tick takes. A later completed tick proves it had its chance;
+    /// otherwise it gets one sleep plus the last tick's duration.
+    /// Unknown stamps and missing log evidence keep the existing finding.
+    fn dispatching(&self, held_for: Option<u64>, now: u64) -> bool {
+        let Some(age) = held_for else { return false };
+        let stamped = now.saturating_sub(age);
+        if self.tick_started.is_some_and(|started| started <= stamped) {
+            return true;
+        }
+        if let (Some((ended, _)), Some(took)) = (self.last_tick(), self.last_took)
+            && *ended <= now
+            && ended.saturating_sub(took) > stamped
+        {
+            return false;
+        }
+        let sleep = self.last_tick().map(|(_, tick)| tick.sleep).unwrap_or(0);
+        age < sleep.saturating_add(self.last_took.unwrap_or(0))
     }
 }
 
@@ -741,7 +764,7 @@ fn run_findings(run: &Run, held: &[Held]) -> Vec<Finding> {
 
 /// A claim with no worker, a worker stopped for long, and a role or a team
 /// that moved since a stage in flight started.
-fn claim_findings(run: &Run, held: &[Held]) -> Vec<Finding> {
+fn claim_findings(run: &Run, held: &[Held], now: u64) -> Vec<Finding> {
     let mut found = vec![];
     let instance = run.instance.as_deref().unwrap_or_default();
     for claim in held.iter().filter(|claim| claim.at_work()) {
@@ -752,7 +775,7 @@ fn claim_findings(run: &Run, held: &[Held]) -> Vec<Finding> {
         };
         match claim.worker {
             // With no `run` alive nothing is about to start one: that is the finding.
-            Some(WorkerState::Gone) if run.alive => {
+            Some(WorkerState::Gone) if run.alive && !run.dispatching(claim.held_for, now) => {
                 let (evidence, fix) = match (&claim.worktree, claim.status) {
                     (None, _) => (format!("orca links no worktree to #{issue}"), "dispatch"),
                     (Some(_), Status::Landing) => {
@@ -1409,7 +1432,7 @@ pub fn findings(seen: &Seen) -> Vec<Finding> {
             found.extend(run_findings(seen.run, &state.held));
             found.extend(team_findings(&state.team));
             found.extend(plan_findings(seen.run, state));
-            found.extend(claim_findings(seen.run, &state.held));
+            found.extend(claim_findings(seen.run, &state.held, seen.now));
             found.extend(issue_findings(&state.stood, &state.team, seen.now));
             found.extend(waiting_findings(&state.set.waiting_on_human, seen.now));
             found.extend(crate::blockers::findings(&state.set.unworked_blockers));
@@ -1566,6 +1589,25 @@ fn read_last_took(entries: &[Entry], host: &str) -> Option<u64> {
         }
         _ => None,
     })
+}
+
+/// The unfinished tick of the newest `run` of `host`. Other commands and
+/// events do not end a tick, and another instance's ticks are no evidence.
+fn read_tick_started(entries: &[Entry], host: &str) -> Option<u64> {
+    let newest = entries.iter().rev().find(|entry| entry.host == host && entry.of_run())?;
+    let latest = entries.iter().rev().find(|entry| {
+        entry.host == host
+            && entry.instance == newest.instance
+            && matches!(
+                entry.what,
+                What::TickStarted { .. }
+                    | What::Tick(_)
+                    | What::Start { .. }
+                    | What::Stop { .. }
+                    | What::Broken { .. }
+            )
+    })?;
+    matches!(latest.what, What::TickStarted { .. }).then_some(latest.at)
 }
 
 /// The workers the newest `run` of `host` found hot and has not found
@@ -2149,6 +2191,7 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String], look: &Look) ->
         heartbeats: Heartbeats::default(),
         log_file: log.map(|log| log.file),
         last_took: read_last_took(entries.as_deref().unwrap_or_default(), host),
+        tick_started: read_tick_started(entries.as_deref().unwrap_or_default(), host),
         hot: read_hot(entries.as_deref().unwrap_or_default(), host),
         broken: read_broken(
             entries.as_deref().unwrap_or_default(),
@@ -2555,6 +2598,7 @@ mod tests {
             log_file: Some(PathBuf::from("/cache/afkconvoy/runs/widgets.jsonl")),
             ticks: Some(ticks),
             last_took: None,
+            tick_started: None,
             hot: vec![],
             broken: None,
             events: vec![],
@@ -2835,6 +2879,95 @@ mod tests {
     }
 
     #[test]
+    fn a_claim_gets_a_ticks_chance_to_start_its_worker() {
+        let mut fleet = run(vec![tick(1, json!([]))]);
+        fleet.last_took = Some(10);
+        let gone = |age| Held { held_for: Some(age), worker: Some(WorkerState::Gone), ..held(375) };
+        for age in [0, 27, 99] {
+            assert_eq!(claim_findings(&fleet, &[gone(age)], NOW), [], "claim stamped {age}s ago");
+        }
+        assert_eq!(claim_findings(&fleet, &[gone(100)], NOW)[0].kind, Kind::NoWorker);
+        assert_eq!(claim_findings(&fleet, &[gone(101)], NOW)[0].kind, Kind::NoWorker);
+        assert_eq!(
+            claim_findings(&fleet, &[Held { held_for: None, ..gone(0) }], NOW)[0].kind,
+            Kind::NoWorker,
+            "an unknown stamp retains the finding"
+        );
+        assert_eq!(claim_findings(&run(vec![]), &[gone(27)], NOW)[0].kind, Kind::NoWorker);
+    }
+
+    #[test]
+    fn a_running_tick_dispatches_a_claim_before_doctor_calls_it_workerless() {
+        // 2026-11-01: tick 18 began at 11:43:58, the claim was stamped at
+        // 11:44:12, and the look at 11:44:39 saw no terminal yet.
+        let began = 1_793_533_438;
+        let stamped = began + 14;
+        let entry = |at, instance: &str, what| Entry {
+            at,
+            instance: instance.into(),
+            host: "h1".into(),
+            what,
+        };
+        let mut entries = vec![entry(
+            began,
+            "alpha",
+            What::TickStarted { count: 18, cause: Cause::Timer, by: None },
+        )];
+        let read = |entries: &[Entry]| {
+            let (_, _, ticks) = read_log(entries, "h1");
+            Run {
+                tick_started: read_tick_started(entries, "h1"),
+                last_took: read_last_took(entries, "h1"),
+                ..run(ticks)
+            }
+        };
+        let gone = |now| Held {
+            held_for: Some(now - stamped),
+            worker: Some(WorkerState::Gone),
+            ..held(375)
+        };
+        for now in [began + 41, began + 300] {
+            assert_eq!(claim_findings(&read(&entries), &[gone(now)], now), []);
+        }
+        let at_start = Held { held_for: Some(41), ..gone(began + 41) };
+        assert_eq!(claim_findings(&read(&entries), &[at_start], began + 41), []);
+        let older = Held { held_for: Some(1000), ..gone(began + 41) };
+        assert_eq!(
+            claim_findings(&read(&entries), &[older], began + 41)[0].kind,
+            Kind::NoWorker,
+            "a tick that began after an old claim does not hide it"
+        );
+
+        entries.push(entry(began + 77, "alpha", What::Tick(tick(18, json!([])).1)));
+        assert_eq!(read_tick_started(&entries, "h1"), None);
+        // A following tick has now had its chance, even if a wake made it
+        // finish inside the sleep plus the preceding tick's duration.
+        entries.push(entry(
+            began + 80,
+            "alpha",
+            What::TickStarted { count: 19, cause: Cause::Woken, by: None },
+        ));
+        entries.push(entry(began + 90, "alpha", What::Tick(tick(19, json!([])).1)));
+        let found = claim_findings(&read(&entries), &[gone(began + 90)], began + 90);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].kind, Kind::NoWorker);
+        assert_eq!(found[0].fix, "afkconvoy dispatch --issue 375 --instance alpha");
+
+        // An old instance's unfinished tick is no proof for a new run.
+        entries.push(entry(
+            began + 100,
+            "old",
+            What::TickStarted { count: 20, cause: Cause::Timer, by: None },
+        ));
+        entries.push(entry(
+            began + 101,
+            "alpha",
+            What::Start { worker_command: "codex".into(), harness_commands: [].into() },
+        ));
+        assert_eq!(read_tick_started(&entries, "h1"), None);
+    }
+
+    #[test]
     fn changing_durations_tick_counts_and_free_slots_keep_their_condition_identity() {
         let same = |before: &Finding, after: &Finding| {
             assert_ne!(before.what, after.what, "doctor keeps its current presentation");
@@ -2851,8 +2984,8 @@ mod tests {
             ..held(3)
         };
         same(
-            &claim_findings(&run(vec![]), &[stopped(GRACE)])[0],
-            &claim_findings(&run(vec![]), &[stopped(GRACE + 360)])[0],
+            &claim_findings(&run(vec![]), &[stopped(GRACE)], NOW)[0],
+            &claim_findings(&run(vec![]), &[stopped(GRACE + 360)], NOW)[0],
         );
         let long = Stood { recorded: vec![NOW - 3300, NOW - 3000, NOW - 2000], ..stood(7) };
         same(

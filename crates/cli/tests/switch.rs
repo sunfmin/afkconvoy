@@ -1690,6 +1690,15 @@ fn fleet_with_two_workers() -> World {
 #[test]
 fn the_live_runners_tick_and_served_panel_share_one_orca_observation() {
     let world = fleet_with_two_workers();
+    // A watch starting in the runner has its own live input check, on a
+    // separate thread with this same parent PID. Keep its independent look
+    // within its interval so the count measures only the tick and panel.
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+    common::write(
+        &world.cache(),
+        "afkconvoy/watch/state.json",
+        &json!({"looked": now}).to_string(),
+    );
     world.with_orca(|orca| {
         for terminal in orca["terminals"].as_array_mut().unwrap() {
             terminal["agent"] = json!({"state":"working", "agentType":"claude",
@@ -1721,8 +1730,7 @@ fn the_live_runners_tick_and_served_panel_share_one_orca_observation() {
     let calls: Vec<Vec<String>> = serde_json::from_value(orca["calls"].clone()).unwrap();
     let parents: Vec<u32> = serde_json::from_value(orca["parents"].clone()).unwrap();
     assert_eq!(calls.len(), parents.len());
-    // The stock watch's look has its own doctor process and observation.
-    // This fleet's tick and panel must still share exactly one of their own.
+    // This fleet's tick and panel share exactly one observation.
     let observations = calls
         .iter()
         .zip(parents)
