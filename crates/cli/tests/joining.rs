@@ -183,7 +183,12 @@ fn a_fleet_asked_red_turn_hands_its_answer_to_the_idle_worker_on_the_next_tick()
     let answer = world.afk_in(&dir, &["land", "--issue", "7"]).ok();
     assert_eq!(answer["outcome"], "gate_red", "{answer}");
     let next = tick(&world, 1802);
-    assert!(did(&next).contains(&"dispatch 8 done".to_string()), "{next}");
+    assert!(did(&next).contains(&"watch 7 told".to_string()), "{next}");
+    assert_eq!(next["frontier_remaining"], 1, "the worker still holds its slot: {next}");
+    assert_eq!(turn_answer_lines(&world).len(), 2, "the new red answer is handed back once");
+    let next = tick(&world, 1803);
+    assert_eq!(next["frontier_remaining"], 1, "the worker still holds its slot: {next}");
+    assert_eq!(turn_answer_lines(&world).len(), 2, "no duplicate handoff");
 }
 
 fn turn_answer_lines(world: &World) -> Vec<String> {
