@@ -10,7 +10,7 @@ use serde_json::Value as Json;
 use toml::Value as Toml;
 
 use super::session::{self, json_lines};
-use super::{Held, Kept, Link, SessionFile, SessionLayout};
+use super::{Held, Indexed, Kept, Link, SessionFile, SessionLayout};
 use crate::guard::Call;
 use crate::line::Line;
 use crate::role::{Rules, Start, Told};
@@ -496,22 +496,43 @@ fn note(value: &serde_json::Value) -> Option<Note> {
     }
 }
 
-/// The session files `index` names for `cwd`. A relative session is relative
-/// to the harness directory.
-pub(super) fn indexed_sessions(cwd: &str, index: &str) -> Vec<String> {
+/// Every session file `index` names, marked whether its line names `cwd`.
+/// A worker starts in its role copy, so Kimi files its session under that
+/// directory, not the worktree. A relative session is relative to the harness
+/// directory.
+pub(super) fn indexed_sessions(cwd: &str, index: &str) -> Vec<Indexed> {
     let mut out = Vec::new();
     for value in json_lines(index) {
-        if value["workDir"].as_str().is_none_or(|dir| !session::same_cwd(dir, cwd)) {
-            continue;
-        }
         let Some(session) = value["sessionDir"].as_str() else { continue };
         if session.is_empty() {
             continue;
         }
+        let here = value["workDir"].as_str().is_some_and(|dir| session::same_cwd(dir, cwd));
         let file = std::path::Path::new(session).join(WIRE);
-        out.push(file.to_string_lossy().into_owned());
+        out.push(Indexed { file: file.to_string_lossy().into_owned(), here });
     }
     out
+}
+
+/// Whether a wire's `turn.prompt` names the task brief at `brief`. The type
+/// is the whole match, as for a turn: the model's own words or a tool's
+/// output that quote the brief are not the prompt.
+pub(super) fn names_brief(text: &str, brief: &str) -> bool {
+    json_lines(text).any(|value| {
+        let mut said = Vec::new();
+        strings(&value, &mut said);
+        value["type"] == "turn.prompt" && said.iter().any(|text| session::names_path(text, brief))
+    })
+}
+
+/// Every string `value` holds, however deep.
+fn strings<'a>(value: &'a Json, out: &mut Vec<&'a str>) {
+    match value {
+        Json::String(text) => out.push(text),
+        Json::Array(items) => items.iter().for_each(|item| strings(item, out)),
+        Json::Object(fields) => fields.values().for_each(|field| strings(field, out)),
+        Json::Null | Json::Bool(_) | Json::Number(_) => {}
+    }
 }
 
 /// `existing` with this worktree's line replaced. Lines for other worktrees,
