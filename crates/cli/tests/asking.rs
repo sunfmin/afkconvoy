@@ -172,6 +172,100 @@ fn asking_creates(world: &World) -> usize {
         .count()
 }
 
+fn takeover_fences_outbox(notify: bool) {
+    let world = World::new();
+    let (dir, runner) = two_conditions(&world);
+    let watch = until(&world, "watch", || watch_running(&world));
+    let (wait, host) = conditions(&watch);
+    report_humans(
+        &world,
+        &watch,
+        json!([
+            {"condition": host, "question": "Host's own question?", "answer": "host answer"},
+            {"condition": wait, "question": "Taken issue question?", "answer": "issue answer"}
+        ]),
+    );
+    until(&world, "first question delivered", || {
+        (asking_state(&world)["current"]["delivered"] == true).then_some(())
+    });
+    let terminal = asking_state(&world)["session"]["terminal"].as_str().unwrap().to_string();
+    world.with_orca(|orca| {
+        for row in orca["terminals"].as_array_mut().unwrap() {
+            if row["handle"] == terminal {
+                row["tui_busy"] = json!(true);
+            }
+        }
+    });
+    settle(&world, "settled");
+    until(&world, "issue queued behind busy input", || {
+        (asking_state(&world)["current"]["question"]["condition"] == wait
+            && asking_state(&world)["current"]["delivered"] == false)
+            .then_some(())
+    });
+    let host_name = world.checkout_list()["settings"]["host_name"].clone();
+    drop(runner);
+    // A takeover happens while this host is down, after its report and
+    // asking outboxes have been persisted. No new look will reconcile them.
+    let repo = afkconvoy::git::Repo::at(&world.clone).unwrap();
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+    let sha = repo.record_commit(&format!("convoy:claim instance=peer host=h2 ts={now}")).unwrap();
+    crate::common::git(
+        &world.clone,
+        &["push", "-q", "--force", "origin", &format!("{sha}:refs/convoy/wait/11")],
+    );
+    let output = world.root.join("notifications.jsonl");
+    let mut settings = json!({"host_name": host_name, "watch_dir": dir, "watch_every": 3600});
+    if notify {
+        settings["notify_command"] = json!(format!("cat >> {}", output.display()));
+    }
+    world.say_host_settings(settings);
+    if !notify {
+        world.with_orca(|orca| {
+            for row in orca["terminals"].as_array_mut().unwrap() {
+                if row["handle"] == terminal {
+                    row["tui_busy"] = json!(false);
+                }
+            }
+        });
+    }
+    let mut command = world.command(env!("CARGO_BIN_EXE_afkconvoy"), &world.root);
+    command.arg("host-runner");
+    let _restarted = FixtureProcess::spawn(&mut command);
+    until(&world, "taken wait dropped without another look", || {
+        let path = world.cache().join("afkconvoy/watch/notify.json");
+        let outbox: Value = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+        outbox["entries"].as_object()?.values().all(|e| e["condition"] != wait).then_some(())
+    });
+    until(&world, "asking queue drops taken wait", || {
+        asking_state(&world)["current"].is_null().then_some(())
+    });
+    assert_eq!(
+        asking_terminal(&world)["sent"].as_array().unwrap().len(),
+        1,
+        "the second question never goes out"
+    );
+    if notify {
+        until(&world, "host condition still sends", || output.exists().then_some(()));
+        let lines = std::fs::read_to_string(&output).unwrap();
+        let sent: Vec<Value> = lines.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0]["condition"], host);
+    } else {
+        assert!(!output.exists());
+    }
+    assert!(world.runner_log().join("\n").contains("held by h2"));
+}
+
+#[test]
+fn an_asking_question_rechecks_ownership_after_restart_and_drops_a_taken_wait() {
+    takeover_fences_outbox(false);
+}
+
+#[test]
+fn a_notification_rechecks_ownership_after_restart_and_keeps_host_conditions_local() {
+    takeover_fences_outbox(true);
+}
+
 #[test]
 fn two_conditions_share_one_session_and_are_delivered_one_at_a_time() {
     let world = World::new();

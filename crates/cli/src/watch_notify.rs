@@ -87,6 +87,10 @@ pub fn reported(watch: &Watch, report: &Report, observed: &BTreeMap<String, Stri
     let mut entries = vec![];
     for human in &report.human {
         let condition = crate::watch_report::condition(watch, human)?;
+        if let Some(holder) = crate::human_wait::lost(&condition)? {
+            crate::human_wait::log_drop(&condition, &holder, "report outbox entry")?;
+            continue;
+        }
         let episode = watch.conditions.get(&condition).cloned().or_else(|| {
             // A round already running during upgrade predates the complete
             // snapshot, but still retains its own item/episode pairing.
@@ -131,6 +135,21 @@ pub fn questions() -> Result<(BTreeMap<String, String>, Vec<Entry>)> {
     let mut entries: Vec<Entry> = outbox.entries.values().cloned().collect();
     entries.sort_by_key(|entry| entry.sequence);
     Ok((outbox.observed, entries))
+}
+
+/// Both outboxes check the live remote immediately before acting, including
+/// replay after a restart. Losing ownership removes the durable source too.
+pub fn owns(entry: &Entry, action: &str) -> Result<bool> {
+    let Some(holder) = crate::human_wait::lost(&entry.condition)? else { return Ok(true) };
+    crate::human_wait::log_drop(&entry.condition, &holder, action)?;
+    change(|outbox| {
+        outbox.entries.remove(&entry.id);
+        if let Some(last) = outbox.last.as_mut().filter(|last| last.condition == entry.condition) {
+            last.ended = Some(crate::clock());
+            last.outcome = format!("dropped {action}; held by {holder}");
+        }
+    })?;
+    Ok(false)
 }
 
 fn reconcile(outbox: &mut Outbox, observed: &BTreeMap<String, String>) {
@@ -191,6 +210,9 @@ fn step(ended: &AtomicBool, panel: Option<&str>, bound: Duration) -> Result<()> 
         "watch": entry.watch, "question": entry.human.question, "answer": entry.human.answer,
         "condition": entry.condition, "url": entry.url, "panel": panel,
     });
+    if !owns(&entry, "notification")? {
+        return Ok(());
+    }
     let result = send(&command, &payload, ended, bound);
     change(|outbox| {
         let look = outbox.look;

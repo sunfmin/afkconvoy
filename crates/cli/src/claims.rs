@@ -5,8 +5,8 @@ use std::collections::BTreeMap;
 
 use afkconvoy_core::claims::{
     Beat, CLAIM_KIND, Claim, ClaimStep, HEARTBEAT_KIND, InstanceId, OVER_KIND, Owner, RunClaim,
-    claim_ref, claim_steps, heartbeat_ref, over_ref, read_heartbeat, read_over, releasable,
-    run_ref, write_heartbeat, write_over,
+    WAIT_KIND, claim_ref, claim_steps, heartbeat_ref, over_ref, read_heartbeat, read_over,
+    releasable, run_ref, wait_ref, write_heartbeat, write_over,
 };
 use afkconvoy_core::layout::Layout;
 use afkconvoy_core::patrol::{
@@ -74,6 +74,8 @@ pub struct Scan {
     /// each claim it writes.
     pub tracker: Tracker,
     pub claims: Vec<Claim>,
+    /// Claims on human waits: neither workers nor patrol runs.
+    pub waits: Vec<Claim>,
     pub heartbeats: BTreeMap<String, Beat>,
     /// The claims on runs — a patrol's or a cut's: one for
     /// each still going.
@@ -145,6 +147,7 @@ impl Scan {
         let mut scan = Scan {
             tracker,
             claims: vec![],
+            waits: vec![],
             heartbeats: BTreeMap::new(),
             runs: vec![],
             last_runs: BTreeMap::new(),
@@ -165,6 +168,10 @@ impl Scan {
                         let (key, sha) = (name.to_string(), record.sha);
                         scan.runs.push(RunClaim { key, owner, sha, over: false });
                     }
+                }
+            } else if let Some(key) = kept.strip_prefix(WAIT_KIND) {
+                if let Claimed::Issue(number) = scan.tracker.claimed(key) {
+                    scan.waits.push(Claim::read(number, &record.subject, record.sha));
                 }
             } else if let Some(instance) = kept.strip_prefix(HEARTBEAT_KIND)
                 && let Some(beat) = read_heartbeat(&record.subject, record.sha.clone())
@@ -349,7 +356,7 @@ fn put(repo: &Repo, scan: &mut Scan, me: &Me, refname: &str, how: Take) -> Resul
     }
     // Lost only if somebody else's claim is where ours would be.
     let detail = pushed.stderr.trim().to_string();
-    let there = repo.remote().records(&[refname], Fresh::Process)?.pop();
+    let there = repo.remote().records(&[refname], Fresh::Live)?.pop();
     let moved = match (&there, how.leased_to()) {
         (None, None) => false,
         (None, Some(_)) => true,
@@ -383,6 +390,40 @@ pub fn take(repo: &Repo, scan: &mut Scan, me: &Me, number: u64, how: Take) -> Re
                 "detail": detail}))
         }
     }
+}
+
+/// Takes a human wait with the same atomic push and heartbeat ordering as a
+/// worker claim. Even a lost race updates the scan with the actual holder.
+pub fn take_wait(repo: &Repo, scan: &mut Scan, me: &Me, number: u64, how: Take) -> Result<()> {
+    let name = wait_ref(repo.layout(), &scan.tracker, number);
+    let claim = match put(repo, scan, me, &name, how)? {
+        Put::Won { sha, subject, .. } => Some(Claim::read(number, &subject, sha)),
+        Put::Lost { there, .. } => {
+            let claim = there.map(|r| Claim::read(number, &r.subject, r.sha));
+            // The winner may have published its first heartbeat after our
+            // scan. Carry that live evidence with the claim we just read.
+            if let Some(owner) = claim.as_ref().and_then(|c| c.owner.as_ref()) {
+                let instance = InstanceId::parse(&owner.instance).map_err(anyhow::Error::msg)?;
+                let name = heartbeat_ref(repo.layout(), &instance);
+                if let Some(record) = repo.remote().records(&[&name], Fresh::Live)?.pop()
+                    && let Some(beat) = read_heartbeat(&record.subject, record.sha)
+                {
+                    scan.heartbeats.insert(owner.instance.clone(), beat);
+                }
+            }
+            claim
+        }
+    };
+    scan.waits.retain(|claim| claim.number != number);
+    scan.waits.extend(claim);
+    Ok(())
+}
+
+/// Ends a wait only while it is still the claim this look read.
+pub fn drop_wait(repo: &Repo, scan: &mut Scan, claim: &Claim) -> Result<()> {
+    unput(repo, &wait_ref(repo.layout(), &scan.tracker, claim.number), &claim.sha)?;
+    scan.waits.retain(|c| c.number != claim.number);
+    Ok(())
 }
 
 /// Puts the claim on the run keyed `key` in my name with one atomic push →
