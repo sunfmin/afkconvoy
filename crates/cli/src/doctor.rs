@@ -162,6 +162,8 @@ kinds! {
     NoRun: Critical, "no `afkconvoy run` is alive";
     Broken: Critical, "is broken";
     PublicTracker: Critical, "is public: its fleet instance works nothing";
+    RepoUnworked: Warning, "no fleet has taken";
+    RepoUnreadable: Warning, "remote could not be read";
     StepFailed: Critical, "failed in each of the last";
     StepUnrecovered: Warning, "failed in tick";
     HarnessDown: Critical, "harness is down";
@@ -236,6 +238,8 @@ impl Kind {
                 | Kind::NotUpgraded
                 | Kind::PathStale
                 | Kind::OtherAccount
+                | Kind::RepoUnworked
+                | Kind::RepoUnreadable
                 | Kind::WorkerHealth
                 | Kind::HealthOverdue
         )
@@ -1855,7 +1859,12 @@ fn finish_state(
         found: beats.len(),
         live: live.map(|(instance, _)| instance.clone()).collect(),
     };
-    let (set, flows) = fleet.rebuild(&open, instance.as_ref())?;
+    let (mut set, flows) = fleet.rebuild(&open, instance.as_ref())?;
+    // Tracker-wide reports have their own opening-host finding. Treating
+    // them as ordinary escalations would wake every host serving this repo.
+    set.waiting_on_human.retain(|wait| {
+        open.issues.body(wait.issue).is_none_or(|body| !crate::unworked::is_report(&body.body))
+    });
     let stood = flows.stood();
     let report = FleetReport::read(&fleet, &flows, &set, readings);
     let (team, loaded) = read_team(repo, fleet.config.bound.is_some(), report.roles.as_ref());
@@ -2547,6 +2556,15 @@ pub fn all_since_rounds(
         watch.insert("events".to_string(), Value::Array(watch_events));
     }
     of_host.extend(overdue_findings(&paces, now));
+    once["unworked_repos"] = match crate::unworked::read(now) {
+        Ok(read) => read,
+        Err(error) => crate::error_json(&error),
+    };
+    of_host.extend(crate::unworked::findings(
+        &once["unworked_repos"],
+        host.unwrap_or(&crate::this_host()),
+        now,
+    ));
     // Said once, named for the first checkout on the list: the lines are
     // equal while they are gathered, and each runs from any directory.
     if let Some(checkout) = listed.first() {

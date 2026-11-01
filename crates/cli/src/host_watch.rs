@@ -493,7 +493,8 @@ impl Watcher {
             );
         }
         state.retry_unreported();
-        let look = doctor_look(state.until, &self.ended)?;
+        let mut look = doctor_look(state.until, &self.ended)?;
+        crate::unworked::reconcile(&mut look, &crate::this_host(), crate::clock())?;
         state.observe(look, crate::clock());
         self.say_state(&state);
         // Commit the observation interval and queue before any launch or
@@ -1318,6 +1319,10 @@ fn brief(watch: &Watch) -> String {
          actually dispatches or continues the issue and that its worker takes its brief. \
          Relabelling it alone is no evidence of recovery.\n\n\
          ## Answer escalations\n\n\
+         A repo nobody works is a human decision about which host works it. For a \
+         `repo_unworked` finding, never add that repo to this host's checkout list. \
+         Name the report, the waiting issues and the hosts that last worked it. Ask \
+         the operator which host should take it, through your human report.\n\n\
          Answer an escalation yourself, as the operator would: find out what is true, answer \
          the cause, keep to earlier decisions, and say what is to be done. For each issue in \
          `waiting_on_human`, read its reason and evidence, then run its current answer line \

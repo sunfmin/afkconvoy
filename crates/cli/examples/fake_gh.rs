@@ -192,6 +192,13 @@ fn main() {
             let head = fake::git(&["-C", from, "rev-parse", "HEAD"]);
             st.finish(&head, 0, "")
         }
+        ["api", endpoint, "--jq", ".message"] if endpoint.contains("/git/commits/") => {
+            let (repo, sha) =
+                endpoint.trim_start_matches("repos/").split_once("/git/commits/").unwrap();
+            let from = st.doc["repos"][repo].as_str().or_else(|| st.doc["bare"].as_str()).unwrap();
+            let message = fake::git(&["-C", from, "show", "-s", "--format=%B", sha]);
+            st.finish(&message, 0, "")
+        }
         ["api", "-H", _, endpoint] if endpoint.contains("/contents/") => {
             // A file of another repo: its working tree's, as its default branch.
             let (name, path) =
@@ -242,7 +249,7 @@ fn main() {
             rows.push(issue);
             st.finish(&format!("https://gh/{repo}/issues/{number}"), 0, "")
         }
-        ["api", "repos/{owner}/{repo}", "--jq", jq] if *jq == VISIBILITY_JQ => {
+        ["api", endpoint, "--jq", jq] if *jq == VISIBILITY_JQ && endpoint.starts_with("repos/") => {
             let visibility = st.doc["visibility"].as_str().unwrap_or("private").to_string();
             st.finish(&visibility, 0, "")
         }
@@ -640,7 +647,12 @@ fn issue_create(st: &mut State) -> ! {
 }
 
 fn api(st: &mut State) -> ! {
-    let Some(endpoint) = st.argv.iter().find_map(|a| a.strip_prefix(REPO)).map(str::to_string)
+    let own = format!("repos/{}/", st.doc["repository"].as_str().unwrap_or("acme/dev"));
+    let Some(endpoint) = st
+        .argv
+        .iter()
+        .find_map(|a| a.strip_prefix(REPO).or_else(|| a.strip_prefix(&own)))
+        .map(str::to_string)
     else {
         st.finish("", 1, "gh: Not Found (HTTP 404)\n")
     };
@@ -686,6 +698,24 @@ fn api(st: &mut State) -> ! {
         equivalent_rest(st, path, query)
     }
     match parts.as_slice() {
+        ["issues"] if method == "GET" && jq.is_some_and(|jq| jq.contains("created_at")) => {
+            let rows: Vec<_> = st.doc["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|issue| is_open(issue) && issue["pull_request"] != true)
+                .map(|i| {
+                    json!({"number": i["number"], "body": i["body"].as_str().unwrap_or(""),
+                    "labels": i["labels"], "created": i["at"].as_u64().unwrap_or(0)})
+                    .to_string()
+                })
+                .collect();
+            st.finish(&rows.join("\n"), 0, "")
+        }
+        ["issues", number, "timeline"] => {
+            let rows = st.doc["timelines"][*number].as_array().cloned().unwrap_or_default();
+            st.finish(&rows.iter().map(Value::to_string).collect::<Vec<_>>().join("\n"), 0, "")
+        }
         ["pulls"] if query.contains("state=open") => {
             assert!(st.has("--paginate"));
             assert_eq!(jq, Some(PR_HEADS_JQ));
@@ -863,6 +893,11 @@ fn api(st: &mut State) -> ! {
             st.finish("", 0, "")
         }
         ["issues", number, "dependencies", "blocked_by"] => {
+            if jq == Some(".[]") {
+                let rows: Vec<_> =
+                    blockers(st, number).iter().map(rest_issue).map(|i| i.to_string()).collect();
+                st.finish(&rows.join("\n"), 0, "")
+            }
             assert_eq!(jq, Some(BLOCKED_BY_JQ), "fake gh: unsupported jq");
             assert!(st.has("--paginate"), "{:?}", st.argv);
             let lines: Vec<String> = blockers(st, number)
