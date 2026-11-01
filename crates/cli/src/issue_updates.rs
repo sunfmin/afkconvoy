@@ -91,7 +91,8 @@ pub(crate) fn reconcile(fleet: &Fleet, host: &str, issues: &OpenIssues) -> Vec<V
                 });
                 seen.body.clone_from(&body.body);
             }
-            let harness = worktree.recorded_harness()?.unwrap_or_default();
+            let harness =
+                worktree.recorded_harness()?.unwrap_or(afkconvoy_core::harness::Harness::DEFAULT);
             for comment in issues.comments(number) {
                 if comment.at.is_none_or(|at| at <= started)
                     || comment.body.contains("<!--convoy:")
