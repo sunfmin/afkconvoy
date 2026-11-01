@@ -640,7 +640,7 @@ mod tests {
         assert!(brief.starts_with("# A human question"));
         assert!(brief.contains("Approve this spend?"));
         assert!(brief.contains("```text\nApprove this spend?\n```"));
-        assert!(brief.contains("afkconvoy asked --question episode"));
+        assert!(brief.contains("afkconvoy asked --question 'episode'"));
         assert!(host_watch::asking_push("Approve this spend?", 0).chars().count() <= 180);
     }
 }
