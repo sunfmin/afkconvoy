@@ -212,7 +212,7 @@ const SKILL: &str = include_str!("../../../skills/afkconvoy/SKILL.md");
 ///
 /// ## What a command answers
 ///
-/// Every command prints exactly one JSON object on stdout. A failure is {"error": …} with a non-zero exit — and "see" beside it, where a topic explains it: the command that prints that topic. Warnings go to stderr. A few print otherwise: `show` a drawing unless asked about an issue, `help` Markdown as `--help` does, `skill` the text of a file, `guard` answers as a hook does, with its exit code, `exclusive` as its command does, and `panel` without `--open` one HTML document. `panel --open` is the JSON object `panel --help` describes. `doctor` exits 0 with no critical finding, and non-zero with one, printing the same object, not {"error"}. Under `--all`, a checkout that could not be asked stays {"error", "see"}, as `doctor --help` says: not a doctor that read the checkout. A fleet instance prints nothing: it logs a line as each tick starts and one as it ends, in its tick log.
+/// Every command prints exactly one JSON object on stdout. A failure is {"error": …} with a non-zero exit — and "see" beside it, where a topic explains it: the command that prints that topic. Warnings go to stderr. A few print otherwise: `show` a drawing unless asked about an issue, `help` Markdown as `--help` does, `skill` the text of a file, `guard` answers as a hook does, with its exit code, `exclusive` as its command does, `accounts --rows` NDJSON, and `panel` without `--open` one HTML document. `panel --open` is the JSON object `panel --help` describes. `doctor` exits 0 with no critical finding, and non-zero with one, printing the same object, not {"error"}. Under `--all`, a checkout that could not be asked stays {"error", "see"}, as `doctor --help` says: not a doctor that read the checkout. A fleet instance prints nothing: it logs a line as each tick starts and one as it ends, in its tick log.
 ///
 /// ## The commands, by who runs them
 ///
@@ -284,6 +284,8 @@ enum Command {
     ///
     /// The window includes accounts whose end is between now minus 7 days and now, inclusive. `--days <n>` changes that duration; `--all` includes every account ending by now. Issue closure and update dates do not select the window. Issues with no account are not samples.
     ///
+    /// New accounts carry one authoritative versioned JSON object in a collapsed details block with a fenced json block. Their human text is rendered from that object and is never parsed back. Older accounts are converted from their markers and legacy rows without rewriting the comments; facts absent from their machine-readable evidence stay null.
+    ///
     /// ## What it answers
     ///
     /// One JSON object: `window` has `start` and `end` in epoch seconds (`start` null with `--all`); `count` counts readable accounts in it; `wall_seconds` has p50, p90, p95 and max of end minus earliest claim start. Percentiles use nearest rank: sort ascending and take rank ceil(p * count / 100), one based; an empty sample answers null for each measure.
@@ -293,6 +295,21 @@ enum Command {
     /// `slowest` lists up to five issues in descending wall clock (ties by issue number), each with `number`, `url` and `wall_seconds`. `unreadable` lists `number` and `reason` for accounts with unknown or invalid starts, ends, worker rows or gate seconds, duplicate accounts, or comments that could not be read. They are excluded from all measures. An unreadable end or failed comment read cannot be placed in a window and is reported in every window; an account with a readable end outside the window is excluded.
     ///
     /// A failed issue listing refuses the command with {"error": …} and a non-zero exit. Check `gh auth status`, correct the reported GitHub or checkout-list fault, then run it again.
+    ///
+    /// With `--rows`, stdout is NDJSON instead: one compact JSON object per account in the window, ordered by issue number, with the schema below plus `url`, the issue's URL. An empty window prints no lines. Unknown measurements remain null in these rows even when they exclude the account from the summary. Accounts that cannot be decoded, including unknown schema versions, duplicate accounts and failed comment reads, are omitted and listed under `unreadable` in one JSON object on stderr (only when nonempty). Read stderr as well as stdout. This mode still exits 0 for unreadable accounts and writes nothing.
+    ///
+    /// ## Work account schema
+    ///
+    /// `schema_version` is {const:ACCOUNT_SCHEMA_VERSION}. A field's meaning stays fixed within a version; a breaking change raises the version. Unknown values are JSON null, never a substitute zero or an invented default. Times (`start`, `end`, `at`) are epoch seconds. Duration and size field names carry their units.
+    ///
+    /// - `issue`: the tracker issue number. `repo`: the code repo, owner/name. `tracker`: the issue repo, owner/name. `afkconvoy_version`: the version of the binary that wrote the account.
+    /// - `host`: {name, cpu, logical_cpus, memory_bytes}, as reported by the writing host; cpu is its chip name, else its machine model identifier.
+    /// - `start`: earliest recorded claim since, retained across later ends. `end`: the end being accounted for. `wall_seconds`: end minus start, null if unknown or reversed.
+    /// - `outcome`: landed, closed (nothing more to do), escalated, ended (the workflow ended), or human-closed (closed by a human while claimed). Legacy accounts have null because they did not record it.
+    /// - `workers`: a list of {harness, model, role, stage, claim, start, end, seconds, verdict}. A model not explicitly named is null. Role and stage are null where there is none or neither was recorded. Claim is the claim's identity. A bound worker ends at its stage record or failure, else the account end; an unbound worker ends at the account end. Seconds are end minus start. Verdict is its stage record's verdict, null without one. Landing workers are not rows; continuations on the same harness are not new rows.
+    /// - `gates`: a list of {tree, command, lane, result, at, seconds, host}. Tree is the tested git tree, command is the exact command, lane is fast, slow or whole when known, result is green or red, at is the gate record's epoch timestamp, seconds times the command after its queue turn, and host is the host that ran it. Prior red runs survive later edits after their remote refs disappear. Legacy seconds available only in a legacy row are retained; other metadata without a marker stays null. A legacy lane is null unless its marker names one.
+    ///
+    /// A legacy worker's start, harness, model, stage and claim come from its worker-start marker; its end, seconds and verdict stay null where only prose stated them. Legacy host hardware, writer version, repo, tracker and outcome stay null. Row counts and wall-clock and gate-second measures keep their earlier summary meaning. The overlapping worker and gate durations do not partition wall_seconds.
     ///
     /// ## What trips you up
     ///
@@ -3919,6 +3936,7 @@ pub fn manual() -> agent_help::Help {
         .table::<doctor::Severity>("severity")
         .table::<claim_status::ClaimStatus>("claim_status")
         .constant("CONFIG_FILE", config::FILE)
+        .constant("ACCOUNT_SCHEMA_VERSION", afkconvoy_core::account::SCHEMA_VERSION)
         .constant("LAND_ENDINGS", turn::endings_help())
         .constant("PANEL_PORT", host_settings::PANEL_PORT)
         .constant("FIRST_START_SETTINGS", first_start::settings_help())

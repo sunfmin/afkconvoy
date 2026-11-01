@@ -177,7 +177,7 @@ The comment a stage leaves on its issue: what it produced, its verdict, the vers
 _Avoid_: handoff note, log (the tick log; what a gate prints), stage label
 
 **Work account**:
-The one comment the fleet leaves when work on an issue ends, and edits when a later end of that issue is acted on. It states the wall clock from the earliest claim the fleet has recorded for the issue to that end, the workers the fleet started, and the gate runs it timed on that issue's own tree. A worker does not write it. Position, rework and the guard do not read it.
+The one comment the fleet leaves when work on an issue ends, and edits at a later end: one versioned record of its wall clock from the earliest recorded claim, its outcome, the fleet version and host, its workers and the gate runs on its own tree, with unknown facts left unknown and human text rendered from the record. A worker does not write it; position, rework and the guard do not read it.
 _Avoid_: summary (the read-only summary a command answers), time log, report (a failure a patrol or a cut opens; what a watch round delivers; what doctor says)
 
 **Position**:

@@ -375,7 +375,7 @@ fn worker_row(start: &Start, cited: Option<Cite>, end: u64) -> Worker {
     // A bound row ends at the stage record or the failure. An unbound row
     // runs to the end of the issue, whatever a gate timed during it.
     let row_end = if start.stage.is_some() { cited_at.unwrap_or(end) } else { end };
-    let seconds = row_end.saturating_sub(start.at);
+    let seconds = row_end.checked_sub(start.at);
     Worker {
         harness: Some(harness),
         model,
@@ -385,7 +385,7 @@ fn worker_row(start: &Start, cited: Option<Cite>, end: u64) -> Worker {
         claim: Some(start.claim.clone()),
         start: Some(start.at),
         end: Some(row_end),
-        seconds: Some(seconds),
+        seconds,
     }
 }
 
@@ -755,5 +755,63 @@ mod tests {
         })
         .unwrap();
         assert!(bare.contains("Machine: chip unknown, logical CPUs unknown, memory unknown."));
+    }
+
+    #[test]
+    fn a_command_with_html_comment_closers_and_fences_round_trips_as_data() {
+        let first = account(&[], &[], true, Some(1), 2).unwrap();
+        let mut row = read(&first, 7).unwrap();
+        let command = "afkconvoy exclusive -- ./gate.sh\n```json\n</details><!-- --> & `";
+        row.gates.push(Gate { command: Some(command.into()), ..Gate::default() });
+        let body = render(&row);
+        assert_eq!(read(&body, 7).unwrap(), row);
+        let (_, block) = body.rsplit_once("```json\n").unwrap();
+        let (json, _) = block.split_once("\n```").unwrap();
+        for unsafe_text in ["</details>", "<!--", "-->", "```", "&"] {
+            assert!(!json.contains(unsafe_text), "{json}");
+        }
+    }
+
+    #[test]
+    fn editing_a_legacy_account_retains_its_start_and_prior_red_runs() {
+        let old = "<!--convoy:account start=100 end=200-->\n\
+            <!--convoy:account-red tree=abc command=check seconds=3 host=mini at=190-->";
+        let body = account(&[hear(200, old)], &[], true, Some(250), 300).unwrap();
+        let row = read(&body, 7).unwrap();
+        assert_eq!(row.start, Some(100));
+        assert_eq!(row.gates.len(), 1);
+        assert_eq!(row.gates[0].seconds, Some(3));
+        let again = account(
+            &[hear(300, &body)],
+            &["convoy:gate tree=abc command=check seconds=3 host=mini at=190 issue=7 red=1"],
+            true,
+            Some(250),
+            400,
+        )
+        .unwrap();
+        assert_eq!(
+            read(&again, 7).unwrap().gates.len(),
+            1,
+            "a remote red and its kept copy are one run"
+        );
+    }
+
+    #[test]
+    fn the_workers_role_survives_its_start_and_a_duration_before_start_is_unknown() {
+        let start = worker_comment(&Begun {
+            at: 100,
+            claim: "c1",
+            since: Some(100),
+            harness: "codex",
+            model: None,
+            role: Some("developer"),
+            stage: Some("build"),
+            consult: false,
+        });
+        let body = account(&[hear(100, &start)], &[], true, Some(100), 90).unwrap();
+        let row = read(&body, 7).unwrap();
+        assert_eq!(row.workers[0].role.as_deref(), Some("developer"));
+        assert_eq!(row.workers[0].seconds, None);
+        assert_eq!(row.wall_seconds, None);
     }
 }
