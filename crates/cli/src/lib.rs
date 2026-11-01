@@ -88,6 +88,7 @@ pub mod look;
 pub mod machine;
 pub mod measure;
 pub mod named_harness;
+mod no_node;
 pub mod orca;
 pub mod panel;
 pub mod park;
@@ -2888,6 +2889,45 @@ enum Command {
         #[command(flatten)]
         at: AtFlag,
     },
+    /// Run a macOS command tree with Node execution denied and checked
+    ///
+    /// ## When to run it
+    ///
+    /// Wrap the whole repository gate, including native Darwin tests: `afkconvoy no-node -- ./gate.sh`. It runs in the current directory and needs no checkout or fleet. Commands receive no stdin; their stdout and stderr both go to stderr, leaving stdout for one JSON answer.
+    ///
+    /// ## Dependencies and identity
+    ///
+    /// macOS only. Needs trusted `sandbox-exec`, `log` and `date` on PATH (normally /usr/bin and /bin), readable unified sandbox reports, and a Node binary for the canaries. No sudo or entitlement. `--canary-node PATH` names that binary; otherwise `node` is resolved on PATH before starting. Its resolved basename must be `node`.
+    ///
+    /// One Seatbelt profile allows default operations and denies process-exec whose resolved path matches `/node$`. This covers Node installed outside Homebrew, symlinks, PATH, absolute paths and shebang interpreters. A Bun compatibility link named node resolves to bun and is allowed, including `bun run --bun`. Identity is the resolved filename, not a binary hash: renamed Node binaries are outside this rule, and another executable actually named node is denied too.
+    ///
+    /// ## What it checks
+    ///
+    /// Before and after the command tree, a separate canary process attempts to exec Node in that same sandbox. A fresh nonce tags every denial. After the tree exits, `log show` reads only kernel sandbox reports carrying that nonce. Any report besides the two identified canary PIDs makes the run red, even when the caller ignored the denial or the command failed for another reason. Unrelated processes have no nonce and cause no hit.
+    ///
+    /// Forked descendants inherit the sandbox. An inherited descriptor holds the run open for background descendants, including reparented ones, before the second canary. The command must wait for descendants that deliberately close inherited descriptors. Processes dispatched through launchd/XPC, and Docker workloads, are outside the sandbox. This is a gate check for cooperative commands, not a security boundary against a command trying to evade it.
+    ///
+    /// ## What it answers
+    ///
+    /// One object: `status` green or red, `exit_code` of the command (128 plus signal if signalled), `nonce`, `canaries` with before/after PIDs, and `invocations`, each with caller `process`, `pid` and resolved `path`. Green exits 0; red exits 1. A monitor fault prints {"error"} and exits 1: no unmonitored fallback. Missing tools or reports, malformed reports, sandbox startup or application failure (including nested sandboxes), log read failure, timeout, or interruption all fail closed. Fix the named dependency or command and rerun; nested sandboxes must be run from outside the enclosing sandbox.
+    ///
+    /// Reports may arrive late: the reader retries missing canaries for up to five seconds. `--seconds` bounds the command tree, default 3600. SIGINT/SIGTERM and timeout terminate its process group and fail red; a killed monitor cannot return green.
+    ///
+    /// ## Documented limit
+    ///
+    /// Canaries establish report availability, not lossless logging. If a caller ignores EPERM, logd loses only that attempt's report, and both canary reports survive, this check can miss the attempt. Node still never executed: Seatbelt denied it. Do not interpret green as proof that unified logging lost no events.
+    #[command(next_help_heading = WORKER, verbatim_doc_comment)]
+    NoNode {
+        /// Node binary used for the two deliberate exec attempts
+        #[arg(long)]
+        canary_node: Option<PathBuf>,
+        /// Maximum seconds for the command and its descendants
+        #[arg(long, default_value_t = 3600, value_parser = clap::value_parser!(u64).range(1..))]
+        seconds: u64,
+        /// The command and arguments, after `--`
+        #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
+        command: Vec<OsString>,
+    },
     /// Allow or refuse the tool call described on stdin (a worker's hook, added at launch)
     ///
     /// ## When to run it
@@ -4375,6 +4415,15 @@ pub fn main(args: impl IntoIterator<Item = OsString>) -> ExitCode {
     if matches!(cli.command, Command::Guard) {
         return guard::guard();
     }
+    if let Command::NoNode { command, canary_node, seconds } = &cli.command {
+        return match no_node::run(command, canary_node.as_deref(), *seconds) {
+            Ok(answer) => {
+                println!("{answer}");
+                if answer["status"] == "green" { ExitCode::SUCCESS } else { ExitCode::FAILURE }
+            }
+            Err(error) => fail(1, &format!("{error:#}")),
+        };
+    }
     if let Command::Help { name } = &cli.command {
         return match help(name.as_deref()) {
             Ok(text) => {
@@ -4905,6 +4954,7 @@ fn run(
         }
         // `main` answers it: a hook's answer is no JSON object.
         Command::Guard => anyhow::bail!("guard answers with its exit code"),
+        Command::NoNode { .. } => anyhow::bail!("no-node answers with its validation exit code"),
         Command::Exclusive { .. } => {
             anyhow::bail!("exclusive answers with its command's exit code")
         }
