@@ -124,7 +124,11 @@ pub fn rule(repo: &Repo, team: &Team, number: u64, text: String) -> Result<Value
     let workflow =
         issue.workflow(team).map_err(|why| anyhow!("issue #{number} cannot be ruled on: {why}"))?;
     let position = history(workflow, issue.records()).place.position;
-    let Some(stage) = position.stage() else {
+    let stage = if position.landing() {
+        afkconvoy_core::team::LAND
+    } else if let Some(stage) = position.stage() {
+        &stage.name
+    } else {
         bail!(
             "issue #{number} cannot be ruled on: it has left the stages of its workflow, so \
              none runs again under a ruling. `afkconvoy send` puts it at one"
@@ -132,18 +136,18 @@ pub fn rule(repo: &Repo, team: &Team, number: u64, text: String) -> Result<Value
     };
     // Handed over means the records say so, or the labels do: an issue whose
     // worker went silent was escalated with no record of it.
-    let handed_over =
-        matches!(position, Position::Escalating(..)) || !issue.back(team, workflow).done();
+    let handed_over = matches!(position, Position::Escalating(..) | Position::LandingEscalating)
+        || !issue.back(team, workflow).done();
     if !handed_over {
         bail!(
             "issue #{number} is not escalated: it is at the stage `{}` and carries its flow \
              label; nothing was written",
-            stage.name
+            stage
         );
     }
-    issue.leave(&stage.name, Stated::Declared(Declared::Ruling), text)?;
+    issue.leave(stage, Stated::Declared(Declared::Ruling), text)?;
     let relabelled = issue.hand_back(team, workflow)?;
-    Ok(json!({"issue": number, "workflow": workflow.name, "stage": stage.name, "ruled": true,
+    Ok(json!({"issue": number, "workflow": workflow.name, "stage": stage, "ruled": true,
         "relabelled": relabelled}))
 }
 
