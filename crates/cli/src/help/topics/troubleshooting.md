@@ -27,6 +27,9 @@ Start with `afkconvoy doctor`, in the checkout the fleet runs in: it reads every
 
 ## What `doctor` finds — warning: one issue or one patrol is held up
 
+- `no fleet has taken`: A repo's ready issue has no open blocker or claim and has waited more than an hour, and its remote has no heartbeat within the 1800-second lease. Every host serving that tracker looks, including at repos absent from its checkout list. The host runner opens one report per repo, with its repo and escalate labels; only its opening host's watch asks the operator which host should take it. A claim on the waiting issues or a live heartbeat closes it and names the taking host. The watch never adds the repo to its checkout list.
+- `remote could not be read`: A tracker, repo config, timing record or repo remote needed to judge a waiting issue could not be read. The evidence names the failed source; this says nothing about whether a fleet works the repo. Restore read access and let the next look judge again.
+
 - `hot worker is past its limits`: A worker crossed a host resource limit. The watch receives its condition, duration, worktree, terminal and evidence and checks that work goes on.
 - `admission has held back new workers`: One reason held admission for the host's span. The watch receives the host reading and evidence, once per episode.
 - `the host has been under memory pressure`: Pressure lasted for the host's span independently of admission. The watch checks pressure itself, once per episode; it makes no worker hot.
