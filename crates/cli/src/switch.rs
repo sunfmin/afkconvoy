@@ -35,14 +35,18 @@ pub fn on_host(
     let here = repo
         .clone()
         .unwrap_or_else(|| crate::git::Repo::new(std::env::current_dir().unwrap_or_default()));
-    let held = crate::kit::load()?.harnesses.iter().any(|held| held.harness == harness);
+    let kit = crate::kit::load()?;
+    let held = kit.harnesses.iter().any(|held| held.harness == harness);
+    let removed = kit.is_removed(harness);
     let launches = crate::launch::Launches::new(&here, true)?;
-    let start_fault = match crate::role::startable(&launches, harness, PRIORITY_BY) {
+    let foreseen = crate::launch::Launches::foreseen(&here);
+    // A removed harness is validated without worker-launch discovery writing
+    // it back before the switch has cleared its removal.
+    let checking = if removed { &foreseen } else { &launches };
+    let start_fault = match crate::role::startable(checking, harness, PRIORITY_BY) {
         Ok(()) => None,
         Err(error) if !held => {
-            let installed = crate::launch::Launches::foreseen(&here)
-                .of(harness)?
-                .is_some_and(|proposed| proposed.resolves());
+            let installed = foreseen.of(harness)?.is_some_and(|proposed| proposed.resolves());
             if !installed {
                 return Err(error);
             }

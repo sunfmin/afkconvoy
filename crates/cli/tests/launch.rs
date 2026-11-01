@@ -692,3 +692,88 @@ fn every_known_harness_discovers_its_existing_stock_command() {
         assert_eq!(kit["harnesses"][0]["command"], harness.stock());
     }
 }
+
+#[test]
+fn an_operator_removal_survives_relisting_daily_refresh_and_fallback() {
+    let world = backlog();
+    world.kit_command("pi", "pi");
+    host_to_kit(&world);
+    world.afk(&["tick", "--instance", "alpha", "--host", "h1", "--now", "899"]).ok();
+    let removed = world.afk(&["kit", "--remove", "pi", "--now", "900"]).ok();
+    assert_eq!(removed["removed"], "pi");
+    assert_eq!(removed["kit"]["removed"], json!(["pi"]));
+    assert_eq!(removed["kit"]["harnesses"].as_array().unwrap().len(), 1);
+    assert_eq!(removed["left_out"], json!([{"harness":"pi", "why":"removed by the operator"}]));
+
+    for args in [&["plan", "--now", "901"][..], &["doctor", "--host", "h1", "--now", "901"][..]] {
+        let answer = world.afk(args).json;
+        let kit = if args[0] == "plan" { &answer["host_kit"] } else { &answer["host"]["host_kit"] };
+        assert_eq!(
+            kit["left_out"],
+            json!([{"harness":"pi", "why":"removed by the operator"}]),
+            "{args:?}: {answer}"
+        );
+    }
+    let relisted = world.afk(&["kit", "--now", "1000"]).ok();
+    assert_eq!(relisted["kit"]["harnesses"].as_array().unwrap().len(), 1);
+    assert!(
+        relisted["left_out"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|out| out["harness"] == "pi" && out["why"] == "removed by the operator")
+    );
+
+    let now = (1000 + 86_400).to_string();
+    world.afk(&["tick", "--instance", "alpha", "--host", "h1", "--now", &now]).ok();
+    let refreshed = kit_on_disk(&world);
+    assert_eq!(refreshed["removed"], json!(["pi"]));
+    assert_eq!(refreshed["harnesses"].as_array().unwrap().len(), 1);
+
+    // Claude Code is paused: the next worker falls back to Codex, never to
+    // the still-installed pi whose entry launch discovery must not recreate.
+    world.kit_command("codex", "codex --yolo");
+    world.pause("claude-code", 87_399, "test pause");
+    world.issue(8, &["ready-for-agent"]);
+    world.say_concurrency(&world.clone, 2);
+    world.afk(&["tick", "--instance", "alpha", "--host", "h1", "--now", "87401"]).ok();
+    let commands = started(&world);
+    assert_eq!(commands.len(), 2, "{commands:?}");
+    assert!(commands[1].contains("codex"), "{commands:?}");
+    assert!(!commands[1].contains("pi --"), "{commands:?}");
+    assert_eq!(kit_on_disk(&world)["removed"], json!(["pi"]));
+}
+
+#[test]
+fn removing_a_harness_with_a_running_worker_is_refused_without_ending_it() {
+    let world = backlog();
+    world.kit_command("pi", "pi");
+    world.afk(&TICK).ok();
+    let before = std::fs::read(world.kit_path()).unwrap();
+    let error = world.afk(&["kit", "--remove", "claude-code"]).error();
+    assert!(error.contains("issue #7"), "{error}");
+    assert!(error.contains("afkconvoy switch --all --harness pi"), "{error}");
+    assert!(error.contains("no worker was ended"), "{error}");
+    assert_eq!(std::fs::read(world.kit_path()).unwrap(), before);
+    assert_eq!(started(&world).len(), 1);
+    assert_eq!(world.claims().len(), 1);
+}
+
+#[test]
+fn a_hand_edited_absence_is_read_as_is_but_relisting_brings_it_back() {
+    let world = backlog();
+    world.kit_command("pi", "pi");
+    world.with_kit(|kit| {
+        kit["harnesses"].as_array_mut().unwrap().retain(|held| held["harness"] != "pi")
+    });
+    let plan = world.afk(&["plan", "--now", "1000"]).ok();
+    assert_eq!(plan["host_kit"]["harnesses"].as_array().unwrap().len(), 1);
+    assert_eq!(plan["host_kit"]["left_out"], json!([]));
+
+    host_to_kit(&world);
+    let relisted = world.afk(&["kit", "--now", "1001"]).ok();
+    assert!(
+        relisted["kit"]["harnesses"].as_array().unwrap().iter().any(|held| held["harness"] == "pi")
+    );
+    assert!(relisted["kit"].get("removed").is_none());
+}

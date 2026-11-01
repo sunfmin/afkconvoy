@@ -1803,3 +1803,24 @@ fn orcas_harness_overrules_a_wrong_record_for_quota_recovery_and_is_shown() {
     assert!(html.contains("failure") && html.contains("codex") && html.contains("799000"));
     assert!(html.contains("recorded claude-code"));
 }
+
+#[test]
+fn switching_to_a_removed_harness_restores_it_first_and_clears_the_removal() {
+    let world = World::new();
+    hold_every_harness(&world);
+    world.shell_models(&["provider/model"]);
+    world.afk(&["kit", "--remove", "pi", "--now", "700"]).ok();
+
+    let restored = switch(&world, "800", &["--harness", "pi"]).ok();
+    assert_eq!(restored["restored"], true);
+    assert_eq!(restored["added"], true);
+    assert_eq!(restored["start_fault"], Value::Null);
+    assert_eq!(restored["order"][0], "pi");
+    let kit: Value = serde_json::from_slice(&std::fs::read(world.kit_path()).unwrap()).unwrap();
+    assert!(kit.get("removed").is_none(), "{kit}");
+    assert_eq!(kit["harnesses"][0]["harness"], "pi");
+
+    let again = switch(&world, "801", &["--harness", "pi"]).ok();
+    assert_eq!(again["changed"], false);
+    assert_eq!(again["restored"], false);
+}

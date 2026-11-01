@@ -1,8 +1,8 @@
 //! The host kit (docs/adr/0020): the harnesses this host can start, in order
 //! of preference — each one's worker launch command and listed models.
-//! This file belongs to the host user,
-//! outside every checkout, and is written with no human: `afkconvoy kit`, or
-//! `run` on a host without one.
+//! This file belongs to the host user, outside every checkout. `afkconvoy kit`
+//! and `run` refresh it with no human; `kit --remove` records the operator's
+//! explicit choice, and `switch --harness` reverses it.
 use std::collections::BTreeSet;
 use std::fs::{OpenOptions, TryLockError};
 use std::path::{Path, PathBuf};
@@ -24,6 +24,10 @@ pub struct Kit {
     /// The harnesses this host can start, in order of preference: the first
     /// is the host kit's first.
     pub harnesses: Vec<Held>,
+    /// Harnesses the operator removed. Refresh and launch discovery keep them
+    /// out until `switch --harness` restores them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub removed: Vec<Harness>,
     /// Old kit choices are accepted on read and retired on the next write.
     #[serde(default, rename = "stock_consult", alias = "stock_inspector", skip_serializing)]
     pub _retired_consult: Option<Value>,
@@ -139,6 +143,16 @@ impl Kit {
         self.harnesses.iter().find(|held| held.harness == harness)
     }
 
+    /// Whether the operator removed `harness` from the host kit.
+    pub fn is_removed(&self, harness: Harness) -> bool {
+        self.removed.contains(&harness)
+    }
+
+    /// Every operator removal, reported like any other harness left out.
+    fn operator_left_out(&self) -> Vec<LeftOut> {
+        self.removed.iter().map(|&harness| LeftOut::of(harness, None, REMOVED)).collect()
+    }
+
     /// The host kit's first: its first harness, with that harness's first
     /// placed model — none, its default, while it has none placed. `None` of
     /// a host kit that holds no harness.
@@ -169,6 +183,7 @@ impl Kit {
                 .filter(|held| !is_paused(held.harness))
                 .cloned()
                 .collect(),
+            removed: self.removed.clone(),
             _retired_consult: None,
         }
     }
@@ -179,6 +194,18 @@ impl Kit {
         for held in &self.harnesses {
             if !seen.insert(held.harness.key()) {
                 return Some(format!("it holds the harness `{}` twice", held.harness.key()));
+            }
+            if self.is_removed(held.harness) {
+                return Some(format!(
+                    "it holds `{}` and records it as removed by the operator",
+                    held.harness.key()
+                ));
+            }
+        }
+        let mut removed = BTreeSet::new();
+        for harness in &self.removed {
+            if !removed.insert(harness.key()) {
+                return Some(format!("it records `{}` as removed twice", harness.key()));
             }
         }
         None
@@ -219,6 +246,13 @@ fn writing(file: &Path) -> Result<std::fs::File> {
 fn discover_at(file: &Path, harness: Harness, command: &str) -> Result<String> {
     let _writing = writing(file)?;
     let mut kit = if file.exists() { load_at(file)? } else { Kit::default() };
+    if kit.is_removed(harness) {
+        bail!(
+            "the harness `{}` was removed by the operator; restore it with `afkconvoy switch --harness {}`",
+            harness.key(),
+            harness.key()
+        );
+    }
     if let Some(explicit) = kit.command(harness).filter(|command| !command.trim().is_empty()) {
         return Ok(explicit.to_string());
     }
@@ -295,6 +329,7 @@ fn show_with_research(now: u64, research: bool) -> Value {
                 "path": file,
                 "refreshed": refreshed(),
                 "harnesses": harnesses,
+                "left_out": kit.operator_left_out(),
                 "paused": paused_said, "worker_health": crate::health::json(&crate::health::show()),
             })
         }
@@ -330,6 +365,49 @@ pub fn write(now: u64) -> Result<Value> {
     store(&file, &kit, now)?;
     eprint!("{}", report(&file.display().to_string(), &kit, &left_out));
     Ok(json!({"path": file, "written": true, "kit": kit, "left_out": left_out}))
+}
+
+/// Why an operator-removed harness stays out of the host kit.
+pub const REMOVED: &str = "removed by the operator";
+
+/// Takes `harness`, its command and its models out of the host kit and records
+/// the operator's removal. Live fleet workers on it refuse the removal and are
+/// left alone. Only `switch --harness` restores it.
+pub fn remove(harness: Harness, now: u64) -> Result<Value> {
+    let file = path()?;
+    let _writing = writing(&file)?;
+    let _mutation = mutation_lock(&file)?;
+    let mut kit = if file.exists() { load_at(&file)? } else { Kit::default() };
+    if !kit.is_removed(harness) {
+        let mut running = vec![];
+        for on in crate::orca::Worktree::on_host()?.into_iter().filter(|on| on.held) {
+            let worktree = crate::orca::Worktree::at(on.path.clone(), String::new());
+            if worktree.holds_a_worker() && worktree.harness()? == Some(harness) {
+                running.push(on.issue.map_or_else(
+                    || on.path.display().to_string(),
+                    |issue| format!("issue #{issue} ({})", on.path.display()),
+                ));
+            }
+        }
+        if !running.is_empty() {
+            let alternative = kit.harnesses.iter().find(|held| held.harness != harness);
+            let switch = alternative.map_or_else(
+                || "afkconvoy switch --all --harness <harness>".to_string(),
+                |held| format!("afkconvoy switch --all --harness {}", held.harness.key()),
+            );
+            bail!(
+                "cannot remove `{}`: workers are still running on it: {}; move them first with `{switch}`; no worker was ended",
+                harness.key(),
+                running.join(", ")
+            );
+        }
+    }
+    kit.harnesses.retain(|held| held.harness != harness);
+    push_new(&mut kit.removed, [harness]);
+    store_unlocked(&file, &kit, now)?;
+    let left_out = kit.operator_left_out();
+    eprint!("{}", report(&file.display().to_string(), &kit, &left_out));
+    Ok(json!({"path": file, "written": true, "removed": harness, "kit": kit, "left_out": left_out}))
 }
 
 /// Applies the watch's research against the latest kit under both write locks,
@@ -378,6 +456,7 @@ pub fn write_one(harness: Harness, now: u64) -> Result<Value> {
             .filter(|held| held.harness == harness)
             .cloned()
             .collect(),
+        removed: current.removed.clone(),
         _retired_consult: None,
     };
     let (mut repaired, left_out) = compose(&before, &only, Writing::Refresh);
@@ -444,13 +523,16 @@ pub fn switch_target(harness: Option<Harness>, model: Option<&str>) -> Result<Na
 
 /// Promotes a harness and optionally one of its models, preserving all
 /// contents, other relative orders and probe age under one lock. An installed
-/// harness not held yet is added on its stock command with no model: a worker
-/// starts on its login's default while its targeted refresh runs afterwards.
+/// harness not held yet, including one the operator removed, is added first on
+/// its stock command with no model and starts on its login's default while its
+/// targeted refresh runs afterwards.
 pub fn prefer(harness: Harness, model: Option<&str>) -> Result<Value> {
     let file = path()?;
     let _lock = mutation_lock(&file)?;
     let mut kit = load_at(&file)?;
     let before: Vec<_> = kit.harnesses.iter().map(|held| held.harness).collect();
+    let restored = kit.is_removed(harness);
+    kit.removed.retain(|removed| *removed != harness);
     let at = kit.harnesses.iter().position(|held| held.harness == harness);
     let model_at = model
         .map(|name| {
@@ -464,7 +546,7 @@ pub fn prefer(harness: Harness, model: Option<&str>) -> Result<Value> {
         })
         .transpose()?;
     let added = at.is_none();
-    let changed = added || at != Some(0) || model_at.is_some_and(|at| at != 0);
+    let changed = restored || added || at != Some(0) || model_at.is_some_and(|at| at != 0);
     if changed {
         let held = match at {
             Some(at) => kit.harnesses.remove(at),
@@ -472,6 +554,12 @@ pub fn prefer(harness: Harness, model: Option<&str>) -> Result<Value> {
         };
         kit.harnesses.insert(0, held);
         let mut raw: Value = serde_json::from_slice(&std::fs::read(&file)?)?;
+        if let Some(removed) = raw["removed"].as_array_mut() {
+            removed.retain(|removed| removed != &json!(harness));
+            if removed.is_empty() {
+                raw.as_object_mut().context("kit must be an object")?.remove("removed");
+            }
+        }
         let entries = raw["harnesses"].as_array_mut().context("kit harnesses must be an array")?;
         let held = match at {
             Some(at) => entries.remove(at),
@@ -491,7 +579,7 @@ pub fn prefer(harness: Harness, model: Option<&str>) -> Result<Value> {
     }
     Ok(json!({"harness": harness, "model": model, "path": file, "order_before": before,
         "order": kit.harnesses.iter().map(|held| held.harness).collect::<Vec<_>>(),
-        "changed": changed, "added": added}))
+        "changed": changed, "added": added, "restored": restored}))
 }
 
 fn mutation_lock(file: &Path) -> Result<std::fs::File> {
@@ -516,6 +604,8 @@ fn store(file: &Path, kit: &Kit, now: u64) -> Result<()> {
     let mut kit = kit.clone();
     if let Ok(latest) = load_at(file) {
         kit.cast = latest.cast;
+        kit.removed = latest.removed.clone();
+        kit.harnesses.retain(|held| !latest.is_removed(held.harness));
         kit.harnesses.sort_by_key(|held| {
             latest
                 .harnesses
@@ -682,6 +772,7 @@ fn refresh_at<'a>(
         let before = Kit {
             cast: current.cast,
             harnesses: current.held(Harness::Codex).cloned().into_iter().collect(),
+            removed: current.removed.clone(),
             _retired_consult: None,
         };
         let (repaired, _) = compose(&before, &only, Writing::Refresh);
@@ -804,6 +895,7 @@ impl LeftOut {
 fn compose(current: &Kit, host: &Host, writing: Writing) -> (Kit, Vec<LeftOut>) {
     let mut order: Vec<Harness> = current.harnesses.iter().map(|held| held.harness).collect();
     push_new(&mut order, Harness::ALL);
+    order.retain(|harness| !current.is_removed(*harness));
     let command = |harness: Harness| {
         current.command(harness).map_or_else(|| harness.stock().to_string(), str::to_string)
     };
@@ -835,7 +927,7 @@ fn compose(current: &Kit, host: &Host, writing: Writing) -> (Kit, Vec<LeftOut>) 
             .collect()
     });
 
-    let mut left_out = vec![];
+    let mut left_out = current.operator_left_out();
     let mut harnesses: Vec<Held> = vec![];
     let refresh = writing == Writing::Refresh;
     for (harness, command, listed) in listed {
@@ -895,7 +987,12 @@ fn compose(current: &Kit, host: &Host, writing: Writing) -> (Kit, Vec<LeftOut>) 
         harnesses.push(Held { harness, command, models });
     }
 
-    let mut kit = Kit { cast: current.cast, harnesses, _retired_consult: None };
+    let mut kit = Kit {
+        cast: current.cast,
+        harnesses,
+        removed: current.removed.clone(),
+        _retired_consult: None,
+    };
     retain_model_order(current, &mut kit);
     (kit, left_out)
 }
@@ -998,6 +1095,7 @@ mod tests {
         let current = Kit {
             cast: true,
             harnesses: vec![held(Harness::ClaudeCode, "claude", &["sonnet", "default"])],
+            removed: vec![],
             _retired_consult: None,
         };
         for writing in [Writing::Whole, Writing::Refresh] {
@@ -1018,6 +1116,7 @@ mod tests {
         let stale = Kit {
             cast: false,
             harnesses: vec![held(Harness::ClaudeCode, "claude", &["new", "default", "sonnet"])],
+            removed: vec![],
             _retired_consult: None,
         };
         store(&file, &stale, 200).unwrap();
@@ -1037,6 +1136,7 @@ mod tests {
         let original = Kit {
             cast: false,
             harnesses: vec![held(Harness::Pi, "pi --custom", &["provider/model"])],
+            removed: vec![],
             _retired_consult: None,
         };
         store(&file, &original, 100).unwrap();
@@ -1276,6 +1376,7 @@ mod tests {
         let current = Kit {
             cast: false,
             harnesses: vec![held(Harness::Codex, "mycodex --yolo", &["gpt-a"]), claude],
+            removed: vec![],
             _retired_consult: None,
         };
         let (kit, left_out) = composed(&current);
@@ -1308,6 +1409,7 @@ mod tests {
         let current = Kit {
             cast: false,
             harnesses: vec![held(Harness::Pi, "pi", &["a/b"])],
+            removed: vec![],
             _retired_consult: None,
         };
         let host = Host {
@@ -1337,6 +1439,7 @@ mod tests {
                 held(Harness::Pi, "pi", &["a/b"]),
                 held(Harness::Dsh, "dsh", &["d"]),
             ],
+            removed: vec![],
             _retired_consult: None,
         };
         let (kit, left_out) = composed_as(&current, Writing::Refresh);
@@ -1384,6 +1487,7 @@ mod tests {
                 held(Harness::Codex, "codex", &[]),
                 held(Harness::Pi, "pi", &[]),
             ],
+            removed: vec![],
             _retired_consult: None,
         };
         assert_eq!(current.first(), Some(Named { harness: Harness::ClaudeCode, model: None }));
@@ -1412,6 +1516,7 @@ mod tests {
         let current = Kit {
             cast: false,
             harnesses: vec![held(Harness::ClaudeCode, "claude", &["old-id"])],
+            removed: vec![],
             _retired_consult: None,
         };
         let found =
@@ -1449,6 +1554,7 @@ mod tests {
         let current = Kit {
             cast: true,
             harnesses: vec![held(Harness::Codex, "codex", &[])],
+            removed: vec![],
             _retired_consult: None,
         };
         store(&file, &current, 1000).unwrap();
@@ -1470,6 +1576,7 @@ mod tests {
         let current = Kit {
             cast: true,
             harnesses: vec![held(Harness::Codex, "codex", &[]), held(Harness::Dsh, "dsh-tui", &[])],
+            removed: vec![],
             _retired_consult: None,
         };
         store(&file, &current, 1000).unwrap();
@@ -1492,7 +1599,8 @@ mod tests {
         let file = dir.path().join("afkconvoy/kit.json");
         let mut pi = held(Harness::Pi, "pi", &["a/b"]);
         pi.models[0] = sourced(pi.models[0].clone());
-        let current = Kit { cast: false, harnesses: vec![pi], _retired_consult: None };
+        let current =
+            Kit { cast: false, harnesses: vec![pi], removed: vec![], _retired_consult: None };
         store(&file, &current, 1000).unwrap();
         assert_eq!(written(&file), Some(1000));
         let listed = |_: Harness, _: &str| Ok(vec![listed("a/b", None), listed("c/d", None)]);
@@ -1543,6 +1651,7 @@ mod tests {
         let kit = Kit {
             cast: false,
             harnesses: vec![held(Harness::ClaudeCode, "claude", &["opus"])],
+            removed: vec![],
             _retired_consult: None,
         };
         let text = serde_json::to_string(&kit).unwrap();
@@ -1557,5 +1666,40 @@ mod tests {
                 .to_string()
                 .contains("is no harness")
         );
+    }
+
+    #[test]
+    fn relisting_keeps_an_operator_removed_harness_out_even_when_it_is_installed() {
+        let current = Kit {
+            cast: false,
+            harnesses: vec![held(Harness::ClaudeCode, "claude", &[])],
+            removed: vec![Harness::Pi],
+            _retired_consult: None,
+        };
+        for writing in [Writing::Whole, Writing::Refresh] {
+            let (kit, left_out) = composed_as(&current, writing);
+            assert!(!kit.harnesses.iter().any(|held| held.harness == Harness::Pi));
+            assert_eq!(kit.removed, [Harness::Pi]);
+            let pi: Vec<_> = left_out.iter().filter(|out| out.harness == Harness::Pi).collect();
+            assert_eq!(pi.len(), 1);
+            assert_eq!(pi[0].why, REMOVED);
+        }
+    }
+
+    #[test]
+    fn worker_launch_discovery_does_not_restore_an_operator_removed_harness() {
+        let root = tempfile::tempdir().unwrap();
+        let file = root.path().join("kit.json");
+        let current = Kit {
+            cast: false,
+            harnesses: vec![held(Harness::ClaudeCode, "claude", &[])],
+            removed: vec![Harness::Pi],
+            _retired_consult: None,
+        };
+        store(&file, &current, 100).unwrap();
+        let before = std::fs::read(&file).unwrap();
+        let error = discover_at(&file, Harness::Pi, Harness::Pi.stock()).unwrap_err();
+        assert!(error.to_string().contains("switch --harness pi"), "{error:#}");
+        assert_eq!(std::fs::read(&file).unwrap(), before);
     }
 }
