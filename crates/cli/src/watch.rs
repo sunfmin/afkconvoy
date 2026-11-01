@@ -179,8 +179,8 @@ pub fn restart(fleet: &mut Fleet, me: &Me, agent: &Agent, issue: u64) -> Result<
 }
 
 /// The tick's look at one claim of mine whose PR is joining, after
-/// `ask_waiting` has handled turns needing no harness. A worker gone is continued onto
-/// the join, one that stopped climbs the ladder (`joining::join_route`) →
+/// `ask_waiting` has handled turns needing no harness. A worker gone is
+/// continued onto the join, one that stopped climbs the ladder (`joining::join_route`) →
 /// `Done` when that ended the claim. `start` false: no worker is started —
 /// the claim takes no slot, and none is free. The PR and the branch are never
 /// touched; the worktree goes only with an escalation, and only when the
