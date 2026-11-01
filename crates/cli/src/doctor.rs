@@ -782,7 +782,7 @@ fn settle_wait_findings(run: &Run, held: &[Held], now: u64) -> Vec<Finding> {
         };
         Some(finding(Kind::SettleWaiting, json!(["settle-waiting", claim.issue, path]),
             format!("settling has waited for its worker of #{} in {}", claim.issue, path.display()),
-            format!("worker state: {state}; processes in the worktree: {}; waiting since {} UTC (tick-log)",
+            format!("worker state: {state}; processes in the worktree: {}; tick-observed wait since {} UTC",
                 if processes.is_empty() { "none".to_string() } else { processes.join(", ") }, crate::log::utc(since)),
             format!("afkconvoy tick --instance {}", run.instance.as_deref().unwrap_or_default())))
     }).collect()
