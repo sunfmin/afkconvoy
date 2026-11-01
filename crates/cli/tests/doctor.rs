@@ -117,17 +117,20 @@ fn a_worker_left_alone_by_a_fleet_lock_waits_until_its_nudge() {
     assert!(found(&locked, "the worker of #3 has been stopped").is_empty(), "{locked}");
 
     world.close_issue(7);
-    let tick = world
-        .afk(&["tick", "--instance", "alpha", "--host", "h1", "--now", &(now + 1100).to_string()])
+    let nudge = world
+        .afk(&[
+            "nudge",
+            "--issue",
+            "3",
+            "--instance",
+            "alpha",
+            "--host",
+            "h1",
+            "--now",
+            &(now + 1100).to_string(),
+        ])
         .ok();
-    assert!(
-        tick["did"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|step| step["issue"] == 3 && step["outcome"] == "nudged"),
-        "{tick}"
-    );
+    assert_eq!(nudge["action"], "nudged");
     let before = doctor(&world, &(now + 1399).to_string()).json;
     assert!(found(&before, "the worker of #3 has been stopped").is_empty(), "{before}");
     let after = doctor(&world, &(now + 1401).to_string()).json;
