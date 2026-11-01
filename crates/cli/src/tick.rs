@@ -273,7 +273,7 @@ pub fn tick(
     }
     failures.extend(taken_failures);
     let mut blocked = vec![];
-    let read = Read { set: &set, flows: &flows };
+    let read = Read { set: &set, flows: &flows, issues: &open.issues };
     let pass = run_pass(&set, bound, set.held(), |step| {
         let made = match stop.told() {
             true => Err(anyhow!("this run was told to stop before it made the step")),
@@ -360,6 +360,7 @@ impl Failure {
 struct Read<'r> {
     set: &'r WorkingSet,
     flows: &'r Flows,
+    issues: &'r crate::gh::OpenIssues,
 }
 
 /// Carries out `step` → how it ended. A dispatch that read an open blocker
@@ -374,10 +375,14 @@ fn carry_out(
     // Handle the last turn first: ask a wait again without a harness, or
     // hand an answer needing tree changes to its worker without waiting for
     // a silence judgment. Worker health must not hide that answer.
-    if let TickStep::Watch { issue, start } = step
-        && let Some(outcome) = crate::watch::answer_turn(fleet, me, agent, issue, start)?
-    {
-        return Ok(outcome);
+    if let TickStep::Watch { issue, start } = step {
+        let dependencies =
+            read.issues.blockers.get(&issue).map_or(&[][..], |edges| edges.as_slice());
+        if let Some(outcome) =
+            crate::watch::answer_turn(fleet, me, agent, issue, start, dependencies)?
+        {
+            return Ok(outcome);
+        }
     }
     // A terminal left by an incomplete dispatch is no worker to judge for
     // silence. Continue the same claim before health holds or the nudge

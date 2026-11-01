@@ -1,7 +1,8 @@
 //! What a landing worktree last heard from its turn (`land --issue`), kept in
 //! its own git dir: the process asking for one now, or the outcome the last
 //! one answered. The tick reads it to tell a landing worker changing the tree
-//! from one whose turn only waits, and asks for that turn again itself.
+//! from one whose turn only waits, and asks for that turn again when its
+//! ending calls for one.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -14,8 +15,26 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::gh::BlockedBy;
 use crate::git::Repo;
 use crate::orca::{TURN_FILE, TURN_LOG_FILE, Worktree};
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+struct Dependency {
+    number: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    repo: Option<String>,
+}
+
+fn dependency_list(edges: &[BlockedBy]) -> Vec<Dependency> {
+    let mut dependencies: Vec<_> = edges
+        .iter()
+        .map(|edge| Dependency { number: edge.number, repo: edge.repo.clone() })
+        .collect();
+    dependencies.sort();
+    dependencies.dedup();
+    dependencies
+}
 
 #[derive(Serialize, Deserialize)]
 struct Note {
@@ -30,6 +49,9 @@ struct Note {
     handoff: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     answer: Option<Value>,
+    /// Every dependency after a blocked answer, open or closed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    dependencies: Option<Vec<Dependency>>,
     at: u64,
 }
 
@@ -55,15 +77,28 @@ fn write(file: &Path, value: &impl Serialize) -> Result<()> {
 
 /// Runs the turn `ask` for the checkout `repo`, noting first that this
 /// process asks for it, then what it answered — `error` when it failed. A
+/// blocked answer also keeps every dependency of `issue`, open or closed. A
 /// note that cannot be written leaves the turn as it was.
-pub fn noted(repo: &Repo, now: u64, ask: impl FnOnce() -> Result<Value>) -> Result<Value> {
+pub fn noted(
+    repo: &Repo,
+    issue: Option<u64>,
+    now: u64,
+    ask: impl FnOnce() -> Result<Value>,
+) -> Result<Value> {
     let file = note_in(repo).ok();
     let asking = crate::candidates::identity(std::process::id()).ok().flatten();
     let handoff = std::env::var(HANDOFF).ok();
     if let Some(file) = &file {
         let _ = write(
             file,
-            &Note { asking, outcome: None, handoff: handoff.clone(), answer: None, at: now },
+            &Note {
+                asking,
+                outcome: None,
+                handoff: handoff.clone(),
+                answer: None,
+                dependencies: None,
+                at: now,
+            },
         );
     }
     let answer = ask();
@@ -72,6 +107,11 @@ pub fn noted(repo: &Repo, now: u64, ask: impl FnOnce() -> Result<Value>) -> Resu
             Ok(answer) => answer["outcome"].as_str().unwrap_or("error").to_string(),
             Err(_) => "error".to_string(),
         };
+        let dependencies = issue.filter(|_| outcome == Ending::Blocked.word()).and_then(|issue| {
+            let gh = crate::gh::GitHub::of(repo).ok()?;
+            let edges = gh.blocked_by(issue).ok()?;
+            Some(dependency_list(&edges))
+        });
         let _ = write(
             file,
             &Note {
@@ -79,6 +119,7 @@ pub fn noted(repo: &Repo, now: u64, ask: impl FnOnce() -> Result<Value>) -> Resu
                 outcome: Some(outcome),
                 handoff,
                 answer: answer.as_ref().ok().cloned(),
+                dependencies,
                 at: crate::clock(),
             },
         );
@@ -173,6 +214,38 @@ pub fn read(worktree: &Worktree) -> Result<Answered> {
         return Ok(if alive { Answered::Asking } else { Answered::Said("error".to_string()) });
     }
     Ok(note.outcome.map_or(Answered::Never, Answered::Said))
+}
+
+fn unchanged(note: &Note, current: &[BlockedBy]) -> bool {
+    if note.outcome.as_deref() != Some(Ending::Blocked.word()) {
+        return false;
+    }
+    let Some(answer) = &note.answer else { return false };
+    let Ok(mut answered) = serde_json::from_value::<Vec<u64>>(answer["blocked_by"].clone()) else {
+        return false;
+    };
+    answered.sort_unstable();
+    let mut open: Vec<_> = current
+        .iter()
+        .filter(|edge| edge.state.eq_ignore_ascii_case("open"))
+        .map(|edge| edge.number)
+        .collect();
+    open.sort_unstable();
+    if answered != open {
+        return false;
+    }
+    let Some(recorded) = &note.dependencies else { return true };
+    let mut recorded = recorded.clone();
+    recorded.sort();
+    recorded.dedup();
+    recorded == dependency_list(current)
+}
+
+/// Whether a blocked answer's open blockers and full dependency list are
+/// exactly as that answer left them. Older notes have no full-list snapshot;
+/// their recorded open blockers still hold the turn.
+pub(crate) fn blocked_unchanged(worktree: &Worktree, current: &[BlockedBy]) -> Result<bool> {
+    Ok(note(worktree)?.is_some_and(|note| unchanged(&note, current)))
 }
 
 /// A landing worker obeying its turn waits on no person: a live turn or a

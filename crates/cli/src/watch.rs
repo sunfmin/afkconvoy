@@ -2,6 +2,7 @@
 //! its worker, and the one restart a silent one gets.
 
 use afkconvoy_core::claims::Claim;
+use afkconvoy_core::ending::Ending;
 use afkconvoy_core::landing_worker::{
     Answered, LandingRecord, LandingRoute, RestartStep, Unrestarted, join_comment, join_route,
     read_join, stalled_reason,
@@ -77,7 +78,8 @@ fn ask_after(fleet: &Fleet, me: &Me, issue: u64) -> Result<Option<Asked>> {
 
 /// Handles a landing claim's turn before worker health can hold its harness.
 /// A stopped or gone worker whose turn answered a wait needs no harness or
-/// judgment to ask again. An answer needing tree changes is handed to the
+/// judgment to ask again, unless an unchanged blocked answer holds the turn.
+/// An answer needing tree changes is handed to the
 /// worker before silence can mistake the fleet's merge for worker progress;
 /// that handoff takes a free slot. An open harness turn asking for a wait is
 /// left to its worker.
@@ -88,6 +90,7 @@ pub(crate) fn answer_turn(
     agent: &Agent,
     issue: u64,
     start: bool,
+    dependencies: &[crate::gh::BlockedBy],
 ) -> Result<Option<Outcome>> {
     if mine(fleet, me, issue)?.is_none() {
         return Ok(None);
@@ -122,6 +125,11 @@ pub(crate) fn answer_turn(
     if !answered.waits() || worktree.state(fleet.now)? == afkconvoy_core::worker::WorkerState::Busy
     {
         return Ok(None);
+    }
+    if matches!(&answered, Answered::Said(outcome) if outcome == Ending::Blocked.word())
+        && crate::turn_answer::blocked_unchanged(&worktree, dependencies)?
+    {
+        return Ok(Some(Outcome::Nothing));
     }
     crate::turn_answer::ask_again(&worktree, issue)?;
     Ok(Some(Outcome::Asked))
