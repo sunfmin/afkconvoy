@@ -113,10 +113,8 @@ fn a_blocker_repair_read_in_a_workers_worktree_uses_the_main_checkout_for_flows(
     let plan = world.afk_in(&worktree, &["plan", "--now", "1090"]).ok();
     let fix = plan["findings"][0]["fix"].as_str().unwrap();
     let flows = fix.lines().find(|line| line.contains("afkconvoy flows")).unwrap();
-    // The suggested shell command must exercise this build, even after the
-    // host installs a newer release while this branch is being validated.
-    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_afkconvoy"), world.root.join("bin/afkconvoy"))
-        .unwrap();
+    // The suggested shell command exercises this build: the world's
+    // `afkconvoy` on PATH is it, whatever release the host installs.
     let out = world.command("sh", &worktree).args(["-c", flows]).output().unwrap();
     assert!(out.status.success(), "{flows}: {}", String::from_utf8_lossy(&out.stdout));
     let answer: Value = serde_json::from_slice(&out.stdout).unwrap();
@@ -785,7 +783,13 @@ fn a_bound_repos_tracker_issue_goes_through_its_stages_and_lands_in_a_turn() {
     let joined = world.remote(&["log", "--format=%s%n%b", "--merges", "-1", "main"]);
     assert_eq!(joined, "pr 70 (#70)\nCloses acme/tracker#7");
     assert_eq!(issue_of(&world.tracker(), 7)["state"], "closed");
-    assert_eq!(walked(&tick_at_work(&world, 1450)), ["settle 7 done"]);
+    // The landing worker woke the fleet and stopped at its prompt.
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            terminal["agent"] = json!({"state": "idle", "stateStartedAt": 1400 * 1000});
+        }
+    });
+    assert_eq!(walked(&tick(&world, "1450")), ["settle 7 done"]);
     assert_eq!(world.claims(), []);
 
     // Each stage's record is on the tracker's issue; the repo's are as they were.

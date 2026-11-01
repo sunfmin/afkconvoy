@@ -8,11 +8,11 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use afkconvoy_core::casting::Cast;
 use afkconvoy_core::config::Config;
 use afkconvoy_core::cut::{
     self, CHECKOUT, CLAIM_KEY, Failure, MINOR_LABEL, Record, Row, Seen, Standing, Step, Tag, Took,
 };
+use afkconvoy_core::harness::Harness;
 use afkconvoy_core::landing::{LandedPr, Of};
 use afkconvoy_core::line::Line;
 use afkconvoy_core::plan::Issue;
@@ -25,10 +25,11 @@ use crate::claims::{Me, drop_run, take_run};
 use crate::dispatch::Agent;
 use crate::fleet::Fleet;
 use crate::gh::GitHub;
-use crate::git::{REMOTE, Repo};
+use crate::git::Repo;
 use crate::landing::joins_in;
 use crate::log::What;
 use crate::orca::{Source, Worktree};
+use crate::remote::{Fresh, Push};
 use crate::stage::Flows;
 
 /// How many seconds the step `land` waits between two looks at the base branch.
@@ -112,7 +113,7 @@ fn escalate_label(fleet: &Fleet, read: &Flows) -> String {
 /// started `now` → its record. Without a version tag it makes the declared
 /// initial version; `None` without that declaration, or with no work past a tag.
 fn pick(fleet: &Fleet, base: &str, now: u64) -> Result<Option<Record>> {
-    let newest = cut::newest(&fleet.repo.remote_tags()?);
+    let newest = cut::newest(&fleet.remote.tags(Fresh::Process)?);
     let (version, from, prs, minor) = match newest {
         Some(newest) => {
             if past(&fleet.repo, &newest, base)? == 0 {
@@ -166,11 +167,11 @@ pub fn start(fleet: &mut Fleet, me: &Me, agent: &Agent, busy: bool) -> Result<Ou
         return Ok(Outcome::Nothing);
     }
     // Before the claim: a host kit that holds no harness starts nothing.
-    let first = fleet.first()?;
+    let first = fleet.first_harness()?;
     let Some(claim) = take_run(&fleet.repo, &mut fleet.scan, me, CLAIM_KEY)? else {
         return Ok(Outcome::Lost);
     };
-    let started = started(fleet, me, agent, &first);
+    let started = started(fleet, me, agent, first);
     if !matches!(started, Ok(Some(_)))
         && let Err(kept) = drop_run(&fleet.repo, &mut fleet.scan, &claim)
     {
@@ -188,7 +189,7 @@ pub fn start(fleet: &mut Fleet, me: &Me, agent: &Agent, busy: bool) -> Result<Ou
 
 /// What `start` does once it holds the claim → the cut's record, its
 /// checkout cut and its terminal started; `None` where nothing is left to cut.
-fn started(fleet: &Fleet, me: &Me, agent: &Agent, first: &Cast) -> Result<Option<Record>> {
+fn started(fleet: &Fleet, me: &Me, agent: &Agent, first: Harness) -> Result<Option<Record>> {
     let base = fleet.base_tip()?;
     let Some(record) = pick(fleet, &base, me.now)? else { return Ok(None) };
     let source = Source::of(&fleet.repo)?;
@@ -200,7 +201,7 @@ fn started(fleet: &Fleet, me: &Me, agent: &Agent, first: &Cast) -> Result<Option
     let path = checkout.path.display().to_string();
     let command = crate::own_command_in(&path).fixed(" cut; exit").own();
     let title = format!("afkconvoy cut v{}", record.version);
-    agent.start(&checkout, first.harness, &command, Some(&title), me.now)?;
+    agent.start(&checkout, first, &command, Some(&title), me.now)?;
     Ok(Some(record))
 }
 
@@ -552,7 +553,7 @@ impl Cutting<'_> {
 
     /// The commit the version tag `name` is on, on the remote.
     fn tag_commit(&self, name: &str) -> Result<String> {
-        let tags = self.repo.remote_tags()?;
+        let tags = self.repo.remote().tags(Fresh::Process)?;
         let found = tags.into_iter().find(|(tag, _)| tag == name);
         let (_, commit) = found.ok_or_else(|| anyhow!("the remote has no tag {name}"))?;
         self.repo.bring(&commit, &format!("refs/tags/{name}"))?;
@@ -562,7 +563,7 @@ impl Cutting<'_> {
     /// The base branch's tip on the remote, its commits here.
     fn base(&self) -> Result<String> {
         let branch = &self.config.base_branch;
-        let base = self.repo.fetched(&format!("refs/heads/{branch}"))?;
+        let base = self.repo.remote().fetched(&format!("refs/heads/{branch}"), Fresh::Process)?;
         base.ok_or_else(|| anyhow!("the remote has no branch {branch:?}"))
     }
 
@@ -573,7 +574,7 @@ impl Cutting<'_> {
             return Ok(());
         }
         let branch = branch(record);
-        self.repo.git(&["push", "--quiet", REMOTE, &format!("HEAD:refs/heads/{branch}")])?;
+        self.repo.remote().push(&Push::set("HEAD", &format!("refs/heads/{branch}")))?;
         let open = self.gh.open_prs()?;
         if let Some(pr) = open.iter().find(|pr| pr.head_branch == branch) {
             record.pr = Some(pr.number);
@@ -684,10 +685,10 @@ impl Cutting<'_> {
             bail!("{tag} is here on {}, not on {landed}, which landed the cut", here.stdout);
         }
         let to = format!("refs/tags/{tag}");
-        if self.repo.try_git(&["push", "--quiet", REMOTE, &to])?.ok {
+        if self.repo.remote().try_push(&Push::set(&to, &to))?.ok {
             return Ok(());
         }
-        match self.repo.remote_tags()?.into_iter().find(|(name, _)| *name == tag) {
+        match self.repo.remote().tags(Fresh::Process)?.into_iter().find(|(name, _)| *name == tag) {
             Some((_, commit)) if commit == landed => Ok(()),
             Some((_, commit)) => bail!("the remote has {tag} on {commit} already, not on {landed}"),
             None => bail!("{tag} could not be pushed"),

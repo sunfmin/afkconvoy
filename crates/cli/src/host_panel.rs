@@ -11,6 +11,7 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use anyhow::Result;
 
+use crate::admission::Readings;
 use crate::host_runner::Shared;
 use crate::panel::{self, Broken, Checkout, Host, Page, Panel, Part};
 use crate::serve::{self, Live};
@@ -31,7 +32,8 @@ impl HostPanel {
     /// The page of a host runner that holds `shared` for its fleets, served
     /// nowhere yet, and with no checkout on it.
     pub fn new(shared: Shared) -> HostPanel {
-        let host = Host::read(Path::new("/"), crate::clock(), shared.now());
+        let host =
+            Host::read(Path::new("/"), crate::clock(), Ok(Some(shared.now())), &Readings::new());
         let page = Page { host, live: true, checkouts: vec![] };
         HostPanel {
             live: Live::new(panel::render(&page)),
@@ -108,7 +110,7 @@ impl HostPanel {
     /// Shows the page made of `checkouts` and the host as it is now.
     fn remake(&self, checkouts: &BTreeMap<PathBuf, Checkout>) {
         let dir = checkouts.keys().next().map_or(Path::new("/"), PathBuf::as_path);
-        let host = Host::read(dir, crate::clock(), self.shared.now());
+        let host = Host::read(dir, crate::clock(), Ok(Some(self.shared.now())), &Readings::new());
         let page = Page { host, live: true, checkouts: checkouts.values().cloned().collect() };
         self.live.show(panel::render(&page));
     }

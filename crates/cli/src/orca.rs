@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use afkconvoy_core::casting::CASTER_WORKTREE;
@@ -28,16 +28,16 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::git::{REMOTE, Repo};
+use crate::look::Reading;
 use crate::worker_tmp;
 
 /// The worker's instructions, kept in the worktree's own git dir: never staged
 /// by the worker's `git add -A`, gone when the worktree is.
 const BRIEF_FILE: &str = "convoy-worker-prompt.md";
-/// When the caster here was started (epoch seconds), and the issues it was
-/// given, beside the brief.
-const CASTER_FILE: &str = "convoy-caster";
 /// When the worker here was nudged (epoch seconds), beside the brief.
 const NUDGE_FILE: &str = "convoy-nudged";
+/// Each operator's note that reached the worker's model (`afkconvoy tell`).
+pub(crate) const TOLD_FILE: &str = "convoy-told";
 /// The one since this worker has waited on its own background work (epoch
 /// seconds), beside the brief. The tick line, worker health and a later tick
 /// all name this file. It is gone once the turn is open, or the worker is
@@ -49,6 +49,11 @@ const START_FILE: &str = "convoy-started";
 const WRITES_NOTHING_FILE: &str = "convoy-writes-nothing";
 /// The comment of the `blocked` verdict a worker was last started again over.
 const ANSWERED_FILE: &str = "convoy-answered";
+/// What the last turn asked for here answered, or the process asking for one
+/// now (`turn_answer`).
+pub(crate) const TURN_FILE: &str = "convoy-turn.json";
+/// What the turns the tick asked for here printed, one after another.
+pub(crate) const TURN_LOG_FILE: &str = "convoy-turn.log";
 /// What a bound repo's worker here was started under (`Under`).
 const UNDER_FILE: &str = "convoy-started-under";
 /// The harness the worker here was last started on, as its key.
@@ -179,7 +184,7 @@ impl Ending {
         }
     }
 
-    fn log_ended(&mut self, worktree: &Path) {
+    fn log_ended(&mut self, worktree: &Path, command: &str) {
         if !self.sent || self.logged {
             return;
         }
@@ -190,7 +195,7 @@ impl Ending {
             instance: String::new(),
             host: crate::this_host(),
             what: crate::log::What::Command {
-                command: "start".to_string(),
+                command: command.to_string(),
                 on: Some(worktree.display().to_string()),
                 by: "fleet".to_string(),
                 outcome: format!("ended old worker {}, after {signal}", self.description),
@@ -261,6 +266,17 @@ fn runtime_row(ps: &Value, path: &Path) -> Value {
         .unwrap_or(Value::Null)
 }
 
+/// Whether orca's runtime row still shows this agent running. Orca keeps an
+/// ended session's row as `done` with no live pty, across restarts and for a
+/// worktree cut again at the same path: that one is over.
+fn agent_running(agent: &Value) -> bool {
+    match agent["state"].as_str() {
+        Some("exited" | "stopped" | "closed" | "gone") => false,
+        Some("done") => agent["hasLivePty"] == true,
+        _ => true,
+    }
+}
+
 /// The top-level runtime observation belonging to exactly this terminal.
 fn pane_agent(row: &Value, terminal: &Value) -> Value {
     let pane = format!(
@@ -300,7 +316,10 @@ pub(crate) fn agent_harness(agent: &Value) -> Option<Harness> {
 /// One `orca … --json` call → its `result` object. An error when orca cannot
 /// be run, exits non-zero, or answers `ok: false` — never an empty answer.
 pub fn orca(args: &[&str]) -> Result<Value> {
-    let asked = Asked::of(args)?;
+    let asked = Asked::of(args);
+    // A write forgets each reading that names it, whatever it answered.
+    crate::look::wrote(&[&["orca"], args].concat());
+    let asked = asked?;
     if !asked.exited_ok || asked.answer["ok"] != true {
         return Err(asked.failure());
     }
@@ -464,41 +483,15 @@ fn asked_from() -> PathBuf {
     home.filter(|home| home.is_dir()).unwrap_or_else(|| PathBuf::from("/"))
 }
 
-static RUNNING: Mutex<Option<Arc<OnceLock<bool>>>> = Mutex::new(None);
+/// Whether orca is running, read once in this look. Adding a repo does
+/// not forget this: orca is running then, and the look has not ended.
+pub(crate) static RUNNING: Reading<bool> = Reading::per_look("orca running");
 
 /// Whether orca is running, read once in this look. An orca that cannot say
 /// is not one a worker can be started through. A second ask waits on that
 /// read instead of starting `orca` again.
 pub fn running() -> bool {
-    let cell = {
-        let mut running = RUNNING.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        running.get_or_insert_with(|| Arc::new(OnceLock::new())).clone()
-    };
-    *cell
-        .get_or_init(|| orca(&["status"]).is_ok_and(|status| status["runtime"]["state"] == "ready"))
-}
-
-/// Forgets whether orca is running, so the next read asks again. A look
-/// begins through `look::begin`. Adding a repo does not forget this: orca
-/// is running then, and the look has not ended.
-pub(crate) fn forget_running() {
-    *RUNNING.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
-}
-
-#[cfg(test)]
-pub(crate) fn hold_running(ready: bool) {
-    let cell = Arc::new(OnceLock::new());
-    cell.set(ready).expect("running cell is unset");
-    *RUNNING.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(cell);
-}
-
-#[cfg(test)]
-pub(crate) fn running_cached() -> Option<bool> {
-    RUNNING
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .as_ref()
-        .and_then(|cell| cell.get().copied())
+    RUNNING.read("", || orca(&["status"]).is_ok_and(|status| status["runtime"]["state"] == "ready"))
 }
 
 /// What a start finds of an installed orca: whether it is running, and then
@@ -522,81 +515,39 @@ pub struct Source {
     pub id: String,
 }
 
-static REPOS: Mutex<Option<Result<Value, String>>> = Mutex::new(None);
+/// Orca's host-wide repo listing, read once in this look. Adding a repo orca
+/// did not list forgets this listing alone: the look has not ended.
+pub(crate) static REPOS: Reading<Result<Value, String>> =
+    Reading::per_look("orca repo list").forgotten_by(&[&["orca", "repo", "add"]]);
 
 /// Orca's host-wide repo listing, read once in this look.
 fn repo_list() -> Result<Value> {
-    let mut listed = REPOS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    if listed.is_none() {
-        *listed = Some(orca(&["repo", "list"]).map_err(|error| format!("{error:#}")));
-    }
-    listed.as_ref().expect("set above").clone().map_err(|error| anyhow!(error))
+    REPOS
+        .read("", || orca(&["repo", "list"]).map_err(|error| format!("{error:#}")))
+        .map_err(|error| anyhow!(error))
 }
 
-/// Forgets the listing, so the next read observes it again. A look begins
-/// through `look::begin`, which forgets every observation a look reads once.
-/// Adding a repo orca did not list forgets this listing alone: the look has
-/// not ended, and the quota note stays the one already read.
-pub(crate) fn forget_listing() {
-    *REPOS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
-}
-
-/// Orca's worktree list, read once and shared with the next ask in this look.
-type WorktreesOnce = Arc<OnceLock<Result<Value, String>>>;
+/// Orca's worktree list, read once in this look. Creating or removing a
+/// worktree forgets this list alone: the look has not ended, and the other
+/// readings stay the ones already read.
+pub(crate) static WORKTREES: Reading<Result<Value, String>> =
+    Reading::per_look("orca worktree list")
+        .forgotten_by(&[&["orca", "worktree", "create"], &["orca", "worktree", "rm"]]);
 
 /// Orca's worktree list, one read for this look. A second ask waits on the
-/// first instead of listing again. The lock is not held across `orca`.
-static WORKTREES: Mutex<Option<WorktreesOnce>> = Mutex::new(None);
-
+/// first instead of listing again.
 fn worktree_list() -> Result<Value> {
-    let cell = {
-        let mut listed = WORKTREES.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        listed.get_or_insert_with(|| Arc::new(OnceLock::new())).clone()
-    };
-    let stored =
-        cell.get_or_init(|| orca(&["worktree", "list"]).map_err(|error| format!("{error:#}")));
-    match stored {
-        Ok(value) => Ok(value.clone()),
-        Err(error) => bail!("{error}"),
-    }
+    WORKTREES.read("", list_worktrees).map_err(|error| anyhow!(error))
 }
 
-/// Forgets the worktree list, so the next read observes it again. A look
-/// begins through `look::begin`, which forgets every observation a look
-/// reads once. Creating or removing a worktree forgets this list alone:
-/// the look has not ended, and the other observations stay the ones already read.
-pub(crate) fn forget_worktrees() {
-    *WORKTREES.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+/// Asks orca for the worktree list anew, which is what makes orca drop a
+/// removal failure it recorded.
+fn worktree_list_again() -> Result<Value> {
+    WORKTREES.again("", list_worktrees).map_err(|error| anyhow!(error))
 }
 
-#[cfg(test)]
-pub(crate) fn hold_worktrees(value: Value) {
-    let cell = Arc::new(OnceLock::new());
-    cell.set(Ok(value)).ok();
-    *WORKTREES.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(cell);
-}
-
-#[cfg(test)]
-pub(crate) fn worktrees_cached() -> Option<Value> {
-    WORKTREES
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .as_ref()
-        .and_then(|cell| cell.get().and_then(|listed| listed.as_ref().ok().cloned()))
-}
-
-#[cfg(test)]
-pub(crate) fn hold_listing(value: Value) {
-    *REPOS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Ok(value));
-}
-
-#[cfg(test)]
-pub(crate) fn cached_listing() -> Option<Value> {
-    REPOS
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .as_ref()
-        .and_then(|listed| listed.as_ref().ok().cloned())
+fn list_worktrees() -> Result<Value, String> {
+    orca(&["worktree", "list"]).map_err(|error| format!("{error:#}"))
 }
 
 impl Source {
@@ -694,7 +645,9 @@ pub(crate) fn finish_failed_removals(repo: &Repo, base: &str) -> Result<()> {
     let source = Source::of(repo)?;
     let listed = worktree_list()?;
     let rows = listed["worktrees"].as_array().cloned().unwrap_or_default();
-    let busy = crate::hot::working_directories()?;
+    // Every process of the host is listed only for a row that needs it: a
+    // tick that finds no failed removal starts no `ps` (sunfmin/control#311).
+    let mut busy = None;
     let mut finished = false;
     let mut retired = false;
     for row in &rows {
@@ -711,7 +664,10 @@ pub(crate) fn finish_failed_removals(repo: &Repo, base: &str) -> Result<()> {
         else {
             continue;
         };
-        if crate::hot::occupies(&busy, &path) {
+        if busy.is_none() {
+            busy = Some(crate::hot::working_directories()?);
+        }
+        if crate::hot::occupies(busy.as_deref().unwrap_or_default(), &path) {
             continue;
         }
         let branch = short_branch(row["branch"].as_str().unwrap_or(""));
@@ -735,8 +691,7 @@ pub(crate) fn finish_failed_removals(repo: &Repo, base: &str) -> Result<()> {
         let _ = worker_tmp::reclaim();
     }
     if finished {
-        forget_worktrees();
-        worktree_list()?;
+        worktree_list_again()?;
     }
     Ok(())
 }
@@ -747,7 +702,6 @@ pub(crate) fn finish_failed_removals(repo: &Repo, base: &str) -> Result<()> {
 pub fn watch_directory(directory: &Path) -> Result<()> {
     if Source::at(directory)?.is_none() {
         orca(&["repo", "add", "--path", &directory.display().to_string()])?;
-        forget_listing();
     }
     Ok(())
 }
@@ -814,6 +768,28 @@ fn turn_wait_seconds() -> u64 {
         .unwrap_or(SUBMIT_SECONDS)
 }
 
+/// How long a note typed at a worker waits for its harness to give it to
+/// its model: a harness that takes a line only at the end of its turn takes
+/// it once the step it is on ends. Tests set it short.
+fn note_wait_seconds() -> u64 {
+    std::env::var("AFKCONVOY_NOTE_WAIT_SECONDS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(NOTE_WAIT_SECONDS)
+}
+
+const NOTE_WAIT_SECONDS: u64 = 600;
+const NOTE_POLL: Duration = Duration::from_millis(500);
+
+/// How a note reached a worker's model (`Worktree::hand_note`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Handed {
+    /// Typed, and its session held it this many seconds later.
+    Taken { seconds: u64 },
+    /// Its session held it already: typed by an earlier run.
+    Already,
+}
+
 /// A worker's worktree on this machine.
 #[derive(Debug, Clone)]
 pub struct Worktree {
@@ -850,11 +826,10 @@ impl Worktree {
         if let Some(number) = &issue {
             args.extend(["--issue", number]);
         }
+        // The list this look already read does not contain the worktree
+        // created here: the create forgets it (`WORKTREES`), so a later
+        // question, including a host-runner move after the tick, sees it.
         let made = orca(&args)?;
-        // The list this look already read does not contain the worktree just
-        // created. A later question, including a host-runner move after the
-        // tick, has to see it.
-        forget_worktrees();
         let path = made["worktree"]["path"].as_str().map(PathBuf::from);
         let Some(path) = path.filter(|path| path.is_dir()) else {
             bail!("orca worktree create returned no usable path: {}", made["worktree"]["path"]);
@@ -1101,32 +1076,13 @@ impl Worktree {
     }
 
     /// A note about the worker here, kept in the worktree's own git dir: this
-    /// machine's, like the worker itself, and gone when the worktree is. git
-    /// is asked where that is once.
+    /// machine's, like the worker itself, and gone when the worktree is. It
+    /// is found once (`Repo::git_dir`).
     pub(crate) fn note(&self, name: &str) -> Result<PathBuf> {
         if self.git_dir.get().is_none() {
-            let dir = Repo::new(self.path.clone()).git(&["rev-parse", "--absolute-git-dir"])?;
-            let _ = self.git_dir.set(PathBuf::from(dir));
+            let _ = self.git_dir.set(Repo::new(self.path.clone()).git_dir()?);
         }
         Ok(self.git_dir.get().expect("set above").join(name))
-    }
-
-    /// When the caster here was started, and the issues it was given.
-    pub fn caster(&self) -> Result<Option<(u64, Vec<u64>, String)>> {
-        let kept = std::fs::read_to_string(self.note(CASTER_FILE)?).unwrap_or_default();
-        if let Ok((since, given, context)) = serde_json::from_str(&kept) {
-            return Ok(Some((since, given, context)));
-        }
-        let mut words = kept.split_whitespace().map(str::parse::<u64>);
-        let Some(Ok(since)) = words.next() else { return Ok(None) };
-        Ok(Some((since, words.filter_map(Result::ok).collect(), String::new())))
-    }
-
-    /// Records that the caster here was started at `since`, given `given`.
-    pub fn record_caster(&self, since: u64, given: &[u64], context: &str) -> Result<()> {
-        let file = self.note(CASTER_FILE)?;
-        std::fs::write(&file, serde_json::to_vec(&(since, given, context))?)
-            .with_context(|| format!("cannot write {}", file.display()))
     }
 
     fn forget(&self, name: &str) -> Result<()> {
@@ -1142,8 +1098,13 @@ impl Worktree {
     /// work here is over is ended, whatever it is doing. One with no terminal
     /// is as wanted.
     pub fn close_terminals(&self) -> Result<()> {
+        self.close_any().map(|_| ())
+    }
+
+    /// `close_terminals` → whether there was a terminal here to close.
+    fn close_any(&self) -> Result<bool> {
         if self.terminal()?.is_none() {
-            return Ok(());
+            return Ok(false);
         }
         orca(&["terminal", "close", "--worktree", &self.selector(), "--all"])?;
         if OBSERVATION.with(|slot| slot.borrow().is_some()) && self.terminal()?.is_none() {
@@ -1151,12 +1112,27 @@ impl Worktree {
             // that starts later in this tick. Other workers keep their view.
             self.observed_terminals(0);
         }
-        Ok(())
+        Ok(true)
     }
 
     /// End the old agent before a continuation can rewrite its brief or
     /// start another writer. Include descendants that escaped the terminal.
     pub(crate) fn stop_for_continuation(&self) -> Result<()> {
+        self.end_worker("start", "no replacement was started")
+    }
+
+    /// Ends the session the fleet started here for an issue whose work has
+    /// landed, before settling removes the worktree: its terminals and
+    /// process tree, confirmed gone.
+    pub(crate) fn end_settled(&self) -> Result<()> {
+        self.end_worker("tick", "a later tick removes it")
+    }
+
+    /// Closes every terminal here and ends the worker's process tree, each
+    /// end confirmed: one still there after SIGKILL is an error, saying
+    /// `consequence`. Each process ended is a line of the tick log, under
+    /// `command`.
+    fn end_worker(&self, command: &str, consequence: &str) -> Result<()> {
         let before = crate::hot::listed_checked()?;
         let pids: Vec<_> = crate::hot::tree(&before, &self.path).iter().map(|p| p.pid).collect();
         self.close_terminals()?;
@@ -1185,7 +1161,7 @@ impl Worktree {
             }
             for (pid, record) in &mut ending {
                 if !processes.iter().any(|proc| proc.pid == *pid) {
-                    record.log_ended(&self.path);
+                    record.log_ended(&self.path, command);
                 }
             }
             let old_alive =
@@ -1194,11 +1170,7 @@ impl Worktree {
             // tick's earlier observation of the running agent.
             let report = runtime_row(&runtime_live()?, &self.path);
             let agents = report["agents"].as_array();
-            let agent_alive = agents.is_some_and(|agents| {
-                agents.iter().any(|a| {
-                    !matches!(a["state"].as_str(), Some("exited" | "stopped" | "closed" | "gone"))
-                })
-            });
+            let agent_alive = agents.is_some_and(|agents| agents.iter().any(agent_running));
             if self.terminal()?.is_none() && writers.is_empty() && !old_alive && !agent_alive {
                 return Ok(());
             }
@@ -1213,7 +1185,7 @@ impl Worktree {
                     .collect::<Vec<_>>()
                     .join("; ");
                 bail!(
-                    "old worker termination is unconfirmed in {}; no replacement was started{}",
+                    "old worker termination is unconfirmed in {}; {consequence}{}",
                     self.path.display(),
                     if survivors.is_empty() {
                         String::new()
@@ -1267,19 +1239,24 @@ impl Worktree {
             return Ok(None);
         }
         let file = self.note(BACKGROUND_FILE)?;
-        let seen: Option<u64> =
-            std::fs::read_to_string(&file).ok().and_then(|at| at.trim().parse().ok());
-        let since = match (seen, earlier) {
-            (Some(seen), Some(earlier)) => seen.min(earlier),
-            (Some(seen), None) => seen,
-            (None, Some(earlier)) => earlier,
-            (None, None) => now,
-        };
-        if seen != Some(since) {
+        let since = self.background_seen(earlier, now);
+        if self.background_at() != Some(since) {
             std::fs::write(&file, since.to_string())
                 .with_context(|| format!("cannot write {}", file.display()))?;
         }
         Ok(Some(since))
+    }
+
+    /// The since `background_since` would keep for a worker waiting on
+    /// background work of its own, read and not written: what `doctor`
+    /// judges a silence by without moving it.
+    pub fn background_seen(&self, earlier: Option<u64>, now: u64) -> u64 {
+        match (self.background_at(), earlier) {
+            (Some(seen), Some(earlier)) => seen.min(earlier),
+            (Some(seen), None) => seen,
+            (None, Some(earlier)) => earlier,
+            (None, None) => now,
+        }
     }
 
     /// The one since, read and not written. `None` when the turn is open or
@@ -1287,6 +1264,19 @@ impl Worktree {
     pub fn background_at(&self) -> Option<u64> {
         let file = self.note(BACKGROUND_FILE).ok()?;
         std::fs::read_to_string(file).ok()?.trim().parse().ok()
+    }
+
+    /// Keeps that the note `comment` reached the model of the worker here at
+    /// `at`: one line each, beside its nudge.
+    pub fn record_told(&self, at: u64, comment: &str) -> Result<()> {
+        use std::io::Write;
+        let file = self.note(TOLD_FILE)?;
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&file)
+            .and_then(|mut told| writeln!(told, "{at} {comment}"))
+            .with_context(|| format!("cannot write {}", file.display()))
     }
 
     pub fn record_nudge(&self, at: u64) -> Result<()> {
@@ -1426,7 +1416,6 @@ impl Worktree {
         let _ = worker_tmp::retire(&self.path);
         crate::copies::removable(&self.path);
         orca(&["worktree", "rm", "--worktree", &self.selector(), "--force"])?;
-        forget_worktrees();
         if self.path.exists() {
             crate::copies::removable(&self.path);
             std::fs::remove_dir_all(&self.path)
@@ -1437,8 +1426,7 @@ impl Worktree {
         }
         // The directory is gone. Orca drops a failure it recorded during the
         // removal only when it is asked for the list again.
-        forget_worktrees();
-        worktree_list()?;
+        worktree_list_again()?;
         let _ = worker_tmp::reclaim();
         Ok(())
     }
@@ -1472,13 +1460,15 @@ impl Worktree {
         // A failed close must not turn a continuation into a second writer.
         // Check again even after an acknowledged close: Orca may still be
         // ending the previous terminal. Leave the worker's progress markers
-        // intact until its replacement can actually be started.
-        if self.recorded_harness()?.is_some() {
+        // intact until its replacement can actually be started. Where there
+        // was no terminal to close, the look that found none is that check.
+        let closed = if self.recorded_harness()?.is_some() {
             self.stop_for_continuation()?;
+            true
         } else {
-            self.close_terminals()?;
-        }
-        if self.terminal()?.is_some() {
+            self.close_any()?
+        };
+        if closed && self.terminal()?.is_some() {
             bail!(
                 "the previous worker in {} still has a terminal after close; \
                  no replacement was started",
@@ -1606,6 +1596,78 @@ impl Worktree {
     pub(crate) fn tell_watch(&self, terminal: &str, line: &str, harness: Harness) -> Result<()> {
         let earliest = crate::clock().saturating_sub(2);
         self.tell_unchecked(terminal, line, BRIEF_SETTLE_SECONDS, Some(harness), earliest)
+    }
+
+    /// Types `line` once at the harness in `terminal`, at work or at its
+    /// prompt, and waits until that harness's session holds `mark` in a
+    /// message its model was given as the user's (`session::holds_note`):
+    /// a line seen only in its input queue is not delivered. A session that
+    /// already holds it — a rerun after the line was taken — is typed
+    /// nothing. Past the bound it fails with the screen, and types no second
+    /// line. `since` drops session files written before it.
+    pub(crate) fn hand_note(
+        &self,
+        terminal: &str,
+        line: &str,
+        mark: &str,
+        since: u64,
+    ) -> Result<Handed> {
+        let row = runtime_row(&runtime_live()?, &self.path);
+        let agent = if row["liveTerminalCount"].as_u64().unwrap_or(0) > 1 {
+            let shown = orca(&["terminal", "show", "--terminal", terminal])?;
+            pane_agent(&row, &shown["terminal"])
+        } else {
+            main_agent(&row)
+        };
+        let state = agent["programStatus"]["state"].as_str().or(agent["state"].as_str());
+        // A harness at work has no idle prompt to wait for: its input takes
+        // the line, and the harness hands it over mid-turn or after it.
+        if state != Some("working") {
+            let (ready, _) =
+                self.wait_for_input(terminal, Duration::from_secs(1)).with_context(|| {
+                    self.prompt_context(
+                        terminal,
+                        "no running worker harness confirmed; no line was sent",
+                    )
+                })?;
+            if ready != Waited::Ready {
+                return Err(self.prompt_failure(
+                    terminal,
+                    "no running worker harness at its input; no line was sent",
+                ));
+            }
+        }
+        let harness =
+            agent_harness(&agent).or(self.recorded_harness()?).unwrap_or(Harness::DEFAULT);
+        if crate::session::holds_note(&self.path, harness, since, mark)? {
+            return Ok(Handed::Already);
+        }
+        let sent = orca(&["terminal", "send", "--terminal", terminal, "--text", line, "--enter"])?;
+        if sent["send"]["accepted"] != true {
+            return Err(self.prompt_failure(
+                terminal,
+                &format!("the terminal did not take the line: {}", sent["send"]),
+            ));
+        }
+        let typed = Instant::now();
+        let bound = Duration::from_secs(note_wait_seconds());
+        loop {
+            if crate::session::holds_note(&self.path, harness, since, mark)? {
+                return Ok(Handed::Taken { seconds: typed.elapsed().as_secs() });
+            }
+            if typed.elapsed() >= bound {
+                return Err(self.prompt_failure(
+                    terminal,
+                    &format!(
+                        "{} did not give its model the line within {}s: it is not delivered, \
+                         and no second line was typed",
+                        harness.name(),
+                        bound.as_secs()
+                    ),
+                ));
+            }
+            std::thread::sleep(NOTE_POLL.min(bound.saturating_sub(typed.elapsed())));
+        }
     }
 
     /// Checks this pane's input without typing or waiting for an active
@@ -1873,6 +1935,16 @@ impl Worktree {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_done_agent_with_no_live_pty_has_ended_and_one_with_a_pty_has_not() {
+        let ended = serde_json::json!({"state": "done", "mainAgent": {"state": "done"}});
+        assert!(!super::agent_running(&ended), "orca's leftover row of a session gone");
+        let idle = serde_json::json!({"state": "done", "hasLivePty": true});
+        assert!(super::agent_running(&idle), "a session at its prompt still writes");
+        assert!(super::agent_running(&serde_json::json!({"state": "working"})));
+        assert!(!super::agent_running(&serde_json::json!({"state": "exited"})));
+    }
+
     use super::*;
 
     #[test]

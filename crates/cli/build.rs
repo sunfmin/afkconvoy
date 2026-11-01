@@ -39,7 +39,12 @@ fn main() {
 /// each file's path in the team's directory with its text. Both are in the
 /// order of their names, so that two builds of one tree hold the same.
 fn examples() -> String {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join(EXAMPLES);
+    // The package's directory as cargo names it to this run, not as it was
+    // when this script was built: a candidate's gate builds in its worker's
+    // target directory, where cargo reuses the script built from another
+    // worktree of the repo, one that may be gone (2026-10-30).
+    let package = std::env::var_os("CARGO_MANIFEST_DIR").expect("cargo sets CARGO_MANIFEST_DIR");
+    let root = Path::new(&package).join(EXAMPLES);
     let mut source = String::from("&[\n");
     for example in entries(&root) {
         let name = example.file_name().expect("an entry has a name").to_string_lossy().into_owned();

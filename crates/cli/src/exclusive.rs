@@ -20,8 +20,8 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, mpsc};
 use std::time::{Duration, Instant};
 
 use afkconvoy_core::exclusive::{
-    Ticket, ahead, at_once_line, ended_line, in_order, queued_since, ready, rejoins_line,
-    runs_line, same_lane, same_repo, waits_line,
+    Gate, Ticket, ahead, at_once_line, ended_line, in_order, is_fast, limit, queued_since, ready,
+    rejoins_line, runs_line, same_lane, same_repo, waits_line,
 };
 use afkconvoy_core::role::ISSUE_ENV;
 use anyhow::{Result, bail};
@@ -56,6 +56,65 @@ fn is_cut(repo: &Repo) -> bool {
     })
 }
 
+/// Which of the two gates (docs/adr/0047) the command `exclusive` runs is,
+/// as `gate --fast` and `--slow` say it to the gate's command: `fast` takes
+/// the fast lane (docs/adr/0049). It is said to that `exclusive` alone, and
+/// not passed on to what its command runs.
+pub const GATE_ENV: &str = "AFKCONVOY_GATE";
+
+/// The gate `exclusive` was told it runs; `None` for any other command.
+fn told_gate() -> Option<Gate> {
+    match std::env::var(GATE_ENV).ok()?.as_str() {
+        "fast" => Some(Gate::Fast),
+        "slow" => Some(Gate::Slow),
+        _ => None,
+    }
+}
+
+/// Said by a gate's run to the `exclusive` its command takes a lane in: once
+/// that lane is held, give the gate's tests their share of the host's cores
+/// if another command runs in the host's lanes (`share`). Not passed on.
+pub const SHARE_ENV: &str = "AFKCONVOY_GATE_SHARE";
+
+/// The variable that keeps a gate's tests to its share of the host's cores,
+/// where it runs beside others (sunfmin/control#245).
+const SHARED: [&str; 1] = ["NEXTEST_TEST_THREADS"];
+
+/// Gives a gate's tests, run as `command` in the lane of the process `own`,
+/// their share of the host — the cores over every lane a gate may run in at
+/// once — as `NEXTEST_TEST_THREADS`, unless the environment already says it,
+/// and only while another command runs in a worker, fast or slow lane. Tests
+/// run side by side would otherwise each take every core, and a test far
+/// under the fast gate's line would cross its end on load alone
+/// (sunfmin/control#245). A gate alone in the queue keeps every core: held to
+/// a third of 14 cores beside lanes standing idle, a repo's tests took 461
+/// seconds that had taken 311 with all of them (sunfmin/control#318). Its
+/// build is not held to a share: a build is timed by no line of its own, and
+/// one cold build on one core of eight passed the fast gate's limit before
+/// its tests began (2026-10-29), as ADR-0019 says of a cap on build jobs.
+pub(crate) fn share(command: &mut Command, own: u32) {
+    command.env_remove(SHARE_ENV);
+    if !beside_another(own) {
+        return;
+    }
+    let Ok(settings) = crate::host_settings::of_host() else { return };
+    let share = settings.gate_share().to_string();
+    for name in SHARED {
+        if std::env::var_os(name).is_none() {
+            command.env(name, &share);
+        }
+    }
+}
+
+/// Whether a command other than the one of the process `own` runs in this
+/// host's worker, fast or slow lanes; a light gate's repo lane is none of
+/// them. A queue that cannot be read is taken as one beside it.
+fn beside_another(own: u32) -> bool {
+    standing().map_or(true, |tickets| {
+        tickets.iter().any(|t| t.ran.is_some() && t.repo_lane.is_none() && t.pid != own)
+    })
+}
+
 /// Only the gate's descendants inherit this lease. Nested `exclusive`
 /// wrappers use the already held lane instead of waiting on their parent.
 const OWNER_ENV: &str = "AFKCONVOY_EXCLUSIVE_OWNER";
@@ -86,31 +145,29 @@ fn lease_scope(repo: &Repo) -> Result<String> {
     Ok(format!("{repo:016x}:{cache:016x}"))
 }
 
-fn inherited(checkout: Option<&Repo>) -> bool {
-    let Some((owner, scope)) = std::env::var(OWNER_ENV).ok().and_then(|v| {
+/// The process whose lane this one runs in, as a descendant of it: `None`
+/// where it holds none.
+fn inherited(checkout: Option<&Repo>) -> Option<u32> {
+    let (owner, scope) = std::env::var(OWNER_ENV).ok().and_then(|v| {
         let (owner, scope) = v.split_once(':')?;
         Some((owner.parse::<u32>().ok()?, scope.to_string()))
-    }) else {
-        return false;
-    };
+    })?;
     if checkout.and_then(|repo| lease_scope(repo).ok()).as_deref() != Some(&scope) {
-        return false;
+        return None;
     }
     let processes = crate::hot::listed();
     let mut pid = std::process::id();
     for _ in 0..processes.len() {
-        let Some(parent) = processes.iter().find(|p| p.pid == pid).map(|p| p.ppid) else {
-            return false;
-        };
+        let parent = processes.iter().find(|p| p.pid == pid).map(|p| p.ppid)?;
         if parent == owner {
-            return true;
+            return Some(owner);
         }
         if parent <= 1 || parent == pid {
-            return false;
+            return None;
         }
         pid = parent;
     }
-    false
+    None
 }
 
 /// A command owns its lane until this value drops, including merge, gate,
@@ -123,11 +180,16 @@ pub struct Permit {
 
 impl Permit {
     pub fn take(repo: &Repo, command: &str, heavy: bool, is_turn: bool) -> Result<Self> {
-        Self::acquire(repo, command, heavy, is_turn, false)
+        Self::acquire(repo, command, heavy, is_turn, false, false)
     }
 
     pub(crate) fn candidate(repo: &Repo, command: &str, heavy: bool) -> Result<Self> {
-        Self::acquire(repo, command, heavy, true, true)
+        Self::acquire(repo, command, heavy, true, true, false)
+    }
+
+    /// A round's slow gate, in the host's slow lanes, not its worker lanes.
+    pub(crate) fn slow_gate(repo: &Repo, command: &str, heavy: bool) -> Result<Self> {
+        Self::acquire(repo, command, heavy, true, true, true)
     }
 
     fn acquire(
@@ -136,6 +198,7 @@ impl Permit {
         heavy: bool,
         is_turn: bool,
         candidate: bool,
+        slow: bool,
     ) -> Result<Self> {
         if held() {
             bail!("this command already holds a turn");
@@ -152,6 +215,7 @@ impl Permit {
             is_turn,
             candidate,
             validation: None,
+            gate: (slow && heavy).then_some(afkconvoy_core::exclusive::Gate::Slow),
             asked: crate::clock(),
             ran: None,
         };
@@ -271,7 +335,7 @@ impl Joined {
         else {
             return 0;
         };
-        let limit = if running.repo_lane.is_some() { 1 } else { settings.gate_lanes() };
+        let limit = limit(running, settings.lanes());
         let occupied =
             self.tickets.iter().filter(|t| t.ran.is_some() && same_lane(t, running)).count() as u64;
         self.tickets
@@ -288,6 +352,7 @@ impl Joined {
                         && same_repo(t, waiting)
                         && (same_lane(t, waiting) || (t.is_turn && waiting.is_turn))
                         && !(t.candidate && waiting.candidate)
+                        && !(is_fast(t) && is_fast(waiting))
                 });
                 match owner {
                     Some(owner) => owner.number == number,
@@ -422,7 +487,7 @@ impl Queue {
                                 t.ran.is_some() || crate::slots::repo_available(t).unwrap_or(false)
                             })
                             .collect();
-                        ready(&eligible, number, settings.gate_lanes())
+                        ready(&eligible, number, settings.lanes())
                     } =>
                 {
                     break;
@@ -644,10 +709,12 @@ pub fn exclusive(
     checkout: Option<Repo>,
     now: impl Fn() -> u64,
 ) -> ExitCode {
-    if inherited(checkout.as_ref()) {
-        return match crate::process::status(
-            Command::new(&command[0]).args(&command[1..]).current_dir(dir),
-        ) {
+    if let Some(owner) = inherited(checkout.as_ref()) {
+        let mut nested = Command::new(&command[0]);
+        if std::env::var_os(SHARE_ENV).is_some() {
+            share(&mut nested, owner);
+        }
+        return match crate::process::status(nested.args(&command[1..]).current_dir(dir)) {
             Ok(status) => ExitCode::from(ended(status).0),
             Err(error) => failed(&format!("the nested command could not start: {error}")),
         };
@@ -666,6 +733,7 @@ pub fn exclusive(
         is_turn: false,
         candidate: false,
         validation: None,
+        gate: told_gate(),
         asked: now(),
         ran: None,
     };
@@ -721,7 +789,10 @@ fn run_command(
     slot: &crate::slots::Slot,
 ) -> std::io::Result<Option<ExitStatus>> {
     let mut cmd = Command::new(&command[0]);
-    cmd.args(&command[1..]).current_dir(dir);
+    cmd.args(&command[1..]).current_dir(dir).env_remove(GATE_ENV);
+    if std::env::var_os(SHARE_ENV).is_some() {
+        share(&mut cmd, ticket.pid);
+    }
     slot.inherit(&mut cmd);
     let mut child = crate::process::spawn(&mut cmd)?;
     let started = Instant::now();
@@ -830,6 +901,7 @@ mod tests {
             is_turn: false,
             candidate: false,
             validation: None,
+            gate: None,
             asked,
             ran: None,
         }
@@ -964,6 +1036,34 @@ mod tests {
         assert!(third.next().unwrap()["runs"].is_u64());
         drop(third);
         holds(&queue, &[]);
+    }
+
+    #[test]
+    fn fast_gates_of_one_repo_run_beside_a_slow_gate_and_each_other_up_to_the_fast_lanes() {
+        let dir = tempfile::tempdir().unwrap();
+        let queue = Queue { inherited: false, ..Queue::default() };
+        served(dir.path(), &queue);
+        let of_a = |command: &str, asked: u64, gate: Option<Gate>| Ticket {
+            repo: Some("/a/.git".into()),
+            gate,
+            ..ticket(command, asked)
+        };
+        let (mut slow, _) = Asker::joins(dir.path(), of_a("slow", 100, Some(Gate::Slow)));
+        assert!(slow.next().unwrap()["runs"].is_u64());
+        let (mut other, said) = Asker::joins(dir.path(), of_a("cargo test", 101, None));
+        assert_eq!(said["ahead"], 0, "a slow gate in its own lane holds no worker lane");
+        assert!(other.next().unwrap()["runs"].is_u64());
+        let (mut first, said) = Asker::joins(dir.path(), of_a("fast 1", 102, Some(Gate::Fast)));
+        assert_eq!(said["ahead"], 0, "nothing in the worker lane is ahead of a fast gate");
+        assert!(first.next().unwrap()["runs"].is_u64(), "it runs beside the slow gate");
+        let (mut second, _) = Asker::joins(dir.path(), of_a("fast 2", 103, Some(Gate::Fast)));
+        assert!(second.next().unwrap()["runs"].is_u64(), "and beside a fast gate of its repo");
+        let (mut third, said) = Asker::joins(dir.path(), of_a("fast 3", 104, Some(Gate::Fast)));
+        assert_eq!(said["ahead"], 2);
+        assert_eq!(third.next(), None, "the fast lanes are full");
+        drop(first);
+        assert!(third.next().unwrap()["runs"].is_u64(), "a fast lane's place is free");
+        drop((slow, other));
     }
 
     #[test]

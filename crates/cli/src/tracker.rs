@@ -28,7 +28,8 @@ use crate::probe::refused_public;
 use crate::topic::See;
 
 /// What the repo label says of itself in the tracker.
-const REPO_LABEL_SAYS: &str = "afkconvoy: an issue of the repo this names, which its fleet works";
+pub(crate) const REPO_LABEL_SAYS: &str =
+    "afkconvoy: an issue of the repo this names, which its fleet works";
 /// What the escalate label says of itself.
 const ESCALATE_LABEL_SAYS: &str =
     "afkconvoy: the fleet handed an issue that carries this to a human";
@@ -42,6 +43,11 @@ pub fn repo_or_default(said: &str) -> Result<To<RepoName>, String> {
         RepoName::read(said)
             .ok_or_else(|| format!("`{said}` is no repo, `<owner>/<repo>`, nor `default`"))
     })
+}
+
+/// `--tracker` as said, where it takes a repo alone: `<owner>/<repo>`.
+pub fn repo_named(said: &str) -> Result<RepoName, String> {
+    RepoName::read(said).ok_or_else(|| format!("`{said}` is no repo, `<owner>/<repo>`"))
 }
 
 /// The tracker the checkout `repo` says on the host of `list`, as `checkouts`,
@@ -197,6 +203,7 @@ impl Public {
         let checkout = repo.dir.display().to_string();
         vec![finding(
             Kind::PublicTracker,
+            serde_json::json!(["public-tracker", named]),
             format!(
                 "this checkout's tracker, {named}, is public: its fleet instance works nothing, as \
                  anyone can comment on its issues"

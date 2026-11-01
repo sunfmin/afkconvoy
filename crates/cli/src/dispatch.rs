@@ -10,6 +10,7 @@ use afkconvoy_core::plan::closing_pr;
 use afkconvoy_core::prompt::{Switched, WorkerFields, switched, worker_prompt};
 use afkconvoy_core::recovery::{Recovery, Tier, Variant, superseded};
 use afkconvoy_core::role::ISSUE_ENV;
+use afkconvoy_core::selection::Selection;
 use afkconvoy_core::tick::Outcome;
 use afkconvoy_core::worker::{DispatchStep, branch_comment, dispatch_steps, recorded_branches};
 use anyhow::{Context, Result, anyhow, bail};
@@ -20,10 +21,11 @@ use crate::claims::{Me, Take, take};
 use crate::fleet::Fleet;
 use crate::forget::forget;
 use crate::gh::{IssueRead, gone};
-use crate::git::{REMOTE, Repo};
+use crate::git::Repo;
 use crate::launch::Launches;
 use crate::orca::{Source, Worktree};
 use crate::recovery::{Survey, own_heads, survey};
+use crate::remote::{Fresh, Push};
 use crate::role::Staged;
 
 /// A dispatch is incomplete until its worker has taken the brief. Keep it
@@ -97,13 +99,22 @@ pub struct Agent {
     pub ready_timeout: u64,
 }
 
-/// A worker's selected harness and model. `explicit_model` is set only when
-/// one `model:` label was followed: that id takes precedence over the user's
-/// own preference, where the harness has one.
+/// A worker's selected harness and model, as its worker selection chose
+/// them (`selection::Selection`), with where the model came from.
 pub struct WorkerSelection<'a> {
     pub harness: Harness,
     pub model: Option<&'a str>,
-    pub explicit_model: bool,
+    pub source: Option<&'a str>,
+}
+
+impl<'a> From<&'a Selection> for WorkerSelection<'a> {
+    fn from(chosen: &'a Selection) -> WorkerSelection<'a> {
+        WorkerSelection {
+            harness: chosen.harness(),
+            model: chosen.model.as_deref(),
+            source: chosen.source,
+        }
+    }
 }
 
 impl Agent {
@@ -121,14 +132,9 @@ impl Agent {
         issue: Option<u64>,
         now: u64,
     ) -> Result<String> {
-        let WorkerSelection { harness, model, explicit_model } = selection;
+        let WorkerSelection { harness, model, source } = selection;
         let prepared = crate::codex_launch::prepare_worker(
-            harness,
-            worktree,
-            model,
-            explicit_model,
-            command,
-            in_role,
+            harness, worktree, model, source, command, in_role,
         )?;
         let command = match issue {
             Some(issue) => Line::new()
@@ -221,7 +227,7 @@ pub enum StartFrom {
 ///   {"started": false, "claim": "lost", "owner": {…}}   a peer holds the issue
 ///   {"started": false, "skipped": "blocked", "blocked_by": [n…]}
 ///                                  an open blocker, read just before the claim
-///   {"started": false, "gone": "deleted"|"transferred", "released": bool}
+///   {"started": false, "gone": "deleted"|"transferred"|"missing", "released": bool}
 ///                                  GitHub says the issue is gone: a claim held
 ///                                  on it is let go (`forget`)
 ///
@@ -278,7 +284,7 @@ pub(crate) fn dispatch_continuing(
     if !released {
         fleet.forgotten.push((how.clone(), false));
     }
-    let said = if how.deleted { "deleted" } else { "transferred" };
+    let said = how.word();
     forget_starting(fleet, number)?;
     Ok(json!({"issue": number, "started": false, "gone": said, "released": released}))
 }
@@ -347,7 +353,7 @@ pub(crate) fn continuation_harness(fleet: &Fleet, agent: &Agent, number: u64) ->
         .filter(|_| !afkconvoy_core::plan::is_repair(&issue.labels))
     {
         Some(bound) => Staged::enter(fleet, bound, number, &issue.labels)?.harness(),
-        None => fleet.cast(&issue.labels, Some(number))?.map_err(|e| anyhow!(e))?.harness,
+        None => fleet.select_in(None, &issue.labels, Some(number))?.harness(),
     };
     crate::role::startable(&agent.launches, harness, "worker continuation")?;
     Ok(harness)
@@ -398,39 +404,15 @@ fn start(
     if staged.is_none() && issue.labels.contains(&fleet.config.escalate_label) {
         bail!("issue #{number} is escalated: the host's watch or a human must answer it first");
     }
-    let (harness, mut model, unmatched) = match &staged {
-        Some(staged) => {
-            (staged.harness(), staged.model().map(str::to_string), staged.unmatched().cloned())
-        }
-        None => {
-            let cast = fleet
-                .cast(&issue.labels, Some(number))?
-                .map_err(|why| anyhow!("{why}: run `afkconvoy kit`"))?;
-            let unmatched = cast.unmatched.clone().map(|name| (name, cast.clone()));
-            (cast.harness, cast.model, unmatched)
-        }
+    // One worker selection says what the worker runs: a followed label's
+    // model, or the harness user default, read once (`selection::select`).
+    // Paused, refused and unsafe starts are its answers too.
+    let chosen = match &staged {
+        Some(staged) => staged.selection().clone(),
+        None => fleet.select_in(None, &issue.labels, Some(number))?,
     };
-    // A followed label names the model. Anything else, including a label
-    // that was not followed, is the user default. A harness that reads the
-    // user's model still checks that model against the role's range.
-    let explicit_model = model.is_some();
-    if let Some((chosen, _)) = crate::codex_launch::automatic_model(
-        harness,
-        explicit_model.then_some(model.as_deref()).flatten(),
-    )? {
-        model = chosen;
-        if !explicit_model
-            && let (Some(staged), Some(name)) = (staged.as_ref(), model.as_deref())
-            && !staged.allows_model(name)
-            && let Some(why) = harness.outside_issue(name)
-        {
-            bail!("{why}");
-        }
-    }
-    // No worker is started on a harness paused on this host.
-    if let Some(pause) = crate::paused::Pauses::of_host()?.of(harness)? {
-        return Err(crate::paused::Held::of(&pause, fleet.now).into());
-    }
+    let (harness, model) = (chosen.harness(), chosen.model.clone());
+    let unmatched = chosen.cast.unmatched.clone().map(|name| (name, chosen.cast.clone()));
     let launch = agent.command(harness)?;
     if let Some(staged) = staged.as_ref().filter(|_| held) {
         staged.refuse_spent(fleet.scan.claim_of(number))?;
@@ -553,33 +535,22 @@ fn start(
                 terminal = Some(match &staged {
                     Some(staged) => agent.start_worker(
                         cut,
-                        WorkerSelection { harness, model: model.as_deref(), explicit_model },
+                        (&chosen).into(),
                         &staged.command(launch, cut, model.as_deref())?,
                         true,
                         None,
                         fleet.now,
                     )?,
-                    None => {
-                        // A harness that keeps a session puts the model on as
-                        // it starts, so the user's model is not stuck behind
-                        // a flag written here.
-                        let launch = if harness.session().is_some() {
-                            launch.to_string()
-                        } else {
-                            match &model {
-                                Some(model) => harness.with_model(launch, model),
-                                None => launch.to_string(),
-                            }
-                        };
-                        agent.start_worker(
-                            cut,
-                            WorkerSelection { harness, model: model.as_deref(), explicit_model },
-                            &launch,
-                            false,
-                            Some(number),
-                            fleet.now,
-                        )?
-                    }
+                    // Every harness, session or not, takes its model on its
+                    // start line as its worker selection says.
+                    None => agent.start_worker(
+                        cut,
+                        (&chosen).into(),
+                        &chosen.start_line(launch),
+                        false,
+                        Some(number),
+                        fleet.now,
+                    )?,
                 });
                 worker_untold = note_start(
                     fleet,
@@ -713,7 +684,8 @@ pub(crate) fn continue_brief(
         .unwrap_or_else(|| fleet.config.base_branch.clone());
     let base = fleet
         .repo
-        .fetched(&format!("refs/heads/{branch}"))?
+        .remote()
+        .fetched(&format!("refs/heads/{branch}"), Fresh::Process)?
         .ok_or_else(|| anyhow!("target branch {branch:?} disappeared"))?;
     let log = Repo::new(worktree.path.clone()).git(&[
         "log",
@@ -767,6 +739,8 @@ fn brief_with(
     prompt: impl FnOnce(&WorkerFields) -> Result<String, String>,
 ) -> Result<PathBuf> {
     let path = worktree.path.display().to_string();
+    let fast_gate =
+        fleet.config.gates.as_ref().map(|_| crate::own_command().fixed(" gate --fast").own());
     let fields = WorkerFields {
         number,
         tracker: &fleet.gh.tracker,
@@ -780,6 +754,7 @@ fn brief_with(
         ready_label: &fleet.config.ready_label,
         land_command: &crate::own_command().fixed(" land --issue ").number(number).own(),
         wake_command: &crate::own_command().fixed(" wake").own(),
+        fast_gate_command: fast_gate.as_deref(),
     };
     let mut text = prompt(&fields).map_err(|e| anyhow!(e))?;
     text.push_str(&crate::delivery::brief(&fleet.repo, number)?);
@@ -791,7 +766,8 @@ fn brief_with(
 fn cut_at(fleet: &Fleet, issue: &IssueRead, number: u64, branch: &str) -> Result<Worktree> {
     let sha = fleet
         .repo
-        .fetched(&format!("refs/heads/{branch}"))?
+        .remote()
+        .fetched(&format!("refs/heads/{branch}"), Fresh::Process)?
         .ok_or_else(|| anyhow!("the remote has no branch {branch:?}"))?;
     let source = Source::of(&fleet.repo)?;
     let name = fleet.gh.tracker.worktree_name(number, &issue.title);
@@ -811,7 +787,7 @@ fn discard_attempt(fleet: &Fleet, number: u64) -> Result<Value> {
         fleet.gh.close_pr(*pr, why)?;
     }
     for branch in &own {
-        fleet.repo.git(&["push", "--quiet", REMOTE, &format!(":refs/heads/{branch}")])?;
+        fleet.remote.push(&Push::delete(&format!("refs/heads/{branch}")))?;
     }
     if let Some(worktree) = &worktree {
         worktree.remove()?;

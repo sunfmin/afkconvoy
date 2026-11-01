@@ -1,5 +1,6 @@
 //! The transitions that end a claim other than a landing: `escalate`, `close`,
 //! `park`, `hand_on` and `forget`. Each runs in one order, writes the status board's last word,
+//! leaves the work account where its end is one that does (`End`),
 //! releases the claim as its last write to the remote, and hands back a
 //! `Released` only that release produces — so one cannot end half way and be
 //! taken for done.
@@ -14,6 +15,7 @@
 
 use flux_rs::attrs::*;
 
+use crate::account::End;
 use crate::blocked::Parkable;
 use crate::config::Config;
 use crate::left::Spare;
@@ -59,10 +61,37 @@ impl LastWord {
     }
 
     /// The one way to a `Released`: released sooner, the claim is nobody's,
-    /// and the board keeps saying the issue is being worked.
-    #[spec(fn(&Self[true], issue: u64) -> Released)]
-    fn release(&self, issue: u64) -> Released {
+    /// and the board keeps saying the issue is being worked — or the issue
+    /// ended with no account, and no later end has a claim to leave it under.
+    #[spec(fn(&Self[true], account: &Account[true], issue: u64) -> Released)]
+    fn release(&self, _account: &Account, issue: u64) -> Released {
         Released { issue }
+    }
+}
+
+/// A claim's work account as its claim ends: `left` once its end is
+/// accounted for — an end that leaves none, or one whose account is left.
+#[refined_by(left: bool)]
+struct Account {
+    #[field(bool[left])]
+    left: bool,
+}
+
+impl Account {
+    /// What `end` owes: an account, where it is an end that leaves one.
+    #[spec(fn(&End[@accounted]) -> Account[!accounted])]
+    fn owed(end: &End) -> Account {
+        Account { left: !end.accounted() }
+    }
+
+    #[spec(fn(&Self[@account]) -> bool[account])]
+    fn left(&self) -> bool {
+        self.left
+    }
+
+    #[spec(fn(self: &mut Self) ensures self: Self[true])]
+    fn leave(&mut self) {
+        self.left = true;
     }
 }
 
@@ -109,9 +138,9 @@ impl Escalation {
     }
 
     /// The claim last: until it goes, the escalation is this fleet's to finish.
-    #[spec(fn(Self{e: e.commented && e.relabelled}, word: &LastWord[true], issue: u64) -> Released)]
-    fn release(self, word: &LastWord, issue: u64) -> Released {
-        word.release(issue)
+    #[spec(fn(Self{e: e.commented && e.relabelled}, word: &LastWord[true], account: &Account[true], issue: u64) -> Released)]
+    fn release(self, word: &LastWord, account: &Account, issue: u64) -> Released {
+        word.release(account, issue)
     }
 }
 
@@ -124,6 +153,8 @@ pub enum EscalateStep {
     Relabel,
     /// Write the status board: escalated.
     Board,
+    /// Leave the work account.
+    Account,
     /// Delete the claim.
     Release,
     /// Remove the worktree: only one holding nothing the remote does not.
@@ -158,8 +189,13 @@ where
     let mut word = LastWord::unwritten();
     carry_out(EscalateStep::Board)?;
     word.write();
+    let mut account = Account::owed(&End::Escalated);
+    if !account.left() {
+        carry_out(EscalateStep::Account)?;
+        account.leave();
+    }
     carry_out(EscalateStep::Release)?;
-    let released = begun.release(&word, issue);
+    let released = begun.release(&word, &account, issue);
     carry_out(match spare {
         Some(_) => EscalateStep::RemoveWorktree,
         None => EscalateStep::CloseTerminal,
@@ -331,12 +367,14 @@ pub enum CloseStep {
     CloseIssue,
     /// Write the status board: closed with nothing landed.
     Board,
+    /// Leave the work account.
+    Account,
     Release,
     RemoveWorktree,
 }
 
-/// Closes issue `issue` as needing no change: close it → release the claim →
-/// remove the worktree. It asks for the proof that the branch holds no work.
+/// Closes issue `issue` as needing no change: close it → write the board →
+/// leave the work account → release the claim → remove the worktree. It asks for the proof that the branch holds no work.
 pub fn close<E, F>(issue: u64, _workless: &Workless, mut carry_out: F) -> Result<Released, E>
 where
     F: FnMut(CloseStep) -> Result<(), E>,
@@ -346,8 +384,13 @@ where
     let mut word = LastWord::unwritten();
     carry_out(CloseStep::Board)?;
     word.write();
+    let mut account = Account::owed(&End::Closed);
+    if !account.left() {
+        carry_out(CloseStep::Account)?;
+        account.leave();
+    }
     carry_out(CloseStep::Release)?;
-    let released = word.release(issue);
+    let released = word.release(&account, issue);
     carry_out(CloseStep::RemoveWorktree)?;
     Ok(released)
 }
@@ -391,7 +434,8 @@ impl Parking {
     /// is on the frontier — ready, unclaimed, unblocked — for whoever plans next.
     #[spec(fn(&Self[true], word: &LastWord[true], issue: u64) -> Released)]
     fn release(&self, word: &LastWord, issue: u64) -> Released {
-        word.release(issue)
+        // Work goes on once its blockers close: a park leaves no account.
+        word.release(&Account::owed(&End::Parked), issue)
     }
 }
 
@@ -433,6 +477,8 @@ where
 pub enum HandOnStep {
     /// Write the status board: the stage declared.
     Board,
+    /// Leave the work account, at an end that leaves one.
+    Account,
     Release,
     /// Remove the worktree: no stage is left to work in it.
     RemoveWorktree,
@@ -441,22 +487,31 @@ pub enum HandOnStep {
 }
 
 /// Ends the claim on `issue` once its stage has declared, leaving the issue
-/// where its stage records put it: write the board → release the claim → end
-/// its worker. The issue's labels are not touched: a later stage is the
-/// frontier's to start, in the same worktree and a terminal of its own.
-/// `ended` says the workflow has ended: only then does the worktree go,
-/// whatever its branch holds — a branch with a commit past the base branch
-/// outlives it.
-pub fn hand_on<E, F>(issue: u64, ended: bool, mut carry_out: F) -> Result<Released, E>
+/// where its stage records put it: write the board → leave the work account,
+/// where `end` is one that leaves it → release the claim → end its worker.
+/// The issue's labels are not touched: a later stage is the frontier's to
+/// start, in the same worktree and a terminal of its own. `end` is
+/// `HandedOn`, `Closed` by a consult, or `Ended`, the workflow having ended:
+/// only then does the worktree go, whatever its branch holds — a branch with a
+/// commit past the base branch outlives it.
+pub fn hand_on<E, F>(issue: u64, end: End, mut carry_out: F) -> Result<Released, E>
 where
     F: FnMut(HandOnStep) -> Result<(), E>,
 {
     let mut word = LastWord::unwritten();
     carry_out(HandOnStep::Board)?;
     word.write();
+    let mut account = Account::owed(&end);
+    if !account.left() {
+        carry_out(HandOnStep::Account)?;
+        account.leave();
+    }
     carry_out(HandOnStep::Release)?;
-    let released = word.release(issue);
-    carry_out(if ended { HandOnStep::RemoveWorktree } else { HandOnStep::CloseTerminal })?;
+    let released = word.release(&account, issue);
+    carry_out(match end {
+        End::Ended => HandOnStep::RemoveWorktree,
+        _ => HandOnStep::CloseTerminal,
+    })?;
     Ok(released)
 }
 
@@ -469,8 +524,8 @@ pub enum ForgetStep {
     CloseTerminal,
 }
 
-/// Lets go of the claim on `issue`, which GitHub says was deleted or
-/// transferred: release the claim → remove the worktree, when it holds
+/// Lets go of the claim on `issue`, which GitHub says was deleted,
+/// transferred or never issued: release the claim → remove the worktree, when it holds
 /// nothing the remote does not (`spare`), and close its worker's terminal
 /// when it does. Nothing is written on GitHub: the issue, its board and its
 /// labels went together.
@@ -479,7 +534,7 @@ where
     F: FnMut(ForgetStep) -> Result<(), E>,
 {
     carry_out(ForgetStep::Release)?;
-    let released = LastWord::gone().release(issue);
+    let released = LastWord::gone().release(&Account::owed(&End::Forgotten), issue);
     carry_out(match spare {
         Some(_) => ForgetStep::RemoveWorktree,
         None => ForgetStep::CloseTerminal,
@@ -498,10 +553,28 @@ mod rejected {
         word
     }
 
+    fn accounted() -> Account {
+        let mut account = Account::owed(&End::Escalated);
+        account.leave();
+        account
+    }
+
     /// A claim released while its status board still says it is being worked.
     #[should_fail]
     fn released_before_the_board_says_how_it_ended(issue: u64) -> Released {
-        LastWord::unwritten().release(issue)
+        LastWord::unwritten().release(&Account::owed(&End::Parked), issue)
+    }
+
+    /// A claim released at an end that leaves the work account, with none left.
+    #[should_fail]
+    fn released_before_the_account_is_left(issue: u64) -> Released {
+        said().release(&Account::owed(&End::Escalated), issue)
+    }
+
+    /// Whatever end was read, taken for one that leaves no account.
+    #[should_fail]
+    fn released_on_whatever_end(issue: u64, end: End) -> Released {
+        said().release(&Account::owed(&end), issue)
     }
 
     /// A parked claim released before any edge holds its issue back.
@@ -513,7 +586,7 @@ mod rejected {
     /// A claim released with nothing said on the issue.
     #[should_fail]
     fn released_before_the_reason_is_commented(issue: u64) -> Released {
-        Escalation::read(false, true).release(&said(), issue)
+        Escalation::read(false, true).release(&said(), &accounted(), issue)
     }
 
     /// A claim released with the issue still labelled ready: back on the frontier.
@@ -521,13 +594,13 @@ mod rejected {
     fn released_before_the_relabel(issue: u64) -> Released {
         let mut begun = Escalation::read(false, false);
         begun.comment();
-        begun.release(&said(), issue)
+        begun.release(&said(), &accounted(), issue)
     }
 
     /// Whatever GitHub showed, taken for an escalation that is complete.
     #[should_fail]
     fn released_on_whatever_was_read(issue: u64, commented: bool, relabelled: bool) -> Released {
-        Escalation::read(commented, relabelled).release(&said(), issue)
+        Escalation::read(commented, relabelled).release(&said(), &accounted(), issue)
     }
 
     /// An issue relabelled with no reason on it.
@@ -569,20 +642,20 @@ mod tests {
         use EscalateStep::*;
         assert_eq!(
             steps(Escalation::read(false, false), false, None),
-            (vec![Comment, Relabel, Board, Release, CloseTerminal], true)
+            (vec![Comment, Relabel, Board, Account, Release, CloseTerminal], true)
         );
         assert_eq!(
             steps(Escalation::read(true, false), false, None),
-            (vec![Relabel, Board, Release, CloseTerminal], true)
+            (vec![Relabel, Board, Account, Release, CloseTerminal], true)
         );
         assert_eq!(
             steps(Escalation::read(true, true), true, None),
-            (vec![Board, Release, RemoveWorktree], true)
+            (vec![Board, Account, Release, RemoveWorktree], true)
         );
         // a relabel seen with no comment of this claim's: the reason is still owed
         assert_eq!(
             steps(Escalation::read(false, true), false, None),
-            (vec![Comment, Board, Release, CloseTerminal], true)
+            (vec![Comment, Board, Account, Release, CloseTerminal], true)
         );
     }
 
@@ -595,7 +668,12 @@ mod tests {
         );
         assert_eq!(
             steps(Escalation::read(false, false), true, Some(Release)),
-            (vec![Comment, Relabel, Board], false)
+            (vec![Comment, Relabel, Board, Account], false)
+        );
+        assert_eq!(
+            steps(Escalation::read(false, false), true, Some(Account)),
+            (vec![Comment, Relabel, Board], false),
+            "the claim is held until the account is left"
         );
     }
 
@@ -678,17 +756,63 @@ mod tests {
     #[test]
     fn handing_on_releases_after_the_board_and_keeps_a_worktree_another_stage_needs() {
         use HandOnStep::*;
-        let run = |ended: bool, fail_at: Option<HandOnStep>| {
+        let run = |end: End, fail_at: Option<HandOnStep>| {
             let mut steps = vec![];
-            let done = hand_on(7, ended, |step| {
+            let done = hand_on(7, end, |step| {
                 steps.push(step);
                 if Some(step) == fail_at { Err("cut") } else { Ok(()) }
             });
             (done.map(|released| released.issue), steps)
         };
-        assert_eq!(run(false, None), (Ok(7), vec![Board, Release, CloseTerminal]));
-        assert_eq!(run(true, None), (Ok(7), vec![Board, Release, RemoveWorktree]));
-        assert_eq!(run(false, Some(Board)), (Err("cut"), vec![Board]), "the claim is still held");
+        assert_eq!(run(End::HandedOn, None), (Ok(7), vec![Board, Release, CloseTerminal]));
+        assert_eq!(
+            run(End::Ended, None),
+            (Ok(7), vec![Board, Account, Release, RemoveWorktree]),
+            "a workflow that ended leaves the account"
+        );
+        assert_eq!(
+            run(End::Closed, None),
+            (Ok(7), vec![Board, Account, Release, CloseTerminal]),
+            "a consult's close leaves it too"
+        );
+        assert_eq!(
+            run(End::HandedOn, Some(Board)),
+            (Err("cut"), vec![Board]),
+            "the claim is still held"
+        );
+        assert_eq!(
+            run(End::Ended, Some(Account)),
+            (Err("cut"), vec![Board, Account]),
+            "the claim is held until the account is left"
+        );
+    }
+
+    #[test]
+    fn every_transition_leaves_the_account_once_exactly_where_its_end_does() {
+        let accounts = |steps: &[bool]| steps.iter().filter(|step| **step).count();
+        let (escalated, _) = steps(Escalation::read(false, false), false, None);
+        assert_eq!(
+            accounts(&escalated.iter().map(|s| *s == EscalateStep::Account).collect::<Vec<_>>()),
+            1
+        );
+        for (end, owed) in [(End::HandedOn, 0), (End::Closed, 1), (End::Ended, 1)] {
+            let mut did = vec![];
+            hand_on::<(), _>(7, end, |step| {
+                did.push(step == HandOnStep::Account);
+                Ok(())
+            })
+            .unwrap();
+            assert_eq!(accounts(&did), owed, "{end:?}");
+        }
+        let waiting = [(41, Standing::Waiting)];
+        let Blocked::Park(parkable) = blocked_route(&waiting) else { panic!() };
+        let mut parked = 0;
+        park::<(), _>(7, &parkable, None, |_| {
+            parked += 1;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(parked, 4, "an edge, the board, the release, the terminal: no account");
     }
 
     #[test]
@@ -712,10 +836,11 @@ mod tests {
             [
                 CloseStep::CloseIssue,
                 CloseStep::Board,
+                CloseStep::Account,
                 CloseStep::Release,
                 CloseStep::RemoveWorktree
             ],
-            "the board's last word, then the claim"
+            "the board's last word, the account, then the claim"
         );
         let cut =
             close(7, &proof, |step| if step == CloseStep::Release { Err("no") } else { Ok(()) });

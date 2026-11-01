@@ -6,6 +6,8 @@
 //! the end. The rows under it are not a partition of that total, and nothing
 //! here adds them up.
 
+use flux_rs::attrs::*;
+
 use crate::gate::GATE;
 use crate::record::{self, Fields};
 use crate::stage_record::{Author, StageRecord, Stated};
@@ -16,6 +18,69 @@ pub const ACCOUNT: &str = "convoy:account";
 pub const WORKER: &str = "convoy:worker";
 /// A red gate run cited by the account, kept in the comment after its ref is gone.
 pub const KEPT_RED: &str = "convoy:account-red";
+
+/// How work on an issue ends, and so whether that end leaves the work
+/// account (`accounted`). The transitions that end a claim take theirs, and
+/// cannot release it before an end that accounts has left the account. A new
+/// kind of end is written here, and gets its account by being one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[refined_by(accounted: bool)]
+pub enum End {
+    /// Its pull request landed on the base branch.
+    #[variant(End[true])]
+    Landed,
+    /// Closed with nothing more to do: no change was needed, or a consult
+    /// closed it.
+    #[variant(End[true])]
+    Closed,
+    /// Handed to a human.
+    #[variant(End[true])]
+    Escalated,
+    /// Its workflow ended.
+    #[variant(End[true])]
+    Ended,
+    /// A human closed it while a claim was held.
+    #[variant(End[true])]
+    HumanClosed,
+    /// Parked on its blockers: work goes on once they close.
+    #[variant(End[false])]
+    Parked,
+    /// Handed on to a later stage, or back to the frontier.
+    #[variant(End[false])]
+    HandedOn,
+    /// The issue is gone: nothing is left to write an account on.
+    #[variant(End[false])]
+    Forgotten,
+}
+
+impl End {
+    /// Whether this end leaves the work account.
+    #[spec(fn(&Self[@end]) -> bool[end])]
+    pub fn accounted(&self) -> bool {
+        match self {
+            End::Landed | End::Closed | End::Escalated | End::Ended | End::HumanClosed => true,
+            End::Parked | End::HandedOn | End::Forgotten => false,
+        }
+    }
+}
+
+/// Whether an issue's comments already carry its work account.
+pub fn left<'a>(bodies: impl IntoIterator<Item = &'a str>) -> bool {
+    bodies.into_iter().any(|body| record::read_marker(ACCOUNT, body).is_some())
+}
+
+/// The end settling a claim whose work is on the base branch leaves the
+/// account for, or `None` when it leaves none. A landing turn that already
+/// left the account was that end, and settling it does not move the end. A
+/// claim still held on an issue a human closed, or a landing cut short of its
+/// account, leaves one in settling.
+pub fn settled_end(landed: bool, accounted: bool) -> Option<End> {
+    match (landed, accounted) {
+        (true, true) => None,
+        (true, false) => Some(End::Landed),
+        (false, _) => Some(End::HumanClosed),
+    }
+}
 
 /// One comment the fleet has already read, oldest first.
 pub struct Heard<'a> {
@@ -472,6 +537,33 @@ mod tests {
             cpus: Some(14),
             bytes: Some(34359738368),
         }
+    }
+
+    #[test]
+    fn an_end_with_nothing_left_to_do_on_the_issue_leaves_the_account() {
+        use End::*;
+        for end in [Landed, Closed, Escalated, Ended, HumanClosed] {
+            assert!(end.accounted(), "{end:?}");
+        }
+        // Work goes on after these, or the issue is gone.
+        for end in [Parked, HandedOn, Forgotten] {
+            assert!(!end.accounted(), "{end:?}");
+        }
+    }
+
+    #[test]
+    fn settling_a_landing_already_accounted_for_leaves_no_second_account() {
+        assert_eq!(settled_end(true, true), None, "the landing turn was that end");
+        assert_eq!(settled_end(true, false), Some(End::Landed), "a landing cut short");
+        assert_eq!(settled_end(false, false), Some(End::HumanClosed));
+        assert_eq!(settled_end(false, true), Some(End::HumanClosed), "the one comment is edited");
+        assert!(settled_end(true, false).is_some_and(|end| end.accounted()));
+    }
+
+    #[test]
+    fn an_account_is_read_by_its_marker() {
+        assert!(left(["hello", "<!--convoy:account-->\n**afkconvoy**"]));
+        assert!(!left(["hello", "<!--convoy:worker at=1-->"]));
     }
 
     fn hear(at: u64, body: &str) -> Heard<'_> {

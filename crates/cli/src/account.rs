@@ -4,26 +4,31 @@
 
 use std::process::Command;
 
-use afkconvoy_core::account::{self, Heard, Machine};
+use afkconvoy_core::account::{self, End, Heard, Machine};
 use afkconvoy_core::claims::{Claim, claim_ref};
 use afkconvoy_core::layout::GATE_KIND;
 use anyhow::Result;
 
 use crate::gh::GitHub;
 use crate::git::Repo;
+use crate::remote::Fresh;
 
-/// Leaves the work account on `issue` at `now`, or edits the one already
-/// there. An issue with no claim, no worker start and no account yet is
-/// left untouched.
-pub fn leave(repo: &Repo, gh: &GitHub, issue: u64, now: u64) -> Result<()> {
+/// Leaves the work account on `issue` for its `end` at `now`, or edits the
+/// one already there: the one place the fleet writes it. An end that leaves
+/// none (`End::accounted`), and an issue with no claim, no worker start and no
+/// account yet, are left untouched.
+pub fn leave(repo: &Repo, gh: &GitHub, issue: u64, end: End, now: u64) -> Result<()> {
+    if !end.accounted() {
+        return Ok(());
+    }
     let comments = gh.comments(issue)?;
     let name = claim_ref(repo.layout(), &gh.tracker, issue);
-    let held = repo.remote_records(&name)?;
+    let held = repo.remote().records(&[&name], Fresh::Process)?;
     let claimed = !held.is_empty();
     let held_since = held
         .first()
         .and_then(|record| Claim::read(issue, &record.subject, record.sha.clone()).since);
-    let recorded = repo.remote_records(&repo.layout().every(GATE_KIND))?;
+    let recorded = repo.remote().records(&[&repo.layout().every(GATE_KIND)], Fresh::Process)?;
     let gates: Vec<&str> = recorded.iter().map(|record| record.subject.as_str()).collect();
     let heard: Vec<Heard<'_>> = comments
         .iter()

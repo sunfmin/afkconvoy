@@ -604,15 +604,21 @@ impl Harness {
     /// `model`: its model flag added after it. A harness that takes a model
     /// on no flag of its command (DSH) is started as written.
     pub fn with_model(self, command: &str, model: &str) -> String {
-        let flag = match self {
-            Harness::ClaudeCode => claude_code::MODEL,
-            Harness::Pi => pi::MODEL,
-            Harness::Codex => codex::MODEL,
-            Harness::Kimi => kimi::MODEL,
-            Harness::Grok => grok::MODEL,
-            Harness::Dsh => return command.to_string(),
-        };
+        let Some(flag) = self.model_flag() else { return command.to_string() };
         Line::new().launch(command).fixed(" ").fixed(flag).fixed(" ").word(model).done()
+    }
+
+    /// The flag its worker launch command takes a model by. `None`: DSH,
+    /// whose profile names the model.
+    fn model_flag(self) -> Option<&'static str> {
+        match self {
+            Harness::ClaudeCode => Some(claude_code::MODEL),
+            Harness::Pi => Some(pi::MODEL),
+            Harness::Codex => Some(codex::MODEL),
+            Harness::Kimi => Some(kimi::MODEL),
+            Harness::Grok => Some(grok::MODEL),
+            Harness::Dsh => None,
+        }
     }
 
     /// The models it knows, given what the worker's shell printed for
@@ -663,6 +669,19 @@ impl Harness {
             Harness::Dsh => dsh::TRUST,
             Harness::Kimi => kimi::TRUST,
             Harness::Grok => grok::TRUST,
+        }
+    }
+
+    /// Whether `worktree_trust` is flags the worker launch command must take:
+    /// outside a role, a launch checks the command takes `flags` only then.
+    pub const fn trust_is_flags(self) -> bool {
+        match self {
+            Harness::ClaudeCode => claude_code::TRUST_IS_FLAGS,
+            Harness::Pi => pi::TRUST_IS_FLAGS,
+            Harness::Codex => codex::TRUST_IS_FLAGS,
+            Harness::Dsh => dsh::TRUST_IS_FLAGS,
+            Harness::Kimi => kimi::TRUST_IS_FLAGS,
+            Harness::Grok => grok::TRUST_IS_FLAGS,
         }
     }
 
@@ -774,14 +793,16 @@ impl Harness {
         }
     }
 
-    /// `command` naming `model`, unless it already does. A harness that keeps
-    /// a session puts the model on here, once, as the session starts.
+    /// `command` naming `model`, unless it already does: the model is said
+    /// once, in this harness's way, whether or not it keeps a session
+    /// (`selection::Selection::start_line`).
     pub fn ensure_model(self, command: &str, model: Option<&str>) -> String {
-        match self {
-            Harness::Codex => codex::ensure_model(command, model),
-            Harness::ClaudeCode | Harness::Pi | Harness::Dsh | Harness::Kimi | Harness::Grok => {
-                command.to_string()
+        match (self, model, self.model_flag()) {
+            (Harness::Codex, _, _) => codex::ensure_model(command, model),
+            (_, Some(model), Some(flag)) if !command.contains(flag) => {
+                self.with_model(command, model)
             }
+            _ => command.to_string(),
         }
     }
 
@@ -1010,6 +1031,39 @@ impl Harness {
         }
     }
 
+    /// Where this harness keeps the words of the session of the worktree
+    /// `cwd`: where it keeps the turn, but for Grok, whose turn events hold
+    /// no message.
+    pub fn note_place(self, cwd: &str) -> SessionPlace {
+        match self {
+            Harness::Grok => {
+                SessionPlace { under_home: grok::HOME, layout: grok::note_layout(cwd) }
+            }
+            Harness::ClaudeCode | Harness::Pi | Harness::Codex | Harness::Dsh | Harness::Kimi => {
+                self.session_place(cwd)
+            }
+        }
+    }
+
+    /// Whether one session file's `text` holds `mark` in a message its model
+    /// was given as the user's. A line the harness only queued is not one,
+    /// nor a tool's output that shows it.
+    pub fn holds_note(self, text: &str, mark: &str) -> bool {
+        session::holds_note(text, mark)
+    }
+
+    /// The files a stand-in writes under the harness directory for `line`,
+    /// typed at a worker in `cwd` while it worked: given to its model when
+    /// `taken`, else only queued. A harness with no stand-in for it writes
+    /// none.
+    pub fn note_files(self, cwd: &str, line: &str, taken: bool, at: u64) -> Vec<SessionFile> {
+        match self {
+            Harness::ClaudeCode => claude_code::note_files(cwd, line, taken, at),
+            Harness::Grok => grok::note_files(cwd, line, taken, at),
+            Harness::Pi | Harness::Codex | Harness::Dsh | Harness::Kimi => Vec::new(),
+        }
+    }
+
     /// The index after this worktree's turn is recorded, given the `existing`
     /// index. `""` is an index that was not there. `None` when this harness
     /// keeps no index. Lines for other worktrees stay.
@@ -1139,6 +1193,13 @@ mod tests {
             assert!(line.contains(harness.worktree_trust()), "{}: {line}", harness.key());
             assert!(line.contains("agent"), "{}: {line}", harness.key());
         }
+    }
+
+    #[test]
+    fn each_harness_says_whether_its_worktree_trust_is_flags() {
+        let flags: Vec<Harness> =
+            Harness::ALL.into_iter().filter(|harness| harness.trust_is_flags()).collect();
+        assert_eq!(flags, [Harness::ClaudeCode, Harness::Pi, Harness::Codex]);
     }
 
     #[test]

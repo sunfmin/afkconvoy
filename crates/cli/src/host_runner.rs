@@ -68,6 +68,7 @@ use crate::host_sleep::Standings;
 use crate::instance::{self, Named, Start};
 use crate::log::{self, What};
 use crate::panel::Broken;
+use crate::published::Published;
 use crate::runner_socket::{self, Reached, Reply, Request};
 use crate::stop::Stop;
 use crate::tick::{Echo, Holder, Line, Show};
@@ -156,6 +157,7 @@ pub struct Shared {
     pub resources: crate::resources::Shared,
     pub queue: Queue,
     pub installed: Arc<Mutex<Option<Installed>>>,
+    pub published: Arc<Mutex<Option<Published>>>,
     pub blockers: wake::Blockers,
     pub watch: crate::host_watch::Shared,
 }
@@ -171,8 +173,9 @@ impl Shared {
         let (exclusive, exclusive_paused) = self.queue.observation()?;
         Ok(SharedNow {
             exclusive,
-            exclusive_paused,
+            exclusive_paused: Some(exclusive_paused),
             installed: self.installed().clone(),
+            published: self.published.lock().unwrap_or_else(|e| e.into_inner()).clone(),
             watch: self.watch.running(),
         })
     }
@@ -195,15 +198,20 @@ impl Shared {
 pub struct SharedNow {
     /// The exclusive queue, in scheduler order.
     pub exclusive: Vec<Ticket>,
-    /// Whether a release move has paused new grants. Default keeps older
-    /// host runners readable by doctor and the panel.
+    /// Whether a release move has paused new grants; `None`: an older host
+    /// runner did not say, and the observation keeps it unknown.
     #[serde(default)]
-    pub exclusive_paused: bool,
+    pub exclusive_paused: Option<bool>,
     /// The afkconvoy installed where the host runner was started from, where
     /// it is newer than the host runner's or does not start; `None`: none is,
     /// or the host runner is of an afkconvoy that does not say it.
     #[serde(default)]
     pub installed: Option<Installed>,
+    /// A release of afkconvoy newer than the host runner's, published to the
+    /// tap it was installed from; `None`: none is, it is installed from no
+    /// tap, or the host runner is of an afkconvoy that does not say it.
+    #[serde(default)]
+    pub published: Option<Published>,
     /// The watch running on the host; `None`: none.
     #[serde(default)]
     pub watch: Option<crate::host_watch::Watch>,
@@ -267,8 +275,36 @@ pub fn shared() -> Result<Option<SharedNow>> {
 /// from did not start, or does not say its version. None where no host
 /// runner runs, or it cannot say.
 pub fn findings() -> Vec<Finding> {
-    let installed = shared().ok().flatten().and_then(|shared| shared.installed);
-    installed.as_ref().and_then(not_moved).into_iter().collect()
+    let Some(shared) = shared().ok().flatten() else { return vec![] };
+    let moved = shared.installed.as_ref().and_then(not_moved);
+    moved.into_iter().chain(shared.published.as_ref().map(not_upgraded)).collect()
+}
+
+/// The finding of `published`, a release newer than the host runner's that
+/// it has not moved onto yet.
+fn not_upgraded(published: &Published) -> Finding {
+    let Published { formula, version, installed, from, since, failed } = published;
+    let what = format!(
+        "afkconvoy {version} is published, newer than the host runner's, afkconvoy {from}; \
+         Homebrew has afkconvoy {installed} installed from {formula}"
+    );
+    let due = since + 2 * crate::published::LOOKED_EVERY.as_secs();
+    let evidence = match failed {
+        Some(why) => {
+            format!("first seen at {since}; the last `brew upgrade {formula}` failed: {why}")
+        }
+        None => format!(
+            "first seen at {since}; the host runner installs it by {due}, and moves onto it \
+             between ticks"
+        ),
+    };
+    finding(
+        Kind::NotUpgraded,
+        json!(["not-upgraded", formula, version]),
+        what,
+        evidence,
+        format!("brew update && brew upgrade {formula}"),
+    )
 }
 
 /// The finding of `installed`, where the host runner did not move onto it.
@@ -283,6 +319,7 @@ fn not_moved(installed: &Installed) -> Option<Finding> {
         );
         return Some(finding(
             Kind::NotMoved,
+            json!(["not-moved", installed.path]),
             what,
             installed.held_back.join("; "),
             format!("{} --version", installed.path.display()),
@@ -302,7 +339,13 @@ fn not_moved(installed: &Installed) -> Option<Finding> {
             installed.from
         ),
     };
-    Some(finding(Kind::NotMoved, what, why, format!("{at} --version")))
+    Some(finding(
+        Kind::NotMoved,
+        json!(["not-moved", installed.path]),
+        what,
+        why,
+        format!("{at} --version"),
+    ))
 }
 
 /// One checkout's fleet instance, from its start until its thread ends.
@@ -457,11 +500,12 @@ impl RunnerLog {
     }
 }
 
-/// `line` as the host runner's log keeps it: stamped in UTC, and what spans
+/// `line` as the host runner's log keeps it: stamped in UTC, the stamp naming
+/// its zone (`2026-10-30T13:56:16Z`), and what spans
 /// several lines, as an error may, folded into one.
 fn stamped(line: &str) -> String {
     let parts: Vec<&str> = line.lines().map(str::trim).filter(|part| !part.is_empty()).collect();
-    format!("{} {}", log::utc(crate::clock()), parts.join(" "))
+    format!("{} {}", log::stamp(crate::clock()), parts.join(" "))
 }
 
 /// An answer the host runner gave that is an error: `run` prints it as it
@@ -493,6 +537,13 @@ fn watch_said(what: &log::What) -> String {
 pub fn pid() -> Option<u32> {
     let pid = holder_of(&cache().ok()?.join(LOCK))?;
     u32::try_from(pid).ok()
+}
+
+/// The release of this host's runner, as its lock says the last one to hold
+/// it; `None` where none ever did, or it said none.
+pub fn version() -> Option<String> {
+    let text = std::fs::read_to_string(cache().ok()?.join(LOCK)).ok()?;
+    serde_json::from_str::<Value>(&text).ok()?["version"].as_str().map(str::to_string)
 }
 
 /// The host runner's log: host-runner.log in the cache directory.
@@ -532,6 +583,11 @@ pub fn serve() -> Result<Value> {
         std::panic::set_hook(Box::new(move |panic| log.say(&panic.to_string())));
     }
     let mut watched = Watched::started();
+    {
+        let log = Arc::clone(&log);
+        let published = Arc::clone(&watched.published);
+        crate::published::learn(watched.path.clone(), published, move |line| log.say(line));
+    }
     // Heard from the first hold of the host on, and across every hold after.
     let mut stop = None;
     loop {
@@ -686,7 +742,11 @@ fn held_host(
         ));
     }
     let held = Mutex::default();
-    let shared = Shared { installed: Arc::clone(&watched.installed), ..Shared::default() };
+    let shared = Shared {
+        installed: Arc::clone(&watched.installed),
+        published: Arc::clone(&watched.published),
+        ..Shared::default()
+    };
     let panel = HostPanel::new(shared.clone());
     // Read once: a port the host settings change to holds from the next start.
     let port = host_settings::of_host().map_or(host_settings::PANEL_PORT, |said| said.panel_port());
@@ -825,6 +885,9 @@ struct Watched {
     /// What it found there, where it is newer than this host runner's
     /// afkconvoy or does not say its version: said on the socket.
     installed: Arc<Mutex<Option<Installed>>>,
+    /// A newer release published to the tap it was installed from, as the
+    /// host runner's looks there find it (`published::learn`).
+    published: Arc<Mutex<Option<Published>>>,
 }
 
 impl Watched {
@@ -833,8 +896,8 @@ impl Watched {
     fn started() -> Watched {
         let path = std::env::current_exe().ok();
         let seen = path.as_deref().and_then(file_at);
-        let installed = Arc::default();
-        Watched { path, seen, looked: Instant::now(), installed }
+        let (installed, published) = (Arc::default(), Arc::default());
+        Watched { path, seen, looked: Instant::now(), installed, published }
     }
 
     fn installed(&self) -> MutexGuard<'_, Option<Installed>> {
@@ -936,7 +999,7 @@ fn found_at(path: &Path, log: &RunnerLog) -> Option<Installed> {
 /// and given `VERSION_SAID_WITHIN`: `afkconvoy 0.6.0` is `0.6.0`. Errors: it
 /// could not be started, said nothing in time and was ended, ended in an
 /// error, or said no version.
-fn version_of(path: &Path) -> Result<String> {
+pub(crate) fn version_of(path: &Path) -> Result<String> {
     let mut child = crate::process::spawn(
         Command::new(path)
             .arg("--version")
@@ -1857,6 +1920,7 @@ pub fn run(
     // Before the checkout is handed over: its fleet instance starts under
     // them, and every other on the host reads them as it goes.
     let changed = host_settings::change(&list, settings)?;
+    host_settings::pin_host_name(&list)?;
     // Kept once no host runner runs: one of an older release would write the
     // list over it, knowing no tracker. One whose entry is gone meanwhile is
     // the host runner's to say, as it is handed the checkout.
@@ -2373,7 +2437,7 @@ fn start_detached(program: &Path) -> Result<Child> {
     let env = pinned(env, &dir, config);
     let log = opened_log(&dir.join(LOG))?;
     crate::process::spawn(
-        Command::new(program)
+        crate::process::inheriting_nothing(&mut Command::new(program))
             .arg("host-runner")
             .env_clear()
             .envs(env)
@@ -2521,6 +2585,7 @@ mod tests {
             seen: None,
             looked: Instant::now(),
             installed: Arc::clone(&shared.installed),
+            published: Arc::default(),
         };
         assert!(!watched.moves_at(1600), "the old runner gets time to work");
         assert!(watched.moves_at(1601), "the same installed file is tried again");

@@ -64,8 +64,7 @@ pub fn source(repo: &Repo) -> Result<u64> {
 }
 
 fn note(repo: &Repo, name: &str) -> Result<std::path::PathBuf> {
-    let dir = repo.git(&["rev-parse", "--absolute-git-dir"])?;
-    Ok(Path::new(&dir).join(name))
+    Ok(repo.git_dir()?.join(name))
 }
 
 fn noted(repo: &Repo, name: &str) -> Result<Option<u64>> {

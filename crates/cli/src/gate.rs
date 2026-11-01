@@ -8,7 +8,7 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use afkconvoy_core::config::Config;
+use afkconvoy_core::config::{Config, Which};
 use afkconvoy_core::gate::{
     GateCommand, GreenRun, Ran, Recording, Tree, after_run, at_limit, believed_among, record_ref,
     red_ref, red_subject,
@@ -20,9 +20,10 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::gh::GitHub;
-use crate::git::{REMOTE, Repo};
+use crate::git::Repo;
 use crate::lock::standing_locks;
 use crate::measure;
+use crate::remote::{Fresh, Push};
 
 /// What keeps a worktree from being exactly a commit: its uncommitted and
 /// untracked paths as `git status --porcelain` lists them, and — given the
@@ -80,20 +81,57 @@ struct CommandRun {
     cancelled: bool,
 }
 
+/// Gives a gate's tests their share of the host's cores where it runs beside
+/// others (`exclusive::share`). That is told once its lane is held: now, in
+/// a turn that holds it, or else by the `exclusive` its command waits in.
+fn share(command: &mut Command) {
+    if crate::exclusive::held() {
+        crate::exclusive::share(command, std::process::id());
+    } else {
+        command.env(crate::exclusive::SHARE_ENV, "1");
+    }
+}
+
+/// How often a candidate's gate asks whether the candidate was cancelled.
+/// Each ask reads the chain live from the remote — over the network, on a
+/// real one — and starts git, all beside the gate it is asked of; asked at
+/// every look at the gate (50 ms), they took the host's cores from it
+/// (sunfmin/control#309). The turn that cancels a candidate on this host
+/// signals its gate itself (`candidates::cleanup`).
+const CANCELLED_EVERY: Duration = Duration::from_secs(1);
+
 /// Runs the gate command in a worktree, its log going line by line to this
 /// process's stderr, keeping its status, signal evidence and the end of its
 /// log. A run that reaches the gate limit, `limit`, is killed, with everything
 /// it started, and is reported as a timeout rather than an outside signal.
+/// `alone` is the one of the two gates run alone, which the command's
+/// `exclusive` is told, so that a fast gate takes the fast lane.
 fn run_command(
     repo: &Repo,
     command: &str,
     limit: Duration,
     candidate: Option<&crate::candidates::Gate<'_>>,
+    alone: Option<Which>,
 ) -> Result<CommandRun> {
     let mut shell = Command::new("sh");
     crate::exclusive::inherit(&mut shell, repo)?;
+    match alone {
+        Some(which) => shell.env(crate::exclusive::GATE_ENV, which.word()),
+        None => shell.env_remove(crate::exclusive::GATE_ENV),
+    };
+    // A slow gate runs alone in its lane, its tests mostly waiting
+    // on the processes they start: twelve at a time, as its profile says
+    // (sunfmin/control#234), not the share a fast gate's tests are held to.
+    if !(candidate.is_some_and(|c| c.slow) || alone == Some(Which::Slow)) {
+        share(&mut shell);
+    }
     if let Some(candidate) = candidate {
         shell.env(crate::candidates::PROCESS_ENV, candidate.process_marker());
+        // Five cold builds at once on eight cores passed the fast gate's
+        // limit before their tests began (2026-10-29).
+        if std::env::var_os("CARGO_TARGET_DIR").is_none() {
+            shell.env("CARGO_TARGET_DIR", candidate.target());
+        }
     }
     let scope = candidate
         .map(|c| c.scope().and_then(|path| crate::process_scope::create(&path, &mut shell)))
@@ -144,11 +182,16 @@ fn run_command(
     };
     let started = Instant::now();
     let mut cancelled = false;
+    let mut asked: Option<Instant> = None;
     let (exit_code, timed_out, termination) = loop {
         while let Ok(line) = read.try_recv() {
             keep(line);
         }
-        if let Some(candidate) = candidate
+        let ask = candidate.filter(|_| asked.is_none_or(|at| at.elapsed() >= CANCELLED_EVERY));
+        if ask.is_some() {
+            asked = Some(Instant::now());
+        }
+        if let Some(candidate) = ask
             && candidate.cancelled()?
         {
             cancelled = true;
@@ -261,7 +304,7 @@ fn controlled_run(
     let head = repo.git(&["rev-parse", "HEAD"])?;
     let tree = head_tree(repo)?;
     let before = off_commit(repo, None)?;
-    let command_run = run_command(repo, command.text(), limit, candidate)?;
+    let command_run = run_command(repo, command.text(), limit, candidate, None)?;
     let ended = match command_run.termination {
         Some(termination) => termination.description(),
         None => format!("gate command ended (exit {})", command_run.exit_code),
@@ -299,12 +342,8 @@ fn controlled_run(
             // The record is a parentless commit OF the tested tree.
             let sha =
                 repo.record_commit_of(tree.name(), &green.write_issued(&tree, command, issue))?;
-            let pushed =
-                repo.try_git(&["push", "--quiet", "--force", REMOTE, &format!("{sha}:{refname}")])?;
-            if !pushed.ok {
-                // Soft: a record that cannot be written costs the landing a run of the gate.
-                run.not_recorded = Some(pushed.stderr.trim().to_string());
-            }
+            // Soft: a record that cannot be written costs the landing a run of the gate.
+            run.not_recorded = push_record(repo, &sha, &refname)?;
             run.green = Some(green);
         }
         Recording::Drop => {
@@ -312,7 +351,7 @@ fn controlled_run(
             // is not believed from the one the record was left on.
             for layout in Layout::ALL {
                 let name = record_ref(layout, &tree, command);
-                let _ = repo.try_git(&["push", "--quiet", REMOTE, "--delete", &name]);
+                let _ = repo.remote().try_push(&Push::delete(&name));
             }
             // A red run of this issue's tree is kept on its own ref until the
             // work account cites it. A base-branch certification names no issue.
@@ -320,13 +359,7 @@ fn controlled_run(
                 let subject = red_subject(&tree, command, ran.seconds, host, now, issue);
                 let red = red_ref(repo.layout(), issue, now, tree.key(), command.key());
                 if let Ok(sha) = repo.record_commit_of(tree.name(), &subject) {
-                    let _ = repo.try_git(&[
-                        "push",
-                        "--quiet",
-                        "--force",
-                        REMOTE,
-                        &format!("{sha}:{red}"),
-                    ]);
+                    let _ = repo.remote().try_push(&Push::set(&sha, &red).force());
                 }
             }
         }
@@ -357,6 +390,62 @@ pub(crate) fn candidate_gate(
     )
 }
 
+/// Puts the whole gate, `whole`, on record for `tree` from the records of its
+/// two parts there, `fast` and `slow` → why it is not on record, `None` when
+/// it is. A round's tip whose slow gate passed is a tree the whole gate
+/// passed (docs/adr/0048): the target tip it becomes needs no other run.
+pub(crate) fn record_whole(
+    repo: &Repo,
+    tree: &Tree,
+    (whole, fast, slow): (&GateCommand, &GateCommand, &GateCommand),
+    issue: Option<u64>,
+    now: u64,
+) -> Result<Option<String>> {
+    let (Some(f), Some(s)) = (recorded(repo, tree, fast, now)?, recorded(repo, tree, slow, now)?)
+    else {
+        return Ok(Some(format!(
+            "the fast or the slow gate's run of {} is not on record",
+            tree.name()
+        )));
+    };
+    let Some(run) = GreenRun::joined(tree, whole, fast, &f, slow, &s) else {
+        return Ok(Some("the fast and the slow gate are one command".into()));
+    };
+    let sha = repo.record_commit_of(tree.name(), &run.write_issued(tree, whole, issue))?;
+    let refname = record_ref(repo.layout(), tree, whole);
+    push_record(repo, &sha, &refname)
+}
+
+/// A push GitHub rejected for a fault of its own, not of the push.
+fn remote_fault(stderr: &str) -> bool {
+    stderr.contains("remote unpack failed") || crate::candidates::lock_failure(stderr)
+}
+
+/// How many times a gate record's push is tried.
+const RECORD_ATTEMPTS: u32 = 5;
+
+/// Pushes the record `sha` to `refname` → why it could not, `None` once it
+/// is there. A record's push is a force push of one commit, so trying it
+/// again is safe. A rejection that is GitHub's own fault — it could not
+/// write the pack (`remote unpack failed`), or another push held the ref's
+/// lock — is tried again; any other is not. On 2026-10-29 two candidates
+/// whose fast gate was green went red for the first, cancelling every
+/// candidate behind them.
+fn push_record(repo: &Repo, sha: &str, refname: &str) -> Result<Option<String>> {
+    let mut attempt = 0;
+    loop {
+        let pushed = repo.remote().try_push(&Push::set(sha, refname).force())?;
+        if pushed.ok {
+            return Ok(None);
+        }
+        attempt += 1;
+        if !remote_fault(&pushed.stderr) || attempt >= RECORD_ATTEMPTS {
+            return Ok(Some(pushed.stderr.trim().to_string()));
+        }
+        std::thread::sleep(Duration::from_millis(250 << attempt));
+    }
+}
+
 /// The green run of `command` on `tree` the remote has on record and still
 /// believes at `now`, from either ref layout; `None` when it holds none that
 /// stands. One listing reads both records.
@@ -370,14 +459,14 @@ pub fn recorded(
     let names: Vec<String> =
         Layout::ALL.into_iter().map(|layout| record_ref(layout, tree, command)).collect();
     let patterns: Vec<&str> = names.iter().map(String::as_str).collect();
-    let found = repo.remote_records_in(&patterns)?;
+    let found = repo.remote().records(&patterns, Fresh::Process)?;
     Ok(recorded_among(&found, noted, tree, command, now))
 }
 
 /// The still-valid green run among an existing remote snapshot's records,
 /// from either ref layout. The noted layout's record wins when both stand.
 pub fn recorded_among(
-    records: &[crate::git::RemoteRecord],
+    records: &[crate::remote::RemoteRecord],
     layout: afkconvoy_core::layout::Layout,
     tree: &Tree,
     command: &GateCommand,
@@ -537,4 +626,60 @@ pub fn gate(repo: &Repo, config: &Config, train: bool, host: &str, now: u64) -> 
     };
     answer["detail"] = json!(detail);
     Ok(answer)
+}
+
+/// `afkconvoy gate --fast` or `--slow`: one of the two gates the repo's gate
+/// is split into (docs/adr/0047), run alone in the worktree it is called
+/// from, under its own limit, and held to its own budget. Neither is put on
+/// record: what a landing turn proves is the whole gate, `gate_command`.
+pub fn one(repo: &Repo, config: &Config, which: Which) -> Result<Value> {
+    let name = which.word();
+    let gate = config.gate(which).ok_or_else(|| {
+        anyhow!(
+            "this repo declares no {name} gate: its config has no ```yaml gates block \
+             (`afkconvoy config --help`); run `afkconvoy gate`, the whole gate"
+        )
+    })?;
+    let run =
+        run_command(repo, &gate.command, Duration::from_secs(gate.seconds), None, Some(which))?;
+    let green = run.exit_code == 0 && !run.timed_out && run.termination.is_none();
+    let over_budget = run.seconds > gate.budget_seconds;
+    let detail = match (green, &run.termination) {
+        (true, _) if over_budget => format!(
+            "green, but slow: the {name} gate took {}s, past its budget of {}s — it is not red; \
+             say so on the issue if your change made it slower",
+            run.seconds, gate.budget_seconds
+        ),
+        (true, _) => format!("green in {}s; nothing is on record", run.seconds),
+        (false, Some(termination)) => {
+            format!("the {name} gate is red — {}", termination.description())
+        }
+        (false, None) if run.timed_out => format!(
+            "the {name} gate is red: its run reached its limit of {}s and was ended",
+            gate.seconds
+        ),
+        (false, None) => format!("the {name} gate is red — fix it, commit, and run this again"),
+    };
+    Ok(json!({"gate": name, "status": if green { "green" } else { "red" },
+        "exit_code": run.exit_code, "timed_out": run.timed_out, "seconds": run.seconds,
+        "command": gate.command, "limit_seconds": gate.seconds,
+        "budget_seconds": gate.budget_seconds, "over_budget": over_budget, "recorded": false,
+        "termination": run.termination, "excerpt": if green { vec![] } else { run.excerpt },
+        "detail": detail}))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_pack_github_could_not_write_is_its_fault_and_a_refused_push_is_not() {
+        let unpack = "remote: fatal: unable to rename temporary '*.pack' file\n\
+                      error: remote unpack failed: index-pack failed\n \
+                      ! [remote rejected]   d5531db -> refs/convoy/gate/47 (unpacker error)";
+        assert!(remote_fault(unpack));
+        assert!(remote_fault(" ! [remote rejected]   d5531db -> refs/convoy/gate/47 (failed)"));
+        assert!(!remote_fault("fatal: 'origin' does not appear to be a git repository"));
+        assert!(!remote_fault(" ! [remote rejected] d5531db -> refs/convoy/gate/47 (protected)"));
+    }
 }

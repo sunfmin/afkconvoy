@@ -33,6 +33,34 @@ The one-hour gate limit still bounds termination, leaving cold builds and host
 competition room to finish. A warning alone fails no validation. Change the
 budget only with a deliberate baseline review; never raise it per run.
 
+The gate is two gates, run one after the other by `./gate.sh` (ADR-0047):
+the fast gate, which a worker passes before it opens or updates its PR, and
+the slow gate, which runs the tests `.config/slow-tests` marks slow. A landing
+turn runs the fast gate on each candidate and the slow gate once per round, at
+the candidate chain's tip (ADR-0048). Older versions skip this block, and land
+on `gate_command`, both; this repo's fleet is upgraded by hand before it
+lands with rounds.
+
+```yaml gates
+fast:
+  command: afkconvoy exclusive -- ./gate.sh fast
+  seconds: 600                    # its limit: room for a cold build
+  budget_seconds: 180             # 137s measured on Offices-MacBook-Pro.local
+slow:
+  command: afkconvoy exclusive -- ./gate.sh slow
+  seconds: 3000                   # with the fast gate's, gate_seconds
+  budget_seconds: 420             # with the fast gate's, gate_budget_seconds
+```
+
+The two limits add up to `gate_seconds` and the two budgets to
+`gate_budget_seconds`: the split raises neither. The fast gate's budget is
+its measured 137 seconds with about a third more for load; the slow gate's is
+what is left of the whole gate's, which its measured 1,157 seconds on the
+8-core host already exceeded. Its worlds running the real git and not
+Apple's shim, twelve tests at a time, it took 665 seconds there
+(sunfmin/control#234): still past it. The measurements are in
+[the gate baseline](../gate-baseline.md).
+
 How many claims are at work at once is no key here: each host that works this
 repo says its own, `afkconvoy run <checkout> --concurrency N`, and 3 until it
 does (`docs/adr/0025`).
@@ -51,7 +79,9 @@ So the gate runs through the host's exclusive queue (ADR-0019), in every
 checkout — a worker's standalone gate or landing turn, and a gate in a
 temporary checkout that certifies the base branch: by default one command
 at a time across its fleets. The host's `gate_lanes` setting may allow more. The workers keep editing while their gates
-wait.
+wait. A worker's fast gate, `afkconvoy gate --fast`, waits on none of these: it
+takes the host's fast lane, beside the other fast gates up to the host's
+`fast_lanes` setting, whatever their repo (ADR-0049).
 
 - Run `afkconvoy gate` as it is. Never wrap it in another `afkconvoy exclusive`:
   its own would wait behind it, on itself, until the gate limit.

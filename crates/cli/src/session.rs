@@ -28,6 +28,65 @@ pub fn read_turn(
     since: Option<u64>,
     not_before: Option<u64>,
 ) -> Result<Option<Turn>> {
+    let mut turns = Vec::new();
+    for root in &roots(cwd, harness)? {
+        if let Some(turn) = read_root(root, harness, cwd, since, not_before)? {
+            turns.push(turn);
+        }
+    }
+    Ok(prefer(&turns))
+}
+
+/// Whether `harness`'s session for `cwd` holds `mark` in a message its
+/// model was given as the user's (`Harness::holds_note`). `since` drops
+/// files last written before it, as for a turn.
+pub fn holds_note(cwd: &Path, harness: Harness, since: u64, mark: &str) -> Result<bool> {
+    let cwd_text = cwd_str(cwd);
+    let holds = |text: &str| harness.holds_note(text, mark).then_some(());
+    for root in &roots(cwd, harness)? {
+        if !root.exists() {
+            continue;
+        }
+        let since = Some(since);
+        let held = match harness.note_place(&cwd_text).layout {
+            SessionLayout::Files { dir, extension } => {
+                read_files(&root.join(dir), extension, since, holds)?
+            }
+            SessionLayout::Tree { dir, extension } => {
+                read_tree(&root.join(dir), extension, since, holds)?
+            }
+            SessionLayout::Named { dir, name, compressed } => {
+                read_named(&root.join(dir), name, compressed, since, holds)?
+            }
+            SessionLayout::Index { file } => {
+                read_index(root, &file, harness, &cwd_text, since, holds)?
+            }
+        };
+        if !held.is_empty() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Writes, for every harness under `home`, what it keeps of `line` typed at
+/// the worker in `cwd` while it worked: given to its model when `taken`,
+/// else only queued. The stand-in calls this.
+pub fn record_note(home: &Path, cwd: &Path, line: &str, taken: bool, at: u64) -> Result<()> {
+    let cwd = cwd_str(cwd);
+    for harness in Harness::ALL {
+        let root = home.join(harness.note_place(&cwd).under_home);
+        for file in harness.note_files(&cwd, line, taken, at) {
+            write_text(&root.join(&file.path), &file.body, at)?;
+        }
+    }
+    Ok(())
+}
+
+/// Every directory `harness` may keep the session of `cwd` under: the
+/// user's home, the directories the fleet keeps, and a home noted beside the
+/// worktree.
+fn roots(cwd: &Path, harness: Harness) -> Result<Vec<PathBuf>> {
     let place = harness.session_place(&cwd_str(cwd));
     let mut roots = Vec::new();
     if let Some(home) = user_home() {
@@ -41,13 +100,7 @@ pub fn read_turn(
     }
     roots.sort();
     roots.dedup();
-    let mut turns = Vec::new();
-    for root in &roots {
-        if let Some(turn) = read_root(root, harness, cwd, since, not_before)? {
-            turns.push(turn);
-        }
-    }
-    Ok(prefer(&turns))
+    Ok(roots)
 }
 
 /// Writes one turn for every harness under `home`, closed unless `open`.
@@ -130,17 +183,19 @@ fn read_root(
                 harness.recorded_turn(&cwd, text, not_before)
             })?
         }
-        SessionLayout::Index { file } => read_index(root, &file, harness, &cwd, since, not_before)?,
+        SessionLayout::Index { file } => read_index(root, &file, harness, &cwd, since, |text| {
+            harness.recorded_turn(&cwd, text, not_before)
+        })?,
     };
     Ok(prefer(&turns))
 }
 
-fn read_files(
+fn read_files<T>(
     dir: &Path,
     extension: &str,
     since: Option<u64>,
-    mut turn_of: impl FnMut(&str) -> Option<Turn>,
-) -> Result<Vec<Turn>> {
+    mut turn_of: impl FnMut(&str) -> Option<T>,
+) -> Result<Vec<T>> {
     let Some(entries) = list_dir(dir)? else { return Ok(Vec::new()) };
     let mut turns = Vec::new();
     for path in entries {
@@ -159,12 +214,12 @@ fn read_files(
     Ok(turns)
 }
 
-fn read_tree(
+fn read_tree<T>(
     dir: &Path,
     extension: &str,
     since: Option<u64>,
-    mut turn_of: impl FnMut(&str) -> Option<Turn>,
-) -> Result<Vec<Turn>> {
+    mut turn_of: impl FnMut(&str) -> Option<T>,
+) -> Result<Vec<T>> {
     let mut files = Vec::new();
     collect(dir, extension, tree_floor(since), &mut files)?;
     let mut turns = Vec::new();
@@ -178,13 +233,13 @@ fn read_tree(
     Ok(turns)
 }
 
-fn read_named(
+fn read_named<T>(
     dir: &Path,
     name: &str,
     compressed: bool,
     since: Option<u64>,
-    mut turn_of: impl FnMut(&str) -> Option<Turn>,
-) -> Result<Vec<Turn>> {
+    mut turn_of: impl FnMut(&str) -> Option<T>,
+) -> Result<Vec<T>> {
     let Some(entries) = list_dir(dir)? else { return Ok(Vec::new()) };
     let mut turns = Vec::new();
     for session in entries {
@@ -202,14 +257,14 @@ fn read_named(
     Ok(turns)
 }
 
-fn read_index(
+fn read_index<T>(
     root: &Path,
     file: &str,
     harness: Harness,
     cwd: &str,
     since: Option<u64>,
-    not_before: Option<u64>,
-) -> Result<Vec<Turn>> {
+    mut turn_of: impl FnMut(&str) -> Option<T>,
+) -> Result<Vec<T>> {
     let Some(text) = read_text(&root.join(file))? else { return Ok(Vec::new()) };
     let mut turns = Vec::new();
     for session in harness.indexed_sessions(cwd, &text) {
@@ -219,7 +274,7 @@ fn read_index(
             continue;
         }
         if let Some(body) = read_text(&path)?
-            && let Some(turn) = harness.recorded_turn(cwd, &body, not_before)
+            && let Some(turn) = turn_of(&body)
         {
             turns.push(turn);
         }

@@ -3,6 +3,7 @@
 //! and handing to a human an issue nobody holds. What the stage records call
 //! for is the core's to say (`afkconvoy_core::stage_record::advance`).
 
+use afkconvoy_core::account::End;
 use afkconvoy_core::blocked::{Blocked, blocked_route};
 use afkconvoy_core::claims::Claim;
 use afkconvoy_core::plan::closing_pr;
@@ -10,7 +11,7 @@ use afkconvoy_core::position::Failure;
 use afkconvoy_core::prompt::stage_nudge_line;
 use afkconvoy_core::stage_record::{Advance, StageRecord};
 use afkconvoy_core::stopped::{
-    Nudged, Route, Silence, Why, past_grace, settled_by_state, silence, stage_stalled_reason,
+    Nudged, Route, Silence, Why, settled_by_state, stage_stalled_reason,
 };
 use afkconvoy_core::tick::Outcome;
 use afkconvoy_core::transition::{self, HandOnStep, Released};
@@ -21,8 +22,8 @@ use crate::claims::{Me, Take, delete, take};
 use crate::dispatch::{Agent, StartFrom, dispatch};
 use crate::fleet::Fleet;
 use crate::judge::{
-    BLOCKED_BRIEF, Handed, close_claim, escalate_claim, mine, nudge_worker, own_background,
-    progress, refuted_work, where_it_stopped, worktree_and_work, worktree_of,
+    BLOCKED_BRIEF, Handed, Look, close_claim, escalate_claim, mine, nudge_worker, refuted_work,
+    silence_of, where_it_stopped, worktree_and_work, worktree_of,
 };
 use crate::lock::explaining_lock;
 use crate::orca::{Source, Worktree};
@@ -53,20 +54,19 @@ pub(crate) fn stated(reason: &str, said: Option<&str>, rounds: Option<&str>) -> 
 
 /// Ends `claim` once its stage has declared, the issue left where its stage
 /// records put it — at `waits_at`, when that is a human's stage — and its
-/// worker with it: its terminal is closed, and `ended`, its workflow having
-/// ended, the worktree goes too.
-fn hand_on(
-    fleet: &mut Fleet,
-    claim: &Claim,
-    waits_at: Option<&str>,
-    ended: bool,
-) -> Result<Released> {
+/// worker with it: its terminal is closed, and at `End::Ended`, its workflow
+/// having ended, the worktree goes too. An `end` that leaves the work account
+/// leaves it before the claim goes.
+fn hand_on(fleet: &mut Fleet, claim: &Claim, waits_at: Option<&str>, end: End) -> Result<Released> {
     let issue = claim.number;
     let pr = pr_of(fleet, issue)?;
     let worktree = Worktree::of_issue(&Source::of(&fleet.repo)?, issue)?;
-    transition::hand_on(issue, ended, |step| {
+    transition::hand_on(issue, end, |step| {
         match (step, &worktree) {
             (HandOnStep::Board, _) => declared(fleet, claim, pr, waits_at)?,
+            (HandOnStep::Account, _) => {
+                crate::account::leave(&fleet.repo, &fleet.gh, issue, end, fleet.now)?
+            }
             (HandOnStep::Release, _) => {
                 delete(&fleet.repo, &mut fleet.scan, issue, &claim.sha)?;
             }
@@ -102,7 +102,7 @@ fn hand_off(
     if !flows.ends_with(issue, &record) {
         fleet.gh.comment(issue, &record.comment())?;
     }
-    hand_on(fleet, claim, None, false)?;
+    hand_on(fleet, claim, None, End::HandedOn)?;
     // The consult is the next tick's to start.
     let _ = wake(&fleet.repo, "");
     Ok(Outcome::Done)
@@ -136,7 +136,7 @@ fn run_again(
     lock: u64,
 ) -> Result<Outcome> {
     leave_lock_closed(fleet, flows, claim.number, stage, lock)?;
-    hand_on(fleet, claim, None, false)?;
+    hand_on(fleet, claim, None, End::HandedOn)?;
     // As after any verdict: the stage is the next tick's to start.
     let _ = wake(&fleet.repo, "");
     Ok(Outcome::Done)
@@ -185,11 +185,7 @@ fn ask_after(
     let (Some(worktree), Some(state)) = (worktree, state) else {
         bail!("issue #{issue}: a worker that stopped has a worktree and a state");
     };
-    let progress = progress(&worktree, &fleet.task_tip(issue)?)?;
-    let (nudged, handed) = (worktree.nudged()?, worktree.handed(None)?);
-    let past_grace = past_grace(state, &progress, nudged, handed, fleet.now);
-    let background = own_background(fleet, &worktree, past_grace)?;
-    match silence(state, &progress, nudged, handed, background, fleet.now) {
+    match silence_of(fleet, issue, &worktree, state, None, Look::Acting)? {
         Silence::Lively => Ok(Outcome::Nothing),
         Silence::Waiting(since) => Ok(Outcome::Waiting(since)),
         Silence::Gone => {
@@ -286,7 +282,7 @@ pub fn advance(
             return ask_after(fleet, me, agent, flows, &claim, asked);
         }
         Advance::HandOn => {
-            hand_on(fleet, &claim, called.waits_at.as_deref(), false)?;
+            hand_on(fleet, &claim, called.waits_at.as_deref(), End::HandedOn)?;
             // What follows that this tick does not start is the next one's:
             // it need not wait out a sleep. A wake nobody hears costs only
             // that wait.
@@ -294,14 +290,12 @@ pub fn advance(
             return Ok(Outcome::HandedOn);
         }
         Advance::End => {
-            crate::account::leave(&fleet.repo, &fleet.gh, issue, fleet.now)?;
-            hand_on(fleet, &claim, None, true)?;
+            hand_on(fleet, &claim, None, End::Ended)?;
             return Ok(Outcome::Done);
         }
         Advance::ConsultClose => {
             fleet.gh.close_issue(issue)?;
-            crate::account::leave(&fleet.repo, &fleet.gh, issue, fleet.now)?;
-            hand_on(fleet, &claim, None, false)?;
+            hand_on(fleet, &claim, None, End::Closed)?;
             return Ok(Outcome::Done);
         }
         Advance::Close => {
@@ -327,7 +321,7 @@ pub fn advance(
             // Every blocker closed: the frontier holds the issue at the
             // stage that parked it.
             Blocked::Redispatch => {
-                hand_on(fleet, &claim, None, false)?;
+                hand_on(fleet, &claim, None, End::HandedOn)?;
                 return Ok(Outcome::HandedOn);
             }
             Blocked::Escalate(reason) => {

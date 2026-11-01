@@ -3,18 +3,25 @@
 //! labels to keep off an issue, and the line that opens one in the fleet's
 //! tracker — with the labels that line names created there where they are
 //! missing. In an unbound repo the one label is the ready label.
+//!
+//! The tracker is the one the checkout's host says on its checkout list, or
+//! the one its caller says with `--tracker` where the list holds no entry of
+//! it: never guessed, as an issue opened in a tracker no fleet reads is
+//! never worked.
 
-use afkconvoy_core::config::Config;
+use afkconvoy_core::config::{Config, RepoName};
 use afkconvoy_core::line::Line;
 use afkconvoy_core::team::{DONE, HUMAN, LAND, Pass, Performer, Team, Workflow};
-use anyhow::Result;
+use anyhow::{Result, bail};
 use serde_json::{Value, json};
 
+use crate::checkout_list::{List, named_repo, said};
 use crate::config;
 use crate::gh::{GitHub, Tracker};
 use crate::git::Repo;
 use crate::intake::open_taken_in;
 use crate::team;
+use crate::tracker::REPO_LABEL_SAYS;
 
 /// What GitHub shows beside a flow label this command created, and beside a
 /// ready label.
@@ -101,21 +108,77 @@ fn keep_off(config: &Config, escalate_label: &str) -> Value {
         "lock_label": config.lock_label})
 }
 
-/// `afkconvoy flows`, in the checkout `repo`. Everything is read before a
-/// label is created, so a team with a fault writes nothing.
+/// The tracker `flows` answers for in the checkout `repo`, with `asked` what
+/// `--tracker` says of it → the tracker, and whether `asked` said it where
+/// the checkout list holds no entry of the checkout. The list's entry holds,
+/// and an `asked` it does not say is refused, naming both; with no entry,
+/// `asked` is the tracker, and with neither the tracker is not said.
+fn tracker(repo: &Repo, asked: Option<&RepoName>) -> Result<(Tracker, bool)> {
+    // The tracker a checkout names, none where that is its own repo.
+    let own = |named: &RepoName| -> Result<Option<RepoName>> {
+        let is_own = named.as_str().eq_ignore_ascii_case(named_repo(repo)?.as_str());
+        Ok((!is_own).then(|| named.clone()))
+    };
+    let tracker = |named: Option<RepoName>| -> Result<Tracker> {
+        Ok(match named {
+            None => Tracker::Own,
+            Some(tracker) => Tracker::Other { tracker, repo: named_repo(repo)? },
+        })
+    };
+    let lower = |named: &Option<RepoName>| named.as_ref().map(|n| n.as_str().to_lowercase());
+    match (said(&List::of_host()?, repo)?, asked) {
+        (Some(listed), None) => Ok((tracker(listed)?, false)),
+        (Some(listed), Some(asked)) => {
+            if lower(&listed) != lower(&own(asked)?) {
+                let listed = listed.map_or_else(|| named_repo(repo), Ok)?;
+                bail!(
+                    "{} is on this host's checkout list with the tracker {listed}, and \
+                     `--tracker` says {asked}: its fleet reads its issues in {listed}. Leave \
+                     `--tracker` off, or change what the list says with `afkconvoy run \
+                     --tracker {asked}`",
+                    repo.dir.display()
+                );
+            }
+            Ok((tracker(listed)?, false))
+        }
+        (None, Some(asked)) => Ok((tracker(own(asked)?)?, true)),
+        (None, None) => bail!(
+            "the tracker is not said: {} is on no checkout list of this host, so which repo its \
+             fleet reads its issues in is not known here. Say it: `afkconvoy flows --tracker \
+             <owner>/<repo>` — the checkout's own repo where that is its tracker — or run it on \
+             the fleet's host, where `afkconvoy run --tracker <owner>/<repo>` puts it on the list",
+            repo.dir.display()
+        ),
+    }
+}
+
+/// `afkconvoy flows`, in the checkout `repo`, for the tracker `tracker`
+/// finds with `asked`. Everything is read before a label is created, so a
+/// team with a fault, or a tracker not said, writes nothing.
 ///
 ///   {"team", "workflows": [{"name", "flow_label", "description", "first", "ends", "line"}],
 ///    "keep_off", "intake": {"open", "limit"}, "created"}
 ///   {"team": null, "ready_label", "line", "keep_off", "created"}
-pub fn flows(repo: &Repo, delivery: Option<&str>) -> Result<Value> {
+pub fn flows(repo: &Repo, delivery: Option<&str>, asked: Option<&RepoName>) -> Result<Value> {
     let config = config::load(&repo.dir.join(config::FILE))?;
-    let gh = GitHub::of(repo)?;
+    let (tracker, off_the_list) = tracker(repo, asked)?;
+    let gh = GitHub::new(repo.dir.clone(), tracker);
     if let Some(id) = delivery {
         crate::delivery::reference(repo, id)?;
     }
+    // A tracker the list says was given the repo label by the `run` that
+    // said it; one `--tracker` says off the list may lack it.
+    let repo_label = gh.tracker.repo_label().filter(|_| off_the_list);
+    let labelled = |gh: &GitHub, mut created: Vec<String>| -> Result<Vec<String>> {
+        if let Some(label) = &repo_label {
+            created.extend(create_missing(gh, std::slice::from_ref(label), REPO_LABEL_SAYS)?);
+        }
+        Ok(created)
+    };
     let Some(bound) = &config.bound else {
         let created =
             create_missing(&gh, std::slice::from_ref(&config.ready_label), READY_LABEL_SAYS)?;
+        let created = labelled(&gh, created)?;
         let mut answer = json!({"team": null, "ready_label": config.ready_label,
             "line": line(&gh.tracker, delivery.is_none().then_some(config.ready_label.as_str())),
             "keep_off": keep_off(&config, &config.escalate_label), "created": created});
@@ -129,7 +192,7 @@ pub fn flows(repo: &Repo, delivery: Option<&str>) -> Result<Value> {
     let open = open_taken_in(&team, &gh.open_issues()?);
     let flow_labels: Vec<String> =
         team.workflows.iter().map(|workflow| workflow.flow_label().to_string()).collect();
-    let created = create_missing(&gh, &flow_labels, FLOW_LABEL_SAYS)?;
+    let created = labelled(&gh, create_missing(&gh, &flow_labels, FLOW_LABEL_SAYS)?)?;
     let mut answer = json!({
         "team": bound.team,
         "workflows":

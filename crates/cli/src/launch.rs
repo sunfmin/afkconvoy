@@ -19,6 +19,7 @@ use anyhow::{Result, anyhow, bail};
 
 use crate::config;
 use crate::git::Repo;
+use crate::look::Reading;
 use crate::topic::See;
 
 /// How long the login shell is given to answer.
@@ -343,9 +344,9 @@ impl Launches {
     }
 
     /// Whether this launch adds harness flags: every worker in a role, and
-    /// outside one wherever worktree trust is launch configuration.
+    /// outside one wherever its harness says its worktree trust is flags.
     pub fn adds_flags(&self, harness: Harness) -> bool {
-        self.bound || matches!(harness, Harness::ClaudeCode | Harness::Pi | Harness::Codex)
+        self.bound || harness.trust_is_flags()
     }
 
     /// `fault`, of the command of `harness`, as a human is told it: in a
@@ -569,7 +570,21 @@ fn login_shell(dir: &Path, script: &str) -> Option<String> {
 /// worktree of it → whether it exited zero, and what it printed. `None` when
 /// it could not run or timed out.
 pub fn ask_login_shell(dir: &Path, script: &str) -> Option<(bool, String)> {
-    ask_login_shell_within(dir, script, SHELL_TIMEOUT)
+    ANSWERED.read(&asked(dir, script), || ask_login_shell_within(dir, script, SHELL_TIMEOUT))
+}
+
+/// The login shell's answer to one question in one directory, asked once in
+/// this look (docs/adr/0043). A tick asked `type` and the flags question of
+/// its default harness twice, once for the fleet's view of what it can start
+/// and once for the agent that starts it: a login shell each. In a sample of
+/// the slow gate's tests, 787 of 2,186 questions were asked again in the
+/// process that had asked them (sunfmin/control#319). A harness installed or
+/// logged in meanwhile is seen at the next look.
+pub(crate) static ANSWERED: Reading<Option<(bool, String)>> = Reading::per_look("login shell");
+
+/// The key `ANSWERED` keeps the answer to `script`, asked in `dir`, by.
+fn asked(dir: &Path, script: &str) -> String {
+    format!("{}\0{script}", dir.display())
 }
 
 /// `ask_login_shell`, given `timeout` to answer.
@@ -935,6 +950,26 @@ mod tests {
         assert!(matches!(again, Once::Ran(true, ref printed) if printed == "ok"));
         assert!(matches!(other, Once::Already));
         assert_eq!(starts, 1);
+    }
+
+    #[test]
+    fn a_login_shell_question_is_asked_once_a_look() {
+        let dir = Path::new("/no/such/checkout");
+        let found = Some((true, "agent is /usr/local/bin/agent".to_string()));
+        let look = Arc::new(crate::look::Look::new());
+        look.seed(&ANSWERED, &asked(dir, "type -- 'agent'"), found.clone());
+        look.enter(|| {
+            assert_eq!(ask_login_shell(dir, "type -- 'agent'"), found, "answered from the look");
+            // No shell starts in a directory that is not there.
+            assert_eq!(ask_login_shell(dir, "agent --help"), None, "another question is asked");
+            assert_eq!(look.held(&ANSWERED, &asked(dir, "agent --help")), Some(None));
+            crate::look::begin();
+        });
+        assert_eq!(
+            look.held(&ANSWERED, &asked(dir, "type -- 'agent'")),
+            None,
+            "the next look asks"
+        );
     }
 
     #[test]

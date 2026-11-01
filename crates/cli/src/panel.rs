@@ -16,7 +16,6 @@ use std::fmt::Write;
 use std::path::{Path, PathBuf};
 
 use afkconvoy_core::claims::InstanceId;
-use afkconvoy_core::exclusive::Ticket;
 use afkconvoy_core::host_sleep::Hours;
 use afkconvoy_core::patrol::{self, Standing};
 use afkconvoy_core::plan::{Excluded, Status, WorkingSet};
@@ -26,10 +25,11 @@ use afkconvoy_core::tick::{Outcome, TickStep};
 use afkconvoy_core::worker::WorkerState;
 use anyhow::Result;
 
-use crate::admission::Admission;
+use crate::admission::{Admission, Readings};
 use crate::checkout_list;
 use crate::claims::Me;
 use crate::fleet::Fleet;
+use crate::fleet_report::FleetReport;
 use crate::git::Repo;
 use crate::host_runner::SharedNow;
 use crate::hot::{HotNow, held_said};
@@ -164,9 +164,6 @@ pub struct Panel {
     /// Its workers hot as the tick ended — or, of a rebuild, as its tick log
     /// has them. The page lists them with the host.
     pub hot: Vec<Hot>,
-    /// An unbound repo's caster, while one runs or is due, and the issues
-    /// held back for it.
-    pub caster: Option<afkconvoy_core::casting::Standing>,
     pub casting: Vec<afkconvoy_core::casting::ModelStatus>,
     /// Each role no worker of which can be started on this host, with why
     /// (`casting::nothing_safe`): its stages wait while it lasts.
@@ -276,16 +273,18 @@ pub struct Host {
     pub now: u64,
     /// Admission's reading of the host now; why it cannot be read.
     pub admission: Result<Admission, String>,
-    /// The host's exclusive queue, with running requests before waiters.
-    pub exclusive: Vec<Ticket>,
-    pub exclusive_paused: bool,
-    pub gate_lanes: u64,
+    /// What its host runner says of the exclusive queue; why it cannot.
+    pub exclusive: Result<crate::queue::Said, String>,
+    /// How many commands may run at once in its worker lanes, fast lane and
+    /// slow lanes.
+    pub lanes: afkconvoy_core::exclusive::Lanes,
     /// The hours of its local time a fleet may put it to sleep in; `None`
     /// where its host settings keep it awake.
     pub sleep_hours: Option<Hours>,
     /// Its host kit, every harness in it; why it cannot be read.
     pub kit: Result<Kit, String>,
-    pub worker_health: serde_json::Value,
+    /// Worker health; why it cannot be read.
+    pub worker_health: Result<crate::health::Health, String>,
     pub watch: serde_json::Value,
     /// The harnesses paused on this host, since when and why: no worker is
     /// started on one until a probe finds it working.
@@ -295,20 +294,32 @@ pub struct Host {
 impl Host {
     /// The host as it is at `now`, read soft: what cannot be read is said
     /// so, or shows nothing. Admission reads the disk under `dir`; `shared`
-    /// is what its host runner holds for its fleets.
-    pub fn read(dir: &Path, now: u64, shared: SharedNow) -> Host {
+    /// is what its host runner holds for its fleets, `None` where none runs;
+    /// `readings` the look's reading of the host.
+    pub fn read(
+        dir: &Path,
+        now: u64,
+        shared: Result<Option<SharedNow>, String>,
+        readings: &Readings,
+    ) -> Host {
         let settings = host_settings::of_host().unwrap_or_default();
+        let (exclusive, watch) = match shared {
+            Ok(Some(shared)) => {
+                (Ok(Some((shared.exclusive, shared.exclusive_paused))), shared.watch)
+            }
+            Ok(None) => (Ok(None), None),
+            Err(error) => (Err(error), None),
+        };
         Host {
             name: crate::this_host(),
             now,
-            admission: Admission::read(dir).map_err(|error| format!("{error:#}")),
-            exclusive: shared.exclusive,
-            exclusive_paused: shared.exclusive_paused,
-            gate_lanes: settings.gate_lanes(),
+            admission: Admission::read_from(dir, readings).map_err(|error| format!("{error:#}")),
+            exclusive,
+            lanes: settings.lanes(),
             sleep_hours: host_settings::host_sleep(),
             kit: crate::kit::load().map_err(|error| format!("{error:#}")),
             worker_health: crate::health::show(),
-            watch: crate::host_watch::json(shared.watch.as_ref(), false),
+            watch: crate::host_watch::json(watch.as_ref(), false),
             paused: crate::paused::read(),
         }
     }
@@ -375,7 +386,7 @@ fn place(seen: &Seen, number: u64) -> Option<(String, Option<String>)> {
 fn said(step: TickStep, outcome: Outcome) -> Option<(u64, &'static str)> {
     let issue = match step {
         TickStep::Judge { issue, .. }
-        | TickStep::Watch { issue }
+        | TickStep::Watch { issue, .. }
         | TickStep::Advance { issue }
         | TickStep::Escalate { issue }
         | TickStep::Reclaim { issue }
@@ -388,6 +399,7 @@ fn said(step: TickStep, outcome: Outcome) -> Option<(u64, &'static str)> {
         (_, Outcome::Waiting(_)) => "its worker waits on its own background work",
         (_, Outcome::Restarted) => "its worker was replaced this tick",
         (_, Outcome::Continued) => "a worker was started on it again this tick",
+        (_, Outcome::Asked) => "its turn was asked for again this tick",
         (TickStep::Dispatch { .. }, Outcome::Done) => "started this tick",
         (TickStep::Dispatch { .. }, Outcome::Blocked) => "skipped this tick: a blocker is open",
         (TickStep::Reclaim { .. }, Outcome::Done) => "taken from a silent peer this tick",
@@ -422,7 +434,6 @@ impl Panel {
             cut: None,
             now: fleet.now,
             hot: vec![],
-            caster: None,
             casting: vec![],
             nothing_safe: vec![],
             codex_workers: vec![],
@@ -438,7 +449,6 @@ impl Panel {
         let set = seen.set;
         self.lanes = lanes(seen);
         self.locks = set.locks.clone();
-        self.caster = set.caster.clone();
         self.casting = set.casting.clone();
         self.patrols = set.patrols.clone();
         let mut put = Put { panel: &mut self, seen };
@@ -594,15 +604,17 @@ impl Put<'_, '_> {
 }
 
 /// The panel of the fleet instance `me` — `None`: of nobody — after a rebuild read `set` and
-/// `flows`, and a tick — if one was made — carried out `did`. Asks orca after
-/// the worker of every claim of mine at work; one orca cannot speak of is
-/// shown with no state rather than failing the page.
+/// `flows`, and a tick — if one was made — carried out `did`; its tracker, its
+/// bound, its deliveries and its roles that can run nothing safely as `report`
+/// has them. Asks orca after the worker of every claim of mine at work; one
+/// orca cannot speak of is shown with no state rather than failing the page.
 pub fn read(
     fleet: &Fleet,
     me: Option<&Me>,
     set: &WorkingSet,
     flows: &Flows,
     did: &[(TickStep, Outcome)],
+    report: &FleetReport,
 ) -> Panel {
     let source = Source::of(&fleet.repo).ok();
     let state = |issue: u64| {
@@ -634,23 +646,21 @@ pub fn read(
     .ok()
     .and_then(|rows| rows.as_array().cloned())
     .unwrap_or_default();
-    let delivery_prefix = fleet.repo.layout().under("delivery/");
-    panel.deliveries = crate::delivery::panel_lines(
-        &fleet.repo,
-        fleet.now,
-        &fleet.records_at_open(&format!("{delivery_prefix}*")),
-    )
-    .unwrap_or_else(|error| vec![format!("deliveries could not be read: {error:#}")]);
-    panel.declared = set.declared();
+    panel.tracker = report.tracker_named();
+    panel.deliveries = match &report.deliveries {
+        Some(Ok(rows)) => rows.iter().map(crate::delivery::panel_line).collect(),
+        Some(Err(error)) => vec![format!("deliveries could not be read: {error}")],
+        None => vec![],
+    };
+    panel.declared = set.slotless();
     panel.held = set.mine.len() - panel.declared;
-    panel.bound = set.bound(fleet.config.concurrency()) - panel.declared;
+    let concurrency = report.concurrency_in_force().unwrap_or(fleet.config.concurrency());
+    panel.bound = set.bound(concurrency) - panel.declared;
     panel.frontier = set.frontier.len();
     panel.idle = afkconvoy_core::host_sleep::idle(set.held(), panel.frontier) && !set.cut_running();
     panel.cut = set.cut.as_ref().and_then(|row| crate::cut::says(&fleet.repo, row));
     // Soft: a team or a host kit that cannot be read names no role.
-    if let (Ok(team), Ok((kit, _))) = (flows.team(), crate::kit::running()) {
-        panel.nothing_safe = afkconvoy_core::casting::range_faults(team, &kit.range());
-    }
+    panel.nothing_safe = report.nothing_safe().to_vec();
     panel
 }
 
@@ -672,11 +682,14 @@ pub fn printed(
     let mut listed = if named { vec![] } else { checkout_list::List::of_host()?.read()?.checkouts };
     listed.sort_by(|one, other| one.checkout.cmp(&other.checkout));
     let runs = host_runner::runs();
+    // The page is one look: every checkout's report reads the host once.
+    let readings = Readings::new();
     let checkouts = match listed.is_empty() {
         true => {
             let repo = checkout?;
             let entries = logged(&repo);
-            let part = Part::Shown(Box::new(rebuilt(&repo, &entries, instance, host, now)?));
+            let part =
+                Part::Shown(Box::new(rebuilt(&repo, &entries, instance, host, now, &readings)?));
             let broken = broken_in(&entries, host, runs);
             vec![Checkout { dir: repo.dir, part, broken }]
         }
@@ -685,7 +698,8 @@ pub fn printed(
             .map(|entry| {
                 let repo = Repo::at(&entry.checkout);
                 let entries = repo.as_ref().map(logged).unwrap_or_default();
-                let part = repo.and_then(|repo| rebuilt(&repo, &entries, instance, host, now));
+                let part =
+                    repo.and_then(|repo| rebuilt(&repo, &entries, instance, host, now, &readings));
                 let part = part.map_or_else(
                     |error| Part::Unread(format!("{error:#}")),
                     |panel| Part::Shown(Box::new(panel)),
@@ -696,9 +710,9 @@ pub fn printed(
             .collect(),
     };
     let dir = checkouts.first().map_or_else(|| PathBuf::from("/"), |first| first.dir.clone());
-    // Soft: what the host runner holds for its fleets, where it cannot be read, shows nothing.
-    let shared = host_runner::shared().ok().flatten().unwrap_or_default();
-    Ok(Page { host: Host::read(&dir, now, shared), live: false, checkouts })
+    // Soft: what the host runner holds for its fleets, where it cannot be read, says why.
+    let shared = host_runner::shared().map_err(|error| format!("{error:#}"));
+    Ok(Page { host: Host::read(&dir, now, shared, &readings), live: false, checkouts })
 }
 
 /// What the tick log of `repo` on this host holds; nothing where it cannot
@@ -723,6 +737,7 @@ fn rebuilt(
     instance: Option<&InstanceId>,
     host: &str,
     now: u64,
+    readings: &Readings,
 ) -> Result<Panel> {
     let (logged, ..) = doctor::read_log(entries, host);
     let logged = logged.and_then(|logged| InstanceId::parse(&logged).ok());
@@ -730,7 +745,8 @@ fn rebuilt(
     let me = instance.map(|instance| Me { instance, host: host.to_string(), now });
     let (mut fleet, open) = Fleet::read(repo, now)?;
     let (set, flows) = fleet.rebuild(&open, me.as_ref().map(|me| &me.instance))?;
-    let mut panel = read(&fleet, me.as_ref(), &set, &flows, &[]);
+    let report = FleetReport::read(&fleet, &flows, &set, readings);
+    let mut panel = read(&fleet, me.as_ref(), &set, &flows, &[], &report);
     panel.hot = doctor::read_hot(entries, host)
         .into_iter()
         .map(|hot| Hot { worker: hot.worker, since: hot.since, why: hot.why, held: hot.held })
@@ -917,11 +933,15 @@ fn patrol_says(row: &patrol::Row, now: u64) -> String {
 fn exclusive_says(request: &afkconvoy_core::exclusive::Observed) -> String {
     use afkconvoy_core::exclusive::State;
     let ticket = &request.ticket;
+    let kind = request.kind.word();
     let mut doing = match request.scheduling.state {
-        State::Running => format!("running, for {}", lasted(request.elapsed_seconds.unwrap_or(0))),
-        State::Eligible => {
-            format!("eligible now, waiting for grant, for {}", lasted(request.waiting_seconds))
+        State::Running => {
+            format!("{kind} · running, for {}", lasted(request.elapsed_seconds.unwrap_or(0)))
         }
+        State::Eligible => format!(
+            "{kind} · eligible now, waiting for grant, for {}",
+            lasted(request.waiting_seconds)
+        ),
         State::Waiting => {
             let holders: std::collections::BTreeSet<_> = request
                 .scheduling
@@ -961,7 +981,7 @@ fn exclusive_says(request: &afkconvoy_core::exclusive::Observed) -> String {
                 })
                 .collect();
             format!(
-                "waits behind {} holding or reserving requests, for {} · {}",
+                "{kind} · waits behind {} holding or reserving requests, for {} · {}",
                 holders.len(),
                 lasted(request.waiting_seconds),
                 why.join("; ")
@@ -1129,43 +1149,7 @@ fn host_part(out: &mut String, page: &Page) {
             write!(out, "<section class=\"hot\"><b>Watch unavailable</b>: {}</section>", esc(why));
     }
 
-    {
-        let observation = afkconvoy_core::exclusive::snapshot(
-            &host.exclusive,
-            host.gate_lanes,
-            host.exclusive_paused,
-            host.now,
-        );
-        let lanes: std::collections::BTreeSet<_> =
-            host.exclusive.iter().map(afkconvoy_core::exclusive::lane).collect();
-        out.push_str("<section class=\"exclusive\"><h2>Command lanes</h2>");
-        let _ = write!(
-            out,
-            "<p>{} worker lanes · {} used · {} free</p>",
-            observation.worker.capacity, observation.worker.used, observation.worker.free
-        );
-        for lane in lanes {
-            let _ = write!(out, "<h3>{} lane</h3><ul class=\"cards\">", esc(&lane));
-            for request in observation
-                .running
-                .iter()
-                .chain(&observation.waiting)
-                .filter(|request| request.lane == lane)
-            {
-                let ticket = &request.ticket;
-                let class = if ticket.ran.is_some() { "busy" } else { "queued" };
-                let _ = write!(
-                    out,
-                    "<li class=\"card {class}\"><span class=\"title\"><code>{}</code></span>\
-                 <span class=\"meta\"><span class=\"note\">{}</span></span></li>",
-                    esc(&ticket.command),
-                    esc(&exclusive_says(request)),
-                );
-            }
-            out.push_str("</ul>");
-        }
-        out.push_str("</section>\n");
-    }
+    exclusive(out, host);
 
     let sleep = match host.sleep_hours {
         None => {
@@ -1232,63 +1216,142 @@ fn admission(out: &mut String, host: &Host) {
     };
 }
 
-/// The host kit: every harness in it, in order, with its models in order,
-/// each harness paused, since when and why.
-fn kit(out: &mut String, host: &Host) {
-    if let Some(faults) = host.worker_health["faults"].as_array().filter(|v| !v.is_empty()) {
+/// The command lanes: the observation `afkconvoy queue` answers, each of its
+/// lanes with the requests it lists there, running before waiting.
+fn exclusive(out: &mut String, host: &Host) {
+    out.push_str("<section class=\"exclusive\"><h2>Command lanes</h2>");
+    let said = match &host.exclusive {
+        Ok(said) => said,
+        Err(error) => {
+            let _ = writeln!(
+                out,
+                "<p>The exclusive queue cannot be read: {}</p></section>",
+                esc(error)
+            );
+            return;
+        }
+    };
+    let observation = crate::queue::snapshot_of(said, host.lanes, host.now);
+    let _ = write!(
+        out,
+        "<p>{} worker lanes · {} used · {} free</p><p>{} fast gate lanes · {} used · {} free</p>",
+        observation.worker.capacity,
+        observation.worker.used,
+        observation.worker.free,
+        observation.fast.capacity,
+        observation.fast.used,
+        observation.fast.free
+    );
+    match said {
+        None => out.push_str("<p>No host runner holds the queue.</p>"),
+        Some((_, None)) => {
+            out.push_str("<p>The host runner does not say whether it paused new grants.</p>")
+        }
+        Some((_, Some(true))) => out.push_str("<p>The host runner has paused new grants.</p>"),
+        Some((_, Some(false))) => {}
+    }
+    // The worker lane, as `lane` names a ticket of no repo lane, and the
+    // fast lane, each shown where a request is in it.
+    let lanes = [("worker".to_string(), None), ("fast".to_string(), None)].into_iter().chain(
+        observation.repos.iter().map(|repo| (format!("repo {}", repo.repo), Some(&repo.occupancy))),
+    );
+    for (lane, occupancy) in lanes {
+        let mut requests = observation
+            .running
+            .iter()
+            .chain(&observation.waiting)
+            .filter(|request| request.lane == lane)
+            .peekable();
+        if occupancy.is_none() && requests.peek().is_none() {
+            continue;
+        }
+        let _ = write!(out, "<h3>{} lane</h3>", esc(&lane));
+        if let Some(occupancy) = occupancy {
+            let _ = write!(out, "<p>{} used · {} free</p>", occupancy.used, occupancy.free);
+        }
+        out.push_str("<ul class=\"cards\">");
+        for request in requests {
+            let class = if request.ticket.ran.is_some() { "busy" } else { "queued" };
+            let _ = write!(
+                out,
+                "<li class=\"card {class}\"><span class=\"title\"><code>{}</code></span>\
+                 <span class=\"meta\"><span class=\"note\">{}</span></span></li>",
+                esc(&request.ticket.command),
+                esc(&exclusive_says(request)),
+            );
+        }
+        out.push_str("</ul>");
+    }
+    out.push_str("</section>\n");
+}
+
+/// What worker health holds of the host kit: each candidate a fault leaves
+/// out, each failed observation and each worker in recovery.
+fn kit_health(out: &mut String, health: &crate::health::Health) {
+    if !health.faults.is_empty() {
         out.push_str("<section data-health-faults><h2>Unavailable candidates</h2><ul>");
-        for fault in faults {
+        for fault in &health.faults {
             let _ = write!(
                 out,
                 "<li>{}: scope {}; model {}; next probe {}; evidence {}</li>",
-                esc(fault["harness"].as_str().unwrap_or("")),
-                esc(fault["scope"].as_str().unwrap_or("")),
-                esc(fault["model"].as_str().unwrap_or("all")),
-                fault["next_check"],
-                esc(&fault["evidence"].to_string())
+                esc(fault.harness.key()),
+                esc(fault.scope.key()),
+                esc(fault.model.as_deref().unwrap_or("all")),
+                fault.next_check,
+                esc(&serde_json::json!(fault.evidence).to_string())
             );
         }
         out.push_str("</ul></section>");
     }
-    if let Some(failed) =
-        host.worker_health["observations_failed"].as_array().filter(|v| !v.is_empty())
-    {
+    if !health.observations_failed.is_empty() {
         let _ = write!(
             out,
             "<section data-health-observation-errors><h2>Waiting for observations</h2><pre>{}</pre></section>",
-            esc(&serde_json::to_string_pretty(failed).unwrap_or_default())
+            esc(&serde_json::to_string_pretty(&health.observations_failed).unwrap_or_default())
         );
     }
-    if let Some(workers) = host.worker_health["workers"].as_array().filter(|w| !w.is_empty()) {
+    if !health.workers.is_empty() {
         out.push_str("<section data-worker-health><h2>Worker recovery</h2><table><tr><th>Worker</th><th>Orca state / outcome / agent type / since (epoch ms)</th><th>Action / successor</th><th>Evidence source</th><th>Next check</th><th>Evidence / failure</th></tr>");
-        for worker in workers {
+        for worker in health.workers.iter().map(|worker| &worker.observed) {
             let _ = write!(
                 out,
                 "<tr><td>{}</td><td>{} / {} / {} / {}{}</td><td>{} {}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
-                esc(worker["path"].as_str().unwrap_or("")),
-                esc(worker["orca"]["state"].as_str().unwrap_or("unknown")),
-                esc(worker["orca"]["outcome"].as_str().unwrap_or("none")),
-                esc(worker["orca"]["agentType"].as_str().unwrap_or("unknown")),
-                worker["orca"]["stateStartedAt"],
-                if worker["harness_mismatch"] == true {
+                esc(&worker.path.to_string_lossy()),
+                esc(worker.orca["state"].as_str().unwrap_or("unknown")),
+                esc(worker.orca["outcome"].as_str().unwrap_or("none")),
+                esc(worker.orca["agentType"].as_str().unwrap_or("unknown")),
+                worker.orca["stateStartedAt"],
+                if worker.harness_mismatch {
                     format!(
                         " (recorded {}; Orca's harness is used)",
-                        esc(worker["recorded_harness"].as_str().unwrap_or("unknown"))
+                        esc(worker.recorded_harness.as_deref().unwrap_or("unknown"))
                     )
                 } else {
                     String::new()
                 },
-                esc(worker["action"].as_str().unwrap_or("")),
-                esc(worker["successor"].as_str().unwrap_or("")),
-                esc(worker["source"].as_str().unwrap_or("")),
-                worker["next_check"],
-                esc(&match worker["operator_reason"].as_str() {
+                esc(&worker.action),
+                esc(worker.successor.as_deref().unwrap_or("")),
+                esc(&worker.source),
+                worker.next_check,
+                esc(&match &worker.operator_reason {
                     Some(reason) => format!("waiting for the operator: {reason}"),
-                    None => format!("{} {}", worker["diagnosis"], worker["error"]),
+                    None => format!(
+                        "{} {}",
+                        serde_json::json!(worker.diagnosis),
+                        serde_json::json!(worker.error)
+                    ),
                 })
             );
         }
         out.push_str("</table></section>");
+    }
+}
+
+/// The host kit: every harness in it, in order, with its models in order,
+/// each harness paused, since when and why.
+fn kit(out: &mut String, host: &Host) {
+    if let Ok(health) = &host.worker_health {
+        kit_health(out, health);
     }
     for pause in &host.paused {
         let _ = writeln!(
@@ -1479,7 +1542,7 @@ fn repo(out: &mut String, at: usize, panel: &Panel) {
     );
     gauge(out, "Claims held", panel.held, Some(panel.bound));
     if panel.declared > 0 {
-        gauge(out, "Declared", panel.declared, None);
+        gauge(out, "Taking no slot", panel.declared, None);
     }
     gauge(out, "Queued", panel.queued(), None);
     gauge(out, "With a human", panel.with_a_human(), None);
@@ -1490,7 +1553,7 @@ fn repo(out: &mut String, at: usize, panel: &Panel) {
             let text = |key: &str| candidate[key].as_str().unwrap_or("");
             let _ = write!(
                 out,
-                "<li>PR {} · target <code>{}</code> · <code>{}</code> · predecessor <code>{}</code> · {} · {} {}</li>",
+                "<li>PR {} · target <code>{}</code> · <code>{}</code> · predecessor <code>{}</code> · {} · {} {}",
                 candidate["pr"],
                 esc(text("target_branch")),
                 esc(text("id")),
@@ -1499,6 +1562,10 @@ fn repo(out: &mut String, at: usize, panel: &Panel) {
                 esc(text("cause")),
                 esc(text("cancelled_by"))
             );
+            if let Some(tip) = candidate["round"].as_str() {
+                let _ = write!(out, " · in the round slow-gating at <code>{}</code>", esc(tip));
+            }
+            out.push_str("</li>");
         }
         out.push_str("</ul></section>");
     }
@@ -1683,7 +1750,6 @@ mod tests {
             cut: None,
             now,
             hot: vec![],
-            caster: None,
             casting: vec![],
             nothing_safe: vec![],
             codex_workers: vec![],
@@ -1703,12 +1769,11 @@ mod tests {
             name: "h1".into(),
             now,
             admission: Ok(Admission { shares: SHARES, said: vec![], reading, span: 600 }),
-            exclusive: vec![],
-            exclusive_paused: false,
-            gate_lanes: 1,
+            exclusive: Ok(Some((vec![], Some(false)))),
+            lanes: afkconvoy_core::exclusive::Lanes { worker: 1, fast: 1, slow: 1 },
             sleep_hours: Some(SLEEP_HOURS),
             kit: Ok(Kit::default()),
-            worker_health: serde_json::json!({}),
+            worker_health: Ok(crate::health::Health::default()),
             watch: serde_json::json!({}),
             paused: vec![],
         }
@@ -1780,6 +1845,31 @@ mod tests {
     }
 
     #[test]
+    fn a_candidate_says_the_round_whose_slow_gate_it_waits_on() {
+        let mut acme = part_of("acme", 1000);
+        let row = |id: &str, waiting: &str, round: Option<&str>| {
+            serde_json::json!({"pr": 7, "target_branch": "main", "id": id, "predecessor": "m0",
+                "waiting": waiting, "cause": null, "cancelled_by": null, "round": round})
+        };
+        acme.candidates = vec![
+            row("c1", "waiting_for_round", Some("c2")),
+            row("c2", "slow_gating", Some("c2")),
+            row("c3", "waiting_for_round", None),
+        ];
+        let html = render(&page_of(host_of(1000), vec![acme]));
+        assert!(
+            html.contains("<code>c1</code> · predecessor <code>m0</code> · waiting_for_round ·   · in the round slow-gating at <code>c2</code></li>"),
+            "{html}"
+        );
+        assert!(
+            html.contains(
+                "<code>c3</code> · predecessor <code>m0</code> · waiting_for_round ·  </li>"
+            ),
+            "{html}"
+        );
+    }
+
+    #[test]
     fn nothing_waiting_for_a_human_is_said_so_and_no_checkout_on_the_list_too() {
         let html = render(&page_of(host_of(1000), vec![part_of("acme", 1000)]));
         assert!(html.contains("<p class=\"none\">Nothing waits for a human.</p>"), "{html}");
@@ -1793,6 +1883,67 @@ mod tests {
         let html = render(&page_of(host, vec![]));
         assert!(html.contains("data-kept-awake=\"true\"><b>Host sleep</b>: none"), "{html}");
         assert!(html.contains("the host cannot be read: sysctl: &lt;none&gt;"), "{html}");
+    }
+
+    #[test]
+    fn the_command_lanes_are_the_queue_observation_s_lanes() {
+        let ticket = |number: u64, repo_lane: Option<&str>, ran: Option<u64>| {
+            afkconvoy_core::exclusive::Ticket {
+                number,
+                pid: 4000 + number as u32,
+                command: format!("cmd-{number}"),
+                dir: format!("/w/{number}"),
+                issue: None,
+                cut: false,
+                repo_lane: repo_lane.map(String::from),
+                repo: repo_lane.map(String::from),
+                is_turn: false,
+                candidate: false,
+                validation: None,
+                gate: None,
+                asked: 900 + number,
+                ran,
+            }
+        };
+        let said = Some((
+            vec![
+                ticket(1, None, Some(950)),
+                ticket(2, None, None),
+                ticket(3, Some("/a/.git"), Some(960)),
+            ],
+            None,
+        ));
+        let mut host = host_of(1000);
+        host.exclusive = Ok(said.clone());
+        let html = render(&page_of(host, vec![]));
+        let observation = crate::queue::observation(
+            said,
+            afkconvoy_core::exclusive::Lanes { worker: 1, fast: 1, slow: 1 },
+            1000,
+        );
+        let section = html.split("<h2>Command lanes</h2>").nth(1).unwrap();
+        let section = section.split("</section>").next().unwrap();
+        let worker = section.split("<h3>worker lane</h3>").nth(1).unwrap();
+        let (worker, repo) = worker.split_once("<h3>repo /a/.git lane</h3>").unwrap();
+        for request in observation["running"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .chain(observation["waiting"].as_array().unwrap())
+        {
+            let card = format!("<code>{}</code>", request["command"].as_str().unwrap());
+            let shown = if request["lane"] == "worker" { worker } else { repo };
+            assert!(shown.contains(&card), "{} not in its lane: {section}", request["lane"]);
+        }
+        assert!(section.contains("1 worker lanes · 1 used · 0 free"), "{section}");
+        assert!(repo.contains("1 used · 0 free"), "{section}");
+        assert!(section.contains("does not say whether it paused"), "{section}");
+        assert!(!section.contains("waiting_for_capacity"), "{section}");
+        let mut host = host_of(1000);
+        host.exclusive = Err("the host runner closed".into());
+        let html = render(&page_of(host, vec![]));
+        assert!(html.contains("The exclusive queue cannot be read: the host runner closed"));
+        assert!(!html.contains("worker lanes"), "an unread queue is not an empty one: {html}");
     }
 
     #[test]

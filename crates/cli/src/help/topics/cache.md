@@ -26,7 +26,7 @@ Each command reads the variable for itself, so two commands find the same copies
 - `checkouts.json`: the checkout list, the checkouts the host runner works, each with the `--instance`, `--host` and `--worker-no-proxy` its `run` named, and beside them the host settings (`afkconvoy run --help`); `checkouts.lock`, held while it is changed.
 - `host-runner.lock`: held by the host runner as long as it runs, so a host has one; it says its pid, its version and when it started.
 - `host-runner.sock`: the host runner's socket, the one socket of the host: `run`, `stop`, `wake`, `panel --open`, `exclusive` and `doctor` speak to the host runner there, each naming its checkout. No fleet instance and no repo has a socket of its own. One nobody listens on — a host runner killed with no goodbye left it — is removed by whoever finds it.
-- `host-runner.log`: the host runner's log, moved aside to host-runner.log.1 once past a MiB: what it started, added, refused and stopped, each line stamped in UTC.
+- `host-runner.log`: the host runner's log, moved aside to host-runner.log.1 once past a MiB: what it started, added, refused and stopped, each line stamped in UTC with its zone named: `2026-10-30T13:56:16Z checkout added: …`.
 - `stock-watch/`: the stock watch's directory, made and kept when the host names no operator directory. Its rules are the short instruction carried in the binary, refreshed when a stock watch starts.
 - `watch/`: the watch's state, briefs and transcripts, in either directory. Its record survives a host runner restart and includes what it left with a human. `resources.json` keeps observed resource episodes across runner moves, and `evidence/` holds the host readings and process or disk evidence.
 

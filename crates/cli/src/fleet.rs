@@ -3,16 +3,17 @@
 //!
 //! A rebuild asks the remote once and GitHub a fixed number of times, side by
 //! side: one listing of branch tips and every ref of the fleet
-//! (`Repo::listing`), and what is open on GitHub (`GitHub::open`). A patrol
+//! (`Remote::open`), and what is open on GitHub (`GitHub::open`). A patrol
 //! that bounds how many issues it lands in a day is read in that same issues
 //! query. Neither grows with the issues in flight.
 
-use afkconvoy_core::casting::{self, Cast};
+use afkconvoy_core::casting;
 use afkconvoy_core::claims::{Claim, InstanceId};
 use afkconvoy_core::config::Config;
 use afkconvoy_core::harness::Harness;
 use afkconvoy_core::plan::{Excluded, Observed, WorkingSet, assemble, closing_pr};
 use afkconvoy_core::position::Position;
+use afkconvoy_core::selection::{self, Facts, Named, Selection, Unsafe, UserConfig};
 use afkconvoy_core::stopped::standing_verdict;
 use afkconvoy_core::team::{Role, Team, Workflow};
 use afkconvoy_core::verdict::latest_verdict;
@@ -22,9 +23,10 @@ use std::thread;
 
 use crate::claims::Scan;
 use crate::gh::{GitHub, Gone, Open, OpenIssues, beside, gone};
-use crate::git::{Listing, Repo};
+use crate::git::Repo;
 use crate::orca::{Source, Worktree};
 use crate::patrol;
+use crate::remote::{Fresh, Listing, Remote};
 use crate::settle::cut_landing_of;
 use crate::slow_gate;
 use crate::stage::Flows;
@@ -42,6 +44,8 @@ pub struct Fleet {
     /// Candidates excluded for this continuation only, never a preference.
     pub avoiding: Vec<Harness>,
     runnable: std::cell::RefCell<Option<Runnable>>,
+    /// The user configs the harness user default is read from, read once.
+    user: std::cell::RefCell<Option<Vec<UserConfig>>>,
     /// One view of the issue's refusal comments, seeded by the paged rebuild.
     refusals:
         std::cell::RefCell<std::collections::BTreeMap<u64, Vec<afkconvoy_core::worker::Refusal>>>,
@@ -50,15 +54,17 @@ pub struct Fleet {
     pub config: Config,
     pub gh: GitHub,
     pub scan: Scan,
-    /// The base branch and the fleet's refs as the remote had them when this
-    /// view was opened: what `scan` was read from.
-    listing: Listing,
+    /// The remote, opened on the base branch and the fleet's refs as it had
+    /// them when this view was opened: what `scan` was read from, and what a
+    /// `Fresh::Opened` read answers.
+    pub remote: Remote,
     pub now: u64,
     /// The issues this view escalated, each with why in a few words: what a
     /// tick's line says of them. Every escalation is made through
     /// `judge::escalate_claim`, which is what adds to it.
     pub escalated: Vec<(u64, String)>,
-    /// The issues this view found gone — deleted or transferred — as a step
+    /// The issues this view found gone — deleted, transferred or never
+    /// issued — as a step
     /// met them, each with whether a claim on it was released: what a tick's
     /// line says of them.
     pub forgotten: Vec<(Gone, bool)>,
@@ -108,18 +114,20 @@ impl Fleet {
         let config = crate::concurrency::config_of(&repo)?;
         let pinned = crate::named_harness::named(&repo)?;
 
-        let listing = repo.listing(&config.base_branch)?;
-        let scan = Scan::among(repo.layout(), gh.tracker.clone(), listing.records.clone());
+        let remote = Remote::open(&repo, &config.base_branch)?;
+        let scan =
+            Scan::among(repo.layout(), gh.tracker.clone(), remote.listing()?.records.clone());
         Ok(Fleet {
             repo,
             pinned,
             avoiding: vec![],
             runnable: std::cell::RefCell::new(None),
+            user: std::cell::RefCell::new(None),
             refusals: std::cell::RefCell::new(Default::default()),
             config,
             gh,
             scan,
-            listing,
+            remote,
             now,
             escalated: vec![],
             forgotten: vec![],
@@ -156,150 +164,114 @@ impl Fleet {
         Ok((fleet, opened.open))
     }
 
-    /// The first eligible harness in kit order within the role's range, and
-    /// the model its one `model:` label names of that harness where the range
-    /// holds it. Anything else is that harness's user default. A role without
-    /// an eligible harness waits safely.
-    pub fn cast_in(&self, role: &Role, labels: &[String], issue: Option<u64>) -> Result<Cast> {
-        let range = self.range_in(role, issue)?;
-        let kit = crate::kit::load()?.range();
-        casting::preferred(labels, &range, &kit)
-            .map_err(|why| anyhow!("the role `{}`: {why}", role.name))
+    /// The one worker selection (`selection::select`) of a worker of `role`
+    /// — `None` of no role — carrying `labels`, on `issue` where it is an
+    /// issue's, from the facts this view gathers once: the host kit whole,
+    /// what of it can start now and why the rest cannot, the harness this
+    /// checkout names, the pauses, and the harness user default. An error is
+    /// a fact that could not be read.
+    pub fn select(
+        &self,
+        role: Option<&Role>,
+        labels: &[String],
+        issue: Option<u64>,
+    ) -> Result<Result<Selection, Unsafe>> {
+        let whole = crate::kit::load()?.range();
+        let runnable = self.runnable_for(issue)?.range();
+        let left_out = self.left_out(&whole, &runnable, issue);
+        let paused: Vec<(Harness, String)> = crate::paused::read()
+            .iter()
+            .map(|pause| (pause.harness, crate::paused::said(pause, self.now)))
+            .collect();
+        let user = self.user_configs()?;
+        let checkout = self.repo.dir.display().to_string();
+        let named = self.pinned.map(|harness| Named { harness, checkout: &checkout });
+        Ok(selection::select(&Facts {
+            kit: &whole,
+            runnable: &runnable,
+            left_out: &left_out,
+            named,
+            paused: &paused,
+            role,
+            labels,
+            of_issue: issue.is_some(),
+            user: &user,
+        }))
     }
 
-    /// The role's permitted range in current kit order, with health and
-    /// startability exclusions applied after its permissions are resolved.
-    /// A checkout that names a harness is that harness alone: no other
-    /// harness of the range is offered in its place.
-    pub fn range_in(&self, role: &Role, issue: Option<u64>) -> Result<Vec<casting::Held>> {
-        // Apply the role to the whole kit before excluding unhealthy
-        // candidates. Temporary unavailability is never an unmatched roster
-        // entry and cannot broaden the role's permissions.
-        let whole = crate::kit::load()?.range();
-        if let Some(why) = casting::nothing_safe(role, &whole) {
-            return Err(NothingSafe(why).into());
-        }
-        let allowed = casting::range(role, &whole);
-        if let Some(pinned) = self.pinned {
-            let checkout = self.repo.dir.display();
-            let key = pinned.key();
-            if !whole.iter().any(|held| held.harness == pinned) {
-                return Err(NothingSafe(format!(
-                    "checkout {checkout} names harness {key}: no eligible harness: `{key}` is not a harness this host kit holds"
-                ))
-                .into());
-            }
-            if let Some(why) = afkconvoy_core::team::unlimited(role, pinned) {
-                return Err(NothingSafe(format!(
-                    "checkout {checkout} names harness {key}: no eligible harness: the role `{}` holds no limits for `{key}`: {why}",
-                    role.name
-                ))
-                .into());
-            }
-            if !allowed.iter().any(|held| held.harness == pinned) {
-                return Err(NothingSafe(format!(
-                    "checkout {checkout} names harness {key}: no eligible harness: `{key}` is outside the roster range of role `{}`",
-                    role.name
-                ))
-                .into());
-            }
-        }
-        let kit = self.runnable_for(issue)?;
-        let kit = kit.range();
-        let mut range = vec![];
-        for available in &kit {
-            if let Some(held) = allowed.iter().find(|h| h.harness == available.harness) {
-                let mut held = held.clone();
-                held.models.retain(|model| available.models.iter().any(|m| m.id == model.id));
-                if !held.models.is_empty() || available.models.is_empty() {
-                    range.push(held);
+    /// `select`, with why nothing is safe as an error a caller can tell
+    /// apart: a pause (`paused::Held`), nothing safe (`NothingSafe`), or a
+    /// refused user default.
+    pub fn select_in(
+        &self,
+        role: Option<&Role>,
+        labels: &[String],
+        issue: Option<u64>,
+    ) -> Result<Selection> {
+        self.select(role, labels, issue)?.map_err(|why| match why {
+            Unsafe::Paused(why) => crate::paused::Held(why).into(),
+            Unsafe::NothingSafe(why) => NothingSafe(why).into(),
+            Unsafe::Refused { why, .. } => anyhow!(why),
+        })
+    }
+
+    /// Each user config a harness reads its user default from, read once in
+    /// this view (`codex_launch::user_config`).
+    fn user_configs(&self) -> Result<Vec<UserConfig>> {
+        if self.user.borrow().is_none() {
+            let mut user = vec![];
+            for harness in Harness::ALL {
+                if let Some(config) = crate::codex_launch::user_config(harness)? {
+                    user.push(config);
                 }
             }
+            *self.user.borrow_mut() = Some(user);
         }
-        if range.is_empty() {
-            if let Some(pinned) = self.pinned {
-                let why = self.pinned_unavailable(pinned, issue);
-                return Err(NothingSafe(format!(
-                    "checkout {} names harness {}: no eligible harness: {why}",
-                    self.repo.dir.display(),
-                    pinned.key()
-                ))
-                .into());
-            }
-            return Err(NothingSafe(format!(
-                "the role `{}` has no currently eligible harness in its range; waiting for recovery",
-                role.name
-            ))
-            .into());
-        }
-        Ok(range)
+        Ok(self.user.borrow().clone().unwrap_or_default())
     }
 
-    /// Why the harness this checkout names cannot start, once the runnable
-    /// view has been filled.
-    fn pinned_unavailable(&self, pinned: Harness, issue: Option<u64>) -> String {
-        if let Some(issue) = issue {
-            let refused = self.refusals.borrow().get(&issue).and_then(|refusals| {
-                refusals
-                    .iter()
-                    .find(|refusal| refusal.harness == pinned)
-                    .map(|r| r.evidence.clone())
-            });
-            if let Some(evidence) = refused {
-                return format!("{} refused this task: {evidence}", pinned.key());
-            }
-        }
-        if let Some(why) = self.runnable.borrow().as_ref().and_then(|runnable| {
-            runnable
-                .skipped
-                .iter()
-                .find(|(harness, _)| *harness == pinned)
-                .map(|(_, why)| why.clone())
-        }) {
-            return why;
-        }
-        if let Some(why) = crate::health::fault_reason(pinned) {
-            return why;
-        }
-        if let Some(pause) = crate::paused::read().into_iter().find(|pause| pause.harness == pinned)
-        {
-            return format!("`{}` is paused on this host: {}", pinned.key(), pause.why);
-        }
-        format!("`{}` is not a harness this host kit holds", pinned.key())
-    }
-
-    /// Kit order chooses the harness, unless this checkout names one. One
-    /// `model:` label chooses a model of it where the runnable kit holds that
-    /// model; anything else is the user default. `kit` is the host kit, so a
-    /// name can match a model this start cannot run.
-    pub fn cast(&self, labels: &[String], issue: Option<u64>) -> Result<Result<Cast, String>> {
-        let kit = self.runnable_for(issue)?;
+    /// Each harness of `whole` that `runnable` leaves out for `issue`, with
+    /// why, where this view knows why: the issue refused it, it cannot
+    /// start, it is faulted, or it is paused.
+    fn left_out(
+        &self,
+        whole: &[casting::Held],
+        runnable: &[casting::Held],
+        issue: Option<u64>,
+    ) -> Vec<(Harness, String)> {
+        let refusals = issue.and_then(|issue| self.refusals.borrow().get(&issue).cloned());
+        let skipped = self.runnable.borrow().as_ref().map(|runnable| runnable.skipped.clone());
         let paused = crate::paused::read();
-        let range = kit.range();
-        if range.is_empty() {
-            if let Some(pinned) = self.pinned {
-                let why = self.pinned_unavailable(pinned, issue);
-                return Ok(Err(format!(
-                    "checkout {} names harness {}: no eligible harness: {why}",
-                    self.repo.dir.display(),
-                    pinned.key()
-                )));
+        let mut left = vec![];
+        for held in whole {
+            let harness = held.harness;
+            if runnable.iter().any(|runnable| runnable.harness == harness) {
+                continue;
             }
-            if !paused.is_empty() {
-                return Err(crate::paused::Held::every(&paused, self.now).into());
-            }
-            let why = self
-                .runnable
-                .borrow()
-                .as_ref()
-                .map(|r| {
-                    r.skipped.iter().map(|(_, why)| why.as_str()).collect::<Vec<_>>().join("; ")
+            let refused = refusals.iter().flatten().find(|refusal| refusal.harness == harness).map(
+                |refusal| format!("{} refused this task: {}", harness.key(), refusal.evidence),
+            );
+            let skipped = || {
+                skipped
+                    .iter()
+                    .flatten()
+                    .find(|(skipped, _)| *skipped == harness)
+                    .map(|(_, why)| why.clone())
+            };
+            let paused = || {
+                paused.iter().find(|pause| pause.harness == harness).map(|pause| {
+                    format!("`{}` is paused on this host: {}", harness.key(), pause.why)
                 })
-                .unwrap_or_default();
-            return Ok(Err(format!("no eligible harness in the host kit: {why}")));
+            };
+            let why = refused
+                .or_else(skipped)
+                .or_else(|| crate::health::fault_reason(harness))
+                .or_else(paused);
+            if let Some(why) = why {
+                left.push((harness, why));
+            }
         }
-        let whole = crate::kit::load()?.range();
-        Ok(casting::preferred(labels, &range, &whole))
+        left
     }
 
     /// One view's capability snapshot. Failed startability checks skip only
@@ -407,7 +379,7 @@ impl Fleet {
         serde_json::json!({"order": crate::kit::load().map(|k| k.harnesses.iter().map(|h| h.harness).collect::<Vec<_>>()).unwrap_or_default(),
             "eligible": kit.map(|k| k.harnesses.iter().map(|h| h.harness).collect::<Vec<_>>()).unwrap_or_default(),
             "skipped": self.runnable.borrow().as_ref().map(|runnable| &runnable.skipped),
-            "pinned": self.pinned, "health": crate::health::show(), "refusals": *self.refusals.borrow(), "why": why})
+            "pinned": self.pinned, "health": crate::health::json(&crate::health::show()), "refusals": *self.refusals.borrow(), "why": why})
     }
 
     pub(crate) fn invalidate_selection(&self) {
@@ -415,7 +387,7 @@ impl Fleet {
     }
 
     pub fn role_selection(&self, role: &Role) -> serde_json::Value {
-        let chosen = self.cast_in(role, &[], None).ok().map(|cast| cast.harness);
+        let chosen = self.select_in(Some(role), &[], None).ok().map(|chosen| chosen.harness());
         let skipped = chosen.map_or_else(Vec::new, |to| self.skipped_before(to, Some(role), None));
         serde_json::json!({"role":role.name,"harness":chosen,"skipped":skipped})
     }
@@ -494,29 +466,42 @@ impl Fleet {
             .collect()
     }
 
-    /// The selected harness's user default: a watch, a cut, an inspection
-    /// and any other start with no model label.
-    pub fn first(&self) -> Result<Cast> {
-        self.cast(&[], None)?.map_err(|why| anyhow!("{why}: run `afkconvoy kit`"))
+    /// The listing this view was opened on.
+    fn listing(&self) -> &Listing {
+        self.remote.listing().expect("a fleet's view of the remote is opened listed")
+    }
+
+    /// What a worker with no role and no model label runs: a cut, an
+    /// inspection, a continuation with no issue.
+    pub fn first(&self) -> Result<Selection> {
+        self.select_in(None, &[], None)
+    }
+
+    /// The harness `first` selects, even where its user default refuses the
+    /// start: what a start that runs no model goes by.
+    pub fn first_harness(&self) -> Result<Harness> {
+        match self.select(None, &[], None)? {
+            Ok(chosen) => Ok(chosen.harness()),
+            Err(Unsafe::Refused { cast, .. }) => Ok(cast.harness),
+            Err(why) => Err(anyhow!(why)),
+        }
     }
 
     /// Every version tag the remote had when this view was opened, each with
     /// the commit it is on.
     pub fn version_tags(&self) -> &[(String, String)] {
-        &self.listing.tags
+        &self.listing().tags
     }
 
     /// A branch or fleet ref's sha in this view's remote listing, with its
     /// commit brought into the local repo when needed.
     pub fn fetched_at_open(&self, refname: &str) -> Result<Option<String>> {
-        let Some(sha) = self.listing.sha(refname) else { return Ok(None) };
-        self.repo.bring(sha, refname)?;
-        Ok(Some(sha.to_string()))
+        self.remote.fetched(refname, Fresh::Opened)
     }
 
     /// The fleet records matching `pattern` in this view's remote listing.
-    pub fn records_at_open(&self, pattern: &str) -> Vec<crate::git::RemoteRecord> {
-        self.listing
+    pub fn records_at_open(&self, pattern: &str) -> Vec<crate::remote::RemoteRecord> {
+        self.listing()
             .records
             .iter()
             .filter(|record| match pattern.strip_suffix('*') {
@@ -534,7 +519,7 @@ impl Fleet {
         command: &afkconvoy_core::gate::GateCommand,
     ) -> Option<afkconvoy_core::gate::GreenRun> {
         crate::gate::recorded_among(
-            &self.listing.records,
+            &self.listing().records,
             self.repo.layout(),
             tree,
             command,
@@ -545,12 +530,10 @@ impl Fleet {
     /// The base branch's tip on the remote, its commits in this repo.
     pub fn base_tip(&self) -> Result<String> {
         let branch = &self.config.base_branch;
-        let tip = self
-            .listing
-            .base
-            .as_ref()
-            .ok_or_else(|| anyhow!("the remote has no branch {branch:?}"))?;
-        self.repo.bring(tip, &self.listing.base_ref)?;
+        let listing = self.listing();
+        let tip =
+            listing.base.as_ref().ok_or_else(|| anyhow!("the remote has no branch {branch:?}"))?;
+        self.repo.bring(tip, &listing.base_ref)?;
         Ok(tip.clone())
     }
 
@@ -561,7 +544,7 @@ impl Fleet {
             &self.config,
             &self.gh.tracker,
             &open.rows,
-            &self.listing,
+            self.listing(),
         )
     }
 
@@ -577,7 +560,7 @@ impl Fleet {
         if branch == self.config.base_branch {
             return self.base_tip();
         }
-        self.repo.fetched(&format!("refs/heads/{branch}"))?.ok_or_else(|| {
+        self.remote.fetched(&format!("refs/heads/{branch}"), Fresh::Process)?.ok_or_else(|| {
             anyhow!(
                 "target branch {branch:?} disappeared; restore it before continuing task {issue}"
             )
@@ -591,17 +574,15 @@ impl Fleet {
             &self.config,
             &self.gh.tracker,
             issue,
-            &self.listing.records,
+            &self.listing().records,
         )?;
         let name = format!("refs/heads/{branch}");
-        let (_, tip) = self.listing.heads.iter().find(|(r, _)| r == &name).ok_or_else(|| {
+        self.remote.fetched(&name, Fresh::Opened)?.ok_or_else(|| {
             anyhow!(
                 "target branch {branch:?} is missing; restore it before continuing {}",
                 self.gh.tracker.issue(issue)
             )
-        })?;
-        self.repo.bring(tip, &name)?;
-        Ok(tip.clone())
+        })
     }
 
     /// Rebuilds the working set of `me` from `open` and the remote as this
@@ -630,8 +611,9 @@ impl Fleet {
             })
             .collect();
         // The list holds only open issues: a claim missing from it is asked
-        // about, and is closed, gone — deleted or transferred — or unread.
-        let (mut closed, mut deleted) = (vec![], vec![]);
+        // about, and is closed, gone — deleted, transferred or never issued —
+        // or unread.
+        let (mut closed, mut vanished) = (vec![], vec![]);
         self.unread.clear();
         self.closers.clear();
         for claim in &self.scan.claims {
@@ -644,7 +626,7 @@ impl Fleet {
                     self.closers.extend(read.closed_by.map(|by| (claim.number, by)));
                 }
                 Ok(_) => {}
-                Err(error) if gone(&error).is_some() => deleted.push(claim.number),
+                Err(error) if gone(&error).is_some() => vanished.push(claim.number),
                 Err(error) => self.unread.push((claim.number, error)),
             }
         }
@@ -694,8 +676,9 @@ impl Fleet {
                 declared.push(claim.number);
             }
         }
+        let idle = self.idle_landings(me, prs, &closed);
         let heartbeats = self.scan.beats();
-        let (landings, slow_gate) = slow_gate::seen(self, &self.listing.records, &base)?;
+        let (landings, slow_gate) = slow_gate::seen(self, &self.listing().records, &base)?;
         let cut = crate::cut::seen(self, &stages, issues, &base)?;
         let seen = Observed {
             unworked_blockers: &unworked_blockers,
@@ -705,10 +688,11 @@ impl Fleet {
             claims: &self.scan.claims,
             heartbeats: &heartbeats,
             closed: &closed,
-            gone: &deleted,
+            gone: &vanished,
             kept: &kept,
             landed: &landed,
             declared: &declared,
+            idle: &idle,
             due: &stages.due(prs),
             flows: &stages.flow_labels(),
             landing: &stages.landing(&self.scan.claims),
@@ -733,71 +717,45 @@ impl Fleet {
         Ok((set, stages))
     }
 
+    /// My claims whose PR is open and whose worker is not changing the tree
+    /// (`landing_worker::changing_tree`): each takes no slot. One whose
+    /// worker could not be asked after takes one, as it did.
+    fn idle_landings(
+        &self,
+        me: Option<&InstanceId>,
+        prs: &[afkconvoy_core::plan::PullRequest],
+        closed: &[u64],
+    ) -> Vec<u64> {
+        let mine = self.scan.claims.iter().filter(|claim| {
+            me.is_some_and(|me| claim.is_held_by(me))
+                && !closed.contains(&claim.number)
+                && closing_pr(prs, claim.number).is_some()
+        });
+        let mut idle = vec![];
+        for claim in mine {
+            let at_work = || -> Result<bool> {
+                let source = Source::of(&self.repo)?;
+                let Some(worktree) = Worktree::of_issue(&source, claim.number)? else {
+                    return Ok(false);
+                };
+                let state = worktree.state(self.now)?;
+                let answered = crate::turn_answer::read(&worktree)?;
+                Ok(afkconvoy_core::landing_worker::changing_tree(Some(state), &answered))
+            };
+            if matches!(at_work(), Ok(false)) {
+                idle.push(claim.number);
+            }
+        }
+        idle
+    }
+
     /// Apply host priority to the unbound frontier. No issue waits for a
     /// model: its one `model:` label is followed, or it runs the user default.
     fn cast_frontier(&self, set: &mut WorkingSet, open: &OpenIssues) {
-        let paused = crate::paused::read();
-        let issues = &open.rows;
-        let labels_of = |number: u64| -> Vec<String> {
-            issues
-                .iter()
-                .find(|issue| issue.number == number)
-                .map(|issue| issue.labels.clone())
-                .unwrap_or_default()
-        };
-        let whole = crate::kit::load().map(|kit| kit.range()).unwrap_or_default();
         let frontier = std::mem::take(&mut set.frontier);
-        for mut issue in frontier {
-            let range = match self.runnable_for(Some(issue.number)) {
-                Ok(kit) => kit.range(),
-                Err(error) => {
-                    set.excluded.push(Excluded {
-                        number: issue.number,
-                        title: issue.title,
-                        reason: format!("{error:#}"),
-                    });
-                    continue;
-                }
-            };
-            if range.is_empty()
-                && let Some(pinned) = self.pinned
-            {
-                let why = self.pinned_unavailable(pinned, Some(issue.number));
-                let title = issue.title;
-                set.excluded.push(Excluded {
-                    number: issue.number,
-                    title,
-                    reason: format!(
-                        "checkout {} names harness {}: no eligible harness: {why}",
-                        self.repo.dir.display(),
-                        pinned.key()
-                    ),
-                });
-                continue;
-            }
-            let labels = labels_of(issue.number);
-            let paused_held = (range.is_empty() && !paused.is_empty())
-                .then(|| crate::paused::Held::every(&paused, self.now));
-            if let Some(held) = paused_held {
-                set.excluded.push(Excluded {
-                    number: issue.number,
-                    title: issue.title,
-                    reason: held.0,
-                });
-                continue;
-            }
-            let kit = if whole.is_empty() { range.clone() } else { whole.clone() };
-            match casting::preferred(&labels, &range, &kit) {
-                Ok(cast) => {
-                    issue.cast = Some(cast);
-                    set.frontier.push(issue);
-                }
-                Err(why) => set.excluded.push(Excluded {
-                    number: issue.number,
-                    title: issue.title,
-                    reason: format!("{why}: run `afkconvoy kit`"),
-                }),
-            }
+        for issue in frontier {
+            let labels = labels_of(open, issue.number);
+            self.cast_issue(set, issue, None, &labels);
         }
         set.excluded.sort_by_key(|excluded| excluded.number);
     }
@@ -807,18 +765,9 @@ impl Fleet {
     fn cast_bound_frontier(&self, set: &mut WorkingSet, open: &OpenIssues, stages: &Flows) {
         let Ok(team) = stages.team() else { return };
         let positions = stages.positions();
-        let issues = &open.rows;
-        let labels_of = |number: u64| -> Vec<String> {
-            issues
-                .iter()
-                .find(|issue| issue.number == number)
-                .map(|issue| issue.labels.clone())
-                .unwrap_or_default()
-        };
         let placed = |number: u64| positions.iter().find(|(at, ..)| *at == number);
         let frontier = std::mem::take(&mut set.frontier);
-        for mut issue in frontier {
-            let labels = labels_of(issue.number);
+        for issue in frontier {
             let Some((_, workflow, position)) = placed(issue.number) else {
                 set.frontier.push(issue);
                 continue;
@@ -828,36 +777,37 @@ impl Fleet {
                 set.frontier.push(issue);
                 continue;
             };
-            // Held back while a harness is paused, and while its role can run
-            // nothing safely.
-            if let Err(error) = self.cast_in(role, &labels, Some(issue.number)) {
-                let reason = match (
-                    error.downcast_ref::<crate::paused::Held>(),
-                    error.downcast_ref::<NothingSafe>(),
-                ) {
-                    (Some(held), _) => Some(held.0.clone()),
-                    (_, Some(nothing)) => Some(nothing.0.clone()),
-                    _ => None,
-                };
-                if let Some(reason) = reason {
-                    let title = issue.title;
-                    set.excluded.push(Excluded { number: issue.number, title, reason });
-                    continue;
-                }
-            }
-            match self.cast_in(role, &labels, Some(issue.number)).map_err(|e| format!("{e:#}")) {
-                Ok(cast) => {
-                    issue.cast = Some(cast);
-                    set.frontier.push(issue);
-                }
-                Err(why) => set.excluded.push(Excluded {
-                    number: issue.number,
-                    title: issue.title,
-                    reason: format!("the role `{}`: {why}", role.name),
-                }),
-            }
+            let labels = labels_of(open, issue.number);
+            self.cast_issue(set, issue, Some(role), &labels);
         }
         set.excluded.sort_by_key(|excluded| excluded.number);
+    }
+
+    /// Puts `issue` on the frontier with what its worker runs, or excludes
+    /// it while a harness is paused or nothing is safe for it. A user
+    /// default that refuses its start keeps it there: its dispatch says why.
+    fn cast_issue(
+        &self,
+        set: &mut WorkingSet,
+        mut issue: afkconvoy_core::plan::Dispatchable,
+        role: Option<&Role>,
+        labels: &[String],
+    ) {
+        let reason = match self.select(role, labels, Some(issue.number)) {
+            Ok(Ok(chosen)) => {
+                issue.cast = Some(chosen.cast);
+                set.frontier.push(issue);
+                return;
+            }
+            Ok(Err(Unsafe::Refused { cast, .. })) => {
+                issue.cast = Some(cast);
+                set.frontier.push(issue);
+                return;
+            }
+            Ok(Err(why)) => why.said().to_string(),
+            Err(error) => format!("{error:#}"),
+        };
+        set.excluded.push(Excluded { number: issue.number, title: issue.title, reason });
     }
 
     /// Whether the worker of `claim`, in an unbound repo, declared a verdict
@@ -898,4 +848,10 @@ pub fn due_role<'t>(
         at => at.worker(),
     };
     work.map(|work| team.role_of(work))
+}
+
+/// The labels `open` read of issue `number`.
+fn labels_of(open: &OpenIssues, number: u64) -> Vec<String> {
+    let issue = open.rows.iter().find(|issue| issue.number == number);
+    issue.map(|issue| issue.labels.clone()).unwrap_or_default()
 }

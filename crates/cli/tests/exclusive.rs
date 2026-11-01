@@ -112,6 +112,50 @@ fn a_gate_timeout_still_ends_a_nested_exclusive_command_and_its_descendants() {
     );
 }
 
+/// A gate alone in its host's queue keeps every core, even with one worker
+/// lane (sunfmin/control#318); one that starts while another command holds a
+/// lane is held to its share: the cores over every worker, fast and slow lane
+/// (sunfmin/control#245). Its build is not.
+#[test]
+fn a_gate_s_tests_are_held_to_their_share_of_the_cores_only_beside_another_command() {
+    let world = World::new();
+    let cache = world.cache();
+    let gate = afkconvoy_core::line::Line::new()
+        .program(env!("CARGO_BIN_EXE_afkconvoy"))
+        .fixed(" exclusive -- sh -c ")
+        .word("echo \"jobs=$CARGO_BUILD_JOBS tests=$NEXTEST_TEST_THREADS\" > ../share.txt")
+        .own();
+    world.set_gate(&gate);
+    let _host_runner = world.host_held();
+    let said = || std::fs::read_to_string(world.root.join("share.txt")).unwrap();
+
+    world.say_host_settings(json!({"gate_lanes": 1}));
+    assert_eq!(world.afk(&["gate"]).ok()["status"], "green");
+    assert_eq!(said().trim(), "jobs= tests=", "one worker lane: every core");
+
+    world.say_host_settings(json!({"gate_lanes": 2, "fast_lanes": 1, "slow_gate_lanes": 1}));
+    assert_eq!(world.afk(&["gate"]).ok()["status"], "green");
+    assert_eq!(said().trim(), "jobs= tests=", "alone in the queue: every core");
+
+    // Another repo's: a command of the gate's own repo would hold it back.
+    let held = world
+        .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.root.join("clone2"))
+        .env("CACHE", &cache)
+        .args(["exclusive", "--", "sh", "-c"])
+        .arg("touch \"$CACHE/held\"; while test ! -f \"$CACHE/release\"; do sleep 0.02; done")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    until(|| cache.join("held").exists());
+    assert_eq!(world.afk(&["gate"]).ok()["status"], "green");
+    std::fs::write(cache.join("release"), "").unwrap();
+    assert!(held.wait_with_output().unwrap().status.success());
+    let cores = std::thread::available_parallelism().unwrap().get() as u64;
+    let share = (cores / 4).max(1);
+    assert_eq!(said().trim(), format!("jobs= tests={share}"), "beside a held lane: its share");
+}
+
 /// `afkconvoy exclusive -- sh -c <script>`, started in `world`'s checkout on
 /// the host whose cache is `cache`, as the worker of `issue`. The script
 /// names the cache `$CACHE`: a tick log keeps only the start of a long
@@ -134,14 +178,7 @@ fn exclusive(world: &World, cache: &Path, issue: u64, script: &str) -> Child {
 fn tickets(world: &World) -> usize {
     let doctor = world.afk(&["doctor", "--host", "h1"]).json;
     let exclusive = &doctor["host"]["exclusive"];
-    let count = |lane: &serde_json::Value| {
-        lane["waiting"].as_array().map_or(0, Vec::len) + usize::from(!lane["running"].is_null())
-    };
-    count(&exclusive["lanes"]["worker"])
-        + count(&exclusive["lanes"]["train"])
-        + exclusive["lanes"]["repos"]
-            .as_array()
-            .map_or(0, |repos| repos.iter().map(|r| count(&r["queue"])).sum::<usize>())
+    ["running", "waiting"].iter().map(|group| exclusive[group].as_array().map_or(0, Vec::len)).sum()
 }
 
 /// Waits, five seconds at most, until `done`.
@@ -252,13 +289,13 @@ fn an_unbound_worker_s_gate_names_its_issue_in_the_tick_log_and_the_host_s_queue
     until(|| tickets(&world) == 2);
     let shown = world.afk(&["doctor", "--host", "h1"]).json;
     let queue = &shown["host"]["exclusive"];
-    assert!(queue["running"]["issue"].is_null(), "{queue}");
+    assert!(queue["running"][0]["issue"].is_null(), "{queue}");
     assert_eq!(queue["waiting"][0]["issue"], 12, "{queue}");
     std::fs::write(cache.join("holder-release"), "").unwrap();
     assert!(holder.wait_with_output().unwrap().status.success());
     until(|| cache.join("worker-ran").exists());
     let shown = world.afk(&["doctor", "--host", "h1"]).json;
-    assert_eq!(shown["host"]["exclusive"]["running"]["issue"], 12, "{shown}");
+    assert_eq!(shown["host"]["exclusive"]["running"][0]["issue"], 12, "{shown}");
     std::fs::write(cache.join("worker-release"), "").unwrap();
     let out = worker.wait_with_output().unwrap();
     assert!(out.status.success(), "{}", text(&out.stderr));
@@ -371,8 +408,8 @@ fn a_cut_gates_ahead_of_waiting_workers_and_its_queue_wait_does_not_end_its_gate
         .unwrap();
     until(|| tickets(&world) == 4);
     let shown = world.afk(&["doctor", "--host", "h1"]).json;
-    let queue = &shown["host"]["exclusive"]["lanes"]["worker"];
-    assert_eq!(queue["running"]["issue"], 11, "{queue}");
+    let queue = &shown["host"]["exclusive"];
+    assert_eq!(queue["running"][0]["issue"], 11, "{queue}");
     let first = Path::new(queue["waiting"][0]["dir"].as_str().unwrap());
     assert_eq!(first.file_name().unwrap(), "afkconvoy-cut-2", "{queue}");
     assert_eq!(lines(&order), ["holder-start"], "priority never interrupts the holder");

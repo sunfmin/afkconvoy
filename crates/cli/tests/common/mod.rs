@@ -233,6 +233,9 @@ impl World {
         for (name, script) in [("pmset", PMSET), ("sysctl", SYSCTL), ("ioreg", IOREG), ("df", DF)] {
             write_script(&bin.join(name), script);
         }
+        // The machine is this account's alone, and its `afkconvoy` this build.
+        write_script(&bin.join("ps"), PS);
+        std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_afkconvoy"), bin.join("afkconvoy")).unwrap();
         let world = World {
             repository_templates: std::sync::atomic::AtomicBool::new(false),
             termination_clock: std::sync::atomic::AtomicBool::new(false),
@@ -374,6 +377,10 @@ impl World {
             "DSH_AGENTS_HOME",
             "DSH_PROFILE",
             "DSH_PROFILE_DIR",
+            // The share the gate running these tests was given is not the
+            // share of a gate in the world (sunfmin/control#245).
+            "CARGO_BUILD_JOBS",
+            "NEXTEST_TEST_THREADS",
         ] {
             cmd.env_remove(name);
         }
@@ -402,7 +409,15 @@ impl World {
         let only = self.root.join("path");
         let path = match only.exists() {
             true => only.display().to_string(),
-            false => format!("{}:{}", self.bin.display(), std::env::var("PATH").unwrap()),
+            false => match &*REAL_GIT_DIR {
+                Some(dir) => format!(
+                    "{}:{}:{}",
+                    self.bin.display(),
+                    dir.display(),
+                    std::env::var("PATH").unwrap()
+                ),
+                None => format!("{}:{}", self.bin.display(), std::env::var("PATH").unwrap()),
+            },
         };
         let shown = |path: &Path| path.display().to_string();
         let mut env = vec![
@@ -421,6 +436,8 @@ impl World {
         // The fleet polls a session file for the turn. The stand-in has
         // already written it when send returns, so a test checks once.
         env.push(("AFKCONVOY_TURN_WAIT_SECONDS".to_string(), "0".to_string()));
+        // The same for a note typed at a worker (`afkconvoy tell`).
+        env.push(("AFKCONVOY_NOTE_WAIT_SECONDS".to_string(), "0".to_string()));
         env
     }
 
@@ -958,9 +975,7 @@ impl World {
 
     /// Has every `git` call afkconvoy makes from here on logged (`git_calls`).
     pub fn watch_git(&self) {
-        let path = std::env::var_os("PATH").unwrap();
-        let git = std::env::split_paths(&path).map(|dir| dir.join("git")).find(|git| git.is_file());
-        let (git, log) = (git.expect("git is on PATH"), self.root.join("git.log"));
+        let (git, log) = (git_program(), self.root.join("git.log"));
         let script = format!(
             "#!/bin/sh\necho \"$*\" >> '{}'\nexec '{}' \"$@\"\n",
             log.display(),
@@ -994,10 +1009,7 @@ impl World {
                 let built = std::fs::read_link(self.bin.join(stand_in)).unwrap();
                 std::os::unix::fs::symlink(built, only.join(stand_in)).unwrap();
             }
-            let path = std::env::var_os("PATH").unwrap();
-            let git =
-                std::env::split_paths(&path).map(|dir| dir.join("git")).find(|git| git.is_file());
-            let git = git.expect("git is on PATH");
+            let git = git_program();
             write_script(
                 &only.join("git"),
                 &format!("#!/bin/sh\nexec '{}' \"$@\"\n", git.display()),
@@ -1370,6 +1382,19 @@ impl World {
         std::fs::write(file, list.to_string()).unwrap();
     }
 
+    /// Puts `checkout` on this world's checkout list, as a `run` of it does,
+    /// saying nothing of it: its tracker is its own repo.
+    pub fn list_checkout(&self, checkout: &Path) {
+        let file = self.cache().join("afkconvoy/checkouts.json");
+        let mut list = self.checkout_list();
+        let entries = list["checkouts"].as_array_mut().unwrap();
+        if !entries.iter().any(|entry| entry["checkout"] == json!(checkout)) {
+            entries.push(json!({"checkout": checkout}));
+        }
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(file, list.to_string()).unwrap();
+    }
+
     /// Has the remote of `checkout` be named as the repo `repo` (`owner/repo`)
     /// on GitHub, as an issue of it in another tracker names it: git reads
     /// that name as this world's remote all the same.
@@ -1451,10 +1476,10 @@ impl World {
         let text = std::fs::read_to_string(file).unwrap_or_default();
         let stamped = |line: &str| {
             let bytes = line.as_bytes();
-            bytes.len() > 20 && bytes[4] == b'-' && bytes[10] == b' ' && bytes[19] == b' '
+            bytes.len() > 21 && bytes[4] == b'-' && bytes[10] == b'T' && &bytes[19..21] == b"Z "
         };
         let unstamped =
-            |line: &str| if stamped(line) { line[20..].to_string() } else { line.into() };
+            |line: &str| if stamped(line) { line[21..].to_string() } else { line.into() };
         text.lines().map(unstamped).collect()
     }
 
@@ -1694,18 +1719,20 @@ echo "$*" >> "${0%/*}/../pmset.log"
 /// epoch second in `host-woke`, or never slept since it booted; for
 /// `vm.loadavg`, the load in `host-load`, or none; for
 /// `kern.memorystatus_level`, the share of memory free in `host-memory`, or 80%.
+/// Each file is one word, read by the shell itself: a fleet asks for its
+/// host's load and memory at every tick, and a `cat` for each was a process
+/// more each time (sunfmin/control#319).
 const SYSCTL: &str = r#"#!/bin/sh
-echo "$*" >> "${0%/*}/../sysctl.log"
+here=${0%/*}/..
+echo "$*" >> "$here/sysctl.log"
+said() { said=$2; [ -f "$here/$1" ] && read -r said < "$here/$1"; : "${said:=$2}"; }
 case "$*" in
-*vm.loadavg*) echo "{ $(cat "${0%/*}/../host-load" 2>/dev/null || echo 0.00) 0.00 0.00 }" ;;
-*kern.memorystatus_level*) cat "${0%/*}/../host-memory" 2>/dev/null || echo 80 ;;
-*kern.memorystatus_vm_pressure_level*) cat "${0%/*}/../host-pressure" 2>/dev/null || echo 1 ;;
+*vm.loadavg*) said host-load 0.00; echo "{ $said 0.00 0.00 }" ;;
+*kern.memorystatus_level*) said host-memory 80; echo "$said" ;;
+*kern.memorystatus_vm_pressure_level*) said host-pressure 1; echo "$said" ;;
 *hw.memsize*) echo 34359738368 ;;
 *machdep.cpu.brand_string*|*hw.model*|*hw.logicalcpu*) ;;
-*)
-    woke=$(cat "${0%/*}/../host-woke" 2>/dev/null || echo 0)
-    echo "{ sec = $woke, usec = 0 } Sat Oct 18 10:00:00 2026"
-    ;;
+*) said host-woke 0; echo "{ sec = $said, usec = 0 } Sat Oct 18 10:00:00 2026" ;;
 esac
 "#;
 
@@ -1715,6 +1742,20 @@ const DF: &str = r#"#!/bin/sh
 echo "$*" >> "${0%/*}/../df.log"
 echo "Filesystem 1024-blocks Used Available Capacity Mounted on"
 echo "/dev/stand-in 1048576000 524288000 524288000 50% /"
+"#;
+
+/// The stand-in `ps`: the real one, but where asked for the uids of the
+/// machine's processes it lists this account's alone, and then the rows in
+/// `other-accounts`: of another account's, as a test says them.
+const PS: &str = r#"#!/bin/sh
+case "$*" in
+*uid=*)
+    me=$(id -u)
+    /bin/ps "$@" | awk -v me="$me" '$1 == me'
+    cat "${0%/*}/../other-accounts" 2>/dev/null
+    ;;
+*) exec /bin/ps "$@" ;;
+esac
 "#;
 
 /// The stand-in `ioreg`: the keyboard and mouse untouched for the seconds in
@@ -1936,9 +1977,42 @@ pub fn worktree_listed(listed: &str, path: &Path) -> bool {
     })
 }
 
+/// Where the git that Apple's `/usr/bin/git` starts is, when that is the git
+/// on PATH: put after the stand-ins on a world's PATH, it is the git the
+/// world runs, and the harness's own. `/usr/bin/git` is a shim that asks
+/// `xcrun` for the developer directory each time it runs, and then starts
+/// the same git: about 16 ms a call where the git alone takes 7 (#234), and
+/// a test of the CLI makes about fifty a tick. A symlink to that git will
+/// not do: it finds its own `git-core` and templates beside the path it was
+/// started as. `None` wherever the git on PATH is another.
+static REAL_GIT_DIR: std::sync::LazyLock<Option<PathBuf>> = std::sync::LazyLock::new(|| {
+    let path = std::env::var_os("PATH")?;
+    let first = std::env::split_paths(&path).map(|dir| dir.join("git")).find(|git| git.is_file());
+    if first? != Path::new("/usr/bin/git") {
+        return None;
+    }
+    let found = Command::new("xcrun").args(["--find", "git"]).output().ok()?;
+    let real = PathBuf::from(String::from_utf8(found.stdout).ok()?.trim());
+    (found.status.success() && real.is_file()).then(|| real.parent().unwrap().to_path_buf())
+});
+
+/// The git a world runs, and so the harness's own: see `REAL_GIT_DIR`.
+pub fn git_program() -> PathBuf {
+    match &*REAL_GIT_DIR {
+        Some(dir) => dir.join("git"),
+        None => {
+            let path = std::env::var_os("PATH").unwrap();
+            let git =
+                std::env::split_paths(&path).map(|dir| dir.join("git")).find(|git| git.is_file());
+            git.expect("git is on PATH")
+        }
+    }
+}
+
 /// Runs git in `cwd` and returns its trimmed stdout; a failure fails the test.
 pub fn git(cwd: &Path, args: &[&str]) -> String {
-    let out = Command::new("git").current_dir(cwd).args(args).envs(GIT_ENV).output().unwrap();
+    let out =
+        Command::new(git_program()).current_dir(cwd).args(args).envs(GIT_ENV).output().unwrap();
     assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }

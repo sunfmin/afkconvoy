@@ -5,6 +5,9 @@
 //! Source heads never move. Invalidation is permanent and precedes signalling
 //! processes. A cancelled gate keeps its lane until its descendants are gone.
 //! A green successor waits on its exact predecessor, without another gate.
+//! Where the commit declares a fast gate and a slow gate, a candidate runs
+//! the fast one, and a round runs the slow one once at the chain's tip,
+//! landing every candidate up to it together (docs/adr/0048).
 use flux_rs::attrs::*;
 use serde::{Deserialize, Serialize};
 
@@ -14,6 +17,8 @@ pub enum Phase {
     Building,
     Validating,
     Green,
+    /// The round's tip, running the slow gate on its commit.
+    Slow,
     Red,
     Cancelling,
     Cancelled,
@@ -57,6 +62,22 @@ pub struct Candidate {
     pub stopped: bool,
     /// Actual gate evidence survives invalidation and owner death.
     pub result: Option<serde_json::Value>,
+    /// The slow gate its commit declares, which a round at this candidate
+    /// runs; `None` where it declares no gates and `command` is the whole gate.
+    #[serde(default)]
+    pub slow: Option<Slow>,
+    /// The round at this candidate gated green.
+    #[serde(default)]
+    pub slowed: bool,
+}
+
+/// The slow gate a candidate's commit declares, and its whole gate.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Slow {
+    pub command: String,
+    pub seconds: u64,
+    /// `gate_command`, which its fast and slow runs on one tree pass together.
+    pub whole: String,
 }
 
 impl Candidate {
@@ -73,19 +94,28 @@ impl Candidate {
         }
     }
     pub fn active(&self) -> bool {
-        matches!(self.phase, Phase::Building | Phase::Validating | Phase::Green) || !self.stopped
+        matches!(self.phase, Phase::Building | Phase::Validating | Phase::Green | Phase::Slow)
+            || !self.stopped
     }
 
     pub fn valid(&self) -> bool {
-        matches!(self.phase, Phase::Building | Phase::Validating | Phase::Green)
+        matches!(self.phase, Phase::Building | Phase::Validating | Phase::Green | Phase::Slow)
             && self.cancelled_by.is_none()
+    }
+
+    /// Its tree has passed the whole gate: its own gate was the whole gate,
+    /// or the round at it gated green.
+    pub fn whole(&self) -> bool {
+        self.phase == Phase::Green && (self.slow.is_none() || self.slowed)
     }
 
     pub fn waiting(&self) -> &'static str {
         match self.phase {
             Phase::Building => "constructing_worktree",
             Phase::Validating => "validating",
+            Phase::Green if !self.whole() => "waiting_for_round",
             Phase::Green => "waiting_for_predecessor",
+            Phase::Slow => "slow_gating",
             Phase::Cancelling => "confirming_process_exit",
             Phase::Cancelled => "cancelled",
             Phase::Red => "gate_red",
@@ -111,6 +141,10 @@ pub struct Chain {
     /// A serial turn reserves its place without occupying a worker lane.
     #[serde(default)]
     pub barriers: Vec<Barrier>,
+    /// The turns that asked to land and hold no candidate yet: a round waits
+    /// for them, as it is as big as the PRs that are ready.
+    #[serde(default)]
+    pub pending: Vec<Barrier>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -120,12 +154,13 @@ pub struct Barrier {
 }
 
 impl Chain {
-    /// A bounded speculative window includes green waiters and unconfirmed
-    /// cancellation. A barrier drains the window and admits no successors.
-    pub fn can_assign(&self, limit: u64, barrier: bool) -> bool {
+    /// The window has no bound of its own: the worker lanes bound how many
+    /// gates run at once, and a round takes every PR that is ready
+    /// (sunfmin/control#244). Unconfirmed cancellation still holds it, and a
+    /// barrier drains it and admits no successors.
+    pub fn can_assign(&self, barrier: bool) -> bool {
         let active: Vec<_> = self.candidates.iter().filter(|c| c.active()).collect();
-        (active.len() as u64) < limit
-            && (!barrier || active.is_empty())
+        (!barrier || active.is_empty())
             && (barrier || self.barriers.is_empty())
             && !active.iter().any(|c| c.barrier || !c.valid())
     }
@@ -161,12 +196,17 @@ impl Chain {
         }
     }
 
+    /// A candidate's gate result. For the round's tip in `Slow`, the round's:
+    /// green passes the whole gate at it; red fails the round.
     pub fn finish(&mut self, id: &str, green: bool, result: serde_json::Value) {
         let mut failed = false;
+        let mut round = false;
         for c in &mut self.candidates {
             if c.id == id && c.valid() {
                 c.result = Some(result.clone());
+                round = c.phase == Phase::Slow;
                 c.phase = if green { Phase::Green } else { Phase::Red };
+                c.slowed = round && green;
                 failed = !green;
             } else if c.id == id
                 && c.phase == Phase::Red
@@ -178,9 +218,149 @@ impl Chain {
                 c.result = Some(result.clone());
             }
         }
-        if failed {
+        if failed && round {
+            self.round_red(id);
+        } else if failed {
             self.invalidate(id, "predecessor_failed");
         }
+    }
+
+    /// The candidates a landing at `id` takes onto the base: every valid one
+    /// up to and including it, in chain order. Empty when `id` is not valid.
+    pub fn members(&self, id: &str) -> Vec<&Candidate> {
+        let mut members = vec![];
+        for c in self.candidates.iter().filter(|c| c.valid()) {
+            members.push(c);
+            if c.id == id {
+                return members;
+            }
+        }
+        vec![]
+    }
+
+    /// The candidate whose turn runs a round's slow gate now: the last valid
+    /// candidate, once every valid candidate is fast-green and none is
+    /// slow-gating, and no pending turn may still join it, where its commit
+    /// declares a slow gate not yet passed. A candidate assigned during the
+    /// round joins the next one.
+    pub fn round_tip(&self) -> Option<&Candidate> {
+        let valid: Vec<&Candidate> = self.candidates.iter().filter(|c| c.valid()).collect();
+        let tip = valid.last()?;
+        let ready = !self.joinable() && valid.iter().all(|c| c.phase == Phase::Green);
+        (ready && tip.slow.is_some() && !tip.slowed).then_some(*tip)
+    }
+
+    /// Whether a pending turn may still join the round: one is pending, and
+    /// no barrier, on the chain or waiting, admits no successors. A round
+    /// that waited for turns a barrier holds back would hold the barrier
+    /// back in turn: the watch's serial landing of 2026-10-29, fast-green,
+    /// waited for six pending turns that waited for it.
+    pub fn joinable(&self) -> bool {
+        !self.pending.is_empty()
+            && self.barriers.is_empty()
+            && !self.candidates.iter().any(|c| c.valid() && c.barrier)
+    }
+
+    /// The candidate whose running slow gate `id` waits on: the tip of the
+    /// round now slow-gating, where `id` is valid and at or before it. A
+    /// candidate behind it, or one with no round running, waits for the next.
+    pub fn round_of(&self, id: &str) -> Option<&Candidate> {
+        let mut member = false;
+        for c in self.candidates.iter().filter(|c| c.valid()) {
+            member = member || c.id == id;
+            if c.phase == Phase::Slow {
+                return member.then_some(c);
+            }
+        }
+        None
+    }
+
+    /// Starts the round at `id` when it is the round's tip → whether it did.
+    /// Its gate process is a new one, to be confirmed gone again.
+    pub fn start_round(&mut self, id: &str) -> bool {
+        if self.round_tip().is_none_or(|tip| tip.id != id) {
+            return false;
+        }
+        for c in &mut self.candidates {
+            if c.id == id {
+                c.phase = Phase::Slow;
+                c.stopped = false;
+                c.gate = None;
+                c.descendants.clear();
+            }
+        }
+        true
+    }
+
+    /// A red round is not bisected: its tip keeps the failure, every other
+    /// candidate of the round is cancelled by it, and its successors by
+    /// their failed predecessor.
+    pub fn round_red(&mut self, tip: &str) {
+        // The tip is already red here: the round is what stands before it.
+        let mut members: Vec<String> = vec![];
+        for c in &self.candidates {
+            if c.id == tip {
+                break;
+            }
+            if c.valid() {
+                members.push(c.id.clone());
+            }
+        }
+        for c in &mut self.candidates {
+            if members.contains(&c.id) {
+                c.cancelled_by = Some(tip.to_string());
+                c.cause = Some("round_red".to_string());
+                c.phase = if c.stopped { Phase::Cancelled } else { Phase::Cancelling };
+            }
+        }
+        self.invalidate(tip, "round_red");
+        for c in &mut self.candidates {
+            if c.cancelled_by.as_deref() == Some(tip) && c.id != tip && !members.contains(&c.id) {
+                c.cause = Some("predecessor_failed".to_string());
+            }
+        }
+    }
+
+    /// `id` may land now on `base`, taking every member with it: its tree
+    /// passed the whole gate, every member is green, every one ahead of it
+    /// is waiting for a round, and the first stands on `base`.
+    pub fn ripe(&self, id: &str, base: &str) -> bool {
+        let members = self.members(id);
+        let Some(first) = members.first() else { return false };
+        let Some(last) = members.last() else { return false };
+        // A whole-gated candidate ahead lands by its own turn, not this one.
+        let (ahead, _) = members.split_at(members.len() - 1);
+        last.whole()
+            && members.iter().all(|c| c.phase == Phase::Green)
+            && ahead.iter().all(|c| !c.whole())
+            && first.predecessor == base
+    }
+
+    /// Marks `id` and every member before it landed.
+    pub fn land(&mut self, id: &str) {
+        let members: Vec<String> = self.members(id).iter().map(|c| c.id.clone()).collect();
+        for c in &mut self.candidates {
+            if members.contains(&c.id) {
+                c.phase = Phase::Landed;
+            }
+        }
+    }
+
+    /// Drops every ended candidate `released` says nothing holds any more,
+    /// unless a candidate kept depends on it: as its predecessor, or as the
+    /// root that cancelled it. An active one is always kept.
+    pub fn prune(&mut self, released: impl Fn(&Candidate) -> bool) {
+        let mut kept: Vec<Candidate> = vec![];
+        let mut needed: Vec<String> = vec![];
+        for c in self.candidates.drain(..).rev() {
+            if c.active() || needed.contains(&c.commit) || needed.contains(&c.id) || !released(&c) {
+                needed.push(c.predecessor.clone());
+                needed.extend(c.cancelled_by.clone());
+                kept.push(c);
+            }
+        }
+        kept.reverse();
+        self.candidates = kept;
     }
 
     /// An ordinary advance to a known candidate preserves its successors.
@@ -299,7 +479,123 @@ mod tests {
             cause: None,
             stopped: false,
             result: None,
+            slow: None,
+            slowed: false,
         }
+    }
+
+    /// A candidate whose commit declares a fast gate and a slow gate: its own
+    /// gate is the fast one.
+    fn split(n: usize) -> Candidate {
+        let slow = Slow { command: "slow".into(), seconds: 60, whole: "whole".into() };
+        Candidate { command: "fast".into(), slow: Some(slow), ..candidate(n) }
+    }
+
+    #[test]
+    fn an_ended_candidate_nothing_holds_is_pruned_unless_a_kept_one_depends_on_it() {
+        let ended = |n, phase| Candidate { phase, stopped: true, ..candidate(n) };
+        let mut chain = Chain {
+            candidates: vec![
+                ended(0, Phase::Landed),
+                Candidate { predecessor: "base".into(), ..ended(1, Phase::Red) },
+                Candidate { cancelled_by: Some("c1".into()), ..ended(2, Phase::Cancelled) },
+                ended(3, Phase::Landed),
+                candidate(4),
+            ],
+            ..Chain::default()
+        };
+        // c2 is still held; c1 cancelled it, and c4 stands on c3.
+        chain.prune(|c| c.id != "c2");
+        let ids: Vec<_> = chain.candidates.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, ["c1", "c2", "c3", "c4"]);
+        chain.candidates.retain(|c| c.id != "c4");
+        chain.prune(|_| true);
+        assert!(chain.candidates.is_empty(), "{:?}", chain.candidates);
+    }
+
+    #[test]
+    fn a_round_runs_once_at_the_tip_when_every_candidate_is_fast_green() {
+        let mut chain = Chain { candidates: (0..3).map(split).collect(), ..Chain::default() };
+        chain.finish("c0", true, serde_json::json!({}));
+        chain.finish("c2", true, serde_json::json!({}));
+        assert!(chain.round_tip().is_none(), "c1 is still fast-gating");
+        assert!(!chain.ripe("c0", "base"), "a fast-green candidate does not land alone");
+        chain.finish("c1", true, serde_json::json!({}));
+        assert_eq!(chain.round_tip().map(|c| c.id.as_str()), Some("c2"));
+        assert!(!chain.start_round("c1"), "only the tip's turn runs the round");
+        assert!(chain.start_round("c2"));
+        assert_eq!(chain.candidates[2].waiting(), "slow_gating");
+        assert_eq!(chain.candidates[0].waiting(), "waiting_for_round");
+        let round = |chain: &Chain, id| chain.round_of(id).map(|c| c.id.clone());
+        assert_eq!(round(&chain, "c0").as_deref(), Some("c2"));
+        assert_eq!(round(&chain, "c2").as_deref(), Some("c2"));
+        // A candidate assigned during the round waits for the next one.
+        let mut later = split(3);
+        later.phase = Phase::Green;
+        chain.candidates.push(later);
+        assert!(chain.round_tip().is_none());
+        assert_eq!(round(&chain, "c3"), None, "it waits for the next round");
+        chain.finish("c2", true, serde_json::json!({}));
+        assert!(chain.candidates[2].slowed);
+        assert!(chain.ripe("c2", "base"));
+        assert!(!chain.ripe("c2", "m0"), "the round's first candidate stands on the base");
+        chain.land("c2");
+        let landed: Vec<_> = chain.candidates.iter().map(|c| c.phase).collect();
+        assert_eq!(landed, [Phase::Landed, Phase::Landed, Phase::Landed, Phase::Green]);
+        assert_eq!(chain.round_tip().map(|c| c.id.as_str()), Some("c3"));
+    }
+
+    #[test]
+    fn a_round_waits_for_every_turn_that_asked_to_land() {
+        let mut chain = Chain { candidates: (0..2).map(split).collect(), ..Chain::default() };
+        chain.finish("c0", true, serde_json::json!({}));
+        chain.finish("c1", true, serde_json::json!({}));
+        let owner = chain.candidates[0].owner.clone();
+        chain.pending.push(Barrier { id: "waiting".into(), owner });
+        assert!(chain.round_tip().is_none(), "a PR still waiting for a lane is in the round");
+        assert!(chain.can_assign(false), "the window is not bounded by the lanes");
+        chain.pending.clear();
+        assert_eq!(chain.round_tip().map(|c| c.id.as_str()), Some("c1"));
+    }
+
+    #[test]
+    fn a_red_round_is_not_bisected_its_tip_keeps_the_failure() {
+        let mut chain = Chain { candidates: (0..4).map(split).collect(), ..Chain::default() };
+        for c in ["c0", "c1", "c2"] {
+            chain.finish(c, true, serde_json::json!({}));
+            chain.candidates.iter_mut().for_each(|c| c.stopped = c.phase == Phase::Green);
+        }
+        chain.candidates.pop();
+        assert!(chain.start_round("c2"));
+        let mut later = split(3);
+        later.phase = Phase::Validating;
+        chain.candidates.push(later);
+        chain.finish("c2", false, serde_json::json!({"exit_code": 1}));
+        let phases: Vec<_> = chain.candidates.iter().map(|c| c.phase).collect();
+        assert_eq!(phases, [Phase::Cancelled, Phase::Cancelled, Phase::Red, Phase::Cancelling]);
+        let causes: Vec<_> = chain.candidates.iter().map(|c| c.cause.as_deref()).collect();
+        assert_eq!(
+            causes,
+            [Some("round_red"), Some("round_red"), Some("round_red"), Some("predecessor_failed")]
+        );
+        assert!(chain.candidates.iter().all(|c| c.cancelled_by.as_deref() == Some("c2")));
+        assert!(chain.round_tip().is_none(), "no smaller round runs after a red one");
+    }
+
+    #[test]
+    fn a_whole_gated_candidate_lands_the_fast_green_ones_before_it() {
+        let mut chain = Chain { candidates: vec![split(0), candidate(1)], ..Chain::default() };
+        chain.finish("c0", true, serde_json::json!({}));
+        chain.finish("c1", true, serde_json::json!({}));
+        assert!(chain.round_tip().is_none(), "its gate was the whole gate");
+        assert!(chain.ripe("c1", "base"));
+        chain.land("c1");
+        assert!(chain.candidates.iter().all(|c| c.phase == Phase::Landed));
+        let mut chain = Chain { candidates: vec![candidate(0), candidate(1)], ..Chain::default() };
+        chain.finish("c0", true, serde_json::json!({}));
+        chain.finish("c1", true, serde_json::json!({}));
+        assert!(!chain.ripe("c1", "base"), "a whole-gated one ahead lands by its own turn");
+        assert!(chain.ripe("c0", "base"));
     }
 
     #[test]
@@ -313,19 +609,33 @@ mod tests {
         }
         assert_eq!(chain, invalidated);
         assert_eq!(chain.candidates[0].phase, Phase::Red);
-        assert!(!chain.can_assign(3, false), "unconfirmed cancellation keeps the window occupied");
+        assert!(!chain.can_assign(false), "unconfirmed cancellation keeps the window occupied");
     }
 
     #[test]
     fn a_pending_serial_barrier_drains_the_window_without_reserving_capacity() {
         let mut chain = Chain { candidates: vec![candidate(0)], ..Chain::default() };
         chain.barriers.push(Barrier { id: "cut".into(), owner: chain.candidates[0].owner.clone() });
-        assert!(!chain.can_assign(3, false));
-        assert!(!chain.can_assign(3, true));
+        assert!(!chain.can_assign(false));
+        assert!(!chain.can_assign(true));
         chain.candidates[0].phase = Phase::Landed;
         chain.candidates[0].stopped = true;
-        assert!(chain.can_assign(3, true));
-        assert!(!chain.can_assign(3, false));
+        assert!(chain.can_assign(true));
+        assert!(!chain.can_assign(false));
+    }
+
+    #[test]
+    fn a_fast_green_barrier_starts_its_round_beside_turns_it_holds_back() {
+        let mut chain = Chain { candidates: vec![split(0)], ..Chain::default() };
+        let owner = chain.candidates[0].owner.clone();
+        chain.pending.push(Barrier { id: "waiting".into(), owner: owner.clone() });
+        chain.finish("c0", true, serde_json::json!({"fast": "green"}));
+        assert!(chain.round_tip().is_none(), "a pending turn may still join");
+        chain.candidates[0].barrier = true;
+        assert_eq!(chain.round_tip().map(|c| c.id.as_str()), Some("c0"));
+        chain.candidates[0].barrier = false;
+        chain.barriers.push(Barrier { id: "cut".into(), owner });
+        assert_eq!(chain.round_tip().map(|c| c.id.as_str()), Some("c0"), "a cut waits");
     }
 
     #[test]
@@ -339,13 +649,24 @@ mod tests {
 
     #[test]
     fn exhaust_three_candidates_through_completion_invalidation_exit_and_publication() {
-        // Exactly three assigned candidates, two results per gate, cancellation
-        // and exit confirmations, external moves and publication. Enumerates
-        // every reachable state, not arbitrary graph sizes or OS behaviour.
-        let initial = (
-            Chain { candidates: (0..3).map(candidate).collect(), ..Chain::default() },
-            "base".to_string(),
-        );
+        assert!(explore(candidate) > 500, "exploration stopped exercising interleavings");
+    }
+
+    #[test]
+    fn exhaust_three_candidates_through_fast_results_rounds_exit_and_publication() {
+        assert!(explore(split) > 500, "exploration stopped exercising interleavings");
+    }
+
+    /// Exactly three assigned candidates and one pending turn, two results per
+    /// gate, rounds where they declare a slow gate, cancellation and exit
+    /// confirmations, external moves and publication. Enumerates every reachable state, not arbitrary
+    /// graph sizes or OS behaviour → how many states it reached.
+    fn explore(made: fn(usize) -> Candidate) -> usize {
+        let candidates: Vec<Candidate> = (0..3).map(made).collect();
+        let owner = candidates[0].owner.clone();
+        let waiting = vec![Barrier { id: "pending".into(), owner }];
+        let initial =
+            (Chain { candidates, pending: waiting, ..Chain::default() }, "base".to_string());
         let mut pending = VecDeque::from([initial]);
         let mut seen = HashSet::new();
         while let Some((chain, base)) = pending.pop_front() {
@@ -353,23 +674,38 @@ mod tests {
             if !seen.insert(key) {
                 continue;
             }
-            assert!(seen.len() < 100_000, "the exploration bound changed");
-            for c in &chain.candidates {
+            assert!(seen.len() < 200_000, "the exploration bound changed");
+            for (i, c) in chain.candidates.iter().enumerate() {
                 if c.cancelled_by.is_some() {
                     assert!(!c.valid());
                 }
                 if c.phase == Phase::Landed {
                     assert!(c.result.is_some() && c.stopped);
+                    // Landings are a prefix: nothing before it is left valid.
+                    assert!(chain.candidates[..i].iter().all(|b| !b.valid()));
                 }
+                assert!(c.phase != Phase::Slow || !chain.joinable(), "a round waited");
+                assert!(
+                    c.phase != Phase::Slow
+                        || chain
+                            .candidates
+                            .iter()
+                            .all(|o| { o.id == c.id || o.phase != Phase::Slow }),
+                    "one round at a time"
+                );
             }
             for i in 0..3 {
                 let c = &chain.candidates[i];
-                if c.phase == Phase::Validating {
+                if matches!(c.phase, Phase::Validating | Phase::Slow) {
                     for green in [true, false] {
                         let mut next = chain.clone();
                         next.finish(&c.id, green, serde_json::json!({"green": green}));
                         pending.push_back((next, base.clone()));
                     }
+                }
+                let mut started = chain.clone();
+                if started.start_round(&c.id) {
+                    pending.push_back((started, base.clone()));
                 }
                 if !c.stopped {
                     let mut next = chain.clone();
@@ -379,18 +715,19 @@ mod tests {
                     }
                     pending.push_back((next, base.clone()));
                 }
+                let members = chain.members(&c.id);
                 let publish = Publication::new(
-                    c.valid(),
-                    c.phase == Phase::Green,
-                    c.predecessor == base,
+                    members.iter().all(|m| m.valid()),
+                    chain.ripe(&c.id, &base),
+                    members.first().is_some_and(|m| m.predecessor == base),
                     true,
                     true,
-                    c.stopped,
+                    members.iter().all(|m| m.stopped),
                 );
                 if publish.is_some() {
-                    assert!(c.cancelled_by.is_none());
+                    assert!(members.iter().all(|m| m.cancelled_by.is_none() && m.result.is_some()));
                     let mut next = chain.clone();
-                    next.candidates[i].phase = Phase::Landed;
+                    next.land(&c.id);
                     pending.push_back((next, c.commit.clone()));
                 }
                 if c.valid() {
@@ -399,12 +736,17 @@ mod tests {
                     pending.push_back((next, base.clone()));
                 }
             }
+            if !chain.pending.is_empty() {
+                let mut next = chain.clone();
+                next.pending.clear();
+                pending.push_back((next, base.clone()));
+            }
             if base != "outside" {
                 let mut next = chain.clone();
                 next.observe_base("outside");
                 pending.push_back((next, "outside".into()));
             }
         }
-        assert!(seen.len() > 500, "exploration stopped exercising interleavings: {}", seen.len());
+        seen.len()
     }
 }

@@ -6,7 +6,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::gh::GitHub;
-use crate::git::{Listing, REMOTE, RemoteRecord, Repo};
+use crate::git::Repo;
+use crate::remote::{Fresh, Listing, Push, RemoteRecord};
 use afkconvoy_core::tracker::Tracker;
 
 #[derive(Serialize, Deserialize, PartialEq, Eq)]
@@ -56,7 +57,7 @@ fn refname(repo: &Repo, tracker: &Tracker, issue: u64) -> String {
 fn existing(repo: &Repo, gh: &GitHub, issue: u64) -> Result<Option<Target>> {
     let name = refname(repo, &gh.tracker, issue);
     let claim_ref = afkconvoy_core::claims::claim_ref(repo.layout(), &gh.tracker, issue);
-    let listed = repo.listed_refs(&[&name, &claim_ref])?;
+    let listed = repo.remote().refs(&[&name, &claim_ref], Fresh::Process)?;
     let target = from_listing(repo, &gh.tracker, issue, &listed)?;
     if let Some(target) = &target {
         target.resolve(repo)?;
@@ -110,7 +111,7 @@ pub fn once(repo: &Repo, config: &Config, tracker: &Tracker, issue: u64) -> Resu
     let claim_ref = afkconvoy_core::claims::claim_ref(repo.layout(), tracker, issue);
     let base_ref = format!("refs/heads/{}", config.base_branch);
     let asked_refs = [name.as_str(), claim_ref.as_str(), base_ref.as_str()];
-    let listed = repo.listed_refs(&asked_refs)?;
+    let listed = repo.remote().refs(&asked_refs, Fresh::Process)?;
     let target = from_listing(repo, tracker, issue, &listed)?;
     let branch = match target {
         None => config.base_branch.clone(),
@@ -202,7 +203,8 @@ pub fn stamp_claim(
     let gh = GitHub::of(repo)?;
     let name = refname(repo, &gh.tracker, issue);
     let sha = repo
-        .remote_sha(&name)?
+        .remote()
+        .sha(&name, Fresh::Process)?
         .context("target disappeared before claim; restore its pinned record")?;
     Ok(format!("{subject}{}", afkconvoy_core::record::write("", &[("target", &sha)])))
 }
@@ -217,13 +219,13 @@ fn validate_known(
 ) -> Result<()> {
     let name = format!("refs/heads/{branch}");
     ensure!(
-        repo.try_git(&["check-ref-format", &name])?.ok,
+        repo.ref_name_ok(&name)?,
         "invalid target branch {branch:?}; select an existing same-repo branch with afkconvoy target --issue <n> --branch <branch>"
     );
     let present = if asked.contains(&name.as_str()) {
         listed.iter().any(|record| record.name == name)
     } else {
-        repo.remote_sha(&name)?.is_some()
+        repo.remote().sha(&name, Fresh::Process)?.is_some()
     };
     ensure!(
         present,
@@ -275,7 +277,7 @@ fn write(repo: &Repo, gh: &GitHub, issue: u64, target: Target, selecting: bool) 
     }
     let sha = repo.record_commit(&serde_json::to_string(&target)?)?;
     let name = refname(repo, &gh.tracker, issue);
-    let pushed = repo.try_git(&["push", "--quiet", REMOTE, &format!("{sha}:{name}")])?;
+    let pushed = repo.remote().try_push(&Push::set(&sha, &name))?;
     // Always discover even after success, covering simultaneous selection.
     if let Some(won) = existing(repo, gh, issue)? {
         ensure!(
@@ -327,7 +329,7 @@ pub fn attach(repo: &Repo, issue: u64, id: &str) -> Result<String> {
         let comments = gh.comments(issue)?;
         let recorded =
             afkconvoy_core::worker::recorded_branches(comments.iter().map(|c| c.body.as_str()));
-        let heads = repo.remote_heads()?;
+        let heads = repo.remote().heads(Fresh::Process)?;
         let branches = afkconvoy_core::recovery::own_branches(&heads, &recorded, None);
         let worktree = crate::orca::Worktree::of_issue(&crate::orca::Source::of(repo)?, issue)?;
         ensure!(
@@ -356,7 +358,7 @@ pub fn delivery(repo: &Repo, issue: u64) -> Result<Option<String>> {
 
 pub fn attached(repo: &Repo, id: &str) -> Result<Vec<String>> {
     let mut issues = vec![];
-    for record in repo.remote_records(&repo.layout().every("target/"))? {
+    for record in repo.remote().records(&[&repo.layout().every("target/")], Fresh::Process)? {
         let target: Target = serde_json::from_str(&record.subject).with_context(|| {
             format!(
                 "unreadable task target at {}; restore it before inspecting deliveries",

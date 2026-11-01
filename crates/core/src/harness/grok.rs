@@ -31,6 +31,9 @@ pub(super) const MODEL: &str = "--model";
 /// On the launch line. Grok 1.0.70 accepts it and `--help` does not name it,
 /// so it is not one of `FLAGS`: the flag check does not require `--help` to.
 pub(super) const TRUST: &str = "--trust";
+/// `TRUST` is a flag `--help` does not name, and not one of `FLAGS`: outside
+/// a role a launch adds no flag it checks the command takes.
+pub(super) const TRUST_IS_FLAGS: bool = false;
 /// `--add-dir` is not one of these. Grok 1.0.60 and later reject
 /// `additionalDirectories` on session create, so the fleet never passes it
 /// (ADR-0043). A command must take `--model`.
@@ -539,6 +542,37 @@ pub(super) fn session_layout(cwd: &str) -> SessionLayout {
         name: EVENTS,
         compressed: false,
     }
+}
+
+/// What was said in each session: the user's lines and the model's, beside
+/// its events.
+const CHAT: &str = "chat_history.jsonl";
+
+/// Where Grok keeps what was said in the session of `cwd`.
+pub(super) fn note_layout(cwd: &str) -> SessionLayout {
+    SessionLayout::Named {
+        dir: format!("sessions/{}", dir_name(cwd)),
+        name: CHAT,
+        compressed: false,
+    }
+}
+
+/// The chat entry a stand-in writes for `line`, typed while the worker
+/// worked, once Grok gave it to its model: as Grok words it. A line still in
+/// its input queue is in no file.
+pub(super) fn note_files(cwd: &str, line: &str, taken: bool, _at: u64) -> Vec<SessionFile> {
+    if !taken {
+        return Vec::new();
+    }
+    let said =
+        format!("The user sent a message while you were working: <user_query>{line}</user_query>");
+    let entry = session::object(vec![("role", "user".into()), ("content", said.into())]);
+    vec![SessionFile {
+        path: format!("sessions/{}/afkconvoy-turn/{CHAT}", dir_name(cwd)),
+        body: format!("{entry}\n"),
+        compressed: false,
+        replaces: None,
+    }]
 }
 
 /// The same path → `%2FUsers%2Fsunfmin%2FDevelopments%2Fchessmirror`.

@@ -98,7 +98,7 @@ fn a_well_formed_team_is_accepted_with_what_was_read() {
         json!([
             {"name": "dev", "repo": "acme/dev", "path": "", "commit": head(&world, "acme/dev"),
              "host_user": true, "dsh_profile": "fleet", "skills": ["implement", "land"], "above": [], "limits": [],
-             "roster": {"cast": "Hard work on opus.", "run": [
+             "roster": {"run": [
                  {"harness": "claude-code", "model": "opus", "good_at": "hard work"},
                  {"harness": "claude-code", "model": null, "good_at": null}]},
              "range": [{"harness": "claude-code", "models": ["sonnet", "opus"]}], "left_out": [], "unmatched": null, "nothing_safe": null},
@@ -351,7 +351,7 @@ fn a_roster_entry_names_harnesses_and_models_its_role_may_run_and_nothing_else()
     let read = world.afk(&["check"]).ok();
     assert_eq!(
         read["roles"][0]["roster"],
-        json!({"cast": null, "run": [{"harness": "pi", "model": "openai/gpt-5.5", "good_at": null}]})
+        json!({"run": [{"harness": "pi", "model": "openai/gpt-5.5", "good_at": null}]})
     );
     // The host kit holds no pi: the entry matches nothing, and the role
     // ranges over the host kit whole. `check` names the entry.
@@ -1091,4 +1091,12 @@ fn dsh_profile_defaults_to_fleet_and_roles_override_the_team_in_either_direction
         );
         assert_eq!(answer.json["faults"][0]["problem"], "must be fleet or host-user");
     }
+}
+
+#[test]
+fn show_of_an_issue_never_issued_says_there_is_no_such_issue() {
+    let world = bound(&[("team.md", TEAM), ("workflows/feature.md", FEATURE)]);
+    world.with_gh(|gh| gh["missing"] = json!({"999999999": 0}));
+    let error = world.afk(&["show", "--issue", "999999999"]).error();
+    assert_eq!(error, "no such issue: #999999999 (HTTP 404)");
 }

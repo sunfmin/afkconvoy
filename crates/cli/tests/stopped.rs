@@ -1181,3 +1181,83 @@ fn run_sets_the_jev_key_command_from_a_flag_or_the_environment_and_default_remov
     world.afk(&["stop", "--all"]).ok();
     assert_eq!(world.checkout_list()["settings"]["jev_key_command"], Value::Null);
 }
+
+fn tell(world: &World, host: &str, text: &str) -> common::Answer {
+    world.afk(&["tell", "7", "--text", text, "--host", host, "--now", "1100"])
+}
+
+/// The comments that hold an operator's note.
+fn notes(world: &World) -> Vec<String> {
+    let comments = world.comments(7).into_iter();
+    comments.filter(|body| body.starts_with("<!--convoy:tell-->")).collect()
+}
+
+fn told_record(world: &World) -> PathBuf {
+    let dir = worktree(world);
+    PathBuf::from(common::git(&dir, &["rev-parse", "--absolute-git-dir"])).join("convoy-told")
+}
+
+#[test]
+fn a_note_is_told_to_a_busy_worker_only_once_its_harness_gave_it_to_the_model() {
+    let world = fleet(1000);
+    report(&world, "working", 1000, 1080);
+    world.with_orca(|orca| orca["notes"] = json!("queued"));
+    let error = tell(&world, "h1", "the body changed:\nuse the v2 endpoint").error();
+    let [note] = notes(&world).try_into().unwrap();
+    assert!(note.contains("the body changed:\nuse the v2 endpoint"), "{note}");
+    let url = world.comment_url(7, &note);
+    assert!(error.contains("not delivered") && error.contains(&url), "{error}");
+    assert!(error.contains("no second line"), "{error}");
+    assert_eq!(typed(&world).len(), 2, "the brief, then the note once");
+    let line = &typed(&world)[1];
+    assert!(line.contains(&url) && line.contains("the body changed: use the v2 endpoint"));
+    assert!(!told_record(&world).exists(), "a queued note is not told");
+
+    // Rerun once the harness takes what it is typed: the same comment.
+    world.with_orca(|orca| orca["notes"] = json!("taken"));
+    let told = tell(&world, "h1", "the body changed:\nuse the v2 endpoint").ok();
+    assert_eq!(told["action"], "told");
+    assert_eq!(told["comment"], url);
+    assert!(told["terminal"].is_string(), "{told}");
+    assert_eq!(notes(&world).len(), 1, "no second comment for the same note");
+    let record = std::fs::read_to_string(told_record(&world)).unwrap();
+    assert_eq!(record, format!("1100 {url}\n"));
+
+    // Told already: the session holds it, and nothing more is typed.
+    let typed_before = typed(&world).len();
+    let again = tell(&world, "h1", "the body changed:\nuse the v2 endpoint").ok();
+    assert_eq!(again["typed"], false, "{again}");
+    assert_eq!(typed(&world).len(), typed_before);
+    assert_eq!(notes(&world).len(), 1);
+}
+
+#[test]
+fn a_note_is_told_to_a_stopped_worker_the_same_way() {
+    let world = fleet(1000);
+    report(&world, "done", 1000, 1000);
+    world.with_orca(|orca| orca["notes"] = json!("taken"));
+    let told = tell(&world, "h1", "land after #9").ok();
+    assert_eq!(told["action"], "told", "{told}");
+    assert_eq!(typed(&world).len(), 2);
+    assert!(!nudge_record(&world).exists(), "a note is no nudge");
+}
+
+#[test]
+fn with_no_worker_of_this_host_at_work_a_note_is_only_commented_and_says_why() {
+    let world = fleet(1000);
+    report(&world, "working", 1000, 1080);
+    world.with_orca(|orca| orca["notes"] = json!("taken"));
+    let elsewhere = tell(&world, "h2", "use the v2 endpoint").ok();
+    assert_eq!(elsewhere["action"], "commented");
+    assert_eq!(elsewhere["host"], "h1");
+    assert!(elsewhere["why"].as_str().unwrap().contains("alpha"), "{elsewhere}");
+    assert_eq!(elsewhere["comment"], world.comment_url(7, &notes(&world)[0]));
+    assert_eq!(typed(&world).len(), 1, "nothing typed");
+
+    world.issue(8, &["bug"]);
+    let unclaimed = world.afk(&["tell", "8", "--text", "hello", "--host", "h1"]).ok();
+    assert_eq!(unclaimed["action"], "commented");
+    assert!(unclaimed["why"].as_str().unwrap().contains("not claimed"), "{unclaimed}");
+    assert!(unclaimed["host"].is_null());
+    assert_eq!(typed(&world).len(), 1);
+}

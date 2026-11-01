@@ -25,7 +25,7 @@ pub const HELP: &str = "## What it logs\n\nAs it acts it appends one line to the
 /// One command that acts, as it starts.
 pub struct Acting {
     /// The command's name, as its command line says it.
-    pub command: &'static str,
+    pub command: String,
     /// What it acts on: `#46`, `run sweep`, `from <instance>`.
     pub on: Option<String>,
     /// The fleet instance it acts as, where it names one.
@@ -39,8 +39,14 @@ pub struct Acting {
 }
 
 impl Acting {
-    pub fn new(command: &'static str) -> Acting {
-        Acting { command, on: None, instance: None, says_start: false, checkout: None }
+    pub fn new(command: &str) -> Acting {
+        Acting {
+            command: command.to_string(),
+            on: None,
+            instance: None,
+            says_start: false,
+            checkout: None,
+        }
     }
 
     pub fn in_checkout(self, checkout: Option<Repo>) -> Acting {
@@ -97,7 +103,7 @@ impl Acting {
     pub fn end(&self, now: u64, ended: anyhow::Result<Value>) -> anyhow::Result<Value> {
         match &ended {
             Ok(answer) if self.command == "switch" => self.log_switch(now, answer),
-            Ok(answer) => self.log(now, outcome(self.command, answer), false),
+            Ok(answer) => self.log(now, outcome(&self.command, answer), false),
             Err(error) => self.log(now, format!("{error:#}"), true),
         }
         let woke = self.in_one().and_then(|repo| wake::wake(repo, &self.named()));
@@ -144,9 +150,9 @@ impl Acting {
             one_line(&outcome)
         };
         let what = What::Command {
-            command: self.command.to_string(),
+            command: self.command.clone(),
             on: self.on.clone(),
-            by: by(self.command).to_string(),
+            by: by(&self.command).to_string(),
             outcome,
             failed,
         };
@@ -224,6 +230,14 @@ pub fn outcome(command: &str, answer: &Value) -> String {
         "switch" => Some(switch_outcome(answer)),
         "park" => Some(format!("blocked by {}", issues("blocked_by"))),
         "escalate" | "close" | "nudge" | "restart" | "abandon" => word("action"),
+        "tell" => Some(match word("why") {
+            Some(why) => format!("commented, typed nothing: {why}"),
+            None => format!(
+                "{}, {}",
+                word("action").unwrap_or_default(),
+                word("comment").unwrap_or_default()
+            ),
+        }),
         "dispatch" => Some(match answer["started"].as_bool() {
             Some(true) => "started".to_string(),
             _ => match (word("gone"), word("skipped"), word("claim")) {

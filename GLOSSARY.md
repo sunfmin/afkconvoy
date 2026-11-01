@@ -4,6 +4,10 @@ Every term afkconvoy's help uses, each with its one definition and the words to 
 
 ### The fleet
 
+**Host**:
+One user account on one machine, and what the fleet keeps for it there: its host runner, its checkout list and host settings, its host kit, its exclusive lanes and its panel. A machine shared by several accounts holds a host of each, each working its own checkouts and seeing nothing of the others' but their processes: `doctor` names the host runners of the other accounts on its machine, read from the process table alone.
+_Avoid_: machine (the hardware every host on it shares)
+
 **Fleet instance**:
 One repo's fleet in its host's host runner, and everything it owns: the workers it started and the claims it holds, under an id minted when it starts. One host runs at most one per repo.
 _Avoid_: launcher, coordinator, node, process (the host runner is the process)
@@ -37,7 +41,7 @@ A fleet instance whose loop panicked or ended in an error — its tracker found 
 _Avoid_: crashed, dead (a heartbeat past the lease), down (a harness that refuses every prompt)
 
 **Host settings**:
-What a host says for every fleet instance on it — whether it may be put to sleep and its sleep hours, the limits past which a worker is hot, the shares admission holds back at, the bound on an exclusive command holding others up, the number of worker lanes, the panel's port, the operator's directory a watch starts in and how often the host runner looks, the command that supplies a TypeSafe key for Jev's worker-health judgments — kept beside the checkout list and changed by any `run` that names one, for every fleet instance on the host at once.
+What a host says for every fleet instance on it — whether it may be put to sleep and its sleep hours, the limits past which a worker is hot, the shares admission holds back at, the bound on an exclusive command holding others up, the number of worker lanes and of fast lanes, the panel's port, the operator's directory a watch starts in and how often the host runner looks, the command that supplies a TypeSafe key for Jev's worker-health judgments — kept beside the checkout list and changed by any `run` that names one, for every fleet instance on the host at once.
 _Avoid_: global config, runner flags
 
 **Tick**:
@@ -55,6 +59,10 @@ _Avoid_: bootstrap, preflight, health check
 **Ref layout**:
 One of the two ways every ref the fleet writes is named: hidden refs (`refs/convoy/*`), or — only where the remote rejects those — ordinary branches (`convoy-*`), on which push-triggered CI fires.
 _Avoid_: namespace, fallback mode
+
+**Remote view**:
+A repository's one way to read and write the remote's refs. A read names how fresh it must be: as the view opened (the one listing a fleet's view is read from), current for this process (a ref already read is not asked again until this process writes it), or live, for a check another process may have moved or a write that must be certain. Every write — a push or a receive-pack publication — states the refs it writes, and the view drops exactly those. Nothing else pushes or lists the remote.
+_Avoid_: remote cache, ref cache
 
 **Fleet state**:
 The authoritative record of what is claimed, in flight, landed, parked and escalated. It lives entirely in GitHub — the issues in the fleet's tracker, the PRs, branches and refs in the repo — and no process holds it. A PR whose head is in another repository is no part of it: only a login with write access can push a branch to the repo, so a PR from one of its branches is a collaborator's, and one from a fork is anyone's. The fleet acts as if a fork's PR did not exist — none is landed, taken up, synced, closed, commented on or reported, none holds an issue off.
@@ -131,7 +139,7 @@ The rules every role of a team works under, whatever its own rules add. They say
 _Avoid_: global rules, shared rules
 
 **Admission**:
-Whether a tick starts new workers on its host: not while the host is past a share of its load, below its share of memory free, or low on free disk under the checkout. What it holds back stays on the frontier for the next tick; workers already running and the worker a declared verdict starts are never held back. The shares have defaults taken from the host's cores, memory and disk, and the host can say its own in its host settings. Holding back for one reason — the load, memory or disk — at every tick past a span (ten minutes, or the host's own) calls for the host's watch, once an **episode**: the episode ends once admission has admitted for five minutes. Holding back for reasons that change starts none. Memory pressure is observed independently: held past the same span, it calls for the host's watch for memory, once an episode ending after five minutes without pressure; it changes no admission decision.
+Whether a tick starts new workers on its host: not while the host is past a share of its load, below its share of memory free, or low on free disk under the checkout. Its readings are the machine's, shared with the host runners of the other accounts on it: their workers load it and fill its memory as this host's do. What it holds back stays on the frontier for the next tick; workers already running and the worker a declared verdict starts are never held back. The shares have defaults taken from the host's cores, memory and disk, and the host can say its own in its host settings. Holding back for one reason — the load, memory or disk — at every tick past a span (ten minutes, or the host's own) calls for the host's watch, once an **episode**: the episode ends once admission has admitted for five minutes. Holding back for reasons that change starts none. Memory pressure is observed independently: held past the same span, it calls for the host's watch for memory, once an episode ending after five minutes without pressure; it changes no admission decision.
 _Avoid_: throttling, backpressure
 
 **Host user's skills and rules**:
@@ -143,7 +151,7 @@ What a DSH worker loads of bundles, plugins, MCP servers, patches, themes and se
 _Avoid_: provider profile, persona
 
 **Bound repo**:
-A repo whose config names a team. An unbound repo has no roles and one fixed path for every issue: one worker, then a turn that lands its PR.
+A repo whose config names a team. An unbound repo has no roles and one fixed path for every issue: one worker, then a turn that lands its PR. It has no position and no workflow to draw: `show <issue>` there says where the issue stands on that path — ready, held back and why, claimed and by which fleet instance, landing with the fleet's PR, waiting on a human, or closed — from the facts a tick acts on.
 _Avoid_: team mode, managed repo
 
 **Guard**:
@@ -240,6 +248,9 @@ _Avoid_: fleet effort, role effort
 An issue's one `model:` label. It names the model a worker of the selected harness starts on when it names exactly one model that harness holds and the role's range holds. The selected harness is the one the checkout names, or the first eligible harness in the host kit's order when the checkout names none. Anything else leaves the worker on that harness's **default model**, and the label stays. A `harness:` label never selects a harness.
 _Avoid_: casting (the removed automatic choice, as in "automatic casting is gone"), caster (the removed chooser; help may say there is none), assignment (a GitHub assignee), routing, dispatch (starting a worker)
 
+**Worker selection**:
+The one decision of what a worker runs: its harness, its model, whether a model label named that model, and what an unfollowed label is told — or why nothing is safe, as the user is told it. It is made from facts gathered once for the start: the host kit whole, what of it can start now and why the rest cannot, the checkout's named harness, the pauses, the role, the issue's labels and the harness's **default model** where the user's Codex config names one. Dispatch, switch, a patrol, plan and the panel each ask it, and it says how the model goes on the start line of every harness.
+
 **Worker**:
 A session of one harness, started in one role to perform one stage of one issue — or, after its last stage, to land its PR in a turn — in that issue's worktree, and to report through GitHub. In an unbound repo it has no role and owns its issue from start to landing. It is ended — its terminal closed — by the step that ends what it was started for: its stage, its claim, or its run.
 _Avoid_: agent (whoever reads the help; and a worker, to whoever has not met the term), subagent, child (an issue a split opened)
@@ -288,12 +299,16 @@ One bounded task delivered to the host's watch, with its own identity, brief, de
 _Avoid_: session (the Agent can execute many rounds)
 
 **Exclusive queue**:
-The host runner's FIFO queue for heavy commands across its fleets. Commands run in worker lanes, as many as the host settings allow; independently owned candidate worktrees of one repo may validate together. A light gate takes a turn in its repo's own lane.
+The host runner's FIFO queue for heavy commands across its fleets. Commands run in worker lanes, as many as the host settings allow; independently owned candidate worktrees of one repo may validate together. A light gate takes a turn in its repo's own lane. A worker's fast gate takes the fast lane.
 _Avoid_: gate queue
 
 **Nudge**:
 The one line the fleet types at a stopped worker with no outcome, telling it to carry on. Sent once for silence; a capacity stop may call for another after a longer wait.
 _Avoid_: ping, reminder, retry
+
+**Tell**:
+The operator's note to the worker at work on an issue, busy or stopped, with `afkconvoy tell`. Posted on the issue first, its one home, which every later worker reads; then typed at the worker under this host's claim, and told only once its harness's session record holds it as a message its model was given as the user's. A note seen only in the harness's input queue is not told. A nudge is the fleet's own line to a stopped worker, telling it to carry on; a tell is the operator's words.
+_Avoid_: relay
 
 **Restart**:
 Replacing a silent worker with a new one in the same worktree and the same role, with its PR, branch and worktree untouched. Made once, and only for a worker waiting to land its PR.
@@ -310,7 +325,7 @@ _Avoid_: notification, callback, done signal
 ### Claims
 
 **Claim**:
-The atomic lock marking one issue as owned by one fleet instance. Its creation succeeds for exactly one instance. It takes one slot of the concurrency while its worker is at work, and none once a verdict is declared under it: it is still held until that verdict is acted on, and a worker started under it again takes a slot as any start does.
+The atomic lock marking one issue as owned by one fleet instance. Its creation succeeds for exactly one instance. It takes one slot of the concurrency while its worker is at work, and none once a verdict is declared under it: it is still held until that verdict is acted on, and a worker started under it again takes a slot as any start does. A landing claim's worker is at work only while it is changing the tree — resolving a conflict, fixing a red gate, or still preparing the branch for the turn. Gone or idle, or with its turn queued, waiting on a predecessor or last answering a wait, it takes no slot: the claim is still held until the PR lands or it ends otherwise, the tick asks for the turn again without starting a harness, and a worker it starts because the turn needs the tree changed takes a slot as any start does.
 _Avoid_: assignee, assignment, lock (the fleet lock)
 
 **Heartbeat**:
@@ -352,7 +367,7 @@ The file a fleet instance keeps on its own host: one line as it starts, a line a
 _Avoid_: state file, journal, history
 
 **Finding**:
-One thing `doctor` says is wrong with the fleet on this host, with how bad it is, what shows it, its fix — a line to run, or a file and the key in it to edit — and the help topic that explains it. `doctor` fixes none itself.
+One thing `doctor` says is wrong with the fleet on this host, of one **kind**, with how bad it is, what shows it, its fix — a line to run, or a file and the key in it to edit — the help topic that explains it, and the identity of its condition, made where it is judged and unchanged by its words. `doctor` fixes none itself. The host's watch acts on each finding that is not `info` by its kind and identity: each condition it acts on is one finding.
 _Avoid_: diagnosis (a worker health assessment), alert, warning (one of its severities), error (what a command that failed answers with)
 
 ### Landing
@@ -366,16 +381,28 @@ How long the gate may run. A run that reaches it is ended and is red. A repo dec
 _Avoid_: timeout (what a run that reached it did), budget (the warning threshold), baseline (a committed timing observation)
 
 **Gate budget**:
-The fixed duration a repo expects its gate to stay within. Recent recorded landings on one host that all exceed it make a slow gate; exceeding it never ends a run.
+The fixed duration a repo expects its gate to stay within. Recent recorded landings on one host that all exceed it make a gate gone slow; exceeding it never ends a run. The fast gate and the slow gate each have one of their own.
 _Avoid_: gate limit (the termination bound), learned baseline
 
 **Recorded gate run**:
 The evidence that the gate passed on one committed tree, with how long the run took and on which host, made by the tool that saw the exit code and kept where every host can read it. A turn believes one from either ref layout while it stands.
 _Avoid_: gate cache, CI status
 
+**Fast gate**:
+The part of the gate a worker passes before it opens or updates its PR: the checks that are quick, and every test not marked slow. A repo declares it beside the slow gate, each with its own command, limit and budget; together they are the gate. A new test is in it until it is marked slow.
+_Avoid_: smoke test, pre-check, quick gate
+
+**Fast lane**:
+The places of the exclusive queue that only a worker's fast gate takes, as many as the host settings say. No slow gate, turn or other command holds one, and fast gates of one repo run side by side in it, each in its own worktree.
+_Avoid_: fast queue, priority lane
+
 **Slow gate**:
-What the gate is when its recent runs for the base branch, on one host, all exceeded the gate budget, or took most of the gate limit where no budget is declared. The fleet opens one issue that says so, and no second while that one is open.
-_Avoid_: regression, drift, creep
+The part of the gate the fast gate leaves out: every test marked slow, and any check not in the fast gate. Nothing in the fast gate is run again in it. A landing turn runs it once per round, not per candidate.
+_Avoid_: full gate (the gate, both parts), gate gone slow (a gate whose runs exceed its budget)
+
+**Gate gone slow**:
+What the gate is when its recent runs for the base branch, on one host, all exceeded the gate budget, or took most of the gate limit where no budget is declared. The fleet opens one issue that says so, labelled `slow-gate`, and no second while that one is open.
+_Avoid_: slow gate (the part of the gate holding the slow tests), regression, drift, creep
 
 **Sync**:
 Bringing a branch up to date by merging into it. Nothing is ever rebased.
@@ -392,6 +419,10 @@ _Avoid_: speculative branch, train tip
 **Candidate chain**:
 The ordered candidates of one repo and target branch, each depending on its predecessor. A failed or invalid candidate cancels its dependent suffix; already landed predecessors remain landed.
 _Avoid_: landing train, speculative queue
+
+**Round**:
+One run of the slow gate on a candidate chain's tip, once every PR that asked to land is a fast-green candidate, that lands every candidate up to the tip together. Its size is the PRs that are ready, not the host's worker lanes. A PR that asks during it waits for the next. A red round is not split to find whose change failed: the tip's worker fixes it whole, from the round's issues and its failing tests, and the round's other candidates stop, their changes carried by the tip's PR.
+_Avoid_: batch (a tick's), bisection, merge train, rollup
 
 **Land**:
 Pushing the exact candidate a turn recorded green onto its target branch as a fast-forward after its predecessor has landed, and closing the issue it completes. Issue workers, a workflow's landing worker, watches and cuts all land in a turn; watches and cuts retain the configured base branch.

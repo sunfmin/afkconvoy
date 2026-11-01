@@ -330,6 +330,55 @@ fn a_worktree_a_process_is_in_stays_until_that_process_is_gone() {
 }
 
 #[test]
+fn a_landed_worker_idle_at_its_prompt_is_ended_and_its_worktree_removed() {
+    let world = backlog(&[3]);
+    world.set_gate("true");
+    tick(&world, "1000");
+    let worktree = worker_worktree(&world);
+    common::commit(&worktree, "three.txt", "3\n");
+    git(&worktree, &["push", "-q", "origin", "HEAD"]);
+    world.pr(30, 3, &git(&worktree, &["symbolic-ref", "--short", "HEAD"]));
+    let landed = world.afk_in(&worktree, &["land", "--issue", "3", "--now", "1050"]).ok();
+    assert_eq!(landed["outcome"], "merged", "{landed}");
+    let session = Session::start(&world, &worktree);
+    report(&world, "idle", 1060);
+
+    let ticked = tick(&world, "1090");
+    assert_eq!(did(&ticked), ["settle 3 done"], "{ticked}");
+    assert!(ticked["errors"].as_array().unwrap().is_empty(), "{ticked}");
+    assert!(session.ended(), "the worker's own session is ended");
+    assert!(open_terminals(&world, &worktree).is_empty(), "its terminal is closed");
+    assert!(!worktree.exists(), "the worktree is removed");
+    assert_eq!(world.claims(), []);
+}
+
+#[test]
+fn a_worker_still_working_keeps_its_worktree() {
+    let world = backlog(&[3]);
+    tick(&world, "1000");
+    let worktree = worker_worktree(&world);
+    let session = Session::start(&world, &worktree);
+    report(&world, "working", 1000);
+    world.close_issue(3);
+
+    let ticked = tick(&world, "1090");
+    assert_eq!(did(&ticked), ["settle 3 failed", "heartbeat done"], "{ticked}");
+    let error = ticked["errors"][0]["error"].as_str().unwrap();
+    assert!(error.contains("a worker is still using"), "{error}");
+    assert!(!session.ended(), "a worker still working is left alone");
+    assert_eq!(open_terminals(&world, &worktree).len(), 1);
+    assert!(worktree.is_dir());
+    assert_eq!(world.claims(), alpha(&[3]));
+
+    report(&world, "idle", 1100);
+    let again = tick(&world, "1180");
+    assert_eq!(did(&again)[0], "settle 3 done", "{again}");
+    assert!(session.ended());
+    assert!(!worktree.exists(), "once it stopped, the next tick ends it and removes the worktree");
+    assert_eq!(world.claims(), []);
+}
+
+#[test]
 fn a_worktree_with_a_commit_the_remote_does_not_have_stays() {
     let world = backlog(&[3]);
     tick(&world, "1000");
@@ -445,6 +494,81 @@ fn mode(path: &Path) -> u32 {
 }
 
 /// Kills the process when dropped, including when an assertion fails.
+/// The workers report `state` since `since` (epoch seconds).
+fn report(world: &World, state: &str, since: u64) {
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            terminal["agent"] = json!({"state": state, "stateStartedAt": since * 1000});
+            terminal["lastOutputAt"] = json!(since * 1000);
+        }
+    });
+}
+
+fn open_terminals(world: &World, dir: &Path) -> Vec<Value> {
+    let orca = world.orca();
+    let terminals = orca["terminals"].as_array().unwrap();
+    let here = terminals.iter().filter(|t| t["worktreePath"] == dir.to_str().unwrap());
+    here.filter(|t| t["open"] == true).cloned().collect()
+}
+
+/// A process of the worker's own session: started in its worktree with its
+/// `TMPDIR`, as the harness orca starts for it is. A thread reaps it the
+/// moment it ends, so no zombie stands for it.
+#[test]
+#[ignore = "a worker's session starts this as its process"]
+fn session_helper() {
+    std::fs::write(std::env::var_os("SESSION_READY").unwrap(), "").unwrap();
+    std::thread::sleep(std::time::Duration::from_secs(120));
+}
+
+struct Session {
+    pid: u32,
+    reaper: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Session {
+    fn start(world: &World, worktree: &Path) -> Self {
+        // Not a system binary: `ps` reads the environment of this one.
+        let ready = worktree.join(".afkconvoy-tmp/session-ready");
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "tick::session_helper", "--ignored"])
+            .current_dir(worktree)
+            .env("TMPDIR", world.tmp(worktree))
+            .env("SESSION_READY", &ready)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        let reaper = std::thread::spawn(move || {
+            child.wait().unwrap();
+        });
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !ready.exists() {
+            assert!(std::time::Instant::now() < until, "the session never started");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        Self { pid, reaper: Some(reaper) }
+    }
+
+    fn ended(&self) -> bool {
+        self.reaper.as_ref().is_none_or(|reaper| reaper.is_finished())
+    }
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        if let Some(reaper) = self.reaper.take() {
+            if !reaper.is_finished() {
+                // SAFETY: this pid is the test's own child, not yet reaped.
+                unsafe { libc::kill(self.pid as libc::pid_t, libc::SIGKILL) };
+            }
+            reaper.join().unwrap();
+        }
+    }
+}
+
 struct Hold(Child);
 
 impl Drop for Hold {
@@ -734,8 +858,8 @@ fn a_failed_step_shows_in_the_line() {
     assert!(lines[0].starts_with("tick 1: holding 1/2 · frontier 0 · FAILED"), "{lines:?}");
 }
 
-/// Takes issue `number` off the stand-in GitHub as `how` — `deleted` or
-/// `transferred` — once `calls` more calls about it are answered.
+/// Takes issue `number` off the stand-in GitHub as `how` — `deleted`,
+/// `transferred` or `missing` — once `calls` more calls about it are answered.
 fn gone(world: &World, number: u64, how: &str, calls: u64) {
     world.with_gh(|gh| {
         if calls == 0 {
@@ -747,9 +871,11 @@ fn gone(world: &World, number: u64, how: &str, calls: u64) {
 
 #[test]
 fn a_claimed_issue_deleted_between_two_ticks_is_let_go_and_its_slot_refilled() {
-    for (how, said) in
-        [("deleted", "the issue was deleted"), ("transferred", "the issue is gone from this repo")]
-    {
+    for (how, said) in [
+        ("deleted", "the issue was deleted"),
+        ("transferred", "the issue was transferred to acme/elsewhere#1003"),
+        ("missing", "there is no such issue"),
+    ] {
         let world = backlog(&[3, 5, 9]);
         tick(&world, "1000");
         let worktree = world.orca()["worktrees"][0]["path"].as_str().unwrap().to_string();

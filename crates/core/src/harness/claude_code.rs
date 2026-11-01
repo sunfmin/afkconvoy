@@ -44,6 +44,9 @@ pub(super) const PROVIDER: &str = "ANTHROPIC_BASE_URL";
 /// setting do not accept workspace trust, even when both settings are given.
 /// This does not write a trust entry in the host user's config.
 pub(super) const TRUST: &str = "CLAUDE_CODE_SANDBOXED=1";
+/// Its worktree trust outside a role is the permission-bypass and settings
+/// flags `in_worktree` adds: a launch checks the command takes `FLAGS`.
+pub(super) const TRUST_IS_FLAGS: bool = true;
 const BYPASS: &str = "--dangerously-skip-permissions";
 
 /// Starts Claude Code with its worktree trusted and its unattended warning
@@ -540,6 +543,43 @@ fn note(cwd: &str, value: &serde_json::Value) -> Option<Note> {
         }
         _ => None,
     }
+}
+
+/// The line a stand-in writes for `line`, typed while the worker worked: a
+/// `queued_command` attachment once its model has it, else only the
+/// `queue-operation` that holds it in the input queue.
+pub(super) fn note_files(cwd: &str, line: &str, taken: bool, at: u64) -> Vec<SessionFile> {
+    let iso = session::format_iso(at);
+    let record = if taken {
+        session::object(vec![
+            ("type", "attachment".into()),
+            ("timestamp", iso.clone().into()),
+            ("cwd", cwd.into()),
+            ("isSidechain", false.into()),
+            (
+                "attachment",
+                session::object(vec![
+                    ("type", "queued_command".into()),
+                    ("prompt", line.into()),
+                    ("commandMode", "prompt".into()),
+                    ("timestamp", iso.into()),
+                ]),
+            ),
+        ])
+    } else {
+        session::object(vec![
+            ("type", "queue-operation".into()),
+            ("operation", "enqueue".into()),
+            ("timestamp", iso.into()),
+            ("content", line.into()),
+        ])
+    };
+    vec![SessionFile {
+        path: format!("projects/{}/afkconvoy-note.jsonl", dir_name(cwd)),
+        body: format!("{record}\n"),
+        compressed: false,
+        replaces: None,
+    }]
 }
 
 /// One session file a stand-in writes for this turn.

@@ -8,6 +8,7 @@ use afkconvoy_core::plan::{PullRequest, closing_pr};
 use afkconvoy_core::settle::{
     Follow, SettleStep, cut_landing, follow, landed_comment, settle_steps,
 };
+use afkconvoy_core::worker::WorkerState;
 use anyhow::{Result, anyhow, bail};
 
 use crate::board::last_word;
@@ -18,6 +19,7 @@ use crate::git::{REMOTE, Repo};
 use crate::landing::joins_in;
 use crate::orca::{Source, Worktree};
 use crate::recovery::own_heads;
+use crate::remote::{Fresh, Push};
 
 /// The joining on the base branch that landed `issue` of `tracker` — the
 /// newest merge commit there a PR joined a train with that closes it — and
@@ -65,7 +67,7 @@ fn follow_base(fleet: &Fleet) -> Result<()> {
     let base = &fleet.config.base_branch;
     let local = format!("refs/heads/{base}");
     let before = main.try_git(&["rev-parse", "-q", "--verify", &local])?;
-    let Some(tip) = main.fetched(&local)?.filter(|_| before.ok) else {
+    let Some(tip) = main.remote().fetched(&local, Fresh::Process)?.filter(|_| before.ok) else {
         return Ok(());
     };
     let here = main.try_git(&["symbolic-ref", "-q", "--short", "HEAD"])?.stdout;
@@ -85,16 +87,25 @@ fn follow_base(fleet: &Fleet) -> Result<()> {
 }
 
 /// Removes the worktree settling `issue` leaves, unless a worker is still in
-/// it or it holds a commit the remote does not. A worker still in it fails
-/// the settle, so the claim stays and a later tick tries again. A commit the
+/// it or it holds a commit the remote does not. The worker the fleet started
+/// here, stopped at its prompt, is its own session: it is ended first. A
+/// worker still working, or any other process still in it, fails the
+/// settle, so the claim stays and a later tick tries again. A commit the
 /// remote does not have stays, and the settle goes on: the claim is released
 /// and nothing records a failed removal, so a later tick does not take it.
 fn remove_settled(fleet: &Fleet, issue: u64, worktree: &Worktree) -> Result<()> {
     let path = worktree.path.display().to_string();
-    let busy = crate::hot::working_directories()
-        .map_err(|_| anyhow!("a worker is still using {path}; a later tick removes it"))?;
+    let still = || anyhow!("a worker is still using {path}; a later tick removes it");
+    if worktree.holds_a_worker() {
+        match worktree.state(fleet.now)? {
+            WorkerState::Busy => return Err(still()),
+            WorkerState::Idle { .. } => worktree.end_settled()?,
+            WorkerState::Gone => {}
+        }
+    }
+    let busy = crate::hot::working_directories().map_err(|_| still())?;
     if crate::hot::occupies(&busy, &worktree.path) {
-        bail!("a worker is still using {path}; a later tick removes it");
+        return Err(still());
     }
     if settled_keeps(fleet, issue, worktree)? {
         return Ok(());
@@ -127,16 +138,11 @@ fn settled_keeps(fleet: &Fleet, issue: u64, worktree: &Worktree) -> Result<bool>
 pub fn settle(fleet: &mut Fleet, me: &Me, issue: u64) -> Result<()> {
     let closed = fleet.gh.issue(issue)?.is_closed();
     let base_tip = fleet.task_tip(issue)?;
-    // A landing turn that already left the account is that end. Settling it
-    // does not move the end. A claim still held on an issue a human closed,
-    // or a landing cut short of its account, leaves one here.
     let landed = landing_of(&fleet.repo, &fleet.gh.tracker, &base_tip, issue)?.is_some();
-    let accounted = fleet.gh.comments(issue)?.iter().any(|comment| {
-        afkconvoy_core::record::read_marker(afkconvoy_core::account::ACCOUNT, &comment.body)
-            .is_some()
-    });
-    if !(landed && accounted) {
-        crate::account::leave(&fleet.repo, &fleet.gh, issue, fleet.now)?;
+    let comments = fleet.gh.comments(issue)?;
+    let accounted = afkconvoy_core::account::left(comments.iter().map(|c| c.body.as_str()));
+    if let Some(end) = afkconvoy_core::account::settled_end(landed, accounted) {
+        crate::account::leave(&fleet.repo, &fleet.gh, issue, end, fleet.now)?;
     }
     for step in settle_steps(closed) {
         match step {
@@ -171,16 +177,9 @@ pub fn settle(fleet: &mut Fleet, me: &Me, issue: u64) -> Result<()> {
                 let worktree = Worktree::of_issue(&Source::of(&fleet.repo)?, issue)?;
                 for branch in own_heads(fleet, issue, worktree.as_ref())? {
                     let head = format!("refs/heads/{branch}");
-                    let Some(tip) = fleet.repo.fetched(&head)? else { continue };
+                    let Some(tip) = fleet.remote.fetched(&head, Fresh::Process)? else { continue };
                     if fleet.repo.try_git(&["merge-base", "--is-ancestor", &tip, &base_tip])?.ok {
-                        let lease = format!("--force-with-lease={head}:{tip}");
-                        fleet.repo.git(&[
-                            "push",
-                            "--quiet",
-                            &lease,
-                            REMOTE,
-                            &format!(":{head}"),
-                        ])?;
+                        fleet.remote.push(&Push::delete(&head).leased(&tip))?;
                     }
                 }
             }

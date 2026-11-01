@@ -9,6 +9,29 @@ use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+/// Has `command` start with no descriptor it would inherit but stdin,
+/// stdout and stderr. A process that outlives its starter — the host
+/// runner — would otherwise hold whatever its starter was handed: a worker
+/// lane's lease, kept by its kernel lock, held the lane for as long as a
+/// host runner a test started lived (2026-10-29). Descriptors marked
+/// close-on-exec are left to exec, and Rust's own pipe among them.
+pub(crate) fn inheriting_nothing(command: &mut Command) -> &mut Command {
+    use std::os::unix::process::CommandExt;
+    // SAFETY: getdtablesize and fcntl and close are async-signal-safe.
+    let limit = unsafe { libc::getdtablesize() };
+    unsafe {
+        command.pre_exec(move || {
+            for fd in 3..limit {
+                let flags = libc::fcntl(fd, libc::F_GETFD);
+                if flags >= 0 && flags & libc::FD_CLOEXEC == 0 {
+                    libc::close(fd);
+                }
+            }
+            Ok(())
+        })
+    }
+}
+
 /// Starts `command` with its configured streams, without inheriting a pipe
 /// another start is still preparing. Waiting for the child holds no turn.
 pub(crate) fn spawn(command: &mut Command) -> io::Result<Child> {
@@ -54,13 +77,32 @@ const DRAIN_AFTER_EXIT: Duration = Duration::from_secs(2);
 /// `DRAIN_AFTER_EXIT` and then dropped: the output already written is kept,
 /// and a leaked writer cannot hold the caller.
 pub(crate) fn output(command: &mut Command) -> io::Result<Output> {
-    let mut child = starting(|| {
-        command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()
-    })?;
+    output_given(command, None)
+}
+
+/// As `output`, with `input` written to the command's stdin and then closed:
+/// for text too long for an argument, which the OS bounds by `ARG_MAX`.
+pub(crate) fn output_with_input(command: &mut Command, input: &[u8]) -> io::Result<Output> {
+    output_given(command, Some(input))
+}
+
+fn output_given(command: &mut Command, input: Option<&[u8]>) -> io::Result<Output> {
+    let stdin = if input.is_some() { Stdio::piped() } else { Stdio::null() };
+    let mut child =
+        starting(|| command.stdin(stdin).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn())?;
+    let writer = child.stdin.take();
     let stdout = child.stdout.take().ok_or_else(|| io::Error::other("stdout was not piped"))?;
     let stderr = child.stderr.take().ok_or_else(|| io::Error::other("stderr was not piped"))?;
     let exited = AtomicBool::new(false);
     let (stdout, stderr, status) = std::thread::scope(|scope| {
+        if let (Some(mut writer), Some(input)) = (writer, input) {
+            // A child that exits before reading it all closes the pipe; its
+            // status says what went wrong, not the broken write.
+            scope.spawn(move || {
+                use std::io::Write;
+                let _ = writer.write_all(input);
+            });
+        }
         let stdout = scope.spawn(|| read_bounded(stdout, &exited));
         let stderr = scope.spawn(|| read_bounded(stderr, &exited));
         let status = child.wait();
@@ -171,6 +213,32 @@ mod tests {
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn input_past_arg_max_reaches_the_command_whole() {
+        // macOS's ARG_MAX is 1 MiB; a candidate record was refused there
+        // as an argument (sunfmin/control#308).
+        let input = "x".repeat(2 << 20);
+        let out = output_with_input(Command::new("wc").arg("-c"), input.as_bytes()).unwrap();
+        assert!(out.status.success());
+        assert_eq!(String::from_utf8(out.stdout).unwrap().trim(), (2 << 20).to_string());
+    }
+
+    #[test]
+    fn a_start_inheriting_nothing_is_handed_no_descriptor_its_starter_was() {
+        let dir = tempfile::tempdir().unwrap();
+        let lease = std::fs::File::create(dir.path().join("lease")).unwrap();
+        let fd = lease.as_raw_fd();
+        // As a worker's lease is handed on: inheritable.
+        assert_eq!(unsafe { libc::fcntl(fd, libc::F_SETFD, 0) }, 0);
+        let open = |command: &mut Command| {
+            let probe = format!("[ -e /dev/fd/{fd} ] && echo open || echo closed");
+            let out = command.args(["-c", &probe]).output().unwrap();
+            String::from_utf8(out.stdout).unwrap().trim().to_string()
+        };
+        assert_eq!(open(&mut Command::new("sh")), "open");
+        assert_eq!(open(inheriting_nothing(&mut Command::new("sh"))), "closed");
+    }
 
     #[test]
     fn waiting_for_one_child_does_not_hold_back_another_start() {

@@ -228,7 +228,7 @@ fn an_escalate_starts_the_consult_its_stage_names_with_the_history_and_the_reaso
 
     let dir = worktree(&world);
     let told = brief(&dir);
-    let own = format!("cd '{}' && {}", dir.display(), env!("CARGO_BIN_EXE_afkconvoy"));
+    let own = format!("cd '{}' && afkconvoy", dir.display());
     for said in [
         "started in your role as a **consult**",
         "- **Stage that asked:** `build`, of the workflow `feature`\n",
@@ -689,14 +689,16 @@ fn an_escalation_says_so_on_the_tick_line_and_names_the_command_that_answers_it(
     let mut warnings = waited(&late);
     let identity = warnings[0].as_object_mut().unwrap().remove("watch_id").unwrap();
     let identity: Value =
-        serde_json::from_str(identity.as_str().unwrap().strip_prefix("checkout:human:").unwrap())
+        serde_json::from_str(identity.as_str().unwrap().strip_prefix("checkout:").unwrap())
             .unwrap();
+    assert_eq!(identity[0], "human");
+    let identity = identity[1].clone();
     let mut question = waiting[0].clone();
     question.as_object_mut().unwrap().remove("title");
     assert_eq!(identity, question, "the warning identifies the structured human question");
     assert_eq!(
         warnings,
-        [json!({"severity": "warning",
+        [json!({"kind": "waited_long", "severity": "warning",
             "what": format!("#7 has waited for a human for 2h 1m: {why}"),
             "evidence": "nobody holds it and no tick moves it; it is the fleet's again once \
                          it is answered, and it has waited longer than 1h 0m",

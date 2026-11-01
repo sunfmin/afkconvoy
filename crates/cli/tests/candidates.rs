@@ -2,6 +2,7 @@
 //! release files; assertions inspect refs, original heads and child exit.
 use crate::common::{World, commit, git, worktree_listed};
 use serde_json::{Value, json};
+use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -18,7 +19,48 @@ fn until(mut done: impl FnMut() -> bool) {
     }
 }
 
-fn world(lanes: u64) -> World {
+/// A world whose gates, and what they started, end with a failing test: a
+/// gate outliving it would keep whatever lane lease the test ran under.
+struct Fleet(World);
+
+impl Deref for Fleet {
+    type Target = World;
+    fn deref(&self) -> &World {
+        &self.0
+    }
+}
+
+impl Drop for Fleet {
+    fn drop(&mut self) {
+        // A passing test has already seen its gates end; their pids may be reused.
+        if !std::thread::panicking() {
+            return;
+        }
+        let ours = Command::new("ps")
+            .args(["-p", &std::process::id().to_string(), "-o", "pgid="])
+            .output()
+            .unwrap();
+        let ours = String::from_utf8_lossy(&ours.stdout).trim().to_string();
+        for name in ["a", "b", "c", "d"] {
+            for kind in ["gate", "child"] {
+                let Ok(pid) = std::fs::read_to_string(self.root.join(format!("{kind}-{name}")))
+                else {
+                    continue;
+                };
+                let pid = pid.trim();
+                let group = Command::new("ps").args(["-p", pid, "-o", "pgid="]).output().unwrap();
+                let group = String::from_utf8_lossy(&group.stdout).trim().to_string();
+                if !group.is_empty() && group != ours {
+                    let _ =
+                        Command::new("kill").args(["-KILL", "--", &format!("-{group}")]).status();
+                }
+                let _ = Command::new("kill").args(["-KILL", pid]).status();
+            }
+        }
+    }
+}
+
+fn world(lanes: u64) -> Fleet {
     let world = World::new();
     let root = quote(&world.root);
     let script = format!(
@@ -46,7 +88,7 @@ test ! -f "$root/fail-$name"
     world.set_gate(&command);
     assert_eq!(world.afk(&["gate"]).ok()["recorded"], true);
     world.say_host_settings(json!({"gate_lanes": lanes}));
-    world
+    Fleet(world)
 }
 
 fn start(world: &World, dir: &Path, cache: &Path, n: u64) -> Child {
@@ -113,6 +155,23 @@ fn gone(world: &World, name: &str) {
             let status = String::from_utf8_lossy(&ps.stdout);
             status.trim().is_empty() || status.trim().starts_with('Z')
         });
+    }
+}
+
+/// A turn stopped by SIGSTOP until dropped, so a panic never leaves it frozen.
+struct Held(String);
+
+impl Held {
+    fn stop(turn: &Child) -> Held {
+        let pid = turn.id().to_string();
+        assert!(Command::new("kill").args(["-STOP", &pid]).status().unwrap().success());
+        Held(pid)
+    }
+}
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        let _ = Command::new("kill").args(["-CONT", &self.0]).status();
     }
 }
 
@@ -361,8 +420,12 @@ fn a_gate_timeout_invalidates_and_terminates_its_running_successor() {
     let _runner = world.host_held();
     let aa = start(&world, &a, &world.cache(), 1);
     began(&world, "a");
+    // a's turn watches its gate limit; frozen, it cannot time a out before b
+    // has begun, however long b takes to start on a loaded host.
+    let held = Held::stop(&aa);
     let bb = start(&world, &b, &world.cache(), 2);
     began(&world, "b");
+    drop(held);
     let failed = finish(aa);
     let cancelled = finish(bb);
     assert_eq!(failed["outcome"], "gate_red", "{failed}");
@@ -470,7 +533,7 @@ fn semantic_blockers_hold_a_cancelled_successor_and_a_live_lock_blocks_a_waiting
     began(&world, "a");
     let bb = start(&world, &b, &world.cache(), 2);
     until(|| {
-        world.afk(&["doctor"]).json["host"]["exclusive"]["lanes"]["worker"]["waiting"]
+        world.afk(&["doctor"]).json["host"]["exclusive"]["waiting"]
             .as_array()
             .is_some_and(|w| !w.is_empty())
     });
@@ -499,8 +562,11 @@ fn publication_survives_issue_settlement_failure_without_a_duplicate_gate() {
     let (a, head) = worker(&world, 1, "a");
     world.with_gh(|gh| gh["fail"] = json!(["state=closed"]));
     release(&world, "a", false);
-    let failed = start(&world, &a, &world.cache(), 1).wait_with_output().unwrap();
-    assert!(!failed.status.success());
+    // The landing is published: a close that fails does not unsay it
+    // (sunfmin/control#247).
+    let landed = finish(start(&world, &a, &world.cache(), 1));
+    assert_eq!(landed["outcome"], "merged", "{landed}");
+    assert!(landed["settle_error"].as_str().is_some_and(|e| !e.is_empty()), "{landed}");
     let state = chain(&world);
     assert_eq!(state["candidates"][0]["phase"], "landed");
     assert_eq!(
@@ -511,9 +577,28 @@ fn publication_survives_issue_settlement_failure_without_a_duplicate_gate() {
     world.with_gh(|gh| gh["fail"] = json!([]));
     let recovered = finish(start(&world, &a, &world.cache(), 1));
     assert_eq!(recovered["outcome"], "merged");
+    assert!(recovered.get("settle_error").is_none(), "{recovered}");
     assert_eq!(world.state(1), "closed");
     assert_eq!(git(&a, &["rev-parse", "HEAD"]), head);
     assert_eq!(chain(&world)["candidates"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn a_close_refused_while_github_closes_the_issue_itself_is_a_close() {
+    let world = world(1);
+    let (a, _) = worker(&world, 1, "a");
+    // GitHub closes the issue as the merged PR says it, and refuses the
+    // turn's own close at that moment.
+    world.with_gh(|gh| {
+        gh["fail"] = json!(["state=closed"]);
+        let rows = gh["issues"].as_array_mut().unwrap();
+        let issue = rows.iter_mut().find(|row| row["number"] == 1).unwrap();
+        issue["state"] = json!("closed");
+    });
+    release(&world, "a", false);
+    let landed = finish(start(&world, &a, &world.cache(), 1));
+    assert_eq!(landed["outcome"], "merged", "{landed}");
+    assert!(landed.get("settle_error").is_none(), "{landed}");
 }
 
 #[test]
@@ -1011,4 +1096,246 @@ fn measure_serial_and_parallel_batches() {
         "CANDIDATE_BATCH_MEASUREMENT={}",
         json!({"version":afkconvoy::VERSION,"batches":batches})
     );
+}
+
+/// A world whose config declares a fast gate and a slow gate. Each part
+/// waits for its own release file, `release-<part>-<name>`, and fails on
+/// `fail-<part>-<name>`; the whole gate is the two in a row.
+fn split_world(lanes: u64) -> World {
+    let world = World::new();
+    let root = quote(&world.root);
+    let script = format!(
+        r#"#!/bin/sh
+set -e
+root={root}
+part=$1
+name=
+for n in a b c d; do if test -f "$n.txt"; then name=$n; fi; done
+case "${{AFKCONVOY_ISSUE:-}}" in 1) name=a;; 2) name=b;; 3) name=c;; 4) name=d;; esac
+test -n "$name" || exit 0
+touch "$root/start-$part-$name"
+while test -d "$root" && test ! -f "$root/release-$part-$name"; do sleep 0.02; done
+test ! -f "$root/fail-$part-$name"
+"#
+    );
+    commit(&world.clone, "gate.sh", &script);
+    let afk = afkconvoy_core::line::Line::new().program(env!("CARGO_BIN_EXE_afkconvoy")).own();
+    let config = format!(
+        "```yaml\nbase_branch: main\ngate_command: \"{afk} exclusive -- sh ./gate.sh whole\"\ngate_seconds: 600\n```\n\n```yaml gates\nfast:\n  command: \"{afk} exclusive -- sh ./gate.sh fast\"\n  seconds: 300\n  budget_seconds: 200\nslow:\n  command: \"{afk} exclusive -- sh ./gate.sh slow\"\n  seconds: 300\n  budget_seconds: 200\n```\n"
+    );
+    std::fs::write(world.clone.join("docs/agents/afkconvoy.md"), config).unwrap();
+    git(&world.clone, &["commit", "-q", "-am", "split the gate"]);
+    git(&world.clone, &["push", "-q", "origin", "HEAD"]);
+    assert_eq!(world.afk(&["gate"]).ok()["recorded"], true);
+    world.say_host_settings(json!({"gate_lanes": lanes}));
+    world
+}
+
+fn started(world: &World, part: &str, name: &str) -> bool {
+    world.root.join(format!("start-{part}-{name}")).exists()
+}
+
+fn let_go(world: &World, part: &str, name: &str, red: bool) {
+    if red {
+        std::fs::write(world.root.join(format!("fail-{part}-{name}")), "").unwrap();
+    } else {
+        let _ = std::fs::remove_file(world.root.join(format!("fail-{part}-{name}")));
+    }
+    std::fs::write(world.root.join(format!("release-{part}-{name}")), "").unwrap();
+}
+
+#[test]
+fn a_round_slow_gates_its_tip_once_and_lands_every_fast_green_candidate_together() {
+    let world = split_world(3);
+    let (a, ah) = worker(&world, 1, "a");
+    let (b, bh) = worker(&world, 2, "b");
+    let _runner = world.host_held();
+    let aa = start(&world, &a, &world.cache(), 1);
+    until(|| started(&world, "fast", "a"));
+    let bb = start(&world, &b, &world.cache(), 2);
+    until(|| started(&world, "fast", "b"));
+    let_go(&world, "fast", "a", false);
+    green(&world, 1);
+    assert_eq!(
+        chain(&world)["candidates"][0]["slow"]["command"].as_str().map(|c| c.ends_with("slow")),
+        Some(true)
+    );
+    let_go(&world, "fast", "b", false);
+    until(|| started(&world, "slow", "b"));
+    assert!(!started(&world, "slow", "a"), "only the round's tip runs the slow gate");
+    let candidates = chain(&world)["candidates"].clone();
+    assert_eq!(candidates[0]["phase"], "green");
+    assert_eq!(candidates[1]["phase"], "slow");
+    let_go(&world, "slow", "b", false);
+    let (landed_a, landed_b) = (finish(aa), finish(bb));
+    assert_eq!(landed_a["outcome"], "merged", "{landed_a}");
+    assert_eq!(landed_b["outcome"], "merged", "{landed_b}");
+    assert_eq!(landed_b["landed"], json!([10, 20]));
+    assert_eq!(landed_a["commit"], candidates[0]["commit"]);
+    assert_eq!(
+        world.remote(&["rev-parse", "refs/heads/main"]),
+        candidates[1]["commit"].as_str().unwrap()
+    );
+    assert_eq!(world.remote(&["rev-parse", "refs/heads/issue-1"]), ah);
+    assert_eq!(world.remote(&["rev-parse", "refs/heads/issue-2"]), bh);
+    // The round put the whole gate on record for the new tip: the next turn
+    // starts on it without a run of the whole gate.
+    let (c, _) = worker(&world, 3, "c");
+    let_go(&world, "fast", "c", false);
+    let_go(&world, "slow", "c", false);
+    let landed_c = finish(start(&world, &c, &world.cache(), 3));
+    assert_eq!(landed_c["outcome"], "merged", "{landed_c}");
+    assert!(!started(&world, "whole", "b"), "the round's tip needed no certification run");
+}
+
+#[test]
+fn a_red_round_is_fixed_whole_by_its_tip_and_its_other_candidates_stop() {
+    let world = split_world(3);
+    let (a, _) = worker(&world, 1, "a");
+    let (b, _) = worker(&world, 2, "b");
+    let base = world.remote(&["rev-parse", "refs/heads/main"]);
+    let _runner = world.host_held();
+    let aa = start(&world, &a, &world.cache(), 1);
+    until(|| started(&world, "fast", "a"));
+    let bb = start(&world, &b, &world.cache(), 2);
+    until(|| started(&world, "fast", "b"));
+    let_go(&world, "fast", "a", false);
+    let_go(&world, "fast", "b", false);
+    until(|| started(&world, "slow", "b"));
+    let tip = chain(&world)["candidates"][1]["commit"].as_str().unwrap().to_string();
+    let_go(&world, "slow", "b", true);
+    let (stopped, red) = (finish(aa), finish(bb));
+    assert_eq!(red["outcome"], "gate_red", "{red}");
+    assert_eq!(red["gate"], "slow");
+    assert_eq!(red["round"].as_array().map(Vec::len), Some(2), "{red}");
+    assert_eq!(stopped["outcome"], "round_red", "{stopped}");
+    assert_eq!(stopped["round_pr"], 20);
+    assert_eq!(
+        world.remote(&["rev-parse", "refs/heads/main"]),
+        base,
+        "nothing of a red round lands"
+    );
+    assert!(!started(&world, "slow", "a"), "a red round is not split");
+    // The tip's branch holds the whole round; its next turn lands it all.
+    assert_eq!(git(&b, &["rev-parse", "HEAD"]), tip);
+    let_go(&world, "slow", "b", false);
+    let fixed = finish(start(&world, &b, &world.cache(), 2));
+    assert_eq!(fixed["outcome"], "merged", "{fixed}");
+    let files = world.remote(&["ls-tree", "--name-only", "refs/heads/main"]);
+    assert!(files.lines().any(|f| f == "a.txt") && files.lines().any(|f| f == "b.txt"));
+    let history = world.remote(&["log", "--format=%s", "refs/heads/main"]);
+    assert!(
+        history.contains("(#10)"),
+        "the stopped candidate's merge is in the history: {history}"
+    );
+}
+
+#[test]
+fn a_conflict_with_the_candidate_ahead_is_left_for_the_worker_to_resolve() {
+    let world = split_world(3);
+    let a = world.worker(1, "x.txt", "a");
+    let b = world.worker(2, "x.txt", "b");
+    let _runner = world.host_held();
+    let aa = start(&world, &a, &world.cache(), 1);
+    until(|| started(&world, "fast", "a"));
+    let conflict = finish(start(&world, &b, &world.cache(), 2));
+    assert_eq!(conflict["outcome"], "speculative_conflict", "{conflict}");
+    assert_eq!(conflict["files"], json!(["x.txt"]));
+    std::fs::write(b.join("x.txt"), "ab").unwrap();
+    git(&b, &["commit", "-q", "-am", "resolve"]);
+    let bb = start(&world, &b, &world.cache(), 2);
+    until(|| started(&world, "fast", "b"));
+    for part in ["fast", "slow"] {
+        let_go(&world, part, "a", false);
+        let_go(&world, part, "b", false);
+    }
+    assert_eq!(finish(aa)["outcome"], "merged");
+    assert_eq!(finish(bb)["outcome"], "merged");
+    assert_eq!(world.remote(&["show", "refs/heads/main:x.txt"]), "ab");
+}
+
+#[test]
+fn with_one_lane_every_ready_pr_fast_gates_in_turn_and_lands_in_one_round() {
+    let world = split_world(1);
+    let workers: Vec<_> = [(1, "a"), (2, "b"), (3, "c")]
+        .into_iter()
+        .map(|(n, name)| worker(&world, n, name))
+        .collect();
+    let _runner = world.host_held();
+    let aa = start(&world, &workers[0].0, &world.cache(), 1);
+    until(|| started(&world, "fast", "a"));
+    let bb = start(&world, &workers[1].0, &world.cache(), 2);
+    let cc = start(&world, &workers[2].0, &world.cache(), 3);
+    until(|| chain(&world)["pending"].as_array().is_some_and(|p| p.len() == 2));
+    assert!(!started(&world, "fast", "b"), "one lane runs one gate");
+    let_go(&world, "fast", "a", false);
+    // A fast-green candidate frees its lane, and waits for the PRs still pending.
+    until(|| started(&world, "fast", "b") || started(&world, "fast", "c"));
+    assert!(!started(&world, "slow", "a"), "a round waits for every ready PR");
+    let_go(&world, "fast", "b", false);
+    let_go(&world, "fast", "c", false);
+    let tip = if started(&world, "fast", "c") { "c" } else { "b" };
+    until(|| started(&world, "slow", "b") || started(&world, "slow", "c"));
+    assert!(!started(&world, "slow", "a"));
+    let_go(&world, "slow", "b", false);
+    let_go(&world, "slow", "c", false);
+    let answers = [finish(aa), finish(bb), finish(cc)];
+    for answer in &answers {
+        assert_eq!(answer["outcome"], "merged", "{answer}");
+    }
+    let rows = chain(&world)["candidates"].as_array().unwrap().clone();
+    let slowed: Vec<_> = rows.iter().filter(|c| c["slowed"] == true).collect();
+    assert_eq!(slowed.len(), 1, "one slow gate run for the three: {rows:?}");
+    assert_eq!(
+        world.remote(&["rev-parse", "refs/heads/main"]),
+        rows[2]["commit"].as_str().unwrap()
+    );
+    let _ = tip;
+}
+
+/// A record past `ARG_MAX` is written all the same, and the ended candidates
+/// nothing holds any more are not carried into it (sunfmin/control#308).
+#[test]
+fn a_record_past_arg_max_is_written_and_drops_the_candidates_nothing_holds() {
+    let world = world(1);
+    let (a, _) = worker(&world, 1, "a");
+    release(&world, "a", false);
+    let landed = world.afk_in(&a, &["land", "--issue", "1"]).ok();
+    assert_eq!(landed["outcome"], "merged", "{landed}");
+    let mut seed = chain(&world);
+    let template = seed["candidates"][0].clone();
+    // Its owner's pid: a process this test saw exit.
+    let mut exited = Command::new("true").spawn().unwrap();
+    let dead = exited.id();
+    exited.wait().unwrap();
+    let pad = "x".repeat(4096);
+    let ended: Vec<Value> = (0..300)
+        .map(|n| {
+            let mut c = template.clone();
+            c["id"] = json!(format!("ended-{n}"));
+            c["owner"]["pid"] = json!(dead);
+            c["worktree"] = json!(world.root.join(format!("gone-{n}")));
+            c["result"] = json!({"pad": pad});
+            c
+        })
+        .collect();
+    seed["candidates"] = json!(ended);
+    let text = seed.to_string();
+    assert!(text.len() > 1_048_576, "the record is past macOS's ARG_MAX");
+    let file = world.root.join("seed.json");
+    std::fs::write(&file, &text).unwrap();
+    let state = world.remote(&["rev-parse", "refs/convoy/candidates/main"]);
+    let tree = world.remote(&["hash-object", "-t", "tree", "/dev/null"]);
+    let seeded = world.remote(&["commit-tree", &tree, "-p", &state, "-F", file.to_str().unwrap()]);
+    world.remote(&["update-ref", "refs/convoy/candidates/main", &seeded]);
+
+    let (b, _) = worker(&world, 2, "b");
+    release(&world, "b", false);
+    let landed = world.afk_in(&b, &["land", "--issue", "2"]).ok();
+    assert_eq!(landed["outcome"], "merged", "{landed}");
+    let kept = chain(&world)["candidates"].as_array().unwrap().clone();
+    assert!(!kept.iter().any(|c| c["id"].as_str().unwrap().starts_with("ended-")), "{kept:?}");
+    assert!(kept.iter().any(|c| c["issue"] == 2 && c["phase"] == "landed"), "{kept:?}");
+    let history = world.remote(&["rev-list", "refs/convoy/candidates/main"]);
+    assert!(history.lines().any(|sha| sha == seeded), "the seeded record stays reachable");
 }

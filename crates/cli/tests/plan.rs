@@ -66,9 +66,9 @@ fn plan_assembles_the_working_set() {
     assert_eq!(
         plan["mine"],
         json!([
-            {"number": 1, "title": "issue 1", "status": "no_pr", "pr": null, "declared": false},
-            {"number": 4, "title": "issue 4", "status": "landing", "pr": 40, "declared": false},
-            {"number": 6, "title": null, "status": "closed", "pr": null, "declared": false},
+            {"number": 1, "title": "issue 1", "status": "no_pr", "pr": null, "declared": false, "idle": false},
+            {"number": 4, "title": "issue 4", "status": "landing", "pr": 40, "declared": false, "idle": true},
+            {"number": 6, "title": null, "status": "closed", "pr": null, "declared": false, "idle": false},
         ])
     );
     assert_eq!(numbers(&plan["peer_live"]), [2]);
@@ -76,7 +76,7 @@ fn plan_assembles_the_working_set() {
     assert_eq!(plan["stale"][0]["instance"], "dead");
     assert_eq!(plan["stale"][0]["sha"], world.remote(&["rev-parse", "refs/convoy/claim/3"]));
     assert_eq!(numbers(&plan["stale_closed"]), [10]);
-    assert_eq!(plan["free_slots"], 0, "three held under a concurrency of two");
+    assert_eq!(plan["free_slots"], 1, "the idle landing #4 takes none of the two slots");
 }
 
 #[test]
@@ -90,7 +90,7 @@ fn a_pr_from_a_fork_is_read_by_nothing() {
     let plan = world.afk(&["plan", "--instance", "me", "--now", "10000"]).ok();
     assert_eq!(
         plan["mine"][1],
-        json!({"number": 4, "title": "issue 4", "status": "landing", "pr": 40, "declared": false})
+        json!({"number": 4, "title": "issue 4", "status": "landing", "pr": 40, "declared": false, "idle": true})
     );
     assert_eq!(numbers(&plan["frontier"]), [11], "{plan}");
     assert!(!numbers(&plan["excluded"]).contains(&11), "{plan}");
@@ -192,4 +192,51 @@ fn plan_and_doctor_name_only_the_open_blockers_whatever_the_summary_says() {
     assert_eq!(plan["excluded"][0]["reason"], "open blockers: #71, #73");
     let doctor = world.afk(&["doctor"]).ok();
     assert_eq!(doctor["issues"]["excluded"][0]["reason"], plan["excluded"][0]["reason"]);
+}
+
+/// Where `show <issue>` says issue `number` of `world` stands at `now`.
+fn shown(world: &World, number: u64) -> Value {
+    world.afk(&["show", &number.to_string(), "--now", "10000"]).ok()
+}
+
+#[test]
+fn show_says_where_an_issue_of_an_unbound_repo_stands_from_what_plan_reads() {
+    let world = backlog();
+    world.issue(11, &["ready-for-agent"]);
+    world.comment(4, "<!--convoy:branch name=feature-4-->");
+    let stands = |number: u64| shown(&world, number)["stands"].clone();
+    assert_eq!(stands(11), json!({"is": "ready"}));
+    assert_eq!(stands(7), json!({"is": "held", "reason": "no ready-for-agent label"}));
+    assert_eq!(stands(8), json!({"is": "held", "reason": "epic label (prd)"}));
+    assert_eq!(stands(9), json!({"is": "held", "reason": "open blockers: #7"}));
+    let five = shown(&world, 5);
+    assert_eq!(five["stands"], json!({"is": "held", "reason": "has an open linked PR"}));
+    assert_eq!(five["pr"], json!({"number": 50, "branch": "feature-5", "fleet": false}));
+    let two = shown(&world, 2);
+    assert_eq!(two["stands"], json!({"is": "claimed"}));
+    assert_eq!(two["claim"], json!({"instance": "live", "live": true}));
+    assert_eq!(two["pr"], Value::Null);
+    assert_eq!(shown(&world, 3)["claim"], json!({"instance": "dead", "live": false}));
+    // The fleet's own PR waits to land: its claim's worker lands it.
+    let four = shown(&world, 4);
+    assert_eq!(four["stands"], json!({"is": "landing"}));
+    assert_eq!(four["pr"], json!({"number": 40, "branch": "feature-4", "fleet": true}));
+    assert_eq!(four["claim"]["instance"], "me");
+    assert_eq!((&four["workflow"], &four["target_branch"]), (&Value::Null, &json!("main")));
+    let six = shown(&world, 6);
+    assert_eq!(six["stands"]["is"], "closed", "{six}");
+    assert_eq!(six["claim"], Value::Null);
+    // Bare, `show` still has no workflow to draw.
+    assert!(world.afk(&["show"]).error().contains("this repo is unbound"));
+}
+
+#[test]
+fn show_says_a_fleet_lock_holds_an_unbound_issue_back() {
+    let world = World::new();
+    world.set_gate_config("gate_command: ./gate.sh\nlock_label: halt");
+    world.issue(1, &["ready-for-agent"]);
+    world.issue(2, &["halt"]);
+    let held = shown(&world, 1)["stands"].clone();
+    assert_eq!(held["is"], "held");
+    assert!(held["reason"].as_str().unwrap().contains("#2"), "{held}");
 }

@@ -129,6 +129,20 @@ fn with_no_run_to_wake_a_wake_succeeds_and_does_nothing() {
 }
 
 #[test]
+fn a_wake_outside_a_git_checkout_is_the_error_doctor_answers_there() {
+    let world = World::new();
+    let elsewhere = world.home();
+    let doctor = world.afk_in(&elsewhere, &["doctor"]).error();
+    assert!(doctor.ends_with("is not in a git checkout"), "{doctor}");
+
+    let answer = world.afk_in(&elsewhere, &["wake"]);
+    assert!(answer.stderr.is_empty(), "nothing on stderr: {}", answer.stderr);
+    assert_eq!(answer.error(), doctor);
+    // no checkout, so no tick log to say it in
+    assert!(!world.cache().join("afkconvoy/runs").exists(), "it logged nothing");
+}
+
+#[test]
 fn a_run_that_does_not_answer_costs_the_wake_its_wait_and_no_more() {
     let world = World::new();
     // something listens where the host runner would, and answers nothing:
@@ -195,11 +209,11 @@ fn the_worker_brief_and_the_join_brief_carry_the_wake_line() {
         let git_dir = git(Path::new(&dir), &["rev-parse", "--absolute-git-dir"]);
         std::fs::read_to_string(Path::new(&git_dir).join("convoy-worker-prompt.md")).unwrap()
     };
-    let line = format!("\n{} wake\n", env!("CARGO_BIN_EXE_afkconvoy"));
+    let line = "\nafkconvoy wake\n";
 
     let whole = brief(&dispatch("7"));
     assert!(whole.contains("2. **Implement**"), "the whole brief");
-    assert!(whole.contains(&line), "{whole}");
+    assert!(whole.contains(line), "{whole}");
     assert!(whole.contains("or your comment is posted"));
 
     // its PR opened, the issue is dispatched again: the join brief
@@ -209,7 +223,7 @@ fn the_worker_brief_and_the_join_brief_carry_the_wake_line() {
     world.pr(70, 7, &git(Path::new(&dir), &["symbolic-ref", "--short", "HEAD"]));
     let joining = brief(&dispatch("7"));
     assert!(joining.contains("Your ONLY job is to land that PR in a turn"), "{joining}");
-    assert!(joining.contains(&line), "{joining}");
+    assert!(joining.contains(line), "{joining}");
     assert!(!joining.contains("your comment is posted"), "a joiner posts no verdict");
 }
 

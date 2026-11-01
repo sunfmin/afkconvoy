@@ -8,6 +8,8 @@ use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 use afkconvoy_core::layout::{Layout, Note};
 use anyhow::{Context, Result, bail};
 
+use crate::remote::{Remote, RemoteRecord, Seen, Wire};
+
 /// The remote every ref and branch is pushed to and fetched from.
 pub const REMOTE: &str = "origin";
 
@@ -37,133 +39,45 @@ pub struct Repo {
 struct Fixed {
     /// The repo's git dir (`common_dir`).
     common: OnceLock<PathBuf>,
-    /// The empty tree's id in the repo's object format (`record_commit`).
-    empty_tree: OnceLock<String>,
     /// Remote reads of this checkout's repository, resolved on the first one.
     reads: OnceLock<Arc<RemoteReads>>,
 }
 
-/// Remote refs and commit subjects this process has already read of one
-/// repository. Every worktree of that repository shares one, so a push from
-/// any of them drops the ref the others cached.
-#[derive(Debug, Default)]
-struct RemoteReads {
-    /// Remote refs already read. A push of a ref, or a raw `git ls-remote`
-    /// outside `listed`, drops what a later read must see again.
-    seen: Mutex<Seen>,
+/// What this process has read of one repository's remote, and the wire it
+/// reads it over. Every worktree of that repository shares one, so a write
+/// from any of them drops the ref the others read (`remote::Remote`).
+#[derive(Debug)]
+pub(crate) struct RemoteReads {
+    pub(crate) wire: Arc<dyn Wire>,
+    /// Remote refs already read.
+    pub(crate) seen: Mutex<Seen>,
     /// A commit's subject, by sha. The sha names the subject, so it stays.
     subjects: Mutex<HashMap<String, String>>,
+    /// A commit's whole message, by sha (`Repo::message`): it stays too.
+    messages: Mutex<HashMap<String, String>>,
+    /// The empty tree's id in the repository's object format
+    /// (`record_commit`), which it keeps for as long as it is there.
+    empty_tree: OnceLock<String>,
     /// Shas `bring` has already found present. Objects live in the common store.
     present: Mutex<HashSet<String>>,
 }
 
-/// One process's remote reads. An exact ref already covered by a listing is
-/// not asked again. Pushing the ref drops it, so the next read sees the
-/// remote — including a peer that won the push. A raw `ls-remote` drops the
-/// refs it named, because that call saw them and this map did not.
-#[derive(Debug, Default)]
-struct Seen {
-    /// `Some` is the sha the remote had; `None` is a read that found it absent.
-    sha: HashMap<String, Option<String>>,
-    /// Glob prefixes (`refs/heads/`) for which every ref is in `sha` or absent.
-    covered: Vec<String>,
-    /// Pushed by this process since the read that filled `sha`.
-    dirty: HashSet<String>,
+impl RemoteReads {
+    fn over(wire: Arc<dyn Wire>) -> RemoteReads {
+        RemoteReads {
+            wire,
+            seen: Mutex::default(),
+            subjects: Mutex::default(),
+            messages: Mutex::default(),
+            empty_tree: OnceLock::new(),
+            present: Mutex::default(),
+        }
+    }
 }
 
-#[derive(Debug, PartialEq, Eq)]
-enum SeenAnswer {
-    Miss,
-    Absent,
-    Sha(String),
-}
-
-impl Seen {
-    fn answer(&self, name: &str) -> SeenAnswer {
-        if self.dirty.contains(name) {
-            return SeenAnswer::Miss;
-        }
-        if let Some(found) = self.sha.get(name) {
-            return match found {
-                Some(sha) => SeenAnswer::Sha(sha.clone()),
-                None => SeenAnswer::Absent,
-            };
-        }
-        if self.covered.iter().any(|prefix| name.starts_with(prefix)) {
-            return SeenAnswer::Absent;
-        }
-        SeenAnswer::Miss
-    }
-
-    fn clear(&mut self) {
-        self.sha.clear();
-        self.covered.clear();
-        self.dirty.clear();
-    }
-
-    /// The next read of `name` asks the remote. Other refs stay.
-    fn dirty(&mut self, name: &str) {
-        self.sha.remove(name);
-        self.dirty.insert(name.to_string());
-    }
-
-    /// A write to the remote changed `refs`: the next read of each asks the
-    /// remote. `None`, or a name this cache cannot hold, drops every ref.
-    fn wrote(&mut self, refs: Option<&[String]>) {
-        let Some(refs) = refs.filter(|refs| refs.iter().all(|name| is_exact(name))) else {
-            self.clear();
-            return;
-        };
-        for name in refs {
-            self.dirty(name);
-        }
-    }
-
-    /// `records` is what `patterns` just listed. A glob prefix becomes complete:
-    /// a name under it that was not listed is absent.
-    fn remember(&mut self, records: &[RemoteRecord], patterns: &[&str]) {
-        if patterns.iter().any(|pattern| glob_prefix(pattern).is_none() && !is_exact(pattern)) {
-            self.clear();
-            return;
-        }
-        for pattern in patterns {
-            if let Some(prefix) = glob_prefix(pattern) {
-                self.sha.retain(|name, _| !name.starts_with(&prefix));
-                self.dirty.retain(|name| !name.starts_with(&prefix));
-                if !self.covered.iter().any(|had| had == &prefix) {
-                    self.covered.push(prefix);
-                }
-            } else {
-                self.sha.remove(*pattern);
-                self.dirty.remove(*pattern);
-            }
-        }
-        for record in records {
-            self.sha.insert(record.name.clone(), Some(record.sha.clone()));
-            self.dirty.remove(&record.name);
-        }
-        for pattern in patterns {
-            if is_exact(pattern) && !records.iter().any(|record| record.name == *pattern) {
-                self.sha.insert((*pattern).to_string(), None);
-            }
-        }
-    }
-
-    /// Drops the refs a raw `ls-remote` just read, so the next read asks again.
-    /// A pattern this cache cannot name drops every ref.
-    fn forget(&mut self, patterns: &[String]) {
-        for pattern in patterns {
-            if let Some(prefix) = glob_prefix(pattern) {
-                self.sha.retain(|name, _| !name.starts_with(&prefix));
-                self.dirty.retain(|name| !name.starts_with(&prefix));
-                self.covered.retain(|had| had != &prefix);
-            } else if is_exact(pattern) {
-                self.dirty(pattern);
-            } else {
-                self.clear();
-                return;
-            }
-        }
+impl Default for RemoteReads {
+    fn default() -> RemoteReads {
+        RemoteReads::over(Arc::new(crate::remote::Git))
     }
 }
 
@@ -179,102 +93,13 @@ fn shared_reads(key: PathBuf) -> Arc<RemoteReads> {
     lock(&REPOS).entry(key).or_default().clone()
 }
 
-/// The prefix a trailing-star pattern covers (`refs/heads/*` → `refs/heads/`).
-/// A pattern with any other glob is not a prefix.
-fn glob_prefix(pattern: &str) -> Option<String> {
-    let prefix = pattern.strip_suffix('*')?;
-    if prefix.is_empty() || prefix.contains('*') || prefix.contains('?') {
-        return None;
+/// Refuses a git call that reads or writes the remote's refs: those go
+/// through the remote view (`Repo::remote`), which keeps what it read honest.
+fn local(args: &[&str]) -> Result<()> {
+    if let Some(cmd) = args.first().filter(|cmd| ["push", "ls-remote"].contains(*cmd)) {
+        bail!("git {cmd} goes through the remote view (`Repo::remote`), never around it");
     }
-    Some(prefix.to_string())
-}
-
-fn is_exact(pattern: &str) -> bool {
-    !pattern.contains('*') && !pattern.contains('?')
-}
-
-/// The refs a `git push` writes. `None` when a destination is not a named ref
-/// (`HEAD`, a tag, a branch other than `main`, `--all`): the caller drops
-/// every cached ref, because this cannot say which one changed.
-fn refs_pushed(args: &[&str]) -> Option<Vec<String>> {
-    let mut refs = Vec::new();
-    let mut saw_remote = false;
-    let mut i = 1;
-    while i < args.len() {
-        let arg = args[i];
-        if arg == "--all" || arg == "--mirror" || arg == "--tags" {
-            return None;
-        }
-        if arg == "--delete" {
-            i += 1;
-            continue;
-        }
-        if let Some(value) = arg.strip_prefix("--force-with-lease=") {
-            refs.push(lease_name(value)?);
-            i += 1;
-            continue;
-        }
-        if arg == "--force-with-lease" {
-            if let Some(value) = args.get(i + 1).copied().filter(|value| !value.starts_with('-')) {
-                refs.push(lease_name(value)?);
-                i += 2;
-                continue;
-            }
-            i += 1;
-            continue;
-        }
-        if arg.starts_with('-') {
-            i += 1;
-            continue;
-        }
-        if !saw_remote {
-            saw_remote = true;
-            i += 1;
-            continue;
-        }
-        refs.push(pushed_ref(arg)?);
-        i += 1;
-    }
-    if refs.is_empty() { None } else { Some(refs) }
-}
-
-fn lease_name(value: &str) -> Option<String> {
-    let name = value.split_once(':').map(|(name, _)| name).unwrap_or(value);
-    name.starts_with("refs/").then(|| name.to_string())
-}
-
-fn pushed_ref(arg: &str) -> Option<String> {
-    if let Some((_, dst)) = arg.split_once(':') {
-        return dst.starts_with("refs/").then(|| dst.to_string());
-    }
-    if arg.starts_with("refs/") {
-        return Some(arg.to_string());
-    }
-    if arg == "main" {
-        return Some("refs/heads/main".to_string());
-    }
-    None
-}
-
-/// The patterns a raw `git ls-remote` asked for. `None` when it listed a class
-/// this cache does not name (`--heads`, no pattern): the caller drops every ref.
-fn refs_asked(args: &[&str]) -> Option<Vec<String>> {
-    let mut patterns = Vec::new();
-    let mut saw_remote = false;
-    for arg in args.iter().skip(1) {
-        if *arg == "--heads" || *arg == "--tags" || *arg == "--refs" {
-            return None;
-        }
-        if arg.starts_with('-') {
-            continue;
-        }
-        if !saw_remote {
-            saw_remote = true;
-            continue;
-        }
-        patterns.push((*arg).to_string());
-    }
-    if patterns.is_empty() { None } else { Some(patterns) }
+    Ok(())
 }
 
 impl Repo {
@@ -285,15 +110,33 @@ impl Repo {
             bail!("{} is not a directory", dir.display());
         }
         let ran = run(dir, &["rev-parse", "--show-toplevel"], &[])?;
-        if !ran.ok {
+        if ran.ok {
+            return Ok(Repo::new(PathBuf::from(ran.stdout)));
+        }
+        // Only that answer means no checkout: any other is git refusing one
+        // (sunfmin/control#304), which it alone can say why.
+        if ran.stderr.starts_with("fatal: not a git repository") {
             bail!("{} is not in a git checkout", dir.display());
         }
-        Ok(Repo::new(PathBuf::from(ran.stdout)))
+        bail!("git refused {}: {}", dir.display(), ran.stderr.trim())
     }
 
     /// The checkout whose top directory is `dir`.
     pub fn new(dir: PathBuf) -> Repo {
         Repo { dir, fixed: Arc::default() }
+    }
+
+    /// The checkout `dir`, whose remote is `wire` alone: a fake remote.
+    #[cfg(test)]
+    pub(crate) fn on_wire(dir: PathBuf, wire: Arc<dyn Wire>) -> Repo {
+        let repo = Repo::new(dir);
+        let _ = repo.fixed.reads.set(Arc::new(RemoteReads::over(wire)));
+        repo
+    }
+
+    /// This checkout's remote: every read and write of its refs.
+    pub fn remote(&self) -> Remote {
+        Remote::of(self)
     }
 
     /// The repo's git dir, which every worktree of it shares. git is asked
@@ -305,8 +148,7 @@ impl Repo {
         Ok(self.fixed.common.get().expect("set above"))
     }
 
-    /// The absolute git common dir. Asked through `run`, not `git`: `git`
-    /// notes a remote read, and resolving the reads would call this again.
+    /// The absolute git common dir, asked once.
     fn resolve_common(&self) -> Result<PathBuf> {
         if let Some(common) = self.fixed.common.get() {
             return Ok(common.clone());
@@ -323,7 +165,7 @@ impl Repo {
 
     /// This checkout's remote reads, shared with every worktree of its
     /// repository. A checkout whose common dir cannot be read keeps its own.
-    fn reads(&self) -> Arc<RemoteReads> {
+    pub(crate) fn reads(&self) -> Arc<RemoteReads> {
         if let Some(reads) = self.fixed.reads.get() {
             return Arc::clone(reads);
         }
@@ -373,6 +215,21 @@ impl Repo {
         self.note_settled(layout, streak.unwrap_or(0))
     }
 
+    /// This checkout's own git dir, not the one its worktrees share: a linked
+    /// worktree's is named by its `.git` file, read with no git started, as a
+    /// tick asks of every worktree it looks at (sunfmin/control#311). git is
+    /// asked where there is no such file or it names no directory.
+    pub fn git_dir(&self) -> Result<PathBuf> {
+        let linked = std::fs::read_to_string(self.dir.join(".git")).ok().and_then(|file| {
+            let dir = self.dir.join(file.strip_prefix("gitdir: ")?.trim_end_matches(['\r', '\n']));
+            dir.is_dir().then_some(dir)
+        });
+        match linked {
+            Some(dir) => Ok(dir),
+            None => Ok(PathBuf::from(self.git(&["rev-parse", "--absolute-git-dir"])?)),
+        }
+    }
+
     /// Where a note called `name` is kept on this host: in the repo's git
     /// dir, which every worktree of it shares.
     pub fn note(&self, name: &str) -> Result<PathBuf> {
@@ -381,52 +238,32 @@ impl Repo {
 
     /// One git call whose failure the caller reads.
     pub fn try_git(&self, args: &[&str]) -> Result<Ran> {
-        let ran = run(&self.dir, args, &[])?;
-        self.note_remote(args);
-        Ok(ran)
-    }
-
-    /// A push drops the ref it wrote. A raw `ls-remote` drops the refs it
-    /// named: the caller read them itself, and the saved reads would be older.
-    /// A call whose refs this cache cannot name drops every saved ref.
-    fn note_remote(&self, args: &[&str]) {
-        let Some(cmd) = args.first().copied() else { return };
-        if cmd != "ls-remote" && cmd != "push" {
-            return;
-        }
-        // Resolve the shared reads before taking `seen`. Resolving runs git,
-        // and that must not happen while `seen` is held.
-        let reads = self.reads();
-        let mut seen = lock(&reads.seen);
-        if cmd == "ls-remote" {
-            match refs_asked(args) {
-                None => seen.clear(),
-                Some(patterns) => seen.forget(&patterns),
-            }
-        } else if cmd == "push" {
-            seen.wrote(refs_pushed(args).as_deref());
-        }
+        local(args)?;
+        run(&self.dir, args, &[])
     }
 
     /// One git call under extra environment, whose failure the caller reads.
     pub fn try_git_with(&self, args: &[&str], env: &[(&str, &str)]) -> Result<Ran> {
-        let ran = run(&self.dir, args, env)?;
-        self.note_remote(args);
-        Ok(ran)
+        local(args)?;
+        run(&self.dir, args, env)
+    }
+
+    /// Is `name` a ref name git takes (`git check-ref-format`)? What git says
+    /// depends on the name alone, so it is asked once a name in a process: a
+    /// tick checks its base branch's name for every issue it reads.
+    pub fn ref_name_ok(&self, name: &str) -> Result<bool> {
+        static SAID: LazyLock<Mutex<HashMap<String, bool>>> = LazyLock::new(Mutex::default);
+        if let Some(&ok) = lock(&SAID).get(name) {
+            return Ok(ok);
+        }
+        let ok = self.try_git(&["check-ref-format", name])?.ok;
+        lock(&SAID).insert(name.to_string(), ok);
+        Ok(ok)
     }
 
     /// Is `commit` on `tip`'s history (or `tip` itself)?
     pub fn within(&self, commit: &str, tip: &str) -> Result<bool> {
         Ok(self.try_git(&["merge-base", "--is-ancestor", commit, tip])?.ok)
-    }
-
-    /// The sha the remote has at one ref, with its commits brought into this
-    /// repo; `None` when the remote has no such ref. Like every read of the
-    /// remote it writes no ref here and no FETCH_HEAD.
-    pub fn fetched(&self, refname: &str) -> Result<Option<String>> {
-        let Some(sha) = self.remote_sha(refname)? else { return Ok(None) };
-        self.bring(&sha, refname)?;
-        Ok(Some(sha))
     }
 
     /// Brings into this repo the commit `sha` the remote was seen to have at
@@ -459,14 +296,30 @@ impl Repo {
     /// One git call that must succeed → its stdout as it came: for output whose
     /// leading spaces mean something.
     pub fn git_raw(&self, args: &[&str]) -> Result<String> {
+        local(args)?;
         let out = crate::process::output(
             Command::new("git").current_dir(&self.dir).args(args).env("LC_ALL", "C"),
         )
-        .context("git could not run")?;
+        .with_context(|| could_not_run(args, &self.dir))?;
         if !out.status.success() {
             bail!("git {} failed: {}", args.join(" "), String::from_utf8_lossy(&out.stderr).trim());
         }
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    }
+
+    /// One git call that must succeed, `input` on its stdin → its stdout,
+    /// trimmed: for text no argument may carry, past the OS's `ARG_MAX`.
+    pub fn git_with_input(&self, args: &[&str], input: &str) -> Result<String> {
+        local(args)?;
+        let out = crate::process::output_with_input(
+            Command::new("git").current_dir(&self.dir).args(args).env("LC_ALL", "C"),
+            input.as_bytes(),
+        )
+        .with_context(|| could_not_run(args, &self.dir))?;
+        if !out.status.success() {
+            bail!("git {} failed: {}", args.join(" "), String::from_utf8_lossy(&out.stderr).trim());
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
     }
 
     /// One git call that must succeed → its stdout, trimmed.
@@ -482,11 +335,12 @@ impl Repo {
     /// sha, which is what gets pushed to a ref. It drags no history along, and
     /// is written under the fleet's identity, whoever's machine this is.
     pub fn record_commit(&self, record: &str) -> Result<String> {
-        if self.fixed.empty_tree.get().is_none() {
+        let reads = self.reads();
+        if reads.empty_tree.get().is_none() {
             let tree = self.git(&["hash-object", "-t", "tree", "/dev/null"])?;
-            let _ = self.fixed.empty_tree.set(tree);
+            let _ = reads.empty_tree.set(tree);
         }
-        self.record_commit_of(self.fixed.empty_tree.get().expect("set above"), record)
+        self.record_commit_of(reads.empty_tree.get().expect("set above"), record)
     }
 
     /// A parentless commit of `tree` whose subject is `record`: a record that
@@ -499,142 +353,17 @@ impl Repo {
         Ok(ran.stdout)
     }
 
-    /// The sha the remote has for one ref, `None` if it has none. A ref this
-    /// process already listed is not asked again until this process pushes it
-    /// or a raw `ls-remote` reads it. An error when the remote cannot be read.
-    pub fn remote_sha(&self, refname: &str) -> Result<Option<String>> {
-        let found = self.listed(&[refname])?.into_iter().find(|listed| listed.name == refname);
-        Ok(found.map(|listed| listed.sha))
-    }
-
-    /// The sha the remote has for one ref now, even when this process listed
-    /// it. A check that another process can move the ref — a source branch
-    /// while a candidate is validating — uses this. The saved listing would
-    /// still say what it said when this process read it.
-    pub(crate) fn remote_sha_now(&self, refname: &str) -> Result<Option<String>> {
-        self.note_remote(&["ls-remote", REMOTE, refname]);
-        self.remote_sha(refname)
-    }
-
-    /// Runs `write`, a write to the remote of `refs` that does not go through
-    /// `git push` (`publication::push` speaks receive-pack), then drops each
-    /// ref like a push does. It drops them whatever `write` returns: a write
-    /// that failed or was refused may still have changed the remote.
-    pub(crate) fn write_remote<T>(&self, refs: &[&str], write: impl FnOnce() -> T) -> T {
-        let wrote = write();
-        let refs: Vec<String> = refs.iter().map(|name| name.to_string()).collect();
-        lock(&self.reads().seen).wrote(Some(&refs));
-        wrote
-    }
-
-    /// Every ref the remote has that matches one of `patterns` — a ref's
-    /// name, or `<namespace>/*` — in one call, with no record read yet. An
-    /// exact ref already listed is answered from that listing. An error when
-    /// the remote cannot be read.
-    fn listed(&self, patterns: &[&str]) -> Result<Vec<RemoteRecord>> {
-        if !patterns.is_empty() && patterns.iter().copied().all(is_exact) {
-            let reads = self.reads();
-            let seen = lock(&reads.seen);
-            let mut records = Vec::new();
-            for pattern in patterns {
-                match seen.answer(pattern) {
-                    SeenAnswer::Miss => {
-                        drop(seen);
-                        return self.ask(patterns);
-                    }
-                    SeenAnswer::Absent => {}
-                    SeenAnswer::Sha(sha) => records.push(RemoteRecord {
-                        name: (*pattern).to_string(),
-                        sha,
-                        subject: String::new(),
-                    }),
-                }
-            }
-            return Ok(records);
+    /// The whole message of the commit `sha`, which is here. A sha already
+    /// read is not asked again: the sha names the message, and a turn waiting
+    /// on a record reads the same one many times.
+    pub(crate) fn message(&self, sha: &str) -> Result<String> {
+        let reads = self.reads();
+        if let Some(message) = lock(&reads.messages).get(sha) {
+            return Ok(message.clone());
         }
-        self.ask(patterns)
-    }
-
-    /// Lists `patterns` and keeps the answer. Goes through `run`, not `git`:
-    /// `git` would drop the answer as a raw `ls-remote`.
-    fn ask(&self, patterns: &[&str]) -> Result<Vec<RemoteRecord>> {
-        let mut args = Vec::with_capacity(patterns.len() + 2);
-        args.push("ls-remote");
-        args.push(REMOTE);
-        args.extend_from_slice(patterns);
-        let ran = run(&self.dir, &args, &[])?;
-        if !ran.ok {
-            bail!("git {} failed: {}", args.join(" "), ran.stderr.trim());
-        }
-        let records = ran
-            .stdout
-            .lines()
-            .filter_map(|row| row.split_once('\t'))
-            .map(|(sha, name)| RemoteRecord {
-                name: name.to_string(),
-                sha: sha.to_string(),
-                subject: String::new(),
-            })
-            .collect::<Vec<_>>();
-        lock(&self.reads().seen).remember(&records, patterns);
-        Ok(records)
-    }
-
-    /// Every branch tip, including `base_branch`, every version tag and every ref
-    /// the fleet keeps, as ONE listing of the remote saw them: what a rebuild
-    /// reads of the remote, all of it from one moment.
-    pub fn listing(&self, base_branch: &str) -> Result<Listing> {
-        let (every, base_ref) = (self.layout().every(""), format!("refs/heads/{base_branch}"));
-        let mut records = self.listed(&[&every, "refs/heads/*", TAGS])?;
-        let base = records.iter().find(|record| record.name == base_ref);
-        let base = base.map(|record| record.sha.clone());
-        let tags = tags_of(&records);
-        let heads = records
-            .iter()
-            .filter(|r| r.name.starts_with("refs/heads/"))
-            .map(|r| (r.name.clone(), r.sha.clone()))
-            .collect();
-        records.retain(|record| record.name.starts_with(every.trim_end_matches('*')));
-        self.read_records(&mut records)?;
-        Ok(Listing { base_ref, base, records, tags, heads })
-    }
-
-    /// Every version tag the remote has, each with the commit it is on.
-    pub fn remote_tags(&self) -> Result<Vec<(String, String)>> {
-        Ok(tags_of(&self.listed(&[TAGS])?))
-    }
-
-    /// Every branch the remote has, by its short name. An error when the
-    /// remote cannot be read.
-    pub fn remote_heads(&self) -> Result<Vec<String>> {
-        Ok(self
-            .listed(&["refs/heads/*"])?
-            .into_iter()
-            .filter_map(|record| record.name.strip_prefix("refs/heads/").map(str::to_string))
-            .collect())
-    }
-
-    /// Every ref the remote has that matches `pattern` (one ref's name, or
-    /// `<namespace>/*`), each with the subject of the commit it points at. An
-    /// error when the remote cannot be read.
-    ///
-    /// Nothing is written to this checkout's refs or its FETCH_HEAD: worktrees
-    /// share both, and a worker's command may be reading the remote meanwhile.
-    pub fn remote_records(&self, pattern: &str) -> Result<Vec<RemoteRecord>> {
-        self.remote_records_in(&[pattern])
-    }
-
-    /// `remote_records` for several patterns, in one listing of the remote.
-    pub fn remote_records_in(&self, patterns: &[&str]) -> Result<Vec<RemoteRecord>> {
-        let mut records = self.listed_refs(patterns)?;
-        self.read_record_subjects(&mut records)?;
-        Ok(records)
-    }
-
-    /// The refs named by `patterns`, in one read of the remote, with no record
-    /// read yet. A ref the remote does not have is absent, not an error.
-    pub(crate) fn listed_refs(&self, patterns: &[&str]) -> Result<Vec<RemoteRecord>> {
-        self.listed(patterns)
+        let message = self.git(&["show", "-s", "--format=%B", sha])?;
+        lock(&reads.messages).insert(sha.to_string(), message.clone());
+        Ok(message)
     }
 
     /// The subject of each of `records`, fetched by ref name when its commit
@@ -719,64 +448,6 @@ fn subjects_of(
     out
 }
 
-/// One ref of the remote and the record its commit carries.
-#[derive(Debug, Clone)]
-pub struct RemoteRecord {
-    pub name: String,
-    pub sha: String,
-    pub subject: String,
-}
-
-/// Every branch tip and ref of the fleet, as one listing of the
-/// remote saw them (`Repo::listing`).
-#[derive(Debug, Clone)]
-pub struct Listing {
-    /// Branch identities and tips, from the same observation as fleet state.
-    pub heads: Vec<(String, String)>,
-    /// The base branch's ref.
-    pub base_ref: String,
-    /// Its tip; `None` when the remote has no such branch.
-    pub base: Option<String>,
-    /// Every ref of the fleet, with the record its commit carries.
-    pub records: Vec<RemoteRecord>,
-    /// Every tag whose name starts `v` — a version tag, where it names one
-    /// (`cut::Version::tagged`) — each with the commit it is on.
-    pub tags: Vec<(String, String)>,
-}
-
-impl Listing {
-    /// The sha a fleet ref or branch had in this listing, `None` if absent.
-    pub fn sha(&self, refname: &str) -> Option<&str> {
-        let found = self.records.iter().find(|record| record.name == refname);
-        found.map(|record| record.sha.as_str()).or_else(|| {
-            self.heads.iter().find(|(name, _)| name == refname).map(|(_, sha)| sha.as_str())
-        })
-    }
-}
-
-/// What a listing of the remote's version tags asks for: every tag whose
-/// name starts `v`.
-const TAGS: &str = "refs/tags/v*";
-
-/// The tags among `listed`, each by its name with the commit it is on: an
-/// annotated tag's is listed once more, peeled (`<tag>^{}`), and that one is
-/// taken.
-fn tags_of(listed: &[RemoteRecord]) -> Vec<(String, String)> {
-    let tag = |name: &str| name.strip_prefix("refs/tags/").map(str::to_string);
-    let mut tags: Vec<(String, String)> = listed
-        .iter()
-        .filter(|listed| !listed.name.ends_with("^{}"))
-        .filter_map(|listed| Some((tag(&listed.name)?, listed.sha.clone())))
-        .collect();
-    for (name, commit) in &mut tags {
-        let peeled = format!("refs/tags/{name}^{{}}");
-        if let Some(peeled) = listed.iter().find(|listed| listed.name == peeled) {
-            commit.clone_from(&peeled.sha);
-        }
-    }
-    tags
-}
-
 const RECORD_IDENTITY: [(&str, &str); 4] = [
     ("GIT_AUTHOR_NAME", "afkconvoy"),
     ("GIT_AUTHOR_EMAIL", "afkconvoy@localhost"),
@@ -784,9 +455,15 @@ const RECORD_IDENTITY: [(&str, &str); 4] = [
     ("GIT_COMMITTER_EMAIL", "afkconvoy@localhost"),
 ];
 
+/// What a git call that could not start says: which call, and the directory
+/// it was to run in, which a cancelled candidate's removal may have taken.
+fn could_not_run(args: &[&str], dir: &Path) -> String {
+    format!("git {} could not run in {}", args.join(" "), dir.display())
+}
+
 /// git's messages are read — a ref the remote lacks, a push the server turned
 /// down — so they are asked for in one language whatever the machine's locale.
-fn run(dir: &Path, args: &[&str], env: &[(&str, &str)]) -> Result<Ran> {
+pub(crate) fn run(dir: &Path, args: &[&str], env: &[(&str, &str)]) -> Result<Ran> {
     let out = crate::process::output(
         Command::new("git")
             .current_dir(dir)
@@ -794,7 +471,7 @@ fn run(dir: &Path, args: &[&str], env: &[(&str, &str)]) -> Result<Ran> {
             .env("LC_ALL", "C")
             .envs(env.iter().copied()),
     )
-    .context("git could not run")?;
+    .with_context(|| could_not_run(args, dir))?;
     Ok(Ran {
         ok: out.status.success(),
         stdout: String::from_utf8_lossy(&out.stdout).trim().to_string(),
@@ -806,232 +483,92 @@ fn run(dir: &Path, args: &[&str], env: &[(&str, &str)]) -> Result<Ran> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn an_annotated_tag_is_on_the_commit_it_peels_to() {
-        let listed = |name: &str, sha: &str| RemoteRecord {
-            name: name.to_string(),
-            sha: sha.to_string(),
-            subject: String::new(),
-        };
-        let tags = tags_of(&[
-            listed("refs/tags/v0.5.15", "c15"),
-            listed("refs/tags/v0.5.16", "t16"),
-            listed("refs/tags/v0.5.16^{}", "c16"),
-            listed("refs/heads/main", "m"),
-        ]);
-        let named = |name: &str, commit: &str| (name.to_string(), commit.to_string());
-        assert_eq!(tags, [named("v0.5.15", "c15"), named("v0.5.16", "c16")]);
-    }
-
-    fn record(name: &str, sha: &str) -> RemoteRecord {
-        RemoteRecord { name: name.to_string(), sha: sha.to_string(), subject: String::new() }
-    }
-
-    #[test]
-    fn a_listing_answers_an_absent_ref_under_its_prefix() {
-        let mut seen = Seen::default();
-        seen.remember(&[record("refs/heads/main", "abc")], &["refs/heads/*"]);
-        assert_eq!(seen.answer("refs/heads/main"), SeenAnswer::Sha("abc".into()));
-        assert_eq!(seen.answer("refs/heads/other"), SeenAnswer::Absent);
-        assert_eq!(seen.answer("refs/convoy/target/7"), SeenAnswer::Miss);
-    }
-
-    #[test]
-    fn a_push_drops_only_the_ref_it_wrote() {
-        let mut seen = Seen::default();
-        seen.remember(
-            &[record("refs/heads/main", "abc"), record("refs/heads/other", "def")],
-            &["refs/heads/*"],
-        );
-        seen.wrote(refs_pushed(&["push", "--quiet", "origin", "main"]).as_deref());
-        assert_eq!(seen.answer("refs/heads/main"), SeenAnswer::Miss);
-        assert_eq!(seen.answer("refs/heads/other"), SeenAnswer::Sha("def".into()));
-        assert_eq!(seen.answer("refs/heads/gone"), SeenAnswer::Absent);
-    }
-
-    #[test]
-    fn a_push_to_a_destination_it_cannot_name_drops_every_ref() {
-        let mut seen = Seen::default();
-        seen.remember(
-            &[record("refs/heads/main", "abc"), record("refs/convoy/target/7", "def")],
-            &["refs/heads/*", "refs/convoy/target/7"],
-        );
-        seen.wrote(refs_pushed(&["push", "-q", "origin", "HEAD"]).as_deref());
-        assert_eq!(seen.answer("refs/heads/main"), SeenAnswer::Miss);
-        assert_eq!(seen.answer("refs/heads/gone"), SeenAnswer::Miss);
-        assert_eq!(seen.answer("refs/convoy/target/7"), SeenAnswer::Miss);
-    }
-
-    #[test]
-    fn an_exact_miss_stays_absent_until_the_ref_is_listed() {
-        let mut seen = Seen::default();
-        seen.remember(&[], &["refs/convoy/target/7"]);
-        assert_eq!(seen.answer("refs/convoy/target/7"), SeenAnswer::Absent);
-        seen.remember(&[record("refs/convoy/target/7", "abc")], &["refs/convoy/target/7"]);
-        assert_eq!(seen.answer("refs/convoy/target/7"), SeenAnswer::Sha("abc".into()));
-    }
-
-    #[test]
-    fn a_raw_read_drops_only_the_refs_it_named() {
-        let mut seen = Seen::default();
-        seen.remember(
-            &[record("refs/heads/main", "abc"), record("refs/convoy/target/7", "def")],
-            &["refs/heads/*", "refs/convoy/*"],
-        );
-        seen.forget(&["refs/convoy/candidates/main".into(), "refs/heads/main".into()]);
-        assert_eq!(seen.answer("refs/heads/main"), SeenAnswer::Miss);
-        assert_eq!(seen.answer("refs/heads/other"), SeenAnswer::Absent);
-        assert_eq!(seen.answer("refs/convoy/target/7"), SeenAnswer::Sha("def".into()));
-    }
-
-    #[test]
-    fn a_push_names_the_ref_it_writes() {
-        let names = |args: &[&str]| refs_pushed(args);
-        assert_eq!(names(&["push", "-q", "origin", "main"]), Some(vec!["refs/heads/main".into()]));
-        assert_eq!(
-            names(&["push", "--quiet", "origin", "abc:refs/convoy/target/7"]),
-            Some(vec!["refs/convoy/target/7".into()])
-        );
-        assert_eq!(
-            names(&["push", "--quiet", "origin", "--delete", "refs/convoy/gate/x"]),
-            Some(vec!["refs/convoy/gate/x".into()])
-        );
-        assert_eq!(
-            names(&[
-                "push",
-                "--quiet",
-                "origin",
-                "--force-with-lease=refs/convoy/claim/7:abc",
-                ":refs/convoy/claim/7",
-            ]),
-            Some(vec!["refs/convoy/claim/7".into(), "refs/convoy/claim/7".into()])
-        );
-        assert_eq!(names(&["push", "-q", "origin", "HEAD"]), None);
-        assert_eq!(names(&["push", "-q", "origin", "v0.1.0"]), None);
-        assert_eq!(names(&["push", "--force-with-lease=main:abc", "origin", "main"]), None);
-        assert_eq!(
-            names(&["push", "--quiet", "--force", "origin", "abc:refs/convoy/heartbeat/alpha"]),
-            Some(vec!["refs/convoy/heartbeat/alpha".into()])
-        );
-        assert_eq!(
-            names(&[
-                "push",
-                "--quiet",
-                "--force-with-lease=refs/convoy/train/line/main:old",
-                "origin",
-                ":refs/convoy/train/line/main",
-            ]),
-            Some(vec!["refs/convoy/train/line/main".into(), "refs/convoy/train/line/main".into()])
-        );
-        assert_eq!(
-            names(&["push", "--quiet", "origin", "HEAD:refs/heads/cut"]),
-            Some(vec!["refs/heads/cut".into()])
-        );
-        assert_eq!(
-            names(&["push", "--quiet", "origin", "refs/tags/v0.1.0"]),
-            Some(vec!["refs/tags/v0.1.0".into()])
-        );
-        assert_eq!(names(&["push", "--all", "origin"]), None);
-        assert_eq!(refs_asked(&["ls-remote", "--heads", "origin"]), None);
-        assert_eq!(
-            refs_asked(&["ls-remote", "origin", "refs/convoy/candidates/main", "refs/heads/main"]),
-            Some(vec!["refs/convoy/candidates/main".into(), "refs/heads/main".into()])
+    fn git(dir: &Path, args: &[&str]) {
+        let out = std::process::Command::new("git").current_dir(dir).args(args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "git {}: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&out.stderr)
         );
     }
 
     /// `turn::certify` pushes the gate record from a worktree `Repo::new` opened
-    /// beside the checkout that cached the ref's absence. Both are one repository,
-    /// so the parent sees the push.
-    /// A git call outside `Repo`, so no remembered listing hears of it: what
-    /// another process does to the remote.
-    fn git(dir: &Path, args: &[&str]) -> String {
-        let out = std::process::Command::new("git")
-            .current_dir(dir)
-            .args(args)
-            .env("GIT_AUTHOR_NAME", "afkconvoy")
-            .env("GIT_AUTHOR_EMAIL", "afkconvoy@localhost")
-            .env("GIT_COMMITTER_NAME", "afkconvoy")
-            .env("GIT_COMMITTER_EMAIL", "afkconvoy@localhost")
-            .output()
-            .unwrap();
-        assert!(
-            out.status.success(),
-            "git {} in {}: {}",
-            args.join(" "),
-            dir.display(),
-            String::from_utf8_lossy(&out.stderr)
-        );
-        String::from_utf8_lossy(&out.stdout).trim().to_string()
-    }
-
-    /// A checkout `main` under `root` whose origin is a bare repo with `main`
-    /// pushed.
-    fn checkout(root: &Path) -> PathBuf {
-        let bare = root.join("remote.git");
-        let main = root.join("main");
-        git(root, &["init", "--bare", bare.to_str().unwrap()]);
-        git(root, &["init", "-b", "main", main.to_str().unwrap()]);
-        git(&main, &["config", "maintenance.auto", "false"]);
-        git(&main, &["remote", "add", "origin", bare.to_str().unwrap()]);
-        git(&main, &["commit", "--allow-empty", "-m", "init"]);
-        git(&main, &["push", "--quiet", "origin", "main"]);
-        main
-    }
-
+    /// beside the checkout that read the ref. Both are one repository, so they
+    /// share one remote view's reads, and the parent sees the push.
     #[test]
-    fn a_receive_pack_publication_drops_the_refs_it_wrote() {
+    fn every_worktree_of_a_repository_shares_its_remote_reads() {
         let root = tempfile::tempdir().unwrap();
-        let dir = checkout(root.path());
-        let repo = Repo::new(dir.clone());
-        let record = "refs/convoy/delivery/x";
-        let head = repo.remote_sha("refs/heads/main").unwrap().unwrap();
-        assert_eq!(repo.remote_sha(record).unwrap(), None);
-
-        let sha = repo.record_commit("delivered").unwrap();
-        let zero = "0".repeat(sha.len());
-        let update = crate::publication::Update { name: record, old: &zero, new: &sha };
-        assert!(crate::publication::push(&repo, &[update]).unwrap());
-        assert_eq!(repo.remote_sha(record).unwrap().as_deref(), Some(sha.as_str()));
-
-        // Another process moves main. This process did not write it, so the
-        // look still answers from the listing it read.
-        git(&dir, &["commit", "--allow-empty", "-m", "elsewhere"]);
-        git(&dir, &["push", "--quiet", "origin", "main"]);
-        assert_eq!(repo.remote_sha("refs/heads/main").unwrap(), Some(head));
-    }
-
-    #[test]
-    fn a_ref_another_process_can_move_is_read_now() {
-        let root = tempfile::tempdir().unwrap();
-        let dir = checkout(root.path());
-        let repo = Repo::new(dir.clone());
-        let source = "refs/heads/main";
-        let listed = repo.remote_sha(source).unwrap().unwrap();
-
-        git(&dir, &["commit", "--allow-empty", "-m", "elsewhere"]);
-        git(&dir, &["push", "--quiet", "origin", "main"]);
-        let moved = git(&dir, &["rev-parse", "HEAD"]);
-        assert_eq!(repo.remote_sha(source).unwrap(), Some(listed));
-        assert_eq!(repo.remote_sha_now(source).unwrap(), Some(moved));
-    }
-
-    #[test]
-    fn a_worktree_push_drops_the_ref_the_parent_cached() {
-        let root = tempfile::tempdir().unwrap();
-        let main = checkout(root.path());
+        let main = root.path().join("main");
         let wt = root.path().join("wt");
-        git(&main, &["worktree", "add", "--detach", wt.to_str().unwrap(), "HEAD"]);
+        git(root.path(), &["init", "-q", "-b", "main", main.to_str().unwrap()]);
+        git(
+            &main,
+            &[
+                "-c",
+                "user.name=a",
+                "-c",
+                "user.email=a@b",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "init",
+            ],
+        );
+        git(&main, &["worktree", "add", "-q", "--detach", wt.to_str().unwrap(), "HEAD"]);
+        let (parent, child) = (Repo::new(main), Repo::new(wt));
+        assert!(Arc::ptr_eq(&parent.reads(), &child.reads()));
+    }
 
-        let parent = Repo::new(main);
-        let child = Repo::new(wt);
-        assert_eq!(parent.common_dir().unwrap(), child.common_dir().unwrap());
-        let gate = "refs/convoy/gate/x";
-        assert_eq!(parent.remote_sha(gate).unwrap(), None);
+    /// A worktree's own git dir is read from its `.git` file, and is the one
+    /// git names; the main checkout's is git's answer.
+    #[test]
+    fn a_checkouts_own_git_dir_is_the_one_git_names() {
+        let root = tempfile::tempdir().unwrap();
+        let main = root.path().join("main");
+        let wt = root.path().join("wt");
+        git(root.path(), &["init", "-q", "-b", "main", main.to_str().unwrap()]);
+        git(
+            &main,
+            &[
+                "-c",
+                "user.name=a",
+                "-c",
+                "user.email=a@b",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "init",
+            ],
+        );
+        git(&main, &["worktree", "add", "-q", "--detach", wt.to_str().unwrap(), "HEAD"]);
+        for dir in [main, wt] {
+            let repo = Repo::new(dir);
+            let said = repo.git(&["rev-parse", "--absolute-git-dir"]).unwrap();
+            let read = repo.git_dir().unwrap();
+            assert_eq!(read.canonicalize().unwrap(), Path::new(&said).canonicalize().unwrap());
+        }
+    }
 
-        let sha = child.record_commit("green").unwrap();
-        let spec = format!("{sha}:{gate}");
-        let pushed = child.try_git(&["push", "--quiet", "--force", "origin", &spec]).unwrap();
-        assert!(pushed.ok, "{}", pushed.stderr);
-        assert_eq!(parent.remote_sha(gate).unwrap().as_deref(), Some(sha.as_str()));
+    #[test]
+    fn a_raw_push_or_listing_of_the_remote_is_refused() {
+        let repo = Repo::new(PathBuf::from("/nowhere"));
+        assert!(repo.try_git(&["push", "origin", "main"]).is_err());
+        assert!(repo.git(&["ls-remote", "origin"]).is_err());
+        assert!(repo.git_raw(&["push", "origin", "HEAD"]).is_err());
+    }
+
+    #[test]
+    fn a_ref_name_is_judged_by_git_once_a_process() {
+        let here = Repo::new(std::env::temp_dir());
+        assert!(here.ref_name_ok("refs/heads/judged-once").unwrap());
+        assert!(!here.ref_name_ok("refs/heads/judged..once").unwrap());
+        // No git runs in a directory that is not there: these are remembered.
+        let nowhere = Repo::new(PathBuf::from("/nowhere"));
+        assert!(nowhere.ref_name_ok("refs/heads/judged-once").unwrap());
+        assert!(!nowhere.ref_name_ok("refs/heads/judged..once").unwrap());
+        assert!(nowhere.ref_name_ok("refs/heads/never-judged").is_err());
     }
 }

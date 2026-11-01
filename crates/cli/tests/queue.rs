@@ -277,6 +277,10 @@ fn empty_queue_missing_runner_and_stale_socket_are_distinct_successful_observati
         absent["worker"],
         json!({"capacity": afkconvoy::host_settings::GATE_LANES, "used": 0, "free": afkconvoy::host_settings::GATE_LANES})
     );
+    assert_eq!(
+        absent["fast"],
+        json!({"capacity": afkconvoy::host_settings::FAST_LANES, "used": 0, "free": afkconvoy::host_settings::FAST_LANES})
+    );
     let received = local.answer(response(vec![]));
     let (code, empty) = local.query();
     assert_eq!(code, 0, "{empty}");
@@ -309,10 +313,67 @@ fn paused_and_old_ticket_metadata_are_reported_without_guessing_and_clock_skew_c
     assert_eq!(request["issue"], Value::Null);
     assert_eq!(request["repo_lane"], Value::Null);
     assert_eq!(request["is_turn"], false);
+    assert_eq!(request["gate"], Value::Null);
+    assert_eq!(request["kind"], "command");
     assert_eq!(request["waiting_seconds"], 0);
     assert_eq!(request["scheduling"]["state"], "waiting");
     assert_eq!(request["scheduling"]["reasons"][0]["kind"], "paused");
     assert_eq!(request["scheduling"]["reasons"][0]["requests"], json!([]));
+}
+
+#[test]
+fn fast_gates_take_the_fast_lane_beside_a_slow_gate_and_name_their_kind() {
+    let local = Local::new();
+    local.settings(1);
+    let gate = |number: u64, part: &str, ran: Option<u64>| {
+        let mut gate = ticket(number, "/repos/a/.git", 900 + number, ran, false);
+        gate["is_turn"] = json!(false);
+        gate["gate"] = json!(part);
+        gate
+    };
+    let received = local.answer(response(vec![
+        gate(1, "slow", Some(950)),
+        ticket(2, "/repos/a/.git", 902, None, false),
+        gate(3, "fast", Some(960)),
+        gate(4, "fast", None),
+        gate(5, "fast", None),
+    ]));
+    let (code, answer) = local.query();
+    assert_eq!(code, 0, "{answer}");
+    received.recv().unwrap();
+    // The slow gate runs in its slow lane, leaving the worker lane free.
+    assert_eq!(answer["worker"], json!({"capacity": 1, "used": 0, "free": 1}));
+    assert_eq!(answer["slow"], json!({"capacity": 1, "used": 1, "free": 0}));
+    let fast = afkconvoy::host_settings::FAST_LANES;
+    assert_eq!(answer["fast"], json!({"capacity": fast, "used": 1, "free": fast - 1}));
+    let seen = |number| {
+        let request = request(&answer, number);
+        (request["kind"].clone(), request["lane"].clone(), request["scheduling"]["state"].clone())
+    };
+    assert_eq!(seen(1), (json!("slow_gate"), json!("slow"), json!("running")));
+    assert_eq!(seen(2), (json!("turn"), json!("worker"), json!("eligible")));
+    assert_eq!(seen(3), (json!("fast_gate"), json!("fast"), json!("running")));
+    assert_eq!(seen(4), (json!("fast_gate"), json!("fast"), json!("eligible")), "{answer}");
+    let fifth = request(&answer, 5);
+    assert_eq!(fifth["scheduling"]["reasons"][0]["kind"], "fast_capacity", "{answer}");
+    assert_eq!(fifth["scheduling"]["reasons"].as_array().unwrap().len(), 1, "never same_repo");
+}
+
+#[test]
+fn an_older_runner_that_omits_its_pause_still_reads_with_the_pause_unknown() {
+    let local = Local::new();
+    local.settings(2);
+    let mut older = response(vec![ticket(1, "/a/.git", 900, Some(950), false)]);
+    older.as_object_mut().unwrap().remove("exclusive_paused");
+    let received = local.answer(older);
+    let (code, answer) = local.query();
+    assert_eq!(code, 0, "{answer}");
+    received.recv().unwrap();
+    assert_eq!(answer["status"], "available");
+    assert_eq!(answer["paused"], Value::Null, "an unsaid pause is not invented: {answer}");
+    assert_eq!(answer["worker"], json!({"capacity": 2, "used": 1, "free": 1}));
+    assert_eq!(answer["running"][0]["lane"], "worker");
+    assert_eq!(answer["repos"], json!([]));
 }
 
 #[test]
@@ -323,7 +384,8 @@ fn failed_or_unsupported_observations_never_fabricate_an_empty_queue() {
         "{\"error\":\"unsupported\"}\n".to_string(),
         "{}\n".to_string(),
         "{\"exclusive\":null}\n".to_string(),
-        "{\"exclusive\":[],\"host_runner\":{\"pid\":1,\"version\":\"older\"}}\n".to_string(),
+        "{\"exclusive_paused\":false,\"host_runner\":{\"pid\":1,\"version\":\"older\"}}\n"
+            .to_string(),
     ] {
         let local = Local::new();
         let received = local.serve(move |mut stream| {
@@ -402,15 +464,13 @@ fn the_real_scheduler_admits_another_repo_while_a_same_repo_waits_with_two_free_
     assert_eq!(after["worker"], json!({"capacity": 3, "used": 2, "free": 1}));
     assert_eq!(after["waiting"].as_array().unwrap().len(), 1);
     let doctor = world.afk(&["--now", "200", "doctor"]).json;
-    let common = &doctor["host"]["exclusive"]["observation"];
-    for field in ["worker", "repos", "paused", "running", "waiting"] {
+    let common = &doctor["host"]["exclusive"];
+    for field in ["status", "worker", "repos", "paused", "running", "waiting"] {
         assert_eq!(common[field], after[field], "doctor and queue disagree on {field}: {doctor}");
     }
-    assert_eq!(
-        doctor["host"]["exclusive"]["lanes"]["worker"]["running_all"].as_array().unwrap().len(),
-        2,
-        "legacy doctor projection remains available"
-    );
+    for gone in ["lanes", "observation"] {
+        assert!(common.get(gone).is_none(), "doctor keeps a second shape: {doctor}");
+    }
 }
 
 #[test]

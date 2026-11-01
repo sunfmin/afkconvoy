@@ -36,6 +36,10 @@ pub struct WorkerFields<'a> {
     pub land_command: &'a str,
     /// The line the worker wakes the fleet with: `afkconvoy wake`.
     pub wake_command: &'a str,
+    /// The line the worker runs the fast gate with, `afkconvoy gate --fast`,
+    /// where the repo splits its gate in two (docs/adr/0047); `None` where
+    /// it does not.
+    pub fast_gate_command: Option<&'a str>,
 }
 
 const OPENING_FRESH: &str = "You are an afkconvoy worker. You own exactly ONE GitHub issue and work in an isolated git worktree.";
@@ -184,7 +188,7 @@ git add -A && git commit -m \"<what this step did>\" && git push origin HEAD
 ## Steps
 
 <step1>
-2. **Implement** the issue's acceptance criteria, matching the surrounding code's conventions.
+2. **Implement** the issue's acceptance criteria, matching the surrounding code's conventions.<fast_gate>
 3. **Open a PR** against `{base_branch}` whose body contains the line `Closes {issue}`:
    ```bash
    git push origin HEAD && gh pr create --base {base_branch} --head {branch} --title \"<title>\" --body \"<what changed>
@@ -845,9 +849,12 @@ fn prompt(
             (steps(&taker, "3", "4", outcomes), pr.to_string())
         }
     };
+    let template =
+        template.replace("<fast_gate>", fields.fast_gate_command.map_or("", |_| FAST_GATE));
     fill(
         &in_tracker(&template, fields.tracker),
         &[
+            ("fast_gate_command", fields.fast_gate_command.unwrap_or("")),
             ("role", landing.map_or("", |landing| landing.role)),
             ("skill", landing.map_or("", |landing| landing.skill)),
             ("n", &number),
@@ -868,6 +875,13 @@ fn prompt(
     )
 }
 
+/// What a worker is told of the fast gate, in a repo that declares one: to
+/// pass it before its PR is opened or updated.
+const FAST_GATE: &str = "
+   Before you open or update the PR, commit and pass the fast gate: `{fast_gate_command}`, until its
+   `status` is green. It is not the whole gate: the landing turn still runs that. A test it ends as
+   TIMEOUT is a slow test: do as its output says.";
+
 /// The worker prompt with a variant's opening and first step in it.
 fn briefed(opening: &str, step1: &str) -> String {
     let outcomes = " — your PR has landed, or your comment is posted";
@@ -887,9 +901,20 @@ fn steps(template: &str, gate: &str, join: &str, outcomes: &str) -> String {
 }
 
 /// What the land step tells a worker of each word its turn can answer, as
-/// the turn's endings say it.
+/// the turn's endings say it — but of a wait (`Ending::waits`): the worker
+/// stops, and its fleet asks for the turn again.
 pub fn endings() -> String {
-    Ending::listed(|word, told| format!("   On `\"{word}\"`, {told}."))
+    Ending::listed(|word, told| {
+        let waits = Ending::ALL.iter().any(|e| e.word() == word && e.waits());
+        match told.rsplit_once(": ").filter(|_| waits) {
+            Some((situation, _)) => format!(
+                "   On `\"{word}\"`, {situation}: nothing in your tree is to change. Stop without \
+                 waking anyone; the fleet asks for the turn again itself, and starts a worker \
+                 here if the tree needs changing."
+            ),
+            None => format!("   On `\"{word}\"`, {told}."),
+        }
+    })
 }
 
 /// The line typed at a worker to hand it its brief. The prompt itself, sent as
@@ -1074,7 +1099,19 @@ mod tests {
             ready_label: "agent-ready",
             land_command: "/opt/bin/afkconvoy land --issue 7",
             wake_command: "/opt/bin/afkconvoy wake",
+            fast_gate_command: None,
         }
+    }
+
+    #[test]
+    fn a_worker_passes_the_fast_gate_before_its_pr_where_the_repo_declares_one() {
+        let without = worker_prompt(&fields(), Variant::Fresh).unwrap();
+        assert!(!without.contains("fast gate"), "{without}");
+        let fast =
+            WorkerFields { fast_gate_command: Some("/opt/bin/afkconvoy gate --fast"), ..fields() };
+        let with = worker_prompt(&fast, Variant::Fresh).unwrap();
+        let told = with.find("pass the fast gate: `/opt/bin/afkconvoy gate --fast`").expect(&with);
+        assert!(told < with.find("3. **Open a PR**").unwrap(), "{with}");
     }
 
     #[test]

@@ -3,6 +3,7 @@
 use crate::claims::{Me, drop_run, take_run};
 use crate::fleet::Fleet;
 use crate::git::Repo;
+use crate::remote::Fresh;
 use afkconvoy_core::claims::Holder;
 use afkconvoy_core::tick::Outcome;
 use anyhow::Result;
@@ -31,10 +32,12 @@ pub fn is_for(
     }))
 }
 
+/// Tends each base tip the tick's listing of the remote marks red
+/// (docs/adr/0043): a mark made since is tended by the next tick.
 pub fn tend(fleet: &mut Fleet, me: &Me) -> Result<Outcome> {
     let prefix = red_ref(&fleet.repo, "");
     let mut outcome = Outcome::Nothing;
-    for record in fleet.repo.remote_records(&format!("{prefix}*"))? {
+    for record in fleet.records_at_open(&format!("{prefix}*")) {
         let Some(branch) = record.name.strip_prefix(&prefix) else { continue };
         let next = tend_on(fleet, me, branch)?;
         if next != Outcome::Nothing {
@@ -48,7 +51,7 @@ fn tend_on(fleet: &mut Fleet, me: &Me, branch: &str) -> Result<Outcome> {
     let mut config = crate::config::load(&fleet.repo.dir.join(crate::config::FILE))?;
     config.base_branch = branch.to_string();
     let base = crate::turn::base(&fleet.repo, &config)?;
-    if fleet.repo.remote_sha(&red_ref(&fleet.repo, branch))?.as_deref() != Some(&base) {
+    if fleet.remote.sha(&red_ref(&fleet.repo, branch), Fresh::Process)?.as_deref() != Some(&base) {
         return Ok(Outcome::Nothing);
     }
     let declared = crate::turn::tip_config(&fleet.repo, &base)?;

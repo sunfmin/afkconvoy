@@ -5,9 +5,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::Result;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use super::{Finding, Kind, finding};
 use crate::gh::{Comment, GitHub};
 use crate::git::Repo;
 use crate::log::{self, Entry, Log, What};
@@ -49,7 +50,7 @@ pub fn since(raw: &str) -> Result<u64, String> {
             - 719_468;
     let at =
         u64::try_from(days * 86_400 + hour * 3600 + minute * 60 + second).map_err(|_| bad())?;
-    if format!("{}Z", log::utc(at).replace(' ', "T")) != raw {
+    if log::stamp(at) != raw {
         return Err(bad());
     }
     Ok(at)
@@ -70,7 +71,7 @@ struct Issue {
     steps: Vec<Step>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct Ticks {
     instance: String,
     first: u64,
@@ -184,6 +185,52 @@ pub(super) fn read(repo: &Repo, host: &str, since: u64, until: u64) -> Result<Va
     answer["log"] = json!({"file": log.file, "first": entries.first().map(|e| e.at),
         "retained_only": true});
     Ok(answer)
+}
+
+/// Each failed tick of the interval `watching` whose failures no finding of
+/// `found` already says, as a step that has not recovered: one condition is
+/// one finding. A tick is its instance and the steps that failed in it.
+pub(super) fn tick_findings(watching: &Value, found: &[Finding]) -> Vec<Finding> {
+    let said: BTreeSet<&str> = found.iter().map(|finding| finding.watch_id.as_str()).collect();
+    let ticks = watching["ticks"].as_array().into_iter().flatten();
+    let ticks = ticks.filter_map(|tick| Ticks::deserialize(tick).ok()).filter(|tick| tick.failed);
+    let mut findings: Vec<Finding> = vec![];
+    for tick in ticks {
+        let errors = tick.errors.as_array().map(Vec::as_slice).unwrap_or_default();
+        let step = |row: &Value| {
+            json!(["step", row["do"].as_str().unwrap_or("tick"), row["issue"], row["patrol"]])
+        };
+        let unsaid: Vec<&Value> = errors
+            .iter()
+            .filter(|row| !said.contains(format!("checkout:{}", step(row)).as_str()))
+            .collect();
+        if !errors.is_empty() && unsaid.is_empty() {
+            continue;
+        }
+        let steps: Vec<Value> = unsaid.iter().map(|row| step(row)).collect();
+        let identity = json!(["tick", tick.instance, steps]);
+        let error = unsaid.iter().find_map(|row| row["error"].as_str()).unwrap_or_default();
+        let fix = super::named_line(error)
+            .unwrap_or_else(|| format!("afkconvoy plan --instance {}", tick.instance));
+        let made = finding(
+            Kind::TickFailed,
+            identity,
+            format!(
+                "a tick failed since the last look: {} of {}, from {} to {} UTC: {}",
+                if tick.count == 1 { "one".to_string() } else { format!("{} ticks", tick.count) },
+                tick.instance,
+                log::utc(tick.first),
+                log::utc(tick.last),
+                tick.line
+            ),
+            format!("its errors: {}", json!(unsaid)),
+            fix,
+        );
+        if !findings.iter().any(|known| known.watch_id == made.watch_id) {
+            findings.push(made);
+        }
+    }
+    findings
 }
 
 /// Interpret the retained lines without changing their source order at equal
@@ -424,7 +471,7 @@ mod tests {
         assert_eq!(since("1970-01-01T00:00:00Z"), Ok(0));
         assert_eq!(since("2026-10-25T11:42:00Z"), Ok(1_792_928_520));
         for at in [0, 951_782_400, 1_792_928_520, 253_402_300_799] {
-            assert_eq!(since(&format!("{}Z", log::utc(at).replace(' ', "T"))), Ok(at));
+            assert_eq!(since(&log::stamp(at)), Ok(at));
             assert_eq!(since(&at.to_string()), Ok(at));
         }
         for raw in [

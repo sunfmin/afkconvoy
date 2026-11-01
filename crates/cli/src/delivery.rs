@@ -10,8 +10,10 @@ use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::fleet::Fleet;
 use crate::gh::GitHub;
-use crate::git::{REMOTE, RemoteRecord, Repo};
+use crate::git::Repo;
+use crate::remote::{Fresh, Push, RemoteRecord};
 
 const BRANCH_PREFIX: &str = "delivery/jira-";
 const MARKER: &str = "<!--convoy:delivery ";
@@ -44,7 +46,7 @@ pub(crate) struct Reference {
 
 pub fn reference(repo: &Repo, id: &str) -> Result<Reference> {
     let name = refname(repo, id)?;
-    let rows = repo.remote_records(&name)?;
+    let rows = repo.remote().records(&[&name], Fresh::Process)?;
     let delivery = decode(repo, id, rows.first())?;
     ensure!(
         delivery.repository.eq_ignore_ascii_case(&GitHub::of(repo)?.repository()?),
@@ -65,7 +67,7 @@ pub fn resolve(
     let records = match snapshot {
         Some(records) => records,
         None => {
-            read = repo.remote_records(&name)?;
+            read = repo.remote().records(&[&name], Fresh::Process)?;
             &read
         }
     };
@@ -157,7 +159,7 @@ fn decode(repo: &Repo, id: &str, record: Option<&RemoteRecord>) -> Result<Delive
         "contradictory delivery at {name}; restore its immutable record"
     );
     ensure!(
-        repo.try_git(&["check-ref-format", &format!("refs/heads/{}", delivery.final_target)])?.ok,
+        repo.ref_name_ok(&format!("refs/heads/{}", delivery.final_target))?,
         "invalid final target in delivery {id}; restore its immutable record"
     );
     Ok(delivery)
@@ -165,13 +167,13 @@ fn decode(repo: &Repo, id: &str, record: Option<&RemoteRecord>) -> Result<Delive
 
 pub(crate) fn load(repo: &Repo, id: &str) -> Result<Delivery> {
     let name = refname(repo, id)?;
-    let rows = repo.remote_records(&name)?;
+    let rows = repo.remote().records(&[&name], Fresh::Process)?;
     decode(repo, id, rows.first())
 }
 
 impl Delivery {
     fn validate(&self, repo: &Repo) -> Result<()> {
-        let tip = repo.fetched(&format!("refs/heads/{}", self.branch))?.with_context(|| {
+        let tip = repo.remote().fetched(&format!("refs/heads/{}", self.branch), Fresh::Process)?.with_context(|| {
             format!(
                 "delivery {} branch {:?} is missing; restore the owned branch before continuing",
                 self.identity, self.branch
@@ -183,7 +185,9 @@ impl Delivery {
             self.identity
         );
         ensure!(
-            repo.remote_sha(&format!("refs/heads/{}", self.final_target))?.is_some(),
+            repo.remote()
+                .sha(&format!("refs/heads/{}", self.final_target), Fresh::Process)?
+                .is_some(),
             "delivery {} final target {:?} is missing; restore it before continuing",
             self.identity,
             self.final_target
@@ -206,7 +210,7 @@ fn create(
 ) -> Result<Delivery> {
     let id = identity(jira, repository);
     let name = refname(repo, &id)?;
-    let existing = repo.remote_records(&name)?;
+    let existing = repo.remote().records(&[&name], Fresh::Process)?;
     if !existing.is_empty() {
         let found = decode(repo, &id, existing.first())?;
         ensure!(
@@ -224,12 +228,12 @@ fn create(
         "delivery creation requires a private tracker; configure afkconvoy run --tracker <owner/private-repo>"
     );
     ensure!(
-        repo.try_git(&["check-ref-format", &format!("refs/heads/{final_target}")])?.ok
+        repo.ref_name_ok(&format!("refs/heads/{final_target}"))?
             && !final_pr(final_target, "")
             && !final_target.starts_with("convoy-"),
         "invalid final target {final_target:?}; name an existing code branch on origin"
     );
-    let initial = repo.fetched(&format!("refs/heads/{final_target}"))?
+    let initial = repo.remote().fetched(&format!("refs/heads/{final_target}"), Fresh::Process)?
         .with_context(|| format!("final target {final_target:?} does not exist on origin; create it before creating a delivery"))?;
     let delivery = Delivery {
         identity: id.clone(),
@@ -245,20 +249,13 @@ fn create(
     let sha = repo.record_commit(&serde_json::to_string(&delivery)?)?;
     let zero = "0".repeat(sha.len());
     let target_ref = format!("refs/heads/{final_target}");
-    let pushed = crate::publication::push(
-        repo,
-        &[
-            crate::publication::Update { name: &name, old: &zero, new: &sha },
-            crate::publication::Update { name: &branch_ref, old: &zero, new: &delivery.initial },
-            crate::publication::Update {
-                name: &target_ref,
-                old: &delivery.initial,
-                new: &delivery.initial,
-            },
-        ],
-    );
+    let pushed = repo.remote().publish(&[
+        crate::remote::Update { name: &name, old: &zero, new: &sha },
+        crate::remote::Update { name: &branch_ref, old: &zero, new: &delivery.initial },
+        crate::remote::Update { name: &target_ref, old: &delivery.initial, new: &delivery.initial },
+    ]);
     // Lost receipts and competing creators both discover the actual remote.
-    let records = repo.remote_records(&name)?;
+    let records = repo.remote().records(&[&name], Fresh::Process)?;
     if !records.is_empty() {
         let found = decode(repo, &id, records.first())?;
         ensure!(
@@ -278,7 +275,7 @@ fn create(
 
 fn receipt(repo: &Repo, delivery: &Delivery) -> Result<Option<Receipt>> {
     let name = repo.layout().under(&format!("delivery-pr/{}", delivery.identity));
-    let rows = repo.remote_records(&name)?;
+    let rows = repo.remote().records(&[&name], Fresh::Process)?;
     rows.first()
         .map(|r| {
             let read: Receipt = serde_json::from_str(&r.subject).with_context(|| {
@@ -306,7 +303,7 @@ fn keep_receipt(repo: &Repo, delivery: &Delivery, pr: u64) -> Result<()> {
         delivery: delivery.identity.clone(),
         pr,
     })?)?;
-    let pushed = repo.try_git(&["push", "--quiet", REMOTE, &format!("{sha}:{name}")])?;
+    let pushed = repo.remote().try_push(&Push::set(&sha, &name))?;
     let found = receipt(repo, delivery)?.context("final PR exists but its receipt was not recorded; rerun afkconvoy delivery --jira <url> --final-target <branch>")?;
     ensure!(
         found.pr == pr,
@@ -360,10 +357,12 @@ fn discover(
 
 fn has_diff(repo: &Repo, delivery: &Delivery) -> Result<bool> {
     let base = repo
-        .fetched(&format!("refs/heads/{}", delivery.final_target))?
+        .remote()
+        .fetched(&format!("refs/heads/{}", delivery.final_target), Fresh::Process)?
         .context("final target disappeared; restore it before retrying")?;
     let head = repo
-        .fetched(&format!("refs/heads/{}", delivery.branch))?
+        .remote()
+        .fetched(&format!("refs/heads/{}", delivery.branch), Fresh::Process)?
         .context("delivery branch disappeared; restore it before retrying")?;
     let diff = repo.try_git(&["diff", "--quiet", &format!("{base}...{head}"), "--"])?;
     if diff.ok {
@@ -457,7 +456,7 @@ fn settlement_ref(repo: &Repo, id: &str) -> String {
 }
 
 fn read_record<T: for<'de> Deserialize<'de>>(repo: &Repo, name: &str) -> Result<Option<T>> {
-    let rows = repo.remote_records(name)?;
+    let rows = repo.remote().records(&[name], Fresh::Process)?;
     let Some(row) = rows.first() else { return Ok(None) };
     let value = serde_json::from_str(&row.subject)
         .with_context(|| format!("unreadable record at {name}; restore it before continuing"))?;
@@ -467,18 +466,15 @@ fn read_record<T: for<'de> Deserialize<'de>>(repo: &Repo, name: &str) -> Result<
 /// Publishes `body` at `name`. `replace` moves an existing ref onto the new
 /// snapshot; a settlement (`replace` false) keeps the first record.
 fn publish(repo: &Repo, name: &str, body: &str, replace: bool) -> Result<()> {
-    let rows = repo.remote_records(name)?;
+    let rows = repo.remote().records(&[name], Fresh::Process)?;
     if rows.first().is_some_and(|row| row.subject == body || !replace) {
         return Ok(());
     }
     let sha = repo.record_commit(body)?;
     let zero = "0".repeat(sha.len());
     let old = rows.first().map(|row| row.sha.clone()).unwrap_or(zero);
-    let _pushed = crate::publication::push(
-        repo,
-        &[crate::publication::Update { name, old: &old, new: &sha }],
-    )?;
-    let now = repo.remote_records(name)?;
+    let _pushed = repo.remote().publish(&[crate::remote::Update { name, old: &old, new: &sha }])?;
+    let now = repo.remote().records(&[name], Fresh::Process)?;
     let got = now
         .first()
         .with_context(|| format!("record {name} was not published; rerun the handoff"))?;
@@ -506,7 +502,7 @@ fn result_of(blocking: &[String]) -> String {
 fn candidate_blocks(repo: &Repo, issue: u64) -> Result<Vec<String>> {
     let prefix = repo.layout().under("candidates/");
     let mut reasons = vec![];
-    for record in repo.remote_records(&format!("{prefix}*"))? {
+    for record in repo.remote().records(&[&format!("{prefix}*")], Fresh::Process)? {
         let chain: Chain = serde_json::from_str(&record.subject).with_context(|| {
             format!(
                 "unreadable candidate record {}; restore it before a delivery handoff",
@@ -521,7 +517,7 @@ fn candidate_blocks(repo: &Repo, issue: u64) -> Result<Vec<String>> {
             Phase::Cancelled | Phase::Cancelling => {
                 Some(format!("landing {} was cancelled", last.id))
             }
-            Phase::Building | Phase::Validating | Phase::Green => {
+            Phase::Building | Phase::Validating | Phase::Green | Phase::Slow => {
                 Some(format!("landing {} is still in progress", last.id))
             }
             Phase::Landed => None,
@@ -559,12 +555,16 @@ fn retained_work(repo: &Repo, issue: u64, tip: &str) -> Result<Option<String>> {
 }
 
 fn assess(repo: &Repo, gh: &GitHub, delivery: &Delivery) -> Result<Snapshot> {
-    let delivery_head =
-        repo.fetched(&format!("refs/heads/{}", delivery.branch))?.with_context(|| {
+    let delivery_head = repo
+        .remote()
+        .fetched(&format!("refs/heads/{}", delivery.branch), Fresh::Process)?
+        .with_context(|| {
             format!("delivery branch {:?} disappeared; restore it", delivery.branch)
         })?;
-    let final_target_head =
-        repo.fetched(&format!("refs/heads/{}", delivery.final_target))?.with_context(|| {
+    let final_target_head = repo
+        .remote()
+        .fetched(&format!("refs/heads/{}", delivery.final_target), Fresh::Process)?
+        .with_context(|| {
             format!("final target {:?} disappeared; restore it", delivery.final_target)
         })?;
     let names = crate::target::attached(repo, &delivery.identity)?;
@@ -649,7 +649,8 @@ fn on_target(
         return Ok(false);
     }
     let target = repo
-        .fetched(&format!("refs/heads/{}", delivery.final_target))?
+        .remote()
+        .fetched(&format!("refs/heads/{}", delivery.final_target), Fresh::Process)?
         .context("final target disappeared")?;
     repo.within(head, &target)
 }
@@ -721,10 +722,12 @@ enum Aggregate {
 
 fn aggregate(repo: &Repo, delivery: &Delivery, host: &str, now: u64) -> Result<Aggregate> {
     let base = repo
-        .fetched(&format!("refs/heads/{}", delivery.final_target))?
+        .remote()
+        .fetched(&format!("refs/heads/{}", delivery.final_target), Fresh::Process)?
         .context("final target disappeared")?;
     let head = repo
-        .fetched(&format!("refs/heads/{}", delivery.branch))?
+        .remote()
+        .fetched(&format!("refs/heads/{}", delivery.branch), Fresh::Process)?
         .context("delivery branch disappeared")?;
     let message = format!(
         "Jira delivery {} aggregate check\n\nThis commit is not published to {}.",
@@ -1111,18 +1114,13 @@ pub fn reported(repo: &Repo, now: u64, records: &[RemoteRecord]) -> Result<Vec<V
     Ok(rows)
 }
 
-pub fn panel_lines(repo: &Repo, now: u64, records: &[RemoteRecord]) -> Result<Vec<String>> {
-    Ok(reported(repo, now, records)?
-        .into_iter()
-        .map(|row| {
-            format!(
-                "{} ({}) · {}",
-                row["jira"].as_str().unwrap_or("delivery"),
-                row["delivery"].as_str().unwrap_or(""),
-                row["detail"].as_str().unwrap_or("unreadable")
-            )
-        })
-        .collect())
+pub fn panel_line(row: &Value) -> String {
+    format!(
+        "{} ({}) · {}",
+        row["jira"].as_str().unwrap_or("delivery"),
+        row["delivery"].as_str().unwrap_or(""),
+        row["detail"].as_str().unwrap_or("unreadable")
+    )
 }
 
 pub fn command(
@@ -1181,9 +1179,12 @@ pub fn command(
 }
 
 /// Covers the crash window between task publication and final PR creation.
-/// Acting ticks alone call this; plans and inspection remain read-only.
-pub fn reconcile(repo: &Repo, gh: &GitHub) -> Result<()> {
-    for record in repo.remote_records(&repo.layout().every("delivery/"))? {
+/// Acting ticks alone call this; plans and inspection remain read-only. The
+/// deliveries are those of the tick's listing of the remote (docs/adr/0043):
+/// one written since is reconciled by the next tick.
+pub fn reconcile(fleet: &Fleet) -> Result<()> {
+    let (repo, gh) = (&fleet.repo, &fleet.gh);
+    for record in fleet.records_at_open(&repo.layout().every("delivery/")) {
         let id = repo
             .layout()
             .kept(&record.name)

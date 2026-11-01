@@ -16,6 +16,7 @@ use afkconvoy_core::prompt::{
     stage_prompt,
 };
 use afkconvoy_core::role::{Due, Facts, On, Rules, Start, Told, due};
+use afkconvoy_core::selection::Selection;
 use afkconvoy_core::stage_record::{History, Reading, StageRecord, Stated, history};
 use afkconvoy_core::team::{LAND, Team};
 use afkconvoy_core::tools::{Found, Tool, fault, refused};
@@ -48,14 +49,8 @@ pub struct Staged {
     /// Whether the worker is the stage's consult: it rules on the stage's
     /// `escalate`, and writes no code whatever the stage may.
     consult: bool,
-    /// The harness the worker is a session of (`Fleet::cast_in`).
-    harness: Harness,
-    model: Option<String>,
-    /// Models this role allows on the selected harness.
-    allowed_models: Vec<String>,
-    /// The name the issue was given that matches nothing held, with what
-    /// the worker runs instead.
-    unmatched: Option<(String, casting::Cast)>,
+    /// What the worker runs: its worker selection (`Fleet::select`).
+    selection: Selection,
     /// Every kit candidate before `harness` that its range excluded.
     skipped: Vec<Value>,
     /// What the guard holds every worker to: the repo's base branch, the
@@ -87,18 +82,18 @@ pub struct Staged {
     handed: Option<String>,
 }
 
-/// What a human handed the issue would be told, where `history` — read from
-/// `records`, each with the URL of its comment — has it with its stage's
+/// What a human handed the issue would be told, where `history` — its
+/// records each with the URL of its comment in `urls` — has it with its stage's
 /// consult for a hand-off: the reason and the evidence of the failure the
 /// fleet recorded, or why its records hand it on, with every round of the
 /// rework a breaker stopped. `None` of an `escalate`, and anywhere else.
-fn handed_said(history: &History, records: &[StageRecord], urls: &[String]) -> Option<String> {
+fn handed_said(history: &History, urls: &[String]) -> Option<String> {
     let Position::Consult(stage, _, ConsultOn::HandOff(reason)) = history.place.position else {
         return None;
     };
     if let Reason::Failed(_) = reason {
-        let recorded =
-            records.iter().rev().find(|record| matches!(record.stated, Stated::Failed(_)));
+        let mut records = history.records.iter().rev();
+        let recorded = records.find(|record| matches!(record.stated, Stated::Failed(_)));
         return recorded.map(|record| record.text.clone());
     }
     let reason = reason.said(stage);
@@ -106,7 +101,7 @@ fn handed_said(history: &History, records: &[StageRecord], urls: &[String]) -> O
     let mut said: String =
         chars.next().into_iter().flat_map(char::to_uppercase).chain(chars).collect();
     said.push('.');
-    if let Some(rounds) = history.rounds_said(records, urls) {
+    if let Some(rounds) = history.rounds_said(urls) {
         said.push_str(&format!("\n\n{rounds}"));
     }
     Some(said)
@@ -150,23 +145,16 @@ impl Staged {
                 return Err(See::Workflows.refusal(why));
             }
         };
-        let history = history(workflow, &records);
-        let handed = handed_said(&history, &records, &urls);
-        let verdicts = records.into_iter().zip(urls).zip(history.readings);
+        let history = history(workflow, records);
+        let handed = handed_said(&history, &urls);
+        let verdicts = history.records.into_iter().zip(urls).zip(history.readings);
         let labels = labels.to_vec();
-        // A checkout that names a harness offers that harness's models alone.
-        // One that names none offers the host kit, in its order.
-        let kit = match fleet.pinned {
-            Some(_) => fleet.runnable()?.range(),
-            None => crate::kit::running()?.0.range(),
-        };
-        let ranges = casting::stage_ranges(&kept.team, workflow, &kit);
         // A worker in a role runs the issue's one model label where that
         // harness holds it, or that harness's user default (docs/adr/0020).
         // A checkout that names a harness runs that harness.
         let (work, role) = by;
-        let cast = fleet.cast_in(role, &labels, Some(issue))?;
-        let (harness, model) = (cast.harness, cast.model.clone());
+        let selection = fleet.select_in(Some(role), &labels, Some(issue))?;
+        let harness = selection.harness();
         let (role, skill, role_copy, host_user, dsh_profile) = (
             role.name.clone(),
             work.skill.clone(),
@@ -174,12 +162,6 @@ impl Staged {
             role.host_user,
             role.dsh_profile,
         );
-        let allowed_models = ranges
-            .iter()
-            .flat_map(|(_, ranges)| ranges)
-            .find(|range| range.harness == harness)
-            .map(|range| range.models.iter().map(|model| model.id.clone()).collect())
-            .unwrap_or_default();
         let skipped = fleet.skipped_before(harness, Some(by.1), Some(issue));
         Ok(Staged {
             verdicts: verdicts
@@ -199,10 +181,7 @@ impl Staged {
             skill,
             writes: at.is_none_or(|stage| stage.writes),
             consult,
-            harness,
-            model,
-            allowed_models,
-            unmatched: cast.unmatched.clone().map(|name| (name, cast)),
+            selection,
             skipped,
             base_branch: fleet.task_branch(issue)?,
             repo_base_branch: fleet.config.base_branch.clone(),
@@ -221,29 +200,17 @@ impl Staged {
 
     /// The harness the worker is a session of.
     pub fn harness(&self) -> Harness {
-        self.harness
+        self.selection.harness()
+    }
+
+    /// What the worker runs: its worker selection.
+    pub fn selection(&self) -> &Selection {
+        &self.selection
     }
 
     /// The stage this worker performs. A landing worker's is `land`.
     pub fn stage(&self) -> &str {
         &self.stage
-    }
-
-    /// The fleet's selected model for this stage or consult.
-    pub fn model(&self) -> Option<&str> {
-        self.model.as_deref()
-    }
-
-    /// Whether the role's range allows a model selected from the user's
-    /// Codex preference.
-    pub fn allows_model(&self, model: &str) -> bool {
-        self.allowed_models.iter().any(|allowed| allowed == model)
-    }
-
-    /// The name the issue was given that matches nothing held, with what
-    /// the worker runs instead: what the issue is told once.
-    pub fn unmatched(&self) -> Option<&(String, casting::Cast)> {
-        self.unmatched.as_ref()
     }
 
     /// The line the terminal on `worktree` runs to start the worker with
@@ -256,13 +223,13 @@ impl Staged {
         model: Option<&str>,
     ) -> Result<String> {
         let told = ToldRules::read(
-            self.harness,
+            self.harness(),
             &worktree.path,
             self.team_rules.as_deref(),
             &self.role_copy.dir,
         )?;
         let (kept, shadowed) = crate::kept::for_worker(
-            self.harness,
+            self.harness(),
             self.host_user,
             &self.role_copy.dir,
             &worktree.path,
@@ -278,7 +245,7 @@ impl Staged {
             kept: &kept,
             host_user: self.host_user,
             dsh_profile: self.dsh_profile,
-            host_rules: &crate::kept::host_rules(self.harness),
+            host_rules: &crate::kept::host_rules(self.harness()),
             shadowed: &shadowed,
             told: told.told(),
             facts: Facts {
@@ -296,7 +263,7 @@ impl Staged {
                 team_commit: &self.team_copy.commit,
             },
         };
-        Ok(self.harness.in_role(launch, &start))
+        Ok(self.harness().in_role(launch, &start))
     }
 
     /// Keeps, for a stage that writes nothing and for a consult, where the
@@ -359,6 +326,7 @@ impl Staged {
         let gate = own().fixed(" gate --land").own();
         // Another checkout is gated from inside it.
         let gate_alone = crate::own_command().fixed(" gate").own();
+        let fast_gate = fleet.config.gates.as_ref().map(|_| own().fixed(" gate --fast").own());
         if let Some(pr) = self.joins {
             let fields = WorkerFields {
                 number: self.issue,
@@ -373,6 +341,7 @@ impl Staged {
                 ready_label: &fleet.config.ready_label,
                 land_command: &own().fixed(" land --issue ").number(self.issue).own(),
                 wake_command: &own().fixed(" wake").own(),
+                fast_gate_command: fast_gate.as_deref(),
             };
             let landing = Landing { role: &self.role, skill: &self.skill };
             let mut prompt = landing_prompt(&fields, pr, landing).map_err(|e| anyhow!(e))?;
@@ -438,8 +407,8 @@ impl Staged {
 
     pub fn json(&self) -> Value {
         json!({"flow": self.flow, "name": self.stage, "role": self.role, "skill": self.skill,
-            "writes": self.writes, "consult": self.consult, "harness": self.harness,
-            "model": self.model, "skipped": self.skipped,
+            "writes": self.writes, "consult": self.consult, "harness": self.harness(),
+            "model": self.selection.model, "skipped": self.skipped,
             "role_commit": self.role_copy.commit, "role_dir": self.role_copy.dir,
             "team_commit": self.team_copy.commit, "team_dir": self.team_copy.dir})
     }

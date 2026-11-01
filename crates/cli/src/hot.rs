@@ -19,7 +19,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use afkconvoy_core::hot::{
@@ -165,10 +165,12 @@ pub(crate) fn occupies(directories: &[PathBuf], worktree: &Path) -> bool {
     })
 }
 
-/// The bytes of memory this host has; `None` where it cannot be read.
+/// The bytes of memory this host has; `None` where it cannot be read. On
+/// macOS it is asked once a process: it does not change while one runs.
 pub fn memory() -> Option<u64> {
     if cfg!(target_os = "macos") {
-        return sysctl("hw.memsize");
+        static MEMSIZE: OnceLock<Option<u64>> = OnceLock::new();
+        return *MEMSIZE.get_or_init(|| sysctl("hw.memsize"));
     }
     let info = std::fs::read_to_string("/proc/meminfo").ok()?;
     let line = info.lines().find(|line| line.starts_with("MemTotal:"))?;

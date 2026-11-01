@@ -25,3 +25,7 @@ Those are help topics: `afkconvoy help <topic>`, Markdown as the rest of the hel
 - That the help is *enough* cannot be checked by a machine. It is tried: an agent that has never seen afkconvoy is given the binary and asked for a team that passes `check`, and where it stalls is a defect.
 - The README says what afkconvoy is, how to install it, and to run `--help`. It explains no concept.
 - The example team is files in the binary, held to `check` by a test, so it cannot rot the way a listing does.
+
+## The page is gone (sunfmin/control#243)
+
+The page made from the help, `docs/manual.md`, is deleted, with what wrote it and the gate's check of it. It was a second copy of the help, kept current by a rule and a check, and stacked candidates that each changed the help merged it cleanly as text into a page that no longer matched the merged help: in the batch of 2026-10-28, seven of ten PRs changed it, and candidates went red on it though no PR was wrong. A reader who wants the whole manual runs `afkconvoy help all`, as the README says. That the help names no `docs/adr/` is still checked, as a test of the help itself.
