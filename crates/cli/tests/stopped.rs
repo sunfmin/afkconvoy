@@ -1338,3 +1338,285 @@ fn with_no_worker_of_this_host_at_work_a_note_is_only_commented_and_says_why() {
     assert!(unclaimed["host"].is_null());
     assert_eq!(typed(&world).len(), 1);
 }
+
+fn later_comment(world: &World, text: &str, at: u64) -> String {
+    let url = world.comment(7, text);
+    world.with_gh(|gh| {
+        gh["comments"]["7"].as_array_mut().unwrap().last_mut().unwrap()["at"] = json!(at);
+    });
+    url
+}
+
+fn user_notes(world: &World) -> String {
+    use afkconvoy_core::harness::{Harness, SessionLayout};
+    let cwd = worktree(world);
+    let place = Harness::ClaudeCode.note_place(&cwd.to_string_lossy());
+    let SessionLayout::Files { dir, .. } = place.layout else { panic!("Claude message layout") };
+    std::fs::read_to_string(
+        world.home().join(place.under_home).join(dir).join("afkconvoy-note.jsonl"),
+    )
+    .unwrap_or_default()
+}
+
+#[test]
+fn later_issue_comments_are_told_once_with_user_session_proof() {
+    let world = fleet(1000);
+    report(&world, "working", 1000, 1080);
+    world.with_orca(|orca| orca["notes"] = json!("taken"));
+    let url = later_comment(&world, "Use the v2 endpoint.\nKeep the retries.", 1080);
+    let told = tick(&world, 1090);
+    assert!(told["errors"].as_array().unwrap().is_empty(), "{told}");
+    assert!(
+        told["did"].as_array().unwrap().iter().any(|step| {
+            step["do"] == "tell" && step["comment"] == url && step["outcome"] == "done"
+        }),
+        "{told}"
+    );
+    let session = user_notes(&world);
+    assert!(afkconvoy_core::harness::Harness::ClaudeCode.holds_note(&session, &url), "{session}");
+    assert!(typed(&world)[1].contains("Use the v2 endpoint. Keep the retries."));
+    assert!(typed(&world)[1].contains(&url));
+    tick(&world, 1180);
+    assert_eq!(typed(&world).len(), 2, "the brief and one update, across tick processes");
+}
+
+#[test]
+fn later_issue_body_edits_are_told_with_the_whole_new_body() {
+    let world = fleet(1000);
+    world.with_orca(|orca| orca["notes"] = json!("taken"));
+    let new_body = "# Corrected requirement\nUse v2 and preserve 日本語.";
+    world.with_gh(|gh| gh["issues"][0]["body"] = json!(new_body));
+    let told = tick(&world, 1090);
+    assert!(told["errors"].as_array().unwrap().is_empty(), "{told}");
+    let line = &typed(&world)[1];
+    assert!(
+        line.contains("Whole new body: # Corrected requirement Use v2 and preserve 日本語."),
+        "{line}"
+    );
+    assert!(line.contains("https://gh/i/7"));
+    assert!(
+        afkconvoy_core::harness::Harness::ClaudeCode
+            .holds_note(&user_notes(&world), "#convoy-body-1000-1")
+    );
+    tick(&world, 1180);
+    assert_eq!(typed(&world).len(), 2);
+}
+
+#[test]
+fn a_stopped_worker_is_told_a_later_comment_before_the_tick_judges_it() {
+    let world = fleet(1000);
+    report(&world, "done", 1000, 1000);
+    world.with_orca(|orca| orca["notes"] = json!("taken"));
+    let url = later_comment(&world, "Keep going with v2.", 1080);
+    let told = tick(&world, 1090);
+    assert!(told["errors"].as_array().unwrap().is_empty(), "{told}");
+    assert!(afkconvoy_core::harness::Harness::ClaudeCode.holds_note(&user_notes(&world), &url));
+    assert_eq!(typed(&world).len(), 2);
+    assert!(!nudge_record(&world).exists(), "a comment is no nudge");
+}
+
+#[test]
+fn a_body_edit_shows_changed_lines_against_the_workers_starting_body() {
+    let world = World::new();
+    world.issue(7, &["ready-for-agent"]);
+    world.with_gh(|gh| gh["issues"][0]["body"] = json!("# Requirement\nUse v1.\nKeep retries."));
+    tick(&world, 1000);
+    world.with_orca(|orca| orca["notes"] = json!("taken"));
+    world.with_gh(|gh| gh["issues"][0]["body"] = json!("# Requirement\nUse v2.\nKeep retries."));
+    let told = tick(&world, 1090);
+    assert!(told["errors"].as_array().unwrap().is_empty(), "{told}");
+    assert_eq!(typed(&world).len(), 2);
+    let line = &typed(&world)[1];
+    assert!(line.contains("Changed lines") && line.contains("- Use v1. + Use v2."), "{line}");
+    assert!(!line.contains("Keep retries"), "unchanged context is omitted: {line}");
+}
+
+#[test]
+fn a_claim_with_no_worker_types_no_comment_and_dispatches_normally() {
+    let world = World::new();
+    world.issue(7, &["ready-for-agent"]);
+    world.afk(&["claim", "7", "--instance", "alpha", "--host", "h1", "--now", "1000"]).ok();
+    let url = later_comment(&world, "Read this at your start.", 1080);
+    let started = tick(&world, 1090);
+    assert!(started["errors"].as_array().unwrap().is_empty(), "{started}");
+    assert!(!started["did"].as_array().unwrap().iter().any(|step| step["do"] == "tell"));
+    assert_eq!(typed(&world).len(), 1, "only its brief is typed");
+    assert!(!typed(&world)[0].contains(&url));
+    assert!(user_notes(&world).is_empty());
+}
+
+#[test]
+fn a_new_body_edit_keeps_the_revision_still_queued_for_the_worker() {
+    let world = fleet(1000);
+    report(&world, "working", 1000, 1080);
+    world.with_orca(|orca| orca["notes"] = json!("queued"));
+    world.with_gh(|gh| gh["issues"][0]["body"] = json!("First correction."));
+    let first = tick(&world, 1090);
+    assert_eq!(first["errors"][0]["do"], "tell");
+    assert_eq!(typed(&world).len(), 2);
+    let earlier = typed(&world)[1].clone();
+    world.with_gh(|gh| gh["issues"][0]["body"] = json!("Second correction."));
+    afkconvoy::session::record_note(&world.home(), &worktree(&world), &earlier, true, 1100)
+        .unwrap();
+    world.with_orca(|orca| orca["notes"] = json!("taken"));
+    let next = tick(&world, 1180);
+    assert!(next["errors"].as_array().unwrap().is_empty(), "{next}");
+    let told: Vec<&Value> =
+        next["did"].as_array().unwrap().iter().filter(|step| step["do"] == "tell").collect();
+    assert_eq!(told.len(), 2, "{next}");
+    assert_eq!(told[0]["typed"], false, "the first revision was already taken");
+    assert_eq!(typed(&world).len(), 3, "each body revision is typed once");
+    assert!(typed(&world)[1].contains("First correction."));
+    assert!(typed(&world)[2].contains("Second correction."));
+}
+
+#[test]
+fn a_worker_started_before_upgrade_is_told_a_body_edited_since_its_start() {
+    let world = fleet(1000);
+    let notes = PathBuf::from(git(&worktree(&world), &["rev-parse", "--absolute-git-dir"]));
+    std::fs::remove_file(notes.join("convoy-issue-updates.json")).unwrap();
+    world.with_orca(|orca| orca["notes"] = json!("taken"));
+    world.with_gh(|gh| {
+        gh["issues"][0]["body"] = json!("An edit since the old worker started.");
+        gh["issues"][0]["edited"] = json!(1080);
+    });
+    let told = tick(&world, 1090);
+    assert!(told["errors"].as_array().unwrap().is_empty(), "{told}");
+    assert_eq!(typed(&world).len(), 2);
+    assert!(typed(&world)[1].contains("An edit since the old worker started."));
+    tick(&world, 1180);
+    assert_eq!(typed(&world).len(), 2);
+}
+
+#[test]
+fn later_fleet_comments_and_earlier_comments_are_not_told() {
+    let world = fleet(1000);
+    world.with_orca(|orca| orca["notes"] = json!("taken"));
+    later_comment(&world, "already read", 999);
+    later_comment(&world, "at start", 1000);
+    later_comment(&world, "prefix\n<!--convoy:tell-->\noperator note", 1080);
+    tick(&world, 1090);
+    assert_eq!(typed(&world).len(), 1);
+}
+
+#[test]
+fn a_comment_written_by_this_worker_is_not_told_even_with_the_same_login() {
+    use afkconvoy_core::harness::{Harness, SessionLayout};
+    let world = fleet(1000);
+    report(&world, "working", 1000, 1080);
+    world.with_orca(|orca| orca["notes"] = json!("taken"));
+    let own = later_comment(&world, "I opened the follow-up issue.", 1080);
+    let place = Harness::ClaudeCode.note_place(&worktree(&world).to_string_lossy());
+    let SessionLayout::Files { dir, .. } = place.layout else { unreachable!() };
+    let session = world.home().join(place.under_home).join(dir).join("worker-writes.jsonl");
+    let call = json!({"type": "assistant", "message": {"role": "assistant", "content": [
+        {"type": "tool_use", "id": "write-1", "name": "Bash", "input": {
+            "command": "gh issue comment 7 --body-file reply.md"}}]}});
+    let result = json!({"type": "user", "message": {"role": "user", "content": [
+        {"type": "tool_result", "tool_use_id": "write-1", "content": own}]}});
+    std::fs::write(&session, format!("{call}\n{result}\n")).unwrap();
+    tick(&world, 1090);
+    assert_eq!(typed(&world).len(), 1, "a write receipt, not the shared login, identifies it");
+    // Session compaction must not turn an already identified write into a
+    // person's comment at the next tick.
+    std::fs::remove_file(&session).unwrap();
+    let human = later_comment(&world, "Also cover timeouts.", 1100);
+    tick(&world, 1180);
+    assert_eq!(typed(&world).len(), 2);
+    assert!(typed(&world)[1].contains(&human));
+}
+
+#[test]
+fn later_comments_wait_for_a_worker_of_the_claim_s_host() {
+    let world = fleet(1000);
+    world.with_orca(|orca| orca["notes"] = json!("taken"));
+    later_comment(&world, "Use v2", 1080);
+    let elsewhere =
+        world.afk(&["tick", "--instance", "beta", "--host", "h2", "--now", "1090"]).ok();
+    assert!(elsewhere["errors"].as_array().unwrap().is_empty(), "{elsewhere}");
+    assert_eq!(typed(&world).len(), 1, "another host types nothing");
+}
+
+#[test]
+fn a_queued_issue_update_is_retried_without_retyping_and_doctor_names_its_comment() {
+    let world = fleet(1000);
+    report(&world, "working", 1000, 1080);
+    world.with_orca(|orca| orca["notes"] = json!("queued"));
+    let url = later_comment(&world, "Use v2", 1080);
+    world.afk_lines(&[
+        "run",
+        "--foreground",
+        "--host",
+        "h1",
+        "--instance",
+        "alpha",
+        "--second-ms",
+        "0",
+        "--ticks",
+        "3",
+        "--now",
+        "1090",
+    ]);
+    let recorded: Vec<Value> = logs(&world)
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter_map(|entry| {
+            entry["tick"]["answer"].as_object().map(|_| entry["tick"]["answer"].clone())
+        })
+        .collect();
+    assert_eq!(recorded.len(), 3);
+    for failed in recorded {
+        assert!(
+            failed["errors"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|step| { step["do"] == "tell" && step["comment"] == url }),
+            "{failed}"
+        );
+        assert!(
+            failed["did"].as_array().unwrap().iter().any(|step| step["do"] == "heartbeat"),
+            "{failed}"
+        );
+    }
+    assert_eq!(typed(&world).len(), 2, "the input queue receives one line across retries");
+    let doctor = world.afk(&["doctor", "--host", "h1", "--now", "1271"]).json;
+    let finding = doctor["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|finding| {
+            finding["what"].as_str().unwrap_or("").contains("last 3 ticks")
+                && finding["evidence"].as_str().unwrap_or("").contains(&url)
+        })
+        .unwrap_or_else(|| panic!("{doctor}"));
+    assert!(finding["what"].as_str().unwrap().contains("#7"));
+
+    // The queued input eventually becomes the model's user message.
+    let line = typed(&world)[1].clone();
+    afkconvoy::session::record_note(&world.home(), &worktree(&world), &line, true, 1280).unwrap();
+    world.afk_lines(&[
+        "run",
+        "--foreground",
+        "--host",
+        "h1",
+        "--instance",
+        "alpha",
+        "--second-ms",
+        "0",
+        "--ticks",
+        "1",
+        "--now",
+        "1360",
+    ]);
+    assert_eq!(typed(&world).len(), 2);
+    let doctor = world.afk(&["doctor", "--host", "h1", "--now", "1361"]).json;
+    assert!(
+        !doctor["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|finding| { finding["evidence"].as_str().unwrap_or("").contains(&url) }),
+        "{doctor}"
+    );
+}

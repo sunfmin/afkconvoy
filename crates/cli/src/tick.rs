@@ -78,6 +78,7 @@ pub(crate) fn waiting_since(since: u64, now: u64) -> String {
 /// What one tick came to.
 pub struct Ticked {
     pub pass: Pass,
+    updates: Vec<Value>,
     failures: Vec<Failure>,
     /// The issues the pass escalated, each with why in a few words
     /// (`Fleet::escalated`): whichever step did.
@@ -225,6 +226,7 @@ pub fn tick(
     if crate::repair::tend(&mut fleet, me)? == Outcome::Done {
         (fleet, open) = Fleet::read(repo, me.now)?;
     }
+    let updates = crate::issue_updates::reconcile(&fleet, &me.host, &open.issues);
     for issue in &open.issues.rows {
         // Dispatch reports a resolution failure against its issue; successful
         // discovery must precede the choice of range.
@@ -318,6 +320,7 @@ pub fn tick(
     );
     let ticked = Ticked {
         pass,
+        updates,
         failures,
         escalated,
         blocked,
@@ -730,7 +733,7 @@ impl Ticked {
     }
 
     pub fn json(&self) -> Value {
-        let did: Vec<Value> = self
+        let mut did: Vec<Value> = self
             .pass
             .did
             .iter()
@@ -775,7 +778,7 @@ impl Ticked {
                 did
             })
             .collect();
-        let errors: Vec<Value> = self
+        let mut errors: Vec<Value> = self
             .failures
             .iter()
             .map(|failure| {
@@ -787,6 +790,8 @@ impl Ticked {
                 failed
             })
             .collect();
+        did.extend(self.updates.iter().cloned());
+        errors.extend(self.updates.iter().filter(|step| step["outcome"] == "failed").cloned());
         let mut answer = json!({"did": did, "errors": errors, "held": self.pass.held,
             "frontier_remaining": self.pass.frontier_remaining, "idle": self.idle(),
             "locks": self.set.locks});
@@ -953,6 +958,15 @@ impl Ticked {
             parts.push(format!("opened an issue for the slow gate: {evidence}"));
         }
         parts.extend(self.cut_said.iter().filter_map(log::cut_said));
+        for update in &self.updates {
+            let issue = &update["issue"];
+            let comment = update["comment"].as_str().unwrap_or("issue updates");
+            parts.push(if update["outcome"] == "failed" {
+                format!("FAILED tell #{issue}: {}", update["error"].as_str().unwrap_or_default())
+            } else {
+                format!("told #{issue}: {comment}")
+            });
+        }
         if self.pass.held_back(&self.set) {
             parts.push(format!(
                 "admission holds back new workers: {}",
