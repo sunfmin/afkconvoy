@@ -274,6 +274,10 @@ fn a_landing_blocked_verdict_parks_and_resumes_landing() {
         tick(&world, now);
         let dir = worktree(&world);
         let head = git(&dir, &["rev-parse", "HEAD"]);
+        let branch = git(&dir, &["symbolic-ref", "--short", "HEAD"]);
+        if explicit {
+            std::fs::write(dir.join("unfinished.txt"), "landing work").unwrap();
+        }
         world.issue(41, &["flow:feature"]);
         // Keep the blocker off this instance's frontier, without changing its
         // eligibility as an issue the fleet can wait for.
@@ -300,9 +304,10 @@ fn a_landing_blocked_verdict_parks_and_resumes_landing() {
         }
         assert_eq!(world.claims(), [(41, "beta".into())]);
         assert_eq!(world.edges(7), [41]);
-        assert!(dir.exists(), "the open PR keeps its worktree");
+        assert_eq!(dir.exists(), explicit, "only work held locally keeps the worktree");
         assert!(terminals(&world, &dir).is_empty());
-        assert_eq!(git(&dir, &["rev-parse", "HEAD"]), head);
+        assert_eq!(world.remote(&["rev-parse", &format!("refs/heads/{branch}")]), head);
+        assert_eq!(world.gh()["prs"][0]["state"], "open");
         assert!(frontier(&world).is_empty());
         let shown = world.afk(&["show", "--issue", "7"]).ok();
         assert_eq!(shown["position"]["is"], "parked", "{shown}");
@@ -314,6 +319,7 @@ fn a_landing_blocked_verdict_parks_and_resumes_landing() {
         world.close(41, "completed");
         assert_eq!(frontier(&world), [(7, "land".into())]);
         assert_eq!(did(&tick(&world, now + 270)), ["dispatch 7 done"]);
+        let dir = worktree(&world);
         assert!(worker(&world, &dir).contains("AFKCONVOY_STAGE='land'"));
         assert_eq!(status(&world), "landing");
     }
@@ -332,9 +338,10 @@ fn a_landing_escalate_verdict_waits_for_a_human_and_a_ruling_resumes_landing() {
     assert_eq!(did(&tick(&world, now + 90)), ["advance 7 done"]);
     assert!(world.claims().is_empty());
     assert!(world.labels(7).contains(&"ready-for-human".to_string()));
-    assert!(dir.exists());
+    assert!(!dir.exists(), "all work is on the remote");
     assert!(terminals(&world, &dir).is_empty());
     assert_eq!(world.remote(&["rev-parse", &format!("refs/heads/{branch}")]), head);
+    assert_eq!(world.gh()["prs"][0]["state"], "open");
     let plan = world.afk(&["plan", "--instance", "alpha"]).ok();
     let waiting = plan["waiting_on_human"].as_array().unwrap();
     assert_eq!(waiting.len(), 1, "{plan}");
@@ -350,6 +357,7 @@ fn a_landing_escalate_verdict_waits_for_a_human_and_a_ruling_resumes_landing() {
     assert_eq!(ruled["stage"], "land", "{ruled}");
     assert_eq!(frontier(&world), [(7, "land".into())]);
     assert_eq!(did(&tick(&world, now + 270)), ["dispatch 7 done"]);
+    let dir = worktree(&world);
     assert!(worker(&world, &dir).contains("AFKCONVOY_STAGE='land'"));
     assert_eq!(world.afk_in(&dir, &["land", "--issue", "7"]).ok()["outcome"], "merged");
 }
