@@ -33,7 +33,6 @@ mod grok;
 mod guard;
 mod help;
 mod host_runner;
-mod host_sleep;
 mod host_watch;
 mod intake;
 mod joining;

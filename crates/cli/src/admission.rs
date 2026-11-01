@@ -5,16 +5,26 @@
 
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::process::Command;
 use std::sync::Mutex;
 
 use afkconvoy_core::admission::{Disk, Hold, Reading, SHARES, Shares, holds, thresholds};
 use afkconvoy_core::resources::{Reason, SPAN};
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
 use crate::host_settings;
-use crate::host_sleep::output;
 use crate::measure;
+
+/// The output of `program` with `args`, which must succeed.
+pub(crate) fn output(program: &str, args: &[&str]) -> Result<String> {
+    let out = crate::process::output(Command::new(program).args(args))
+        .with_context(|| format!("`{program}` could not be run"))?;
+    if !out.status.success() {
+        bail!("`{program} {}` failed: {}", args.join(" "), String::from_utf8_lossy(&out.stderr));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
 
 /// One look's host reading, with one disk observation per volume. Every
 /// checkout derives its admission from these same load and memory values.

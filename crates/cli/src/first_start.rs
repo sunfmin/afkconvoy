@@ -15,11 +15,9 @@ use crate::instance::Start;
 /// What the guide and first-start topic tell the user about host settings,
 /// with numeric defaults taken from the rules that use them.
 pub fn settings_help() -> String {
-    use afkconvoy_core::{admission::SHARES, host_sleep, resources::SPAN};
+    use afkconvoy_core::{admission::SHARES, resources::SPAN};
     format!(
-        "Host settings apply to every fleet; `run` changes those named. Defaults: host sleep {} local time after host and fleets idle {} minutes (`--no-host-sleep` required off macOS); watch workers above half the cores (at least one) for two minutes, a quarter of memory resident, or a tenth of free disk written in ten minutes (at least one GiB); admission holds starts above {}% load per core or below {}% memory or {}% disk free, calling for the watch after {} seconds held for one reason or memory pressure; end exclusive commands after {} seconds holding others up; panel port {} (a free port if taken); the host runner looks every {} seconds in the operator's directory, or the stock watch's by default. Concurrency: {} claims at work per checkout. Flags: `afkconvoy run --help`.",
-        host_sleep::SLEEP_HOURS,
-        host_sleep::IDLE_WAIT / 60,
+        "Host settings apply to every fleet; `run` changes those named. Defaults: watch workers above half the cores (at least one) for two minutes, a quarter of memory resident, or a tenth of free disk written in ten minutes (at least one GiB); admission holds starts above {}% load per core or below {}% memory or {}% disk free, calling for the watch after {} seconds held for one reason or memory pressure; end exclusive commands after {} seconds holding others up; panel port {} (a free port if taken); the host runner looks every {} seconds in the operator's directory, or the stock watch's by default. Concurrency: {} claims at work per checkout. Flags: `afkconvoy run --help`.",
         SHARES.load,
         SHARES.memory,
         SHARES.disk,
@@ -57,7 +55,6 @@ pub struct Ask {
 #[serde(rename_all = "kebab-case")]
 enum Setting {
     Tracker,
-    HostSleep,
     Concurrency,
     WatchDir,
 }
@@ -66,7 +63,6 @@ impl std::fmt::Display for Setting {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Setting::Tracker => "tracker",
-            Setting::HostSleep => "host-sleep",
             Setting::Concurrency => "concurrency",
             Setting::WatchDir => "watch-dir",
         })
@@ -93,17 +89,6 @@ pub fn questions() -> Vec<Ask> {
                     option: "A new private repo, created only on the user's yes to its owner and name",
                     line: "gh repo create <owner>/<name> --private && afkconvoy run <checkout> --tracker <owner>/<name>".into(),
                 },
-            ],
-        },
-        Ask {
-            setting: Setting::HostSleep,
-            question: "May the fleets put this host to sleep, and during which hours?",
-            default: afkconvoy_core::host_sleep::SLEEP_HOURS.to_string(),
-            recommend: "On macOS, use the default hours unless this host must stay awake; on any other host, choose never (`--no-host-sleep`).",
-            options: vec![
-                line("Default hours on macOS", "--host-sleep --host-sleep-hours default"),
-                line("Other hours on macOS, in the host's local time", "--host-sleep --host-sleep-hours <HH:MM-HH:MM>"),
-                line("Never; required on a host that is not macOS", "--no-host-sleep"),
             ],
         },
         Ask {
@@ -160,14 +145,11 @@ pub fn settled(
     let (listed, has_settings) = List::of_host()?.read_with_settings()?;
     let new_checkout = !listed.checkouts.iter().any(|entry| entry.checkout == checkout.dir);
     let tracker = new_checkout && start.tracker.is_none();
-    let sleep =
-        !has_settings && settings.no_host_sleep.is_none() && settings.host_sleep_hours.is_none();
-    if tracker || sleep {
+    if tracker {
         let asks = questions()
             .into_iter()
             .filter(|ask| match ask.setting {
                 Setting::Tracker => tracker,
-                Setting::HostSleep => sleep,
                 Setting::Concurrency => new_checkout && start.concurrency.is_none(),
                 Setting::WatchDir => !has_settings && settings.watch_dir.is_none(),
             })

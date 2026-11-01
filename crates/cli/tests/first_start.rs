@@ -8,14 +8,8 @@ use crate::common::{Answer, World};
 use serde_json::{Value, json};
 
 fn run(world: &World, cwd: &Path, args: &[&str]) -> Answer {
-    let out = world
-        .command(env!("CARGO_BIN_EXE_afkconvoy"), cwd)
-        .env_remove("AFKCONVOY_NO_HOST_SLEEP")
-        .env_remove("AFKCONVOY_HOST_SLEEP_HOURS")
-        .arg("run")
-        .args(args)
-        .output()
-        .unwrap();
+    let out =
+        world.command(env!("CARGO_BIN_EXE_afkconvoy"), cwd).arg("run").args(args).output().unwrap();
     Answer {
         json: serde_json::from_slice(&out.stdout).expect("exactly one JSON object"),
         code: out.status.code().unwrap(),
@@ -69,7 +63,7 @@ fn a_new_checkout_asks_for_its_tracker_before_any_startup_writes() {
     refused(
         &world,
         &world.clone,
-        &["--no-host-sleep", "--hot-cores", "2", "--concurrency", "1", "--panel", "7123"],
+        &["--hot-cores", "2", "--concurrency", "1", "--panel", "7123"],
         &["tracker", "watch-dir"],
     );
     world.say_host_settings(json!({}));
@@ -80,28 +74,22 @@ fn a_new_checkout_asks_for_its_tracker_before_any_startup_writes() {
 }
 
 #[test]
-fn a_new_host_asks_for_sleep_even_when_its_tracker_was_given() {
+fn a_new_host_asks_nothing_of_host_sleep() {
     let world = World::new();
-    refused(
-        &world,
-        &world.clone,
-        &["--tracker", "default", "--hot-memory", "2"],
-        &["host-sleep", "concurrency", "watch-dir"],
-    );
-    let all = ["tracker", "host-sleep", "concurrency", "watch-dir"];
+    let all = ["tracker", "concurrency", "watch-dir"];
     refused(&world, &world.clone, &[], &all);
     refused(&world, &world.clone, &["--foreground"], &all);
-    // A list of checkouts without a settings object has no host settings.
-    let file = world.cache().join("afkconvoy/checkouts.json");
-    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-    std::fs::write(file, json!({"checkouts": [{"checkout": world.clone}]}).to_string()).unwrap();
-    refused(&world, &world.clone, &[], &["host-sleep", "watch-dir"]);
+    // Its tracker given, a new host starts: no fleet puts a host to sleep,
+    // so there is nothing of it to settle (docs/adr/0050).
+    let first = run(&world, &world.clone, &["--tracker", "default", "--hot-memory", "2"]).ok();
+    assert_eq!(first["added"], true);
+    world.afk(&["stop", "--all"]).ok();
 }
 
 #[test]
 fn explicit_choices_start_and_existing_checkouts_and_host_defaults_need_no_flags() {
     let world = World::new();
-    let first = run(&world, &world.clone, &["--tracker", "default", "--no-host-sleep"]).ok();
+    let first = run(&world, &world.clone, &["--tracker", "default"]).ok();
     assert_eq!(first["added"], true);
     let again = run(&world, &world.clone, &[]).ok();
     assert_eq!(again["added"], false);
@@ -117,7 +105,7 @@ fn explicit_choices_start_and_existing_checkouts_and_host_defaults_need_no_flags
 #[test]
 fn every_first_start_question_and_option_is_shared_by_the_topic_and_json_asks() {
     let world = World::new();
-    let all = ["tracker", "host-sleep", "concurrency", "watch-dir"];
+    let all = ["tracker", "concurrency", "watch-dir"];
     let answer = refused(&world, &world.clone, &[], &all);
     let out = world
         .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)

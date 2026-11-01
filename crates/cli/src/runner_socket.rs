@@ -519,9 +519,9 @@ mod tests {
     #[test]
     fn a_request_crosses_as_one_line_tagged_by_its_op() {
         let start: Start = serde_json::from_value(json!({
-            "named": {"host": "h1"}, "panel": null, "no_host_sleep": true,
+            "named": {"host": "h1"}, "panel": null,
             "hot": {"millicores": null, "resident": null, "written": null},
-            "knobs": {"ticks": null, "second_ms": 100, "host_sleep_after": 600,
+            "knobs": {"ticks": null, "second_ms": 100,
                 "ready_timeout": 120, "now": null}
         }))
         .unwrap();
@@ -620,6 +620,7 @@ mod tests {
             BufReader::new(&asker).read_line(&mut answer).unwrap();
             serde_json::from_str::<Value>(&answer).unwrap()
         };
+        // an older afkconvoy's start, with keys this one has none of, is read
         let start = r#""start":{"named":{},"panel":null,"no_host_sleep":true,"hot":{"millicores":null,"resident":null,"written":null},"knobs":{"ticks":null,"second_ms":1000,"host_sleep_after":600,"ready_timeout":120,"now":null}}"#;
         let added = ask(&format!(r#"{{"op":"add","checkout":"/w",{start}}}"#));
         assert_eq!(added, json!({"checkout": "/w", "host_runner": about}));
@@ -669,9 +670,9 @@ mod tests {
     fn asking_tells_nobody_from_one_that_ended_or_said_nothing_in_time() {
         let dir = tempfile::tempdir().unwrap();
         let add: Request = serde_json::from_value(json!({"op": "add", "checkout": "/w",
-            "start": {"named": {}, "panel": null, "no_host_sleep": true,
+            "start": {"named": {}, "panel": null,
                 "hot": {"millicores": null, "resident": null, "written": null},
-                "knobs": {"ticks": null, "second_ms": 1000, "host_sleep_after": 600,
+                "knobs": {"ticks": null, "second_ms": 1000,
                     "ready_timeout": 120, "now": null}}}))
         .unwrap();
         let within = Duration::from_millis(200);

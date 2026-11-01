@@ -46,7 +46,7 @@ pub fn pressure_level() -> Option<u64> {
     if !cfg!(target_os = "macos") {
         return None;
     }
-    crate::host_sleep::output("sysctl", &["-n", "kern.memorystatus_vm_pressure_level"])
+    crate::admission::output("sysctl", &["-n", "kern.memorystatus_vm_pressure_level"])
         .ok()?
         .trim()
         .parse()

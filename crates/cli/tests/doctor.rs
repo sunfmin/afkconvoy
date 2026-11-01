@@ -480,11 +480,7 @@ fn run_logs_a_line_as_it_starts_one_as_each_tick_starts_and_ends_and_prints_each
         );
     }
     // stdout holds every line of the log, in its order
-    let host_sleep = "start: puts this host to sleep";
-    let printed: Vec<&String> = lines
-        .iter()
-        .filter(|line| !line.starts_with(host_sleep) && !line.starts_with("watch: "))
-        .collect();
+    let printed: Vec<&String> = lines.iter().filter(|line| !line.starts_with("watch: ")).collect();
     assert_eq!(printed.len(), log.len(), "{lines:?}");
     assert_eq!(printed[0], "start: run as alpha on h1, its workers started with `agent`");
     assert_eq!(printed[1], "tick 1: started (start)");

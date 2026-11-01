@@ -810,7 +810,7 @@ fn every_tick_says_as_it_starts_why_it_started() {
     tick(&world, "1000");
     world.close_issue(3);
     let args = ["run", "--foreground", "--host", "h1", "--second-ms", "0"];
-    let more = ["--instance", "alpha", "--ticks", "3", "--now", "1090", "--no-host-sleep"];
+    let more = ["--instance", "alpha", "--ticks", "3", "--now", "1090"];
     let (lines, _) = world.afk_every_line(&[&args[..], &more[..]].concat());
     // The host's watch has its own log events, independent of this fleet's ticks.
     let lines: Vec<_> = lines.into_iter().filter(|line| !line.starts_with("watch: ")).collect();
@@ -826,6 +826,22 @@ fn every_tick_says_as_it_starts_why_it_started() {
             "tick 3: nothing to do · holding 0/2 · frontier 0 · next in 90s",
         ]
     );
+}
+
+/// A fleet that worked and then went idle never puts its host to sleep: it
+/// asks `pmset` nothing, however long it stays idle (docs/adr/0050).
+#[test]
+fn a_fleet_that_worked_and_went_idle_never_puts_its_host_to_sleep() {
+    let world = World::new();
+    world.issue(7, &["ready-for-agent"]);
+    let claim = ["claim", "--issue", "7", "--instance", "alpha", "--host", "h1"];
+    assert_eq!(world.afk(&claim).ok()["won"], true);
+    world.close_issue(7);
+    let args = ["run", "--foreground", "--instance", "alpha", "--host", "h1", "--second-ms", "0"];
+    let (lines, _) = world.afk_every_line(&[&args[..], &["--ticks", "3"]].concat());
+    assert!(lines.iter().any(|line| line.starts_with("tick 3: nothing to do")), "{lines:#?}");
+    assert!(!lines.iter().any(|line| line.contains("host sleep")), "{lines:#?}");
+    assert_eq!(world.host_calls("pmset"), Vec::<String>::new());
 }
 
 #[test]

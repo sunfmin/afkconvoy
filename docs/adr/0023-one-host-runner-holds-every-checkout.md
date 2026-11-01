@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: proposed; its host sleep superseded by ADR-0050
 ---
 
 # One host runner holds every checkout of its host
