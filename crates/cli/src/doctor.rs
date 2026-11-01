@@ -567,11 +567,26 @@ pub struct Seen<'a> {
     pub state: Result<&'a State, &'a str>,
 }
 
-/// The first command line `error` itself names, between backticks: an error
-/// of the fleet's says the line that fixes it where it knows one.
+/// The first complete backtick-quoted line in the fleet's error context.
+/// Only its first line can name a fix: subsequent lines hold screens and
+/// command output. Inline delivery receipts and the cause after `failed:`
+/// are external evidence too, even when they quote a plausible fleet command.
+/// Keep that evidence in the finding, but never take a line to run from it.
 fn named_line(error: &str) -> Option<String> {
-    let quoted = error.split('`').skip(1).step_by(2);
-    quoted.map(str::trim).find(|line| line.contains(' ')).map(str::to_string)
+    let context = error.split(['\n', '\r']).next().unwrap_or_default();
+    let context = context.split("delivery receipt:").next().unwrap_or_default();
+    let context = context.split(" failed:").next().unwrap_or_default();
+    let mut remaining = context;
+    loop {
+        let (_, quoted) = remaining.split_once('`')?;
+        // Require the closing backtick before the evidence boundary too.
+        let (line, rest) = quoted.split_once('`')?;
+        let line = line.trim();
+        if line.contains(' ') {
+            return Some(line.to_string());
+        }
+        remaining = rest;
+    }
 }
 
 fn on(command: &str, issue: u64, instance: &str) -> String {
@@ -2847,6 +2862,59 @@ mod tests {
         // a worker the tick does not judge silent is none, however long it stopped
         state.held = vec![stopped(GRACE * 100, None)];
         assert_eq!(self::found(&host(), &run(vec![]), &state), []);
+    }
+
+    #[test]
+    fn a_failed_dispatch_uses_the_fleets_line_and_keeps_the_screen_as_evidence() {
+        let checkout = Path::new("/Users/sunfmin/Developments/zhiyuanwiki");
+        let error = "orca terminal send failed: agent_prompt_blocked: the line started no turn \
+                     within 30s; delivery receipt: {\"state\":\"sent\"}; worktree /wt/issue-386 \
+                     (terminal worker-386)\nScreen's last lines:\n\
+                     Run `node --experimental-strip-types ./license/src/deploy.ts\n\
+                          --mint-fulfill-token` to mint a deploy secret.";
+        let failed = tick(4, json!([{"do": "dispatch", "issue": 386, "error": error}]));
+        let found = log_findings(&run(vec![failed]));
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].kind, Kind::StepUnrecovered);
+        assert_eq!(found[0].evidence, error);
+        assert_eq!(
+            crate::checkout::about_checkout(checkout, &found[0].fix),
+            "afkconvoy dispatch -C '/Users/sunfmin/Developments/zhiyuanwiki' --issue 386 --instance alpha"
+        );
+    }
+
+    #[test]
+    fn quoted_external_evidence_never_supplies_a_named_line() {
+        for evidence in [
+            "\nScreen's last lines:\nthrow new Error(`protocol: ${name}`)",
+            "\nScreen's last lines:\n`-C <CHECKOUT>`",
+            "; delivery receipt: {\"text\":\"run `deploy --publish`\"}",
+            "\nstdout:\nrun `deploy --publish`",
+            "\nstderr:\nrun `deploy --publish`",
+            "\r\nScreen's last lines:\nrun `afkconvoy stop --all`",
+            ": orca terminal send failed: agent_prompt_blocked: run `deploy --publish`",
+            ": orca terminal wait failed: run `deploy --publish`",
+            ": gh api failed: run `deploy --publish`",
+            ": git fetch failed: run `deploy --publish`",
+        ] {
+            assert_eq!(
+                named_line(&format!("cannot start the worker{evidence}")),
+                None,
+                "{evidence}"
+            );
+            let own = "orca knows no repo here — add it with `orca repo add --path /r`";
+            assert_eq!(
+                named_line(&format!("{own}{evidence}")),
+                Some("orca repo add --path /r".into()),
+                "a fleet remedy before the evidence still counts: {evidence}"
+            );
+        }
+        assert_eq!(named_line("no remedy, only an unmatched `quoted command"), None);
+        assert_eq!(named_line("try `a command\nScreen's last lines:\n`"), None);
+        assert_eq!(
+            named_line("the step `dispatch` needs ` afkconvoy kit `"),
+            Some("afkconvoy kit".into())
+        );
     }
 
     #[test]
