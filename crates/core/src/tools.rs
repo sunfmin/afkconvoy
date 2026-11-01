@@ -108,23 +108,32 @@ fn redact_label(text: &str, label: &str) -> String {
         if !boundary {
             continue;
         }
-        let after = &lower[start + label.len()..];
-        let separator = start + label.len() + after.len() - after.trim_start().len();
+        let after = &lower[start.saturating_add(label.len())..];
+        let separator = start
+            .saturating_add(label.len())
+            .saturating_add(after.len())
+            .saturating_sub(after.trim_start().len());
         if !matches!(lower[separator..].chars().next(), Some('=' | ':')) {
             continue;
         }
-        let after = &lower[separator + 1..];
-        let value = separator + 1 + after.len() - after.trim_start().len();
+        let after = &lower[separator.saturating_add(1)..];
+        let value = separator
+            .saturating_add(1)
+            .saturating_add(after.len())
+            .saturating_sub(after.trim_start().len());
         let Some(first) = lower[value..].chars().next() else { continue };
         let (content, end) = if matches!(first, '\'' | '"') {
-            let content = value + first.len_utf8();
-            let end = lower[content..].find(first).map(|at| content + at).unwrap_or(lower.len());
+            let content = value.saturating_add(first.len_utf8());
+            let end = lower[content..]
+                .find(first)
+                .map(|at| content.saturating_add(at))
+                .unwrap_or(lower.len());
             (content, end)
         } else {
             let end = lower[value..]
                 .char_indices()
                 .find(|(_, c)| c.is_whitespace() || matches!(c, ',' | ';' | '}' | ']'))
-                .map(|(at, _)| value + at)
+                .map(|(at, _)| value.saturating_add(at))
                 .unwrap_or(lower.len());
             (value, end)
         };
@@ -143,11 +152,11 @@ fn redact_prefix(text: &str, prefix: &str) -> String {
         if lower[..start].chars().next_back().is_some_and(|c| c.is_ascii_alphanumeric()) {
             continue;
         }
-        let content = start + prefix.len();
+        let content = start.saturating_add(prefix.len());
         let end = lower[content..]
             .char_indices()
             .find(|(_, c)| !(c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')))
-            .map(|(at, _)| content + at)
+            .map(|(at, _)| content.saturating_add(at))
             .unwrap_or(lower.len());
         if content < end {
             ranges.push((content, end));
