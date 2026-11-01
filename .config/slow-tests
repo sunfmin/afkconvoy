@@ -880,3 +880,10 @@ afkconvoy::cli host_watch::asking_guard_pi
 afkconvoy::cli tick::settling_waits_for_a_finishing_worker_then_leaves_without_a_failed_tick
 afkconvoy::cli tick::a_run_says_left_after_a_finishing_worker_leaves
 afkconvoy::cli tick::a_worktree_a_process_is_in_waits_until_that_process_is_gone
+afkconvoy::cli asking_guard::unbound_codex
+afkconvoy::cli asking_guard::unbound_dsh
+afkconvoy::cli asking_guard::unbound_kimi
+afkconvoy::cli asking_guard::unbound_pi
+# Doctor tests exceeded the fast gate's 6s limit after merging the preceding candidates.
+afkconvoy::cli doctor::a_worker_left_alone_by_a_fleet_lock_waits_until_its_nudge
+afkconvoy::cli doctor::doctor_routes_other_declared_verdicts
