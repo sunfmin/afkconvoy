@@ -6,6 +6,68 @@ use serde_json::json;
 
 const CLAIM_7: &str = "refs/convoy/claim/7";
 
+#[test]
+fn human_waits_race_on_one_remote_without_becoming_worker_claims() {
+    use afkconvoy::claims::{Me, Scan};
+    use afkconvoy::git::Repo;
+    use afkconvoy_core::claims::InstanceId;
+    let world = World::new();
+    let winners: Vec<_> = std::thread::scope(|scope| {
+        let racers: Vec<_> = ["h1", "h2"]
+            .into_iter()
+            .map(|host| {
+                let world = &world;
+                scope.spawn(move || {
+                    let repo = Repo::at(&world.clone).unwrap();
+                    let mut scan = Scan::read(&repo).unwrap();
+                    let me = Me {
+                        instance: InstanceId::parse(host).unwrap(),
+                        host: host.into(),
+                        now: 1000,
+                    };
+                    afkconvoy::human_wait::reconcile(&repo, &mut scan, &me, &[7].into()).unwrap();
+                    afkconvoy::human_wait::holders(&scan, me.now)[&7].clone() == host
+                })
+            })
+            .collect();
+        racers.into_iter().map(|r| r.join().unwrap()).collect()
+    });
+    assert_eq!(winners.iter().filter(|won| **won).count(), 1);
+    let scan = Scan::read(&Repo::at(&world.clone).unwrap()).unwrap();
+    assert_eq!(scan.waits.len(), 1);
+    assert!(scan.claims.is_empty());
+    assert!(scan.runs.is_empty());
+}
+
+#[test]
+fn a_wait_alone_beats_and_is_taken_after_the_lease_then_released_when_answered() {
+    use afkconvoy::claims::{Me, Scan};
+    use afkconvoy::git::Repo;
+    use afkconvoy_core::claims::InstanceId;
+    let world = World::new();
+    let look = |host: &str, now, waiting: bool| {
+        let repo = Repo::at(&world.clone).unwrap();
+        let mut scan = Scan::read(&repo).unwrap();
+        let me = Me { instance: InstanceId::parse(host).unwrap(), host: host.into(), now };
+        let waits = if waiting { [7].into() } else { Default::default() };
+        afkconvoy::human_wait::reconcile(&repo, &mut scan, &me, &waits).unwrap();
+        scan
+    };
+    look("h1", 1000, true);
+    let scan = look("h1", 2000, true);
+    assert_eq!(scan.last_beat("h1"), Some(2000));
+    assert!(scan.claims.is_empty());
+    let scan = look("h2", 2000 + 29 * 60, true);
+    assert_eq!(scan.waits[0].owner.as_ref().unwrap().host, "h1");
+    let scan = look("h2", 2000 + 31 * 60, true);
+    assert_eq!(scan.waits[0].owner.as_ref().unwrap().host, "h2");
+    // The old host's cleanup cannot remove the new holder's claim.
+    assert_eq!(look("h1", 4000, false).waits.len(), 1);
+    let ended = look("h2", 4000, false);
+    assert!(ended.waits.is_empty());
+    assert_eq!(ended.last_beat("h2"), None, "the last wait takes its heartbeat with it");
+}
+
 fn claim(world: &World, issue: &str, instance: &str, now: &str) -> serde_json::Value {
     world
         .afk(&["claim", "--issue", issue, "--instance", instance, "--host", "h1", "--now", now])
