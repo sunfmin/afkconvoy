@@ -1023,6 +1023,19 @@ impl Harness {
         }
     }
 
+    /// Whether this session's initial user prompt names the task brief at
+    /// `brief`, the exact path in the worktree's own git directory. The
+    /// harness selects its user messages; the shared brief matcher excludes
+    /// tool output, model replies and another worker's brief.
+    pub fn names_brief(self, text: &str, brief: &str) -> bool {
+        match self {
+            Harness::Codex => codex::names_brief(text, brief),
+            Harness::ClaudeCode | Harness::Pi | Harness::Dsh | Harness::Kimi | Harness::Grok => {
+                false
+            }
+        }
+    }
+
     /// The files a stand-in writes under the harness directory so a later
     /// read sees this turn.
     ///

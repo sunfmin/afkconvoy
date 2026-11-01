@@ -750,7 +750,7 @@ pub(super) fn recorded_turn(
             notes.push(note);
         }
     }
-    if !saw_header || (!saw_cwd && !brief.is_some_and(|brief| initial_brief(text, brief))) {
+    if !saw_header || (!saw_cwd && !brief.is_some_and(|brief| names_brief(text, brief))) {
         return None;
     }
     session::turn_of(&notes, not_before)
@@ -760,8 +760,7 @@ pub(super) fn recorded_turn(
 /// role session with a worker. Codex may write AGENTS.md and environment
 /// messages before it. A later mention, tool output or model reply cannot
 /// take another worker's session.
-fn initial_brief(text: &str, brief: &str) -> bool {
-    let expected = crate::prompt::brief_pointer(brief);
+pub(super) fn names_brief(text: &str, brief: &str) -> bool {
     for value in json_lines(text) {
         let payload = &value["payload"];
         if value["type"] == "response_item"
@@ -771,10 +770,8 @@ fn initial_brief(text: &str, brief: &str) -> bool {
         {
             return false;
         }
-        for said in session::user_texts(&value) {
-            if said.starts_with(crate::prompt::BRIEF_POINTER_PREFIX) {
-                return said == expected;
-            }
+        if let Some(matches) = session::brief_match(&value, brief) {
+            return matches;
         }
     }
     false

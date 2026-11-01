@@ -59,7 +59,7 @@ fn bound() -> World {
 
 #[test]
 fn a_supported_codex_send_is_proved_by_its_role_session_even_when_orca_reports_no_turn() {
-    for blocked in [false, true] {
+    for blocked in [true, false] {
         let world = bound();
         world.issue(7, &["flow:feature"]);
         let role = role_copy(&world, "acme/dev");

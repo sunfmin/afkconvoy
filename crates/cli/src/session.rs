@@ -148,17 +148,22 @@ fn kept_roots(harness: Harness) -> Result<Vec<PathBuf>> {
 
 /// The harness directory a launch noted beside the worktree's git directory.
 fn noted(cwd: &Path, name: &str) -> Option<PathBuf> {
-    let home = std::fs::read_to_string(worktree_git_dir(cwd)?.join(name)).ok()?;
+    let home = std::fs::read_to_string(git_dir(cwd)?.join(name)).ok()?;
     let home = home.trim();
     if home.is_empty() { None } else { Some(PathBuf::from(home)) }
 }
 
 /// The worktree's own git directory, also where its brief is written.
 /// Read the pointer directly: polling for a turn must not spawn git.
-fn worktree_git_dir(cwd: &Path) -> Option<PathBuf> {
+fn git_dir(cwd: &Path) -> Option<PathBuf> {
     let git = std::fs::read_to_string(cwd.join(".git")).ok()?;
     let dir = git.trim().strip_prefix("gitdir:")?.trim();
     if dir.is_empty() { None } else { Some(cwd.join(dir)) }
+}
+
+/// The task brief the fleet keeps for the worker in `cwd`, as an absolute path.
+fn brief(cwd: &Path) -> Option<String> {
+    Some(cwd_str(&git_dir(cwd)?.join(crate::orca::BRIEF_FILE)))
 }
 
 fn read_root(
@@ -171,7 +176,7 @@ fn read_root(
     if !root.exists() {
         return Ok(None);
     }
-    let brief = worktree_git_dir(cwd).map(|dir| cwd_str(&dir.join(crate::orca::BRIEF_FILE)));
+    let brief = brief(cwd);
     let cwd = cwd_str(cwd);
     let place = harness.session_place(&cwd);
     let turns = match place.layout {
