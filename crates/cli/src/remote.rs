@@ -11,6 +11,7 @@ mod publication;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use anyhow::{Result, anyhow, bail, ensure};
 
@@ -48,6 +49,8 @@ pub(crate) trait Wire: Send + Sync + std::fmt::Debug {
     fn list(&self, dir: &Path, patterns: &[&str]) -> Result<Vec<(String, String)>>;
     /// Runs `push` from the checkout `dir`.
     fn push(&self, dir: &Path, push: &Push) -> Result<Ran>;
+    /// Runs `push`, ending its process group if it outlives `limit`.
+    fn push_within(&self, dir: &Path, push: &Push, limit: Duration) -> Result<Ran>;
     /// Publishes `updates` all together, or none of them → whether it took.
     fn publish(&self, repo: &Repo, updates: &[Update<'_>]) -> Result<bool>;
 }
@@ -78,6 +81,12 @@ impl Wire for Git {
         let args = push.args();
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
         crate::git::run(dir, &args, &[])
+    }
+
+    fn push_within(&self, dir: &Path, push: &Push, limit: Duration) -> Result<Ran> {
+        let args = push.args();
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        crate::git::run_within(dir, &args, &[], limit)
     }
 
     fn publish(&self, repo: &Repo, updates: &[Update<'_>]) -> Result<bool> {
@@ -272,6 +281,16 @@ impl Remote {
     /// dropped whatever came of it: a push that failed or was refused may
     /// still have changed the remote.
     pub fn try_push(&self, push: &Push) -> Result<Ran> {
+        self.try_push_bounded(push, None)
+    }
+
+    /// As `try_push`, ending the push's process group at `limit`. Its remote
+    /// outcome is then unknown, and the written refs are still dropped.
+    pub fn try_push_within(&self, push: &Push, limit: Duration) -> Result<Ran> {
+        self.try_push_bounded(push, Some(limit))
+    }
+
+    fn try_push_bounded(&self, push: &Push, limit: Option<Duration>) -> Result<Ran> {
         let refs: Vec<String> = push.refs().map(str::to_string).collect();
         ensure!(!refs.is_empty(), "a push names the refs it writes");
         for name in &refs {
@@ -280,8 +299,12 @@ impl Remote {
                 "a push names each ref it writes in full, not {name:?}"
             );
         }
-        let ran = self.shared().wire.push(&self.repo.dir, push);
-        lock(&self.shared().seen).wrote(&refs);
+        let shared = self.shared();
+        let ran = match limit {
+            Some(limit) => shared.wire.push_within(&self.repo.dir, push, limit),
+            None => shared.wire.push(&self.repo.dir, push),
+        };
+        lock(&shared.seen).wrote(&refs);
         ran
     }
 
@@ -613,6 +636,10 @@ mod tests {
                 };
             }
             Ok(Ran { ok: true, stdout: String::new(), stderr: String::new() })
+        }
+
+        fn push_within(&self, dir: &Path, push: &Push, _: Duration) -> Result<Ran> {
+            self.push(dir, push)
         }
 
         fn publish(&self, _: &Repo, updates: &[Update<'_>]) -> Result<bool> {

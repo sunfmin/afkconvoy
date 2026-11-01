@@ -86,7 +86,25 @@ pub(crate) fn output_with_input(command: &mut Command, input: &[u8]) -> io::Resu
     output_given(command, Some(input))
 }
 
+/// As `output`, but `None` when the command has not ended within `limit`.
+/// Its own process group is killed so a transport or remote hook it started
+/// cannot survive the bound.
+pub(crate) fn output_within(command: &mut Command, limit: Duration) -> io::Result<Option<Output>> {
+    use std::os::unix::process::CommandExt;
+    output_bounded(command.process_group(0), None, limit)
+}
+
 fn output_given(command: &mut Command, input: Option<&[u8]>) -> io::Result<Output> {
+    output_bounded(command, input, None)
+        .map(|out| out.expect("an unbounded command is not timed out"))
+}
+
+fn output_bounded(
+    command: &mut Command,
+    input: Option<&[u8]>,
+    limit: impl Into<Option<Duration>>,
+) -> io::Result<Option<Output>> {
+    let limit = limit.into();
     let stdin = if input.is_some() { Stdio::piped() } else { Stdio::null() };
     let mut child =
         starting(|| command.stdin(stdin).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn())?;
@@ -94,7 +112,7 @@ fn output_given(command: &mut Command, input: Option<&[u8]>) -> io::Result<Outpu
     let stdout = child.stdout.take().ok_or_else(|| io::Error::other("stdout was not piped"))?;
     let stderr = child.stderr.take().ok_or_else(|| io::Error::other("stderr was not piped"))?;
     let exited = AtomicBool::new(false);
-    let (stdout, stderr, status) = std::thread::scope(|scope| {
+    let (stdout, stderr, status, timed_out) = std::thread::scope(|scope| {
         if let (Some(mut writer), Some(input)) = (writer, input) {
             // A child that exits before reading it all closes the pipe; its
             // status says what went wrong, not the broken write.
@@ -105,15 +123,38 @@ fn output_given(command: &mut Command, input: Option<&[u8]>) -> io::Result<Outpu
         }
         let stdout = scope.spawn(|| read_bounded(stdout, &exited));
         let stderr = scope.spawn(|| read_bounded(stderr, &exited));
-        let status = child.wait();
+        let started = Instant::now();
+        let mut timed_out = false;
+        let status = if let Some(limit) = limit {
+            loop {
+                match child.try_wait() {
+                    Ok(Some(status)) => break Ok(status),
+                    Ok(None) if started.elapsed() >= limit => {
+                        timed_out = true;
+                        let pid = child.id();
+                        if pid > 0 {
+                            // SAFETY: this child leads the dedicated group made above.
+                            unsafe { libc::kill(-(pid as i32), libc::SIGKILL) };
+                        }
+                        let _ = child.kill();
+                        break child.wait();
+                    }
+                    Ok(None) => std::thread::sleep(Duration::from_millis(10)),
+                    Err(error) => break Err(error),
+                }
+            }
+        } else {
+            child.wait()
+        };
         exited.store(true, Ordering::Release);
         let stdout =
             stdout.join().unwrap_or_else(|_| Err(io::Error::other("stdout drain panicked")));
         let stderr =
             stderr.join().unwrap_or_else(|_| Err(io::Error::other("stderr drain panicked")));
-        (stdout, stderr, status)
+        (stdout, stderr, status, timed_out)
     });
-    Ok(Output { status: status?, stdout: stdout?, stderr: stderr? })
+    let out = Output { status: status?, stdout: stdout?, stderr: stderr? };
+    Ok((!timed_out).then_some(out))
 }
 
 fn set_nonblock(fd: i32) -> io::Result<()> {

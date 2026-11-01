@@ -356,7 +356,7 @@ fn controlled_run(
             // is not believed from the one the record was left on.
             for layout in Layout::ALL {
                 let name = record_ref(layout, &tree, command);
-                let _ = repo.remote().try_push(&Push::delete(&name));
+                let _ = repo.remote().try_push_within(&Push::delete(&name), record_push_limit());
             }
             // A red run of this issue's tree is kept on its own ref until the
             // work account cites it. A base-branch certification names no issue.
@@ -364,7 +364,9 @@ fn controlled_run(
                 let subject = red_subject(&tree, command, ran.seconds, host, now, issue);
                 let red = red_ref(repo.layout(), issue, now, tree.key(), command.key());
                 if let Ok(sha) = repo.record_commit_of(tree.name(), &subject) {
-                    let _ = repo.remote().try_push(&Push::set(&sha, &red).force());
+                    let _ = repo
+                        .remote()
+                        .try_push_within(&Push::set(&sha, &red).force(), record_push_limit());
                 }
             }
         }
@@ -429,17 +431,32 @@ fn remote_fault(stderr: &str) -> bool {
 /// How many times a gate record's push is tried.
 const RECORD_ATTEMPTS: u32 = 5;
 
+/// How long one gate-record push may take before its process group is ended.
+/// The tests set this short; the production bound keeps a stalled transport
+/// from holding a candidate's worker lane.
+const RECORD_PUSH_SECONDS: u64 = 30;
+
+fn record_push_limit() -> Duration {
+    let seconds = std::env::var("AFKCONVOY_GATE_RECORD_PUSH_SECONDS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(RECORD_PUSH_SECONDS);
+    Duration::from_secs(seconds)
+}
+
 /// Pushes the record `sha` to `refname` → why it could not, `None` once it
 /// is there. A record's push is a force push of one commit, so trying it
 /// again is safe. A rejection that is GitHub's own fault — it could not
 /// write the pack (`remote unpack failed`), or another push held the ref's
 /// lock — is tried again; any other is not. On 2026-10-29 two candidates
 /// whose fast gate was green went red for the first, cancelling every
-/// candidate behind them.
+/// candidate behind them. A push that reaches `record_push_limit` is also
+/// not retried: its remote outcome is unknown, so this run stays unrecorded.
 fn push_record(repo: &Repo, sha: &str, refname: &str) -> Result<Option<String>> {
     let mut attempt = 0;
     loop {
-        let pushed = repo.remote().try_push(&Push::set(sha, refname).force())?;
+        let pushed =
+            repo.remote().try_push_within(&Push::set(sha, refname).force(), record_push_limit())?;
         if pushed.ok {
             return Ok(None);
         }
