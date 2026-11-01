@@ -10,8 +10,43 @@ use serde_json::{Value, json};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Human {
+    /// The condition id from this round's look. Older reports may omit it
+    /// only when that look contains exactly one actionable condition.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub condition: Option<String>,
     pub question: String,
     pub answer: String,
+}
+
+/// Resolves by the fleet's structured identities, never by a question or
+/// answer's words. Ambiguous reports must name their condition explicitly.
+pub fn condition(watch: &crate::host_watch::Watch, human: &Human) -> Result<String> {
+    let items = crate::host_watch::actionable(&watch.look);
+    match &human.condition {
+        Some(id) if items.iter().any(|item| &item.id == id) => Ok(id.clone()),
+        None if items.len() == 1 => Ok(items[0].id.clone()),
+        _ => bail!(
+            "each human entry must name a `condition` from this round's look; choose one of: {}",
+            serde_json::to_string(&items.iter().map(|item| &item.id).collect::<Vec<_>>())?
+        ),
+    }
+}
+
+/// The issue's source link in the look; host conditions have no issue URL.
+pub fn issue_url(watch: &crate::host_watch::Watch, condition: &str) -> Option<String> {
+    for checkout in watch.look["checkouts"].as_array().into_iter().flatten() {
+        let Some(at) = checkout["checkout"].as_str() else { continue };
+        for waiting in checkout["doctor"]["waiting_on_human"].as_array().into_iter().flatten() {
+            let Ok(identity) = serde_json::from_value::<crate::doctor::HumanWait>(waiting.clone())
+            else {
+                continue;
+            };
+            if crate::host_watch::scoped_finding_id(at, &identity.watch_id()) == condition {
+                return waiting["url"].as_str().map(str::to_string);
+            }
+        }
+    }
+    None
 }
 
 /// All five parts are required, including empty lists: absence must never
@@ -86,6 +121,9 @@ pub fn record(id: &str, file: &Path, now: u64) -> Result<Value> {
             || (watch.started != 0 && afkconvoy_core::host_watch::expired(watch.started, now))
         {
             bail!("watch {id} is not the running watch within its hour; nothing recorded");
+        }
+        for human in &report.human {
+            condition(&watch, human)?;
         }
         let temporary = directory.join(format!("report-{}.tmp", crate::unique()));
         std::fs::write(&temporary, serde_json::to_vec_pretty(&report)?)?;

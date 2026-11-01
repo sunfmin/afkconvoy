@@ -89,6 +89,10 @@ pub struct Watch {
     pub stock: bool,
     /// What the look that started it answered.
     pub look: Value,
+    /// Every condition's episode at this round's look, including a human
+    /// wait already covered by an earlier report.
+    #[serde(default)]
+    pub conditions: BTreeMap<String, String>,
     /// Why it was started.
     pub items: Vec<Item>,
     pub started: u64,
@@ -142,7 +146,7 @@ pub struct Attempt {
 pub fn watch_json(watch: &Watch) -> Value {
     json!({"id": watch.id, "session": session_identity(watch), "episodes": watch.episodes,
         "directory": watch.directory, "stock": watch.stock, "items": watch.items,
-        "started": watch.started, "harness": watch.harness, "model": watch.model,
+        "conditions": watch.conditions, "started": watch.started, "harness": watch.harness, "model": watch.model,
         "model_source": watch.model_source,
         "terminal": watch.terminal, "transcript": watch.transcript, "did": watch.did,
         "reported": watch.report.is_some(), "report": watch.report,
@@ -339,20 +343,37 @@ impl Shared {
 pub struct HostWatch {
     ended: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
+    sender: Option<std::thread::JoinHandle<()>>,
 }
 
 impl HostWatch {
     /// Watches the host, saying each start, end and thing done to `say`.
-    pub fn start(shared: Shared, say: impl Fn(What) + Send + Sync + 'static) -> HostWatch {
+    pub fn start(
+        shared: Shared,
+        panel: Option<String>,
+        say: impl Fn(What) + Send + Sync + 'static,
+    ) -> HostWatch {
         let ended = Arc::new(AtomicBool::new(false));
+        let say = Arc::new(say);
+        let sender_ended = Arc::clone(&ended);
+        let sender_say = Arc::clone(&say);
+        let sender = std::thread::spawn(move || {
+            crate::watch_notify::run(&sender_ended, panel.as_deref(), |said| {
+                sender_say(What::WatchFailed { said })
+            });
+        });
         let watcher = Watcher {
             ended: Arc::clone(&ended),
             shared,
-            say: Box::new(say),
+            say: Box::new(move |what| say(what)),
             looking: Failing::default(),
             checking: Failing::default(),
         };
-        HostWatch { ended, thread: Some(std::thread::spawn(move || watcher.run())) }
+        HostWatch {
+            ended,
+            thread: Some(std::thread::spawn(move || watcher.run())),
+            sender: Some(sender),
+        }
     }
 }
 
@@ -361,6 +382,9 @@ impl Drop for HostWatch {
         self.ended.store(true, Ordering::Relaxed);
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
+        }
+        if let Some(sender) = self.sender.take() {
+            let _ = sender.join();
         }
     }
 }
@@ -461,6 +485,7 @@ impl Watcher {
         // Commit the observation interval and queue before any launch or
         // delivery. A restart cannot consume a look without retaining work.
         self.save(&state)?;
+        crate::watch_notify::looked(&state.observed)?;
         if state.running.is_none() && !state.pending.is_empty() {
             let pending: Vec<Item> = state.pending.iter().map(|q| q.item.clone()).collect();
             crate::resources::evidence(&mut state.look, &pending)?;
@@ -549,6 +574,7 @@ impl Watcher {
             directory: directory.to_path_buf(),
             stock,
             look,
+            conditions: state.observed.clone(),
             items,
             started: 0,
             harness: Harness::DEFAULT,
@@ -742,6 +768,14 @@ impl Watcher {
         let exited = host_watch::exited(&transcript);
         let now = crate::clock();
         if let Some(report) = crate::watch_report::read(&watch.id)? {
+            if let Err(error) = crate::watch_notify::reported(&watch, &report, &state.observed) {
+                // Reports accepted before the condition field existed may
+                // be ambiguous. Never guess from their words or hold a
+                // completed round open for the sender's cache error.
+                (self.say)(What::WatchFailed {
+                    said: format!("human decision report not queued: {error:#}"),
+                });
+            }
             // A fast or explicitly recovered report can precede Orca's
             // execution receipt. It still settles this exact round; never
             // retain a zero research reservation that is already daily-due.
@@ -1201,6 +1235,10 @@ fn write_brief(watch: &Watch) -> Result<()> {
 
 /// What a session of `watch` is told.
 fn brief(watch: &Watch) -> String {
+    let human_conditions = serde_json::to_string_pretty(
+        &actionable(&watch.look).iter().map(|item| &item.id).collect::<Vec<_>>(),
+    )
+    .unwrap_or_default();
     let why: Vec<String> =
         watch.items.iter().map(|item| format!("- `{}`: {}", item.id, item.reason)).collect();
     let said = |lines: &[String]| match lines {
@@ -1334,8 +1372,12 @@ fn brief(watch: &Watch) -> String {
          ## Report this round, then await the next message\n\n\
          Write `{}` as a JSON object with all five keys: `held_back`, `did`, `verified`, \
          `human`, `pending`. The first three and `pending` are lists of nonempty strings; \
-         `human` is a list of objects with nonempty `question` and `answer` strings, the \
-         exact question left alone and its answer command. Use [] for an empty part. \
+         `human` is a list of objects with `condition`, `question` and `answer` strings: the \
+         condition's exact id from this round's look, the question left alone and its answer \
+         command. Choose `condition` from the ids below. An older report may omit it only \
+         when this look has exactly one condition; ambiguous or invented ids are refused. \
+         Questions and answer words never identify a condition. Use [] for an empty part.\n\n\
+         Condition ids in this round's look:\n\n```json\n{human_conditions}\n```\n\n\
          Printed output is not a report. Your last step for this round is this exact command. \
          Once it records, return to your interactive input and wait for the next task message \
          in this same session. Do not exit the harness, poll, sleep in a tool loop, or request \
@@ -1446,7 +1488,7 @@ fn push(items: &mut Vec<Item>, id: String, reason: String) {
 
 /// A finding's identity scoped to where it was found: a checkout's to its
 /// checkout, a host's to the host. A resource's holds its scope already.
-fn scoped_finding_id(at: &str, id: &str) -> String {
+pub(crate) fn scoped_finding_id(at: &str, id: &str) -> String {
     if let Some(identity) = id.strip_prefix("checkout:") {
         format!("finding:{at}:{identity}")
     } else if let Some(identity) = id.strip_prefix("host:") {

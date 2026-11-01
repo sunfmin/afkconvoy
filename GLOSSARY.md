@@ -41,7 +41,7 @@ A fleet instance whose loop panicked or ended in an error — its tracker found 
 _Avoid_: crashed, dead (a heartbeat past the lease), down (a harness that refuses every prompt)
 
 **Host settings**:
-What a host says for every fleet instance on it — the limits past which a worker is hot, the shares admission holds back at, the bound on an exclusive command holding others up, the number of worker lanes and of fast lanes, the panel's port, the operator's directory a watch starts in and how often the host runner looks, the command that supplies a TypeSafe key for Jev's worker-health judgments — kept beside the checkout list and changed by any `run` that names one, for every fleet instance on the host at once.
+What a host says for every fleet instance on it — the limits past which a worker is hot, the shares admission holds back at, the bound on an exclusive command holding others up, the number of worker lanes and of fast lanes, the panel's port, the operator's directory a watch starts in and how often the host runner looks, the command that supplies a TypeSafe key for Jev's worker-health judgments, and an optional shell command that sends the human decisions a watch reports once per condition episode (`--notify-command`, none by default; `default` removes it) — kept beside the checkout list and changed by any `run` that names one, for every fleet instance on the host at once.
 _Avoid_: global config, runner flags
 
 **Tick**:
@@ -303,7 +303,7 @@ The one line the fleet types at a stopped worker with no outcome, telling it to 
 _Avoid_: ping, reminder, retry
 
 **Tell**:
-The operator's note to the worker at work on an issue, busy or stopped, with `afkconvoy tell`. Posted on the issue first, its one home, which every later worker reads; then typed at the worker under this host's claim, and told only once its harness's session record holds it as a message its model was given as the user's. A note seen only in the harness's input queue is not told. A busy Grok keeps a line typed while it works in that queue until its screen shows the line queued, and tell presses send now so the model is given it. A nudge is the fleet's own line to a stopped worker, telling it to carry on; a tell is the operator's words.
+The operator's note to the worker at work on an issue, busy or stopped, with `afkconvoy tell`, or a later issue comment or body edit the fleet tells it automatically each tick. The issue is the words' one home, which every later worker reads. Typed at the worker under this host's claim, with the comment's link or the body's changed lines (the whole new body when needed), they are told only once its harness's session record holds them as a message its model was given as the user's. A note seen only in the harness's input queue is not told. A busy Grok keeps a line typed while it works in that queue until its screen shows the line queued, and tell presses send now so the model is given it. The fleet skips its own marked comments and comments whose write receipt is in this worker's session, retries failed deliveries next tick, and names an update still untold after three consecutive ticks in doctor. With no worker here, nothing is typed. A nudge is the fleet's own line to a stopped worker, telling it to carry on; a tell carries the issue's words for the worker to decide within its scope or open another issue for.
 _Avoid_: relay
 
 **Restart**:

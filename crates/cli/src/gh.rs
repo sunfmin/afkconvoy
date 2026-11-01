@@ -38,7 +38,7 @@ pub const OPEN_ISSUES_QUERY: &str = "query($owner: String!, $repo: String!, $lab
     issues(states: OPEN, labels: $labels, first: 40, after: $endCursor, \
     orderBy: {field: CREATED_AT, direction: DESC}) { \
     pageInfo { hasNextPage endCursor } \
-    nodes { number title body url createdAt labels(first: 100) { nodes { name } } \
+    nodes { number title body url createdAt lastEditedAt labels(first: 100) { nodes { name } } \
     blockedBy(first: 10) { pageInfo { hasNextPage } nodes { number state \
     repository { nameWithOwner } labels(first: 100) { nodes { name } } } } \
     comments(first: 100) { pageInfo { hasNextPage } \
@@ -46,7 +46,7 @@ pub const OPEN_ISSUES_QUERY: &str = "query($owner: String!, $repo: String!, $lab
 /// What is read of every open issue: `more` says its comments go on past
 /// those that came with it.
 pub const OPEN_ISSUES_JQ: &str = ".data.repository.issues.nodes[] | {number, title, body, url, \
-    at: (.createdAt | fromdateiso8601? // null), \
+    at: (.createdAt | fromdateiso8601? // null), edited: (.lastEditedAt | fromdateiso8601? // null), \
     labels: [.labels.nodes[].name], blockers: [.blockedBy.nodes[] | select(. != null) | \
     {number, state, repo: .repository.nameWithOwner, labels: [.labels.nodes[].name]}], \
     blockers_more: .blockedBy.pageInfo.hasNextPage, \
@@ -84,7 +84,7 @@ pub const OPEN_AND_LANDED_QUERY: &str = "query($owner: String!, $repo: String!, 
     issues(states: OPEN, labels: $labels, first: 40, after: $endCursor, \
     orderBy: {field: CREATED_AT, direction: DESC}) { \
     pageInfo { hasNextPage endCursor } \
-    nodes { number title body url createdAt labels(first: 100) { nodes { name } } \
+    nodes { number title body url createdAt lastEditedAt labels(first: 100) { nodes { name } } \
     blockedBy(first: 10) { pageInfo { hasNextPage } nodes { number state \
     repository { nameWithOwner } labels(first: 100) { nodes { name } } } } \
     comments(first: 100) { pageInfo { hasNextPage } \
@@ -97,7 +97,7 @@ pub const OPEN_AND_LANDED_QUERY: &str = "query($owner: String!, $repo: String!, 
 pub const OPEN_AND_LANDED_JQ: &str = ".data.repository as $repo \
     | ($repo.landed.nodes | length) as $n \
     | ($repo.issues.nodes[] | {part: \"open\", number, title, body, url, \
-    at: (.createdAt | fromdateiso8601? // null), \
+    at: (.createdAt | fromdateiso8601? // null), edited: (.lastEditedAt | fromdateiso8601? // null), \
     labels: [.labels.nodes[].name], blockers: [.blockedBy.nodes[] | select(. != null) | \
     {number, state, repo: .repository.nameWithOwner, labels: [.labels.nodes[].name]}], \
     blockers_more: .blockedBy.pageInfo.hasNextPage, \
@@ -420,6 +420,7 @@ pub struct OpenIssues {
     /// Failure reports written before reason comments were added still
     /// carry their reason in the issue body.
     reports: HashMap<u64, Comment>,
+    edited: HashMap<u64, u64>,
 }
 
 impl OpenIssues {
@@ -445,6 +446,16 @@ impl OpenIssues {
     /// issue that is not among them.
     pub fn comments(&self, number: u64) -> &[Comment] {
         self.comments.get(&number).map_or(&[], Vec::as_slice)
+    }
+
+    /// When GitHub last recorded an edit of the issue, where it records one.
+    pub fn body_edited(&self, number: u64) -> Option<u64> {
+        self.edited.get(&number).copied()
+    }
+
+    /// The body and link from the same read as the comments.
+    pub fn body(&self, number: u64) -> Option<&Comment> {
+        self.reports.get(&number)
     }
 }
 
@@ -472,6 +483,8 @@ pub(crate) struct Opened {
 /// One open issue, as the issues query returns it.
 #[derive(Debug, Deserialize)]
 struct OpenRow {
+    #[serde(default)]
+    edited: Option<u64>,
     number: u64,
     title: String,
     #[serde(default)]
@@ -1062,6 +1075,9 @@ impl GitHub {
         let blockers = if row.blockers_more { self.blocked_by(row.number)? } else { row.blockers };
         let comments = if row.more { self.comments(row.number)? } else { row.comments };
         open.comments.insert(row.number, comments);
+        if let Some(edited) = row.edited {
+            open.edited.insert(row.number, edited);
+        }
         open.blockers.insert(row.number, blockers.clone());
         open.reports
             .insert(row.number, Comment { id: 0, body: row.body, url: row.url, at: row.at });
@@ -1853,7 +1869,7 @@ mod tests {
         assert!(!landed.contains("endCursor"), "{landed}");
         assert!(OPEN_AND_LANDED_QUERY.contains("first: 100"));
         assert_eq!(LANDED_PAGE, 100);
-        let nodes = "nodes { number title body url createdAt labels(first: 100) { nodes { name } }";
+        let nodes = "nodes { number title body url createdAt lastEditedAt labels(first: 100) { nodes { name } }";
         assert!(OPEN_ISSUES_QUERY.contains(nodes));
         assert!(OPEN_AND_LANDED_QUERY.contains(nodes));
     }
