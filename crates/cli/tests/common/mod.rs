@@ -436,6 +436,8 @@ impl World {
         // The fleet polls a session file for the turn. The stand-in has
         // already written it when send returns, so a test checks once.
         env.push(("AFKCONVOY_TURN_WAIT_SECONDS".to_string(), "0".to_string()));
+        // The same for a note typed at a worker (`afkconvoy tell`).
+        env.push(("AFKCONVOY_NOTE_WAIT_SECONDS".to_string(), "0".to_string()));
         env
     }
 

@@ -545,6 +545,43 @@ fn note(cwd: &str, value: &serde_json::Value) -> Option<Note> {
     }
 }
 
+/// The line a stand-in writes for `line`, typed while the worker worked: a
+/// `queued_command` attachment once its model has it, else only the
+/// `queue-operation` that holds it in the input queue.
+pub(super) fn note_files(cwd: &str, line: &str, taken: bool, at: u64) -> Vec<SessionFile> {
+    let iso = session::format_iso(at);
+    let record = if taken {
+        session::object(vec![
+            ("type", "attachment".into()),
+            ("timestamp", iso.clone().into()),
+            ("cwd", cwd.into()),
+            ("isSidechain", false.into()),
+            (
+                "attachment",
+                session::object(vec![
+                    ("type", "queued_command".into()),
+                    ("prompt", line.into()),
+                    ("commandMode", "prompt".into()),
+                    ("timestamp", iso.into()),
+                ]),
+            ),
+        ])
+    } else {
+        session::object(vec![
+            ("type", "queue-operation".into()),
+            ("operation", "enqueue".into()),
+            ("timestamp", iso.into()),
+            ("content", line.into()),
+        ])
+    };
+    vec![SessionFile {
+        path: format!("projects/{}/afkconvoy-note.jsonl", dir_name(cwd)),
+        body: format!("{record}\n"),
+        compressed: false,
+        replaces: None,
+    }]
+}
+
 /// One session file a stand-in writes for this turn.
 pub(super) fn session_files(cwd: &str, open: bool, at: u64) -> Vec<SessionFile> {
     let iso = session::format_iso(at);

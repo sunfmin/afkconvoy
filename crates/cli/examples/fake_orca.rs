@@ -29,6 +29,8 @@
 //! is gone, which is how real orca forgets a failed removal. A `worktree rm`
 //! whose git remove fails while the directory remains records `removalError`
 //! and still answers success. `rm_fails` still refuses before any delete.
+//! `notes`: `taken` — every harness's session keeps each line sent as given
+//! to its model as the user's; `queued` — only in its input queue.
 //! `startup_working_reports`: a quiet screen while the harness reports a
 //! start-up working episode for this many fresh runtime observations.
 //!
@@ -496,6 +498,11 @@ fn terminal_send(st: &mut State) -> ! {
         }
     });
     st.doc["terminals"][at]["last_prompt_stages"] = json!(stages.clone());
+    if let Some(note) = st.doc["notes"].as_str() {
+        let cwd = st.doc["terminals"][at]["worktreePath"].as_str().unwrap_or("").to_string();
+        let line = sent["text"].as_str().unwrap_or("").to_string();
+        record_note(Path::new(&cwd), &line, note == "taken", send_stamp(Path::new(&cwd)));
+    }
     if record_send(st, at, &stages) {
         let cwd = st.doc["terminals"][at]["worktreePath"].as_str().unwrap_or("");
         if !cwd.is_empty() {
@@ -578,6 +585,16 @@ fn sync_sessions(st: &State) {
         let at = terminal["agent"]["stateStartedAt"].as_u64().unwrap_or(0) / 1000;
         record_turn(Path::new(cwd), state == "working", at);
     }
+}
+
+/// What each harness keeps of `line`, typed at the worker in `cwd`.
+fn record_note(cwd: &Path, line: &str, taken: bool, at: u64) {
+    let Ok(home) = std::env::var("HOME") else { return };
+    if home.is_empty() || cwd.as_os_str().is_empty() {
+        return;
+    }
+    afkconvoy::session::record_note(Path::new(&home), cwd, line, taken, at)
+        .unwrap_or_else(|error| panic!("cannot record a note for {}: {error}", cwd.display()));
 }
 
 fn record_turn(cwd: &Path, open: bool, at: u64) {
