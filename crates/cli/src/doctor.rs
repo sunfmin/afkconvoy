@@ -162,6 +162,8 @@ kinds! {
     NoRun: Critical, "no `afkconvoy run` is alive";
     Broken: Critical, "is broken";
     PublicTracker: Critical, "is public: its fleet instance works nothing";
+    RepoUnworked: Warning, "no fleet has taken";
+    RepoUnreadable: Warning, "remote could not be read";
     StepFailed: Critical, "failed in each of the last";
     StepUnrecovered: Warning, "failed in tick";
     HarnessDown: Critical, "harness is down";
@@ -200,6 +202,7 @@ kinds! {
     PatrolFull: Warning, "have reached its `max_open`";
     CutFailed: Warning, "cuts no version: its last cut failed";
     WaitedLong: Warning, "has waited for a human for";
+    WaitTaken: Info, "human wait is taken by";
     NotOurs: Warning, "is held off by a PR not the fleet's";
     ClaimOnGone: Warning, "is claimed but GitHub has it no more";
     SlowGate: Warning, "the gate is slow";
@@ -236,6 +239,8 @@ impl Kind {
                 | Kind::NotUpgraded
                 | Kind::PathStale
                 | Kind::OtherAccount
+                | Kind::RepoUnworked
+                | Kind::RepoUnreadable
                 | Kind::WorkerHealth
                 | Kind::HealthOverdue
         )
@@ -527,6 +532,8 @@ pub enum TeamRead {
 /// What GitHub, the remote and orca say of the fleet.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct State {
+    /// The live hosts holding human waits, from this look's remote scan.
+    pub wait_holders: std::collections::BTreeMap<u64, String>,
     pub set: WorkingSet,
     pub targets: Value,
     pub refusals: Value,
@@ -1477,7 +1484,32 @@ pub fn findings(seen: &Seen) -> Vec<Finding> {
                 &state.stage_baselines,
                 seen.now,
             ));
-            found.extend(waiting_findings(&state.set.waiting_on_human, seen.now));
+            let local: Vec<_> = state
+                .set
+                .waiting_on_human
+                .iter()
+                .filter(|wait| {
+                    state.wait_holders.get(&wait.issue).is_none_or(|host| host == &seen.run.host)
+                })
+                .cloned()
+                .collect();
+            found.extend(waiting_findings(&local, seen.now));
+            for wait in &state.set.waiting_on_human {
+                if let Some(host) =
+                    state.wait_holders.get(&wait.issue).filter(|host| *host != &seen.run.host)
+                {
+                    found.push(finding(
+                        Kind::WaitTaken,
+                        json!(["wait-taken", wait.issue]),
+                        format!("#{} human wait is taken by {host}'s watch", wait.issue),
+                        format!(
+                            "the claim holder's heartbeat is within the {} second lease",
+                            LEASE
+                        ),
+                        format!("leave this wait to {host}'s watch"),
+                    ));
+                }
+            }
             found.extend(crate::blockers::findings(&state.set.unworked_blockers));
             found.extend(state.unclaimed.iter().map(unclaimed_finding));
             found.extend(state.not_ours.iter().map(not_ours_finding));
@@ -1868,7 +1900,12 @@ fn finish_state(
         found: beats.len(),
         live: live.map(|(instance, _)| instance.clone()).collect(),
     };
-    let (set, flows) = fleet.rebuild(&open, instance.as_ref())?;
+    let (mut set, flows) = fleet.rebuild(&open, instance.as_ref())?;
+    // Tracker-wide reports have their own opening-host finding. Treating
+    // them as ordinary escalations would wake every host serving this repo.
+    set.waiting_on_human.retain(|wait| {
+        open.issues.body(wait.issue).is_none_or(|body| !crate::unworked::is_report(&body.body))
+    });
     let stood = flows.stood();
     let report = FleetReport::read(&fleet, &flows, &set, readings);
     let (team, loaded) = read_team(repo, fleet.config.bound.is_some(), report.roles.as_ref());
@@ -1907,6 +1944,7 @@ fn finish_state(
     .unwrap_or_else(|error| json!({"error": error.to_string()}));
     let deliveries = report.deliveries_json();
     let state = State {
+        wait_holders: crate::human_wait::holders(&fleet.scan, now),
         refusals: fleet.selection()["refusals"].clone(),
         targets: fleet.targets(&open.issues)?,
         set,
@@ -2310,7 +2348,22 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String], look: &Look) ->
         Ok(state) => (
             state.held.iter().map(|held| held_json(held, &state.set.locks)).collect(),
             issues_json(&state.set)?,
-            serde_json::to_value(&state.set.waiting_on_human)?,
+            Value::Array(
+                state
+                    .set
+                    .waiting_on_human
+                    .iter()
+                    .map(|wait| {
+                        let mut value = json!(wait);
+                        if let Some(host) =
+                            state.wait_holders.get(&wait.issue).filter(|host| *host != &run.host)
+                        {
+                            value["taken_by"] = json!(host);
+                        }
+                        value
+                    })
+                    .collect(),
+            ),
         ),
         Err(_) => (vec![], Value::Null, Value::Null),
     };
@@ -2574,6 +2627,16 @@ pub fn all_since_rounds(
         watch.insert("events".to_string(), Value::Array(watch_events));
     }
     of_host.extend(overdue_findings(&paces, now));
+    let unworked = match crate::unworked::read(now) {
+        Ok(read) => read,
+        Err(error) => crate::error_json(&error),
+    };
+    once.insert("unworked_repos".into(), unworked);
+    of_host.extend(crate::unworked::findings(
+        &once["unworked_repos"],
+        host.unwrap_or(&crate::this_host()),
+        now,
+    ));
     // Said once, named for the first checkout on the list: the lines are
     // equal while they are gathered, and each runs from any directory.
     if let Some(checkout) = listed.first() {
@@ -2684,6 +2747,7 @@ mod tests {
 
     fn state() -> State {
         State {
+            wait_holders: Default::default(),
             refusals: json!({}),
             targets: json!([]),
             set: set(),

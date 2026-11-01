@@ -194,6 +194,111 @@ fn worker(world: &World, n: u64, name: &str) -> (PathBuf, String) {
 }
 
 #[test]
+fn a_candidates_gate_never_finds_the_checkouts_configuration_above_it() {
+    let world = World::new();
+    commit(&world.clone, "checkout-config-marker", "**/*\n");
+    git(&world.clone, &["push", "-q", "origin", "HEAD"]);
+    world.set_gate(
+        r#"parent=$(dirname "$PWD"); while :; do
+test ! -f "$parent/checkout-config-marker" || exit 9
+test "$parent" != / || break
+parent=$(dirname "$parent")
+done"#,
+    );
+    assert_eq!(world.afk(&["gate"]).ok()["recorded"], true);
+    let (source, _) = worker(&world, 1, "a");
+    let landed = world.afk_in(&source, &["land", "--issue", "1"]).ok();
+    assert_eq!(landed["outcome"], "merged", "{landed}");
+    let candidate = candidate_of(&world, 1);
+    let path = Path::new(candidate["worktree"].as_str().unwrap());
+    assert!(path.starts_with(world.cache().join("afkconvoy/candidates")), "{candidate}");
+    assert!(!path.starts_with(&world.clone));
+    assert_eq!(candidate["phase"], "landed");
+    assert!(!path.exists(), "the stopped candidate is removed from the new root");
+    assert!(
+        !world.remote(&["for-each-ref", "--format=%(objectname)", "refs/convoy/gate"]).is_empty()
+    );
+}
+
+#[test]
+fn a_cache_inside_any_checkout_is_refused_before_a_candidate_is_assigned() {
+    let world = World::new();
+    world.set_gate("true");
+    assert_eq!(world.afk(&["gate"]).ok()["recorded"], true);
+    let (source, _) = worker(&world, 1, "a");
+    let other = world.second_repo();
+    for checkout in [&world.clone, &source, &other] {
+        let out = world
+            .command(env!("CARGO_BIN_EXE_afkconvoy"), &source)
+            .env("XDG_CACHE_HOME", checkout.join(".candidate-cache"))
+            .args(["land", "--issue", "1"])
+            .output()
+            .unwrap();
+        assert!(!out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));
+        let answer: Value = serde_json::from_slice(&out.stdout).unwrap();
+        let error = answer["error"].as_str().unwrap();
+        assert!(
+            error.contains("candidate cache") && error.contains("is inside checkout"),
+            "{error}"
+        );
+        assert!(error.contains("set XDG_CACHE_HOME"), "{error}");
+    }
+    assert!(
+        world.remote(&["for-each-ref", "--format=%(refname)", "refs/convoy/candidates"]).is_empty()
+    );
+}
+
+#[test]
+fn stopped_candidates_in_the_old_root_are_removed_and_other_directories_are_left() {
+    let world = World::new();
+    world.set_gate("true");
+    assert_eq!(world.afk(&["gate"]).ok()["recorded"], true);
+    let (source, _) = worker(&world, 1, "a");
+    let landed = world.afk_in(&source, &["land", "--issue", "1"]).ok();
+    assert_eq!(landed["outcome"], "merged", "{landed}");
+    let mut state = chain(&world);
+    let template = candidate_of(&world, 1);
+    let path = Path::new(template["worktree"].as_str().unwrap());
+    let root = path.parent().unwrap();
+    let legacy = world.clone.join(".git/convoy-candidates/legacy");
+    git(
+        &world.clone,
+        &["worktree", "add", "--quiet", "--detach", legacy.to_str().unwrap(), "HEAD"],
+    );
+    let paths = [
+        ("legacy", legacy.clone(), true),
+        ("leftover", root.join("leftover"), true),
+        ("outside", world.root.join("outside"), false),
+        ("nested", root.join("extra/nested"), false),
+        ("wrong-id", root.join("different-id"), false),
+        ("foreign", root.parent().unwrap().join("another-repo/foreign"), false),
+    ];
+    for (id, path, _) in &paths {
+        std::fs::create_dir_all(path).unwrap();
+        std::fs::write(path.join("keep"), id).unwrap();
+        std::fs::write(format!("{}.processes", path.display()), "scope").unwrap();
+        let mut row = template.clone();
+        row["id"] = json!(id);
+        row["worktree"] = json!(path);
+        state["candidates"].as_array_mut().unwrap().push(row);
+    }
+    let file = world.root.join("seed.json");
+    std::fs::write(&file, state.to_string()).unwrap();
+    let tip = chain_tip(&world);
+    let tree = world.remote(&["hash-object", "-t", "tree", "/dev/null"]);
+    let seeded = world.remote(&["commit-tree", &tree, "-p", &tip, "-F", file.to_str().unwrap()]);
+    world.remote(&["update-ref", "refs/convoy/candidates/main", &seeded]);
+    tick(&world);
+    for (_, path, removed) in &paths {
+        assert_eq!(path.exists(), !removed, "{}", path.display());
+        assert_eq!(Path::new(&format!("{}.processes", path.display())).exists(), !removed);
+    }
+    assert!(!listed(&world, &legacy));
+    assert!(listed(&world, &source));
+    assert_eq!(chain_tip(&world), seeded, "removal leaves the candidate evidence intact");
+}
+
+#[test]
 fn interleaved_targets_and_default_publish_only_to_their_own_chains() {
     let world = world(3);
     let base = world.remote(&["rev-parse", "refs/heads/main"]);

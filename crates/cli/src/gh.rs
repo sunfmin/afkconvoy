@@ -281,6 +281,9 @@ pub(crate) enum HeadMiss {
 /// reached and does not read again. A process that is one look — `doctor` —
 /// reads each HEAD once.
 pub(crate) static HEADS: Reading<Result<String, HeadMiss>> = Reading::per_look("github head");
+/// Tracker visibility is shared by the ordinary checkout look and the
+/// tracker-wide work look. No fleet operation changes repository visibility.
+static VISIBILITY: Reading<Result<String, String>> = Reading::per_look("github visibility");
 
 /// `gh`, run in `dir`: the checkout a command is about, or where none is at
 /// hand the host's temporary directory (`in_no_checkout`). Every issue call
@@ -962,7 +965,24 @@ impl GitHub {
     /// Who GitHub lets see the tracker, as it says it (`VISIBILITY_JQ`).
     pub fn visibility(&self) -> Result<String> {
         let endpoint = format!("repos/{}", path(&self.tracker));
-        Ok(self.read(&["api", &endpoint, "--jq", VISIBILITY_JQ])?.trim().to_string())
+        let key = self
+            .tracker
+            .named()
+            .map(ToString::to_string)
+            .or_else(|| {
+                Repo::at(&self.dir)
+                    .and_then(|repo| crate::checkout_list::named_repo(&repo))
+                    .ok()
+                    .map(|name| name.to_string())
+            })
+            .unwrap_or_else(|| self.dir.display().to_string());
+        VISIBILITY
+            .read(&key, || {
+                self.read(&["api", &endpoint, "--jq", VISIBILITY_JQ])
+                    .map(|s| s.trim().to_string())
+                    .map_err(|e| format!("{e:#}"))
+            })
+            .map_err(anyhow::Error::msg)
     }
 
     /// The commit at the head of the default branch of `repo`, read once per

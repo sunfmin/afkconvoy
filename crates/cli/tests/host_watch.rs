@@ -12,6 +12,139 @@ use serde_json::{Value, json};
 
 use crate::common::{World, asked};
 
+#[test]
+fn two_hosts_find_one_wait_and_only_its_holder_reports_notifies_and_asks_it() {
+    let first = World::new();
+    first.issue(11, &["ready-for-human"]);
+    first.comment(11, "<!--convoy:escalation claim=old-->\nApprove the account?");
+    let dir = operator(&first);
+    let output = first.root.join("notifications.jsonl");
+    let command = append_notification(&output);
+    first
+        .afk(&[
+            "run",
+            "--host",
+            "h1",
+            "--watch-dir",
+            dir.to_str().unwrap(),
+            "--watch-every",
+            "1",
+            "--notify-command",
+            &command,
+        ])
+        .ok();
+    let round = until(&first, "holder's wait round", || {
+        running(&first).filter(|w| {
+            w["items"].as_array().is_some_and(|items| {
+                items.iter().any(|i| i["id"].as_str().is_some_and(|id| id.contains("[\"human\",")))
+            })
+        })
+    });
+
+    let second = World::new();
+    crate::common::git(
+        &second.clone,
+        &["remote", "set-url", "origin", first.bare.to_str().unwrap()],
+    );
+    let mut gh = first.gh();
+    gh["calls"] = json!([]);
+    second.write_gh(&gh);
+    second.say_host_settings(json!({"host_name": "h2"}));
+    let other_dir = operator(&second);
+    let other_output = second.root.join("notifications.jsonl");
+    second
+        .afk(&[
+            "run",
+            "--host",
+            "h2",
+            "--watch-dir",
+            other_dir.to_str().unwrap(),
+            "--watch-every",
+            "1",
+            "--notify-command",
+            &append_notification(&other_output),
+        ])
+        .ok();
+    until(&second, "nonholder's completed look", || state(&second)["looked"].as_u64());
+    let doctor = second.afk(&["doctor", "--host", "h2"]).json;
+    assert_eq!(doctor["waiting_on_human"][0]["issue"], 11);
+    assert_eq!(doctor["waiting_on_human"][0]["taken_by"], "h1");
+    assert!(
+        doctor["findings"].as_array().unwrap().iter().any(|f| {
+            f["kind"] == "wait_taken"
+                && f["severity"] == "info"
+                && f["what"].as_str().unwrap().contains("h1")
+        }),
+        "{doctor}"
+    );
+    assert!(
+        state(&second)["observed"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .all(|id| !id.contains("[\"human\","))
+    );
+    assert!(state(&second)["rounds"].as_array().into_iter().flatten().all(|w| {
+        w["items"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .all(|i| !i["id"].as_str().unwrap().contains("[\"human\","))
+    }));
+    assert!(notify_state(&second)["entries"].as_object().is_none_or(|e| e.is_empty()));
+    assert!(!other_output.exists());
+    assert!(
+        second.orca()["terminals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|t| t["title"] != "afkconvoy asks")
+    );
+
+    // An unrelated local condition can start h2's watch, but its full look
+    // and answering instructions must still omit h1's wait.
+    paused(&second, "pi", "this host needs its own account");
+    let local = until(&second, "nonholder's local host round", || {
+        running(&second).filter(|w| {
+            w["items"].as_array().is_some_and(|items| {
+                items
+                    .iter()
+                    .any(|item| item["reason"].as_str().is_some_and(|reason| reason.contains("pi")))
+            })
+        })
+    });
+    assert_eq!(local["look"]["checkouts"][0]["doctor"]["waiting_on_human"], json!([]));
+    report_humans(
+        &second,
+        &local,
+        json!([{"question": "Provide h2's account?", "answer": "host answer"}]),
+    );
+    until(&second, "local host condition's notification", || {
+        (notifications(&other_output).len() == 1).then_some(())
+    });
+    assert!(
+        !notifications(&other_output)[0]["condition"].as_str().unwrap().contains("[\"human\",")
+    );
+
+    report_humans(
+        &first,
+        &round,
+        json!([{"question": "Approve the account?", "answer": "answer"}]),
+    );
+    until(&first, "holder notification", || (notifications(&output).len() == 1).then_some(()));
+    until(&first, "holder asking question", || {
+        let state: Value = std::fs::read(first.cache().join("afkconvoy/asking/state.json"))
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())?;
+        (state["current"]["delivered"] == true).then_some(())
+    });
+    first.close_issue(11);
+    second.close_issue(11);
+    until(&first, "answered wait's claim removed", || {
+        first.remote(&["for-each-ref", "refs/convoy/wait/"]).is_empty().then_some(())
+    });
+}
+
 /// The operator's own terminal in the operator's directory: no watch ends it.
 const OPERATORS: &str = "operators-own";
 
