@@ -143,6 +143,12 @@ pub fn take_look(look: &mut Value) -> Result<()> {
         if let Some(findings) = checkout["doctor"]["findings"].as_array_mut() {
             findings.retain(|f| f["watch_id"].as_str().is_none_or(|id| !taken.contains(id)));
         }
+        // A round for a local host condition must not carry another host's
+        // wait or its answer line in the printed look either. Doctor keeps
+        // its full read-only view; this is only the watch's copy.
+        if let Some(waits) = checkout["doctor"]["waiting_on_human"].as_array_mut() {
+            waits.retain(|wait| wait["taken_by"].is_null());
+        }
     }
     Ok(())
 }

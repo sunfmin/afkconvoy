@@ -18,7 +18,9 @@ to the claim it read. A restart on the holding host keeps the claim and its
 heartbeat identity. Its next look removes claims whose issues no longer wait
 on a human. An unread checkout never counts as having no waits.
 
-Only the holding host queues the wait and its human report entries. A
+Only the holding host queues the wait and its human report entries. A round
+for a local host condition omits other hosts' waits and answer lines from
+its full look as well as its actionable conditions. A
 recorded report remains immutable. On entering the report outbox, and
 immediately before each notify-command sending or asking-session question,
 the host re-reads the claim. A host that lost ownership drops the durable

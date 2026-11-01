@@ -101,6 +101,31 @@ fn two_hosts_find_one_wait_and_only_its_holder_reports_notifies_and_asks_it() {
             .all(|t| t["title"] != "afkconvoy asks")
     );
 
+    // An unrelated local condition can start h2's watch, but its full look
+    // and answering instructions must still omit h1's wait.
+    paused(&second, "pi", "this host needs its own account");
+    let local = until(&second, "nonholder's local host round", || {
+        running(&second).filter(|w| {
+            w["items"].as_array().is_some_and(|items| {
+                items
+                    .iter()
+                    .any(|item| item["reason"].as_str().is_some_and(|reason| reason.contains("pi")))
+            })
+        })
+    });
+    assert_eq!(local["look"]["checkouts"][0]["doctor"]["waiting_on_human"], json!([]));
+    report_humans(
+        &second,
+        &local,
+        json!([{"question": "Provide h2's account?", "answer": "host answer"}]),
+    );
+    until(&second, "local host condition's notification", || {
+        (notifications(&other_output).len() == 1).then_some(())
+    });
+    assert!(
+        !notifications(&other_output)[0]["condition"].as_str().unwrap().contains("[\"human\",")
+    );
+
     report_humans(
         &first,
         &round,
