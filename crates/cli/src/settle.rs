@@ -192,10 +192,10 @@ pub fn settle(fleet: &mut Fleet, me: &Me, issue: u64) -> Result<Option<u64>> {
                 }
             }
             SettleStep::RemoveWorktree => {
-                if let Some(worktree) = Worktree::of_issue(&Source::of(&fleet.repo)?, issue)? {
-                    if let Some(since) = remove_settled(fleet, issue, &worktree)? {
-                        return Ok(Some(since));
-                    }
+                if let Some(worktree) = Worktree::of_issue(&Source::of(&fleet.repo)?, issue)?
+                    && let Some(since) = remove_settled(fleet, issue, &worktree)?
+                {
+                    return Ok(Some(since));
                 }
             }
             // Soft: a checkout that cannot follow never fails the release it rides on.

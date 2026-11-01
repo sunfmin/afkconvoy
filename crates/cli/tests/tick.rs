@@ -427,6 +427,29 @@ fn settling_waits_for_a_finishing_worker_then_leaves_without_a_failed_tick() {
 }
 
 #[test]
+fn a_run_says_left_after_a_finishing_worker_leaves() {
+    let world = backlog(&[391]);
+    let running =
+        world.running(&["--instance", "alpha", "--host", "h1", "--ticks", "3", "--now", "1000"]);
+    let soon = std::time::Duration::from_secs(20);
+    assert!(running.line(soon).unwrap().contains("dispatched #391"));
+    let worktree = worker_worktree(&world);
+    let session = Session::start(&world, &worktree);
+    report(&world, "working", 1000);
+    world.close_issue(391);
+    world.afk(&["wake"]).ok();
+    let waiting = running.line(soon).unwrap();
+    assert!(waiting.contains("settling #391 once its worker leaves"), "{waiting}");
+    assert!(!waiting.contains("FAILED"), "{waiting}");
+    report(&world, "idle", 1000);
+    world.afk(&["wake"]).ok();
+    let left = running.line(soon).unwrap();
+    assert!(left.contains("left #391"), "{left}");
+    assert!(session.ended());
+    assert!(!worktree.exists());
+}
+
+#[test]
 fn a_worker_still_busy_after_the_settle_grace_gets_exactly_one_finding() {
     let world = backlog(&[381]);
     tick(&world, "1000");
