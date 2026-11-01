@@ -46,6 +46,99 @@ fn takeover(world: &World, more: &[&str]) -> common::Answer {
     world.afk(&args)
 }
 
+/// The worker always names its issue, including in an unbound repo.
+fn worker_command(world: &World, args: &[&str]) -> common::Answer {
+    let out = world
+        .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
+        .env("AFKCONVOY_ISSUE", "7")
+        .args(args)
+        .output()
+        .unwrap();
+    common::Answer {
+        json: serde_json::from_slice(&out.stdout).unwrap(),
+        code: out.status.code().unwrap(),
+        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+    }
+}
+
+#[test]
+fn a_taken_workers_verdict_land_and_every_gate_refuse_without_writing() {
+    let world = World::new();
+    world.issue(7, &["ready-for-agent"]);
+    claimed(&world, 7, "alpha", "h1", 1000);
+    takeover(&world, &["--from", "alpha", "--instance", "beta", "--host", "h2", "--now", "2860"])
+        .ok();
+    let refs = world.remote(&["show-ref"]);
+    let comments = world.comments(7);
+    world.watch_pushes(None);
+    for args in [
+        vec![
+            "verdict",
+            "pass",
+            "--issue",
+            "7",
+            "--stage",
+            "build",
+            "--text",
+            "done",
+            "--role-commit",
+            "r1",
+            "--team-commit",
+            "t1",
+        ],
+        vec!["land", "--issue", "7"],
+        vec!["gate"],
+        vec!["gate", "--fast"],
+        vec!["gate", "--slow"],
+        vec!["gate", "--land"],
+        vec!["gate", "--host", "h2"],
+    ] {
+        assert_eq!(
+            worker_command(&world, &args).error(),
+            "the claim on #7 is held by instance beta on host h2 since 2860: this worker's work was taken; stop",
+            "{args:?}"
+        );
+    }
+    assert_eq!(world.remote(&["show-ref"]), refs, "no candidate or gate record");
+    assert_eq!(world.comments(7), comments, "no stage record");
+    assert!(world.pushes().is_empty());
+    assert!(!world.root.join("executed").exists(), "the gate did not start");
+}
+
+#[test]
+fn a_new_instance_on_the_same_host_keeps_its_workers_commands() {
+    let world = World::new();
+    world.issue(7, &["ready-for-agent"]);
+    claimed(&world, 7, "alpha", "h1", 1000);
+    takeover(
+        &world,
+        &["--from", "alpha", "--instance", "beta", "--host", "h1", "--now", "1060", "--yes"],
+    )
+    .ok();
+    let declared = worker_command(
+        &world,
+        &[
+            "verdict",
+            "pass",
+            "--issue",
+            "7",
+            "--stage",
+            "build",
+            "--text",
+            "done",
+            "--role-commit",
+            "r1",
+            "--team-commit",
+            "t1",
+        ],
+    )
+    .ok();
+    assert_eq!(declared["declared"], true);
+    assert!(worker_command(&world, &["land", "--issue", "7"]).error().contains("no open PR"));
+    world.set_gate("true");
+    assert_eq!(worker_command(&world, &["gate"]).ok()["status"], "green");
+}
+
 #[test]
 fn a_tick_reclaims_stale_claims_into_its_free_slots_ahead_of_the_frontier() {
     let world = World::new();
