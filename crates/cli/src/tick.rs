@@ -161,6 +161,11 @@ pub fn tick(
                 return Ok(false);
             }
             worktree.close_terminals()?;
+            anyhow::ensure!(
+                worktree.terminal()?.is_none(),
+                "the worker on #{} still has a terminal after close; its worktree was kept and the next tick retries",
+                claim.number
+            );
             Ok(true)
         })();
         match closed {
