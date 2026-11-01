@@ -61,6 +61,8 @@ pub enum Action {
     Unknown,
     /// Nothing: it is done.
     Complete,
+    /// Continue the same worker through its existing nudge.
+    Nudge,
 }
 
 /// What a stopped worker is: each class has one scope and one action.
@@ -90,6 +92,8 @@ pub enum Class {
     Working,
     /// It finished and reported.
     Complete,
+    /// Its turn ended with the task still incomplete and no question.
+    Short,
     /// Its session exited with a failure.
     Failed,
 }
@@ -110,6 +114,7 @@ impl Class {
             Class::WaitingHuman => "waiting_human",
             Class::Working => "working",
             Class::Complete => "complete",
+            Class::Short => "short",
             Class::Failed => "failed",
         }
     }
@@ -125,6 +130,7 @@ impl Class {
             Class::Session | Class::Refusal | Class::Failed => (Scope::Worker, Action::Continue),
             Class::TrustGap | Class::WaitingHuman | Class::Working => (Scope::Worker, Action::Wait),
             Class::Complete => (Scope::Worker, Action::Complete),
+            Class::Short => (Scope::Worker, Action::Nudge),
         }
     }
 }
@@ -163,7 +169,7 @@ struct Question {
 /// screen names comes before a person's choice, a choice before work going
 /// on, and work going on before a finished task: a worker is continued on
 /// another harness only on a settled yes that nothing before it questions.
-const QUESTIONS: [Question; 6] = [
+const QUESTIONS: [Question; 7] = [
     Question {
         id: "usage_limit",
         instructions: "Has the agent stopped because its account's usage limit is used up?",
@@ -209,10 +215,20 @@ const QUESTIONS: [Question; 6] = [
     Question {
         id: "finished",
         instructions: "Has the agent finished its task and reported the result?",
-        yes: "The agent's last message reports the outcome of its task, and it is idle.",
+        yes: "The agent's last message reports that its task is finished or its required outcome \
+              was declared, and it is idle. An admission of unfinished work is not completion.",
         no: "The task is still underway, was stopped short by an error or a limit, or no \
              outcome is reported.",
         class: Class::Complete,
+    },
+    Question {
+        id: "short",
+        instructions: "Did the agent end its turn short of its task, idle and asking nothing?",
+        yes: "The last message says the task remains incomplete or work remains, and the agent \
+              is idle at an empty prompt without asking a person for a decision.",
+        no: "The task is finished, the agent is working, asks a person to decide, or stopped \
+             because of a limit, error or refusal; or the screen does not establish this.",
+        class: Class::Short,
     },
 ];
 
@@ -356,7 +372,7 @@ impl Decision {
     pub fn status(&self) -> &'static str {
         match (self.class, self.action) {
             (Class::Capacity, _) => "stopped",
-            (_, Action::Wait | Action::Unknown | Action::Complete) => "observed",
+            (_, Action::Wait | Action::Unknown | Action::Complete | Action::Nudge) => "observed",
             (_, Action::Retry | Action::Continue) => "fault",
         }
     }
@@ -474,9 +490,13 @@ mod tests {
             let request = request(&screen).unwrap();
             let mut asked = request.clone();
             asked.as_object_mut().unwrap().remove("state");
+            asked["questions"].as_object_mut().unwrap().remove("short");
+            asked["questions"]["finished"] = recorded["asked"]["questions"]["finished"].clone();
             asked["questions"][EVIDENCE].as_object_mut().unwrap().remove("criteria");
             assert_eq!(asked, recorded["asked"], "{name}: asked as it was recorded");
-            let answers = answers(&request, &case["response"]).unwrap();
+            let mut response = case["response"].clone();
+            response["answers"]["short"] = json!({"type": "noul", "noul": 0.1});
+            let answers = answers(&request, &response).unwrap();
             let decision = decide(Evidence::Judged(&answers))
                 .unwrap_or_else(|reason| panic!("{name}: {reason}"))
                 .unwrap();
@@ -495,7 +515,7 @@ mod tests {
         }
     }
 
-    fn answered(nouls: [u64; 6]) -> Answers {
+    fn answered(nouls: [u64; 7]) -> Answers {
         Answers { nouls: nouls.to_vec(), evidence: "Working".into() }
     }
 
@@ -508,33 +528,43 @@ mod tests {
             })
         };
         assert_eq!(
-            decided([940, 20, 10, 20, 30, 30]),
+            decided([940, 20, 10, 20, 30, 30, 10]),
             Ok((Class::Quota, Scope::Account, Action::Continue))
         );
         assert_eq!(
-            decided([10, 900, 10, 10, 10, 10]),
+            decided([10, 900, 10, 10, 10, 10, 10]),
             Ok((Class::Authentication, Scope::Account, Action::Continue))
         );
         assert_eq!(
-            decided([10, 10, 950, 900, 10, 10]),
+            decided([10, 10, 950, 900, 10, 10, 10]),
             Ok((Class::TrustGap, Scope::Worker, Action::Wait))
         );
         assert_eq!(
-            decided([10, 10, 10, 10, 960, 500]),
+            decided([10, 10, 10, 10, 960, 500, 10]),
             Ok((Class::Working, Scope::Worker, Action::Wait))
         );
         assert_eq!(
-            decided([10, 10, 10, 10, 10, 970]),
+            decided([10, 10, 10, 10, 10, 970, 10]),
             Ok((Class::Complete, Scope::Worker, Action::Complete))
         );
+        assert_eq!(
+            decided([10, 10, 10, 10, 10, 10, 970]),
+            Ok((Class::Short, Scope::Worker, Action::Nudge))
+        );
+        assert_eq!(
+            decided([10, 10, 10, 970, 10, 10, 970]),
+            Ok((Class::WaitingHuman, Scope::Worker, Action::Wait))
+        );
         assert!(
-            decided([500, 10, 10, 10, 960, 10])
+            decided([500, 10, 10, 10, 960, 10, 10])
                 .unwrap_err()
                 .contains("`usage_limit` unsettled, at 0.500")
         );
-        assert!(decided([10, 10, 10, 10, 10, 10]).unwrap_err().contains("none of its questions"));
-        assert_eq!(decided([300, 300, 300, 300, 700, 300]).map(|d| d.0), Ok(Class::Working));
-        assert!(decided([301, 10, 10, 10, 960, 10]).is_err());
+        assert!(
+            decided([10, 10, 10, 10, 10, 10, 10]).unwrap_err().contains("none of its questions")
+        );
+        assert_eq!(decided([300, 300, 300, 300, 700, 300, 10]).map(|d| d.0), Ok(Class::Working));
+        assert!(decided([301, 10, 10, 10, 960, 10, 10]).is_err());
     }
 
     #[test]
@@ -547,7 +577,7 @@ mod tests {
         let request = request(&screen).unwrap();
         assert_eq!(request["model"], MODEL);
         assert_eq!(request["state"], screen.join("\n"));
-        assert_eq!(request["questions"].as_object().unwrap().len(), 7);
+        assert_eq!(request["questions"].as_object().unwrap().len(), 8);
         for id in judgments() {
             assert_eq!(request["questions"][id]["type"], "noul", "{id}");
         }
@@ -598,7 +628,7 @@ mod tests {
         let in_message = decide(Evidence::Error { harness: Some(Harness::Pi), error: &json!(pi) });
         let code = json!({"error": {"code": "insufficient_quota"}});
         let as_code = decide(Evidence::Error { harness: None, error: &code });
-        let judged = decide(Evidence::Judged(&answered([940, 20, 10, 20, 30, 30])));
+        let judged = decide(Evidence::Judged(&answered([940, 20, 10, 20, 30, 30, 10])));
         for decided in [on_screen, in_message, as_code, judged] {
             let decision = decided.unwrap().unwrap();
             assert_eq!(

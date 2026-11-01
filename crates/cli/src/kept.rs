@@ -46,6 +46,25 @@ fn home() -> Option<PathBuf> {
     std::env::var_os("HOME").filter(|home| !home.is_empty()).map(PathBuf::from)
 }
 
+/// A home for an interactive Agent outside a role. Generated hook files live
+/// in a session's own home: a probe or asking launch must never overwrite a
+/// worker's or watch's guard in a shared home.
+pub(crate) fn outside_role(
+    harness: Harness,
+    worktree: &Path,
+    guard: Option<&str>,
+) -> Result<String> {
+    let shared = keep(harness, true)?;
+    if matches!(harness, Harness::Kimi | Harness::Grok) {
+        let dir =
+            worktree.join(crate::worker_tmp::TMP_DIR).join(format!("guard-{}", crate::unique()));
+        keep_at(&dir, home().as_deref(), harness, true)?;
+        configure(&dir, home().as_deref(), harness, true, None, None, guard)?;
+        return Ok(dir.display().to_string());
+    }
+    Ok(shared.display().to_string())
+}
+
 /// The host's rule files which native project discovery can find even when
 /// the harness's user settings are disabled.
 pub fn host_rules(harness: Harness) -> Vec<String> {
