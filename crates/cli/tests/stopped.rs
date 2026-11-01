@@ -1416,6 +1416,22 @@ fn a_stopped_worker_is_told_a_later_comment_before_the_tick_judges_it() {
 }
 
 #[test]
+fn a_body_edit_shows_changed_lines_against_the_workers_starting_body() {
+    let world = World::new();
+    world.issue(7, &["ready-for-agent"]);
+    world.with_gh(|gh| gh["issues"][0]["body"] = json!("# Requirement\nUse v1.\nKeep retries."));
+    tick(&world, 1000);
+    world.with_orca(|orca| orca["notes"] = json!("taken"));
+    world.with_gh(|gh| gh["issues"][0]["body"] = json!("# Requirement\nUse v2.\nKeep retries."));
+    let told = tick(&world, 1090);
+    assert!(told["errors"].as_array().unwrap().is_empty(), "{told}");
+    assert_eq!(typed(&world).len(), 2);
+    let line = &typed(&world)[1];
+    assert!(line.contains("Changed lines") && line.contains("- Use v1. + Use v2."), "{line}");
+    assert!(!line.contains("Keep retries"), "unchanged context is omitted: {line}");
+}
+
+#[test]
 fn a_claim_with_no_worker_types_no_comment_and_dispatches_normally() {
     let world = World::new();
     world.issue(7, &["ready-for-agent"]);
@@ -1498,9 +1514,12 @@ fn a_comment_written_by_this_worker_is_not_told_even_with_the_same_login() {
             "command": "gh issue comment 7 --body-file reply.md"}}]}});
     let result = json!({"type": "user", "message": {"role": "user", "content": [
         {"type": "tool_result", "tool_use_id": "write-1", "content": own}]}});
-    std::fs::write(session, format!("{call}\n{result}\n")).unwrap();
+    std::fs::write(&session, format!("{call}\n{result}\n")).unwrap();
     tick(&world, 1090);
     assert_eq!(typed(&world).len(), 1, "a write receipt, not the shared login, identifies it");
+    // Session compaction must not turn an already identified write into a
+    // person's comment at the next tick.
+    std::fs::remove_file(&session).unwrap();
     let human = later_comment(&world, "Also cover timeouts.", 1100);
     tick(&world, 1180);
     assert_eq!(typed(&world).len(), 2);

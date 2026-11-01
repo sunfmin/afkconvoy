@@ -832,3 +832,12 @@ afkconvoy::cli panel::a_fleet_lock_is_said_first_and_holds_back_all_but_its_issu
 afkconvoy::cli joining::a_running_landing_turn_is_left_alone_with_its_worker_idle
 # Measured 7.64s: three queued deliveries and doctor's recovery observation.
 afkconvoy::cli stopped::a_queued_issue_update_is_retried_without_retyping_and_doctor_names_its_comment
+# Automatic issue delivery scenarios measured over the fast gate's 2s line.
+afkconvoy::cli stopped::a_comment_written_by_this_worker_is_not_told_even_with_the_same_login
+afkconvoy::cli stopped::a_new_body_edit_keeps_the_revision_still_queued_for_the_worker
+afkconvoy::cli stopped::a_stopped_worker_is_told_a_later_comment_before_the_tick_judges_it
+afkconvoy::cli stopped::a_worker_started_before_upgrade_is_told_a_body_edited_since_its_start
+afkconvoy::cli stopped::later_comments_wait_for_a_worker_of_the_claim_s_host
+afkconvoy::cli stopped::later_fleet_comments_and_earlier_comments_are_not_told
+afkconvoy::cli stopped::later_issue_body_edits_are_told_with_the_whole_new_body
+afkconvoy::cli stopped::later_issue_comments_are_told_once_with_user_session_proof

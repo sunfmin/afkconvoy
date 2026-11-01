@@ -63,7 +63,9 @@ pub fn note_at(cwd: &Path, harness: Harness, since: u64, mark: &str) -> Result<O
                 crate::doctor::watching::since(whole.as_deref().unwrap_or(stamp)).ok()
             })
         });
-        found.set(at);
+        if at.is_some() {
+            found.set(at);
+        }
         at.is_some()
     })?;
     Ok(found.get())

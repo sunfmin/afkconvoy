@@ -13,7 +13,8 @@ with delivery at each tick, using tell's session proof (ADR-0042).
 The tick uses the body and comments already read in its rebuild. Under this
 host's claim, with a worker that took its brief and still has a terminal,
 it tells comments newer than that worker's start and changes from the body
-captured before its brief. A body change carries the whole new body. The
+captured before its brief. A body change carries the changed lines, or the
+whole new body when no meaningful baseline is available. The
 worktree keeps the observed body and pending revisions, scoped to that
 worker's start; a newer edit cannot erase a pending one. GitHub remains the
 words' authoritative home.

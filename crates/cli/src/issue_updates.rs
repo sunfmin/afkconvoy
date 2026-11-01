@@ -21,6 +21,8 @@ struct Seen {
     revision: u64,
     pending: Vec<Update>,
     told: BTreeSet<String>,
+    #[serde(default)]
+    ignored: BTreeSet<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -32,7 +34,14 @@ struct Update {
 
 impl Seen {
     fn new(started: u64, body: &str) -> Self {
-        Self { started, body: body.into(), revision: 0, pending: vec![], told: BTreeSet::new() }
+        Self {
+            started,
+            body: body.into(),
+            revision: 0,
+            pending: vec![],
+            told: BTreeSet::new(),
+            ignored: BTreeSet::new(),
+        }
     }
 
     fn save(&self, worktree: &Worktree) -> Result<()> {
@@ -84,13 +93,12 @@ pub fn reconcile(fleet: &Fleet, host: &str, issues: &OpenIssues) -> Vec<Value> {
             {
                 seen.revision += 1;
                 let mark = format!("{}#convoy-body-{started}-{}", body.url, seen.revision);
-                // Keep the full new body: a worker can compare it with the
-                // version it read; no diff library or shell quoting involved.
                 seen.pending.push(Update {
                     mark,
                     text: format!(
-                        "Issue body edited ({}). Whole new body: {}",
-                        body.url, body.body
+                        "Issue body edited ({}). {}",
+                        body.url,
+                        body_change((!unknown_body).then_some(seen.body.as_str()), &body.body)
                     ),
                     receipt: format!("convoy-body-send-{started}-{}", seen.revision),
                 });
@@ -102,14 +110,13 @@ pub fn reconcile(fleet: &Fleet, host: &str, issues: &OpenIssues) -> Vec<Value> {
                 if comment.at.is_none_or(|at| at <= started)
                     || comment.body.contains("<!--convoy:")
                     || seen.told.contains(&comment.url)
+                    || seen.ignored.contains(&comment.url)
                     || seen.pending.iter().any(|update| update.mark == comment.url)
-                    || crate::session::posted_comment(
-                        &worktree.path,
-                        harness,
-                        started,
-                        &comment.url,
-                    )?
                 {
+                    continue;
+                }
+                if crate::session::posted_comment(&worktree.path, harness, started, &comment.url)? {
+                    seen.ignored.insert(comment.url.clone());
                     continue;
                 }
                 seen.pending.push(Update {
@@ -169,4 +176,31 @@ pub fn reconcile(fleet: &Fleet, host: &str, issues: &OpenIssues) -> Vec<Value> {
         }
     }
     steps
+}
+
+/// A replacement block drops the common beginning and end. Without a
+/// meaningful baseline, or for whitespace-only edits, keep the new body.
+fn body_change(before: Option<&str>, after: &str) -> String {
+    if let Some(before) = before.filter(|before| !before.is_empty()) {
+        let old: Vec<&str> = before.lines().collect();
+        let new: Vec<&str> = after.lines().collect();
+        let prefix = old.iter().zip(&new).take_while(|(a, b)| a == b).count();
+        let old = &old[prefix..];
+        let new = &new[prefix..];
+        let suffix = old.iter().rev().zip(new.iter().rev()).take_while(|(a, b)| a == b).count();
+        let removed = &old[..old.len() - suffix];
+        let added = &new[..new.len() - suffix];
+        if !removed.is_empty() || !added.is_empty() {
+            let lines: Vec<String> = removed
+                .iter()
+                .map(|line| format!("- {line}"))
+                .chain(added.iter().map(|line| format!("+ {line}")))
+                .collect();
+            return format!(
+                "Changed lines (replace the removed block with the added block):\n{}",
+                lines.join("\n")
+            );
+        }
+    }
+    format!("Whole new body: {after}")
 }
