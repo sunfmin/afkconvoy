@@ -141,7 +141,7 @@ pub fn render(row: &Record) -> String {
                     total.add(count);
                 }
             }
-            None => unknown += 1,
+            None => unknown = unknown.saturating_add(1),
         }
     }
     let token_total = format!(

@@ -147,8 +147,8 @@ fn token_report(rows: &[Row]) -> TokenReport {
                     entry.0.add(counts);
                 }
             } else {
-                unknown += 1;
-                entry.1 += 1;
+                unknown = unknown.saturating_add(1);
+                entry.1 = entry.1.saturating_add(1);
             }
         }
         for (harness, (counts, missing, present)) in grouped {
@@ -165,12 +165,12 @@ fn token_report(rows: &[Row]) -> TokenReport {
     let stats = token_stats(&overall);
     let by_harness = harnesses.into_iter().map(|(name, rows)| (name, token_stats(&rows))).collect();
     overall.sort_by_key(|(number, _, counts, _, _)| (std::cmp::Reverse(counts.total()), *number));
-    let top = overall
-        .into_iter()
-        .filter(|(_, _, _, _, known)| *known)
-        .take(5)
-        .map(|(number, url, counts, _, _)| TokenIssue { number, url, total: counts.total() })
-        .collect();
+    let mut top = Vec::new();
+    for (number, url, counts, _, known) in overall {
+        if known && top.len() < 5 {
+            top.push(TokenIssue { number, url, total: counts.total() });
+        }
+    }
     TokenReport { overall: stats, by_harness, top }
 }
 
