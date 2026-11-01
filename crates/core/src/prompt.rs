@@ -122,7 +122,7 @@ open no other PR. Nobody reads this terminal: never wait for an answer.
 
 ## Hard rules
 
-- End with your PR landed on the base branch — never just stop.
+- End with your PR landed on the base branch<landing_end> — never just stop.
 - Never close the PR, never open another, never rebase.
 - Never edit files outside your worktree, and never push to `{base_branch}`.
 ";
@@ -234,6 +234,11 @@ const LANDING: &str = "\
 **Your role:** `{role}`, which you were started in. Perform its skill `{skill}` as you carry out the
 steps below. You were started in your role's directory, not in the worktree: the commands below
 change to the worktree themselves.
+
+If landing needs another issue fixed first, run `afkconvoy verdict blocked --issue {n} --stage land --blocked-by <blockers> --text-file <file>` from the worktree, then stop. Name every blocking issue.
+If a human must decide, declare `escalate` with `--stage land` and the reason instead, then stop.
+The fleet releases the claim and keeps the PR and branch. Once blockers close, or a human rules,
+the issue returns to landing.
 ";
 
 /// The brief of a worker started in its role: a fixed form that says what the
@@ -858,7 +863,11 @@ fn prompt(
         Variant::Fresh => (briefed(OPENING_FRESH, STEP1_FRESH), String::new()),
         Variant::Continue => (briefed(OPENING_CONTINUE, STEP1_CONTINUE), String::new()),
         Variant::Land { pr } => {
-            let joiner = JOINER.replace("<landing>", if landing.is_some() { LANDING } else { "" });
+            let joiner =
+                JOINER.replace("<landing>", if landing.is_some() { LANDING } else { "" }).replace(
+                    "<landing_end>",
+                    if landing.is_some() { ", or a declared landing verdict" } else { "" },
+                );
             (steps(&joiner, "2", "3", " — your PR has landed"), pr.to_string())
         }
         Variant::TakeUp { pr } => {
@@ -1756,11 +1765,16 @@ mod tests {
             ),
             "{prompt}"
         );
-        // But for those lines it is the brief every joining worker gets.
+        assert!(prompt.contains("verdict blocked --issue 7 --stage land --blocked-by <blockers>"));
+        assert!(prompt.contains("or a declared landing verdict — never just stop"));
+        // But for the role, its verdict instructions and the permitted ending,
+        // it is the brief every joining worker gets.
         let joiner = worker_prompt(&fields(), Variant::Land { pr: 70 }).unwrap();
         let role = prompt.find("**Your role:**").unwrap();
         let steps = prompt.find("\n## Steps").unwrap();
-        assert_eq!(format!("{}{}", &prompt[..role], &prompt[steps..]), joiner);
+        let ordinary = format!("{}{}", &prompt[..role], &prompt[steps..])
+            .replace(", or a declared landing verdict", "");
+        assert_eq!(ordinary, joiner);
         assert!(!joiner.contains("<landing>") && !joiner.contains("Your role"), "{joiner}");
     }
 

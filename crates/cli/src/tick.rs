@@ -629,6 +629,8 @@ impl Ticked {
                     Position::Parked(stage) => format!("parked {}", at(&stage.name)),
                     Position::Escalating(stage, _) => format!("escalating {}", at(&stage.name)),
                     Position::Landing => "landing".to_string(),
+                    Position::LandingParked => "parked at land".to_string(),
+                    Position::LandingEscalating => "escalating at land".to_string(),
                     Position::Ended => "ended".to_string(),
                 };
                 (*number, said)

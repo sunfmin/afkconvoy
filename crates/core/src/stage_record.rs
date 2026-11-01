@@ -9,7 +9,7 @@ use flux_rs::macros::qualifier;
 
 use crate::harness::Harness;
 use crate::lock;
-use crate::position::{ConsultOn, Declared, Failure, Place, Position};
+use crate::position::{ConsultOn, Declared, Failure, LANDING_ESCALATION, Place, Position};
 use crate::prompt::quoted;
 use crate::record;
 use crate::team::{HUMAN, LAND, Workflow};
@@ -361,6 +361,21 @@ pub fn history<'w>(workflow: &'w Workflow, records: Vec<StageRecord>) -> History
         let at = place.position.stage();
         let reading = if record.claim().is_some_and(|claim| spent.contains(&claim)) {
             Reading::ClaimSpent
+        } else if record.stage == LAND {
+            if !place.position.landing() {
+                Reading::OtherStage
+            } else if record.puts() {
+                place.position = Position::Landing;
+                Reading::Verdict
+            } else if let Stated::Declared(declared) = record.stated {
+                if let Some(claim) = record.claim() {
+                    spent.push(claim);
+                }
+                place = place.after(declared);
+                Reading::Verdict
+            } else {
+                Reading::OtherStage
+            }
         } else if let Some(named) = workflow.place_of(&record.stage) {
             let own = at.filter(|stage| stage.at() == named);
             let consulted = matches!(place.position, Position::Consult(..));
@@ -580,6 +595,9 @@ pub fn advance(history: &History, claim: &str) -> Advance {
     if let Position::Escalating(stage, reason) = position {
         return Advance::Escalate(reason.said(stage));
     }
+    if position == Position::LandingEscalating {
+        return Advance::Escalate(LANDING_ESCALATION.to_string());
+    }
     let verdict = history.verdict_under(claim).and_then(|at| history.records.get(at));
     let Some(verdict) = verdict else {
         // A claim on an issue no worker has a stage to perform on, or to
@@ -592,7 +610,9 @@ pub fn advance(history: &History, claim: &str) -> Advance {
         Position::Ended if verdict.stated == Stated::Declared(Declared::Close) => {
             Advance::ConsultClose
         }
-        Position::Parked(_) => Advance::Blocked(verdict.blocked_by.clone()),
+        Position::Parked(_) | Position::LandingParked => {
+            Advance::Blocked(verdict.blocked_by.clone())
+        }
         Position::Ended if verdict.stated == Stated::Declared(Declared::AlreadySatisfied) => {
             Advance::Close
         }
@@ -606,14 +626,15 @@ pub fn advance(history: &History, claim: &str) -> Advance {
 /// The claim of the stage whose `pass` led there is not: it is released, and
 /// the join is started under a claim of its own.
 pub fn lands(history: &History, claim: &str) -> bool {
-    matches!(history.place.position, Position::Landing) && history.verdict_under(claim).is_none()
+    matches!(history.place.position, Position::Landing | Position::LandingParked)
+        && history.verdict_under(claim).is_none()
 }
 
 /// The label that shows `position`: the stage the issue is at, `land` while
 /// it is landing, and none once it has ended.
 pub fn stage_label(position: Position) -> Option<String> {
     match position {
-        Position::Landing => Some(format!("{STAGE_LABEL}{LAND}")),
+        at if at.landing() => Some(format!("{STAGE_LABEL}{LAND}")),
         Position::Ended => None,
         at => at.stage().map(|stage| format!("{STAGE_LABEL}{}", stage.name)),
     }
@@ -1049,6 +1070,48 @@ mod tests {
         assert!(lands(&landing, "c5"));
         let reviewed = &signed[..3];
         assert!(!lands(&history(workflow, reviewed.to_vec()), "c5"), "not landing yet");
+    }
+
+    #[test]
+    fn landing_verdicts_settle_the_claim_and_keep_the_landing_destination() {
+        let team = one(FEATURE);
+        let workflow = team.workflow("feature").unwrap();
+        let signed: Vec<_> = ["plan", "build", "review", "sign-off"]
+            .into_iter()
+            .enumerate()
+            .map(|(at, stage)| record(stage, Pass, &format!("c{at}")))
+            .collect();
+        let mut blocked = record(LAND, Blocked, "landing");
+        blocked.blocked_by = vec![41];
+        let mut records = signed.clone();
+        records.push(blocked);
+        // Another declaration under the spent claim never changes its first word.
+        records.push(record(LAND, Escalate, "landing"));
+        let parked = history(workflow, records.clone());
+        assert_eq!(parked.place.position, Position::LandingParked);
+        assert_eq!(advance(&parked, "landing"), Advance::Blocked(vec![41]));
+        assert!(!lands(&parked, "landing"));
+        assert!(lands(&parked, "resumed"));
+        assert_eq!(parked.readings.last(), Some(&Reading::ClaimSpent));
+        assert_eq!(stage_label(parked.place.position).as_deref(), Some("stage:land"));
+
+        records.push(record(LAND, Escalate, "resumed"));
+        let escalated = history(workflow, records.clone());
+        assert_eq!(escalated.place.position, Position::LandingEscalating);
+        assert_eq!(advance(&escalated, "resumed"), Advance::Escalate(LANDING_ESCALATION.into()));
+        assert!(!lands(&escalated, "another"));
+        assert!(unconsulted(&escalated).is_none());
+        records.push(human(LAND, Stated::Declared(Ruling)));
+        let resumed = history(workflow, records);
+        assert_eq!(resumed.place.position, Position::Landing);
+        assert_eq!(resumed.place.rework(), parked.place.rework());
+        assert!(lands(&resumed, "another"));
+
+        // `land` before the last stage passes cannot move the issue there.
+        assert_eq!(
+            history(workflow, vec![record(LAND, Blocked, "early")]).readings,
+            [Reading::OtherStage]
+        );
     }
 
     #[test]
