@@ -108,7 +108,7 @@ fn a_worker_left_alone_by_a_fleet_lock_waits_until_its_nudge() {
         orca["terminals"][0]["lastOutputAt"] = json!(1000000);
     });
     world.afk(&["tick", "--instance", "alpha", "--host", "h1", "--now", "2000"]).ok();
-    let locked = doctor(&world, "2000").ok();
+    let locked = doctor(&world, "2000").json;
     let claim = locked["claims"].as_array().unwrap().iter().find(|c| c["issue"] == 3).unwrap();
     assert_eq!(claim["worker"], json!({"state": "waiting_on_lock", "locks": [7]}));
     assert!(found(&locked, "the worker of #3 has been stopped").is_empty(), "{locked}");
@@ -123,9 +123,9 @@ fn a_worker_left_alone_by_a_fleet_lock_waits_until_its_nudge() {
             .any(|step| step["issue"] == 3 && step["outcome"] == "nudged"),
         "{tick}"
     );
-    let before = doctor(&world, "2399").ok();
+    let before = doctor(&world, "2399").json;
     assert!(found(&before, "the worker of #3 has been stopped").is_empty(), "{before}");
-    let after = doctor(&world, "2401").ok();
+    let after = doctor(&world, "2401").json;
     let stopped = found(&after, "the worker of #3 has been stopped");
     assert_eq!(stopped.len(), 1, "{after}");
     assert!(stopped[0]["evidence"].as_str().unwrap().contains("after its nudge"));
