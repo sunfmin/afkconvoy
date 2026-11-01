@@ -305,6 +305,9 @@ enum Command {
         /// Include all recorded account ends through now
         #[arg(long)]
         all: bool,
+        /// Answer NDJSON: one versioned record per account; unreadable diagnostics on stderr
+        #[arg(long)]
+        rows: bool,
         #[command(flatten)]
         at: At,
     },
@@ -4614,8 +4617,8 @@ fn run(
             let example = example.as_deref().and_then(scaffold::example);
             scaffold::scaffold(what, &dir, &role, example, create.as_ref())
         }
-        Command::Accounts { days, all, .. } => {
-            accounts::accounts(&checkout?, days.unwrap_or(7), all, now)
+        Command::Accounts { days, all, rows, .. } => {
+            accounts::accounts(&checkout?, days.unwrap_or(7), all, rows, now)
         }
         Command::Flows { delivery, tracker, .. } => {
             flows::flows(&checkout?, delivery.as_deref(), tracker.as_ref())
