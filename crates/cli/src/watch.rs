@@ -75,16 +75,6 @@ fn ask_after(fleet: &Fleet, me: &Me, issue: u64) -> Result<Option<Asked>> {
     Ok(Some(Asked::Stopped(Box::new(Stopped { claim, pr, worktree, record, comments, route }))))
 }
 
-/// Whether the turn of a landing worktree needs the tree changed before it is
-/// asked for again: it never was — the branch is still being prepared — or
-/// it answered a conflict, a red gate, or anything else but a wait. A turn
-/// being asked for now needs nothing.
-fn needs_harness(answered: &Answered) -> bool {
-    !matches!(answered, Answered::Asking) && !answered.waits()
-}
-
-/// Asks for the turn of `issue` again where its last answered a wait, and
-/// leaves one being asked for: no harness is started either way.
 /// Handles a landing claim's turn before worker health can hold its harness.
 /// A stopped or gone worker whose turn answered a wait needs no harness or
 /// judgment to ask again. An open harness turn is left to its worker.
@@ -100,8 +90,7 @@ pub(crate) fn ask_waiting(fleet: &Fleet, me: &Me, issue: u64) -> Result<Option<O
     if answered == Answered::Asking {
         return Ok(Some(Outcome::Nothing));
     }
-    if needs_harness(&answered)
-        || worktree.state(fleet.now)? == afkconvoy_core::worker::WorkerState::Busy
+    if !answered.waits() || worktree.state(fleet.now)? == afkconvoy_core::worker::WorkerState::Busy
     {
         return Ok(None);
     }
