@@ -142,7 +142,12 @@ pub fn parse(harness: Harness, text: &str) -> Option<Tokens> {
                     .or_else(|| v["id"].as_str())
                     .map(str::to_string)
                     .unwrap_or_else(|| format!("line:{line_no}"));
-                let counts = normalized(usage, input, read, write, output, reasoning, false);
+                let mut counts = normalized(usage, input, read, write, output, reasoning, false);
+                if harness == Harness::ClaudeCode {
+                    counts.reasoning = usage["output_tokens_details"]["thinking_tokens"]
+                        .as_u64()
+                        .or(counts.reasoning);
+                }
                 messages.insert(id, (msg["model"].as_str().unwrap_or("").to_string(), counts));
                 found = true;
             }
