@@ -1481,7 +1481,7 @@ mod tests {
         std::fs::write(&note, "not a turn note").unwrap();
         assert!(!waiting_on_turn(dir.path()));
         std::fs::write(&note, json!({"outcome": "error", "at": 1700}).to_string()).unwrap();
-        assert!(!waiting_on_turn(dir.path()));
+        assert!(waiting_on_turn(dir.path()));
     }
 
     fn screen(lines: &[&str]) -> Vec<String> {

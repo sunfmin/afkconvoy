@@ -295,8 +295,9 @@ pub(crate) fn landing(records: &[crate::remote::RemoteRecord], prefix: &str, bra
     })
 }
 
-/// An unreadable observation never proves death. Kernel start time prevents
-/// PID reuse; host identity is physical, independent of --host.
+/// A process this user may not read is another user's, never the recorded
+/// owner. Any other unreadable observation never proves death. Kernel start
+/// time prevents PID reuse; host identity is physical, independent of --host.
 #[cfg(target_os = "macos")]
 pub(crate) fn identity(pid: u32) -> Result<Option<Process>> {
     let mut info = std::mem::MaybeUninit::<libc::proc_bsdinfo>::zeroed();
@@ -305,7 +306,9 @@ pub(crate) fn identity(pid: u32) -> Result<Option<Process>> {
     let got = unsafe {
         libc::proc_pidinfo(pid as i32, libc::PROC_PIDTBSDINFO, 0, info.as_mut_ptr().cast(), size)
     };
-    if got == 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
+    if got == 0
+        && matches!(std::io::Error::last_os_error().raw_os_error(), Some(libc::ESRCH | libc::EPERM))
+    {
         return Ok(None);
     }
     ensure!(got == size, "cannot confirm process {pid}: {}", std::io::Error::last_os_error());
@@ -1474,6 +1477,17 @@ fn publish(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn an_unreadable_pid_is_not_the_candidate_owner() {
+        let recorded = super::Process {
+            host: crate::this_host(),
+            pid: 1,
+            started: "the recorded turn owner".into(),
+        };
+        assert!(!super::alive(&recorded).unwrap());
+    }
+
     #[test]
     fn a_branch_whose_live_turn_holds_a_valid_candidate_is_landing() {
         let me = super::identity(std::process::id()).unwrap().unwrap();
