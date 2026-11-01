@@ -566,3 +566,76 @@ fn under_the_branch_layout_a_pr_lands_in_one_recorded_turn_without_a_train_ref()
     assert_eq!(refs(&world, "refs/heads/convoy-train"), [] as [String; 0]);
     assert_eq!(refs(&world, "refs/convoy"), [] as [String; 0]);
 }
+
+#[test]
+fn gate_needs_refuse_without_disclosing_output_and_recheck_after_an_hour() {
+    use std::os::unix::fs::PermissionsExt;
+    let world = World::new();
+    let config = world.clone.join("docs/agents/afkconvoy.md");
+    let original = std::fs::read_to_string(&config).unwrap();
+    std::fs::write(&config, format!("{original}\n```yaml gate-needs\nchecks:\n  - name: toolchain\n    command: sh check-need.sh\n    seconds: 5\n```\n")).unwrap();
+    let script = world.clone.join("check-need.sh");
+    std::fs::write(&script, "echo stdout-secret\necho stderr-secret >&2\nexit 7\n").unwrap();
+    world.watch_pushes(None);
+    for answer in [plan(&world), tick_at(&world, "1000"), run_once(&world)] {
+        let error = answer.error();
+        assert!(error.contains("toolchain") && error.contains("exit status: 7"), "{error}");
+        assert!(!error.contains("stdout-secret") && !error.contains("stderr-secret"), "{error}");
+    }
+    assert!(world.probes().is_empty());
+    let dir = world.cache().join("afkconvoy/gate-needs");
+    let path = std::fs::read_dir(dir).unwrap().next().unwrap().unwrap().path();
+    assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "stderr-secret");
+    std::fs::write(&script, "exit 0\n").unwrap();
+    plan_at(&world, "1000").ok();
+    assert!(!path.exists());
+    std::fs::write(&script, "echo stderr-secret >&2\nexit 7\n").unwrap();
+    plan_at(&world, "4599").ok();
+    let error = plan_at(&world, "4600").error();
+    assert!(error.contains("toolchain") && !error.contains("stderr-secret"), "{error}");
+}
+
+#[test]
+fn a_fleet_instance_breaks_when_a_gate_need_stops_passing() {
+    let world = World::new();
+    let config = world.clone.join("docs/agents/afkconvoy.md");
+    let original = std::fs::read_to_string(&config).unwrap();
+    std::fs::write(&config, format!("{original}\n```yaml gate-needs\nchecks:\n  - name: toolchain\n    command: sh check-need.sh\n    seconds: 5\n```\n")).unwrap();
+    let script = world.clone.join("check-need.sh");
+    std::fs::write(&script, "exit 0\n").unwrap();
+    world.afk(&["run", "--tracker", "default", "--host", "h1", "--second-ms", "10"]).ok();
+    std::fs::write(&script, "echo stdout-secret\necho stderr-secret >&2\nexit 7\n").unwrap();
+    let note = world.clone.join(".git/convoy-gate-needs");
+    let mut noted: Value = serde_json::from_str(&std::fs::read_to_string(&note).unwrap()).unwrap();
+    noted["at"] = json!(noted["at"].as_u64().unwrap() - 3600);
+    std::fs::write(note, noted.to_string()).unwrap();
+    world.afk(&["wake"]).ok();
+    let start = std::time::Instant::now();
+    loop {
+        let checkouts = world.afk(&["checkouts"]).ok();
+        if checkouts["checkouts"][0]["state"] == "broken" {
+            break;
+        }
+        assert!(start.elapsed() < std::time::Duration::from_secs(60), "instance did not break");
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let doctor = world.afk(&["doctor", "--host", "h1"]).json.to_string();
+    assert!(
+        doctor.contains("toolchain")
+            && doctor.contains("exit status: 7")
+            && doctor.contains("check-need.sh"),
+        "{doctor}"
+    );
+    assert!(!doctor.contains("stdout-secret") && !doctor.contains("stderr-secret"), "{doctor}");
+    let plan = world.afk(&["plan"]).error();
+    assert!(!plan.contains("stdout-secret") && !plan.contains("stderr-secret"));
+    let path = std::fs::read_dir(world.cache().join("afkconvoy/gate-needs"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    assert_eq!(std::fs::read_to_string(path).unwrap(), "stderr-secret");
+    world.afk(&["stop", "--all"]).ok();
+}
