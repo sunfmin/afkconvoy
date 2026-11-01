@@ -57,6 +57,28 @@ pub(super) fn watch(command: &str, kept: &str, model: Option<&str>) -> String {
     line.done()
 }
 
+/// Loads the same extension as a role worker, without adding role rules.
+pub(super) fn guarded(command: &str, worktree: &str, kept: &str, guard: &str) -> String {
+    Line::new()
+        .fixed("export ")
+        .fixed(USER_DIR)
+        .fixed("=")
+        .word(kept)
+        .fixed(" AFKCONVOY_GUARD=")
+        .word(guard)
+        .fixed(" AFKCONVOY_WORKTREE=")
+        .word(worktree)
+        .fixed(" AFKCONVOY_TEAM_DIR=")
+        .word(worktree)
+        .fixed(" && ")
+        .launch(command)
+        .fixed(" ")
+        .fixed(EXTENSION)
+        .fixed(" ")
+        .word(&format!("{kept}/{EXTENSION_FILE}"))
+        .done()
+}
+
 /// pi's flag that leaves out every skill it would find by itself: those of
 /// the host user's home among them, which it reads wherever its user
 /// directory is. The host user's own are named, where a worker is given

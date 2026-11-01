@@ -183,7 +183,6 @@ impl Look {
     }
 
     /// Runs `f` on this thread with this look as the current one.
-    #[cfg(test)]
     pub fn enter<T>(self: &Arc<Self>, f: impl FnOnce() -> T) -> T {
         struct Restore(Option<Arc<Look>>);
         impl Drop for Restore {
@@ -199,15 +198,14 @@ impl Look {
 /// The process's look. A process is one look until [`begin`] starts the next.
 static PROCESS: Look = Look::new();
 
-#[cfg(test)]
 thread_local! {
-    /// The look a test entered on this thread, in place of the process's.
+    /// A scoped look on this thread, in place of the process's. A report
+    /// transition rereads under its tracker claim without resetting peers.
     static ENTERED: std::cell::RefCell<Option<Arc<Look>>> =
         const { std::cell::RefCell::new(None) };
 }
 
 fn current<T>(f: impl FnOnce(&Look) -> T) -> T {
-    #[cfg(test)]
     if let Some(look) = ENTERED.with(|entered| entered.borrow().clone()) {
         return f(&look);
     }

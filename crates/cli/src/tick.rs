@@ -1292,6 +1292,9 @@ pub fn run(
         if let Ok(Some(why)) = crate::probe::public_tracker(repo, clock(), true) {
             return Err(See::Troubleshooting.refusal(why));
         }
+        if let Some(why) = crate::probe::check_gate_needs(repo, clock())? {
+            return Err(See::Troubleshooting.refusal(why));
+        }
         count += 1;
         said.keep(clock(), log::What::TickStarted { count, cause, by: by.take() });
         me.now = clock();

@@ -108,6 +108,11 @@ fn handed_said(history: &History, urls: &[String]) -> Option<String> {
 }
 
 impl Staged {
+    /// The role this worker performs, including a consult's own role.
+    pub fn role(&self) -> &str {
+        &self.role
+    }
+
     pub fn is_consult(&self) -> bool {
         self.consult
     }

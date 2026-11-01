@@ -971,7 +971,7 @@ fn a_stage_record_of_a_codex_worker_names_codex() {
         .unwrap();
     assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
     let comments = world.comments(7);
-    let record = comments.iter().find(|comment| comment.contains(" stage=build ")).unwrap();
+    let record = comments.iter().find(|comment| comment.contains(" verdict=pass ")).unwrap();
     assert!(
         record.contains(" verdict=pass ") && record.contains(" harness=codex model=gpt-5.5-->"),
         "{record}"
