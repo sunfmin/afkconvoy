@@ -242,7 +242,7 @@ fn human_notifications_send_each_answer_once_across_reports_and_restart_until_ab
         assert_eq!(sent["answer"], human["answer"]);
         assert_eq!(sent["watch"], first["id"]);
         assert_eq!(sent["host"], world.checkout_list()["settings"]["host_name"]);
-        assert_eq!(sent["panel"], "http://127.0.0.1:7070/");
+        assert_eq!(sent["panel"], ran["host_runner"]["panel"]);
     }
     assert!(!world.clone.join("should-never-exist").exists());
     let doctor = world.afk(&["doctor"]).json;
@@ -370,7 +370,7 @@ fn notify_command_environment_and_flag_follow_host_setting_precedence() {
     let out = world
         .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
         .env("AFKCONVOY_NOTIFY_COMMAND", command)
-        .args(["run"])
+        .args(["run", "--tracker", "default", "--concurrency", "default"])
         .output()
         .unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));

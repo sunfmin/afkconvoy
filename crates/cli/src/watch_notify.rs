@@ -98,16 +98,16 @@ pub fn looked() -> Result<()> {
     change(|outbox| outbox.look = outbox.look.saturating_add(1))
 }
 
-pub fn run(ended: &AtomicBool, say: impl Fn(String)) {
+pub fn run(ended: &AtomicBool, panel: Option<&str>, say: impl Fn(String)) {
     while !ended.load(Ordering::Relaxed) {
-        if let Err(error) = step(ended, Duration::from_secs(SECONDS)) {
+        if let Err(error) = step(ended, panel, Duration::from_secs(SECONDS)) {
             say(format!("human decision sending failed: {error:#}"));
         }
         std::thread::sleep(Duration::from_millis(250));
     }
 }
 
-fn step(ended: &AtomicBool, bound: Duration) -> Result<()> {
+fn step(ended: &AtomicBool, panel: Option<&str>, bound: Duration) -> Result<()> {
     let settings = crate::host_settings::of_host()?;
     let Some(command) = settings.notify_command else { return Ok(()) };
     let outbox = read()?;
@@ -140,7 +140,7 @@ fn step(ended: &AtomicBool, bound: Duration) -> Result<()> {
     let payload = json!({
         "host": settings.host_name.unwrap_or_else(crate::host_settings::host_name),
         "watch": entry.watch, "question": entry.human.question, "answer": entry.human.answer,
-        "panel": format!("http://127.0.0.1:{}/", settings.panel.unwrap_or(crate::host_settings::PANEL_PORT)),
+        "panel": panel,
     });
     let result = send(&command, &payload, ended, bound);
     change(|outbox| {
@@ -256,7 +256,7 @@ pub fn findings() -> Vec<crate::doctor::Finding> {
         Err(error) => vec![crate::doctor::finding(
             crate::doctor::Kind::NotifyFailed,
             json!(["notify-cache"]),
-            "human decision sending cache cannot be read".into(),
+            "human decision sending has failed repeatedly: its cache cannot be read".into(),
             format!("{error:#}"),
             "afkconvoy doctor --all".into(),
         )],

@@ -59,6 +59,7 @@ A warning may be the fleet mid-step: run `doctor` again after a tick before you 
 - `cuts no version: its last cut failed`: The issue that reports the fleet's failed cut is open: it names the step that failed, why, and the line that goes on from there. Read it (`fix`), then run that line in the cut's checkout, which closes it once the cut is over; or close it, and the next idle tick, or busy tick past the age bound, cuts again from the start (`afkconvoy help humans`).
 - `` have reached its `max_open` ``: A patrol is not run while that many of its issues are open. Close some, or raise it.
 - `has waited for a human for`: Nothing in the fleet moves that issue. `fix` answers it: [`afkconvoy help humans`](help:humans).
+- `human decision sending has failed repeatedly`: The host's notify command failed {const:NOTIFY_FAILURES} times in a row for one answer line. `doctor.host.notify` says the command and last sending. Correct the command with `afkconvoy run --notify-command <COMMAND>`; the next look retries. `default` disables sending. A sending command has {const:NOTIFY_SECONDS} seconds and holds back no watch round, look or tick.
 
 - `is held off by a PR not the fleet's`: No worker starts: it would open a second PR. `fix` closes it, or merge it yourself.
 - `is claimed but GitHub has it no more`: Deleted, transferred, or no such issue: its fleet's next tick releases it. `fix` is for one stopped.

@@ -344,13 +344,19 @@ pub struct HostWatch {
 
 impl HostWatch {
     /// Watches the host, saying each start, end and thing done to `say`.
-    pub fn start(shared: Shared, say: impl Fn(What) + Send + Sync + 'static) -> HostWatch {
+    pub fn start(
+        shared: Shared,
+        panel: Option<String>,
+        say: impl Fn(What) + Send + Sync + 'static,
+    ) -> HostWatch {
         let ended = Arc::new(AtomicBool::new(false));
         let say = Arc::new(say);
         let sender_ended = Arc::clone(&ended);
         let sender_say = Arc::clone(&say);
         let sender = std::thread::spawn(move || {
-            crate::watch_notify::run(&sender_ended, |said| sender_say(What::WatchFailed { said }));
+            crate::watch_notify::run(&sender_ended, panel.as_deref(), |said| {
+                sender_say(What::WatchFailed { said })
+            });
         });
         let watcher = Watcher {
             ended: Arc::clone(&ended),
