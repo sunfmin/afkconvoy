@@ -77,9 +77,18 @@ fn ask_after(fleet: &Fleet, me: &Me, issue: u64) -> Result<Option<Asked>> {
 
 /// Handles a landing claim's turn before worker health can hold its harness.
 /// A stopped or gone worker whose turn answered a wait needs no harness or
-/// judgment to ask again. An open harness turn is left to its worker.
+/// judgment to ask again. An answer needing tree changes is handed to the
+/// worker before silence can mistake the fleet's merge for worker progress;
+/// that handoff takes a free slot. An open harness turn asking for a wait is
+/// left to its worker.
 /// `None` leaves ordinary harness recovery to the tick.
-pub(crate) fn ask_waiting(fleet: &Fleet, me: &Me, issue: u64) -> Result<Option<Outcome>> {
+pub(crate) fn answer_turn(
+    fleet: &mut Fleet,
+    me: &Me,
+    agent: &Agent,
+    issue: u64,
+    start: bool,
+) -> Result<Option<Outcome>> {
     if mine(fleet, me, issue)?.is_none() {
         return Ok(None);
     }
@@ -89,6 +98,26 @@ pub(crate) fn ask_waiting(fleet: &Fleet, me: &Me, issue: u64) -> Result<Option<O
     let answered = crate::turn_answer::read(&worktree)?;
     if answered == Answered::Asking {
         return Ok(Some(Outcome::Nothing));
+    }
+    if let Some(handoff) = crate::turn_answer::pending(&worktree)? {
+        if !start {
+            return Ok(Some(Outcome::Nothing));
+        }
+        if worktree.state(fleet.now)? == afkconvoy_core::worker::WorkerState::Gone
+            || crate::dispatch::incomplete(fleet, issue)?
+        {
+            let started = dispatch(fleet, me, agent, issue, StartFrom::Auto)?;
+            if started["started"] != true {
+                return Ok(Some(Outcome::Nothing));
+            }
+        } else {
+            let terminal = worktree.terminal()?.ok_or_else(|| {
+                anyhow::anyhow!("issue #{issue}: no terminal for its turn's answer")
+            })?;
+            worktree.hand_note(&terminal, &handoff.line, &handoff.mark, 0)?;
+        }
+        handoff.taken(&worktree, fleet.now)?;
+        return Ok(Some(Outcome::Told));
     }
     if !answered.waits() || worktree.state(fleet.now)? == afkconvoy_core::worker::WorkerState::Busy
     {
@@ -179,7 +208,7 @@ pub fn restart(fleet: &mut Fleet, me: &Me, agent: &Agent, issue: u64) -> Result<
 }
 
 /// The tick's look at one claim of mine whose PR is joining, after
-/// `ask_waiting` has handled turns needing no harness. A worker gone is
+/// `answer_turn` has handled the last turn's answer. A worker gone is
 /// continued onto the join, one that stopped climbs the ladder (`joining::join_route`) →
 /// `Done` when that ended the claim. `start` false: no worker is started —
 /// the claim takes no slot, and none is free. The PR and the branch are never

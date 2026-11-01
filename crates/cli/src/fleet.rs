@@ -740,7 +740,8 @@ impl Fleet {
                 };
                 let state = worktree.state(self.now)?;
                 let answered = crate::turn_answer::read(&worktree)?;
-                Ok(afkconvoy_core::landing_worker::changing_tree(Some(state), &answered))
+                Ok(crate::turn_answer::handed(&worktree)?.is_some()
+                    || afkconvoy_core::landing_worker::changing_tree(Some(state), &answered))
             };
             if matches!(at_work(), Ok(false)) {
                 idle.push(claim.number);

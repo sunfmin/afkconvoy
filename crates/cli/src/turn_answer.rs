@@ -7,7 +7,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use afkconvoy_core::candidate::Process;
+use afkconvoy_core::ending::Ending;
 use afkconvoy_core::landing_worker::Answered;
+use afkconvoy_core::stopped::Progress;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -23,6 +25,20 @@ struct Note {
     /// What the last turn answered: its `outcome`, or `error`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     outcome: Option<String>,
+    /// Only a fleet-asked turn needs its answer handed to the worker.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    handoff: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    answer: Option<Value>,
+    at: u64,
+}
+
+const HANDOFF: &str = "AFKCONVOY_TURN_HANDOFF";
+const RECEIPT: &str = "convoy-turn-told.json";
+
+#[derive(Serialize, Deserialize)]
+struct Receipt {
+    handoff: String,
     at: u64,
 }
 
@@ -30,8 +46,10 @@ fn note_in(repo: &Repo) -> Result<PathBuf> {
     Ok(repo.git_dir()?.join(TURN_FILE))
 }
 
-fn write(file: &Path, note: &Note) -> Result<()> {
-    std::fs::write(file, serde_json::to_vec(note)?)
+fn write(file: &Path, value: &impl Serialize) -> Result<()> {
+    let temporary = file.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
+    std::fs::write(&temporary, serde_json::to_vec(value)?)
+        .and_then(|()| std::fs::rename(&temporary, file))
         .with_context(|| format!("cannot write {}", file.display()))
 }
 
@@ -41,8 +59,12 @@ fn write(file: &Path, note: &Note) -> Result<()> {
 pub fn noted(repo: &Repo, now: u64, ask: impl FnOnce() -> Result<Value>) -> Result<Value> {
     let file = note_in(repo).ok();
     let asking = crate::candidates::identity(std::process::id()).ok().flatten();
+    let handoff = std::env::var(HANDOFF).ok();
     if let Some(file) = &file {
-        let _ = write(file, &Note { asking, outcome: None, at: now });
+        let _ = write(
+            file,
+            &Note { asking, outcome: None, handoff: handoff.clone(), answer: None, at: now },
+        );
     }
     let answer = ask();
     if let Some(file) = &file {
@@ -50,20 +72,101 @@ pub fn noted(repo: &Repo, now: u64, ask: impl FnOnce() -> Result<Value>) -> Resu
             Ok(answer) => answer["outcome"].as_str().unwrap_or("error").to_string(),
             Err(_) => "error".to_string(),
         };
-        let _ = write(file, &Note { asking: None, outcome: Some(outcome), at: crate::clock() });
+        let _ = write(
+            file,
+            &Note {
+                asking: None,
+                outcome: Some(outcome),
+                handoff,
+                answer: answer.as_ref().ok().cloned(),
+                at: crate::clock(),
+            },
+        );
     }
     answer
+}
+
+fn note(worktree: &Worktree) -> Result<Option<Note>> {
+    let Ok(bytes) = std::fs::read(worktree.note(TURN_FILE)?) else { return Ok(None) };
+    Ok(serde_json::from_slice(&bytes).ok())
+}
+
+/// A fleet-asked answer that requires changes, kept until a harness takes it.
+pub(crate) struct Handoff {
+    note: Note,
+    pub line: String,
+    pub mark: String,
+}
+
+/// Reads a pending handoff without considering silence or the tree the fleet
+/// itself changed. The ending's instructions have their one home in `Ending`.
+pub(crate) fn pending(worktree: &Worktree) -> Result<Option<Handoff>> {
+    let Some(note) = note(worktree)? else { return Ok(None) };
+    if note.asking.is_some() || handed(worktree)?.is_some() {
+        return Ok(None);
+    }
+    let Some(id) = &note.handoff else { return Ok(None) };
+    let ending =
+        Ending::ALL.into_iter().find(|ending| Some(ending.word()) == note.outcome.as_deref());
+    let Some(ending @ (Ending::Conflict | Ending::SpeculativeConflict | Ending::GateRed)) = ending
+    else {
+        return Ok(None);
+    };
+    let mark = format!("turn-answer:{id}");
+    let log = worktree.note(TURN_LOG_FILE)?;
+    let line = format!(
+        "The turn the fleet asked for answered `{}` ({mark}). {}. Full answer: {}. Answer: {}. After fixing it, run `afkconvoy land --issue` with your issue number again.",
+        ending.word(),
+        ending.told(),
+        log.display(),
+        note.answer.as_ref().unwrap_or(&Value::Null)
+    );
+    Ok(Some(Handoff { note, line, mark }))
+}
+
+impl Handoff {
+    /// A new turn may start as soon as the worker takes the line. Keep the
+    /// receipt separately, keyed to this answer, so it cannot overwrite the
+    /// newer turn's note or give that turn a stale delivery receipt.
+    pub fn taken(self, worktree: &Worktree, now: u64) -> Result<()> {
+        let handoff = self.note.handoff.context("a handoff has an identity")?;
+        write(&worktree.note(RECEIPT)?, &Receipt { handoff, at: now })
+    }
+}
+
+/// Once handed work, this claim takes a slot until the worker asks again,
+/// even if its harness still reports the idle state before delivery.
+pub(crate) fn handed(worktree: &Worktree) -> Result<Option<u64>> {
+    let Some(handoff) = note(worktree)?.and_then(|note| note.handoff) else { return Ok(None) };
+    let receipt = std::fs::read(worktree.note(RECEIPT)?)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Receipt>(&bytes).ok());
+    Ok(receipt.filter(|receipt| receipt.handoff == handoff).map(|receipt| receipt.at))
+}
+
+/// Ordinary starts and nudges forget a wait; a handoff remains until the
+/// worker asks for its next turn (or the operator gives different work).
+pub(crate) fn forget_wait(worktree: &Worktree) -> Result<()> {
+    if pending(worktree)?.is_none() && handed(worktree)?.is_none() {
+        worktree.clear_turn()?;
+    }
+    Ok(())
+}
+
+/// A fleet-asked turn's merge and file writes are no worker sign of life.
+/// Only later commits or touches count while that answer is current.
+pub(crate) fn worker_progress(worktree: &Worktree, progress: &mut Progress) -> Result<()> {
+    if let Some(note) = note(worktree)?.filter(|note| note.handoff.is_some()) {
+        progress.last_commit = progress.last_commit.filter(|at| *at > note.at);
+        progress.touched = progress.touched.filter(|at| *at > note.at);
+    }
+    Ok(())
 }
 
 /// What the worktree of a landing worker last heard from its turn: one whose
 /// asking process is gone answered nothing.
 pub fn read(worktree: &Worktree) -> Result<Answered> {
-    let Ok(bytes) = std::fs::read(worktree.note(TURN_FILE)?) else {
-        return Ok(Answered::Never);
-    };
-    let Ok(note) = serde_json::from_slice::<Note>(&bytes) else {
-        return Ok(Answered::Never);
-    };
+    let Some(note) = note(worktree)? else { return Ok(Answered::Never) };
     if let Some(asking) = note.asking {
         let alive = asking.host == crate::this_host()
             && crate::candidates::identity(asking.pid)?.as_ref() == Some(&asking);
@@ -95,6 +198,7 @@ pub fn ask_again(worktree: &Worktree, issue: u64) -> Result<()> {
     let mut child = crate::process::spawn(
         Command::new(program)
             .args(["land", "--issue", &issue.to_string()])
+            .env(HANDOFF, uuid::Uuid::new_v4().to_string())
             .current_dir(&worktree.path)
             .stdin(Stdio::null())
             .stdout(log.try_clone()?)
