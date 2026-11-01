@@ -185,6 +185,44 @@ impl Push {
     }
 }
 
+/// Refs of a GitHub repo with no checkout on this host. Keep these reads
+/// behind the remote boundary too; callers read record subjects through gh.
+pub(crate) fn foreign_refs(
+    dir: &Path,
+    url: &str,
+    patterns: &[&str],
+) -> Result<Vec<(String, String)>> {
+    let mut args = vec!["ls-remote", url];
+    args.extend_from_slice(patterns);
+    let ran = crate::git::run(dir, &args, &[])?;
+    ensure!(ran.ok, "remote {url} could not be read: {}", ran.stderr.trim());
+    Ok(ran
+        .stdout
+        .lines()
+        .filter_map(|line| line.split_once('\t'))
+        .map(|(sha, name)| (name.to_string(), sha.to_string()))
+        .collect())
+}
+
+/// An atomic compare-and-swap on a tracker ref. The object is a parentless
+/// empty-tree record made locally, so pushing it carries no checkout history.
+pub(crate) fn foreign_push(dir: &Path, url: &str, push: &Push) -> Result<bool> {
+    let mut args = push.args();
+    let at = args.iter().position(|arg| arg == REMOTE).expect("push remote");
+    args[at] = url.to_string();
+    let args: Vec<_> = args.iter().map(String::as_str).collect();
+    let ran = crate::git::run(dir, &args, &[])?;
+    if ran.ok {
+        return Ok(true);
+    }
+    // Only a rejected compare-and-swap is a peer winning, never a transport
+    // error. A lost receipt leaves the record for a later look to recover.
+    if ran.stderr.contains("[rejected]") {
+        return Ok(false);
+    }
+    bail!("tracker claim push failed: {}", ran.stderr.trim())
+}
+
 impl Remote {
     /// The remote of `repo`, sharing what this process has read of it.
     /// Opened with no listing: a `Fresh::Opened` read is refused.
