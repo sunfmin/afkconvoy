@@ -290,7 +290,16 @@ fn human_notifications_send_each_condition_once_despite_reworded_reports_and_res
     assert_eq!(doctor["host"]["notify"]["last"]["outcome"], "sent");
     assert!(doctor["host"]["notify"]["last"]["ended"].as_u64().is_some());
 
-    let second = another_notification_round(&world, &dir, &first);
+    world.kill_host_runner("KILL");
+    paused(&world, "kimi", "an unrelated new fault");
+    run(&world, &dir);
+    let second = until(&world, "another round for an unrelated condition", || {
+        running(&world).filter(|w| w["id"] != first["id"] && w["started"].as_u64().unwrap_or(0) > 0)
+    });
+    assert!(
+        !second["items"].as_array().unwrap().iter().any(|item| item["id"] == json!(wait)),
+        "the already covered wait need not be the reason for this round"
+    );
     let mut reworded = humans.clone();
     reworded[0]["question"] = json!("The same account, asked differently?");
     reworded[0]["answer"] =
@@ -316,6 +325,7 @@ fn human_notifications_send_each_condition_once_despite_reworded_reports_and_res
     until(&world, "observed recovery ends both episodes", || {
         (notify_state(&world)["entries"] == json!({})).then_some(())
     });
+    world.kill_host_runner("KILL");
     paused(&world, "pi", "an account is needed");
     world.with_gh(|gh| {
         gh["issues"]
@@ -323,8 +333,9 @@ fn human_notifications_send_each_condition_once_despite_reworded_reports_and_res
             .unwrap()
             .iter_mut()
             .find(|issue| issue["number"] == 11)
-            .unwrap()["state"] = json!("OPEN");
+            .unwrap()["state"] = json!("open");
     });
+    run(&world, &dir);
     let returned = until(&world, "a new episode of each condition", || {
         running(&world).filter(|w| w["id"] != empty["id"] && w["started"].as_u64().unwrap_or(0) > 0)
     });
