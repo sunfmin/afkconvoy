@@ -1093,6 +1093,30 @@ fn one_jev_request_classes_a_real_finished_screen_and_the_key_goes_nowhere_but_t
 }
 
 #[test]
+fn a_short_worker_is_nudged_once_then_waits_for_the_operator_if_still_short() {
+    let world = fleet(1000);
+    let message = "The issue is not complete. I did not declare a stage verdict.";
+    world.jev_judges(&[("short", 0.99)], message);
+    report(&world, "done", 1000, 1000);
+    show(&world, &[message, "› Ask Codex to do anything"]);
+    tick(&world, 1300);
+    tick(&world, 1600);
+    let doctor = world.afk(&["doctor", "--host", "h1", "--now", "1601"]).json;
+    let worker = &doctor["host"]["host_kit"]["worker_health"]["workers"][0];
+    assert_eq!(worker["diagnosis"]["class"], "short", "{doctor}");
+    assert_eq!(worker["action"], "nudged", "{doctor}");
+    assert!(!doctor["findings"].as_array().unwrap().iter().any(|f| f["kind"] == "worker_health"));
+
+    report(&world, "done", 1600, 1600);
+    tick(&world, 1900);
+    tick(&world, 2200);
+    let doctor = world.afk(&["doctor", "--host", "h1", "--now", "2201"]).json;
+    let worker = &doctor["host"]["host_kit"]["worker_health"]["workers"][0];
+    assert_eq!(worker["action"], "waiting for operator", "{doctor}");
+    assert!(doctor["findings"].as_array().unwrap().iter().any(|f| f["kind"] == "worker_health"));
+}
+
+#[test]
 fn a_failed_or_silent_key_command_is_an_error_and_the_worker_waits_for_the_operator() {
     for (command, error) in [
         ("exit 3", "the Jev key command failed"),

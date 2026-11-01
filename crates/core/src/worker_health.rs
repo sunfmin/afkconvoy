@@ -215,7 +215,8 @@ const QUESTIONS: [Question; 7] = [
     Question {
         id: "finished",
         instructions: "Has the agent finished its task and reported the result?",
-        yes: "The agent's last message reports the outcome of its task, and it is idle.",
+        yes: "The agent's last message reports that its task is finished or its required outcome \
+              was declared, and it is idle. An admission of unfinished work is not completion.",
         no: "The task is still underway, was stopped short by an error or a limit, or no \
              outcome is reported.",
         class: Class::Complete,
@@ -490,6 +491,7 @@ mod tests {
             let mut asked = request.clone();
             asked.as_object_mut().unwrap().remove("state");
             asked["questions"].as_object_mut().unwrap().remove("short");
+            asked["questions"]["finished"] = recorded["asked"]["questions"]["finished"].clone();
             asked["questions"][EVIDENCE].as_object_mut().unwrap().remove("criteria");
             assert_eq!(asked, recorded["asked"], "{name}: asked as it was recorded");
             let mut response = case["response"].clone();
@@ -544,6 +546,14 @@ mod tests {
         assert_eq!(
             decided([10, 10, 10, 10, 10, 970, 10]),
             Ok((Class::Complete, Scope::Worker, Action::Complete))
+        );
+        assert_eq!(
+            decided([10, 10, 10, 10, 10, 10, 970]),
+            Ok((Class::Short, Scope::Worker, Action::Nudge))
+        );
+        assert_eq!(
+            decided([10, 10, 10, 970, 10, 10, 970]),
+            Ok((Class::WaitingHuman, Scope::Worker, Action::Wait))
         );
         assert!(
             decided([500, 10, 10, 10, 960, 10, 10])
