@@ -104,6 +104,7 @@ pub mod recovery;
 pub mod remote;
 mod repair;
 pub mod resources;
+pub mod rewrite_accounts;
 pub mod role;
 pub mod roster_issue;
 pub mod runner_socket;
@@ -330,6 +331,25 @@ enum Command {
         rows: bool,
         #[command(flatten)]
         at: At,
+    },
+    /// Convert the tracker’s legacy work accounts into versioned records
+    ///
+    /// ## When to run it
+    ///
+    /// Run once per tracker after upgrading all fleet instances. It needs git and a signed-in gh. Run with no flags first to inspect every old and proposed body and its check.
+    ///
+    /// ## What it reads and writes
+    ///
+    /// Reads all issues and comments in the checkout’s tracker. With no flags it writes nothing. With `--backup <directory>` it saves each original in that directory before editing the comment, and skips records it cannot validate. The directory must be kept for recovery. Repeating it skips JSON accounts.
+    ///
+    /// ## What it answers
+    ///
+    /// One JSON object with `dry_run`, `backup`, counts `rewrite` and `left`, and `changes` containing issue, comment, old_body, new_body and check. `before` and `after` show this checkout’s all-time account summaries as currently read and as projected after conversion. It refuses a changed comment or a conflicting backup; run it again after examining the error.
+    #[command(next_help_heading = OPERATOR, verbatim_doc_comment)]
+    RewriteAccounts {
+        /// Save original bodies in this directory and edit validated comments
+        #[arg(long)]
+        backup: Option<std::path::PathBuf>,
     },
     /// Write this host's host kit. `kit --cast` is refused: automatic casting is gone
     ///
@@ -4733,6 +4753,9 @@ fn run(
         }
         Command::Accounts { days, all, rows, .. } => {
             accounts::accounts(&checkout?, days.unwrap_or(7), all, rows, now)
+        }
+        Command::RewriteAccounts { backup } => {
+            rewrite_accounts::run(&checkout?, backup.as_deref(), now)
         }
         Command::Flows { delivery, tracker, .. } => {
             flows::flows(&checkout?, delivery.as_deref(), tracker.as_ref())
