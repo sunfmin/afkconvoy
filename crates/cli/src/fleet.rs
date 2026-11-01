@@ -16,7 +16,6 @@ use afkconvoy_core::position::Position;
 use afkconvoy_core::selection::{self, Facts, Named, Selection, Unsafe, UserConfig};
 use afkconvoy_core::stopped::standing_verdict;
 use afkconvoy_core::team::{Role, Team, Workflow};
-use afkconvoy_core::verdict::latest_verdict;
 use afkconvoy_core::worker::recorded_branches;
 use anyhow::{Context, Result, anyhow};
 use std::thread;
@@ -818,21 +817,19 @@ impl Fleet {
     /// What cannot be read says no: the claim then takes a slot.
     pub(crate) fn declared_since(&self, open: &Open, claim: &Claim) -> bool {
         let comments = open.issues.comments(claim.number);
-        let Some(verdict) = latest_verdict(comments.iter().map(|c| c.body.as_str())) else {
+        let Some(verdict) = crate::gh::verdict_since(comments, claim.since) else {
             return false;
         };
         let Some(said) = comments.get(verdict.comment) else { return false };
-        let since = said.at.zip(claim.since).is_some_and(|(at, since)| at >= since);
         // Only a verdict that is the claim's own is looked for in its worktree.
         let answered = || -> Option<Option<String>> {
             let worktree =
                 Worktree::of_issue(&Source::of(&self.repo).ok()?, claim.number).ok()??;
             worktree.answered().ok()
         };
-        since
-            && answered().is_some_and(|answered| {
-                standing_verdict(Some(verdict), Some(&said.url), answered.as_deref()).is_some()
-            })
+        answered().is_some_and(|answered| {
+            standing_verdict(Some(verdict), Some(&said.url), answered.as_deref()).is_some()
+        })
     }
 }
 

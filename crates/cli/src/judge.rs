@@ -24,7 +24,7 @@ use afkconvoy_core::transition::{
     CloseStep, EscalateStep, Escalation, FleetFault, Relabel, Released, escalation_begun,
     escalation_comment,
 };
-use afkconvoy_core::verdict::{Verdict, latest_verdict};
+use afkconvoy_core::verdict::Verdict;
 use afkconvoy_core::waiting::{Back, Waits, back};
 use afkconvoy_core::worker::WorkerState;
 use anyhow::{Result, bail};
@@ -494,8 +494,7 @@ fn ask_after(fleet: &Fleet, me: &Me, issue: u64, look: Look) -> Result<Option<As
         return Ok(Some(Asked::Settled(Route::Leave)));
     }
     let comments = fleet.gh.comments(issue)?;
-    let bodies = || comments.iter().map(|c| c.body.as_str());
-    let verdict = latest_verdict(bodies());
+    let verdict = crate::gh::verdict_since(&comments, claim.since);
     let said =
         verdict.as_ref().and_then(|verdict| Some(comments.get(verdict.comment)?.url.clone()));
     let verdict = standing_verdict(verdict, said.as_deref(), worktree.answered()?.as_deref());
