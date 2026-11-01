@@ -216,22 +216,6 @@ pub(crate) fn merged_onto(
     Ok(Some(commit_at(repo, &tree, &[base, head], message, now)?))
 }
 
-/// `head`'s changes on `base` as one commit whose only parent is `base` → its
-/// sha, `None` when the two conflict. A cut lands this commit (ADR-0028). The
-/// tree is the merge, so a base that moved keeps the landings already on it
-/// and the diff against that parent is what `head` adds. `head` itself is not
-/// a parent, and stays off the base branch.
-pub(crate) fn cut_onto(
-    repo: &Repo,
-    base: &str,
-    head: &str,
-    message: &str,
-    now: u64,
-) -> Result<Option<String>> {
-    let Some(tree) = merged_tree(repo, base, head)? else { return Ok(None) };
-    Ok(Some(commit_at(repo, &tree, &[base], message, now)?))
-}
-
 /// The head of a PR's `branch` on the remote, with a worktree that is only
 /// BEHIND it caught up to it — a worktree recreated before the last push. One
 /// that is ahead (a resolution, a fix: the join pushes them) or in the middle

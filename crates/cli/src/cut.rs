@@ -587,8 +587,7 @@ impl Cutting<'_> {
     }
 
     /// Recovers the cut's commit from the base branch after its landing turn.
-    /// The set commit is not an ancestor of that branch. An interrupted cut
-    /// can take another turn if its PR has not landed.
+    /// An interrupted cut can take another turn if its PR has not landed.
     fn land(&self, record: &mut Record, clock: &impl Fn() -> u64) -> Result<()> {
         if record.landed.is_some() {
             return Ok(());

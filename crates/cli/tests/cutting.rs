@@ -337,7 +337,7 @@ fn ancestor(world: &World, commit: &str, tip: &str) -> bool {
 }
 
 #[test]
-fn a_cut_adds_one_commit_and_leaves_the_set_commit_off_the_base() {
+fn a_cut_lands_its_pr_as_a_merge_and_keeps_the_base_tip() {
     let world = initial(false);
     assert_eq!(cut(&tick_as(&world, "alpha", 10_000)), ["cut done"]);
     let checkout = checkout(&world);
@@ -356,8 +356,15 @@ fn a_cut_adds_one_commit_and_leaves_the_set_commit_off_the_base() {
     let answer = finish_in_turn(&world, &checkout);
     let landed = answer["landed"].as_str().unwrap();
     assert_eq!(world.remote(&["rev-parse", "v1.2.3^{commit}"]), landed);
-    assert_eq!(parents(&world, landed), vec![tip], "one parent, the base tip at land time");
-    assert!(!ancestor(&world, &set, landed), "the set commit stays off the base");
+    assert_eq!(parents(&world, landed), vec![tip, set.clone()]);
+    assert!(ancestor(&world, &set, landed));
+    let open = world.afk(&["plan", "--now", "10200"]).ok();
+    let _ = open;
+    world.with_gh(|gh| {
+        let pr =
+            gh["prs"].as_array().unwrap().iter().find(|pr| pr["number"] == answer["pr"]).unwrap();
+        assert_eq!(pr["state"], "merged", "the landed cut's PR is merged");
+    });
     assert_eq!(
         world.remote(&["diff", "--name-only", &format!("{landed}^"), landed]),
         "VERSION",
