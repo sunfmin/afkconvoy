@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
-use crate::common::{World, asked};
+use crate::common::{FixtureProcess, World, asked};
 
 fn operator(world: &World) -> PathBuf {
     let dir = world.root.join("operator");
@@ -23,7 +23,15 @@ fn operator(world: &World) -> PathBuf {
     dir
 }
 
-fn run(world: &World, dir: &Path) {
+fn run(world: &World, dir: &Path) -> FixtureProcess {
+    let mut command = world.command(env!("CARGO_BIN_EXE_afkconvoy"), &world.root);
+    command.arg("host-runner");
+    let runner = FixtureProcess::spawn(&mut command);
+    until(world, "owned host runner", || {
+        (world.host_runner() == Some(runner.id())
+            && world.cache().join("afkconvoy/host-runner.sock").exists())
+        .then_some(())
+    });
     world
         .afk(&[
             "run",
@@ -37,6 +45,7 @@ fn run(world: &World, dir: &Path) {
             "1",
         ])
         .ok();
+    runner
 }
 
 fn until<T>(world: &World, what: &str, mut got: impl FnMut() -> Option<T>) -> T {
@@ -98,13 +107,13 @@ fn report_humans(world: &World, watch: &Value, human: Value) {
     });
 }
 
-fn two_conditions(world: &World) -> PathBuf {
+fn two_conditions(world: &World) -> (PathBuf, FixtureProcess) {
     let dir = operator(world);
     paused(world, "pi", "an account is needed");
     world.issue(11, &["ready-for-human"]);
     world.comment(11, "<!--convoy:escalation claim=old-->\nNeeds a quiet measurement environment.");
-    run(world, &dir);
-    dir
+    let runner = run(world, &dir);
+    (dir, runner)
 }
 
 fn conditions(watch: &Value) -> (String, String) {
@@ -165,7 +174,7 @@ fn asking_creates(world: &World) -> usize {
 #[test]
 fn two_conditions_share_one_session_and_are_delivered_one_at_a_time() {
     let world = World::new();
-    let dir = two_conditions(&world);
+    let (dir, runner) = two_conditions(&world);
     let watch = until(&world, "watch", || watch_running(&world));
     let (wait, host) = conditions(&watch);
     report_humans(
@@ -237,12 +246,14 @@ fn two_conditions_share_one_session_and_are_delivered_one_at_a_time() {
     std::thread::sleep(Duration::from_millis(500));
     assert_eq!(asking_terminal(&world)["sent"].as_array().unwrap().len(), 2);
     assert_eq!(asking_creates(&world), 1);
+    drop(runner);
+    assert!(world.host_runner().is_none());
 }
 
 #[test]
 fn reworded_reports_and_runner_restart_do_not_ask_an_episode_twice() {
     let world = World::new();
-    let _dir = two_conditions(&world);
+    let (_dir, runner) = two_conditions(&world);
     let watch = until(&world, "watch", || watch_running(&world));
     let (_, host) = conditions(&watch);
     report_humans(
@@ -254,8 +265,8 @@ fn reworded_reports_and_runner_restart_do_not_ask_an_episode_twice() {
         (asking_state(&world)["current"]["delivered"] == true).then_some(())
     });
     let episode = asking_state(&world)["current"]["question"]["id"].as_str().unwrap().to_string();
-    world.kill_host_runner("KILL");
-    run(&world, &world.root.join("operator"));
+    drop(runner);
+    let _runner = run(&world, &world.root.join("operator"));
     until(&world, "recovered asking session", || {
         (asking_state(&world)["current"]["question"]["id"] == json!(episode)
             && asking_state(&world)["current"]["delivered"] == true)
@@ -285,7 +296,7 @@ fn reworded_reports_and_runner_restart_do_not_ask_an_episode_twice() {
 #[test]
 fn busy_input_is_untouched_and_a_recovered_pending_question_is_never_delivered() {
     let world = World::new();
-    let _dir = two_conditions(&world);
+    let (_dir, _runner) = two_conditions(&world);
     let watch = until(&world, "watch", || watch_running(&world));
     let (wait, host) = conditions(&watch);
     report_humans(
@@ -334,7 +345,7 @@ fn busy_input_is_untouched_and_a_recovered_pending_question_is_never_delivered()
 #[test]
 fn an_unverified_terminal_pauses_delivery_until_its_identity_is_restored() {
     let world = World::new();
-    let _dir = two_conditions(&world);
+    let (_dir, _runner) = two_conditions(&world);
     let watch = until(&world, "watch", || watch_running(&world));
     let (wait, host) = conditions(&watch);
     report_humans(
@@ -385,7 +396,7 @@ fn an_unverified_terminal_pauses_delivery_until_its_identity_is_restored() {
 #[test]
 fn a_condition_recovered_after_delivery_is_told_as_withdrawn() {
     let world = World::new();
-    let _dir = two_conditions(&world);
+    let (_dir, _runner) = two_conditions(&world);
     let watch = until(&world, "watch", || watch_running(&world));
     let (_, host) = conditions(&watch);
     report_humans(
@@ -412,7 +423,7 @@ fn a_condition_recovered_after_delivery_is_told_as_withdrawn() {
 #[test]
 fn a_question_put_aside_stays_pending_and_does_not_hold_back_the_next() {
     let world = World::new();
-    let _dir = two_conditions(&world);
+    let (_dir, _runner) = two_conditions(&world);
     let watch = until(&world, "watch", || watch_running(&world));
     let (wait, host) = conditions(&watch);
     report_humans(
