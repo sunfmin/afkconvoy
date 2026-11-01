@@ -565,7 +565,10 @@ impl Flows {
             let place = &history.place;
             stood.workflow = Ok(workflow.name.clone());
             let (stage, work) = match place.position {
-                Position::Landing => (Some(LAND.to_string()), workflow.land.as_ref()),
+                Position::Landing | Position::LandingParked => {
+                    (Some(LAND.to_string()), workflow.land.as_ref())
+                }
+                Position::LandingEscalating => (Some(LAND.to_string()), None),
                 at => (at.stage().map(|stage| stage.name.clone()), at.worker()),
             };
             stood.stage = stage;
@@ -616,7 +619,7 @@ impl Flows {
     /// issue with no position.
     pub fn at(&self, number: u64) -> Option<String> {
         match self.issue(number)?.stages.history()?.place.position {
-            Position::Landing => Some(LAND.to_string()),
+            at if at.landing() => Some(LAND.to_string()),
             at => at.stage().map(|stage| stage.name.clone()),
         }
     }
@@ -669,7 +672,7 @@ impl Flows {
             waits_at,
             consulted: matches!(history.place.position, Position::Consult(..)),
             advance: advance(history, claim),
-            stage: history.place.position.stage().map(|stage| stage.name.clone()),
+            stage: self.at(number),
             said: verdict.and_then(|at| issue.urls.get(at).cloned()),
             rounds: history.rounds_said(&issue.urls),
         })
@@ -727,6 +730,7 @@ impl Flows {
         match history.place.position {
             Position::Escalating(stage, reason) => format!("{}: {}", stage.name, reason.brief()),
             Position::Landing => "nothing to land in a turn with".to_string(),
+            Position::LandingEscalating => "land: declared escalate, to a human".to_string(),
             at => match at.stage() {
                 Some(stage) => format!("{}: its stage cannot be carried on", stage.name),
                 None => "its workflow has ended".to_string(),

@@ -373,8 +373,12 @@ proptest! {
             place = place.after(declared);
             let said = format!("after verdict {nth}, `{}`", declared.word());
             match (before.position, declared) {
-                (Position::Landing | Position::Ended, _) => {
+                (Position::Ended, _) => {
                     prop_assert_eq!(&place, &before, "{}, an issue left its end", said);
+                }
+                (Position::Landing | Position::LandingParked | Position::LandingEscalating, _) => {
+                    prop_assert!(place.position.landing(), "{}, an issue left landing", said);
+                    prop_assert!(place.position.stage().is_none(), "{}, a stage ran again", said);
                 }
                 (Position::Escalating(..), Declared::Ruling) => {
                     rework = 0;
