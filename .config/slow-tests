@@ -860,3 +860,8 @@ afkconvoy::cli joining::fleet_asked_conflicts_are_handed_once_even_after_the_fle
 afkconvoy::cli joining::an_answer_queued_in_the_harness_is_pending_until_the_model_takes_it
 afkconvoy::cli codex::codex_workers_take_fresh_user_service_tier_without_inheriting_session_config
 afkconvoy::cli escalation::a_handed_back_workers_usage_limit_does_not_replay_the_previous_claims_verdict
+
+# no-node waits five seconds to prove a missing sandbox report (control#452).
+afkconvoy::cli no_node::a_log_reader_returning_nothing_fails_closed
+afkconvoy::cli no_node::a_missing_before_canary_fails_closed
+afkconvoy::cli no_node::a_missing_after_canary_fails_closed

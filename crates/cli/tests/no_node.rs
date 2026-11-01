@@ -265,7 +265,7 @@ fn a_timed_out_command_never_returns_green() {
 fn an_interrupted_monitor_never_returns_green() {
     let run = Run::new();
     let ready = run.dir.path().join("ready");
-    let mut child = run
+    let child = run
         .command()
         .args(["--", "/bin/sh", "-c", "echo ready > ready; /bin/sleep 30"])
         .stdout(std::process::Stdio::piped())

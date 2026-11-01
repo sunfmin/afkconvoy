@@ -213,7 +213,7 @@ const SKILL: &str = include_str!("../../../skills/afkconvoy/SKILL.md");
 ///
 /// ## What a command answers
 ///
-/// Every command prints exactly one JSON object on stdout. A failure is {"error": …} with a non-zero exit — and "see" beside it, where a topic explains it: the command that prints that topic. Warnings go to stderr. A few print otherwise: `show` a drawing unless asked about an issue, `help` Markdown as `--help` does, `skill` the text of a file, `guard` answers as a hook does, with its exit code, `exclusive` as its command does, and `panel` without `--open` one HTML document. `panel --open` is the JSON object `panel --help` describes. `doctor` exits 0 with no critical finding, and non-zero with one, printing the same object, not {"error"}. Under `--all`, a checkout that could not be asked stays {"error", "see"}, as `doctor --help` says: not a doctor that read the checkout. A fleet instance prints nothing: it logs a line as each tick starts and one as it ends, in its tick log.
+/// Every command prints exactly one JSON object on stdout. A failure is {"error": …} with a non-zero exit — and "see" beside it, where a topic explains it: the command that prints that topic. Warnings go to stderr. A few print otherwise: `show` a drawing unless asked about an issue, `help` Markdown as `--help` does, `skill` the text of a file, `guard` answers as a hook does, with its exit code, `exclusive` as its command does, and `panel` without `--open` one HTML document. `panel --open` is the JSON object `panel --help` describes. `doctor` exits 0 with no critical finding, and non-zero with one, printing the same object, not {"error"}. Under `--all`, a checkout that could not be asked stays {"error", "see"}, as `doctor --help` says: not a doctor that read the checkout. `no-node` exits 0 for green and 1 for red, printing its validation object in both cases; monitor faults print {"error"}. A fleet instance prints nothing: it logs a line as each tick starts and one as it ends, in its tick log.
 ///
 /// ## The commands, by who runs them
 ///
@@ -2894,6 +2894,10 @@ enum Command {
     /// ## When to run it
     ///
     /// Wrap the whole repository gate, including native Darwin tests: `afkconvoy no-node -- ./gate.sh`. It runs in the current directory and needs no checkout or fleet. Commands receive no stdin; their stdout and stderr both go to stderr, leaving stdout for one JSON answer.
+    ///
+    /// ## Who runs it
+    ///
+    /// A worker in its own worktree, or anyone running a gate on macOS.
     ///
     /// ## Dependencies and identity
     ///

@@ -63,12 +63,18 @@ exit "$code"
 
     // An error or a signal must not leave the direct command running. The
     // sandbox itself is inherited even by children that leave this group.
-    struct Running(Child);
+    struct Running {
+        child: Child,
+        reaped: bool,
+    }
     impl Drop for Running {
         fn drop(&mut self) {
+            if self.reaped {
+                return;
+            }
             // SAFETY: negative pid addresses only this child's new group.
-            unsafe { libc::kill(-(self.0.id() as i32), libc::SIGKILL) };
-            let _ = self.0.wait();
+            unsafe { libc::kill(-(self.child.id() as i32), libc::SIGKILL) };
+            let _ = self.child.wait();
         }
     }
 
@@ -126,9 +132,12 @@ exit "$code"
             .stdout(Stdio::from(std::io::stderr()))
             .stderr(Stdio::inherit())
             .process_group(0);
-        let mut child = Running(crate::process::spawn(&mut sandbox).context(
-            "cannot start sandbox-exec; put /usr/bin on PATH and run outside any enclosing sandbox",
-        )?);
+        let mut child = Running {
+            child: crate::process::spawn(&mut sandbox).context(
+                "cannot start sandbox-exec; put /usr/bin on PATH and run outside any enclosing sandbox",
+            )?,
+            reaped: false,
+        };
         // Command retains the pre_exec closure, but that closure owns no File.
         // Closing the parent's copy makes free() an observation of children.
         drop(scope);
@@ -143,12 +152,13 @@ exit "$code"
                 began.elapsed() < Duration::from_secs(seconds),
                 "no-node command tree timed out after {seconds}s; fix the command or raise --seconds and rerun"
             );
-            if let Some(status) = child.0.try_wait()? {
+            if let Some(status) = child.child.try_wait()? {
+                child.reaped = true;
                 break status;
             }
             if !released && dir.join("exit").exists() && crate::process_scope::free(&scope_path)? {
                 child
-                    .0
+                    .child
                     .stdin
                     .take()
                     .context("sandbox control pipe missing")?
@@ -168,6 +178,7 @@ exit "$code"
         let wrapper_code = status.code().unwrap_or_else(|| 128 + status.signal().unwrap_or(0));
         ensure!(wrapper_code == code, "sandbox wrapper was interrupted; no complete result; rerun");
         let invocations = reports(started.trim(), &nonce, before, after, &node, &stopped)?;
+        ensure!(!stopped.load(Ordering::Relaxed), "no-node interrupted; no green result; rerun");
         Ok(json!({
             "status": if code == 0 && invocations.is_empty() { "green" } else { "red" },
             "exit_code": code,
