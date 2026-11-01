@@ -44,7 +44,7 @@ pub struct WorkerFields<'a> {
 
 const OPENING_FRESH: &str = "You are an afkconvoy worker. You own exactly ONE GitHub issue and work in an isolated git worktree.";
 
-const ISSUE_UPDATES: &str = "\n\n## Later comments and body edits\n\nThe fleet tells you later issue comments and body edits while you work, with their links.\nDecide each one: within this issue, carry it out; beyond this issue, open an issue and say so\non this issue. Use `afkconvoy intake` where the repo is bound, and the issue-opening line\n`afkconvoy flows` answers where it is unbound.\n";
+const ISSUE_UPDATES: &str = "\n\n## Later comments and body edits\n\nThe fleet tells you later issue comments and body edits while you work, with their links.\nDecide each one: within this issue, carry it out; beyond this issue, open an issue and say so\non this issue. Name the receiving repo's main checkout as `<target-checkout>`.\nUse the issue-opening line `afkconvoy flows <target-checkout>` answers, and\n`afkconvoy intake -C <target-checkout>` where the receiving repo is bound.\n";
 
 const OPENING_CONTINUE: &str = "\
 You are an afkconvoy worker **continuing** an issue a previous worker started but did not finish.
