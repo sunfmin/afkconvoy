@@ -74,6 +74,27 @@ fn bound() -> World {
     world
 }
 
+#[test]
+fn a_claude_worker_is_proved_by_its_role_session_even_when_orca_reports_no_turn() {
+    let world = bound();
+    world.issue(7, &["flow:feature"]);
+    let role = copy(&world, "acme/dev", &head(&world, "acme/dev"));
+    world.with_orca(|orca| {
+        orca["claude_session_cwd"] = json!(role);
+        orca["session_turn"] = json!(true);
+        orca["raw_answers"] = json!({"terminal send": json!({"ok": false,
+            "error": {"code": "agent_prompt_blocked", "details": {
+                "reason": "the line started no turn within 30s",
+                "prompt": {"provider": "claude", "observation": "supported",
+                    "stages": ["input_accepted"]}}}}).to_string()});
+    });
+    let answer = dispatch(&world, 7).ok();
+    assert_eq!(answer["started"], true, "{answer}");
+    let terminals = open_terminals(&world, &worktree(&world, 7));
+    assert_eq!(terminals.len(), 1);
+    assert_eq!(terminals[0]["sent"].as_array().unwrap().len(), 1, "the brief is never resent");
+}
+
 fn tick(world: &World, now: u64) -> common::Answer {
     let now = now.to_string();
     world.afk(&["tick", "--instance", "alpha", "--host", "h1", "--now", &now])

@@ -48,6 +48,8 @@
 //! then. No agent leaves the send's turn as it stands.
 //! `codex_session_cwd` makes the send's Codex rollout start in that role
 //! directory and record the sent brief pointer as its initial user prompt.
+//! `claude_session_cwd` files Claude Code's session under that role directory
+//! instead of the worktree, with the sent brief pointer as its first prompt.
 
 mod fake;
 
@@ -513,6 +515,20 @@ fn terminal_send(st: &mut State) -> ! {
             let cwd = Path::new(cwd);
             let stamp = send_stamp(cwd);
             record_turn(cwd, false, stamp);
+            if let Some(role) = st.doc["claude_session_cwd"].as_str() {
+                let harness = afkconvoy_core::harness::Harness::ClaudeCode;
+                let home = std::env::var("HOME").expect("the world's home");
+                let root = Path::new(&home).join(harness.session_place(role).under_home);
+                for file in harness.session_files(cwd.to_str().unwrap(), false, stamp) {
+                    std::fs::remove_file(root.join(file.path)).unwrap();
+                }
+                for file in harness.session_files(role, false, stamp) {
+                    let path = root.join(file.path);
+                    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                    let body = file.body.replace("\"brief\"", &sent["text"].to_string());
+                    std::fs::write(path, body).unwrap();
+                }
+            }
             if let Some(role) = st.doc["codex_session_cwd"].as_str() {
                 let harness = afkconvoy_core::harness::Harness::Codex;
                 let home = std::env::var("HOME").expect("the world's home");
