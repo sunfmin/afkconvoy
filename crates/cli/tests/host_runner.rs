@@ -20,6 +20,25 @@ use serde_json::{Value, json};
 const RUN: [&str; 7] = ["run", "--tracker", "default", "--host", "h1", "--second-ms", "100"];
 
 #[test]
+fn the_initial_panel_does_not_ask_the_host_runner_before_it_can_answer() {
+    let world = World::new();
+    let mut command = world.command(env!("CARGO_BIN_EXE_afkconvoy"), &world.root);
+    command.arg("host-runner");
+    let _runner = common::FixtureProcess::spawn(&mut command);
+    let began = Instant::now();
+    while !world.cache().join("afkconvoy/host-runner.sock").exists() {
+        assert!(began.elapsed() < Duration::from_secs(5), "runner did not listen");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    world.afk(&["checkouts"]).ok();
+    assert!(
+        began.elapsed() < Duration::from_secs(5),
+        "the initial panel waited for the runner's own unanswered socket: {:?}",
+        world.runner_log()
+    );
+}
+
+#[test]
 fn a_host_runner_ends_when_its_test_is_killed() {
     const PROBE: &str = "CONVOY_RUNNER_OWNER_PROBE";
     if let Some(path) = std::env::var_os(PROBE) {
