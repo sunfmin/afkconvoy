@@ -40,8 +40,8 @@ use afkconvoy::gh::{
     ACCOUNTS_JQ, ACCOUNTS_QUERY, BLOCKED_BY_JQ, CARRYING_JQ, CLOSED_JQ, COMMENTS_JQ, COMMENTS_WITH,
     DELIVERY_PRS_JQ, ISSUE_JQ, LABELS_JQ, LANDED_ISSUES_JQ, LANDED_ISSUES_QUERY,
     OPEN_AND_LANDED_JQ, OPEN_AND_LANDED_QUERY, OPEN_ISSUES_JQ, OPEN_ISSUES_QUERY, OPEN_LABELLED_JQ,
-    PR_FIELDS, PR_HEADS_JQ, PR_OF_FIELDS, PR_OF_JQ, VISIBILITY_JQ, WATCH_ISSUES_JQ,
-    WATCH_ISSUES_QUERY, WATCH_PRS_JQ,
+    PR_FIELDS, PR_HEADS_JQ, PR_OF_FIELDS, PR_OF_JQ, REWRITE_ACCOUNTS_QUERY, VISIBILITY_JQ,
+    WATCH_ISSUES_JQ, WATCH_ISSUES_QUERY, WATCH_PRS_JQ,
 };
 use std::path::PathBuf;
 
@@ -996,7 +996,9 @@ fn open_issues(st: &State) -> ! {
     // `labels`, where the query names it: those carrying any of them.
     let labels: Vec<&str> = st.argv.iter().filter_map(|a| a.strip_prefix("labels[]=")).collect();
     let labelled = |issue: &&Value| labels.is_empty() || labels.iter().any(|l| carries(issue, l));
-    if st.argv.contains(&format!("query={ACCOUNTS_QUERY}")) {
+    if st.argv.contains(&format!("query={ACCOUNTS_QUERY}"))
+        || st.argv.contains(&format!("query={REWRITE_ACCOUNTS_QUERY}"))
+    {
         assert_eq!(st.opt("--jq"), Some(ACCOUNTS_JQ));
         assert!(st.has("--paginate"));
         let rows: Vec<String> = st.doc["issues"]
@@ -1010,7 +1012,7 @@ fn open_issues(st: &State) -> ! {
                 with.truncate(COMMENTS_WITH);
                 json!({"number": issue["number"],
                     "url": format!("https://gh/issues/{}", issue["number"]),
-                    "labels": issue["labels"], "more": more, "comments": with})
+                    "labels": issue["labels"], "closed": issue["state"] == "closed", "more": more, "comments": with})
                 .to_string()
             })
             .collect();

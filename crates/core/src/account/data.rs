@@ -75,7 +75,7 @@ pub fn read(body: &str, issue: u64) -> Result<Record, String> {
         }
         return Ok(row);
     }
-    super::rewrite::legacy(body, issue)
+    Err("account has no JSON block".into())
 }
 
 /// Render only from the record. Escape HTML and fence characters in the JSON

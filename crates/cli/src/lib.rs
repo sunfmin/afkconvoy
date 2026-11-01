@@ -350,6 +350,8 @@ enum Command {
         /// Save original bodies in this directory and edit validated comments
         #[arg(long)]
         backup: Option<std::path::PathBuf>,
+        #[command(flatten)]
+        at: At,
     },
     /// Write this host's host kit. `kit --cast` is refused: automatic casting is gone
     ///
@@ -4754,7 +4756,7 @@ fn run(
         Command::Accounts { days, all, rows, .. } => {
             accounts::accounts(&checkout?, days.unwrap_or(7), all, rows, now)
         }
-        Command::RewriteAccounts { backup } => {
+        Command::RewriteAccounts { backup, .. } => {
             rewrite_accounts::run(&checkout?, backup.as_deref(), now)
         }
         Command::Flows { delivery, tracker, .. } => {

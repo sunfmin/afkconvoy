@@ -198,34 +198,34 @@ fn rows_are_ndjson_and_prose_changes_do_not_change_either_answer() {
 }
 
 #[test]
-fn a_real_legacy_account_becomes_a_record_without_inventing_missing_facts() {
+fn rewrite_previews_checks_and_is_idempotent() {
     let world = World::new();
     world.issue(421, &[]);
-    world.comment(421, include_str!("fixtures/account-421.md"));
-    let out = world.afk(&["accounts", "--all", "--rows", "--now", "1793542000"]).ok();
-    assert_eq!(out["schema_version"], 1);
-    assert_eq!(out["issue"], 421);
-    assert_eq!(out["wall_seconds"], 2339);
-    assert_eq!(out["workers"][0]["harness"], "kimi");
-    assert_eq!(out["workers"][0]["start"], 1793539449u64);
-    for key in ["model", "role", "stage", "end", "seconds"] {
-        assert!(out["workers"][0][key].is_null(), "{key}: {out}");
-    }
-    for key in ["repo", "tracker", "afkconvoy_version", "outcome"] {
-        assert!(out[key].is_null(), "{key}: {out}");
-    }
-    assert_eq!(
-        out["host"],
-        json!({"name": null, "cpu": null, "logical_cpus": null, "memory_bytes": null})
-    );
-    assert_eq!(out["gates"].as_array().unwrap().len(), 3);
-    assert_eq!(out["gates"][0]["seconds"], 483);
-    assert_eq!(out["gates"][0]["host"], "FelixMBP14.local");
-    assert!(out["gates"][0]["lane"].is_null());
-    let summary = world.afk(&["accounts", "--all", "--now", "1793542000"]).ok();
-    assert_eq!(summary["count"], 1);
-    assert_eq!(summary["wall_seconds"]["p50"], 2339);
-    assert_eq!(summary["gate_seconds"]["p50"], 966);
+    let body = include_str!("fixtures/account-421.md");
+    world.comment(421, body);
+    world.issue(422, &[]);
+    let unexpected = body.replace("Machine: Apple", "Other fact: keep me\nMachine: Apple");
+    world.comment(422, &unexpected);
+    let before = world.tracker();
+    let dry = world.afk(&["rewrite-accounts"]).ok();
+    assert_eq!(dry["rewrite"], 1);
+    assert_eq!(dry["left"], 1);
+    assert_eq!(dry["changes"][0]["old_body"], body);
+    assert_eq!(dry["changes"][0]["check"], "pass");
+    assert_eq!(world.tracker()["comments"], before["comments"]);
+    let backup = world.clone.join("account-backups");
+    let path = backup.to_str().unwrap();
+    let written = world.afk(&["rewrite-accounts", "--backup", path]).ok();
+    assert_eq!(written["rewrite"], 1);
+    assert_eq!(world.tracker()["comments"]["422"][0]["body"], unexpected);
+    assert_eq!(std::fs::read_dir(&backup).unwrap().count(), 1);
+    let again = world.afk(&["rewrite-accounts", "--backup", path]).ok();
+    assert_eq!(again["rewrite"], 0);
+    assert_eq!(again["left"], 1);
+    let report = world.afk(&["accounts", "--all", "--now", "1793542000"]).ok();
+    assert_eq!(report["count"], 1);
+    assert_eq!(report["wall_seconds"]["p50"], 2339);
+    assert_eq!(report["gate_seconds"]["p50"], 966);
 }
 
 #[test]

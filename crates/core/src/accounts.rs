@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 
 use serde::Serialize;
 
-use crate::{account, record};
+use crate::account;
 
 /// An account as answered to another system. Its URL is delivery context,
 /// not a second copy stored inside the comment.
@@ -26,14 +26,7 @@ pub fn rows(issues: Vec<Issue>, start: Option<u64>, end: u64) -> (Vec<Row>, Vec<
             Ok(None) => continue,
             Ok(Some(body)) => {
                 let read = account::read(body, issue.number);
-                let at = match &read {
-                    Ok(row) => row.end,
-                    Err(_) if !body.contains("```json\n") => {
-                        record::read_marker(account::ACCOUNT, body)
-                            .and_then(|fields| fields.number("end"))
-                    }
-                    Err(_) => None,
-                };
+                let at = read.as_ref().ok().and_then(|row| row.end);
                 if at.is_some_and(|at| at > end || start.is_some_and(|start| at < start)) {
                     continue;
                 }
