@@ -252,7 +252,10 @@ fn named(call: &[String]) -> (String, String) {
         }
         _ => {}
     }
-    let endpoint = call.iter().find_map(|arg| arg.strip_prefix("repos/")).expect("an endpoint");
+    let endpoint = call
+        .iter()
+        .find_map(|arg| arg.strip_prefix("repos/"))
+        .unwrap_or_else(|| panic!("an endpoint: {call:?}"));
     let parts: Vec<&str> = endpoint.splitn(3, '/').collect();
     (format!("{}/{}", parts[0], parts[1]), parts.get(2).unwrap_or(&"").to_string())
 }
