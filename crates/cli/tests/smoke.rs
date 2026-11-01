@@ -403,3 +403,109 @@ fn real_interactive_claude_takes_its_brief_without_persisting_workspace_trust() 
         assert!(!persisted_trust(&project));
     }
 }
+
+/// Opt-in live acceptance check: the named issue must already be claimed
+/// on this host in this worktree. Only its new, read-only smoke worker is
+/// closed; ordinary workers and every other issue are left alone.
+#[test]
+#[ignore = "starts real Claude in Orca and posts one issue comment; AFKCONVOY_LIVE_ISSUE=N"]
+fn a_real_claimed_worker_receives_a_later_comment_in_its_session() {
+    use afkconvoy::fleet::Fleet;
+    use afkconvoy::issue_updates::reconcile;
+    use afkconvoy::orca::orca;
+    use afkconvoy_core::harness::{Harness, SessionLayout};
+    use serde_json::{Value, json};
+    use std::time::{Duration, Instant};
+
+    struct Terminal(String);
+    impl Drop for Terminal {
+        fn drop(&mut self) {
+            let _ = orca(&["terminal", "close", "--terminal", &self.0]);
+        }
+    }
+
+    let issue: u64 =
+        std::env::var("AFKCONVOY_LIVE_ISSUE").expect("name the claimed issue").parse().unwrap();
+    let checkout = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let repo = afkconvoy::git::Repo::new(checkout.clone());
+    let fleet = Fleet::open(
+        &repo,
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs(),
+    )
+    .unwrap();
+    let host = afkconvoy::host_settings::host_name();
+    assert_eq!(fleet.scan.claim_of(issue).unwrap().owner.as_ref().unwrap().host, host);
+    let selector = format!("path:{}", checkout.display());
+    let launch = orca(&["agent", "launch", "--agent", "claude", "--worktree", &selector,
+        "--surface", "terminal", "--prompt",
+        "You are a read-only worker in an issue-delivery smoke test. Use no tools and change no files. Reply READY now. On a later issue comment, reply RECEIVED and nothing else."]).unwrap();
+    let outcome = launch.get("outcome").unwrap_or(&launch["launch"]["outcome"]);
+    assert_eq!(outcome["kind"], "terminal", "{launch}");
+    let terminal = Terminal(outcome["handle"].as_str().expect("launched terminal handle").into());
+    let waited = orca(&[
+        "terminal",
+        "wait",
+        "--terminal",
+        &terminal.0,
+        "--for",
+        "tui-idle",
+        "--timeout-ms",
+        "60000",
+    ])
+    .unwrap();
+    assert_eq!(waited["wait"]["satisfied"], true, "{waited}");
+    let text = format!(
+        "Read-only delivery acceptance check {}: reply RECEIVED. This comment requires no code change.",
+        uuid::Uuid::new_v4()
+    );
+    fleet.gh.comment(issue, &text).unwrap();
+    let comment =
+        fleet.gh.comments(issue).unwrap().into_iter().find(|comment| comment.body == text).unwrap();
+    let began = Instant::now();
+    loop {
+        let mut open = fleet.gh.open().unwrap();
+        open.issues.rows.retain(|row| row.number == issue);
+        let steps = reconcile(&fleet, &host, &open.issues);
+        if steps.iter().any(|step| step["comment"] == comment.url && step["outcome"] == "done") {
+            break;
+        }
+        assert!(began.elapsed() < Duration::from_secs(90), "{steps:?}");
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    // Read the actual user entry's timestamp, not the terminal receipt or
+    // this test's observation clock.
+    let place = Harness::ClaudeCode.note_place(&checkout.to_string_lossy());
+    let SessionLayout::Files { dir, .. } = place.layout else { unreachable!() };
+    let home = std::path::PathBuf::from(std::env::var_os("HOME").unwrap());
+    let dir = home.join(place.under_home).join(dir);
+    let mut entry_at = None;
+    for file in std::fs::read_dir(dir).unwrap().flatten() {
+        if file.path().extension().is_none_or(|ext| ext != "jsonl") {
+            continue;
+        }
+        for line in std::fs::read_to_string(file.path()).unwrap().lines() {
+            if Harness::ClaudeCode.holds_note(line, &comment.url) {
+                let entry: Value = serde_json::from_str(line).unwrap();
+                entry_at = entry["timestamp"]
+                    .as_str()
+                    .map(|at| afkconvoy::doctor::watching::since(at).unwrap());
+            }
+        }
+    }
+    let entry_at = entry_at.expect("the real session's user entry");
+    let evidence = json!({"issue":issue,"comment":comment.url,"comment_at":comment.at,
+        "session_entry_at":entry_at,"seconds":entry_at.saturating_sub(comment.at.unwrap()),
+        "terminal":terminal.0,"harness":"claude-code"});
+    std::fs::create_dir_all(checkout.join(".afkconvoy-tmp")).unwrap();
+    std::fs::write(
+        checkout.join(".afkconvoy-tmp/issue-update-live-evidence.json"),
+        evidence.to_string(),
+    )
+    .unwrap();
+    println!("{evidence}");
+}
