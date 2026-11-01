@@ -100,11 +100,26 @@ pub fn take_look(look: &mut Value) -> Result<()> {
             .collect();
         let mut scan = Scan::read(&repo)?;
         reconcile(&repo, &mut scan, &me, &waiting)?;
-        let holders = holders(&scan, me.now);
+        // Losing the claim race never permits queueing, even if its new
+        // heartbeat cannot yet be read. Only ownership here permits it.
+        let holders: std::collections::BTreeMap<_, _> = scan
+            .waits
+            .iter()
+            .map(|claim| {
+                (
+                    claim.number,
+                    claim.owner.as_ref().map(|o| o.host.as_str()).unwrap_or("an unknown host"),
+                )
+            })
+            .collect();
         let mut taken = BTreeSet::new();
         for wait in checkout["doctor"]["waiting_on_human"].as_array_mut().into_iter().flatten() {
-            let holder =
-                wait["issue"].as_u64().and_then(|n| holders.get(&n)).filter(|h| *h != &host);
+            let holder = wait["issue"]
+                .as_u64()
+                .and_then(|n| holders.get(&n))
+                .copied()
+                .unwrap_or("no host (claim not won)");
+            let holder = (holder != host).then_some(holder);
             wait["taken_by"] = serde_json::json!(holder);
             if holder.is_some() {
                 let identity: crate::doctor::HumanWait = serde_json::from_value(wait.clone())?;

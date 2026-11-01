@@ -398,7 +398,21 @@ pub fn take_wait(repo: &Repo, scan: &mut Scan, me: &Me, number: u64, how: Take) 
     let name = wait_ref(repo.layout(), &scan.tracker, number);
     let claim = match put(repo, scan, me, &name, how)? {
         Put::Won { sha, subject, .. } => Some(Claim::read(number, &subject, sha)),
-        Put::Lost { there, .. } => there.map(|r| Claim::read(number, &r.subject, r.sha)),
+        Put::Lost { there, .. } => {
+            let claim = there.map(|r| Claim::read(number, &r.subject, r.sha));
+            // The winner may have published its first heartbeat after our
+            // scan. Carry that live evidence with the claim we just read.
+            if let Some(owner) = claim.as_ref().and_then(|c| c.owner.as_ref()) {
+                let instance = InstanceId::parse(&owner.instance).map_err(anyhow::Error::msg)?;
+                let name = heartbeat_ref(repo.layout(), &instance);
+                if let Some(record) = repo.remote().records(&[&name], Fresh::Live)?.pop()
+                    && let Some(beat) = read_heartbeat(&record.subject, record.sha)
+                {
+                    scan.heartbeats.insert(owner.instance.clone(), beat);
+                }
+            }
+            claim
+        }
     };
     scan.waits.retain(|claim| claim.number != number);
     scan.waits.extend(claim);
