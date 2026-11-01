@@ -765,6 +765,8 @@ fn initial_brief(text: &str, brief: &str) -> bool {
     for value in json_lines(text) {
         let payload = &value["payload"];
         if value["type"] == "response_item"
+            && payload["role"] != "developer"
+            && payload["role"] != "system"
             && (payload["role"] == "assistant" || payload["type"] != "message")
         {
             return false;

@@ -917,11 +917,12 @@ pub fn endings() -> String {
     })
 }
 
-/// The line typed at a worker to hand it its brief. The prompt itself, sent as
-/// text, arrives as one paste, which an agent asks to have confirmed.
+/// The opening words of the fleet's brief pointer, also recognised in a
+/// harness's initial user messages to identify a role worker's session.
 pub(crate) const BRIEF_POINTER_PREFIX: &str = "Your task brief is the file ";
 
-/// The line typed at a worker to hand it the exact brief file.
+/// The line typed at a worker to hand it its brief. The prompt itself, sent as
+/// text, arrives as one paste, which an agent asks to have confirmed.
 pub fn brief_pointer(brief: &str) -> String {
     format!(
         "{BRIEF_POINTER_PREFIX}{brief} — read it now and carry it out end to end. \

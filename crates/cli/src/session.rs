@@ -488,6 +488,14 @@ mod tests {
             let mut lines = vec![
                 serde_json::json!({"type": "session_meta", "payload": {
                     "cwd": "/cache/copies/acme/team/hash-role+codex-roles%2Fbuilder"}}),
+                // Codex's real rollout puts tool definitions and environment
+                // messages before the brief, even within its first turn.
+                serde_json::json!({"type": "response_item", "payload": {
+                    "type": "additional_tools", "role": "developer", "tools": []}}),
+                serde_json::json!({"type": "response_item", "payload": {
+                    "type": "message", "role": "user", "content": [
+                        {"type": "input_text", "text": "# AGENTS.md instructions for /role"},
+                        {"type": "input_text", "text": "<environment_context>"}]}}),
                 serde_json::json!({"type": "response_item", "payload": {
                     "type": "message", "role": "user", "content": [
                         {"type": "input_text", "text": message}]}}),
@@ -507,6 +515,31 @@ mod tests {
         assert_eq!(read(&body, None), Some(Turn::Open { since: AT }));
         assert_eq!(read(&body, Some(AT + 1)), None, "an old turn cannot prove this send");
         assert_eq!(read(&rollout(&prompt, None), Some(AT)), None, "a prompt is not a turn");
+        let no_header = body.lines().skip(1).collect::<Vec<_>>().join("\n");
+        assert_eq!(read(&no_header, Some(AT)), None, "a header is still required");
+        let complete = serde_json::json!({"type": "event_msg", "payload": {
+            "type": "task_complete", "completed_at": AT + 3}});
+        assert_eq!(
+            read(&format!("{body}{complete}\n"), Some(AT)),
+            Some(Turn::Closed { since: AT + 3, started: Some(AT) }),
+            "the same role session also records when its worker stops"
+        );
+        let event = serde_json::json!({"type": "event_msg", "payload": {
+            "type": "user_message", "message": prompt}});
+        let empty = rollout("", Some(AT));
+        assert_eq!(read(&format!("{empty}{event}\n"), Some(AT)), Some(Turn::Open { since: AT }));
+        for payload in [
+            serde_json::json!({"type": "function_call_output", "output": prompt}),
+            serde_json::json!({"type": "message", "role": "assistant", "content": [
+                {"type": "output_text", "text": prompt}]}),
+        ] {
+            let reply = serde_json::json!({"type": "response_item", "payload": payload});
+            assert_eq!(
+                read(&format!("{empty}{reply}\n{event}\n"), Some(AT)),
+                None,
+                "neither a reply nor a later user mention can associate a session"
+            );
+        }
         let other = prompt.replace("/work/convoy-", "/other/convoy-");
         assert_ne!(other, prompt);
         assert_eq!(read(&rollout(&other, Some(AT)), Some(AT)), None);
