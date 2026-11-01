@@ -2352,7 +2352,7 @@ pub fn foreground(checkout: &Repo, start: &Start, settings: host_settings::Named
     let Reach { wakes } = reach;
     let watching = {
         let list = List::of_host()?;
-        crate::host_watch::HostWatch::start(shared.watch.clone(), None, move |what| {
+        crate::host_watch::HostWatch::start(shared.watch.clone(), panel.address(), move |what| {
             println!("{}", watch_said(&what));
             crate::host_watch::append_to_tick_logs(&list, &what);
         })

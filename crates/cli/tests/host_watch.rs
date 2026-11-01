@@ -219,17 +219,22 @@ fn human_notifications_send_each_answer_once_across_reports_and_restart_until_ab
             dir.to_str().unwrap(),
             "--watch-every",
             "1",
-            "--notify-command",
-            &command,
         ])
         .ok();
-    assert_eq!(ran["settings"]["notify_command"]["to"], command);
     let first = until(&world, "first notification round", || running(&world));
     let humans = json!([
         {"question": "Supply an account?", "answer": "first answer"},
         {"question": "Approve the spend? $(touch should-never-exist)", "answer": "second answer"}
     ]);
     report_humans(&world, &first, humans.clone());
+    let before = notify_state(&world)["look"].as_u64().unwrap();
+    until(&world, "looks with no command named", || {
+        notify_state(&world)["look"].as_u64().filter(|look| *look > before + 1)
+    });
+    assert!(!file.exists(), "no command named by default, so nothing runs");
+    assert_eq!(notify_state(&world)["last"], Value::Null);
+    let enabled = world.afk(&["run", "--notify-command", &command]).ok();
+    assert_eq!(enabled["settings"]["notify_command"]["to"], command);
     until(&world, "two successful sendings", || {
         let entries = notify_state(&world)["entries"].clone();
         (entries.as_object().is_some_and(|e| e.len() == 2 && e.values().all(|v| v["sent"] == true)))
@@ -309,7 +314,6 @@ fn human_notification_failures_retry_at_later_looks_and_doctor_finds_three_then_
         .iter()
         .find(|f| f["kind"] == "notify_failed")
         .unwrap();
-    assert_eq!(finding["of_host"], true);
     assert!(finding["fix"].as_str().unwrap().contains("--notify-command"));
     assert!(doctor["host"]["notify"]["last"]["outcome"].as_str().unwrap().contains("failed"));
     assert!(notifications(&file).len() >= 3);

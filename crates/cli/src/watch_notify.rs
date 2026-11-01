@@ -144,11 +144,13 @@ fn step(ended: &AtomicBool, panel: Option<&str>, bound: Duration) -> Result<()> 
     });
     let result = send(&command, &payload, ended, bound);
     change(|outbox| {
+        let look = outbox.look;
         if let Some(current) = outbox.entries.get_mut(&entry.human.answer)
             && current.id == entry.id
         {
             current.sent = result.is_ok();
             current.failures = if current.sent { 0 } else { current.failures.saturating_add(1) };
+            current.attempted_look = Some(look);
         }
         outbox.last = Some(Sending {
             watch: entry.watch,
