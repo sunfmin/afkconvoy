@@ -360,13 +360,10 @@ pub fn waiting_for_operator() -> Vec<OperatorWait> {
     health.workers.iter().filter_map(|worker| worker.observed.operator_wait(keyed)).collect()
 }
 
-/// A landing worker obeying its turn waits on no person. An unreadable note
-/// grants no exemption; a new worker or delivered instruction forgets it.
+/// Whether the landing worker at `path` is obeying its turn's wait.
 fn waiting_on_turn(path: &Path) -> bool {
     let worktree = Worktree::at(path.to_path_buf(), String::new());
-    crate::turn_answer::read(&worktree).is_ok_and(|answered| {
-        matches!(answered, afkconvoy_core::landing_worker::Answered::Asking) || answered.waits()
-    })
+    crate::turn_answer::waiting(&worktree)
 }
 
 /// Whether the host kit's paused list or its worker-health faults leave no

@@ -109,6 +109,89 @@ fn an_idle_unbound_codex_worker_has_its_waiting_turn_asked_again_without_a_harne
 }
 
 #[test]
+fn doctor_exempts_landing_turn_waits_but_still_reports_workers_that_need_to_change_the_tree() {
+    use afkconvoy_core::ending::Ending;
+
+    let world = joining();
+    let dir = worktree(&world);
+    let notes = PathBuf::from(git(&dir, &["rev-parse", "--absolute-git-dir"]));
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            terminal["agent"] = json!({"state": "done", "stateStartedAt": 1_050_000});
+            terminal["lastOutputAt"] = json!(1_050_000);
+        }
+    });
+    let stopped = || {
+        let doctor = world.afk(&["doctor", "--host", "h1", "--now", "1800"]).json;
+        assert_eq!(doctor["claims"][0]["status"], "landing", "{doctor}");
+        doctor["findings"].as_array().unwrap().iter().any(|f| f["kind"] == "worker_stopped")
+    };
+    assert!(stopped(), "a worker still preparing its branch can be silent");
+    for outcome in Ending::ALL.iter().map(|ending| ending.word()).chain(["error", "unknown"]) {
+        std::fs::write(
+            notes.join("convoy-turn.json"),
+            json!({"outcome": outcome, "at": 1050}).to_string(),
+        )
+        .unwrap();
+        let waits = Ending::ALL.iter().any(|ending| ending.word() == outcome && ending.waits());
+        assert_eq!(stopped(), !waits, "{outcome}");
+    }
+    std::fs::write(notes.join("convoy-turn.json"), "not a turn note").unwrap();
+    assert!(stopped(), "an unreadable note grants no exemption");
+}
+
+#[test]
+fn doctor_does_not_call_a_cancelled_landing_worker_stopped_when_the_tick_asks_again() {
+    let world = World::new();
+    let started = world.root.join("gate-started");
+    let release = world.root.join("release-gate");
+    let line = afkconvoy_core::line::Line::new()
+        .fixed("touch ")
+        .word(&started.to_string_lossy())
+        .fixed("; while test -d ")
+        .word(&world.root.to_string_lossy())
+        .fixed(" && test ! -f ")
+        .word(&release.to_string_lossy())
+        .fixed("; do sleep 0.02; done")
+        .own();
+    world.set_gate(&line);
+    let world = joining_in(world);
+    let dir = worktree(&world);
+    let notes = PathBuf::from(git(&dir, &["rev-parse", "--absolute-git-dir"]));
+    std::fs::write(
+        notes.join("convoy-turn.json"),
+        json!({"outcome": "cancelled", "at": 1050}).to_string(),
+    )
+    .unwrap();
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            terminal["agent"] = json!({"state": "done", "stateStartedAt": 1_050_000});
+            terminal["lastOutputAt"] = json!(1_050_000);
+        }
+    });
+    let terminals = open_terminals(&world, &dir);
+    let ticked = tick(&world, 1500);
+    assert_eq!(ticked["errors"], json!([]), "{ticked}");
+    assert!(did(&ticked).contains(&"watch 7 asked".to_string()), "{ticked}");
+    let began = Instant::now();
+    while !started.exists() {
+        assert!(began.elapsed() < Duration::from_secs(15), "the retried turn did not start");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let asking: Value =
+        serde_json::from_slice(&std::fs::read(notes.join("convoy-turn.json")).unwrap()).unwrap();
+    let doctor = world.afk(&["doctor", "--host", "h1", "--now", "1800"]).json;
+    std::fs::write(release, "").unwrap();
+    assert!(asking["asking"]["pid"].is_number(), "{asking}");
+    assert_eq!(doctor["claims"][0]["status"], "landing", "{doctor}");
+    assert!(
+        doctor["findings"].as_array().unwrap().iter().all(|f| f["kind"] != "worker_stopped"),
+        "{doctor}"
+    );
+    assert_eq!(open_terminals(&world, &dir), terminals, "no harness was started for the retry");
+}
+
+#[test]
 fn a_running_landing_turn_is_left_alone_with_its_worker_idle() {
     let world = World::new();
     let started = world.root.join("gate-started");
