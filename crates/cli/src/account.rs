@@ -103,6 +103,27 @@ pub fn leave(repo: &Repo, gh: &GitHub, issue: u64, end: End, now: u64) -> Result
     }
 }
 
+/// Refresh an existing account after its worker has stopped, while the
+/// worktree and its session records still exist. Keep the original end:
+/// finishing the worker must not lengthen the issue's wall clock.
+pub(crate) fn refresh_stopped(repo: &Repo, gh: &GitHub, issue: u64) -> Result<()> {
+    let comments = gh.comments(issue)?;
+    let Some(row) = comments.iter().find_map(|comment| account::read(&comment.body, issue).ok())
+    else {
+        return Ok(());
+    };
+    let Some(at) = row.end else { return Ok(()) };
+    let end = match row.outcome.as_deref() {
+        Some("landed") => End::Landed,
+        Some("closed") => End::Closed,
+        Some("escalated") => End::Escalated,
+        Some("ended") => End::Ended,
+        Some("human-closed") => End::HumanClosed,
+        _ => return Ok(()),
+    };
+    leave(repo, gh, issue, end, at)
+}
+
 /// Chip name, else model identifier; logical CPUs; memory in bytes. A fact
 /// the host does not report is absent, and the account says so.
 fn machine_of_host() -> (Option<String>, Option<String>, Option<u64>, Option<u64>) {
