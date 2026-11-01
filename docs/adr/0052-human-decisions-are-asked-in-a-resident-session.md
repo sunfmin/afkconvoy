@@ -32,6 +32,15 @@ operator, then use the same commands as a human with the operator's authority.
 The operator's quoted words and their time on the issue establish human intent
 under ADR-0039; the session's own words establish none.
 
+For sunfmin/control#418, the shared guard refuses `orca terminal send` to
+this Terminal from every bound or unbound worker and the watch, through each
+harness's hooks, extension or plugin. It reads the asking launch journal's
+current handle at each call; a title or directory grants no authority. The
+host runner's own deliveries run outside worker hooks, and the asking
+session is exempt by its runtime Terminal identity. Other Terminals retain
+their existing input behavior. As in ADR-0012, this stops an unattended
+Agent that errs, not one that deliberately evades the guard.
+
 A separate session preserves the watch's bounded rounds and gives every human
 decision one continuing place to talk. Reusing the watch's conversation would
 mix two lifecycles and let operator discussion hold up host repair. Doctor and
