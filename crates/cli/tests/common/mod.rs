@@ -157,10 +157,8 @@ pub fn trusted(command: &str) -> String {
 }
 
 fn terminal_guard() -> String {
-    afkconvoy_core::line::Line::new()
-        .program(env!("CARGO_BIN_EXE_afkconvoy"))
-        .fixed(" guard --terminal-input-only")
-        .own()
+    // Each World puts this build on PATH under the name its launch uses.
+    "afkconvoy guard --terminal-input-only".to_string()
 }
 
 /// The code blocks of `language` the manual shows at `at` — a command as
