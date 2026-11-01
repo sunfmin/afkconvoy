@@ -13,6 +13,9 @@ fn escalated(yaml: &str) -> World {
     world.issue(7, &["ready-for-agent", "bug"]);
     tick(&world, 1000);
     world.comment(7, "<!--convoy:verdict phase=escalate-->\nThe schema is ambiguous.");
+    world.with_gh(|gh| {
+        gh["comments"]["7"].as_array_mut().unwrap().last_mut().unwrap()["at"] = json!(1050)
+    });
     tick(&world, 1090);
     assert_eq!(world.labels(7), ["bug", "ready-for-human"]);
     assert!(world.claims().is_empty());
@@ -97,10 +100,35 @@ fn a_watch_handing_an_unbound_issue_back_moves_it_as_a_humans_answer_would() {
     assert_eq!(world.labels(7), ["bug", "ready-for-agent"]);
     // The next ordinary worker's escalation is visible to the watch again.
     world.comment(7, "<!--convoy:verdict phase=escalate-->\nAnother question.");
+    world.with_gh(|gh| {
+        gh["comments"]["7"].as_array_mut().unwrap().last_mut().unwrap()["at"] = json!(1300)
+    });
     tick(&world, 1360);
     let plan = world.afk(&["plan", "--now", "1450"]).ok();
     assert_eq!(plan["waiting_on_human"][0]["issue"], 7);
     assert_eq!(plan["frontier"], json!([]));
+}
+
+#[test]
+fn a_handed_back_workers_usage_limit_does_not_replay_the_previous_claims_verdict() {
+    let world = escalated("");
+    let answer = world.afk(&["plan", "--now", "1180"]).ok()["waiting_on_human"][0]["answer"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(world.command("sh", &world.clone).args(["-c", &answer]).status().unwrap().success());
+    tick(&world, 1270);
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap().iter_mut().filter(|t| t["open"] == true) {
+            terminal["agent"] = json!({"state": "done", "outcome": "failure", "programStatus": {"state": "error", "message": "429 You've reached your 5-hour usage limit"}});
+            terminal["screen"] = json!(["Error: 429 You've reached your 5-hour usage limit"]);
+        }
+    });
+    tick(&world, 1360);
+    assert_eq!(world.labels(7), ["bug", "ready-for-agent"]);
+    assert_eq!(world.claims().len(), 1);
+    let plan = world.afk(&["plan", "--now", "1361"]).ok();
+    assert_eq!(plan["host_kit"]["worker_health"]["workers"][0]["action"], "continued", "{plan}");
 }
 
 #[test]
