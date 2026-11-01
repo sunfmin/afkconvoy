@@ -20,6 +20,9 @@ pub struct Record {
     pub outcome: Option<String>,
     pub workers: Vec<Worker>,
     pub gates: Vec<Gate>,
+    /// Original evidence retained only when converting a legacy account.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub legacy_evidence: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -164,4 +167,3 @@ pub(super) fn gate_of(fields: &record::Fields, result: &str) -> Gate {
         host: fields.get("host").map(str::to_string),
     }
 }
-

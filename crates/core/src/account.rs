@@ -9,7 +9,7 @@
 use flux_rs::attrs::*;
 
 mod data;
-mod rewrite;
+pub mod rewrite;
 pub use data::{Gate, Host, Record, SCHEMA_VERSION, Worker, read, render};
 
 use crate::gate::GATE;
@@ -202,6 +202,7 @@ pub fn comment(told: &Told<'_>) -> Option<String> {
     let kept = prior.as_ref().map(|prior| prior.reds.as_slice()).unwrap_or(&[]);
     let row = Record {
         schema_version: SCHEMA_VERSION,
+        legacy_evidence: None,
         issue: told.issue,
         repo: Some(told.repo.to_string()),
         tracker: Some(told.tracker.to_string()),
