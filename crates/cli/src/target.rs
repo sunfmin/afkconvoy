@@ -105,13 +105,15 @@ pub struct Seen {
 
 /// The branch issue `issue` lands on, and that branch's tip when the one
 /// listing already held it. The target ref, the claim ref and the configured
-/// base are read together, once.
+/// base are read live together, once. Ownership is checked before resolving
+/// the target or writing a turn receipt.
 pub fn once(repo: &Repo, config: &Config, tracker: &Tracker, issue: u64) -> Result<Seen> {
     let name = refname(repo, tracker, issue);
     let claim_ref = afkconvoy_core::claims::claim_ref(repo.layout(), tracker, issue);
     let base_ref = format!("refs/heads/{}", config.base_branch);
     let asked_refs = [name.as_str(), claim_ref.as_str(), base_ref.as_str()];
-    let listed = repo.remote().refs(&asked_refs, Fresh::Process)?;
+    let listed = repo.remote().refs(&asked_refs, Fresh::Live)?;
+    crate::claims::on_this_host(repo, issue, &crate::host_settings::host_name(), Fresh::Process)?;
     let target = from_listing(repo, tracker, issue, &listed)?;
     let branch = match target {
         None => config.base_branch.clone(),

@@ -340,7 +340,7 @@ fn controlled_run(
     // The host may have slept while the gate ran. Its initial check does
     // not authorize a record after another host has taken the issue.
     if let Some(issue) = issue {
-        crate::claims::on_this_host(repo, issue, &crate::host_settings::host_name())?;
+        crate::claims::on_this_host(repo, issue, &crate::host_settings::host_name(), Fresh::Live)?;
     }
     match after_run(&tree, command, ran, host, now) {
         Recording::Write(green) => {

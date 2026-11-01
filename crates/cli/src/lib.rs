@@ -4644,16 +4644,11 @@ fn run(
         }
         Command::Land { number, issue, watch, merged_timeout, host, .. } => {
             let repo = checkout?;
-            if let Some(issue) = issue.or(number) {
-                claims::on_this_host(&repo, issue, &host_settings::host_name())?;
-            }
             let config = config::load(&repo.dir.join(config::FILE))?;
             let gh = gh::GitHub::of(&repo)?;
             let host = host.unwrap_or_else(this_host);
             match issue.or(number) {
-                Some(issue) => turn_answer::noted(&repo, now, || {
-                    turn::land(&repo, &config, &gh, issue, &host, now)
-                }),
+                Some(issue) => turn::land(&repo, &config, &gh, issue, &host, now),
                 None if watch => watch_landing::land(&repo, &config, &gh, &host, now),
                 None => {
                     let _ = merged_timeout;

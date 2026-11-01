@@ -275,8 +275,10 @@ pub fn land(
     host: &str,
     now: u64,
 ) -> Result<Value> {
-    crate::claims::on_this_host(repo, issue, &crate::host_settings::host_name())?;
-    let mut answer = land_task(repo, config, gh, issue, host, now)?;
+    let looked = crate::target::once(repo, config, &gh.tracker, issue)?;
+    let mut answer = crate::turn_answer::noted(repo, now, || {
+        land_task(repo, config, gh, issue, host, now, looked)
+    })?;
     crate::delivery::after_task(repo, issue, &mut answer);
     Ok(answer)
 }
@@ -288,22 +290,15 @@ fn land_task(
     issue: u64,
     host: &str,
     now: u64,
+    looked: crate::target::Seen,
 ) -> Result<Value> {
     let mut routed = crate::config::load(&repo.dir.join(crate::config::FILE))?;
-    // One look: the target, the claim and the base, beside the open PRs.
+    // The claim, target and base were checked before the turn's receipt.
     // Finding no PR does not read any of those again.
-    let (prs, looked) = std::thread::scope(|scope| {
-        let prs = scope.spawn(|| {
-            gh.note_without_probe()?;
-            gh.open_prs()
-        });
-        let looked = scope.spawn(|| crate::target::once(repo, config, &gh.tracker, issue));
-        (crate::gh::beside(prs), crate::gh::beside(looked))
-    });
-    let looked = looked?;
+    gh.note_without_probe()?;
+    let prs = gh.open_prs()?;
     routed.base_branch = looked.branch;
     let config = &routed;
-    let prs = prs?;
     let Some(pr) = closing_pr(&prs, issue) else {
         let tip = match (&looked.tip, looked.asked) {
             (Some(sha), _) => {

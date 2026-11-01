@@ -68,8 +68,12 @@ pub struct Ran {
 /// reads it against the stage it dispatched under that claim. A human's — one
 /// that names no commits — is `steer::declare`'s.
 pub fn verdict(repo: &Repo, declaring: Declaring) -> Result<Value> {
-    let claim =
-        crate::claims::on_this_host(repo, declaring.issue, &crate::host_settings::host_name())?;
+    let claim = crate::claims::on_this_host(
+        repo,
+        declaring.issue,
+        &crate::host_settings::host_name(),
+        crate::remote::Fresh::Live,
+    )?;
     let Declaring { issue, stage, declared, blocked_by, text, ran, consult } = declaring;
     if stage.trim().is_empty() {
         bail!("--stage names no stage");
