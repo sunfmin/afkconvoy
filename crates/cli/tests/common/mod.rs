@@ -146,12 +146,19 @@ pub fn codex_line(_world: &World, dir: &Path) -> String {
     } else {
         Harness::Codex.with_model(Harness::Codex.stock(), &model)
     };
-    Harness::Codex.in_worktree(&command, &dir.display().to_string(), &home)
+    let command = Harness::Codex.in_worktree(&command, &dir.display().to_string(), &home);
+    Harness::Codex.guarded(&command, "", "", &terminal_guard())
 }
 
 /// A Claude Code launch as an unbound worker receives it, with worktree trust.
 pub fn trusted(command: &str) -> String {
-    afkconvoy_core::harness::Harness::ClaudeCode.in_worktree(command, "", "")
+    let harness = afkconvoy_core::harness::Harness::ClaudeCode;
+    harness.guarded(&harness.in_worktree(command, "", ""), "", "", &terminal_guard())
+}
+
+fn terminal_guard() -> String {
+    // Each World puts this build on PATH under the name its launch uses.
+    "afkconvoy guard --terminal-input-only".to_string()
 }
 
 /// The code blocks of `language` the manual shows at `at` — a command as

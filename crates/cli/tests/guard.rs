@@ -28,9 +28,22 @@ struct Answered {
 /// Runs the guard on `described` with `facts` — and nothing else — as its
 /// environment.
 fn guard(described: &str, facts: &[(&str, &str)]) -> Answered {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_afkconvoy"))
-        .arg("guard")
-        .env_clear()
+    let home = tempfile::tempdir().unwrap();
+    guard_at(described, facts, home.path(), false)
+}
+
+fn guard_at(
+    described: &str,
+    facts: &[(&str, &str)],
+    home: &std::path::Path,
+    terminal_only: bool,
+) -> Answered {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_afkconvoy"));
+    command.arg("guard").env_clear().env("HOME", home).env("XDG_CACHE_HOME", home);
+    if terminal_only {
+        command.arg("--terminal-input-only");
+    }
+    let mut child = command
         .envs(facts.iter().copied())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -44,6 +57,105 @@ fn guard(described: &str, facts: &[(&str, &str)]) -> Answered {
         stdout: String::from_utf8(out.stdout).unwrap(),
         stderr: String::from_utf8(out.stderr).unwrap(),
     }
+}
+
+#[test]
+fn every_harness_refuses_worker_and_watch_input_but_allows_the_asking_session() {
+    let home = tempfile::tempdir().unwrap();
+    let directory = home.path().join("afkconvoy/asking");
+    std::fs::create_dir_all(&directory).unwrap();
+    let record = json!({
+        "session": {"id":"asking-1", "directory":home.path(), "stock":false,
+            "harness":"codex", "model":null, "terminal":"asks", "transcript":home.path().join("session.log"), "session_started":1},
+        "status":"running", "question":null, "terminal":null, "problem":null, "command":"",
+    });
+    std::fs::write(directory.join("terminal.json"), record.to_string()).unwrap();
+    for harness in afkconvoy_core::harness::Harness::ALL {
+        let describe = |line| {
+            match harness {
+                afkconvoy_core::harness::Harness::Pi => {
+                    json!({"toolName":"bash", "input":{"command":line}})
+                }
+                afkconvoy_core::harness::Harness::Dsh => {
+                    json!({"name":"bash", "arguments":{"command":line}})
+                }
+                afkconvoy_core::harness::Harness::Grok => {
+                    json!({"toolName":"run_terminal_command", "toolInput":{"command":line}})
+                }
+                _ => json!({"tool_name":"Bash", "tool_input":{"command":line}}),
+            }
+            .to_string()
+        };
+        for terminal_only in [false, true] {
+            for watch in [false, true] {
+                let mut facts = FACTS.to_vec();
+                facts.push(("AFKCONVOY_HARNESS", harness.key()));
+                facts.push(("ORCA_TERMINAL_HANDLE", "worker"));
+                if watch {
+                    facts.push(("AFKCONVOY_WATCH", "host"));
+                }
+                let refused = guard_at(
+                    &describe("orca terminal send --terminal asks --text yes --enter"),
+                    &facts,
+                    home.path(),
+                    terminal_only,
+                );
+                assert_eq!(refused.code, 2, "{harness:?}: {}", refused.stderr);
+                assert!(refused.stderr.contains("asking session's Terminal"), "{}", refused.stderr);
+                assert_eq!(
+                    guard_at(
+                        &describe("orca terminal send --terminal another --text yes --enter"),
+                        &facts,
+                        home.path(),
+                        terminal_only
+                    )
+                    .code,
+                    0
+                );
+                facts.push(("ORCA_TERMINAL_HANDLE", "asks"));
+                assert_eq!(
+                    guard_at(
+                        &describe("orca terminal send --terminal asks --text yes --enter"),
+                        &facts,
+                        home.path(),
+                        terminal_only
+                    )
+                    .code,
+                    0
+                );
+            }
+        }
+        // Outside a role, no stage facts are invented just to ask this guard.
+        assert_eq!(
+            guard_at(
+                &describe("git commit -am step"),
+                &[("AFKCONVOY_HARNESS", harness.key())],
+                home.path(),
+                true
+            )
+            .code,
+            0
+        );
+    }
+    // Existing sessions read the new identity at each call, not a launch-time copy.
+    let mut record = record;
+    record["session"]["terminal"] = json!("replacement");
+    std::fs::write(directory.join("terminal.json"), record.to_string()).unwrap();
+    assert_eq!(
+        guard_at(
+            &bash("orca terminal send --terminal replacement --enter"),
+            &FACTS,
+            home.path(),
+            true
+        )
+        .code,
+        2
+    );
+    assert_eq!(
+        guard_at(&bash("orca terminal send --terminal asks --enter"), &FACTS, home.path(), true)
+            .code,
+        0
+    );
 }
 
 /// A Bash call running `line`, as Claude Code describes one to a hook.
