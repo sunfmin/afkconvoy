@@ -1501,16 +1501,18 @@ fn a_running_fleet_uses_commands_and_codex_preferences_changed_after_it_started(
     ));
     let ran = world.afk(&RUN).ok();
     let pid = ran["host_runner"]["pid"].clone();
-    for (number, command, model, effort) in [
-        (7, "agent --added-codex", "user-first", "xhigh"),
-        (8, "agent --changed-codex", "user-next", "high"),
+    for (number, command, model, effort, service_tier) in [
+        (7, "agent --added-codex", "user-first", "xhigh", "default"),
+        (8, "agent --changed-codex", "user-next", "high", "priority"),
     ] {
         world.kit_command("codex", command);
         world.kit_models("codex", &["fleet-model", model]);
         common::write(
             &world.home(),
             ".codex/config.toml",
-            &format!("model = '{model}'\nmodel_reasoning_effort = '{effort}'\n"),
+            &format!(
+                "model = '{model}'\nmodel_reasoning_effort = '{effort}'\nservice_tier = '{service_tier}'\n"
+            ),
         );
         world.afk(&["switch", "--harness", "codex"]).ok();
         world.issue(number, &["ready-for-agent", "harness:codex"]);
@@ -1527,6 +1529,7 @@ fn a_running_fleet_uses_commands_and_codex_preferences_changed_after_it_started(
                         line.contains(&format!("model_reasoning_effort=\"{effort}\"")),
                         "{line}"
                     );
+                    assert!(line.contains(&format!("service_tier=\"{service_tier}\"")), "{line}");
                     true
                 })
             }) {

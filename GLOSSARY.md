@@ -240,6 +240,10 @@ _Avoid_: fallback model, the host kit's first (a model's place in the kit; the f
 The reasoning effort a Codex worker takes from the host user's own Codex settings at its start, or Codex's model default where the user says none. It is independent of the model selected from the user's Codex preference, and is no setting of the fleet.
 _Avoid_: fleet effort, role effort
 
+**Codex service tier**:
+The service tier a Codex worker takes from the host user's own Codex settings at its start when one is explicitly configured, including `default` and `priority`, or Codex's own default where the user says none. It is read afresh for each launch in bound and unbound repos regardless of `host_user`, changes no already-running session, and is no setting of the fleet.
+_Avoid_: fleet service tier, role service tier
+
 **Model label**:
 An issue's one `model:` label. It names the model a worker of the selected harness starts on when it names exactly one model that harness holds and the role's range holds. The selected harness is the one the checkout names, or the first eligible harness in the host kit's order when the checkout names none. Anything else leaves the worker on that harness's **default model**, and the label stays. A `harness:` label never selects a harness.
 _Avoid_: casting (the removed automatic choice, as in "automatic casting is gone"), caster (the removed chooser; help may say there is none), assignment (a GitHub assignee), routing, dispatch (starting a worker)

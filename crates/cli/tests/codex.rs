@@ -1317,21 +1317,68 @@ fn assert_selection(ran: &[String], model: &str, effort: Option<&str>) {
         let config: toml::Table = config.parse().unwrap();
         assert!(!config.contains_key("model"));
         assert!(!config.contains_key("model_reasoning_effort"));
+        assert!(!config.contains_key("service_tier"));
     }
 }
 
-fn assert_selection_effort(ran: &[String], effort: Option<&str>) {
-    let efforts: Vec<_> = ran
+fn assert_config(ran: &[String], key: &str, expected: Option<&str>) {
+    let prefix = format!("{key}=");
+    let values: Vec<_> = ran
         .windows(2)
-        .filter(|args| args[0] == "--config" && args[1].starts_with("model_reasoning_effort="))
-        .map(|args| {
-            args[1].parse::<toml::Table>().unwrap()["model_reasoning_effort"]
-                .as_str()
-                .unwrap()
-                .to_string()
-        })
+        .filter(|args| args[0] == "--config" && args[1].starts_with(&prefix))
+        .map(|args| args[1].parse::<toml::Table>().unwrap()[key].as_str().unwrap().to_string())
         .collect();
-    assert_eq!(efforts, effort.into_iter().map(str::to_string).collect::<Vec<_>>(), "{ran:?}");
+    assert_eq!(values, expected.into_iter().map(str::to_string).collect::<Vec<_>>(), "{ran:?}");
+}
+
+fn assert_selection_effort(ran: &[String], effort: Option<&str>) {
+    assert_config(ran, "model_reasoning_effort", effort);
+}
+
+fn assert_service_tier(ran: &[String], service_tier: Option<&str>) {
+    assert_config(ran, "service_tier", service_tier);
+}
+
+#[test]
+fn codex_workers_take_fresh_user_service_tier_without_inheriting_session_config() {
+    let world = bound_with(
+        &TEAM.replace("auditor: acme/auditor", "auditor: { dir: acme/auditor, host_user: false }"),
+    );
+    let config = "service_tier = 'default'\nmodel_verbosity = 'low'\n";
+    write(&world.home(), ".codex/config.toml", config);
+    world.issue(7, &["flow:feature"]);
+    let first = launch(&world, 7, 1000);
+    assert_service_tier(&first, Some("default"));
+    assert!(!Path::new(&first[1]).join("config.toml").exists());
+
+    write(Path::new(&first[1]), "config.toml", "service_tier = 'default'\n");
+    write(&world.home(), ".codex/config.toml", "service_tier = 'priority'\n");
+    world.issue(8, &["flow:audit"]);
+    let second = launch(&world, 8, 1100);
+    assert_service_tier(&second, Some("priority"));
+    assert_ne!(first[1], second[1]);
+    assert!(!Path::new(&second[1]).join("config.toml").exists());
+
+    write(&world.home(), ".codex/config.toml", "model_verbosity = 'low'\n");
+    world.issue(9, &["flow:feature"]);
+    assert_service_tier(&launch(&world, 9, 1200), None);
+
+    write(&world.home(), ".codex/config.toml", "service_tier = 4\n");
+    world.issue(10, &["flow:feature"]);
+    let before = world.worktrees().len();
+    let why = world
+        .afk(&["dispatch", "10", "--instance", "alpha", "--host", "h1", "--now", "1300"])
+        .error();
+    assert!(why.contains("service_tier must be a nonempty string"), "{why}");
+    assert_eq!(world.worktrees().len(), before);
+
+    let world = unbound_codex();
+    write(&world.home(), ".codex/config.toml", config);
+    world.issue(7, &["ready-for-agent"]);
+    let ran = launch(&world, 7, 1000);
+    assert_service_tier(&ran, Some("default"));
+    assert!(!Path::new(&ran[1]).join("config.toml").exists());
+    assert_eq!(std::fs::read_to_string(world.home().join(".codex/config.toml")).unwrap(), config);
 }
 
 #[test]

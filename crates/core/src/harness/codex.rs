@@ -384,6 +384,8 @@ pub(super) const SESSION: super::Session = super::Session {
 const PREFERENCE_MODEL: &str = "model";
 /// The key of the user's config that names the effort of that model.
 const EFFORT: &str = "model_reasoning_effort";
+/// The key of the user's config that names the service tier of a session.
+const SERVICE_TIER: &str = "service_tier";
 const USER_SOURCE: &str = "user_selection";
 const DEFAULT_SOURCE: &str = "codex_default";
 const LABEL_SOURCE: &str = "model_label";
@@ -422,24 +424,30 @@ pub(super) fn automatic_model(
     }
 }
 
+fn preference(text: &str, file: &str, key: &str) -> Result<Option<String>, String> {
+    match config_text(text, file)?.get(key) {
+        Some(toml::Value::String(value)) if !value.trim().is_empty() => Ok(Some(value.clone())),
+        None => Ok(None),
+        _ => Err(format!(
+            "{file}: {key} must be a nonempty string; fix it or remove it for Codex's default"
+        )),
+    }
+}
+
 /// The effort of a start, from the same file as the model, read on its own:
 /// a model the issue names does not skip it.
 pub(super) fn effort(text: &str, file: &str) -> Result<(Option<String>, String), String> {
-    let effort = match config_text(text, file)?.get(EFFORT) {
-        Some(toml::Value::String(effort)) if !effort.trim().is_empty() => Some(effort.clone()),
-        None => None,
-        _ => {
-            return Err(format!(
-                "{file}: {EFFORT} must be a nonempty string; fix it or remove it for Codex's \
-                 default"
-            ));
-        }
-    };
+    let effort = preference(text, file, EFFORT)?;
     let source = match &effort {
         Some(_) => format!("{file}:{EFFORT}"),
         None => DEFAULT_SOURCE.to_string(),
     };
     Ok((effort, source))
+}
+
+/// The service tier of a worker start. With none, Codex chooses its own.
+pub(super) fn service_tier(text: &str, file: &str) -> Result<Option<String>, String> {
+    preference(text, file, SERVICE_TIER)
 }
 
 pub(super) fn outside_issue(model: &str) -> String {
@@ -482,16 +490,26 @@ pub(super) fn ensure_model(command: &str, model: Option<&str>) -> String {
     }
 }
 
-/// `line` with the effort, said as Codex takes one key of its configuration.
-pub(super) fn with_effort(line: &str, effort: Option<&str>) -> String {
+fn with_preference(line: &str, key: &str, preference: Option<&str>) -> String {
     let line = Line::new().launch(line);
-    match effort {
-        Some(effort) => {
-            let value = format!("{EFFORT}={}", toml::Value::String(effort.to_string()));
+    match preference {
+        Some(preference) => {
+            let value = format!("{key}={}", toml::Value::String(preference.to_string()));
             line.fixed(" --config ").word(&value).done()
         }
         None => line.done(),
     }
+}
+
+/// `line` with the effort, said as Codex takes one key of its configuration.
+pub(super) fn with_effort(line: &str, effort: Option<&str>) -> String {
+    with_preference(line, EFFORT, effort)
+}
+
+/// `line` with the service tier, said as Codex takes one key of its
+/// configuration. None adds nothing, leaving Codex's default in force.
+pub(super) fn with_service_tier(line: &str, service_tier: Option<&str>) -> String {
+    with_preference(line, SERVICE_TIER, service_tier)
 }
 
 /// A watch's launch line: the worker's, with search, the model inside the
@@ -1141,6 +1159,31 @@ mod tests {
         for unread in [r#"{"toolName":"bash","input":{"command":"ls"}}"#, "{}", "[]", ""] {
             assert!(judged(unread).is_err(), "{unread}");
         }
+    }
+
+    #[test]
+    fn a_worker_service_tier_is_an_explicit_nonempty_user_preference() {
+        let file = "home/.codex/config.toml";
+        for tier in ["default", "priority"] {
+            let text = format!("service_tier = '{tier}'\n");
+            assert_eq!(
+                Harness::Codex.service_tier(&text, file).unwrap().unwrap().as_deref(),
+                Some(tier)
+            );
+            let line = Harness::Codex.with_service_tier("codex", Some(tier));
+            assert!(line.contains(&format!("--config 'service_tier=\"{tier}\"'")), "{line}");
+        }
+        for absent in
+            ["", "model_verbosity = 'low'\n", "[profiles.saved]\nservice_tier = 'default'\n"]
+        {
+            assert_eq!(Harness::Codex.service_tier(absent, file).unwrap().unwrap(), None);
+            assert_eq!(Harness::Codex.with_service_tier("codex", None), "codex");
+        }
+        for invalid in ["service_tier = 4\n", "service_tier = ''\n"] {
+            let bad = Harness::Codex.service_tier(invalid, file).unwrap().unwrap_err();
+            assert!(bad.contains("service_tier must be a nonempty string"), "{bad}");
+        }
+        assert!(Harness::Pi.service_tier("service_tier = 'default'", file).is_none());
     }
 
     #[test]
