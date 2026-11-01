@@ -571,6 +571,7 @@ fn claude_is_told(world: &World, line: &str, shell: &str) -> (i32, String) {
         .args(["-c", &guard])
         .env_clear()
         .envs(world.login_env())
+        .env("XDG_CACHE_HOME", world.cache())
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
