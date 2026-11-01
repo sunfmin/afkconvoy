@@ -104,6 +104,15 @@ if [ -z "$nextest" ] && [ -n "${1:-}" ]; then
     exit 2
 fi
 if [ -n "$fast" ]; then
+# Ignoring temp directories does not stop a forced add. Refuse tracked paths
+# at every depth, including temp files and workers' private harness homes.
+tracked_tmp=$(git ls-files -- ':(glob)**/.afkconvoy-tmp/**')
+if [ -n "$tracked_tmp" ]; then
+    echo "gate: no path under .afkconvoy-tmp may be tracked; remove these paths from git:" >&2
+    printf '%s\n' "$tracked_tmp" >&2
+    exit 1
+fi
+step tracked-temp
 cargo fmt --all --check
 step fmt
 # Every function of the core crate is checked: none is taken on trust. Flux
