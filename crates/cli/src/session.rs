@@ -153,11 +153,12 @@ fn noted(cwd: &Path, name: &str) -> Option<PathBuf> {
     if home.is_empty() { None } else { Some(PathBuf::from(home)) }
 }
 
-/// The worktree's own git directory, which its `.git` file names.
+/// The worktree's own git directory, also where its brief is written.
+/// Read the pointer directly: polling for a turn must not spawn git.
 fn git_dir(cwd: &Path) -> Option<PathBuf> {
     let git = std::fs::read_to_string(cwd.join(".git")).ok()?;
     let dir = git.trim().strip_prefix("gitdir:")?.trim();
-    Some(cwd.join(dir))
+    if dir.is_empty() { None } else { Some(cwd.join(dir)) }
 }
 
 /// The task brief the fleet keeps for the worker in `cwd`, as an absolute path.
@@ -175,26 +176,27 @@ fn read_root(
     if !root.exists() {
         return Ok(None);
     }
+    let brief = brief(cwd);
     let cwd = cwd_str(cwd);
     let place = harness.session_place(&cwd);
     let turns = match place.layout {
         SessionLayout::Files { dir, extension } => {
             read_files(&root.join(dir), extension, since, |text| {
-                harness.recorded_turn(&cwd, text, not_before)
+                harness.recorded_turn(&cwd, text, not_before, brief.as_deref())
             })?
         }
         SessionLayout::Tree { dir, extension } => {
             read_tree(&root.join(dir), extension, since, |text| {
-                harness.recorded_turn(&cwd, text, not_before)
+                harness.recorded_turn(&cwd, text, not_before, brief.as_deref())
             })?
         }
         SessionLayout::Named { dir, name, compressed } => {
             read_named(&root.join(dir), name, compressed, since, |text| {
-                harness.recorded_turn(&cwd, text, not_before)
+                harness.recorded_turn(&cwd, text, not_before, brief.as_deref())
             })?
         }
         SessionLayout::Index { file } => read_index(root, &file, harness, &cwd, since, |text| {
-            harness.recorded_turn(&cwd, text, not_before)
+            harness.recorded_turn(&cwd, text, not_before, brief.as_deref())
         })?,
     };
     Ok(prefer(&turns))
@@ -487,6 +489,92 @@ mod tests {
     const AT: u64 = 1_793_106_373;
 
     #[test]
+    fn a_codex_role_session_belongs_to_the_worker_named_by_its_first_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().join("work");
+        let gitdir = dir.path().join("git/worktrees/work");
+        std::fs::create_dir_all(&cwd).unwrap();
+        std::fs::create_dir_all(&gitdir).unwrap();
+        std::fs::write(cwd.join(".git"), format!("gitdir: {}\n", gitdir.display())).unwrap();
+        let brief = gitdir.join("convoy-worker-prompt.md");
+        let prompt = afkconvoy_core::prompt::brief_pointer(&brief.display().to_string());
+        let root = dir.path().join("codex");
+        let file = root.join("sessions/2026/10/27/rollout-role.jsonl");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        let rollout = |message: &str, start: Option<u64>| {
+            let mut lines = vec![
+                serde_json::json!({"type": "session_meta", "payload": {
+                    "cwd": "/cache/copies/acme/team/hash-role+codex-roles%2Fbuilder"}}),
+                // Codex's real rollout puts tool definitions and environment
+                // messages before the brief, even within its first turn.
+                serde_json::json!({"type": "response_item", "payload": {
+                    "type": "additional_tools", "role": "developer", "tools": []}}),
+                serde_json::json!({"type": "response_item", "payload": {
+                    "type": "message", "role": "user", "content": [
+                        {"type": "input_text", "text": "# AGENTS.md instructions for /role"},
+                        {"type": "input_text", "text": "<environment_context>"}]}}),
+                serde_json::json!({"type": "response_item", "payload": {
+                    "type": "message", "role": "user", "content": [
+                        {"type": "input_text", "text": message}]}}),
+            ];
+            if let Some(at) = start {
+                lines.push(serde_json::json!({"type": "event_msg", "payload": {
+                    "type": "task_started", "started_at": at}}));
+            }
+            lines.iter().map(|line| format!("{line}\n")).collect::<String>()
+        };
+        let read = |body: &str, not_before| {
+            std::fs::write(&file, body).unwrap();
+            read_root(&root, Harness::Codex, &cwd, None, not_before).unwrap()
+        };
+        let body = rollout(&prompt, Some(AT));
+        assert_eq!(read(&body, Some(AT)), Some(Turn::Open { since: AT }));
+        assert_eq!(read(&body, None), Some(Turn::Open { since: AT }));
+        assert_eq!(read(&body, Some(AT + 1)), None, "an old turn cannot prove this send");
+        assert_eq!(read(&rollout(&prompt, None), Some(AT)), None, "a prompt is not a turn");
+        let no_header = body.lines().skip(1).collect::<Vec<_>>().join("\n");
+        assert_eq!(read(&no_header, Some(AT)), None, "a header is still required");
+        let complete = serde_json::json!({"type": "event_msg", "payload": {
+            "type": "task_complete", "completed_at": AT + 3}});
+        assert_eq!(
+            read(&format!("{body}{complete}\n"), Some(AT)),
+            Some(Turn::Closed { since: AT + 3, started: Some(AT) }),
+            "the same role session also records when its worker stops"
+        );
+        let event = serde_json::json!({"type": "event_msg", "payload": {
+            "type": "user_message", "message": prompt}});
+        let empty = rollout("", Some(AT));
+        assert_eq!(read(&format!("{empty}{event}\n"), Some(AT)), Some(Turn::Open { since: AT }));
+        for payload in [
+            serde_json::json!({"type": "function_call_output", "output": prompt}),
+            serde_json::json!({"type": "message", "role": "assistant", "content": [
+                {"type": "output_text", "text": prompt}]}),
+        ] {
+            let reply = serde_json::json!({"type": "response_item", "payload": payload});
+            assert_eq!(
+                read(&format!("{empty}{reply}\n{event}\n"), Some(AT)),
+                None,
+                "neither a reply nor a later user mention can associate a session"
+            );
+        }
+        let other = prompt.replace("/work/convoy-", "/other/convoy-");
+        assert_ne!(other, prompt);
+        assert_eq!(read(&rollout(&other, Some(AT)), Some(AT)), None);
+        let mut wrong_worker = rollout(&other, Some(AT));
+        wrong_worker.push_str(&format!(
+            "{}\n",
+            serde_json::json!({"type": "response_item",
+            "payload": {"type": "message", "role": "user", "content": [
+                {"type": "input_text", "text": prompt}]}})
+        ));
+        assert_eq!(
+            read(&wrong_worker, Some(AT)),
+            None,
+            "a later mention cannot take another worker's session"
+        );
+    }
+
+    #[test]
     fn every_harness_round_trips_an_open_and_a_closed_turn() {
         let dir = tempfile::tempdir().unwrap();
         let home = dir.path().join("home");
@@ -616,27 +704,30 @@ mod tests {
         grok_file(&root, &cwd, "earlier", &killed);
         grok_file(&root, &cwd, "later", &finished);
         let turn = read_root(&root, harness, &cwd, None, None).unwrap();
-        assert_eq!(turn, harness.recorded_turn(&cwd_text, &finished, None));
+        assert_eq!(turn, harness.recorded_turn(&cwd_text, &finished, None, None));
         assert!(matches!(turn, Some(Turn::Closed { .. })));
-        assert!(matches!(harness.recorded_turn(&cwd_text, &killed, None), Some(Turn::Open { .. })));
+        assert!(matches!(
+            harness.recorded_turn(&cwd_text, &killed, None, None),
+            Some(Turn::Open { .. })
+        ));
 
         let earlier = grok_body("2026-10-27T13:06:13Z", Some("2026-10-27T13:06:33Z"), "primary");
         let later = grok_body("2026-10-27T13:06:53Z", None, "primary");
         grok_file(&root, &cwd, "earlier", &earlier);
         grok_file(&root, &cwd, "later", &later);
         let turn = read_root(&root, harness, &cwd, None, None).unwrap();
-        assert_eq!(turn, harness.recorded_turn(&cwd_text, &later, None));
+        assert_eq!(turn, harness.recorded_turn(&cwd_text, &later, None, None));
         assert!(matches!(turn, Some(Turn::Open { .. })));
         assert!(matches!(
-            harness.recorded_turn(&cwd_text, &earlier, None),
+            harness.recorded_turn(&cwd_text, &earlier, None, None),
             Some(Turn::Closed { .. })
         ));
 
         let child = grok_body("2026-10-27T13:08:00Z", Some("2026-10-27T13:08:10Z"), "subagent");
         grok_file(&root, &cwd, "child", &child);
         let turn = read_root(&root, harness, &cwd, None, None).unwrap();
-        assert_eq!(turn, harness.recorded_turn(&cwd_text, &later, None));
-        assert_eq!(harness.recorded_turn(&cwd_text, &child, None), None);
+        assert_eq!(turn, harness.recorded_turn(&cwd_text, &later, None, None));
+        assert_eq!(harness.recorded_turn(&cwd_text, &child, None, None), None);
 
         let stale = grok_body("2026-10-27T14:00:00Z", None, "primary");
         let stale_path = grok_file(&root, &cwd, "stale", &stale);
@@ -646,7 +737,7 @@ mod tests {
         let turn = read_root(&root, harness, &cwd, Some(now.saturating_sub(30)), None).unwrap();
         assert_eq!(
             turn,
-            harness.recorded_turn(&cwd_text, &later, None),
+            harness.recorded_turn(&cwd_text, &later, None, None),
             "a file last written before the handoff is not this turn"
         );
     }
