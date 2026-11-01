@@ -54,9 +54,14 @@ pub fn note_at(cwd: &Path, harness: Harness, since: u64, mark: &str) -> Result<O
                 return None;
             }
             let entry: serde_json::Value = serde_json::from_str(line).ok()?;
-            entry["timestamp"]
-                .as_u64()
-                .or_else(|| crate::doctor::watching::since(entry["timestamp"].as_str()?).ok())
+            entry["timestamp"].as_u64().or_else(|| {
+                let stamp = entry["timestamp"].as_str()?;
+                let whole = stamp
+                    .split_once('.')
+                    .filter(|_| stamp.ends_with('Z'))
+                    .map(|(whole, _)| format!("{whole}Z"));
+                crate::doctor::watching::since(whole.as_deref().unwrap_or(stamp)).ok()
+            })
         });
         found.set(at);
         at.is_some()

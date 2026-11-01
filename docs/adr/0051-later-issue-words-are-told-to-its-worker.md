@@ -18,6 +18,11 @@ worktree keeps the observed body and pending revisions, scoped to that
 worker's start; a newer edit cannot erase a pending one. GitHub remains the
 words' authoritative home.
 
+A worker started before this delivery mechanism has no body snapshot. Where
+GitHub records an edit after its start, its first tick tells the whole new
+body and establishes the snapshot. An issue update timestamp alone is not
+proof of a body edit: comments and label changes move it too.
+
 Every comment containing a `<!--convoy:` marker is skipped. The login is no
 filter: people and workers use the same one. A worker's own comment is
 identified by the result link of a comment-writing tool call in its harness

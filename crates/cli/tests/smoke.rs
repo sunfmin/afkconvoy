@@ -405,7 +405,8 @@ fn real_interactive_claude_takes_its_brief_without_persisting_workspace_trust() 
 }
 
 /// Opt-in live acceptance check: the named issue must already be claimed
-/// on this host in this worktree. Only its new read-only comment is delivered;\n/// every other issue is left alone.
+/// on this host in this worktree. Only its new read-only comment is delivered;
+/// every other issue is left alone.
 #[test]
 #[ignore = "tells a real claimed worker through Orca; posts one issue comment; AFKCONVOY_LIVE_ISSUE=N"]
 fn a_real_claimed_worker_receives_a_later_comment_in_its_session() {

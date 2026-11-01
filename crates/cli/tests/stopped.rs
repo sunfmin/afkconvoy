@@ -1403,6 +1403,76 @@ fn later_issue_body_edits_are_told_with_the_whole_new_body() {
 }
 
 #[test]
+fn a_stopped_worker_is_told_a_later_comment_before_the_tick_judges_it() {
+    let world = fleet(1000);
+    report(&world, "done", 1000, 1000);
+    world.with_orca(|orca| orca["notes"] = json!("taken"));
+    let url = later_comment(&world, "Keep going with v2.", 1080);
+    let told = tick(&world, 1090);
+    assert!(told["errors"].as_array().unwrap().is_empty(), "{told}");
+    assert!(afkconvoy_core::harness::Harness::ClaudeCode.holds_note(&user_notes(&world), &url));
+    assert_eq!(typed(&world).len(), 2);
+    assert!(!nudge_record(&world).exists(), "a comment is no nudge");
+}
+
+#[test]
+fn a_claim_with_no_worker_types_no_comment_and_dispatches_normally() {
+    let world = World::new();
+    world.issue(7, &["ready-for-agent"]);
+    world.afk(&["claim", "7", "--instance", "alpha", "--host", "h1", "--now", "1000"]).ok();
+    let url = later_comment(&world, "Read this at your start.", 1080);
+    let started = tick(&world, 1090);
+    assert!(started["errors"].as_array().unwrap().is_empty(), "{started}");
+    assert!(!started["did"].as_array().unwrap().iter().any(|step| step["do"] == "tell"));
+    assert_eq!(typed(&world).len(), 1, "only its brief is typed");
+    assert!(!typed(&world)[0].contains(&url));
+    assert!(user_notes(&world).is_empty());
+}
+
+#[test]
+fn a_new_body_edit_keeps_the_revision_still_queued_for_the_worker() {
+    let world = fleet(1000);
+    report(&world, "working", 1000, 1080);
+    world.with_orca(|orca| orca["notes"] = json!("queued"));
+    world.with_gh(|gh| gh["issues"][0]["body"] = json!("First correction."));
+    let first = tick(&world, 1090);
+    assert_eq!(first["errors"][0]["do"], "tell");
+    assert_eq!(typed(&world).len(), 2);
+    let earlier = typed(&world)[1].clone();
+    world.with_gh(|gh| gh["issues"][0]["body"] = json!("Second correction."));
+    afkconvoy::session::record_note(&world.home(), &worktree(&world), &earlier, true, 1100)
+        .unwrap();
+    world.with_orca(|orca| orca["notes"] = json!("taken"));
+    let next = tick(&world, 1180);
+    assert!(next["errors"].as_array().unwrap().is_empty(), "{next}");
+    let told: Vec<&Value> =
+        next["did"].as_array().unwrap().iter().filter(|step| step["do"] == "tell").collect();
+    assert_eq!(told.len(), 2, "{next}");
+    assert_eq!(told[0]["typed"], false, "the first revision was already taken");
+    assert_eq!(typed(&world).len(), 3, "each body revision is typed once");
+    assert!(typed(&world)[1].contains("First correction."));
+    assert!(typed(&world)[2].contains("Second correction."));
+}
+
+#[test]
+fn a_worker_started_before_upgrade_is_told_a_body_edited_since_its_start() {
+    let world = fleet(1000);
+    let notes = PathBuf::from(git(&worktree(&world), &["rev-parse", "--absolute-git-dir"]));
+    std::fs::remove_file(notes.join("convoy-issue-updates.json")).unwrap();
+    world.with_orca(|orca| orca["notes"] = json!("taken"));
+    world.with_gh(|gh| {
+        gh["issues"][0]["body"] = json!("An edit since the old worker started.");
+        gh["issues"][0]["edited"] = json!(1080);
+    });
+    let told = tick(&world, 1090);
+    assert!(told["errors"].as_array().unwrap().is_empty(), "{told}");
+    assert_eq!(typed(&world).len(), 2);
+    assert!(typed(&world)[1].contains("An edit since the old worker started."));
+    tick(&world, 1180);
+    assert_eq!(typed(&world).len(), 2);
+}
+
+#[test]
 fn later_fleet_comments_and_earlier_comments_are_not_told() {
     let world = fleet(1000);
     world.with_orca(|orca| orca["notes"] = json!("taken"));

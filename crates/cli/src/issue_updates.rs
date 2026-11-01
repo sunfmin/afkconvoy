@@ -65,18 +65,23 @@ pub fn reconcile(fleet: &Fleet, host: &str, issues: &OpenIssues) -> Vec<Value> {
             let Some(started) = worktree.handed(None)? else { return Ok(vec![]) };
             let Some(body) = issues.body(number) else { return Ok(vec![]) };
             let file = worktree.note(FILE)?;
+            let mut unknown_body = false;
             let mut seen: Seen = match std::fs::read(&file) {
                 Ok(bytes) => serde_json::from_slice(&bytes)
                     .with_context(|| format!("cannot read {}", file.display()))?,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    unknown_body = true;
                     Seen::new(started, &body.body)
                 }
                 Err(error) => return Err(error.into()),
             };
             if seen.started != started {
+                unknown_body = true;
                 seen = Seen::new(started, &body.body);
             }
-            if seen.body != body.body {
+            if seen.body != body.body
+                || unknown_body && issues.body_edited(number).is_some_and(|edited| edited > started)
+            {
                 seen.revision += 1;
                 let mark = format!("{}#convoy-body-{started}-{}", body.url, seen.revision);
                 // Keep the full new body: a worker can compare it with the
