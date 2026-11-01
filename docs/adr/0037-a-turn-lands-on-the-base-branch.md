@@ -6,7 +6,7 @@ status: accepted
 
 A turn makes the PR's merge commit on the current target tip, gates that commit, records green, and pushes that same commit to the target branch as a fast-forward. This replaces the landing train of ADR-0004 and the joining step of ADR-0034. The train added no verification after a recorded turn, but needed another worker and a separate lane; the measurements in ADR-0034 show the cost of running those gates together.
 
-A cut lands a merge commit, as issue turns and watches do (sunfmin/control#431). Its first parent is the base tip and its second is the set commit, so GitHub marks its PR merged. The turn gates that tree and fast-forwards the base branch to that same commit. Its diff against the base tip is what the set lines wrote; landings already on that tip stay. Older cuts landed with one parent (sunfmin/control#178); those remain recoverable. A commit with one parent whose subject ends ` (#n)` and whose message has no `By a cut on <host>` line is not a landing. Tags already published stay where they are.
+A cut's landed commit has one parent (sunfmin/control#178). The turn builds it on the base tip as it stands, gates that tree, and fast-forwards the base branch to that same commit. Its diff against its parent is what the set lines wrote; where the base moved, the parent is the tip at land time and the landings already on it stay. The commit that set the version stays on the cut's branch and is not an ancestor of the base. Issue turns and watches still land as merge commits. A commit with one parent whose subject ends ` (#n)` and whose message has no `By a cut on <host>` line is not a landing. Tags already published stay where they are.
 
 ## Pinned task destinations (sunfmin/control#154)
 

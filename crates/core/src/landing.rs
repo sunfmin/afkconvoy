@@ -32,8 +32,9 @@ pub struct LandedPr {
     pub pr: u64,
     /// The commit that landed.
     pub commit: String,
-    /// The PR's head it merged: the commit's second parent. Empty for older
-    /// cuts whose landing has only one parent.
+    /// The PR's head it merged: the commit's second parent. Empty for a cut's
+    /// landed commit, which has one parent; the commit that set the version
+    /// stays on the cut's branch and is not recorded here.
     pub head: String,
 }
 

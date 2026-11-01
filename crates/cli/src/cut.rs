@@ -587,7 +587,8 @@ impl Cutting<'_> {
     }
 
     /// Recovers the cut's commit from the base branch after its landing turn.
-    /// An interrupted cut can take another turn if its PR has not landed.
+    /// The set commit is not an ancestor of that branch. An interrupted cut
+    /// can take another turn if its PR has not landed.
     fn land(&self, record: &mut Record, clock: &impl Fn() -> u64) -> Result<()> {
         if record.landed.is_some() {
             return Ok(());
@@ -660,6 +661,10 @@ impl Cutting<'_> {
         let landed =
             record.landed.clone().ok_or_else(|| anyhow!("nothing says where it landed"))?;
         let tag = format!("v{}", record.version);
+        let number = record.pr.ok_or_else(|| anyhow!("the cut opened no PR"))?;
+        if self.gh.open_prs()?.iter().any(|pr| pr.number == number) {
+            self.gh.close_pr(number, &format!("Cut landed as {landed}; version {tag}."))?;
+        }
         let from = record.from.as_deref().map(|tag| self.tag_commit(tag)).transpose()?;
         let mut prs = prs_past(self.repo, from.as_deref(), &landed)?;
         prs.retain(|pr| Some(*pr) != record.pr);
