@@ -77,5 +77,6 @@ Choosing an explicit version instead of inferring it from files keeps the versio
 - A landing commit names the issue its PR closes, the watch that made it, or the cut and its host; a cut's PR closes no issue.
 - An interrupted cut recovers its landed commit or takes another gated turn when its PR has not landed.
 - A cut adds one commit to the base branch, and the version tag points at it. Issue turns and watches still land as merge commits. A version tag already published stays on the commit it names.
+- After its landing is recorded, a cut closes its PR with a comment naming the landing commit and version tag. It ends CLOSED because its set commit is not an ancestor of the base; GitHub marks a PR MERGED only when its head is an ancestor. This keeps the one-commit landing and gives historical and future cuts the same end state.
 - `plan` has a `cut` row in a repo that turns cutting on; `doctor` warns while a failed cut's issue is open.
 - The rule that ran the cut from a human's session ends where a repo turns cutting on.

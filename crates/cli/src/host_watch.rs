@@ -431,8 +431,17 @@ impl Watcher {
     fn run(mut self) {
         self.shared.set(read().ok().and_then(|state| state.running));
         let (mut next_look, mut next_check) = (Instant::now(), Instant::now());
+        let mut next_beat = Instant::now();
         while !self.ended.load(Ordering::Relaxed) {
             let now = Instant::now();
+            if now >= next_beat {
+                next_beat = now + Duration::from_secs(60);
+                if let Err(error) = crate::human_wait::heartbeat() {
+                    (self.say)(What::WatchFailed {
+                        said: format!("human wait heartbeat failed: {error:#}"),
+                    });
+                }
+            }
             let checking = now >= next_check;
             if checking {
                 next_check = now + CHECK_EVERY;
@@ -493,7 +502,8 @@ impl Watcher {
             );
         }
         state.retry_unreported();
-        let look = doctor_look(state.until, &self.ended)?;
+        let mut look = doctor_look(state.until, &self.ended)?;
+        crate::human_wait::take_look(&mut look)?;
         state.observe(look, crate::clock());
         self.say_state(&state);
         // Commit the observation interval and queue before any launch or
@@ -1134,6 +1144,7 @@ fn launch_session(watch: &mut Watch) -> Result<(String, PathBuf)> {
         &watch.directory,
         watch.model.as_deref(),
         command.as_str(),
+        Some(&crate::codex_launch::terminal_guard()),
     )?;
     let line = launches.worker_line(watch.harness, &line);
     let line = format!("export {}=host; {line}", host_watch::WATCH_ENV);
@@ -1436,6 +1447,9 @@ fn answering(look: &Value) -> String {
             _ => continue,
         };
         for issue in doctor["waiting_on_human"].as_array().into_iter().flatten() {
+            if issue["taken_by"].is_string() {
+                continue;
+            }
             let Some(number) = issue["issue"].as_u64() else { continue };
             lines.push(format!(
                 "In `{}`, issue {}:",
@@ -1558,6 +1572,9 @@ pub(crate) fn actionable(look: &Value) -> Vec<Item> {
         let doctor = &checkout["doctor"];
         findings(&mut items, at, &doctor["findings"]);
         for waiting in doctor["waiting_on_human"].as_array().into_iter().flatten() {
+            if waiting["taken_by"].is_string() {
+                continue;
+            }
             let issue = waiting["issue"].as_u64().unwrap_or(0);
             let reason = format!(
                 "#{issue} waits on a human: {}; answer: {}",

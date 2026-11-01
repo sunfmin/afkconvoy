@@ -131,10 +131,10 @@ pub const WATCH_ISSUES_JQ: &str = ".data.repository.issues.nodes[] | \
 pub const ACCOUNTS_QUERY: &str = "query ConvoyAccounts($owner: String!, $repo: String!, \
     $labels: [String!], $endCursor: String) { repository(owner: $owner, name: $repo) { \
     issues(labels: $labels, first: 100, after: $endCursor) { \
-    pageInfo { hasNextPage endCursor } nodes { number url labels(first: 100) { nodes { name } } \
+    pageInfo { hasNextPage endCursor } nodes { number url closed labels(first: 100) { nodes { name } } \
     comments(first: 100) { pageInfo { hasNextPage } \
     nodes { fullDatabaseId body url createdAt } } } } } }";
-pub const ACCOUNTS_JQ: &str = ".data.repository.issues.nodes[] | {number, url, \
+pub const ACCOUNTS_JQ: &str = ".data.repository.issues.nodes[] | {number, url, closed, \
     labels: [.labels.nodes[].name], more: .comments.pageInfo.hasNextPage, \
     comments: [.comments.nodes[] | {id: (.fullDatabaseId | tonumber), body, url, \
     at: (.createdAt | fromdateiso8601? // null)}]}";
@@ -1170,6 +1170,8 @@ impl GitHub {
         #[derive(Deserialize)]
         struct Row {
             number: u64,
+            #[serde(default)]
+            closed: bool,
             url: String,
             labels: Vec<String>,
             more: bool,
@@ -1199,6 +1201,7 @@ impl GitHub {
             });
             issues.push(afkconvoy_core::accounts::Issue {
                 number: row.number,
+                closed: row.closed,
                 url: row.url,
                 account,
             });
