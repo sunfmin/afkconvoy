@@ -103,7 +103,14 @@ pub fn run(repo: &Repo, backup: Option<&Path>, now: u64) -> Result<Value> {
             let data = serde_json::to_vec(
                 &json!({"issue":change.issue,"comment":change.comment,"body":change.old_body}),
             )?;
-            match OpenOptions::new().write(true).create_new(true).open(&path) {
+            let mut options = OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            match options.open(&path) {
                 Ok(mut file) => {
                     file.write_all(&data)?;
                     file.sync_all()?;

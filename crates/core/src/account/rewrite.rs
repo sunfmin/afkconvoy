@@ -88,6 +88,7 @@ pub fn convert(body: &str, issue: u64) -> Result<Record, String> {
     let lines: Vec<&str> = header.lines().collect();
     if lines.len() != 6
         || !lines[0].starts_with("<!--convoy:account ")
+        || !lines[0].ends_with("-->")
         || lines[1] != "**afkconvoy** — work account."
         || !lines[2].is_empty()
         || !lines[4].is_empty()
@@ -134,6 +135,9 @@ pub fn convert(body: &str, issue: u64) -> Result<Record, String> {
             return Err("unrecognized worker text".into());
         }
     } else {
+        if worker_text.lines().count() != row.workers.len() {
+            return Err("unrecognized text among worker rows".into());
+        }
         for (worker, line) in row.workers.iter_mut().zip(worker_text.lines()) {
             let (human, marker) =
                 line.split_once(". Start: `").ok_or("worker has no start marker")?;
@@ -231,6 +235,11 @@ pub fn convert(body: &str, issue: u64) -> Result<Record, String> {
             return Err("unrecognized text after gate rows".into());
         }
     }
+    if !row.gates.is_empty()
+        && gate_text.lines().any(|line| line == "No gate was timed on this issue's tree.")
+    {
+        return Err("gate rows contradict the no-gate statement".into());
+    }
     row.legacy_evidence = Some(body.to_string());
     Ok(row)
 }
@@ -262,6 +271,25 @@ mod tests {
     #[test]
     fn real_account_retains_evidence_and_recovers_rows() {
         let row = convert(ACCOUNT_421, 421).unwrap();
+        assert_eq!(
+            serde_json::to_value(&row).unwrap(),
+            serde_json::json!({
+                "schema_version": 1, "issue": 421, "repo": null, "tracker": null,
+                "afkconvoy_version": null,
+                "host": {"name": null, "cpu": "Apple M4 Pro", "logical_cpus": 14, "memory_bytes": 51539607552u64},
+                "start": 1793539449u64, "end": 1793541788u64, "wall_seconds": 2339,
+                "outcome": null,
+                "workers": [{"harness": "kimi", "model": null, "role": null, "stage": null,
+                    "claim": "b30d44f27dac447c863847352ccade2d6dc6d1f5", "start": 1793539449u64,
+                    "end": 1793541788u64, "seconds": 2339, "verdict": null}],
+                "gates": [
+                    {"tree": "00fa9cf826dc9142c59b6638521345b177d617ee", "command": "afkconvoy exclusive -- ./gate.sh", "lane": null, "result": "green", "at": 1793541225u64, "seconds": 483, "host": "FelixMBP14.local"},
+                    {"tree": "00fa9cf826dc9142c59b6638521345b177d617ee", "command": "afkconvoy exclusive -- ./gate.sh fast", "lane": null, "result": "green", "at": 1793541225u64, "seconds": 147, "host": "FelixMBP14.local"},
+                    {"tree": "00fa9cf826dc9142c59b6638521345b177d617ee", "command": "afkconvoy exclusive -- ./gate.sh slow", "lane": null, "result": "green", "at": 1793541406u64, "seconds": 336, "host": "FelixMBP14.local"}
+                ],
+                "legacy_evidence": ACCOUNT_421
+            })
+        );
         assert_eq!(row.start, Some(1793539449));
         assert_eq!(row.end, Some(1793541788));
         assert_eq!(row.host.cpu.as_deref(), Some("Apple M4 Pro"));
