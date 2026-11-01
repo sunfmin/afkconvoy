@@ -41,8 +41,53 @@ pub fn read_turn(
 /// model was given as the user's (`Harness::holds_note`). `since` drops
 /// files last written before it, as for a turn.
 pub fn holds_note(cwd: &Path, harness: Harness, since: u64, mark: &str) -> Result<bool> {
+    notes_match(cwd, harness, since, |text| harness.holds_note(text, mark))
+}
+
+/// The timestamp of a recorded user entry, for live delivery evidence.
+/// Queue records and tool output cannot supply it.
+pub fn note_at(cwd: &Path, harness: Harness, since: u64, mark: &str) -> Result<Option<u64>> {
+    let found = std::cell::Cell::new(None);
+    notes_match(cwd, harness, since, |text| {
+        let at = text.lines().find_map(|line| {
+            if !harness.holds_note(line, mark) {
+                return None;
+            }
+            let entry: serde_json::Value = serde_json::from_str(line).ok()?;
+            entry["timestamp"].as_u64().or_else(|| {
+                let stamp = entry["timestamp"].as_str()?;
+                let whole = stamp
+                    .split_once('.')
+                    .filter(|_| stamp.ends_with('Z'))
+                    .map(|(whole, _)| format!("{whole}Z"));
+                crate::doctor::watching::since(whole.as_deref().unwrap_or(stamp)).ok()
+            })
+        });
+        if at.is_some() {
+            found.set(at);
+        }
+        at.is_some()
+    })?;
+    Ok(found.get())
+}
+
+/// Reads the harness's message files once for a question about this worker.
+/// Global session trees must identify this worktree; project message stores
+/// already have its directory in their layout.
+fn notes_match(
+    cwd: &Path,
+    harness: Harness,
+    since: u64,
+    matches: impl Fn(&str) -> bool,
+) -> Result<bool> {
     let cwd_text = cwd_str(cwd);
-    let holds = |text: &str| harness.holds_note(text, mark).then_some(());
+    let place = harness.note_place(&cwd_text);
+    let brief = brief(cwd);
+    let holds = |text: &str| {
+        let belongs = !matches!(place.layout, SessionLayout::Tree { .. })
+            || harness.recorded_turn(&cwd_text, text, Some(since), brief.as_deref()).is_some();
+        (belongs && matches(text)).then_some(())
+    };
     for root in &roots(cwd, harness)? {
         if !root.exists() {
             continue;
@@ -65,8 +110,80 @@ pub fn holds_note(cwd: &Path, harness: Harness, since: u64, mark: &str) -> Resul
         if !held.is_empty() {
             return Ok(true);
         }
+        // A bound Claude starts in its role copy and records the worktree
+        // in that session. Its project directory is not the worktree's.
+        if harness == Harness::ClaudeCode {
+            let held = read_tree(&root.join("projects"), "jsonl", since, |text| {
+                (harness.recorded_turn(&cwd_text, text, since, brief.as_deref()).is_some()
+                    && matches(text))
+                .then_some(())
+            })?;
+            if !held.is_empty() {
+                return Ok(true);
+            }
+        }
     }
     Ok(false)
+}
+
+/// A write's result link identifies a worker's own comment even when it
+/// used a body file. Read commands and user messages cannot suppress one.
+pub(crate) fn posted_comment(cwd: &Path, harness: Harness, since: u64, url: &str) -> Result<bool> {
+    notes_match(cwd, harness, since, |text| posted_in(text, url))
+}
+
+fn posted_in(text: &str, url: &str) -> bool {
+    use serde_json::Value;
+    use std::collections::BTreeSet;
+    fn visit(value: &Value, writes: &mut BTreeSet<String>, url: &str) -> bool {
+        match value {
+            Value::Array(items) => items.iter().any(|item| visit(item, writes, url)),
+            Value::Object(fields) => {
+                let kind = value["type"].as_str().unwrap_or("");
+                let id = value["call_id"].as_str().or(value["id"].as_str());
+                if matches!(kind, "function_call" | "tool_use" | "toolCall" | "function") {
+                    let args = value
+                        .get("arguments")
+                        .or(value.get("input"))
+                        .or_else(|| value["function"].get("arguments"));
+                    let args = args.map(Value::to_string).unwrap_or_default();
+                    if args.contains("gh ")
+                        && (args.contains("issue comment")
+                            || args.contains("/comments")
+                                && (args.contains("POST") || args.contains("-f")))
+                        && let Some(id) = id
+                    {
+                        writes.insert(id.to_string());
+                    }
+                }
+                let reply = value["call_id"]
+                    .as_str()
+                    .or(value["tool_use_id"].as_str())
+                    .or(value["tool_call_id"].as_str())
+                    .or(value["toolCallId"].as_str());
+                let result = matches!(kind, "function_call_output" | "tool_result")
+                    || value["role"] == "toolResult"
+                    || value["role"] == "tool";
+                if result
+                    && reply.is_some_and(|id| writes.contains(id))
+                    && value.to_string().match_indices(url).any(|(at, _)| {
+                        value.to_string()[at + url.len()..]
+                            .chars()
+                            .next()
+                            .is_none_or(|next| !next.is_ascii_digit())
+                    })
+                {
+                    return true;
+                }
+                fields.values().any(|child| visit(child, writes, url))
+            }
+            _ => false,
+        }
+    }
+    let mut writes = BTreeSet::new();
+    text.lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .any(|line| visit(&line, &mut writes, url))
 }
 
 /// Writes, for every harness under `home`, what it keeps of `line` typed at
@@ -484,6 +601,48 @@ fn remove_named(dir: &Path, name: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn only_a_comment_write_receipt_identifies_the_workers_own_comment() {
+        use serde_json::json;
+        let url = "https://github.com/acme/tasks/issues/7#issuecomment-100";
+        let calls = [
+            (
+                json!({"type":"function_call", "call_id":"write", "name":"functions.exec", "arguments":"await tools.exec_command({cmd: 'gh issue comment 7 --body-file note.md'})"}),
+                json!({"type":"function_call_output", "call_id":"write", "output":url}),
+            ),
+            (
+                json!({"type":"tool_use", "id":"write", "name":"Bash", "input":{"command":"gh api repos/acme/tasks/issues/7/comments -f body=done"}}),
+                json!({"type":"tool_result", "tool_use_id":"write", "content":url}),
+            ),
+            (
+                json!({"type":"toolCall", "id":"write", "name":"bash", "arguments":{"command":"gh issue comment 7 --body done"}}),
+                json!({"role":"toolResult", "toolCallId":"write", "content":[{"type":"text","text":url}]}),
+            ),
+            (
+                json!({"type":"function", "id":"write", "function":{"name":"bash","arguments":"{\"command\":\"gh issue comment 7 --body done\"}"}}),
+                json!({"role":"tool", "tool_call_id":"write", "content":url}),
+            ),
+        ];
+        for (call, result) in calls {
+            assert!(super::posted_in(&format!("{call}\n{result}\n"), url));
+            assert!(!super::posted_in(
+                &format!("{call}\n{}\n", result.to_string().replace(url, &format!("{url}0"))),
+                url
+            ));
+            assert!(!super::posted_in(&result.to_string(), url), "a link alone proves no write");
+            let read = call
+                .to_string()
+                .replace("issue comment", "issue view")
+                .replace("/comments -f", "/comments --jq");
+            assert!(
+                !super::posted_in(&format!("{read}\n{result}\n"), url),
+                "a read proves no write"
+            );
+        }
+        let quoted = json!({"type":"user", "message":{"role":"user","content":format!("gh issue comment 7: {url}")}});
+        assert!(!super::posted_in(&quoted.to_string(), url));
+    }
+
     use super::*;
 
     const AT: u64 = 1_793_106_373;

@@ -434,13 +434,15 @@ pub struct Failed {
     pub step: String,
     pub issue: Option<u64>,
     pub patrol: Option<String>,
+    pub comment: Option<String>,
     pub error: String,
 }
 
 impl Failed {
     /// Whether `other` is the same step on the same thing, whatever it said.
     pub fn same_step(&self, other: &Failed) -> bool {
-        (&self.step, self.issue, &self.patrol) == (&other.step, other.issue, &other.patrol)
+        (&self.step, self.issue, &self.patrol, &self.comment)
+            == (&other.step, other.issue, &other.patrol, &other.comment)
     }
 
     /// The step as a human names it: `dispatch #3`, `patrol triage`, `tick`.
@@ -494,13 +496,20 @@ impl Tick {
     pub fn failed(&self) -> Vec<Failed> {
         if let Some(error) = &self.error {
             let step = "tick".to_string();
-            return vec![Failed { step, issue: None, patrol: None, error: error.clone() }];
+            return vec![Failed {
+                step,
+                issue: None,
+                patrol: None,
+                comment: None,
+                error: error.clone(),
+            }];
         }
         let errors = self.answer.as_ref().and_then(|answer| answer["errors"].as_array());
         let failed = |row: &Value| Failed {
             step: row["do"].as_str().unwrap_or_default().to_string(),
             issue: row["issue"].as_u64(),
             patrol: row["patrol"].as_str().map(str::to_string),
+            comment: row["comment"].as_str().map(str::to_string),
             error: row["error"].as_str().unwrap_or_default().to_string(),
         };
         errors.into_iter().flatten().map(failed).collect()
