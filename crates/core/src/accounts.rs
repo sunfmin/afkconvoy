@@ -106,7 +106,9 @@ struct TokenIssue {
     total: u64,
 }
 
-fn token_stats(rows: &[(u64, String, account::Counts, usize, bool)]) -> TokenStats {
+type TokenSample = (u64, String, account::Counts, usize, bool);
+
+fn token_stats(rows: &[TokenSample]) -> TokenStats {
     let mut totals = account::Counts::default();
     let mut values = Vec::new();
     let mut unknown_workers = 0usize;
@@ -128,8 +130,7 @@ fn token_stats(rows: &[(u64, String, account::Counts, usize, bool)]) -> TokenSta
 
 fn token_report(rows: &[Row]) -> TokenReport {
     let mut overall = Vec::new();
-    let mut harnesses: BTreeMap<String, Vec<(u64, String, account::Counts, usize, bool)>> =
-        BTreeMap::new();
+    let mut harnesses: BTreeMap<String, Vec<TokenSample>> = BTreeMap::new();
     for row in rows {
         let mut total = account::Counts::default();
         let mut unknown = 0usize;

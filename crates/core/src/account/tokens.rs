@@ -87,10 +87,10 @@ pub fn parse(harness: Harness, text: &str) -> Option<Tokens> {
         let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
         match harness {
             Harness::Codex => {
-                if v["type"] == "turn_context" {
-                    if let Some(m) = v["payload"]["model"].as_str() {
-                        model = m.to_string();
-                    }
+                if v["type"] == "turn_context"
+                    && let Some(m) = v["payload"]["model"].as_str()
+                {
+                    model = m.to_string();
                 }
                 if v["type"] != "event_msg" || v["payload"]["type"] != "token_count" {
                     continue;
