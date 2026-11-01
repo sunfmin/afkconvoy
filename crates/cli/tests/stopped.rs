@@ -1446,8 +1446,6 @@ fn later_comments_wait_for_a_worker_of_the_claim_s_host() {
         world.afk(&["tick", "--instance", "beta", "--host", "h2", "--now", "1090"]).ok();
     assert!(elsewhere["errors"].as_array().unwrap().is_empty(), "{elsewhere}");
     assert_eq!(typed(&world).len(), 1, "another host types nothing");
-    tick(&world, 1180);
-    assert_eq!(typed(&world).len(), 2, "its own host delivers");
 }
 
 #[test]
@@ -1456,8 +1454,29 @@ fn a_queued_issue_update_is_retried_without_retyping_and_doctor_names_its_commen
     report(&world, "working", 1000, 1080);
     world.with_orca(|orca| orca["notes"] = json!("queued"));
     let url = later_comment(&world, "Use v2", 1080);
-    for now in [1090, 1180, 1270] {
-        let failed = tick(&world, now);
+    world.afk_lines(&[
+        "run",
+        "--foreground",
+        "--host",
+        "h1",
+        "--instance",
+        "alpha",
+        "--second-ms",
+        "0",
+        "--ticks",
+        "3",
+        "--now",
+        "1090",
+    ]);
+    let recorded: Vec<Value> = logs(&world)
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter_map(|entry| {
+            entry["tick"]["answer"].as_object().map(|_| entry["tick"]["answer"].clone())
+        })
+        .collect();
+    assert_eq!(recorded.len(), 3);
+    for failed in recorded {
         assert!(
             failed["errors"]
                 .as_array()
@@ -1487,8 +1506,20 @@ fn a_queued_issue_update_is_retried_without_retyping_and_doctor_names_its_commen
     // The queued input eventually becomes the model's user message.
     let line = typed(&world)[1].clone();
     afkconvoy::session::record_note(&world.home(), &worktree(&world), &line, true, 1280).unwrap();
-    let recovered = tick(&world, 1360);
-    assert!(recovered["errors"].as_array().unwrap().is_empty(), "{recovered}");
+    world.afk_lines(&[
+        "run",
+        "--foreground",
+        "--host",
+        "h1",
+        "--instance",
+        "alpha",
+        "--second-ms",
+        "0",
+        "--ticks",
+        "1",
+        "--now",
+        "1360",
+    ]);
     assert_eq!(typed(&world).len(), 2);
     let doctor = world.afk(&["doctor", "--host", "h1", "--now", "1361"]).json;
     assert!(

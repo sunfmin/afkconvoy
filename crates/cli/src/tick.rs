@@ -958,6 +958,15 @@ impl Ticked {
             parts.push(format!("opened an issue for the slow gate: {evidence}"));
         }
         parts.extend(self.cut_said.iter().filter_map(log::cut_said));
+        for update in &self.updates {
+            let issue = &update["issue"];
+            let comment = update["comment"].as_str().unwrap_or("issue updates");
+            parts.push(if update["outcome"] == "failed" {
+                format!("FAILED tell #{issue}: {}", update["error"].as_str().unwrap_or_default())
+            } else {
+                format!("told #{issue}: {comment}")
+            });
+        }
         if self.pass.held_back(&self.set) {
             parts.push(format!(
                 "admission holds back new workers: {}",

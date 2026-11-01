@@ -83,6 +83,18 @@ fn notes_match(
         if !held.is_empty() {
             return Ok(true);
         }
+        // A bound Claude starts in its role copy and records the worktree
+        // in that session. Its project directory is not the worktree's.
+        if harness == Harness::ClaudeCode {
+            let held = read_tree(&root.join("projects"), "jsonl", since, |text| {
+                (harness.recorded_turn(&cwd_text, text, since, brief.as_deref()).is_some()
+                    && matches(text))
+                .then_some(())
+            })?;
+            if !held.is_empty() {
+                return Ok(true);
+            }
+        }
     }
     Ok(false)
 }
@@ -102,8 +114,11 @@ fn posted_in(text: &str, url: &str) -> bool {
             Value::Object(fields) => {
                 let kind = value["type"].as_str().unwrap_or("");
                 let id = value["call_id"].as_str().or(value["id"].as_str());
-                if matches!(kind, "function_call" | "tool_use" | "toolCall") {
-                    let args = value.get("arguments").or(value.get("input"));
+                if matches!(kind, "function_call" | "tool_use" | "toolCall" | "function") {
+                    let args = value
+                        .get("arguments")
+                        .or(value.get("input"))
+                        .or_else(|| value["function"].get("arguments"));
                     let args = args.map(Value::to_string).unwrap_or_default();
                     if args.contains("gh ")
                         && (args.contains("issue comment")
@@ -117,6 +132,7 @@ fn posted_in(text: &str, url: &str) -> bool {
                 let reply = value["call_id"]
                     .as_str()
                     .or(value["tool_use_id"].as_str())
+                    .or(value["tool_call_id"].as_str())
                     .or(value["toolCallId"].as_str());
                 let result = matches!(kind, "function_call_output" | "tool_result")
                     || value["role"] == "toolResult"
@@ -553,6 +569,44 @@ fn remove_named(dir: &Path, name: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn only_a_comment_write_receipt_identifies_the_workers_own_comment() {
+        use serde_json::json;
+        let url = "https://github.com/acme/tasks/issues/7#issuecomment-100";
+        let calls = [
+            (
+                json!({"type":"function_call", "call_id":"write", "name":"functions.exec", "arguments":"await tools.exec_command({cmd: 'gh issue comment 7 --body-file note.md'})"}),
+                json!({"type":"function_call_output", "call_id":"write", "output":url}),
+            ),
+            (
+                json!({"type":"tool_use", "id":"write", "name":"Bash", "input":{"command":"gh api repos/acme/tasks/issues/7/comments -f body=done"}}),
+                json!({"type":"tool_result", "tool_use_id":"write", "content":url}),
+            ),
+            (
+                json!({"type":"toolCall", "id":"write", "name":"bash", "arguments":{"command":"gh issue comment 7 --body done"}}),
+                json!({"role":"toolResult", "toolCallId":"write", "content":[{"type":"text","text":url}]}),
+            ),
+            (
+                json!({"type":"function", "id":"write", "function":{"name":"bash","arguments":"{\"command\":\"gh issue comment 7 --body done\"}"}}),
+                json!({"role":"tool", "tool_call_id":"write", "content":url}),
+            ),
+        ];
+        for (call, result) in calls {
+            assert!(super::posted_in(&format!("{call}\n{result}\n"), url));
+            assert!(!super::posted_in(&result.to_string(), url), "a link alone proves no write");
+            let read = call
+                .to_string()
+                .replace("issue comment", "issue view")
+                .replace("/comments -f", "/comments --jq");
+            assert!(
+                !super::posted_in(&format!("{read}\n{result}\n"), url),
+                "a read proves no write"
+            );
+        }
+        let quoted = json!({"type":"user", "message":{"role":"user","content":format!("gh issue comment 7: {url}")}});
+        assert!(!super::posted_in(&quoted.to_string(), url));
+    }
+
     use super::*;
 
     const AT: u64 = 1_793_106_373;
