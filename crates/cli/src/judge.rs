@@ -549,8 +549,9 @@ impl Silenced {
 /// the read the tick routes it by — writing nothing. `None` for one at work,
 /// gone, within grace, waiting on its own background work inside the gate
 /// limit, obeying its landing turn's wait, held by a shared harness outage,
-/// or a dispatch whose worker has not taken its brief. One with no PR that declared past grace is reported too,
-/// with the command that carries its verdict out.
+/// or a dispatch whose worker has not taken its brief. One with no PR that
+/// declared past grace is reported too, with the command that carries its
+/// verdict out.
 pub(crate) fn silenced(
     fleet: &Fleet,
     me: &Me,
