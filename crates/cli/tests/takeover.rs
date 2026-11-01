@@ -140,6 +140,45 @@ fn a_new_instance_on_the_same_host_keeps_its_workers_commands() {
 }
 
 #[test]
+fn a_gate_started_before_a_takeover_cannot_record_after_it() {
+    let world = World::new();
+    world.set_gate(
+        "afkconvoy takeover --from alpha --instance beta --host h2 --now 2860 >/dev/null",
+    );
+    world.issue(7, &["ready-for-agent"]);
+    claimed(&world, 7, "alpha", "h1", 1000);
+    let error = worker_command(&world, &["gate"]).error();
+    assert!(error.contains("this worker's work was taken; stop"), "{error}");
+    assert_eq!(holder(&world, 7), "beta");
+    assert!(world.remote(&["for-each-ref", "--format=%(refname)", "refs/convoy/gate/"]).is_empty());
+}
+
+#[test]
+fn a_failed_close_of_a_taken_worker_is_retried_without_losing_its_worktree() {
+    let world = World::new();
+    world.issue(7, &["ready-for-agent"]);
+    tick_as(&world, "alpha", "h1", 1000);
+    let path = PathBuf::from(world.orca()["worktrees"][0]["path"].as_str().unwrap());
+    takeover(&world, &["--from", "alpha", "--instance", "beta", "--host", "h2", "--now", "2860"])
+        .ok();
+    world.with_orca(|orca| orca["close_keeps_terminal"] = json!(true));
+    let failed = tick_as(&world, "alpha", "h1", 2860);
+    assert_eq!(failed["errors"][0]["do"], "stop_taken", "{failed}");
+    assert!(path.is_dir());
+    world.with_orca(|orca| orca["close_keeps_terminal"] = json!(false));
+    assert_eq!(tick_as(&world, "alpha", "h1", 2950)["errors"], json!([]));
+    assert!(
+        world.orca()["terminals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|t| t["worktreePath"] == path.to_str().unwrap())
+            .all(|t| t["open"] != true)
+    );
+    assert!(path.is_dir());
+}
+
+#[test]
 fn a_tick_reclaims_stale_claims_into_its_free_slots_ahead_of_the_frontier() {
     let world = World::new();
     world.say_concurrency(&world.clone, 2);

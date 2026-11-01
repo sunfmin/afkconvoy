@@ -80,7 +80,15 @@ fn a_claim_taken_as_stale_is_said_lost_past_the_lease() {
     let (path, head) = kept.into_inner().unwrap();
     assert!(path.is_dir(), "the old worker's worktree is kept");
     assert_eq!(git(&path, &["rev-parse", "HEAD"]), head);
-    assert!(world.orca()["terminals"].as_array().unwrap().iter().all(|t| t["open"] != true));
+    let orca = world.orca();
+    let workers: Vec<_> = orca["terminals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|t| t["worktreePath"] == path.to_str().unwrap() && !t["command"].is_null())
+        .collect();
+    assert!(!workers.is_empty(), "the worker's terminal stays on record");
+    assert!(workers.iter().all(|t| t["open"] != true), "{workers:?}");
     assert!(!world.pushes().iter().any(|name| name.starts_with("refs/heads/")));
     assert!(!world.remote(&["rev-list", "--all"]).lines().any(|sha| sha == head));
     let doctor = world.afk(&["doctor", "--host", "h1", "--now", LATER]).ok();
