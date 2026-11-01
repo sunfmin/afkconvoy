@@ -256,3 +256,60 @@ fn unknown_schema_is_unreadable_and_unknown_measurements_stay_null_in_rows() {
     assert_eq!(summary["count"], 0);
     assert_eq!(summary["unreadable"].as_array().unwrap().len(), 2);
 }
+
+#[test]
+fn token_summary_counts_known_workers_by_harness_and_ranks_issues() {
+    use afkconvoy_core::account::Counts;
+    let world = World::new();
+    for n in 1..=6u64 {
+        world.issue(n, &[]);
+        let text =
+            account(n, 100, 200, &[if n % 2 == 0 { "codex" } else { "pi" }, "claude-code"], &[]);
+        let mut row = account::read(&text, n).unwrap();
+        row.workers[0].tokens = Some(
+            [(
+                String::from("model"),
+                Counts {
+                    input: n * 10,
+                    cache_read: n * 2,
+                    cache_write: n,
+                    output: n * 3,
+                    reasoning: Some(n),
+                },
+            )]
+            .into_iter()
+            .collect(),
+        );
+        world.comment(n, &account::render(&row));
+    }
+    let out = world.afk(&["accounts", "--all", "--now", "300"]).ok();
+    assert_eq!(
+        out["tokens"]["totals"],
+        json!({"input":210,"cache_read":42,"cache_write":21,"output":63,"reasoning":21})
+    );
+    assert_eq!(out["tokens"]["unknown_workers"], 6);
+    assert_eq!(out["tokens"]["p50"], 48);
+    assert_eq!(out["tokens"]["p95"], 96);
+    assert_eq!(out["tokens"]["by_harness"]["codex"]["totals"]["input"], 120);
+    assert_eq!(out["tokens"]["by_harness"]["pi"]["totals"]["input"], 90);
+    assert_eq!(out["tokens"]["by_harness"]["claude-code"]["unknown_workers"], 6);
+    assert_eq!(
+        out["tokens"]["top"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["number"].as_u64().unwrap())
+            .collect::<Vec<_>>(),
+        vec![6, 5, 4, 3, 2]
+    );
+    let rows = world
+        .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
+        .args(["accounts", "--all", "--rows", "--now", "300"])
+        .output()
+        .unwrap();
+    assert!(rows.status.success());
+    let row: serde_json::Value =
+        serde_json::from_slice(rows.stdout.split(|b| *b == b'\n').next().unwrap()).unwrap();
+    assert_eq!(row["workers"][0]["tokens"]["model"]["input"], 10);
+    assert!(row["workers"][1]["tokens"].is_null());
+}
