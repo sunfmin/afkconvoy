@@ -1030,7 +1030,7 @@ impl Harness {
         brief: Option<&str>,
     ) -> Option<Turn> {
         match self {
-            Harness::ClaudeCode => claude_code::recorded_turn(cwd, text, not_before),
+            Harness::ClaudeCode => claude_code::recorded_turn(cwd, text, not_before, brief),
             Harness::Pi => pi::recorded_turn(cwd, text, not_before),
             Harness::Codex => codex::recorded_turn(cwd, text, not_before, brief),
             Harness::Dsh => dsh::recorded_turn(cwd, text, not_before),
@@ -1063,9 +1063,10 @@ impl Harness {
     /// worker, excluding tool output and model replies.
     pub fn names_brief(self, text: &str, brief: &str) -> bool {
         match self {
+            Harness::ClaudeCode => claude_code::names_brief(text, brief),
             Harness::Codex => codex::names_brief(text, brief),
             Harness::Kimi => kimi::names_brief(text, brief),
-            Harness::ClaudeCode | Harness::Pi | Harness::Dsh | Harness::Grok => false,
+            Harness::Pi | Harness::Dsh | Harness::Grok => false,
         }
     }
 
@@ -1086,16 +1087,18 @@ impl Harness {
     }
 
     /// Where this harness keeps the words of the session of the worktree
-    /// `cwd`: where it keeps the turn, but for Grok, whose turn events hold
-    /// no message.
+    /// `cwd`: Claude Code's project directory, Grok's message file, or where
+    /// the harness keeps its turn.
     pub fn note_place(self, cwd: &str) -> SessionPlace {
         match self {
+            Harness::ClaudeCode => SessionPlace {
+                under_home: claude_code::HOME,
+                layout: claude_code::note_layout(cwd),
+            },
             Harness::Grok => {
                 SessionPlace { under_home: grok::HOME, layout: grok::note_layout(cwd) }
             }
-            Harness::ClaudeCode | Harness::Pi | Harness::Codex | Harness::Dsh | Harness::Kimi => {
-                self.session_place(cwd)
-            }
+            Harness::Pi | Harness::Codex | Harness::Dsh | Harness::Kimi => self.session_place(cwd),
         }
     }
 

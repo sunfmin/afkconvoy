@@ -512,9 +512,14 @@ pub(super) fn shows_background(screen: &[String]) -> bool {
 /// The harness directory under a user's home.
 pub(super) const HOME: &str = ".claude";
 
-/// Where Claude Code keeps the session of `cwd`: one JSONL file for each
-/// session, in the project directory it names from the worktree path.
-pub(super) fn session_layout(cwd: &str) -> SessionLayout {
+/// Sessions are filed under the directory Claude Code starts in, which is
+/// the role copy for a bound worker. The session identifies its worktree.
+pub(super) fn session_layout(_cwd: &str) -> SessionLayout {
+    SessionLayout::Tree { dir: "projects".into(), extension: "jsonl" }
+}
+
+/// Notes typed at an unbound worker's prompt stay in its project directory.
+pub(super) fn note_layout(cwd: &str) -> SessionLayout {
     SessionLayout::Files { dir: format!("projects/{}", dir_name(cwd)), extension: "jsonl" }
 }
 
@@ -523,15 +528,45 @@ fn dir_name(cwd: &str) -> String {
     session::stored_name(cwd.replace('/', "-"), cwd)
 }
 
-/// The turn `text` records for `cwd`. A line whose `cwd` is another worktree
-/// is not this one. A sidechain is a child session.
-pub(super) fn recorded_turn(cwd: &str, text: &str, not_before: Option<u64>) -> Option<Turn> {
-    let notes: Vec<Note> = json_lines(text).filter_map(|value| note(cwd, &value)).collect();
+/// The turn for `cwd`, or for the worker its initial brief pointer names
+/// when Claude Code starts in a role copy. A sidechain is a child session.
+pub(super) fn recorded_turn(
+    cwd: &str,
+    text: &str,
+    not_before: Option<u64>,
+    brief: Option<&str>,
+) -> Option<Turn> {
+    let named = brief.is_some_and(|brief| names_brief(text, brief));
+    let here = json_lines(text).any(|value| {
+        value["isSidechain"] != true
+            && value["cwd"].as_str().is_some_and(|recorded| session::same_cwd(recorded, cwd))
+    });
+    if !here && !named {
+        return None;
+    }
+    let notes: Vec<Note> = json_lines(text).filter_map(|value| note(cwd, &value, named)).collect();
     session::turn_of(&notes, not_before)
 }
 
-fn note(cwd: &str, value: &serde_json::Value) -> Option<Note> {
-    if value["cwd"].as_str().is_some_and(|recorded| !session::same_cwd(recorded, cwd)) {
+/// The first primary user message must be this worker's brief pointer.
+/// Tool results, queued input, replies and later mentions cannot associate
+/// another worker's session. The pointer match is shared with Codex.
+pub(super) fn names_brief(text: &str, brief: &str) -> bool {
+    for value in json_lines(text) {
+        if value["isSidechain"] == true {
+            continue;
+        }
+        match value["type"].as_str() {
+            Some("user") => return session::brief_match(&value, brief).unwrap_or(false),
+            Some("assistant") => return false,
+            _ => {}
+        }
+    }
+    false
+}
+
+fn note(cwd: &str, value: &serde_json::Value, named: bool) -> Option<Note> {
+    if !named && value["cwd"].as_str().is_some_and(|recorded| !session::same_cwd(recorded, cwd)) {
         return None;
     }
     let child = value["isSidechain"] == true;
