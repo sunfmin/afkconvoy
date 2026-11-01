@@ -161,6 +161,7 @@ with `phase=blocked` and every existing blocking issue in `blocked_by=`:
 ```
 {verdict_marker}
 ```
+<escalation>
 
 <wake>
 
@@ -215,9 +216,9 @@ body:
   Reuse its issue, or open one for another repo of this host following the cross-repo blocker
   procedure above. Name every blocking issue in `blocked_by=` (e.g. `blocked_by=41,42`) and say
   what is missing.
-- **`escalate`** — after a genuine effort you cannot complete the work or make the gate pass, or
-  the issue as written cannot be done. Say where you are stuck, or the decision that has to be made,
-  so that a human can act on it in one reply.
+- **`escalate`** — a human must act, as described below.
+
+<escalation>
 
 <wake>
 
@@ -255,6 +256,7 @@ reads this terminal: never wait for an answer.
 <rework><gate><split><cross_repo>
 ## Before an `escalate`
 
+<escalation>
 <decisions>
 ## Declare a verdict
 
@@ -457,6 +459,18 @@ its source: a shared GitHub identity, an agent's ruling or a merged document alo
 Preserve actual user decisions and escalate unresolved conflicts within the existing boundaries.
 ";
 
+/// The same boundary for an unbound worker and a stage declaring a verdict.
+const ESCALATION: &str = "\
+A worker's turn has no fixed length. A large, multi-part or long change is not a reason to
+escalate: work it in committed, pushed pieces where your role permits writing.
+
+Escalate only when a human must act: spending money, or needing an account, a credential or a
+person's hands; what cannot be undone; a secret or private data leaving the host; what a product
+is for or who it is for; or a conflict between written decisions you cannot settle by the issue's
+goal. Name which of these requires a human in your escalate comment, and say what they must decide
+or do so they can act in one reply.
+";
+
 /// Where the rules a worker works under are: a line
 /// for each kind. A harness loads them; a brief copies none. They are given
 /// no order, and nothing here says which holds when two disagree: a team's
@@ -620,7 +634,8 @@ pub fn stage_prompt(fields: &StageFields) -> Result<String, String> {
                 "Judge what is left now:"
             },
         )
-        .replace("<decisions>", DECISIONS);
+        .replace("<decisions>", DECISIONS)
+        .replace("<escalation>", ESCALATION);
     let template = format!("{template}{ISSUE_UPDATES}");
     fill(
         &in_tracker(&template, fields.tracker),
@@ -852,8 +867,9 @@ fn prompt(
             (steps(&taker, "3", "4", outcomes), pr.to_string())
         }
     };
-    let template =
-        template.replace("<fast_gate>", fields.fast_gate_command.map_or("", |_| FAST_GATE));
+    let template = template
+        .replace("<fast_gate>", fields.fast_gate_command.map_or("", |_| FAST_GATE))
+        .replace("<escalation>", ESCALATION);
     let template = format!("{template}{ISSUE_UPDATES}");
     fill(
         &in_tracker(&template, fields.tracker),
@@ -1108,6 +1124,29 @@ mod tests {
             land_command: "/opt/bin/afkconvoy land --issue 7",
             wake_command: "/opt/bin/afkconvoy wake",
             fast_gate_command: None,
+        }
+    }
+
+    fn asserts_escalation_boundary(brief: &str) {
+        for rule in [
+            "A worker's turn has no fixed length",
+            "A large, multi-part or long change is not a reason to\nescalate",
+            "committed, pushed pieces",
+            "spending money, or needing an account, a credential or a\nperson's hands",
+            "what cannot be undone",
+            "a secret or private data leaving the host",
+            "what a product\nis for or who it is for",
+            "a conflict between written decisions you cannot settle by the issue's\ngoal",
+            "Name which of these requires a human in your escalate comment",
+        ] {
+            assert!(brief.contains(rule), "missing {rule:?} in {brief}");
+        }
+    }
+
+    #[test]
+    fn unbound_workers_escalate_only_for_a_human() {
+        for variant in [Variant::Fresh, Variant::Continue, Variant::TakeUp { pr: 70 }] {
+            asserts_escalation_boundary(&worker_prompt(&fields(), variant).unwrap());
         }
     }
 
@@ -1396,6 +1435,7 @@ mod tests {
             gate: None,
         };
         let prompt = stage_prompt(&fields).unwrap();
+        asserts_escalation_boundary(&prompt);
         for said in [
             "- **Issue:** #7 — Add {branch} support\n",
             "- **Stage:** `build`, of the workflow `feature`\n",
