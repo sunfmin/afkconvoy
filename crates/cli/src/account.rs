@@ -36,8 +36,24 @@ pub fn leave(repo: &Repo, gh: &GitHub, issue: u64, end: End, now: u64) -> Result
         .collect();
     let (chip, model, cpus, bytes) = machine_of_host();
     let host = crate::this_host();
+    let own = gh.repository()?;
+    let tracker = match &gh.tracker {
+        afkconvoy_core::tracker::Tracker::Own => own.as_str(),
+        afkconvoy_core::tracker::Tracker::Other { tracker, .. } => tracker.as_str(),
+    };
+    let config = crate::config::load(&crate::config::file_of(repo))?;
+    let mut lanes = vec![(config.gate_command.as_str(), "whole")];
+    if let Some(gates) = &config.gates {
+        lanes.push((gates.fast.command.as_str(), "fast"));
+        lanes.push((gates.slow.command.as_str(), "slow"));
+    }
     let Some(text) = account::comment(&account::Told {
         issue,
+        repo: &own,
+        tracker,
+        version: crate::VERSION,
+        outcome: end,
+        lanes: &lanes,
         heard: &heard,
         gates: &gates,
         claimed,
