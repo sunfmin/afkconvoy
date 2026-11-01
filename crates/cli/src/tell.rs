@@ -100,7 +100,11 @@ fn comment(fleet: &Fleet, issue: u64, text: &str) -> Result<String> {
         "{MARK}\n**Operator's note** to the worker of this issue, typed at it by `afkconvoy tell`:\n\n{text}"
     );
     let posted = |comments: &[Comment]| {
-        comments.iter().rev().find(|comment| comment.body.trim() == body.trim()).map(|c| c.url.clone())
+        comments
+            .iter()
+            .rev()
+            .find(|comment| comment.body.trim() == body.trim())
+            .map(|c| c.url.clone())
     };
     if let Some(url) = posted(&fleet.gh.comments(issue)?) {
         return Ok(url);

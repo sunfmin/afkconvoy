@@ -1036,7 +1036,9 @@ impl Harness {
     /// no message.
     pub fn note_place(self, cwd: &str) -> SessionPlace {
         match self {
-            Harness::Grok => SessionPlace { under_home: grok::HOME, layout: grok::note_layout(cwd) },
+            Harness::Grok => {
+                SessionPlace { under_home: grok::HOME, layout: grok::note_layout(cwd) }
+            }
             Harness::ClaudeCode | Harness::Pi | Harness::Codex | Harness::Dsh | Harness::Kimi => {
                 self.session_place(cwd)
             }

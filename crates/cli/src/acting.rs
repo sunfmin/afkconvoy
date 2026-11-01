@@ -232,7 +232,11 @@ pub fn outcome(command: &str, answer: &Value) -> String {
         "escalate" | "close" | "nudge" | "restart" | "abandon" => word("action"),
         "tell" => Some(match word("why") {
             Some(why) => format!("commented, typed nothing: {why}"),
-            None => format!("{}, {}", word("action").unwrap_or_default(), word("comment").unwrap_or_default()),
+            None => format!(
+                "{}, {}",
+                word("action").unwrap_or_default(),
+                word("comment").unwrap_or_default()
+            ),
         }),
         "dispatch" => Some(match answer["started"].as_bool() {
             Some(true) => "started".to_string(),

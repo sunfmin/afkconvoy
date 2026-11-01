@@ -1637,7 +1637,8 @@ impl Worktree {
                 ));
             }
         }
-        let harness = agent_harness(&agent).or(self.recorded_harness()?).unwrap_or(Harness::DEFAULT);
+        let harness =
+            agent_harness(&agent).or(self.recorded_harness()?).unwrap_or(Harness::DEFAULT);
         if crate::session::holds_note(&self.path, harness, since, mark)? {
             return Ok(Handed::Already);
         }

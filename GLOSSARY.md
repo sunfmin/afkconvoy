@@ -308,7 +308,7 @@ _Avoid_: ping, reminder, retry
 
 **Tell**:
 The operator's note to the worker at work on an issue, busy or stopped, with `afkconvoy tell`. Posted on the issue first, its one home, which every later worker reads; then typed at the worker under this host's claim, and told only once its harness's session record holds it as a message its model was given as the user's. A note seen only in the harness's input queue is not told. A nudge is the fleet's own line to a stopped worker, telling it to carry on; a tell is the operator's words.
-_Avoid_: message, relay, steer (`send` hands a stage's issue to its next stage)
+_Avoid_: message, relay, send (`send` puts an issue at a stage of its workflow)
 
 **Restart**:
 Replacing a silent worker with a new one in the same worktree and the same role, with its PR, branch and worktree untouched. Made once, and only for a worker waiting to land its PR.

@@ -114,9 +114,9 @@ pub mod stop;
 pub mod stop_release;
 pub mod switch;
 pub mod takeover;
-pub mod tell;
 mod target;
 pub mod team;
+pub mod tell;
 pub mod tick;
 pub mod tools;
 pub mod topic;
@@ -3178,7 +3178,12 @@ enum Command {
         #[command(flatten)]
         issue: IssueArg,
         /// The note
-        #[arg(long, value_name = "TEXT", required_unless_present = "file", conflicts_with = "file")]
+        #[arg(
+            long,
+            value_name = "TEXT",
+            required_unless_present = "file",
+            conflicts_with = "file"
+        )]
         text: Option<String>,
         /// A file holding the note
         #[arg(long, value_name = "PATH")]
@@ -3718,8 +3723,7 @@ fn kind(name: &str) -> Kind {
     let worker_acts = Kind { acts: true, worktree: Worktree::Its, starts: false };
     match name {
         "dispatch" | "close" | "escalate" | "park" | "nudge" | "tell" | "restart" | "switch"
-        | "claim"
-        | "release" | "heartbeat" | "patrol-now" => Kind::ACTS,
+        | "claim" | "release" | "heartbeat" | "patrol-now" => Kind::ACTS,
         "takeover" => Kind { worktree: Worktree::Reads(Some("from")), ..Kind::ACTS },
         "cast" | "target" | "delivery" | "gate" | "land" | "verdict" | "rule" | "send"
         | "intake" | "lock" | "over" | "cut" | "wake" => worker_acts,

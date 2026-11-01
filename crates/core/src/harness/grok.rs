@@ -550,7 +550,11 @@ const CHAT: &str = "chat_history.jsonl";
 
 /// Where Grok keeps what was said in the session of `cwd`.
 pub(super) fn note_layout(cwd: &str) -> SessionLayout {
-    SessionLayout::Named { dir: format!("sessions/{}", dir_name(cwd)), name: CHAT, compressed: false }
+    SessionLayout::Named {
+        dir: format!("sessions/{}", dir_name(cwd)),
+        name: CHAT,
+        compressed: false,
+    }
 }
 
 /// The chat entry a stand-in writes for `line`, typed while the worker
@@ -560,9 +564,8 @@ pub(super) fn note_files(cwd: &str, line: &str, taken: bool, _at: u64) -> Vec<Se
     if !taken {
         return Vec::new();
     }
-    let said = format!(
-        "The user sent a message while you were working: <user_query>{line}</user_query>"
-    );
+    let said =
+        format!("The user sent a message while you were working: <user_query>{line}</user_query>");
     let entry = session::object(vec![("role", "user".into()), ("content", said.into())]);
     vec![SessionFile {
         path: format!("sessions/{}/afkconvoy-turn/{CHAT}", dir_name(cwd)),
