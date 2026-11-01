@@ -19,17 +19,22 @@ fn queue_load_admits_but_load_outside_the_queue_holds() {
     let _runner = world.host_held();
     world.busy(PAST_ANY);
     let marker = world.root.join("running");
-    let mut command = world.command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
+    let mut command = world
+        .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
         .args(["exclusive", "--", "sh", "-c"])
         .arg(format!("touch '{}'; sleep 30", marker.display()))
-        .stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
     let start = Instant::now();
     while !marker.exists() {
         assert!(start.elapsed() < Duration::from_secs(10));
         std::thread::sleep(Duration::from_millis(20));
     }
     let processes = world.root.join("admission-processes");
-    std::fs::write(&processes, format!("{} 1 0.0\n999999 {} 100.0\n", command.id(), command.id())).unwrap();
+    std::fs::write(&processes, format!("{} 1 0.0\n999999 {} 100.0\n", command.id(), command.id()))
+        .unwrap();
     let admitted = tick(&world, "1000");
     assert_eq!(dispatched(&admitted), [3, 5], "{admitted}");
     let doctor = world.afk(&["doctor", "--host", "h1"]).json;
