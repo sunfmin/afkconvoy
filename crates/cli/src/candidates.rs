@@ -1428,7 +1428,9 @@ fn round(round: Round<'_>, clock: impl Fn() -> u64) -> Result<Option<Value>> {
     if green {
         let tree = Tree::named(&tip.tree);
         let parts = (&GateCommand::new(&slow.whole), &GateCommand::new(&tip.command), &command);
-        if let Some(why) = crate::gate::record_whole(repo, &tree, parts, issue, clock())? {
+        if let Some(why) =
+            crate::gate::record_whole(repo, &tree, &tip.commit, parts, issue, clock())?
+        {
             green = false;
             result["recorded"] = json!(false);
             result["not_recorded"] = json!(why);

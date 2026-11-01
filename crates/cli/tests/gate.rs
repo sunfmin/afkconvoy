@@ -7,9 +7,10 @@ use afkconvoy_core::layout::Layout;
 use common::{World, git};
 use serde_json::json;
 
+use std::io::Write;
 use std::os::unix::net::UnixListener;
 use std::os::unix::process::CommandExt;
-use std::process::{Child, Output, Stdio};
+use std::process::{Child, Command, Output, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -217,6 +218,45 @@ fn a_green_run_on_a_committed_tree_is_put_on_record() {
 }
 
 #[test]
+fn a_record_push_packs_only_objects_past_the_tested_commit() {
+    let (world, _) = gated();
+    let mut random = 0x9e3779b9_u32;
+    let large: Vec<u8> = (0..1024 * 1024)
+        .map(|_| {
+            random ^= random << 13;
+            random ^= random >> 17;
+            random ^= random << 5;
+            random as u8
+        })
+        .collect();
+    std::fs::write(world.clone.join("large.bin"), large).unwrap();
+    git(&world.clone, &["add", "large.bin"]);
+    git(&world.clone, &["commit", "-q", "-m", "a large base tree"]);
+    git(&world.clone, &["push", "-q", "origin", "main"]);
+
+    let head = common::commit(&world.clone, "README.md", "one line changed\n");
+    // The candidate chain has already preserved the tested commit before its
+    // gate record is pushed, as the base branch has here.
+    git(&world.clone, &["push", "-q", "origin", "main"]);
+    assert_eq!(world.afk(&["gate"]).ok()["recorded"], true);
+
+    let record = records(&world).pop().unwrap();
+    let sha = world.remote(&["rev-parse", &record]);
+    assert_eq!(world.remote(&["rev-parse", &format!("{record}^")]), head);
+    let mut pack = Command::new("git")
+        .current_dir(&world.clone)
+        .args(["pack-objects", "--revs", "--stdout"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    pack.stdin.take().unwrap().write_all(format!("{sha}\n^{head}\n").as_bytes()).unwrap();
+    let packed = pack.wait_with_output().unwrap();
+    assert!(packed.status.success(), "{}", String::from_utf8_lossy(&packed.stderr));
+    assert!(packed.stdout.len() < 64 * 1024, "the record pack was {} bytes", packed.stdout.len());
+}
+
+#[test]
 fn a_run_is_timed_from_the_start_of_the_gate_command_to_its_end() {
     let world = World::new();
     world.set_gate("sleep 2");
@@ -361,6 +401,22 @@ fn a_record_stands_for_the_same_tree_and_command_for_one_day() {
     assert!(recorded(&repo, &tree, &other_command, 100_000).unwrap().is_none());
     let other_tree = Tree::named("4b825dc642cb6eb9a060e54bf8d69288fbee4904");
     assert!(recorded(&repo, &other_tree, &command, 100_000).unwrap().is_none());
+}
+
+#[test]
+fn a_parentless_record_already_on_the_remote_is_still_believed() {
+    let (world, command) = gated();
+    world.afk(&["gate", "--now", "100000"]).ok();
+    let repo = Repo::at(&world.clone).unwrap();
+    let tree = Tree::named(&git(&world.clone, &["rev-parse", "HEAD^{tree}"]));
+    let command = GateCommand::new(&command);
+    let name = records(&world).pop().unwrap();
+    let subject = world.remote(&["log", "-1", "--format=%s", &name]);
+    let legacy = repo.record_commit_of(tree.name(), &subject).unwrap();
+    git(&world.clone, &["push", "-q", "--force", "origin", &format!("{legacy}:{name}")]);
+
+    let run = recorded(&repo, &tree, &command, 100_000).unwrap().unwrap();
+    assert_eq!(run.at(), 100_000);
 }
 
 /// Moves the commit at `from` onto `to` and drops `from`.
