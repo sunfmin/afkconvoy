@@ -201,6 +201,7 @@ kinds! {
     PatrolFailed: Warning, "does not run: its last run failed";
     PatrolFull: Warning, "have reached its `max_open`";
     CutFailed: Warning, "cuts no version: its last cut failed";
+    CutNeed: Warning, "not cutting here";
     WaitedLong: Warning, "has waited for a human for";
     WaitTaken: Info, "human wait is taken by";
     NotOurs: Warning, "is held off by a PR not the fleet's";
@@ -1191,6 +1192,15 @@ fn plan_findings(run: &Run, state: &State) -> Vec<Finding> {
             format!("the patrol `{name}` does not run: {why}"),
             evidence,
             fix,
+        ));
+    }
+    if let Some(name) = set.cut.as_ref().and_then(|cut| cut.not_cutting_here.as_ref()) {
+        found.push(finding(
+            Kind::CutNeed,
+            json!(["cut-need", name]),
+            name.clone(),
+            "the cut is due and a host check failed".to_string(),
+            "check the repo's cut-needs declaration on this host".to_string(),
         ));
     }
     if let Some(cut) = set.cut.as_ref().filter(|cut| cut.standing == cut::Standing::Failed)

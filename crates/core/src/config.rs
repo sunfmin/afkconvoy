@@ -165,6 +165,9 @@ pub struct Config {
     /// Commands a host must pass before it can gate this repo.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub gate_needs: Vec<GateNeed>,
+    /// Commands a host must pass before claiming a cut.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub cut_needs: Vec<GateNeed>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -496,6 +499,7 @@ fn checked(
         cut: None,
         gates: None,
         gate_needs: Vec::new(),
+        cut_needs: Vec::new(),
     })
 }
 
