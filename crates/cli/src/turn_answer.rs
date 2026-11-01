@@ -166,12 +166,7 @@ pub(crate) fn worker_progress(worktree: &Worktree, progress: &mut Progress) -> R
 /// What the worktree of a landing worker last heard from its turn: one whose
 /// asking process is gone answered nothing.
 pub fn read(worktree: &Worktree) -> Result<Answered> {
-    let Ok(bytes) = std::fs::read(worktree.note(TURN_FILE)?) else {
-        return Ok(Answered::Never);
-    };
-    let Ok(note) = serde_json::from_slice::<Note>(&bytes) else {
-        return Ok(Answered::Never);
-    };
+    let Some(note) = note(worktree)? else { return Ok(Answered::Never) };
     if let Some(asking) = note.asking {
         let alive = asking.host == crate::this_host()
             && crate::candidates::identity(asking.pid)?.as_ref() == Some(&asking);
