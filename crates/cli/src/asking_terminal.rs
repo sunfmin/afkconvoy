@@ -59,6 +59,23 @@ pub(crate) fn read() -> Result<Option<Record>> {
     }
 }
 
+/// The current asking Terminal, also during the creation-reply window. An
+/// ended session protects none. No title or directory establishes ownership.
+pub(crate) fn protected() -> Result<Option<String>> {
+    let Some(record) = read()? else { return Ok(None) };
+    if record.status == LaunchState::Ended {
+        return Ok(None);
+    }
+    if !record.session.terminal.is_empty() {
+        return Ok(Some(record.session.terminal));
+    }
+    match std::fs::read_to_string(handshake(&record.session)) {
+        Ok(handle) => Ok(Some(handle.trim().to_string()).filter(|handle| !handle.is_empty())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
 pub(crate) fn save(record: &Record) -> Result<()> {
     let path = file()?;
     std::fs::create_dir_all(path.parent().expect("asking association parent"))?;

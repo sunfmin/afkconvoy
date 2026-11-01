@@ -900,6 +900,86 @@ pub fn refused(
     commands(line).iter().find_map(|words| limits.refuses(words, processes))
 }
 
+/// Refuses Orca input to the asking Terminal. The caller resolves an omitted
+/// Terminal through Orca; an explicit handle needs no lookup. This uses the
+/// same shell reader as the stage guards, including wrappers and `sh -c`.
+pub fn asking_input(
+    call: &Call,
+    protected: &str,
+    current: &impl Fn(&[String]) -> Result<Option<String>, String>,
+) -> Result<Option<String>, String> {
+    let Call::Shell(line) = call else { return Ok(None) };
+    for command in commands(line) {
+        let mut rest = command.iter().map(String::as_str);
+        let mut wrapped = false;
+        let program = loop {
+            let Some(word) = rest.next() else { break "" };
+            if WRAPPERS.contains(&word) {
+                wrapped = true;
+            } else if !(is_assignment(word) || wrapped && word.starts_with('-')) {
+                break word.rsplit('/').next().unwrap_or(word);
+            }
+        };
+        let args: Vec<_> = rest.collect();
+        if matches!(program, "sh" | "bash" | "zsh" | "dash" | "ksh") {
+            for (at, arg) in args.iter().enumerate() {
+                if arg.starts_with('-')
+                    && !arg.starts_with("--")
+                    && arg.contains('c')
+                    && let Some(line) = args.get(at + 1)
+                    && let Some(why) = asking_input(&Call::shell(line), protected, current)?
+                {
+                    return Ok(Some(why));
+                }
+            }
+        }
+        if program != "orca" {
+            continue;
+        }
+        // Consume option values, so text which happens to say --terminal or
+        // terminal send is data, never another target or command.
+        let mut words = vec![];
+        let mut terminal = None;
+        let mut routing = vec![];
+        let mut help = false;
+        let mut args = args.into_iter();
+        while let Some(arg) = args.next() {
+            if arg == "--terminal" {
+                terminal = args.next();
+            } else if let Some(value) = arg.strip_prefix("--terminal=") {
+                terminal = Some(value);
+            } else if ["--environment", "--pairing-code", "--worktree"].contains(&arg) {
+                routing.push(arg.to_string());
+                if let Some(value) = args.next() {
+                    routing.push(value.to_string());
+                }
+            } else if ["--environment=", "--pairing-code=", "--worktree="]
+                .iter()
+                .any(|flag| arg.starts_with(flag))
+            {
+                routing.push(arg.to_string());
+            } else if arg == "--help" {
+                help = true;
+            } else if ["--text", "--text-file", "--wait-submit", "--retry-request"].contains(&arg) {
+                args.next();
+            } else if !arg.starts_with('-') {
+                words.push(arg);
+            }
+        }
+        if help || words.get(..2) != Some(&["terminal", "send"]) {
+            continue;
+        }
+        let target = match terminal {
+            Some(terminal) => Some(terminal.to_string()),
+            None => current(&routing)?,
+        };
+        if target.as_deref() == Some(protected) {
+            return Ok(Some("input to the asking session's Terminal is refused: only the host runner's marked deliveries and the operator may supply its input".into()));
+        }
+    }
+    Ok(None)
+}
+
 /// Where a stage that writes nothing started: what the fleet keeps of it to
 /// check, once the stage has declared, what a guard may have missed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -962,6 +1042,42 @@ impl WritesNothing {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn asking_input_is_refused_through_wrappers_and_shells_but_text_is_data() {
+        let current = |_: &[String]| Ok(Some("asks".to_string()));
+        for line in [
+            "orca terminal send --terminal asks --text 'yes' --enter",
+            "env X=1 /bin/orca terminal send --terminal=asks --interrupt",
+            "cd /w && orca --json terminal send --terminal asks --enter",
+            "bash -lc 'orca terminal send --terminal asks --text yes'",
+            "orca terminal send --text yes",
+            "orca terminal send --terminal asks --retry-request key --text-file /tmp/input",
+        ] {
+            assert!(
+                asking_input(&Call::shell(line), "asks", &current).unwrap().is_some(),
+                "{line}"
+            );
+        }
+        for line in [
+            "orca terminal send --terminal worker --text 'yes' --enter",
+            "orca terminal read --terminal asks",
+            "orca terminal show --terminal asks",
+            "orca terminal send --terminal asks --help",
+            "echo 'orca terminal send --terminal asks'",
+            "orca terminal send --terminal worker --text '--terminal asks'",
+            "orca terminal send --terminal worker --text 'terminal send'",
+        ] {
+            assert_eq!(asking_input(&Call::shell(line), "asks", &current), Ok(None), "{line}");
+        }
+        assert_eq!(asking_input(&Call::Other, "asks", &current), Ok(None));
+        assert!(
+            asking_input(&Call::shell("orca terminal send --enter"), "asks", &|_| Err(
+                "unread".into()
+            ))
+            .is_err()
+        );
+    }
     use crate::role::{Facts, On};
 
     /// The fleets of this test's host started 4242 and 4243, and its host

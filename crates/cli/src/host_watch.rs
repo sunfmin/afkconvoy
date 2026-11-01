@@ -1134,6 +1134,7 @@ fn launch_session(watch: &mut Watch) -> Result<(String, PathBuf)> {
         &watch.directory,
         watch.model.as_deref(),
         command.as_str(),
+        Some(&crate::codex_launch::terminal_guard()),
     )?;
     let line = launches.worker_line(watch.harness, &line);
     let line = format!("export {}=host; {line}", host_watch::WATCH_ENV);

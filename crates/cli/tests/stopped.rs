@@ -1072,7 +1072,7 @@ fn one_jev_request_classes_a_real_finished_screen_and_the_key_goes_nowhere_but_t
     let payload = world.typesafe_payload();
     assert_eq!(payload["model"], "jev-latest");
     assert_eq!(payload["state"], screen.join("\n"));
-    assert_eq!(payload["questions"].as_object().unwrap().len(), 7);
+    assert_eq!(payload["questions"].as_object().unwrap().len(), 8);
     assert!(payload["questions"]["evidence"]["criteria"].get(evidence.as_str().unwrap()).is_some());
     assert_eq!(worker["judgment"]["request"], payload, "the request is kept as it was sent");
     let (arguments, config) = world.typesafe_sent();
@@ -1090,6 +1090,30 @@ fn one_jev_request_classes_a_real_finished_screen_and_the_key_goes_nowhere_but_t
     assert_eq!(logged["judgment"]["response"], response);
     assert!(!leaked(&world.root, b"jev-secret-marker", &world.root.join("typesafe-request")));
     assert!(!logs.contains("jev-secret-marker"));
+}
+
+#[test]
+fn a_short_worker_is_nudged_once_then_waits_for_the_operator_if_still_short() {
+    let world = fleet(1000);
+    let message = "The issue is not complete. I did not declare a stage verdict.";
+    world.jev_judges(&[("short", 0.99)], message);
+    report(&world, "done", 1000, 1000);
+    show(&world, &[message, "› Ask Codex to do anything"]);
+    tick(&world, 1300);
+    tick(&world, 1600);
+    let doctor = world.afk(&["doctor", "--host", "h1", "--now", "1601"]).json;
+    let worker = &doctor["host"]["host_kit"]["worker_health"]["workers"][0];
+    assert_eq!(worker["diagnosis"]["class"], "short", "{doctor}");
+    assert_eq!(worker["action"], "nudged", "{doctor}");
+    assert!(!doctor["findings"].as_array().unwrap().iter().any(|f| f["kind"] == "worker_health"));
+
+    report(&world, "done", 1600, 1600);
+    tick(&world, 1900);
+    tick(&world, 2200);
+    let doctor = world.afk(&["doctor", "--host", "h1", "--now", "2201"]).json;
+    let worker = &doctor["host"]["host_kit"]["worker_health"]["workers"][0];
+    assert_eq!(worker["action"], "waiting for operator", "{doctor}");
+    assert!(doctor["findings"].as_array().unwrap().iter().any(|f| f["kind"] == "worker_health"));
 }
 
 #[test]
