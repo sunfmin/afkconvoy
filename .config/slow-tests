@@ -91,6 +91,7 @@ afkconvoy::cli claims::a_claim_is_never_on_the_remote_ahead_of_its_owners_heartb
 afkconvoy::cli claims::a_claim_whose_record_cannot_be_read_names_nobody
 afkconvoy::cli claims::a_release_that_left_the_ref_on_the_remote_is_an_error
 afkconvoy::cli claims::a_released_claim_is_gone_from_the_next_scan
+afkconvoy::cli claims::a_wait_alone_beats_and_is_taken_after_the_lease_then_released_when_answered
 afkconvoy::cli claims::heartbeat_refreshes_only_when_due
 afkconvoy::cli claims::of_instances_claiming_at_once_exactly_one_wins
 afkconvoy::cli claims::release_deletes_only_the_callers_own_claim
@@ -243,7 +244,7 @@ afkconvoy::cli doctor::a_tick_that_failed_whole_is_logged_and_three_in_a_row_are
 afkconvoy::cli doctor::a_worker_that_fails_to_start_is_a_finding_after_one_tick
 afkconvoy::cli doctor::a_worktree_kept_with_no_claim_is_named_with_what_it_holds_and_how_to_remove_it
 afkconvoy::cli doctor::an_issue_long_at_its_stage_and_one_rework_from_its_breaker_are_findings
-afkconvoy::cli doctor::doctor_routes_other_declared_verdicts_and_respects_a_fleet_lock
+afkconvoy::cli doctor::doctor_routes_other_declared_verdicts
 afkconvoy::cli doctor::in_a_repo_of_several_roles_a_role_moved_only_when_its_own_directory_changed
 afkconvoy::cli doctor::run_logs_a_line_as_it_starts_one_as_each_tick_starts_and_ends_and_prints_each
 afkconvoy::cli doctor::the_host_s_exclusive_queue_is_shown_what_runs_first_then_what_waits
@@ -720,6 +721,7 @@ afkconvoy::cli tick::a_later_tick_removes_a_worktree_orca_already_gave_up_on
 afkconvoy::cli tick::a_left_removal_with_a_commit_the_remote_does_not_have_stays
 afkconvoy::cli tick::a_missing_ready_terminal_is_replaced_without_counting_its_pending_brief_as_a_failed_start
 afkconvoy::cli tick::a_readiness_wait_timeout_is_still_a_failed_start
+afkconvoy::cli tick::a_run_says_left_after_a_finishing_worker_leaves
 afkconvoy::cli tick::a_ready_terminal_waiting_for_its_brief_is_not_reused_under_a_later_claim
 afkconvoy::cli tick::a_settled_worktree_goes_when_the_gate_left_a_directory_the_owner_cannot_write
 afkconvoy::cli tick::a_settling_that_failed_keeps_the_claim_and_the_pass_goes_on
@@ -734,6 +736,7 @@ afkconvoy::cli tick::a_tick_that_cannot_rebuild_is_a_line_and_the_loop_goes_on
 afkconvoy::cli tick::a_worker_start_that_fails_again_escalates_with_the_start_errors
 afkconvoy::cli tick::a_worker_that_never_took_its_brief_is_started_again_in_the_same_worktree
 afkconvoy::cli tick::a_worktree_a_process_is_in_stays_until_that_process_is_gone
+afkconvoy::cli tick::a_worktree_a_process_is_in_waits_until_that_process_is_gone
 afkconvoy::cli tick::a_worktree_trust_gap_is_reported_once_not_as_a_failed_dispatch_every_tick
 afkconvoy::cli tick::a_worktree_with_a_commit_the_remote_does_not_have_stays
 afkconvoy::cli tick::an_incomplete_dispatch_does_not_belong_to_a_later_claim
@@ -745,6 +748,7 @@ afkconvoy::cli tick::run_follows_a_tick_that_settled_a_claim_with_no_sleep_and_s
 afkconvoy::cli tick::run_goes_idle_after_three_empty_ticks
 afkconvoy::cli tick::run_mints_an_instance_id_named_for_the_host
 afkconvoy::cli tick::run_ticks_until_stopped_and_says_what_each_tick_did
+afkconvoy::cli tick::settling_waits_for_a_finishing_worker_then_leaves_without_a_failed_tick
 afkconvoy::cli tmpdir::a_failed_process_listing_never_removes_a_live_servers_tmpdir
 afkconvoy::cli tmpdir::a_test_reclaims_only_its_own_links_and_repairs_to_durable_storage
 afkconvoy::cli tmpdir::retiring_a_link_outlives_the_callers_temporary_directory
@@ -849,6 +853,9 @@ afkconvoy::cli asking::busy_input_is_untouched_and_a_recovered_pending_question_
 afkconvoy::cli asking::an_unverified_terminal_pauses_delivery_until_its_identity_is_restored
 afkconvoy::cli asking::a_condition_recovered_after_delivery_is_told_as_withdrawn
 afkconvoy::cli asking::a_question_put_aside_stays_pending_and_does_not_hold_back_the_next
+afkconvoy::cli asking::an_asking_question_rechecks_ownership_after_restart_and_drops_a_taken_wait
+afkconvoy::cli asking::a_notification_rechecks_ownership_after_restart_and_keeps_host_conditions_local
+afkconvoy::cli host_watch::two_hosts_find_one_wait_and_only_its_holder_reports_notifies_and_asks_it
 afkconvoy::cli stopped::a_comment_written_by_this_worker_is_not_told_even_with_the_same_login
 afkconvoy::cli stopped::a_new_body_edit_keeps_the_revision_still_queued_for_the_worker
 afkconvoy::cli stopped::a_stopped_worker_is_told_a_later_comment_before_the_tick_judges_it
@@ -867,3 +874,31 @@ afkconvoy::cli joining::fleet_asked_conflicts_are_handed_once_even_after_the_fle
 afkconvoy::cli joining::an_answer_queued_in_the_harness_is_pending_until_the_model_takes_it
 afkconvoy::cli codex::codex_workers_take_fresh_user_service_tier_without_inheriting_session_config
 afkconvoy::cli escalation::a_handed_back_workers_usage_limit_does_not_replay_the_previous_claims_verdict
+afkconvoy::cli unworked::doctor_reads_label_and_blocker_times_and_remote_beats_without_a_checkout
+afkconvoy::cli unworked::runner_opens_one_report_starts_its_watch_and_closes_on_a_live_heartbeat
+afkconvoy::cli tick::settling_waits_for_a_finishing_worker_then_leaves_without_a_failed_tick
+afkconvoy::cli stopped::a_short_worker_is_nudged_once_then_waits_for_the_operator_if_still_short
+# Asking Terminal launch coverage: measured over 2s in the fast gate on FelixMBP14.local.
+afkconvoy::cli asking_guard::bound_claude
+afkconvoy::cli asking_guard::bound_codex
+afkconvoy::cli asking_guard::bound_dsh
+afkconvoy::cli asking_guard::bound_grok
+afkconvoy::cli asking_guard::bound_kimi
+afkconvoy::cli asking_guard::bound_pi
+afkconvoy::cli asking_guard::unbound_claude
+afkconvoy::cli asking_guard::unbound_grok
+afkconvoy::cli host_watch::asking_guard_claude
+afkconvoy::cli host_watch::asking_guard_dsh
+afkconvoy::cli host_watch::asking_guard_grok
+afkconvoy::cli host_watch::asking_guard_kimi
+afkconvoy::cli host_watch::asking_guard_pi
+afkconvoy::cli tick::settling_waits_for_a_finishing_worker_then_leaves_without_a_failed_tick
+afkconvoy::cli tick::a_run_says_left_after_a_finishing_worker_leaves
+afkconvoy::cli tick::a_worktree_a_process_is_in_waits_until_that_process_is_gone
+afkconvoy::cli asking_guard::unbound_codex
+afkconvoy::cli asking_guard::unbound_dsh
+afkconvoy::cli asking_guard::unbound_kimi
+afkconvoy::cli asking_guard::unbound_pi
+# Doctor tests exceeded the fast gate's 6s limit after merging the preceding candidates.
+afkconvoy::cli doctor::a_worker_left_alone_by_a_fleet_lock_waits_until_its_nudge
+afkconvoy::cli doctor::doctor_routes_other_declared_verdicts
