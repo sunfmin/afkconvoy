@@ -17,8 +17,12 @@ cat > "$tmp/home/.cargo/bin/cargo" <<'MOCK'
 #!/bin/sh
 case "$*" in
 *'nextest --version'*|*'--no-run'*|fmt*|clippy*) exit 0 ;;
-*'nextest run'*'--profile fast'*) echo 'TIMEOUT [   6.000s] afkconvoy::cli tick::example' >&2; exit 1 ;;
-*'nextest run'*) echo 'TIMEOUT [   2.000s] afkconvoy::cli tick::example' >&2; exit 1 ;;
+*'nextest run'*'--profile fast -E'*)
+    if [ "$CASE" = failure ]; then echo 'FAIL [   0.100s] afkconvoy::cli tick::example' >&2; else echo 'TIMEOUT [   6.000s] afkconvoy::cli tick::example' >&2; fi
+    exit 1 ;;
+*'nextest run'*)
+    if [ "$CASE" = pass ]; then exit 0; fi
+    echo 'TIMEOUT [   2.000s] afkconvoy::cli tick::example' >&2; exit 1 ;;
 esac
 exit 0
 MOCK
@@ -31,13 +35,20 @@ cat > "$tmp/home/.cargo/bin/getconf" <<'MOCK'
 echo 4
 MOCK
 chmod +x "$tmp/repo/verify.sh" "$tmp/home/.cargo/bin/"*
-for load in 40.00 1.00; do
-    HOME="$tmp/home" FAKE_LOAD="$load" sh "$tmp/repo/gate.sh" fast >"$tmp/out" 2>&1 && exit 1
-    if [ "$load" = 40.00 ]; then
+for scenario in loaded slow pass failure; do
+    case "$scenario" in loaded) load=40.00 ;; *) load=1.00 ;; esac
+    HOME="$tmp/home" FAKE_LOAD="$load" CASE="$scenario" sh "$tmp/repo/gate.sh" fast >"$tmp/out" 2>&1 && exit 1
+    if [ "$scenario" = loaded ]; then
         ! grep -q 'Name it in .config/slow-tests' "$tmp/out"
         grep -qi 'overload' "$tmp/out"
         grep -q '40.00' "$tmp/out"
-    else
+    elif [ "$scenario" = slow ]; then
         grep -q 'Name it in .config/slow-tests' "$tmp/out"
+    elif [ "$scenario" = pass ]; then
+        ! grep -q 'Name it in .config/slow-tests' "$tmp/out"
+        grep -q 'load fault' "$tmp/out"
+    else
+        ! grep -q 'Name it in .config/slow-tests' "$tmp/out"
+        ! grep -q 'load fault' "$tmp/out"
     fi
 done
