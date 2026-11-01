@@ -148,11 +148,17 @@ fn kept_roots(harness: Harness) -> Result<Vec<PathBuf>> {
 
 /// The harness directory a launch noted beside the worktree's git directory.
 fn noted(cwd: &Path, name: &str) -> Option<PathBuf> {
-    let git = std::fs::read_to_string(cwd.join(".git")).ok()?;
-    let dir = git.trim().strip_prefix("gitdir:")?.trim();
-    let home = std::fs::read_to_string(Path::new(dir).join(name)).ok()?;
+    let home = std::fs::read_to_string(worktree_git_dir(cwd)?.join(name)).ok()?;
     let home = home.trim();
     if home.is_empty() { None } else { Some(PathBuf::from(home)) }
+}
+
+/// The worktree's own git directory, also where its brief is written.
+/// Read the pointer directly: polling for a turn must not spawn git.
+fn worktree_git_dir(cwd: &Path) -> Option<PathBuf> {
+    let git = std::fs::read_to_string(cwd.join(".git")).ok()?;
+    let dir = git.trim().strip_prefix("gitdir:")?.trim();
+    if dir.is_empty() { None } else { Some(cwd.join(dir)) }
 }
 
 fn read_root(
@@ -165,26 +171,27 @@ fn read_root(
     if !root.exists() {
         return Ok(None);
     }
+    let brief = worktree_git_dir(cwd).map(|dir| cwd_str(&dir.join(crate::orca::BRIEF_FILE)));
     let cwd = cwd_str(cwd);
     let place = harness.session_place(&cwd);
     let turns = match place.layout {
         SessionLayout::Files { dir, extension } => {
             read_files(&root.join(dir), extension, since, |text| {
-                harness.recorded_turn(&cwd, text, not_before)
+                harness.recorded_turn(&cwd, text, not_before, brief.as_deref())
             })?
         }
         SessionLayout::Tree { dir, extension } => {
             read_tree(&root.join(dir), extension, since, |text| {
-                harness.recorded_turn(&cwd, text, not_before)
+                harness.recorded_turn(&cwd, text, not_before, brief.as_deref())
             })?
         }
         SessionLayout::Named { dir, name, compressed } => {
             read_named(&root.join(dir), name, compressed, since, |text| {
-                harness.recorded_turn(&cwd, text, not_before)
+                harness.recorded_turn(&cwd, text, not_before, brief.as_deref())
             })?
         }
         SessionLayout::Index { file } => read_index(root, &file, harness, &cwd, since, |text| {
-            harness.recorded_turn(&cwd, text, not_before)
+            harness.recorded_turn(&cwd, text, not_before, brief.as_deref())
         })?,
     };
     Ok(prefer(&turns))
@@ -601,27 +608,30 @@ mod tests {
         grok_file(&root, &cwd, "earlier", &killed);
         grok_file(&root, &cwd, "later", &finished);
         let turn = read_root(&root, harness, &cwd, None, None).unwrap();
-        assert_eq!(turn, harness.recorded_turn(&cwd_text, &finished, None));
+        assert_eq!(turn, harness.recorded_turn(&cwd_text, &finished, None, None));
         assert!(matches!(turn, Some(Turn::Closed { .. })));
-        assert!(matches!(harness.recorded_turn(&cwd_text, &killed, None), Some(Turn::Open { .. })));
+        assert!(matches!(
+            harness.recorded_turn(&cwd_text, &killed, None, None),
+            Some(Turn::Open { .. })
+        ));
 
         let earlier = grok_body("2026-10-27T13:06:13Z", Some("2026-10-27T13:06:33Z"), "primary");
         let later = grok_body("2026-10-27T13:06:53Z", None, "primary");
         grok_file(&root, &cwd, "earlier", &earlier);
         grok_file(&root, &cwd, "later", &later);
         let turn = read_root(&root, harness, &cwd, None, None).unwrap();
-        assert_eq!(turn, harness.recorded_turn(&cwd_text, &later, None));
+        assert_eq!(turn, harness.recorded_turn(&cwd_text, &later, None, None));
         assert!(matches!(turn, Some(Turn::Open { .. })));
         assert!(matches!(
-            harness.recorded_turn(&cwd_text, &earlier, None),
+            harness.recorded_turn(&cwd_text, &earlier, None, None),
             Some(Turn::Closed { .. })
         ));
 
         let child = grok_body("2026-10-27T13:08:00Z", Some("2026-10-27T13:08:10Z"), "subagent");
         grok_file(&root, &cwd, "child", &child);
         let turn = read_root(&root, harness, &cwd, None, None).unwrap();
-        assert_eq!(turn, harness.recorded_turn(&cwd_text, &later, None));
-        assert_eq!(harness.recorded_turn(&cwd_text, &child, None), None);
+        assert_eq!(turn, harness.recorded_turn(&cwd_text, &later, None, None));
+        assert_eq!(harness.recorded_turn(&cwd_text, &child, None, None), None);
 
         let stale = grok_body("2026-10-27T14:00:00Z", None, "primary");
         let stale_path = grok_file(&root, &cwd, "stale", &stale);
@@ -631,7 +641,7 @@ mod tests {
         let turn = read_root(&root, harness, &cwd, Some(now.saturating_sub(30)), None).unwrap();
         assert_eq!(
             turn,
-            harness.recorded_turn(&cwd_text, &later, None),
+            harness.recorded_turn(&cwd_text, &later, None, None),
             "a file last written before the handoff is not this turn"
         );
     }

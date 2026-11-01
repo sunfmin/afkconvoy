@@ -216,7 +216,7 @@ pub(super) fn holds_note(text: &str, mark: &str) -> bool {
 /// queue. Every harness here writes a message at its prompt with the role
 /// or the type `user`, at the top of the line, under `message` or under
 /// `payload`; Codex also as a `user_message` event.
-fn user_texts(line: &Value) -> Vec<&str> {
+pub(super) fn user_texts(line: &Value) -> Vec<&str> {
     let attachment = &line["attachment"];
     if line["type"] == "attachment" && attachment["type"] == "queued_command" {
         return attachment["prompt"].as_str().into_iter().collect();

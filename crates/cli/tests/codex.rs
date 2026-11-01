@@ -58,6 +58,39 @@ fn bound() -> World {
 }
 
 #[test]
+fn a_supported_codex_send_is_proved_by_its_role_session_even_when_orca_reports_no_turn() {
+    for blocked in [false, true] {
+        let world = bound();
+        world.issue(7, &["flow:feature"]);
+        let role = role_copy(&world, "acme/dev");
+        world.with_orca(|orca| {
+            orca["codex_session_cwd"] = json!(role);
+            orca["session_turn"] = json!(true);
+            let prompt = json!({"provider": "codex", "observation": "supported",
+                "baselineWorkingSequence": 0, "stages": ["input_accepted"]});
+            orca["raw_answers"] = json!({"terminal send": if blocked {
+                json!({"ok": false, "error": {"code": "agent_prompt_blocked", "details": {
+                    "reason": "the line started no turn within 30s", "prompt": prompt}}})
+            } else {
+                json!({"ok": true, "result": {"send": {"accepted": true, "prompt": prompt}}})
+            }.to_string()});
+        });
+        let answer = world
+            .afk(&["dispatch", "7", "--instance", "alpha", "--host", "h1", "--now", "1000"])
+            .ok();
+        assert_eq!(answer["started"], true, "{answer}");
+        let orca = world.orca();
+        let terminal = orca["terminals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|terminal| terminal["worktreePath"] == answer["worktree"])
+            .unwrap();
+        assert_eq!(terminal["sent"].as_array().unwrap().len(), 1, "the brief is never resent");
+    }
+}
+
+#[test]
 fn a_large_codex_catalog_reaches_the_terminal_as_model_names_alone() {
     use afkconvoy_core::harness::Harness;
     let world = World::new();

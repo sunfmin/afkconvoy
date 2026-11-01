@@ -728,27 +728,54 @@ pub(super) fn session_layout(_cwd: &str) -> SessionLayout {
     SessionLayout::Tree { dir: SESSIONS.into(), extension: "jsonl" }
 }
 
-/// The turn `text` records for `cwd`. A file with no session header for this
-/// worktree is not it. Codex records no child session.
-pub(super) fn recorded_turn(cwd: &str, text: &str, not_before: Option<u64>) -> Option<Turn> {
+/// The turn `text` records for this worker. Codex starts in the role copy
+/// when bound: its initial brief pointer identifies that worktree instead
+/// of the session cwd. A header and a turn are still required.
+pub(super) fn recorded_turn(
+    cwd: &str,
+    text: &str,
+    not_before: Option<u64>,
+    brief: Option<&str>,
+) -> Option<Turn> {
+    let mut saw_header = false;
     let mut saw_cwd = false;
     let mut notes = Vec::new();
     for value in json_lines(text) {
         if value["type"] == "session_meta" {
+            saw_header = true;
             let recorded = value["payload"]["cwd"].as_str().unwrap_or("");
-            if !session::same_cwd(recorded, cwd) {
-                return None;
-            }
-            saw_cwd = true;
+            saw_cwd = session::same_cwd(recorded, cwd);
         }
         if let Some(note) = note(&value) {
             notes.push(note);
         }
     }
-    if !saw_cwd {
+    if !saw_header || (!saw_cwd && !brief.is_some_and(|brief| initial_brief(text, brief))) {
         return None;
     }
     session::turn_of(&notes, not_before)
+}
+
+/// Only the first brief pointer in the initial user messages associates a
+/// role session with a worker. Codex may write AGENTS.md and environment
+/// messages before it. A later mention, tool output or model reply cannot
+/// take another worker's session.
+fn initial_brief(text: &str, brief: &str) -> bool {
+    let expected = crate::prompt::brief_pointer(brief);
+    for value in json_lines(text) {
+        let payload = &value["payload"];
+        if value["type"] == "response_item"
+            && (payload["role"] == "assistant" || payload["type"] != "message")
+        {
+            return false;
+        }
+        for said in session::user_texts(&value) {
+            if said.starts_with(crate::prompt::BRIEF_POINTER_PREFIX) {
+                return said == expected;
+            }
+        }
+    }
+    false
 }
 
 fn note(value: &serde_json::Value) -> Option<Note> {
