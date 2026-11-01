@@ -339,20 +339,31 @@ impl Shared {
 pub struct HostWatch {
     ended: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
+    sender: Option<std::thread::JoinHandle<()>>,
 }
 
 impl HostWatch {
     /// Watches the host, saying each start, end and thing done to `say`.
     pub fn start(shared: Shared, say: impl Fn(What) + Send + Sync + 'static) -> HostWatch {
         let ended = Arc::new(AtomicBool::new(false));
+        let say = Arc::new(say);
+        let sender_ended = Arc::clone(&ended);
+        let sender_say = Arc::clone(&say);
+        let sender = std::thread::spawn(move || {
+            crate::watch_notify::run(&sender_ended, |said| sender_say(What::WatchFailed { said }));
+        });
         let watcher = Watcher {
             ended: Arc::clone(&ended),
             shared,
-            say: Box::new(say),
+            say: Box::new(move |what| say(what)),
             looking: Failing::default(),
             checking: Failing::default(),
         };
-        HostWatch { ended, thread: Some(std::thread::spawn(move || watcher.run())) }
+        HostWatch {
+            ended,
+            thread: Some(std::thread::spawn(move || watcher.run())),
+            sender: Some(sender),
+        }
     }
 }
 
@@ -361,6 +372,9 @@ impl Drop for HostWatch {
         self.ended.store(true, Ordering::Relaxed);
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
+        }
+        if let Some(sender) = self.sender.take() {
+            let _ = sender.join();
         }
     }
 }
@@ -461,6 +475,7 @@ impl Watcher {
         // Commit the observation interval and queue before any launch or
         // delivery. A restart cannot consume a look without retaining work.
         self.save(&state)?;
+        crate::watch_notify::looked()?;
         if state.running.is_none() && !state.pending.is_empty() {
             let pending: Vec<Item> = state.pending.iter().map(|q| q.item.clone()).collect();
             crate::resources::evidence(&mut state.look, &pending)?;
@@ -742,6 +757,7 @@ impl Watcher {
         let exited = host_watch::exited(&transcript);
         let now = crate::clock();
         if let Some(report) = crate::watch_report::read(&watch.id)? {
+            crate::watch_notify::reported(&watch.id, &report)?;
             // A fast or explicitly recovered report can precede Orca's
             // execution receipt. It still settles this exact round; never
             // retain a zero research reservation that is already daily-due.
