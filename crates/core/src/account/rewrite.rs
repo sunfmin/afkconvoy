@@ -190,20 +190,38 @@ pub fn convert(body: &str, issue: u64) -> Result<Record, String> {
             }
         }
     }
-    let mut gate_lines = gate_text.lines().filter(|line| line.starts_with("- "));
-    for run in &row.gates {
-        let line = gate_lines.next().ok_or("missing gate row")?;
-        if !(line.starts_with("- green, ") || line.starts_with("- red, "))
-            || !line.contains(", command `")
-            || !line.contains(", tree `")
-            || !line.ends_with('.')
-        {
-            return Err("unrecognized gate row".into());
-        }
-        if run.seconds.is_none() && !line.contains("seconds not recorded") {
-            return Err("gate seconds cannot be recovered".into());
-        }
+    let mut reds: Vec<Gate> = record::markers(account::KEPT_RED, gate_text)
+        .iter()
+        .map(|fields| gate_of(fields, "red"))
+        .collect();
+    let mut recovered = Vec::new();
+    for line in gate_text.lines().filter(|line| line.starts_with("- ")) {
+        let run = if line.starts_with("- red, ") {
+            let index = reds
+                .iter()
+                .position(|run| gate_matches(line, run, None))
+                .ok_or("red gate row does not match a retained marker")?;
+            reds.remove(index)
+        } else if let Some((_, tail)) = line.split_once(" Recorded gate run: `") {
+            let raw = tail.strip_suffix("`.").ok_or("invalid recorded gate")?;
+            let fields = record::read(gate::GATE, raw).ok_or("invalid recorded gate marker")?;
+            if fields.number("issue") != Some(issue) {
+                return Err("gate issue does not match".into());
+            }
+            let run = gate_of(&fields, "green");
+            if !gate_matches(line, &run, Some(raw)) {
+                return Err("gate row disagrees with marker".into());
+            }
+            run
+        } else {
+            return Err("gate row has no recorded marker".into());
+        };
+        recovered.push(run);
     }
+    if !reds.is_empty() {
+        return Err("retained gate marker has no row".into());
+    }
+    row.gates = recovered;
     for line in gate_text.lines() {
         if !line.is_empty()
             && !line.starts_with("- ")
@@ -215,6 +233,24 @@ pub fn convert(body: &str, issue: u64) -> Result<Record, String> {
     }
     row.legacy_evidence = Some(body.to_string());
     Ok(row)
+}
+
+fn gate_matches(line: &str, run: &Gate, raw: Option<&str>) -> bool {
+    let (Some(result), Some(command), Some(tree)) = (&run.result, &run.command, &run.tree) else {
+        return false;
+    };
+    let seconds =
+        run.seconds.map(|n| format!("{n}s")).unwrap_or_else(|| "seconds not recorded".into());
+    let mut prefix = format!("- {result}, {seconds}, command `{command}`, tree `{tree}`");
+    if let Some(at) = run.at {
+        prefix.push_str(&format!(", at {at}"));
+    }
+    let tail =
+        raw.map(|raw| format!(". Recorded gate run: `{raw}`.")).unwrap_or_else(|| ".".into());
+    if line == format!("{prefix}{tail}") {
+        return true;
+    }
+    run.host.as_ref().is_some_and(|host| line == format!("{prefix}, on host `{host}`{tail}"))
 }
 
 #[cfg(test)]

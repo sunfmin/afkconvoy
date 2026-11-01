@@ -288,7 +288,7 @@ enum Command {
     ///
     /// The window includes accounts whose end is between now minus 7 days and now, inclusive. `--days <n>` changes that duration; `--all` includes every account ending by now. Issue closure and update dates do not select the window. Issues with no account are not samples.
     ///
-    /// New accounts carry one authoritative versioned JSON object in a collapsed details block with a fenced json block. Their human text is rendered from that object and is never parsed back. Older accounts are converted from their markers and legacy rows without rewriting the comments; facts absent from their machine-readable evidence stay null.
+    /// Every readable work account carries one authoritative versioned JSON object in a collapsed details block with a fenced json block. Its human text is rendered from that object and is never parsed back. Old prose is converted by `rewrite-accounts` before this command can read it.
     ///
     /// ## What it answers
     ///
@@ -309,11 +309,11 @@ enum Command {
     /// - `issue`: the tracker issue number. `repo`: the code repo, owner/name. `tracker`: the tracker, owner/name. `afkconvoy_version`: the version of the binary that wrote the account.
     /// - `host`: {name, cpu, logical_cpus, memory_bytes}, as reported by the writing host; cpu is its chip name, else its machine model identifier.
     /// - `start`: earliest recorded claim since, retained across later ends. `end`: the end being accounted for. `wall_seconds`: end minus start, null if unknown or reversed.
-    /// - `outcome`: landed, closed (nothing more to do), escalated, ended (the workflow ended), or human-closed (closed by a human while claimed). Legacy accounts have null because they did not record it.
+    /// - `outcome`: landed, closed (nothing more to do), escalated, ended (the workflow ended), or human-closed (closed by a human while claimed). An unknown outcome is null.
     /// - `workers`: a list of {harness, model, role, stage, claim, start, end, seconds, verdict}. A model not explicitly named is null. Role and stage are null where there is none or neither was recorded. Claim is the claim's identity. A bound worker ends at its stage record or failure, else the account end; an unbound worker ends at the account end. Seconds are end minus start. Verdict is its stage record's verdict, null without one. Landing workers are not rows; continuations on the same harness are not new rows.
     /// - `gates`: a list of {tree, command, lane, `result`, at, seconds, host}. Tree is the tested git tree, command is the exact command, lane is fast, slow or whole when known, `result` is green or red, at is the gate record's epoch timestamp, seconds times the command after its queue turn, and host is the host that ran it. Prior red runs survive later edits after their remote refs disappear. Legacy seconds available only in a legacy row are retained; other metadata without a marker stays null. A legacy lane is null unless its marker names one.
     ///
-    /// A legacy worker's start, harness, model, stage and claim come from its worker-start marker; its end, seconds and verdict stay null where only prose stated them. Legacy host hardware, writer version, repo, tracker and outcome stay null. Row counts and wall-clock and gate-second measures keep their earlier summary meaning. The overlapping worker and gate durations do not partition wall_seconds.
+    /// A converted account retains its original evidence in `legacy_evidence`. Worker durations, models and host hardware stated by the old rows are recovered; facts not stated remain null. The overlapping worker and gate durations do not partition wall_seconds.
     ///
     /// ## What trips you up
     ///
