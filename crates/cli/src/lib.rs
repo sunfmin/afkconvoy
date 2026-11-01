@@ -89,6 +89,7 @@ pub mod look;
 pub mod machine;
 pub mod measure;
 pub mod named_harness;
+mod no_node;
 pub mod orca;
 pub mod panel;
 pub mod park;
@@ -214,7 +215,7 @@ const SKILL: &str = include_str!("../../../skills/afkconvoy/SKILL.md");
 ///
 /// ## What a command answers
 ///
-/// Every command prints exactly one JSON object on stdout. A failure is {"error": …} with a non-zero exit — and "see" beside it, where a topic explains it: the command that prints that topic. Warnings go to stderr. A few print otherwise: `show` a drawing unless asked about an issue, `help` Markdown as `--help` does, `skill` the text of a file, `guard` answers as a hook does, with its exit code, `exclusive` as its command does, `accounts --rows` NDJSON, and `panel` without `--open` one HTML document. `panel --open` is the JSON object `panel --help` describes. `doctor` exits 0 with no critical finding, and non-zero with one, printing the same object, not {"error"}. Under `--all`, a checkout that could not be asked stays {"error", "see"}, as `doctor --help` says: not a doctor that read the checkout. A fleet instance prints nothing: it logs a line as each tick starts and one as it ends, in its tick log.
+/// Every command prints exactly one JSON object on stdout. A failure is {"error": …} with a non-zero exit — and "see" beside it, where a topic explains it: the command that prints that topic. Warnings go to stderr. A few print otherwise: `show` a drawing unless asked about an issue, `help` Markdown as `--help` does, `skill` the text of a file, `guard` answers as a hook does, with its exit code, `exclusive` as its command does, `accounts --rows` NDJSON, and `panel` without `--open` one HTML document. `panel --open` is the JSON object `panel --help` describes. `doctor` exits 0 with no critical finding, and non-zero with one, printing the same object, not {"error"}. Under `--all`, a checkout that could not be asked stays {"error", "see"}, as `doctor --help` says: not a doctor that read the checkout. `no-node` exits 0 for green and 1 for red, printing its validation object in both cases; monitor faults print {"error"}. A fleet instance prints nothing: it logs a line as each tick starts and one as it ends, in its tick log.
 ///
 /// ## The commands, by who runs them
 ///
@@ -224,7 +225,7 @@ const SKILL: &str = include_str!("../../../skills/afkconvoy/SKILL.md");
 /// - **{const:DESIGNER}** — `scaffold` to start one or a role of it from a skeleton, `draft` to draft its roster from the host kit, then, once `check` accepts it, `show` to review a workflow or to ask where an issue is in it, and `rehearse` to try one out.
 /// - **{const:HANDS_WORK}** — a human or their agent opening decided work. `flows` names the workflow, gives the issue-create line and makes labels. After opening issues, `wake` has the fleet take them up now.
 /// - **{const:SETS_UP}** — `skill` prints the skill file that sends their agent to `afkconvoy --help`.
-/// - **{const:WORKER}** — `gate`, `land`, `verdict`, `intake`, `lock`, `over`, `exclusive`, `watched`, `asked`: its prompt names each one as it is needed, and `wake`, above, as its last; `cut` is what a cut's terminal runs, and what you run to go on with a cut that failed. Read them only when you are a worker, or are finding out why one stopped (`rule` is a consult's too).
+/// - **{const:WORKER}** — `gate`, `land`, `verdict`, `intake`, `lock`, `over`, `exclusive`, `no-node`, `watched`, `asked`: its prompt names each one as it is needed, and `wake`, above, as its last; `cut` is what a cut's terminal runs, and what you run to go on with a cut that failed. Read them only when you are a worker, or are finding out why one stopped (`rule` is a consult's too).
 /// - **{const:HUMAN}** — in a bound repo: `rule` to answer an escalated issue, `send` to put an issue at a stage of your choosing. A `by: human` stage waits for your `verdict`, a worker's command too. [`afkconvoy help humans`](help:humans) says what each case asks of you.
 /// - **{const:HOOK}** — `guard`, called before each action of a bound repo's worker. Nobody runs it by hand. Its help explains what the worker is refused and why.
 /// - **{const:BY_HAND}** — `dispatch`, `close`, `escalate`, `park`, `nudge` and `restart`: each is something a tick does on its own, and `recovery` shows what `dispatch` would continue an issue from. Read one when a plan shows a transition the fleet is not making, or you are told to make it yourself.
@@ -1074,7 +1075,7 @@ enum Command {
     ///
     /// `harness` is the harness the worker of the position is a session of, null where no worker acts: the stage's — the one it names, or the default of this checkout's config — for a worker that performs it, and the default for a consult and a landing.
     ///
-    /// `valid` is false for what may not be declared where the issue is: a `reject` from a stage with no `on.reject`, a `ruling` nobody asked for, anything but `ruling` or `escalate`, `close` or `park` from a consult. An invalid verdict escalates the issue. Anything declared on an issue that is landing or ended, and anything but a `ruling` on one that is escalating, is not valid either and changes nothing.
+    /// `valid` is false for what may not be declared where the issue is: a `reject` from a stage with no `on.reject`, a `ruling` nobody asked for, anything but `ruling` or `escalate`, `close` or `park` from a consult. An invalid verdict escalates the issue at a stage. Landing accepts `blocked` and `escalate`; a ruling resumes escalated landing. Other declarations at landing, anything declared on an ended issue, and anything but a `ruling` on one that is escalating change nothing.
     ///
     /// `rework` is the issue's rework in total: its rejections and its consults' rulings. `consecutive_rework` is, for each stage that may reject, its rejections in a row: a `pass` of that stage starts its count over. A human's `ruling` starts every count over. `breaker` is null, or the breaker this step tripped — "max_rework" or "max_consecutive_rework": the rework that would have passed it is refused and not counted, and the issue escalates at the stage that would have run again.
     ///
@@ -2018,7 +2019,7 @@ enum Command {
     ///
     /// ## What it reads and writes
     ///
-    /// The config's gate_command runs on this worktree, with its log streaming to stderr and its gate limit, gate_seconds (default {const:GATE_SECONDS}). A green run on the committed tree is recorded with the tree, command, host and elapsed seconds. A dirty worktree or artifacts the gate fails to ignore cannot produce a record. Its first green run records the fresh build for worker disk observations.
+    /// The config's gate_command runs on this worktree, with its log streaming to stderr and its gate limit, gate_seconds (default {const:GATE_SECONDS}). A green run on the committed tree is recorded with the tree, command, host and elapsed seconds. The record has the tested commit as its parent, so its push sends only objects the remote lacks; parentless records already on the remote are still found by tree and command. A dirty worktree or artifacts the gate fails to ignore cannot produce a record. Its first green run records the fresh build for worker disk observations.
     ///
     /// With --fast or --slow, the fast gate's or the slow gate's command runs alone, as the ```yaml gates block of the config declares it (`afkconvoy config --help`), under that gate's own limit, `seconds`. A run here is put on record as neither, and neither stands in for the whole gate: a landing turn runs the fast gate per candidate and the slow gate per round, and records the whole gate only from both on one tree (`afkconvoy land --help`). A run past that gate's `budget_seconds` is green and says it is slow. A repo that declares no gates block answers an error.
     ///
@@ -2059,6 +2060,8 @@ enum Command {
     /// ## When to run it
     ///
     /// After the PR is open and all changes are committed: `afkconvoy land <n>` or `afkconvoy land --issue <n>`. A watch uses `land --watch` for its own PR. Cuts take the same turn automatically.
+    ///
+    /// A bound repo's landing worker can stop with `afkconvoy verdict blocked --issue <n> --stage land --blocked-by <issues> --text-file <file>` when another issue must be fixed first. The fleet parks its claim on open blockers and returns it to Landing when they all close. `verdict escalate --issue <n> --stage land --text-file <file>` hands it to a human, with the PR and branch kept; `afkconvoy rule` resumes landing after the cause is resolved.
     ///
     /// ## Who runs it
     ///
@@ -2231,6 +2234,8 @@ enum Command {
     ///
     /// Opening a PR declares nothing: a stage that wrote one still declares `pass` — after `afkconvoy gate` says green on what it pushed, as its brief tells it.
     ///
+    /// At Landing, a worker declares with `--stage land`: `blocked` names open issues the fleet can wait for and parks the claim, keeping work as `afkconvoy park` does. Once every blocker closes it returns to Landing, without repeating a stage. `escalate` hands it to a human with an answer line, keeping its PR and branch; a human's `afkconvoy rule` resumes landing. Other worker verdicts do not advance Landing.
+    ///
     /// A consult also declares `close` or `park`, with its reason in the text. Close ends the issue; park leaves it open for new evidence, off the frontier until explicitly brought back (see `afkconvoy help humans`). Neither adds rework or resets its counts. `escalate` lets through to a human what the consult was asked to rule on. Its ruling uses `afkconvoy rule --help`.
     ///
     /// A human runs it too, for a stage a workflow gives them (`by: human`): the issue waits there, unclaimed, until they declare. `afkconvoy show --issue 7` names the stage:
@@ -2325,6 +2330,8 @@ enum Command {
     /// The issue's number is an argument, or `--issue 7`: one of the two. The comment of the escalation ends with this line, the number filled in, and `afkconvoy doctor` lists it for every issue that waits (`waiting_on_human`).
     ///
     /// The stage the issue stopped at runs again under the ruling, and both rework counts start over from it. `afkconvoy show --issue 7` says which stage that is before you rule. To put the issue at another stage instead, see `afkconvoy send --help`.
+    ///
+    /// An issue escalated at Landing returns to Landing under the ruling: its existing PR is kept and no stage runs again. Its answer has `stage: land`.
     ///
     /// Or as a consult: the issue was at a stage that names one (`escalate: { to, do }` in its workflow), and would have gone to a human — the stage declared `escalate`, a breaker tripped, it failed, or its workflow changed — so the fleet started you in that role to answer it first. The stage comes from your environment:
     ///
@@ -2934,6 +2941,53 @@ enum Command {
         #[command(flatten)]
         at: AtFlag,
     },
+    /// Run a macOS command tree with Node execution denied and checked
+    ///
+    /// ## When to run it
+    ///
+    /// Wrap the whole repository gate, including native Darwin tests: `afkconvoy no-node -- ./gate.sh`. It runs in the current directory and needs no checkout or fleet. Commands receive no stdin; their stdout and stderr both go to stderr, leaving stdout for one JSON answer.
+    ///
+    /// ## Who runs it
+    ///
+    /// A worker in its own worktree, or anyone running a gate on macOS.
+    ///
+    /// ## What it reads and writes
+    ///
+    /// Writes temporary canary PID and scope files, removed after the run. Reads the command's exit status and this sandbox's reports from the macOS unified log.
+    ///
+    /// ### Dependencies and identity
+    ///
+    /// macOS only. Needs trusted `sandbox-exec`, `log` and `date` on PATH (normally /usr/bin and /bin), readable unified sandbox reports, and a Node binary for the canaries. No sudo or entitlement. `--canary-node PATH` names that binary; otherwise `node` is resolved on PATH before starting. Its resolved basename must be `node`.
+    ///
+    /// One Seatbelt profile allows default operations and denies process-exec whose resolved path matches `/node$`. This covers Node installed outside Homebrew, symlinks, PATH, absolute paths and shebang interpreters. A Bun compatibility link named node resolves to bun and is allowed, including `bun run --bun`. Identity is the resolved filename, not a binary hash: renamed Node binaries are outside this rule, and another executable actually named node is denied too.
+    ///
+    /// ### What it checks
+    ///
+    /// Before and after the command tree, a separate canary process attempts to exec Node in that same sandbox. A fresh nonce tags every denial. After the tree exits, `log show` reads only kernel sandbox reports carrying that nonce. Any report besides the two identified canary PIDs makes the run red, even when the caller ignored the denial or the command failed for another reason. Unrelated processes have no nonce and cause no hit.
+    ///
+    /// Forked descendants inherit the sandbox. An inherited descriptor holds the run open for background descendants, including reparented ones, before the second canary. The command must wait for descendants that deliberately close inherited descriptors. Processes dispatched through launchd/XPC, and Docker workloads, are outside the sandbox. This is a gate check for cooperative commands, not a security boundary against a command trying to evade it.
+    ///
+    /// ## What it answers
+    ///
+    /// One object: `status` green or red, `exit_code` of the command (128 plus signal if signalled), `nonce`, `canaries` with before/after PIDs, and `invocations`, each with caller `process`, `pid` and resolved `path`. Green exits 0; red exits 1. A monitor fault prints {"error"} and exits 1: no unmonitored fallback. Missing tools or reports, malformed reports, sandbox startup or application failure (including nested sandboxes), log read failure, timeout, or interruption all fail closed. Fix the named dependency or command and rerun; nested sandboxes must be run from outside the enclosing sandbox.
+    ///
+    /// Reports may arrive late: the reader retries missing canaries for up to five seconds. `--seconds` bounds the command tree, default 3600. SIGINT/SIGTERM and timeout terminate its process group and fail red; a killed monitor cannot return green.
+    ///
+    /// ## What trips you up
+    ///
+    /// Canaries establish report availability, not lossless logging. If a caller ignores EPERM, logd loses only that attempt's report, and both canary reports survive, this check can miss the attempt. Node still never executed: Seatbelt denied it. Do not interpret green as proof that unified logging lost no events.
+    #[command(next_help_heading = WORKER, verbatim_doc_comment)]
+    NoNode {
+        /// Node binary used for the two deliberate exec attempts
+        #[arg(long)]
+        canary_node: Option<PathBuf>,
+        /// Maximum seconds for the command and its descendants
+        #[arg(long, default_value_t = 3600, value_parser = clap::value_parser!(u64).range(1..))]
+        seconds: u64,
+        /// The command and arguments, after `--`
+        #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
+        command: Vec<OsString>,
+    },
     /// Allow or refuse the tool call described on stdin (a worker's hook, added at launch)
     ///
     /// ## When to run it
@@ -3029,7 +3083,7 @@ enum Command {
     ///
     /// Where the stage declared `escalate` and names a consult, the worker is started as that consult instead: in the consult's role, on a brief that names the skill, the stage that asked and its reason, and the two lines it ends with — `afkconvoy rule`, or `afkconvoy verdict escalate` to let it through to a human. AFKCONVOY_CONSULT is `true` in its environment, the guard refuses its commits, and it runs its own role's range, not the stage's.
     ///
-    /// Once the issue's last stage has passed to `land`, the worker is started in the workflow's landing role instead, on the landing brief with that role's landing skill named in it: it gates the issue's open PR and lands in a turn. Its stage is `land`, and it declares no verdict.
+    /// Once the issue's last stage has passed to `land`, the worker is started in the workflow's landing role instead, on the landing brief with that role's landing skill named in it: it gates the issue's open PR and lands in a turn. Its stage is `land`; when it cannot proceed it may declare `blocked` or `escalate` (`afkconvoy verdict --help`).
     ///
     /// ## What it answers
     ///
@@ -3841,7 +3895,7 @@ fn kind(name: &str) -> Kind {
         "cast" | "target" | "delivery" | "gate" | "land" | "verdict" | "rule" | "send"
         | "intake" | "lock" | "over" | "cut" | "wake" => worker_acts,
         "tick" => Kind { starts: true, ..Kind::ACTS },
-        "doctor" | "show" | "exclusive" => Kind::WORKERS,
+        "doctor" | "show" | "exclusive" | "no-node" => Kind::WORKERS,
         "plan" => Kind { starts: true, ..Kind::WORKERS },
         "run" => Kind { starts: true, ..Kind::PLAIN },
         "accounts" | "config" | "check" | "rehearse" | "recovery" | "scan" | "panel" => Kind::READS,
@@ -4427,6 +4481,15 @@ pub fn main(args: impl IntoIterator<Item = OsString>) -> ExitCode {
     if let Command::Guard { terminal_input_only } = cli.command {
         return guard::guard(terminal_input_only);
     }
+    if let Command::NoNode { command, canary_node, seconds } = &cli.command {
+        return match no_node::run(command, canary_node.as_deref(), *seconds) {
+            Ok(answer) => {
+                println!("{answer}");
+                if answer["status"] == "green" { ExitCode::SUCCESS } else { ExitCode::FAILURE }
+            }
+            Err(error) => fail(1, &format!("{error:#}")),
+        };
+    }
     if let Command::Help { name } = &cli.command {
         return match help(name.as_deref()) {
             Ok(text) => {
@@ -4957,6 +5020,7 @@ fn run(
         }
         // `main` answers it: a hook's answer is no JSON object.
         Command::Guard { .. } => anyhow::bail!("guard answers with its exit code"),
+        Command::NoNode { .. } => anyhow::bail!("no-node answers with its validation exit code"),
         Command::Exclusive { .. } => {
             anyhow::bail!("exclusive answers with its command's exit code")
         }

@@ -148,6 +148,7 @@ pub fn due<'t>(
     };
     match position {
         Position::Escalating(stage, reason) => Due::Human(reason.said(stage)),
+        Position::LandingEscalating => Due::Human(crate::position::LANDING_ESCALATION.to_string()),
         Position::Consult(stage, Consult::Role(work), _) => {
             Due::Consult(Entry { workflow, stage, work, role: team.role_of(work) })
         }
@@ -155,7 +156,7 @@ pub fn due<'t>(
             waits(stage, "a human: no worker performs it")
         }
         Position::ParkedForEvidence(stage) => waits(stage, "new evidence and an explicit send"),
-        Position::Landing => match (&workflow.land, pr) {
+        Position::Landing | Position::LandingParked => match (&workflow.land, pr) {
             (Some(work), Some(pr)) => {
                 Due::Lander(Lander { workflow, work, role: team.role_of(work), pr })
             }

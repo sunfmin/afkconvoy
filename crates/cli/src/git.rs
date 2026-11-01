@@ -353,6 +353,18 @@ impl Repo {
         Ok(ran.stdout)
     }
 
+    /// A commit of `tree` on `parent`, whose subject is `record`. The parent
+    /// gives a push the edge of the tested commit, so a remote holding it is
+    /// sent only the record and objects it still lacks.
+    pub fn record_commit_on(&self, tree: &str, parent: &str, record: &str) -> Result<String> {
+        let ran =
+            run(&self.dir, &["commit-tree", tree, "-p", parent, "-m", record], &RECORD_IDENTITY)?;
+        if !ran.ok {
+            bail!("git commit-tree failed: {}", ran.stderr.trim());
+        }
+        Ok(ran.stdout)
+    }
+
     /// The whole message of the commit `sha`, which is here. A sha already
     /// read is not asked again: the sha names the message, and a turn waiting
     /// on a record reads the same one many times.
@@ -484,7 +496,7 @@ pub(crate) fn run_within(
     env: &[(&str, &str)],
     limit: std::time::Duration,
 ) -> Result<Ran> {
-    let out = crate::process::output_within(
+    let (out, timed_out) = crate::process::output_within_with_timeout(
         Command::new("git")
             .current_dir(dir)
             .args(args)
@@ -493,18 +505,19 @@ pub(crate) fn run_within(
         limit,
     )
     .with_context(|| could_not_run(args, dir))?;
-    Ok(match out {
-        Some(out) => ran(out),
-        None => Ran {
-            ok: false,
-            stdout: String::new(),
-            stderr: format!(
-                "git {} did not end within {}s; its process group was ended",
-                args.join(" "),
-                limit.as_secs()
-            ),
-        },
-    })
+    if !timed_out {
+        return Ok(ran(out));
+    }
+    let mut stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    if !stderr.is_empty() && !stderr.ends_with('\n') {
+        stderr.push('\n');
+    }
+    stderr.push_str(&format!(
+        "git {} did not end within {}s; its process group was ended",
+        args.join(" "),
+        limit.as_secs()
+    ));
+    Ok(Ran { ok: false, stdout: String::new(), stderr })
 }
 
 fn ran(out: std::process::Output) -> Ran {
