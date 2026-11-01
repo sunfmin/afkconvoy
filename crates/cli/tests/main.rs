@@ -4,6 +4,7 @@
 
 mod common;
 
+mod accounts;
 mod admission;
 mod board;
 mod candidates;

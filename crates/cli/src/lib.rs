@@ -25,6 +25,7 @@ use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use serde_json::{Value, json};
 
 pub mod account;
+pub mod accounts;
 pub mod acting;
 pub mod admission;
 pub mod advance;
@@ -262,6 +263,38 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Report completion times from this repo's issues' work accounts
+    ///
+    /// ## When to run it
+    ///
+    /// Run `afkconvoy accounts` in a checkout to measure how long its issues took, or compare windows before and after a fleet change. Needs git and a signed-in `gh`; no running fleet or orca is needed.
+    ///
+    /// ## What it reads and writes
+    ///
+    /// Reads this host's checkout list to find the tracker, then every open and closed issue's work account through `gh`, paging through issues and comments. Where the tracker is another repo, only this repo's repo label's issues belong. An issue carrying several repo labels belongs to none. With no tracker named on the host, the checkout's own repo is its tracker. It writes nothing and starts no worker.
+    ///
+    /// The window includes accounts whose end is between now minus 7 days and now, inclusive. `--days <n>` changes that duration; `--all` includes every account ending by now. Issue closure and update dates do not select the window. Issues with no account are not samples.
+    ///
+    /// ## What it answers
+    ///
+    /// One JSON object: `window` has `start` and `end` in epoch seconds (`start` null with `--all`); `count` counts readable accounts in it; `wall_seconds` has p50, p90, p95 and max of end minus earliest claim start. Percentiles use nearest rank: sort ascending and take rank ceil(p * count / 100), one based; an empty sample answers null for each measure.
+    ///
+    /// `by_harness` maps the first worker's harness to its `count` and `wall_seconds`, with the same percentiles; `unknown` holds issues with no worker. `multiple_workers` counts issues with more than one worker. `gate_seconds` has p50 and p95 of each issue's sum of timed gate rows, zero when no gate ran. Worker rows and gate rows overlap the wall clock: they are never added into it, and no remainder is computed.
+    ///
+    /// `slowest` lists up to five issues in descending wall clock (ties by issue number), each with `number`, `url` and `wall_seconds`. `unreadable` lists `number` and `reason` for accounts with unknown or invalid starts, ends, worker rows or gate seconds, duplicate accounts, or comments that could not be read. They are excluded from all measures. An unreadable end or failed comment read cannot be placed in a window and is reported in every window; an account with a readable end outside the window is excluded.
+    ///
+    /// A failed issue listing refuses the command with {"error": …} and a non-zero exit. Check `gh auth status`, correct the reported GitHub or checkout-list fault, then run it again.
+    #[command(next_help_heading = OPERATOR, verbatim_doc_comment)]
+    Accounts {
+        /// Account ends in the last N days (positive; default 7); conflicts with --all
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..=u64::MAX / 86400), conflicts_with = "all")]
+        days: Option<u64>,
+        /// Include all recorded account ends through now
+        #[arg(long)]
+        all: bool,
+        #[command(flatten)]
+        at: At,
+    },
     /// Write this host's host kit. `kit --cast` is refused: automatic casting is gone
     ///
     /// ## When to run it
@@ -3703,7 +3736,7 @@ fn kind(name: &str) -> Kind {
         "doctor" | "show" | "exclusive" => Kind::WORKERS,
         "plan" => Kind { starts: true, ..Kind::WORKERS },
         "run" => Kind { starts: true, ..Kind::PLAIN },
-        "config" | "check" | "rehearse" | "recovery" | "scan" | "panel" => Kind::READS,
+        "accounts" | "config" | "check" | "rehearse" | "recovery" | "scan" | "panel" => Kind::READS,
         _ => Kind::PLAIN,
     }
 }
@@ -4517,6 +4550,9 @@ fn run(
             // The parser took the name for one there is an example of.
             let example = example.as_deref().and_then(scaffold::example);
             scaffold::scaffold(what, &dir, &role, example, create.as_ref())
+        }
+        Command::Accounts { days, all, .. } => {
+            accounts::accounts(&checkout?, days.unwrap_or(7), all, now)
         }
         Command::Flows { delivery, tracker, .. } => {
             flows::flows(&checkout?, delivery.as_deref(), tracker.as_ref())
