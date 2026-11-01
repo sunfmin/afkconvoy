@@ -408,6 +408,18 @@ pub struct Comment {
     pub at: Option<u64>,
 }
 
+/// The latest verdict belongs to this claim only when its comment was written
+/// at or after the claim began. Missing timestamps cannot establish ownership.
+pub(crate) fn verdict_since(
+    comments: &[Comment],
+    since: Option<u64>,
+) -> Option<afkconvoy_core::verdict::Verdict> {
+    let verdict =
+        afkconvoy_core::verdict::latest_verdict(comments.iter().map(|c| c.body.as_str()))?;
+    comments.get(verdict.comment)?.at.zip(since).filter(|(at, since)| at >= since)?;
+    Some(verdict)
+}
+
 /// Every open issue, with the comments on each, as one read of GitHub saw
 /// them.
 #[derive(Debug, Default)]

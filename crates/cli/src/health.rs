@@ -750,7 +750,6 @@ pub fn reconcile(
             continue;
         }
         let comments = open.issues.comments(claim.number);
-        let bodies = || comments.iter().map(|c| c.body.as_str());
         let prohibited_work = worktree.writes_nothing()?.is_some_and(|start| {
             start.broken(&claim.id, &worktree.tip().unwrap_or_default()).is_some()
         });
@@ -759,7 +758,7 @@ pub fn reconcile(
             book.observations_failed.retain(|failed| failed.path != worktree.path);
             continue;
         }
-        let verdict = afkconvoy_core::verdict::latest_verdict(bodies());
+        let verdict = crate::gh::verdict_since(comments, claim.since);
         let said = verdict.as_ref().and_then(|v| comments.get(v.comment)).map(|c| c.url.as_str());
         let answered = worktree.answered()?;
         let unbound_declared =

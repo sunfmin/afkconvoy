@@ -772,7 +772,22 @@ impl World {
             if !rows.is_array() {
                 *rows = json!([]);
             }
-            rows.as_array_mut().unwrap().push(json!({"id": id, "body": body, "html_url": url}));
+            // A worker's verdict is posted after its start. Tests that need a
+            // different or missing time set it explicitly after posting.
+            let at = if body.starts_with("<!--convoy:verdict ") {
+                rows.as_array().unwrap().iter().rev().find_map(|row| {
+                    let fields = afkconvoy_core::record::read_marker(
+                        afkconvoy_core::account::WORKER,
+                        row["body"].as_str()?,
+                    )?;
+                    fields.get("since")?.parse::<u64>().ok()
+                })
+            } else {
+                None
+            };
+            rows.as_array_mut()
+                .unwrap()
+                .push(json!({"id": id, "body": body, "html_url": url, "at": at}));
         });
         url
     }

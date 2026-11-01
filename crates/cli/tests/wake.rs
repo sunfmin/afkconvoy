@@ -308,7 +308,7 @@ fn closed_blocker(closes: bool, through_edge: bool) {
         world.with_tracker(|gh| {
             gh["comments"]["7"].as_array_mut().unwrap().push(json!({
                 "id": 90001, "body": "<!--convoy:verdict phase=already-satisfied-->",
-                "html_url": "https://gh/i/7#90001"
+                "html_url": "https://gh/i/7#90001", "at": now.parse::<u64>().unwrap()
             }));
         });
         world.with_orca(|orca| {
