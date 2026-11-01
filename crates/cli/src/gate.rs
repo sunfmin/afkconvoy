@@ -550,6 +550,7 @@ pub fn gated(
 /// A red run with a fleet lock standing says which: the base branch may be
 /// what is red, and the worker is to declare nothing of it.
 pub fn gate(repo: &Repo, config: &Config, train: bool, host: &str, now: u64) -> Result<Value> {
+    crate::claims::own_issue_on_this_host(repo)?;
     if train && !crate::exclusive::held() {
         let gh = GitHub::of(repo)?;
         let branch = repo.git(&["symbolic-ref", "--short", "HEAD"])?;
@@ -633,6 +634,7 @@ pub fn gate(repo: &Repo, config: &Config, train: bool, host: &str, now: u64) -> 
 /// from, under its own limit, and held to its own budget. Neither is put on
 /// record: what a landing turn proves is the whole gate, `gate_command`.
 pub fn one(repo: &Repo, config: &Config, which: Which) -> Result<Value> {
+    crate::claims::own_issue_on_this_host(repo)?;
     let name = which.word();
     let gate = config.gate(which).ok_or_else(|| {
         anyhow!(

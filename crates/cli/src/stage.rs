@@ -68,6 +68,8 @@ pub struct Ran {
 /// reads it against the stage it dispatched under that claim. A human's — one
 /// that names no commits — is `steer::declare`'s.
 pub fn verdict(repo: &Repo, declaring: Declaring) -> Result<Value> {
+    let claim =
+        crate::claims::on_this_host(repo, declaring.issue, &crate::host_settings::host_name())?;
     let Declaring { issue, stage, declared, blocked_by, text, ran, consult } = declaring;
     if stage.trim().is_empty() {
         bail!("--stage names no stage");
@@ -85,8 +87,7 @@ pub fn verdict(repo: &Repo, declaring: Declaring) -> Result<Value> {
         let team = crate::team::load(crate::team::From::Config, Some(repo))?.team;
         return crate::steer::declare(repo, &team, issue, &stage, declared, text);
     };
-    let scan = Scan::read(repo)?;
-    let Some(claim) = scan.claim_of(issue) else {
+    let Some(claim) = claim else {
         bail!(
             "issue #{issue} is not claimed: a verdict is declared under the claim its stage was \
              dispatched under"

@@ -275,6 +275,7 @@ pub fn land(
     host: &str,
     now: u64,
 ) -> Result<Value> {
+    crate::claims::on_this_host(repo, issue, &crate::host_settings::host_name())?;
     let mut answer = land_task(repo, config, gh, issue, host, now)?;
     crate::delivery::after_task(repo, issue, &mut answer);
     Ok(answer)

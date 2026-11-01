@@ -48,6 +48,7 @@ use crate::watch::watch;
 enum Failed {
     Step(TickStep),
     Read(u64),
+    StopTaken(u64),
     Delivery,
 }
 
@@ -92,6 +93,8 @@ pub struct Ticked {
     before: Option<Before>,
     /// The claims another fleet instance took since the tick before.
     lost: Vec<Lost>,
+    /// Local workers ended because another host holds their issue's claim.
+    stopped_taken: Vec<u64>,
     /// The closed claimed issues, each with who closed it (`Fleet::closers`).
     closers: Vec<(u64, String)>,
     /// What the pass's start and end of a cut said (`Fleet::cut_said`).
@@ -142,6 +145,30 @@ pub fn tick(
     let _ = crate::paused::probe(repo, me.instance.as_str(), &me.host, me.now);
     let _ = crate::kit::refresh(repo, me.instance.as_str(), &me.host, me.now);
     let (mut fleet, mut open) = Fleet::read(repo, me.now)?;
+    // This is independent of the previous tick's log view: retry failed
+    // closes, and cover a runner that restarted after the host woke.
+    let mut stopped_taken = vec![];
+    let mut taken_failures = vec![];
+    for claim in &fleet.scan.claims {
+        if claim.owner.as_ref().is_none_or(|owner| owner.host == me.host) {
+            continue;
+        }
+        let closed = (|| -> Result<bool> {
+            let Some(worktree) = crate::judge::worktree_of(&fleet, claim.number)? else {
+                return Ok(false);
+            };
+            if worktree.terminal()?.is_none() {
+                return Ok(false);
+            }
+            worktree.close_terminals()?;
+            Ok(true)
+        })();
+        match closed {
+            Ok(true) => stopped_taken.push(claim.number),
+            Ok(false) => {}
+            Err(error) => taken_failures.push(Failure::of(Failed::StopTaken(claim.number), &error)),
+        }
+    }
     // The look listed the candidate chain with the rest of the remote.
     // Removal answers from that listing. The chain already holds the gate's
     // evidence. A failure leaves the directory for the next tick; the pass
@@ -237,6 +264,7 @@ pub fn tick(
     if let Some(error) = delivery_failure {
         failures.push(Failure::of(Failed::Delivery, &error));
     }
+    failures.extend(taken_failures);
     let mut blocked = vec![];
     let read = Read { set: &set, flows: &flows };
     let pass = run_pass(&set, bound, set.held(), |step| {
@@ -291,6 +319,7 @@ pub fn tick(
         forgotten,
         before: before.cloned(),
         lost,
+        stopped_taken,
         closers,
         cut_said,
         handed,
@@ -547,6 +576,7 @@ impl Ticked {
         match failed {
             Failed::Step(step) => self.named(step),
             Failed::Read(issue) => json!({"do": "read", "issue": issue}),
+            Failed::StopTaken(issue) => json!({"do": "stop_taken", "issue": issue}),
             Failed::Delivery => json!({"do": "delivery"}),
         }
     }
@@ -556,6 +586,7 @@ impl Ticked {
         let step = match failed {
             Failed::Step(step) => step,
             Failed::Read(issue) => return format!("read #{issue}"),
+            Failed::StopTaken(issue) => return format!("stop taken worker #{issue}"),
             Failed::Delivery => return "reconcile deliveries".to_string(),
         };
         let (word, issue) = words(step);
@@ -768,7 +799,18 @@ impl Ticked {
         }
         let lead = parts.len();
         // A claim another fleet instance took since the tick before.
-        parts.extend(self.lost.iter().map(Lost::said));
+        parts.extend(self.lost.iter().map(|lost| {
+            let stopped =
+                if self.stopped_taken.contains(&lost.issue) { "; stopped its worker" } else { "" };
+            format!("{}{stopped}", lost.said())
+        }));
+        for issue in &self.stopped_taken {
+            if !self.lost.iter().any(|lost| lost.issue == *issue) {
+                parts.push(format!(
+                    "stopped its worker on #{issue}: its claim is held on another host"
+                ));
+            }
+        }
         // An issue that left the fleet for a human says so, whichever step
         // handed it over: none of them names it as anything else.
         let escalated: Vec<String> =

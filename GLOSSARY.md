@@ -333,7 +333,7 @@ A claim of this fleet instance with no PR and no live worker. It is recovered by
 _Avoid_: stuck issue, zombie
 
 **Stale claim**:
-Another fleet instance's claim whose heartbeat is past the lease. It is the only claim a fleet takes from another host unattended.
+Another fleet instance's claim whose heartbeat is past the lease. It is the only claim a fleet takes from another host unattended. When the old host wakes, its next tick closes the worker's terminal and keeps the worktree, pushing nothing of its branch. A worker's verdict, land or gate is refused while another host holds the claim; a new instance on the same host keeps its workers. Commits only the old worktree holds stay there for a human, named by doctor until removed.
 _Avoid_: dead claim, abandoned claim
 
 **Takeover**:

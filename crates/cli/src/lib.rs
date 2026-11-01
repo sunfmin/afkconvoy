@@ -1914,6 +1914,8 @@ enum Command {
     ///
     /// A worker in its own worktree, or the operator diagnosing a red gate.
     ///
+    /// Before running any gate, a worker's AFKCONVOY_ISSUE claim is read live. If another host holds it, the command refuses: `the claim on #N is held by instance X on host H since <ts>: this worker's work was taken; stop`. Nothing runs or is recorded. The host is the name its host settings give it, regardless of --host; a restart on the same host keeps its workers.
+    ///
     /// ## What it reads and writes
     ///
     /// The config's gate_command runs on this worktree, with its log streaming to stderr and its gate limit, gate_seconds (default {const:GATE_SECONDS}). A green run on the committed tree is recorded with the tree, command, host and elapsed seconds. A dirty worktree or artifacts the gate fails to ignore cannot produce a record. Its first green run records the fresh build for worker disk observations.
@@ -1961,6 +1963,8 @@ enum Command {
     /// ## Who runs it
     ///
     /// An issue's worker in its own worktree; in a bound workflow its landing worker after the last stage passes. A watch uses its own linked checkout named {const:WATCH_CHECKOUT}, with an optional numeric suffix. Other watch checkout names are refused.
+    ///
+    /// The issue's claim is checked live first. If another host holds it, the command refuses: `the claim on #N is held by instance X on host H since <ts>: this worker's work was taken; stop`. No candidate, gate record or landing is written. Ownership uses the host's name from its host settings, regardless of --host; a new instance on the same host keeps its workers.
     ///
     /// ## What it reads and writes
     ///
@@ -2099,6 +2103,8 @@ enum Command {
     /// A worker, in its own worktree: it starts in its role's directory, so the line its brief gives changes to the worktree first. The fleet put the commits of its role and of its team, and the harness it is a session of, in its environment, and the command reads them from there.
     ///
     /// Or a human, in a checkout of the bound repo, with neither commit named and none in the environment: that is what makes the record a human's.
+    ///
+    /// The issue's claim is checked live first. If another host holds it, the command refuses: `the claim on #N is held by instance X on host H since <ts>: this worker's work was taken; stop`. No stage record is written. Ownership uses the host's name from its host settings; a new instance on the same host keeps its workers.
     ///
     /// ## What it reads and writes
     ///
@@ -3279,7 +3285,7 @@ enum Command {
     ///
     /// ## What trips you up
     ///
-    /// - `--from` an instance whose heartbeat is still fresh takes nothing until `--yes`: the answer is `confirm`, with exit 0. Add `--yes` only when you know that fleet is dead — a live one goes on working the issues it lost.
+    /// - `--from` an instance whose heartbeat is still fresh takes nothing until `--yes`: the answer is `confirm`, with exit 0. Add `--yes` only when you know that fleet is dead. The old host's next tick stops its workers on claims taken to another host, and their verdict, land and gate commands refuse.
     /// - Taking starts nothing. The claims are continued by the next tick of `--instance`: follow it with `run --instance <id>` or `tick --instance <id>`, under the same id.
     /// - A run taken is not continued: that tick ends it — its worker is on the host that died — and the patrol is due again by its interval, the ruling not proposed again.
     /// - `--list` is the way to learn a running fleet's instance id.
