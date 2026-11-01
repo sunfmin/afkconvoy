@@ -61,6 +61,11 @@ fn accounts_match_a_hand_count_and_only_read_the_trackers_repos_issues() {
         let mut comments: Vec<_> = (0..101).map(|id| json!({"id": id, "body": "discussion"})).collect();
         comments.push(json!({"id": 999, "body": "no account yet"}));
         gh["comments"]["6"] = json!(comments);
+        for rows in gh["comments"].as_object_mut().unwrap().values_mut() {
+            for row in rows.as_array_mut().unwrap() {
+                row["html_url"] = json!("https://gh/comment");
+            }
+        }
     });
     let before = world.tracker();
     let out = world.afk(&["accounts", "--all", "--now", "2000"]).ok();
