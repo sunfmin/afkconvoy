@@ -774,7 +774,9 @@ fn fix_of(failed: &Failed, instance: &str) -> String {
 
 /// Failures stay visible across ticks that do not try their step. A later
 /// successful attempt clears one, as does progress on the same issue by a
-/// step that can continue or end its claim. Boards and labels clear none.
+/// step that can continue or end its claim. An advance with nothing to do
+/// clears an earlier dispatch failure: the claim has a worker to advance.
+/// Boards and labels clear none.
 fn recovered(failed: &Failed, step: &Value) -> bool {
     if step["outcome"] == "failed" {
         return false;
@@ -798,7 +800,11 @@ fn recovered(failed: &Failed, step: &Value) -> bool {
             )
         )
         && matches!(step["outcome"].as_str(), Some("done" | "continued" | "restarted" | "gone"));
-    same || progressed
+    let started = failed.step == "dispatch"
+        && step["do"] == "advance"
+        && step["issue"].as_u64() == failed.issue
+        && step["outcome"] == "nothing";
+    same || progressed || started
 }
 
 /// Each step that failed and has not since recovered, with its latest error.
@@ -2790,6 +2796,18 @@ mod tests {
             json!([{"do": "judge", "issue": 3, "outcome": "continued"}]);
         ticks.push(continued);
         assert_eq!(log_findings(&run(ticks)), []);
+    }
+
+    #[test]
+    fn an_advance_with_nothing_to_do_recovers_an_earlier_dispatch_failure() {
+        let failed = tick(
+            4,
+            json!([{"do": "dispatch", "issue": 3, "error": "orca worktree create failed: runtime_timeout"}]),
+        );
+        let mut advanced = tick(5, json!([]));
+        advanced.1.answer.as_mut().unwrap()["did"] =
+            json!([{"do": "advance", "issue": 3, "outcome": "nothing"}]);
+        assert_eq!(log_findings(&run(vec![failed, advanced])), []);
     }
 
     #[test]
