@@ -2556,10 +2556,11 @@ pub fn all_since_rounds(
         watch.insert("events".to_string(), Value::Array(watch_events));
     }
     of_host.extend(overdue_findings(&paces, now));
-    once["unworked_repos"] = match crate::unworked::read(now) {
+    let unworked = match crate::unworked::read(now) {
         Ok(read) => read,
         Err(error) => crate::error_json(&error),
     };
+    once.insert("unworked_repos".into(), unworked);
     of_host.extend(crate::unworked::findings(
         &once["unworked_repos"],
         host.unwrap_or(&crate::this_host()),
