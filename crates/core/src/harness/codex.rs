@@ -738,19 +738,22 @@ pub(super) fn recorded_turn(
     brief: Option<&str>,
 ) -> Option<Turn> {
     let mut saw_header = false;
-    let mut saw_cwd = false;
     let mut notes = Vec::new();
     for value in json_lines(text) {
         if value["type"] == "session_meta" {
-            saw_header = true;
             let recorded = value["payload"]["cwd"].as_str().unwrap_or("");
-            saw_cwd = session::same_cwd(recorded, cwd);
+            if !session::same_cwd(recorded, cwd)
+                && !brief.is_some_and(|brief| names_brief(text, brief))
+            {
+                return None;
+            }
+            saw_header = true;
         }
         if let Some(note) = note(&value) {
             notes.push(note);
         }
     }
-    if !saw_header || (!saw_cwd && !brief.is_some_and(|brief| names_brief(text, brief))) {
+    if !saw_header {
         return None;
     }
     session::turn_of(&notes, not_before)
