@@ -863,6 +863,11 @@ afkconvoy::cli joining::a_fleet_asked_red_turn_hands_its_answer_to_the_idle_work
 afkconvoy::cli joining::fleet_asked_conflicts_are_handed_once_even_after_the_fleet_changed_the_tree
 afkconvoy::cli codex::codex_workers_take_fresh_user_service_tier_without_inheriting_session_config
 afkconvoy::cli escalation::a_handed_back_workers_usage_limit_does_not_replay_the_previous_claims_verdict
+
+# no-node waits five seconds to prove a missing sandbox report (control#452).
+afkconvoy::cli no_node::a_log_reader_returning_nothing_fails_closed
+afkconvoy::cli no_node::a_missing_before_canary_fails_closed
+afkconvoy::cli no_node::a_missing_after_canary_fails_closed
 afkconvoy::cli unworked::doctor_reads_label_and_blocker_times_and_remote_beats_without_a_checkout
 afkconvoy::cli unworked::runner_opens_one_report_starts_its_watch_and_closes_on_a_live_heartbeat
 afkconvoy::cli tick::settling_waits_for_a_finishing_worker_then_leaves_without_a_failed_tick
