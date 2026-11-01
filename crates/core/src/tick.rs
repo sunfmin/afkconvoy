@@ -266,6 +266,14 @@ fn cutting(set: &WorkingSet, did: &[(TickStep, Outcome)]) -> bool {
     started || (set.cut_running() && !ended)
 }
 
+/// Whether a fleet instance holding `held` claims — on an issue, a patrol's
+/// run or a cut — with `frontier` issues left on its frontier is idle
+/// (GLOSSARY: Idle). An escalated issue and a patrol not yet due leave it
+/// idle.
+pub fn idle(held: usize, frontier: usize) -> bool {
+    held == 0 && frontier == 0
+}
+
 /// Whether `did` holds a dispatch of `issue`, however it ended.
 fn dispatched(did: &[(TickStep, Outcome)], issue: u64) -> bool {
     for (step, _) in did {
@@ -879,6 +887,12 @@ mod tests {
             claim: None,
         };
         standing.iter().enumerate().map(row).collect()
+    }
+
+    #[test]
+    fn idle_is_nothing_held_and_an_empty_frontier() {
+        assert!(idle(0, 0));
+        assert!(!idle(1, 0) && !idle(0, 2));
     }
 
     #[test]

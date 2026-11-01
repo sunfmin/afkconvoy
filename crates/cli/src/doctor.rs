@@ -369,8 +369,6 @@ pub struct Run {
     /// The seconds its last tick took, from its start line to its end;
     /// `None` where the log has no start of it.
     pub last_took: Option<u64>,
-    /// Its last check for host sleep, as its log has it; `None`: it made none.
-    pub host_sleep: Option<HostSleepChecked>,
     /// The newest events that reached this host's `run`s, newest first.
     pub events: Vec<Event>,
     /// The workers its log says are hot: each turned hot, and has not
@@ -407,26 +405,15 @@ pub struct BrokenRead {
 }
 
 /// One event that reached a `run` from outside it: a wake, its start or
-/// stop, the host put to sleep or waking.
+/// stop, the host waking.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Event {
     pub at: u64,
-    /// `wake`, `start`, `stop`, `host_sleep` or `host_wake`.
+    /// `wake`, `start`, `stop` or `host_wake`, among others (`Entry::event`).
     pub event: &'static str,
     /// What caused it, in words.
     pub cause: String,
     pub instance: String,
-}
-
-/// A check for host sleep, as the log has it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HostSleepChecked {
-    /// When it ended.
-    pub at: u64,
-    /// Whether it put the host to sleep.
-    pub slept: bool,
-    /// What kept the host awake, each in words.
-    pub awake: Vec<String>,
 }
 
 impl Run {
@@ -1530,19 +1517,6 @@ fn read_last_took(entries: &[Entry], host: &str) -> Option<u64> {
     })
 }
 
-/// The last check for host sleep the newest `run` of `host` made, as the log
-/// has it.
-fn read_host_sleep(entries: &[Entry], host: &str) -> Option<HostSleepChecked> {
-    let newest = entries.iter().rev().find(|entry| entry.host == host && entry.of_run())?;
-    let own = entries.iter().filter(|entry| entry.instance == newest.instance);
-    own.rev().find_map(|entry| match &entry.what {
-        What::HostSleep { slept, awake } => {
-            Some(HostSleepChecked { at: entry.at, slept: *slept, awake: awake.clone() })
-        }
-        _ => None,
-    })
-}
-
 /// The workers the newest `run` of `host` found hot and has not found
 /// stopped being hot since, as the log has them, longest hot first.
 pub(crate) fn read_hot(entries: &[Entry], host: &str) -> Vec<HotRead> {
@@ -1896,8 +1870,6 @@ fn fleet_json(run: &Run) -> Value {
         },
         "last_tick": last_tick,
         "failed_steps": failed,
-        "host_sleep": run.host_sleep.as_ref().map(|checked| json!({"checked": checked.at,
-            "slept": checked.slept, "kept_awake_by": checked.awake})),
         "events": run.events,
         // Only a `run` that is alive watches its workers.
         "hot_workers": if run.alive { json!(run.hot) } else { json!([]) },
@@ -2115,7 +2087,6 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String], look: &Look) ->
         heartbeats: Heartbeats::default(),
         log_file: log.map(|log| log.file),
         last_took: read_last_took(entries.as_deref().unwrap_or_default(), host),
-        host_sleep: read_host_sleep(entries.as_deref().unwrap_or_default(), host),
         hot: read_hot(entries.as_deref().unwrap_or_default(), host),
         broken: read_broken(
             entries.as_deref().unwrap_or_default(),
@@ -2520,7 +2491,6 @@ mod tests {
             log_file: Some(PathBuf::from("/cache/afkconvoy/runs/widgets.jsonl")),
             ticks: Some(ticks),
             last_took: None,
-            host_sleep: None,
             hot: vec![],
             broken: None,
             events: vec![],
@@ -3483,8 +3453,6 @@ mod tests {
             entry(50, "alpha", "h1", started(2, Cause::Timer)),
             entry(55, "alpha", "h1", What::WokenDuring { during: 2, by: None }),
             entry(60, "alpha", "h1", started(3, Cause::Woken)),
-            entry(70, "alpha", "h1", What::HostSleep { slept: false, awake: vec!["x".into()] }),
-            entry(80, "alpha", "h1", What::HostSleep { slept: true, awake: vec![] }),
             entry(90, "alpha", "h1", What::HostWoke { asleep: 3600 }),
             entry(95, "beta", "h2", start),
         ];
@@ -3497,7 +3465,6 @@ mod tests {
             said,
             [
                 (90, "host_wake", "after 3600s asleep", "alpha"),
-                (80, "host_sleep", "every fleet on this host was idle", "alpha"),
                 (60, "wake", "woken: tick 3 started", "alpha"),
                 (55, "wake", "woken during tick 2: tick 3 followed", "alpha"),
                 (30, "start", "afkconvoy run started, its workers with `claude`", "alpha"),
@@ -3576,29 +3543,6 @@ mod tests {
         // #1 was the old run's, and #7 cooled
         assert_eq!(said, [("#8", 50), ("#9", 70)]);
         assert!(read_hot(&entries, "h2").is_empty());
-    }
-
-    #[test]
-    fn the_last_check_for_host_sleep_is_read_for_the_instance_this_host_ran_last() {
-        let entry = |at: u64, instance: &str, slept: bool, awake: &[&str]| Entry {
-            at,
-            instance: instance.into(),
-            host: "h1".into(),
-            what: What::HostSleep { slept, awake: awake.iter().map(|a| a.to_string()).collect() },
-        };
-        let ticked =
-            Entry { what: What::Tick(tick(1, json!([])).1), ..entry(40, "alpha", false, &[]) };
-        let entries = [
-            entry(10, "old", true, &[]),
-            entry(20, "alpha", false, &["beta is not idle"]),
-            entry(30, "alpha", false, &["the keyboard or mouse was used 30s ago"]),
-            ticked,
-        ];
-        let checked = read_host_sleep(&entries, "h1").unwrap();
-        assert_eq!(checked.at, 30);
-        assert_eq!(checked.awake, ["the keyboard or mouse was used 30s ago"]);
-        assert_eq!(read_host_sleep(&entries[..1], "h1").map(|checked| checked.slept), Some(true));
-        assert_eq!(read_host_sleep(&entries, "h2"), None);
     }
 
     #[test]

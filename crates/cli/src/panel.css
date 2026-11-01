@@ -61,7 +61,7 @@ h1 { font-size: 34px; line-height: 1.1; font-weight: 600; letter-spacing: -0.02e
 .lane, .patrols, .exclusive, .human, .kit { margin-top: 32px; }
 
 /* The host first, once; then what waits for a human; then each repo. */
-.admission, .sleep { margin-top: 12px; }
+.admission { margin-top: 12px; }
 .admission { padding: 10px 0; border-top: 1px solid var(--hair); }
 .harnesses { display: flex; flex-wrap: wrap; gap: 4px 24px; margin-top: 8px; }
 .harnesses .note { color: var(--wait); font-size: 13px; }
