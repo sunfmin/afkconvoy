@@ -24,6 +24,7 @@ fn operator(world: &World) -> PathBuf {
 }
 
 fn run(world: &World, dir: &Path) -> FixtureProcess {
+    world.say_host_settings(json!({"watch_dir": dir, "watch_every": 1}));
     let mut command = world.command(env!("CARGO_BIN_EXE_afkconvoy"), &world.root);
     command.arg("host-runner");
     let runner = FixtureProcess::spawn(&mut command);
