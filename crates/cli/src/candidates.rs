@@ -833,6 +833,29 @@ fn worktree_root(repo: &Repo) -> Result<PathBuf> {
     Ok(crate::copies::cache()?.join("candidates").join(format!("{key:016x}")))
 }
 
+/// A configured cache can itself be inside a checkout. Refuse it before
+/// reserving a turn or assigning a candidate, even if it is another repo's.
+/// Ask git so linked worktrees and configuration discovery boundaries count.
+fn prepare_worktree_root(repo: &Repo) -> Result<PathBuf> {
+    let root = worktree_root(repo)?;
+    std::fs::create_dir_all(&root)?;
+    let root = std::fs::canonicalize(root)?;
+    let found = Repo::new(root.clone()).try_git(&["rev-parse", "--show-toplevel"])?;
+    ensure!(
+        !found.ok,
+        "candidate cache {} is inside checkout {}; set XDG_CACHE_HOME to a directory outside every checkout and run `afkconvoy land` again",
+        root.display(),
+        found.stdout
+    );
+    ensure!(
+        found.stderr.starts_with("fatal: not a git repository"),
+        "cannot check candidate cache {}: {}; set XDG_CACHE_HOME to a directory outside every checkout and run `afkconvoy land` again",
+        root.display(),
+        found.stderr.trim()
+    );
+    Ok(root)
+}
+
 /// Removes the worktree of every stopped candidate named by `records`.
 ///
 /// `records` are candidate chains already read: the look's listing, or a
@@ -971,6 +994,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
             return Ok(answer);
         }
     }
+    let root = prepare_worktree_root(repo)?;
     let barrier = !locks.is_empty() || !matches!(of, Of::Issue(_));
     let starting = read(repo, config)?;
     let base_config = crate::turn::tip_config(repo, &starting.base)?;
@@ -1039,7 +1063,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
     } else {
         Permit::candidate(repo, "turn: validate candidate, record, land", heavy)?
     });
-    let path = worktree_root(repo)?.join(&id);
+    let path = root.join(&id);
     let candidate = loop {
         let locks = crate::lock::standing_locks(&gh, config)?;
         if issue.map_or(!locks.is_empty(), |n| keeps_off(&locks, n)) {

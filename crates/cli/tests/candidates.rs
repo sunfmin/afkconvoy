@@ -221,6 +221,34 @@ done"#,
 }
 
 #[test]
+fn a_cache_inside_any_checkout_is_refused_before_a_candidate_is_assigned() {
+    let world = World::new();
+    world.set_gate("true");
+    assert_eq!(world.afk(&["gate"]).ok()["recorded"], true);
+    let (source, _) = worker(&world, 1, "a");
+    let other = world.second_repo();
+    for checkout in [&world.clone, &source, &other] {
+        let out = world
+            .command(env!("CARGO_BIN_EXE_afkconvoy"), &source)
+            .env("XDG_CACHE_HOME", checkout.join(".candidate-cache"))
+            .args(["land", "--issue", "1"])
+            .output()
+            .unwrap();
+        assert!(!out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));
+        let answer: Value = serde_json::from_slice(&out.stdout).unwrap();
+        let error = answer["error"].as_str().unwrap();
+        assert!(
+            error.contains("candidate cache") && error.contains("is inside checkout"),
+            "{error}"
+        );
+        assert!(error.contains("set XDG_CACHE_HOME"), "{error}");
+    }
+    assert!(
+        world.remote(&["for-each-ref", "--format=%(refname)", "refs/convoy/candidates"]).is_empty()
+    );
+}
+
+#[test]
 fn stopped_candidates_in_the_old_root_are_removed_and_other_directories_are_left() {
     let world = World::new();
     world.set_gate("true");

@@ -18,6 +18,8 @@ Red, a conflict, or a rejected push ends the turn without landing. A conflict wi
 
 ## Candidate validation and ordered landing (sunfmin/control#131)
 
+A cache configured inside a checkout, including another repo's, is refused before reserving a turn or assigning a candidate. The operator sets `XDG_CACHE_HOME` outside every checkout; the command never silently moves onto another host cache.
+
 Candidate worktrees live under the host's cache at `candidates/<repo-key>/<candidate-id>`, keyed by the canonical common git directory (sunfmin/control#453). They must be outside the checkout: tools that walk up for configuration otherwise read the checkout's branch above the candidate's commit. In particular, a candidate under `<checkout>/.git/convoy-candidates` can find a tsconfig whose globs exclude that candidate. Removal recognises both the new root and that earlier common-git-dir root, and only a candidate's exact directory in either root; retained candidates from an earlier version are removed when they stop.
 
 The approved change replaces whole-turn same-repo exclusion. Given certified base M and original PR heads A, B, C, turns assign A1=merge(M,A), B1=merge(A1,B), C1=merge(B1,C). Each immutable candidate has its own detached worktree. The source branches and their original heads stay intact, so a cancelled successor can rebuild from M+B without carrying failed A back in.
