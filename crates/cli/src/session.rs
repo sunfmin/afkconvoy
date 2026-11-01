@@ -1071,3 +1071,108 @@ mod tests {
         }
     }
 }
+
+/// Read the usage of sessions started for one worker. Missing or unreadable
+/// records are unknown; an unavailable session never becomes a zero count.
+pub(crate) fn tokens(
+    cwd: &Path,
+    harness: Harness,
+    start: u64,
+    before: Option<u64>,
+) -> Result<Option<afkconvoy_core::account::Tokens>> {
+    use afkconvoy_core::account::{Tokens, parse_tokens};
+    let cwd_text = cwd_str(cwd);
+    let brief = brief(cwd);
+    let mut homes = roots(cwd, harness)?;
+    // Codex uses a new private home for each launch; the note names only the
+    // latest. Earlier homes remain in the worktree until it is removed.
+    if harness == Harness::Codex {
+        if let Some(entries) = list_dir(&cwd.join(crate::worker_tmp::TMP_DIR))? {
+            for entry in entries {
+                for name in ["codex", "codex-host-user"] {
+                    let home = entry.join("harness").join(name);
+                    if home.is_dir() {
+                        homes.push(home);
+                    }
+                }
+            }
+        }
+    }
+    homes.sort();
+    homes.dedup();
+    let mut total = Tokens::new();
+    let mut found = false;
+    for root in homes {
+        let place = harness.session_place(&cwd_text);
+        let accepts = |text: &str| {
+            let at = session_first_at(text)?;
+            if at < start.saturating_sub(60)
+                || before.is_some_and(|end| at >= end.saturating_sub(2))
+            {
+                return None;
+            }
+            harness.recorded_turn(&cwd_text, text, None, brief.as_deref())?;
+            Some(text.to_owned())
+        };
+        let mut sessions = match place.layout {
+            SessionLayout::Files { dir, extension } => {
+                read_files(&root.join(dir), extension, Some(start), accepts)?
+            }
+            SessionLayout::Tree { dir, extension } => {
+                read_tree(&root.join(dir), extension, Some(start), accepts)?
+            }
+            SessionLayout::Index { file } => {
+                read_index(&root, &file, harness, &cwd_text, Some(start), accepts)?
+            }
+            SessionLayout::Named { dir, name, compressed: _ } if harness == Harness::Grok => {
+                let mut texts = Vec::new();
+                if let Some(entries) = list_dir(&root.join(dir))? {
+                    for entry in entries {
+                        let Some(events) = read_text(&entry.join(&name))? else { continue };
+                        if accepts(&events).is_some() {
+                            if let Some(updates) = read_text(&entry.join("updates.jsonl"))? {
+                                texts.push(updates);
+                            }
+                        }
+                    }
+                }
+                texts
+            }
+            SessionLayout::Named { dir, name, compressed } => {
+                read_named(&root.join(dir), name, compressed, Some(start), accepts)?
+            }
+        };
+        if harness == Harness::ClaudeCode {
+            sessions.extend(read_tree(&root.join("projects"), "jsonl", Some(start), accepts)?);
+            sessions.sort();
+            sessions.dedup();
+        }
+        for text in sessions {
+            if let Some(tokens) = parse_tokens(harness, &text) {
+                found = true;
+                for (model, counts) in tokens {
+                    total.entry(model).or_default().add(&counts);
+                }
+            }
+        }
+    }
+    Ok(found.then_some(total))
+}
+
+fn session_first_at(text: &str) -> Option<u64> {
+    for line in text.lines() {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+        for key in ["timestamp", "time", "ts"] {
+            if let Some(n) = value[key].as_u64() {
+                return Some(if n > 10_000_000_000 { n / 1000 } else { n });
+            }
+            if let Some(raw) = value[key].as_str() {
+                let whole = raw.split_once('.').map(|(s, _)| format!("{s}Z"));
+                if let Ok(at) = crate::doctor::watching::since(whole.as_deref().unwrap_or(raw)) {
+                    return Some(at);
+                }
+            }
+        }
+    }
+    None
+}

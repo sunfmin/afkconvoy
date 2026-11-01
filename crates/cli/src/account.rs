@@ -64,6 +64,35 @@ pub fn leave(repo: &Repo, gh: &GitHub, issue: u64, end: End, now: u64) -> Result
     }) else {
         return Ok(());
     };
+    let mut row = account::read(&text, issue).map_err(anyhow::Error::msg)?;
+    let prior = comments.iter().find_map(|comment| account::read(&comment.body, issue).ok());
+    let worktree = crate::orca::Source::of(repo)
+        .ok()
+        .and_then(|source| crate::orca::Worktree::of_issue(&source, issue).ok().flatten());
+    for index in 0..row.workers.len() {
+        let before = row.workers.get(index + 1).and_then(|worker| worker.start);
+        let worker = &mut row.workers[index];
+        let old = prior
+            .as_ref()
+            .and_then(|prior| {
+                prior.workers.iter().find(|old| {
+                    old.claim == worker.claim
+                        && old.start == worker.start
+                        && old.harness == worker.harness
+                })
+            })
+            .and_then(|old| old.tokens.clone());
+        worker.tokens = worktree
+            .as_ref()
+            .and_then(|worktree| {
+                let harness = afkconvoy_core::harness::Harness::read(worker.harness.as_deref()?)?;
+                crate::session::tokens(&worktree.path, harness, worker.start?, before)
+                    .ok()
+                    .flatten()
+            })
+            .or(old);
+    }
+    let text = account::render(&row);
     let found = comments.iter().find(|comment| {
         afkconvoy_core::record::read_marker(account::ACCOUNT, &comment.body).is_some()
     });
