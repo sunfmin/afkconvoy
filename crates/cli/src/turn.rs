@@ -276,8 +276,9 @@ pub fn land(
     now: u64,
 ) -> Result<Value> {
     let looked = crate::target::once(repo, config, &gh.tracker, issue)?;
-    let mut answer =
-        crate::turn_answer::noted(repo, now, || land_task(repo, gh, issue, host, now, looked))?;
+    let mut answer = crate::turn_answer::noted(repo, Some(issue), now, || {
+        land_task(repo, gh, issue, host, now, looked)
+    })?;
     crate::delivery::after_task(repo, issue, &mut answer);
     Ok(answer)
 }
