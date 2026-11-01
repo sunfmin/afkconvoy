@@ -103,7 +103,9 @@ pub(crate) fn answer_turn(
         if !start {
             return Ok(Some(Outcome::Nothing));
         }
-        if worktree.state(fleet.now)? == afkconvoy_core::worker::WorkerState::Gone {
+        if worktree.state(fleet.now)? == afkconvoy_core::worker::WorkerState::Gone
+            || crate::dispatch::incomplete(fleet, issue)?
+        {
             let started = dispatch(fleet, me, agent, issue, StartFrom::Auto)?;
             if started["started"] != true {
                 return Ok(Some(Outcome::Nothing));
