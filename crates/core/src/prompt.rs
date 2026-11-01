@@ -1765,11 +1765,16 @@ mod tests {
             ),
             "{prompt}"
         );
-        // But for those lines it is the brief every joining worker gets.
+        assert!(prompt.contains("verdict blocked --issue 7 --stage land --blocked-by <blockers>"));
+        assert!(prompt.contains("or a declared landing verdict — never just stop"));
+        // But for the role, its verdict instructions and the permitted ending,
+        // it is the brief every joining worker gets.
         let joiner = worker_prompt(&fields(), Variant::Land { pr: 70 }).unwrap();
         let role = prompt.find("**Your role:**").unwrap();
         let steps = prompt.find("\n## Steps").unwrap();
-        assert_eq!(format!("{}{}", &prompt[..role], &prompt[steps..]), joiner);
+        let ordinary = format!("{}{}", &prompt[..role], &prompt[steps..])
+            .replace(", or a declared landing verdict", "");
+        assert_eq!(ordinary, joiner);
         assert!(!joiner.contains("<landing>") && !joiner.contains("Your role"), "{joiner}");
     }
 
