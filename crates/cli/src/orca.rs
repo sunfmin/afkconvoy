@@ -1910,7 +1910,7 @@ impl Worktree {
         self.tell_at(terminal, line, crate::clock())
     }
 
-    pub(crate) fn forget_turn(&self) -> Result<()> {
+    pub(crate) fn clear_turn(&self) -> Result<()> {
         self.forget(TURN_FILE)
     }
 

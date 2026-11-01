@@ -148,7 +148,7 @@ pub(crate) fn handed(worktree: &Worktree) -> Result<Option<u64>> {
 /// worker asks for its next turn (or the operator gives different work).
 pub(crate) fn forget_wait(worktree: &Worktree) -> Result<()> {
     if pending(worktree)?.is_none() && handed(worktree)?.is_none() {
-        worktree.forget_turn()?;
+        worktree.clear_turn()?;
     }
     Ok(())
 }
