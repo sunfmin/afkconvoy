@@ -229,6 +229,18 @@ fn rewrite_previews_checks_and_is_idempotent() {
 }
 
 #[test]
+fn rewrite_uses_an_adjacent_escalation_as_the_outcome() {
+    let world = World::new();
+    world.issue(421, &[]);
+    world.comment(421, "<!--convoy:escalation claim=test-->\nEscalated.");
+    world.comment(421, include_str!("fixtures/account-421.md"));
+    let dry = world.afk(&["rewrite-accounts"]).ok();
+    let body = dry["changes"][0]["new_body"].as_str().unwrap();
+    let row = account::read(body, 421).unwrap();
+    assert_eq!(row.outcome.as_deref(), Some("escalated"));
+}
+
+#[test]
 fn unknown_schema_is_unreadable_and_unknown_measurements_stay_null_in_rows() {
     let world = World::new();
     world.issue(1, &[]);
