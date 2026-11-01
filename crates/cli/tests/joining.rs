@@ -219,6 +219,7 @@ fn new_work_restores_health_after_a_landing_turn_wait() {
         });
         tick(&world, 2200);
         tick(&world, 2500);
+        let current = worktree(&world);
         let doctor = world.afk(&["doctor", "--all", "--now", "2500"]).json;
         let workers = &doctor["host"]["host_kit"]["worker_health"]["workers"];
         assert!(
@@ -226,7 +227,7 @@ fn new_work_restores_health_after_a_landing_turn_wait() {
                 .as_array()
                 .unwrap()
                 .iter()
-                .any(|w| { w["path"] == json!(dir) && w["action"] == "waiting for operator" }),
+                .any(|w| { w["path"] == json!(current) && w["action"] == "waiting for operator" }),
             "{action}: {workers}"
         );
         assert!(
