@@ -1743,7 +1743,14 @@ mod tests {
         Host {
             name: "h1".into(),
             now,
-            admission: Ok(Admission { shares: SHARES, said: vec![], reading, span: 600 }),
+            admission: Ok(Admission {
+                shares: SHARES,
+                said: vec![],
+                reading,
+                total_load: reading.load,
+                queue_load: Some(0),
+                span: 600,
+            }),
             exclusive: Ok(Some((vec![], Some(false)))),
             lanes: afkconvoy_core::exclusive::Lanes { worker: 1, fast: 1, slow: 1 },
             kit: Ok(Kit::default()),
