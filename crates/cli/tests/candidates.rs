@@ -486,7 +486,10 @@ fn a_stalled_gate_record_push_releases_the_lane_without_recording_green() {
     assert_eq!(failed["exit_code"], 0);
     assert_eq!(failed["timed_out"], false, "the gate did not reach its own limit");
     assert_eq!(failed["recorded"], false);
-    assert!(failed["not_recorded"].as_str().unwrap().contains("did not end within 1s"), "{failed}");
+    let not_recorded = failed["not_recorded"].as_str().unwrap();
+    assert!(not_recorded.contains("did not end within 1s"), "{failed}");
+    assert!(not_recorded.contains("Git reported "), "{failed}");
+    assert!(not_recorded.contains(" sent before the push was ended"), "{failed}");
     assert_eq!(world.state(1), "open");
 
     began(&world, "b");

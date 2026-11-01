@@ -100,6 +100,7 @@ impl Wire for Git {
 pub struct Push {
     force: bool,
     atomic: bool,
+    progress: bool,
     writes: Vec<Write>,
 }
 
@@ -151,6 +152,13 @@ impl Push {
         self
     }
 
+    /// Reports pack progress even when output is captured, so a failed push
+    /// can say how much it had written.
+    pub fn progress(mut self) -> Push {
+        self.progress = true;
+        self
+    }
+
     /// The last write takes only while its ref is still at `expected`.
     pub fn leased(mut self, expected: &str) -> Push {
         if let Some(write) = self.writes.last_mut() {
@@ -171,6 +179,9 @@ impl Push {
         }
         if self.atomic {
             args.push("--atomic".into());
+        }
+        if self.progress {
+            args.push("--progress".into());
         }
         for write in &self.writes {
             if let Some(lease) = &write.lease {

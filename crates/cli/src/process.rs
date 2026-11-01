@@ -86,24 +86,26 @@ pub(crate) fn output_with_input(command: &mut Command, input: &[u8]) -> io::Resu
     output_given(command, Some(input))
 }
 
-/// As `output`, but `None` when the command has not ended within `limit`.
-/// Its own process group is killed so a transport or remote hook it started
-/// cannot survive the bound.
-pub(crate) fn output_within(command: &mut Command, limit: Duration) -> io::Result<Option<Output>> {
+/// As `output`, with whether the command outlived `limit`. Its output is kept
+/// either way. Its own process group is killed at the limit so a transport or
+/// remote hook it started cannot survive the bound.
+pub(crate) fn output_within(command: &mut Command, limit: Duration) -> io::Result<(Output, bool)> {
     use std::os::unix::process::CommandExt;
     output_bounded(command.process_group(0), None, limit)
 }
 
 fn output_given(command: &mut Command, input: Option<&[u8]>) -> io::Result<Output> {
-    output_bounded(command, input, None)
-        .map(|out| out.expect("an unbounded command is not timed out"))
+    output_bounded(command, input, None).map(|(out, timed_out)| {
+        assert!(!timed_out, "an unbounded command is not timed out");
+        out
+    })
 }
 
 fn output_bounded(
     command: &mut Command,
     input: Option<&[u8]>,
     limit: impl Into<Option<Duration>>,
-) -> io::Result<Option<Output>> {
+) -> io::Result<(Output, bool)> {
     let limit = limit.into();
     let stdin = if input.is_some() { Stdio::piped() } else { Stdio::null() };
     let mut child =
@@ -154,7 +156,7 @@ fn output_bounded(
         (stdout, stderr, status, timed_out)
     });
     let out = Output { status: status?, stdout: stdout?, stderr: stderr? };
-    Ok((!timed_out).then_some(out))
+    Ok((out, timed_out))
 }
 
 fn set_nonblock(fd: i32) -> io::Result<()> {
