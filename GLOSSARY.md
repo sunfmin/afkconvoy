@@ -337,6 +337,10 @@ _Avoid_: assignee, assignment, lock (the fleet lock)
 The timestamp a fleet instance publishes for itself while it holds claims, stamped with its host. A claim is live while its owner's heartbeat is within the lease. A land turn stamps its host the same way on the candidate record while its host holds a candidate, a barrier or a pending turn there; that host's members of the chain are live while either stamp of the host is within the lease, and any other host's next turn takes them over once neither is. A `run` told to stop while it holds no claim removes its own; a start removes the dead ones that hold nothing: those of the instances it took from, its own host's past the lease, and anyone's older than a day.
 _Avoid_: ping, keepalive
 
+**Repo nobody works**:
+A repo with an open ready issue of its tracker, carrying its repo label, with no open blocker or claim, ready for more than an hour since the later of readiness and its last blocker closing, and no heartbeat within the lease on its remote. Every host serving that tracker looks, but only the report's opening host asks the operator which host should take it; an unreadable remote establishes no such repo.
+_Avoid_: host is off (the cause is unknown), abandoned repo
+
 **Orphaned claim**:
 A claim of this fleet instance with no PR and no live worker. It is recovered by continuation, never released.
 _Avoid_: stuck issue, zombie
