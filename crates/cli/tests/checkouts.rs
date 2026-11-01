@@ -192,6 +192,7 @@ fn doctor_all_answers_each_checkouts_doctor_and_the_hosts_findings_once() {
         keys(&answer["host"]),
         BTreeSet::from(
             [
+                "asking",
                 "exclusive",
                 "host_kit",
                 "installed",

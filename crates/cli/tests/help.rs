@@ -971,7 +971,7 @@ fn the_readme_points_to_the_help_as_the_whole_manual() {
 #[test]
 fn the_short_help_is_still_one_screen() {
     let short = help("-h");
-    assert!(short.lines().count() <= 56, "{short}");
+    assert!(short.lines().count() <= 57, "{short}");
     assert!(!short.contains("THE COMMANDS"));
 }
 
@@ -1104,13 +1104,18 @@ fn the_guide_and_each_subcommand_agree_on_who_runs_it_and_why() {
             "over",
             "exclusive",
             "cut",
-            "watched"
+            "watched",
+            "asked"
         ])
     );
     for command in &workers {
         let who = who(command);
         if *command == "watched" {
             assert!(who.contains("watch") && who.contains("watch directory"), "{who}");
+            continue;
+        }
+        if *command == "asked" {
+            assert!(who.contains("asking session") && who.contains("operator"), "{who}");
             continue;
         }
         assert!(who.contains("worker") && who.contains("in its own worktree"), "{command}: {who}");

@@ -54,6 +54,8 @@ fn stock_instruction() -> String {
 
 Find what holds this host's fleets and their work back, fix it with the watch's authority,
 check that the work goes on, and say what you did.
+A resident session whose brief names it “afkconvoy asks” is not the stock watch:
+it only asks the human questions its brief carries and does no watch's work.
 Leave these with a human, never act on them, and list each in your report:
 {HUMAN_KINDS}
 "
@@ -344,6 +346,7 @@ pub struct HostWatch {
     ended: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
     sender: Option<std::thread::JoinHandle<()>>,
+    asking: Option<std::thread::JoinHandle<()>>,
 }
 
 impl HostWatch {
@@ -362,6 +365,13 @@ impl HostWatch {
                 sender_say(What::WatchFailed { said })
             });
         });
+        let asking_ended = Arc::clone(&ended);
+        let asking_say = Arc::clone(&say);
+        let asking = std::thread::spawn(move || {
+            crate::host_asking::run(&asking_ended, |said| {
+                asking_say(What::WatchFailed { said });
+            });
+        });
         let watcher = Watcher {
             ended: Arc::clone(&ended),
             shared,
@@ -373,6 +383,7 @@ impl HostWatch {
             ended,
             thread: Some(std::thread::spawn(move || watcher.run())),
             sender: Some(sender),
+            asking: Some(asking),
         }
     }
 }
@@ -385,6 +396,9 @@ impl Drop for HostWatch {
         }
         if let Some(sender) = self.sender.take() {
             let _ = sender.join();
+        }
+        if let Some(asking) = self.asking.take() {
+            let _ = asking.join();
         }
     }
 }
@@ -1025,7 +1039,7 @@ fn stop_session(watch: &Watch) -> Result<()> {
     watch_terminal::set_status(watch, LaunchState::Ended)
 }
 
-fn stop_marked(identity: &str) -> Result<()> {
+pub(crate) fn stop_marked(identity: &str) -> Result<()> {
     let marker = format!("{}{identity}", host_watch::SESSION_PROCESS);
     let began = Instant::now();
     let mut pids = BTreeSet::new();
@@ -1065,7 +1079,11 @@ fn stop_marked(identity: &str) -> Result<()> {
 
 /// Whether the harness of a session gave out: its own words for a fault it
 /// cannot go on past, or an exit with a failure.
-fn gave_out(harness: Harness, transcript: &str, exited: Option<i32>) -> Option<Diagnosis> {
+pub(crate) fn gave_out(
+    harness: Harness,
+    transcript: &str,
+    exited: Option<i32>,
+) -> Option<Diagnosis> {
     let lines: Vec<String> = transcript.lines().map(str::to_string).collect();
     crate::health::terminal_fault(harness, &lines).or_else(|| {
         let status = exited.filter(|status| *status != 0)?;

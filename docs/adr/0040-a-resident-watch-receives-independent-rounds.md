@@ -4,6 +4,10 @@ status: accepted
 
 # A resident watch receives independent rounds
 
+Amended by ADR-0052 (sunfmin/control#417): human entries of recorded reports
+are asked in a separate resident asking session. The watch's own rounds and
+resident session are unchanged.
+
 Amends ADR-0030, ADR-0035, ADR-0038 and ADR-0039 for sunfmin/control#145.
 Their rules that an active watch stops looks, a report ends the harness,
 and each later watch starts a new Agent no longer apply. Authority, guards,

@@ -153,6 +153,40 @@ pub fn evidence(transcript: &str) -> Vec<String> {
     did
 }
 
+/// Orca's phone push carries at most this many characters of the Agent's last message.
+pub const PUSH_CHARS: usize = 180;
+
+/// The asking session's last message: the question first, then how many more wait.
+pub fn asking_push(question: &str, more: usize) -> String {
+    let question = question.split_whitespace().collect::<Vec<_>>().join(" ");
+    let suffix = match more {
+        0 => String::new(),
+        1 => " · 1 more waits".to_string(),
+        more => format!(" · {more} more wait"),
+    };
+    let room = PUSH_CHARS.saturating_sub(suffix.chars().count());
+    let question: String = question.chars().take(room).collect();
+    format!("{question}{suffix}")
+}
+
+#[cfg(test)]
+mod asking_push_tests {
+    #[test]
+    fn the_question_leads_and_the_whole_push_fits() {
+        assert_eq!(super::asking_push("Approve the spend?", 0), "Approve the spend?");
+        assert_eq!(super::asking_push("Approve the spend?", 2), "Approve the spend? · 2 more wait");
+        let question = "请 决定 ".repeat(100);
+        for more in [0, 1, 20] {
+            let push = super::asking_push(&question, more);
+            assert!(push.starts_with("请 决定"), "{push}");
+            assert!(push.chars().count() <= super::PUSH_CHARS, "{}", push.chars().count());
+            if more > 0 {
+                assert!(push.ends_with("more wait") || push.ends_with("more waits"));
+            }
+        }
+    }
+}
+
 /// The watch's identity in a guarded command's environment.
 pub const WATCH_ENV: &str = "AFKCONVOY_WATCH";
 

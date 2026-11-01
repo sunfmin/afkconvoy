@@ -2400,6 +2400,7 @@ fn host_once(
         ("exclusive".to_string(), exclusive_json(exclusive, now)),
         ("installed".to_string(), serde_json::to_value(installed).unwrap_or_default()),
         ("watch".to_string(), crate::host_watch::json(watch.as_ref(), rounds)),
+        ("asking".to_string(), crate::host_asking::json()),
         ("notify".to_string(), crate::watch_notify::json()),
         ("other_accounts".to_string(), crate::machine::json(others)),
     ])
