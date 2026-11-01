@@ -68,6 +68,33 @@ fn running(world: &World) -> Option<Value> {
     Some(state(world)["running"].clone()).filter(|running| !running.is_null())
 }
 
+fn guarded_watch(harness: afkconvoy_core::harness::Harness) {
+    let world = World::new();
+    crate::asking_guard::prepare(&world, harness);
+    world.issue(11, &["ready-for-human"]);
+    world.comment(11, "<!--convoy:escalation claim=old-->\nAn operator decision is needed.");
+    let dir = operator(&world);
+    run(&world, &dir);
+    until(&world, "guarded watch launch", || running(&world));
+    let journal: Value = serde_json::from_slice(
+        &std::fs::read(world.cache().join("afkconvoy/watch/terminal.json")).unwrap(),
+    )
+    .unwrap();
+    crate::asking_guard::check_launch(&world, harness, &dir, journal["command"].as_str().unwrap());
+}
+
+macro_rules! guarded_watches {
+    ($($name:ident: $harness:ident),* $(,)?) => { $(
+        #[test]
+        fn $name() { guarded_watch(afkconvoy_core::harness::Harness::$harness); }
+    )* };
+}
+
+guarded_watches! {
+    asking_guard_claude: ClaudeCode, asking_guard_pi: Pi, asking_guard_codex: Codex,
+    asking_guard_dsh: Dsh, asking_guard_kimi: Kimi, asking_guard_grok: Grok,
+}
+
 fn ended(world: &World, outcome: &str) -> Option<Value> {
     Some(state(world)["last"].clone()).filter(|last| last["outcome"] == outcome)
 }
