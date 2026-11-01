@@ -1,8 +1,7 @@
-//! `afkconvoy guard`: what the fleet has every worker of a bound repo ask
-//! before each tool call (docs/adr/0012), with the call described on standard
-//! input and the stage's facts in the environment — the harness that asks
-//! among them. How the call is described and how the answer is given are
-//! that harness's
+//! `afkconvoy guard`: what every worker and the watch ask before each tool
+//! call. All protect the asking Terminal; bound workers also carry their
+//! stage's facts (docs/adr/0012). How the call is described and answered is
+//! the harness's
 //! (`afkconvoy_core::harness`); whether the call is refused is the core's to
 //! say, in one place for every harness (`afkconvoy_core::guard`). Whom a
 //! process a watch would end is, this reads off the host's processes,
@@ -23,7 +22,7 @@ use crate::orca::Worktree;
 /// exit 0, saying nothing, when the worker may make the call; else the
 /// reason on stderr and the exit code that refuses it. A call or a stage it
 /// cannot read is refused: nothing is allowed unread.
-pub fn guard() -> ExitCode {
+pub fn guard(terminal_input_only: bool) -> ExitCode {
     let harness = match asking(std::env::var(HARNESS_ENV).ok().as_deref()) {
         Ok(harness) => harness,
         Err(why) => {
@@ -35,7 +34,7 @@ pub fn guard() -> ExitCode {
     let read = OnceCell::new();
     let whom = |pid: u32| whom(read.get_or_init(on_host), pid);
     let decided = match std::io::stdin().read_to_string(&mut described) {
-        Ok(_) => decide(harness, &described, |name| std::env::var(name).ok(), &whom),
+        Ok(_) => decide_on_host(harness, &described, terminal_input_only, &whom),
         Err(error) => Err(format!("the tool call could not be read: {error}")),
     };
     match decided {
@@ -45,6 +44,46 @@ pub fn guard() -> ExitCode {
             ExitCode::from(harness.refused())
         }
     }
+}
+
+/// The asking journal, rather than its title or directory, names the protected
+/// Terminal. The runner does not invoke a harness hook. The asking session's
+/// own hooks are exempt by their runtime Terminal identity, including a
+/// launch acknowledged before its creation reply reached the runner.
+fn decide_on_host(
+    harness: Harness,
+    described: &str,
+    terminal_input_only: bool,
+    processes: &impl Fn(u32) -> Process,
+) -> Result<Option<String>, String> {
+    let mut input = serde_json::Deserializer::from_str(described);
+    let unread = |error| format!("what it was handed describes no tool call: {error}");
+    let call = harness.call(&mut input).map_err(unread)?;
+    input.end().map_err(unread)?;
+    if let Some(terminal) =
+        crate::asking_terminal::protected().map_err(|error| error.to_string())?
+        && std::env::var("ORCA_TERMINAL_HANDLE").ok().as_deref() != Some(terminal.as_str())
+    {
+        let current = |routing: &[String]| {
+            let mut args = vec!["terminal", "show"];
+            args.extend(routing.iter().map(String::as_str));
+            crate::orca::orca(&args)
+                .and_then(|shown| {
+                    shown["terminal"]["handle"]
+                        .as_str()
+                        .map(|handle| Some(handle.to_string()))
+                        .ok_or_else(|| anyhow::anyhow!("Orca returned no Terminal handle"))
+                })
+                .map_err(|error| format!("cannot identify the input Terminal: {error}"))
+        };
+        if let Some(why) = afkconvoy_core::guard::asking_input(&call, &terminal, &current)? {
+            return Ok(Some(why));
+        }
+    }
+    if terminal_input_only {
+        return Ok(None);
+    }
+    decide(harness, described, |name| std::env::var(name).ok(), processes)
 }
 
 /// The harness that asks, by what the worker's environment `names` for it: a

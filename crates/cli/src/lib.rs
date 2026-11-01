@@ -1144,7 +1144,7 @@ enum Command {
     ///   - `concurrency`: {in_force, said_by}: how many claims its fleet instance holds at work at once on this host, as `plan` says it — said_by `checkout` or `default`. {error} where the config or the checkout list cannot be read
     ///   - `tracker`: the repo its fleet reads and writes its issues in, as `afkconvoy checkouts` says it: null where the checkout says none, and its own repo is its tracker. {error} where the checkout list cannot be read
     ///   - `github_api`: {host, login, core, graphql, secondary, for_rest_reads, for_graphql_reads}. Each quota has {remaining, reset}; null remaining means unknown and reset is Unix seconds. Selection respects primary exhaustion until reset and shared secondary cooldowns; fallback requires equivalent facts. {error} when the observation cannot be read. [`afkconvoy help troubleshooting`](help:troubleshooting) explains capability refusals and write receipts.
-    /// - `claims`: each claim of that instance: {issue, title, status, pr, stage, role, held_for, worker, worktree, gate} — status as `plan` gives it; stage and role in a bound repo; held_for in seconds; worker is {state, quiet}, state being busy, stopped or gone, and null when orca could not say; gate is {green_at} when a green gate run is on record for the tree the worktree is at, else null
+    /// - `claims`: each claim of that instance: {issue, title, status, pr, stage, role, held_for, worker, worktree, gate} — status as `plan` gives it; stage and role in a bound repo; held_for in seconds; worker is {state, quiet}, state being busy, stopped or gone, and null when orca could not say. A claim left alone by a fleet lock instead says {state: "waiting_on_lock", locks: [issue numbers]} and raises no stopped or missing worker finding; the lock's own worker keeps its findings. gate is {green_at} when a green gate run is on record for the tree the worktree is at, else null
     /// - `issues`: as `plan` answers them: {frontier, excluded, escalating, locks, free_slots, patrols} — what a worker can be started on, what waits and why, and what is being handed to a human and why. null when they could not be read
     /// - `refusals`: issue number → the harnesses that refused that task, each with `harness` and `evidence`, read from GitHub. Later starts skip them across every stage; the harness stays healthy for other issues.
     /// - `candidates`: the remote candidate chains for every target branch of this repo, each in order and identified by `target_branch`. Each candidate is {phase, commit, issue, pr, predecessor, waiting, target_branch, id, cause, cancelled_by, round}. `round` is the id of the candidate whose slow gate it waits on: the tip of the round now slow-gating, for each candidate of that round and the tip itself; null for one behind it or with no round running, which waits for the next round. `waiting` is `constructing_worktree`, `validating`, `waiting_for_round` (fast-green, until a round's slow gate lands it), `slow_gating` (the round's tip, running the slow gate), `waiting_for_predecessor`, `confirming_process_exit`, `gate_red`, `cancelled` or `landed`. A finished candidate — phase `landed`, `red` or `cancelled` — carries no gate excerpt. A candidate gating now (phase `validating` or `slow`) may still carry `excerpt`. An error reading the chain is reported as `{error}`.
@@ -2912,7 +2912,7 @@ enum Command {
     ///
     /// ## When to run it
     ///
-    /// Never by hand. It is the guard: the check made before each thing a worker of a bound repo does, refusing what no worker may do and what its stage may not. Read this to learn what a worker is refused, or why one was.
+    /// Never by hand. Every worker and the watch ask it before each tool call. Outside a bound stage, --terminal-input-only checks input to the asking Terminal without requiring stage facts. Bound workers also check what their stage may not do. Read this to learn what a worker is refused, or why one was.
     ///
     /// ## Who runs it
     ///
@@ -2940,6 +2940,7 @@ enum Command {
     ///
     /// Refused for every worker:
     ///
+    /// - input to the asking session's Terminal (`orca terminal send`, including raw text, Enter, interrupts and retried prompts). The current handle comes from the asking launch journal, never its title or directory. The host runner's own deliveries run outside worker hooks; the asking session itself is exempt by its runtime Terminal identity. Input to another Terminal is unchanged.
     /// - adding or removing a flow label, a `stage:` label, the escalate label or the lock label (`gh issue edit --add-label`, `--remove-label`, `gh issue create --label`, and any write of an issue's labels through `gh api`)
     /// - writing a stage record by hand: only `afkconvoy verdict` writes one
     /// - writing an intake record by hand: only `afkconvoy intake` writes one, and it is what puts a flow label on for a worker
@@ -2973,9 +2974,13 @@ enum Command {
     /// - Heredoc bodies and quoted arguments are data, not commands: a report may name `rm` or `git worktree remove`, and a read-only `gh` call may search for stage or intake records with `--jq` or `--template`. Sending a handwritten record through a writing `gh` call is still refused, including through a heredoc. The argument after `sh -c` or `bash -c` is executable shell text and is judged as commands.
     /// - It recognises commands. The same act wrapped in a script, hidden in a variable or in a substitution inside quotes gets past it: it stops a worker that errs, not one that means to get by.
     /// - What it misses is checked after the stage: a commit left on the branch by a stage marked `writes: false`, or by a consult, is a failure, and the issue escalates; a patrol's final commit not on the base branch, working-tree changes, or a PR is a failed run, reported to a human — see `afkconvoy tick --help`.
-    /// - An unbound repo's workers have no guard: their worker launch command is opaque.
+    /// - Unbound workers and the watch carry only the asking Terminal input guard. The opaque launch command stays intact; the harness adds its hook, extension or plugin. The asking session starts without this guard.
     #[command(next_help_heading = HOOK, verbatim_doc_comment)]
-    Guard,
+    Guard {
+        /// Check only asking Terminal input, outside a bound stage
+        #[arg(long)]
+        terminal_input_only: bool,
+    },
     /// Start a fresh worker on one issue
     ///
     /// ## When to run it
@@ -4393,8 +4398,8 @@ pub fn main(args: impl IntoIterator<Item = OsString>) -> ExitCode {
             return fail(2, &said);
         }
     };
-    if matches!(cli.command, Command::Guard) {
-        return guard::guard();
+    if let Command::Guard { terminal_input_only } = cli.command {
+        return guard::guard(terminal_input_only);
     }
     if let Command::Help { name } = &cli.command {
         return match help(name.as_deref()) {
@@ -4925,7 +4930,7 @@ fn run(
             cut::run(&repo, &config, from, &host, second, clock)
         }
         // `main` answers it: a hook's answer is no JSON object.
-        Command::Guard => anyhow::bail!("guard answers with its exit code"),
+        Command::Guard { .. } => anyhow::bail!("guard answers with its exit code"),
         Command::Exclusive { .. } => {
             anyhow::bail!("exclusive answers with its command's exit code")
         }

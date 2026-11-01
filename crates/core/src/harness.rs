@@ -728,6 +728,28 @@ impl Harness {
         }
     }
 
+    /// Adds the asking Terminal guard outside a role. Hook spelling and loading
+    /// belong to the harness; the decision belongs to the shared guard. Kimi
+    /// and Grok's `kept` homes already contain the supplied guard's hooks.
+    pub fn guarded(self, command: &str, worktree: &str, kept: &str, guard: &str) -> String {
+        let command = match self {
+            Harness::ClaudeCode => claude_code::guarded(command, guard),
+            Harness::Pi => pi::guarded(command, worktree, kept, guard),
+            Harness::Codex => codex::guarded(command, guard),
+            Harness::Dsh => dsh::guarded(command, guard),
+            Harness::Kimi => kimi::guarded(command, kept),
+            Harness::Grok => grok::guarded(command, kept),
+        };
+        Line::new()
+            .fixed("export ")
+            .fixed(HARNESS_ENV)
+            .fixed("=")
+            .word(self.key())
+            .fixed(" && ")
+            .launch(&command)
+            .done()
+    }
+
     /// Starts an interactive watch with the worker's trust, login and model.
     /// The brief is delivered at its input after startup, as a worker's is.
     pub fn watch(self, command: &str, worktree: &str, kept: &str, model: Option<&str>) -> String {
