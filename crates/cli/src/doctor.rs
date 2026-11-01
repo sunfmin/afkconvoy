@@ -2346,9 +2346,11 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String], look: &Look) ->
                     .iter()
                     .map(|wait| {
                         let mut value = json!(wait);
-                        value["taken_by"] = json!(
+                        if let Some(host) =
                             state.wait_holders.get(&wait.issue).filter(|host| *host != &run.host)
-                        );
+                        {
+                            value["taken_by"] = json!(host);
+                        }
                         value
                     })
                     .collect(),
