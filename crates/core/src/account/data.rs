@@ -57,8 +57,8 @@ pub struct Gate {
     pub host: Option<String>,
 }
 
-/// Read the authoritative JSON block, or convert an old comment once. Never
-/// fall back to prose when a JSON block is damaged or has a future version.
+/// Read the authoritative JSON block only. Damaged blocks and unknown schema
+/// versions are unreadable; prose conversion belongs to the rewrite.
 pub fn read(body: &str, issue: u64) -> Result<Record, String> {
     if let Some((_, rest)) = body.rsplit_once("```json\n") {
         let (json, _) = rest.split_once("\n```").ok_or("unterminated account JSON block")?;
