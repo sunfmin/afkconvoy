@@ -102,6 +102,10 @@ fn a_taken_workers_verdict_land_and_every_gate_refuse_without_writing() {
     assert_eq!(world.remote(&["show-ref"]), refs, "no candidate or gate record");
     assert_eq!(world.comments(7), comments, "no stage record");
     assert!(world.pushes().is_empty());
+    assert!(
+        !world.clone.join(".git").join(afkconvoy::orca::TURN_FILE).exists(),
+        "no local turn receipt"
+    );
     assert!(!world.root.join("executed").exists(), "the gate did not start");
 }
 

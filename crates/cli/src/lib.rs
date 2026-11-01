@@ -4633,6 +4633,7 @@ fn run(
         }
         Command::Gate { land, fast, slow, host, .. } => {
             let repo = checkout?;
+            claims::own_issue_on_this_host(&repo)?;
             let config = config::load(&repo.dir.join(config::FILE))?;
             let host = host.unwrap_or_else(this_host);
             match (fast, slow) {
@@ -4643,6 +4644,9 @@ fn run(
         }
         Command::Land { number, issue, watch, merged_timeout, host, .. } => {
             let repo = checkout?;
+            if let Some(issue) = issue.or(number) {
+                claims::on_this_host(&repo, issue, &host_settings::host_name())?;
+            }
             let config = config::load(&repo.dir.join(config::FILE))?;
             let gh = gh::GitHub::of(&repo)?;
             let host = host.unwrap_or_else(this_host);
