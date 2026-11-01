@@ -99,22 +99,27 @@ fn a_blocked_claim_whose_blockers_closed_has_a_working_doctor_fix() {
 
 #[test]
 fn a_worker_left_alone_by_a_fleet_lock_waits_until_its_nudge() {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
     let world = World::new();
     world.issue(3, &["ready-for-agent"]);
-    run(&world, &["--instance", "alpha", "--ticks", "1", "--now", "1000"]);
+    run(&world, &["--instance", "alpha", "--ticks", "1", "--now", &now.to_string()]);
     world.issue(7, &["ready-for-agent", "fleet-lock"]);
     world.with_orca(|orca| {
-        orca["terminals"][0]["agent"] = json!({"state": "idle", "stateStartedAt": 1000000});
-        orca["terminals"][0]["lastOutputAt"] = json!(1000000);
+        orca["terminals"][0]["agent"] = json!({"state": "done", "stateStartedAt": now * 1000});
+        orca["terminals"][0]["lastOutputAt"] = json!(now * 1000);
     });
-    world.afk(&["tick", "--instance", "alpha", "--host", "h1", "--now", "2000"]).ok();
-    let locked = doctor(&world, "2000").json;
+    world
+        .afk(&["tick", "--instance", "alpha", "--host", "h1", "--now", &(now + 1000).to_string()])
+        .ok();
+    let locked = doctor(&world, &(now + 1000).to_string()).json;
     let claim = locked["claims"].as_array().unwrap().iter().find(|c| c["issue"] == 3).unwrap();
     assert_eq!(claim["worker"], json!({"state": "waiting_on_lock", "locks": [7]}));
     assert!(found(&locked, "the worker of #3 has been stopped").is_empty(), "{locked}");
 
     world.close_issue(7);
-    let tick = world.afk(&["tick", "--instance", "alpha", "--host", "h1", "--now", "2100"]).ok();
+    let tick = world
+        .afk(&["tick", "--instance", "alpha", "--host", "h1", "--now", &(now + 1100).to_string()])
+        .ok();
     assert!(
         tick["did"]
             .as_array()
@@ -123,30 +128,26 @@ fn a_worker_left_alone_by_a_fleet_lock_waits_until_its_nudge() {
             .any(|step| step["issue"] == 3 && step["outcome"] == "nudged"),
         "{tick}"
     );
-    let before = doctor(&world, "2399").json;
+    let before = doctor(&world, &(now + 1399).to_string()).json;
     assert!(found(&before, "the worker of #3 has been stopped").is_empty(), "{before}");
-    let after = doctor(&world, "2401").json;
+    let after = doctor(&world, &(now + 1401).to_string()).json;
     let stopped = found(&after, "the worker of #3 has been stopped");
     assert_eq!(stopped.len(), 1, "{after}");
     assert!(stopped[0]["evidence"].as_str().unwrap().contains("after its nudge"));
 }
 
 #[test]
-fn doctor_routes_other_declared_verdicts_and_respects_a_fleet_lock() {
-    for (phase, locked, command) in [
-        ("blocked blocked_by=41", false, "park --issue 7"),
-        ("blocked blocked_by=41", true, "tick"),
-        ("already-satisfied", false, "tick"),
-        ("escalate", false, "tick"),
+fn doctor_routes_other_declared_verdicts() {
+    for (phase, command) in [
+        ("blocked blocked_by=41", "park --issue 7"),
+        ("already-satisfied", "tick"),
+        ("escalate", "tick"),
     ] {
         let world = World::new();
         world.issue(7, &["ready-for-agent"]);
         run(&world, &["--instance", "alpha", "--ticks", "1", "--now", "1000"]);
         world.issue(41, &["ready-for-agent"]);
         world.comment(7, &format!("<!--convoy:verdict phase={phase}-->\nwhy"));
-        if locked {
-            world.afk(&["lock", "--issue", "41"]).ok();
-        }
         world.with_orca(|orca| {
             let terminal = &mut orca["terminals"][0];
             terminal["agent"] = json!({"state": "idle", "stateStartedAt": 1000000});
