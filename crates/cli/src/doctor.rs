@@ -2844,6 +2844,49 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_dispatch_uses_the_fleets_line_and_keeps_the_screen_as_evidence() {
+        let checkout = Path::new("/Users/sunfmin/Developments/zhiyuanwiki");
+        let error = "orca terminal send failed: agent_prompt_blocked: the line started no turn \
+                     within 30s; delivery receipt: {\"state\":\"sent\"}; worktree /wt/issue-386 \
+                     (terminal worker-386)\nScreen's last lines:\n\
+                     Run `node --experimental-strip-types ./license/src/deploy.ts\n\
+                          --mint-fulfill-token` to mint a deploy secret.";
+        let failed = tick(4, json!([{"do": "dispatch", "issue": 386, "error": error}]));
+        let found = log_findings(&run(vec![failed]));
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].kind, Kind::StepUnrecovered);
+        assert_eq!(found[0].evidence, error);
+        assert_eq!(
+            crate::checkout::about_checkout(checkout, &found[0].fix),
+            "afkconvoy dispatch -C '/Users/sunfmin/Developments/zhiyuanwiki' --issue 386 --instance alpha"
+        );
+    }
+
+    #[test]
+    fn quoted_external_evidence_never_supplies_a_named_line() {
+        for evidence in [
+            "\nScreen's last lines:\nthrow new Error(`protocol: ${name}`)",
+            "\nScreen's last lines:\n`-C <CHECKOUT>`",
+            "; delivery receipt: {\"text\":\"run `deploy --publish`\"}",
+            "\nstdout:\nrun `deploy --publish`",
+            "\nstderr:\nrun `deploy --publish`",
+            ": orca terminal send failed: agent_prompt_blocked: run `deploy --publish`",
+            ": orca terminal wait failed: run `deploy --publish`",
+            ": gh api failed: run `deploy --publish`",
+            ": git fetch failed: run `deploy --publish`",
+        ] {
+            assert_eq!(named_line(&format!("cannot start the worker{evidence}")), None, "{evidence}");
+            let own = "orca knows no repo here — add it with `orca repo add --path /r`";
+            assert_eq!(
+                named_line(&format!("{own}{evidence}")),
+                Some("orca repo add --path /r".into()),
+                "a fleet remedy before the evidence still counts: {evidence}"
+            );
+        }
+        assert_eq!(named_line("no remedy, only an unmatched `quoted command"), None);
+    }
+
+    #[test]
     fn a_step_that_failed_in_each_of_the_last_ticks_is_critical_with_its_errors_own_line() {
         let knows_not = "orca knows no repo at /repos/widgets — add this checkout once with \
                          `orca repo add --path '/repos/widgets'`";
