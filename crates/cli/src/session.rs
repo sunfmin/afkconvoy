@@ -489,6 +489,56 @@ mod tests {
     const AT: u64 = 1_793_106_373;
 
     #[test]
+    fn a_claude_role_session_belongs_to_the_worker_named_by_its_first_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().join("work");
+        let gitdir = dir.path().join("git/worktrees/work");
+        std::fs::create_dir_all(&cwd).unwrap();
+        std::fs::create_dir_all(&gitdir).unwrap();
+        std::fs::write(cwd.join(".git"), format!("gitdir: {}\n", gitdir.display())).unwrap();
+        let brief = gitdir.join("convoy-worker-prompt.md");
+        let prompt = afkconvoy_core::prompt::brief_pointer(&brief.display().to_string());
+        let root = dir.path().join("claude");
+        let role = "/cache/copies/acme/team/hash-role+claude-code-roles%2Fbuilder";
+        let harness = Harness::ClaudeCode;
+        let session = &harness.session_files(role, true, AT)[0];
+        let file = root.join(&session.path);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        let body = |message: &str, open| {
+            harness.session_files(role, open, AT)[0]
+                .body
+                .replace("\"brief\"", &serde_json::to_string(message).unwrap())
+        };
+        let read = |body: &str, not_before| {
+            std::fs::write(&file, body).unwrap();
+            read_root(&root, harness, &cwd, None, not_before).unwrap()
+        };
+        let started = body(&prompt, true);
+        assert_eq!(read(&started, Some(AT)), Some(Turn::Open { since: AT }));
+        assert_eq!(read(&started, None), Some(Turn::Open { since: AT }));
+        assert_eq!(read(&started, Some(AT + 1)), None, "an old turn cannot prove this send");
+        assert_eq!(read("", Some(AT)), None, "no turn was written");
+        assert_eq!(read(&body("no brief", true), Some(AT)), None);
+        let other = prompt.replace("/work/convoy-", "/other/convoy-");
+        assert_ne!(other, prompt);
+        assert_eq!(read(&body(&other, true), Some(AT)), None);
+        assert_eq!(
+            read(&format!("{}{started}", body(&other, true)), Some(AT)),
+            None,
+            "a later mention cannot take another worker's session"
+        );
+        assert_eq!(
+            read(&body(&prompt, false), Some(AT)),
+            Some(Turn::Closed { since: AT, started: Some(AT) })
+        );
+        assert_eq!(
+            read(&started.replace("\"isSidechain\":false", "\"isSidechain\":true"), Some(AT)),
+            None,
+            "a child cannot prove the worker's start"
+        );
+    }
+
+    #[test]
     fn a_codex_role_session_belongs_to_the_worker_named_by_its_first_prompt() {
         let dir = tempfile::tempdir().unwrap();
         let cwd = dir.path().join("work");
