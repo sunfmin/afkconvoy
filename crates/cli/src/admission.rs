@@ -41,8 +41,20 @@ pub struct Readings {
 impl Readings {
     /// Reads the host-wide values once; volumes are read on first use.
     pub fn new() -> Readings {
+        Self::read(|load| {
+            crate::exclusive::standing().ok().and_then(|queue| queue_load(load, &queue).ok())
+        })
+    }
+
+    /// Reads against the runner's existing queue snapshot. Inside the runner
+    /// an RPC to itself can wait for a server that has not started yet.
+    pub(crate) fn with_queue(queue: &[crate::exclusive::Ticket]) -> Readings {
+        Self::read(|load| queue_load(load, queue).ok())
+    }
+
+    fn read(estimate_queue: impl FnOnce(u64) -> Option<u64>) -> Readings {
         let total_load = load().ok();
-        let queue_load = total_load.and_then(|load| queue_load(load).ok());
+        let queue_load = total_load.and_then(estimate_queue);
         Readings {
             cores: std::thread::available_parallelism().map_or(1, |cores| cores.get() as u64),
             load: total_load.map(|load| load.saturating_sub(queue_load.unwrap_or(0))),
@@ -222,12 +234,9 @@ impl Admission {
 /// Attribute the one-minute load in proportion to CPU currently used by the
 /// running queue trees. This is an estimate: the kernel exposes no per-tree
 /// load average. On an unreadable queue or process table, subtract nothing.
-fn queue_load(load: u64) -> Result<u64> {
-    let roots: BTreeSet<u32> = crate::exclusive::standing()?
-        .into_iter()
-        .filter(|ticket| ticket.ran.is_some())
-        .map(|ticket| ticket.pid)
-        .collect();
+fn queue_load(load: u64, queue: &[crate::exclusive::Ticket]) -> Result<u64> {
+    let roots: BTreeSet<u32> =
+        queue.iter().filter(|ticket| ticket.ran.is_some()).map(|ticket| ticket.pid).collect();
     if roots.is_empty() {
         return Ok(0);
     }
