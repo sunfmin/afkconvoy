@@ -72,6 +72,14 @@ pub fn read(worktree: &Worktree) -> Result<Answered> {
     Ok(note.outcome.map_or(Answered::Never, Answered::Said))
 }
 
+/// A landing worker obeying its turn waits on no person: a live turn or a
+/// last answer that waits needs neither worker health nor a silence finding.
+/// An unreadable note grants no exemption; a new worker or delivered
+/// instruction forgets it.
+pub fn waiting(worktree: &Worktree) -> bool {
+    read(worktree).is_ok_and(|answered| matches!(answered, Answered::Asking) || answered.waits())
+}
+
 /// Asks for the turn of `issue` again in `worktree`, starting no harness: an
 /// `afkconvoy land --issue` of its own, detached from the tick, whose answer
 /// the note takes and the next tick reads. Its output is appended to the

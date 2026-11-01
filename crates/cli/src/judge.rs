@@ -548,8 +548,8 @@ impl Silenced {
 /// Whether the worker of my claim on `issue`, at `status`, is silent, through
 /// the read the tick routes it by — writing nothing. `None` for one at work,
 /// gone, within grace, waiting on its own background work inside the gate
-/// limit, held by a shared harness outage, or a dispatch whose worker has not
-/// taken its brief. One with no PR that declared past grace is reported too,
+/// limit, obeying its landing turn's wait, held by a shared harness outage,
+/// or a dispatch whose worker has not taken its brief. One with no PR that declared past grace is reported too,
 /// with the command that carries its verdict out.
 pub(crate) fn silenced(
     fleet: &Fleet,
@@ -586,6 +586,9 @@ pub(crate) fn silenced(
     let Some(worktree) = Worktree::of_issue(&Source::of(&fleet.repo)?, issue)? else {
         return Ok(None);
     };
+    if crate::turn_answer::waiting(&worktree) {
+        return Ok(None);
+    }
     let state = worktree.state(fleet.now)?;
     if settled_by_state(Some(state)).is_some() || held_for_report(fleet, &worktree)? {
         return Ok(None);
