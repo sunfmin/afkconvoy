@@ -516,6 +516,12 @@ fn start(
                     let pr = closing_pr(&fleet.gh.open_prs()?, number).map(|pr| pr.number);
                     continue_brief(fleet, cut, Some(number), pr, continuing)?;
                 }
+                if let Some(handoff) = crate::turn_answer::pending(cut)? {
+                    let file = brief.as_ref().ok_or_else(undecided)?;
+                    let mut text = std::fs::read_to_string(file)?;
+                    text.push_str(&format!("\n\n{}\n", handoff.line));
+                    cut.write_brief(&text)?;
+                }
             }
             DispatchStep::Start => {
                 let cut = worktree.as_ref().ok_or_else(undecided)?;

@@ -79,7 +79,13 @@ fn ask_after(fleet: &Fleet, me: &Me, issue: u64) -> Result<Option<Asked>> {
 /// A stopped or gone worker whose turn answered a wait needs no harness or
 /// judgment to ask again. An open harness turn is left to its worker.
 /// `None` leaves ordinary harness recovery to the tick.
-pub(crate) fn ask_waiting(fleet: &Fleet, me: &Me, issue: u64) -> Result<Option<Outcome>> {
+pub(crate) fn answer_turn(
+    fleet: &mut Fleet,
+    me: &Me,
+    agent: &Agent,
+    issue: u64,
+    start: bool,
+) -> Result<Option<Outcome>> {
     if mine(fleet, me, issue)?.is_none() {
         return Ok(None);
     }
@@ -89,6 +95,24 @@ pub(crate) fn ask_waiting(fleet: &Fleet, me: &Me, issue: u64) -> Result<Option<O
     let answered = crate::turn_answer::read(&worktree)?;
     if answered == Answered::Asking {
         return Ok(Some(Outcome::Nothing));
+    }
+    if let Some(handoff) = crate::turn_answer::pending(&worktree)? {
+        if !start {
+            return Ok(Some(Outcome::Nothing));
+        }
+        if worktree.state(fleet.now)? == afkconvoy_core::worker::WorkerState::Gone {
+            let started = dispatch(fleet, me, agent, issue, StartFrom::Auto)?;
+            if started["started"] != true {
+                return Ok(Some(Outcome::Nothing));
+            }
+        } else {
+            let terminal = worktree.terminal()?.ok_or_else(|| {
+                anyhow::anyhow!("issue #{issue}: no terminal for its turn's answer")
+            })?;
+            worktree.hand_note(&terminal, &handoff.line, &handoff.mark, 0)?;
+        }
+        handoff.taken(&worktree, fleet.now)?;
+        return Ok(Some(Outcome::Told));
     }
     if !answered.waits() || worktree.state(fleet.now)? == afkconvoy_core::worker::WorkerState::Busy
     {

@@ -98,6 +98,9 @@ pub enum Outcome {
     /// `Watch` asked for the turn of a PR whose last turn answered a wait,
     /// starting no harness: the claim is still held, and takes no slot.
     Asked,
+    /// `Watch` handed a fleet-asked turn's answer to its worker, which now
+    /// changes the tree and takes a slot until it asks for a turn again.
+    Told,
     /// There was nothing for it to do.
     Nothing,
     /// A peer holds the issue — it won the race, or its heartbeat came back:
@@ -208,6 +211,7 @@ impl Pass {
                     | Outcome::Nudged
                     | Outcome::Continued
                     | Outcome::Restarted
+                    | Outcome::Told
                     | Outcome::Gone
             )
         })
@@ -473,7 +477,7 @@ where
     };
     let outcome = carry_out(step);
     did.push((step, outcome));
-    let started = outcome == Outcome::Continued || outcome == Outcome::Restarted;
+    let started = matches!(outcome, Outcome::Continued | Outcome::Restarted | Outcome::Told);
     if mine.slotless() && started && slots.has_free() {
         slots.restart_declared();
     }
