@@ -720,10 +720,16 @@ fn a_live_run_is_seen_alive_and_a_claim_whose_worker_is_gone_is_a_finding() {
     assert_eq!(worker["harness_mismatch"], false);
     assert_eq!(worker["orca"]["state"], "idle");
 
-    // its worker's terminal is closed under it
+    // Its worker's terminal is closed under it. A look inside one tick's
+    // chance leaves it to the fleet; after that, the manual fix is named.
     world.with_orca(|orca| orca["terminals"] = json!([]));
     let answer = doctor(&world, &now).ok();
     assert_eq!(answer["claims"][0]["worker"]["state"], "gone");
+    assert!(found(&answer, "the claim on #3 has no worker").is_empty());
+    let tick = &answer["fleet"]["last_tick"];
+    let now =
+        (at + tick["sleep"].as_u64().unwrap() + tick["took"].as_u64().unwrap_or(0)).to_string();
+    let answer = doctor(&world, &now).ok();
     let gone = found(&answer, "the claim on #3 has no worker");
     assert_eq!(gone[0]["severity"], "warning");
     assert_eq!(
