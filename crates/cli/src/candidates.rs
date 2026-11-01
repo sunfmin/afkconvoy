@@ -824,6 +824,15 @@ pub(crate) fn remove_stopped_worktrees(repo: &Repo) -> Result<()> {
     remove_listed(repo, &records)
 }
 
+/// Candidate worktrees live outside the checkout so a gate's tools cannot
+/// discover the checkout's configuration above their own. The common git
+/// dir identifies this repository across all its worktrees and path aliases.
+fn worktree_root(repo: &Repo) -> Result<PathBuf> {
+    let common = std::fs::canonicalize(repo.common_dir()?)?;
+    let key = afkconvoy_core::gate::key(&common.to_string_lossy());
+    Ok(crate::copies::cache()?.join("candidates").join(format!("{key:016x}")))
+}
+
 /// Removes the worktree of every stopped candidate named by `records`.
 ///
 /// `records` are candidate chains already read: the look's listing, or a
@@ -835,14 +844,15 @@ pub(crate) fn remove_stopped_worktrees(repo: &Repo) -> Result<()> {
 /// that still has the directory as its working directory keeps it too; the
 /// next call removes it once that process is gone. A directory whose git registration is already gone is
 /// removed as well. Nothing here reads or writes the candidate chain. An
-/// issue's, watch's, or cut's worktree is outside `convoy-candidates` and is
-/// left alone.
+/// issue's, watch's, or cut's worktree is outside the candidate roots and is
+/// left alone. Both the host cache and the old common-git-dir root are
+/// recognised, so a later version finishes an earlier one's removal.
 ///
 /// A process listing that fails removes nothing: it is no evidence the
 /// directory is free.
 pub(crate) fn remove_listed(repo: &Repo, records: &[crate::remote::RemoteRecord]) -> Result<()> {
     let prefix = repo.layout().under("candidates/");
-    let root = repo.common_dir()?.join("convoy-candidates");
+    let roots = [worktree_root(repo)?, repo.common_dir()?.join("convoy-candidates")];
     let mut pending = vec![];
     for record in records {
         if !record.name.starts_with(&prefix) {
@@ -854,7 +864,7 @@ pub(crate) fn remove_listed(repo: &Repo, records: &[crate::remote::RemoteRecord]
                 continue;
             }
             let path = PathBuf::from(&candidate.worktree);
-            if !candidate_directory(&root, &path, &candidate.id) {
+            if !roots.iter().any(|root| candidate_directory(root, &path, &candidate.id)) {
                 continue;
             }
             if (path.exists() || crate::process_scope::path(&candidate.worktree).exists())
@@ -1029,7 +1039,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
     } else {
         Permit::candidate(repo, "turn: validate candidate, record, land", heavy)?
     });
-    let path = repo.common_dir()?.join("convoy-candidates").join(&id);
+    let path = worktree_root(repo)?.join(&id);
     let candidate = loop {
         let locks = crate::lock::standing_locks(&gh, config)?;
         if issue.map_or(!locks.is_empty(), |n| keeps_off(&locks, n)) {
