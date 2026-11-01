@@ -230,8 +230,15 @@ pub(crate) fn foreign_push(dir: &Path, url: &str, push: &Push) -> Result<bool> {
     }
     // Only a rejected compare-and-swap is a peer winning, never a transport
     // error. A lost receipt leaves the record for a later look to recover.
-    if ran.stderr.contains("[rejected]") {
-        return Ok(false);
+    if ran.stderr.contains("[rejected]") || ran.stderr.contains("[remote rejected]") {
+        for write in &push.writes {
+            if let Some(expected) = &write.lease {
+                let current = foreign_refs(dir, url, &[&write.name])?;
+                if current.first().map_or("", |(_, sha)| sha.as_str()) != expected {
+                    return Ok(false);
+                }
+            }
+        }
     }
     bail!("tracker claim push failed: {}", ran.stderr.trim())
 }
