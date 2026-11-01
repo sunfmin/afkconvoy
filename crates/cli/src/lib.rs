@@ -222,7 +222,7 @@ const SKILL: &str = include_str!("../../../skills/afkconvoy/SKILL.md");
 ///
 /// Read `afkconvoy <command> --help` before first running it. Commands are grouped by who runs them:
 ///
-/// - **{const:OPERATOR}** — `config`, `check`, `plan` before `run`; `target` to select a task's destination; `delivery` for a Jira delivery; `tick` for one pass, `stop` to stop; `queue` for the local exclusive queue; `doctor --all --since <until of your last look>`, `checkouts`, `panel` to watch (`doctor` names each fix); `accounts` for completion times from work accounts, `rewrite-accounts` to convert old work accounts; `kit`, `cast`, `switch` for workers' harnesses and models; `patrol-now` to run a patrol now; `tell` to tell the worker at work on an issue something it must know; `takeover` to take another fleet instance's claims.
+/// - **{const:OPERATOR}** — `config`, `check`, `plan` before `run`; `target` selects a task's destination; `delivery` for a Jira delivery; `tick` for one pass, `stop` to stop; `queue` for the local exclusive queue; `doctor --all --since <until of your last look>`, `checkouts`, `panel` to watch (`doctor` names each fix); `accounts` reads work accounts, `rewrite-accounts` converts old ones; `kit`, `cast`, `switch` for workers' harnesses and models; `patrol-now` runs a patrol; `tell` tells a worker something it must know; `takeover` takes another fleet instance's claims.
 /// - **{const:DESIGNER}** — `scaffold` to start one or a role of it from a skeleton, `draft` to draft its roster from the host kit, then, once `check` accepts it, `show` to review a workflow or to ask where an issue is in it, and `rehearse` to try one out.
 /// - **{const:HANDS_WORK}** — a human or their agent opening decided work. `flows` names the workflow, gives the issue-create line and makes labels. After opening issues, `wake` has the fleet take them up now.
 /// - **{const:SETS_UP}** — `skill` prints the skill file that sends their agent to `afkconvoy --help`.
@@ -338,6 +338,10 @@ enum Command {
     ///
     /// Run once per tracker after upgrading all fleet instances. It needs git and a signed-in gh. Run with no flags first to inspect every old and proposed body and its check.
     ///
+    /// ## Who runs it
+    ///
+    /// The operator or an agent working on the operator's behalf, in a checkout of a repo using that tracker.
+    ///
     /// ## What it reads and writes
     ///
     /// Reads all issues and comments in the checkout’s tracker. With no flags it writes nothing. With `--backup <directory>` it saves each original in that directory before editing the comment, and skips records it cannot validate. The directory must be kept for recovery. Repeating it skips JSON accounts.
@@ -345,6 +349,10 @@ enum Command {
     /// ## What it answers
     ///
     /// One JSON object with `dry_run`, `backup`, counts `rewrite` and `left`, and `changes` containing issue, comment, old_body, new_body and check. `before` and `after` show this checkout’s all-time account summaries as currently read and as projected after conversion. It refuses a changed comment or a conflicting backup; run it again after examining the error.
+    ///
+    /// ## What trips you up
+    ///
+    /// Store the backups in a durable private directory. Accounts with unrecognized facts are left as they are and remain unreadable to `accounts` until repaired.
     #[command(next_help_heading = OPERATOR, verbatim_doc_comment)]
     RewriteAccounts {
         /// Save original bodies in this directory and edit validated comments
