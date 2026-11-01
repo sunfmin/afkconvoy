@@ -12,4 +12,3 @@ Gates:
 - green, 483s, command `afkconvoy exclusive -- ./gate.sh`, tree `00fa9cf826dc9142c59b6638521345b177d617ee`, at 1793541225. Recorded gate run: `convoy:gate tree=00fa9cf826dc9142c59b6638521345b177d617ee command=afkconvoy%20exclusive%20--%20./gate.sh at=1793541225 seconds=483 host=FelixMBP14.local issue=421`.
 - green, 147s, command `afkconvoy exclusive -- ./gate.sh fast`, tree `00fa9cf826dc9142c59b6638521345b177d617ee`, at 1793541225. Recorded gate run: `convoy:gate tree=00fa9cf826dc9142c59b6638521345b177d617ee command=afkconvoy%20exclusive%20--%20./gate.sh%20fast at=1793541225 seconds=147 host=FelixMBP14.local issue=421`.
 - green, 336s, command `afkconvoy exclusive -- ./gate.sh slow`, tree `00fa9cf826dc9142c59b6638521345b177d617ee`, at 1793541406. Recorded gate run: `convoy:gate tree=00fa9cf826dc9142c59b6638521345b177d617ee command=afkconvoy%20exclusive%20--%20./gate.sh%20slow at=1793541406 seconds=336 host=FelixMBP14.local issue=421`.
-
