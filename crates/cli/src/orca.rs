@@ -36,6 +36,8 @@ use crate::worker_tmp;
 const BRIEF_FILE: &str = "convoy-worker-prompt.md";
 /// When the worker here was nudged (epoch seconds), beside the brief.
 const NUDGE_FILE: &str = "convoy-nudged";
+/// Each operator's note that reached the worker's model (`afkconvoy tell`).
+pub(crate) const TOLD_FILE: &str = "convoy-told";
 /// The one since this worker has waited on its own background work (epoch
 /// seconds), beside the brief. The tick line, worker health and a later tick
 /// all name this file. It is gone once the turn is open, or the worker is
@@ -766,6 +768,28 @@ fn turn_wait_seconds() -> u64 {
         .unwrap_or(SUBMIT_SECONDS)
 }
 
+/// How long a note typed at a worker waits for its harness to give it to
+/// its model: a harness that takes a line only at the end of its turn takes
+/// it once the step it is on ends. Tests set it short.
+fn note_wait_seconds() -> u64 {
+    std::env::var("AFKCONVOY_NOTE_WAIT_SECONDS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(NOTE_WAIT_SECONDS)
+}
+
+const NOTE_WAIT_SECONDS: u64 = 600;
+const NOTE_POLL: Duration = Duration::from_millis(500);
+
+/// How a note reached a worker's model (`Worktree::hand_note`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Handed {
+    /// Typed, and its session held it this many seconds later.
+    Taken { seconds: u64 },
+    /// Its session held it already: typed by an earlier run.
+    Already,
+}
+
 /// A worker's worktree on this machine.
 #[derive(Debug, Clone)]
 pub struct Worktree {
@@ -1242,6 +1266,19 @@ impl Worktree {
         std::fs::read_to_string(file).ok()?.trim().parse().ok()
     }
 
+    /// Keeps that the note `comment` reached the model of the worker here at
+    /// `at`: one line each, beside its nudge.
+    pub fn record_told(&self, at: u64, comment: &str) -> Result<()> {
+        use std::io::Write;
+        let file = self.note(TOLD_FILE)?;
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&file)
+            .and_then(|mut told| writeln!(told, "{at} {comment}"))
+            .with_context(|| format!("cannot write {}", file.display()))
+    }
+
     pub fn record_nudge(&self, at: u64) -> Result<()> {
         let file = self.note(NUDGE_FILE)?;
         std::fs::write(&file, at.to_string())
@@ -1559,6 +1596,78 @@ impl Worktree {
     pub(crate) fn tell_watch(&self, terminal: &str, line: &str, harness: Harness) -> Result<()> {
         let earliest = crate::clock().saturating_sub(2);
         self.tell_unchecked(terminal, line, BRIEF_SETTLE_SECONDS, Some(harness), earliest)
+    }
+
+    /// Types `line` once at the harness in `terminal`, at work or at its
+    /// prompt, and waits until that harness's session holds `mark` in a
+    /// message its model was given as the user's (`session::holds_note`):
+    /// a line seen only in its input queue is not delivered. A session that
+    /// already holds it — a rerun after the line was taken — is typed
+    /// nothing. Past the bound it fails with the screen, and types no second
+    /// line. `since` drops session files written before it.
+    pub(crate) fn hand_note(
+        &self,
+        terminal: &str,
+        line: &str,
+        mark: &str,
+        since: u64,
+    ) -> Result<Handed> {
+        let row = runtime_row(&runtime_live()?, &self.path);
+        let agent = if row["liveTerminalCount"].as_u64().unwrap_or(0) > 1 {
+            let shown = orca(&["terminal", "show", "--terminal", terminal])?;
+            pane_agent(&row, &shown["terminal"])
+        } else {
+            main_agent(&row)
+        };
+        let state = agent["programStatus"]["state"].as_str().or(agent["state"].as_str());
+        // A harness at work has no idle prompt to wait for: its input takes
+        // the line, and the harness hands it over mid-turn or after it.
+        if state != Some("working") {
+            let (ready, _) =
+                self.wait_for_input(terminal, Duration::from_secs(1)).with_context(|| {
+                    self.prompt_context(
+                        terminal,
+                        "no running worker harness confirmed; no line was sent",
+                    )
+                })?;
+            if ready != Waited::Ready {
+                return Err(self.prompt_failure(
+                    terminal,
+                    "no running worker harness at its input; no line was sent",
+                ));
+            }
+        }
+        let harness =
+            agent_harness(&agent).or(self.recorded_harness()?).unwrap_or(Harness::DEFAULT);
+        if crate::session::holds_note(&self.path, harness, since, mark)? {
+            return Ok(Handed::Already);
+        }
+        let sent = orca(&["terminal", "send", "--terminal", terminal, "--text", line, "--enter"])?;
+        if sent["send"]["accepted"] != true {
+            return Err(self.prompt_failure(
+                terminal,
+                &format!("the terminal did not take the line: {}", sent["send"]),
+            ));
+        }
+        let typed = Instant::now();
+        let bound = Duration::from_secs(note_wait_seconds());
+        loop {
+            if crate::session::holds_note(&self.path, harness, since, mark)? {
+                return Ok(Handed::Taken { seconds: typed.elapsed().as_secs() });
+            }
+            if typed.elapsed() >= bound {
+                return Err(self.prompt_failure(
+                    terminal,
+                    &format!(
+                        "{} did not give its model the line within {}s: it is not delivered, \
+                         and no second line was typed",
+                        harness.name(),
+                        bound.as_secs()
+                    ),
+                ));
+            }
+            std::thread::sleep(NOTE_POLL.min(bound.saturating_sub(typed.elapsed())));
+        }
     }
 
     /// Checks this pane's input without typing or waiting for an active

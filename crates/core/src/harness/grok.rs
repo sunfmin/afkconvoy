@@ -544,6 +544,37 @@ pub(super) fn session_layout(cwd: &str) -> SessionLayout {
     }
 }
 
+/// What was said in each session: the user's lines and the model's, beside
+/// its events.
+const CHAT: &str = "chat_history.jsonl";
+
+/// Where Grok keeps what was said in the session of `cwd`.
+pub(super) fn note_layout(cwd: &str) -> SessionLayout {
+    SessionLayout::Named {
+        dir: format!("sessions/{}", dir_name(cwd)),
+        name: CHAT,
+        compressed: false,
+    }
+}
+
+/// The chat entry a stand-in writes for `line`, typed while the worker
+/// worked, once Grok gave it to its model: as Grok words it. A line still in
+/// its input queue is in no file.
+pub(super) fn note_files(cwd: &str, line: &str, taken: bool, _at: u64) -> Vec<SessionFile> {
+    if !taken {
+        return Vec::new();
+    }
+    let said =
+        format!("The user sent a message while you were working: <user_query>{line}</user_query>");
+    let entry = session::object(vec![("role", "user".into()), ("content", said.into())]);
+    vec![SessionFile {
+        path: format!("sessions/{}/afkconvoy-turn/{CHAT}", dir_name(cwd)),
+        body: format!("{entry}\n"),
+        compressed: false,
+        replaces: None,
+    }]
+}
+
 /// The same path → `%2FUsers%2Fsunfmin%2FDevelopments%2Fchessmirror`.
 fn dir_name(cwd: &str) -> String {
     let mut out = String::new();

@@ -116,6 +116,7 @@ pub mod switch;
 pub mod takeover;
 mod target;
 pub mod team;
+pub mod tell;
 pub mod tick;
 pub mod tools;
 pub mod topic;
@@ -212,7 +213,7 @@ const SKILL: &str = include_str!("../../../skills/afkconvoy/SKILL.md");
 ///
 /// Read `afkconvoy <command> --help` before first running it. Commands are grouped by who runs them:
 ///
-/// - **{const:OPERATOR}** — `config`, `check`, `plan` before `run`; `target` to select a task's destination; `delivery` for a Jira delivery; `tick` for one pass, `stop` to stop; `queue` for the local exclusive queue; `doctor --all --since <until of your last look>`, `checkouts`, `panel` to watch (`doctor` names each fix); `kit`, `cast`, `switch` for workers' harnesses and models; `patrol-now` to run a patrol now; `takeover` to take another fleet instance's claims.
+/// - **{const:OPERATOR}** — `config`, `check`, `plan` before `run`; `target` to select a task's destination; `delivery` for a Jira delivery; `tick` for one pass, `stop` to stop; `queue` for the local exclusive queue; `doctor --all --since <until of your last look>`, `checkouts`, `panel` to watch (`doctor` names each fix); `kit`, `cast`, `switch` for workers' harnesses and models; `patrol-now` to run a patrol now; `tell` to tell the worker at work on an issue something it must know; `takeover` to take another fleet instance's claims.
 /// - **{const:DESIGNER}** — `scaffold` to start one or a role of it from a skeleton, `draft` to draft its roster from the host kit, then, once `check` accepts it, `show` to review a workflow or to ask where an issue is in it, and `rehearse` to try one out.
 /// - **{const:HANDS_WORK}** — a human or their agent opening decided work. `flows` names the workflow, gives the issue-create line and makes labels. After opening issues, `wake` has the fleet take them up now.
 /// - **{const:SETS_UP}** — `skill` prints the skill file that sends their agent to `afkconvoy --help`.
@@ -3132,12 +3133,64 @@ enum Command {
     /// - `--instance` is required, and must be the instance that holds the claim.
     /// - It is refused wherever a tick would not nudge: it cannot be used to hurry a worker.
     /// - One nudge per worker. A worker silent again after it is escalated by the next tick.
+    /// - To tell a worker something it must know, busy or stopped, use `afkconvoy tell`: a nudge only says carry on.
     #[command(next_help_heading = BY_HAND, verbatim_doc_comment)]
     Nudge {
         #[command(flatten)]
         issue: IssueArg,
         #[command(flatten)]
         who: Who,
+        #[command(flatten)]
+        at: AtFlag,
+    },
+    /// Tell the worker at work on an issue something it must know, busy or stopped
+    ///
+    /// ## When to run it
+    ///
+    /// When the worker at work on an issue must know something it did not read when it started: an issue body edited after its claim, a decision, a correction. A worker works from what it read at its start and never sees a body edit. Use it rather than `nudge`, which is the fleet's own line to a stopped worker telling it only to carry on: this is the operator's words, to a worker busy or stopped.
+    ///
+    /// ## Who runs it
+    ///
+    /// The operator, in a checkout of the repo, on the host the worker runs on. Name the issue, never an orca terminal.
+    ///
+    /// ## What it reads and writes
+    ///
+    /// It posts the note as a comment on the issue first: that comment is the note's one home, which a continuation, a restart or a later stage's worker reads in its brief's first step. Rerun for the same note, it finds that comment and posts no second one.
+    ///
+    /// It then finds the worker at work under this host's claim of the issue, whichever fleet instance of the host holds it, and types one line at its terminal: the note, on one line, with the comment's link. At a worker that is stopped it first checks that the terminal has a harness ready for a prompt: a bare shell receives nothing. At a busy worker it types into the harness's input: Grok and Claude Code give a line typed while they work to their model mid-turn, at the next step; a harness that does not waits, bounded, until its turn ends.
+    ///
+    /// It is told only once the harness's session record holds the line as a message its model was given as the user's. A line seen only in the harness's input queue is not delivered: a harness stopped or dead with it there drops it. It records the delivery in the worktree, beside the nudge, and in the tick log.
+    ///
+    /// ## What it answers
+    ///
+    /// {"issue", "action": "told", "terminal", "comment", "seconds"} — seconds from the send to the session record's user entry; "typed": false instead where a rerun found the line already taken.
+    ///
+    /// With no worker at work under this host's claim — the issue is not claimed, its worker has not taken its brief, it has no worktree here (not started, or between stages), no live terminal, or another host holds the claim — it posts the comment, types nothing, and answers {"issue", "action": "commented", "comment", "why"}, with "host" naming the host that holds the claim where another one does.
+    ///
+    /// Errors: past the bound (600 seconds) with the line not taken, it fails with the current screen and the comment's link, and types no second line; rerun it to try again. A terminal with no harness at its input is sent nothing.
+    ///
+    /// ## What trips you up
+    ///
+    /// - It never edits the issue's body: a worker at work never sees a body edit, a comment is read by every later one.
+    /// - It takes no `--instance`: the claim says whose worker it is, and only a worker on this host can be typed at.
+    #[command(next_help_heading = OPERATOR, verbatim_doc_comment)]
+    Tell {
+        #[command(flatten)]
+        issue: IssueArg,
+        /// The note
+        #[arg(
+            long,
+            value_name = "TEXT",
+            required_unless_present = "file",
+            conflicts_with = "file"
+        )]
+        text: Option<String>,
+        /// A file holding the note
+        #[arg(long, value_name = "PATH")]
+        file: Option<PathBuf>,
+        /// The host the worker runs on [default: this machine's name]
+        #[arg(long)]
+        host: Option<String>,
         #[command(flatten)]
         at: AtFlag,
     },
@@ -3669,8 +3722,8 @@ impl Kind {
 fn kind(name: &str) -> Kind {
     let worker_acts = Kind { acts: true, worktree: Worktree::Its, starts: false };
     match name {
-        "dispatch" | "close" | "escalate" | "park" | "nudge" | "restart" | "switch" | "claim"
-        | "release" | "heartbeat" | "patrol-now" => Kind::ACTS,
+        "dispatch" | "close" | "escalate" | "park" | "nudge" | "tell" | "restart" | "switch"
+        | "claim" | "release" | "heartbeat" | "patrol-now" => Kind::ACTS,
         "takeover" => Kind { worktree: Worktree::Reads(Some("from")), ..Kind::ACTS },
         "cast" | "target" | "delivery" | "gate" | "land" | "verdict" | "rule" | "send"
         | "intake" | "lock" | "over" | "cut" | "wake" => worker_acts,
@@ -4412,6 +4465,7 @@ impl Command {
             Command::Escalate { issue, who, .. } => of("escalate", issue, Some(who)),
             Command::Park { issue, who, .. } => of("park", issue, Some(who)),
             Command::Nudge { issue, who, .. } => of("nudge", issue, Some(who)),
+            Command::Tell { issue, .. } => of("tell", issue, None),
             Command::Restart { issue, who, .. } => of("restart", issue, Some(who)),
             Command::Switch { issue, patrol, all, .. } => {
                 let acting = Acting::new("switch");
@@ -4821,6 +4875,16 @@ fn run(
         }
         Command::Nudge { issue, who, .. } => {
             judge::nudge(&mut Fleet::open(&checkout?, now)?, &who.me(now), issue.number())
+        }
+        Command::Tell { issue, text, file, host, .. } => {
+            let text = match (text, file) {
+                (Some(text), _) => text,
+                (None, Some(file)) => std::fs::read_to_string(&file)
+                    .with_context(|| format!("cannot read the note in {}", file.display()))?,
+                (None, None) => anyhow::bail!("tell takes --text or --file"),
+            };
+            let host = host.unwrap_or_else(this_host);
+            tell::tell(&Fleet::open(&checkout?, now)?, &host, issue.number(), &text)
         }
         Command::Restart { issue, who, agent, .. } => {
             let repo = checkout?;

@@ -200,3 +200,125 @@ mod tests {
         assert_eq!(parse_iso("1970-01-01T00:00:00Z"), Some(0));
     }
 }
+
+/// Whether a session's `text` holds `mark` in a message the harness gave its
+/// model as the user's: a line typed at its prompt, or one typed while it
+/// worked that it handed over mid-turn. A line the harness only queued, a
+/// tool's output and the model's own words are not.
+pub(super) fn holds_note(text: &str, mark: &str) -> bool {
+    !mark.is_empty()
+        && json_lines(text).any(|line| user_texts(&line).iter().any(|said| said.contains(mark)))
+}
+
+/// What one session line gives the model as the user's words. Claude Code
+/// writes a line typed mid-turn as a `queued_command` attachment once its
+/// model has it, and a `queue-operation` line while it only waits in the
+/// queue. Every harness here writes a message at its prompt with the role
+/// or the type `user`, at the top of the line, under `message` or under
+/// `payload`; Codex also as a `user_message` event.
+fn user_texts(line: &Value) -> Vec<&str> {
+    let attachment = &line["attachment"];
+    if line["type"] == "attachment" && attachment["type"] == "queued_command" {
+        return attachment["prompt"].as_str().into_iter().collect();
+    }
+    let mut said = Vec::new();
+    for message in [line, &line["message"], &line["payload"]] {
+        let user = message["role"] == "user"
+            || message["type"] == "user"
+            || message["type"] == "user_message";
+        if !user {
+            continue;
+        }
+        said.extend(message["message"].as_str());
+        said.extend(message["text"].as_str());
+        match &message["content"] {
+            Value::String(text) => said.push(text.as_str()),
+            Value::Array(parts) => said.extend(parts.iter().filter_map(text_part)),
+            _ => {}
+        }
+    }
+    said
+}
+
+/// A part of a message's content that is text, not a tool's result.
+fn text_part(part: &Value) -> Option<&str> {
+    match part["type"].as_str() {
+        None | Some("text" | "input_text") => part["text"].as_str().or(part.as_str()),
+        Some(_) => None,
+    }
+}
+
+#[cfg(test)]
+mod note_tests {
+    use crate::harness::Harness;
+
+    const MARK: &str = "https://github.com/acme/widgets/issues/7#issuecomment-41";
+
+    fn note() -> String {
+        format!("Operator's note, also on the issue at {MARK}: use the v2 endpoint")
+    }
+
+    /// As Claude Code wrote them on 2026-10-29, a line typed while it worked:
+    /// first queued, then handed to the model at the next step.
+    fn claude_queued() -> String {
+        let queued = serde_json::json!({"type": "queue-operation", "operation": "enqueue",
+            "timestamp": "2026-10-29T14:32:40.100Z", "sessionId": "s", "content": note()});
+        format!("{queued}\n")
+    }
+
+    fn claude_taken() -> String {
+        let taken = serde_json::json!({"type": "attachment", "isSidechain": false,
+            "timestamp": "2026-10-29T14:32:44.819Z", "cwd": "/w/issue-7",
+            "attachment": {"type": "queued_command", "prompt": note(),
+                "commandMode": "prompt", "origin": {"kind": "human"}}});
+        format!("{}{taken}\n", claude_queued())
+    }
+
+    #[test]
+    fn a_note_the_model_was_given_is_held_and_one_still_queued_is_not() {
+        assert!(!Harness::ClaudeCode.holds_note(&claude_queued(), MARK));
+        assert!(Harness::ClaudeCode.holds_note(&claude_taken(), MARK));
+        let grok = serde_json::json!({"role": "user", "content": format!(
+            "The user sent a message while you were working: <user_query>{}</user_query>",
+            note())});
+        assert!(Harness::Grok.holds_note(&format!("{grok}\n"), MARK));
+        let codex = serde_json::json!({"type": "event_msg",
+            "payload": {"type": "user_message", "message": note()}});
+        assert!(Harness::Codex.holds_note(&format!("{codex}\n"), MARK));
+        let pi = serde_json::json!({"type": "message",
+            "message": {"role": "user", "content": [{"type": "text", "text": note()}]}});
+        assert!(Harness::Pi.holds_note(&format!("{pi}\n"), MARK));
+    }
+
+    #[test]
+    fn a_tool_showing_the_note_or_the_model_saying_it_is_no_note_taken() {
+        // The worker read its issue's comments, where the note is too.
+        let tool = serde_json::json!({"type": "user", "message": {"role": "user",
+            "content": [{"type": "tool_result", "tool_use_id": "t", "content": note()}]}});
+        let model = serde_json::json!({"type": "assistant", "message": {"role": "assistant",
+            "content": [{"type": "text", "text": note()}]}});
+        let codex = serde_json::json!({"type": "response_item",
+            "payload": {"type": "function_call_output", "output": note()}});
+        for line in [tool, model, codex] {
+            assert!(!Harness::ClaudeCode.holds_note(&format!("{line}\n"), MARK), "{line}");
+        }
+        assert!(!Harness::ClaudeCode.holds_note(&claude_taken(), ""));
+    }
+
+    #[test]
+    fn what_a_stand_in_writes_for_a_note_reads_as_taken_or_queued() {
+        for harness in [Harness::ClaudeCode, Harness::Grok] {
+            let files = |taken| harness.note_files("/w/issue-7", &note(), taken, 1_800_000_000);
+            let taken: String = files(true).iter().map(|file| file.body.clone()).collect();
+            assert!(harness.holds_note(&taken, MARK), "{harness:?}");
+            let queued: String = files(false).iter().map(|file| file.body.clone()).collect();
+            assert!(!harness.holds_note(&queued, MARK), "{harness:?}");
+        }
+        let place = Harness::Grok.note_place("/w/issue-7");
+        let written = &Harness::Grok.note_files("/w/issue-7", &note(), true, 0)[0].path;
+        let crate::harness::SessionLayout::Named { dir, name, .. } = place.layout else {
+            panic!("grok keeps a named chat");
+        };
+        assert!(written.starts_with(&dir) && written.ends_with(name), "{written}");
+    }
+}
