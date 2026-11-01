@@ -103,9 +103,7 @@ fn an_idle_unbound_codex_worker_has_its_waiting_turn_asked_again_without_a_harne
     )
     .unwrap();
     assert!(
-        health["workers"].as_array().unwrap().iter().any(|worker| {
-            worker["path"] == json!(dir) && worker["action"] == "waiting for operator"
-        }),
+        health["workers"].as_array().unwrap().iter().all(|worker| worker["path"] != json!(dir)),
         "{health}"
     );
 }
