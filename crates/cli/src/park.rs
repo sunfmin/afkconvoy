@@ -129,8 +129,7 @@ pub fn park(fleet: &mut Fleet, me: &Me, issue: u64) -> Result<Value> {
     let refused = |why: &str| anyhow!("issue #{issue} is not parkable: {why}; nothing was changed");
     let not_blocked = || refused("its worker's latest verdict is not `blocked`");
     let named = if fleet.config.bound.is_some() {
-        use afkconvoy_core::position::Declared;
-        use afkconvoy_core::stage_record::{Stated, history, stage_records};
+        use afkconvoy_core::stage_record::{Advance, advance, history, stage_records};
         let team = crate::team::load(crate::team::From::Config, Some(&fleet.repo))?.team;
         let labels = fleet.gh.issue(issue)?.labels;
         let workflow =
@@ -140,12 +139,10 @@ pub fn park(fleet: &mut Fleet, me: &Me, issue: u64) -> Result<Value> {
             .map(|(_, record)| record)
             .collect();
         let history = history(workflow, records);
-        let record = history
-            .verdict_under(&claim.id)
-            .and_then(|at| history.records.get(at))
-            .filter(|record| record.stated == Stated::Declared(Declared::Blocked))
-            .ok_or_else(not_blocked)?;
-        record.blocked_by.clone()
+        match advance(&history, &claim.id) {
+            Advance::Blocked(named) => named,
+            _ => return Err(not_blocked()),
+        }
     } else {
         latest_verdict(comments.iter().map(|c| c.body.as_str()))
             .filter(|verdict| verdict.phase == Some(Phase::Blocked))

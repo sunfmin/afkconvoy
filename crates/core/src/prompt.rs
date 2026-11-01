@@ -122,7 +122,7 @@ open no other PR. Nobody reads this terminal: never wait for an answer.
 
 ## Hard rules
 
-- End with your PR landed on the base branch — never just stop.
+- End with your PR landed on the base branch<landing_end> — never just stop.
 - Never close the PR, never open another, never rebase.
 - Never edit files outside your worktree, and never push to `{base_branch}`.
 ";
@@ -235,8 +235,7 @@ const LANDING: &str = "\
 steps below. You were started in your role's directory, not in the worktree: the commands below
 change to the worktree themselves.
 
-If landing needs another issue fixed first, run `afkconvoy verdict blocked --issue {n} --stage land
---blocked-by <issues> --text-file <file>` from the worktree, then stop. Name every blocking issue.
+If landing needs another issue fixed first, run `afkconvoy verdict blocked --issue {n} --stage land --blocked-by <blockers> --text-file <file>` from the worktree, then stop. Name every blocking issue.
 If a human must decide, declare `escalate` with `--stage land` and the reason instead, then stop.
 The fleet releases the claim and keeps the PR and branch. Once blockers close, or a human rules,
 the issue returns to landing.
@@ -864,7 +863,11 @@ fn prompt(
         Variant::Fresh => (briefed(OPENING_FRESH, STEP1_FRESH), String::new()),
         Variant::Continue => (briefed(OPENING_CONTINUE, STEP1_CONTINUE), String::new()),
         Variant::Land { pr } => {
-            let joiner = JOINER.replace("<landing>", if landing.is_some() { LANDING } else { "" });
+            let joiner =
+                JOINER.replace("<landing>", if landing.is_some() { LANDING } else { "" }).replace(
+                    "<landing_end>",
+                    if landing.is_some() { ", or a declared landing verdict" } else { "" },
+                );
             (steps(&joiner, "2", "3", " — your PR has landed"), pr.to_string())
         }
         Variant::TakeUp { pr } => {

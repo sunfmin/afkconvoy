@@ -2284,6 +2284,8 @@ enum Command {
     ///
     /// The stage the issue stopped at runs again under the ruling, and both rework counts start over from it. `afkconvoy show --issue 7` says which stage that is before you rule. To put the issue at another stage instead, see `afkconvoy send --help`.
     ///
+    /// An issue escalated at Landing returns to Landing under the ruling: its existing PR is kept and no stage runs again. Its answer has `stage: land`.
+    ///
     /// Or as a consult: the issue was at a stage that names one (`escalate: { to, do }` in its workflow), and would have gone to a human — the stage declared `escalate`, a breaker tripped, it failed, or its workflow changed — so the fleet started you in that role to answer it first. The stage comes from your environment:
     ///
     /// ```
