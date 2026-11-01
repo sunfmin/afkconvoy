@@ -344,7 +344,7 @@ pub fn says(repo: &Repo, row: &Row) -> Option<String> {
         Standing::Untagged => "the remote has no version tag to count a version from".to_string(),
     };
     let said = match &row.not_cutting_here {
-        Some(name) => format!("{said}; not cutting here: {name} failed"),
+        Some(reason) => format!("{said}; {reason}"),
         None => said,
     };
     let last = crate::log::Log::of(repo).ok().and_then(|log| log.read()).and_then(|entries| {

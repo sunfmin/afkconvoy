@@ -707,7 +707,8 @@ impl Fleet {
         if let Some(row) =
             set.cut.as_mut().filter(|row| row.standing == afkconvoy_core::cut::Standing::Due)
         {
-            row.not_cutting_here = crate::probe::check_cut_needs(&self.repo, &self.config)?;
+            row.not_cutting_here = crate::probe::check_cut_needs(&self.repo, &self.config)?
+                .map(|name| format!("not cutting here: {name} failed"));
         }
         open.issues.explain(&mut set.waiting_on_human);
 

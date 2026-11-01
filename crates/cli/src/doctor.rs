@@ -1198,8 +1198,8 @@ fn plan_findings(run: &Run, state: &State) -> Vec<Finding> {
         found.push(finding(
             Kind::CutNeed,
             json!(["cut-need", name]),
-            format!("not cutting here: {name} failed"),
-            format!("the cut is due and its host check {name} failed"),
+            name.clone(),
+            "the cut is due and a host check failed".to_string(),
             "check the repo's cut-needs declaration on this host".to_string(),
         ));
     }
