@@ -465,6 +465,59 @@ mod tests {
     const AT: u64 = 1_793_106_373;
 
     #[test]
+    fn a_codex_role_session_belongs_to_the_worker_named_by_its_first_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().join("work");
+        let gitdir = dir.path().join("git/worktrees/work");
+        std::fs::create_dir_all(&cwd).unwrap();
+        std::fs::create_dir_all(&gitdir).unwrap();
+        std::fs::write(cwd.join(".git"), format!("gitdir: {}\n", gitdir.display())).unwrap();
+        let brief = gitdir.join("convoy-worker-prompt.md");
+        let prompt = afkconvoy_core::prompt::brief_pointer(&brief.display().to_string());
+        let root = dir.path().join("codex");
+        let file = root.join("sessions/2026/10/27/rollout-role.jsonl");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        let rollout = |message: &str, start: Option<u64>| {
+            let mut lines = vec![
+                serde_json::json!({"type": "session_meta", "payload": {
+                    "cwd": "/cache/copies/acme/team/hash-role+codex-roles%2Fbuilder"}}),
+                serde_json::json!({"type": "response_item", "payload": {
+                    "type": "message", "role": "user", "content": [
+                        {"type": "input_text", "text": message}]}}),
+            ];
+            if let Some(at) = start {
+                lines.push(serde_json::json!({"type": "event_msg", "payload": {
+                    "type": "task_started", "started_at": at}}));
+            }
+            lines.iter().map(|line| format!("{line}\n")).collect::<String>()
+        };
+        let read = |body: &str, not_before| {
+            std::fs::write(&file, body).unwrap();
+            read_root(&root, Harness::Codex, &cwd, None, not_before).unwrap()
+        };
+        let body = rollout(&prompt, Some(AT));
+        assert_eq!(read(&body, Some(AT)), Some(Turn::Open { since: AT }));
+        assert_eq!(read(&body, None), Some(Turn::Open { since: AT }));
+        assert_eq!(read(&body, Some(AT + 1)), None, "an old turn cannot prove this send");
+        assert_eq!(read(&rollout(&prompt, None), Some(AT)), None, "a prompt is not a turn");
+        let other = prompt.replace("/work/convoy-", "/other/convoy-");
+        assert_ne!(other, prompt);
+        assert_eq!(read(&rollout(&other, Some(AT)), Some(AT)), None);
+        let mut wrong_worker = rollout(&other, Some(AT));
+        wrong_worker.push_str(&format!(
+            "{}\n",
+            serde_json::json!({"type": "response_item",
+            "payload": {"type": "message", "role": "user", "content": [
+                {"type": "input_text", "text": prompt}]}})
+        ));
+        assert_eq!(
+            read(&wrong_worker, Some(AT)),
+            None,
+            "a later mention cannot take another worker's session"
+        );
+    }
+
+    #[test]
     fn every_harness_round_trips_an_open_and_a_closed_turn() {
         let dir = tempfile::tempdir().unwrap();
         let home = dir.path().join("home");
