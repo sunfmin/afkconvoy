@@ -13,10 +13,13 @@ pub fn waited(
     claimed: bool,
     now: u64,
 ) -> Option<u64> {
-    if claimed || blockers.iter().any(Option::is_none) {
+    if claimed {
         return None;
     }
-    let since = blockers.iter().flatten().copied().fold(ready?, u64::max);
+    let mut since = ready?;
+    for blocker in blockers {
+        since = since.max((*blocker)?);
+    }
     now.checked_sub(since).filter(|age| *age > WAIT)
 }
 
