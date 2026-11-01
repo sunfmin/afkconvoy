@@ -41,8 +41,26 @@ pub fn read_turn(
 /// model was given as the user's (`Harness::holds_note`). `since` drops
 /// files last written before it, as for a turn.
 pub fn holds_note(cwd: &Path, harness: Harness, since: u64, mark: &str) -> Result<bool> {
+    notes_match(cwd, harness, since, |text| harness.holds_note(text, mark))
+}
+
+/// Reads the harness's message files once for a question about this worker.
+/// Global session trees must identify this worktree; project message stores
+/// already have its directory in their layout.
+fn notes_match(
+    cwd: &Path,
+    harness: Harness,
+    since: u64,
+    matches: impl Fn(&str) -> bool,
+) -> Result<bool> {
     let cwd_text = cwd_str(cwd);
-    let holds = |text: &str| harness.holds_note(text, mark).then_some(());
+    let place = harness.note_place(&cwd_text);
+    let brief = brief(cwd);
+    let holds = |text: &str| {
+        let belongs = !matches!(place.layout, SessionLayout::Tree { .. })
+            || harness.recorded_turn(&cwd_text, text, Some(since), brief.as_deref()).is_some();
+        (belongs && matches(text)).then_some(())
+    };
     for root in &roots(cwd, harness)? {
         if !root.exists() {
             continue;
@@ -67,6 +85,57 @@ pub fn holds_note(cwd: &Path, harness: Harness, since: u64, mark: &str) -> Resul
         }
     }
     Ok(false)
+}
+
+/// A write's result link identifies a worker's own comment even when it
+/// used a body file. Read commands and user messages cannot suppress one.
+pub(crate) fn posted_comment(cwd: &Path, harness: Harness, since: u64, url: &str) -> Result<bool> {
+    notes_match(cwd, harness, since, |text| posted_in(text, url))
+}
+
+fn posted_in(text: &str, url: &str) -> bool {
+    use serde_json::Value;
+    use std::collections::BTreeSet;
+    fn visit(value: &Value, writes: &mut BTreeSet<String>, url: &str) -> bool {
+        match value {
+            Value::Array(items) => items.iter().any(|item| visit(item, writes, url)),
+            Value::Object(fields) => {
+                let kind = value["type"].as_str().unwrap_or("");
+                let id = value["call_id"].as_str().or(value["id"].as_str());
+                if matches!(kind, "function_call" | "tool_use" | "toolCall") {
+                    let args = value.get("arguments").or(value.get("input"));
+                    let args = args.map(Value::to_string).unwrap_or_default();
+                    if args.contains("gh ")
+                        && (args.contains("issue comment")
+                            || args.contains("/comments")
+                                && (args.contains("POST") || args.contains("-f")))
+                        && let Some(id) = id
+                    {
+                        writes.insert(id.to_string());
+                    }
+                }
+                let reply = value["call_id"]
+                    .as_str()
+                    .or(value["tool_use_id"].as_str())
+                    .or(value["toolCallId"].as_str());
+                let result = matches!(kind, "function_call_output" | "tool_result")
+                    || value["role"] == "toolResult"
+                    || value["role"] == "tool";
+                if result
+                    && reply.is_some_and(|id| writes.contains(id))
+                    && value.to_string().contains(url)
+                {
+                    return true;
+                }
+                fields.values().any(|child| visit(child, writes, url))
+            }
+            _ => false,
+        }
+    }
+    let mut writes = BTreeSet::new();
+    text.lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .any(|line| visit(&line, &mut writes, url))
 }
 
 /// Writes, for every harness under `home`, what it keeps of `line` typed at

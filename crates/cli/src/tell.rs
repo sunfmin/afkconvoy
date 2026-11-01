@@ -53,7 +53,7 @@ pub fn tell(fleet: &Fleet, host: &str, issue: u64, text: &str) -> Result<Value> 
 
 /// Why no worker of this host is at work on the issue, and the host whose
 /// claim it is where another one holds it.
-struct Absent {
+pub(crate) struct Absent {
     why: String,
     host: Option<String>,
 }
@@ -65,7 +65,11 @@ fn absent(why: &str) -> Result<Result<(Worktree, String), Absent>> {
 /// The worktree and terminal of the worker at work under `host`'s claim of
 /// `issue`, as `nudge` finds it — but whichever fleet instance of the host
 /// holds the claim.
-fn worker(fleet: &Fleet, host: &str, issue: u64) -> Result<Result<(Worktree, String), Absent>> {
+pub(crate) fn worker(
+    fleet: &Fleet,
+    host: &str,
+    issue: u64,
+) -> Result<Result<(Worktree, String), Absent>> {
     let Some(claim) = fleet.scan.claim_of(issue) else {
         return absent("it is not claimed: no worker is at work on it");
     };
@@ -116,7 +120,7 @@ fn comment(fleet: &Fleet, issue: u64, text: &str) -> Result<String> {
 
 /// The note on one line, as a terminal's input takes it: Enter would submit
 /// the rest of it early. The comment keeps its lines.
-fn one_line(text: &str) -> String {
+pub(crate) fn one_line(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 

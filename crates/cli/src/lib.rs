@@ -69,6 +69,7 @@ pub mod host_watch;
 pub mod hot;
 pub mod instance;
 pub mod intake;
+pub mod issue_updates;
 pub mod jev;
 pub mod judge;
 pub mod kept;
@@ -3119,7 +3120,7 @@ enum Command {
     ///
     /// ## When to run it
     ///
-    /// When the worker at work on an issue must know something it did not read when it started: an issue body edited after its claim, a decision, a correction. A worker works from what it read at its start and never sees a body edit. Use it rather than `nudge`, which is the fleet's own line to a stopped worker telling it only to carry on: this is the operator's words, to a worker busy or stopped.
+    /// When the worker at work on an issue must know a decision or correction now. Each tick also tells it later issue comments and body edits automatically. Use it rather than `nudge`, which is the fleet's own line to a stopped worker telling it only to carry on: this is the operator's words, to a worker busy or stopped.
     ///
     /// ## Who runs it
     ///
@@ -3143,7 +3144,7 @@ enum Command {
     ///
     /// ## What trips you up
     ///
-    /// - It never edits the issue's body: a worker at work never sees a body edit, a comment is read by every later one.
+    /// - It never edits the issue's body. Each tick tells later body edits and issue comments to the worker under this host's claim, with session proof, and retries failed deliveries. Three consecutive failed ticks make a doctor finding naming the issue and comment. Fleet comments carrying a `<!--convoy:` marker and comments the worker itself posted (identified by its session's write receipts) are skipped. With no worker here, the next worker reads the issue at its start. PR comments are not told, and closed issues stay closed.
     /// - It takes no `--instance`: the claim says whose worker it is, and only a worker on this host can be typed at.
     #[command(next_help_heading = OPERATOR, verbatim_doc_comment)]
     Tell {

@@ -433,6 +433,11 @@ impl OpenIssues {
     pub fn comments(&self, number: u64) -> &[Comment] {
         self.comments.get(&number).map_or(&[], Vec::as_slice)
     }
+
+    /// The body and link from the same read as the comments.
+    pub fn body(&self, number: u64) -> Option<&Comment> {
+        self.reports.get(&number)
+    }
 }
 
 /// What is open on GitHub, as a rebuild reads it.
