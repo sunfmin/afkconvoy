@@ -12,13 +12,14 @@ It is made when something is first kept in it. With neither variable set, a comm
 Setting XDG_CACHE_HOME, and nothing else: there is no flag and no config key for it. To keep everything under a directory of your choosing:
 
 ```sh
-XDG_CACHE_HOME="$PWD/.cache" afkconvoy check
+XDG_CACHE_HOME="$HOME/afkconvoy-cache" afkconvoy check
 ```
 
 Each command reads the variable for itself, so two commands find the same copies and the same log only under the same value: a `doctor` run without the one a `run` was started with reads another directory, and finds no log there. The host runner keeps the directory of the `run` that started it, whatever its login shell sets, and so does every fleet instance it holds; a `run` under another value asks the host runner of that directory, and starts one there where none answers.
 
 ## What it holds
 
+- `candidates/<repo-key>/<candidate-id>/`: a candidate's detached worktree, kept until it stops; its adjacent `.processes` file identifies its gate's descendants. The repo key hashes the canonical common git directory. Keep the cache outside every checkout: `land` refuses a cache inside a checkout so gate tools cannot discover that checkout's configuration above a candidate. `afkconvoy land --help` describes removal and retained evidence.
 - `copies/`: the fleet's copy of a team's repo and of each role's, one per commit, read-only: copies/<owner>/<repo>/<commit>. Derived copies name their kind and directory too. Claude Code's role copy is `<commit>-role+claude-code-<directory>` (the directory is empty for a whole repo), with an empty `.git` directory to bound native skill discovery. A worker of a bound repo starts in one; an unbound repo has none.
 - `github-quota/`: expiring primary quota observations for REST core and GraphQL and a shared secondary cooldown, separated by GitHub host and authenticated login. Under each host, `identities/` binds an opaque one-way fingerprint of overriding credential environment/configuration to its authoritative login, or to a bounded wait while neither API can identify it. Credential values are never written or printed. The configured login is otherwise read locally, so an authentication status probe does not repeatedly hit an exhausted API. These are observations, never fleet state or cached issue/PR relationships. Removing one loses only an avoided rejected request. `doctor` reports their remaining/reset and API selection in `fleet.github_api`.
 - `harness/`: the user directory the fleet keeps for pi, Codex, Kimi Code and Grok, a worker's in place of yours: harness/pi, harness/codex, harness/kimi, harness/grok. A Kimi or Grok worker's role-specific home is under that directory, so concurrent roles do not share hooks or rules.
