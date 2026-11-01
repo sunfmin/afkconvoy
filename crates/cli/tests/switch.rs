@@ -1787,7 +1787,11 @@ fn orcas_harness_overrules_a_wrong_record_for_quota_recovery_and_is_shown() {
     tick(&world, 800);
     assert_eq!(open_commands(&world, &dir), [common::trusted("agent")]);
     assert!(!world.root.join("typesafe-request").exists());
-    let health = world.afk(&["doctor", "--now", "801"]).ok();
+    let health = world.afk(&["doctor", "--now", "801"]);
+    // Recovery ran in a standalone tick; no host runner holds the claim.
+    assert_eq!(health.code, 1);
+    let health = health.json;
+    assert!(health["findings"].as_array().unwrap().iter().any(|f| f["kind"] == "no_run"));
     let health = &health["host"]["host_kit"]["worker_health"];
     assert_eq!(health["workers"][0]["harness"], "codex");
     assert_eq!(health["workers"][0]["recorded_harness"], "claude-code");

@@ -216,7 +216,7 @@ fn a_run_is_timed_from_the_start_of_the_gate_command_to_its_end() {
     assert_eq!(answer["recorded"], true, "{answer}");
     assert!((2..30).contains(&answer["seconds"].as_u64().unwrap()), "{answer}");
     let subject = world.remote(&["log", "-1", "--format=%s", &records(&world)[0]]);
-    let host = gethostname::gethostname().to_string_lossy().into_owned();
+    let host = world.checkout_list()["settings"]["host_name"].as_str().unwrap().to_string();
     let said = format!(" seconds={} host={host}", answer["seconds"]);
     assert!(subject.ends_with(&said), "the host is what the fleet calls this one: {subject}");
 }
