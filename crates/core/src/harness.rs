@@ -142,6 +142,15 @@ pub enum AnsweredAs {
     Unsaid,
 }
 
+/// One keystroke typed at a harness, carrying no line of the operator's.
+/// `text` is what `terminal send --text` carries; `None` is the key alone.
+/// `enter` is Enter, alone or after that text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Keystroke {
+    pub text: Option<&'static str>,
+    pub enter: bool,
+}
+
 /// A harness the fleet can start a worker of a bound repo on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Harness {
@@ -183,6 +192,18 @@ impl Harness {
     pub fn task_refusal(self, output: &[String]) -> Option<String> {
         match self {
             Harness::Codex => codex::task_refusal(output),
+            _ => None,
+        }
+    }
+
+    /// The key that hands `line` to the model now, when `screen` shows that
+    /// line waiting in this harness's input queue. `None` when this harness
+    /// takes a typed line without another key, or the screen does not show
+    /// `line` queued. How a harness recognises its queue, and which key it
+    /// asks for, is that harness's.
+    pub fn send_queued(self, screen: &[String], line: &str) -> Option<Keystroke> {
+        match self {
+            Harness::Grok => grok::send_queued(screen, line),
             _ => None,
         }
     }

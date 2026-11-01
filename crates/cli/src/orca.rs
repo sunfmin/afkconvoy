@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use afkconvoy_core::casting::CASTER_WORKTREE;
 use afkconvoy_core::cut;
 use afkconvoy_core::guard::WritesNothing;
-use afkconvoy_core::harness::Harness;
+use afkconvoy_core::harness::{Harness, Keystroke};
 use afkconvoy_core::launch::{TrustGap, Waited};
 use afkconvoy_core::legacy::TRAIN_WORKTREE;
 use afkconvoy_core::line::niced;
@@ -1601,10 +1601,12 @@ impl Worktree {
     /// Types `line` once at the harness in `terminal`, at work or at its
     /// prompt, and waits until that harness's session holds `mark` in a
     /// message its model was given as the user's (`session::holds_note`):
-    /// a line seen only in its input queue is not delivered. A session that
-    /// already holds it — a rerun after the line was taken — is typed
-    /// nothing. Past the bound it fails with the screen, and types no second
-    /// line. `since` drops session files written before it.
+    /// a line seen only in its input queue is not delivered. When the
+    /// harness's screen shows the line queued, and that harness names a key
+    /// that sends it now, the key is pressed once. A session that already
+    /// holds it — a rerun after the line was taken — is typed nothing. Past
+    /// the bound it fails with the screen, and types no second line. `since`
+    /// drops session files written before it.
     pub(crate) fn hand_note(
         &self,
         terminal: &str,
@@ -1651,9 +1653,21 @@ impl Worktree {
         }
         let typed = Instant::now();
         let bound = Duration::from_secs(note_wait_seconds());
+        let mut sent_now = false;
         loop {
             if crate::session::holds_note(&self.path, harness, since, mark)? {
                 return Ok(Handed::Taken { seconds: typed.elapsed().as_secs() });
+            }
+            if !sent_now {
+                // A screen that cannot be read is not a queue. The bound
+                // still applies, and the line is not typed again.
+                if let Ok(screen) = self.queue_screen(terminal)
+                    && let Some(key) = harness.send_queued(&screen, line)
+                {
+                    self.press_key(terminal, key)?;
+                    sent_now = true;
+                    continue;
+                }
             }
             if typed.elapsed() >= bound {
                 return Err(self.prompt_failure(
@@ -1668,6 +1682,44 @@ impl Worktree {
             }
             std::thread::sleep(NOTE_POLL.min(bound.saturating_sub(typed.elapsed())));
         }
+    }
+
+    /// How many rendered rows are read when looking for a queued line. The
+    /// queue sits at the bottom of the screen, with the composer.
+    const QUEUE_SCREEN: usize = 40;
+
+    /// The rendered screen, plus the composer draft when orca reports one.
+    /// The draft is not terminal output; a queued line can sit there.
+    fn queue_screen(&self, terminal: &str) -> Result<Vec<String>> {
+        let limit = Self::QUEUE_SCREEN.to_string();
+        let read =
+            orca(&["terminal", "read", "--terminal", terminal, "--screen", "--limit", &limit])?;
+        let tail = read["terminal"]["tail"].as_array().cloned().unwrap_or_default();
+        let mut lines =
+            tail.iter().filter_map(|line| line.as_str().map(str::to_string)).collect::<Vec<_>>();
+        if let Some(draft) = read["terminal"]["draft"].as_str() {
+            lines.extend(draft.lines().map(str::to_string));
+        }
+        Ok(lines)
+    }
+
+    /// Types `key` at `terminal`, with no line of the operator's.
+    fn press_key(&self, terminal: &str, key: Keystroke) -> Result<()> {
+        let mut args = vec!["terminal", "send", "--terminal", terminal];
+        if let Some(text) = key.text {
+            args.extend(["--text", text]);
+        }
+        if key.enter {
+            args.push("--enter");
+        }
+        let sent = orca(&args)?;
+        if sent["send"]["accepted"] != true {
+            return Err(self.prompt_failure(
+                terminal,
+                &format!("the terminal did not take the key: {}", sent["send"]),
+            ));
+        }
+        Ok(())
     }
 
     /// Checks this pane's input without typing or waiting for an active
