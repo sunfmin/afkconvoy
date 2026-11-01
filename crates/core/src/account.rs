@@ -390,6 +390,7 @@ fn worker_row(start: &Start, cited: Option<Cite>, end: u64) -> Worker {
         start: Some(start.at),
         end: Some(row_end),
         seconds,
+        tokens: None,
     }
 }
 
