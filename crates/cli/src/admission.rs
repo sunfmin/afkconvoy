@@ -3,12 +3,13 @@
 //! says, in its host settings. Whether admission holds is the core's to decide
 //! (`afkconvoy_core::admission::holds`).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::process::Command;
 use std::sync::Mutex;
 
 use afkconvoy_core::admission::{Disk, Hold, Reading, SHARES, Shares, holds, thresholds};
+use afkconvoy_core::exclusive::Ticket;
 use afkconvoy_core::resources::{Reason, SPAN};
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
@@ -31,6 +32,8 @@ pub(crate) fn output(program: &str, args: &[&str]) -> Result<String> {
 pub struct Readings {
     cores: u64,
     load: Option<u64>,
+    total_load: Option<u64>,
+    queue_load: Option<u64>,
     memory_free: Option<u64>,
     memory: Option<u64>,
     disks: Mutex<BTreeMap<u64, Option<Disk>>>,
@@ -39,9 +42,25 @@ pub struct Readings {
 impl Readings {
     /// Reads the host-wide values once; volumes are read on first use.
     pub fn new() -> Readings {
+        Self::read(|load| {
+            crate::exclusive::standing().ok().and_then(|queue| queue_load(load, &queue).ok())
+        })
+    }
+
+    /// Reads against the runner's existing queue snapshot. Inside the runner
+    /// an RPC to itself can wait for a server that has not started yet.
+    pub(crate) fn with_queue(queue: &[Ticket]) -> Readings {
+        Self::read(|load| queue_load(load, queue).ok())
+    }
+
+    fn read(estimate_queue: impl FnOnce(u64) -> Option<u64>) -> Readings {
+        let total_load = load().ok();
+        let queue_load = total_load.and_then(estimate_queue);
         Readings {
             cores: std::thread::available_parallelism().map_or(1, |cores| cores.get() as u64),
-            load: load().ok(),
+            load: total_load.map(|load| load.saturating_sub(queue_load.unwrap_or(0))),
+            total_load,
+            queue_load,
             memory_free: memory_free().ok(),
             memory: crate::hot::memory(),
             disks: Mutex::new(BTreeMap::new()),
@@ -84,6 +103,10 @@ pub struct Admission {
     /// said it in; the rest are the defaults.
     pub said: Vec<&'static str>,
     pub reading: Reading,
+    /// Total load and its estimated queue share, in hundredths. An unknown
+    /// queue share leaves the total in the admission decision.
+    pub total_load: Option<u64>,
+    pub queue_load: Option<u64>,
     /// How long, in seconds, admission holds back for one reason before the
     /// host calls for a watch: the host's, or `SPAN`.
     pub span: u64,
@@ -100,7 +123,10 @@ impl Admission {
     /// The shares the host settings say, with the checkout's reading from one
     /// shared look.
     pub fn read_from(dir: &Path, readings: &Readings) -> Result<Admission> {
-        Ok(Admission::of(&host_settings::of_host()?, readings.at(dir)))
+        let mut admission = Admission::of(&host_settings::of_host()?, readings.at(dir));
+        admission.total_load = readings.total_load;
+        admission.queue_load = readings.queue_load;
+        Ok(admission)
     }
 
     /// The shares `settings` say, with `reading`.
@@ -119,7 +145,7 @@ impl Admission {
                 said.push(name);
             }
         }
-        Admission { shares, said, reading, span }
+        Admission { shares, said, total_load: reading.load, queue_load: Some(0), reading, span }
     }
 
     /// The thresholds the host is past: none, and new workers start.
@@ -195,12 +221,61 @@ impl Admission {
             "reading": {
                 "cores": reading.cores,
                 "load": reading.load.map(|load| load as f64 / 100.0),
+                "total_load": self.total_load.map(|load| load as f64 / 100.0),
+                "queue_load": self.queue_load.map(|load| load as f64 / 100.0),
+                "other_load": reading.load.map(|load| load as f64 / 100.0),
                 "memory_free_percent": reading.memory_free,
                 "disk_free_bytes": reading.disk.map(|disk| disk.free),
                 "disk_size_bytes": reading.disk.map(|disk| disk.size),
             },
         })
     }
+}
+
+/// Attribute the one-minute load in proportion to CPU currently used by the
+/// running queue trees. This is an estimate: the kernel exposes no per-tree
+/// load average. On an unreadable queue or process table, subtract nothing.
+fn queue_load(load: u64, queue: &[Ticket]) -> Result<u64> {
+    let roots: BTreeSet<u32> =
+        queue.iter().filter(|ticket| ticket.ran.is_some()).map(|ticket| ticket.pid).collect();
+    if roots.is_empty() {
+        return Ok(0);
+    }
+    let said = output("ps", &["-A", "-o", "pid=,ppid=,pcpu="])?;
+    let rows: Vec<(u32, u32, f64)> = said
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let (pid, parent, cpu) = (
+                fields.next()?.parse().ok()?,
+                fields.next()?.parse().ok()?,
+                fields.next()?.parse::<f64>().ok()?,
+            );
+            (cpu.is_finite() && cpu >= 0.0).then_some((pid, parent, cpu))
+        })
+        .collect();
+    anyhow::ensure!(
+        !rows.is_empty() && roots.iter().all(|root| rows.iter().any(|row| row.0 == *root)),
+        "queue process table incomplete"
+    );
+    let mut tree = roots;
+    loop {
+        let before = tree.len();
+        for &(pid, parent, _) in &rows {
+            if tree.contains(&parent) {
+                tree.insert(pid);
+            }
+        }
+        if tree.len() == before {
+            break;
+        }
+    }
+    let total: f64 = rows.iter().map(|row| row.2).sum();
+    let queued: f64 = rows.iter().filter(|row| tree.contains(&row.0)).map(|row| row.2).sum();
+    if total <= 0.0 {
+        return Ok(0);
+    }
+    Ok(((load as f64 * queued / total).round() as u64).min(load))
 }
 
 /// `hundredths` as a load is written: `105.43`.
@@ -282,6 +357,8 @@ mod tests {
             shares: SHARES,
             said: vec![],
             reading: Reading { cores: 14, load: Some(10543), memory_free: Some(4), disk: None },
+            total_load: Some(10543),
+            queue_load: Some(0),
             span: SPAN,
         };
         let said: Vec<String> = admission.holds().iter().map(|hold| admission.said(hold)).collect();

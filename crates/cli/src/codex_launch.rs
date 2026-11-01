@@ -156,12 +156,20 @@ pub(crate) fn prepare_worker(
         let command = if in_role {
             command.to_string()
         } else {
-            harness.in_worktree(command, &worktree.path.display().to_string(), "")
+            let guard = terminal_guard();
+            let kept = crate::kept::outside_role(harness, &worktree.path, Some(&guard))?;
+            let path = worktree.path.display().to_string();
+            let command = harness.watch(command, &path, &kept, None);
+            harness.guarded(&command, &path, &kept, &guard)
         };
         return Ok(Prepared { model, command, settings: None });
     };
-    let (command, settings) =
+    let (mut command, settings) =
         prepare(harness, worktree, model.as_deref(), command, in_role, model_source)?;
+    if !in_role {
+        command =
+            harness.guarded(&command, &worktree.path.display().to_string(), "", &terminal_guard());
+    }
     Ok(Prepared { model, command, settings: Some(settings) })
 }
 
@@ -213,6 +221,7 @@ pub(crate) fn watch_line(
     worktree: &Path,
     model: Option<&str>,
     command: &str,
+    guard: Option<&str>,
 ) -> Result<String> {
     let (kept, effort) = match fresh_root(harness, worktree) {
         Some(root) => {
@@ -225,15 +234,25 @@ pub(crate) fn watch_line(
             let (effort, _) = effort(harness)?;
             (home.display().to_string(), effort)
         }
-        None => (crate::kept::keep(harness, true)?.display().to_string(), None),
+        None => (crate::kept::outside_role(harness, worktree, guard)?, None),
     };
-    Ok(harness.session_watch(
+    let line = harness.session_watch(
         command,
         &worktree.display().to_string(),
         &kept,
         model,
         effort.as_deref(),
-    ))
+    );
+    Ok(match guard {
+        Some(guard) => harness.guarded(&line, &worktree.display().to_string(), &kept, guard),
+        None => format!("export AFKCONVOY_GUARD=true && {line}"),
+    })
+}
+
+/// The guard outside a bound stage: the same asking-input decision, without
+/// imposing a stage's facts on an Agent that has no stage.
+pub(crate) fn terminal_guard() -> String {
+    crate::own_command().fixed(" guard --terminal-input-only").own()
 }
 
 pub(crate) fn record(worktree: &Worktree, harness: Harness, settings: &Settings) -> Result<()> {

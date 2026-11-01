@@ -199,6 +199,7 @@ fn doctor_all_answers_each_checkouts_doctor_and_the_hosts_findings_once() {
                 "notify",
                 "other_accounts",
                 "resources",
+                "unworked_repos",
                 "watch"
             ]
             .map(String::from)

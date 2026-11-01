@@ -90,14 +90,72 @@ run_tests() {
         TMPDIR="$tests_tmpdir" cargo test --workspace --quiet
         return
     fi
-    TMPDIR="$tests_tmpdir" cargo nextest run --workspace --cargo-quiet --status-level fail --final-status-level slow --show-progress none --no-tests=pass --profile "$1" -E "$2" || {
-        tests_status=$?
-        case "$1" in
-        fast) echo "gate: a test listed above as TIMEOUT is a slow test: it ran past 6 seconds, three times the fast gate's line of 2, and was ended. Name it in .config/slow-tests, as its binary and its name (\`afkconvoy::cli switch::its_name\`), and it runs in the slow gate" >&2 ;;
-        *) echo "gate: a test listed above as TIMEOUT ran too long: it was ended at the limit for one test, which .config/nextest.toml gives" >&2 ;;
-        esac
+    test_log=$(mktemp -d "$PWD/.afkconvoy-tmp/nextest.XXXXXX")
+    # Keep nextest's output live and retain its own exit status through tee.
+    (if TMPDIR="$tests_tmpdir" cargo nextest run --workspace --cargo-quiet --status-level fail --final-status-level slow --show-progress none --no-tests=pass --profile "$1" -E "$2"; then
+        echo 0 >"$test_log/status"
+    else
+        echo "$?" >"$test_log/status"
+    fi) 2>&1 | tee "$test_log/output"
+    tests_status=$(cat "$test_log/status")
+    if [ "$tests_status" -ne 0 ]; then
+        if [ "$1" = fast ]; then
+            check_fast_timeouts "$test_log/output"
+        elif grep -q 'TIMEOUT' "$test_log/output"; then
+            echo "gate: a test listed above as TIMEOUT ran too long: it was ended at the limit for one test, which .config/nextest.toml gives" >&2
+        fi
+        rm -rf "$test_log"
         exit "$tests_status"
-    }
+    fi
+    rm -rf "$test_log"
+}
+
+# A timeout under contention is not evidence that a test belongs in the slow
+# gate. Check each one alone, only while the load average is below the host's
+# logical CPU count. A failed check that is not a timeout is not a slow test.
+host_load() {
+    uptime | awk -F 'load averages?: ' 'NF > 1 { gsub(/,/, "", $2); split($2, a, " "); print a[1] }'
+}
+quiet_host() {
+    awk -v load="$1" -v cpus="$2" 'BEGIN { exit !(load ~ /^[0-9]+([.][0-9]+)?$/ && cpus ~ /^[0-9]+$/ && cpus > 0 && load < cpus) }'
+}
+check_fast_timeouts() {
+    timeouts=$(awk '/TIMEOUT[[:space:]]*\[/ { sub(/^.*TIMEOUT[[:space:]]*\[[^]]*\][[:space:]]*/, ""); if (NF >= 2) print $1, $2 }' "$1" | sort -u)
+    [ -n "$timeouts" ] || return 0
+    cpus=$(getconf _NPROCESSORS_ONLN 2>/dev/null || true)
+    load=$(host_load)
+    if ! quiet_host "$load" "$cpus"; then
+        echo "gate: host overloaded or load unavailable (load ${load:-unknown}, CPUs ${cpus:-unknown}); cannot classify TIMEOUT tests. Retry on a quiet host." >&2
+        return 0
+    fi
+    printf '%s\n' "$timeouts" | while read -r binary name; do
+        load=$(host_load)
+        if ! quiet_host "$load" "$cpus"; then
+            echo "gate: host overloaded (load ${load:-unknown}, CPUs $cpus); cannot classify $binary $name. Retry on a quiet host." >&2
+            continue
+        fi
+        echo "gate: checking $binary $name alone against the 2s line (load $load, CPUs $cpus)" >&2
+        check_log=$(mktemp "$PWD/.afkconvoy-tmp/check.XXXXXX")
+        if TMPDIR="$tests_tmpdir" cargo nextest run --workspace --cargo-quiet --status-level fail --final-status-level fail --show-progress none --no-tests=fail --test-threads 1 --profile fast-check -E "binary_id(=$binary) & test(=$name)" >"$check_log" 2>&1; then
+            after=$(host_load)
+            if quiet_host "$after" "$cpus"; then
+                echo "gate: $binary $name passed the 2s check; the earlier TIMEOUT was a load fault (load $load)." >&2
+            else
+                echo "gate: $binary $name passed the 2s check; host overloaded during it (load ${after:-unknown}, CPUs $cpus)." >&2
+            fi
+        elif grep -q 'TIMEOUT' "$check_log"; then
+            after=$(host_load)
+            if quiet_host "$after" "$cpus"; then
+                echo "gate: $binary $name was still TIMEOUT at 2s on a quiet host. Name it in .config/slow-tests as its binary and name." >&2
+            else
+                echo "gate: host overloaded during the check (load ${after:-unknown}, CPUs $cpus); cannot classify $binary $name." >&2
+            fi
+        else
+            echo "gate: checking $binary $name failed without a TIMEOUT:" >&2
+            cat "$check_log" >&2
+        fi
+        rm -f "$check_log"
+    done
 }
 if [ -z "$nextest" ] && [ -n "${1:-}" ]; then
     echo "gate: the fast gate and the slow gate are told apart by nextest's filter, and cargo-nextest is not installed: run ./gate.sh, the whole gate" >&2

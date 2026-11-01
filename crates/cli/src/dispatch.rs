@@ -659,6 +659,7 @@ fn note_start(
         harness: harness.key(),
         model,
         stage: staged.map(Staged::stage),
+        role: staged.map(Staged::role),
         consult: staged.is_some_and(Staged::is_consult),
     });
     fleet.gh.comment(number, &body).err().map(|error| format!("{error:#}"))

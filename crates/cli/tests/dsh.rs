@@ -118,6 +118,7 @@ fn the_plugin_refuses_through_the_real_guard_and_reports_running_and_interrupted
         .arg(root.join("driver.mjs"))
         .current_dir(root)
         .env("AFKCONVOY_GUARD", format!("'{}' guard", env!("CARGO_BIN_EXE_afkconvoy")))
+        .env("XDG_CACHE_HOME", root.join("cache"))
         .env("AFKCONVOY_WORKTREE", root.join("project"))
         .env("AFKCONVOY_TEAM_DIR", root.join("team"))
         .env("DSH_HOME", root.join("host"))

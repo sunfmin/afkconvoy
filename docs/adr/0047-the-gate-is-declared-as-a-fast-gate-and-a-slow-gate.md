@@ -17,7 +17,9 @@ Each says its own command, limit (`seconds`) and warning budget (`budget_seconds
 
 The line is drawn per test, at 2 seconds on `Offices-MacBook-Pro.local`: a test that took 2 seconds or more there is marked slow, by its binary and whole name, in `.config/slow-tests`; every other test is fast. `gate.sh` makes one nextest filter of the list: the slow gate runs the tests it matches, the fast gate the tests it does not, so no test runs in both or in neither. A new test is fast until it is marked.
 
-The fast gate keeps the line honest. It runs its tests under nextest's `fast` profile, which ends a test still running after 6 seconds, three times the line, and the gate then says to mark that test slow. Three times, not the line itself: a test that takes 1.8 seconds on a quiet host takes more on a host running three gates, and a line enforced at 2 seconds would flip such tests on load alone. A test that now runs under 2 seconds may be taken off the list, with its time.
+The fast gate keeps the line honest. It runs its tests under nextest's `fast` profile, which ends a test still running after 6 seconds, three times the line. Three times, not the line itself: a test that takes 1.8 seconds on a quiet host takes more on a host running three gates, and a line enforced at 2 seconds would flip such tests on load alone. A test that now runs under 2 seconds may be taken off the list, with its time.
+
+Amended by sunfmin/control#445: a fast TIMEOUT alone does not establish that a test is slow. When the host's one-minute load is below its logical CPU count, the gate checks each timed-out test alone against the 2-second line, and recommends naming it slow only if that check also times out while the host remains below that load. A check that passes identifies a load fault. If the host is overloaded or its load cannot be read, the gate asks for a retry on a quiet host; it does not classify the test. The original fast gate remains red in each case.
 
 A line per test, not a budget for the whole fast gate, was chosen because a budget says only that the fast gate is slow, never which test to move, and a growing suite would breach it a test at a time with nothing for the author of each to do. A line per test tells the author of a slow test that it is slow, the day it is written.
 
@@ -42,6 +44,6 @@ The two gates are the gate split, not a gate more: their limits add up to no mor
 
 - A worker learns of formatting, Flux, clippy, manual, build and quick-test failures before opening its PR, from a run that skips the slow tests.
 - A landing still waits on the whole gate. Making the slow gate faster is sunfmin/control#234; running it once per round of candidates, not per candidate, is ADR-0048 (sunfmin/control#240).
-- A slow test added without being marked fails the fast gate past 6 seconds, by name, with what to do; one between 2 and 6 seconds passes, and stays in the fast gate until its time is measured again.
+- A slow test added without being marked fails the fast gate past 6 seconds, by name, and is checked alone before it is named slow; one between 2 and 6 seconds passes, and stays in the fast gate until its time is measured again.
 - The list is measured on one host. Another host's fast gate may run a little slower or faster; the 6-second end is what holds it.
 - An older afkconvoy skips the gates block: it can land and cut the version that reads it, and until then `gate --fast` is unknown to it.
