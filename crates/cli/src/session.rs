@@ -44,6 +44,26 @@ pub fn holds_note(cwd: &Path, harness: Harness, since: u64, mark: &str) -> Resul
     notes_match(cwd, harness, since, |text| harness.holds_note(text, mark))
 }
 
+/// The timestamp of a recorded user entry, for live delivery evidence.
+/// Queue records and tool output cannot supply it.
+pub fn note_at(cwd: &Path, harness: Harness, since: u64, mark: &str) -> Result<Option<u64>> {
+    let found = std::cell::Cell::new(None);
+    notes_match(cwd, harness, since, |text| {
+        let at = text.lines().find_map(|line| {
+            if !harness.holds_note(line, mark) {
+                return None;
+            }
+            let entry: serde_json::Value = serde_json::from_str(line).ok()?;
+            entry["timestamp"]
+                .as_u64()
+                .or_else(|| crate::doctor::watching::since(entry["timestamp"].as_str()?).ok())
+        });
+        found.set(at);
+        at.is_some()
+    })?;
+    Ok(found.get())
+}
+
 /// Reads the harness's message files once for a question about this worker.
 /// Global session trees must identify this worktree; project message stores
 /// already have its directory in their layout.
