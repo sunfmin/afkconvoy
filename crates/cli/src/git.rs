@@ -472,11 +472,47 @@ pub(crate) fn run(dir: &Path, args: &[&str], env: &[(&str, &str)]) -> Result<Ran
             .envs(env.iter().copied()),
     )
     .with_context(|| could_not_run(args, dir))?;
-    Ok(Ran {
+    Ok(ran(out))
+}
+
+/// One git call that must end within `limit`. On the bound its process group
+/// is ended and the call is a failure the caller can report, not an error that
+/// holds its lane while waiting indefinitely.
+pub(crate) fn run_within(
+    dir: &Path,
+    args: &[&str],
+    env: &[(&str, &str)],
+    limit: std::time::Duration,
+) -> Result<Ran> {
+    let out = crate::process::output_within(
+        Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .env("LC_ALL", "C")
+            .envs(env.iter().copied()),
+        limit,
+    )
+    .with_context(|| could_not_run(args, dir))?;
+    Ok(match out {
+        Some(out) => ran(out),
+        None => Ran {
+            ok: false,
+            stdout: String::new(),
+            stderr: format!(
+                "git {} did not end within {}s; its process group was ended",
+                args.join(" "),
+                limit.as_secs()
+            ),
+        },
+    })
+}
+
+fn ran(out: std::process::Output) -> Ran {
+    Ran {
         ok: out.status.success(),
         stdout: String::from_utf8_lossy(&out.stdout).trim().to_string(),
         stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
-    })
+    }
 }
 
 #[cfg(test)]

@@ -92,15 +92,27 @@ test ! -f "$root/fail-$name"
 }
 
 fn start(world: &World, dir: &Path, cache: &Path, n: u64) -> Child {
-    world
-        .command(env!("CARGO_BIN_EXE_afkconvoy"), dir)
+    start_with_record_push_limit(world, dir, cache, n, None)
+}
+
+fn start_with_record_push_limit(
+    world: &World,
+    dir: &Path,
+    cache: &Path,
+    n: u64,
+    seconds: Option<u64>,
+) -> Child {
+    let mut command = world.command(env!("CARGO_BIN_EXE_afkconvoy"), dir);
+    command
         .env("XDG_CACHE_HOME", cache)
         .env("AFKCONVOY_ISSUE", n.to_string())
         .args(["land", "--issue", &n.to_string()])
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .unwrap()
+        .stderr(Stdio::inherit());
+    if let Some(seconds) = seconds {
+        command.env("AFKCONVOY_GATE_RECORD_PUSH_SECONDS", seconds.to_string());
+    }
+    command.spawn().unwrap()
 }
 
 fn finish(child: Child) -> Value {
@@ -432,6 +444,58 @@ fn a_gate_timeout_invalidates_and_terminates_its_running_successor() {
     assert_eq!(failed["timed_out"], true);
     assert_eq!(cancelled["outcome"], "cancelled", "{cancelled}");
     assert_eq!(cancelled["cause"], "predecessor_failed");
+    gone(&world, "a");
+    gone(&world, "b");
+}
+
+#[test]
+fn a_stalled_gate_record_push_releases_the_lane_without_recording_green() {
+    let world = world(1);
+    let (a, _) = worker(&world, 1, "a");
+    let (b, _) = worker(&world, 2, "b");
+    let started = world.root.join("push-started");
+    let hook = format!(
+        "#!/bin/sh\nwhile read old new ref; do\n  case \"$ref\" in refs/convoy/gate/*)\n    \
+         if test ! -f '{0}'; then touch '{0}'; sleep 30; fi;;\n  esac\ndone\n",
+        started.display()
+    );
+    let hook_path = world.bare.join("hooks/pre-receive");
+    std::fs::write(&hook_path, hook).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&hook_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let _runner = world.host_held();
+    let mut aa = start_with_record_push_limit(&world, &a, &world.cache(), 1, Some(1));
+    until(|| world.root.join("start-a").exists() || aa.try_wait().unwrap().is_some());
+    if aa.try_wait().unwrap().is_some() {
+        panic!("the first turn ended before its gate: {}", finish(aa));
+    }
+    release(&world, "a", false);
+    until(|| started.exists() || aa.try_wait().unwrap().is_some());
+    if aa.try_wait().unwrap().is_some() {
+        panic!("the first turn ended before the push stalled: {}", finish(aa));
+    }
+    let mut bb = start(&world, &b, &world.cache(), 2);
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(!world.root.join("start-b").exists(), "the stalled push held the only worker lane");
+    assert!(bb.try_wait().unwrap().is_none(), "the queued turn is still waiting");
+
+    let failed = finish(aa);
+    assert_eq!(failed["outcome"], "gate_red", "{failed}");
+    assert_eq!(failed["status"], "green", "the tests passed before the push stalled");
+    assert_eq!(failed["exit_code"], 0);
+    assert_eq!(failed["timed_out"], false, "the gate did not reach its own limit");
+    assert_eq!(failed["recorded"], false);
+    assert!(failed["not_recorded"].as_str().unwrap().contains("did not end within 1s"), "{failed}");
+    assert_eq!(world.state(1), "open");
+
+    began(&world, "b");
+    release(&world, "b", false);
+    let landed = finish(bb);
+    assert_eq!(landed["outcome"], "merged", "{landed}");
+    let files = world.remote(&["ls-tree", "--name-only", "refs/heads/main"]);
+    assert!(files.lines().any(|file| file == "b.txt"));
+    assert!(!files.lines().any(|file| file == "a.txt"));
     gone(&world, "a");
     gone(&world, "b");
 }
