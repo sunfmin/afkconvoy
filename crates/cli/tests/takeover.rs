@@ -2,11 +2,11 @@ use crate::common;
 
 use std::path::PathBuf;
 
+use afkconvoy_core::lease::LEASE;
 use common::{World, commit, git};
 use serde_json::{Value, json};
 
-/// The lease, and a moment past it for a heartbeat stamped at 1000.
-const LEASE: u64 = 4500;
+/// A moment past the lease, for a heartbeat stamped at 1000.
 const LATER: u64 = 1000 + LEASE + 1;
 
 fn tick_as(world: &World, instance: &str, host: &str, now: u64) -> Value {

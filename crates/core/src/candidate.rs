@@ -8,8 +8,12 @@
 //! Where the commit declares a fast gate and a slow gate, a candidate runs
 //! the fast one, and a round runs the slow one once at the chain's tip,
 //! landing every candidate up to it together (docs/adr/0048).
+use std::collections::BTreeMap;
+
 use flux_rs::attrs::*;
 use serde::{Deserialize, Serialize};
+
+use crate::lease::{stamp_due, stamp_stale};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -60,6 +64,12 @@ pub struct Candidate {
     pub cause: Option<String>,
     /// True only after the gate group and descendants have been observed gone.
     pub stopped: bool,
+    /// Its owner's host was read dead (`Chain::abandon`): it holds the chain
+    /// no more, though nobody confirmed its processes gone — they are on a
+    /// host nobody else can reach. Should that host come back, its own turn
+    /// stops them, and only then is it `stopped`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub abandoned: bool,
     /// Actual gate evidence survives invalidation and owner death.
     pub result: Option<serde_json::Value>,
     /// The slow gate its commit declares, which a round at this candidate
@@ -95,7 +105,7 @@ impl Candidate {
     }
     pub fn active(&self) -> bool {
         matches!(self.phase, Phase::Building | Phase::Validating | Phase::Green | Phase::Slow)
-            || !self.stopped
+            || (!self.stopped && !self.abandoned)
     }
 
     pub fn valid(&self) -> bool {
@@ -145,6 +155,12 @@ pub struct Chain {
     /// for them, as it is as big as the PRs that are ready.
     #[serde(default)]
     pub pending: Vec<Barrier>,
+    /// When each host that owns a member — a candidate not yet stopped, a
+    /// barrier or a pending turn — last said a turn of it is alive, in
+    /// seconds: its turns stamp it as they wait (`beat`). Another host reads
+    /// it to tell a live owner from a dead one (`abandon`).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub heartbeats: BTreeMap<String, u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -163,6 +179,74 @@ impl Chain {
         (!barrier || active.is_empty())
             && (barrier || self.barriers.is_empty())
             && !active.iter().any(|c| c.barrier || !c.valid())
+    }
+
+    /// The hosts that own a member: a candidate not yet stopped nor
+    /// abandoned, a barrier or a pending turn.
+    pub fn owners(&self) -> Vec<&str> {
+        let candidates = self.candidates.iter().filter(|c| !c.stopped && !c.abandoned);
+        let mut hosts: Vec<&str> = candidates
+            .map(|c| c.owner.host.as_str())
+            .chain(self.barriers.iter().chain(&self.pending).map(|b| b.owner.host.as_str()))
+            .collect();
+        hosts.sort_unstable();
+        hosts.dedup();
+        hosts
+    }
+
+    /// A turn on `host` is alive at `now`: stamps it, where `host` owns a
+    /// member and its stamp is missing or due (`lease::stamp_due`). A stamp
+    /// of a host that owns nothing is dropped → whether anything changed.
+    pub fn beat(&mut self, host: &str, now: u64) -> bool {
+        let before = self.heartbeats.clone();
+        let owners: Vec<String> = self.owners().into_iter().map(str::to_string).collect();
+        self.heartbeats.retain(|stamped, _| owners.contains(stamped));
+        if owners.iter().any(|owner| owner == host)
+            && self.heartbeats.get(host).is_none_or(|&stamp| stamp_due(stamp, now))
+        {
+            self.heartbeats.insert(host.to_string(), now);
+        }
+        before != self.heartbeats
+    }
+
+    /// `host` was heard alive at `ts` some other way — by a fleet heartbeat
+    /// of it — and is stamped so, where that is newer than its stamp.
+    pub fn heard(&mut self, host: &str, ts: u64) {
+        let stamp = self.heartbeats.entry(host.to_string()).or_insert(ts);
+        *stamp = (*stamp).max(ts);
+    }
+
+    /// Whether a turn on `host` said it was alive within the lease at `now`.
+    pub fn beats(&self, host: &str, now: u64) -> bool {
+        self.heartbeats.get(host).is_some_and(|&stamp| !stamp_stale(stamp, now))
+    }
+
+    /// Takes over everything `host` owns, once it is read dead: its barriers
+    /// and pending turns are dropped, each of its valid candidates is
+    /// invalidated `owner_died` with its suffix, and each of its candidates
+    /// not confirmed stopped is abandoned. The suffix's own owners cancel
+    /// their candidates as for any failed predecessor.
+    pub fn abandon(&mut self, host: &str) {
+        self.barriers.retain(|b| b.owner.host != host);
+        self.pending.retain(|b| b.owner.host != host);
+        let roots: Vec<String> = self
+            .candidates
+            .iter()
+            .filter(|c| c.owner.host == host && c.valid())
+            .map(|c| c.id.clone())
+            .collect();
+        for root in roots {
+            self.invalidate(&root, "owner_died");
+        }
+        for c in &mut self.candidates {
+            if c.owner.host == host && !c.stopped && c.phase != Phase::Landed {
+                c.abandoned = true;
+                if c.phase == Phase::Cancelling {
+                    c.phase = Phase::Cancelled;
+                }
+            }
+        }
+        self.heartbeats.remove(host);
     }
 
     pub fn predecessor(&self, base: &str) -> String {
@@ -478,10 +562,82 @@ mod tests {
             cancelled_by: None,
             cause: None,
             stopped: false,
+            abandoned: false,
             result: None,
             slow: None,
             slowed: false,
         }
+    }
+
+    fn owned(c: Candidate, host: &str) -> Candidate {
+        Candidate { owner: Process { host: host.into(), ..c.owner.clone() }, ..c }
+    }
+
+    fn reserved(id: &str, host: &str) -> Barrier {
+        Barrier { id: id.into(), owner: Process { host: host.into(), pid: 9, started: "s".into() } }
+    }
+
+    /// The Offices-MBP chain of 2026-11-01: a dead host's round tip slow-gating,
+    /// a live host's green successor behind it, stopped, and the dead host's
+    /// pending turn and barrier.
+    #[test]
+    fn a_dead_hosts_members_are_taken_over_and_the_chain_admits_again() {
+        let tip = Candidate { phase: Phase::Slow, ..owned(split(0), "far") };
+        let behind = Candidate { phase: Phase::Green, stopped: true, ..owned(split(1), "here") };
+        let mut chain = Chain {
+            candidates: vec![tip, behind],
+            pending: vec![reserved("p-far", "far"), reserved("p-here", "here")],
+            barriers: vec![reserved("b-far", "far")],
+            heartbeats: [("far".to_string(), 1000), ("here".to_string(), 1000)].into(),
+        };
+        assert!(!chain.can_assign(false), "the slow round holds the chain");
+        chain.abandon("far");
+        let (tip, behind) = (&chain.candidates[0], &chain.candidates[1]);
+        assert_eq!(
+            (tip.phase, tip.cause.as_deref(), tip.abandoned, tip.stopped, tip.active()),
+            (Phase::Cancelled, Some("owner_died"), true, false, false),
+            "never confirmed stopped, yet no longer holding the chain"
+        );
+        assert_eq!(
+            (behind.phase, behind.cancelled_by.as_deref(), behind.abandoned),
+            (Phase::Cancelled, Some("c0"), false),
+            "its successor cancels as behind any failed predecessor"
+        );
+        let ids = |b: &[Barrier]| b.iter().map(|b| b.id.clone()).collect::<Vec<_>>();
+        assert_eq!((ids(&chain.pending), ids(&chain.barriers)), (vec!["p-here".into()], vec![]));
+        assert_eq!(chain.heartbeats.keys().collect::<Vec<_>>(), ["here"]);
+        assert!(chain.can_assign(false), "a turn is assigned a candidate");
+    }
+
+    #[test]
+    fn a_dead_hosts_successor_on_a_live_host_holds_the_chain_until_its_owner_stops_it() {
+        let tip = Candidate { phase: Phase::Slow, ..owned(split(0), "far") };
+        let behind = Candidate { phase: Phase::Validating, ..owned(split(1), "here") };
+        let mut chain = Chain { candidates: vec![tip, behind], ..Chain::default() };
+        chain.abandon("far");
+        assert_eq!(chain.candidates[1].phase, Phase::Cancelling);
+        assert!(!chain.can_assign(false), "its gate on a live host is not confirmed gone");
+    }
+
+    #[test]
+    fn a_turn_stamps_its_host_while_it_owns_a_member_and_only_when_due() {
+        let mut chain = Chain {
+            candidates: vec![owned(candidate(0), "here")],
+            heartbeats: [("gone".to_string(), 10)].into(),
+            ..Chain::default()
+        };
+        assert!(chain.beat("here", 1000), "a first stamp");
+        assert_eq!(
+            chain.heartbeats,
+            [("here".to_string(), 1000)].into(),
+            "an owner of nothing is dropped"
+        );
+        assert!(!chain.beat("here", 1000 + crate::lease::BEAT_EVERY), "not due yet");
+        assert!(chain.beat("here", 1001 + crate::lease::BEAT_EVERY));
+        assert!(!chain.beat("elsewhere", 5000), "a host that owns nothing is not stamped");
+        assert!(chain.beats("here", 1001 + crate::lease::BEAT_EVERY + crate::lease::LEASE));
+        assert!(!chain.beats("here", 1002 + crate::lease::BEAT_EVERY + crate::lease::LEASE));
+        assert!(!chain.beats("elsewhere", 5000));
     }
 
     /// A candidate whose commit declares a fast gate and a slow gate: its own

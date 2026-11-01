@@ -1339,3 +1339,102 @@ fn a_record_past_arg_max_is_written_and_drops_the_candidates_nothing_holds() {
     let history = world.remote(&["rev-list", "refs/convoy/candidates/main"]);
     assert!(history.lines().any(|sha| sha == seeded), "the seeded record stays reachable");
 }
+
+/// `land --issue n` in `dir` with its clock at `now`.
+fn start_at(world: &World, dir: &Path, n: u64, now: u64) -> Child {
+    world
+        .command(env!("CARGO_BIN_EXE_afkconvoy"), dir)
+        .env("XDG_CACHE_HOME", world.cache())
+        .env("AFKCONVOY_ISSUE", n.to_string())
+        .args(["land", "--issue", &n.to_string(), "--now", &now.to_string()])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .unwrap()
+}
+
+fn candidate_of(world: &World, issue: u64) -> Value {
+    let state = chain(world);
+    let rows = state["candidates"].as_array().unwrap();
+    rows.iter().find(|c| c["issue"] == issue).cloned().unwrap_or(Value::Null)
+}
+
+/// The Offices-MBP case (sunfmin/control#400): a host whose turn holds a
+/// candidate goes quiet — its lid closed, here its turn stopped — and its
+/// gate with it. While a fleet heartbeat of it is within the lease it is
+/// left alone; past the lease, the next turn here takes its candidate over,
+/// cancels the candidate behind it and stops that one's gate, and is
+/// assigned one of its own. When the quiet host comes back, its turn finds
+/// its candidate taken, stops its own gate, and answers cancelled.
+#[test]
+fn a_quiet_hosts_candidate_is_taken_over_past_the_lease_and_its_turn_learns_it_on_waking() {
+    use afkconvoy_core::lease::LEASE;
+    let world = world(2);
+    let (a, _) = worker(&world, 1, "a");
+    let (b, _) = worker(&world, 2, "b");
+    let (c, _) = worker(&world, 3, "c");
+    let base = world.remote(&["rev-parse", "refs/heads/main"]);
+    let _runner = world.host_held();
+    // A turn reads its host's name once, as it starts: this one is on "far".
+    let here = world.checkout_list()["settings"].clone();
+    let mut far_settings = here.clone();
+    far_settings["host_name"] = json!("far");
+    world.say_host_settings(far_settings);
+    let far = start(&world, &a, &world.cache(), 1);
+    began(&world, "a");
+    assert_eq!(candidate_of(&world, 1)["owner"]["host"], "far");
+    assert!(chain(&world)["heartbeats"]["far"].is_u64(), "its turn said it was alive");
+    world.say_host_settings(here);
+    let asleep = Held::stop(&far);
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+    let beat = (now + 1000).to_string();
+    world.afk(&["heartbeat", "--instance", "farfleet", "--host", "far", "--now", &beat]).ok();
+
+    // The chain heard nothing of it for longer than the lease, but its fleet
+    // beat within it: it is alive, and a turn here lines up behind it.
+    let behind = start_at(&world, &b, 2, now + LEASE + 100);
+    began(&world, "b");
+    let first = candidate_of(&world, 1);
+    assert_eq!(
+        (first["phase"].clone(), first["cancelled_by"].clone()),
+        (json!("validating"), Value::Null)
+    );
+    assert_eq!(candidate_of(&world, 2)["predecessor"], first["commit"]);
+
+    // Past the lease on both counts: it is dead.
+    let next = start_at(&world, &c, 3, now + 1001 + 2 * LEASE);
+    until(|| candidate_of(&world, 3)["phase"] == "validating");
+    let first = candidate_of(&world, 1);
+    assert_eq!(
+        (first["phase"].clone(), first["cause"].clone(), first["abandoned"].clone()),
+        (json!("cancelled"), json!("owner_died"), json!(true)),
+        "{first}"
+    );
+    assert_eq!(first["stopped"], false, "nobody here confirmed its processes gone");
+    assert_eq!(candidate_of(&world, 3)["predecessor"], json!(base));
+    let cancelled = finish(behind);
+    assert_eq!(
+        (cancelled["outcome"].clone(), cancelled["cancelled_by"].clone()),
+        (json!("cancelled"), first["id"].clone()),
+        "the candidate behind it cancels as behind any failed predecessor: {cancelled}"
+    );
+    gone(&world, "b");
+    release(&world, "c", false);
+    assert_eq!(finish(next)["outcome"], "merged");
+
+    // The far host wakes.
+    drop(asleep);
+    let woke = finish(far);
+    assert_eq!(
+        (woke["outcome"].clone(), woke["cause"].clone()),
+        (json!("cancelled"), json!("owner_died")),
+        "{woke}"
+    );
+    assert!(
+        woke["detail"].as_str().unwrap().contains("another host took this candidate over"),
+        "{woke}"
+    );
+    gone(&world, "a");
+    assert_eq!(candidate_of(&world, 1)["stopped"], true, "its own host confirmed them gone");
+    assert!(!world.root.join("release-a").exists(), "gate a was stopped, never released");
+}
