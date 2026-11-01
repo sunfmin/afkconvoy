@@ -179,6 +179,64 @@ fn a_landing_workers_turn_wait_retires_health_without_an_operator_finding() {
 }
 
 #[test]
+fn new_work_restores_health_after_a_landing_turn_wait() {
+    let world = gated();
+    world.say_concurrency(&world.clone, 3);
+    let dir = worktree(&world);
+    let git_dir = PathBuf::from(git(&dir, &["rev-parse", "--absolute-git-dir"]));
+    let note = git_dir.join("convoy-turn.json");
+    for action in ["tell", "continue", "dispatch"] {
+        std::fs::write(&note, json!({"outcome": "round_red", "at": 1700}).to_string()).unwrap();
+        if action == "tell" {
+            world.with_orca(|orca| orca["notes"] = json!("queued"));
+            world.afk(&["tell", "7", "--text", "Please revise the change", "--host", "h1"]).error();
+            assert!(note.exists(), "an undelivered instruction changes nothing");
+            world.with_orca(|orca| orca["notes"] = json!("taken"));
+            world.afk(&["tell", "7", "--text", "Please revise the change", "--host", "h1"]).ok();
+        } else {
+            let mut args = vec![
+                "dispatch",
+                "--issue",
+                "7",
+                "--instance",
+                "alpha",
+                "--host",
+                "h1",
+                "--now",
+                "1800",
+            ];
+            if action == "dispatch" {
+                args.extend(["--start", "fresh"]);
+            }
+            world.afk(&args).ok();
+        }
+        assert!(!note.exists(), "{action} forgets the previous turn's wait");
+        world.with_orca(|orca| {
+            for terminal in orca["terminals"].as_array_mut().unwrap() {
+                terminal["agent"] = json!({"state": "done", "stateStartedAt": 1_850_000});
+                terminal["lastOutputAt"] = json!(1_850_000);
+            }
+        });
+        tick(&world, 2200);
+        tick(&world, 2500);
+        let doctor = world.afk(&["doctor", "--all", "--now", "2500"]).json;
+        let workers = &doctor["host"]["host_kit"]["worker_health"]["workers"];
+        assert!(
+            workers
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|w| { w["path"] == json!(dir) && w["action"] == "waiting for operator" }),
+            "{action}: {workers}"
+        );
+        assert!(
+            doctor["findings"].as_array().unwrap().iter().any(|f| { f["kind"] == "worker_health" }),
+            "{action}: {doctor}"
+        );
+    }
+}
+
+#[test]
 fn landing_retires_existing_health_even_when_its_recovery_window_has_expired() {
     for (waiting, next_tick, broken_gitdir) in
         [(false, 1400, false), (true, 2200, false), (true, 5000, true)]
