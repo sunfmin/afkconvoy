@@ -417,9 +417,10 @@ fn settling_waits_for_a_finishing_worker_then_leaves_without_a_failed_tick() {
         "--second-ms",
         "0",
     ]);
-    assert!(lines.iter().any(|line| line.contains("left #391")), "{lines:?}");
+    // A new run has no previous tick to attribute an outside closure to.
+    assert!(lines.iter().any(|line| line.contains("settled #391")), "{lines:?}");
     let doctor = world.afk(&["doctor", "--host", "h1", "--now", "1180"]).json;
-    assert!(doctor["fleet"]["last_tick"]["line"].as_str().unwrap().contains("left #391"));
+    assert!(doctor["fleet"]["last_tick"]["line"].as_str().unwrap().contains("settled #391"));
     assert!(session.ended());
     assert!(!worktree.exists(), "once it stopped, the next tick ends it and removes the worktree");
     assert_eq!(world.claims(), []);
