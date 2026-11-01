@@ -9,6 +9,7 @@
 use flux_rs::attrs::*;
 
 mod data;
+mod rewrite;
 pub use data::{Gate, Host, Record, SCHEMA_VERSION, Worker, read, render};
 
 use crate::gate::GATE;
