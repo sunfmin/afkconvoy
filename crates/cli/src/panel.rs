@@ -1749,6 +1749,7 @@ mod tests {
             kit: Ok(Kit::default()),
             worker_health: Ok(crate::health::Health::default()),
             watch: serde_json::json!({}),
+            asking: serde_json::json!({}),
             paused: vec![],
         }
     }

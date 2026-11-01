@@ -189,7 +189,7 @@ fn two_conditions_share_one_session_and_are_delivered_one_at_a_time() {
     assert_eq!(terminal["worktreePath"], json!(dir));
     assert_eq!(terminal["sent"].as_array().unwrap().len(), 1);
     let brief = asking_brief(&world);
-    assert!(brief.contains(&first["current"]["question"]["condition"].as_str().unwrap()));
+    assert!(brief.contains(first["current"]["question"]["condition"].as_str().unwrap()));
     assert!(brief.contains("https://gh/c/2000"));
     assert!(brief.contains("1 more questions wait"));
     let push = push_text(&brief);
