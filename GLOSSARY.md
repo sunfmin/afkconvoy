@@ -10,7 +10,7 @@ _Avoid_: machine (the hardware every host on it shares)
 
 **Fleet instance**:
 One repo's fleet in its host's host runner, and everything it owns: the workers it started and the claims it holds, under an id minted when it starts. One host runs at most one per repo.
-_Avoid_: launcher, coordinator, node, process (the host runner is the process)
+_Avoid_: launcher, coordinator, node (the Node executable), process (the host runner is the process)
 
 **Host runner**:
 A host's one long-running process of the fleet, holding a fleet instance for each checkout on its host's checkout list. `run` starts it in the background where none runs, and adds its checkout to it either way. `stop` takes one checkout off its list, and `stop --all`, or SIGTERM, stops it and keeps the list. Once a newer release is installed where it was started from, it moves onto it by itself between ticks once no exclusive command runs, on the same list, with its workers and work carried over.
