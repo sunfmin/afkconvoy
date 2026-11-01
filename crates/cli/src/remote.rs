@@ -355,9 +355,21 @@ impl Remote {
     /// Lists `patterns` on the remote now, and keeps the answer.
     fn ask(&self, patterns: &[&str]) -> Result<Vec<RemoteRecord>> {
         let shared = self.shared();
-        let records: Vec<RemoteRecord> = shared
-            .wire
-            .list(&self.repo.dir, patterns)?
+        let mut attempts = 1;
+        let listed = loop {
+            match shared.wire.list(&self.repo.dir, patterns) {
+                Ok(listed) => break listed,
+                Err(error) if !connection_failure(&format!("{error:#}")) => return Err(error),
+                Err(error) if attempts == LIST_ATTEMPTS => {
+                    return Err(anyhow!(
+                        "remote ref read failed after {attempts} attempts: {error:#}"
+                    ));
+                }
+                Err(_) => std::thread::sleep(BETWEEN_LIST_ATTEMPTS),
+            }
+            attempts += 1;
+        };
+        let records: Vec<RemoteRecord> = listed
             .into_iter()
             .map(|(name, sha)| RemoteRecord { name, sha, subject: String::new() })
             .collect();
@@ -365,6 +377,30 @@ impl Remote {
         Ok(records)
     }
 }
+
+/// A read changes nothing on the remote, so a failure in transit is safe to
+/// ask again. Any answer from the remote itself fails at once.
+fn connection_failure(said: &str) -> bool {
+    let said = said.to_ascii_lowercase();
+    [
+        "tls connect error",
+        "unexpected eof",
+        "ssl_error_syscall",
+        "connection reset",
+        "connection refused",
+        "could not resolve host",
+        "timeout",
+        "timed out",
+    ]
+    .iter()
+    .any(|mark| said.contains(mark))
+}
+
+const LIST_ATTEMPTS: usize = 3;
+#[cfg(not(test))]
+const BETWEEN_LIST_ATTEMPTS: Duration = Duration::from_secs(5);
+#[cfg(test)]
+const BETWEEN_LIST_ATTEMPTS: Duration = Duration::ZERO;
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -723,6 +759,29 @@ mod tests {
         assert!(error.contains("3 attempts"), "{error}");
         assert!(error.contains("SSL_ERROR_SYSCALL"), "{error}");
         assert_eq!(fake.lists(), 3);
+    }
+
+    #[test]
+    fn only_connection_failures_are_read_again() {
+        for said in [
+            "TLS connect error",
+            "unexpected EOF",
+            "SSL_ERROR_SYSCALL",
+            "Connection reset by peer",
+            "Connection refused",
+            "Could not resolve host",
+            "Operation timed out",
+            "TLS handshake timeout",
+        ] {
+            assert!(connection_failure(said), "{said}");
+        }
+        for said in [
+            "Authentication failed",
+            "Repository not found",
+            "The requested URL returned error: 403",
+        ] {
+            assert!(!connection_failure(said), "{said}");
+        }
     }
 
     #[test]
