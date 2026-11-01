@@ -119,10 +119,16 @@ pub(crate) fn position(team: &Team, workflow: &Workflow, position: Position) -> 
         }
         _ => None,
     };
+    // Landing has left the workflow's stages. Its new waiting positions
+    // name `land` for the declaration they need; ordinary landing keeps
+    // its existing stage-less answer.
+    let stage = match position {
+        Position::LandingParked | Position::LandingEscalating => Some(afkconvoy_core::team::LAND),
+        _ => position.stage().map(|stage| stage.name.as_str()),
+    };
     json!({
         "is": is,
-        "stage": if position.landing() { Some(afkconvoy_core::team::LAND) }
-            else { position.stage().map(|stage| stage.name.as_str()) },
+        "stage": stage,
         "by": by,
         "do": worker.map(|work| work.skill.as_str()),
         "harness": harness,
