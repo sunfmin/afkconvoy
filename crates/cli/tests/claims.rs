@@ -1,5 +1,6 @@
 use crate::common;
 
+use afkconvoy_core::lease::BEAT_EVERY;
 use common::{World, git};
 use serde_json::json;
 
@@ -64,25 +65,27 @@ fn a_claim_is_never_on_the_remote_ahead_of_its_owners_heartbeat() {
     assert_eq!(world.afk(&["scan"]).ok()["heartbeats"], json!({"alpha": 1000}));
 
     // not due: a third of the lease has not passed
-    claim(&world, "8", "alpha", "2500");
+    claim(&world, "8", "alpha", &(1000 + BEAT_EVERY).to_string());
     assert_eq!(world.pushes().len(), 5, "{:?}", world.pushes());
     // due again
-    claim(&world, "9", "alpha", "2501");
+    let due = 1001 + BEAT_EVERY;
+    claim(&world, "9", "alpha", &due.to_string());
     assert_eq!(
         world.pushes()[5..],
         ["refs/convoy/target/9", "refs/convoy/heartbeat/alpha", "refs/convoy/claim/9"]
     );
-    assert_eq!(world.afk(&["scan"]).ok()["heartbeats"], json!({"alpha": 2501}));
+    assert_eq!(world.afk(&["scan"]).ok()["heartbeats"], json!({"alpha": due}));
 }
 
 #[test]
 fn heartbeat_refreshes_only_when_due() {
     let world = World::new();
     let beat = |now: &str| world.afk(&["heartbeat", "--instance", "alpha", "--now", now]).ok();
+    let (not_due, due) = ((1000 + BEAT_EVERY).to_string(), (1001 + BEAT_EVERY).to_string());
     assert_eq!(beat("1000")["refreshed"], true);
-    assert_eq!(beat("2000")["refreshed"], false);
-    assert_eq!(beat("2000")["ts"], 1000);
-    assert_eq!(beat("2501")["refreshed"], true);
+    assert_eq!(beat(&not_due)["refreshed"], false);
+    assert_eq!(beat(&not_due)["ts"], 1000);
+    assert_eq!(beat(&due)["refreshed"], true);
 }
 
 #[test]
