@@ -489,7 +489,7 @@ fn brief(_session: &Session, question: &Queued, pending: &[Queued]) -> Result<St
     if question.withdrawn {
         let push = host_watch::asking_push(&format!("Withdrawn: {}", entry.human.question), 0);
         return Ok(format!(
-            "{push}\n\n# A question withdrawn by the host runner\n\nThe condition `{}` recovered after this question was delivered. The question is withdrawn: do not investigate, act, or report it settled. Your last message is exactly the one-line withdrawal above, then return to interactive input and await the next question. Do not exit, poll or sleep.\n",
+            "{push}\n\n# A question withdrawn by the host runner\n\nThe condition `{}` recovered after this question was delivered. The question is withdrawn: do not investigate, act, or report it settled. Your last message is exactly the one-line withdrawal shown here, then return to interactive input and await the next question. Do not exit, poll or sleep.\n\n```text\n{push}\n```\n",
             entry.condition
         ));
     }
