@@ -8,6 +8,10 @@ use flux_rs::attrs::*;
 use crate::team::{Consult, Pass, Performer, Stage, Work, Workflow};
 use crate::verdict::Phase;
 
+/// Why a landing worker hands its issue to a human.
+pub const LANDING_ESCALATION: &str =
+    "the landing worker declared `escalate`, which it hands to a human";
+
 /// What ends a stage or answers an escalation: a stage or consult verdict, or
 /// a ruling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -230,6 +234,13 @@ pub enum Position<'w> {
     /// Its last stage passed to the landing train.
     #[variant(Position[false, 0, 0])]
     Landing,
+    /// Landing waits on the issues its worker named; closing them resumes
+    /// landing, without performing a stage again.
+    #[variant(Position[false, 0, 0])]
+    LandingParked,
+    /// Landing was handed to a human. Their ruling resumes landing.
+    #[variant(Position[false, 0, 0])]
+    LandingEscalating,
     /// Nothing more to do.
     #[variant(Position[false, 0, 0])]
     Ended,
@@ -239,6 +250,11 @@ pub enum Position<'w> {
 }
 
 impl<'w> Position<'w> {
+    /// Whether the issue has reached landing, including a wait declared there.
+    pub fn landing(self) -> bool {
+        matches!(self, Position::Landing | Position::LandingParked | Position::LandingEscalating)
+    }
+
     /// The stage the issue is at; `None` once it has left its stages.
     #[spec(fn(Position[@p]) -> Option<&Stage{v: p.at_stage && v.n == p.n && v.roles == p.roles}>)]
     pub fn stage(self) -> Option<&'w Stage> {
@@ -249,7 +265,10 @@ impl<'w> Position<'w> {
             | Position::Parked(stage)
             | Position::ParkedForEvidence(stage)
             | Position::Escalating(stage, _) => Some(stage),
-            Position::Landing | Position::Ended => None,
+            Position::Landing
+            | Position::LandingParked
+            | Position::LandingEscalating
+            | Position::Ended => None,
         }
     }
 
@@ -415,6 +434,8 @@ impl<'w> Place<'w> {
             | Position::ParkedForEvidence(_)
             | Position::Escalating(..)
             | Position::Landing
+            | Position::LandingParked
+            | Position::LandingEscalating
             | Position::Ended => self.position,
         };
         Place { position, ..self }
@@ -487,6 +508,8 @@ impl<'w> Place<'w> {
             Position::ParkedForEvidence(_)
             | Position::Escalating(..)
             | Position::Landing
+            | Position::LandingParked
+            | Position::LandingEscalating
             | Position::Ended => self.position,
         };
         Place { position, ..self }
@@ -506,6 +529,8 @@ impl<'w> Place<'w> {
             Position::ParkedForEvidence(_)
             | Position::Escalating(..)
             | Position::Landing
+            | Position::LandingParked
+            | Position::LandingEscalating
             | Position::Ended => self.position,
         };
         Place { position, ..self }
@@ -569,6 +594,8 @@ impl<'w> Place<'w> {
             Position::ParkedForEvidence(_)
             | Position::Escalating(..)
             | Position::Landing
+            | Position::LandingParked
+            | Position::LandingEscalating
             | Position::Ended => self.position,
         };
         Place { position, ..self }
@@ -579,7 +606,21 @@ impl<'w> Place<'w> {
     fn valid(&self, declared: Declared) -> Option<Place<'w>> {
         let mut next = self.clone();
         next.position = match (self.position, declared) {
-            (Position::ParkedForEvidence(_) | Position::Landing | Position::Ended, _) => {
+            (Position::Landing | Position::LandingParked, Declared::Blocked) => {
+                Position::LandingParked
+            }
+            (Position::Landing | Position::LandingParked, Declared::Escalate) => {
+                Position::LandingEscalating
+            }
+            (Position::LandingEscalating, Declared::Ruling) => Position::Landing,
+            (
+                Position::ParkedForEvidence(_)
+                | Position::Landing
+                | Position::LandingParked
+                | Position::LandingEscalating
+                | Position::Ended,
+                _,
+            ) => {
                 return None;
             }
             // A ruling on an escalated issue is a human's.
@@ -700,6 +741,8 @@ mod tests {
             Position::ParkedForEvidence(stage) => format!("parked for evidence at {}", stage.name),
             Position::Parked(stage) => format!("parked at {}", stage.name),
             Position::Landing => "landing".to_string(),
+            Position::LandingParked => "parked at land".to_string(),
+            Position::LandingEscalating => "escalating at land".to_string(),
             Position::Ended => "ended".to_string(),
             Position::Escalating(stage, reason) => {
                 format!("escalating at {}: {reason:?}", stage.name)
@@ -757,9 +800,8 @@ mod tests {
         );
         // A consult rules or lets the escalation through, and nothing else.
         assert_eq!(at(&team, &[Pass, Escalate, Pass]), "escalating at build: NoValidVerdict");
-        // Nothing is declared on an issue that has left its stages or waits
-        // for a ruling: it stays where it is, and why.
-        for left in [&[AlreadySatisfied][..], &[Pass, Pass, Pass, Pass], &[Escalate]] {
+        // An ended issue, or one waiting for a ruling, stays where it is.
+        for left in [&[AlreadySatisfied][..], &[Escalate]] {
             let place = position(workflow, left);
             for declared in Declared::ALL.into_iter().filter(|declared| *declared != Ruling) {
                 assert!(!place.takes(declared), "{left:?} then {declared:?}");
@@ -767,6 +809,25 @@ mod tests {
             }
         }
         assert!(!position(workflow, &[AlreadySatisfied]).takes(Ruling));
+    }
+
+    #[test]
+    fn landing_parks_or_escalates_without_returning_to_a_stage() {
+        let team = one(FEATURE);
+        let workflow = team.workflow("feature").unwrap();
+        let landing = position(workflow, &[Pass, Pass, Pass, Pass]);
+        for declared in Declared::ALL {
+            assert_eq!(landing.takes(declared), matches!(declared, Blocked | Escalate));
+            if !matches!(declared, Blocked | Escalate) {
+                assert_eq!(landing.clone().after(declared), landing);
+            }
+        }
+        let parked = landing.clone().after(Blocked);
+        assert_eq!(parked.position, Position::LandingParked);
+        assert!(parked.position.stage().is_none());
+        let escalated = parked.after(Escalate);
+        assert_eq!(escalated.position, Position::LandingEscalating);
+        assert_eq!(escalated.after(Ruling), landing);
     }
 
     #[test]
