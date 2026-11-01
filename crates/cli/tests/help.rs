@@ -1104,7 +1104,8 @@ fn the_guide_and_each_subcommand_agree_on_who_runs_it_and_why() {
             "over",
             "exclusive",
             "cut",
-            "watched"
+            "watched",
+            "asked"
         ])
     );
     for command in &workers {

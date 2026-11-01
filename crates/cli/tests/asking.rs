@@ -218,6 +218,25 @@ fn two_conditions_share_one_session_and_are_delivered_one_at_a_time() {
     let panel = String::from_utf8(panel.stdout).unwrap();
     assert!(panel.contains("data-asking=\"session\""), "{panel}");
     assert!(panel.contains("Approve the account spend?"), "{panel}");
+    for args in [["run", "--help"].as_slice(), ["help", "humans"].as_slice()] {
+        let help = world
+            .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
+            .args(args)
+            .output()
+            .unwrap();
+        let help = String::from_utf8(help.stdout).unwrap();
+        assert!(help.contains("afkconvoy asks"), "{help}");
+        assert!(help.contains("180"), "{help}");
+    }
+    settle(&world, "settled");
+    until(&world, "resident standby after every question settled", || {
+        (asking_state(&world)["current"].is_null()
+            && world.afk(&["doctor"]).json["host"]["asking"]["status"] == "standby")
+            .then_some(())
+    });
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(asking_terminal(&world)["sent"].as_array().unwrap().len(), 2);
+    assert_eq!(asking_creates(&world), 1);
 }
 
 #[test]
@@ -335,6 +354,43 @@ fn a_condition_recovered_after_delivery_is_told_as_withdrawn() {
     assert!(push_text(&asking_brief(&world)).starts_with("Withdrawn: Approve this account?"));
     until(&world, "withdrawn question cleared", || {
         asking_state(&world)["current"].is_null().then_some(())
+    });
+    assert_eq!(asking_creates(&world), 1);
+}
+
+#[test]
+fn a_question_put_aside_stays_pending_and_does_not_hold_back_the_next() {
+    let world = World::new();
+    let _dir = two_conditions(&world);
+    let watch = until(&world, "watch", || watch_running(&world));
+    let (wait, host) = conditions(&watch);
+    report_humans(
+        &world,
+        &watch,
+        json!([
+            {"condition": wait, "question": "Decide later?", "answer": "first answer"},
+            {"condition": host, "question": "Decide now?", "answer": "second answer"}
+        ]),
+    );
+    until(&world, "first question", || {
+        (asking_state(&world)["current"]["delivered"] == true).then_some(())
+    });
+    settle(&world, "aside");
+    until(&world, "next question after put aside", || {
+        let current = asking_state(&world)["current"].clone();
+        (current["question"]["human"]["question"] == "Decide now?" && current["delivered"] == true)
+            .then_some(())
+    });
+    let state = asking_state(&world);
+    assert_eq!(state["pending"].as_array().unwrap().len(), 1);
+    assert_eq!(state["pending"][0]["aside"], true);
+    assert_eq!(state["pending"][0]["question"]["human"]["question"], "Decide later?");
+    assert!(asking_brief(&world).contains("Decide later?"));
+    settle(&world, "settled");
+    until(&world, "only the put-aside question left", || {
+        (asking_state(&world)["current"].is_null()
+            && asking_state(&world)["pending"].as_array().unwrap().len() == 1)
+            .then_some(())
     });
     assert_eq!(asking_creates(&world), 1);
 }

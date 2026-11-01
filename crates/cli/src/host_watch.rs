@@ -54,6 +54,8 @@ fn stock_instruction() -> String {
 
 Find what holds this host's fleets and their work back, fix it with the watch's authority,
 check that the work goes on, and say what you did.
+A resident session whose brief names it “afkconvoy asks” is not the stock watch:
+it only asks the human questions its brief carries and does no watch's work.
 Leave these with a human, never act on them, and list each in your report:
 {HUMAN_KINDS}
 "
