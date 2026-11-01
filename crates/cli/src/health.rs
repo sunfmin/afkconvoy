@@ -1249,6 +1249,48 @@ fn decide(
     observed.next_check =
         fleet.now.saturating_add(diagnosis.retry_after.unwrap_or(CHECK_SECONDS).max(1));
     match diagnosis.action {
+        Action::Nudge => {
+            if let Some(issue) = issue {
+                use afkconvoy_core::stopped::Silence;
+                match crate::judge::silence_of(
+                    fleet,
+                    issue,
+                    worktree,
+                    state,
+                    None,
+                    crate::judge::Look::Acting,
+                )? {
+                    Silence::Nudge(unnudged) => {
+                        let line = if fleet.config.bound.is_some() {
+                            afkconvoy_core::prompt::stage_nudge_line
+                        } else {
+                            afkconvoy_core::prompt::nudge_line
+                        };
+                        crate::judge::nudge_worker(worktree, unnudged, line, fleet.now)?;
+                        observed.action = "nudged".into();
+                        return Ok(());
+                    }
+                    Silence::Stalled(_) => {
+                        return wait_for_operator(
+                            observed,
+                            fleet.now,
+                            "worker is still short of its task after its nudge".into(),
+                            false,
+                        );
+                    }
+                    _ => {
+                        observed.action = "observing".into();
+                        return Ok(());
+                    }
+                }
+            }
+            return wait_for_operator(
+                observed,
+                fleet.now,
+                "worker is short of its task".into(),
+                false,
+            );
+        }
         Action::Complete => {
             observed.action = "complete".into();
             return Ok(());

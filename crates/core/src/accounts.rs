@@ -55,6 +55,8 @@ pub fn rows(issues: Vec<Issue>, start: Option<u64>, end: u64) -> (Vec<Row>, Vec<
 /// an account that cannot supply every measure is reported, never partly counted.
 pub struct Issue {
     pub number: u64,
+    /// Whether the issue has closed.
+    pub closed: bool,
     pub url: String,
     pub account: Result<Option<String>, String>,
 }
@@ -168,6 +170,46 @@ pub fn summarize(issues: Vec<Issue>, start: Option<u64>, end: u64) -> Report {
     }
 }
 
+/// Completed stage performances in closed issues' work accounts. Versioned
+/// records supply the duration and verdict; unknown or inconsistent facts
+/// do not become samples. Legacy records without these facts remain unknown.
+pub fn stage_durations(issues: &[Issue]) -> BTreeMap<String, Vec<u64>> {
+    let mut stages: BTreeMap<String, Vec<u64>> = BTreeMap::new();
+    for issue in issues.iter().filter(|issue| issue.closed) {
+        let Ok(Some(body)) = &issue.account else { continue };
+        let Ok(account) = account::read(body, issue.number) else { continue };
+        for worker in account.workers {
+            if worker.verdict.as_deref() != Some("pass") {
+                continue;
+            }
+            let (Some(stage), Some(start), Some(end), Some(seconds)) =
+                (worker.stage, worker.start, worker.end, worker.seconds)
+            else {
+                continue;
+            };
+            if seconds >= 60 && end.checked_sub(start) == Some(seconds) {
+                stages.entry(stage).or_default().push(seconds);
+            }
+        }
+    }
+    stages
+}
+
+/// A p95 needs at least twenty completed performances: otherwise its nearest
+/// rank is just the maximum and a single outlier sets the baseline.
+pub fn stage_baselines(issues: &[Issue]) -> BTreeMap<String, (u64, usize)> {
+    stage_durations(issues)
+        .into_iter()
+        .filter_map(|(stage, mut durations)| {
+            if durations.len() < 20 {
+                return None;
+            }
+            durations.sort_unstable();
+            Some((stage, (percentile(&durations, 95)?, durations.len())))
+        })
+        .collect()
+}
+
 fn sample(row: &Row) -> Result<Sample, String> {
     let account = &row.record;
     let start = account.start.ok_or("account start is unknown or invalid")?;
@@ -214,4 +256,34 @@ fn percentile(sorted: &[u64], p: usize) -> Option<u64> {
     let rank =
         (n / 100).saturating_mul(p).saturating_add((n % 100).saturating_mul(p).div_ceil(100));
     sorted.get(rank.checked_sub(1)?).copied()
+}
+
+#[cfg(test)]
+mod stage_tests {
+    use super::*;
+
+    fn issue(number: u64, closed: bool, seconds: u64, verdict: &str) -> Issue {
+        let end = 100 + seconds;
+        let body = format!(
+            "<!--convoy:account -->\n```json\n{}\n```",
+            serde_json::json!({
+                "schema_version": 1, "issue": number, "repo": null, "tracker": null,
+                "afkconvoy_version": null, "host": {"name": null, "cpu": null, "logical_cpus": null, "memory_bytes": null},
+                "start": 100, "end": end, "wall_seconds": seconds, "outcome": null,
+                "workers": [{"harness": "codex", "model": null, "role": null, "stage": "build", "claim": "c", "start": 100, "end": end, "seconds": seconds, "verdict": verdict}], "gates": []
+            })
+        );
+        Issue { number, closed, url: String::new(), account: Ok(Some(body)) }
+    }
+
+    #[test]
+    fn baselines_use_completed_passes_of_closed_issues_and_nearest_rank() {
+        let mut issues: Vec<_> = (0..19).map(|n| issue(n, true, 3600, "pass")).collect();
+        assert!(stage_baselines(&issues).is_empty());
+        issues.push(issue(20, true, 7200, "pass"));
+        issues.push(issue(21, false, 9000, "pass"));
+        issues.push(issue(22, true, 100, "escalate"));
+        issues.push(issue(23, true, 30, "pass"));
+        assert_eq!(stage_baselines(&issues).get("build"), Some(&(3600, 20)));
+    }
 }

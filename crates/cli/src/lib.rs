@@ -1186,7 +1186,7 @@ enum Command {
     ///
     /// It exits non-zero where any finding is critical, the host's or a checkout's, or a checkout could not be asked — printing the same object. Errors: the checkout list cannot be read.
     ///
-    /// The findings: a command the fleet needs is missing or logged out; orca cannot be asked, or does not know the checkout; the worker launch command of a harness the fleet could be asked for cannot start a worker — said with the harness and what calls for it; no `run` is alive and claims are held; the fleet instance of this checkout is broken — with why, since when and when the host runner starts it again; the same step failed in each of the last three ticks; the team has a fault at its head; a fleet lock stands on an issue that cannot be worked (all critical) — a step failed and has not recovered, including a worker that failed to start, with its error and the line to try again; a claim has no worker; a worker is silent with its claim still at work, as the tick judges it — its `fix` the command the tick runs next for it; the frontier is not empty, slots are free and the last tick started nobody; a flow label names no workflow of the team; an issue has been at a stage longer than any before it took; an issue is one rework from a breaker; a patrol is failed or full; an issue has waited for a human for more than an hour, its `fix` being the line that answers it; the gate is slow — with the host, the fixed duration budget when declared, the termination gate limit and the {const:SLOW_GATE_LANDINGS} runs, each a commit and its seconds, as `afkconvoy plan` has them, and the issue open for it when there is one; the host runner did not move onto the newer release installed where it was started from — it did not start, does not say its version, or waited past the release move limit — with the file, both releases and why, its `fix` that file's `--version` (all warning) — the repo's config names `concurrency`, which nothing reads any more — with the value it names and the concurrency in force: nothing is held up, even where the values differ. Its `fix` is deleting the key alone where the checkout says its own or the config names the number already in force; otherwise `afkconvoy run <checkout> --concurrency <value>` keeps the config's number on this host before deleting the key; the role or the team a stage in flight started under has moved since; and the repo's config declares no gate limit, so the gate has the default's {const:GATE_SECONDS} seconds before anything ends it: `fix` is the file and the key, `gate_seconds`; and a worktree on this host is kept with no claim on its issue — said with what it holds that the remote does not (uncommitted changes, commits only it has, or nothing), its `fix` the line that removes it, pushing first whatever only it holds (all info). A checkout that names a harness no worker of this checkout starts on is said with the checkout, the harness and why — the role holds no limits for that harness, or the harness cannot start — and no other harness is started in its place.
+    /// The findings: a command the fleet needs is missing or logged out; orca cannot be asked, or does not know the checkout; the worker launch command of a harness the fleet could be asked for cannot start a worker — said with the harness and what calls for it; no `run` is alive and claims are held; the fleet instance of this checkout is broken — with why, since when and when the host runner starts it again; the same step failed in each of the last three ticks; the team has a fault at its head; a fleet lock stands on an issue that cannot be worked (all critical) — a step failed and has not recovered, including a worker that failed to start, with its error and the line to try again; a claim has no worker; a worker is silent with its claim still at work, as the tick judges it — its `fix` the command the tick runs next for it; the frontier is not empty, slots are free and the last tick started nobody; a flow label names no workflow of the team; an issue has been at a stage longer than the repo's p95 for completed performances of that stage, or, with fewer than 20, longer than its own earlier record gaps of at least a minute; an issue is one rework from a breaker; a patrol is failed or full; an issue has waited for a human for more than an hour, its `fix` being the line that answers it; the gate is slow — with the host, the fixed duration budget when declared, the termination gate limit and the {const:SLOW_GATE_LANDINGS} runs, each a commit and its seconds, as `afkconvoy plan` has them, and the issue open for it when there is one; the host runner did not move onto the newer release installed where it was started from — it did not start, does not say its version, or waited past the release move limit — with the file, both releases and why, its `fix` that file's `--version` (all warning) — the repo's config names `concurrency`, which nothing reads any more — with the value it names and the concurrency in force: nothing is held up, even where the values differ. Its `fix` is deleting the key alone where the checkout says its own or the config names the number already in force; otherwise `afkconvoy run <checkout> --concurrency <value>` keeps the config's number on this host before deleting the key; the role or the team a stage in flight started under has moved since; and the repo's config declares no gate limit, so the gate has the default's {const:GATE_SECONDS} seconds before anything ends it: `fix` is the file and the key, `gate_seconds`; and a worktree on this host is kept with no claim on its issue — said with what it holds that the remote does not (uncommitted changes, commits only it has, or nothing), its `fix` the line that removes it, pushing first whatever only it holds (all info). A checkout that names a harness no worker of this checkout starts on is said with the checkout, the harness and why — the role holds no limits for that harness, or the harness cannot start — and no other harness is started in its place.
     ///
     /// Moved: the role's directory holds something else at the head of its repo than at the commit the stage started under — a file added, removed or changed. A new commit is not it: in a repo of several roles a push gives every role a new commit, and moves the ones whose directory it changed. The team has moved when its directory has, without what a worker is not given of it: the directories of its roles, and the .claude/ at its top. So a push that changes only a role moves no team, one that changes only the team's rules — the CLAUDE.md at its top, which every worker is given — moves the team, and one that changes a workflow moves no role. A role in a repo of its own moves with every push that changes a file there. The two are compared in the copies this host keeps (copies/ under the cache directory); where the one the stage started under is no longer there, a different commit is all there is to go by, and it is said to have moved. `evidence` gives both commits.
     ///
@@ -2912,7 +2912,7 @@ enum Command {
     ///
     /// ## When to run it
     ///
-    /// Never by hand. It is the guard: the check made before each thing a worker of a bound repo does, refusing what no worker may do and what its stage may not. Read this to learn what a worker is refused, or why one was.
+    /// Never by hand. Every worker and the watch ask it before each tool call. Outside a bound stage, --terminal-input-only checks input to the asking Terminal without requiring stage facts. Bound workers also check what their stage may not do. Read this to learn what a worker is refused, or why one was.
     ///
     /// ## Who runs it
     ///
@@ -2940,6 +2940,7 @@ enum Command {
     ///
     /// Refused for every worker:
     ///
+    /// - input to the asking session's Terminal (`orca terminal send`, including raw text, Enter, interrupts and retried prompts). The current handle comes from the asking launch journal, never its title or directory. The host runner's own deliveries run outside worker hooks; the asking session itself is exempt by its runtime Terminal identity. Input to another Terminal is unchanged.
     /// - adding or removing a flow label, a `stage:` label, the escalate label or the lock label (`gh issue edit --add-label`, `--remove-label`, `gh issue create --label`, and any write of an issue's labels through `gh api`)
     /// - writing a stage record by hand: only `afkconvoy verdict` writes one
     /// - writing an intake record by hand: only `afkconvoy intake` writes one, and it is what puts a flow label on for a worker
@@ -2973,9 +2974,13 @@ enum Command {
     /// - Heredoc bodies and quoted arguments are data, not commands: a report may name `rm` or `git worktree remove`, and a read-only `gh` call may search for stage or intake records with `--jq` or `--template`. Sending a handwritten record through a writing `gh` call is still refused, including through a heredoc. The argument after `sh -c` or `bash -c` is executable shell text and is judged as commands.
     /// - It recognises commands. The same act wrapped in a script, hidden in a variable or in a substitution inside quotes gets past it: it stops a worker that errs, not one that means to get by.
     /// - What it misses is checked after the stage: a commit left on the branch by a stage marked `writes: false`, or by a consult, is a failure, and the issue escalates; a patrol's final commit not on the base branch, working-tree changes, or a PR is a failed run, reported to a human — see `afkconvoy tick --help`.
-    /// - An unbound repo's workers have no guard: their worker launch command is opaque.
+    /// - Unbound workers and the watch carry only the asking Terminal input guard. The opaque launch command stays intact; the harness adds its hook, extension or plugin. The asking session starts without this guard.
     #[command(next_help_heading = HOOK, verbatim_doc_comment)]
-    Guard,
+    Guard {
+        /// Check only asking Terminal input, outside a bound stage
+        #[arg(long)]
+        terminal_input_only: bool,
+    },
     /// Start a fresh worker on one issue
     ///
     /// ## When to run it
@@ -4393,8 +4398,8 @@ pub fn main(args: impl IntoIterator<Item = OsString>) -> ExitCode {
             return fail(2, &said);
         }
     };
-    if matches!(cli.command, Command::Guard) {
-        return guard::guard();
+    if let Command::Guard { terminal_input_only } = cli.command {
+        return guard::guard(terminal_input_only);
     }
     if let Command::Help { name } = &cli.command {
         return match help(name.as_deref()) {
@@ -4925,7 +4930,7 @@ fn run(
             cut::run(&repo, &config, from, &host, second, clock)
         }
         // `main` answers it: a hook's answer is no JSON object.
-        Command::Guard => anyhow::bail!("guard answers with its exit code"),
+        Command::Guard { .. } => anyhow::bail!("guard answers with its exit code"),
         Command::Exclusive { .. } => {
             anyhow::bail!("exclusive answers with its command's exit code")
         }

@@ -969,7 +969,7 @@ fn an_issue_long_at_its_stage_and_one_rework_from_its_breaker_are_findings() {
         format!("afkconvoy show -C {} --issue 3", quoted(&world)),
         "{answer}"
     );
-    assert_eq!(found(&answer, "longer than any stage").len(), 0, "100s in: {answer}");
+    assert_eq!(found(&answer, "longer than its baseline").len(), 0, "100s in: {answer}");
 
     // an hour on, it has been at `build` longer than the 10m `build` took before
     let answer = doctor(&world, "5200").ok();
