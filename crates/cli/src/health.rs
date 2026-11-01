@@ -4,7 +4,7 @@
 //! Health is host-local evidence, never another preference. Only kit order
 //! chooses successors.
 use std::fs::OpenOptions;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use afkconvoy_core::harness::Harness;
 use afkconvoy_core::plan::{Status, WorkingSet};
@@ -314,6 +314,7 @@ pub fn show() -> Result<Health, String> {
     let workers = book
         .workers
         .into_iter()
+        .filter(|observed| !waiting_on_turn(&observed.path))
         .map(|observed| {
             // The since is the worktree's stamp, read here. The observation
             // keeps none: a copy cleared when the turn opened disagreed with it.
@@ -326,7 +327,11 @@ pub fn show() -> Result<Health, String> {
     Ok(Health {
         workers,
         faults: book.faults,
-        observations_failed: book.observations_failed,
+        observations_failed: book
+            .observations_failed
+            .into_iter()
+            .filter(|failed| !waiting_on_turn(&failed.path))
+            .collect(),
         observe_seconds: OBSERVE_SECONDS,
         check_seconds: CHECK_SECONDS,
         max_rate_retries: MAX_RATE_RETRIES,
@@ -349,10 +354,19 @@ pub fn json(shown: &Result<Health, String>) -> Value {
 /// The workers whose health check is waiting for the operator, each with
 /// the reason, the last line its screen showed and its fix, for `doctor`.
 pub fn waiting_for_operator() -> Vec<OperatorWait> {
-    let Ok(book) = read() else { return vec![] };
+    let Ok(health) = show() else { return vec![] };
     let keyed =
         crate::host_settings::of_host().is_ok_and(|settings| settings.jev_key_command.is_some());
-    book.workers.iter().filter_map(|worker| worker.operator_wait(keyed)).collect()
+    health.workers.iter().filter_map(|worker| worker.observed.operator_wait(keyed)).collect()
+}
+
+/// A landing worker obeying its turn waits on no person. An unreadable note
+/// grants no exemption; a new worker or delivered instruction forgets it.
+fn waiting_on_turn(path: &Path) -> bool {
+    let worktree = Worktree::at(path.to_path_buf(), String::new());
+    crate::turn_answer::read(&worktree).is_ok_and(|answered| {
+        matches!(answered, afkconvoy_core::landing_worker::Answered::Asking) || answered.waits()
+    })
 }
 
 /// Whether the host kit's paused list or its worker-health faults leave no
@@ -634,9 +648,9 @@ fn probe_due(book: &mut Book, kit: &Kit, now: u64) {
     });
 }
 
-/// Observe this fleet's workers and retire evidence of ended workers across
-/// the host, including casters without a claim. An unreadable runtime keeps
-/// its evidence. Account/model faults survive the workers that proved them.
+/// Observe this fleet's workers and retire evidence of ended workers or
+/// landing workers obeying a turn's wait, across the host. An unreadable
+/// runtime keeps its evidence. Account/model faults survive their workers.
 pub fn reconcile(
     fleet: &mut Fleet,
     me: &Me,
@@ -665,16 +679,17 @@ pub fn reconcile(
         .map(|worker| worker.path.clone())
         .chain(book.observations_failed.iter().map(|failed| failed.path.clone()))
         .collect();
-    let gone: std::collections::BTreeSet<_> = paths
+    let retired: std::collections::BTreeSet<_> = paths
         .into_iter()
         .filter(|path| {
-            Worktree::at(path.clone(), String::new())
-                .state(fleet.now)
-                .is_ok_and(|state| state == WorkerState::Gone)
+            waiting_on_turn(path)
+                || Worktree::at(path.clone(), String::new())
+                    .state(fleet.now)
+                    .is_ok_and(|state| state == WorkerState::Gone)
         })
         .collect();
-    book.workers.retain(|worker| !gone.contains(&worker.path));
-    book.observations_failed.retain(|failed| !gone.contains(&failed.path));
+    book.workers.retain(|worker| !retired.contains(&worker.path));
+    book.observations_failed.retain(|failed| !retired.contains(&failed.path));
     let kit = crate::kit::load()?;
     probe_due(&mut book, &kit, fleet.now);
     store(&book)?;
@@ -708,6 +723,9 @@ pub fn reconcile(
         let Some(worktree) = Worktree::of_issue(&source, claim.number)? else {
             continue;
         };
+        if waiting_on_turn(&worktree.path) {
+            continue;
+        }
         let state = match worktree.state(fleet.now) {
             Ok(state) => state,
             Err(_) => continue,
@@ -1446,6 +1464,29 @@ fn decide(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_running_turn_and_every_wait_exempt_health_but_repairs_do_not() {
+        use afkconvoy_core::ending::Ending;
+
+        let dir = tempfile::tempdir().unwrap();
+        let repo = Repo::new(dir.path().to_path_buf());
+        repo.git(&["init", "-q"]).unwrap();
+        assert!(!waiting_on_turn(dir.path()));
+        for ending in Ending::ALL {
+            crate::turn_answer::noted(&repo, 1700, || {
+                assert!(waiting_on_turn(dir.path()), "a live Asking process needs no operator");
+                Ok(json!({"outcome": ending.word()}))
+            })
+            .unwrap();
+            assert_eq!(waiting_on_turn(dir.path()), ending.waits(), "{}", ending.word());
+        }
+        let note = repo.git_dir().unwrap().join(crate::orca::TURN_FILE);
+        std::fs::write(&note, "not a turn note").unwrap();
+        assert!(!waiting_on_turn(dir.path()));
+        std::fs::write(&note, json!({"outcome": "error", "at": 1700}).to_string()).unwrap();
+        assert!(!waiting_on_turn(dir.path()));
+    }
 
     fn screen(lines: &[&str]) -> Vec<String> {
         lines.iter().map(|line| (*line).to_string()).collect()
