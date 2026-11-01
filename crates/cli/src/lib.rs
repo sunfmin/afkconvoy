@@ -2955,7 +2955,11 @@ enum Command {
     /// - What it misses is checked after the stage: a commit left on the branch by a stage marked `writes: false`, or by a consult, is a failure, and the issue escalates; a patrol's final commit not on the base branch, working-tree changes, or a PR is a failed run, reported to a human — see `afkconvoy tick --help`.
     /// - An unbound repo's workers have no guard: their worker launch command is opaque.
     #[command(next_help_heading = HOOK, verbatim_doc_comment)]
-    Guard,
+    Guard {
+        /// Check only asking Terminal input, outside a bound stage
+        #[arg(long)]
+        terminal_input_only: bool,
+    },
     /// Start a fresh worker on one issue
     ///
     /// ## When to run it
@@ -4372,8 +4376,8 @@ pub fn main(args: impl IntoIterator<Item = OsString>) -> ExitCode {
             return fail(2, &said);
         }
     };
-    if matches!(cli.command, Command::Guard) {
-        return guard::guard();
+    if let Command::Guard { terminal_input_only } = cli.command {
+        return guard::guard(terminal_input_only);
     }
     if let Command::Help { name } = &cli.command {
         return match help(name.as_deref()) {
@@ -4904,7 +4908,7 @@ fn run(
             cut::run(&repo, &config, from, &host, second, clock)
         }
         // `main` answers it: a hook's answer is no JSON object.
-        Command::Guard => anyhow::bail!("guard answers with its exit code"),
+        Command::Guard { .. } => anyhow::bail!("guard answers with its exit code"),
         Command::Exclusive { .. } => {
             anyhow::bail!("exclusive answers with its command's exit code")
         }

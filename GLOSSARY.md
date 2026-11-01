@@ -151,7 +151,7 @@ A repo whose config names a team. An unbound repo has no roles and one fixed pat
 _Avoid_: team mode, managed repo
 
 **Guard**:
-The check made before each thing a worker does, refusing what its role or its stage may not do — and, of a watch, what crosses the bounds of any unattended worker. It stops a worker that errs, not one that means to get past it.
+The check made before each thing a worker does, refusing what its role or its stage may not do — and, of a watch, what crosses the bounds of any unattended worker. Every worker, bound or unbound, and the watch is refused input to the asking session's Terminal. Only the host runner's marked deliveries and the operator supply that input; the asking session itself is exempt by its Terminal identity. It stops a worker that errs, not one that means to get past it.
 _Avoid_: permission (what a harness's own settings deny), sandbox (what a harness may shut a worker's commands in)
 
 ### Workflows
