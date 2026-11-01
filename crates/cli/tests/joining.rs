@@ -66,7 +66,8 @@ fn an_idle_unbound_codex_worker_has_its_waiting_turn_asked_again_without_a_harne
     .unwrap();
     world.with_orca(|orca| {
         for terminal in orca["terminals"].as_array_mut().unwrap() {
-            terminal["agent"] = json!({"agentType": "codex", "state": "done", "stateStartedAt": 1_050_000});
+            terminal["agent"] =
+                json!({"agentType": "codex", "state": "done", "stateStartedAt": 1_050_000});
         }
     });
     let terminals = open_terminals(&world, &dir);

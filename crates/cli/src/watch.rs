@@ -38,8 +38,7 @@ enum Asked {
     /// At work: nothing on GitHub was read.
     AtWork,
     /// Gone, its terminal or its whole worktree: nothing on GitHub was read.
-    /// The worktree, when there is one, with what its turn last answered.
-    Gone(Option<(Worktree, Answered)>),
+    Gone,
     /// Its PR is not open any more: what the claim is now is the next
     /// rebuild's to say.
     NoPr,
@@ -56,16 +55,7 @@ fn ask_after(fleet: &Fleet, me: &Me, issue: u64) -> Result<Option<Asked>> {
     };
     match settled_by_state(state) {
         Some(Route::Leave) => return Ok(Some(Asked::AtWork)),
-        Some(_) => {
-            let answered = match worktree {
-                Some(worktree) => {
-                    let answered = crate::turn_answer::read(&worktree)?;
-                    Some((worktree, answered))
-                }
-                None => None,
-            };
-            return Ok(Some(Asked::Gone(answered)));
-        }
+        Some(_) => return Ok(Some(Asked::Gone)),
         None => {}
     }
     let (Some(worktree), Some(state)) = (worktree, state) else {
@@ -95,12 +85,28 @@ fn needs_harness(answered: &Answered) -> bool {
 
 /// Asks for the turn of `issue` again where its last answered a wait, and
 /// leaves one being asked for: no harness is started either way.
-fn ask_turn(worktree: &Worktree, issue: u64, answered: &Answered) -> Result<Outcome> {
-    if *answered == Answered::Asking {
-        return Ok(Outcome::Nothing);
+/// Handles a landing claim's turn before worker health can hold its harness.
+/// A stopped or gone worker whose turn answered a wait needs no harness or
+/// judgment to ask again. An open harness turn is left to its worker.
+/// `None` leaves ordinary harness recovery to the tick.
+pub(crate) fn ask_waiting(fleet: &Fleet, me: &Me, issue: u64) -> Result<Option<Outcome>> {
+    if mine(fleet, me, issue)?.is_none() {
+        return Ok(None);
     }
-    crate::turn_answer::ask_again(worktree, issue)?;
-    Ok(Outcome::Asked)
+    let Some(worktree) = Worktree::of_issue(&Source::of(&fleet.repo)?, issue)? else {
+        return Ok(None);
+    };
+    let answered = crate::turn_answer::read(&worktree)?;
+    if answered == Answered::Asking {
+        return Ok(Some(Outcome::Nothing));
+    }
+    if needs_harness(&answered)
+        || worktree.state(fleet.now)? == afkconvoy_core::worker::WorkerState::Busy
+    {
+        return Ok(None);
+    }
+    crate::turn_answer::ask_again(&worktree, issue)?;
+    Ok(Some(Outcome::Asked))
 }
 
 /// The join record of `pr`, and the PR's comments it was read from.
@@ -183,10 +189,8 @@ pub fn restart(fleet: &mut Fleet, me: &Me, agent: &Agent, issue: u64) -> Result<
         "terminal": started["terminal"], "prompt": started["prompt"]}))
 }
 
-/// The tick's look at one claim of mine whose PR is joining. A worker gone
-/// or stopped whose turn is being asked for is left; one whose last turn
-/// answered a wait has that turn asked for again (`turn_answer::ask_again`),
-/// with no harness started. Otherwise a worker that is gone is continued onto
+/// The tick's look at one claim of mine whose PR is joining, after
+/// `ask_waiting` has handled turns needing no harness. A worker gone is continued onto
 /// the join, one that stopped climbs the ladder (`joining::join_route`) →
 /// `Done` when that ended the claim. `start` false: no worker is started —
 /// the claim takes no slot, and none is free. The PR and the branch are never
@@ -201,20 +205,13 @@ pub fn watch(
 ) -> Result<Outcome> {
     let found = match ask_after(fleet, me, issue)? {
         None | Some(Asked::AtWork | Asked::NoPr) => return Ok(Outcome::Nothing),
-        Some(Asked::Gone(Some((worktree, answered)))) if !needs_harness(&answered) => {
-            return ask_turn(&worktree, issue, &answered);
-        }
-        Some(Asked::Gone(_)) if !start => return Ok(Outcome::Nothing),
-        Some(Asked::Gone(_)) => {
+        Some(Asked::Gone) if !start => return Ok(Outcome::Nothing),
+        Some(Asked::Gone) => {
             dispatch(fleet, me, agent, issue, StartFrom::Auto)?;
             return Ok(Outcome::Continued);
         }
         Some(Asked::Stopped(found)) => *found,
     };
-    let answered = crate::turn_answer::read(&found.worktree)?;
-    if !needs_harness(&answered) {
-        return ask_turn(&found.worktree, issue, &answered);
-    }
     let mut found = found;
     match std::mem::replace(&mut found.route, LandingRoute::Leave) {
         LandingRoute::Leave => Ok(Outcome::Nothing),
