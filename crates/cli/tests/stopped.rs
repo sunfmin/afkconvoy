@@ -1231,6 +1231,83 @@ fn a_note_is_told_to_a_busy_worker_only_once_its_harness_gave_it_to_the_model() 
     assert_eq!(notes(&world).len(), 1);
 }
 
+/// What was sent at the worker of issue 7, each `{text, enter}`.
+fn sends(world: &World) -> Vec<Value> {
+    let orca = world.orca();
+    let terminals = orca["terminals"].as_array().unwrap();
+    let worker =
+        terminals.iter().find(|terminal| terminal["command"] == common::trusted("agent")).unwrap();
+    worker["sent"].as_array().unwrap().clone()
+}
+
+/// The chat file Grok writes once it gave a typed line to its model.
+fn grok_chat(world: &World) -> Option<String> {
+    let cwd = worktree(world);
+    let files =
+        afkconvoy_core::harness::Harness::Grok.note_files(&cwd.to_string_lossy(), "x", true, 0);
+    let path = world.home().join(".grok").join(&files[0].path);
+    std::fs::read_to_string(path).ok()
+}
+
+/// The worker's terminal is Grok, busy, showing `screen`.
+fn grok_busy(world: &World, screen: &[&str]) {
+    report(world, "working", 1000, 1080);
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            if terminal["command"] == common::trusted("agent") {
+                terminal["agent"]["agentType"] = json!("grok");
+                terminal["screen"] = json!(screen);
+            }
+        }
+    });
+}
+
+#[test]
+fn a_busy_grok_is_told_by_send_now_once_the_line_is_queued() {
+    let world = fleet(1000);
+    world.with_orca(|orca| orca["notes"] = json!("send-now"));
+    // As a busy Grok showed it on 2026-11-01: the typed line sits under
+    // Queued, and the hint names Enter.
+    grok_busy(
+        &world,
+        &["reading the repo", "▾ Queued 1", "#1 Operator's note …", "Enter:send now"],
+    );
+    let told = tell(&world, "h1", "the body changed:\nuse the v2 endpoint").ok();
+    assert_eq!(told["action"], "told", "{told}");
+    assert!(told["seconds"].is_u64(), "{told}");
+    assert!(told["typed"].is_null(), "{told}");
+    let url = told["comment"].as_str().unwrap();
+    let sent = sends(&world);
+    assert_eq!(sent.len(), 3, "{sent:?}");
+    assert!(sent[1]["text"].as_str().unwrap().contains(url), "{sent:?}");
+    assert!(sent[1]["text"].as_str().unwrap().contains("use the v2 endpoint"), "{sent:?}");
+    assert_eq!(sent[1]["enter"], true);
+    assert_eq!(sent[2]["text"], "");
+    assert_eq!(sent[2]["enter"], true, "send now is Enter alone");
+    let chat = grok_chat(&world).expect("the session holds the user message");
+    assert!(chat.contains(url) && chat.contains("\"role\":\"user\""), "{chat}");
+    assert_eq!(notes(&world).len(), 1);
+
+    let again = tell(&world, "h1", "the body changed:\nuse the v2 endpoint").ok();
+    assert_eq!(again["typed"], false, "{again}");
+    assert_eq!(again["action"], "told");
+    assert_eq!(sends(&world).len(), 3, "a rerun types nothing");
+    assert_eq!(notes(&world).len(), 1);
+}
+
+#[test]
+fn a_busy_grok_whose_line_is_not_queued_is_not_sent_now() {
+    let world = fleet(1000);
+    world.with_orca(|orca| orca["notes"] = json!("queued"));
+    grok_busy(&world, &["still reading the issue"]);
+    let error = tell(&world, "h1", "use the v2 endpoint").error();
+    assert!(error.contains("not delivered") && error.contains("no second line"), "{error}");
+    let sent = sends(&world);
+    assert_eq!(sent.len(), 2, "{sent:?}");
+    assert!(sent.iter().all(|row| !row["text"].as_str().unwrap().is_empty()), "{sent:?}");
+    assert!(grok_chat(&world).is_none(), "a queued line is not a user message");
+}
+
 #[test]
 fn a_note_is_told_to_a_stopped_worker_the_same_way() {
     let world = fleet(1000);

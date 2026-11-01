@@ -30,7 +30,9 @@
 //! whose git remove fails while the directory remains records `removalError`
 //! and still answers success. `rm_fails` still refuses before any delete.
 //! `notes`: `taken` — every harness's session keeps each line sent as given
-//! to its model as the user's; `queued` — only in its input queue.
+//! to its model as the user's; `queued` — only in its input queue;
+//! `send-now` — queued on the line, and given to the model when a later
+//! send is Enter alone.
 //! `startup_working_reports`: a quiet screen while the harness reports a
 //! start-up working episode for this many fresh runtime observations.
 //!
@@ -458,7 +460,8 @@ fn terminal_send(st: &mut State) -> ! {
     if asks_trust(st, at) {
         answer_trust(st, at);
     }
-    let sent = json!({"text": st.opt("--text").expect("--text"), "enter": st.has("--enter")});
+    let text = st.opt("--text").unwrap_or("");
+    let sent = json!({"text": text, "enter": st.has("--enter")});
     let request = st.opt("--retry-request").map(str::to_string);
     if let Some(request) = &request {
         let previous = st.doc["terminals"][at]["requests"][request].clone();
@@ -498,10 +501,9 @@ fn terminal_send(st: &mut State) -> ! {
         }
     });
     st.doc["terminals"][at]["last_prompt_stages"] = json!(stages.clone());
-    if let Some(note) = st.doc["notes"].as_str() {
-        let cwd = st.doc["terminals"][at]["worktreePath"].as_str().unwrap_or("").to_string();
-        let line = sent["text"].as_str().unwrap_or("").to_string();
-        record_note(Path::new(&cwd), &line, note == "taken", send_stamp(Path::new(&cwd)));
+    if let Some(deliver) = noted_line(st, at, &sent) {
+        let cwd = st.doc["terminals"][at]["worktreePath"].as_str().unwrap_or("");
+        record_note(Path::new(cwd), &deliver.0, deliver.1, send_stamp(Path::new(cwd)));
     }
     if record_send(st, at, &stages) {
         let cwd = st.doc["terminals"][at]["worktreePath"].as_str().unwrap_or("");
@@ -527,6 +529,24 @@ fn terminal_send(st: &mut State) -> ! {
         st.doc["terminals"][at]["requests"][&request] = json!({"input": sent, "receipt": receipt});
     }
     done(st, receipt)
+}
+
+/// The line this send leaves in the session, and whether the model was
+/// given it. `send-now` keeps a typed line queued until Enter alone.
+fn noted_line(st: &State, at: usize, sent: &Value) -> Option<(String, bool)> {
+    let mode = st.doc["notes"].as_str()?;
+    let line = sent["text"].as_str().unwrap_or("");
+    if mode == "send-now" && line.is_empty() && sent["enter"] == true {
+        let earlier = st.doc["terminals"][at]["sent"].as_array()?.iter().rev().find_map(|row| {
+            let text = row["text"].as_str()?;
+            (!text.is_empty()).then(|| text.to_string())
+        })?;
+        return Some((earlier, true));
+    }
+    if line.is_empty() {
+        return None;
+    }
+    Some((line.to_string(), mode == "taken"))
 }
 
 /// The saved receipt claims the harness started a turn.
