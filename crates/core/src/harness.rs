@@ -1298,6 +1298,10 @@ mod tests {
     fn each_harness_names_where_it_keeps_a_session() {
         assert!(matches!(
             Harness::ClaudeCode.session_place(CWD).layout,
+            SessionLayout::Tree { dir, extension: "jsonl" } if dir == "projects"
+        ));
+        assert!(matches!(
+            Harness::ClaudeCode.note_place(CWD).layout,
             SessionLayout::Files { dir, extension: "jsonl" }
                 if dir == "projects/-Users-sunfmin-Developments-chessmirror"
         ));
@@ -1359,7 +1363,7 @@ mod tests {
             }
         }
         for harness in [Harness::ClaudeCode, Harness::Pi, Harness::Dsh, Harness::Grok] {
-            let place = harness.session_place(&cwd);
+            let place = harness.note_place(&cwd);
             let dir = match place.layout {
                 SessionLayout::Files { dir, .. } | SessionLayout::Named { dir, .. } => dir,
                 SessionLayout::Tree { .. } | SessionLayout::Index { .. } => unreachable!(),
