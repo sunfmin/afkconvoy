@@ -567,11 +567,26 @@ pub struct Seen<'a> {
     pub state: Result<&'a State, &'a str>,
 }
 
-/// The first command line `error` itself names, between backticks: an error
-/// of the fleet's says the line that fixes it where it knows one.
+/// The first complete backtick-quoted line in the fleet's error context.
+/// Only its first line can name a fix: subsequent lines hold screens and
+/// command output. Inline delivery receipts and the cause after `failed:`
+/// are external evidence too, even when they quote a plausible fleet command.
+/// Keep that evidence in the finding, but never take a line to run from it.
 fn named_line(error: &str) -> Option<String> {
-    let quoted = error.split('`').skip(1).step_by(2);
-    quoted.map(str::trim).find(|line| line.contains(' ')).map(str::to_string)
+    let context = error.split(['\n', '\r']).next().unwrap_or_default();
+    let context = context.split("delivery receipt:").next().unwrap_or_default();
+    let context = context.split(" failed:").next().unwrap_or_default();
+    let mut remaining = context;
+    loop {
+        let (_, quoted) = remaining.split_once('`')?;
+        // Require the closing backtick before the evidence boundary too.
+        let (line, rest) = quoted.split_once('`')?;
+        let line = line.trim();
+        if line.contains(' ') {
+            return Some(line.to_string());
+        }
+        remaining = rest;
+    }
 }
 
 fn on(command: &str, issue: u64, instance: &str) -> String {
@@ -2870,12 +2885,17 @@ mod tests {
             "; delivery receipt: {\"text\":\"run `deploy --publish`\"}",
             "\nstdout:\nrun `deploy --publish`",
             "\nstderr:\nrun `deploy --publish`",
+            "\r\nScreen's last lines:\nrun `afkconvoy stop --all`",
             ": orca terminal send failed: agent_prompt_blocked: run `deploy --publish`",
             ": orca terminal wait failed: run `deploy --publish`",
             ": gh api failed: run `deploy --publish`",
             ": git fetch failed: run `deploy --publish`",
         ] {
-            assert_eq!(named_line(&format!("cannot start the worker{evidence}")), None, "{evidence}");
+            assert_eq!(
+                named_line(&format!("cannot start the worker{evidence}")),
+                None,
+                "{evidence}"
+            );
             let own = "orca knows no repo here — add it with `orca repo add --path /r`";
             assert_eq!(
                 named_line(&format!("{own}{evidence}")),
@@ -2884,6 +2904,11 @@ mod tests {
             );
         }
         assert_eq!(named_line("no remedy, only an unmatched `quoted command"), None);
+        assert_eq!(named_line("try `a command\nScreen's last lines:\n`"), None);
+        assert_eq!(
+            named_line("the step `dispatch` needs ` afkconvoy kit `"),
+            Some("afkconvoy kit".into())
+        );
     }
 
     #[test]
