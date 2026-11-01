@@ -46,6 +46,186 @@ fn takeover(world: &World, more: &[&str]) -> common::Answer {
     world.afk(&args)
 }
 
+/// The worker always names its issue, including in an unbound repo.
+fn worker_command(world: &World, args: &[&str]) -> common::Answer {
+    let out = world
+        .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
+        .env("AFKCONVOY_ISSUE", "7")
+        .args(args)
+        .output()
+        .unwrap();
+    common::Answer {
+        json: serde_json::from_slice(&out.stdout).unwrap(),
+        code: out.status.code().unwrap(),
+        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+    }
+}
+
+#[test]
+fn a_taken_workers_verdict_land_and_every_gate_refuse_without_writing() {
+    let world = World::new();
+    world.issue(7, &["ready-for-agent"]);
+    claimed(&world, 7, "alpha", "h1", 1000);
+    takeover(&world, &["--from", "alpha", "--instance", "beta", "--host", "h2", "--now", "2860"])
+        .ok();
+    let refs = world.remote(&["show-ref"]);
+    let comments = world.comments(7);
+    world.watch_pushes(None);
+    for args in [
+        vec![
+            "verdict",
+            "pass",
+            "--issue",
+            "7",
+            "--stage",
+            "build",
+            "--text",
+            "done",
+            "--role-commit",
+            "r1",
+            "--team-commit",
+            "t1",
+        ],
+        vec!["land", "--issue", "7"],
+        vec!["gate"],
+        vec!["gate", "--fast"],
+        vec!["gate", "--slow"],
+        vec!["gate", "--land"],
+        vec!["gate", "--host", "h2"],
+    ] {
+        assert_eq!(
+            worker_command(&world, &args).error(),
+            "the claim on #7 is held by instance beta on host h2 since 2860: this worker's work was taken; stop",
+            "{args:?}"
+        );
+    }
+    assert_eq!(world.remote(&["show-ref"]), refs, "no candidate or gate record");
+    assert_eq!(world.comments(7), comments, "no stage record");
+    assert!(world.pushes().is_empty());
+    assert!(!world.clone.join(".git/convoy-turn.json").exists(), "no local turn receipt");
+    assert!(!world.root.join("executed").exists(), "the gate did not start");
+}
+
+#[test]
+fn a_new_instance_on_the_same_host_keeps_its_workers_commands() {
+    let world = World::new();
+    world.issue(7, &["ready-for-agent"]);
+    tick_as(&world, "alpha", "h1", 1000);
+    let terminal = world.orca()["terminals"][0]["handle"].clone();
+    takeover(
+        &world,
+        &["--from", "alpha", "--instance", "beta", "--host", "h1", "--now", "1060", "--yes"],
+    )
+    .ok();
+    assert_eq!(tick_as(&world, "beta", "h1", 1060)["errors"], json!([]));
+    let terminals = world.orca()["terminals"].as_array().unwrap().clone();
+    let open: Vec<_> = terminals.iter().filter(|t| t["open"] == true).collect();
+    assert_eq!(open.len(), 1);
+    assert_eq!(open[0]["handle"], terminal, "the same worker keeps its terminal");
+    let declared = worker_command(
+        &world,
+        &[
+            "verdict",
+            "pass",
+            "--issue",
+            "7",
+            "--stage",
+            "build",
+            "--text",
+            "done",
+            "--role-commit",
+            "r1",
+            "--team-commit",
+            "t1",
+        ],
+    )
+    .ok();
+    assert_eq!(declared["declared"], true);
+    assert!(worker_command(&world, &["land", "--issue", "7"]).error().contains("no open PR"));
+    world.set_gate("true");
+    assert_eq!(worker_command(&world, &["gate"]).ok()["status"], "green");
+}
+
+#[test]
+fn a_gate_started_before_a_takeover_cannot_record_after_it() {
+    let world = World::new();
+    world.set_gate(
+        "afkconvoy takeover --from alpha --instance beta --host h2 --now 2860 >/dev/null",
+    );
+    world.issue(7, &["ready-for-agent"]);
+    claimed(&world, 7, "alpha", "h1", 1000);
+    let error = worker_command(&world, &["gate"]).error();
+    assert!(error.contains("this worker's work was taken; stop"), "{error}");
+    assert_eq!(holder(&world, 7), "beta");
+    assert!(world.remote(&["for-each-ref", "--format=%(refname)", "refs/convoy/gate/"]).is_empty());
+}
+
+#[test]
+fn a_failed_close_of_a_taken_worker_is_retried_without_losing_its_worktree() {
+    let world = World::new();
+    world.issue(7, &["ready-for-agent"]);
+    tick_as(&world, "alpha", "h1", 1000);
+    let path = PathBuf::from(world.orca()["worktrees"][0]["path"].as_str().unwrap());
+    takeover(&world, &["--from", "alpha", "--instance", "beta", "--host", "h2", "--now", "2860"])
+        .ok();
+    world.with_orca(|orca| orca["close_keeps_terminal"] = json!(true));
+    let failed = tick_as(&world, "alpha", "h1", 2860);
+    assert_eq!(failed["errors"][0]["do"], "stop_taken", "{failed}");
+    assert!(path.is_dir());
+    world.with_orca(|orca| orca["close_keeps_terminal"] = json!(false));
+    assert_eq!(tick_as(&world, "alpha", "h1", 2950)["errors"], json!([]));
+    assert!(
+        world.orca()["terminals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|t| t["worktreePath"] == path.to_str().unwrap())
+            .all(|t| t["open"] != true)
+    );
+    assert!(path.is_dir());
+}
+
+#[test]
+fn a_slept_hosts_next_tick_stops_its_taken_worker_and_keeps_unpushed_work() {
+    let world = World::new();
+    world.issue(7, &["ready-for-agent"]);
+    tick_as(&world, "alpha", "h1", 1000);
+    let path = PathBuf::from(world.orca()["worktrees"][0]["path"].as_str().unwrap());
+    let head = commit(&path, "only-here.txt", "work while the host slept\n");
+    world.watch_pushes(None);
+    takeover(&world, &["--from", "alpha", "--instance", "beta", "--host", "h2", "--now", "2860"])
+        .ok();
+    // Both hosts now read the clock after the sleep; beta's new heartbeat
+    // is live, so alpha must close its worker and leave beta's claim alone.
+    assert_eq!(tick_as(&world, "alpha", "h1", 2860)["errors"], json!([]));
+    assert_eq!(holder(&world, 7), "beta");
+    assert!(path.is_dir());
+    assert_eq!(git(&path, &["rev-parse", "HEAD"]), head);
+    let orca = world.orca();
+    let workers: Vec<_> = orca["terminals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|t| t["worktreePath"] == path.to_str().unwrap() && !t["command"].is_null())
+        .collect();
+    assert!(!workers.is_empty());
+    assert!(workers.iter().all(|t| t["open"] != true));
+    assert!(!world.pushes().iter().any(|name| name.starts_with("refs/heads/")));
+    assert!(!world.remote(&["rev-list", "--all"]).lines().any(|sha| sha == head));
+    let doctor = world.afk(&["doctor", "--host", "h1", "--now", "2860"]).ok();
+    let finding = doctor["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["kind"] == "taken_worktree")
+        .expect("doctor names the retained local commit");
+    assert!(finding["what"].as_str().unwrap().contains("1 commit the remote does not have"));
+    assert!(finding["evidence"].as_str().unwrap().contains(path.to_str().unwrap()));
+    assert!(!finding["fix"].as_str().unwrap().contains("push"));
+    assert_eq!(tick_as(&world, "alpha", "h1", 2950)["errors"], json!([]));
+    assert_eq!(git(&path, &["rev-parse", "HEAD"]), head, "later ticks retain the work too");
+}
+
 #[test]
 fn a_tick_reclaims_stale_claims_into_its_free_slots_ahead_of_the_frontier() {
     let world = World::new();

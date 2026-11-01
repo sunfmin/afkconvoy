@@ -1409,7 +1409,7 @@ enum Command {
     /// tick 9: skipped #320 (blocked by #379, added since tick 8) · holding 1/3 · frontier 0 · next in 90s
     /// ```
     ///
-    /// `lost #46`: a claim this instance held is another's now — taken by a takeover, or `(stale: past the lease)`, as a stale claim, this instance's heartbeat being past the lease. `released #231`: its issue was deleted, `(the issue was transferred to acme/other#12)`, where GitHub says it moved, or `(there is no such issue)`, a 404 with no move. `left #97`: a claim with no PR whose issue was closed, by whoever GitHub says closed it (`closed on GitHub` where it says no one), is settled — nothing of the fleet's landed. `labelled …` and `added since …` say what the tick before saw otherwise. A change the tick does nothing about is in no line; nor is one made before the fleet instance's first tick, which has no tick before it, nor anything of the kind in what `afkconvoy tick` answers.
+    /// `lost #46`: a claim this instance held is another's now — taken by a takeover, or `(stale: past the lease)`, as a stale claim, this instance's heartbeat being past the lease. On another host, the tick closes its local worker's terminal and adds `stopped its worker`, keeps the worktree and pushes nothing of its branch. A failed close is an error under `stop_taken`, retried next tick. `released #231`: its issue was deleted, `(the issue was transferred to acme/other#12)`, where GitHub says it moved, or `(there is no such issue)`, a 404 with no move. `left #97`: a claim with no PR whose issue was closed, by whoever GitHub says closed it (`closed on GitHub` where it says no one), is settled — nothing of the fleet's landed. `labelled …` and `added since …` say what the tick before saw otherwise. A change the tick does nothing about is in no line; nor is one made before the fleet instance's first tick, which has no tick before it, nor anything of the kind in what `afkconvoy tick` answers.
     ///
     /// `next now` in place of `next in <n>s`: the tick settled an issue, or advanced one without starting what follows, and left a slot free, so what follows — a consult, the landing of a PR, an issue the landing unblocked — is the next tick's to start, and that tick starts with no sleep.
     ///
@@ -1919,6 +1919,8 @@ enum Command {
     ///
     /// A worker in its own worktree, or the operator diagnosing a red gate.
     ///
+    /// Before running any gate, a worker's AFKCONVOY_ISSUE claim is read live. If another host holds it, the command refuses: `the claim on #N is held by instance X on host H since <ts>: this worker's work was taken; stop`. Nothing runs or is recorded. The host is the name its host settings give it, regardless of --host; a restart on the same host keeps its workers.
+    ///
     /// ## What it reads and writes
     ///
     /// The config's gate_command runs on this worktree, with its log streaming to stderr and its gate limit, gate_seconds (default {const:GATE_SECONDS}). A green run on the committed tree is recorded with the tree, command, host and elapsed seconds. A dirty worktree or artifacts the gate fails to ignore cannot produce a record. Its first green run records the fresh build for worker disk observations.
@@ -1966,6 +1968,8 @@ enum Command {
     /// ## Who runs it
     ///
     /// An issue's worker in its own worktree; in a bound workflow its landing worker after the last stage passes. A watch uses its own linked checkout named {const:WATCH_CHECKOUT}, with an optional numeric suffix. Other watch checkout names are refused.
+    ///
+    /// The issue's claim is checked live first. If another host holds it, the command refuses: `the claim on #N is held by instance X on host H since <ts>: this worker's work was taken; stop`. No candidate, gate record or landing is written. Ownership uses the host's name from its host settings, regardless of --host; a new instance on the same host keeps its workers.
     ///
     /// ## What it reads and writes
     ///
@@ -2104,6 +2108,8 @@ enum Command {
     /// A worker, in its own worktree: it starts in its role's directory, so the line its brief gives changes to the worktree first. The fleet put the commits of its role and of its team, and the harness it is a session of, in its environment, and the command reads them from there.
     ///
     /// Or a human, in a checkout of the bound repo, with neither commit named and none in the environment: that is what makes the record a human's.
+    ///
+    /// The issue's claim is checked live first. If another host holds it, the command refuses: `the claim on #N is held by instance X on host H since <ts>: this worker's work was taken; stop`. No stage record is written. Ownership uses the host's name from its host settings; a new instance on the same host keeps its workers.
     ///
     /// ## What it reads and writes
     ///
@@ -3284,7 +3290,7 @@ enum Command {
     ///
     /// ## What trips you up
     ///
-    /// - `--from` an instance whose heartbeat is still fresh takes nothing until `--yes`: the answer is `confirm`, with exit 0. Add `--yes` only when you know that fleet is dead — a live one goes on working the issues it lost.
+    /// - `--from` an instance whose heartbeat is still fresh takes nothing until `--yes`: the answer is `confirm`, with exit 0. Add `--yes` only when you know that fleet is dead. The old host's next tick stops its workers on claims taken to another host, and their verdict, land and gate commands refuse.
     /// - Taking starts nothing. The claims are continued by the next tick of `--instance`: follow it with `run --instance <id>` or `tick --instance <id>`, under the same id.
     /// - A run taken is not continued: that tick ends it — its worker is on the host that died — and the patrol is due again by its interval, the ruling not proposed again.
     /// - `--list` is the way to learn a running fleet's instance id.
@@ -4633,6 +4639,7 @@ fn run(
         }
         Command::Gate { land, fast, slow, host, .. } => {
             let repo = checkout?;
+            claims::own_issue_on_this_host(&repo)?;
             let config = config::load(&repo.dir.join(config::FILE))?;
             let host = host.unwrap_or_else(this_host);
             match (fast, slow) {
@@ -4647,9 +4654,7 @@ fn run(
             let gh = gh::GitHub::of(&repo)?;
             let host = host.unwrap_or_else(this_host);
             match issue.or(number) {
-                Some(issue) => turn_answer::noted(&repo, now, || {
-                    turn::land(&repo, &config, &gh, issue, &host, now)
-                }),
+                Some(issue) => turn::land(&repo, &config, &gh, issue, &host, now),
                 None if watch => watch_landing::land(&repo, &config, &gh, &host, now),
                 None => {
                     let _ = merged_timeout;

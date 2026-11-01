@@ -255,6 +255,9 @@ impl World {
             "root": world.root.join("wt"), "worktrees": [], "terminals": [], "calls": [],
             "envs": []}));
         world.kit_command("claude-code", "agent");
+        // Claims in this world normally call its local host h1. Commands
+        // without a --host flag must read that same identity from settings.
+        world.say_host_settings(json!({"host_name": "h1"}));
         // What a fresh login shell of its host user starts with: its
         // commands' environment, a name only it sets, and a line its rc
         // files print first.

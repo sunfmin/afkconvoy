@@ -13,7 +13,7 @@
 use std::path::{Path, PathBuf};
 
 use afkconvoy_core::casting;
-use afkconvoy_core::claims::{InstanceId, claim_ref};
+use afkconvoy_core::claims::{InstanceId, Owner, claim_ref};
 use afkconvoy_core::config::{Config, SaidBy};
 use afkconvoy_core::cut;
 use afkconvoy_core::gate::GateCommand;
@@ -205,6 +205,7 @@ kinds! {
     Moved: Info, "moved since the stage";
     RetiredConcurrency: Info, "which nothing reads any more";
     KeptWorktree: Info, "is kept with no claim";
+    TakenWorktree: Info, "is kept after its claim was taken";
     NoGateLimit: Info, "declares no gate limit";
     OtherAccount: Info, "works on this machine under another account";
 }
@@ -541,8 +542,8 @@ pub struct NotOurs {
     pub branch: String,
 }
 
-/// A worktree on this host whose issue holds no claim: one a park or an
-/// escalation kept, or an older afkconvoy left.
+/// A worktree on this host with no local claim: one a park or an escalation
+/// kept, or whose claim another host took.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Unclaimed {
     pub issue: u64,
@@ -550,6 +551,8 @@ pub struct Unclaimed {
     pub branch: String,
     /// Why it is kept; `None` when it holds nothing the remote does not.
     pub kept: Option<Kept>,
+    /// The other host's holder; absent when the issue holds no claim.
+    pub taken: Option<Owner>,
 }
 
 /// Everything `doctor` read.
@@ -1138,6 +1141,22 @@ pub(crate) fn waiting_findings(waiting: &[Waiting], now: u64) -> Vec<Finding> {
 fn unclaimed_finding(unclaimed: &Unclaimed) -> Finding {
     let (path, branch) = (unclaimed.path.display(), &unclaimed.branch);
     let remove = format!("orca worktree rm --worktree path:{path} --force");
+    if let Some(owner) = &unclaimed.taken {
+        let holds = unclaimed.kept.as_ref().map(Kept::holds).unwrap_or_default();
+        return finding(
+            Kind::TakenWorktree,
+            json!(["taken", unclaimed.issue, unclaimed.path]),
+            format!(
+                "the worktree of #{} is kept after its claim was taken: it holds {holds}",
+                unclaimed.issue
+            ),
+            format!(
+                "{path}, on the branch {branch}; held by instance {} on host {} since {}; local work was not pushed",
+                owner.instance, owner.host, owner.ts
+            ),
+            format!("git -C {path} log --oneline HEAD --not --remotes"),
+        );
+    }
     let push = format!("git -C {path} push origin HEAD:{branch}");
     let (holds, fix) = match &unclaimed.kept {
         None => ("nothing the remote does not".to_string(), remove),
@@ -1800,13 +1819,24 @@ fn read_unclaimed(fleet: &Fleet) -> Vec<Unclaimed> {
     else {
         return vec![];
     };
-    let unclaimed = linked.into_iter().filter(|(issue, _)| fleet.scan.claim_of(*issue).is_none());
+    let host = crate::host_settings::host_name();
+    let unclaimed = linked.into_iter().filter(|(issue, _)| {
+        fleet
+            .scan
+            .claim_of(*issue)
+            .is_none_or(|claim| claim.owner.as_ref().is_some_and(|owner| owner.host != host))
+    });
     unclaimed
         .filter_map(|(issue, worktree)| {
             let left = leaving_at_open(fleet, issue, &worktree).ok()?.left;
+            let taken = fleet.scan.claim_of(issue).and_then(|claim| claim.owner.clone());
+            if taken.is_some() && left.kept().is_none() {
+                return None;
+            }
             Some(Unclaimed {
                 issue,
                 kept: left.kept().copied(),
+                taken,
                 path: worktree.path,
                 branch: worktree.branch,
             })
