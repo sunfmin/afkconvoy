@@ -194,7 +194,7 @@ kinds! {
     NothingStarted: Warning, "the last tick started no worker";
     NoWorkflow: Warning, "follows no workflow of the team";
     BlockerUnworked: Warning, "waits on a blocker no fleet works";
-    LongAtStage: Warning, "longer than any stage before it took";
+    LongAtStage: Warning, "longer than its baseline";
     NearBreaker: Warning, "is one rework from a breaker";
     PatrolFailed: Warning, "does not run: its last run failed";
     PatrolFull: Warning, "have reached its `max_open`";
