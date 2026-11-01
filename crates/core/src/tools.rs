@@ -37,7 +37,7 @@ const PI_NO_MODELS: &str = "No models available";
 const CODEX_LOGIN: &str = "test -f \"$HOME/.codex/auth.json\" && codex login status";
 
 /// The last answer to a login question, kept for a finding without asking again.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct LoginAnswer {
     /// Whether the shell command exited zero; `None` on an old probe note.
     succeeded: Option<bool>,
@@ -60,12 +60,6 @@ impl LoginAnswer {
         };
         let printed = if self.printed.is_empty() { "(nothing printed)" } else { &self.printed };
         format!("exit status: {status}\nprinted:\n{printed}")
-    }
-}
-
-impl Default for LoginAnswer {
-    fn default() -> Self {
-        Self { succeeded: None, printed: String::new() }
     }
 }
 
