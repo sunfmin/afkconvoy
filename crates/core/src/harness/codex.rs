@@ -728,27 +728,56 @@ pub(super) fn session_layout(_cwd: &str) -> SessionLayout {
     SessionLayout::Tree { dir: SESSIONS.into(), extension: "jsonl" }
 }
 
-/// The turn `text` records for `cwd`. A file with no session header for this
-/// worktree is not it. Codex records no child session.
-pub(super) fn recorded_turn(cwd: &str, text: &str, not_before: Option<u64>) -> Option<Turn> {
-    let mut saw_cwd = false;
+/// The turn `text` records for this worker. Codex starts in the role copy
+/// when bound: its initial brief pointer identifies that worktree instead
+/// of the session cwd. A header and a turn are still required.
+pub(super) fn recorded_turn(
+    cwd: &str,
+    text: &str,
+    not_before: Option<u64>,
+    brief: Option<&str>,
+) -> Option<Turn> {
+    let mut saw_header = false;
     let mut notes = Vec::new();
     for value in json_lines(text) {
         if value["type"] == "session_meta" {
             let recorded = value["payload"]["cwd"].as_str().unwrap_or("");
-            if !session::same_cwd(recorded, cwd) {
+            if !session::same_cwd(recorded, cwd)
+                && !brief.is_some_and(|brief| names_brief(text, brief))
+            {
                 return None;
             }
-            saw_cwd = true;
+            saw_header = true;
         }
         if let Some(note) = note(&value) {
             notes.push(note);
         }
     }
-    if !saw_cwd {
+    if !saw_header {
         return None;
     }
     session::turn_of(&notes, not_before)
+}
+
+/// Only the first brief pointer in the initial user messages associates a
+/// role session with a worker. Codex may write AGENTS.md and environment
+/// messages before it. A later mention, tool output or model reply cannot
+/// take another worker's session.
+pub(super) fn names_brief(text: &str, brief: &str) -> bool {
+    for value in json_lines(text) {
+        let payload = &value["payload"];
+        if value["type"] == "response_item"
+            && payload["role"] != "developer"
+            && payload["role"] != "system"
+            && (payload["role"] == "assistant" || payload["type"] != "message")
+        {
+            return false;
+        }
+        if let Some(matches) = session::brief_match(&value, brief) {
+            return matches;
+        }
+    }
+    false
 }
 
 fn note(value: &serde_json::Value) -> Option<Note> {

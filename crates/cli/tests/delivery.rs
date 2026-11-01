@@ -690,7 +690,11 @@ fn two_tasks_hand_off_one_pr_and_a_human_merge_is_reconstructed_after_restart() 
     assert!(inspected["tasks"][0].is_string());
     assert_eq!(inspected["handoff"]["certifies"], true, "{inspected}");
     let plan = world.afk(&["plan"]).ok();
-    let doctor = world.afk(&["doctor"]).ok();
+    let doctor = world.afk(&["doctor"]);
+    // The standalone tick left #9 claimed, with no host runner working it.
+    assert_eq!(doctor.code, 1);
+    let doctor = doctor.json;
+    assert!(doctor["findings"].as_array().unwrap().iter().any(|f| f["kind"] == "no_run"));
     assert_eq!(plan["deliveries"][0]["certifies"], true, "{plan}");
     assert_eq!(plan["deliveries"][0]["detail"], "ready for human review");
     assert_eq!(doctor["deliveries"][0]["detail"], plan["deliveries"][0]["detail"]);

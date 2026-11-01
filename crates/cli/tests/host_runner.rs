@@ -807,6 +807,7 @@ fn a_newer_afkconvoy_moves_the_host_runner_onto_itself_on_the_same_list() {
 #[test]
 fn a_run_older_than_the_host_runner_changes_nothing_and_says_so() {
     let world = World::new();
+    let before = world.checkout_list();
     let mut newer = world.host_runner_of("999.0.0");
 
     let refused = world.afk(&RUN);
@@ -822,7 +823,7 @@ fn a_run_older_than_the_host_runner_changes_nothing_and_says_so() {
     // the newer one holds the host as before, and nothing was listed or started
     assert!(newer.try_wait().unwrap().is_none(), "the newer host runner works on");
     assert_eq!(world.host_runner(), Some(newer.id()));
-    assert_eq!(world.checkout_list(), json!({"checkouts": []}));
+    assert_eq!(world.checkout_list(), before);
     assert_eq!(world.runner_log(), [] as [String; 0]);
     assert!(!world.cache().join("afkconvoy/runs").exists(), "no tick log");
     newer.kill().unwrap();

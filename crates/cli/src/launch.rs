@@ -250,9 +250,13 @@ impl Launches {
 
     /// The host kit's command, with its first word resolved in the login shell.
     /// A missing command is discovered from the harness's stock command in
-    /// the worker's login shell. Read-only commands never write the kit.
+    /// the worker's login shell unless the operator removed that harness.
+    /// Read-only commands never write the kit.
     pub fn of(&self, harness: Harness) -> Result<Option<Proposed>> {
         let kit = crate::kit::load()?;
+        if self.starts && kit.is_removed(harness) {
+            return Ok(None);
+        }
         let explicit = kit.command(harness).filter(|command| !command.trim().is_empty());
         let command = explicit.unwrap_or(harness.stock());
         if let Some(proposed) = self
@@ -335,8 +339,16 @@ impl Launches {
     pub fn command(&self, harness: Harness) -> Result<LaunchCommand> {
         let proposed = self.of(harness)?;
         let proposed = proposed.ok_or_else(|| {
-            See::Troubleshooting
-                .refusal("no worker launch command in the host kit: run `afkconvoy kit`")
+            if crate::kit::load().is_ok_and(|kit| kit.is_removed(harness)) {
+                anyhow!(
+                    "the harness `{}` was removed by the operator; restore it with `afkconvoy switch --harness {}`",
+                    harness.key(),
+                    harness.key()
+                )
+            } else {
+                See::Troubleshooting
+                    .refusal("no worker launch command in the host kit: run `afkconvoy kit`")
+            }
         })?;
         self.validate(&proposed)?;
         let checked = proposed.checked();

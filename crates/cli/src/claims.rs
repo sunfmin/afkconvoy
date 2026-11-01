@@ -28,6 +28,41 @@ pub struct Me {
     pub now: u64,
 }
 
+/// Reads this issue's claim before a worker acts. Ownership follows the
+/// host, so a restart here can keep its workers; a takeover elsewhere cannot.
+/// An absent claim is left to the command's existing unclaimed semantics.
+/// `fresh` is live unless the caller just listed the claim with its other refs.
+pub fn on_this_host(repo: &Repo, issue: u64, host: &str, fresh: Fresh) -> Result<Option<Claim>> {
+    let tracker = crate::checkout_list::tracker_of(repo)?;
+    let name = claim_ref(repo.layout(), &tracker, issue);
+    let claim = repo
+        .remote()
+        .records(&[&name], fresh)?
+        .pop()
+        .map(|record| Claim::read(issue, &record.subject, record.sha));
+    if let Some(owner) = claim.as_ref().and_then(|claim| claim.owner.as_ref())
+        && owner.host != host
+    {
+        bail!(
+            "the claim on #{issue} is held by instance {} on host {} since {}: this worker's work was taken; stop",
+            owner.instance,
+            owner.host,
+            owner.ts
+        );
+    }
+    Ok(claim)
+}
+
+/// A standalone gate has no issue argument: the worker's environment names it.
+pub fn own_issue_on_this_host(repo: &Repo) -> Result<()> {
+    if let Some(issue) =
+        std::env::var(afkconvoy_core::role::ISSUE_ENV).ok().and_then(|raw| fleet_number(&raw))
+    {
+        on_this_host(repo, issue, &crate::host_settings::host_name(), Fresh::Live)?;
+    }
+    Ok(())
+}
+
 /// Every claim and heartbeat the remote has, and what it records of the
 /// patrols, as one fetch saw them. A write this process makes is carried into
 /// it, so a read after a write sees it. Its claims on issues are those of the

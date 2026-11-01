@@ -14,7 +14,7 @@ use serde_json::json;
 const SOON: Duration = Duration::from_secs(20);
 
 /// The lease, and a moment past it for a heartbeat stamped at 1000.
-const LATER: &str = "5501";
+const LATER: &str = "2860"; // 31 minutes after 1000
 
 /// A `run` of two ticks as `alpha` on h1, its clock stopped at 1000.
 fn run(world: &World) -> Running {
@@ -53,7 +53,7 @@ fn a_claim_another_host_took_over_is_said_lost_at_the_next_tick() {
     assert!(first.starts_with("tick 1: dispatched #3 · "), "{first}");
     assert_eq!(
         second,
-        "tick 2: lost #3 to instance beta on host h2 (takeover) · holding 0/2 · frontier 0 · \
+        "tick 2: lost #3 to instance beta on host h2 (takeover); stopped its worker · holding 0/2 · frontier 0 · \
          next in 90s"
     );
 }
@@ -69,9 +69,10 @@ fn a_claim_taken_as_stale_is_said_lost_past_the_lease() {
     });
     assert!(
         second
-            .starts_with("tick 2: lost #3 to instance beta on host h2 (stale: past the lease) · "),
+            .starts_with("tick 2: lost #3 to instance beta on host h2 (stale: past the lease); stopped its worker · "),
         "{second}"
     );
+    assert_eq!(world.orca()["terminals"][0]["open"], false);
 }
 
 #[test]

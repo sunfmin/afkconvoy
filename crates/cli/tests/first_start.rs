@@ -7,6 +7,14 @@ use std::path::{Path, PathBuf};
 use crate::common::{Answer, World};
 use serde_json::{Value, json};
 
+/// Ordinary worker worlds know their host's name. First-start scenarios
+/// deliberately begin before any host settings have been saved.
+fn fresh_host() -> World {
+    let world = World::new();
+    std::fs::remove_file(world.cache().join("afkconvoy/checkouts.json")).unwrap();
+    world
+}
+
 fn run(world: &World, cwd: &Path, args: &[&str]) -> Answer {
     let out =
         world.command(env!("CARGO_BIN_EXE_afkconvoy"), cwd).arg("run").args(args).output().unwrap();
@@ -56,7 +64,7 @@ fn refused(world: &World, cwd: &Path, args: &[&str], settings: &[&str]) -> Value
 
 #[test]
 fn a_new_checkout_asks_for_its_tracker_before_any_startup_writes() {
-    let world = World::new();
+    let world = fresh_host();
     // A missing kit and flags that would write settings are deliberate:
     // neither setup nor those writes may precede this refusal.
     std::fs::remove_file(world.kit_path()).unwrap();
@@ -75,7 +83,7 @@ fn a_new_checkout_asks_for_its_tracker_before_any_startup_writes() {
 
 #[test]
 fn a_new_host_asks_nothing_of_host_sleep() {
-    let world = World::new();
+    let world = fresh_host();
     let all = ["tracker", "concurrency", "watch-dir"];
     refused(&world, &world.clone, &[], &all);
     refused(&world, &world.clone, &["--foreground"], &all);
@@ -104,7 +112,7 @@ fn explicit_choices_start_and_existing_checkouts_and_host_defaults_need_no_flags
 
 #[test]
 fn every_first_start_question_and_option_is_shared_by_the_topic_and_json_asks() {
-    let world = World::new();
+    let world = fresh_host();
     let all = ["tracker", "concurrency", "watch-dir"];
     let answer = refused(&world, &world.clone, &[], &all);
     let out = world

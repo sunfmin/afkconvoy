@@ -1,6 +1,8 @@
 use crate::common;
 
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::time::{Duration, Instant};
 
 use common::{World, commit, git};
 use serde_json::{Value, json};
@@ -36,6 +38,10 @@ fn worktree(world: &World) -> PathBuf {
 /// and stopped there, short of the landing train.
 fn joining() -> World {
     let world = World::new();
+    joining_in(world)
+}
+
+fn joining_in(world: World) -> World {
     world.issue(7, &["ready-for-agent", "bug"]);
     assert_eq!(did(&tick(&world, 700)), ["dispatch 7 done", "heartbeat done"]);
     let dir = worktree(&world);
@@ -43,6 +49,111 @@ fn joining() -> World {
     git(&dir, &["push", "-q", "origin", "HEAD"]);
     world.pr(70, 7, &git(&dir, &["symbolic-ref", "--short", "HEAD"]));
     world
+}
+
+#[test]
+fn an_idle_unbound_codex_worker_has_its_waiting_turn_asked_again_without_a_harness() {
+    let world = World::new();
+    world.kit_command("codex", afkconvoy_core::harness::Harness::Codex.stock());
+    world.with_kit(|kit| {
+        kit["harnesses"].as_array_mut().unwrap().retain(|held| held["harness"] == "codex");
+    });
+    let world = joining_in(world);
+    let dir = worktree(&world);
+    let notes = PathBuf::from(git(&dir, &["rev-parse", "--absolute-git-dir"]));
+    // Let health observe the worker before its recovery judgment is due.
+    assert!(did(&tick(&world, 1000)).contains(&"watch 7 nothing".to_string()));
+    std::fs::write(
+        notes.join("convoy-turn.json"),
+        json!({"outcome": "waiting_for_capacity", "at": 1000}).to_string(),
+    )
+    .unwrap();
+    // Read the rollout itself, independent of Orca's agent-state receipt.
+    // An unbound worker keeps it in the home recorded at launch.
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            terminal["agent"] = Value::Null;
+        }
+    });
+    std::fs::remove_dir_all(world.home().join(".codex/sessions")).unwrap();
+    let home = std::fs::read_to_string(notes.join("convoy-codex-home")).unwrap();
+    let sessions = PathBuf::from(home).join("sessions/1970/01/01");
+    std::fs::create_dir_all(&sessions).unwrap();
+    let rollout = [
+        json!({"type": "session_meta", "payload": {"cwd": dir, "source": "cli"}}),
+        json!({"type": "event_msg", "timestamp": "1970-01-01T00:16:40Z",
+            "payload": {"type": "task_started", "started_at": 1000, "turn_id": "worker"}}),
+        json!({"type": "event_msg", "timestamp": "1970-01-01T00:17:30Z",
+            "payload": {"type": "task_complete", "started_at": 1000,
+                "completed_at": 1050, "turn_id": "worker"}}),
+    ];
+    std::fs::write(
+        sessions.join("rollout-idle.jsonl"),
+        rollout.iter().map(Value::to_string).collect::<Vec<_>>().join("\n"),
+    )
+    .unwrap();
+    let terminals = open_terminals(&world, &dir);
+    let ticked = tick(&world, 1500);
+    assert_eq!(ticked["errors"], json!([]), "{ticked}");
+    assert!(did(&ticked).contains(&"watch 7 asked".to_string()), "{ticked}");
+    assert!(notes.join("convoy-turn.log").exists());
+    assert_eq!(open_terminals(&world, &dir), terminals);
+    let health: Value = serde_json::from_slice(
+        &std::fs::read(world.cache().join("afkconvoy/worker-health.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        health["workers"].as_array().unwrap().iter().any(|worker| {
+            worker["path"] == json!(dir) && worker["action"] == "waiting for operator"
+        }),
+        "{health}"
+    );
+}
+
+#[test]
+fn a_running_landing_turn_is_left_alone_with_its_worker_idle() {
+    let world = World::new();
+    let started = world.root.join("gate-started");
+    let release = world.root.join("release-gate");
+    let line = afkconvoy_core::line::Line::new()
+        .fixed("touch ")
+        .word(&started.to_string_lossy())
+        .fixed("; while test -d ")
+        .word(&world.root.to_string_lossy())
+        .fixed(" && test ! -f ")
+        .word(&release.to_string_lossy())
+        .fixed("; do sleep 0.02; done")
+        .own();
+    world.set_gate(&line);
+    let world = joining_in(world);
+    let dir = worktree(&world);
+    let notes = PathBuf::from(git(&dir, &["rev-parse", "--absolute-git-dir"]));
+    let child = world
+        .command(env!("CARGO_BIN_EXE_afkconvoy"), &dir)
+        .args(["land", "--issue", "7"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let began = Instant::now();
+    while !started.exists() {
+        assert!(began.elapsed() < Duration::from_secs(15), "the landing gate did not start");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let asking: Value =
+        serde_json::from_slice(&std::fs::read(notes.join("convoy-turn.json")).unwrap()).unwrap();
+    let terminals = open_terminals(&world, &dir);
+    let ticked = tick(&world, 1100);
+    let retried = notes.join("convoy-turn.log").exists();
+    let after = open_terminals(&world, &dir);
+    std::fs::write(release, "").unwrap();
+    let finished = child.wait_with_output().unwrap();
+    assert!(finished.status.success(), "{}", String::from_utf8_lossy(&finished.stderr));
+    assert!(asking["asking"]["pid"].is_number(), "{asking}");
+    assert_eq!(ticked["errors"], json!([]), "{ticked}");
+    assert!(did(&ticked).contains(&"watch 7 nothing".to_string()), "{ticked}");
+    assert!(!retried, "a live land process must not be asked for again");
+    assert_eq!(after, terminals);
 }
 
 fn brief(dir: &Path) -> String {
