@@ -863,6 +863,8 @@ afkconvoy::cli joining::fleet_asked_conflicts_are_handed_once_even_after_the_fle
 afkconvoy::cli joining::an_answer_queued_in_the_harness_is_pending_until_the_model_takes_it
 afkconvoy::cli codex::codex_workers_take_fresh_user_service_tier_without_inheriting_session_config
 afkconvoy::cli escalation::a_handed_back_workers_usage_limit_does_not_replay_the_previous_claims_verdict
+afkconvoy::cli tick::settling_waits_for_a_finishing_worker_then_leaves_without_a_failed_tick
+afkconvoy::cli stopped::a_short_worker_is_nudged_once_then_waits_for_the_operator_if_still_short
 # Asking Terminal launch coverage: measured over 2s in the fast gate on FelixMBP14.local.
 afkconvoy::cli asking_guard::bound_claude
 afkconvoy::cli asking_guard::bound_codex
