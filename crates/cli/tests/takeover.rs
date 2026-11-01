@@ -102,10 +102,7 @@ fn a_taken_workers_verdict_land_and_every_gate_refuse_without_writing() {
     assert_eq!(world.remote(&["show-ref"]), refs, "no candidate or gate record");
     assert_eq!(world.comments(7), comments, "no stage record");
     assert!(world.pushes().is_empty());
-    assert!(
-        !world.clone.join(".git").join(afkconvoy::orca::TURN_FILE).exists(),
-        "no local turn receipt"
-    );
+    assert!(!world.clone.join(".git/convoy-turn.json").exists(), "no local turn receipt");
     assert!(!world.root.join("executed").exists(), "the gate did not start");
 }
 
@@ -113,12 +110,18 @@ fn a_taken_workers_verdict_land_and_every_gate_refuse_without_writing() {
 fn a_new_instance_on_the_same_host_keeps_its_workers_commands() {
     let world = World::new();
     world.issue(7, &["ready-for-agent"]);
-    claimed(&world, 7, "alpha", "h1", 1000);
+    tick_as(&world, "alpha", "h1", 1000);
+    let terminal = world.orca()["terminals"][0]["handle"].clone();
     takeover(
         &world,
         &["--from", "alpha", "--instance", "beta", "--host", "h1", "--now", "1060", "--yes"],
     )
     .ok();
+    assert_eq!(tick_as(&world, "beta", "h1", 1060)["errors"], json!([]));
+    let terminals = world.orca()["terminals"].as_array().unwrap().clone();
+    let open: Vec<_> = terminals.iter().filter(|t| t["open"] == true).collect();
+    assert_eq!(open.len(), 1);
+    assert_eq!(open[0]["handle"], terminal, "the same worker keeps its terminal");
     let declared = worker_command(
         &world,
         &[
