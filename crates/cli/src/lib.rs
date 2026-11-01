@@ -3834,7 +3834,7 @@ fn kind(name: &str) -> Kind {
         "cast" | "target" | "delivery" | "gate" | "land" | "verdict" | "rule" | "send"
         | "intake" | "lock" | "over" | "cut" | "wake" => worker_acts,
         "tick" => Kind { starts: true, ..Kind::ACTS },
-        "doctor" | "show" | "exclusive" => Kind::WORKERS,
+        "doctor" | "show" | "exclusive" | "no-node" => Kind::WORKERS,
         "plan" => Kind { starts: true, ..Kind::WORKERS },
         "run" => Kind { starts: true, ..Kind::PLAIN },
         "accounts" | "config" | "check" | "rehearse" | "recovery" | "scan" | "panel" => Kind::READS,

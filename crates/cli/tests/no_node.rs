@@ -168,22 +168,47 @@ fn a_background_descendant_is_waited_for_before_the_second_canary() {
 #[test]
 fn an_outside_node_running_concurrently_causes_no_hit() {
     let run = Run::new();
+    let ready = run.dir.path().join("ready");
     let outside = run.dir.path().join("outside");
-    let mut child = Command::new(&run.node)
+    let monitored = run
+        .command()
         .args([
-            "-e",
-            "require('fs').writeFileSync(process.argv[1], 'ready'); setTimeout(() => {}, 1000)",
+            "--",
+            "/bin/sh",
+            "-c",
+            "echo ready > ready; while [ ! -f outside ]; do /bin/sleep 0.01; done",
         ])
-        .arg(&outside)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
         .spawn()
         .unwrap();
     let began = Instant::now();
-    while !outside.exists() {
+    while !ready.exists() {
         assert!(began.elapsed() < Duration::from_secs(5));
         std::thread::sleep(Duration::from_millis(10));
     }
-    green(run.shell("/bin/sleep 0.1"));
-    assert!(child.wait().unwrap().success());
+    let status = Command::new(&run.node)
+        .args(["-e", "require('fs').writeFileSync(process.argv[1], 'ready')"])
+        .arg(&outside)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    green(monitored.wait_with_output().unwrap());
+}
+
+#[test]
+fn node_reports_are_preserved_when_the_command_itself_fails() {
+    let run = Run::new();
+    let out = run.shell("\"$1\" --version || true; \"$1\" --version || true; exit 37");
+    let said = answer(&out);
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(said["status"], "red", "{said}");
+    assert_eq!(said["exit_code"], 37);
+    let hits = said["invocations"].as_array().unwrap();
+    assert_eq!(hits.len(), 2, "{said}");
+    for hit in hits {
+        assert_eq!(hit["path"], run.node.to_string_lossy().as_ref());
+    }
 }
 
 #[test]
