@@ -2,7 +2,8 @@
 # Exercise gate.sh with nextest and host readings controlled at its boundary.
 set -eu
 root=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
-tmp=$(mktemp -d "${TMPDIR:-/tmp}/gate-timeouts.XXXXXX")
+mkdir -p "$root/.afkconvoy-tmp"
+tmp=$(mktemp -d "$root/.afkconvoy-tmp/gate-timeouts.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/home/.cargo/bin" "$tmp/repo/.config"
 cp "$root/gate.sh" "$tmp/repo/gate.sh"
