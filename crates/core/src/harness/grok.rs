@@ -14,7 +14,7 @@ use serde::{Deserialize, Deserializer};
 use toml::Value as Toml;
 
 use super::session::{self, json_lines};
-use super::{Held, Kept, Link, SessionFile, SessionLayout};
+use super::{Held, Kept, Keystroke, Link, SessionFile, SessionLayout};
 use crate::guard::Call;
 use crate::line::Line;
 use crate::role::{Rules, Start, Told};
@@ -557,6 +557,55 @@ pub(super) fn note_layout(cwd: &str) -> SessionLayout {
     }
 }
 
+/// What a busy Grok prints when a typed line waits in its input queue, and
+/// the key that hint names. Measured 2026-11-01 (sunfmin/control#387): the
+/// line stays queued until Enter, which the screen calls send now. A line
+/// still only queued is not a message the model was given.
+const QUEUE: &str = "Queued";
+const SEND_NOW: &str = "Enter:send now";
+/// The shortest visible piece of the typed line that counts as that line on
+/// a truncated queue row. Shorter, and a header could match.
+const SHOWN_MIN: usize = 8;
+
+/// The key that hands `line` to the model now, when `screen` shows it
+/// waiting in the input queue. `None` when the screen does not show that
+/// queue, or does not show this line on it.
+pub(super) fn send_queued(screen: &[String], line: &str) -> Option<Keystroke> {
+    let line = squash(line);
+    if line.chars().count() < SHOWN_MIN {
+        return None;
+    }
+    let flat = squash(&screen.join(" "));
+    if !flat.contains(QUEUE) || !flat.contains(SEND_NOW) {
+        return None;
+    }
+    screen.iter().any(|raw| shows_item(raw, &line)).then_some(Keystroke { text: None, enter: true })
+}
+
+fn squash(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Whether `raw` is a queue row whose visible text is `line`, or the head of
+/// it where the row is cut short.
+fn shows_item(raw: &str, line: &str) -> bool {
+    let shown = visible_item(raw);
+    let n = shown.chars().count();
+    n >= SHOWN_MIN && (line.starts_with(&shown) || shown.starts_with(line))
+}
+
+/// A queue row with its index and a trailing ellipsis taken off.
+fn visible_item(raw: &str) -> String {
+    let shown = squash(raw);
+    let shown = match shown.strip_prefix('#') {
+        Some(rest) if rest.starts_with(|c: char| c.is_ascii_digit()) => {
+            rest.trim_start_matches(|c: char| c.is_ascii_digit()).trim_start()
+        }
+        _ => shown.as_str(),
+    };
+    shown.trim_end_matches(['.', '…']).trim().to_string()
+}
+
 /// The chat entry a stand-in writes for `line`, typed while the worker
 /// worked, once Grok gave it to its model: as Grok words it. A line still in
 /// its input queue is in no file.
@@ -648,7 +697,7 @@ pub(super) fn session_files(cwd: &str, open: bool, at: u64) -> Vec<SessionFile> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::harness::Harness;
+    use crate::harness::{Harness, Keystroke};
     use crate::role::{Facts, On};
 
     fn start<'a>(model: Option<&'a str>, host_user: bool) -> Start<'a> {
@@ -849,6 +898,48 @@ hooks = [{ type = "command", command = "role hook", timeout = 5 }]
                 .to_string()
                 .contains("disagree")
         );
+    }
+
+    #[test]
+    fn a_busy_grok_queues_a_line_until_enter_sends_it_now() {
+        let line = "Operator's note (also on the issue: https://github.com/acme/widgets/issues/7#issuecomment-41): use the v2 endpoint";
+        let screen = vec![
+            "reading the repo".to_string(),
+            "▾ Queued 1".to_string(),
+            "#1 Operator's note …".to_string(),
+            "Enter:send now".to_string(),
+        ];
+        assert_eq!(
+            Harness::Grok.send_queued(&screen, line),
+            Some(Keystroke { text: None, enter: true })
+        );
+        // The hint wraps, and the row holds the whole line.
+        let wrapped =
+            vec!["▾ Queued 1".into(), format!("#1 {line}"), "Enter:send".into(), "now".into()];
+        assert_eq!(
+            Harness::Grok.send_queued(&wrapped, line),
+            Some(Keystroke { text: None, enter: true })
+        );
+        // Another line is queued. Enter would hand that one over, not this.
+        let other = vec![
+            "▾ Queued 1".into(),
+            "#1 land after the other issue …".into(),
+            "Enter:send now".into(),
+        ];
+        assert_eq!(Harness::Grok.send_queued(&other, line), None);
+        // No queue, or no send-now hint: the line was not seen waiting.
+        assert_eq!(Harness::Grok.send_queued(&["#1 Operator's note …".into()], line), None);
+        assert_eq!(
+            Harness::Grok.send_queued(&["▾ Queued 1".into(), "#1 Operator's note …".into()], line),
+            None
+        );
+        assert_eq!(Harness::Grok.send_queued(&screen, "short"), None);
+        for harness in Harness::ALL {
+            if harness == Harness::Grok {
+                continue;
+            }
+            assert_eq!(harness.send_queued(&screen, line), None, "{}", harness.key());
+        }
     }
 
     #[test]

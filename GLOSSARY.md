@@ -303,7 +303,7 @@ The one line the fleet types at a stopped worker with no outcome, telling it to 
 _Avoid_: ping, reminder, retry
 
 **Tell**:
-The operator's note to the worker at work on an issue, busy or stopped, with `afkconvoy tell`. Posted on the issue first, its one home, which every later worker reads; then typed at the worker under this host's claim, and told only once its harness's session record holds it as a message its model was given as the user's. A note seen only in the harness's input queue is not told. A nudge is the fleet's own line to a stopped worker, telling it to carry on; a tell is the operator's words.
+The operator's note to the worker at work on an issue, busy or stopped, with `afkconvoy tell`. Posted on the issue first, its one home, which every later worker reads; then typed at the worker under this host's claim, and told only once its harness's session record holds it as a message its model was given as the user's. A note seen only in the harness's input queue is not told. A busy Grok keeps a line typed while it works in that queue until its screen shows the line queued, and tell presses send now so the model is given it. A nudge is the fleet's own line to a stopped worker, telling it to carry on; a tell is the operator's words.
 _Avoid_: relay
 
 **Restart**:
