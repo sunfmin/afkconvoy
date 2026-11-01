@@ -154,6 +154,19 @@ pub(crate) fn working_directories() -> anyhow::Result<Vec<PathBuf>> {
     Ok(dirs)
 }
 
+/// Processes whose current directory is in this worktree, without their environment.
+pub(crate) fn working_in(worktree: &Path) -> anyhow::Result<Vec<String>> {
+    Ok(listed_checked()?
+        .into_iter()
+        .filter_map(|proc| {
+            let cwd = works_in(proc.pid)?;
+            occupies(&[cwd], worktree).then(|| {
+                format!("{} {}", proc.pid, proc.line.split_whitespace().next().unwrap_or("unknown"))
+            })
+        })
+        .collect())
+}
+
 /// Whether any process's working directory is `worktree` or a path inside it.
 pub(crate) fn occupies(directories: &[PathBuf], worktree: &Path) -> bool {
     let worktree = std::fs::canonicalize(worktree).unwrap_or_else(|_| worktree.to_path_buf());

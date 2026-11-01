@@ -432,10 +432,10 @@ fn carry_out(
         }
     }
     match step {
-        TickStep::Settle { issue } => {
-            settle(fleet, me, issue)?;
-            Ok(Outcome::Done)
-        }
+        TickStep::Settle { issue } => Ok(match settle(fleet, me, issue)? {
+            Some(since) => Outcome::Waiting(since),
+            None => Outcome::Done,
+        }),
         TickStep::Forget { issue } => forget(fleet, me, issue),
         TickStep::Judge { issue, start } => judge(fleet, me, agent, issue, start),
         TickStep::Watch { issue, start } => watch(fleet, me, agent, issue, start),
@@ -921,10 +921,16 @@ impl Ticked {
         }
         // A worker left as it waits on its own background work, and since when:
         // it is not silent, and the line says why it was not nudged.
+        for (step, outcome) in &self.pass.did {
+            if let (TickStep::Settle { issue }, Outcome::Waiting(_)) = (step, outcome) {
+                parts.push(format!("settling #{issue} once its worker leaves"));
+            }
+        }
         let waiting: Vec<String> = self
             .pass
             .did
             .iter()
+            .filter(|(step, _)| !matches!(step, TickStep::Settle { .. }))
             .filter_map(|(step, outcome)| match outcome {
                 Outcome::Waiting(since) => {
                     let since = waiting_since(*since, self.now);

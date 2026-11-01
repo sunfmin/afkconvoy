@@ -186,6 +186,7 @@ kinds! {
     StateUnread: Critical, "the fleet's state cannot be read";
     NoWorker: Warning, "has no worker";
     WorkerStopped: Warning, "has been stopped for";
+    SettleWaiting: Warning, "settling has waited for its worker";
     WorkerHealth: Warning, "worker health is waiting for the operator";
     HealthOverdue: Warning, "its health observation is overdue";
     NotAlive: Warning, "its fleet instance is not alive";
@@ -764,6 +765,29 @@ fn run_findings(run: &Run, held: &[Held]) -> Vec<Finding> {
 
 /// A claim with no worker, a worker stopped for long, and a role or a team
 /// that moved since a stage in flight started.
+fn settle_wait_findings(run: &Run, held: &[Held], now: u64) -> Vec<Finding> {
+    held.iter().filter_map(|claim| {
+        if claim.at_work() { return None; }
+        let path = claim.worktree.as_ref()?;
+        let worktree = Worktree::at(path.clone(), String::new());
+        let since: u64 = std::fs::read_to_string(worktree.note("convoy-settle-wait").ok()?).ok()?.trim().parse().ok()?;
+        if now.saturating_sub(since) < afkconvoy_core::worker::GRACE { return None; }
+        let processes = crate::hot::working_in(path).ok()?;
+        if claim.worker != Some(WorkerState::Busy) && processes.is_empty() { return None; }
+        let state = match claim.worker {
+            Some(WorkerState::Busy) => "busy",
+            Some(WorkerState::Idle { .. }) => "idle",
+            Some(WorkerState::Gone) => "gone",
+            None => "unknown",
+        };
+        Some(finding(Kind::SettleWaiting, json!(["settle-waiting", claim.issue, path]),
+            format!("settling has waited for its worker of #{} in {}", claim.issue, path.display()),
+            format!("worker state: {state}; processes in the worktree: {}; tick-observed wait since {} UTC",
+                if processes.is_empty() { "none".to_string() } else { processes.join(", ") }, crate::log::utc(since)),
+            format!("afkconvoy tick --instance {}", run.instance.as_deref().unwrap_or_default())))
+    }).collect()
+}
+
 fn claim_findings(run: &Run, held: &[Held], now: u64) -> Vec<Finding> {
     let mut found = vec![];
     let instance = run.instance.as_deref().unwrap_or_default();
@@ -1433,6 +1457,7 @@ pub fn findings(seen: &Seen) -> Vec<Finding> {
             found.extend(team_findings(&state.team));
             found.extend(plan_findings(seen.run, state));
             found.extend(claim_findings(seen.run, &state.held, seen.now));
+            found.extend(settle_wait_findings(seen.run, &state.held, seen.now));
             found.extend(issue_findings(&state.stood, &state.team, seen.now));
             found.extend(waiting_findings(&state.set.waiting_on_human, seen.now));
             found.extend(crate::blockers::findings(&state.set.unworked_blockers));

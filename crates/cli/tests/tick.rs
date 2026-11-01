@@ -308,7 +308,7 @@ fn a_later_tick_removes_a_worktree_orca_already_gave_up_on() {
 }
 
 #[test]
-fn a_worktree_a_process_is_in_stays_until_that_process_is_gone() {
+fn a_worktree_a_process_is_in_waits_until_that_process_is_gone() {
     let world = backlog(&[3]);
     tick(&world, "1000");
     let worktree = worker_worktree(&world);
@@ -316,9 +316,8 @@ fn a_worktree_a_process_is_in_stays_until_that_process_is_gone() {
     let _held = Hold(Command::new("sleep").arg("120").current_dir(&worktree).spawn().unwrap());
 
     let ticked = tick(&world, "1090");
-    assert_eq!(did(&ticked), ["settle 3 failed", "heartbeat done"], "{ticked}");
-    let error = ticked["errors"][0]["error"].as_str().unwrap();
-    assert!(error.contains("still using"), "{error}");
+    assert_eq!(did(&ticked), ["settle 3 waiting", "heartbeat done"], "{ticked}");
+    assert_eq!(ticked["errors"], json!([]), "{ticked}");
     assert!(worktree.is_dir(), "a worktree a process is in stays");
     assert_eq!(world.claims(), alpha(&[3]));
 
@@ -353,29 +352,129 @@ fn a_landed_worker_idle_at_its_prompt_is_ended_and_its_worktree_removed() {
 }
 
 #[test]
-fn a_worker_still_working_keeps_its_worktree() {
-    let world = backlog(&[3]);
+fn settling_waits_for_a_finishing_worker_then_leaves_without_a_failed_tick() {
+    let world = backlog(&[391]);
     tick(&world, "1000");
     let worktree = worker_worktree(&world);
     let session = Session::start(&world, &worktree);
     report(&world, "working", 1000);
-    world.close_issue(3);
+    world.close_issue(391);
 
-    let ticked = tick(&world, "1090");
-    assert_eq!(did(&ticked), ["settle 3 failed", "heartbeat done"], "{ticked}");
-    let error = ticked["errors"][0]["error"].as_str().unwrap();
-    assert!(error.contains("a worker is still using"), "{error}");
+    let (lines, _) = world.afk_lines(&[
+        "run",
+        "--foreground",
+        "--instance",
+        "alpha",
+        "--host",
+        "h1",
+        "--now",
+        "1090",
+        "--ticks",
+        "1",
+        "--second-ms",
+        "0",
+    ]);
+    assert!(
+        lines.iter().any(|line| line.contains("settling #391 once its worker leaves")),
+        "{lines:?}"
+    );
+    let doctor = world.afk(&["doctor", "--host", "h1", "--now", "1090"]).json;
+    assert!(
+        doctor["fleet"]["last_tick"]["line"]
+            .as_str()
+            .unwrap()
+            .contains("settling #391 once its worker leaves")
+    );
+    let findings = doctor["findings"].as_array().unwrap();
+    assert!(
+        !findings.iter().any(|finding| matches!(
+            finding["kind"].as_str(),
+            Some("step_unrecovered" | "settle_waiting")
+        )),
+        "{findings:#?}"
+    );
+    let all =
+        world.afk(&["doctor", "--all", "--host", "h1", "--since", "1000", "--now", "1090"]).json;
+    let findings = all["checkouts"][0]["doctor"]["findings"].as_array().unwrap();
+    assert!(!findings.iter().any(|finding| finding["kind"] == "tick_failed"), "{findings:#?}");
     assert!(!session.ended(), "a worker still working is left alone");
     assert_eq!(open_terminals(&world, &worktree).len(), 1);
     assert!(worktree.is_dir());
-    assert_eq!(world.claims(), alpha(&[3]));
+    assert_eq!(world.claims(), alpha(&[391]));
 
     report(&world, "idle", 1100);
-    let again = tick(&world, "1180");
-    assert_eq!(did(&again)[0], "settle 3 done", "{again}");
+    let (lines, _) = world.afk_lines(&[
+        "run",
+        "--foreground",
+        "--instance",
+        "alpha",
+        "--host",
+        "h1",
+        "--now",
+        "1180",
+        "--ticks",
+        "1",
+        "--second-ms",
+        "0",
+    ]);
+    // A new run has no previous tick to attribute an outside closure to.
+    assert!(lines.iter().any(|line| line.contains("settled #391")), "{lines:?}");
+    let doctor = world.afk(&["doctor", "--host", "h1", "--now", "1180"]).json;
+    assert!(doctor["fleet"]["last_tick"]["line"].as_str().unwrap().contains("settled #391"));
     assert!(session.ended());
     assert!(!worktree.exists(), "once it stopped, the next tick ends it and removes the worktree");
     assert_eq!(world.claims(), []);
+}
+
+#[test]
+fn a_run_says_left_after_a_finishing_worker_leaves() {
+    let world = backlog(&[391]);
+    let running =
+        world.running(&["--instance", "alpha", "--host", "h1", "--ticks", "3", "--now", "1000"]);
+    let soon = std::time::Duration::from_secs(20);
+    assert!(running.line(soon).unwrap().contains("dispatched #391"));
+    let worktree = worker_worktree(&world);
+    let session = Session::start(&world, &worktree);
+    report(&world, "working", 1000);
+    world.close_issue(391);
+    world.afk(&["wake"]).ok();
+    let waiting = running.line(soon).unwrap();
+    assert!(waiting.contains("settling #391 once its worker leaves"), "{waiting}");
+    assert!(!waiting.contains("FAILED"), "{waiting}");
+    report(&world, "idle", 1000);
+    world.afk(&["wake"]).ok();
+    let left = running.line(soon).unwrap();
+    assert!(left.contains("left #391"), "{left}");
+    assert!(session.ended());
+    assert!(!worktree.exists());
+}
+
+#[test]
+fn a_worker_still_busy_after_the_settle_grace_gets_exactly_one_finding() {
+    let world = backlog(&[381]);
+    tick(&world, "1000");
+    let worktree = worker_worktree(&world);
+    let _session = Session::start(&world, &worktree);
+    report(&world, "working", 1000);
+    world.close_issue(381);
+
+    tick(&world, "1090");
+    let waiting = tick(&world, "1450");
+    assert_eq!(waiting["errors"], json!([]), "{waiting}");
+    let doctor = world.afk(&["doctor", "--host", "h1", "--now", "1450"]).json;
+    let found: Vec<_> = doctor["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|finding| finding["kind"] == "settle_waiting")
+        .collect();
+    assert_eq!(found.len(), 1, "{found:#?}");
+    assert!(found[0]["what"].as_str().unwrap().contains("#381"), "{found:#?}");
+    assert!(found[0]["what"].as_str().unwrap().contains(worktree.to_str().unwrap()));
+    let evidence = found[0]["evidence"].as_str().unwrap();
+    assert!(evidence.contains("busy"), "{evidence}");
+    assert!(evidence.contains("processes"), "{evidence}");
+    assert!(evidence.contains("tick-"), "{evidence}");
 }
 
 #[test]
