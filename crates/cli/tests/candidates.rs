@@ -1404,6 +1404,57 @@ fn a_record_past_arg_max_is_written_and_drops_the_candidates_nothing_holds() {
     assert!(history.lines().any(|sha| sha == seeded), "the seeded record stays reachable");
 }
 
+/// The FelixMBP14 case (sunfmin/control#459): a fast-green candidate's turn
+/// exited on a transient remote fault while a successor slow-gated. Its next
+/// turn takes ownership of the stopped candidate and its recorded evidence;
+/// the successor and the round are not cancelled.
+#[test]
+fn a_stopped_fast_green_candidate_is_adopted_without_cancelling_its_round() {
+    let world = split_world(2);
+    let (a, _) = worker(&world, 1, "a");
+    let (b, _) = worker(&world, 2, "b");
+    let _runner = world.host_held();
+    let mut first = start(&world, &a, &world.cache(), 1);
+    until(|| {
+        if first.try_wait().unwrap().is_some() {
+            let mut out = String::new();
+            std::io::Read::read_to_string(first.stdout.as_mut().unwrap(), &mut out).unwrap();
+            panic!("first turn exited early: {out}");
+        }
+        started(&world, "fast", "a")
+    });
+    let behind = start(&world, &b, &world.cache(), 2);
+    until(|| started(&world, "fast", "b"));
+    let_go(&world, "fast", "a", false);
+    green(&world, 1);
+    let_go(&world, "fast", "b", false);
+    until(|| started(&world, "slow", "b"));
+    let original = chain(&world)["candidates"].clone();
+    let id = original[0]["id"].as_str().unwrap().to_string();
+    let commit = original[0]["commit"].as_str().unwrap().to_string();
+    assert!(original[0]["stopped"].as_bool().unwrap());
+    assert!(original[0]["result"]["recorded"].as_bool().unwrap());
+
+    assert!(
+        Command::new("kill").args(["-KILL", &first.id().to_string()]).status().unwrap().success()
+    );
+    first.wait().unwrap();
+    let recovered = start(&world, &a, &world.cache(), 1);
+    std::thread::sleep(Duration::from_secs(2));
+    let adopting = chain(&world)["candidates"].clone();
+    assert_eq!(adopting[0]["id"], id, "the immutable candidate is retained: {adopting}");
+    assert_eq!(adopting[0]["owner"]["pid"], recovered.id(), "{adopting}");
+    assert_eq!(adopting[0]["cause"], Value::Null, "{adopting}");
+    assert_eq!(adopting[1]["cause"], Value::Null, "its successor stays valid: {adopting}");
+    assert_eq!(adopting[0]["result"], original[0]["result"], "its fast-gate evidence stands");
+
+    let_go(&world, "slow", "b", false);
+    assert_eq!(finish(recovered)["outcome"], "merged");
+    assert_eq!(finish(behind)["outcome"], "merged");
+    assert_eq!(world.remote(&["rev-parse", "refs/heads/main"]), original[1]["commit"]);
+    assert!(world.remote(&["rev-list", "refs/heads/main"]).lines().any(|landed| landed == commit));
+}
+
 /// `land --issue n` in `dir` with its clock at `now`.
 fn start_at(world: &World, dir: &Path, n: u64, now: u64) -> Child {
     world
