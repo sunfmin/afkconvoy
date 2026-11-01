@@ -41,6 +41,8 @@ pub struct Worker {
     pub end: Option<u64>,
     pub seconds: Option<u64>,
     pub verdict: Option<String>,
+    #[serde(default)]
+    pub tokens: Option<super::Tokens>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -114,8 +116,38 @@ pub fn render(row: &Record) -> String {
         if let Some(verdict) = &worker.verdict {
             line.push_str(&format!(", verdict `{verdict}`"));
         }
+        if let Some(tokens) = &worker.tokens {
+            for (model, count) in tokens {
+                let model = if model.is_empty() { "unknown" } else { model };
+                line.push_str(&format!(
+                    ", tokens ({model}): input {}, cache read {}, cache write {}, output {}",
+                    count.input, count.cache_read, count.cache_write, count.output
+                ));
+                if let Some(reasoning) = count.reasoning {
+                    line.push_str(&format!(", reasoning {reasoning}"));
+                }
+            }
+        } else {
+            line.push_str(", tokens unknown");
+        }
         workers.push(format!("{line}."));
     }
+    let mut total = super::Counts::default();
+    let mut unknown = 0usize;
+    for worker in &row.workers {
+        match &worker.tokens {
+            Some(tokens) => {
+                for count in tokens.values() {
+                    total.add(count);
+                }
+            }
+            None => unknown = unknown.saturating_add(1),
+        }
+    }
+    let token_total = format!(
+        "Tokens: input {}, cache read {}, cache write {}, output {}; {unknown} workers unknown.",
+        total.input, total.cache_read, total.cache_write, total.output
+    );
     let mut gates = vec![];
     for gate in &row.gates {
         let result = gate.result.as_deref().unwrap_or("unknown");
@@ -149,7 +181,7 @@ pub fn render(row: &Record) -> String {
         .replace('>', "\\u003e")
         .replace('`', "\\u0060");
     format!(
-        "<!--convoy:account -->\n**afkconvoy** — work account.\n\n{wall}\n\nMachine: {cpu}, {cpus}, {bytes}.\n\nWorkers:\n{workers}\n\nGates:\n{gates}\n\n<details>\n<summary>Work account JSON</summary>\n\n```json\n{json}\n```\n\n</details>\n"
+        "<!--convoy:account -->\n**afkconvoy** — work account.\n\n{wall}\n\nMachine: {cpu}, {cpus}, {bytes}.\n\nWorkers:\n{workers}\n\n{token_total}\n\nGates:\n{gates}\n\n<details>\n<summary>Work account JSON</summary>\n\n```json\n{json}\n```\n\n</details>\n"
     )
 }
 

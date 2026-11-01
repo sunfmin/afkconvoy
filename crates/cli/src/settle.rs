@@ -117,6 +117,7 @@ fn remove_settled(fleet: &Fleet, issue: u64, worktree: &Worktree) -> Result<Opti
     if settled_keeps(fleet, issue, worktree)? {
         return Ok(None);
     }
+    crate::account::refresh_stopped(&fleet.repo, &fleet.gh, issue)?;
     worktree.remove()?;
     Ok(None)
 }
