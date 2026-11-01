@@ -41,6 +41,7 @@ pub fn tell(fleet: &Fleet, host: &str, issue: u64, text: &str) -> Result<Value> 
     let handed = worktree.hand_note(&terminal, &line, &comment, since).with_context(|| {
         format!("issue #{issue}: the note was not told; it is on the issue at {comment}")
     })?;
+    worktree.clear_turn()?;
     worktree.record_told(fleet.now, &comment)?;
     let mut answer =
         json!({"issue": issue, "action": "told", "terminal": terminal, "comment": comment});

@@ -62,14 +62,16 @@ pub fn progress(worktree: &Worktree, base_tip: &str) -> Result<Progress> {
         .filter_map(|path| std::fs::symlink_metadata(repo.dir.join(path)).ok()?.modified().ok())
         .filter_map(|at| Some(at.duration_since(UNIX_EPOCH).ok()?.as_secs()))
         .max();
-    Ok(Progress {
+    let mut progress = Progress {
         commits_ahead: ahead.stdout.parse().ok().filter(|_| merge_base.ok && ahead.ok),
         trees_equal: (merge_base.ok && base_tree.ok && head_tree.ok)
             .then_some(base_tree.stdout == head_tree.stdout),
         dirty,
         last_commit: committed.stdout.parse().ok().filter(|_| committed.ok),
         touched,
-    })
+    };
+    crate::turn_answer::worker_progress(worktree, &mut progress)?;
+    Ok(progress)
 }
 
 /// What refutes an `already-satisfied` verdict, including the committed and

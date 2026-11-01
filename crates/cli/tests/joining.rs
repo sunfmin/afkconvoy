@@ -109,6 +109,158 @@ fn an_idle_unbound_codex_worker_has_its_waiting_turn_asked_again_without_a_harne
 }
 
 #[test]
+fn a_fleet_asked_red_turn_hands_its_answer_to_the_idle_worker_on_the_next_tick() {
+    let world = World::new();
+    // The base passes; the candidate's change makes its gate fail.
+    world.set_gate("if test -f seven.txt; then echo 'FAIL checkout::worker_brief'; exit 1; fi");
+    let world = joining_in(world);
+    world.say_concurrency(&world.clone, 1);
+    let dir = worktree(&world);
+    let notes = PathBuf::from(git(&dir, &["rev-parse", "--absolute-git-dir"]));
+    let file = notes.join("convoy-turn.json");
+    std::fs::write(&file, json!({"outcome": "waiting_for_capacity", "at": 1000}).to_string())
+        .unwrap();
+    world.with_orca(|orca| {
+        orca["notes"] = json!("taken");
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            terminal["agent"] = json!({"state": "done", "stateStartedAt": 1_050_000});
+            terminal["lastOutputAt"] = json!(1_050_000);
+        }
+    });
+    let terminals = open_terminals(&world, &dir);
+    let asked = tick(&world, 1500);
+    assert!(did(&asked).contains(&"watch 7 asked".to_string()), "{asked}");
+    let began = Instant::now();
+    loop {
+        let note: Value = std::fs::read(&file)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default();
+        if note["outcome"] == "gate_red" {
+            break;
+        }
+        assert!(
+            began.elapsed() < Duration::from_secs(30),
+            "the retried turn did not answer gate_red: {note}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let (lines, _) = world.afk_lines(&[
+        "run",
+        "--foreground",
+        "--instance",
+        "alpha",
+        "--host",
+        "h1",
+        "--second-ms",
+        "0",
+        "--ticks",
+        "1",
+        "--now",
+        "1800",
+    ]);
+    assert!(lines[0].contains("told its turn's answer to #7"), "{lines:?}");
+    assert!(lines[0].contains("holding 1/1"), "{lines:?}");
+    assert!(!lines[0].contains("nothing to do"), "{lines:?}");
+    let sends = turn_answer_lines(&world);
+    assert_eq!(sends.len(), 1, "{sends:?}");
+    let line = &sends[0];
+    for expected in [
+        "gate_red",
+        "checkout::worker_brief",
+        "fix your change",
+        "afkconvoy land --issue",
+        notes.join("convoy-turn.log").to_str().unwrap(),
+    ] {
+        assert!(line.contains(expected), "missing {expected}: {line}");
+    }
+    assert_eq!(open_terminals(&world, &dir), terminals, "the idle worker took the answer");
+    world.issue(8, &["ready-for-agent"]);
+    let next = tick(&world, 1801);
+    assert_eq!(next["frontier_remaining"], 1, "the handed worker holds its slot: {next}");
+    assert_eq!(turn_answer_lines(&world).len(), 1, "no duplicate handoff");
+    // The worker asks again: its turn replaces the handoff receipt.
+    let answer = world.afk_in(&dir, &["land", "--issue", "7"]).ok();
+    assert_eq!(answer["outcome"], "gate_red", "{answer}");
+    let next = tick(&world, 1802);
+    assert!(did(&next).contains(&"dispatch 8 done".to_string()), "{next}");
+}
+
+fn turn_answer_lines(world: &World) -> Vec<String> {
+    world.orca()["terminals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|terminal| terminal["sent"].as_array().into_iter().flatten())
+        .filter_map(|sent| sent["text"].as_str())
+        .filter(|text| text.contains("turn-answer:"))
+        .map(str::to_string)
+        .collect()
+}
+
+#[test]
+fn fleet_asked_conflicts_are_handed_once_even_after_the_fleet_changed_the_tree() {
+    for (outcome, gone) in
+        [("conflict", false), ("speculative_conflict", false), ("gate_red", true)]
+    {
+        let world = joining();
+        let dir = worktree(&world);
+        let notes = PathBuf::from(git(&dir, &["rev-parse", "--absolute-git-dir"]));
+        // These recent fleet writes used to count as the idle worker's life.
+        commit(&dir, "fleet-merge.txt", "the round's tip\n");
+        std::fs::write(dir.join("conflicted.txt"), "resolve me\n").unwrap();
+        let at =
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        std::fs::write(notes.join("convoy-turn.json"), json!({
+            "outcome": outcome, "at": at, "handoff": outcome,
+            "answer": {"outcome": outcome, "files": ["conflicted.txt"], "excerpt": "FAIL round_test", "round": [{"pr": 70, "issue": 7}]}
+        }).to_string()).unwrap();
+        world.with_orca(|orca| {
+            orca["notes"] = json!("taken");
+            for terminal in orca["terminals"].as_array_mut().unwrap() {
+                terminal["agent"] = json!({"state": "done", "stateStartedAt": 1_050_000});
+                terminal["lastOutputAt"] = json!(1_050_000);
+                if gone {
+                    terminal["open"] = json!(false);
+                }
+            }
+        });
+        let ticked = tick(&world, at);
+        assert_eq!(ticked["errors"], json!([]), "{ticked}");
+        assert!(did(&ticked).contains(&"watch 7 told".to_string()), "{outcome}: {ticked}");
+        let text = if gone { brief(&dir) } else { turn_answer_lines(&world).join("\n") };
+        for expected in [outcome, "conflicted.txt", "FAIL round_test", "convoy-turn.log"] {
+            assert!(text.contains(expected), "{outcome} missing {expected}: {text}");
+        }
+        assert_eq!(std::fs::read_to_string(dir.join("conflicted.txt")).unwrap(), "resolve me\n");
+        let before = turn_answer_lines(&world).len();
+        assert_eq!(tick(&world, at + 1)["errors"], json!([]));
+        assert_eq!(turn_answer_lines(&world).len(), before);
+    }
+}
+
+#[test]
+fn an_answer_queued_in_the_harness_is_pending_until_the_model_takes_it() {
+    let world = joining();
+    let dir = worktree(&world);
+    let notes = PathBuf::from(git(&dir, &["rev-parse", "--absolute-git-dir"]));
+    let file = notes.join("convoy-turn.json");
+    std::fs::write(&file, json!({"outcome": "conflict", "at": 1000, "handoff": "queued", "answer": {"files": ["README.md"]}}).to_string()).unwrap();
+    world.with_orca(|orca| orca["notes"] = json!("queued"));
+    let failed = tick(&world, 1500);
+    assert!(!failed["errors"].as_array().unwrap().is_empty(), "{failed}");
+    assert!(!notes.join("convoy-turn-told.json").exists(), "queued is not delivered");
+    world.with_orca(|orca| orca["notes"] = json!("taken"));
+    let told = tick(&world, 1501);
+    assert!(did(&told).contains(&"watch 7 told".to_string()), "{told}");
+    let receipt: Value =
+        serde_json::from_slice(&std::fs::read(notes.join("convoy-turn-told.json")).unwrap())
+            .unwrap();
+    assert_eq!(receipt["at"], 1501, "{receipt}");
+    assert_eq!(receipt["handoff"], "queued", "{receipt}");
+}
+
+#[test]
 fn doctor_exempts_landing_turn_waits_but_still_reports_workers_that_need_to_change_the_tree() {
     use afkconvoy_core::ending::Ending;
 

@@ -1492,7 +1492,7 @@ impl Worktree {
         let file = self.note(START_FILE)?;
         std::fs::write(&file, now.to_string())
             .with_context(|| format!("cannot write {}", file.display()))?;
-        self.forget(TURN_FILE)?;
+        crate::turn_answer::forget_wait(self)?;
         Ok(handle.to_string())
     }
 
@@ -1690,7 +1690,6 @@ impl Worktree {
         let mut sent_now = false;
         loop {
             if crate::session::holds_note(&self.path, harness, since, mark)? {
-                self.forget(TURN_FILE)?;
                 return Ok(Handed::Taken { seconds: typed.elapsed().as_secs() });
             }
             if !sent_now {
@@ -1800,7 +1799,10 @@ impl Worktree {
     /// after that.
     pub fn handed(&self, since: Option<u64>) -> Result<Option<u64>> {
         let started = std::fs::read_to_string(self.note(START_FILE)?).ok();
-        Ok(started.and_then(|at| at.trim().parse().ok()).max(since))
+        Ok(started
+            .and_then(|at| at.trim().parse().ok())
+            .max(since)
+            .max(crate::turn_answer::handed(self)?))
     }
 
     /// Waits until the agent in `terminal` is ready for a prompt. A trust
@@ -1941,12 +1943,16 @@ impl Worktree {
         self.tell_at(terminal, line, crate::clock())
     }
 
+    pub(crate) fn clear_turn(&self) -> Result<()> {
+        self.forget(TURN_FILE)
+    }
+
     pub fn tell_at(&self, terminal: &str, line: &str, now: u64) -> Result<()> {
         let earliest = crate::clock().saturating_sub(2);
         crate::harness_down::tell(self, terminal, now, || {
             self.tell_unchecked(terminal, line, 1, None, earliest)
         })?;
-        self.forget(TURN_FILE)
+        crate::turn_answer::forget_wait(self)
     }
 
     fn tell_unchecked(

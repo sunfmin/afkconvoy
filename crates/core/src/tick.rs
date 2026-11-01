@@ -98,6 +98,9 @@ pub enum Outcome {
     /// `Watch` asked for the turn of a PR whose last turn answered a wait,
     /// starting no harness: the claim is still held, and takes no slot.
     Asked,
+    /// `Watch` handed a fleet-asked turn's answer to its worker, which now
+    /// changes the tree and takes a slot until it asks for a turn again.
+    Told,
     /// There was nothing for it to do.
     Nothing,
     /// A peer holds the issue — it won the race, or its heartbeat came back:
@@ -208,6 +211,7 @@ impl Pass {
                     | Outcome::Nudged
                     | Outcome::Continued
                     | Outcome::Restarted
+                    | Outcome::Told
                     | Outcome::Gone
             )
         })
@@ -473,7 +477,7 @@ where
     };
     let outcome = carry_out(step);
     did.push((step, outcome));
-    let started = outcome == Outcome::Continued || outcome == Outcome::Restarted;
+    let started = matches!(outcome, Outcome::Continued | Outcome::Restarted | Outcome::Told);
     if mine.slotless() && started && slots.has_free() {
         slots.restart_declared();
     }
@@ -1570,6 +1574,26 @@ mod tests {
         });
         assert!(pass.did.contains(&(Watch { issue: 1, start: false }, Nothing)));
         assert_eq!((pass.held, pass.bound, pass.frontier_remaining), (2, 2, 1));
+    }
+
+    #[test]
+    fn handing_a_turn_answer_takes_a_slot_before_the_frontier_and_counts_as_work() {
+        let set = idle_landings(&[7], &[1]);
+        let pass = run_pass(&set, set.bound(1), set.held(), |step| match step {
+            Watch { start: true, .. } => Told,
+            _ => Nothing,
+        });
+        assert_eq!((pass.held, pass.bound, pass.frontier_remaining), (1, 1, 1));
+        assert!(pass.did_work());
+        assert!(!pass.did.iter().any(|(step, _)| matches!(step, Dispatch { .. })));
+
+        let mut full = idle_landings(&[], &[1]);
+        full.mine.push(Mine { number: 2, idle: false, ..full.mine[0].clone() });
+        let pass = run_pass(&full, full.bound(1), full.held(), |step| match step {
+            Watch { start: true, .. } => Told,
+            _ => Nothing,
+        });
+        assert!(pass.did.contains(&(Watch { issue: 1, start: false }, Nothing)));
     }
 
     /// A set of three claims with no PR, the last of which declared.
