@@ -426,6 +426,7 @@ impl World {
         let shown = |path: &Path| path.display().to_string();
         let mut env = vec![
             ("PATH".to_string(), path),
+            ("AFKCONVOY_TEST_OWNER".to_string(), std::process::id().to_string()),
             ("CONVOY_FAKE_GH".to_string(), shown(&self.gh_file)),
             ("CONVOY_FAKE_ORCA".to_string(), shown(&self.orca_file)),
             ("AFKCONVOY_TMP_LINKS".to_string(), shown(&self.tmp_links.path().join("links"))),

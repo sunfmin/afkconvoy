@@ -570,6 +570,26 @@ pub fn log_path() -> Result<PathBuf> {
 /// One that does not answer leaves this one holding the host again, as it
 /// held it before, and trying that file no more until it changes.
 pub fn serve() -> Result<Value> {
+    // Test worlds put their test process in the login environment. A detached
+    // runner must not survive a timeout or SIGKILL that bypasses World::drop.
+    // Real login environments do not set this fixture-only lifeline.
+    if let Some(owner) = std::env::var("AFKCONVOY_TEST_OWNER")
+        .ok()
+        .and_then(|value| value.parse::<libc::pid_t>().ok())
+        .filter(|pid| *pid > 1)
+    {
+        std::thread::spawn(move || {
+            loop {
+                // SAFETY: signal zero only observes whether the test still exists.
+                if unsafe { libc::kill(owner, 0) } != 0
+                    && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+                {
+                    std::process::exit(0);
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        });
+    }
     // Before any thread starts: nothing moves it after, and nothing the
     // fleet does leans on it.
     std::env::set_current_dir("/").context("the host runner cannot work from /")?;

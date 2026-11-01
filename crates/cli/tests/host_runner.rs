@@ -19,6 +19,47 @@ use serde_json::{Value, json};
 /// A `run` of the first repo on the host `h1`, its sleeps short.
 const RUN: [&str; 7] = ["run", "--tracker", "default", "--host", "h1", "--second-ms", "100"];
 
+#[test]
+fn a_host_runner_ends_when_its_test_is_killed() {
+    const PROBE: &str = "CONVOY_RUNNER_OWNER_PROBE";
+    if let Some(path) = std::env::var_os(PROBE) {
+        let world = World::new();
+        world.afk(&RUN).ok();
+        std::fs::write(path, world.host_runner().unwrap().to_string()).unwrap();
+        loop {
+            std::thread::sleep(Duration::from_secs(1));
+        }
+    }
+    let rendezvous = tempfile::tempdir().unwrap();
+    let pid_file = rendezvous.path().join("runner");
+    let mut child = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "host_runner::a_host_runner_ends_when_its_test_is_killed"])
+        .env(PROBE, &pid_file)
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let until = Instant::now() + Duration::from_secs(30);
+    while !pid_file.exists() {
+        assert!(child.try_wait().unwrap().is_none(), "probe ended before starting its runner");
+        assert!(Instant::now() < until, "probe did not start its runner");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let pid: libc::pid_t = std::fs::read_to_string(pid_file).unwrap().parse().unwrap();
+    // SAFETY: the probe reports its runner before it parks; signal zero only observes it.
+    assert_eq!(unsafe { libc::kill(pid, 0) }, 0);
+    child.kill().unwrap();
+    child.wait().unwrap();
+    let until = Instant::now() + Duration::from_secs(5);
+    while unsafe { libc::kill(pid, 0) } == 0 {
+        if Instant::now() >= until {
+            // SAFETY: this is the runner the probe just started.
+            unsafe { libc::kill(pid, libc::SIGKILL) };
+            panic!("host runner {pid} outlived its killed test");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
 /// A `run` as `RUN`, for a test that waits for the next tick of a fleet
 /// instance that holds claims: a second of its sleeps takes 10ms, so each tick
 /// comes 0.9s after the last, not 9s. Not for an idle one: its empty ticks come
