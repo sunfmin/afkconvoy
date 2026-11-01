@@ -131,10 +131,10 @@ pub const WATCH_ISSUES_JQ: &str = ".data.repository.issues.nodes[] | \
 pub const ACCOUNTS_QUERY: &str = "query ConvoyAccounts($owner: String!, $repo: String!, \
     $labels: [String!], $endCursor: String) { repository(owner: $owner, name: $repo) { \
     issues(labels: $labels, first: 100, after: $endCursor) { \
-    pageInfo { hasNextPage endCursor } nodes { number url labels(first: 100) { nodes { name } } \
+    pageInfo { hasNextPage endCursor } nodes { number url closed labels(first: 100) { nodes { name } } \
     comments(first: 100) { pageInfo { hasNextPage } \
     nodes { fullDatabaseId body url createdAt } } } } } }";
-pub const ACCOUNTS_JQ: &str = ".data.repository.issues.nodes[] | {number, url, \
+pub const ACCOUNTS_JQ: &str = ".data.repository.issues.nodes[] | {number, url, closed, \
     labels: [.labels.nodes[].name], more: .comments.pageInfo.hasNextPage, \
     comments: [.comments.nodes[] | {id: (.fullDatabaseId | tonumber), body, url, \
     at: (.createdAt | fromdateiso8601? // null)}]}";
@@ -281,6 +281,9 @@ pub(crate) enum HeadMiss {
 /// reached and does not read again. A process that is one look — `doctor` —
 /// reads each HEAD once.
 pub(crate) static HEADS: Reading<Result<String, HeadMiss>> = Reading::per_look("github head");
+/// Tracker visibility is shared by the ordinary checkout look and the
+/// tracker-wide work look. No fleet operation changes repository visibility.
+static VISIBILITY: Reading<Result<String, String>> = Reading::per_look("github visibility");
 
 /// `gh`, run in `dir`: the checkout a command is about, or where none is at
 /// hand the host's temporary directory (`in_no_checkout`). Every issue call
@@ -962,7 +965,24 @@ impl GitHub {
     /// Who GitHub lets see the tracker, as it says it (`VISIBILITY_JQ`).
     pub fn visibility(&self) -> Result<String> {
         let endpoint = format!("repos/{}", path(&self.tracker));
-        Ok(self.read(&["api", &endpoint, "--jq", VISIBILITY_JQ])?.trim().to_string())
+        let key = self
+            .tracker
+            .named()
+            .map(ToString::to_string)
+            .or_else(|| {
+                Repo::at(&self.dir)
+                    .and_then(|repo| crate::checkout_list::named_repo(&repo))
+                    .ok()
+                    .map(|name| name.to_string())
+            })
+            .unwrap_or_else(|| self.dir.display().to_string());
+        VISIBILITY
+            .read(&key, || {
+                self.read(&["api", &endpoint, "--jq", VISIBILITY_JQ])
+                    .map(|s| s.trim().to_string())
+                    .map_err(|e| format!("{e:#}"))
+            })
+            .map_err(anyhow::Error::msg)
     }
 
     /// The commit at the head of the default branch of `repo`, read once per
@@ -1170,6 +1190,8 @@ impl GitHub {
         #[derive(Deserialize)]
         struct Row {
             number: u64,
+            #[serde(default)]
+            closed: bool,
             url: String,
             labels: Vec<String>,
             more: bool,
@@ -1199,6 +1221,7 @@ impl GitHub {
             });
             issues.push(afkconvoy_core::accounts::Issue {
                 number: row.number,
+                closed: row.closed,
                 url: row.url,
                 account,
             });

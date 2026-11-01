@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use afkconvoy_core::config::{Config, GATES_BLOCK, Gates, Settings};
+use afkconvoy_core::config::{Config, GATES_BLOCK, GateNeed, Gates, Settings};
 use afkconvoy_core::cut;
 use anyhow::{Context, Result, anyhow};
 
@@ -19,6 +19,12 @@ pub const BUDGET_BLOCK: &str = "```yaml gate-budget";
 #[serde(deny_unknown_fields)]
 struct GateBudget {
     gate_budget_seconds: u64,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GateNeeds {
+    checks: Vec<GateNeed>,
 }
 
 /// The config file of the checkout `repo`.
@@ -70,7 +76,27 @@ pub fn parse(markdown: &str) -> Result<Config> {
         ),
         true => None,
     };
-    let config = config.split(gates);
+    let mut config = config.split(gates);
+    let blocks = fenced_all(markdown, "```yaml gate-needs");
+    if !blocks.is_empty() {
+        let needs: GateNeeds =
+            serde_yaml::from_str(&blocks.join("\n")).context("its ```yaml gate-needs block")?;
+        let mut names = std::collections::HashSet::new();
+        for check in &needs.checks {
+            anyhow::ensure!(
+                !check.name.trim().is_empty()
+                    && !check.command.trim().is_empty()
+                    && check.seconds > 0,
+                "gate-needs: each check needs a name, command and positive seconds"
+            );
+            anyhow::ensure!(
+                names.insert(&check.name),
+                "gate-needs: duplicate check name {}",
+                check.name
+            );
+        }
+        config.gate_needs = needs.checks;
+    }
     // An outer gate/land would ask for the lane a second time before it
     // could even reach the inherited gate wrapper.
     if config.gate_command.split_whitespace().collect::<Vec<_>>().windows(2).any(|pair| {

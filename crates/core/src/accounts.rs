@@ -7,10 +7,56 @@ use serde::Serialize;
 
 use crate::{account, record};
 
+/// An account as answered to another system. Its URL is delivery context,
+/// not a second copy stored inside the comment.
+#[derive(Serialize)]
+pub struct Row {
+    #[serde(flatten)]
+    pub record: account::Record,
+    pub url: String,
+}
+
+/// Read one window for both consumers. Incomplete measurements remain rows;
+/// only the summary requires every measure it uses to be known.
+pub fn rows(issues: Vec<Issue>, start: Option<u64>, end: u64) -> (Vec<Row>, Vec<Unreadable>) {
+    let mut rows = vec![];
+    let mut unreadable = vec![];
+    for issue in issues {
+        let read = match &issue.account {
+            Ok(None) => continue,
+            Ok(Some(body)) => {
+                let read = account::read(body, issue.number);
+                let at = match &read {
+                    Ok(row) => row.end,
+                    Err(_) if !body.contains("```json\n") => {
+                        record::read_marker(account::ACCOUNT, body)
+                            .and_then(|fields| fields.number("end"))
+                    }
+                    Err(_) => None,
+                };
+                if at.is_some_and(|at| at > end || start.is_some_and(|start| at < start)) {
+                    continue;
+                }
+                read
+            }
+            Err(reason) => Err(reason.clone()),
+        };
+        match read {
+            Ok(record) => rows.push(Row { record, url: issue.url }),
+            Err(reason) => unreadable.push(Unreadable { number: issue.number, reason }),
+        }
+    }
+    rows.sort_by_key(|row| row.record.issue);
+    unreadable.sort_by_key(|row| row.number);
+    (rows, unreadable)
+}
+
 /// An issue's account, read from its comments. An absent account is no sample;
 /// an account that cannot supply every measure is reported, never partly counted.
 pub struct Issue {
     pub number: u64,
+    /// Whether the issue has closed.
+    pub closed: bool,
     pub url: String,
     pub account: Result<Option<String>, String>,
 }
@@ -70,7 +116,7 @@ struct Slowest {
 }
 
 #[derive(Serialize)]
-struct Unreadable {
+pub struct Unreadable {
     number: u64,
     reason: String,
 }
@@ -80,24 +126,11 @@ struct Unreadable {
 /// in a bounded window: they cannot safely be excluded from it.
 pub fn summarize(issues: Vec<Issue>, start: Option<u64>, end: u64) -> Report {
     let mut samples = vec![];
-    let mut unreadable = vec![];
-    for issue in issues {
-        let read = match &issue.account {
-            Ok(None) => continue,
-            Ok(Some(body)) => {
-                let fields = record::read_marker(account::ACCOUNT, body);
-                if let Some(at) = fields.as_ref().and_then(|fields| fields.number("end"))
-                    && (at > end || start.is_some_and(|start| at < start))
-                {
-                    continue;
-                }
-                sample(&issue, body)
-            }
-            Err(reason) => Err(reason.clone()),
-        };
-        match read {
+    let (rows, mut unreadable) = rows(issues, start, end);
+    for row in rows {
+        match sample(&row) {
             Ok(sample) => samples.push(sample),
-            Err(reason) => unreadable.push(Unreadable { number: issue.number, reason }),
+            Err(reason) => unreadable.push(Unreadable { number: row.record.issue, reason }),
         }
     }
     let walls: Vec<u64> = samples.iter().map(|sample| sample.wall).collect();
@@ -137,45 +170,70 @@ pub fn summarize(issues: Vec<Issue>, start: Option<u64>, end: u64) -> Report {
     }
 }
 
-fn sample(issue: &Issue, body: &str) -> Result<Sample, String> {
-    let fields = record::read_marker(account::ACCOUNT, body).ok_or("invalid account marker")?;
-    let start = fields.number("start").ok_or("account start is unknown or invalid")?;
-    let end = fields.number("end").ok_or("account end is unknown or invalid")?;
+/// Completed stage performances in closed issues' work accounts. Versioned
+/// records supply the duration and verdict; unknown or inconsistent facts
+/// do not become samples. Legacy records without these facts remain unknown.
+pub fn stage_durations(issues: &[Issue]) -> BTreeMap<String, Vec<u64>> {
+    let mut stages: BTreeMap<String, Vec<u64>> = BTreeMap::new();
+    for issue in issues.iter().filter(|issue| issue.closed) {
+        let Ok(Some(body)) = &issue.account else { continue };
+        let Ok(account) = account::read(body, issue.number) else { continue };
+        for worker in account.workers {
+            if worker.verdict.as_deref() != Some("pass") {
+                continue;
+            }
+            let (Some(stage), Some(start), Some(end), Some(seconds)) =
+                (worker.stage, worker.start, worker.end, worker.seconds)
+            else {
+                continue;
+            };
+            if seconds >= 60 && end.checked_sub(start) == Some(seconds) {
+                stages.entry(stage).or_default().push(seconds);
+            }
+        }
+    }
+    stages
+}
+
+/// A p95 needs at least twenty completed performances: otherwise its nearest
+/// rank is just the maximum and a single outlier sets the baseline.
+pub fn stage_baselines(issues: &[Issue]) -> BTreeMap<String, (u64, usize)> {
+    stage_durations(issues)
+        .into_iter()
+        .filter_map(|(stage, mut durations)| {
+            if durations.len() < 20 {
+                return None;
+            }
+            durations.sort_unstable();
+            Some((stage, (percentile(&durations, 95)?, durations.len())))
+        })
+        .collect()
+}
+
+fn sample(row: &Row) -> Result<Sample, String> {
+    let account = &row.record;
+    let start = account.start.ok_or("account start is unknown or invalid")?;
+    let end = account.end.ok_or("account end is unknown or invalid")?;
     let wall = end.checked_sub(start).ok_or("account end precedes its start")?;
-    let (_, rows) = body.split_once("\nWorkers:\n").ok_or("account has no worker rows")?;
-    let (workers, gates) = rows.split_once("\nGates:\n").ok_or("account has no gate rows")?;
-    let starts = record::markers(account::WORKER, workers);
-    let worker_rows = workers.lines().filter(|line| line.starts_with("- ")).count();
-    if starts.len() != worker_rows
-        || (starts.is_empty() && workers.trim() != "No worker was started.")
-        || starts
-            .iter()
-            .any(|fields| fields.get("harness").is_none() || fields.number("at").is_none())
-    {
+    if account.wall_seconds != Some(wall) {
+        return Err("account wall_seconds does not match start and end".into());
+    }
+    if account.workers.iter().any(|worker| worker.harness.is_none() || worker.start.is_none()) {
         return Err("account worker rows cannot be read".into());
     }
-    let harness = starts.first().and_then(|fields| fields.get("harness")).unwrap_or("unknown");
+    let harness =
+        account.workers.first().and_then(|worker| worker.harness.as_deref()).unwrap_or("unknown");
     let mut seconds = 0u64;
-    let mut timed = false;
-    for line in gates.lines().filter(|line| line.starts_with("- ")) {
-        let (_, rest) = line.split_once(", ").ok_or("invalid gate row")?;
-        let (time, _) = rest.split_once(", ").ok_or("invalid gate seconds")?;
-        let time: u64 = time
-            .strip_suffix('s')
-            .and_then(|time| time.parse().ok())
-            .ok_or("gate seconds were not recorded or are invalid")?;
+    for gate in &account.gates {
+        let time = gate.seconds.ok_or("gate seconds were not recorded or are invalid")?;
         seconds = seconds.checked_add(time).ok_or("gate seconds overflow")?;
-        timed = true;
-    }
-    if !timed && gates.trim() != "No gate was timed on this issue's tree." {
-        return Err("account gate rows cannot be read".into());
     }
     Ok(Sample {
-        number: issue.number,
-        url: issue.url.clone(),
+        number: account.issue,
+        url: row.url.clone(),
         wall,
         gates: seconds,
-        workers: starts.len(),
+        workers: account.workers.len(),
         harness: harness.to_string(),
     })
 }
@@ -198,4 +256,34 @@ fn percentile(sorted: &[u64], p: usize) -> Option<u64> {
     let rank =
         (n / 100).saturating_mul(p).saturating_add((n % 100).saturating_mul(p).div_ceil(100));
     sorted.get(rank.checked_sub(1)?).copied()
+}
+
+#[cfg(test)]
+mod stage_tests {
+    use super::*;
+
+    fn issue(number: u64, closed: bool, seconds: u64, verdict: &str) -> Issue {
+        let end = 100 + seconds;
+        let body = format!(
+            "<!--convoy:account -->\n```json\n{}\n```",
+            serde_json::json!({
+                "schema_version": 1, "issue": number, "repo": null, "tracker": null,
+                "afkconvoy_version": null, "host": {"name": null, "cpu": null, "logical_cpus": null, "memory_bytes": null},
+                "start": 100, "end": end, "wall_seconds": seconds, "outcome": null,
+                "workers": [{"harness": "codex", "model": null, "role": null, "stage": "build", "claim": "c", "start": 100, "end": end, "seconds": seconds, "verdict": verdict}], "gates": []
+            })
+        );
+        Issue { number, closed, url: String::new(), account: Ok(Some(body)) }
+    }
+
+    #[test]
+    fn baselines_use_completed_passes_of_closed_issues_and_nearest_rank() {
+        let mut issues: Vec<_> = (0..19).map(|n| issue(n, true, 3600, "pass")).collect();
+        assert!(stage_baselines(&issues).is_empty());
+        issues.push(issue(20, true, 7200, "pass"));
+        issues.push(issue(21, false, 9000, "pass"));
+        issues.push(issue(22, true, 100, "escalate"));
+        issues.push(issue(23, true, 30, "pass"));
+        assert_eq!(stage_baselines(&issues).get("build"), Some(&(3600, 20)));
+    }
 }

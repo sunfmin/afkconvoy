@@ -76,6 +76,15 @@ pub(super) fn watch(command: &str, model: Option<&str>) -> String {
     line.done()
 }
 
+/// Adds the fleet's hooks without changing project or user rule discovery.
+pub(super) fn guarded(command: &str, guard: &str) -> String {
+    Line::new()
+        .launch(command)
+        .fixed(" --settings ")
+        .word(&added_settings(guard, REPORT, &[]))
+        .done()
+}
+
 /// Claude Code's flag for a directory added to the one it was started in.
 const ADD_DIR: &str = "--add-dir";
 /// Claude Code's flag for which settings it loads.

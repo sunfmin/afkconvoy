@@ -14,6 +14,7 @@ fn account(number: u64, start: u64, end: u64, harnesses: &[&str], gates: &[&str]
                 harness,
                 model: None,
                 stage: None,
+                role: None,
                 consult: false,
             })
         })
@@ -21,6 +22,11 @@ fn account(number: u64, start: u64, end: u64, harnesses: &[&str], gates: &[&str]
     let heard: Vec<Heard<'_>> = starts.iter().map(|body| Heard { at: Some(start), body }).collect();
     account::comment(&Told {
         issue: number,
+        repo: "acme/dev",
+        tracker: "acme/tracker",
+        version: "test",
+        outcome: account::End::Landed,
+        lanes: &[("./gate.sh", "whole")],
         heard: &heard,
         gates,
         claimed: true,
@@ -139,4 +145,114 @@ fn account_windows_select_the_end_and_report_unknown_data() {
     assert!(asked(&["--help"]).contains("accounts"));
     assert!(world.afk(&["accounts", "--days", "0"]).error().contains("invalid value"));
     assert!(world.afk(&["accounts", "--days", "1", "--all"]).error().contains("cannot be used"));
+}
+
+#[test]
+fn rows_are_ndjson_and_prose_changes_do_not_change_either_answer() {
+    let world = World::new();
+    let first = account(
+        1,
+        100,
+        200,
+        &["codex"],
+        &["convoy:gate tree=abc command=./gate.sh issue=1 seconds=12 at=150 host=test"],
+    );
+    world.issue(1, &[]);
+    world.comment(1, &first);
+    world.issue(2, &[]);
+    world.comment(2, &account(2, 100, 300, &[], &[]));
+    let rows = || {
+        let out = world
+            .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
+            .args(["accounts", "--all", "--rows", "--now", "250"])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{out:?}");
+        let text = String::from_utf8(out.stdout).unwrap();
+        let rows: Vec<serde_json::Value> =
+            text.lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+        assert_eq!(rows.len(), 1, "one line per account in the window");
+        rows
+    };
+    let before_rows = rows();
+    let row = &before_rows[0];
+    assert_eq!(row["schema_version"], 1);
+    assert_eq!(row["issue"], 1);
+    assert_eq!(row["url"], "https://gh/issues/1");
+    assert_eq!(row["repo"], "acme/dev");
+    assert_eq!(row["tracker"], "acme/tracker");
+    assert_eq!(row["afkconvoy_version"], "test");
+    assert_eq!(row["outcome"], "landed");
+    assert_eq!(row["workers"][0]["seconds"], 100);
+    assert_eq!(row["workers"][0]["model"], serde_json::Value::Null);
+    assert_eq!(row["gates"][0]["lane"], "whole");
+    let before = world.afk(&["accounts", "--all", "--now", "250"]).ok();
+    world.with_gh(|gh| {
+        // Replace the whole human rendering, including headings and durations.
+        let (_, data) = first.split_once("<details>").unwrap();
+        gh["comments"]["1"][0]["body"] =
+            json!(format!("<!--convoy:account -->\nNew words.\n<details>{data}"));
+    });
+    assert_eq!(rows(), before_rows);
+    assert_eq!(world.afk(&["accounts", "--all", "--now", "250"]).ok(), before);
+}
+
+#[test]
+fn a_real_legacy_account_becomes_a_record_without_inventing_missing_facts() {
+    let world = World::new();
+    world.issue(421, &[]);
+    world.comment(421, include_str!("fixtures/account-421.md"));
+    let out = world.afk(&["accounts", "--all", "--rows", "--now", "1793542000"]).ok();
+    assert_eq!(out["schema_version"], 1);
+    assert_eq!(out["issue"], 421);
+    assert_eq!(out["wall_seconds"], 2339);
+    assert_eq!(out["workers"][0]["harness"], "kimi");
+    assert_eq!(out["workers"][0]["start"], 1793539449u64);
+    for key in ["model", "role", "stage", "end", "seconds"] {
+        assert!(out["workers"][0][key].is_null(), "{key}: {out}");
+    }
+    for key in ["repo", "tracker", "afkconvoy_version", "outcome"] {
+        assert!(out[key].is_null(), "{key}: {out}");
+    }
+    assert_eq!(
+        out["host"],
+        json!({"name": null, "cpu": null, "logical_cpus": null, "memory_bytes": null})
+    );
+    assert_eq!(out["gates"].as_array().unwrap().len(), 3);
+    assert_eq!(out["gates"][0]["seconds"], 483);
+    assert_eq!(out["gates"][0]["host"], "FelixMBP14.local");
+    assert!(out["gates"][0]["lane"].is_null());
+    let summary = world.afk(&["accounts", "--all", "--now", "1793542000"]).ok();
+    assert_eq!(summary["count"], 1);
+    assert_eq!(summary["wall_seconds"]["p50"], 2339);
+    assert_eq!(summary["gate_seconds"]["p50"], 966);
+}
+
+#[test]
+fn unknown_schema_is_unreadable_and_unknown_measurements_stay_null_in_rows() {
+    let world = World::new();
+    world.issue(1, &[]);
+    world.comment(
+        1,
+        &account(1, 100, 200, &[], &[]).replace("\"schema_version\": 1", "\"schema_version\": 999"),
+    );
+    world.issue(2, &[]);
+    world.comment(2, &account(2, 100, 200, &[], &["convoy:gate tree=abc command=check issue=2"]));
+    let out = world
+        .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
+        .args(["accounts", "--all", "--rows", "--now", "250"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let row: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(row["issue"], 2);
+    assert!(row["gates"][0]["seconds"].is_null());
+    let diagnostics: serde_json::Value = serde_json::from_slice(&out.stderr).unwrap();
+    assert_eq!(diagnostics["unreadable"][0]["number"], 1);
+    assert!(
+        diagnostics["unreadable"][0]["reason"].as_str().unwrap().contains("schema version: 999")
+    );
+    let summary = world.afk(&["accounts", "--all", "--now", "250"]).ok();
+    assert_eq!(summary["count"], 0);
+    assert_eq!(summary["unreadable"].as_array().unwrap().len(), 2);
 }

@@ -11,7 +11,7 @@
 
 use std::path::Path;
 
-use afkconvoy_core::config::Config;
+use afkconvoy_core::config::{Config, GateNeed};
 use afkconvoy_core::gate::outlived;
 use afkconvoy_core::layout::{
     Answer, BaseCheck, GATE_KIND, Layout, PROBE_STANDS, answer, base_check, no_base_branch,
@@ -41,6 +41,85 @@ const PASSED_NOTE: &str = "convoy-probe";
 /// The note of the last check that found the checkout's tracker private
 /// (`Private`).
 const TRACKER_NOTE: &str = "convoy-tracker";
+const NEEDS_NOTE: &str = "convoy-gate-needs";
+
+#[derive(Serialize, Deserialize)]
+struct NeedsPassed {
+    at: u64,
+    checks: Vec<GateNeed>,
+}
+
+/// A check's output is private to its caller. Running instances report only
+/// the name and the command to fix it, never output in their tick log.
+fn gate_needs(repo: &Repo, config: &Config, now: u64, trusting: bool) -> Result<Option<String>> {
+    let note = repo.note(NEEDS_NOTE)?;
+    if trusting {
+        let passed = std::fs::read_to_string(&note)
+            .ok()
+            .and_then(|text| serde_json::from_str::<NeedsPassed>(&text).ok());
+        if passed.is_some_and(|p| p.checks == config.gate_needs && probe_stands(p.at, now)) {
+            return Ok(None);
+        }
+    }
+    let _ = std::fs::remove_file(&note);
+    for check in &config.gate_needs {
+        use std::hash::{Hash, Hasher};
+        use std::io::Write;
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        let mut hash = std::collections::hash_map::DefaultHasher::new();
+        repo.common_dir()?.hash(&mut hash);
+        check.name.hash(&mut hash);
+        let dir = crate::copies::cache()?.join("gate-needs");
+        std::fs::create_dir_all(&dir)?;
+        let path = dir.join(format!("{:016x}.stderr", hash.finish()));
+        let script = format!("exec 1>/dev/null\n{}", check.command);
+        let mut command = std::process::Command::new("sh");
+        command.args(["-e", "-c", &script]).current_dir(&repo.dir);
+        let (output, timed_out) = crate::process::output_within_with_timeout(
+            &mut command,
+            std::time::Duration::from_secs(check.seconds),
+        )?;
+        // A successful next run also clears the previous failure's output.
+        if !timed_out && output.status.success() {
+            let _ = std::fs::remove_file(&path);
+            continue;
+        }
+        let _ = std::fs::remove_file(repo.note(PASSED_NOTE)?);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let lines: Vec<_> = stderr.lines().collect();
+        let tail = lines[lines.len().saturating_sub(20)..].join("\n");
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&path)?;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        file.write_all(tail.as_bytes())?;
+        let reason = if timed_out {
+            format!("timed out after {}s", check.seconds)
+        } else {
+            output.status.to_string()
+        };
+        return Ok(Some(format!(
+            "gate need {} failed ({reason}); stderr: {}; fix it in {}: {}",
+            check.name,
+            path.display(),
+            repo.dir.display(),
+            check.command
+        )));
+    }
+    std::fs::write(
+        note,
+        serde_json::to_string(&NeedsPassed { at: now, checks: config.gate_needs.clone() })?,
+    )?;
+    Ok(None)
+}
+
+pub(crate) fn check_gate_needs(repo: &Repo, now: u64) -> Result<Option<String>> {
+    let config = config::load(&config::file_of(repo))?;
+    gate_needs(repo, &config, now, true)
+}
 
 /// A check that found the checkout's tracker private, as the host that made
 /// it notes it: when, and of which tracker — the repo it names, or none for
@@ -189,6 +268,8 @@ struct Asked {
     /// default harness's — as their key (`Launches::key`): a command itself
     /// is written to no file.
     launch: Option<u64>,
+    #[serde(default)]
+    gate_needs: Vec<GateNeed>,
 }
 
 impl Asked {
@@ -200,6 +281,7 @@ impl Asked {
             team: config.bound.as_ref().map(|bound| bound.team.to_string()),
             layout: repo.layout().name().to_string(),
             launch,
+            gate_needs: config.gate_needs.clone(),
         })
     }
 }
@@ -299,6 +381,9 @@ pub fn without_git(dir: &Path) -> Option<anyhow::Error> {
 pub fn startup(repo: &Repo, now: u64, launches: &Launches) -> Result<Vec<String>> {
     tools::check(repo, launches).see(See::Troubleshooting)?;
     let config = config::load(&config::file_of(repo)).see(See::Troubleshooting)?;
+    if let Some(why) = gate_needs(repo, &config, now, false)? {
+        return Err(See::Troubleshooting.refusal(why));
+    }
     // A bound repo's workers start in their roles, each on the harness its
     // stage names: every one's command must be there, and take that.
     if let Some(bound) = &config.bound {
