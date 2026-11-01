@@ -484,7 +484,7 @@ fn sent_bytes(stderr: &str) -> Option<&str> {
             let bytes = bytes.split('|').next()?.trim();
             (!bytes.is_empty()).then_some(bytes)
         })
-        .last()
+        .next_back()
 }
 
 fn push_error(stderr: &str) -> String {
