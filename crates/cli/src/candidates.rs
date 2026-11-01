@@ -571,7 +571,8 @@ pub(crate) fn invalidate(repo: &Repo, config: &Config, id: &str, cause: &str) ->
 /// A turn's look at the chain at `now`, which keeps it true: says this host
 /// is alive (`Chain::beat`), takes over what a dead host owns (`dead_hosts`,
 /// `Chain::abandon`), invalidates a candidate whose PR head moved or whose
-/// owner on this host is gone, drops this host's dead barriers and pending
+/// owner on this host is gone, except an adoptable stopped fast-green one,
+/// drops this host's dead barriers and pending
 /// turns, and stops this host's invalid candidates (`cleanup`): its own too,
 /// when another host took it over while this one was away.
 fn reconcile(repo: &Repo, config: &Config, now: u64) -> Result<Chain> {
@@ -593,7 +594,7 @@ fn reconcile(repo: &Repo, config: &Config, now: u64) -> Result<Chain> {
                 != Some(&c.original_head)
             {
                 invalid.push((c.id.clone(), "head_changed"));
-            } else if !alive(&c.owner)? {
+            } else if !c.adoptable() && !alive(&c.owner)? {
                 invalid.push((c.id.clone(), "owner_died"));
             }
         }
@@ -655,6 +656,8 @@ fn dead_hosts(
 }
 
 /// Used before queue capacity is released after a candidate owner dies.
+/// A stopped fast-green candidate has no process to clean up and is adopted
+/// by its next turn instead of cancelling its successors here.
 pub(crate) fn abandoned(dir: &str) -> Result<()> {
     let repo = Repo::new(dir.into());
     let prefix = repo.layout().under("candidates/");
@@ -664,7 +667,7 @@ pub(crate) fn abandoned(dir: &str) -> Result<()> {
             record.name.strip_prefix(&prefix).context("invalid candidate ref")?.to_string();
         let chain: Chain = serde_json::from_str(&record.subject)?;
         for c in chain.candidates.iter().filter(|c| c.active()) {
-            if !alive(&c.owner)? {
+            if !c.adoptable() && !alive(&c.owner)? {
                 invalidate(&repo, &config, &c.id, "owner_died")?;
             }
         }
@@ -996,26 +999,21 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
         .candidates
         .iter()
         .rev()
-        .find(|c| {
-            c.pr == pr.number && c.original_head == original && c.phase == Phase::Green && c.stopped
-        })
+        .find(|c| c.pr == pr.number && c.original_head == original && c.adoptable())
         .cloned();
     let mut adopted = None;
     if let Some(c) = existing
-        && c.valid()
         && c.owner != owner
         && !alive(&c.owner)?
     {
         let previous = c.id.clone();
         let old_owner = c.owner.clone();
         change(repo, config, |chain| {
-            if let Some(c) = chain.candidates.iter_mut().find(|c| {
-                c.id == previous
-                    && c.owner == old_owner
-                    && c.phase == Phase::Green
-                    && c.stopped
-                    && c.valid()
-            }) {
+            if let Some(c) = chain
+                .candidates
+                .iter_mut()
+                .find(|c| c.id == previous && c.owner == old_owner && c.adoptable())
+            {
                 c.owner = owner.clone();
                 c.abandoned = false;
                 adopted = Some(c.clone());
@@ -1032,7 +1030,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
         // Another host read this one dead while it was away — it slept, or
         // lost the network — and dropped its place: it takes one again, at
         // the back.
-        if !chain.barriers.iter().chain(&chain.pending).any(|b| b.id == id) {
+        if adopted.is_none() && !chain.barriers.iter().chain(&chain.pending).any(|b| b.id == id) {
             chain = change(repo, config, reserve)?;
         }
         if let Some(c) =

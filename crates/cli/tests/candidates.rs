@@ -1405,9 +1405,10 @@ fn a_record_past_arg_max_is_written_and_drops_the_candidates_nothing_holds() {
 }
 
 /// The FelixMBP14 case (sunfmin/control#459): a fast-green candidate's turn
-/// exited on a transient remote fault while a successor slow-gated. Its next
+/// exited on a transient remote fault while a successor fast-gated. Its next
 /// turn takes ownership of the stopped candidate and its recorded evidence;
-/// the successor and the round are not cancelled.
+/// the successor and the round are not cancelled, and no adopted turn is left
+/// pending to hold the round back.
 #[test]
 fn a_stopped_fast_green_candidate_is_adopted_without_cancelling_its_round() {
     let world = split_world(2);
@@ -1427,13 +1428,13 @@ fn a_stopped_fast_green_candidate_is_adopted_without_cancelling_its_round() {
     until(|| started(&world, "fast", "b"));
     let_go(&world, "fast", "a", false);
     green(&world, 1);
-    let_go(&world, "fast", "b", false);
-    until(|| started(&world, "slow", "b"));
+    until(|| chain(&world)["candidates"][0]["stopped"] == true);
     let original = chain(&world)["candidates"].clone();
     let id = original[0]["id"].as_str().unwrap().to_string();
     let commit = original[0]["commit"].as_str().unwrap().to_string();
     assert!(original[0]["stopped"].as_bool().unwrap());
     assert!(original[0]["result"]["recorded"].as_bool().unwrap());
+    let behind_held = Held::stop(&behind);
 
     assert!(
         Command::new("kill").args(["-KILL", &first.id().to_string()]).status().unwrap().success()
@@ -1448,6 +1449,9 @@ fn a_stopped_fast_green_candidate_is_adopted_without_cancelling_its_round() {
     assert_eq!(adopting[1]["cause"], Value::Null, "its successor stays valid: {adopting}");
     assert_eq!(adopting[0]["result"], original[0]["result"], "its fast-gate evidence stands");
 
+    drop(behind_held);
+    let_go(&world, "fast", "b", false);
+    until(|| started(&world, "slow", "b"));
     let_go(&world, "slow", "b", false);
     assert_eq!(finish(recovered)["outcome"], "merged");
     assert_eq!(finish(behind)["outcome"], "merged");

@@ -113,6 +113,12 @@ impl Candidate {
             && self.cancelled_by.is_none()
     }
 
+    /// A later turn may own this candidate's preserved evidence on the same
+    /// host: it is fast-green, and its gate processes are confirmed gone.
+    pub fn adoptable(&self) -> bool {
+        self.valid() && self.phase == Phase::Green && self.stopped
+    }
+
     /// Its tree has passed the whole gate: its own gate was the whole gate,
     /// or the round at it gated green.
     pub fn whole(&self) -> bool {
