@@ -276,10 +276,11 @@ fn routed(world: &World) -> Vec<Vec<String>> {
     let calls: Vec<Vec<String>> = serde_json::from_value(gh["calls"].clone()).unwrap();
     let mut of_tracker = vec![];
     for call in &calls {
-        // Authentication configuration and primary quota observations belong
-        // to the host/login, not to the checkout or its tracker repository.
+        // Authentication, quota and checkout identity observations are not
+        // issue or PR operations to route to the tracker.
         if call.starts_with(&["config".into(), "get".into(), "user".into()])
             || call.starts_with(&["api".into(), "rate_limit".into()])
+            || call == &["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"]
         {
             continue;
         }
