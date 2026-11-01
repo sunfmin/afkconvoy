@@ -12,6 +12,13 @@ use crate::tracker::Tracker;
 /// heartbeat's for its instance.
 pub const CLAIM_KIND: &str = "claim/";
 pub const HEARTBEAT_KIND: &str = "heartbeat/";
+/// Claims on human waits, separate from worker and run claims.
+pub const WAIT_KIND: &str = "wait/";
+
+/// The claim on a human wait of this tracker. It consumes no worker slot.
+pub fn wait_ref(layout: Layout, tracker: &Tracker, number: u64) -> String {
+    layout.under(&format!("{WAIT_KIND}{}", tracker.claim_key(number)))
+}
 
 /// The ref that is the claim on issue `number` of `tracker`: named for the
 /// tracker too where it is another repo (`Tracker::claim_key`), so that two

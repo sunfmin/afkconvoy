@@ -71,6 +71,7 @@ pub mod host_runner;
 pub mod host_settings;
 pub mod host_watch;
 pub mod hot;
+pub mod human_wait;
 pub mod instance;
 pub mod intake;
 pub mod issue_updates;
