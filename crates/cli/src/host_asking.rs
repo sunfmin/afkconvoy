@@ -153,7 +153,11 @@ fn step() -> Result<()> {
     }
     let (_, questions) = crate::watch_notify::questions()?;
     reconcile(&mut state, questions);
+    state.unavailable = None;
     check_session(&mut state)?;
+    if state.unavailable.is_some() {
+        return save(&state);
+    }
     if state.session.is_none() {
         start(&mut state)?;
         return save(&state);

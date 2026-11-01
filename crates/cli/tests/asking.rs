@@ -332,6 +332,57 @@ fn busy_input_is_untouched_and_a_recovered_pending_question_is_never_delivered()
 }
 
 #[test]
+fn an_unverified_terminal_pauses_delivery_until_its_identity_is_restored() {
+    let world = World::new();
+    let _dir = two_conditions(&world);
+    let watch = until(&world, "watch", || watch_running(&world));
+    let (wait, host) = conditions(&watch);
+    report_humans(
+        &world,
+        &watch,
+        json!([
+            {"condition": wait, "question": "First question?", "answer": "first answer"},
+            {"condition": host, "question": "Second question?", "answer": "second answer"}
+        ]),
+    );
+    until(&world, "first question", || {
+        (asking_state(&world)["current"]["delivered"] == true).then_some(())
+    });
+    let handle = asking_state(&world)["session"]["terminal"].as_str().unwrap().to_string();
+    world.with_orca(|orca| {
+        let terminal = orca["terminals"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|row| row["handle"] == handle)
+            .unwrap();
+        terminal["ptyId"] = json!("different-terminal");
+    });
+    until(&world, "unverified association", || {
+        asking_state(&world)["unavailable"].as_str().map(str::to_string)
+    });
+    settle(&world, "settled");
+    std::thread::sleep(Duration::from_millis(1200));
+    assert_eq!(asking_terminal(&world)["sent"].as_array().unwrap().len(), 1);
+    world.with_orca(|orca| {
+        let terminal = orca["terminals"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|row| row["handle"] == handle)
+            .unwrap();
+        terminal["ptyId"] = json!(handle);
+    });
+    until(&world, "second question after identity is restored", || {
+        let current = asking_state(&world)["current"].clone();
+        (current["question"]["human"]["question"] == "Second question?"
+            && current["delivered"] == true)
+            .then_some(())
+    });
+    assert_eq!(asking_terminal(&world)["sent"].as_array().unwrap().len(), 2);
+}
+
+#[test]
 fn a_condition_recovered_after_delivery_is_told_as_withdrawn() {
     let world = World::new();
     let _dir = two_conditions(&world);
