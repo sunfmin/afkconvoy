@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 
-use serde_json::{Value, json};
+use serde::Serialize;
 
 use crate::{account, record};
 
@@ -24,10 +24,61 @@ struct Sample {
     harness: String,
 }
 
+#[derive(Serialize)]
+pub struct Report {
+    window: Window,
+    count: usize,
+    wall_seconds: Distribution,
+    by_harness: BTreeMap<String, Harness>,
+    multiple_workers: usize,
+    gate_seconds: GateSeconds,
+    slowest: Vec<Slowest>,
+    unreadable: Vec<Unreadable>,
+}
+
+#[derive(Serialize)]
+struct Window {
+    start: Option<u64>,
+    end: u64,
+}
+
+#[derive(Serialize)]
+struct Distribution {
+    p50: Option<u64>,
+    p90: Option<u64>,
+    p95: Option<u64>,
+    max: Option<u64>,
+}
+
+#[derive(Serialize)]
+struct Harness {
+    count: usize,
+    wall_seconds: Distribution,
+}
+
+#[derive(Serialize)]
+struct GateSeconds {
+    p50: Option<u64>,
+    p95: Option<u64>,
+}
+
+#[derive(Serialize)]
+struct Slowest {
+    number: u64,
+    url: String,
+    wall_seconds: u64,
+}
+
+#[derive(Serialize)]
+struct Unreadable {
+    number: u64,
+    reason: String,
+}
+
 /// Summarize accounts ending in the inclusive epoch-second window. `None`
 /// starts at the beginning of the record. Unknown ends remain unreadable even
 /// in a bounded window: they cannot safely be excluded from it.
-pub fn summarize(issues: Vec<Issue>, start: Option<u64>, end: u64) -> Value {
+pub fn summarize(issues: Vec<Issue>, start: Option<u64>, end: u64) -> Report {
     let mut samples = vec![];
     let mut unreadable = vec![];
     for issue in issues {
@@ -46,7 +97,7 @@ pub fn summarize(issues: Vec<Issue>, start: Option<u64>, end: u64) -> Value {
         };
         match read {
             Ok(sample) => samples.push(sample),
-            Err(reason) => unreadable.push(json!({"number": issue.number, "reason": reason})),
+            Err(reason) => unreadable.push(Unreadable { number: issue.number, reason }),
         }
     }
     let walls: Vec<u64> = samples.iter().map(|sample| sample.wall).collect();
@@ -55,28 +106,35 @@ pub fn summarize(issues: Vec<Issue>, start: Option<u64>, end: u64) -> Value {
     for sample in &samples {
         harnesses.entry(sample.harness.clone()).or_default().push(sample.wall);
     }
-    let harnesses: BTreeMap<String, Value> = harnesses
+    let harnesses = harnesses
         .into_iter()
         .map(|(harness, walls)| {
-            (harness, json!({"count": walls.len(), "wall_seconds": distribution(&walls)}))
+            (harness, Harness { count: walls.len(), wall_seconds: distribution(&walls) })
         })
         .collect();
     let multiple_workers = samples.iter().filter(|sample| sample.workers > 1).count();
     samples.sort_by_key(|sample| (std::cmp::Reverse(sample.wall), sample.number));
-    let slowest: Vec<Value> = samples
+    let slowest = samples
         .iter()
         .take(5)
-        .map(|sample| json!({"number": sample.number, "url": sample.url, "wall_seconds": sample.wall}))
+        .map(|sample| Slowest {
+            number: sample.number,
+            url: sample.url.clone(),
+            wall_seconds: sample.wall,
+        })
         .collect();
-    unreadable.sort_by_key(|row| row["number"].as_u64());
+    unreadable.sort_by_key(|row| row.number);
     let gates = distribution(&gates);
-    json!({
-        "window": {"start": start, "end": end}, "count": samples.len(),
-        "wall_seconds": distribution(&walls), "by_harness": harnesses,
-        "multiple_workers": multiple_workers,
-        "gate_seconds": {"p50": gates["p50"], "p95": gates["p95"]},
-        "slowest": slowest, "unreadable": unreadable,
-    })
+    Report {
+        window: Window { start, end },
+        count: samples.len(),
+        wall_seconds: distribution(&walls),
+        by_harness: harnesses,
+        multiple_workers,
+        gate_seconds: GateSeconds { p50: gates.p50, p95: gates.p95 },
+        slowest,
+        unreadable,
+    }
 }
 
 fn sample(issue: &Issue, body: &str) -> Result<Sample, String> {
@@ -122,11 +180,15 @@ fn sample(issue: &Issue, body: &str) -> Result<Sample, String> {
     })
 }
 
-fn distribution(values: &[u64]) -> Value {
+fn distribution(values: &[u64]) -> Distribution {
     let mut sorted = values.to_vec();
     sorted.sort_unstable();
-    json!({"p50": percentile(&sorted, 50), "p90": percentile(&sorted, 90),
-        "p95": percentile(&sorted, 95), "max": sorted.last()})
+    Distribution {
+        p50: percentile(&sorted, 50),
+        p90: percentile(&sorted, 90),
+        p95: percentile(&sorted, 95),
+        max: sorted.last().copied(),
+    }
 }
 
 /// Nearest rank: ceil(p * n / 100), one based. Splitting the quotient keeps
