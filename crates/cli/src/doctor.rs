@@ -2822,6 +2822,21 @@ mod tests {
     }
 
     #[test]
+    fn a_claim_gets_a_ticks_chance_to_start_its_worker() {
+        let mut fleet = run(vec![tick(1, json!([]))]);
+        fleet.last_took = Some(10);
+        let gone = |age| Held {
+            held_for: Some(age),
+            worker: Some(WorkerState::Gone),
+            ..held(375)
+        };
+        for age in [0, 27, 99] {
+            assert_eq!(claim_findings(&fleet, &[gone(age)]), [], "claim stamped {age}s ago");
+        }
+        assert_eq!(claim_findings(&fleet, &[gone(100)])[0].kind, Kind::NoWorker);
+    }
+
+    #[test]
     fn changing_durations_tick_counts_and_free_slots_keep_their_condition_identity() {
         let same = |before: &Finding, after: &Finding| {
             assert_ne!(before.what, after.what, "doctor keeps its current presentation");
