@@ -79,20 +79,18 @@ pub fn harness(launch: &Proposed) -> Option<(Tool, Found)> {
 /// started in `dir`.
 fn asked(dir: &Path, tool: Tool, question: &str) -> Found {
     if tool.starts_workers() {
-        // One doctor starts this program once. Flags of the default harness
-        // are that start; login is the start of any other. The same question
-        // is answered from the first start. A different question does not
-        // start the program again.
+        // One doctor starts this program once when its first answer is ready.
+        // A logged-out answer earns one more ask, which may renew a session;
+        // every later reader of this question gets that second answer.
         return match crate::launch::once_per_program(tool.name(), question, || {
-            ask_login_shell(dir, question).unwrap_or_default()
-        }) {
-            crate::launch::Once::Ran(succeeded, printed) => {
-                if tool.logged_in(succeeded, &printed) {
-                    Found::Ready
-                } else {
-                    Found::LoggedOut
-                }
+            let first = ask_login_shell(dir, question).unwrap_or_default();
+            if tool.logged_in(first.0, &first.1) {
+                first
+            } else {
+                crate::launch::ask_login_shell_again(dir, question).unwrap_or_default()
             }
+        }) {
+            crate::launch::Once::Ran(succeeded, printed) => classified(tool, succeeded, &printed),
             crate::launch::Once::Already => Found::Ready,
         };
     }
@@ -101,7 +99,15 @@ fn asked(dir: &Path, tool: Tool, question: &str) -> Found {
         return gh_found(dir, question);
     }
     let (succeeded, printed) = ask_login_shell(dir, question).unwrap_or_default();
-    if tool.logged_in(succeeded, &printed) { Found::Ready } else { Found::LoggedOut }
+    classified(tool, succeeded, &printed)
+}
+
+fn classified(tool: Tool, succeeded: bool, printed: &str) -> Found {
+    if tool.logged_in(succeeded, printed) {
+        Found::Ready
+    } else {
+        Found::LoggedOut(afkconvoy_core::tools::LoginAnswer::new(succeeded, printed))
+    }
 }
 
 /// One answer to a `gh` login question. It stands for the process's life:
@@ -134,7 +140,7 @@ fn gh_found_once(dir: &Path, question: &str) -> Found {
             return Found::Ready;
         }
     }
-    if Tool::Gh.logged_in(succeeded, &printed) { Found::Ready } else { Found::LoggedOut }
+    classified(Tool::Gh, succeeded, &printed)
 }
 
 fn quota_waits(scope: &crate::gh_quota::Scope) -> bool {

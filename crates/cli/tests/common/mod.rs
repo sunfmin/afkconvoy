@@ -1049,6 +1049,13 @@ impl World {
         std::fs::write(self.root.join(format!("logged-out-{tool}")), "").unwrap();
     }
 
+    /// Has the stand-in harness print `first` to its first login question and
+    /// `second` to its second; both answers exit zero.
+    pub fn login_answers(&self, tool: &str, first: &str, second: &str) {
+        std::fs::write(self.root.join(format!("login-first-{tool}")), first).unwrap();
+        std::fs::write(self.root.join(format!("login-second-{tool}")), second).unwrap();
+    }
+
     /// What the stand-in login shell prints when a command is asked for its
     /// `--help`, in place of a help that names every flag Claude Code takes —
     /// and, of Codex's stock command, every flag Codex does.
@@ -1658,6 +1665,15 @@ case "$2" in
     if [ -f "$root/shell-kimi-models" ]; then cat "$root/shell-kimi-models"; exit 0; fi
     echo "command not found" >&2; exit 127 ;;
   "grok models")
+    if [ -f "$root/login-first-grok" ]; then
+      if [ -e "$root/login-first-answered-grok" ]; then
+        cat "$root/login-second-grok"
+      else
+        : > "$root/login-first-answered-grok"
+        cat "$root/login-first-grok"
+      fi
+      exit 0
+    fi
     if [ -e "$root/logged-out-grok" ]; then
       echo "You are not authenticated."
       echo "Default model: grok-4.6"
