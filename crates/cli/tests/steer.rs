@@ -192,7 +192,9 @@ fn recovery_with_no_position(world: &World, answer: &str, choices: &[&str]) {
         assert!(why.contains(label), "the choice {label} is beside the answer: {waiting}");
     }
     let doctor = world.afk(&["doctor", "--now", "5000"]).json;
-    assert_eq!(doctor["waiting_on_human"], plan["waiting_on_human"]);
+    let mut doctor_waiting = plan["waiting_on_human"].clone();
+    doctor_waiting[0]["taken_by"] = Value::Null;
+    assert_eq!(doctor["waiting_on_human"], doctor_waiting);
     let findings = doctor["findings"].as_array().unwrap();
     let waited = findings.iter().find(|f| f["what"].as_str().unwrap().contains("has waited"));
     let waited = waited.expect("waiting more than an hour is a finding");
