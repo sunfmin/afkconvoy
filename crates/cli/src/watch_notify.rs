@@ -87,6 +87,10 @@ pub fn reported(watch: &Watch, report: &Report, observed: &BTreeMap<String, Stri
     let mut entries = vec![];
     for human in &report.human {
         let condition = crate::watch_report::condition(watch, human)?;
+        if let Some(holder) = crate::human_wait::lost(&condition)? {
+            crate::human_wait::log_drop(&condition, &holder, "report outbox entry")?;
+            continue;
+        }
         let episode = watch.conditions.get(&condition).cloned().or_else(|| {
             // A round already running during upgrade predates the complete
             // snapshot, but still retains its own item/episode pairing.
@@ -140,6 +144,10 @@ pub fn owns(entry: &Entry, action: &str) -> Result<bool> {
     crate::human_wait::log_drop(&entry.condition, &holder, action)?;
     change(|outbox| {
         outbox.entries.remove(&entry.id);
+        if let Some(last) = outbox.last.as_mut().filter(|last| last.condition == entry.condition) {
+            last.ended = Some(crate::clock());
+            last.outcome = format!("dropped {action}; held by {holder}");
+        }
     })?;
     Ok(false)
 }
