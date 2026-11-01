@@ -249,13 +249,15 @@ fn an_answer_queued_in_the_harness_is_pending_until_the_model_takes_it() {
     world.with_orca(|orca| orca["notes"] = json!("queued"));
     let failed = tick(&world, 1500);
     assert!(!failed["errors"].as_array().unwrap().is_empty(), "{failed}");
-    let note: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
-    assert!(note["told"].is_null(), "queued is not delivered: {note}");
+    assert!(!notes.join("convoy-turn-told.json").exists(), "queued is not delivered");
     world.with_orca(|orca| orca["notes"] = json!("taken"));
     let told = tick(&world, 1501);
     assert!(did(&told).contains(&"watch 7 told".to_string()), "{told}");
-    let note: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
-    assert_eq!(note["told"], 1501, "{note}");
+    let receipt: Value =
+        serde_json::from_slice(&std::fs::read(notes.join("convoy-turn-told.json")).unwrap())
+            .unwrap();
+    assert_eq!(receipt["at"], 1501, "{receipt}");
+    assert_eq!(receipt["handoff"], "queued", "{receipt}");
 }
 
 #[test]

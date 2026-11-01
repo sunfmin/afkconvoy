@@ -30,19 +30,26 @@ struct Note {
     handoff: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     answer: Option<Value>,
-    #[serde(default)]
-    told: Option<u64>,
     at: u64,
 }
 
 const HANDOFF: &str = "AFKCONVOY_TURN_HANDOFF";
+const RECEIPT: &str = "convoy-turn-told.json";
+
+#[derive(Serialize, Deserialize)]
+struct Receipt {
+    handoff: String,
+    at: u64,
+}
 
 fn note_in(repo: &Repo) -> Result<PathBuf> {
     Ok(repo.git_dir()?.join(TURN_FILE))
 }
 
-fn write(file: &Path, note: &Note) -> Result<()> {
-    std::fs::write(file, serde_json::to_vec(note)?)
+fn write(file: &Path, value: &impl Serialize) -> Result<()> {
+    let temporary = file.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
+    std::fs::write(&temporary, serde_json::to_vec(value)?)
+        .and_then(|()| std::fs::rename(&temporary, file))
         .with_context(|| format!("cannot write {}", file.display()))
 }
 
@@ -56,14 +63,7 @@ pub fn noted(repo: &Repo, now: u64, ask: impl FnOnce() -> Result<Value>) -> Resu
     if let Some(file) = &file {
         let _ = write(
             file,
-            &Note {
-                asking,
-                outcome: None,
-                handoff: handoff.clone(),
-                answer: None,
-                told: None,
-                at: now,
-            },
+            &Note { asking, outcome: None, handoff: handoff.clone(), answer: None, at: now },
         );
     }
     let answer = ask();
@@ -79,7 +79,6 @@ pub fn noted(repo: &Repo, now: u64, ask: impl FnOnce() -> Result<Value>) -> Resu
                 outcome: Some(outcome),
                 handoff,
                 answer: answer.as_ref().ok().cloned(),
-                told: None,
                 at: crate::clock(),
             },
         );
@@ -103,7 +102,7 @@ pub(crate) struct Handoff {
 /// itself changed. The ending's instructions have their one home in `Ending`.
 pub(crate) fn pending(worktree: &Worktree) -> Result<Option<Handoff>> {
     let Some(note) = note(worktree)? else { return Ok(None) };
-    if note.told.is_some() || note.asking.is_some() {
+    if note.asking.is_some() || handed(worktree)?.is_some() {
         return Ok(None);
     }
     let Some(id) = &note.handoff else { return Ok(None) };
@@ -126,22 +125,23 @@ pub(crate) fn pending(worktree: &Worktree) -> Result<Option<Handoff>> {
 }
 
 impl Handoff {
-    /// A new turn may have started as soon as the worker took the line. Never
-    /// replace that newer note with this turn's delivery receipt.
-    pub fn taken(mut self, worktree: &Worktree, now: u64) -> Result<()> {
-        let current = note(worktree)?;
-        if current.as_ref().is_none_or(|current| current.handoff == self.note.handoff) {
-            self.note.told = Some(now);
-            write(&worktree.note(TURN_FILE)?, &self.note)?;
-        }
-        Ok(())
+    /// A new turn may start as soon as the worker takes the line. Keep the
+    /// receipt separately, keyed to this answer, so it cannot overwrite the
+    /// newer turn's note or give that turn a stale delivery receipt.
+    pub fn taken(self, worktree: &Worktree, now: u64) -> Result<()> {
+        let handoff = self.note.handoff.context("a handoff has an identity")?;
+        write(&worktree.note(RECEIPT)?, &Receipt { handoff, at: now })
     }
 }
 
 /// Once handed work, this claim takes a slot until the worker asks again,
 /// even if its harness still reports the idle state before delivery.
 pub(crate) fn handed(worktree: &Worktree) -> Result<Option<u64>> {
-    Ok(note(worktree)?.and_then(|note| note.told))
+    let Some(handoff) = note(worktree)?.and_then(|note| note.handoff) else { return Ok(None) };
+    let receipt = std::fs::read(worktree.note(RECEIPT)?)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Receipt>(&bytes).ok());
+    Ok(receipt.filter(|receipt| receipt.handoff == handoff).map(|receipt| receipt.at))
 }
 
 /// Ordinary starts and nudges forget a wait; a handoff remains until the

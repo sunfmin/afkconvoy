@@ -1576,6 +1576,26 @@ mod tests {
         assert_eq!((pass.held, pass.bound, pass.frontier_remaining), (2, 2, 1));
     }
 
+    #[test]
+    fn handing_a_turn_answer_takes_a_slot_before_the_frontier_and_counts_as_work() {
+        let set = idle_landings(&[7], &[1]);
+        let pass = run_pass(&set, set.bound(1), set.held(), |step| match step {
+            Watch { start: true, .. } => Told,
+            _ => Nothing,
+        });
+        assert_eq!((pass.held, pass.bound, pass.frontier_remaining), (1, 1, 1));
+        assert!(pass.did_work());
+        assert!(!pass.did.iter().any(|(step, _)| matches!(step, Dispatch { .. })));
+
+        let mut full = idle_landings(&[], &[1]);
+        full.mine.push(Mine { number: 2, idle: false, ..full.mine[0].clone() });
+        let pass = run_pass(&full, full.bound(1), full.held(), |step| match step {
+            Watch { start: true, .. } => Told,
+            _ => Nothing,
+        });
+        assert!(pass.did.contains(&(Watch { issue: 1, start: false }, Nothing)));
+    }
+
     /// A set of three claims with no PR, the last of which declared.
     fn one_declared(frontier: &[u64]) -> WorkingSet {
         let mut set = set(frontier, &[(1, Status::NoPr), (2, Status::NoPr), (3, Status::NoPr)]);
