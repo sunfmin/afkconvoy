@@ -132,6 +132,9 @@ fn token_report(rows: &[Row]) -> TokenReport {
     let mut overall = Vec::new();
     let mut harnesses: BTreeMap<String, Vec<TokenSample>> = BTreeMap::new();
     for row in rows {
+        if sample(row).is_err() {
+            continue;
+        }
         let mut total = account::Counts::default();
         let mut unknown = 0usize;
         let mut known = false;
