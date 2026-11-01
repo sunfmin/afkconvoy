@@ -48,6 +48,61 @@ fn found<'a>(answer: &'a Value, what: &str) -> Vec<&'a Value> {
     findings.filter(|finding| finding["what"].as_str().unwrap().contains(what)).collect()
 }
 
+fn named_grok() -> World {
+    let world = World::new();
+    world.hold_every_harness();
+    world.with_kit(|kit| {
+        let entries = kit["harnesses"].as_array_mut().unwrap();
+        let at = entries.iter().position(|held| held["harness"] == "grok").unwrap();
+        let grok = entries.remove(at);
+        entries.insert(0, grok);
+    });
+    world
+}
+
+fn grok_login_questions(world: &World) -> usize {
+    world.shell_asked().iter().filter(|question| *question == "grok models").count()
+}
+
+#[test]
+fn a_harness_login_check_asks_once_more_only_after_a_logged_out_answer() {
+    let world = named_grok();
+    world.login_answers(
+        "grok",
+        "You are not authenticated.",
+        "You are logged in with grok.com.\nAvailable models:\n  * grok-4.7 (default)\n",
+    );
+    let answer = doctor(&world, "1000").json;
+    assert!(found(&answer, "`grok` is not logged in").is_empty(), "{answer}");
+    assert_eq!(answer["host"]["tools"][3]["state"], "ready");
+    assert_eq!(grok_login_questions(&world), 2);
+
+    let ready = named_grok();
+    doctor(&ready, "1000");
+    assert_eq!(grok_login_questions(&ready), 1, "a ready first answer is not asked again");
+}
+
+#[test]
+fn a_logged_out_finding_keeps_the_second_answer_without_its_credentials() {
+    let world = named_grok();
+    world.login_answers(
+        "grok",
+        "the first answer expired",
+        "You are not authenticated.\ntoken=second-secret api_key: \"another-secret\"\n",
+    );
+    let answer = doctor(&world, "1000");
+    assert_eq!(answer.code, 1);
+    let finding = found(&answer.json, "`grok` is not logged in")[0];
+    let evidence = finding["evidence"].as_str().unwrap();
+    assert!(evidence.contains("exit status: 0"), "{evidence}");
+    assert!(evidence.contains("You are not authenticated."), "{evidence}");
+    assert!(evidence.contains("token=[redacted]"), "{evidence}");
+    assert!(evidence.contains("api_key: \"[redacted]\""), "{evidence}");
+    assert!(!evidence.contains("second-secret") && !evidence.contains("another-secret"));
+    assert!(!evidence.contains("the first answer expired"), "{evidence}");
+    assert_eq!(grok_login_questions(&world), 2);
+}
+
 /// The checkout, as a fix line quotes a path it inserts.
 fn quoted(world: &World) -> String {
     format!("'{}'", world.clone.display())

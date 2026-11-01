@@ -36,13 +36,142 @@ const PI_NO_MODELS: &str = "No models available";
 /// login Codex keeps in a keyring is in no file, and is no worker's.
 const CODEX_LOGIN: &str = "test -f \"$HOME/.codex/auth.json\" && codex login status";
 
+/// The last answer to a login question, kept for a finding without asking again.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct LoginAnswer {
+    /// Whether the shell command exited zero; `None` on an old probe note.
+    succeeded: Option<bool>,
+    /// Its first 500 characters, with credential-shaped text redacted.
+    printed: String,
+}
+
+impl LoginAnswer {
+    pub fn new(succeeded: bool, printed: &str) -> Self {
+        let printed = redact_credentials(printed).chars().take(500).collect();
+        Self { succeeded: Some(succeeded), printed }
+    }
+
+    /// The exit status and safe excerpt of what the harness printed.
+    pub fn evidence(&self) -> String {
+        let status = match self.succeeded {
+            Some(true) => "0",
+            Some(false) => "non-zero",
+            None => "not recorded",
+        };
+        let printed = if self.printed.is_empty() { "(nothing printed)" } else { &self.printed };
+        format!("exit status: {status}\nprinted:\n{printed}")
+    }
+}
+
+impl Default for LoginAnswer {
+    fn default() -> Self {
+        Self { succeeded: None, printed: String::new() }
+    }
+}
+
+fn redact_credentials(printed: &str) -> String {
+    let mut clean = printed.to_string();
+    for label in [
+        "token",
+        "secret",
+        "password",
+        "passwd",
+        "api_key",
+        "api-key",
+        "apikey",
+        "authorization",
+        "credential",
+        "private_key",
+        "private-key",
+        "access_key",
+        "access-key",
+        "session_key",
+        "session-key",
+        "key",
+    ] {
+        clean = redact_label(&clean, label);
+    }
+    for prefix in
+        ["bearer ", "github_pat_", "ghp_", "gho_", "ghu_", "ghs_", "ghr_", "sk-", "xai-", "eyJ"]
+    {
+        clean = redact_prefix(&clean, prefix);
+    }
+    clean
+}
+
+fn redact_label(text: &str, label: &str) -> String {
+    let lower = text.to_ascii_lowercase();
+    let mut ranges = vec![];
+    for (start, _) in lower.match_indices(label) {
+        let boundary =
+            lower[..start].chars().next_back().is_none_or(|c| !c.is_ascii_alphanumeric());
+        if !boundary {
+            continue;
+        }
+        let after = &lower[start + label.len()..];
+        let separator = start + label.len() + after.len() - after.trim_start().len();
+        if !matches!(lower[separator..].chars().next(), Some('=' | ':')) {
+            continue;
+        }
+        let after = &lower[separator + 1..];
+        let value = separator + 1 + after.len() - after.trim_start().len();
+        let Some(first) = lower[value..].chars().next() else { continue };
+        let (content, end) = if matches!(first, '\'' | '"') {
+            let content = value + first.len_utf8();
+            let end = lower[content..].find(first).map(|at| content + at).unwrap_or(lower.len());
+            (content, end)
+        } else {
+            let end = lower[value..]
+                .char_indices()
+                .find(|(_, c)| c.is_whitespace() || matches!(c, ',' | ';' | '}' | ']'))
+                .map(|(at, _)| value + at)
+                .unwrap_or(lower.len());
+            (value, end)
+        };
+        if content < end {
+            ranges.push((content, end));
+        }
+    }
+    replace_ranges(text, ranges)
+}
+
+fn redact_prefix(text: &str, prefix: &str) -> String {
+    let lower = text.to_ascii_lowercase();
+    let prefix_lower = prefix.to_ascii_lowercase();
+    let mut ranges = vec![];
+    for (start, _) in lower.match_indices(&prefix_lower) {
+        if lower[..start].chars().next_back().is_some_and(|c| c.is_ascii_alphanumeric()) {
+            continue;
+        }
+        let content = start + prefix.len();
+        let end = lower[content..]
+            .char_indices()
+            .find(|(_, c)| !(c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')))
+            .map(|(at, _)| content + at)
+            .unwrap_or(lower.len());
+        if content < end {
+            ranges.push((content, end));
+        }
+    }
+    replace_ranges(text, ranges)
+}
+
+fn replace_ranges(text: &str, mut ranges: Vec<(usize, usize)>) -> String {
+    let mut clean = text.to_string();
+    ranges.sort_unstable_by_key(|(start, _)| std::cmp::Reverse(*start));
+    for (start, end) in ranges {
+        clean.replace_range(start..end, "[redacted]");
+    }
+    clean
+}
+
 /// What a start found of one tool: the first thing in its way. A missing one
 /// is never also logged out, and one not running is asked nothing more.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Found {
     Ready,
     Missing,
-    LoggedOut,
+    LoggedOut(LoginAnswer),
     /// Installed, and not running: orca, which every call goes to as an app.
     NotRunning,
     /// Running, and it has no repo at this path, the checkout's main worktree:
@@ -235,7 +364,7 @@ pub fn fault(tool: Tool, found: &Found, host: Option<&str>, callers: &[String]) 
     let (what, line) = match found {
         Found::Ready => return None,
         Found::Missing => ("is not installed".to_string(), tool.install().to_string()),
-        Found::LoggedOut => (tool.logged_out().to_string(), tool.login(host)),
+        Found::LoggedOut(_) => (tool.logged_out().to_string(), tool.login(host)),
         Found::NotRunning => ("is not running".to_string(), START_ORCA.to_string()),
         Found::KnowsNoCheckout(path) => {
             ("does not know this checkout".to_string(), add_checkout(path))
@@ -300,6 +429,24 @@ mod tests {
     ];
 
     #[test]
+    fn a_login_answer_keeps_a_bounded_excerpt_without_credentials() {
+        let answer = LoginAnswer::new(
+            false,
+            "not authenticated\ntoken=abc123 apiKey: \"def456\" Bearer ghp_secret789\n",
+        );
+        let evidence = answer.evidence();
+        assert!(evidence.contains("exit status: non-zero"), "{evidence}");
+        assert!(evidence.contains("token=[redacted]"), "{evidence}");
+        assert!(evidence.contains("apiKey: \"[redacted]\""), "{evidence}");
+        assert!(evidence.contains("Bearer [redacted]"), "{evidence}");
+        for secret in ["abc123", "def456", "ghp_secret789"] {
+            assert!(!evidence.contains(secret), "{evidence}");
+        }
+        let long = LoginAnswer::new(true, &"x".repeat(600));
+        assert_eq!(long.printed.chars().count(), 500);
+    }
+
+    #[test]
     fn a_harness_is_looked_for_only_as_the_first_word_of_its_launch_command() {
         let claude = |launch| Tool::of(Harness::ClaudeCode, launch);
         assert_eq!(claude("claude --dangerously-skip-permissions"), Some(Tool::Claude));
@@ -345,7 +492,7 @@ mod tests {
         assert!(!codex.logged_in(false, ""));
         assert!(!codex.logged_in(false, "Not logged in"));
         assert_eq!(
-            fault(codex, &Found::LoggedOut, None, &[]).unwrap(),
+            fault(codex, &Found::LoggedOut(LoginAnswer::default()), None, &[]).unwrap(),
             "  codex is not logged in where a worker reads its login, `~/.codex/auth.json` (a \
              login kept in a keyring is in no file): codex login"
         );
@@ -364,12 +511,14 @@ mod tests {
              curl -fsSL https://pi.dev/install.sh | sh"
         );
         assert_eq!(
-            fault(Tool::Pi, &Found::LoggedOut, Some("github.com"), &[]).unwrap(),
+            fault(Tool::Pi, &Found::LoggedOut(LoginAnswer::default()), Some("github.com"), &[])
+                .unwrap(),
             "  pi holds credentials for no provider (`/login` at its prompt logs it in): pi"
         );
         assert_eq!(fault(Tool::Pi, &Found::Ready, None, &callers), None);
         // …under the words every refusal starts with, and beside a command's own fault
-        let lines = [fault(Tool::Pi, &Found::LoggedOut, None, &callers).unwrap()];
+        let lines =
+            [fault(Tool::Pi, &Found::LoggedOut(LoginAnswer::default()), None, &callers).unwrap()];
         let said = refused(&lines, Some("the command of another harness takes no flag")).unwrap();
         assert!(said.contains("nothing was started"), "{said}");
         assert!(
@@ -392,9 +541,9 @@ mod tests {
     fn every_fault_is_named_with_the_line_that_fixes_it() {
         let found = [
             (Tool::Git, Found::Missing),
-            (Tool::Gh, Found::LoggedOut),
+            (Tool::Gh, Found::LoggedOut(LoginAnswer::default())),
             (Tool::Orca, Found::Missing),
-            (Tool::Claude, Found::LoggedOut),
+            (Tool::Claude, Found::LoggedOut(LoginAnswer::default())),
         ];
         let said = refusal(&found, Some("github.com"), None).unwrap();
         let lines: Vec<&str> = said.lines().skip(1).collect();
@@ -428,7 +577,11 @@ mod tests {
         assert!(said.contains("nothing was started"), "{said}");
 
         let unknown = Found::KnowsNoCheckout("/Users/kim/hospital demo".to_string());
-        let said = refusal(&[(Tool::Gh, Found::LoggedOut), (Tool::Orca, unknown)], None, None);
+        let said = refusal(
+            &[(Tool::Gh, Found::LoggedOut(LoginAnswer::default())), (Tool::Orca, unknown)],
+            None,
+            None,
+        );
         let said = said.unwrap();
         let lines: Vec<&str> = said.lines().skip(1).collect();
         assert_eq!(
@@ -447,7 +600,7 @@ mod tests {
             Tool::Gh.login_question(Some("ghe.example.com")).unwrap(),
             "gh auth status --hostname ghe.example.com"
         );
-        let out = [(Tool::Gh, Found::LoggedOut)];
+        let out = [(Tool::Gh, Found::LoggedOut(LoginAnswer::default()))];
         let said = refusal(&out, Some("ghe.example.com"), None).unwrap();
         assert!(said.ends_with(": gh auth login --hostname ghe.example.com"), "{said}");
         assert_eq!(Tool::Git.login_question(None), None);

@@ -26,8 +26,9 @@ use crate::topic::See;
 pub(crate) const SHELL_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// One doctor's harness budget. While it stands, each harness program is
-/// started at most once in this process, including every checkout of
-/// `doctor --all`. A tick never takes one, so its starts stay unlimited.
+/// started once in this process, or twice when its first login answer reads
+/// logged out, including every checkout of `doctor --all`. A tick never takes
+/// one, so its starts stay unlimited.
 pub(crate) struct HarnessBudget;
 
 static DEPTH: AtomicUsize = AtomicUsize::new(0);
@@ -583,6 +584,12 @@ fn login_shell(dir: &Path, script: &str) -> Option<String> {
 /// it could not run or timed out.
 pub fn ask_login_shell(dir: &Path, script: &str) -> Option<(bool, String)> {
     ANSWERED.read(&asked(dir, script), || ask_login_shell_within(dir, script, SHELL_TIMEOUT))
+}
+
+/// Asks the same login shell question again and keeps this answer for the rest
+/// of the look: a harness may renew an expired session while answering first.
+pub fn ask_login_shell_again(dir: &Path, script: &str) -> Option<(bool, String)> {
+    ANSWERED.again(&asked(dir, script), || ask_login_shell_within(dir, script, SHELL_TIMEOUT))
 }
 
 /// The login shell's answer to one question in one directory, asked once in

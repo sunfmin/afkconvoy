@@ -6,8 +6,8 @@
 //! which `tracker::findings` asks and judges. It writes nothing anywhere but the
 //! fleet's own cache, and makes no startup probe: it is run beside a live
 //! fleet, often. While a startup probe that checked the kit's current launch
-//! commands still stands, it starts no harness; otherwise it starts each
-//! harness at most once. `findings` is the half that judges what was read, and asks
+//! commands still stands, it starts no harness; otherwise it starts a ready
+//! harness once, and asks a logged-out one once more. `findings` is the half that judges what was read, and asks
 //! nothing. Nothing here fixes anything: the fleet's own commands do.
 
 use std::path::{Path, PathBuf};
@@ -659,12 +659,13 @@ fn host_findings(host: &Host) -> Vec<Finding> {
                 format!("no `{name}` was found on this host{called}"),
                 tool.install().to_string(),
             ),
-            Found::LoggedOut => (
+            Found::LoggedOut(answer) => (
                 if *tool == Tool::Pi { Kind::NoProvider } else { Kind::ToolLoggedOut },
                 format!("`{name}` {}", tool.logged_out()),
                 format!(
-                    "`{}` says so, in a login shell{called}",
-                    tool.login_question(gh_host).unwrap_or_default()
+                    "`{}` says so, in a login shell{called}\n{}",
+                    tool.login_question(gh_host).unwrap_or_default(),
+                    answer.evidence()
                 ),
                 tool.login(gh_host),
             ),
@@ -1521,7 +1522,9 @@ fn noted(called: &[(Harness, Vec<String>)], notes: &[crate::probe::NotedHarness]
             let noted = notes.iter().find(|note| note.harness() == harness.key());
             let found = match noted.map(crate::probe::NotedHarness::state).unwrap_or("ready") {
                 "missing" => Some(Found::Missing),
-                "logged_out" => Some(Found::LoggedOut),
+                "logged_out" => Some(Found::LoggedOut(
+                    noted.and_then(crate::probe::NotedHarness::answer).unwrap_or_default(),
+                )),
                 "absent" => None,
                 _ => Some(Found::Ready),
             };
@@ -1948,7 +1951,7 @@ fn host_json(host: &Host) -> Value {
         let state = match found {
             Found::Ready => "ready",
             Found::Missing => "missing",
-            Found::LoggedOut => "logged_out",
+            Found::LoggedOut(_) => "logged_out",
             Found::NotRunning if host.orca_unasked.is_some() => "unasked",
             Found::NotRunning => "not_running",
             Found::KnowsNoCheckout(_) => "knows_no_checkout",
@@ -2797,7 +2800,10 @@ mod tests {
     #[test]
     fn a_host_that_lacks_what_the_fleet_needs_is_critical_with_the_line_that_fixes_it() {
         let mut lacking = host();
-        lacking.tools = vec![(Tool::Gh, Found::LoggedOut), (Tool::Orca, Found::Missing)];
+        lacking.tools = vec![
+            (Tool::Gh, Found::LoggedOut(afkconvoy_core::tools::LoginAnswer::default())),
+            (Tool::Orca, Found::Missing),
+        ];
         let found = found(&lacking, &run(vec![]), &state());
         assert_eq!(fixes(&found, "`gh` is not logged in"), ["gh auth login"]);
         assert_eq!(fixes(&found, "`orca` is not installed"), [Tool::Orca.install()]);
@@ -2854,7 +2860,7 @@ mod tests {
         assert_eq!(found[0].severity, Severity::Critical);
         assert_eq!(host_json(&missing)["tools"][3], json!({"name": "pi", "state": "missing"}));
 
-        let mut logged_out = pi(Found::LoggedOut);
+        let mut logged_out = pi(Found::LoggedOut(afkconvoy_core::tools::LoginAnswer::default()));
         logged_out.launches[1].checked.fault = None;
         logged_out.launches[1].checked.flags_fault = None;
         let found = self::found(&logged_out, &run(vec![]), &state());

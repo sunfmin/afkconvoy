@@ -138,6 +138,9 @@ pub(crate) struct NotedHarness {
     /// `ready`, `missing`, `logged_out`, or `absent` when the command names
     /// no harness tool.
     state: String,
+    /// The last answer when logged out, absent on an old note.
+    #[serde(default)]
+    answer: Option<afkconvoy_core::tools::LoginAnswer>,
     fault: Option<String>,
     flags_fault: Option<String>,
 }
@@ -146,13 +149,18 @@ impl NotedHarness {
     fn of(checked: &crate::role::Checked) -> Self {
         let state = match &checked.tool {
             Some((_, Found::Missing)) => "missing",
-            Some((_, Found::LoggedOut)) => "logged_out",
+            Some((_, Found::LoggedOut(_))) => "logged_out",
             Some((_, Found::Ready)) => "ready",
             _ => "absent",
+        };
+        let answer = match &checked.tool {
+            Some((_, Found::LoggedOut(answer))) => Some(answer.clone()),
+            _ => None,
         };
         Self {
             harness: checked.harness.key().to_string(),
             state: state.to_string(),
+            answer,
             fault: checked.fault.clone(),
             flags_fault: checked.flags_fault.clone(),
         }
@@ -164,6 +172,10 @@ impl NotedHarness {
 
     pub(crate) fn state(&self) -> &str {
         &self.state
+    }
+
+    pub(crate) fn answer(&self) -> Option<afkconvoy_core::tools::LoginAnswer> {
+        self.answer.clone()
     }
 
     pub(crate) fn fault(&self) -> Option<&str> {
