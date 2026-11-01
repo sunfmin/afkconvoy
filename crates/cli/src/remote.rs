@@ -204,6 +204,19 @@ pub(crate) fn foreign_refs(
         .collect())
 }
 
+/// The work refs of a repo without a local checkout, shared across trackers
+/// in one look. Report claims use the live read above instead. A report
+/// transition starts a fresh look before rereading these work refs.
+pub(crate) fn foreign_work_refs(dir: &Path, url: &str) -> Result<Vec<(String, String)>> {
+    static WORK: crate::look::Reading<Result<Vec<(String, String)>, String>> =
+        crate::look::Reading::per_look("foreign work refs");
+    WORK.read(url, || {
+        foreign_refs(dir, url, &["refs/convoy/*", "refs/heads/convoy-*"])
+            .map_err(|e| format!("{e:#}"))
+    })
+    .map_err(anyhow::Error::msg)
+}
+
 /// An atomic compare-and-swap on a tracker ref. The object is a parentless
 /// empty-tree record made locally, so pushing it carries no checkout history.
 pub(crate) fn foreign_push(dir: &Path, url: &str, push: &Push) -> Result<bool> {
@@ -611,6 +624,41 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
     use std::path::PathBuf;
+
+    #[test]
+    fn tracker_compare_and_swap_admits_one_host_and_never_releases_a_successor() {
+        let dir = tempfile::tempdir().unwrap();
+        let run = |args: &[&str]| {
+            let ran = crate::git::run(dir.path(), args, &[]).unwrap();
+            assert!(ran.ok, "{}", ran.stderr);
+        };
+        run(&["init", "-q", "--bare", "remote.git"]);
+        run(&["init", "-q", "local"]);
+        let repo = Repo::at(&dir.path().join("local")).unwrap();
+        let remote = dir.path().join("remote.git").display().to_string();
+        let name = "refs/heads/convoy-unworked/acme/repo";
+        let first = repo.record_commit("first host").unwrap();
+        let second = repo.record_commit("second host").unwrap();
+        let (a, b) = std::thread::scope(|scope| {
+            let a = scope.spawn(|| {
+                foreign_push(&repo.dir, &remote, &Push::set(&first, name).leased("")).unwrap()
+            });
+            let b = scope.spawn(|| {
+                foreign_push(&repo.dir, &remote, &Push::set(&second, name).leased("")).unwrap()
+            });
+            (a.join().unwrap(), b.join().unwrap())
+        });
+        assert_ne!(a, b);
+        let won = if a { &first } else { &second };
+        assert_eq!(foreign_refs(&repo.dir, &remote, &[name]).unwrap()[0].1, *won);
+        let successor = repo.record_commit("next host after the lease").unwrap();
+        assert!(
+            foreign_push(&repo.dir, &remote, &Push::set(&successor, name).leased(won)).unwrap()
+        );
+        assert!(!foreign_push(&repo.dir, &remote, &Push::delete(name).leased(won)).unwrap());
+        assert_eq!(foreign_refs(&repo.dir, &remote, &[name]).unwrap()[0].1, successor);
+        assert!(foreign_push(&repo.dir, &remote, &Push::delete(name).leased(&successor)).unwrap());
+    }
 
     /// A remote held in memory: its refs, and how many times it was listed.
     #[derive(Debug, Default)]

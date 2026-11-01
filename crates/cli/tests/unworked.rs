@@ -13,7 +13,10 @@ fn setup() -> (World, PathBuf, u64) {
     world.say_tracker(&world.clone, "acme/control");
     let remote = world.repo(
         "acme/other",
-        &[("docs/agents/afkconvoy.md", "```yaml\nready_label: take-me\n```\n")],
+        &[(
+            "docs/agents/afkconvoy.md",
+            "```yaml\nbase_branch: main\ngate_command: 'true'\nready_label: take-me\n```\n",
+        )],
     );
     git(
         &world.clone,
@@ -64,11 +67,36 @@ fn record(remote: &std::path::Path, name: &str, message: &str) {
 #[test]
 fn doctor_reads_label_and_blocker_times_and_remote_beats_without_a_checkout() {
     let (world, remote, now) = setup();
+    let unavailable = world.root.join("not-a-remote");
+    git(&world.clone, &["config", "--unset", &format!("url.{}.insteadOf", remote.display())]);
+    git(
+        &world.clone,
+        &[
+            "config",
+            &format!("url.{}.insteadOf", unavailable.display()),
+            "https://github.com/acme/other.git",
+        ],
+    );
     ready(&world, now - 3540);
     let young = observation(&world);
     assert!(young["waiting"].as_array().unwrap().is_empty(), "{young}");
     assert!(young["error"].is_null(), "{young}");
     ready(&world, now - 3660);
+    let unreadable = observation(&world);
+    assert!(
+        unreadable["error"].as_str().unwrap().contains("remote could not be read"),
+        "{unreadable}"
+    );
+    assert_eq!(world.tracker()["issues"].as_array().unwrap().len(), 1);
+    git(&world.clone, &["config", "--unset", &format!("url.{}.insteadOf", unavailable.display())]);
+    git(
+        &world.clone,
+        &[
+            "config",
+            &format!("url.{}.insteadOf", remote.display()),
+            "https://github.com/acme/other.git",
+        ],
+    );
     let old = observation(&world);
     assert_eq!(old["waiting"][0]["issue"], 7, "{old}");
     assert!(old["newest"].is_null());
@@ -119,7 +147,24 @@ fn until(world: &World, check: impl Fn() -> Option<Value>) -> Value {
 #[test]
 fn runner_opens_one_report_starts_its_watch_and_closes_on_a_live_heartbeat() {
     let (world, remote, now) = setup();
-    world.afk(&["run", "--host", "h1", "--second-ms", "100", "--watch-every", "1"]).ok();
+    let notifications = world.root.join("notifications.jsonl");
+    let notify = afkconvoy_core::line::Line::new()
+        .fixed("cat >> ")
+        .word(notifications.to_str().unwrap())
+        .own();
+    world
+        .afk(&[
+            "run",
+            "--host",
+            "h1",
+            "--second-ms",
+            "100",
+            "--watch-every",
+            "1",
+            "--notify-command",
+            &notify,
+        ])
+        .ok();
     let report = until(&world, || {
         world.tracker()["issues"]
             .as_array()?
@@ -152,6 +197,32 @@ fn runner_opens_one_report_starts_its_watch_and_closes_on_a_live_heartbeat() {
     assert_eq!(watch["look"]["host"]["unworked_repos"][0]["repo"], "acme/other");
     assert!(brief.contains("never add that repo to this host's checkout list"));
     assert_eq!(world.checkout_list()["checkouts"].as_array().unwrap().len(), 1);
+    let condition = watch["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["id"].as_str().unwrap().contains("unworked-repo"))
+        .unwrap()["id"]
+        .clone();
+    let report_file = world.root.join("human.json");
+    std::fs::write(&report_file, json!({"held_back": [], "did": [], "verified": [], "pending": [],
+        "human": [{"condition": condition, "question": "Which host should take acme/other?", "answer": "afkconvoy run <checkout> --tracker acme/control"}]}).to_string()).unwrap();
+    world
+        .afk(&[
+            "watched",
+            "--watch",
+            watch["id"].as_str().unwrap(),
+            "--text-file",
+            report_file.to_str().unwrap(),
+        ])
+        .ok();
+    let sent = until(&world, || {
+        let line = std::fs::read_to_string(&notifications).ok()?;
+        line.lines()
+            .filter_map(|s| serde_json::from_str::<Value>(s).ok())
+            .find(|v| v["condition"] == condition)
+    });
+    assert_eq!(sent["url"], format!("https://github.com/acme/control/issues/{}", report["number"]));
     record(
         &remote,
         "refs/convoy/heartbeat/peer",

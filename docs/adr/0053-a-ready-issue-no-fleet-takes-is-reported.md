@@ -12,7 +12,7 @@ waited strictly more than an hour since the later of its dispatch label's last
 application and its last blocker closing. Only then, or for an existing report,
 does the look ask that repo's heartbeat remote. A heartbeat within the lease
 rules out a report; a claim leaves the issue to lease takeover. Config and team
-flow labels are read from GitHub, with the usual defaults where no config exists.
+flow labels are read from GitHub; an absent config leaves dispatch labels unknown.
 Timeline label events and blocker closure times remain the tracker's facts.
 
 Doctor stays read-only (ADR-0043); the host runner reconciles its evidence.

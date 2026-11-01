@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use afkconvoy_core::claims::{Claim, read_heartbeat};
 use afkconvoy_core::config::RepoName;
 use afkconvoy_core::layout::Layout;
-use afkconvoy_core::lease::{LEASE, stamp_stale};
+use afkconvoy_core::lease::stamp_stale;
 use afkconvoy_core::tracker::{Tracker, repo_labels};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
@@ -103,7 +103,10 @@ fn issues(gh: &GitHub, tracker: &str) -> Result<Vec<Issue>> {
 }
 
 fn private(gh: &GitHub, tracker: &str) -> Result<()> {
-    let visibility = gh.read(&["api", &format!("repos/{tracker}"), "--jq", ".visibility"])?;
+    let named = RepoName::read(tracker).context("invalid tracker")?;
+    let reader =
+        GitHub::new(gh.dir.clone(), Tracker::Other { tracker: named.clone(), repo: named });
+    let visibility = reader.visibility()?;
     ensure!(
         visibility.trim() == "private",
         "tracker {tracker} is not private; no report may be written"
@@ -112,7 +115,16 @@ fn private(gh: &GitHub, tracker: &str) -> Result<()> {
 }
 
 fn subject(gh: &GitHub, repo: &str, sha: &str) -> Result<String> {
-    gh.read(&["api", &format!("repos/{repo}/git/commits/{sha}"), "--jq", ".message"])
+    // Share a SHA's subject across trackers in this look; failed reads can
+    // recover at the next look.
+    static SUBJECTS: crate::look::Reading<Result<String, String>> =
+        crate::look::Reading::per_look("foreign record subject");
+    SUBJECTS
+        .read(&format!("{repo}/{sha}"), || {
+            gh.read(&["api", &format!("repos/{repo}/git/commits/{sha}"), "--jq", ".message"])
+                .map_err(|e| format!("{e:#}"))
+        })
+        .map_err(anyhow::Error::msg)
 }
 
 fn url(repo: &str) -> String {
@@ -204,13 +216,16 @@ fn observe(
 
 fn read_repo(seen: &mut Observed, gh: &GitHub, open: &[Issue], now: u64) -> Result<()> {
     let named = RepoName::read(&seen.repo).context("invalid repo label")?;
-    let text =
-        gh.file_of(&named, crate::config::FILE)?.unwrap_or_else(|| "```yaml\n{}\n```".into());
+    let text = gh
+        .file_of(&named, crate::config::FILE)?
+        .context("repo has no fleet config; its dispatch labels are unknown")?;
     let config = crate::config::parse(&text)?;
     seen.escalate = config.escalate_label.clone();
     let flows = if let Some(bound) = &config.bound {
         let copies = crate::copies::Copies::of_host()?;
-        Some(crate::team::keep(gh, &copies, &bound.team, &config.labels())?.team.flow_labels())
+        let kept = crate::team::keep(gh, &copies, &bound.team, &config.labels())?;
+        seen.escalate = kept.team.escalate_label.clone();
+        Some(kept.team.flow_labels())
     } else {
         None
     };
@@ -220,12 +235,14 @@ fn read_repo(seen: &mut Observed, gh: &GitHub, open: &[Issue], now: u64) -> Resu
         if owned.len() != 1
             || !owned[0].eq_ignore_ascii_case(&format!("repo:{}", seen.repo))
             || Report::read(&issue.body).is_some()
-            || issue.labels.contains(&config.escalate_label)
+            || issue.labels.contains(&seen.escalate)
         {
             continue;
         }
         let labels = match &flows {
-            Some(flows) => flows.among(&issue.labels).into_iter().map(str::to_string).collect(),
+            Some(flows) => {
+                issue.labels.iter().filter(|label| flows.takes(label)).cloned().collect()
+            }
             None => issue
                 .labels
                 .iter()
@@ -250,12 +267,8 @@ fn read_repo(seen: &mut Observed, gh: &GitHub, open: &[Issue], now: u64) -> Resu
     if waiting.is_empty() && seen.reports.is_empty() {
         return Ok(());
     }
-    let refs = remote::foreign_refs(
-        &seen.checkout,
-        &url(&seen.repo),
-        &["refs/convoy/*", "refs/heads/convoy-*"],
-    )
-    .context("repo's remote could not be read")?;
+    let refs = remote::foreign_work_refs(&seen.checkout, &url(&seen.repo))
+        .context("repo's remote could not be read")?;
     let mut claims = BTreeMap::new();
     let tracker = if seen.tracker.eq_ignore_ascii_case(&seen.repo) {
         Tracker::Own
@@ -409,6 +422,20 @@ pub(crate) fn findings(value: &Value, host: &str, now: u64) -> Vec<Finding> {
         .collect()
 }
 
+/// A human notification links to the report even though its repo is absent
+/// from the checkout list. The condition is the same one the finding owns.
+pub(crate) fn issue_url(value: &Value, condition: &str) -> Option<String> {
+    let rows: Vec<Observed> = serde_json::from_value(value.clone()).ok()?;
+    for seen in rows {
+        let Some(report) = seen.reports.first() else { continue };
+        let Some(finding) = finding_of(&seen, &report.report.host, 0) else { continue };
+        if crate::host_watch::scoped_finding_id("host", &finding.watch_id) == condition {
+            return Some(format!("https://github.com/{}/issues/{}", seen.tracker, report.issue));
+        }
+    }
+    None
+}
+
 trait Reports {
     fn refresh(&self, seen: &Observed, now: u64) -> Result<Observed>;
     fn take(&self, seen: &Observed, host: &str, now: u64) -> Result<Option<String>>;
@@ -466,10 +493,12 @@ impl GitReports {
 
 impl Reports for GitReports {
     fn refresh(&self, seen: &Observed, now: u64) -> Result<Observed> {
-        let gh = GitHub::new(seen.checkout.clone(), Tracker::Own);
-        private(&gh, &seen.tracker)?;
-        let open = issues(&gh, &seen.tracker)?;
-        Ok(observe(seen.checkout.clone(), &gh, &seen.tracker, &seen.repo, &open, now))
+        std::sync::Arc::new(crate::look::Look::new()).enter(|| {
+            let gh = GitHub::new(seen.checkout.clone(), Tracker::Own);
+            private(&gh, &seen.tracker)?;
+            let open = issues(&gh, &seen.tracker)?;
+            Ok(observe(seen.checkout.clone(), &gh, &seen.tracker, &seen.repo, &open, now))
+        })
     }
 
     fn take(&self, seen: &Observed, host: &str, now: u64) -> Result<Option<String>> {
@@ -482,7 +511,7 @@ impl Reports for GitReports {
                 message.trim().strip_prefix(CLAIM).context("invalid report claim")?,
             )?;
             let at = record["at"].as_u64().context("report claim has no time")?;
-            if now.saturating_sub(at) <= LEASE {
+            if !stamp_stale(at, now) {
                 return Ok(None);
             }
             sha.as_str()
@@ -549,7 +578,10 @@ impl Reports for GitReports {
                 repo: RepoName::read(&seen.repo).context("invalid repo")?,
             },
         );
-        gh.comment(issue, &format!("The work was taken by host {host}: its claims or live heartbeat are on the repo's remote."))?;
+        let marker = "<!--convoy:unworked-taken-->";
+        if !gh.comments(issue)?.iter().any(|comment| comment.body.starts_with(marker)) {
+            gh.comment(issue, &format!("{marker}\nThe work was taken by host {host}: its claims or live heartbeat are on the repo's remote."))?;
+        }
         gh.close_issue(issue)
     }
 }
