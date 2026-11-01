@@ -145,6 +145,247 @@ fn printed(world: &World, watch: &Value, lines: &[&str], status: Option<i32>) {
     std::fs::write(watch["transcript"].as_str().unwrap(), text).unwrap();
 }
 
+fn notify_state(world: &World) -> Value {
+    std::fs::read(world.cache().join("afkconvoy/watch/notify.json"))
+        .map_or(json!({}), |bytes| serde_json::from_slice(&bytes).unwrap())
+}
+
+fn notifications(file: &Path) -> Vec<Value> {
+    std::fs::read_to_string(file)
+        .unwrap_or_default()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect()
+}
+
+fn append_notification(file: &Path) -> String {
+    afkconvoy_core::line::Line::new().fixed("cat >> ").word(file.to_str().unwrap()).own()
+}
+
+fn report_humans(world: &World, watch: &Value, human: Value) {
+    let file = world.root.join("human-report.json");
+    std::fs::write(
+        &file,
+        json!({"held_back": [], "did": [], "verified": [],
+        "human": human, "pending": []})
+        .to_string(),
+    )
+    .unwrap();
+    world
+        .afk(&[
+            "watched",
+            "--watch",
+            watch["id"].as_str().unwrap(),
+            "--text-file",
+            file.to_str().unwrap(),
+        ])
+        .ok();
+    until(world, "the human report to settle", || {
+        ended(world, "ended").filter(|last| last["id"] == watch["id"])
+    });
+}
+
+/// Force the same observed fault into a new round after replacing the
+/// runner. Its durable notification records are left untouched.
+fn another_notification_round(world: &World, dir: &Path, previous: &Value) -> Value {
+    world.kill_host_runner("KILL");
+    let mut kept = state(world);
+    kept["covered"] = json!([]);
+    kept["watched"] = json!([]);
+    kept["observed"] = json!({});
+    std::fs::write(world.cache().join("afkconvoy/watch/state.json"), kept.to_string()).unwrap();
+    run(world, dir);
+    until(world, "another notification round", || {
+        running(world)
+            .filter(|w| w["id"] != previous["id"] && w["started"].as_u64().unwrap_or(0) > 0)
+    })
+}
+
+#[test]
+fn human_notifications_send_each_answer_once_across_reports_and_restart_until_absent() {
+    let world = World::new();
+    let dir = operator(&world);
+    paused(&world, "pi", "an account is needed");
+    let file = world.root.join("notifications.jsonl");
+    let command = append_notification(&file);
+    let ran = world
+        .afk(&[
+            "run",
+            "--host",
+            "h1",
+            "--second-ms",
+            "100",
+            "--watch-dir",
+            dir.to_str().unwrap(),
+            "--watch-every",
+            "1",
+            "--notify-command",
+            &command,
+        ])
+        .ok();
+    assert_eq!(ran["settings"]["notify_command"]["to"], command);
+    let first = until(&world, "first notification round", || running(&world));
+    let humans = json!([
+        {"question": "Supply an account?", "answer": "first answer"},
+        {"question": "Approve the spend? $(touch should-never-exist)", "answer": "second answer"}
+    ]);
+    report_humans(&world, &first, humans.clone());
+    until(&world, "two successful sendings", || {
+        let entries = notify_state(&world)["entries"].clone();
+        (entries.as_object().is_some_and(|e| e.len() == 2 && e.values().all(|v| v["sent"] == true)))
+            .then_some(())
+    });
+    let sent = notifications(&file);
+    assert_eq!(sent.len(), 2);
+    for (sent, human) in sent.iter().zip(humans.as_array().unwrap()) {
+        assert_eq!(sent["question"], human["question"]);
+        assert_eq!(sent["answer"], human["answer"]);
+        assert_eq!(sent["watch"], first["id"]);
+        assert_eq!(sent["host"], world.checkout_list()["settings"]["host_name"]);
+        assert_eq!(sent["panel"], "http://127.0.0.1:7070/");
+    }
+    assert!(!world.clone.join("should-never-exist").exists());
+    let doctor = world.afk(&["doctor"]).json;
+    assert_eq!(doctor["host"]["notify"]["command"], command);
+    assert_eq!(doctor["host"]["settings"]["in_force"]["notify_command"], command);
+    assert_eq!(doctor["host"]["notify"]["last"]["outcome"], "sent");
+    assert!(doctor["host"]["notify"]["last"]["ended"].as_u64().is_some());
+
+    let second = another_notification_round(&world, &dir, &first);
+    let mut reworded = humans.clone();
+    reworded[0]["question"] = json!("The same account, asked differently?");
+    report_humans(&world, &second, reworded);
+    let before = notify_state(&world)["look"].as_u64().unwrap();
+    until(&world, "later looks without repeated sending", || {
+        notify_state(&world)["look"].as_u64().filter(|look| *look > before + 1)
+    });
+    assert_eq!(notifications(&file).len(), 2);
+
+    let empty = another_notification_round(&world, &dir, &second);
+    report_humans(&world, &empty, json!([]));
+    assert_eq!(notify_state(&world)["entries"], json!({}));
+    let returned = another_notification_round(&world, &dir, &empty);
+    report_humans(&world, &returned, humans);
+    until(&world, "returned decisions sent again", || {
+        (notifications(&file).len() == 4).then_some(())
+    });
+
+    world.afk(&["run", "--notify-command", "default"]).ok();
+    let disabled = another_notification_round(&world, &dir, &returned);
+    report_humans(
+        &world,
+        &disabled,
+        json!([{"question": "New decision?", "answer": "unsent answer"}]),
+    );
+    let before = notify_state(&world)["look"].as_u64().unwrap();
+    until(&world, "looks with sending disabled", || {
+        notify_state(&world)["look"].as_u64().filter(|look| *look > before + 1)
+    });
+    assert_eq!(notifications(&file).len(), 4);
+    assert_eq!(world.afk(&["doctor"]).json["host"]["notify"]["command"], Value::Null);
+}
+
+#[test]
+fn human_notification_failures_retry_at_later_looks_and_doctor_finds_three_then_recovers() {
+    let world = World::new();
+    let dir = operator(&world);
+    paused(&world, "pi", "an account is needed");
+    let file = world.root.join("attempts.jsonl");
+    let command = format!("{}; exit 17", append_notification(&file));
+    world.say_host_settings(json!({"notify_command": command}));
+    run(&world, &dir);
+    let watch = until(&world, "notification round", || running(&world));
+    report_humans(&world, &watch, json!([{"question": "Supply an account?", "answer": "answer"}]));
+    until(&world, "three failed sendings", || {
+        notify_state(&world)["entries"]["answer"]["failures"]
+            .as_u64()
+            .filter(|failures| *failures >= 3)
+    });
+    let before = state(&world)["looked"].as_u64().unwrap();
+    let doctor = world.afk(&["doctor"]).json;
+    let finding = doctor["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["kind"] == "notify_failed")
+        .unwrap();
+    assert_eq!(finding["of_host"], true);
+    assert!(finding["fix"].as_str().unwrap().contains("--notify-command"));
+    assert!(doctor["host"]["notify"]["last"]["outcome"].as_str().unwrap().contains("failed"));
+    assert!(notifications(&file).len() >= 3);
+    assert!(running(&world).is_none(), "failed sending leaves the watch standing by");
+
+    let recovered = world.root.join("recovered.jsonl");
+    let command = append_notification(&recovered);
+    world.afk(&["run", "--notify-command", &command]).ok();
+    until(&world, "successful retry after changing the command", || {
+        (notify_state(&world)["entries"]["answer"]["sent"] == true).then_some(())
+    });
+    assert_eq!(notifications(&recovered).len(), 1);
+    assert_eq!(notify_state(&world)["entries"]["answer"]["failures"], 0);
+    assert!(state(&world)["looked"].as_u64().unwrap() > before);
+    assert!(
+        !world.afk(&["doctor"]).json["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f["kind"] == "notify_failed")
+    );
+}
+
+#[test]
+fn a_hung_human_notification_times_out_and_retries_without_holding_back_looks_or_rounds() {
+    let world = World::new();
+    let dir = operator(&world);
+    paused(&world, "pi", "an account is needed");
+    let file = world.root.join("hung.jsonl");
+    let command = format!("{}; sleep 120", append_notification(&file));
+    world.say_host_settings(json!({"notify_command": command}));
+    run(&world, &dir);
+    let first = until(&world, "notification round", || running(&world));
+    let human = json!([{"question": "Supply an account?", "answer": "answer"}]);
+    report_humans(&world, &first, human.clone());
+    until(&world, "hung command started", || (notifications(&file).len() == 1).then_some(()));
+    let before = state(&world)["looked"].as_u64().unwrap();
+    paused(&world, "kimi", "another fault while sending hangs");
+    let next = until(&world, "another round during the hung command", || {
+        running(&world).filter(|w| w["id"] != first["id"] && w["started"].as_u64().unwrap_or(0) > 0)
+    });
+    report_humans(&world, &next, human);
+    assert_eq!(notifications(&file).len(), 1, "another round completed within the sending bound");
+    assert!(state(&world)["looked"].as_u64().unwrap() > before);
+    until(&world, "timeout recorded and retried", || {
+        (notify_state(&world)["entries"]["answer"]["failures"].as_u64().unwrap_or(0) >= 1
+            && notifications(&file).len() >= 2)
+            .then_some(())
+    });
+    assert!(!notify_state(&world)["entries"]["answer"]["sent"].as_bool().unwrap());
+    world.afk(&["stop", "--all"]).ok();
+}
+
+#[test]
+fn notify_command_environment_and_flag_follow_host_setting_precedence() {
+    let world = World::new();
+    let command = "exit 73";
+    let out = world
+        .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
+        .env("AFKCONVOY_NOTIFY_COMMAND", command)
+        .args(["run"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));
+    assert_eq!(world.checkout_list()["settings"]["notify_command"], command);
+    let out = world
+        .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
+        .env("AFKCONVOY_NOTIFY_COMMAND", command)
+        .args(["run", "--notify-command", "default"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert_eq!(world.checkout_list()["settings"]["notify_command"], Value::Null);
+    world.afk(&["stop", "--all"]).ok();
+}
+
 #[test]
 fn a_host_with_no_operator_directory_runs_the_stock_watch_and_records_what_stays_human() {
     let world = World::new();
