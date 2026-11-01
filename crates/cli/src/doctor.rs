@@ -172,6 +172,7 @@ kinds! {
     KitUnplaced: Warning, "has unplaced models in the host kit";
     WatchUnavailable: Critical, "no harness can start this host's watch";
     WatchBusy: Critical, "the resident watch is busy; its round remains undelivered";
+    NotifyFailed: Warning, "human decision sending has failed repeatedly";
     NotMoved: Warning, "the host runner did not move onto";
     NotUpgraded: Warning, "is published, newer than the host runner's";
     PathStale: Warning, "is first on PATH";
@@ -229,6 +230,7 @@ impl Kind {
                 | Kind::KitUnplaced
                 | Kind::WatchUnavailable
                 | Kind::WatchBusy
+                | Kind::NotifyFailed
                 | Kind::NotMoved
                 | Kind::NotUpgraded
                 | Kind::PathStale
@@ -246,7 +248,11 @@ impl Kind {
     pub fn watched(self) -> bool {
         !matches!(
             self,
-            Kind::WatchUnavailable | Kind::WatchBusy | Kind::PathStale | Kind::NotUpgraded
+            Kind::WatchUnavailable
+                | Kind::WatchBusy
+                | Kind::NotifyFailed
+                | Kind::PathStale
+                | Kind::NotUpgraded
         )
     }
 }
@@ -2321,6 +2327,7 @@ fn host_once(
         ("exclusive".to_string(), exclusive_json(exclusive, now)),
         ("installed".to_string(), serde_json::to_value(installed).unwrap_or_default()),
         ("watch".to_string(), crate::host_watch::json(watch.as_ref(), rounds)),
+        ("notify".to_string(), crate::watch_notify::json()),
         ("other_accounts".to_string(), crate::machine::json(others)),
     ])
 }
@@ -2334,6 +2341,7 @@ impl Look {
         findings.extend(crate::machine::findings(&others, host_runner::runs()));
         findings.extend(crate::machine::path_findings());
         findings.extend(crate::kit_research::findings());
+        findings.extend(crate::watch_notify::findings());
         Look { readings, host, findings, trackers: crate::tracker::Public::default() }
     }
 }

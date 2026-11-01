@@ -766,10 +766,14 @@ fn held_host(
     // Every host has a watch, in the operator's directory or the stock one's.
     let watching = {
         let (list, log) = (runner.list.clone(), Arc::clone(&runner.log));
-        crate::host_watch::HostWatch::start(runner.shared.watch.clone(), move |what| {
-            log.say(&watch_said(&what));
-            crate::host_watch::append_to_tick_logs(&list, &what);
-        })
+        crate::host_watch::HostWatch::start(
+            runner.shared.watch.clone(),
+            runner.panel.address(),
+            move |what| {
+                log.say(&watch_said(&what));
+                crate::host_watch::append_to_tick_logs(&list, &what);
+            },
+        )
     };
     runner.start_listed(listed.checkouts);
     let about = json!({"pid": pid, "version": VERSION, "log": dir.join(LOG), "panel": address});
@@ -2348,7 +2352,7 @@ pub fn foreground(checkout: &Repo, start: &Start, settings: host_settings::Named
     let Reach { wakes } = reach;
     let watching = {
         let list = List::of_host()?;
-        crate::host_watch::HostWatch::start(shared.watch.clone(), move |what| {
+        crate::host_watch::HostWatch::start(shared.watch.clone(), panel.address(), move |what| {
             println!("{}", watch_said(&what));
             crate::host_watch::append_to_tick_logs(&list, &what);
         })

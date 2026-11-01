@@ -71,6 +71,8 @@ pub struct Settings {
     pub watch_every: Option<u64>,
     /// `--jev-key-command`: a shell command whose stdout is the TypeSafe key.
     pub jev_key_command: Option<String>,
+    /// `--notify-command`: receives one human decision as JSON on stdin.
+    pub notify_command: Option<String>,
     /// `--host-name`: the name this host goes by in every record it owns, so
     /// that its records stay its own when the network renames it. A `run`
     /// that finds none keeps the name the host has then (`pin_host_name`).
@@ -110,6 +112,7 @@ pub struct Named {
     pub watch_dir: Option<To<PathBuf>>,
     pub watch_every: Option<To<u64>>,
     pub jev_key_command: Option<To<String>>,
+    pub notify_command: Option<To<String>>,
     pub host_name: Option<To<String>>,
 }
 
@@ -194,6 +197,17 @@ pub fn jev_key_command_or_default(said: &str) -> Result<To<String>, String> {
     })
 }
 
+/// `--notify-command` as said: a nonempty shell command, or `default`.
+pub fn notify_command_or_default(said: &str) -> Result<To<String>, String> {
+    To::parse(said, |said| {
+        if said.trim().is_empty() {
+            Err("the notify command is empty; name a command, or `default`".into())
+        } else {
+            Ok(said.to_string())
+        }
+    })
+}
+
 impl Named {
     /// Whether it names none.
     pub fn is_empty(&self) -> bool {
@@ -224,6 +238,7 @@ impl Settings {
         lay(&mut self.watch_dir, named.watch_dir.as_ref());
         lay(&mut self.watch_every, named.watch_every.as_ref());
         lay(&mut self.jev_key_command, named.jev_key_command.as_ref());
+        lay(&mut self.notify_command, named.notify_command.as_ref());
         lay(&mut self.host_name, named.host_name.as_ref());
         self
     }
@@ -331,6 +346,7 @@ impl Settings {
             "watch_dir": crate::host_watch::directory(self).ok(),
             "watch_every": self.watch_every(),
             "jev_key_command": self.jev_key_command,
+            "notify_command": self.notify_command,
             "host_name": self.host_name.clone().unwrap_or_else(system_host_name),
         });
         match in_force {
@@ -437,6 +453,7 @@ pub const EXCLUSIVE_SECONDS_ENV: &str = "AFKCONVOY_EXCLUSIVE_SECONDS";
 pub const WATCH_DIR_ENV: &str = "AFKCONVOY_WATCH_DIR";
 pub const WATCH_EVERY_ENV: &str = "AFKCONVOY_WATCH_EVERY";
 pub const JEV_KEY_COMMAND_ENV: &str = "AFKCONVOY_JEV_KEY_COMMAND";
+pub const NOTIFY_COMMAND_ENV: &str = "AFKCONVOY_NOTIFY_COMMAND";
 pub const HOST_NAME_ENV: &str = "AFKCONVOY_HOST_NAME";
 
 /// A number of cores or GiB as the file keeps it — the number, whole or not
