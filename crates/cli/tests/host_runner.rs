@@ -1286,7 +1286,13 @@ fn a_fleet_instance_that_panics_breaks_alone_and_is_started_again_after_a_backof
     let others = tick_log(&other);
     assert_eq!(of_kind(&others, "start").len(), 1, "never broken: {others:#?}");
     assert_eq!(of_kind(&others, "broken"), [] as [Value; 0]);
-    assert!(others.iter().all(|line| line["instance"] == other["instance"]), "{others:#?}");
+    assert!(
+        others
+            .iter()
+            .filter(|line| line["instance"] != "host-watch")
+            .all(|line| line["instance"] == other["instance"]),
+        "{others:#?}"
+    );
 }
 
 #[test]

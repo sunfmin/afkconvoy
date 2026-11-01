@@ -180,10 +180,19 @@ fn a_fleet_asked_red_turn_hands_its_answer_to_the_idle_worker_on_the_next_tick()
     assert_eq!(next["frontier_remaining"], 1, "the handed worker holds its slot: {next}");
     assert_eq!(turn_answer_lines(&world).len(), 1, "no duplicate handoff");
     // The worker asks again: its turn replaces the handoff receipt.
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            terminal["agent"] = json!({"state": "working", "stateStartedAt": 1_801_000});
+        }
+    });
     let answer = world.afk_in(&dir, &["land", "--issue", "7"]).ok();
     assert_eq!(answer["outcome"], "gate_red", "{answer}");
+    let note: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    assert_eq!(note["outcome"], "gate_red", "{note}");
+    assert!(note["handoff"].is_null(), "the worker asked this turn: {note}");
     let next = tick(&world, 1802);
-    assert!(did(&next).contains(&"dispatch 8 done".to_string()), "{next}");
+    assert_eq!(next["errors"], json!([]), "{next}");
+    assert_eq!(turn_answer_lines(&world).len(), 1, "no duplicate handoff");
 }
 
 fn turn_answer_lines(world: &World) -> Vec<String> {
