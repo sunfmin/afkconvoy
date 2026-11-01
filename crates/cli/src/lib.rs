@@ -223,7 +223,7 @@ const SKILL: &str = include_str!("../../../skills/afkconvoy/SKILL.md");
 /// - **{const:DESIGNER}** — `scaffold` to start one or a role of it from a skeleton, `draft` to draft its roster from the host kit, then, once `check` accepts it, `show` to review a workflow or to ask where an issue is in it, and `rehearse` to try one out.
 /// - **{const:HANDS_WORK}** — a human or their agent opening decided work. `flows` names the workflow, gives the issue-create line and makes labels. After opening issues, `wake` has the fleet take them up now.
 /// - **{const:SETS_UP}** — `skill` prints the skill file that sends their agent to `afkconvoy --help`.
-/// - **{const:WORKER}** — `gate`, `land`, `verdict`, `intake`, `lock`, `over`, `exclusive`, `watched`, `asked`: its prompt names each one as it is needed, and `wake`, above, as its last; `cut` is what a cut's terminal runs, and what you run to go on with a cut that failed. Read them only when you are a worker, or are finding out why one stopped (`rule` is a consult's too).
+/// - **{const:WORKER}** — `gate`, `land`, `verdict`, `intake`, `lock`, `over`, `exclusive`, `no-node`, `watched`, `asked`: its prompt names each one as it is needed, and `wake`, above, as its last; `cut` is what a cut's terminal runs, and what you run to go on with a cut that failed. Read them only when you are a worker, or are finding out why one stopped (`rule` is a consult's too).
 /// - **{const:HUMAN}** — in a bound repo: `rule` to answer an escalated issue, `send` to put an issue at a stage of your choosing. A `by: human` stage waits for your `verdict`, a worker's command too. [`afkconvoy help humans`](help:humans) says what each case asks of you.
 /// - **{const:HOOK}** — `guard`, called before each action of a bound repo's worker. Nobody runs it by hand. Its help explains what the worker is refused and why.
 /// - **{const:BY_HAND}** — `dispatch`, `close`, `escalate`, `park`, `nudge` and `restart`: each is something a tick does on its own, and `recovery` shows what `dispatch` would continue an issue from. Read one when a plan shows a transition the fleet is not making, or you are told to make it yourself.
@@ -2899,13 +2899,17 @@ enum Command {
     ///
     /// A worker in its own worktree, or anyone running a gate on macOS.
     ///
-    /// ## Dependencies and identity
+    /// ## What it reads and writes
+    ///
+    /// Writes temporary canary PID and scope files, removed after the run. Reads the command's exit status and this sandbox's reports from the macOS unified log.
+    ///
+    /// ### Dependencies and identity
     ///
     /// macOS only. Needs trusted `sandbox-exec`, `log` and `date` on PATH (normally /usr/bin and /bin), readable unified sandbox reports, and a Node binary for the canaries. No sudo or entitlement. `--canary-node PATH` names that binary; otherwise `node` is resolved on PATH before starting. Its resolved basename must be `node`.
     ///
     /// One Seatbelt profile allows default operations and denies process-exec whose resolved path matches `/node$`. This covers Node installed outside Homebrew, symlinks, PATH, absolute paths and shebang interpreters. A Bun compatibility link named node resolves to bun and is allowed, including `bun run --bun`. Identity is the resolved filename, not a binary hash: renamed Node binaries are outside this rule, and another executable actually named node is denied too.
     ///
-    /// ## What it checks
+    /// ### What it checks
     ///
     /// Before and after the command tree, a separate canary process attempts to exec Node in that same sandbox. A fresh nonce tags every denial. After the tree exits, `log show` reads only kernel sandbox reports carrying that nonce. Any report besides the two identified canary PIDs makes the run red, even when the caller ignored the denial or the command failed for another reason. Unrelated processes have no nonce and cause no hit.
     ///
@@ -2917,7 +2921,7 @@ enum Command {
     ///
     /// Reports may arrive late: the reader retries missing canaries for up to five seconds. `--seconds` bounds the command tree, default 3600. SIGINT/SIGTERM and timeout terminate its process group and fail red; a killed monitor cannot return green.
     ///
-    /// ## Documented limit
+    /// ## What trips you up
     ///
     /// Canaries establish report availability, not lossless logging. If a caller ignores EPERM, logd loses only that attempt's report, and both canary reports survive, this check can miss the attempt. Node still never executed: Seatbelt denied it. Do not interpret green as proof that unified logging lost no events.
     #[command(next_help_heading = WORKER, verbatim_doc_comment)]
