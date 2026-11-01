@@ -108,9 +108,8 @@ bounds only the heavy step.
 
 The fleet cuts each version of afkconvoy itself, once it goes idle with landed
 work past the newest `v*` tag, or the oldest landing has waited five hours
-while busy: it sets the version, lands one commit on the base branch through the
-landing turn — the commit that set the version stays on the cut's branch — tags
-that commit, and publishes and installs it on its host
+while busy: it sets the version, lands a merge commit through the landing turn,
+tags that commit, and publishes and installs it on its host
 (`afkconvoy cut --help`, `docs/adr/0028`). These are its steps, and the one
 place they are written. Each is run by `sh` in the cut's checkout, with the
 version in `$VERSION`: `set` on the base branch, `publish` with the new tag
