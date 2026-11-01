@@ -1657,6 +1657,7 @@ impl Worktree {
         let mut sent_now = false;
         loop {
             if crate::session::holds_note(&self.path, harness, since, mark)? {
+                self.forget(TURN_FILE)?;
                 return Ok(Handed::Taken { seconds: typed.elapsed().as_secs() });
             }
             if !sent_now {
