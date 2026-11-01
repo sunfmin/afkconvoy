@@ -223,6 +223,7 @@ done"#,
 #[test]
 fn stopped_candidates_in_the_old_root_are_removed_and_other_directories_are_left() {
     let world = World::new();
+    world.set_gate("true");
     assert_eq!(world.afk(&["gate"]).ok()["recorded"], true);
     let (source, _) = worker(&world, 1, "a");
     let landed = world.afk_in(&source, &["land", "--issue", "1"]).ok();
