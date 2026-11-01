@@ -114,6 +114,15 @@ pub enum SessionLayout {
     Index { file: String },
 }
 
+/// One session file an index names ([`Harness::indexed_sessions`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Indexed {
+    /// The session file: absolute, or relative to the harness directory.
+    pub file: String,
+    /// The index line's directory is the worktree read for.
+    pub here: bool,
+}
+
 /// One file of a session a stand-in writes under the harness directory.
 /// The body is the text [`Harness::recorded_turn`] reads.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1001,16 +1010,32 @@ impl Harness {
         }
     }
 
-    /// The session files an index names for the worktree `cwd`.
+    /// The session files an index names, each marked whether its line
+    /// names the worktree `cwd`.
     ///
     /// Each path is absolute, or relative to the harness directory. A harness
     /// that keeps no index names none. The reader opens them. A missing file
-    /// is no turn, and one it cannot read is an error.
-    pub fn indexed_sessions(self, cwd: &str, index: &str) -> Vec<String> {
+    /// is no turn, and one it cannot read is an error. A session the index
+    /// files under another directory, as a worker started in its role copy
+    /// is, belongs to `cwd` only when it names the worktree's brief
+    /// ([`Harness::names_brief`]).
+    pub fn indexed_sessions(self, cwd: &str, index: &str) -> Vec<Indexed> {
         match self {
             Harness::Kimi => kimi::indexed_sessions(cwd, index),
             Harness::ClaudeCode | Harness::Pi | Harness::Codex | Harness::Dsh | Harness::Grok => {
                 Vec::new()
+            }
+        }
+    }
+
+    /// Whether one session file's `text` was prompted with the task brief at
+    /// `brief`, the absolute path of a worktree's `convoy-worker-prompt.md`.
+    /// A harness whose session records the worktree itself names none.
+    pub fn names_brief(self, text: &str, brief: &str) -> bool {
+        match self {
+            Harness::Kimi => kimi::names_brief(text, brief),
+            Harness::ClaudeCode | Harness::Pi | Harness::Codex | Harness::Dsh | Harness::Grok => {
+                false
             }
         }
     }
@@ -1457,17 +1482,50 @@ mod tests {
         let codex = Harness::Codex.session_files(elsewhere, true, AT);
         assert_eq!(Harness::Codex.recorded_turn(CWD, &codex[0].body, None), None);
         let index = Harness::Kimi.session_index(elsewhere, "").unwrap();
-        assert!(Harness::Kimi.indexed_sessions(CWD, &index).is_empty());
+        let here = |cwd: &str, index: &str| {
+            Harness::Kimi.indexed_sessions(cwd, index).iter().filter(|s| s.here).count()
+        };
+        assert_eq!(here(CWD, &index), 0);
         let kept = Harness::Kimi.session_index(CWD, &index).unwrap();
-        assert_eq!(Harness::Kimi.indexed_sessions(elsewhere, &kept).len(), 1);
-        assert_eq!(Harness::Kimi.indexed_sessions(CWD, &kept).len(), 1);
+        assert_eq!(here(elsewhere, &kept), 1);
+        assert_eq!(here(CWD, &kept), 1);
+        assert_eq!(Harness::Kimi.indexed_sessions(CWD, &kept).len(), 2);
+    }
+
+    /// A Kimi worker starts in its role copy and is prompted with the brief
+    /// kept in its worktree's git dir, as on 2026-10-28 (sunfmin/control#381).
+    #[test]
+    fn a_kimi_wire_prompted_with_this_worktree_s_brief_names_it() {
+        let brief = "/repo/.git/worktrees/issue-7/convoy-worker-prompt.md";
+        let pointer = crate::prompt::brief_pointer(brief);
+        let wire = |kind: &str, text: &str| {
+            format!("{}\n", serde_json::json!({"type": kind, "time": 1, "prompt": text}))
+        };
+        assert!(Harness::Kimi.names_brief(&wire("turn.prompt", &pointer), brief));
+        let other =
+            crate::prompt::brief_pointer("/repo/.git/worktrees/issue-70/convoy-worker-prompt.md");
+        assert!(!Harness::Kimi.names_brief(&wire("turn.prompt", &other), brief));
+        let deeper = crate::prompt::brief_pointer(&format!("/elsewhere{brief}"));
+        assert!(!Harness::Kimi.names_brief(&wire("turn.prompt", &deeper), brief));
+        assert!(!Harness::Kimi.names_brief(&wire("tool.result", &pointer), brief));
+        let nested = serde_json::json!({"type": "turn.prompt",
+            "input": [{"type": "text", "text": pointer}]});
+        assert!(Harness::Kimi.names_brief(&format!("{nested}\n"), brief));
+        assert!(!Harness::ClaudeCode.names_brief(&wire("turn.prompt", &pointer), brief));
+
+        let role = "/cache/afkconvoy/copies/acme/team/abc-role+kimi-roles%2Fbuilder";
+        let index = serde_json::json!({"workDir": role, "sessionDir": "/k/s"}).to_string();
+        let sessions = Harness::Kimi.indexed_sessions(CWD, &index);
+        assert_eq!(sessions.len(), 1);
+        assert!(!sessions[0].here);
     }
 
     #[test]
     fn an_index_names_the_session_file_it_records() {
         let index = Harness::Kimi.session_index(CWD, "not json\n").unwrap();
         assert!(index.lines().any(|line| line == "not json"));
-        let named = Harness::Kimi.indexed_sessions(CWD, &index);
+        let named: Vec<_> =
+            Harness::Kimi.indexed_sessions(CWD, &index).into_iter().map(|s| s.file).collect();
         let written: Vec<_> = Harness::Kimi
             .session_files(CWD, true, AT)
             .iter()
@@ -1480,7 +1538,10 @@ mod tests {
             .join("agents/main/wire.jsonl")
             .to_string_lossy()
             .into_owned();
-        assert_eq!(Harness::Kimi.indexed_sessions(CWD, &absolute), vec![expected]);
+        assert_eq!(
+            Harness::Kimi.indexed_sessions(CWD, &absolute),
+            vec![Indexed { file: expected, here: true }]
+        );
     }
 
     /// The turn `harness` records in the files it would write, open when `open`.
