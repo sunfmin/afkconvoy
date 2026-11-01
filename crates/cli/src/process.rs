@@ -92,18 +92,26 @@ pub(crate) fn output_with_input(command: &mut Command, input: &[u8]) -> io::Resu
 pub(crate) fn output_within(command: &mut Command, limit: Duration) -> io::Result<Option<Output>> {
     use std::os::unix::process::CommandExt;
     output_bounded(command.process_group(0), None, limit)
+        .map(|(output, timed_out)| (!timed_out).then_some(output))
+}
+
+pub(crate) fn output_within_with_timeout(
+    command: &mut Command,
+    limit: Duration,
+) -> io::Result<(Output, bool)> {
+    use std::os::unix::process::CommandExt;
+    output_bounded(command.process_group(0), None, limit)
 }
 
 fn output_given(command: &mut Command, input: Option<&[u8]>) -> io::Result<Output> {
-    output_bounded(command, input, None)
-        .map(|out| out.expect("an unbounded command is not timed out"))
+    output_bounded(command, input, None).map(|(out, _)| out)
 }
 
 fn output_bounded(
     command: &mut Command,
     input: Option<&[u8]>,
     limit: impl Into<Option<Duration>>,
-) -> io::Result<Option<Output>> {
+) -> io::Result<(Output, bool)> {
     let limit = limit.into();
     let stdin = if input.is_some() { Stdio::piped() } else { Stdio::null() };
     let mut child =
@@ -154,7 +162,7 @@ fn output_bounded(
         (stdout, stderr, status, timed_out)
     });
     let out = Output { status: status?, stdout: stdout?, stderr: stderr? };
-    Ok((!timed_out).then_some(out))
+    Ok((out, timed_out))
 }
 
 fn set_nonblock(fd: i32) -> io::Result<()> {

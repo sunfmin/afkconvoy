@@ -4,7 +4,7 @@
 # ./gate.sh makes one nextest filter of them.
 #
 # One test a line: its binary, a space, and its whole name, as nextest lists
-# them (`cargo nextest list`). A test the fast gate ends past 6 seconds is
+# them (`cargo nextest list`). A test the fast gate ends past 6 seconds is checked alone before it is
 # added here; one that has become fast may be taken out, with its time.
 afkconvoy-core line::tests::a_shell_reads_a_program_of_any_text_as_that_one_word
 afkconvoy-core line::tests::a_shell_reads_the_quoted_form_of_any_text_as_that_one_word
@@ -14,6 +14,13 @@ afkconvoy process::tests::a_grandchild_holding_stdout_does_not_keep_output_waiti
 afkconvoy::cli admission::a_busy_host_dispatches_nothing_new_and_the_frontier_waits_for_the_next_tick
 afkconvoy::cli admission::plan_says_what_would_be_dispatched_and_that_admission_holds_it_back
 afkconvoy::cli admission::the_tick_log_line_says_which_threshold_held_it_back
+afkconvoy::cli host_runner::a_checkout_whose_startup_probe_fails_is_refused_and_not_left_on_the_list
+afkconvoy::cli host_runner::a_host_runner_ends_when_its_test_is_killed
+afkconvoy::cli host_watch::notify_command_environment_and_flag_follow_host_setting_precedence
+afkconvoy::cli host_watch::asking_guard_codex
+afkconvoy::cli named_harness::a_harness_the_host_kit_does_not_hold_and_a_word_that_is_none_write_nothing
+afkconvoy::cli probe::a_fleet_instance_breaks_when_a_gate_need_stops_passing
+afkconvoy::cli public_tracker::run_tracker_naming_a_public_repo_is_refused_the_same_way_and_makes_nothing_in_it
 afkconvoy::cli board::a_board_is_rewritten_only_when_its_text_changed
 afkconvoy::cli board::a_live_peers_board_is_left_alone
 afkconvoy::cli board::an_escalated_joining_claim_keeps_its_pr_on_the_board
@@ -84,6 +91,7 @@ afkconvoy::cli claims::a_claim_is_never_on_the_remote_ahead_of_its_owners_heartb
 afkconvoy::cli claims::a_claim_whose_record_cannot_be_read_names_nobody
 afkconvoy::cli claims::a_release_that_left_the_ref_on_the_remote_is_an_error
 afkconvoy::cli claims::a_released_claim_is_gone_from_the_next_scan
+afkconvoy::cli claims::a_wait_alone_beats_and_is_taken_after_the_lease_then_released_when_answered
 afkconvoy::cli claims::heartbeat_refreshes_only_when_due
 afkconvoy::cli claims::of_instances_claiming_at_once_exactly_one_wins
 afkconvoy::cli claims::release_deletes_only_the_callers_own_claim
@@ -688,11 +696,8 @@ afkconvoy::cli switch::successful_recovery_restores_priority_for_new_work_withou
 afkconvoy::cli switch::switching_models_leaves_healthy_workers_alone_until_all_continues_them
 afkconvoy::cli switch::the_live_runners_tick_and_served_panel_share_one_orca_observation
 afkconvoy::cli switch::working_agents_are_healthy_without_screen_judgment_and_share_one_tick_read
-afkconvoy::cli takeover::a_failed_close_of_a_taken_worker_is_retried_without_losing_its_worktree
 afkconvoy::cli takeover::a_live_peers_claim_on_another_host_is_never_touched_unattended
-afkconvoy::cli takeover::a_new_instance_on_the_same_host_keeps_its_workers_commands
 afkconvoy::cli takeover::a_reclaimed_claim_is_continued_from_what_its_worker_pushed
-afkconvoy::cli takeover::a_slept_hosts_next_tick_stops_its_taken_worker_and_keeps_unpushed_work
 afkconvoy::cli takeover::a_start_takes_every_claim_stamped_with_its_host_whatever_the_heartbeat
 afkconvoy::cli takeover::a_tick_reclaims_stale_claims_into_its_free_slots_ahead_of_the_frontier
 afkconvoy::cli takeover::of_two_takers_one_wins_each_claim
@@ -710,7 +715,6 @@ afkconvoy::cli tick::a_claim_whose_issue_is_closed_is_settled_and_its_slot_refil
 afkconvoy::cli tick::a_claimed_issue_deleted_between_two_ticks_is_let_go_and_its_slot_refilled
 afkconvoy::cli tick::a_claimed_issue_the_rebuild_cannot_read_is_an_error_of_that_tick_alone
 afkconvoy::cli tick::a_failed_step_shows_in_the_line
-afkconvoy::cli tick::a_fleet_that_worked_and_went_idle_never_puts_its_host_to_sleep
 afkconvoy::cli tick::a_later_tick_removes_a_worktree_orca_already_gave_up_on
 afkconvoy::cli tick::a_left_removal_with_a_commit_the_remote_does_not_have_stays
 afkconvoy::cli tick::a_missing_ready_terminal_is_replaced_without_counting_its_pending_brief_as_a_failed_start
@@ -834,12 +838,9 @@ afkconvoy::cli tick::a_landed_worker_idle_at_its_prompt_is_ended_and_its_worktre
 afkconvoy::cli tick::a_worker_still_working_keeps_its_worktree
 afkconvoy::cli candidates::a_record_past_arg_max_is_written_and_drops_the_candidates_nothing_holds
 afkconvoy::cli launch::an_operator_removal_survives_relisting_daily_refresh_and_fallback
-afkconvoy::cli panel::a_fleet_with_nothing_to_do_says_so_at_every_stage
-afkconvoy::cli panel::a_fleet_lock_is_said_first_and_holds_back_all_but_its_issue
 afkconvoy::cli joining::a_running_landing_turn_is_left_alone_with_its_worker_idle
 # Measured 7.64s: three queued deliveries and doctor's recovery observation.
 afkconvoy::cli stopped::a_queued_issue_update_is_retried_without_retyping_and_doctor_names_its_comment
-# Automatic issue delivery scenarios measured over the fast gate's 2s line.
 # Resident asking scenarios start host processes and wait for watch looks and delivery.
 afkconvoy::cli asking::two_conditions_share_one_session_and_are_delivered_one_at_a_time
 afkconvoy::cli asking::reworded_reports_and_runner_restart_do_not_ask_an_episode_twice
@@ -847,24 +848,25 @@ afkconvoy::cli asking::busy_input_is_untouched_and_a_recovered_pending_question_
 afkconvoy::cli asking::an_unverified_terminal_pauses_delivery_until_its_identity_is_restored
 afkconvoy::cli asking::a_condition_recovered_after_delivery_is_told_as_withdrawn
 afkconvoy::cli asking::a_question_put_aside_stays_pending_and_does_not_hold_back_the_next
-afkconvoy::cli stopped::a_comment_written_by_this_worker_is_not_told_even_with_the_same_login
+afkconvoy::cli asking::an_asking_question_rechecks_ownership_after_restart_and_drops_a_taken_wait
+afkconvoy::cli asking::a_notification_rechecks_ownership_after_restart_and_keeps_host_conditions_local
+afkconvoy::cli host_watch::two_hosts_find_one_wait_and_only_its_holder_reports_notifies_and_asks_it
 afkconvoy::cli stopped::a_new_body_edit_keeps_the_revision_still_queued_for_the_worker
-afkconvoy::cli stopped::a_stopped_worker_is_told_a_later_comment_before_the_tick_judges_it
-afkconvoy::cli stopped::a_worker_started_before_upgrade_is_told_a_body_edited_since_its_start
-afkconvoy::cli stopped::later_comments_wait_for_a_worker_of_the_claim_s_host
-afkconvoy::cli stopped::later_fleet_comments_and_earlier_comments_are_not_told
-afkconvoy::cli stopped::later_issue_body_edits_are_told_with_the_whole_new_body
-afkconvoy::cli stopped::later_issue_comments_are_told_once_with_user_session_proof
 afkconvoy::cli host_watch::human_notifications_send_each_condition_once_despite_reworded_reports_and_restart
 afkconvoy::cli host_watch::human_notification_failures_retry_at_later_looks_and_doctor_finds_three_then_recovers
 afkconvoy::cli host_watch::a_hung_human_notification_times_out_and_retries_without_holding_back_looks_or_rounds
 afkconvoy::cli joining::doctor_exempts_landing_turn_waits_but_still_reports_workers_that_need_to_change_the_tree
-afkconvoy::cli joining::doctor_does_not_call_a_cancelled_landing_worker_stopped_when_the_tick_asks_again
 afkconvoy::cli joining::a_fleet_asked_red_turn_hands_its_answer_to_the_idle_worker_on_the_next_tick
 afkconvoy::cli joining::fleet_asked_conflicts_are_handed_once_even_after_the_fleet_changed_the_tree
-afkconvoy::cli joining::an_answer_queued_in_the_harness_is_pending_until_the_model_takes_it
 afkconvoy::cli codex::codex_workers_take_fresh_user_service_tier_without_inheriting_session_config
 afkconvoy::cli escalation::a_handed_back_workers_usage_limit_does_not_replay_the_previous_claims_verdict
+
+# no-node waits five seconds to prove a missing sandbox report (control#452).
+afkconvoy::cli no_node::a_log_reader_returning_nothing_fails_closed
+afkconvoy::cli no_node::a_missing_before_canary_fails_closed
+afkconvoy::cli no_node::a_missing_after_canary_fails_closed
+afkconvoy::cli unworked::doctor_reads_label_and_blocker_times_and_remote_beats_without_a_checkout
+afkconvoy::cli unworked::runner_opens_one_report_starts_its_watch_and_closes_on_a_live_heartbeat
 afkconvoy::cli tick::settling_waits_for_a_finishing_worker_then_leaves_without_a_failed_tick
 afkconvoy::cli stopped::a_short_worker_is_nudged_once_then_waits_for_the_operator_if_still_short
 # Asking Terminal launch coverage: measured over 2s in the fast gate on FelixMBP14.local.
