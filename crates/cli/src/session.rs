@@ -1176,3 +1176,36 @@ fn session_first_at(text: &str) -> Option<u64> {
     }
     None
 }
+
+#[cfg(test)]
+mod token_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn session_usage_is_unknown_when_missing_or_unreadable() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().join("work");
+        let gitdir = dir.path().join("git");
+        let home = dir.path().join("codex");
+        std::fs::create_dir_all(&cwd).unwrap();
+        std::fs::create_dir_all(&gitdir).unwrap();
+        std::fs::create_dir_all(home.join("sessions")).unwrap();
+        std::fs::write(cwd.join(".git"), format!("gitdir: {}", gitdir.display())).unwrap();
+        std::fs::write(gitdir.join("convoy-codex-home"), home.display().to_string()).unwrap();
+        let at = 1_793_106_373;
+        let file = home.join("sessions/session.jsonl");
+        let session = Harness::Codex.session_files(&cwd_str(&cwd), true, at)[0].body.clone();
+        std::fs::write(&file, &session).unwrap();
+        assert_eq!(tokens(&cwd, Harness::Codex, at, None).unwrap(), None);
+        let usage = json!({"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":30,"output_tokens":10}}}});
+        std::fs::write(&file, format!("{session}\n{usage}\n")).unwrap();
+        let counts = tokens(&cwd, Harness::Codex, at, None).unwrap().unwrap();
+        assert_eq!(counts[""].input, 70);
+        assert_eq!(counts[""].cache_read, 30);
+        std::fs::remove_file(&file).unwrap();
+        std::fs::remove_dir(home.join("sessions")).unwrap();
+        std::fs::write(home.join("sessions"), "not a directory").unwrap();
+        assert!(tokens(&cwd, Harness::Codex, at, None).is_err());
+    }
+}
