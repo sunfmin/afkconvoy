@@ -981,6 +981,9 @@ impl Ticked {
                 .unwrap_or_default();
             parts.push(format!("opened an issue for the slow gate: {evidence}"));
         }
+        if let Some(name) = self.set.cut.as_ref().and_then(|cut| cut.not_cutting_here.as_ref()) {
+            parts.push(format!("not cutting here: {name} failed"));
+        }
         parts.extend(self.cut_said.iter().filter_map(log::cut_said));
         for update in &self.updates {
             let issue = &update["issue"];

@@ -260,6 +260,9 @@ impl Standing {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Row {
     pub standing: Standing,
+    /// A failed host check while this cut is due.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub not_cutting_here: Option<String>,
     /// The newest version tag, and how many commits the base branch holds
     /// past it.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -305,6 +308,7 @@ pub fn row(
     };
     Row {
         standing,
+        not_cutting_here: None,
         newest_tag: seen.newest.as_ref().map(|tag| tag.version.tag()),
         initial: seen.initial.filter(|_| seen.newest.is_none()).map(|version| version.to_string()),
         past: seen.past,
