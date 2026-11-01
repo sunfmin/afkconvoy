@@ -61,6 +61,8 @@ fn an_idle_unbound_codex_worker_has_its_waiting_turn_asked_again_without_a_harne
     let world = joining_in(world);
     let dir = worktree(&world);
     let notes = PathBuf::from(git(&dir, &["rev-parse", "--absolute-git-dir"]));
+    // Let health observe the worker before its recovery judgment is due.
+    assert!(did(&tick(&world, 1000)).contains(&"watch 7 nothing".to_string()));
     std::fs::write(
         notes.join("convoy-turn.json"),
         json!({"outcome": "waiting_for_capacity", "at": 1000}).to_string(),
@@ -91,7 +93,7 @@ fn an_idle_unbound_codex_worker_has_its_waiting_turn_asked_again_without_a_harne
     )
     .unwrap();
     let terminals = open_terminals(&world, &dir);
-    let ticked = tick(&world, 1100);
+    let ticked = tick(&world, 1500);
     assert_eq!(ticked["errors"], json!([]), "{ticked}");
     assert!(did(&ticked).contains(&"watch 7 asked".to_string()), "{ticked}");
     assert!(notes.join("convoy-turn.log").exists());
