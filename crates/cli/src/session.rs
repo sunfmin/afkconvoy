@@ -1086,14 +1086,14 @@ pub(crate) fn tokens(
     let mut homes = roots(cwd, harness)?;
     // Codex uses a new private home for each launch; the note names only the
     // latest. Earlier homes remain in the worktree until it is removed.
-    if harness == Harness::Codex {
-        if let Some(entries) = list_dir(&cwd.join(crate::worker_tmp::TMP_DIR))? {
-            for entry in entries {
-                for name in ["codex", "codex-host-user"] {
-                    let home = entry.join("harness").join(name);
-                    if home.is_dir() {
-                        homes.push(home);
-                    }
+    if harness == Harness::Codex
+        && let Some(entries) = list_dir(&cwd.join(crate::worker_tmp::TMP_DIR))?
+    {
+        for entry in entries {
+            for name in ["codex", "codex-host-user"] {
+                let home = entry.join("harness").join(name);
+                if home.is_dir() {
+                    homes.push(home);
                 }
             }
         }
@@ -1128,11 +1128,11 @@ pub(crate) fn tokens(
                 let mut texts = Vec::new();
                 if let Some(entries) = list_dir(&root.join(dir))? {
                     for entry in entries {
-                        let Some(events) = read_text(&entry.join(&name))? else { continue };
-                        if accepts(&events).is_some() {
-                            if let Some(updates) = read_text(&entry.join("updates.jsonl"))? {
-                                texts.push(updates);
-                            }
+                        let Some(events) = read_text(&entry.join(name))? else { continue };
+                        if accepts(&events).is_some()
+                            && let Some(updates) = read_text(&entry.join("updates.jsonl"))?
+                        {
+                            texts.push(updates);
                         }
                     }
                 }
