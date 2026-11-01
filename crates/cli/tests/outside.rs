@@ -6,7 +6,7 @@ use crate::common;
 
 use std::time::Duration;
 
-use common::{Running, World, commit, git};
+use common::{Running, World};
 use serde_json::json;
 
 /// How long a line a wake brings about is waited for. The sleep it ends is
@@ -62,12 +62,7 @@ fn a_claim_another_host_took_over_is_said_lost_at_the_next_tick() {
 fn a_claim_taken_as_stale_is_said_lost_past_the_lease() {
     let world = World::new();
     world.issue(3, &["ready-for-agent"]);
-    let kept = std::cell::RefCell::new(None);
     let (_, second) = by_command(&world, || {
-        let path = std::path::PathBuf::from(world.orca()["worktrees"][0]["path"].as_str().unwrap());
-        let head = commit(&path, "only-here.txt", "work while the host slept\n");
-        *kept.borrow_mut() = Some((path, head));
-        world.watch_pushes(None);
         let from = ["takeover", "--from", "alpha", "--instance", "beta", "--host", "h2"];
         let taken = world.afk(&[&from[..], &["--now", LATER]].concat()).ok();
         assert_eq!(taken["taken"], json!([3]));
@@ -77,30 +72,7 @@ fn a_claim_taken_as_stale_is_said_lost_past_the_lease() {
             .starts_with("tick 2: lost #3 to instance beta on host h2 (stale: past the lease); stopped its worker · "),
         "{second}"
     );
-    let (path, head) = kept.into_inner().unwrap();
-    assert!(path.is_dir(), "the old worker's worktree is kept");
-    assert_eq!(git(&path, &["rev-parse", "HEAD"]), head);
-    let orca = world.orca();
-    let workers: Vec<_> = orca["terminals"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|t| t["worktreePath"] == path.to_str().unwrap() && !t["command"].is_null())
-        .collect();
-    assert!(!workers.is_empty(), "the worker's terminal stays on record");
-    assert!(workers.iter().all(|t| t["open"] != true), "{workers:?}");
-    assert!(!world.pushes().iter().any(|name| name.starts_with("refs/heads/")));
-    assert!(!world.remote(&["rev-list", "--all"]).lines().any(|sha| sha == head));
-    let doctor = world.afk(&["doctor", "--host", "h1", "--now", LATER]).ok();
-    let finding = doctor["findings"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|f| f["kind"] == "taken_worktree")
-        .expect("doctor names the retained local commit");
-    assert!(finding["what"].as_str().unwrap().contains("1 commit the remote does not have"));
-    assert!(finding["evidence"].as_str().unwrap().contains(path.to_str().unwrap()));
-    assert!(!finding["fix"].as_str().unwrap().contains("push"));
+    assert_eq!(world.orca()["terminals"][0]["open"], false);
 }
 
 #[test]

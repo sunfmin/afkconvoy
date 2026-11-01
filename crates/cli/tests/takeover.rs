@@ -179,6 +179,47 @@ fn a_failed_close_of_a_taken_worker_is_retried_without_losing_its_worktree() {
 }
 
 #[test]
+fn a_slept_hosts_next_tick_stops_its_taken_worker_and_keeps_unpushed_work() {
+    let world = World::new();
+    world.issue(7, &["ready-for-agent"]);
+    tick_as(&world, "alpha", "h1", 1000);
+    let path = PathBuf::from(world.orca()["worktrees"][0]["path"].as_str().unwrap());
+    let head = commit(&path, "only-here.txt", "work while the host slept\n");
+    world.watch_pushes(None);
+    takeover(&world, &["--from", "alpha", "--instance", "beta", "--host", "h2", "--now", "2860"])
+        .ok();
+    // Both hosts now read the clock after the sleep; beta's new heartbeat
+    // is live, so alpha must close its worker and leave beta's claim alone.
+    assert_eq!(tick_as(&world, "alpha", "h1", 2860)["errors"], json!([]));
+    assert_eq!(holder(&world, 7), "beta");
+    assert!(path.is_dir());
+    assert_eq!(git(&path, &["rev-parse", "HEAD"]), head);
+    let orca = world.orca();
+    let workers: Vec<_> = orca["terminals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|t| t["worktreePath"] == path.to_str().unwrap() && !t["command"].is_null())
+        .collect();
+    assert!(!workers.is_empty());
+    assert!(workers.iter().all(|t| t["open"] != true));
+    assert!(!world.pushes().iter().any(|name| name.starts_with("refs/heads/")));
+    assert!(!world.remote(&["rev-list", "--all"]).lines().any(|sha| sha == head));
+    let doctor = world.afk(&["doctor", "--host", "h1", "--now", "2860"]).ok();
+    let finding = doctor["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["kind"] == "taken_worktree")
+        .expect("doctor names the retained local commit");
+    assert!(finding["what"].as_str().unwrap().contains("1 commit the remote does not have"));
+    assert!(finding["evidence"].as_str().unwrap().contains(path.to_str().unwrap()));
+    assert!(!finding["fix"].as_str().unwrap().contains("push"));
+    assert_eq!(tick_as(&world, "alpha", "h1", 2950)["errors"], json!([]));
+    assert_eq!(git(&path, &["rev-parse", "HEAD"]), head, "later ticks retain the work too");
+}
+
+#[test]
 fn a_tick_reclaims_stale_claims_into_its_free_slots_ahead_of_the_frontier() {
     let world = World::new();
     world.say_concurrency(&world.clone, 2);
