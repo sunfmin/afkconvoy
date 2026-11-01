@@ -1365,12 +1365,25 @@ fn codex_workers_take_fresh_user_service_tier_without_inheriting_session_config(
 
     write(&world.home(), ".codex/config.toml", "service_tier = 4\n");
     world.issue(10, &["flow:feature"]);
-    let before = world.worktrees().len();
+    let launches = || {
+        world.orca()["terminals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|terminal| {
+                terminal["command"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains("--dangerously-bypass-approvals-and-sandbox")
+            })
+            .count()
+    };
+    let before = launches();
     let why = world
         .afk(&["dispatch", "10", "--instance", "alpha", "--host", "h1", "--now", "1300"])
         .error();
     assert!(why.contains("service_tier must be a nonempty string"), "{why}");
-    assert_eq!(world.worktrees().len(), before);
+    assert_eq!(launches(), before);
 
     let world = unbound_codex();
     write(&world.home(), ".codex/config.toml", config);
