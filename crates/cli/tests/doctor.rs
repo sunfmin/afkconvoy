@@ -725,7 +725,7 @@ fn a_live_run_is_seen_alive_and_a_claim_whose_worker_is_gone_is_a_finding() {
     world.with_orca(|orca| orca["terminals"] = json!([]));
     let answer = doctor(&world, &now).ok();
     assert_eq!(answer["claims"][0]["worker"]["state"], "gone");
-    assert_eq!(found(&answer, "the claim on #3 has no worker"), []);
+    assert!(found(&answer, "the claim on #3 has no worker").is_empty());
     let tick = &answer["fleet"]["last_tick"];
     let now =
         (at + tick["sleep"].as_u64().unwrap() + tick["took"].as_u64().unwrap_or(0)).to_string();
