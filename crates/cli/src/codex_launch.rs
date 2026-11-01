@@ -120,6 +120,14 @@ fn effort(harness: Harness) -> Result<(Option<String>, String)> {
     harness.effort(&text, &file).context("the harness names no effort")?.map_err(anyhow::Error::msg)
 }
 
+fn service_tier(harness: Harness) -> Result<Option<String>> {
+    let (text, file) = read_config(harness)?;
+    harness
+        .service_tier(&text, &file)
+        .context("the harness names no service tier")?
+        .map_err(anyhow::Error::msg)
+}
+
 /// A fresh directory's root, under the worktree, when this harness keeps a
 /// session apart. The directory the host keeps is made under it.
 pub(crate) fn fresh_root(harness: Harness, worktree: &Path) -> Option<PathBuf> {
@@ -157,8 +165,8 @@ pub(crate) fn prepare_worker(
     Ok(Prepared { model, command, settings: Some(settings) })
 }
 
-/// Adds the effort at the last point before the session starts. A bound
-/// command already names its directory; an unbound command gets the same
+/// Adds the host preferences at the last point before the session starts. A
+/// bound command already names its directory; an unbound command gets the same
 /// trust setup and allowed user links, in a fresh directory.
 fn prepare(
     harness: Harness,
@@ -170,6 +178,7 @@ fn prepare(
 ) -> Result<(String, Settings)> {
     let session = harness.session().context("the harness keeps no session of its own")?;
     let (effort, effort_source) = effort(harness)?;
+    let service_tier = service_tier(harness)?;
     let (line, home) = if in_role {
         let home = std::fs::read_to_string(worktree.note(session.note)?)?;
         (Line::new().launch(command), PathBuf::from(home))
@@ -192,7 +201,8 @@ fn prepare(
         effort_source,
         codex_home: Some(home),
     };
-    Ok((harness.with_effort(&line.done(), effort.as_deref()), settings))
+    let line = harness.with_effort(&line.done(), effort.as_deref());
+    Ok((harness.with_service_tier(&line, service_tier.as_deref()), settings))
 }
 
 /// A watch's launch line. A harness with a session of its own gets a fresh

@@ -790,6 +790,18 @@ impl Harness {
         }
     }
 
+    /// The service tier of a worker start, from that same config. `None` on
+    /// the outer option means this harness names none; on the inner one, that
+    /// Codex chooses its own default.
+    pub fn service_tier(self, text: &str, file: &str) -> Option<Result<Option<String>, String>> {
+        match self {
+            Harness::Codex => Some(codex::service_tier(text, file)),
+            Harness::ClaudeCode | Harness::Pi | Harness::Dsh | Harness::Kimi | Harness::Grok => {
+                None
+            }
+        }
+    }
+
     /// Why `model`, chosen from the user's config, cannot start this issue.
     /// `None`: this harness does not refuse a model that way.
     pub fn outside_issue(self, model: &str) -> Option<String> {
@@ -841,6 +853,17 @@ impl Harness {
     pub fn with_effort(self, line: &str, effort: Option<&str>) -> String {
         match self {
             Harness::Codex => codex::with_effort(line, effort),
+            Harness::ClaudeCode | Harness::Pi | Harness::Dsh | Harness::Kimi | Harness::Grok => {
+                line.to_string()
+            }
+        }
+    }
+
+    /// `line` with this harness's service tier, when one was read. Unchanged
+    /// when this harness names none, or none was read.
+    pub fn with_service_tier(self, line: &str, service_tier: Option<&str>) -> String {
+        match self {
+            Harness::Codex => codex::with_service_tier(line, service_tier),
             Harness::ClaudeCode | Harness::Pi | Harness::Dsh | Harness::Kimi | Harness::Grok => {
                 line.to_string()
             }

@@ -52,7 +52,7 @@ A worker's model is its harness's own name for it: pi's is `<provider>/<id>`. A 
 
 ## Codex
 
-Codex uses a fresh `CODEX_HOME` for each session. An automatic launch reads your current model preference and reasoning effort from `~/.codex/config.toml` unless a model label is followed. A followed label is recorded as the issue's model label. Saved session `/model` choices stay in that session. An unbound worker trusts its worktree on the launch line with `--config 'projects={"<worktree>"={trust_level="trusted"}}'`; a role's worker keeps its guard. Launch commands, rules, skills and settings evidence: [`afkconvoy help worker-codex`](help:worker-codex).
+Codex uses a fresh `CODEX_HOME` for each session. An automatic launch reads your current model preference from `~/.codex/config.toml` unless a model label is followed. Every worker launch reads your reasoning effort and explicit service tier from that file, including `default` and `priority`; with no service tier it adds none and leaves Codex's own default in force. These preferences are read afresh for bound and unbound workers regardless of `host_user`, without copying other host settings or changing an already-running session. A followed label is recorded as the issue's model label. Saved session `/model` choices stay in that session. An unbound worker trusts its worktree on the launch line with `--config 'projects={"<worktree>"={trust_level="trusted"}}'`; a role's worker keeps its guard. Launch commands, rules, skills and settings evidence: [`afkconvoy help worker-codex`](help:worker-codex).
 
 A Codex command must take `--add-dir`, `--dangerously-bypass-hook-trust`, `--config` and `--model`.
 
