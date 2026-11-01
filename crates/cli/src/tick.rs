@@ -368,8 +368,9 @@ fn carry_out(
     step: TickStep,
     blocked: &mut Vec<(u64, Vec<u64>)>,
 ) -> Result<Outcome> {
-    // A turn that answered a wait needs no harness. Worker health may hold
-    // that harness for an operator; it must not hold the turn with it.
+    // Handle the last turn first: ask a wait again without a harness, or
+    // hand an answer needing tree changes to its worker without waiting for
+    // a silence judgment. Worker health must not hide that answer.
     if let TickStep::Watch { issue, start } = step
         && let Some(outcome) = crate::watch::answer_turn(fleet, me, agent, issue, start)?
     {
