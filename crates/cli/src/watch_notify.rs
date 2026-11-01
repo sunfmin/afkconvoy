@@ -13,6 +13,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::host_watch::Watch;
 use crate::watch_report::{Human, Report};
 
 pub const SECONDS: u64 = 30;
@@ -23,6 +24,7 @@ pub const FAILURES: u64 = 3;
 struct Outbox {
     reports: BTreeSet<String>,
     look: u64,
+    observed: BTreeMap<String, String>,
     entries: BTreeMap<String, Entry>,
     last: Option<Sending>,
 }
@@ -30,6 +32,8 @@ struct Outbox {
 #[derive(Clone, Serialize, Deserialize)]
 struct Entry {
     id: String,
+    condition: String,
+    url: Option<String>,
     watch: String,
     human: Human,
     sent: bool,
@@ -40,6 +44,7 @@ struct Entry {
 #[derive(Serialize, Deserialize)]
 struct Sending {
     watch: String,
+    condition: String,
     answer: String,
     command: String,
     at: u64,
@@ -72,30 +77,56 @@ fn read() -> Result<Outbox> {
     }
 }
 
-/// Replaying one report is harmless, including after its decisions were
-/// cleared by a later report. An absent answer ends its sending episode.
-pub fn reported(watch: &str, report: &Report) -> Result<()> {
-    change(|outbox| {
-        if !outbox.reports.insert(watch.into()) {
-            return;
-        }
-        outbox.entries.retain(|answer, _| report.human.iter().any(|h| &h.answer == answer));
-        for human in &report.human {
-            outbox.entries.entry(human.answer.clone()).or_insert_with(|| Entry {
-                id: crate::unique(),
-                watch: watch.into(),
+/// Replaying one report is harmless. Only observed recovery ends an episode;
+/// omission from an unrelated report says nothing about the condition.
+pub fn reported(watch: &Watch, report: &Report, observed: &BTreeMap<String, String>) -> Result<()> {
+    let mut entries = vec![];
+    for human in &report.human {
+        let condition = crate::watch_report::condition(watch, human)?;
+        let episode = watch.conditions.get(&condition).cloned().or_else(|| {
+            // A round already running during upgrade predates the complete
+            // snapshot, but still retains its own item/episode pairing.
+            watch.items.iter().position(|item| item.id == condition)
+                .and_then(|at| watch.episodes.get(at).cloned())
+        }).context("human condition has no episode in its round; use a condition listed in the round's brief")?;
+        entries.push((
+            episode.clone(),
+            Entry {
+                id: episode,
+                url: crate::watch_report::issue_url(watch, &condition),
+                condition,
+                watch: watch.id.clone(),
                 human: human.clone(),
                 sent: false,
                 failures: 0,
                 attempted_look: None,
-            });
+            },
+        ));
+    }
+    change(|outbox| {
+        if !outbox.reports.insert(watch.id.clone()) {
+            return;
+        }
+        reconcile(outbox, observed);
+        for (episode, entry) in entries {
+            if outbox.observed.get(&entry.condition) == Some(&episode) {
+                outbox.entries.entry(episode).or_insert(entry);
+            }
         }
     })
 }
 
+fn reconcile(outbox: &mut Outbox, observed: &BTreeMap<String, String>) {
+    outbox.observed = observed.clone();
+    outbox.entries.retain(|episode, entry| observed.get(&entry.condition) == Some(episode));
+}
+
 /// A completed look permits one more attempt for each unsent decision.
-pub fn looked() -> Result<()> {
-    change(|outbox| outbox.look = outbox.look.saturating_add(1))
+pub fn looked(observed: &BTreeMap<String, String>) -> Result<()> {
+    change(|outbox| {
+        reconcile(outbox, observed);
+        outbox.look = outbox.look.saturating_add(1);
+    })
 }
 
 pub fn run(ended: &AtomicBool, panel: Option<&str>, say: impl Fn(String)) {
@@ -128,6 +159,7 @@ fn step(ended: &AtomicBool, panel: Option<&str>, bound: Duration) -> Result<()> 
         entry.attempted_look = Some(outbox.look);
         outbox.last = Some(Sending {
             watch: entry.watch.clone(),
+            condition: entry.condition.clone(),
             answer: entry.human.answer.clone(),
             command: command.clone(),
             at: crate::clock(),
@@ -140,12 +172,12 @@ fn step(ended: &AtomicBool, panel: Option<&str>, bound: Duration) -> Result<()> 
     let payload = json!({
         "host": settings.host_name.unwrap_or_else(crate::host_settings::host_name),
         "watch": entry.watch, "question": entry.human.question, "answer": entry.human.answer,
-        "panel": panel,
+        "condition": entry.condition, "url": entry.url, "panel": panel,
     });
     let result = send(&command, &payload, ended, bound);
     change(|outbox| {
         let look = outbox.look;
-        if let Some(current) = outbox.entries.get_mut(&entry.human.answer)
+        if let Some(current) = outbox.entries.get_mut(&entry.id)
             && current.id == entry.id
         {
             current.sent = result.is_ok();
@@ -154,6 +186,7 @@ fn step(ended: &AtomicBool, panel: Option<&str>, bound: Duration) -> Result<()> 
         }
         outbox.last = Some(Sending {
             watch: entry.watch,
+            condition: entry.condition,
             answer: entry.human.answer,
             command,
             at: outbox.last.as_ref().map_or_else(crate::clock, |last| last.at),

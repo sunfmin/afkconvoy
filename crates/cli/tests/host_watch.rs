@@ -162,7 +162,12 @@ fn append_notification(file: &Path) -> String {
     afkconvoy_core::line::Line::new().fixed("cat >> ").word(file.to_str().unwrap()).own()
 }
 
-fn report_humans(world: &World, watch: &Value, human: Value) {
+fn report_humans(world: &World, watch: &Value, mut human: Value) {
+    for entry in human.as_array_mut().unwrap() {
+        if entry.get("condition").is_none() {
+            entry["condition"] = watch["items"][0]["id"].clone();
+        }
+    }
     let file = world.root.join("human-report.json");
     std::fs::write(
         &file,
@@ -192,7 +197,6 @@ fn another_notification_round(world: &World, dir: &Path, previous: &Value) -> Va
     let mut kept = state(world);
     kept["covered"] = json!([]);
     kept["watched"] = json!([]);
-    kept["observed"] = json!({});
     std::fs::write(world.cache().join("afkconvoy/watch/state.json"), kept.to_string()).unwrap();
     run(world, dir);
     until(world, "another notification round", || {
@@ -202,10 +206,12 @@ fn another_notification_round(world: &World, dir: &Path, previous: &Value) -> Va
 }
 
 #[test]
-fn human_notifications_send_each_answer_once_across_reports_and_restart_until_absent() {
+fn human_notifications_send_each_condition_once_despite_reworded_reports_and_restart() {
     let world = World::new();
     let dir = operator(&world);
     paused(&world, "pi", "an account is needed");
+    world.issue(11, &["ready-for-human"]);
+    world.comment(11, "<!--convoy:escalation claim=old-->\nNeeds a quiet measurement environment.");
     let file = world.root.join("notifications.jsonl");
     let command = append_notification(&file);
     let ran = world
@@ -222,10 +228,35 @@ fn human_notifications_send_each_answer_once_across_reports_and_restart_until_ab
         ])
         .ok();
     let first = until(&world, "first notification round", || running(&world));
+    let ids = first["conditions"].as_object().unwrap();
+    let wait = ids.keys().find(|id| id.contains("\"human\"")).unwrap();
+    let host = ids.keys().find(|id| !id.contains("\"human\"")).unwrap();
     let humans = json!([
-        {"question": "Supply an account?", "answer": "first answer"},
-        {"question": "Approve the spend? $(touch should-never-exist)", "answer": "second answer"}
+        {"condition": wait, "question": "Provide the environment for #11?", "answer": "afkconvoy rule --issue 11 --text-file <file>"},
+        {"condition": host, "question": "Approve the spend? $(touch should-never-exist)", "answer": "second answer"}
     ]);
+    let invalid = world.root.join("invalid-human-report.json");
+    let mut ambiguous = humans.clone();
+    ambiguous[0].as_object_mut().unwrap().remove("condition");
+    let invalid_report =
+        |human| json!({"held_back": [], "did": [], "verified": [], "human": human, "pending": []});
+    for invalid_humans in
+        [ambiguous, json!([{"condition": "invented condition", "question": "?", "answer": "!"}])]
+    {
+        std::fs::write(&invalid, invalid_report(invalid_humans).to_string()).unwrap();
+        assert!(
+            world
+                .afk(&[
+                    "watched",
+                    "--watch",
+                    first["id"].as_str().unwrap(),
+                    "--text-file",
+                    invalid.to_str().unwrap()
+                ])
+                .error()
+                .contains("condition")
+        );
+    }
     report_humans(&world, &first, humans.clone());
     let before = notify_state(&world)["look"].as_u64().unwrap();
     until(&world, "looks with no command named", || {
@@ -242,13 +273,16 @@ fn human_notifications_send_each_answer_once_across_reports_and_restart_until_ab
     });
     let sent = notifications(&file);
     assert_eq!(sent.len(), 2);
-    for (sent, human) in sent.iter().zip(humans.as_array().unwrap()) {
+    for human in humans.as_array().unwrap() {
+        let sent = sent.iter().find(|sent| sent["condition"] == human["condition"]).unwrap();
         assert_eq!(sent["question"], human["question"]);
         assert_eq!(sent["answer"], human["answer"]);
         assert_eq!(sent["watch"], first["id"]);
         assert_eq!(sent["host"], world.checkout_list()["settings"]["host_name"]);
         assert_eq!(sent["panel"], ran["host_runner"]["panel"]);
     }
+    let issue = sent.iter().find(|sent| sent["condition"] == json!(wait)).unwrap();
+    assert_eq!(issue["url"], "https://gh/c/2000");
     assert!(!world.clone.join("should-never-exist").exists());
     let doctor = world.afk(&["doctor"]).json;
     assert_eq!(doctor["host"]["notify"]["command"], command);
@@ -259,6 +293,10 @@ fn human_notifications_send_each_answer_once_across_reports_and_restart_until_ab
     let second = another_notification_round(&world, &dir, &first);
     let mut reworded = humans.clone();
     reworded[0]["question"] = json!("The same account, asked differently?");
+    reworded[0]["answer"] =
+        json!("cd /another/path && afkconvoy rule -C /repo --issue 11 --text-file <ruling>");
+    reworded[1]["question"] = json!("A different way to ask about the spend?");
+    reworded[1]["answer"] = json!("After supplying the account, run afkconvoy kit");
     report_humans(&world, &second, reworded);
     let before = notify_state(&world)["look"].as_u64().unwrap();
     until(&world, "later looks without repeated sending", || {
@@ -268,8 +306,28 @@ fn human_notifications_send_each_answer_once_across_reports_and_restart_until_ab
 
     let empty = another_notification_round(&world, &dir, &second);
     report_humans(&world, &empty, json!([]));
-    assert_eq!(notify_state(&world)["entries"], json!({}));
-    let returned = another_notification_round(&world, &dir, &empty);
+    assert_eq!(
+        notify_state(&world)["entries"].as_object().unwrap().len(),
+        2,
+        "omitting a decision from one report does not end its condition's episode"
+    );
+    std::fs::write(world.paused_path(), "[]").unwrap();
+    world.close_issue(11);
+    until(&world, "observed recovery ends both episodes", || {
+        (notify_state(&world)["entries"] == json!({})).then_some(())
+    });
+    paused(&world, "pi", "an account is needed");
+    world.with_gh(|gh| {
+        gh["issues"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|issue| issue["number"] == 11)
+            .unwrap()["state"] = json!("OPEN");
+    });
+    let returned = until(&world, "a new episode of each condition", || {
+        running(&world).filter(|w| w["id"] != empty["id"] && w["started"].as_u64().unwrap_or(0) > 0)
+    });
     report_humans(&world, &returned, humans);
     until(&world, "returned decisions sent again", || {
         (notifications(&file).len() == 4).then_some(())
@@ -290,6 +348,14 @@ fn human_notifications_send_each_answer_once_across_reports_and_restart_until_ab
     assert_eq!(world.afk(&["doctor"]).json["host"]["notify"]["command"], Value::Null);
 }
 
+fn one_notification(world: &World) -> Value {
+    notify_state(world)["entries"]
+        .as_object()
+        .and_then(|entries| entries.values().next())
+        .cloned()
+        .unwrap_or(Value::Null)
+}
+
 #[test]
 fn human_notification_failures_retry_at_later_looks_and_doctor_finds_three_then_recovers() {
     let world = World::new();
@@ -302,9 +368,7 @@ fn human_notification_failures_retry_at_later_looks_and_doctor_finds_three_then_
     let watch = until(&world, "notification round", || running(&world));
     report_humans(&world, &watch, json!([{"question": "Supply an account?", "answer": "answer"}]));
     until(&world, "three failed sendings", || {
-        notify_state(&world)["entries"]["answer"]["failures"]
-            .as_u64()
-            .filter(|failures| *failures >= 3)
+        one_notification(&world)["failures"].as_u64().filter(|failures| *failures >= 3)
     });
     let before = state(&world)["looked"].as_u64().unwrap();
     let doctor = world.afk(&["doctor"]).json;
@@ -323,10 +387,10 @@ fn human_notification_failures_retry_at_later_looks_and_doctor_finds_three_then_
     let command = append_notification(&recovered);
     world.afk(&["run", "--notify-command", &command]).ok();
     until(&world, "successful retry after changing the command", || {
-        (notify_state(&world)["entries"]["answer"]["sent"] == true).then_some(())
+        (one_notification(&world)["sent"] == true).then_some(())
     });
     assert_eq!(notifications(&recovered).len(), 1);
-    assert_eq!(notify_state(&world)["entries"]["answer"]["failures"], 0);
+    assert_eq!(one_notification(&world)["failures"], 0);
     assert!(state(&world)["looked"].as_u64().unwrap() > before);
     assert!(
         !world.afk(&["doctor"]).json["findings"]
@@ -359,11 +423,11 @@ fn a_hung_human_notification_times_out_and_retries_without_holding_back_looks_or
     assert_eq!(notifications(&file).len(), 1, "another round completed within the sending bound");
     assert!(state(&world)["looked"].as_u64().unwrap() > before);
     until(&world, "timeout recorded and retried", || {
-        (notify_state(&world)["entries"]["answer"]["failures"].as_u64().unwrap_or(0) >= 1
+        (one_notification(&world)["failures"].as_u64().unwrap_or(0) >= 1
             && notifications(&file).len() >= 2)
             .then_some(())
     });
-    assert!(!notify_state(&world)["entries"]["answer"]["sent"].as_bool().unwrap());
+    assert!(!one_notification(&world)["sent"].as_bool().unwrap());
     world.afk(&["stop", "--all"]).ok();
 }
 
