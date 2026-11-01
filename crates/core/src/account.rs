@@ -8,8 +8,11 @@
 
 use flux_rs::attrs::*;
 
+mod data;
+pub use data::{Gate, Host, Record, SCHEMA_VERSION, Worker, read, render};
+
 use crate::gate::GATE;
-use crate::record::{self, Fields};
+use crate::record;
 use crate::stage_record::{Author, StageRecord, Stated};
 
 /// The marker the one account comment opens with.
@@ -113,6 +116,7 @@ pub struct Begun<'a> {
     pub model: Option<&'a str>,
     /// The stage, for a bound repo. None for an unbound repo.
     pub stage: Option<&'a str>,
+    pub role: Option<&'a str>,
     pub consult: bool,
 }
 
@@ -152,6 +156,7 @@ pub fn worker_comment(begun: &Begun<'_>) -> String {
             ("harness", begun.harness),
             ("model", begun.model.unwrap_or("")),
             ("stage", begun.stage.unwrap_or("")),
+            ("role", begun.role.unwrap_or("")),
             ("consult", if begun.consult { "1" } else { "" }),
         ],
     );
@@ -161,6 +166,12 @@ pub fn worker_comment(begun: &Begun<'_>) -> String {
 /// What the fleet has already read, and the moment the account is written.
 pub struct Told<'a> {
     pub issue: u64,
+    pub repo: &'a str,
+    pub tracker: &'a str,
+    pub version: &'a str,
+    pub outcome: End,
+    /// Known commands and their lanes from the writing fleet's config.
+    pub lanes: &'a [(&'a str, &'a str)],
     pub heard: &'a [Heard<'a>],
     /// Subjects of the gate refs the remote holds.
     pub gates: &'a [&'a str],
@@ -177,7 +188,7 @@ pub struct Told<'a> {
 /// The account comment to leave, or `None` when the issue never had a claim:
 /// nothing is claimed now, no worker was started, and no account is there yet.
 pub fn comment(told: &Told<'_>) -> Option<String> {
-    let prior = prior_account(told.heard);
+    let prior = prior_account(told.heard, told.issue);
     let starts = worker_starts(told.heard);
     if prior.is_none() && starts.is_empty() && !told.claimed {
         return None;
@@ -187,12 +198,44 @@ pub fn comment(told: &Told<'_>) -> Option<String> {
         sinces.push(since);
     }
     let start = kept_start(prior.as_ref(), &sinces);
-    Some(render(told, &starts, prior.as_ref(), start))
+    let kept = prior.as_ref().map(|prior| prior.reds.as_slice()).unwrap_or(&[]);
+    let row = Record {
+        schema_version: SCHEMA_VERSION,
+        issue: told.issue,
+        repo: Some(told.repo.to_string()),
+        tracker: Some(told.tracker.to_string()),
+        afkconvoy_version: Some(told.version.to_string()),
+        host: Host {
+            name: text(Some(told.host)).map(str::to_string),
+            cpu: text(told.machine.chip).or_else(|| text(told.machine.model)).map(str::to_string),
+            logical_cpus: told.machine.cpus,
+            memory_bytes: told.machine.bytes,
+        },
+        start,
+        end: Some(told.end),
+        wall_seconds: start.and_then(|start| told.end.checked_sub(start)),
+        outcome: Some(
+            match told.outcome {
+                End::Landed => "landed",
+                End::Closed => "closed",
+                End::Escalated => "escalated",
+                End::Ended => "ended",
+                End::HumanClosed => "human-closed",
+                End::Parked => "parked",
+                End::HandedOn => "handed-on",
+                End::Forgotten => "forgotten",
+            }
+            .to_string(),
+        ),
+        workers: worker_rows(told.heard, &starts, told.end),
+        gates: gate_rows(told.issue, told.gates, kept, told.lanes),
+    };
+    Some(render(&row))
 }
 
 struct Prior {
     start: Option<u64>,
-    reds: Vec<Run>,
+    reds: Vec<Gate>,
 }
 
 struct Start {
@@ -203,23 +246,27 @@ struct Start {
     harness: String,
     model: Option<String>,
     stage: Option<String>,
-    marker: String,
+    role: Option<String>,
 }
 
-#[derive(Clone)]
-struct Run {
-    tree: String,
-    command: String,
-    seconds: Option<u64>,
-    host: String,
-    at: Option<u64>,
-    raw: Option<String>,
-}
-
-fn prior_account(heard: &[Heard<'_>]) -> Option<Prior> {
+fn prior_account(heard: &[Heard<'_>], issue: u64) -> Option<Prior> {
     let body = heard.iter().find(|note| record::read_marker(ACCOUNT, note.body).is_some())?;
+    if body.body.contains("```json\n") {
+        let row = read(body.body, issue).ok()?;
+        return Some(Prior {
+            start: row.start,
+            reds: row
+                .gates
+                .into_iter()
+                .filter(|gate| gate.result.as_deref() == Some("red"))
+                .collect(),
+        });
+    }
     let fields = record::read_marker(ACCOUNT, body.body)?;
-    let reds = record::markers(KEPT_RED, body.body).into_iter().filter_map(run_from_kept).collect();
+    let reds = record::markers(KEPT_RED, body.body)
+        .iter()
+        .map(|fields| data::gate_of(fields, "red"))
+        .collect();
     Some(Prior { start: fields.number("start"), reds })
 }
 
@@ -255,60 +302,13 @@ fn worker_starts(heard: &[Heard<'_>]) -> Vec<Start> {
             harness: harness.to_string(),
             model: fields.get("model").map(str::to_string),
             stage: fields.get("stage").map(str::to_string),
-            marker: raw_marker(WORKER, note.body).unwrap_or_default(),
+            role: fields.get("role").map(str::to_string),
         });
     }
     found
 }
 
-fn raw_marker(word: &str, body: &str) -> Option<String> {
-    let mut rest = body;
-    while let Some((_, inside)) = rest.split_once("<!--") {
-        let (text, after) = inside.split_once("-->")?;
-        let trimmed = text.trim();
-        let matches = trimmed == word
-            || trimmed.strip_prefix(word).is_some_and(|rest| rest.starts_with(char::is_whitespace));
-        if matches {
-            return Some(format!("<!--{text}-->"));
-        }
-        rest = after;
-    }
-    None
-}
-
-fn render(told: &Told<'_>, starts: &[Start], prior: Option<&Prior>, start: Option<u64>) -> String {
-    let end = told.end;
-    let end_text = end.to_string();
-    let start_text = start.map(|start| start.to_string()).unwrap_or_default();
-    let marker = record::marker(ACCOUNT, &[("end", &end_text), ("start", &start_text)]);
-    let wall = match start {
-        Some(start) => {
-            format!("Wall clock: {}s, from {start} to {end}.", end.saturating_sub(start))
-        }
-        None => format!("The start is unknown. No wall clock is stated. The end is {end}."),
-    };
-    let workers = worker_rows(told.heard, starts, end);
-    let workers =
-        if workers.is_empty() { "No worker was started.".to_string() } else { workers.join("\n") };
-    let kept = prior.map(|prior| prior.reds.as_slice()).unwrap_or(&[]);
-    let (gate_lines, reds) = gate_rows(told.issue, told.gates, kept, told.host);
-    let gate_lines = if gate_lines.is_empty() {
-        "No gate was timed on this issue's tree.".to_string()
-    } else {
-        gate_lines.join("\n")
-    };
-    let mut kept_reds = String::new();
-    for red in &reds {
-        kept_reds.push('\n');
-        kept_reds.push_str(&kept_marker(red));
-    }
-    format!(
-        "{marker}\n**afkconvoy** — work account.\n\n{wall}\n\n{}\n\nWorkers:\n{workers}\n\nGates:\n{gate_lines}{kept_reds}\n",
-        machine_line(told.machine)
-    )
-}
-
-fn worker_rows(heard: &[Heard<'_>], starts: &[Start], end: u64) -> Vec<String> {
+fn worker_rows(heard: &[Heard<'_>], starts: &[Start], end: u64) -> Vec<Worker> {
     let mut rows = vec![];
     let mut later = starts.iter().peekable();
     while let Some(start) = later.next() {
@@ -316,26 +316,21 @@ fn worker_rows(heard: &[Heard<'_>], starts: &[Start], end: u64) -> Vec<String> {
         // The start's own comment is not in its window. A range that cannot
         // be is empty: the row is still written, with nothing cited.
         let from = start.index.saturating_add(1);
-        let window: Vec<(Option<u64>, StageRecord, String)> = heard
+        let window: Vec<(Option<u64>, StageRecord)> = heard
             .get(from..next)
             .unwrap_or(&[])
             .iter()
             .filter_map(|note| {
                 let record = StageRecord::read(note.body)?;
-                let marker = note.body.lines().next().unwrap_or("").trim().to_string();
-                Some((note.at, record, marker))
+                Some((note.at, record))
             })
             .collect();
         let cited = window
             .iter()
             .rev()
-            .find(|(_, record, _)| record.claim() == Some(start.claim.as_str()))
-            .or_else(|| window.iter().rev().find(|(_, record, _)| fleet_stop(record)));
-        rows.push(worker_line(
-            start,
-            cited.map(|(at, record, marker)| cite(*at, record, marker)),
-            end,
-        ));
+            .find(|(_, record)| record.claim() == Some(start.claim.as_str()))
+            .or_else(|| window.iter().rev().find(|(_, record)| fleet_stop(record)));
+        rows.push(worker_row(start, cited.map(|(at, record)| cite(*at, record)), end));
     }
     rows
 }
@@ -351,10 +346,9 @@ struct Cite {
     verdict: String,
     harness: Option<String>,
     model: Option<String>,
-    marker: String,
 }
 
-fn cite(at: Option<u64>, record: &StageRecord, marker: &str) -> Cite {
+fn cite(at: Option<u64>, record: &StageRecord) -> Cite {
     let (harness, model) = match &record.by {
         Author::Worker { harness, model, .. } => (Some(harness.key().to_string()), model.clone()),
         Author::Human | Author::Fleet => (None, None),
@@ -365,11 +359,10 @@ fn cite(at: Option<u64>, record: &StageRecord, marker: &str) -> Cite {
         verdict: record.stated.word().to_string(),
         harness,
         model,
-        marker: marker.to_string(),
     }
 }
 
-fn worker_line(start: &Start, cited: Option<Cite>, end: u64) -> String {
+fn worker_row(start: &Start, cited: Option<Cite>, end: u64) -> Worker {
     let harness = cited
         .as_ref()
         .and_then(|cite| cite.harness.clone())
@@ -377,146 +370,60 @@ fn worker_line(start: &Start, cited: Option<Cite>, end: u64) -> String {
     let model = cited.as_ref().and_then(|cite| cite.model.clone()).or_else(|| start.model.clone());
     let stage = cited.as_ref().map(|cite| cite.stage.clone()).or_else(|| start.stage.clone());
     let verdict = cited.as_ref().map(|cite| cite.verdict.clone());
-    let marker = cited.as_ref().map(|cite| cite.marker.clone());
+
     let cited_at = cited.as_ref().and_then(|cite| cite.at);
     // A bound row ends at the stage record or the failure. An unbound row
     // runs to the end of the issue, whatever a gate timed during it.
     let row_end = if start.stage.is_some() { cited_at.unwrap_or(end) } else { end };
-    let seconds = row_end.saturating_sub(start.at);
-    let model = match model {
-        Some(model) => format!("model `{model}`"),
-        None => "the default model".to_string(),
-    };
-    let mut line =
-        format!("- harness `{harness}`, {model}, {seconds}s from {} to {row_end}", start.at);
-    if let Some(stage) = stage {
-        line.push_str(&format!(", stage `{stage}`"));
+    let seconds = row_end.checked_sub(start.at);
+    Worker {
+        harness: Some(harness),
+        model,
+        stage,
+        verdict,
+        role: start.role.clone(),
+        claim: Some(start.claim.clone()),
+        start: Some(start.at),
+        end: Some(row_end),
+        seconds,
     }
-    if let Some(verdict) = verdict {
-        line.push_str(&format!(", verdict `{verdict}`"));
-    }
-    match marker {
-        Some(marker) => line.push_str(&format!(". Stage record: `{marker}`")),
-        None => line.push_str(". No stage record was left"),
-    }
-    line.push_str(&format!(". Start: `{}`.", start.marker));
-    line
 }
 
-fn gate_rows(issue: u64, gates: &[&str], kept: &[Run], host: &str) -> (Vec<String>, Vec<Run>) {
-    let mut lines: Vec<(Option<u64>, String)> = vec![];
-    let mut reds = vec![];
+fn gate_rows(issue: u64, gates: &[&str], kept: &[Gate], lanes: &[(&str, &str)]) -> Vec<Gate> {
+    let mut rows = vec![];
     for subject in gates {
-        let Some(run) = run_from_gate(subject) else { continue };
-        if run.issue != Some(issue) {
+        let Some(fields) = record::read(GATE, subject) else { continue };
+        if fields.number("issue") != Some(issue) {
             continue;
         }
-        if run.red {
-            if reds.iter().any(|have: &Run| same_run(have, &run.run)) {
-                continue;
-            }
-            reds.push(run.run);
-        } else {
-            lines.push((run.run.at, gate_line(&run.run, false, host)));
+        let result = if fields.get("red").is_some() { "red" } else { "green" };
+        let mut run = data::gate_of(&fields, result);
+        run.lane = lanes
+            .iter()
+            .find(|(command, _)| Some(*command) == run.command.as_deref())
+            .map(|(_, lane)| lane.to_string());
+        if !rows.iter().any(|have| same_run(have, &run)) {
+            rows.push(run);
         }
     }
-    for kept in kept {
-        if reds.iter().any(|have| same_run(have, kept)) {
-            continue;
+    for run in kept {
+        if !rows.iter().any(|have| same_run(have, run)) {
+            rows.push(run.clone());
         }
-        reds.push(kept.clone());
     }
-    for red in &reds {
-        lines.push((red.at, gate_line(red, true, host)));
-    }
-    lines.sort_by_key(|(at, _)| (at.is_none(), at.unwrap_or(0)));
-    (lines.into_iter().map(|(_, line)| line).collect(), reds)
+    rows.sort_by_key(|run| (run.at.is_none(), run.at.unwrap_or(0)));
+    rows
 }
 
-struct Gated {
-    issue: Option<u64>,
-    red: bool,
-    run: Run,
-}
-
-fn run_from_gate(subject: &str) -> Option<Gated> {
-    let fields = record::read(GATE, subject)?;
-    let run = run_of(&fields, Some(subject.to_string()))?;
-    Some(Gated { issue: fields.number("issue"), red: fields.get("red").is_some(), run })
-}
-
-fn run_from_kept(fields: Fields) -> Option<Run> {
-    run_of(&fields, None)
-}
-
-fn run_of(fields: &Fields, raw: Option<String>) -> Option<Run> {
-    Some(Run {
-        tree: fields.get("tree")?.to_string(),
-        command: fields.get("command")?.to_string(),
-        seconds: fields.number("seconds"),
-        host: fields.get("host").unwrap_or("").to_string(),
-        at: fields.number("at"),
-        raw,
-    })
-}
-
-fn same_run(one: &Run, other: &Run) -> bool {
-    if one.tree != other.tree || one.command != other.command {
-        return false;
-    }
-    match (one.at, other.at) {
-        (Some(one_at), Some(other_at)) => one_at == other_at,
-        (None, None) => one.seconds == other.seconds && one.host == other.host,
-        _ => false,
-    }
-}
-
-fn gate_line(run: &Run, red: bool, host: &str) -> String {
-    let color = if red { "red" } else { "green" };
-    let seconds = match run.seconds {
-        Some(seconds) => format!("{seconds}s"),
-        None => "seconds not recorded".to_string(),
-    };
-    let mut line = format!("- {color}, {seconds}, command `{}`, tree `{}`", run.command, run.tree);
-    if let Some(at) = run.at {
-        line.push_str(&format!(", at {at}"));
-    }
-    if !run.host.is_empty() && run.host != host {
-        line.push_str(&format!(", on host `{}`", run.host));
-    }
-    line.push('.');
-    if !red && let Some(raw) = &run.raw {
-        line.push_str(&format!(" Recorded gate run: `{raw}`."));
-    }
-    line
-}
-
-fn kept_marker(run: &Run) -> String {
-    let seconds = run.seconds.map(|seconds| seconds.to_string()).unwrap_or_default();
-    let at = run.at.map(|at| at.to_string()).unwrap_or_default();
-    record::marker(
-        KEPT_RED,
-        &[
-            ("tree", &run.tree),
-            ("command", &run.command),
-            ("seconds", &seconds),
-            ("host", &run.host),
-            ("at", &at),
-        ],
-    )
-}
-
-fn machine_line(machine: Machine<'_>) -> String {
-    let name = text(machine.chip).or_else(|| text(machine.model)).unwrap_or("chip unknown");
-    let cpus = match machine.cpus {
-        Some(cpus) => format!("{cpus} logical CPUs"),
-        None => "logical CPUs unknown".to_string(),
-    };
-    let bytes = match machine.bytes {
-        Some(bytes) => format!("{bytes} bytes"),
-        None => "memory unknown".to_string(),
-    };
-    format!("Machine: {name}, {cpus}, {bytes}.")
+fn same_run(one: &Gate, other: &Gate) -> bool {
+    one.tree == other.tree
+        && one.command == other.command
+        && one.result == other.result
+        && match (one.at, other.at) {
+            (Some(one), Some(other)) => one == other,
+            (None, None) => one.seconds == other.seconds && one.host == other.host,
+            _ => false,
+        }
 }
 
 fn text(value: Option<&str>) -> Option<&str> {
@@ -579,6 +486,11 @@ mod tests {
     ) -> Option<String> {
         comment(&Told {
             issue: 7,
+            repo: "acme/dev",
+            tracker: "acme/tracker",
+            version: "test",
+            outcome: End::Landed,
+            lanes: &[("./gate.sh", "whole")],
             heard,
             gates,
             claimed,
@@ -604,6 +516,7 @@ mod tests {
             harness,
             model,
             stage,
+            role: None,
             consult: false,
         })
     }
@@ -640,8 +553,8 @@ mod tests {
             account(&[hear(1200, &start), hear(2000, &record)], &[green], true, Some(1000), 2500)
                 .unwrap();
         assert!(body.starts_with("<!--convoy:account"));
-        assert!(body.contains("start=1000"));
-        assert!(body.contains("end=2500"));
+        assert_eq!(read(&body, 7).unwrap().start, Some(1000));
+        assert_eq!(read(&body, 7).unwrap().end, Some(2500));
         assert!(body.contains("Wall clock: 1500s, from 1000 to 2500."));
         assert!(body.contains("800s from 1200 to 2000"));
         assert!(body.contains("green, 42s"));
@@ -661,10 +574,11 @@ mod tests {
             harness: "pi",
             model: None,
             stage: Some("build"),
+            role: None,
             consult: false,
         });
         let body = account(&[hear(1200, &start)], &[], true, None, 2500).unwrap();
-        assert!(body.contains("The start is unknown. No wall clock is stated. The end is 2500."));
+        assert!(body.contains("The start is unknown. No wall clock is stated."));
         assert!(!body.contains("Wall clock:"));
         assert!(!body.contains("start="));
         assert!(body.contains("the default model"));
@@ -678,7 +592,7 @@ mod tests {
         let second =
             account(&[hear(1500, &first), hear(4000, &start)], &[], true, Some(4000), 5000)
                 .unwrap();
-        assert!(second.contains("start=1000"), "{second}");
+        assert_eq!(read(&second, 7).unwrap().start, Some(1000));
         assert!(second.contains("Wall clock: 4000s, from 1000 to 5000."));
         assert_eq!(record::markers(ACCOUNT, &second).len(), 1);
     }
@@ -692,6 +606,7 @@ mod tests {
             harness: "pi",
             model: None,
             stage: Some("build"),
+            role: None,
             consult: false,
         });
         let first = account(&[hear(1200, &start)], &[], true, None, 1500).unwrap();
@@ -716,7 +631,7 @@ mod tests {
         let start = begun(1000, "c0", 1000, "pi", None, Some("build"));
         let second =
             account(&[hear(2500, &first), hear(1000, &start)], &[], false, None, 3000).unwrap();
-        assert!(second.contains("start=1000"), "{second}");
+        assert_eq!(read(&second, 7).unwrap().start, Some(1000));
     }
 
     #[test]
@@ -740,7 +655,7 @@ mod tests {
         assert!(rows[1].contains("the default model"));
         assert!(rows[1].contains("verdict `failed-silent`"));
         assert!(rows[1].contains("500s from 3000 to 3500"));
-        assert!(rows[1].contains("Stage record: `<!--convoy:stage"));
+        assert_eq!(read(&body, 7).unwrap().workers[1].verdict.as_deref(), Some("failed-silent"));
     }
 
     #[test]
@@ -795,12 +710,12 @@ mod tests {
         let other = "convoy:gate tree=zzz command=./gate.sh at=1600 seconds=3 host=mini issue=8";
         let first = account(&[], &[green, red, base, other], true, Some(1000), 2500).unwrap();
         assert!(first.contains("green, 42s"));
-        assert!(first.contains("Recorded gate run: `convoy:gate tree=abc"));
+        assert_eq!(read(&first, 7).unwrap().gates[0].tree.as_deref(), Some("abc"));
         assert!(first.contains("red, 17s"));
         assert!(first.contains("on host `other`"));
         assert!(!first.contains("tree `base`"), "{first}");
         assert!(!first.contains("tree `zzz`"), "{first}");
-        assert!(first.contains("<!--convoy:account-red"));
+        assert_eq!(read(&first, 7).unwrap().gates[1].result.as_deref(), Some("red"));
         let again = account(&[hear(2500, &first)], &[], true, Some(1000), 2600).unwrap();
         assert!(!again.contains("green, 42s"), "{again}");
         assert!(again.contains("red, 17s"), "{again}");
@@ -825,6 +740,11 @@ mod tests {
         assert!(body.contains("Machine: Apple M4, 14 logical CPUs, 34359738368 bytes."));
         let bare = comment(&Told {
             issue: 7,
+            repo: "acme/dev",
+            tracker: "acme/tracker",
+            version: "test",
+            outcome: End::Landed,
+            lanes: &[("./gate.sh", "whole")],
             heard: &[],
             gates: &[],
             claimed: true,
@@ -835,5 +755,63 @@ mod tests {
         })
         .unwrap();
         assert!(bare.contains("Machine: chip unknown, logical CPUs unknown, memory unknown."));
+    }
+
+    #[test]
+    fn a_command_with_html_comment_closers_and_fences_round_trips_as_data() {
+        let first = account(&[], &[], true, Some(1), 2).unwrap();
+        let mut row = read(&first, 7).unwrap();
+        let command = "afkconvoy exclusive -- ./gate.sh\n```json\n</details><!-- --> & `";
+        row.gates.push(Gate { command: Some(command.into()), ..Gate::default() });
+        let body = render(&row);
+        assert_eq!(read(&body, 7).unwrap(), row);
+        let (_, block) = body.rsplit_once("```json\n").unwrap();
+        let (json, _) = block.split_once("\n```").unwrap();
+        for unsafe_text in ["</details>", "<!--", "-->", "```", "&"] {
+            assert!(!json.contains(unsafe_text), "{json}");
+        }
+    }
+
+    #[test]
+    fn editing_a_legacy_account_retains_its_start_and_prior_red_runs() {
+        let old = "<!--convoy:account start=100 end=200-->\n\
+            <!--convoy:account-red tree=abc command=check seconds=3 host=mini at=190-->";
+        let body = account(&[hear(200, old)], &[], true, Some(250), 300).unwrap();
+        let row = read(&body, 7).unwrap();
+        assert_eq!(row.start, Some(100));
+        assert_eq!(row.gates.len(), 1);
+        assert_eq!(row.gates[0].seconds, Some(3));
+        let again = account(
+            &[hear(300, &body)],
+            &["convoy:gate tree=abc command=check seconds=3 host=mini at=190 issue=7 red=1"],
+            true,
+            Some(250),
+            400,
+        )
+        .unwrap();
+        assert_eq!(
+            read(&again, 7).unwrap().gates.len(),
+            1,
+            "a remote red and its kept copy are one run"
+        );
+    }
+
+    #[test]
+    fn the_workers_role_survives_its_start_and_a_duration_before_start_is_unknown() {
+        let start = worker_comment(&Begun {
+            at: 100,
+            claim: "c1",
+            since: Some(100),
+            harness: "codex",
+            model: None,
+            role: Some("developer"),
+            stage: Some("build"),
+            consult: false,
+        });
+        let body = account(&[hear(100, &start)], &[], true, Some(100), 90).unwrap();
+        let row = read(&body, 7).unwrap();
+        assert_eq!(row.workers[0].role.as_deref(), Some("developer"));
+        assert_eq!(row.workers[0].seconds, None);
+        assert_eq!(row.wall_seconds, None);
     }
 }

@@ -90,7 +90,7 @@ pub(super) fn watch(command: &str, worktree: &str, kept: &str, model: Option<&st
     let line = line
         .fixed(" AFKCONVOY_DSH_KEPT=")
         .word(kept)
-        .fixed(" AFKCONVOY_HARNESS=dsh AFKCONVOY_GUARD='afkconvoy guard' AFKCONVOY_WORKTREE=")
+        .fixed(" AFKCONVOY_HARNESS=dsh AFKCONVOY_GUARD=\"${AFKCONVOY_GUARD:-true}\" AFKCONVOY_WORKTREE=")
         .word(worktree)
         .fixed(" AFKCONVOY_TEAM_DIR=")
         .word(worktree)
@@ -103,6 +103,11 @@ pub(super) fn watch(command: &str, worktree: &str, kept: &str, model: Option<&st
         .fixed(" ")
         .word(worktree);
     line.done()
+}
+
+/// Starts on the fleet's profile, whose plugin asks the supplied guard.
+pub(super) fn guarded(command: &str, guard: &str) -> String {
+    Line::new().fixed("export AFKCONVOY_GUARD=").word(guard).fixed(" && ").launch(command).done()
 }
 
 /// What the probe's plugin prints before the model each request is sent

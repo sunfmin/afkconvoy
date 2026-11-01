@@ -496,7 +496,7 @@ pub(crate) fn run_within(
     env: &[(&str, &str)],
     limit: std::time::Duration,
 ) -> Result<Ran> {
-    let (out, timed_out) = crate::process::output_within(
+    let (out, timed_out) = crate::process::output_within_with_timeout(
         Command::new("git")
             .current_dir(dir)
             .args(args)

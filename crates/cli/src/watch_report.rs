@@ -46,7 +46,7 @@ pub fn issue_url(watch: &crate::host_watch::Watch, condition: &str) -> Option<St
             }
         }
     }
-    None
+    crate::unworked::issue_url(&watch.look["host"]["unworked_repos"], condition)
 }
 
 /// All five parts are required, including empty lists: absence must never

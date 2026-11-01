@@ -18,6 +18,14 @@ use afkconvoy::runner_socket::{self, Kept, Reply, Request, SOCKET};
 
 const GATE_BINARY: &str = env!("CARGO_BIN_EXE_afkconvoy");
 
+#[test]
+fn fast_gate_checks_timeouts_before_calling_tests_slow() {
+    let script =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/gate-timeouts.sh");
+    let output = std::process::Command::new("sh").arg(script).output().unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+}
+
 /// A gate held by an isolated runner until the test explicitly grants it.
 /// The gate process owns a group so interruption cannot signal the test.
 /// Drop cleans up even when an assertion fails before the grant.

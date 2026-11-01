@@ -146,12 +146,19 @@ pub fn codex_line(_world: &World, dir: &Path) -> String {
     } else {
         Harness::Codex.with_model(Harness::Codex.stock(), &model)
     };
-    Harness::Codex.in_worktree(&command, &dir.display().to_string(), &home)
+    let command = Harness::Codex.in_worktree(&command, &dir.display().to_string(), &home);
+    Harness::Codex.guarded(&command, "", "", &terminal_guard())
 }
 
 /// A Claude Code launch as an unbound worker receives it, with worktree trust.
 pub fn trusted(command: &str) -> String {
-    afkconvoy_core::harness::Harness::ClaudeCode.in_worktree(command, "", "")
+    let harness = afkconvoy_core::harness::Harness::ClaudeCode;
+    harness.guarded(&harness.in_worktree(command, "", ""), "", "", &terminal_guard())
+}
+
+fn terminal_guard() -> String {
+    // Each World puts this build on PATH under the name its launch uses.
+    "afkconvoy guard --terminal-input-only".to_string()
 }
 
 /// The code blocks of `language` the manual shows at `at` — a command as
@@ -527,12 +534,13 @@ impl World {
             .iter()
             .find(|case| case["screen"] == screen)
             .unwrap_or_else(|| panic!("no recorded screen `{screen}`"));
-        self.typesafe_answers(&case["response"]);
+        // The historical recording predates the short question. Its earlier
+        // settled answer decides the class; this extra answer is test data.
+        let mut response = case["response"].clone();
+        response["answers"]["short"] = json!({"type": "noul", "noul": 0.1});
+        self.typesafe_answers(&response);
         let lines = case["lines"].as_array().unwrap();
-        (
-            lines.iter().map(|line| line.as_str().unwrap().to_string()).collect(),
-            case["response"].clone(),
-        )
+        (lines.iter().map(|line| line.as_str().unwrap().to_string()).collect(), response)
     }
 
     /// Give the TypeSafe stand-in this whole response body.
@@ -1763,6 +1771,13 @@ echo "/dev/stand-in 1048576000 524288000 524288000 50% /"
 /// `other-accounts`: of another account's, as a test says them.
 const PS: &str = r#"#!/bin/sh
 case "$*" in
+*pid=,ppid=,pcpu=*)
+    if test -f "${0%/*}/../admission-processes"; then
+        cat "${0%/*}/../admission-processes"
+    else
+        exec /bin/ps "$@"
+    fi
+    ;;
 *uid=*)
     me=$(id -u)
     /bin/ps "$@" | awk -v me="$me" '$1 == me'

@@ -86,19 +86,27 @@ pub(crate) fn output_with_input(command: &mut Command, input: &[u8]) -> io::Resu
     output_given(command, Some(input))
 }
 
+/// As `output`, but `None` when the command has not ended within `limit`.
+/// Its own process group is killed so a transport or remote hook it started
+/// cannot survive the bound.
+pub(crate) fn output_within(command: &mut Command, limit: Duration) -> io::Result<Option<Output>> {
+    use std::os::unix::process::CommandExt;
+    output_bounded(command.process_group(0), None, limit)
+        .map(|(output, timed_out)| (!timed_out).then_some(output))
+}
+
 /// As `output`, with whether the command outlived `limit`. Its output is kept
-/// either way. Its own process group is killed at the limit so a transport or
-/// remote hook it started cannot survive the bound.
-pub(crate) fn output_within(command: &mut Command, limit: Duration) -> io::Result<(Output, bool)> {
+/// either way, so a caller can report what a timed-out command had written.
+pub(crate) fn output_within_with_timeout(
+    command: &mut Command,
+    limit: Duration,
+) -> io::Result<(Output, bool)> {
     use std::os::unix::process::CommandExt;
     output_bounded(command.process_group(0), None, limit)
 }
 
 fn output_given(command: &mut Command, input: Option<&[u8]>) -> io::Result<Output> {
-    output_bounded(command, input, None).map(|(out, timed_out)| {
-        assert!(!timed_out, "an unbounded command is not timed out");
-        out
-    })
+    output_bounded(command, input, None).map(|(out, _)| out)
 }
 
 fn output_bounded(

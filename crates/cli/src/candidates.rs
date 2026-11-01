@@ -295,8 +295,9 @@ pub(crate) fn landing(records: &[crate::remote::RemoteRecord], prefix: &str, bra
     })
 }
 
-/// An unreadable observation never proves death. Kernel start time prevents
-/// PID reuse; host identity is physical, independent of --host.
+/// A process this user may not read is another user's, never the recorded
+/// owner. Any other unreadable observation never proves death. Kernel start
+/// time prevents PID reuse; host identity is physical, independent of --host.
 #[cfg(target_os = "macos")]
 pub(crate) fn identity(pid: u32) -> Result<Option<Process>> {
     let mut info = std::mem::MaybeUninit::<libc::proc_bsdinfo>::zeroed();
@@ -305,7 +306,9 @@ pub(crate) fn identity(pid: u32) -> Result<Option<Process>> {
     let got = unsafe {
         libc::proc_pidinfo(pid as i32, libc::PROC_PIDTBSDINFO, 0, info.as_mut_ptr().cast(), size)
     };
-    if got == 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
+    if got == 0
+        && matches!(std::io::Error::last_os_error().raw_os_error(), Some(libc::ESRCH | libc::EPERM))
+    {
         return Ok(None);
     }
     ensure!(got == size, "cannot confirm process {pid}: {}", std::io::Error::last_os_error());
@@ -824,6 +827,38 @@ pub(crate) fn remove_stopped_worktrees(repo: &Repo) -> Result<()> {
     remove_listed(repo, &records)
 }
 
+/// Candidate worktrees live outside the checkout so a gate's tools cannot
+/// discover the checkout's configuration above their own. The common git
+/// dir identifies this repository across all its worktrees and path aliases.
+fn worktree_root(repo: &Repo) -> Result<PathBuf> {
+    let common = std::fs::canonicalize(repo.common_dir()?)?;
+    let key = afkconvoy_core::gate::key(&common.to_string_lossy());
+    Ok(crate::copies::cache()?.join("candidates").join(format!("{key:016x}")))
+}
+
+/// A configured cache can itself be inside a checkout. Refuse it before
+/// reserving a turn or assigning a candidate, even if it is another repo's.
+/// Ask git so linked worktrees and configuration discovery boundaries count.
+fn prepare_worktree_root(repo: &Repo) -> Result<PathBuf> {
+    let root = worktree_root(repo)?;
+    std::fs::create_dir_all(&root)?;
+    let root = std::fs::canonicalize(root)?;
+    let found = Repo::new(root.clone()).try_git(&["rev-parse", "--show-toplevel"])?;
+    ensure!(
+        !found.ok,
+        "candidate cache {} is inside checkout {}; set XDG_CACHE_HOME to a directory outside every checkout and run `afkconvoy land` again",
+        root.display(),
+        found.stdout
+    );
+    ensure!(
+        found.stderr.starts_with("fatal: not a git repository"),
+        "cannot check candidate cache {}: {}; set XDG_CACHE_HOME to a directory outside every checkout and run `afkconvoy land` again",
+        root.display(),
+        found.stderr.trim()
+    );
+    Ok(root)
+}
+
 /// Removes the worktree of every stopped candidate named by `records`.
 ///
 /// `records` are candidate chains already read: the look's listing, or a
@@ -835,14 +870,15 @@ pub(crate) fn remove_stopped_worktrees(repo: &Repo) -> Result<()> {
 /// that still has the directory as its working directory keeps it too; the
 /// next call removes it once that process is gone. A directory whose git registration is already gone is
 /// removed as well. Nothing here reads or writes the candidate chain. An
-/// issue's, watch's, or cut's worktree is outside `convoy-candidates` and is
-/// left alone.
+/// issue's, watch's, or cut's worktree is outside the candidate roots and is
+/// left alone. Both the host cache and the old common-git-dir root are
+/// recognised, so a later version finishes an earlier one's removal.
 ///
 /// A process listing that fails removes nothing: it is no evidence the
 /// directory is free.
 pub(crate) fn remove_listed(repo: &Repo, records: &[crate::remote::RemoteRecord]) -> Result<()> {
     let prefix = repo.layout().under("candidates/");
-    let root = repo.common_dir()?.join("convoy-candidates");
+    let roots = [worktree_root(repo)?, repo.common_dir()?.join("convoy-candidates")];
     let mut pending = vec![];
     for record in records {
         if !record.name.starts_with(&prefix) {
@@ -854,7 +890,7 @@ pub(crate) fn remove_listed(repo: &Repo, records: &[crate::remote::RemoteRecord]
                 continue;
             }
             let path = PathBuf::from(&candidate.worktree);
-            if !candidate_directory(&root, &path, &candidate.id) {
+            if !roots.iter().any(|root| candidate_directory(root, &path, &candidate.id)) {
                 continue;
             }
             if (path.exists() || crate::process_scope::path(&candidate.worktree).exists())
@@ -961,6 +997,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
             return Ok(answer);
         }
     }
+    let root = prepare_worktree_root(repo)?;
     let barrier = !locks.is_empty() || !matches!(of, Of::Issue(_));
     let starting = read(repo, config)?;
     let base_config = crate::turn::tip_config(repo, &starting.base)?;
@@ -1029,7 +1066,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
     } else {
         Permit::candidate(repo, "turn: validate candidate, record, land", heavy)?
     });
-    let path = repo.common_dir()?.join("convoy-candidates").join(&id);
+    let path = root.join(&id);
     let candidate = loop {
         let locks = crate::lock::standing_locks(&gh, config)?;
         if issue.map_or(!locks.is_empty(), |n| keeps_off(&locks, n)) {
@@ -1476,6 +1513,17 @@ fn publish(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn an_unreadable_pid_is_not_the_candidate_owner() {
+        let recorded = super::Process {
+            host: crate::this_host(),
+            pid: 1,
+            started: "the recorded turn owner".into(),
+        };
+        assert!(!super::alive(&recorded).unwrap());
+    }
+
     #[test]
     fn a_branch_whose_live_turn_holds_a_valid_candidate_is_landing() {
         let me = super::identity(std::process::id()).unwrap().unwrap();

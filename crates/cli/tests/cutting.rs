@@ -269,6 +269,14 @@ fn initial(preset: bool) -> World {
 fn finish_in_turn(world: &World, checkout: &Path) -> Value {
     let answer = world.afk_in(checkout, &["cut", "--host", "h1", "--second-ms", "10"]).ok();
     let landed = answer["landed"].as_str().unwrap();
+    let pr_number = answer["pr"].as_u64().unwrap();
+    world.with_gh(|gh| {
+        let pr = gh["prs"].as_array().unwrap().iter().find(|pr| pr["number"] == pr_number).unwrap();
+        assert_eq!(pr["state"], "closed");
+        let comments = gh["comments"][pr_number.to_string()].as_array().unwrap();
+        assert!(comments.iter().any(|c| c["body"].as_str().unwrap().contains(landed)
+            && c["body"].as_str().unwrap().contains("v1.2.3")));
+    });
     assert_eq!(world.remote(&["rev-parse", "refs/heads/main"]), landed);
     let tree = world.remote(&["rev-parse", &format!("{landed}^{{tree}}")]);
     assert!(
