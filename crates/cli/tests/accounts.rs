@@ -206,10 +206,13 @@ fn rewrite_previews_checks_and_is_idempotent() {
     world.issue(422, &[]);
     let unexpected = body.replace("Machine: Apple", "Other fact: keep me\nMachine: Apple");
     world.comment(422, &unexpected);
+    world.issue(423, &[]);
+    let damaged = "<!--convoy:account -->\n```json\n{}\n```";
+    world.comment(423, damaged);
     let before = world.gh();
     let dry = world.afk(&["rewrite-accounts"]).ok();
     assert_eq!(dry["rewrite"], 1);
-    assert_eq!(dry["left"], 1);
+    assert_eq!(dry["left"], 2);
     assert_eq!(dry["changes"][0]["old_body"], body);
     assert_eq!(dry["changes"][0]["check"], "pass");
     assert_eq!(world.gh()["comments"], before["comments"]);
@@ -218,10 +221,11 @@ fn rewrite_previews_checks_and_is_idempotent() {
     let written = world.afk(&["rewrite-accounts", "--backup", path]).ok();
     assert_eq!(written["rewrite"], 1);
     assert_eq!(world.gh()["comments"]["422"][0]["body"], unexpected);
+    assert_eq!(world.gh()["comments"]["423"][0]["body"], damaged);
     assert_eq!(std::fs::read_dir(&backup).unwrap().count(), 1);
     let again = world.afk(&["rewrite-accounts", "--backup", path]).ok();
     assert_eq!(again["rewrite"], 0);
-    assert_eq!(again["left"], 1);
+    assert_eq!(again["left"], 2);
     let report = world.afk(&["accounts", "--all", "--now", "1793542000"]).ok();
     assert_eq!(report["count"], 1);
     assert_eq!(report["wall_seconds"]["p50"], 2339);

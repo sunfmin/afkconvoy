@@ -37,6 +37,15 @@ pub fn run(repo: &Repo, backup: Option<&Path>, now: u64) -> Result<Value> {
             }
             if comment.body.contains("```json\n") {
                 bodies.push((comment.body.clone(), comment.body.clone()));
+                if let Err(reason) = account::read(&comment.body, issue.number) {
+                    changes.push(Change {
+                        issue: issue.number,
+                        comment: comment.id,
+                        old_body: comment.body.clone(),
+                        new_body: None,
+                        check: reason,
+                    });
+                }
                 continue;
             }
             let previous = account::rewrite::legacy(&comment.body, issue.number)
