@@ -352,6 +352,50 @@ fn a_landed_worker_idle_at_its_prompt_is_ended_and_its_worktree_removed() {
 }
 
 #[test]
+fn settling_waits_for_an_old_worker_still_ending_instead_of_failing_the_tick() {
+    let world = backlog(&[3]);
+    world.set_gate("true");
+    tick(&world, "1000");
+    let worktree = worker_worktree(&world);
+    common::commit(&worktree, "three.txt", "3\n");
+    git(&worktree, &["push", "-q", "origin", "HEAD"]);
+    world.pr(30, 3, &git(&worktree, &["symbolic-ref", "--short", "HEAD"]));
+    let landed = world.afk_in(&worktree, &["land", "--issue", "3", "--now", "1050"]).ok();
+    assert_eq!(landed["outcome"], "merged", "{landed}");
+    let _session = Session::start(&world, &worktree);
+    report(&world, "idle", 1060);
+    world.control_termination_time();
+    world.with_orca(|orca| orca["close_keeps_terminal"] = json!(true));
+
+    let ticked = tick(&world, "1090");
+    assert_eq!(did(&ticked)[0], "settle 3 waiting", "{ticked}");
+    assert_eq!(ticked["errors"], json!([]), "{ticked}");
+    assert!(worktree.is_dir(), "a worktree whose worker is still ending stays");
+    let all =
+        world.afk(&["doctor", "--all", "--host", "h1", "--since", "1000", "--now", "1090"]).json;
+    let findings = all["checkouts"][0]["doctor"]["findings"].as_array().unwrap();
+    assert!(!findings.iter().any(|finding| finding["kind"] == "tick_failed"), "{findings:#?}");
+    assert!(!findings.iter().any(|finding| finding["kind"] == "settle_waiting"), "{findings:#?}");
+
+    let late = tick(&world, "1400");
+    assert_eq!(late["errors"], json!([]), "{late}");
+    let doctor = world.afk(&["doctor", "--host", "h1", "--now", "1400"]).json;
+    let waited = doctor["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|finding| finding["kind"] == "settle_waiting")
+        .count();
+    assert_eq!(waited, 1, "past the grace, still ending is a finding: {doctor:#}");
+
+    world.with_orca(|orca| orca["close_keeps_terminal"] = json!(false));
+    let again = tick(&world, "1490");
+    assert_eq!(did(&again)[0], "settle 3 done", "{again}");
+    assert!(!worktree.exists(), "once its end is confirmed, a later tick removes it");
+    assert_eq!(world.claims(), []);
+}
+
+#[test]
 fn settling_waits_for_a_finishing_worker_then_leaves_without_a_failed_tick() {
     let world = backlog(&[391]);
     tick(&world, "1000");

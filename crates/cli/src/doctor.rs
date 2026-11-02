@@ -785,7 +785,9 @@ fn settle_wait_findings(run: &Run, held: &[Held], now: u64) -> Vec<Finding> {
         let since: u64 = std::fs::read_to_string(worktree.note("convoy-settle-wait").ok()?).ok()?.trim().parse().ok()?;
         if now.saturating_sub(since) < afkconvoy_core::worker::GRACE { return None; }
         let processes = crate::hot::working_in(path).ok()?;
-        if claim.worker != Some(WorkerState::Busy) && processes.is_empty() { return None; }
+        // A session still there, working or still ending, keeps the wait.
+        let session = matches!(claim.worker, Some(WorkerState::Busy | WorkerState::Idle { .. }));
+        if !session && processes.is_empty() { return None; }
         let state = match claim.worker {
             Some(WorkerState::Busy) => "busy",
             Some(WorkerState::Idle { .. }) => "idle",

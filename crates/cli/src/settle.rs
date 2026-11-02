@@ -17,7 +17,7 @@ use crate::fleet::Fleet;
 use crate::gh::Tracker;
 use crate::git::{REMOTE, Repo};
 use crate::landing::joins_in;
-use crate::orca::{Source, Worktree};
+use crate::orca::{Ended, Source, Worktree};
 use crate::recovery::own_heads;
 use crate::remote::{Fresh, Push};
 
@@ -89,10 +89,11 @@ fn follow_base(fleet: &Fleet) -> Result<()> {
 /// Removes the worktree settling `issue` leaves, unless a worker is still in
 /// it or it holds a commit the remote does not. The worker the fleet started
 /// here, stopped at its prompt, is its own session: it is ended first. A
-/// worker still working, or any other process still in it, makes the
-/// settle wait, so the claim stays and a later tick tries again. A commit the
-/// remote does not have stays, and the settle goes on: the claim is released
-/// and nothing records a failed removal, so a later tick does not take it.
+/// worker still working, one whose end is not yet confirmed, or any other
+/// process still in it, makes the settle wait, so the claim stays and a
+/// later tick tries again. A commit the remote does not have stays, and the
+/// settle goes on: the claim is released and nothing records a failed
+/// removal, so a later tick does not take it.
 fn remove_settled(fleet: &Fleet, issue: u64, worktree: &Worktree) -> Result<Option<u64>> {
     let wait = || -> Result<Option<u64>> {
         let file = worktree.note("convoy-settle-wait")?;
@@ -106,7 +107,13 @@ fn remove_settled(fleet: &Fleet, issue: u64, worktree: &Worktree) -> Result<Opti
     if worktree.holds_a_worker() {
         match worktree.state(fleet.now)? {
             WorkerState::Busy => return wait(),
-            WorkerState::Idle { .. } => worktree.end_settled()?,
+            // One still ending is waited for like one still working: the
+            // grace, not this tick, says when that is a finding.
+            WorkerState::Idle { .. } => {
+                if let Ended::Unconfirmed(_) = worktree.end_settled()? {
+                    return wait();
+                }
+            }
             WorkerState::Gone => {}
         }
     }

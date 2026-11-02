@@ -899,3 +899,4 @@ afkconvoy::cli asking_guard::unbound_pi
 # Doctor tests exceeded the fast gate's 6s limit after merging the preceding candidates.
 afkconvoy::cli doctor::a_worker_left_alone_by_a_fleet_lock_waits_until_its_nudge
 afkconvoy::cli doctor::doctor_routes_other_declared_verdicts
+afkconvoy::cli tick::settling_waits_for_an_old_worker_still_ending_instead_of_failing_the_tick
