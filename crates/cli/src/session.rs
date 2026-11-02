@@ -1159,6 +1159,76 @@ pub(crate) fn tokens(
     Ok(found.then_some(total))
 }
 
+/// Read one resident session's usage between delivery and report. The brief
+/// root distinguishes the watch from the asking session in their shared
+/// directory; the whole session is read so cumulative counters can establish
+/// their baseline before `start`.
+pub(crate) fn tokens_between(
+    cwd: &Path,
+    harness: Harness,
+    start: u64,
+    end: u64,
+    brief_root: &Path,
+) -> Result<Option<afkconvoy_core::account::Tokens>> {
+    use afkconvoy_core::account::{Tokens, parse_tokens_between};
+    let cwd_text = cwd_str(cwd);
+    let brief_root = cwd_str(brief_root);
+    let mut total = Tokens::new();
+    let mut found = false;
+    for root in roots(cwd, harness)? {
+        let place = harness.session_place(&cwd_text);
+        let accepts = |text: &str| {
+            if !text.contains(&brief_root) {
+                return None;
+            }
+            harness.recorded_turn(&cwd_text, text, None, None)?;
+            Some(text.to_owned())
+        };
+        let mut sessions = match place.layout {
+            SessionLayout::Files { dir, extension } => {
+                read_files(&root.join(dir), extension, Some(start), accepts)?
+            }
+            SessionLayout::Tree { dir, extension } => {
+                read_tree(&root.join(dir), extension, Some(start), accepts)?
+            }
+            SessionLayout::Index { file } => {
+                read_index(&root, &file, harness, &cwd_text, Some(start), accepts)?
+            }
+            SessionLayout::Named { dir, name, compressed: _ } if harness == Harness::Grok => {
+                let mut texts = Vec::new();
+                if let Some(entries) = list_dir(&root.join(dir))? {
+                    for entry in entries {
+                        let Some(events) = read_text(&entry.join(name))? else { continue };
+                        if accepts(&events).is_some()
+                            && let Some(updates) = read_text(&entry.join("updates.jsonl"))?
+                        {
+                            texts.push(updates);
+                        }
+                    }
+                }
+                texts
+            }
+            SessionLayout::Named { dir, name, compressed } => {
+                read_named(&root.join(dir), name, compressed, Some(start), accepts)?
+            }
+        };
+        if harness == Harness::ClaudeCode {
+            sessions.extend(read_tree(&root.join("projects"), "jsonl", Some(start), accepts)?);
+            sessions.sort();
+            sessions.dedup();
+        }
+        for text in sessions {
+            if let Some(tokens) = parse_tokens_between(harness, &text, start, end) {
+                found = true;
+                for (model, counts) in tokens {
+                    total.entry(model).or_default().add(&counts);
+                }
+            }
+        }
+    }
+    Ok(found.then_some(total))
+}
+
 fn session_first_at(text: &str) -> Option<u64> {
     for line in text.lines() {
         let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else { continue };

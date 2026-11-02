@@ -2408,3 +2408,62 @@ fn a_pre_journal_watch_keeps_its_recorded_id_and_captures_public_identity_on_upg
     assert_eq!(doctor["host"]["watch"]["association"]["terminal"], watch["terminal"]);
     assert!(doctor["host"]["watch"]["association"]["identity"]["ptyId"].is_string());
 }
+
+#[test]
+fn a_round_records_only_usage_between_delivery_and_report_and_unknown_without_usage() {
+    let world = World::new();
+    let dir = operator(&world);
+    paused(&world, "pi", "a fault to account");
+    run(&world, &dir);
+    let watch = until(&world, "watch with fixture usage", || running(&world));
+    assert_eq!(watch["harness"], "claude-code");
+    let start = watch["started"].as_u64().unwrap();
+    let brief = world
+        .cache()
+        .join("afkconvoy/watch")
+        .join(watch["id"].as_str().unwrap())
+        .join("brief-1.md");
+    let pointer = afkconvoy_core::prompt::brief_pointer(&brief.display().to_string());
+    let harness = afkconvoy_core::harness::Harness::ClaudeCode;
+    let session = &harness.session_files(&dir.display().to_string(), true, start)[0];
+    let root = world.home().join(harness.session_place(&dir.display().to_string()).under_home);
+    let file = root.join(&session.path);
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    let mut text = session.body.replace("\"brief\"", &serde_json::to_string(&pointer).unwrap());
+    for (id, at, input) in
+        [("before", start - 10, 100), ("round", start, 7), ("after", start + 100, 20)]
+    {
+        text.push_str(&format!(
+            "{}\n",
+            json!({"timestamp": at, "type": "assistant", "cwd": dir,
+                "isSidechain": false, "message": {"id": id, "role": "assistant", "model": "fixture",
+                "usage": {"input_tokens": input, "cache_read_input_tokens": 2,
+                "cache_creation_input_tokens": 1, "output_tokens": 3}}})
+        ));
+    }
+    std::fs::write(&file, text).unwrap();
+    printed(&world, &watch, &["accounted"], Some(0));
+    until(&world, "usage recorded", || ended(&world, "ended"));
+    let usage = |id: &str| {
+        let path = world.cache().join("afkconvoy/watch").join(id).join("usage.json");
+        serde_json::from_slice::<Value>(&std::fs::read(path).unwrap()).unwrap()
+    };
+    let first = usage(watch["id"].as_str().unwrap());
+    assert_eq!(first["start"], start);
+    assert_eq!(first["end"], first["start"].as_u64().unwrap() + first["seconds"].as_u64().unwrap());
+    assert_eq!(
+        first["tokens"]["fixture"],
+        json!({"input": 7, "cache_read": 2, "cache_write": 1, "output": 3, "reasoning": null})
+    );
+
+    paused(&world, "dsh", "a round with no usage");
+    let second = until(&world, "second round", || {
+        running(&world).filter(|round| round["id"] != watch["id"])
+    });
+    printed(&world, &second, &["no usage recorded"], Some(0));
+    until(&world, "second usage recorded", || {
+        ended(&world, "ended").filter(|round| round["id"] == second["id"])
+    });
+    let second = usage(second["id"].as_str().unwrap());
+    assert!(second["tokens"].is_null());
+}

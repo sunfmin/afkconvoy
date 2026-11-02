@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{account, record};
 
@@ -14,6 +14,39 @@ pub struct Row {
     #[serde(flatten)]
     pub record: account::Record,
     pub url: String,
+}
+
+/// Token use of one host activity that has no issue work account. Watch
+/// rounds name their delivered conditions; patrol runs and asking questions
+/// use the same record and summary rules.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Usage {
+    pub id: String,
+    pub harness: Option<String>,
+    pub model: Option<String>,
+    pub start: Option<u64>,
+    pub end: Option<u64>,
+    pub seconds: Option<u64>,
+    #[serde(default)]
+    pub tokens: Option<account::Tokens>,
+    #[serde(default)]
+    pub conditions: Vec<String>,
+}
+
+#[derive(Serialize)]
+pub struct UsageRow<'a> {
+    pub kind: &'a str,
+    #[serde(flatten)]
+    pub usage: &'a Usage,
+}
+
+pub fn usage_rows(rows: Vec<Usage>, start: Option<u64>, end: u64) -> Vec<Usage> {
+    let mut rows: Vec<Usage> = rows
+        .into_iter()
+        .filter(|row| row.end.is_some_and(|at| at <= end && start.is_none_or(|start| at >= start)))
+        .collect();
+    rows.sort_by(|one, other| one.id.cmp(&other.id));
+    rows
 }
 
 /// Read one window for both consumers. Incomplete measurements remain rows;
@@ -81,6 +114,9 @@ pub struct Report {
     slowest: Vec<Slowest>,
     unreadable: Vec<Unreadable>,
     tokens: TokenReport,
+    watch_rounds: UsageReport,
+    asking_questions: UsageReport,
+    patrol_runs: UsageReport,
 }
 
 #[derive(Serialize)]
@@ -97,6 +133,91 @@ struct TokenReport {
     overall: TokenStats,
     by_harness: BTreeMap<String, TokenStats>,
     top: Vec<TokenIssue>,
+}
+
+#[derive(Serialize)]
+struct UsageStats {
+    count: usize,
+    totals: account::Counts,
+    unknown_rounds: usize,
+    p50: Option<u64>,
+    p95: Option<u64>,
+}
+
+#[derive(Serialize)]
+struct UsageReport {
+    #[serde(flatten)]
+    overall: UsageStats,
+    by_harness: BTreeMap<String, UsageStats>,
+    top: Vec<UsageTop>,
+}
+
+#[derive(Serialize)]
+struct UsageTop {
+    id: String,
+    conditions: Vec<String>,
+    total: u64,
+}
+
+fn usage_stats(rows: &[&Usage]) -> UsageStats {
+    let mut totals = account::Counts::default();
+    let mut values = Vec::new();
+    let mut unknown_rounds = 0usize;
+    for row in rows {
+        match &row.tokens {
+            Some(tokens) => {
+                let mut total = account::Counts::default();
+                for counts in tokens.values() {
+                    total.add(counts);
+                }
+                totals.add(&total);
+                values.push(total.total());
+            }
+            None => unknown_rounds = unknown_rounds.saturating_add(1),
+        }
+    }
+    values.sort_unstable();
+    UsageStats {
+        count: rows.len(),
+        totals,
+        unknown_rounds,
+        p50: percentile(&values, 50),
+        p95: percentile(&values, 95),
+    }
+}
+
+fn usage_report(rows: &[Usage]) -> UsageReport {
+    let overall: Vec<&Usage> = rows.iter().collect();
+    let mut harnesses: BTreeMap<String, Vec<&Usage>> = BTreeMap::new();
+    for row in rows {
+        harnesses
+            .entry(row.harness.as_deref().unwrap_or("unknown").to_string())
+            .or_default()
+            .push(row);
+    }
+    let by_harness = harnesses.into_iter().map(|(name, rows)| (name, usage_stats(&rows))).collect();
+    let mut known: Vec<&Usage> = rows.iter().filter(|row| row.tokens.is_some()).collect();
+    known.sort_by_key(|row| (std::cmp::Reverse(usage_total(row)), row.id.clone()));
+    let top = known
+        .into_iter()
+        .take(5)
+        .map(|row| UsageTop {
+            id: row.id.clone(),
+            conditions: row.conditions.clone(),
+            total: usage_total(row),
+        })
+        .collect();
+    UsageReport { overall: usage_stats(&overall), by_harness, top }
+}
+
+fn usage_total(row: &Usage) -> u64 {
+    let mut total = account::Counts::default();
+    if let Some(tokens) = &row.tokens {
+        for counts in tokens.values() {
+            total.add(counts);
+        }
+    }
+    total.total()
 }
 
 #[derive(Serialize)]
@@ -221,6 +342,20 @@ pub struct Unreadable {
 /// starts at the beginning of the record. Unknown ends remain unreadable even
 /// in a bounded window: they cannot safely be excluded from it.
 pub fn summarize(issues: Vec<Issue>, start: Option<u64>, end: u64) -> Report {
+    summarize_with_usage(issues, Vec::new(), Vec::new(), Vec::new(), start, end)
+}
+
+pub fn summarize_with_usage(
+    issues: Vec<Issue>,
+    watch_rounds: Vec<Usage>,
+    asking_questions: Vec<Usage>,
+    patrol_runs: Vec<Usage>,
+    start: Option<u64>,
+    end: u64,
+) -> Report {
+    let watch_rounds = usage_report(&usage_rows(watch_rounds, start, end));
+    let asking_questions = usage_report(&usage_rows(asking_questions, start, end));
+    let patrol_runs = usage_report(&usage_rows(patrol_runs, start, end));
     let mut samples = vec![];
     let (rows, mut unreadable) = rows(issues, start, end);
     let tokens = token_report(&rows);
@@ -265,6 +400,9 @@ pub fn summarize(issues: Vec<Issue>, start: Option<u64>, end: u64) -> Report {
         slowest,
         unreadable,
         tokens,
+        watch_rounds,
+        asking_questions,
+        patrol_runs,
     }
 }
 

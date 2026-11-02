@@ -12,10 +12,17 @@ pub fn accounts(repo: &Repo, days: u64, all: bool, rows: bool, now: u64) -> Resu
     let gh = GitHub::new(repo.dir.clone(), tracker);
     let start = (!all).then(|| now.saturating_sub(days.saturating_mul(86400)));
     let issues = gh.accounts()?;
+    let watch_rounds =
+        afkconvoy_core::accounts::usage_rows(crate::host_watch::rounds()?, start, now);
     if rows {
         let (rows, unreadable) = afkconvoy_core::accounts::rows(issues, start, now);
         let mut text = String::new();
         for row in rows {
+            text.push_str(&serde_json::to_string(&row)?);
+            text.push('\n');
+        }
+        for usage in &watch_rounds {
+            let row = afkconvoy_core::accounts::UsageRow { kind: "watch_round", usage };
             text.push_str(&serde_json::to_string(&row)?);
             text.push('\n');
         }
@@ -24,5 +31,12 @@ pub fn accounts(repo: &Repo, days: u64, all: bool, rows: bool, now: u64) -> Resu
         }
         return Ok(Value::String(text));
     }
-    Ok(serde_json::to_value(afkconvoy_core::accounts::summarize(issues, start, now))?)
+    Ok(serde_json::to_value(afkconvoy_core::accounts::summarize_with_usage(
+        issues,
+        watch_rounds,
+        Vec::new(),
+        Vec::new(),
+        start,
+        now,
+    ))?)
 }

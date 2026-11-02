@@ -1,6 +1,6 @@
 use crate::common::World;
 use afkconvoy_core::account::{self, Begun, Heard, Machine, Told};
-use serde_json::json;
+use serde_json::{Value, json};
 
 /// Use the actual writer: this report must keep reading what the fleet leaves.
 fn account(number: u64, start: u64, end: u64, harnesses: &[&str], gates: &[&str]) -> String {
@@ -312,4 +312,91 @@ fn token_summary_counts_known_workers_by_harness_and_ranks_issues() {
         serde_json::from_slice(rows.stdout.split(|b| *b == b'\n').next().unwrap()).unwrap();
     assert_eq!(row["workers"][0]["tokens"]["model"]["input"], 10);
     assert!(row["workers"][1]["tokens"].is_null());
+}
+
+#[test]
+fn watch_rounds_match_a_hand_count_and_answer_their_own_ndjson_rows() {
+    use afkconvoy_core::account::Counts;
+    use afkconvoy_core::accounts::Usage;
+    let world = World::new();
+    world.issue(1, &[]);
+    for n in 1..=7u64 {
+        let tokens = (n != 7).then(|| {
+            [(
+                String::from("model"),
+                Counts {
+                    input: n * 10,
+                    cache_read: n * 2,
+                    cache_write: n,
+                    output: n * 3,
+                    reasoning: Some(n),
+                },
+            )]
+            .into_iter()
+            .collect()
+        });
+        let usage = Usage {
+            id: format!("round{n}"),
+            harness: Some(if n % 2 == 0 { "codex" } else { "pi" }.into()),
+            model: Some("model".into()),
+            start: Some(50),
+            end: Some(100),
+            seconds: Some(50),
+            tokens,
+            conditions: vec![format!("condition{n}")],
+        };
+        let dir = world.cache().join("afkconvoy/watch").join(&usage.id);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("usage.json"), serde_json::to_vec(&usage).unwrap()).unwrap();
+    }
+    let out = world.afk(&["accounts", "--days", "1", "--now", "86411"]).ok();
+    let rounds = &out["watch_rounds"];
+    assert_eq!(rounds["count"], 7);
+    assert_eq!(rounds["unknown_rounds"], 1);
+    assert_eq!(
+        rounds["totals"],
+        json!({"input":210,"cache_read":42,"cache_write":21,"output":63,"reasoning":21})
+    );
+    assert_eq!(rounds["p50"], 48);
+    assert_eq!(rounds["p95"], 96);
+    assert_eq!(rounds["by_harness"]["codex"]["count"], 3);
+    assert_eq!(rounds["by_harness"]["codex"]["totals"]["input"], 120);
+    assert_eq!(rounds["by_harness"]["pi"]["count"], 4);
+    assert_eq!(rounds["by_harness"]["pi"]["unknown_rounds"], 1);
+    assert_eq!(rounds["by_harness"]["pi"]["totals"]["input"], 90);
+    assert_eq!(
+        rounds["top"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["round6", "round5", "round4", "round3", "round2"]
+    );
+    assert_eq!(rounds["top"][0]["conditions"], json!(["condition6"]));
+    assert_eq!(rounds["top"][0]["total"], 96);
+
+    let rows = world
+        .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
+        .args(["accounts", "--days", "1", "--rows", "--now", "86411"])
+        .output()
+        .unwrap();
+    assert!(rows.status.success(), "{rows:?}");
+    let rows: Vec<Value> = String::from_utf8(rows.stdout)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(rows.len(), 7);
+    for (n, row) in (1..=7).zip(rows) {
+        assert_eq!(row["kind"], "watch_round");
+        assert_eq!(row["id"], format!("round{n}"));
+        assert_eq!(row["conditions"], json!([format!("condition{n}")]));
+        assert_eq!(row["seconds"], 50);
+        if n == 7 {
+            assert!(row["tokens"].is_null());
+        } else {
+            assert_eq!(row["tokens"]["model"]["input"], n * 10);
+        }
+    }
 }
