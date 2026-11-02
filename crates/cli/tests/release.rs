@@ -43,7 +43,7 @@ fn the_release_script_knows_the_version_a_release_is_tagged_with() {
 }
 
 #[test]
-fn the_formula_installs_what_was_packaged_and_depends_on_git_and_gh() {
+fn the_formula_installs_what_was_packaged_and_names_the_users_tools() {
     let dist = tempfile::tempdir().unwrap();
     let archive = |arch: &str| dist.path().join(format!("afkconvoy-{VERSION}-macos-{arch}.tar.gz"));
     std::fs::write(archive("arm64"), "the arm64 build").unwrap();
@@ -66,7 +66,12 @@ fn the_formula_installs_what_was_packaged_and_depends_on_git_and_gh() {
     }
     assert_ne!(sha256(&archive("arm64")), sha256(&archive("x86_64")));
     assert!(formula.contains(&format!("  version \"{VERSION}\"\n")));
-    assert!(formula.contains("  depends_on \"gh\"\n  depends_on \"git\"\n"), "{formula}");
+    assert!(formula.contains("  depends_on :macos\n"), "{formula}");
+    for tool in ["git", "gh", "orca"] {
+        assert!(!formula.contains(&format!("depends_on \"{tool}\"")), "{formula}");
+    }
+    assert!(formula.contains("Have `git` and `gh` on PATH."), "{formula}");
+    assert!(formula.contains("`gh` must be logged in (`gh auth login`)."), "{formula}");
     assert!(formula.contains("bin.install \"afkconvoy\""));
     let orca = afkconvoy_core::tools::Tool::Orca.install();
     assert!(formula.contains(&format!("\n        {orca}\n")), "orca is the user's to install");
