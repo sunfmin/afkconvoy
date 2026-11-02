@@ -47,7 +47,6 @@ mod lock;
 mod logged;
 mod migration;
 mod named_harness;
-mod no_node;
 mod outside;
 mod panel;
 mod park;

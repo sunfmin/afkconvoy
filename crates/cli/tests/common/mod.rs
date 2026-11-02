@@ -381,9 +381,15 @@ impl World {
     /// git or GitHub setup leaking in.
     pub fn command(&self, program: impl AsRef<std::ffi::OsStr>, cwd: &Path) -> Command {
         let mut cmd = Command::new(program);
+        // A gate a worker runs inherits its stage's facts (AFKCONVOY_HARNESS,
+        // AFKCONVOY_ISSUE, …): none is the world's (sunfmin/control#495). What
+        // the world means to say, it sets below.
+        for (name, _) in std::env::vars_os() {
+            if name.to_string_lossy().starts_with("AFKCONVOY_") {
+                cmd.env_remove(name);
+            }
+        }
         for name in [
-            "AFKCONVOY_WATCH",
-            "AFKCONVOY_DSH_MODEL",
             "DSH_HOME",
             "DSH_AGENTS_HOME",
             "DSH_PROFILE",
@@ -401,7 +407,6 @@ impl World {
             .env("XDG_CACHE_HOME", self.cache())
             .env_remove("XDG_CONFIG_HOME")
             .env("HOME", self.home())
-            .env_remove("AFKCONVOY_ISSUE")
             .env_remove("ANTHROPIC_BASE_URL");
         // A stand-in world never inherits the host's real GitHub credential.
         // Quota identity scenarios opt into an explicit fixture token.
