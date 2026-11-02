@@ -76,11 +76,28 @@ check is `verify.sh`'s own, run without checking anything: the pins stay in
 `crates/core/Cargo.toml`, and how to install each is what the check says
 when it fails.
 
+The gate's tests run `node` too: the dsh harness's scripts are JavaScript,
+and its tests run them with the `node` on the PATH, as a worker's dsh does.
+So a host whose runner has no `node` it can run is refused at the same probe,
+and its gate work goes to a host that has one (sunfmin/control#506). The
+check runs `node` itself, with the PATH the runner gives the gate, so a shim
+with no node behind it fails as well. No version is pinned: the tests ask for
+none but what runs a `.mjs` file, and a pin through a version manager would
+put that manager on every host's PATH and a download on each.
+
 ```yaml gate-needs
 checks:
   - name: flux-toolchain
     command: ./verify.sh --toolchain
     seconds: 60
+  - name: node
+    command: |
+      node --version >/dev/null 2>&1 || {
+        echo "the gate runs node, and the host runner cannot run one on its PATH: $PATH" >&2
+        echo "put a node on that PATH: install one under \$HOME (~/homebrew's brew install node, or mise use -g node), or link an existing node into ~/.local/bin, then restart the host runner" >&2
+        exit 1
+      }
+    seconds: 30
 ```
 
 ## Heavy work on the host
