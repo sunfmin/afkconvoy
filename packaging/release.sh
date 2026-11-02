@@ -24,6 +24,12 @@
 set -eu
 cd "$(dirname "$0")/.."
 
+# A cut runs these steps under the host runner, whose PATH may lack rustup's
+# ~/.cargo/bin (sunfmin/control#513). Put it last, so a cargo already on PATH
+# still comes first; `build` puts the stable toolchain's own bin first below.
+PATH="$PATH:$HOME/.cargo/bin"
+export PATH
+
 REPO=https://github.com/sunfmin/afkconvoy
 TAP=sunfmin/homebrew-tap
 ARCHES="arm64 x86_64"
