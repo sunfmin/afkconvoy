@@ -496,6 +496,8 @@ afkconvoy::cli pi::an_unavailable_pi_does_not_block_a_team_whose_roles_use_claud
 afkconvoy::cli plan::a_github_that_cannot_be_read_is_an_error
 afkconvoy::cli plan::a_pr_closes_what_its_body_says_whatever_github_linked
 afkconvoy::cli plan::a_pr_from_a_fork_is_read_by_nothing
+afkconvoy::cli plan::a_remote_read_that_never_ends_fails_after_three_attempts
+afkconvoy::cli plan::a_remote_read_that_outlives_its_limit_is_ended_and_asked_again
 afkconvoy::cli plan::plan_and_doctor_name_only_the_open_blockers_whatever_the_summary_says
 afkconvoy::cli plan::plan_assembles_the_working_set
 afkconvoy::cli plan::plan_writes_nothing

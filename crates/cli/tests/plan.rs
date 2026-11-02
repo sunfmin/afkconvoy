@@ -161,6 +161,42 @@ fn a_github_that_cannot_be_read_is_an_error() {
     assert!(error.contains("gh pr list failed"), "{error}");
 }
 
+fn plan_with_list_stalls(stalls: usize) -> (World, common::Answer) {
+    let world = World::new();
+    world.stall_git_lists(stalls);
+    let out = world
+        .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
+        .env("AFKCONVOY_LS_REMOTE_SECONDS", "1")
+        .arg("plan")
+        .output()
+        .unwrap();
+    let answer = common::Answer {
+        json: serde_json::from_slice(&out.stdout).unwrap(),
+        code: out.status.code().unwrap(),
+        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+    };
+    (world, answer)
+}
+
+#[test]
+fn a_remote_read_that_outlives_its_limit_is_ended_and_asked_again() {
+    let (world, answer) = plan_with_list_stalls(2);
+    answer.ok();
+    let listings = world.git_calls().iter().filter(|call| call.starts_with("ls-remote")).count();
+    assert!(listings >= 3, "the third listing answered: {listings}");
+}
+
+#[test]
+fn a_remote_read_that_never_ends_fails_after_three_attempts() {
+    let (world, answer) = plan_with_list_stalls(3);
+    let error = answer.error();
+    assert!(error.contains("3 attempts"), "{error}");
+    assert!(error.contains("did not end within 1s"), "{error}");
+    assert!(error.contains("its process group was ended"), "{error}");
+    let listings = world.git_calls().iter().filter(|call| call.starts_with("ls-remote")).count();
+    assert_eq!(listings, 3);
+}
+
 #[test]
 fn a_pr_closes_what_its_body_says_whatever_github_linked() {
     let world = World::new();

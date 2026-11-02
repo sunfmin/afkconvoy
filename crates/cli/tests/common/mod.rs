@@ -1009,6 +1009,21 @@ impl World {
         write_script(&self.bin.join("git"), &script);
     }
 
+    /// Makes the first `stalls` listings of the remote sleep past the short
+    /// limit the test gives afkconvoy, and logs every git call.
+    pub fn stall_git_lists(&self, stalls: usize) {
+        let (git, log, calls) =
+            (git_program(), self.root.join("git.log"), self.root.join("git-list-calls"));
+        let script = format!(
+            "#!/bin/sh\necho \"$*\" >> '{0}'\nif [ \"$1\" = ls-remote ]; then\n  n=0\n  if [ -f '{2}' ]; then n=$(cat '{2}'); fi\n  n=$((n + 1))\n  echo \"$n\" > '{2}'\n  if [ \"$n\" -le {1} ]; then sleep 60; fi\nfi\nexec '{3}' \"$@\"\n",
+            log.display(),
+            stalls,
+            calls.display(),
+            git.display()
+        );
+        write_script(&self.bin.join("git"), &script);
+    }
+
     /// The `git` calls afkconvoy made since `watch_git`, each as its command
     /// line, in order.
     pub fn git_calls(&self) -> Vec<String> {
