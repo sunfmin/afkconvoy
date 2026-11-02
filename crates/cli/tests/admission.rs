@@ -19,14 +19,16 @@ fn queue_load_admits_but_load_outside_the_queue_holds() {
     let _runner = world.host_held();
     world.busy(PAST_ANY);
     let marker = world.root.join("running");
-    let mut command = world
-        .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
-        .args(["exclusive", "--", "sh", "-c"])
-        .arg(format!("touch '{}'; sleep 30", marker.display()))
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
+    // Its whole tree ends with the test, the `sh` and its `sleep` too, and
+    // not `exclusive` alone (sunfmin/control#508).
+    let command = common::FixtureProcess::spawn(
+        world
+            .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
+            .args(["exclusive", "--", "sh", "-c"])
+            .arg(format!("touch '{}'; sleep 30", marker.display()))
+            .stdout(Stdio::null())
+            .stderr(Stdio::null()),
+    );
     let start = Instant::now();
     while !marker.exists() {
         assert!(start.elapsed() < Duration::from_secs(10));
@@ -45,8 +47,7 @@ fn queue_load_admits_but_load_outside_the_queue_holds() {
     let held = tick(&world, "1090");
     assert!(dispatched(&held).is_empty(), "{held}");
     assert!(held["held_back_by"].to_string().contains("load"), "{held}");
-    command.kill().unwrap();
-    let _ = command.wait();
+    drop(command);
 }
 
 fn backlog(numbers: &[u64]) -> World {
