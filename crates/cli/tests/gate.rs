@@ -26,6 +26,14 @@ fn fast_gate_checks_timeouts_before_calling_tests_slow() {
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
 }
 
+#[test]
+fn verify_installs_the_pinned_checker_it_reads_and_leaves_a_pinned_one_alone() {
+    let script =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/verify-install.sh");
+    let output = std::process::Command::new("sh").arg(script).output().unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+}
+
 /// A gate held by an isolated runner until the test explicitly grants it.
 /// The gate process owns a group so interruption cannot signal the test.
 /// Drop cleans up even when an assertion fails before the grant.
