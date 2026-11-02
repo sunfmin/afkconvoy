@@ -2203,17 +2203,18 @@ struct Examined {
 /// How a fleet instance ticks: the sleep and the time of its last tick, and
 /// the worktrees its claims hold (`health::Cadence`), and of those the ones a
 /// standing fleet lock leaves alone, by the rule its tick goes by
-/// (`WorkingSet::locked_out`).
+/// (`WorkingSet::locked_out`), with the checkout it is of.
 struct Pace {
+    checkout: PathBuf,
     sleep: u64,
     took: u64,
     worktrees: Vec<PathBuf>,
     left_alone: Vec<PathBuf>,
 }
 
-/// The pace of `run`'s fleet instance, holding the claims `state` read, if
-/// it read them.
-fn pace_of(run: &Run, state: Option<&State>) -> Pace {
+/// The pace of `run`'s fleet instance of `checkout`, holding the claims
+/// `state` read, if it read them.
+fn pace_of(checkout: &Path, run: &Run, state: Option<&State>) -> Pace {
     let held = state.map(|state| state.held.as_slice()).unwrap_or_default();
     let worktrees = |alone: bool| -> Vec<PathBuf> {
         held.iter()
@@ -2222,6 +2223,7 @@ fn pace_of(run: &Run, state: Option<&State>) -> Pace {
             .collect()
     };
     Pace {
+        checkout: checkout.to_path_buf(),
         sleep: run.last_tick().map(|(_, tick)| tick.sleep).unwrap_or(0),
         took: run.last_took.unwrap_or(0),
         worktrees: worktrees(false),
@@ -2230,12 +2232,19 @@ fn pace_of(run: &Run, state: Option<&State>) -> Pace {
 }
 
 /// Each worker health observation past its time and past a tick's chance to
-/// make it, by the pace of every fleet instance `paces` says.
+/// make it, by the pace of every fleet instance `paces` says. A worker of a
+/// checkout that has left the checkout list is none: no fleet ticks for it,
+/// and the next tick of any fleet retires it once its harness has ended.
 fn overdue_findings(paces: &[Pace], now: u64) -> Vec<Finding> {
-    match crate::health::show() {
-        Ok(health) => overdue_of(&health, paces, now),
-        Err(_) => vec![],
+    let Ok(mut health) = crate::health::show() else {
+        return vec![];
+    };
+    let asked: Vec<&Path> = paces.iter().map(|pace| pace.checkout.as_path()).collect();
+    if let Ok(listed) = crate::health::Listed::of_host(&asked) {
+        health.workers.retain(|worker| !listed.left(&worker.observed.path));
+        health.observations_failed.retain(|failed| !listed.left(&failed.path));
     }
+    overdue_of(&health, paces, now)
 }
 
 fn overdue_of(health: &crate::health::Health, paces: &[Pace], now: u64) -> Vec<Finding> {
@@ -2355,7 +2364,7 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String], look: &Look) ->
         state: state.as_ref().map_err(String::as_str),
     };
     let mut found = findings(&seen);
-    let pace = pace_of(&run, state.as_ref().ok());
+    let pace = pace_of(&repo.dir, &run, state.as_ref().ok());
     let mut not_alive = not_alive_finding(&run, &found);
     if let Some(finding) = &mut not_alive {
         finding.fix = crate::checkout::about_checkout(&repo.dir, &finding.fix);
@@ -3400,8 +3409,13 @@ mod tests {
     #[test]
     fn a_health_observation_is_overdue_only_past_its_ticks_chance() {
         // The instance holding /w sleeps 90s between ticks, and its last took 10s.
-        let paces =
-            [Pace { sleep: 90, took: 10, worktrees: vec!["/w".into()], left_alone: vec![] }];
+        let paces = [Pace {
+            checkout: "/c".into(),
+            sleep: 90,
+            took: 10,
+            worktrees: vec!["/w".into()],
+            left_alone: vec![],
+        }];
         let health = |next: u64| -> crate::health::Health {
             serde_json::from_value(json!({
                 "workers": [{"path": "/w", "terminal": "t", "harness": "codex", "snapshots": [],
@@ -3438,7 +3452,7 @@ mod tests {
             "observations_failed": []}))
         .unwrap();
         let paths = |state: &State| -> Vec<String> {
-            let pace = pace_of(&run(vec![]), Some(state));
+            let pace = pace_of(Path::new("/c"), &run(vec![]), Some(state));
             overdue_of(&health, &[pace], 1000)
                 .iter()
                 .map(|finding| finding.watch_id.clone())

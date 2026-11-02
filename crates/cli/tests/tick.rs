@@ -620,13 +620,13 @@ fn session_helper() {
     std::thread::sleep(std::time::Duration::from_secs(120));
 }
 
-struct Session {
+pub(crate) struct Session {
     pid: u32,
     reaper: Option<std::thread::JoinHandle<()>>,
 }
 
 impl Session {
-    fn start(world: &World, worktree: &Path) -> Self {
+    pub(crate) fn start(world: &World, worktree: &Path) -> Self {
         // Not a system binary: `ps` reads the environment of this one.
         let ready = worktree.join(".afkconvoy-tmp/session-ready");
         let mut child = Command::new(std::env::current_exe().unwrap())
