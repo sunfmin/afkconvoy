@@ -14,6 +14,13 @@ pub fn accounts(repo: &Repo, days: u64, all: bool, rows: bool, now: u64) -> Resu
     let issues = gh.accounts()?;
     let watch_rounds =
         afkconvoy_core::accounts::usage_rows(crate::host_watch::rounds()?, start, now);
+    let asking_questions =
+        afkconvoy_core::accounts::usage_rows(crate::host_asking::usages()?, start, now);
+    let patrol_runs = afkconvoy_core::accounts::usage_rows(
+        crate::patrol_usage::runs(&gh.repository()?)?,
+        start,
+        now,
+    );
     if rows {
         let (rows, unreadable) = afkconvoy_core::accounts::rows(issues, start, now);
         let mut text = String::new();
@@ -21,10 +28,16 @@ pub fn accounts(repo: &Repo, days: u64, all: bool, rows: bool, now: u64) -> Resu
             text.push_str(&serde_json::to_string(&row)?);
             text.push('\n');
         }
-        for usage in &watch_rounds {
-            let row = afkconvoy_core::accounts::UsageRow { kind: "watch_round", usage };
-            text.push_str(&serde_json::to_string(&row)?);
-            text.push('\n');
+        for (kind, usages) in [
+            ("watch_round", &watch_rounds),
+            ("asking_question", &asking_questions),
+            ("patrol_run", &patrol_runs),
+        ] {
+            for usage in usages {
+                let row = afkconvoy_core::accounts::UsageRow { kind, usage };
+                text.push_str(&serde_json::to_string(&row)?);
+                text.push('\n');
+            }
         }
         if !unreadable.is_empty() {
             eprintln!("{}", serde_json::json!({"unreadable": unreadable}));
@@ -34,8 +47,8 @@ pub fn accounts(repo: &Repo, days: u64, all: bool, rows: bool, now: u64) -> Resu
     Ok(serde_json::to_value(afkconvoy_core::accounts::summarize_with_usage(
         issues,
         watch_rounds,
-        Vec::new(),
-        Vec::new(),
+        asking_questions,
+        patrol_runs,
         start,
         now,
     ))?)

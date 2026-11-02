@@ -94,6 +94,7 @@ pub mod orca;
 pub mod panel;
 pub mod park;
 pub mod patrol;
+mod patrol_usage;
 pub mod paused;
 pub mod probe;
 mod process;

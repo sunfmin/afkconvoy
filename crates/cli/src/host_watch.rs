@@ -1076,7 +1076,11 @@ pub fn rounds() -> Result<Vec<afkconvoy_core::accounts::Usage>> {
     };
     let mut rounds = Vec::new();
     for entry in entries {
-        let path = entry?.path().join("usage.json");
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        let path = entry.path().join("usage.json");
         match std::fs::read(&path) {
             Ok(bytes) => rounds.push(
                 serde_json::from_slice(&bytes)
