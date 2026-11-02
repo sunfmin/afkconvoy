@@ -3008,7 +3008,7 @@ enum Command {
     ///
     /// Before and after the command tree, a separate canary process attempts to exec Node in that same sandbox. A fresh nonce tags every denial. After the tree exits, `log show` reads only kernel sandbox reports carrying that nonce. Any report besides the two identified canary PIDs makes the run red, even when the caller ignored the denial or the command failed for another reason. Unrelated processes have no nonce and cause no hit.
     ///
-    /// Forked descendants inherit the sandbox. An inherited descriptor holds the run open for background descendants, including reparented ones, before the second canary. The command must wait for descendants that deliberately close inherited descriptors. Processes dispatched through launchd/XPC, and Docker workloads, are outside the sandbox. This is a gate check for cooperative commands, not a security boundary against a command trying to evade it.
+    /// Forked descendants inherit the sandbox, except the system `/bin/ps`, which runs outside it so macOS permits its setuid executable. An inherited descriptor holds the run open for background descendants, including reparented ones, before the second canary. The command must wait for descendants that deliberately close inherited descriptors. Processes dispatched through launchd/XPC, and Docker workloads, are outside the sandbox. This is a gate check for cooperative commands, not a security boundary against a command trying to evade it.
     ///
     /// ## What it answers
     ///

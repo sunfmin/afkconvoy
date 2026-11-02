@@ -103,6 +103,33 @@ fn a_native_command_without_node_is_green_and_streams_output_to_stderr() {
 }
 
 #[test]
+fn ps_observes_a_live_descendants_command_and_environment() {
+    let script = r#"
+NO_NODE_PS_MARKER=visible bun -e 'setTimeout(() => {}, 30000)' &
+pid=$!
+trap 'kill "$pid"; wait "$pid" 2>/dev/null' EXIT
+count=0
+while [ "$count" -lt 100 ]; do
+    command=$(/bin/ps -p "$pid" -o command=) || exit 1
+    environment=$(/bin/ps eww "$pid") || exit 1
+    case "$command:$environment" in
+        *'setTimeout(() => {}, 30000)'*NO_NODE_PS_MARKER=visible*)
+            echo 'command and environment visible'; exit 0 ;;
+    esac
+    count=$((count + 1))
+    /bin/sleep 0.01
+done
+exit 1
+"#;
+    let direct = Command::new("/bin/sh").args(["-c", script]).output().unwrap();
+    assert!(direct.status.success(), "{direct:?}");
+    let monitored = Run::new().shell(script);
+    assert!(String::from_utf8_lossy(&direct.stdout).contains("command and environment visible"));
+    assert!(String::from_utf8_lossy(&monitored.stderr).contains("command and environment visible"));
+    green(monitored);
+}
+
+#[test]
 fn a_command_failure_stays_red_without_node() {
     let out = Run::new().shell("exit 37");
     let said = answer(&out);
