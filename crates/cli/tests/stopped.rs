@@ -1660,14 +1660,50 @@ fn a_worker_no_claim_holds_whose_harness_ended_is_retired_though_its_terminal_st
     let path = worktree(&world);
     assert_eq!(health_record(&world)["workers"][0]["path"], json!(path));
 
-    // Its claim is released, its harness has ended (no process of its tree
-    // is left), and its terminal stays open at the shell.
+    // Its claim is released, and its terminal stays open at the shell.
+    // No fleet takes it again: it is no longer ready.
     for claim in claim_refs(&world) {
         world.remote(&["update-ref", "-d", &claim]);
     }
+    world.with_gh(|gh| {
+        for issue in gh["issues"].as_array_mut().unwrap() {
+            issue["labels"] = json!(["bug"]);
+        }
+    });
     assert_eq!(world.claims(), []);
     assert!(!world.open_terminals().is_empty());
+
+    // While a process of its worker's tree is left, its harness has not
+    // ended: the record is kept.
+    let harness = crate::tick::Session::start(&world, &path);
+    tick(&world, 1350);
+    let kept = health_record(&world)["workers"].clone();
+    drop(harness);
+    assert_eq!(kept.as_array().unwrap().len(), 1, "a running harness keeps its record: {kept}");
+    assert_eq!((&kept[0]["path"], &kept[0]["terminal"]), (&json!(path), &json!("term-1")));
+
+    // Once it has ended, the next tick retires it.
     tick(&world, 1400);
     assert_eq!(health_record(&world)["workers"], json!([]), "the next tick retires it");
     assert!(!world.open_terminals().is_empty(), "its terminal is left as it was");
+}
+
+#[test]
+fn no_health_observation_is_overdue_for_a_worker_whose_checkout_left_the_list() {
+    let world = fleet(1000);
+    report(&world, "done", 1000, 1000);
+    show(&world, &WAITING);
+    assert_eq!(did(&tick(&world, 1300)), ["judge 7 waiting", "heartbeat done"]);
+    let overdue = |world: &World| -> Vec<Value> {
+        let all = world.afk(&["doctor", "--all", "--host", "h1", "--now", "9000"]).json;
+        let found = all["findings"].as_array().cloned().unwrap_or_default();
+        found.into_iter().filter(|finding| finding["kind"] == "health_overdue").collect()
+    };
+
+    world.list_checkout(&world.clone);
+    assert_eq!(overdue(&world).len(), 1, "on the list, its observation is overdue");
+
+    let list = world.cache().join("afkconvoy/checkouts.json");
+    std::fs::write(list, json!({"checkouts": []}).to_string()).unwrap();
+    assert_eq!(overdue(&world), [] as [Value; 0], "off the list, no fleet ticks for it");
 }
