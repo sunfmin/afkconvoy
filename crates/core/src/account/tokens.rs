@@ -208,6 +208,177 @@ pub fn parse(harness: Harness, text: &str) -> Option<Tokens> {
     found.then_some(result)
 }
 
+/// Usage recorded from `start` through `end`, inclusive. Cumulative counters
+/// establish their baseline before the window, so a resident session's earlier
+/// rounds and standby are not charged to this one. A usage record without a
+/// readable timestamp makes the window unknown.
+pub fn parse_between(harness: Harness, text: &str, start: u64, end: u64) -> Option<Tokens> {
+    let mut result = Tokens::new();
+    let mut messages: BTreeMap<String, (u64, String, Counts)> = BTreeMap::new();
+    let mut model = String::new();
+    let mut previous = Counts::default();
+    let mut previous_grok = Tokens::new();
+    let mut latest_grok = Tokens::new();
+    let mut found = false;
+    for (line_no, line) in text.lines().enumerate() {
+        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+        if harness == Harness::Codex
+            && v["type"] == "turn_context"
+            && let Some(m) = v["payload"]["model"].as_str()
+        {
+            model = m.to_string();
+        }
+        let usage = match harness {
+            Harness::Codex if v["type"] == "event_msg" && v["payload"]["type"] == "token_count" => {
+                &v["payload"]["info"]["total_token_usage"]
+            }
+            Harness::ClaudeCode | Harness::Pi
+                if v["type"]
+                    == if harness == Harness::ClaudeCode { "assistant" } else { "message" } =>
+            {
+                &v["message"]["usage"]
+            }
+            Harness::Kimi if v["type"] == "usage.record" => &v["usage"],
+            Harness::Grok => &v["params"]["update"]["usage"],
+            _ => continue,
+        };
+        let Some(at) = usage_at(&v) else {
+            if usage.is_object() {
+                return None;
+            }
+            continue;
+        };
+        match harness {
+            Harness::Codex => {
+                if !usage["input_tokens"].is_number() {
+                    continue;
+                }
+                let current = normalized(
+                    usage,
+                    "input_tokens",
+                    "cached_input_tokens",
+                    "cache_write_input_tokens",
+                    "output_tokens",
+                    "reasoning_output_tokens",
+                    true,
+                );
+                if at < start {
+                    previous = current;
+                    continue;
+                }
+                if at > end {
+                    continue;
+                }
+                let delta = current.delta(&previous);
+                result.entry(model.clone()).or_default().add(&delta);
+                previous = current;
+                found = true;
+            }
+            Harness::ClaudeCode | Harness::Pi | Harness::Kimi => {
+                let msg = &v["message"];
+                let (input, read, write, output, reasoning) = match harness {
+                    Harness::ClaudeCode => (
+                        "input_tokens",
+                        "cache_read_input_tokens",
+                        "cache_creation_input_tokens",
+                        "output_tokens",
+                        "reasoning_tokens",
+                    ),
+                    Harness::Pi => ("input", "cacheRead", "cacheWrite", "output", "reasoning"),
+                    _ => (
+                        "inputOther",
+                        "inputCacheRead",
+                        "inputCacheCreation",
+                        "output",
+                        "reasoning",
+                    ),
+                };
+                if !usage[input].is_number() {
+                    continue;
+                }
+                let id = if harness == Harness::Kimi {
+                    format!("{}:{}", v["time"], v["agentId"])
+                } else {
+                    msg["id"]
+                        .as_str()
+                        .or_else(|| v["id"].as_str())
+                        .map(str::to_string)
+                        .unwrap_or_else(|| format!("line:{line_no}"))
+                };
+                let mut counts = normalized(usage, input, read, write, output, reasoning, false);
+                if harness == Harness::ClaudeCode {
+                    counts.reasoning = usage["output_tokens_details"]["thinking_tokens"]
+                        .as_u64()
+                        .or(counts.reasoning);
+                }
+                let model = if harness == Harness::Kimi {
+                    v["model"].as_str().unwrap_or("")
+                } else {
+                    msg["model"].as_str().unwrap_or("")
+                };
+                messages.entry(id).or_insert_with(|| (at, model.to_string(), counts));
+            }
+            Harness::Grok => {
+                let Some(models) = usage["modelUsage"].as_object() else { continue };
+                let mut snapshot = Tokens::new();
+                for (name, usage) in models {
+                    if usage["inputTokens"].is_number() {
+                        snapshot.insert(
+                            name.clone(),
+                            normalized(
+                                usage,
+                                "inputTokens",
+                                "cachedReadTokens",
+                                "cacheCreationTokens",
+                                "outputTokens",
+                                "reasoningTokens",
+                                true,
+                            ),
+                        );
+                    }
+                }
+                if snapshot.is_empty() {
+                    continue;
+                }
+                if at < start {
+                    previous_grok = snapshot;
+                } else if at <= end {
+                    latest_grok = snapshot;
+                    found = true;
+                }
+            }
+            Harness::Dsh => {}
+        }
+    }
+    if matches!(harness, Harness::ClaudeCode | Harness::Pi | Harness::Kimi) {
+        for (at, model, counts) in messages.into_values() {
+            if at >= start && at <= end {
+                result.entry(model).or_default().add(&counts);
+                found = true;
+            }
+        }
+    }
+    if harness == Harness::Grok {
+        for (model, counts) in latest_grok {
+            let delta = counts.delta(previous_grok.get(&model).unwrap_or(&Counts::default()));
+            result.entry(model).or_default().add(&delta);
+        }
+    }
+    found.then_some(result)
+}
+
+fn usage_at(value: &Value) -> Option<u64> {
+    for key in ["timestamp", "time", "ts"] {
+        if let Some(n) = value[key].as_u64() {
+            return Some(crate::harness::epoch_number(n));
+        }
+        if let Some(raw) = value[key].as_str() {
+            return crate::harness::parse_iso(raw);
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -266,5 +437,46 @@ mod tests {
             );
         }
         assert_eq!(parse(Harness::Codex, "{}"), None);
+    }
+
+    #[test]
+    fn a_round_window_excludes_standby_and_subtracts_cumulative_baselines() {
+        let codex = r#"{"timestamp":90,"type":"turn_context","payload":{"model":"codex"}}
+{"timestamp":95,"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":30,"output_tokens":10,"reasoning_output_tokens":4}}}}
+{"timestamp":105,"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":160,"cached_input_tokens":45,"output_tokens":18,"reasoning_output_tokens":7}}}}
+{"timestamp":115,"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":200,"cached_input_tokens":55,"output_tokens":25,"reasoning_output_tokens":9}}}}"#;
+        let tokens = parse_between(Harness::Codex, codex, 100, 110).unwrap();
+        assert_eq!(
+            tokens["codex"],
+            Counts { input: 45, cache_read: 15, cache_write: 0, output: 8, reasoning: Some(3) }
+        );
+
+        let claude = r#"{"timestamp":"1970-01-01T00:01:35Z","type":"assistant","message":{"id":"before","role":"assistant","model":"claude","usage":{"input_tokens":10,"cache_read_input_tokens":2,"output_tokens":3}}}
+{"timestamp":"1970-01-01T00:01:45Z","type":"assistant","message":{"id":"round","role":"assistant","model":"claude","usage":{"input_tokens":7,"cache_read_input_tokens":5,"cache_creation_input_tokens":1,"output_tokens":4}}}
+{"timestamp":"1970-01-01T00:01:55Z","type":"assistant","message":{"id":"after","role":"assistant","model":"claude","usage":{"input_tokens":20,"cache_read_input_tokens":8,"output_tokens":9}}}"#;
+        let tokens = parse_between(Harness::ClaudeCode, claude, 100, 110).unwrap();
+        assert_eq!(
+            tokens["claude"],
+            Counts { input: 7, cache_read: 5, cache_write: 1, output: 4, reasoning: None }
+        );
+
+        let grok = r#"{"ts":95,"params":{"update":{"usage":{"modelUsage":{"grok":{"inputTokens":130,"cachedReadTokens":30,"outputTokens":10}}}}}}
+{"ts":105,"params":{"update":{"usage":{"modelUsage":{"grok":{"inputTokens":190,"cachedReadTokens":45,"outputTokens":18}}}}}}
+{"ts":115,"params":{"update":{"usage":{"modelUsage":{"grok":{"inputTokens":255,"cachedReadTokens":55,"outputTokens":25}}}}}}"#;
+        let tokens = parse_between(Harness::Grok, grok, 100, 110).unwrap();
+        assert_eq!(
+            tokens["grok"],
+            Counts { input: 45, cache_read: 15, cache_write: 0, output: 8, reasoning: None }
+        );
+        assert_eq!(parse_between(Harness::Codex, codex, 200, 210), None);
+        assert_eq!(
+            parse_between(
+                Harness::Codex,
+                &codex.replace("\"timestamp\":105", "\"at\":105"),
+                100,
+                110
+            ),
+            None
+        );
     }
 }

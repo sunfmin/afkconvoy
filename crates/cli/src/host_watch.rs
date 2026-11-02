@@ -125,6 +125,8 @@ pub struct Watch {
     pub ended: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outcome: Option<String>,
+    #[serde(default)]
+    pub tokens: Option<afkconvoy_core::account::Tokens>,
 }
 
 /// A session of a watch whose harness gave out, and what it did first.
@@ -154,7 +156,8 @@ pub fn watch_json(watch: &Watch) -> Value {
         "reported": watch.report.is_some(), "report": watch.report,
         "delivery": watch_terminal::delivery_json(watch),
         "deadline": (watch.started != 0).then(|| watch.started.saturating_add(host_watch::TIME_LIMIT)),
-        "attempts": watch.attempts, "ended": watch.ended, "outcome": watch.outcome})
+        "attempts": watch.attempts, "ended": watch.ended, "outcome": watch.outcome,
+        "tokens": watch.tokens})
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -615,6 +618,7 @@ impl Watcher {
             attempts: vec![],
             ended: None,
             outcome: None,
+            tokens: None,
         };
         if let Some(resident) = &state.resident {
             watch.session = session_identity(resident);
@@ -830,7 +834,7 @@ impl Watcher {
                 watch,
                 "ended",
                 "the round reported; its resident session awaits input",
-            );
+            )?;
         } else {
             // Recovery precedes every terminal read, input and termination.
             // An uncertain creation or delivery blocks the next launch too.
@@ -854,7 +858,7 @@ impl Watcher {
                             watch,
                             "time_limit",
                             "the active round expired while delivery recovery was paused",
-                        );
+                        )?;
                         return self.save(&state);
                     }
                     let why = watch_terminal::recovery(&format!("{error:#}"));
@@ -872,7 +876,7 @@ impl Watcher {
                     watch,
                     "time_limit",
                     "the round reached its hour and did not report",
-                );
+                )?;
             } else if !live && let Some(fault) = gave_out(watch.harness, &transcript, exited) {
                 stop_session(&watch)?;
                 self.go_on(&mut state, watch, fault, now, vec![])?;
@@ -883,7 +887,7 @@ impl Watcher {
                     watch,
                     "closed",
                     "its terminal closed; it did not report",
-                );
+                )?;
             } else {
                 let screen = worktree.screen(&watch.terminal, host_watch::EVIDENCE_LINES)?;
                 let (worker, runtime) =
@@ -901,7 +905,7 @@ impl Watcher {
                         watch,
                         "not_reported",
                         "its harness exited; it did not report",
-                    );
+                    )?;
                 } else {
                     let grace = afkconvoy_core::worker::GRACE;
                     let stopped = match worker {
@@ -984,17 +988,26 @@ impl Watcher {
         }
         state.unavailable = Some(unstartable(&failures));
         let said = format!("{} gave out ({why}), and no harness can go on with it", from.key());
-        self.finish_said(state, watch, "no_harness", &said);
+        self.finish_said(state, watch, "no_harness", &said)?;
         Ok(())
     }
 
-    fn finish_said(&self, state: &mut State, mut watch: Watch, outcome: &str, said: &str) {
+    fn finish_said(
+        &self,
+        state: &mut State,
+        mut watch: Watch,
+        outcome: &str,
+        said: &str,
+    ) -> Result<()> {
         if watch.report.is_none() {
             state.resident = None;
             state.covered.retain(|episode| !watch.episodes.contains(episode));
         }
-        watch.ended = Some(crate::clock());
+        let ended = crate::clock();
+        watch.ended = Some(ended);
         watch.outcome = Some(outcome.into());
+        let usage = keep_usage(&watch, ended)?;
+        watch.tokens = usage.tokens.clone();
         (self.say)(What::WatchEnded {
             id: watch.id.clone(),
             outcome: outcome.into(),
@@ -1006,7 +1019,78 @@ impl Watcher {
         state.history.drain(..over);
         state.running = None;
         self.say_state(state);
+        Ok(())
     }
+}
+
+fn keep_usage(watch: &Watch, ended: u64) -> Result<afkconvoy_core::accounts::Usage> {
+    use afkconvoy_core::account::Tokens;
+    let start = (watch.started != 0).then_some(watch.started);
+    let mut tokens = Tokens::new();
+    let mut known = start.is_some();
+    let attempts = watch.attempts.iter().map(|attempt| attempt.harness).chain([watch.harness]);
+    for harness in attempts {
+        let Some(start) = start else { continue };
+        let Some(usage) = crate::session::tokens_between(
+            &watch.directory,
+            harness,
+            start,
+            ended,
+            &cache()?.join("watch"),
+        )
+        .ok()
+        .flatten() else {
+            known = false;
+            break;
+        };
+        for (model, counts) in usage {
+            tokens.entry(model).or_default().add(&counts);
+        }
+    }
+    let usage = afkconvoy_core::accounts::Usage {
+        id: watch.id.clone(),
+        harness: Some(watch.harness.key().to_string()),
+        model: watch.model.clone(),
+        start,
+        end: Some(ended),
+        seconds: start.and_then(|start| ended.checked_sub(start)),
+        tokens: known.then_some(tokens),
+        conditions: watch.items.iter().map(|item| item.id.clone()).collect(),
+    };
+    let directory = crate::watch_report::directory(&watch.id)?;
+    std::fs::create_dir_all(&directory)?;
+    let temporary = directory.join(format!("usage-{}.tmp", crate::unique()));
+    std::fs::write(&temporary, serde_json::to_vec_pretty(&usage)?)?;
+    std::fs::rename(temporary, directory.join("usage.json"))?;
+    Ok(usage)
+}
+
+/// Every round whose usage record the host retained, including rounds beyond
+/// the scheduler's short in-state history.
+pub fn rounds() -> Result<Vec<afkconvoy_core::accounts::Usage>> {
+    let directory = cache()?.join("watch");
+    let entries = match std::fs::read_dir(&directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error.into()),
+    };
+    let mut rounds = Vec::new();
+    for entry in entries {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        let path = entry.path().join("usage.json");
+        match std::fs::read(&path) {
+            Ok(bytes) => rounds.push(
+                serde_json::from_slice(&bytes)
+                    .with_context(|| format!("cannot read watch usage {}", path.display()))?,
+            ),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(rounds)
 }
 
 /// Why no harness could start a watch, of each one tried.

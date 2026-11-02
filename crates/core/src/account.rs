@@ -12,6 +12,7 @@ mod data;
 pub mod rewrite;
 mod tokens;
 pub use tokens::parse as parse_tokens;
+pub use tokens::parse_between as parse_tokens_between;
 pub use tokens::{Counts, Tokens};
 
 pub use data::{Gate, Host, Record, SCHEMA_VERSION, Worker, read, render};

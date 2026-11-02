@@ -390,6 +390,15 @@ pub fn end(fleet: &mut Fleet, me: &Me, read: &Flows, row: &Row) -> Result<Outcom
         let left = (!repo.within(&tip, &base)?).then_some(tip.as_str());
         let dirty = !repo.git_raw(&["status", "--porcelain"])?.trim().is_empty();
         let reason = broke(left, dirty, &prs);
+        let started =
+            row.last_run.or_else(|| claim.owner.as_ref().map(|owner| owner.ts)).unwrap_or(me.now);
+        crate::patrol_usage::record(
+            &fleet.gh.repository()?,
+            &checkout,
+            &row.name,
+            started,
+            me.now,
+        )?;
         // One report stands for a patrol until a human closes it.
         if let Some(reason) = reason.as_ref().filter(|_| row.failure.is_none()) {
             let path = checkout.path.display().to_string();

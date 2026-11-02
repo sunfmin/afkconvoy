@@ -33,6 +33,10 @@ pub(crate) fn report_file(id: &str) -> Result<PathBuf> {
     Ok(directory(id)?.join("report.json"))
 }
 
+pub(crate) fn usage_file(id: &str) -> Result<PathBuf> {
+    Ok(directory(id)?.join("usage.json"))
+}
+
 pub fn read(id: &str) -> Result<Option<Report>> {
     match std::fs::read(directory(id)?.join("reported.json")) {
         Ok(bytes) => Ok(Some(serde_json::from_slice(&bytes)?)),

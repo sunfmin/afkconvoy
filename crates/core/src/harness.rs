@@ -23,6 +23,7 @@ mod pi;
 mod session;
 
 pub(crate) use grok::not_authenticated as grok_not_authenticated;
+pub(crate) use session::{epoch_number, parse_iso};
 
 /// A file or a directory of the host user's that a directory the host keeps
 /// for a harness links to.
