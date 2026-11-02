@@ -526,7 +526,7 @@ fn brief(_session: &Session, question: &Queued, pending: &[Queued]) -> Result<St
         .word(&report_file.display().to_string())
         .own();
     Ok(format!(
-        "# A human question from this host's watch\n\nYou are **afkconvoy asks**, the host runner's resident interactive asking session in the watch's directory. You are not the watch: do no watch round, host repair, or work of your own. The host runner delivered this question; your conversation with the operator is the only work.\n\n## Ask now, then stop on the question\n\nCondition: `{}`\nIssue: {}\nWatch: `{}`\nQuestion: {}\nAnswer line: `{}`\n{} more questions wait after this one.\n\nAsk the operator now. Your last message of this turn must be exactly this one line, with nothing after it, so Orca's phone push shows the question and opens this Terminal:\n\n```text\n{}\n```\n\n## Work with the operator\n\nClarify the question when asked, investigate and consult with the operator, and act only with their authority through the same commands a human uses: `rule`, `send`, `tell`, and issues opened as the tracker's docs say. The operator's actual words, quoted with their time on the issue they decide, are the human instruction and source. Your own words establish no human intent. Never invent or attribute an answer to the operator.\n\nWhen settled, record the operator's quoted words and their time on the issue, then write `{}` as {{\"outcome\":\"settled\",\"url\":\"<comment-url>\"}} and run the exact command below. To put the question aside at the operator's request, write {{\"outcome\":\"aside\"}} to that file instead; it stays pending. Only this report lets the host runner deliver the next question. If the operator asks what waits, list these questions, including those put aside:\n{}\n\nAfter the report records, return to interactive input and await the next message in this same session. Do not exit, poll, sleep in a tool loop, or call a model while idle.\n\n{}\n",
+        "# A human question from this host's watch\n\nYou are **afkconvoy asks**, the host runner's resident interactive asking session in the watch's directory. You are not the watch: run no watch round, take no look, and report nothing through `afkconvoy watched`; do no work of your own. The host runner delivered this question; your conversation with the operator, and what they tell you here, is the work.\n\n## Ask now, then stop on the question\n\nCondition: `{}`\nIssue: {}\nWatch: `{}`\nQuestion: {}\nAnswer line: `{}`\n{} more questions wait after this one.\n\nAsk the operator now. Your last message of this turn must be exactly this one line, with nothing after it, so Orca's phone push shows the question and opens this Terminal:\n\n```text\n{}\n```\n\n## Work with the operator\n\nClarify the question when asked, investigate and consult with the operator, and act only with their authority through the same commands a human uses: `rule`, `send`, `tell`, and issues opened as the tracker's docs say.\n\n## Carry out what the operator tells you\n\nWhen the operator tells you in this session to do something — a host fix or install, a ruling, a hand-back, a ticket — carry it out yourself now; do not leave it for a later watch round. That is the operator acting. Keep within the watch's bounds: {bounds}. Leave these with the operator, never act on them yourself:\n{kinds}\n\nCheck that it worked, then record it on the issue with the operator's quoted words and their time. The operator's actual words, quoted with their time on the issue they decide, are the human instruction and source. Your own words establish no human intent. Never invent or attribute an answer to the operator.\n\nWhen settled, record the operator's quoted words and their time on the issue, then write `{}` as {{\"outcome\":\"settled\",\"url\":\"<comment-url>\"}} and run the exact command below. To put the question aside at the operator's request, write {{\"outcome\":\"aside\"}} to that file instead; it stays pending. Only this report lets the host runner deliver the next question. If the operator asks what waits, list these questions, including those put aside:\n{}\n\nAfter the report records, return to interactive input and await the next message in this same session. Do not exit, poll, sleep in a tool loop, or call a model while idle.\n\n{}\n",
         entry.condition,
         entry.url.as_deref().unwrap_or("none (a host condition)"),
         entry.watch,
@@ -537,6 +537,8 @@ fn brief(_session: &Session, question: &Queued, pending: &[Queued]) -> Result<St
         report_file.display(),
         if waiting.is_empty() { "None.".into() } else { waiting.join("\n") },
         report_line,
+        bounds = crate::host_watch::BOUNDS,
+        kinds = crate::host_watch::HUMAN_KINDS,
     ))
 }
 
@@ -769,5 +771,29 @@ mod tests {
         assert!(brief.contains("```text\nApprove this spend?\n```"));
         assert!(brief.contains("afkconvoy asked --question 'episode'"));
         assert!(host_watch::asking_push("Approve this spend?", 0).chars().count() <= 180);
+    }
+
+    #[test]
+    fn the_asking_session_acts_on_the_operators_instruction_and_runs_no_round() {
+        let session: Session = serde_json::from_value(json!({
+            "id": "session", "directory": "/operator", "stock": false,
+            "harness": "codex", "model": null, "terminal": "asks", "transcript": "",
+            "session_started": 1,
+        }))
+        .unwrap();
+        let entry: Entry = serde_json::from_value(json!({
+            "id": "episode", "condition": "finding:host:node", "url": null,
+            "watch": "round", "human": {"question": "Install node?", "answer": "afkconvoy kit"},
+            "sequence": 1, "sent": false, "failures": 0, "attempted_look": null,
+        }))
+        .unwrap();
+        let brief = brief(&session, &Queued::new(entry), &[]).unwrap();
+        assert!(brief.contains("carry it out yourself now"));
+        assert!(brief.contains("a host fix or install, a ruling, a hand-back, a ticket"));
+        assert!(brief.contains(crate::host_watch::BOUNDS));
+        assert!(brief.contains("operator's quoted words and their time"));
+        assert!(brief.contains("run no watch round, take no look"));
+        assert!(brief.contains("report nothing through `afkconvoy watched`"));
+        assert!(!brief.contains("host repair"));
     }
 }

@@ -40,11 +40,17 @@ const HISTORY: usize = 20;
 pub const CHECKOUT: &str = "afkconvoy-watch";
 
 /// The four kinds every watch leaves with a human, in either directory.
-const HUMAN_KINDS: &str = "\
+pub(crate) const HUMAN_KINDS: &str = "\
 - spending money, or needing an account, a credential or a person's hands;\n\
 - what cannot be undone;\n\
 - taking a secret or private data off the host;\n\
 - changing what a product is for, or who it is for.";
+
+/// What a watch, and the asking session acting on the operator's words, may
+/// touch: one home for both briefs.
+pub(crate) const BOUNDS: &str = "only what the fleets of this host started or own; never the \
+host runner, the user's programs, other apps or orca; never delete what cannot be rebuilt, nor \
+a change no commit holds; no force push, no push to a base branch, no merge outside a landing turn";
 
 /// The stock watch's whole instruction, kept as its directory's rules.
 fn stock_instruction() -> String {
@@ -55,7 +61,8 @@ fn stock_instruction() -> String {
 Find what holds this host's fleets and their work back, fix it with the watch's authority,
 check that the work goes on, and say what you did.
 A resident session whose brief names it “afkconvoy asks” is not the stock watch:
-it only asks the human questions its brief carries and does no watch's work.
+it runs no watch round, takes no look and reports nothing through `afkconvoy watched`;
+it asks the human questions its brief carries and carries out what the operator tells it there.
 Leave these with a human, never act on them, and list each in your report:
 {HUMAN_KINDS}
 "
@@ -1387,10 +1394,7 @@ fn brief(watch: &Watch) -> String {
          without waiting for a human, and finish with your reporting command.\n\n\
          Find what holds this host's fleets and their work back, fix it — whatever that takes — \
          and check that the work goes on. You have what the operator at this host's keyboard \
-         has, within these bounds (`afkconvoy run --help`): only what the fleets \
-         of this host started or own; never the host runner, the user's programs, other apps \
-         or orca; never delete what cannot be rebuilt, nor a change no commit holds; no force \
-         push, no push to a base branch, no merge outside a landing turn. Follow this \
+         has, within these bounds (`afkconvoy run --help`): {BOUNDS}. Follow this \
          directory's own rules for looking after the host's projects.\n\n\
          Your authority covers every repo on this host's checkout list, not just the repo of \
          the fault or this directory. `afkconvoy checkouts` gives the current list; the look \
