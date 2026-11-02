@@ -166,7 +166,7 @@ pub fn start(fleet: &mut Fleet, me: &Me, agent: &Agent, busy: bool) -> Result<Ou
     if fleet.config.cut.is_none() {
         return Ok(Outcome::Nothing);
     }
-    if crate::probe::check_cut_needs(&fleet.repo, &fleet.config)?.is_some() {
+    if crate::probe::check_cut_needs(&fleet.repo, &fleet.config, me.now, true)?.is_some() {
         return Ok(Outcome::Nothing);
     }
     // Before the claim: a host kit that holds no harness starts nothing.

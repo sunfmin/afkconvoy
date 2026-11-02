@@ -202,6 +202,8 @@ kinds! {
     PatrolFull: Warning, "have reached its `max_open`";
     CutFailed: Warning, "cuts no version: its last cut failed";
     CutNeed: Warning, "not cutting here";
+    NeedInstallFailed: Warning, "install failed on this host";
+    NeedInstalled: Info, "was installed on this host";
     WaitedLong: Warning, "has waited for a human for";
     WaitTaken: Info, "human wait is taken by";
     NotOurs: Warning, "is held off by a PR not the fleet's";
@@ -1417,6 +1419,38 @@ fn config_finding(config: &Config) -> Option<Finding> {
     ))
 }
 
+/// The installs this host last ran for the needs `config` declares
+/// (`probe::installs`): when, how long, and their result, never their output.
+fn install_findings(checkout: &Path, config: &Config) -> Vec<Finding> {
+    let repo = crate::git::Repo::new(checkout.to_path_buf());
+    crate::probe::installs(&repo, config)
+        .into_iter()
+        .map(|(kind, installed)| {
+            let name = &installed.check.name;
+            let (kind_of, what) = if installed.passed {
+                (Kind::NeedInstalled, format!("the {kind} check {name} was installed on this host"))
+            } else {
+                (
+                    Kind::NeedInstallFailed,
+                    format!("the {kind} check {name}: its install failed on this host"),
+                )
+            };
+            finding(
+                kind_of,
+                json!(["need-install", kind, name]),
+                what,
+                installed.said().trim_start_matches("; ").to_string(),
+                format!(
+                    "{}: {kind} `install` of {name}; run it in {}: {}",
+                    config::FILE,
+                    checkout.display(),
+                    installed.check.install.as_deref().unwrap_or_default()
+                ),
+            )
+        })
+        .collect()
+}
+
 /// A repo config that still names a `concurrency`, which nothing reads any
 /// more (docs/adr/0025): the fleet instance of `checkout` goes by its own on
 /// this host, or the default. Nothing is held up. Where it says none of its
@@ -1479,6 +1513,9 @@ pub fn findings(seen: &Seen) -> Vec<Finding> {
     found.extend(health_findings());
     found.extend(seen.config.and_then(config_finding));
     found.extend(seen.config.and_then(|config| retired_concurrency_finding(seen.checkout, config)));
+    found.extend(
+        seen.config.map(|config| install_findings(seen.checkout, config)).unwrap_or_default(),
+    );
     found.extend(crate::named_harness::findings(seen.checkout, seen.now));
     found.extend(log_findings(seen.run));
     found.extend(broken_finding(seen.run));

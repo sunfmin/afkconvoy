@@ -176,6 +176,13 @@ pub struct GateNeed {
     pub name: String,
     pub command: String,
     pub seconds: u64,
+    /// What installs what the check checks, where it fails: run, then the
+    /// check again. None refuses a failed check as it is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub install: Option<String>,
+    /// The install's limit, required with `install`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub install_seconds: Option<u64>,
 }
 
 /// The opening line of the block that splits a repo's gate in two: one of
