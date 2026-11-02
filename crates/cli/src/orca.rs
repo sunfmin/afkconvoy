@@ -127,6 +127,14 @@ impl TerminationTime {
     }
 }
 
+/// What ending a worker came to: its terminals, process tree and agent
+/// confirmed gone, or still there when the bounded effort ran out, saying so.
+#[must_use]
+pub(crate) enum Ended {
+    Confirmed,
+    Unconfirmed(String),
+}
+
 /// A process left after terminal close, and the bounded effort to end it.
 /// The command is read without its environment: the process-tree listing
 /// includes environment variables, which must never be copied to the log.
@@ -1118,21 +1126,25 @@ impl Worktree {
     /// End the old agent before a continuation can rewrite its brief or
     /// start another writer. Include descendants that escaped the terminal.
     pub(crate) fn stop_for_continuation(&self) -> Result<()> {
-        self.end_worker("start", "no replacement was started")
+        match self.end_worker("start", "no replacement was started")? {
+            Ended::Confirmed => Ok(()),
+            Ended::Unconfirmed(why) => bail!("{why}"),
+        }
     }
 
     /// Ends the session the fleet started here for an issue whose work has
     /// landed, before settling removes the worktree: its terminals and
-    /// process tree, confirmed gone.
-    pub(crate) fn end_settled(&self) -> Result<()> {
+    /// process tree, confirmed gone. One not yet confirmed is `Unconfirmed`,
+    /// not an error: settling waits for it, and a later tick tries again.
+    pub(crate) fn end_settled(&self) -> Result<Ended> {
         self.end_worker("tick", "a later tick removes it")
     }
 
     /// Closes every terminal here and ends the worker's process tree, each
-    /// end confirmed: one still there after SIGKILL is an error, saying
+    /// end confirmed: one still there after SIGKILL is `Unconfirmed`, saying
     /// `consequence`. Each process ended is a line of the tick log, under
     /// `command`.
-    fn end_worker(&self, command: &str, consequence: &str) -> Result<()> {
+    fn end_worker(&self, command: &str, consequence: &str) -> Result<Ended> {
         let before = crate::hot::listed_checked()?;
         let pids: Vec<_> = crate::hot::tree(&before, &self.path).iter().map(|p| p.pid).collect();
         self.close_terminals()?;
@@ -1172,7 +1184,7 @@ impl Worktree {
             let agents = report["agents"].as_array();
             let agent_alive = agents.is_some_and(|agents| agents.iter().any(agent_running));
             if self.terminal()?.is_none() && writers.is_empty() && !old_alive && !agent_alive {
-                return Ok(());
+                return Ok(Ended::Confirmed);
             }
             if clock.now() >= until {
                 let survivors = ending
@@ -1184,7 +1196,7 @@ impl Worktree {
                     })
                     .collect::<Vec<_>>()
                     .join("; ");
-                bail!(
+                return Ok(Ended::Unconfirmed(format!(
                     "old worker termination is unconfirmed in {}; {consequence}{}",
                     self.path.display(),
                     if survivors.is_empty() {
@@ -1192,7 +1204,7 @@ impl Worktree {
                     } else {
                         format!("; survived SIGKILL: {survivors}")
                     }
-                );
+                )));
             }
             clock.sleep(Duration::from_millis(100));
         }
