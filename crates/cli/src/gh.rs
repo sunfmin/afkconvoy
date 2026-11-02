@@ -902,18 +902,15 @@ impl GitHub {
             return Err(PrimaryQuota(scope.describe()?).into());
         }
         let made = if writing { self.raw(args) } else { self.read_once_backend(args) };
+        if let Err(error) = &made
+            && let Some(reset) = crate::gh_quota::secondary(&error.to_string(), now)
+        {
+            scope.save("secondary", &crate::gh_quota::Observation { remaining: Some(0), reset })?;
+            bail!(
+                "GitHub secondary rate limit: both APIs wait until {reset} (Unix seconds); {error}"
+            );
+        }
         match made {
-            Err(error) if crate::gh_quota::secondary(&error.to_string()).is_some() => {
-                let delay = crate::gh_quota::secondary(&error.to_string()).unwrap_or(60);
-                let reset = now.saturating_add(delay);
-                scope.save(
-                    "secondary",
-                    &crate::gh_quota::Observation { remaining: Some(0), reset },
-                )?;
-                bail!(
-                    "GitHub secondary rate limit: both APIs wait until {reset} (Unix seconds); {error}"
-                );
-            }
             Err(error) if crate::gh_quota::primary(&error.to_string()) => {
                 scope.headers(&error.to_string())?;
                 scope.observe(self)?;
