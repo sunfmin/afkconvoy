@@ -15,4 +15,4 @@ The effect layer runs `git`, `gh` and `orca` as subprocesses, as afk-fleet does,
 - What a refined struct is indexed by has to be the value of one of its fields: a stage holds the number of stages its workflow has, which Flux proves is that number.
 - What Flux has to infer of a refined value, it carries through every loop that follows in the same function. A long function makes and joins none: each is made in a function of its own, under a spec.
 - A loop needs its invariant written as a qualifier, and a function whose result an invariant mentions must return a named value, not a formula.
-- The Homebrew formula depends on `git` and `gh`; orca is the user's to install.
+- `git`, `gh` and orca are the user's to install; the Homebrew formula depends on none of them.

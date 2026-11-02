@@ -140,8 +140,6 @@ class Afkconvoy < Formula
   homepage "$REPO"
   version "$(version)"
 
-  depends_on "gh"
-  depends_on "git"
   depends_on :macos
 
   on_arm do
@@ -162,6 +160,7 @@ class Afkconvoy < Formula
       afkconvoy starts its workers through orca. Install it by its tap's
       name (the cask Homebrew itself calls orca is another program):
         brew install --cask stablyai/orca/orca
+      Have \`git\` and \`gh\` on PATH.
       \`gh\` must be logged in (\`gh auth login\`).
     EOS
   end
