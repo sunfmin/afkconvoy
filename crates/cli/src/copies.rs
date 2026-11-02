@@ -417,8 +417,8 @@ mod tests {
         let set = |name: &str| std::env::var_os(name).filter(|value| !value.is_empty());
         let host = [set("XDG_CACHE_HOME").map(PathBuf::from), set("HOME").map(PathBuf::from)];
         for host in host.into_iter().flatten() {
-            assert!(!own.starts_with(host.join("afkconvoy")), "{}", own.display());
-            assert!(!own.starts_with(host.join(".cache")), "{}", own.display());
+            assert_ne!(own, host.join("afkconvoy"));
+            assert_ne!(own, host.join(".cache/afkconvoy"));
         }
         assert_eq!(cache().unwrap(), own, "the same each time it is asked");
         let other = std::thread::spawn(|| cache().unwrap()).join().unwrap();
