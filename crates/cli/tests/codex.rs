@@ -700,8 +700,9 @@ fn hooked(ran: &[String]) -> (String, String) {
 /// hook — by a shell, in the environment of the worker `line` started, with
 /// the event described on standard input: its exit code, and what it said on
 /// stdout and on stderr. Of the host's environment a worker has its PATH,
-/// and the home `home` where one is given.
+/// the world's cache, and the home `home` where one is given.
 fn hook_answers(
+    world: &World,
     line: &str,
     hook: &str,
     home: Option<&Path>,
@@ -714,6 +715,7 @@ fn hook_answers(
         .args(["-c", &format!("{worker} && exec /bin/sh -c \"$STAND_IN_HOOK\"")])
         .env_clear()
         .env("PATH", std::env::var("PATH").unwrap())
+        .env("XDG_CACHE_HOME", world.cache())
         .env("STAND_IN_HOOK", hook);
     if let Some(home) = home {
         hook_run.env("HOME", home);
@@ -734,7 +736,7 @@ fn hook_answers(
 /// exit code and what it said.
 fn codex_is_told(world: &World, line: &str, call: &Value) -> (i32, String) {
     let (guard, _) = hooked(&under_codex(world, line));
-    let (code, out, said) = hook_answers(line, &guard, None, call);
+    let (code, out, said) = hook_answers(world, line, &guard, None, call);
     assert!(out.is_empty(), "a hook says nothing to Codex but on stderr");
     (code, said)
 }
@@ -743,7 +745,7 @@ fn codex_is_told(world: &World, line: &str, call: &Value) -> (i32, String) {
 /// on this world's host.
 fn report_answers(world: &World, line: &str, event: &Value) -> (i32, String, String) {
     let (_, report) = hooked(&under_codex(world, line));
-    hook_answers(line, &report, Some(&world.home()), event)
+    hook_answers(world, line, &report, Some(&world.home()), event)
 }
 
 /// Installs a stand-in for the hook orca installs for Codex on this world's

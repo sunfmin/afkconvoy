@@ -537,7 +537,7 @@ fn has_node() -> bool {
 /// Runs `line`, the line a pi worker was started with, with the stand-in pi
 /// for `pi` and `calls` for the tool calls its model makes → what the
 /// stand-in printed. Nothing of this process's environment is the worker's
-/// but its PATH.
+/// but its PATH; the worker uses the world's cache.
 fn under_pi(world: &World, line: &str, calls: &Value) -> Value {
     use std::os::unix::fs::PermissionsExt;
     let bin = world.root.join("stand-in");
@@ -548,6 +548,7 @@ fn under_pi(world: &World, line: &str, calls: &Value) -> Value {
         .args(["-c", line])
         .env_clear()
         .env("PATH", format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()))
+        .env("XDG_CACHE_HOME", world.cache())
         .env("STAND_IN_CALLS", calls.to_string())
         .stdin(Stdio::null())
         .output()
