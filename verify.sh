@@ -5,6 +5,9 @@
 #
 #   ./verify.sh                 check the whole core crate
 #   ./verify.sh free_slots      check the functions whose path contains a name
+#   ./verify.sh --toolchain     check only that the three tools are the pinned
+#                               ones, and exit: the gate need that
+#                               docs/agents/afkconvoy.md declares
 set -e
 cd "$(dirname "$0")/crates/core"
 # cargo-flux re-invokes `cargo +<its nightly>`, which only rustup's cargo
@@ -59,6 +62,9 @@ verify: z3 is ${z3_is:-(nothing reported)}, and crates/core/Cargo.toml pins $z3_
 EOF
 fi
 [ -n "$pinned" ] || exit 1
+if [ "${1:-}" = --toolchain ]; then
+    exit 0
+fi
 # Every run, the gate's or a hand's, stops a solver query of one function past
 # sixty seconds as an error naming it, checks on past it so one run names
 # every slow function, and times each, the file of timings kept out of the
