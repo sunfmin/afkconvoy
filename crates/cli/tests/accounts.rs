@@ -139,7 +139,17 @@ fn account_windows_select_the_end_and_report_unknown_data() {
         String::from_utf8(out.stdout).unwrap()
     };
     let help = asked(&["accounts", "--help"]);
-    for text in ["nearest rank", "writes nothing", "tracker"] {
+    for text in [
+        "nearest rank",
+        "writes nothing",
+        "tracker",
+        "watch_rounds",
+        "unknown_rounds",
+        "watch_round",
+        "asking_question",
+        "patrol_run",
+        "standby excluded",
+    ] {
         assert!(help.contains(text), "{help}");
     }
     assert!(asked(&["--help"]).contains("accounts"));
