@@ -581,6 +581,9 @@ fn note(cwd: &str, value: &serde_json::Value, named: bool) -> Option<Note> {
     let child = value["isSidechain"] == true;
     let at = session::parse_iso(value["timestamp"].as_str()?)?;
     match value["type"].as_str()? {
+        // A compaction's summary is written as the user's, but nobody asked
+        // anything: compacted while idle, the session stays at its prompt.
+        "user" if value["isCompactSummary"] == true => None,
         "user" => Some(Note { marker: Marker::Start, at, child }),
         "assistant" if value["message"]["stop_reason"] == "end_turn" => {
             Some(Note { marker: Marker::End, at, child })

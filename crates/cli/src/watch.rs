@@ -131,7 +131,13 @@ pub(crate) fn answer_turn(
     {
         return Ok(Some(Outcome::Nothing));
     }
+    // A pass asks after no landing a standing lock keeps it off: one that
+    // stopped at a lock is asked here only once that lock is gone.
+    let locks = crate::turn_answer::stopped_at_locks(&worktree)?;
     crate::turn_answer::ask_again(&worktree, issue)?;
+    if matches!(&answered, Answered::Said(outcome) if outcome == Ending::Locked.word()) {
+        fleet.after_locks.push((issue, locks));
+    }
     Ok(Some(Outcome::Asked))
 }
 

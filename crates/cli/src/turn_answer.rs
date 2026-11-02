@@ -241,6 +241,17 @@ fn unchanged(note: &Note, current: &[BlockedBy]) -> bool {
     recorded == dependency_list(current)
 }
 
+/// The fleet locks the last turn named when it answered `locked`: empty for
+/// any other answer.
+pub(crate) fn stopped_at_locks(worktree: &Worktree) -> Result<Vec<u64>> {
+    let Some(note) = note(worktree)? else { return Ok(vec![]) };
+    if note.outcome.as_deref() != Some(Ending::Locked.word()) {
+        return Ok(vec![]);
+    }
+    let locks = note.answer.as_ref().map(|answer| answer["locks"].clone());
+    Ok(locks.and_then(|locks| serde_json::from_value(locks).ok()).unwrap_or_default())
+}
+
 /// Whether a blocked answer's open blockers and full dependency list are
 /// exactly as that answer left them. Older notes have no full-list snapshot;
 /// their recorded open blockers still hold the turn.

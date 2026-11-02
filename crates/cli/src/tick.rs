@@ -75,6 +75,17 @@ pub(crate) fn waiting_since(since: u64, now: u64) -> String {
     format!("since {} UTC, {ago}", &stamped[..stamped.len() - 3])
 }
 
+/// An issue as the line names it among those asked a turn again: with the
+/// fleet locks it stopped at, closed since, where it had.
+fn after_lock_said(issue: u64, locks: Option<&[u64]>) -> String {
+    match locks {
+        Some([]) => format!("#{issue} (the fleet lock it stopped at closed)"),
+        Some([lock]) => format!("#{issue} (fleet lock #{lock} closed)"),
+        Some(locks) => format!("#{issue} (fleet locks {} closed)", named(locks)),
+        None => format!("#{issue}"),
+    }
+}
+
 /// What one tick came to.
 pub struct Ticked {
     pub pass: Pass,
@@ -98,6 +109,9 @@ pub struct Ticked {
     stopped_taken: Vec<u64>,
     /// The closed claimed issues, each with who closed it (`Fleet::closers`).
     closers: Vec<(u64, String)>,
+    /// The landings asked a turn again once the locks they stopped at closed
+    /// (`Fleet::after_locks`).
+    after_locks: Vec<(u64, Vec<u64>)>,
     /// What the pass's start and end of a cut said (`Fleet::cut_said`).
     cut_said: Vec<log::What>,
     /// The open issues, each with the label that hands it to the fleet
@@ -301,6 +315,7 @@ pub fn tick(
     let escalated = std::mem::take(&mut fleet.escalated);
     let forgotten = std::mem::take(&mut fleet.forgotten);
     let closers = std::mem::take(&mut fleet.closers);
+    let after_locks = std::mem::take(&mut fleet.after_locks);
     let cut_said = std::mem::take(&mut fleet.cut_said);
     let (concurrency, bound) = (fleet.config.concurrency(), pass.bound);
     let issues = &open.issues.rows;
@@ -329,6 +344,7 @@ pub fn tick(
         lost,
         stopped_taken,
         closers,
+        after_locks,
         cut_said,
         handed,
         saw,
@@ -549,6 +565,12 @@ impl Ticked {
         );
         let issue = words(step).1.filter(|_| ends && outcome == Outcome::Done)?;
         self.escalated.iter().find(|(number, _)| *number == issue).map(|(_, why)| why.as_str())
+    }
+
+    /// The locks the landing of `issue` stopped at, when this pass asked its
+    /// turn again once they closed.
+    fn after_lock(&self, issue: u64) -> Option<&[u64]> {
+        self.after_locks.iter().find(|(number, _)| *number == issue).map(|(_, by)| by.as_slice())
     }
 
     /// The open blockers a dispatch of `issue` read just before its claim,
@@ -787,6 +809,11 @@ impl Ticked {
                 if let Some(why) = self.escalated_by(*step, *outcome) {
                     did["escalated"] = json!(why);
                 }
+                if let (TickStep::Watch { issue, .. }, Outcome::Asked) = (step, outcome)
+                    && let Some(locks) = self.after_lock(*issue)
+                {
+                    did["after_locks"] = json!(locks);
+                }
                 if let (TickStep::Dispatch { issue }, Outcome::Blocked) = (step, outcome)
                     && let Some(blockers) = self.blocked_by(*issue)
                 {
@@ -931,7 +958,13 @@ impl Ticked {
                 .did
                 .iter()
                 .filter(|(_, outcome)| *outcome == kept)
-                .filter_map(|(step, _)| words(*step).1.map(|issue| format!("#{issue}")))
+                .filter_map(|(step, _)| words(*step).1)
+                .map(|issue| {
+                    after_lock_said(
+                        issue,
+                        self.after_lock(issue).filter(|_| kept == Outcome::Asked),
+                    )
+                })
                 .collect();
             if !issues.is_empty() {
                 parts.push(format!("{verb} {}", issues.join(", ")));
@@ -1435,5 +1468,13 @@ mod tests {
         let at = 1_792_537_380; // 2026-10-20 23:03 UTC
         assert_eq!(waiting_since(at, at + 720), "since 2026-10-20 23:03 UTC, 12m ago");
         assert_eq!(waiting_since(951_782_400, 0), "since 2000-02-29 00:00 UTC, just now");
+    }
+
+    #[test]
+    fn a_landing_asked_again_after_a_lock_names_the_lock_that_closed() {
+        assert_eq!(after_lock_said(491, Some(&[497])), "#491 (fleet lock #497 closed)");
+        assert_eq!(after_lock_said(7, Some(&[8, 9])), "#7 (fleet locks #8, #9 closed)");
+        assert_eq!(after_lock_said(7, Some(&[])), "#7 (the fleet lock it stopped at closed)");
+        assert_eq!(after_lock_said(7, None), "#7");
     }
 }
