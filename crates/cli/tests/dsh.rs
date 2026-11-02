@@ -100,6 +100,10 @@ fn a_dsh_profile_links_only_credentials_and_opted_in_skills_and_rules() {
 
 #[test]
 fn the_plugin_refuses_through_the_real_guard_and_reports_running_and_interrupted_idle() {
+    if !Command::new("node").arg("--version").output().is_ok_and(|out| out.status.success()) {
+        eprintln!("skipped: no `node` on PATH to run the DSH plugin with");
+        return;
+    }
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
     write(root, "plugin.mjs", include_str!("../../core/src/harness/dsh/plugin.mjs"));
