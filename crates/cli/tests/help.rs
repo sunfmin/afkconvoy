@@ -1421,6 +1421,22 @@ fn the_retired_train_commands_and_lanes_are_absent_from_public_help() {
     }
 }
 
+/// `no-node` read the macOS unified log, which only an admin may open: on a
+/// host whose user is not one, its tests made every gate red
+/// (sunfmin/control#495). The command and its mentions stay gone.
+#[test]
+fn the_removed_no_node_command_is_refused_and_absent_from_the_manual() {
+    let out = Command::new(env!("CARGO_BIN_EXE_afkconvoy"))
+        .args(["no-node", "--", "true"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let said = String::from_utf8(out.stdout).unwrap();
+    assert!(said.contains("unrecognized subcommand"), "{said}");
+    let help = manual();
+    assert!(!help.contains("no-node"), "no-node in help");
+}
+
 #[test]
 fn kit_and_switch_help_explain_operator_removal_and_restoration() {
     let kit = asked(&["kit", "--help"]);
