@@ -1493,6 +1493,31 @@ mod tests {
         );
     }
 
+    /// Claude Code compacts an idle session before its prompt cache expires,
+    /// writing the summary as a user entry after the turn ended: the worker is
+    /// still at its prompt (sunfmin/control#511).
+    #[test]
+    fn a_compaction_while_idle_opens_no_turn() {
+        use crate::worker::{WorkerState, worker_state};
+        let at = |second: u64| crate::harness::session::format_iso(AT + second);
+        let lines = [
+            serde_json::json!({"type": "user", "timestamp": at(0), "cwd": CWD,
+                "isSidechain": false, "message": {"role": "user", "content": "brief"}}),
+            serde_json::json!({"type": "assistant", "timestamp": at(10), "cwd": CWD,
+                "isSidechain": false, "message": {"stop_reason": "end_turn"}}),
+            serde_json::json!({"type": "system", "subtype": "compact_boundary",
+                "timestamp": at(600), "cwd": CWD, "isSidechain": false}),
+            serde_json::json!({"type": "user", "timestamp": at(600), "cwd": CWD,
+                "isSidechain": false, "isCompactSummary": true,
+                "isVisibleInTranscriptOnly": true,
+                "message": {"role": "user", "content": "This session is being continued"}}),
+        ];
+        let text: String = lines.iter().map(|line| format!("{line}\n")).collect();
+        let turn = Harness::ClaudeCode.recorded_turn(CWD, &text, None, None);
+        assert_eq!(turn, Some(Turn::Closed { since: AT + 10, started: Some(AT) }));
+        assert_eq!(worker_state(1, turn, AT + 700), WorkerState::Idle { quiet: Some(690) });
+    }
+
     #[test]
     fn the_primary_session_that_started_last_is_the_turn() {
         use crate::turn::prefer;
