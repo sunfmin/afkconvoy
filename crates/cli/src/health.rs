@@ -224,13 +224,22 @@ pub enum Overdue {
 /// How long past its time an observation is left to a tick: the sleep and
 /// the time of the last tick of the fleet instance whose claim holds its
 /// worktree. A worktree no claim holds gets the longest any instance says;
-/// with none said, there is no grace.
+/// with none said, there is no grace. A worktree whose claim a fleet lock
+/// keeps its fleet off is left alone by its ticks, so its observation is
+/// never overdue while the lock stands.
 #[derive(Debug, Clone, Default)]
 pub struct Cadence {
     of_worktree: std::collections::BTreeMap<PathBuf, u64>,
     longest: u64,
+    left_alone: std::collections::BTreeSet<PathBuf>,
 }
 impl Cadence {
+    /// Worktrees whose claims a standing fleet lock keeps their fleet off
+    /// (`WorkingSet::locked_out`): its ticks observe none of them.
+    pub fn left_alone(&mut self, worktrees: impl IntoIterator<Item = PathBuf>) {
+        self.left_alone.extend(worktrees);
+    }
+
     /// A fleet instance that sleeps `sleep` between ticks, whose last tick
     /// took `took`, holding claims on `worktrees`.
     pub fn instance(
@@ -255,8 +264,9 @@ impl Health {
     /// Every observation past its time by more than its tick's grace at
     /// `now`: the waiting workers first, then the failed observations.
     pub fn overdue(&self, cadence: &Cadence, now: u64) -> Vec<Overdue> {
-        let missed =
-            |path: &std::path::Path, due: u64| due.saturating_add(cadence.grace(path)) <= now;
+        let missed = |path: &std::path::Path, due: u64| {
+            !cadence.left_alone.contains(path) && due.saturating_add(cadence.grace(path)) <= now
+        };
         let waiting = self
             .workers
             .iter()

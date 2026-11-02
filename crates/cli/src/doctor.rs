@@ -2201,13 +2201,34 @@ struct Examined {
 }
 
 /// How a fleet instance ticks: the sleep and the time of its last tick, and
-/// the worktrees its claims hold (`health::Cadence`), with the checkout it
-/// is of.
+/// the worktrees its claims hold (`health::Cadence`), and of those the ones a
+/// standing fleet lock leaves alone, by the rule its tick goes by
+/// (`WorkingSet::locked_out`), with the checkout it is of.
 struct Pace {
     checkout: PathBuf,
     sleep: u64,
     took: u64,
     worktrees: Vec<PathBuf>,
+    left_alone: Vec<PathBuf>,
+}
+
+/// The pace of `run`'s fleet instance of `checkout`, holding the claims
+/// `state` read, if it read them.
+fn pace_of(checkout: &Path, run: &Run, state: Option<&State>) -> Pace {
+    let held = state.map(|state| state.held.as_slice()).unwrap_or_default();
+    let worktrees = |alone: bool| -> Vec<PathBuf> {
+        held.iter()
+            .filter(|held| !alone || state.is_some_and(|state| state.set.locked_out(held.issue)))
+            .filter_map(|held| held.worktree.clone())
+            .collect()
+    };
+    Pace {
+        checkout: checkout.to_path_buf(),
+        sleep: run.last_tick().map(|(_, tick)| tick.sleep).unwrap_or(0),
+        took: run.last_took.unwrap_or(0),
+        worktrees: worktrees(false),
+        left_alone: worktrees(true),
+    }
 }
 
 /// Each worker health observation past its time and past a tick's chance to
@@ -2231,6 +2252,7 @@ fn overdue_of(health: &crate::health::Health, paces: &[Pace], now: u64) -> Vec<F
     let mut cadence = crate::health::Cadence::default();
     for pace in paces {
         cadence.instance(pace.sleep, pace.took, pace.worktrees.iter().cloned());
+        cadence.left_alone(pace.left_alone.iter().cloned());
     }
     health
         .overdue(&cadence, now)
@@ -2342,15 +2364,7 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String], look: &Look) ->
         state: state.as_ref().map_err(String::as_str),
     };
     let mut found = findings(&seen);
-    let pace = Pace {
-        checkout: repo.dir.clone(),
-        sleep: run.last_tick().map(|(_, tick)| tick.sleep).unwrap_or(0),
-        took: run.last_took.unwrap_or(0),
-        worktrees: match &state {
-            Ok(state) => state.held.iter().filter_map(|held| held.worktree.clone()).collect(),
-            Err(_) => vec![],
-        },
-    };
+    let pace = pace_of(&repo.dir, &run, state.as_ref().ok());
     let mut not_alive = not_alive_finding(&run, &found);
     if let Some(finding) = &mut not_alive {
         finding.fix = crate::checkout::about_checkout(&repo.dir, &finding.fix);
@@ -3395,8 +3409,13 @@ mod tests {
     #[test]
     fn a_health_observation_is_overdue_only_past_its_ticks_chance() {
         // The instance holding /w sleeps 90s between ticks, and its last took 10s.
-        let paces =
-            [Pace { checkout: "/c".into(), sleep: 90, took: 10, worktrees: vec!["/w".into()] }];
+        let paces = [Pace {
+            checkout: "/c".into(),
+            sleep: 90,
+            took: 10,
+            worktrees: vec!["/w".into()],
+            left_alone: vec![],
+        }];
         let health = |next: u64| -> crate::health::Health {
             serde_json::from_value(json!({
                 "workers": [{"path": "/w", "terminal": "t", "harness": "codex", "snapshots": [],
@@ -3417,6 +3436,42 @@ mod tests {
         assert!(missed[1].evidence.contains("its retry is overdue: no terminal"), "{missed:?}");
         let later = overdue_of(&health(800), &paces, 1000);
         assert_eq!(later[0].watch_id, missed[0].watch_id, "later, the same observation");
+    }
+
+    #[test]
+    fn a_worker_a_fleet_lock_leaves_alone_has_no_overdue_observation_until_it_lifts() {
+        let mut state = state();
+        state.held = vec![held(4), held(9)];
+        state.set.locks = vec![9];
+        let worker = |path: &str| {
+            json!({"path": path, "terminal": "t", "harness": "codex", "snapshots": [],
+                "next_check": 100, "rate_retries": 0, "source": "rule", "action": "waiting"})
+        };
+        let health: crate::health::Health = serde_json::from_value(json!({
+            "workers": [worker("/wt/issue-4"), worker("/wt/issue-9")],
+            "observations_failed": []}))
+        .unwrap();
+        let paths = |state: &State| -> Vec<String> {
+            let pace = pace_of(Path::new("/c"), &run(vec![]), Some(state));
+            overdue_of(&health, &[pace], 1000)
+                .iter()
+                .map(|finding| finding.watch_id.clone())
+                .collect()
+        };
+        assert_eq!(
+            paths(&state),
+            [r#"host:["health-overdue","/wt/issue-9"]"#],
+            "the lock issue's worker is observed; #4's is left alone"
+        );
+        state.set.locks = vec![];
+        assert_eq!(
+            paths(&state),
+            [
+                r#"host:["health-overdue","/wt/issue-4"]"#,
+                r#"host:["health-overdue","/wt/issue-9"]"#
+            ],
+            "the lock lifted: #4's overdue observation is found again"
+        );
     }
 
     #[test]
