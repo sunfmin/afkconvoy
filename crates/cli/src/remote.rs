@@ -65,7 +65,7 @@ impl Wire for Git {
         args.push("ls-remote");
         args.push(REMOTE);
         args.extend_from_slice(patterns);
-        let ran = crate::git::run(dir, &args, &[])?;
+        let ran = crate::git::run_within(dir, &args, &[], ls_remote_limit())?;
         if !ran.ok {
             bail!("git {} failed: {}", args.join(" "), ran.stderr.trim());
         }
@@ -205,7 +205,7 @@ pub(crate) fn foreign_refs(
 ) -> Result<Vec<(String, String)>> {
     let mut args = vec!["ls-remote", url];
     args.extend_from_slice(patterns);
-    let ran = crate::git::run(dir, &args, &[])?;
+    let ran = crate::git::run_within(dir, &args, &[], ls_remote_limit())?;
     ensure!(ran.ok, "remote {url} could not be read: {}", ran.stderr.trim());
     Ok(ran
         .stdout
@@ -460,9 +460,26 @@ fn connection_failure(said: &str) -> bool {
         "could not resolve host",
         "timeout",
         "timed out",
+        "did not end within",
     ]
     .iter()
     .any(|mark| said.contains(mark))
+}
+
+fn ls_remote_limit() -> Duration {
+    std::env::var("AFKCONVOY_LS_REMOTE_SECONDS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .map(Duration::from_secs)
+        .unwrap_or(crate::git::LS_REMOTE_LIMIT)
+}
+
+pub(crate) fn reads_help() -> String {
+    format!(
+        "Every git call that reads the remote ends within a limit: an ls-remote within {} seconds and a fetch within {} minutes. At the limit its process group is ended. A read of the remote's refs that meets a connection-level failure — a TLS connect error or unexpected EOF, SSL_ERROR_SYSCALL, a connection reset or refusal, an unresolvable host, a timeout or that limit — is asked again five seconds later, up to three attempts in all. Authentication, a missing repository and every other failure end the read at once. When every attempt fails, the error says how many were made and gives the last failure's text. Pushes and publications are not retried.",
+        crate::git::LS_REMOTE_LIMIT.as_secs(),
+        crate::git::FETCH_LIMIT.as_secs() / 60,
+    )
 }
 
 const LIST_ATTEMPTS: usize = 3;
@@ -876,6 +893,7 @@ mod tests {
             "Could not resolve host",
             "Operation timed out",
             "TLS handshake timeout",
+            "git ls-remote origin did not end within 60s; its process group was ended",
         ] {
             assert!(connection_failure(said), "{said}");
         }

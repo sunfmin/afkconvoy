@@ -77,7 +77,7 @@ fn follow_base(fleet: &Fleet) -> Result<()> {
         Follow::Fetch => {
             let update = format!("{local}:{local}");
             let fetch = ["fetch", "--quiet", "--no-write-fetch-head", "--no-tags", REMOTE, &update];
-            main.try_git(&fetch)?.ok
+            main.try_fetch(&fetch)?.ok
         }
     };
     if moved {
