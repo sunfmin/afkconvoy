@@ -74,7 +74,11 @@ check it with any `cargo-flux`, `fixpoint` or `z3` but the ones
 startup probe, and its work goes to a host that has them (ADR-0053). The
 check is `verify.sh`'s own, run without checking anything: the pins stay in
 `crates/core/Cargo.toml`, and how to install each is what the check says
-when it fails.
+when it fails: `./verify.sh install`, which installs under the home
+directory each of the three that is not at its pin, reading the pins from
+the same place, and leaves alone the ones that are. It is not yet declared
+as the need's `install`: no released afkconvoy reads that key, and one that
+does not refuses the whole block.
 
 The gate's tests run `node` too: the dsh harness's scripts are JavaScript,
 and its tests run them with the `node` on the PATH, as a worker's dsh does.
