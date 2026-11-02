@@ -226,8 +226,7 @@ impl Scope {
         let out = match rate_limit_body(gh, &self.host) {
             Ok(out) => out,
             Err(error) => {
-                if let Some(delay) = secondary(&error.to_string()) {
-                    let reset = now().saturating_add(delay);
+                if let Some(reset) = secondary(&error.to_string(), now()) {
                     self.save("secondary", &Observation { remaining: Some(0), reset })?;
                     bail!(
                         "GitHub secondary rate limit on quota observation: both APIs wait until {reset} (Unix seconds); {error}"
@@ -261,27 +260,30 @@ impl Scope {
 /// alone, permissions, auth errors, transport failures and abuse limits do not.
 pub(crate) fn primary(said: &str) -> bool {
     let s = said.to_ascii_lowercase();
-    secondary(said).is_none()
+    secondary(said, 0).is_none()
         && (s.contains("api rate limit exceeded")
             || s.contains("api rate limit already exceeded")
             || s.contains("\"type\":\"rate_limited\""))
 }
 
 /// Retry-After is a host/login-wide cooldown, even when the response also
-/// mentions the primary quota. Missing duration uses GitHub's one-minute floor.
-pub(crate) fn secondary(said: &str) -> Option<u64> {
+/// mentions the primary quota. Answers the instant the cooldown ends: an HTTP
+/// date is that instant exactly; a delay in seconds, or GitHub's one-minute
+/// floor when none is said, counts from the caller's one reading of `now`.
+pub(crate) fn secondary(said: &str, now: u64) -> Option<u64> {
     let s = said.to_ascii_lowercase();
     if !(s.contains("secondary rate") || s.contains("abuse") || s.contains("retry-after:")) {
         return None;
     }
-    let delay = s
+    let reset = s
         .lines()
         .find_map(|line| {
             let after = line.trim().strip_prefix("retry-after:")?.trim();
-            after.parse().ok().or_else(|| retry_date(after).map(|t| t.saturating_sub(now())))
+            let delay = after.parse::<u64>().ok();
+            delay.map(|delay| now.saturating_add(delay)).or_else(|| retry_date(after))
         })
-        .unwrap_or(60);
-    Some(delay)
+        .unwrap_or(now.saturating_add(60));
+    Some(reset)
 }
 
 fn retry_date(date: &str) -> Option<u64> {
@@ -457,7 +459,7 @@ fn environment_login(gh: &GitHub, host: &str, key: &str) -> Result<String> {
     ];
     let rest = ["api", "user", "--hostname", host, "--jq", ".login"];
     let looked = if let Err(error) = &rates
-        && secondary(&error.to_string()).is_some()
+        && secondary(&error.to_string(), 0).is_some()
     {
         Err(anyhow::anyhow!("{error}"))
     } else if blocked("core") && blocked("graphql") {
@@ -486,8 +488,9 @@ fn environment_login(gh: &GitHub, host: &str, key: &str) -> Result<String> {
             "GitHub credential identity returned no login; run gh auth status --hostname {host}"
         ),
         Err(error) => {
-            let seconds = secondary(&error.to_string());
-            if seconds.is_none()
+            let now = now();
+            let cooled = secondary(&error.to_string(), now);
+            if cooled.is_none()
                 && !primary(&error.to_string())
                 && !blocked("core")
                 && !blocked("graphql")
@@ -499,12 +502,12 @@ fn environment_login(gh: &GitHub, host: &str, key: &str) -> Result<String> {
             let reset = ["core", "graphql"]
                 .into_iter()
                 .filter_map(|a| doc["resources"][a]["reset"].as_u64())
-                .filter(|t| *t > now())
+                .filter(|t| *t > now)
                 .min()
-                .unwrap_or(now().saturating_add(60));
+                .unwrap_or(now.saturating_add(60));
             IdentityNote {
                 login: None,
-                until: seconds.map_or(reset, |s| now().saturating_add(s)),
+                until: cooled.unwrap_or(reset),
                 why: Some(format!("{error:#}")),
             }
         }
@@ -543,5 +546,17 @@ mod tests {
         assert_eq!(scope.read("graphql").unwrap().reset, known);
         scope.save("graphql", &Observation { remaining: Some(0), reset: known + 60 }).unwrap();
         assert_eq!(scope.read("graphql").unwrap().reset, known + 60, "a later reset is taken");
+    }
+
+    #[test]
+    fn a_retry_after_date_is_that_instant_whatever_the_clock_reads() {
+        let said = "gh: secondary rate limit\nRetry-After: Fri, 01 Jan 2038 00:00:00 GMT";
+        let date = crate::doctor::watching::since("2038-01-01T00:00:00Z").unwrap();
+        for now in [0, 1000, date - 1, date, date + 1] {
+            assert_eq!(secondary(said, now), Some(date), "now={now}");
+        }
+        let said = "gh: secondary rate limit\nRetry-After: 30";
+        assert_eq!(secondary(said, 1000), Some(1030));
+        assert_eq!(secondary("gh: secondary rate limit", 1000), Some(1060));
     }
 }
