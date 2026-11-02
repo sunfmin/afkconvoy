@@ -1644,3 +1644,30 @@ fn a_queued_issue_update_is_retried_without_retyping_and_doctor_names_its_commen
         "{doctor}"
     );
 }
+
+/// Every claim ref on the remote.
+fn claim_refs(world: &World) -> Vec<String> {
+    let listed = world.remote(&["for-each-ref", "--format=%(refname)", "refs/convoy/claim/"]);
+    listed.lines().map(str::to_string).collect()
+}
+
+#[test]
+fn a_worker_no_claim_holds_whose_harness_ended_is_retired_though_its_terminal_stays_open() {
+    let world = fleet(1000);
+    report(&world, "done", 1000, 1000);
+    show(&world, &WAITING);
+    assert_eq!(did(&tick(&world, 1300)), ["judge 7 waiting", "heartbeat done"]);
+    let path = worktree(&world);
+    assert_eq!(health_record(&world)["workers"][0]["path"], json!(path));
+
+    // Its claim is released, its harness has ended (no process of its tree
+    // is left), and its terminal stays open at the shell.
+    for claim in claim_refs(&world) {
+        world.remote(&["update-ref", "-d", &claim]);
+    }
+    assert_eq!(world.claims(), []);
+    assert!(!world.open_terminals().is_empty());
+    tick(&world, 1400);
+    assert_eq!(health_record(&world)["workers"], json!([]), "the next tick retires it");
+    assert!(!world.open_terminals().is_empty(), "its terminal is left as it was");
+}

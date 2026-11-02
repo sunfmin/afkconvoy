@@ -2201,20 +2201,29 @@ struct Examined {
 }
 
 /// How a fleet instance ticks: the sleep and the time of its last tick, and
-/// the worktrees its claims hold (`health::Cadence`).
+/// the worktrees its claims hold (`health::Cadence`), with the checkout it
+/// is of.
 struct Pace {
+    checkout: PathBuf,
     sleep: u64,
     took: u64,
     worktrees: Vec<PathBuf>,
 }
 
 /// Each worker health observation past its time and past a tick's chance to
-/// make it, by the pace of every fleet instance `paces` says.
+/// make it, by the pace of every fleet instance `paces` says. A worker of a
+/// checkout that has left the checkout list is none: no fleet ticks for it,
+/// and the next tick of any fleet retires it once its harness has ended.
 fn overdue_findings(paces: &[Pace], now: u64) -> Vec<Finding> {
-    match crate::health::show() {
-        Ok(health) => overdue_of(&health, paces, now),
-        Err(_) => vec![],
+    let Ok(mut health) = crate::health::show() else {
+        return vec![];
+    };
+    let asked: Vec<&Path> = paces.iter().map(|pace| pace.checkout.as_path()).collect();
+    if let Ok(listed) = crate::health::Listed::of_host(&asked) {
+        health.workers.retain(|worker| !listed.left(&worker.observed.path));
+        health.observations_failed.retain(|failed| !listed.left(&failed.path));
     }
+    overdue_of(&health, paces, now)
 }
 
 fn overdue_of(health: &crate::health::Health, paces: &[Pace], now: u64) -> Vec<Finding> {
@@ -2334,6 +2343,7 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String], look: &Look) ->
     };
     let mut found = findings(&seen);
     let pace = Pace {
+        checkout: repo.dir.clone(),
         sleep: run.last_tick().map(|(_, tick)| tick.sleep).unwrap_or(0),
         took: run.last_took.unwrap_or(0),
         worktrees: match &state {
@@ -3385,7 +3395,8 @@ mod tests {
     #[test]
     fn a_health_observation_is_overdue_only_past_its_ticks_chance() {
         // The instance holding /w sleeps 90s between ticks, and its last took 10s.
-        let paces = [Pace { sleep: 90, took: 10, worktrees: vec!["/w".into()] }];
+        let paces =
+            [Pace { checkout: "/c".into(), sleep: 90, took: 10, worktrees: vec!["/w".into()] }];
         let health = |next: u64| -> crate::health::Health {
             serde_json::from_value(json!({
                 "workers": [{"path": "/w", "terminal": "t", "harness": "codex", "snapshots": [],

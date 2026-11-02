@@ -645,6 +645,113 @@ fn probe_due(book: &mut Book, kit: &Kit, now: u64) {
     });
 }
 
+/// The worktrees `book` keeps evidence of, but those `retired`.
+fn paths_left(
+    book: &Book,
+    retired: &std::collections::BTreeSet<PathBuf>,
+) -> std::collections::BTreeSet<PathBuf> {
+    book.workers
+        .iter()
+        .map(|worker| &worker.path)
+        .chain(book.observations_failed.iter().map(|failed| &failed.path))
+        .filter(|path| !retired.contains(*path))
+        .cloned()
+        .collect()
+}
+
+/// Of `paths`, the workers no claim holds any more and whose harness has
+/// ended, though a terminal may stay open at its shell: no tick observes
+/// them again. One of this fleet's repo is released when no claim, of any
+/// fleet instance, is on the issue its worktree is linked to; one of another
+/// repo when no checkout of that repo is on this host's checkout list. Its
+/// harness has ended when no process of its worker's tree is left
+/// (`hot::tree`). Evidence that cannot be read keeps the record; a worker
+/// whose claim is held is the stopped-worker path's.
+fn released(
+    paths: std::collections::BTreeSet<PathBuf>,
+    fleet: &Fleet,
+    source: &Source,
+) -> std::collections::BTreeSet<PathBuf> {
+    if paths.is_empty() {
+        return paths;
+    }
+    let Ok(linked) = Worktree::linked(source) else {
+        return Default::default();
+    };
+    let own = fleet.repo.common_dir().ok().map(canonical);
+    let listed = std::cell::OnceCell::new();
+    let unclaimed: Vec<PathBuf> = paths
+        .into_iter()
+        .filter(|path| {
+            if let Some((number, _)) = linked.iter().find(|(_, w)| same_dir(&w.path, path)) {
+                return !fleet.scan.claims.iter().any(|claim| claim.number == *number);
+            }
+            let Some(common) = common_of(path) else { return false };
+            if own.as_ref() == Some(&common) {
+                return false;
+            }
+            listed.get_or_init(|| Listed::of_host(&[])).as_ref().is_ok_and(|l| l.left_with(&common))
+        })
+        .collect();
+    if unclaimed.is_empty() {
+        return Default::default();
+    }
+    let Ok(procs) = crate::hot::listed_checked() else {
+        return Default::default();
+    };
+    unclaimed.into_iter().filter(|path| crate::hot::tree(&procs, path).is_empty()).collect()
+}
+
+/// The checkouts whose fleets may still observe a worker, each by its
+/// repo's git common dir: those on this host's checkout list, and any
+/// others a caller names.
+pub(crate) struct Listed {
+    commons: std::collections::BTreeSet<PathBuf>,
+}
+
+impl Listed {
+    /// This host's checkout list's, and `also`'s.
+    pub(crate) fn of_host(also: &[&Path]) -> Result<Listed> {
+        let list = crate::checkout_list::List::of_host()?.read()?;
+        let commons = list
+            .checkouts
+            .iter()
+            .map(|entry| entry.checkout.as_path())
+            .chain(also.iter().copied())
+            .filter_map(common_of)
+            .collect();
+        Ok(Listed { commons })
+    }
+
+    /// Whether the worker in `path` is of a checkout that has left the list:
+    /// its repo is known, and no checkout listed is of it. A worktree whose
+    /// repo cannot be read is not known to have left.
+    pub(crate) fn left(&self, path: &Path) -> bool {
+        common_of(path).is_some_and(|common| self.left_with(&common))
+    }
+
+    fn left_with(&self, common: &Path) -> bool {
+        !self.commons.contains(common)
+    }
+}
+
+/// The git common dir of the repo `dir` is in, its links followed.
+fn common_of(dir: &Path) -> Option<PathBuf> {
+    if !dir.is_dir() {
+        return None;
+    }
+    Repo::new(dir.to_path_buf()).common_dir().ok().map(canonical)
+}
+
+fn canonical(path: impl AsRef<Path>) -> PathBuf {
+    let path = path.as_ref();
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+}
+
+fn same_dir(a: &Path, b: &Path) -> bool {
+    canonical(a) == canonical(b)
+}
+
 /// Observe this fleet's workers and retire evidence of ended workers or
 /// landing workers obeying a turn's wait, across the host. An unreadable
 /// runtime keeps its evidence. Account/model faults survive their workers.
@@ -685,12 +792,15 @@ pub fn reconcile(
                     .is_ok_and(|state| state == WorkerState::Gone)
         })
         .collect();
+    let source = Source::of(&fleet.repo)?;
+    let left = paths_left(&book, &retired);
+    let retired: std::collections::BTreeSet<_> =
+        retired.into_iter().chain(released(left, fleet, &source)).collect();
     book.workers.retain(|worker| !retired.contains(&worker.path));
     book.observations_failed.retain(|failed| !retired.contains(&failed.path));
     let kit = crate::kit::load()?;
     probe_due(&mut book, &kit, fleet.now);
     store(&book)?;
-    let source = Source::of(&fleet.repo)?;
     let mut jobs = vec![];
     for claim in &fleet.scan.claims {
         if !claim.is_held_by(&me.instance) {
