@@ -201,7 +201,8 @@ pub fn record_note(home: &Path, cwd: &Path, line: &str, taken: bool, at: u64) ->
 }
 
 /// Every directory `harness` may keep the session of `cwd` under: the
-/// user's home, the directories the fleet keeps, and a home noted beside the
+/// user's home, the directories the fleet keeps, a home of its own a session
+/// outside a role was given in the worktree, and a home noted beside the
 /// worktree.
 fn roots(cwd: &Path, harness: Harness) -> Result<Vec<PathBuf>> {
     let place = harness.session_place(&cwd_str(cwd));
@@ -210,6 +211,7 @@ fn roots(cwd: &Path, harness: Harness) -> Result<Vec<PathBuf>> {
         roots.push(home.join(place.under_home));
     }
     roots.extend(kept_roots(harness)?);
+    roots.extend(crate::kept::outside_role_homes(harness, cwd)?);
     if let Some(name) = harness.noted_home()
         && let Some(home) = noted(cwd, name)
     {
@@ -424,8 +426,13 @@ fn read_index<T>(
 }
 
 fn write_harness(home: &Path, harness: Harness, cwd: &str, open: bool, at: u64) -> Result<()> {
+    write_session(&home.join(harness.session_place(cwd).under_home), harness, cwd, open, at)
+}
+
+/// One turn, written as `harness` writes it into its directory `root`.
+fn write_session(root: &Path, harness: Harness, cwd: &str, open: bool, at: u64) -> Result<()> {
+    let root = root.to_path_buf();
     let place = harness.session_place(cwd);
-    let root = home.join(place.under_home);
     let files = harness.session_files(cwd, open, at);
     for file in &files {
         if let Some(name) = &file.replaces {
@@ -781,6 +788,27 @@ mod tests {
             None,
             "a later mention cannot take another worker's session"
         );
+    }
+
+    /// An unbound Kimi or Grok worker, and a watch on either, is launched
+    /// with a home of its own under its worktree (`kept::outside_role`), and
+    /// the harness records its turn there. The start proof reads it, or a
+    /// worker at work is a failed start (sunfmin/control#504).
+    #[test]
+    fn a_turn_in_the_home_a_session_outside_a_role_was_given_is_the_turn() {
+        for harness in [Harness::Kimi, Harness::Grok] {
+            let dir = tempfile::tempdir().unwrap();
+            let cwd = dir.path().join("work");
+            std::fs::create_dir(&cwd).unwrap();
+            let home = crate::kept::outside_role(harness, &cwd, None).unwrap();
+            let home = Path::new(&home);
+            assert!(home.starts_with(&cwd), "{}: {}", harness.key(), home.display());
+            let read = || read_turn(&cwd, harness, Some(AT - 2), Some(AT - 2)).unwrap();
+            assert_eq!(read(), None, "{}: no turn recorded is no start", harness.key());
+
+            write_session(home, harness, &cwd_str(&cwd), true, AT).unwrap();
+            assert_eq!(read(), Some(Turn::Open { since: AT }), "{}", harness.key());
+        }
     }
 
     #[test]
