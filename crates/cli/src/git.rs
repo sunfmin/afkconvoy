@@ -13,6 +13,13 @@ use crate::remote::{Remote, RemoteRecord, Seen, Wire};
 /// The remote every ref and branch is pushed to and fetched from.
 pub const REMOTE: &str = "origin";
 
+/// How long one listing of the remote may take before its process group is ended.
+pub(crate) const LS_REMOTE_LIMIT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// How long one fetch may take before its process group is ended. This covers
+/// the largest fetches the fleets make, including zhiyuanwiki's tens of MB.
+pub(crate) const FETCH_LIMIT: std::time::Duration = std::time::Duration::from_secs(600);
+
 /// The note of the ref layout a start settled on (`Repo::note`).
 const LAYOUT_NOTE: &str = "convoy-layout";
 
@@ -93,11 +100,14 @@ fn shared_reads(key: PathBuf) -> Arc<RemoteReads> {
     lock(&REPOS).entry(key).or_default().clone()
 }
 
-/// Refuses a git call that reads or writes the remote's refs: those go
-/// through the remote view (`Repo::remote`), which keeps what it read honest.
+/// Refuses a git call that reads or writes the remote: refs go through the
+/// remote view (`Repo::remote`), and fetches through their bounded operations.
 fn local(args: &[&str]) -> Result<()> {
     if let Some(cmd) = args.first().filter(|cmd| ["push", "ls-remote"].contains(*cmd)) {
         bail!("git {cmd} goes through the remote view (`Repo::remote`), never around it");
+    }
+    if args.first() == Some(&"fetch") {
+        bail!("git fetch goes through `Repo::fetch` or `Repo::try_fetch`, never around them");
     }
     Ok(())
 }
@@ -248,6 +258,24 @@ impl Repo {
         run(&self.dir, args, env)
     }
 
+    /// One fetch whose failure the caller reads. At `FETCH_LIMIT` its process
+    /// group is ended and the call is a failure.
+    pub fn try_fetch(&self, args: &[&str]) -> Result<Ran> {
+        if args.first() != Some(&"fetch") {
+            bail!("Repo::try_fetch takes a git fetch command");
+        }
+        run_within(&self.dir, args, &[], FETCH_LIMIT)
+    }
+
+    /// One fetch that must succeed → its stdout, trimmed.
+    pub fn fetch(&self, args: &[&str]) -> Result<String> {
+        let ran = self.try_fetch(args)?;
+        if !ran.ok {
+            bail!("git {} failed: {}", args.join(" "), ran.stderr.trim());
+        }
+        Ok(ran.stdout)
+    }
+
     /// Is `name` a ref name git takes (`git check-ref-format`)? What git says
     /// depends on the name alone, so it is asked once a name in a process: a
     /// tick checks its base branch's name for every issue it reads.
@@ -271,7 +299,14 @@ impl Repo {
     /// has it there.
     pub fn bring(&self, sha: &str, refname: &str) -> Result<()> {
         if !self.object_here(sha)? {
-            self.git(&["fetch", "--quiet", "--no-write-fetch-head", "--no-tags", REMOTE, refname])?;
+            self.fetch(&[
+                "fetch",
+                "--quiet",
+                "--no-write-fetch-head",
+                "--no-tags",
+                REMOTE,
+                refname,
+            ])?;
             if !self.object_here(sha)? {
                 bail!("{refname} moved on the remote while it was read — run this again");
             }
@@ -398,7 +433,7 @@ impl Repo {
                 let mut fetch =
                     vec!["fetch", "--quiet", "--no-write-fetch-head", "--no-tags", REMOTE];
                 fetch.extend(records.iter().map(|record| record.name.as_str()));
-                self.git(&fetch)?;
+                self.fetch(&fetch)?;
                 self.subjects(records)?.unwrap_or_default()
             }
         };
@@ -602,11 +637,12 @@ mod tests {
     }
 
     #[test]
-    fn a_raw_push_or_listing_of_the_remote_is_refused() {
+    fn a_raw_push_listing_or_fetch_of_the_remote_is_refused() {
         let repo = Repo::new(PathBuf::from("/nowhere"));
         assert!(repo.try_git(&["push", "origin", "main"]).is_err());
         assert!(repo.git(&["ls-remote", "origin"]).is_err());
         assert!(repo.git_raw(&["push", "origin", "HEAD"]).is_err());
+        assert!(repo.try_git(&["fetch", "origin", "main"]).is_err());
     }
 
     #[test]
