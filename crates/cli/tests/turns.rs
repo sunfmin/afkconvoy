@@ -526,3 +526,56 @@ fn a_land_that_finds_no_pr_reads_the_remote_once() {
     assert!(world.pushes().is_empty(), "{:?}", world.pushes());
     assert!(world.probes().is_empty(), "{:?}", world.probes());
 }
+
+/// A repair whose worker escalates waits for a human: later ticks, with the
+/// tip still red, neither ready it again nor dispatch it (sunfmin/control#498).
+#[test]
+fn an_escalated_repair_stays_with_a_human_while_its_tip_stays_red() {
+    let world = World::new();
+    let tip = world.remote(&["rev-parse", "refs/heads/main"]);
+    world.remote(&["update-ref", "refs/convoy/base/red/main", &tip]);
+    let tick = |now: u64| {
+        world.afk(&["tick", "--instance", "alpha", "--host", "h1", "--now", &now.to_string()]).ok()
+    };
+    let first = tick(1000);
+    let repair = world.gh()["issues"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|issue| issue["title"].as_str().is_some_and(|s| s.starts_with("Repair the red")))
+        .expect("the fleet opened a repair")["number"]
+        .as_u64()
+        .unwrap();
+    let dispatched = |tick: &Value| {
+        tick["did"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|step| step["do"] == "dispatch" && step["issue"] == repair)
+    };
+    assert!(dispatched(&first), "{first}");
+    world.comment(repair, "<!--convoy:verdict phase=escalate-->\nThe gate's toolchain is missing.");
+    world.with_gh(|gh| {
+        gh["comments"][repair.to_string()].as_array_mut().unwrap().last_mut().unwrap()["at"] =
+            json!(1050)
+    });
+    tick(1090);
+    for now in [1180, 1270] {
+        let later = tick(now);
+        assert!(!dispatched(&later), "{later}");
+        let labels = world.labels(repair);
+        assert!(labels.contains(&"ready-for-human".into()), "{labels:?}");
+        assert!(!labels.contains(&"ready-for-agent".into()), "{labels:?}");
+        assert!(world.claims().is_empty());
+    }
+    let doctor = world.afk(&["doctor", "--now", "1300"]).json;
+    let waits = doctor["waiting_on_human"].as_array().expect("doctor lists human waits");
+    let wait = waits.iter().find(|wait| wait["issue"] == repair).expect("{doctor}");
+    assert!(
+        wait["answer"]
+            .as_str()
+            .unwrap()
+            .contains("--add-label ready-for-agent --remove-label ready-for-human"),
+        "{wait}"
+    );
+}

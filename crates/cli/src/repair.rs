@@ -82,18 +82,28 @@ fn tend_on(fleet: &mut Fleet, me: &Me, branch: &str) -> Result<Outcome> {
         for issue in crate::lock::standing_locks(&fleet.gh, config)? {
             if is_for(&fleet.repo, &fleet.gh, issue, &base, branch)? {
                 let read = fleet.gh.issue(issue)?;
+                // A repair carrying the escalate label was escalated as a
+                // repair: by its worker or by the fleet. It waits for a human
+                // answer; no tick takes that label off (sunfmin/control#498).
+                if afkconvoy_core::plan::is_repair(&read.labels)
+                    && read.labels.contains(&config.escalate_label)
+                {
+                    return Ok(Outcome::Nothing);
+                }
                 let mut changed = false;
                 // Older locks can be waiting at a product workflow's human
                 // stage. The repair must run under the operator's authority.
+                // The repair label goes on last: a tick cut short before it
+                // leaves an old lock, which the next tick moves again.
+                if read.labels.contains(&config.escalate_label) {
+                    fleet.gh.remove_label(issue, &config.escalate_label)?;
+                    changed = true;
+                }
                 for label in [config.ready_label.as_str(), afkconvoy_core::plan::REPAIR_LABEL] {
                     if !read.labels.iter().any(|known| known == label) {
                         fleet.gh.add_label(issue, label)?;
                         changed = true;
                     }
-                }
-                if read.labels.contains(&config.escalate_label) {
-                    fleet.gh.remove_label(issue, &config.escalate_label)?;
-                    changed = true;
                 }
                 return Ok(if changed { Outcome::Done } else { Outcome::Nothing });
             }
