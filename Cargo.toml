@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/core", "crates/cli"]
 
 [workspace.package]
-version = "0.5.55"
+version = "0.5.56"
 edition = "2024"
 repository = "https://github.com/sunfmin/afkconvoy"
 
