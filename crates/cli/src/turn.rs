@@ -261,7 +261,7 @@ pub fn locked(mut answer: Value, locks: &[u64]) -> Value {
     answer["outcome"] = json!(Ending::Locked);
     answer["locks"] = json!(locks);
     answer["detail"] = json!(format!(
-        "a fleet lock stands ({}): no other issue lands; run this again when told to carry on",
+        "a fleet lock stands ({}): no other issue lands; the fleet asks for this turn again once no lock stands",
         named(locks)
     ));
     answer

@@ -76,6 +76,10 @@ pub struct Fleet {
     /// What this view's start and end of a cut said: what a tick's line says
     /// of them, and its log keeps.
     pub cut_said: Vec<crate::log::What>,
+    /// The landings this view asked a turn for again that had stopped at a
+    /// fleet lock, each with the locks that turn named, closed since: what a
+    /// tick's line names.
+    pub after_locks: Vec<(u64, Vec<u64>)>,
     /// A startup probe that still stands already checked every harness.
     /// `runnable` then keeps the kit `running` built and starts none again.
     trust_launches: bool,
@@ -133,6 +137,7 @@ impl Fleet {
             unread: vec![],
             closers: vec![],
             cut_said: vec![],
+            after_locks: vec![],
             trust_launches: false,
             patrol_landings: None,
         })

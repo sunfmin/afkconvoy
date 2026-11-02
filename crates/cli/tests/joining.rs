@@ -939,3 +939,62 @@ fn a_worker_stopped_on_a_join_conflict_is_on_the_same_rungs_with_its_merge_left_
     assert_eq!(unmerged(), "README.md");
     assert!(pr_is_open(&world));
 }
+
+/// sunfmin/control#511: a landing whose turn answered `locked` waits, its
+/// worker idle, while the lock stands; once the lock is gone the next tick asks
+/// for its turn again — which merges onto the base tip as it is then — and its
+/// line names the lock that closed. The worker's Claude Code session ends in a
+/// compaction made while idle, which opens no turn of its own.
+#[test]
+fn a_landing_stopped_at_a_fleet_lock_is_asked_again_by_the_tick_once_the_lock_closes() {
+    let world = joining();
+    let dir = worktree(&world);
+    let notes = PathBuf::from(git(&dir, &["rev-parse", "--absolute-git-dir"]));
+    world.issue(8, &["fleet-lock"]);
+    std::fs::write(
+        notes.join("convoy-turn.json"),
+        json!({"outcome": "locked", "answer": {"outcome": "locked", "locks": [8]}, "at": 1050})
+            .to_string(),
+    )
+    .unwrap();
+    // Orca reports no agent: the session alone says the worker is idle.
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            terminal["agent"] = Value::Null;
+        }
+    });
+    let sessions = world.home().join(".claude/projects");
+    let session = std::fs::read_dir(&sessions)
+        .unwrap()
+        .map(|dir| dir.unwrap().path().join("afkconvoy-turn.jsonl"))
+        .find(|file| {
+            std::fs::read_to_string(file).is_ok_and(|text| text.contains(dir.to_str().unwrap()))
+        })
+        .expect("the worker's Claude Code session");
+    let iso = |at: u64| format!("1970-01-01T00:{:02}:{:02}Z", at / 60, at % 60);
+    let entries = [
+        json!({"type": "user", "timestamp": iso(1000), "cwd": dir, "isSidechain": false,
+            "message": {"role": "user", "content": "brief"}}),
+        json!({"type": "assistant", "timestamp": iso(1050), "cwd": dir, "isSidechain": false,
+            "message": {"role": "assistant", "stop_reason": "end_turn"}}),
+        json!({"type": "system", "subtype": "compact_boundary", "timestamp": iso(1400),
+            "cwd": dir, "isSidechain": false}),
+        json!({"type": "user", "timestamp": iso(1400), "cwd": dir, "isSidechain": false,
+            "isCompactSummary": true, "isVisibleInTranscriptOnly": true,
+            "message": {"role": "user", "content": "This session is being continued"}}),
+    ];
+    let text: String = entries.iter().map(|entry| format!("{entry}\n")).collect();
+    std::fs::write(&session, text).unwrap();
+    let ticked = tick(&world, 1500);
+    assert_eq!(ticked["errors"], json!([]), "{ticked}");
+    assert!(!did(&ticked).iter().any(|step| step.starts_with("watch 7")), "{ticked}");
+    assert!(!notes.join("convoy-turn.log").exists(), "asked again while the lock stood");
+
+    world.close_issue(8);
+    let ticked = tick(&world, 1501);
+    assert_eq!(ticked["errors"], json!([]), "{ticked}");
+    assert!(did(&ticked).contains(&"watch 7 asked".to_string()), "{ticked}");
+    let watched = ticked["did"].as_array().unwrap().iter().find(|step| step["do"] == "watch");
+    assert_eq!(watched.unwrap()["after_locks"], json!([8]), "{ticked}");
+    assert!(notes.join("convoy-turn.log").exists(), "the turn was not asked again");
+}

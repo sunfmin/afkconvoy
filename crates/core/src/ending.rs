@@ -106,7 +106,7 @@ impl Ending {
                 "`blocked_by` lists the issue dependencies still open; nothing landed: the fleet does not ask again while they all stay open and the issue's blocked-by list is unchanged; it asks again once one closes or the list changes"
             }
             Ending::Locked => {
-                "a fleet lock stands, named by `locks`; nothing landed: stop without waking anyone until told to carry on"
+                "a fleet lock stands, named by `locks`; nothing landed: ask for a turn again once no lock stands"
             }
         }
     }
@@ -114,14 +114,12 @@ impl Ending {
     /// Whether the ending only asks that the turn be asked for again: nothing
     /// in the tree is to change, and the fleet asks for it itself. A
     /// speculative conflict leaves a merge in the worker's tree to resolve.
+    /// A fleet lock is a wait too: a pass asks after no landing the lock keeps
+    /// it off, so it asks again only once the lock is gone.
     pub fn waits(self) -> bool {
         !matches!(
             self,
-            Ending::Merged
-                | Ending::Conflict
-                | Ending::SpeculativeConflict
-                | Ending::GateRed
-                | Ending::Locked
+            Ending::Merged | Ending::Conflict | Ending::SpeculativeConflict | Ending::GateRed
         )
     }
 
