@@ -416,9 +416,12 @@ mod tests {
         let own = cache().unwrap();
         let set = |name: &str| std::env::var_os(name).filter(|value| !value.is_empty());
         let host = [set("XDG_CACHE_HOME").map(PathBuf::from), set("HOME").map(PathBuf::from)];
+        // A landing candidate can itself be under the host cache. What
+        // matters is the fresh temporary directory, not its ancestors.
+        assert_eq!(own.parent().unwrap().parent().unwrap(), std::env::temp_dir());
         for host in host.into_iter().flatten() {
-            assert!(!own.starts_with(host.join("afkconvoy")), "{}", own.display());
-            assert!(!own.starts_with(host.join(".cache")), "{}", own.display());
+            assert_ne!(own, host.join("afkconvoy"));
+            assert_ne!(own, host.join(".cache/afkconvoy"));
         }
         assert_eq!(cache().unwrap(), own, "the same each time it is asked");
         let other = std::thread::spawn(|| cache().unwrap()).join().unwrap();
