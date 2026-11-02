@@ -55,14 +55,50 @@ pub(crate) fn outside_role(
     guard: Option<&str>,
 ) -> Result<String> {
     let shared = keep(harness, true)?;
-    if matches!(harness, Harness::Kimi | Harness::Grok) {
-        let dir =
-            worktree.join(crate::worker_tmp::TMP_DIR).join(format!("guard-{}", crate::unique()));
+    if has_own_home(harness) {
+        let dir = worktree
+            .join(crate::worker_tmp::TMP_DIR)
+            .join(format!("{OWN_HOME}{}", crate::unique()));
         keep_at(&dir, home().as_deref(), harness, true)?;
         configure(&dir, home().as_deref(), harness, true, None, None, guard)?;
         return Ok(dir.display().to_string());
     }
     Ok(shared.display().to_string())
+}
+
+/// The name every home `outside_role` makes starts with.
+const OWN_HOME: &str = "guard-";
+
+/// Whether a session of `harness` outside a role gets a home of its own.
+fn has_own_home(harness: Harness) -> bool {
+    matches!(harness, Harness::Kimi | Harness::Grok)
+}
+
+/// Every home `outside_role` made for a session of `harness` in `worktree`:
+/// the harness keeps that session's record there, so whoever reads the
+/// session reads these too. A worktree with none has none.
+pub(crate) fn outside_role_homes(harness: Harness, worktree: &Path) -> Result<Vec<PathBuf>> {
+    if !has_own_home(harness) {
+        return Ok(Vec::new());
+    }
+    let dir = worktree.join(crate::worker_tmp::TMP_DIR);
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error).with_context(|| format!("cannot read {}", dir.display())),
+    };
+    let mut homes = Vec::new();
+    for entry in entries {
+        let path = entry.with_context(|| format!("cannot read {}", dir.display()))?.path();
+        let own = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with(OWN_HOME));
+        if own && path.is_dir() {
+            homes.push(path);
+        }
+    }
+    Ok(homes)
 }
 
 /// The host's rule files which native project discovery can find even when
