@@ -188,6 +188,7 @@ kinds! {
     StateUnread: Critical, "the fleet's state cannot be read";
     NoWorker: Warning, "has no worker";
     WorkerStopped: Warning, "has been stopped for";
+    WorkerDisputed: Warning, "its session says its worker works, and orca says it is done";
     SettleWaiting: Warning, "settling has waited for its worker";
     WorkerHealth: Warning, "worker health is waiting for the operator";
     HealthOverdue: Warning, "its health observation is overdue";
@@ -487,6 +488,9 @@ pub struct Held {
     pub held_for: Option<u64>,
     /// `None`: orca could not say.
     pub worker: Option<WorkerState>,
+    /// Since when orca has reported its worker's agent `done`, in epoch
+    /// seconds; `None` when it reports anything else or nothing.
+    pub orca_done: Option<u64>,
     /// Its worker is silent, by the read the tick routes it from
     /// (`judge::silenced`), with the command the tick runs next for it.
     /// `None` when it is not, or that could not be read.
@@ -813,6 +817,33 @@ fn claim_findings(run: &Run, held: &[Held], now: u64, locks: &[u64]) -> Vec<Find
         };
         match claim.worker {
             _ if !locks.is_empty() && !locks.contains(&issue) => {}
+            // The tick routes by the session, and leaves a worker it says is
+            // at work alone: a session misread holds the claim for good.
+            Some(WorkerState::Busy) if disputed(claim, now) => {
+                let since = claim.orca_done.unwrap_or_default();
+                let carry_on = match claim.status {
+                    Status::Landing => format!(
+                        "Your last turn stopped. Carry on: run afkconvoy land --issue {issue} again"
+                    ),
+                    _ => "Your last turn stopped. Carry on with your brief from where you stopped"
+                        .to_string(),
+                };
+                found.push(finding(
+                    Kind::WorkerDisputed,
+                    json!(["worker-disputed", issue, claim.worktree]),
+                    format!(
+                        "the worker of #{issue}: its session says its worker works, and orca says \
+                         it is done"
+                    ),
+                    format!(
+                        "its session records a turn still open, in {place}; orca has reported \
+                         its agent done since {} UTC. The tick goes by the session, and leaves \
+                         the claim alone while it says so",
+                        crate::log::utc(since)
+                    ),
+                    format!("afkconvoy tell --issue {issue} --text '{carry_on}'"),
+                ));
+            }
             // With no `run` alive nothing is about to start one: that is the finding.
             Some(WorkerState::Gone) if run.alive && !run.dispatching(claim.held_for, now) => {
                 let (evidence, fix) = match (&claim.worktree, claim.status) {
@@ -1871,6 +1902,8 @@ fn read_held(
             None => (None, None),
         };
         let under = worktree.as_ref().and_then(|worktree| worktree.under().ok().flatten());
+        let orca_done =
+            worktree.as_ref().and_then(|worktree| orca_done(&worktree.agent_report().ok()?));
         let green = worktree.as_ref().and_then(|worktree| {
             let tree = head_tree(&Repo::new(worktree.path.clone())).ok()?;
             fleet.recorded_gate(&tree, &gate)
@@ -1903,6 +1936,7 @@ fn read_held(
                 .or(at.and_then(|at| at.role.clone())),
             held_for: stamped.and_then(|owner| stamp_age(owner.ts, fleet.now)),
             worker,
+            orca_done,
             silent,
             worktree: worktree.map(|worktree| worktree.path),
             moved: match (&under, team) {
@@ -1914,6 +1948,24 @@ fn read_held(
         }
     };
     set.mine.iter().map(read).collect()
+}
+
+/// Since when orca's `agent_report` has the agent `done`, in epoch seconds.
+fn orca_done(report: &Value) -> Option<u64> {
+    let state = report["programStatus"]["state"].as_str().or(report["state"].as_str());
+    if state != Some("done") {
+        return None;
+    }
+    Some(report["stateStartedAt"].as_u64().unwrap_or(0) / 1000)
+}
+
+/// Whether the worker's session says it is at work while orca has said it is
+/// done for the grace period: they disagree, and neither is reported alone.
+fn disputed(claim: &Held, now: u64) -> bool {
+    claim.worker == Some(WorkerState::Busy)
+        && claim
+            .orca_done
+            .is_some_and(|since| now.saturating_sub(since) >= afkconvoy_core::worker::GRACE)
 }
 
 /// The fleet instance the claims stamped with `host` name: the one stamped
@@ -2124,8 +2176,10 @@ fn held_json(held: &Held, locks: &[u64]) -> Value {
             "gate": held.gate.map(|at| json!({"green_at": at})),
         });
     }
+    let disputed = held.worker == Some(WorkerState::Busy) && held.orca_done.is_some();
     let mut worker = held.worker.map(|worker| match worker {
         WorkerState::Gone => json!({"state": "gone"}),
+        WorkerState::Busy if disputed => json!({"state": "disputed", "session": "busy"}),
         WorkerState::Busy => json!({"state": "busy"}),
         WorkerState::Idle { quiet } => json!({"state": "stopped", "quiet": quiet}),
     });
@@ -2877,6 +2931,7 @@ mod tests {
             role: None,
             held_for: Some(600),
             worker: Some(WorkerState::Busy),
+            orca_done: None,
             silent: None,
             worktree: Some(PathBuf::from(format!("/wt/issue-{issue}"))),
             under: None,
@@ -3239,6 +3294,41 @@ mod tests {
         // a worker the tick does not judge silent is none, however long it stopped
         state.held = vec![stopped(GRACE * 100, None)];
         assert_eq!(self::found(&host(), &run(vec![]), &state), []);
+    }
+
+    /// sunfmin/control#511: a session that says busy while orca has said
+    /// done for the grace period is a finding, and neither read is reported
+    /// alone as the worker's state.
+    #[test]
+    fn a_worker_busy_by_its_session_and_done_by_orca_is_disputed() {
+        let report = json!({"state": "done", "stateStartedAt": (NOW - GRACE) * 1000,
+            "programStatus": {"state": "done"}});
+        assert_eq!(orca_done(&report), Some(NOW - GRACE));
+        assert_eq!(orca_done(&json!({"programStatus": {"state": "working"}})), None);
+        assert_eq!(orca_done(&Value::Null), None);
+        let landing = |since: Option<u64>| Held {
+            status: Status::Landing,
+            pr: Some(52),
+            orca_done: since,
+            ..held(491)
+        };
+        let found = claim_findings(&run(vec![]), &[landing(Some(NOW - GRACE))], NOW, &[]);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].kind, Kind::WorkerDisputed);
+        assert_eq!(
+            found[0].fix,
+            "afkconvoy tell --issue 491 --text 'Your last turn stopped. Carry on: run afkconvoy \
+             land --issue 491 again'"
+        );
+        assert_eq!(held_json(&landing(Some(NOW - GRACE)), &[])["worker"]["state"], "disputed");
+        // Orca only just said so, or does not: no finding, and busy is busy.
+        for since in [Some(NOW - 10), None] {
+            assert_eq!(claim_findings(&run(vec![]), &[landing(since)], NOW, &[]), []);
+        }
+        assert_eq!(held_json(&landing(None), &[])["worker"]["state"], "busy");
+        let at_work = Held { orca_done: Some(0), ..held(3) };
+        let found = claim_findings(&run(vec![]), &[at_work], NOW, &[]);
+        assert!(found[0].fix.contains("--text 'Your last turn stopped. Carry on with your brief"));
     }
 
     #[test]
