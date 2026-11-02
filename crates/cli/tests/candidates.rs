@@ -969,6 +969,48 @@ done
     );
 }
 
+/// A cancellation that froze a gate and cannot record what it froze still
+/// kills it: the turns fail, and no gate, nor what it started, is left
+/// stopped (sunfmin/control#508).
+#[test]
+fn a_cancellation_that_cannot_record_its_frozen_gate_still_kills_it() {
+    use std::os::unix::fs::PermissionsExt;
+    let world = world(2);
+    let (a, _) = worker(&world, 1, "a");
+    let (b, _) = worker(&world, 2, "b");
+    let _runner = world.host_held();
+    let aa = start(&world, &a, &world.cache(), 1);
+    began(&world, "a");
+    let bb = start(&world, &b, &world.cache(), 2);
+    began(&world, "b");
+    let hook = world.bare.join("hooks/pre-receive");
+    let script = r#"#!/bin/sh
+while read old new ref; do
+  case "$ref" in refs/convoy/candidates/main)
+    case "$(git show -s --format=%B "$new")" in *'"descendants":[{'*)
+      echo "the frozen tree is never recorded" >&2
+      exit 1;;
+    esac;;
+  esac
+done
+"#;
+    std::fs::write(&hook, script).unwrap();
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    release(&world, "a", true);
+    for mut turn in [aa, bb] {
+        let began = Instant::now();
+        while turn.try_wait().unwrap().is_none() {
+            if began.elapsed() > Duration::from_secs(60) {
+                let _ = turn.kill();
+                let _ = turn.wait();
+                panic!("a turn whose cancellation cannot be recorded never ended");
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+    gone(&world, "b");
+}
+
 fn worktrees(world: &World) -> String {
     git(&world.clone, &["worktree", "list", "--porcelain"])
 }

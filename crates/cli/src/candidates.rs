@@ -381,8 +381,57 @@ fn alive(process: &Process) -> Result<bool> {
 /// reparenting. It is supplied only to this gate, never the turn's git/ps calls.
 pub(crate) const PROCESS_ENV: &str = "AFKCONVOY_CANDIDATE_PROCESS";
 
+/// What a cancellation has frozen: the gate's group and each owned process
+/// it stopped. Dropped, on every return and every unwind, it kills them all, so
+/// no path between the stop and the kill leaves a stopped tree behind
+/// (sunfmin/control#508).
+struct Frozen {
+    group: Option<u32>,
+    owned: Vec<Process>,
+}
+
+impl Frozen {
+    /// Stop `process`, which this candidate owns, and hold it to be killed.
+    /// One of another host is only held: its pid here is another process.
+    fn stop(&mut self, process: Process) {
+        if process.host == crate::this_host() {
+            // SAFETY: a checked identity belonging to this candidate alone.
+            unsafe {
+                libc::kill(process.pid as i32, libc::SIGSTOP);
+            }
+        }
+        self.owned.push(process);
+    }
+}
+
+impl Drop for Frozen {
+    fn drop(&mut self) {
+        for process in self.owned.iter().rev() {
+            // A stopped process cannot exit and free its pid; only another's
+            // kill can. A pid now under another identity is left alone, and
+            // one whose identity cannot be read is still the frozen one.
+            if process.host == crate::this_host()
+                && !matches!(identity(process.pid), Ok(ref current) if current.as_ref() != Some(process))
+            {
+                // SAFETY: the frozen process still has the saved identity.
+                unsafe {
+                    libc::kill(process.pid as i32, libc::SIGKILL);
+                }
+            }
+        }
+        if let Some(group) = self.group {
+            // SAFETY: kill any group members that exited during discovery.
+            unsafe {
+                libc::kill(-(group as i32), libc::SIGKILL);
+            }
+        }
+    }
+}
+
 /// Freeze and durably identify the whole owned tree BEFORE killing any of it.
 /// Another process may finish this cancellation from the saved identities.
+/// Whatever it froze is killed before it returns, recorded or not: a failed
+/// record leaves the cancellation to finish, never a stopped gate.
 fn signal(repo: &Repo, config: &Config, candidate: &Candidate) -> Result<Vec<Process>> {
     let scope = crate::process_scope::path(&candidate.worktree);
     let has_scope = scope.exists();
@@ -390,7 +439,7 @@ fn signal(repo: &Repo, config: &Config, candidate: &Candidate) -> Result<Vec<Pro
         candidate.gate.is_none() || has_scope,
         "gate process ownership is missing; its lane remains occupied"
     );
-    let mut owned: Vec<Process> = candidate
+    let owned: Vec<Process> = candidate
         .descendants
         .iter()
         .filter_map(|p| match alive(p) {
@@ -399,34 +448,29 @@ fn signal(repo: &Repo, config: &Config, candidate: &Candidate) -> Result<Vec<Pro
             Err(e) => Some(Err(e)),
         })
         .collect::<Result<_>>()?;
+    let mut frozen = Frozen { group: None, owned: vec![] };
     let marker = format!("{PROCESS_ENV}={}", candidate.id);
-    let group = match &candidate.gate {
-        Some(gate) if gate.host == crate::this_host() => {
-            let current = identity(gate.pid)?;
-            if current.as_ref() == Some(gate)
-                && has_scope
-                && crate::process_scope::owns(gate.pid, &scope)?
-            {
-                // SAFETY: the group's identity belongs to this gate, with
-                // PID reuse excluded by its recorded process start time.
-                unsafe {
-                    libc::kill(-(gate.pid as i32), libc::SIGSTOP);
-                }
-                if current.is_some() && !owned.contains(gate) {
-                    owned.push(gate.clone());
-                }
-                Some(gate.pid)
-            } else {
-                None
+    if let Some(gate) = &candidate.gate
+        && gate.host == crate::this_host()
+    {
+        let current = identity(gate.pid)?;
+        if current.as_ref() == Some(gate)
+            && has_scope
+            && crate::process_scope::owns(gate.pid, &scope)?
+        {
+            frozen.group = Some(gate.pid);
+            // SAFETY: the group's identity belongs to this gate, with
+            // PID reuse excluded by its recorded process start time.
+            unsafe {
+                libc::kill(-(gate.pid as i32), libc::SIGSTOP);
+            }
+            if !owned.contains(gate) {
+                frozen.stop(gate.clone());
             }
         }
-        _ => None,
-    };
-    for p in &owned {
-        // SAFETY: checked identities belonging to this candidate alone.
-        unsafe {
-            libc::kill(p.pid as i32, libc::SIGSTOP);
-        }
+    }
+    for p in owned {
+        frozen.stop(p);
     }
     loop {
         let all = crate::hot::listed_checked()?;
@@ -434,11 +478,11 @@ fn signal(repo: &Repo, config: &Config, candidate: &Candidate) -> Result<Vec<Pro
         for p in &all {
             if p.pid == candidate.owner.pid
                 || p.pid == std::process::id()
-                || owned.iter().any(|known| known.pid == p.pid)
+                || frozen.owned.iter().any(|known| known.pid == p.pid)
             {
                 continue;
             }
-            if owned.iter().any(|known| known.pid == p.ppid)
+            if frozen.owned.iter().any(|known| known.pid == p.ppid)
                 || p.line.split_whitespace().any(|word| word == marker)
                 || (has_scope && crate::process_scope::owns(p.pid, &scope)?)
             {
@@ -448,11 +492,7 @@ fn signal(repo: &Repo, config: &Config, candidate: &Candidate) -> Result<Vec<Pro
         let mut added = false;
         for pid in found {
             if let Some(process) = identity(pid)? {
-                // SAFETY: an owned descendant, identified above.
-                unsafe {
-                    libc::kill(pid as i32, libc::SIGSTOP);
-                }
-                owned.push(process);
+                frozen.stop(process);
                 added = true;
             }
         }
@@ -463,7 +503,7 @@ fn signal(repo: &Repo, config: &Config, candidate: &Candidate) -> Result<Vec<Pro
     change(repo, config, |chain| {
         for c in &mut chain.candidates {
             if c.id == candidate.id {
-                for process in &owned {
+                for process in &frozen.owned {
                     if !c.descendants.contains(process) {
                         c.descendants.push(process.clone());
                     }
@@ -471,21 +511,7 @@ fn signal(repo: &Repo, config: &Config, candidate: &Candidate) -> Result<Vec<Pro
             }
         }
     })?;
-    for process in owned.iter().rev() {
-        if identity(process.pid)?.as_ref() == Some(process) {
-            // SAFETY: the frozen process still has the saved identity.
-            unsafe {
-                libc::kill(process.pid as i32, libc::SIGKILL);
-            }
-        }
-    }
-    if let Some(group) = group {
-        // SAFETY: kill any group members that exited during discovery.
-        unsafe {
-            libc::kill(-(group as i32), libc::SIGKILL);
-        }
-    }
-    Ok(owned)
+    Ok(frozen.owned.clone())
 }
 
 fn confirmed(processes: &[Process], scope: &std::path::Path) -> Result<()> {
