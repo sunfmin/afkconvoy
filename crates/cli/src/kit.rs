@@ -1168,6 +1168,11 @@ mod tests {
 
     #[test]
     fn dsh_server_models_are_listed_and_held_without_the_credentials() {
+        let node = std::process::Command::new("node").arg("--version").output();
+        if !node.is_ok_and(|out| out.status.success()) {
+            eprintln!("skipped: no `node` on PATH to run the DSH plugin with");
+            return;
+        }
         let root = tempfile::tempdir().unwrap();
         std::fs::write(
             root.path().join("models.mjs"),

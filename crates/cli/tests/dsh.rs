@@ -98,8 +98,17 @@ fn a_dsh_profile_links_only_credentials_and_opted_in_skills_and_rules() {
     );
 }
 
+/// Whether this host has a `node` to run the DSH plugin with.
+fn has_node() -> bool {
+    Command::new("node").arg("--version").output().is_ok_and(|out| out.status.success())
+}
+
 #[test]
 fn the_plugin_refuses_through_the_real_guard_and_reports_running_and_interrupted_idle() {
+    if !has_node() {
+        eprintln!("skipped: no `node` on PATH to run the DSH plugin with");
+        return;
+    }
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
     write(root, "plugin.mjs", include_str!("../../core/src/harness/dsh/plugin.mjs"));
@@ -211,6 +220,10 @@ server.close()
 
 #[test]
 fn the_generated_line_uses_native_guard_dependencies_and_quotes_every_path() {
+    if !has_node() {
+        eprintln!("skipped: no `node` on PATH to run the DSH plugin with");
+        return;
+    }
     use afkconvoy_core::role::{Facts, On, Start, Told};
     use std::io::Write;
     use std::process::Stdio;

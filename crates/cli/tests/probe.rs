@@ -639,3 +639,115 @@ fn a_fleet_instance_breaks_when_a_gate_need_stops_passing() {
     assert_eq!(std::fs::read_to_string(path).unwrap(), "stderr-secret");
     world.afk(&["stop", "--all"]).ok();
 }
+
+/// The config of `world` with one gate need, `toolchain`, which checks that
+/// the file `tool` is there and declares `install` as its install.
+fn declare_install(world: &World, install: &str, install_seconds: u64) {
+    let config = world.clone.join("docs/agents/afkconvoy.md");
+    let original = std::fs::read_to_string(&config).unwrap();
+    let original = original.split("\n```yaml gate-needs").next().unwrap().to_string();
+    std::fs::write(&config, format!("{original}\n```yaml gate-needs\nchecks:\n  - name: toolchain\n    command: test -f tool\n    seconds: 5\n    install: {install}\n    install_seconds: {install_seconds}\n```\n")).unwrap();
+}
+
+/// How many times the stand-in install `install.sh` ran.
+fn installs(world: &World) -> usize {
+    std::fs::read_to_string(world.clone.join("installs.log"))
+        .map(|log| log.lines().count())
+        .unwrap_or(0)
+}
+
+#[test]
+fn a_failed_gate_need_installs_in_the_exclusive_queue_checks_again_and_admits() {
+    let world = World::new();
+    declare_install(&world, "sh install.sh", 30);
+    std::fs::write(
+        world.clone.join("install.sh"),
+        "echo \"lane=${AFKCONVOY_EXCLUSIVE_OWNER:-none}\" >> installs.log\necho installed\ntouch tool\n",
+    )
+    .unwrap();
+    let answer = plan(&world);
+    let stderr = answer.stderr.clone();
+    let planned = answer.ok();
+    assert_eq!(installs(&world), 1);
+    let log = std::fs::read_to_string(world.clone.join("installs.log")).unwrap();
+    assert!(!log.contains("lane=none"), "the install ran outside the exclusive queue: {log}");
+    assert!(
+        stderr.contains("gate need toolchain was installed on this host")
+            && stderr.contains("the check then passed"),
+        "{stderr}"
+    );
+    let installed = &planned["need_installs"][0];
+    assert_eq!(installed["check"], "toolchain", "{planned}");
+    assert_eq!(installed["kind"], "gate-needs", "{planned}");
+    assert_eq!(installed["passed"], true, "{planned}");
+    assert_eq!(installed["status"], "exit status: 0", "{planned}");
+    let doctor = world.afk(&["doctor", "--host", "h1"]).json.to_string();
+    assert!(doctor.contains("toolchain was installed on this host"), "{doctor}");
+    // Installed, the check passes: a second probe installs nothing.
+    std::fs::remove_file(world.clone.join(".git/convoy-probe")).unwrap();
+    plan_at(&world, "5000").ok();
+    assert_eq!(installs(&world), 1);
+}
+
+#[test]
+fn a_failed_install_refuses_and_is_not_run_again_within_the_hour_unless_declared_anew() {
+    let world = World::new();
+    declare_install(&world, "sh install.sh", 30);
+    std::fs::write(
+        world.clone.join("install.sh"),
+        "echo ran >> installs.log\necho install-secret >&2\nexit 3\n",
+    )
+    .unwrap();
+    let error = plan(&world).error();
+    assert_eq!(installs(&world), 1);
+    assert!(
+        error.contains("toolchain")
+            && error.contains("(exit status: 3)")
+            && error.contains("gate-needs-install/")
+            && !error.contains("install-secret"),
+        "{error}"
+    );
+    let path = std::fs::read_dir(world.cache().join("afkconvoy/gate-needs-install"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| path.extension().is_some_and(|ext| ext == "stderr"))
+        .unwrap();
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "install-secret");
+    let doctor = world.afk(&["doctor", "--host", "h1"]).json.to_string();
+    assert!(doctor.contains("toolchain: its install failed on this host"), "{doctor}");
+    assert!(!doctor.contains("install-secret"), "{doctor}");
+    // Within the hour the second probe does not install: it names the one that failed.
+    let error = plan_at(&world, "4599").error();
+    assert_eq!(installs(&world), 1);
+    assert!(error.contains("not tried again within the hour"), "{error}");
+    // An hour on, it is tried again.
+    plan_at(&world, "4600").error();
+    assert_eq!(installs(&world), 2);
+    // A changed declaration is tried at once.
+    declare_install(&world, "sh install.sh", 31);
+    plan_at(&world, "4700").error();
+    assert_eq!(installs(&world), 3);
+}
+
+#[test]
+fn an_install_past_its_limit_is_stopped_and_named() {
+    let world = World::new();
+    declare_install(&world, "sh install.sh", 1);
+    std::fs::write(world.clone.join("install.sh"), "sleep 3\ntouch late\n").unwrap();
+    let began = std::time::Instant::now();
+    let error = plan(&world).error();
+    assert!(began.elapsed() < std::time::Duration::from_secs(3), "{:?}", began.elapsed());
+    assert!(error.contains("toolchain") && error.contains("(timed out after 1s)"), "{error}");
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    assert!(!world.clone.join("late").exists(), "the install was left running");
+}
+
+#[test]
+fn a_config_gives_install_and_install_seconds_together() {
+    let world = World::new();
+    let config = world.clone.join("docs/agents/afkconvoy.md");
+    let original = std::fs::read_to_string(&config).unwrap();
+    std::fs::write(&config, format!("{original}\n```yaml gate-needs\nchecks:\n  - name: toolchain\n    command: test -f tool\n    seconds: 5\n    install: sh install.sh\n```\n")).unwrap();
+    let error = world.afk(&["config"]).error();
+    assert!(error.contains("install_seconds"), "{error}");
+}

@@ -564,6 +564,20 @@ enum Command {
     ///
     /// Each name is unique and nonempty, each command nonempty, and seconds positive. Each runs with `sh -e` in the checkout. The startup probe refuses a failed or timed-out check; a passing check stands for an hour. A check's stdout is discarded. On failure its last 20 stderr lines are stored in a user-only file in the host cache, overwritten by its next run; the refusal names the file, never its contents.
     ///
+    /// A check may declare how to install what it checks, with `install` and `install_seconds` together (both or neither):
+    ///
+    /// ```yaml gate-needs
+    /// checks:
+    ///   - name: flux-checker
+    ///     command: ./verify.sh pins
+    ///     seconds: 10
+    ///     install: ./verify.sh install
+    ///     install_seconds: 5400
+    /// ```
+    /// Where such a check fails, the host runs its install with `sh -e` in the checkout, in the host's exclusive queue (`afkconvoy exclusive --help`) as a heavy command, within `install_seconds` — past it, it is ended and named as timed out — then the check again. A pass admits; a fail refuses naming the check, the install's status and the user-only host-cache file of its last 20 stderr lines; its stdout is discarded, as a check's is. A failed install is not run again for an hour unless the check's declaration changes, which is tried at once. A running fleet instance's hourly recheck installs the same way before it ends broken, and a due cut installs before it is claimed. The startup probe warns when an install ran and passed; `plan` answers each install noted on the host as `need_installs` [{kind, check, at, seconds, status, passed, stderr}]; and `doctor` says each as `was installed on this host` or `install failed on this host`, never its output.
+    ///
+    /// The contract of an install: it writes only under the user's home, never to system directories and never with sudo, and installs the pinned versions the repo already names, reading them from where the repo keeps them, not from a copy. The owner gives standing consent for exactly this — what a repo declares as a gate or cut need, at the version it pins, installed under the user's home (sunfmin/control#499); anything else still asks first.
+    ///
     /// Where a budget is declared, the answer also has `gate_budget_seconds`. The last {const:SLOW_GATE_LANDINGS} recorded landings on one host must each exceed it to warn through the existing slow-gate issue and doctor finding. Without it the warning threshold stays {const:SLOW_GATE_PERCENT}% of `gate_seconds`. A warning neither ends nor fails a gate.
     ///
     /// A repo whose config names a team is a bound repo, and answers three keys more: {"team", "patrols", "intake_limit"} — the team's directory as owner/repo or owner/repo/path (a whole repo, or a subdirectory of one), which of its patrols run here, by name (default none; `afkconvoy check` holds them against the team's, and `afkconvoy tick --help` says when one runs), how many issues taken in by workers may be open (default {const:INTAKE_LIMIT}). A config names no harness: what each worker runs is its team's `roster`'s to say (`afkconvoy help roster`), within what the host kit holds (`afkconvoy kit --help`). A repo that names no team is unbound and answers the seven above and one legacy key: {"escalate_to"}, always `human`. Existing `consult` values still load, but every hand-off escalates for the host's watch to answer. Only a consult explicitly named by a bound repo's stage is asked before escalation (`afkconvoy help humans`).
@@ -1297,7 +1311,7 @@ enum Command {
     ///
     /// ## What it answers
     ///
-    /// {"frontier", "excluded", "waiting_on_human", "mine", "peer_live", "stale", "stale_closed", "free_slots", "now", "locks", "concurrency", "harness", "tracker", "admission", "host_kit", "worker_no_proxy"} — "held_back" while admission holds; and in a bound repo "intake", "left_out", "unmatched" and "nothing_safe" where they name some, "patrols" where it names some; and "slow_gate" while the gate is slow; and "cut" in a repo that turns cutting on, or while a cut is going or on the base branch
+    /// {"frontier", "excluded", "waiting_on_human", "mine", "peer_live", "stale", "stale_closed", "free_slots", "now", "locks", "concurrency", "harness", "tracker", "admission", "host_kit", "worker_no_proxy", "need_installs"} — "held_back" while admission holds; and in a bound repo "intake", "left_out", "unmatched" and "nothing_safe" where they name some, "patrols" where it names some; and "slow_gate" while the gate is slow; and "cut" in a repo that turns cutting on, or while a cut is going or on the base branch
     ///
     /// `targets` lists open tracker tasks with issue, tracker_issue, delivery (null when unattached), target_branch, configured_base and pinned. Invalid destinations report error per task without falling back to the configured base.
     ///
@@ -1305,6 +1319,7 @@ enum Command {
     ///
     /// - `host_kit`: {path, refreshed, harnesses}: this host's kit file; when it was last written, in epoch seconds — by `kit`, by `run`, or by a tick's daily refresh (`afkconvoy kit --help`); each harness in order of preference as {harness, command, models, default_model, research_pending}, each model {model, names, good_at, settled, sources, researched_at}. `default_model` is true when the harness has no placed model, so a worker runs its login's default with no model flag; `research_pending` is true while it holds a model awaiting research. good_at is what research says a model is good at, or a research marker; settled is a reason research found it unsuitable. The research states are defined in `afkconvoy kit --help`. sources holds dated URLs and researched_at the research time, absent where none succeeded. With an unreadable kit, {path, error}. `afkconvoy kit` writes it again.
     /// - `frontier`: issues due to dispatch, with their stage and cast {harness, model, why}. A checkout that names none takes the host kit's first eligible harness within role eligibility. One that names a harness starts on that harness, and the host kit orders that harness's models. Model labels only match within the harness in force. `selection` lists kit order, eligible candidates, skipped candidates and health evidence.
+    /// - `need_installs`: each install this host last ran for a gate or cut need the config declares, as {kind, check, at, seconds, status, passed, stderr}: `gate-needs` or `cut-needs`, the check's name, when it ran in epoch seconds, how long it took, the install's status, whether the check then passed, and the user-only file of its last 20 stderr lines — never its output (`afkconvoy config --help`). Empty where none ran.
     /// - `codex_workers`: started Codex sessions with their actual model, effort and sources, as `doctor` answers them. A frontier issue whose harness is Codex also has `codex`: its next-launch model and source from a followed model label (`model_label`), the current user preference (`user_selection`), or Codex's native default (`codex_default`), plus the effort read now from your own `~/.codex/config.toml` (`codex_default` with no setting). Existing sessions keep their launch evidence or their own saved `/model` choice. [`afkconvoy help worker-launch`](help:worker-launch).
     /// - `excluded`: every other open issue, with why: {number, title, reason}. An escalated issue says so — "escalated: waits for a ruling" — and not that it lacks the label its escalation took off. A name that matches nothing never excludes an issue: it runs the user default, and the label is said once. A bound repo's issue at a stage whose role has no harness on this host it holds limits for waits, "<role> has no harness on this host it holds limits for: ", naming what the role holds limits for and what the host kit holds, and is dispatched once the host kit holds one. No issue is held for a caster.
     /// - `left_out`: in a bound repo whose team and host kit can be read: each role, in the team's order, with what its range on this host leaves out: {role, left_out: [{harness, why}]} — a harness its roster entry and the host kit allow it and it holds no limits for, while it holds limits for another, why `no limits for pi` (`afkconvoy help roster`)
@@ -4794,6 +4809,20 @@ fn run(
             if let Some(plan) = plan.as_object_mut() {
                 plan.extend(report.plan_json()?);
             }
+            plan["need_installs"] = json!(
+                probe::installs(&fleet.repo, &fleet.config)
+                    .into_iter()
+                    .map(|(kind, installed)| json!({
+                        "kind": kind,
+                        "check": installed.check.name,
+                        "at": installed.at,
+                        "seconds": installed.seconds,
+                        "status": installed.status,
+                        "passed": installed.passed,
+                        "stderr": installed.stderr,
+                    }))
+                    .collect::<Vec<_>>()
+            );
             plan["targets"] = fleet.targets(&open.issues)?;
             plan["host_kit"] = kit::show(now);
             plan["selection"] = fleet.selection();
