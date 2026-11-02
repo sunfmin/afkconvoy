@@ -68,6 +68,21 @@ does (`docs/adr/0025`).
 This repo names no `team`, so it is unbound. A bound repo's three keys more —
 `team`, `patrols`, `intake_limit` — are in `afkconvoy config --help`.
 
+The gate checks the core crate with Flux, and `./verify.sh` refuses to
+check it with any `cargo-flux`, `fixpoint` or `z3` but the ones
+`crates/core/Cargo.toml` pins. So a host without them is refused at the
+startup probe, and its work goes to a host that has them (ADR-0053). The
+check is `verify.sh`'s own, run without checking anything: the pins stay in
+`crates/core/Cargo.toml`, and how to install each is what the check says
+when it fails.
+
+```yaml gate-needs
+checks:
+  - name: flux-toolchain
+    command: ./verify.sh --toolchain
+    seconds: 60
+```
+
 ## Heavy work on the host
 
 One gate fills the host by itself: its Flux, clippy and test builds run one
