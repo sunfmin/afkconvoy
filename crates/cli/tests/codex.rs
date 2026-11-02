@@ -667,7 +667,7 @@ fn under_codex(world: &World, line: &str) -> Vec<String> {
     let out = Command::new("/bin/sh")
         .args(["-c", line])
         .env_clear()
-        .env("PATH", format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()))
+        .env("PATH", format!("{}:{}", bin.display(), world.path()))
         .stdin(Stdio::null())
         .output()
         .unwrap();
@@ -714,7 +714,7 @@ fn hook_answers(
     hook_run
         .args(["-c", &format!("{worker} && exec /bin/sh -c \"$STAND_IN_HOOK\"")])
         .env_clear()
-        .env("PATH", std::env::var("PATH").unwrap())
+        .env("PATH", world.path())
         .env("XDG_CACHE_HOME", world.cache())
         .env("STAND_IN_HOOK", hook);
     if let Some(home) = home {
@@ -924,7 +924,7 @@ fn a_hook_of_a_role_s_limits_for_codex_runs_beside_the_guard_and_never_in_its_pl
             let mut child = Command::new("/bin/sh")
                 .args(["-c", &format!("{worker} && exec /bin/sh -c \"$STAND_IN_HOOK\"")])
                 .env_clear()
-                .env("PATH", std::env::var("PATH").unwrap())
+                .env("PATH", world.path())
                 .env("STAND_IN_HOOK", hook)
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
