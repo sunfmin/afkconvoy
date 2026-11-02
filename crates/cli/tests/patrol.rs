@@ -575,6 +575,26 @@ fn a_patrol_s_worker_declares_its_run_over_and_the_next_tick_ends_it() {
     assert_eq!(patrolled(&tick(&world, 10_010)), ["end_patrol sweep nothing"]);
     // …and once it has, the next tick ends the run, a minute into it, and
     // gives the slot to an issue.
+    let patrol = checkout(&world);
+    let pointer = std::fs::read_to_string(patrol.join(".git")).unwrap();
+    let git_dir = pointer.trim().strip_prefix("gitdir:").unwrap().trim();
+    let brief = patrol.join(git_dir).join("convoy-worker-prompt.md");
+    let pointer = afkconvoy_core::prompt::brief_pointer(&brief.display().to_string());
+    let harness = afkconvoy_core::harness::Harness::ClaudeCode;
+    let session = &harness.session_files(&patrol.display().to_string(), true, 10_000)[0];
+    let root = world.home().join(harness.session_place(&patrol.display().to_string()).under_home);
+    let file = root.join(&session.path).with_file_name("patrol-usage.jsonl");
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    let mut text = session.body.replace("\"brief\"", &serde_json::to_string(&pointer).unwrap());
+    text.push_str(&format!(
+        "{}\n",
+        json!({"timestamp": 10_000, "type": "assistant", "cwd": patrol,
+            "isSidechain": false, "message": {"id": "patrol", "role": "assistant",
+            "model": "fixture", "usage": {"input_tokens": 7, "cache_read_input_tokens": 2,
+            "cache_creation_input_tokens": 1, "output_tokens": 3}}})
+    ));
+    assert!(text.contains(&patrol.join(git_dir).display().to_string()), "{text}");
+    std::fs::write(&file, text).unwrap();
     let said = world.afk_in(&checkout(&world), &["over", "--run", "patrol-sweep"]).ok();
     assert_eq!(said["over"], true, "{said}");
     assert_eq!(said["ref"], "refs/convoy/over/patrol-sweep");
@@ -588,6 +608,10 @@ fn a_patrol_s_worker_declares_its_run_over_and_the_next_tick_ends_it() {
     // gone, and the terminals left are those of the two issues' workers.
     assert_eq!(checkouts(&world), Vec::<PathBuf>::new());
     assert_eq!(world.open_terminals().len(), 2);
+    let accounts = world.afk(&["accounts", "--all", "--now", "10060"]).ok();
+    assert_eq!(accounts["patrol_runs"]["count"], 1);
+    assert_eq!(accounts["patrol_runs"]["totals"]["input"], 7);
+    assert_eq!(accounts["patrol_runs"]["top"][0]["conditions"], json!(["patrol:sweep"]));
 
     // With no run going there is nothing to declare over, and what was
     // declared of one run says nothing of the next.

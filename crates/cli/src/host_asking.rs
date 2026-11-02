@@ -46,11 +46,22 @@ pub struct Queued {
     pub withdrawn: bool,
     #[serde(default)]
     pub delivered: bool,
+    #[serde(default)]
+    pub started: Option<u64>,
+    #[serde(default)]
+    pub attempts: Vec<Attempt>,
 }
 
 impl Queued {
     fn new(question: Entry) -> Queued {
-        Queued { question, aside: false, withdrawn: false, delivered: false }
+        Queued {
+            question,
+            aside: false,
+            withdrawn: false,
+            delivered: false,
+            started: None,
+            attempts: Vec::new(),
+        }
     }
 }
 
@@ -171,6 +182,7 @@ fn settle_reported(state: &mut State) -> Result<bool> {
     let Some(current) = state.current.clone() else { return Ok(false) };
     let Some(report) = crate::asking_report::read(&current.question.id)? else { return Ok(false) };
     let Some(session) = &state.session else { bail!("a reported question has no asking session") };
+    keep_usage(&current, session, crate::clock())?;
     match report.outcome {
         crate::asking_report::Outcome::Settled => {
             state.finished.insert(current.question.id.clone());
@@ -179,6 +191,8 @@ fn settle_reported(state: &mut State) -> Result<bool> {
             let mut aside = current;
             aside.aside = true;
             aside.delivered = false;
+            aside.started = None;
+            aside.attempts = Vec::new();
             state.pending.push(aside);
         }
     }
@@ -226,7 +240,7 @@ fn check_session(state: &mut State) -> Result<()> {
                 stop_marked(&session.id)?;
                 crate::health::watch_fault(session.harness, &fault, crate::clock())?;
                 close(&worktree, &session.terminal, true)?;
-                state.attempts.push(Attempt {
+                let attempt = Attempt {
                     harness: session.harness,
                     model: session.model.clone(),
                     model_source: session.model_source.clone(),
@@ -234,7 +248,11 @@ fn check_session(state: &mut State) -> Result<()> {
                     why: fault.evidence.join("; "),
                     did: vec![],
                     screen,
-                });
+                };
+                if let Some(current) = &mut state.current {
+                    current.attempts.push(attempt.clone());
+                }
+                state.attempts.push(attempt);
                 asking_terminal::set_status(&session, LaunchState::Ended)?;
                 reset_delivery(state);
             } else if host_watch::exited(&text).is_some() {
@@ -457,6 +475,7 @@ fn deliver(state: &mut State) -> Result<()> {
 }
 
 fn finish_withdrawn(state: &mut State, session: &Session, current: &Queued) -> Result<()> {
+    keep_usage(current, session, crate::clock())?;
     state.finished.insert(current.question.id.clone());
     state.current = None;
     asking_terminal::set_status(session, LaunchState::Idle)
@@ -589,10 +608,111 @@ fn resume_delivery(session: &Session) -> Result<()> {
     }
     if let Some(question) = &mut record.question {
         question.delivered = true;
+        question.started = record.offered;
     }
     record.execution_evidence = evidence;
     asking_terminal::save(&record)?;
     asking_terminal::set_status(session, LaunchState::Running)
+}
+
+fn keep_usage(current: &Queued, session: &Session, ended: u64) -> Result<()> {
+    use afkconvoy_core::account::Tokens;
+    let start = current.started;
+    let mut tokens = Tokens::new();
+    let mut known = start.is_some();
+    let attempts = current.attempts.iter().map(|attempt| attempt.harness).chain([session.harness]);
+    for harness in attempts {
+        let Some(start) = start else { continue };
+        let Some(usage) = crate::session::tokens_between(
+            &session.directory,
+            harness,
+            start,
+            ended,
+            &crate::copies::cache()?.join("asking/sessions"),
+        )
+        .ok()
+        .flatten() else {
+            known = false;
+            break;
+        };
+        for (model, counts) in usage {
+            tokens.entry(model).or_default().add(&counts);
+        }
+    }
+    let path = crate::asking_report::usage_file(&current.question.id)?;
+    let prior = match std::fs::read(&path) {
+        Ok(bytes) => Some(serde_json::from_slice::<afkconvoy_core::accounts::Usage>(&bytes)?),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error.into()),
+    };
+    let earlier_start = prior.as_ref().and_then(|prior| prior.start);
+    if let Some(prior) = prior {
+        tokens = match (prior.tokens, known.then_some(tokens)) {
+            (Some(mut earlier), Some(later)) => {
+                for (model, counts) in later {
+                    earlier.entry(model).or_default().add(&counts);
+                }
+                earlier
+            }
+            _ => {
+                known = false;
+                Tokens::new()
+            }
+        };
+    }
+    let start = prior_start(earlier_start, start);
+    let usage = afkconvoy_core::accounts::Usage {
+        id: current.question.id.clone(),
+        harness: Some(session.harness.key().to_string()),
+        model: session.model.clone(),
+        start,
+        end: Some(ended),
+        seconds: start.and_then(|start| ended.checked_sub(start)),
+        tokens: known.then_some(tokens),
+        conditions: vec![current.question.condition.clone()],
+    };
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let temporary = path.with_extension(format!("{}.tmp", crate::unique()));
+    std::fs::write(&temporary, serde_json::to_vec_pretty(&usage)?)?;
+    std::fs::rename(temporary, path)?;
+    Ok(())
+}
+
+fn prior_start(prior: Option<u64>, current: Option<u64>) -> Option<u64> {
+    match (prior, current) {
+        (Some(prior), Some(current)) => Some(prior.min(current)),
+        (prior, current) => prior.or(current),
+    }
+}
+
+/// Every asking question's retained usage, including put-aside and withdrawn
+/// questions whose later segments have been merged into the same record.
+pub fn usages() -> Result<Vec<afkconvoy_core::accounts::Usage>> {
+    let directory = crate::copies::cache()?.join("asking/reports");
+    let entries = match std::fs::read_dir(&directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error.into()),
+    };
+    let mut usages = Vec::new();
+    for entry in entries {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        let path = entry.path().join("usage.json");
+        match std::fs::read(&path) {
+            Ok(bytes) => usages.push(
+                serde_json::from_slice(&bytes)
+                    .with_context(|| format!("cannot read asking usage {}", path.display()))?,
+            ),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(usages)
 }
 
 /// What `doctor` and the panel say of the asking session and its durable queue.

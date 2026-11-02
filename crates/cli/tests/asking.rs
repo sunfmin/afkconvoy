@@ -567,3 +567,63 @@ fn a_question_put_aside_stays_pending_and_does_not_hold_back_the_next() {
     });
     assert_eq!(asking_creates(&world), 1);
 }
+
+#[test]
+fn a_settled_question_records_its_sessions_usage() {
+    let world = World::new();
+    let (dir, _runner) = two_conditions(&world);
+    let watch = until(&world, "watch", || watch_running(&world));
+    let (_, host) = conditions(&watch);
+    report_humans(
+        &world,
+        &watch,
+        json!([{"condition": host, "question": "Approve this account?", "answer": "afkconvoy kit"}]),
+    );
+    until(&world, "delivered question", || {
+        (asking_state(&world)["current"]["delivered"] == true).then_some(())
+    });
+    let current = asking_state(&world)["current"].clone();
+    let start = current["started"].as_u64().unwrap();
+    let question = current["question"]["id"].as_str().unwrap();
+    let session = asking_state(&world)["session"].clone();
+    assert_eq!(session["harness"], "claude-code");
+    let brief = world
+        .cache()
+        .join("afkconvoy/asking/sessions")
+        .join(session["id"].as_str().unwrap())
+        .join(format!("question-{question}.md"));
+    let pointer = afkconvoy_core::prompt::brief_pointer(&brief.display().to_string());
+    let harness = afkconvoy_core::harness::Harness::ClaudeCode;
+    let recorded = &harness.session_files(&dir.display().to_string(), true, start)[0];
+    let root = world.home().join(harness.session_place(&dir.display().to_string()).under_home);
+    let file = root.join(&recorded.path);
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    let mut text = recorded.body.replace("\"brief\"", &serde_json::to_string(&pointer).unwrap());
+    text.push_str(&format!(
+        "{}\n",
+        json!({"timestamp": start, "type": "assistant", "cwd": dir,
+            "isSidechain": false, "message": {"id": "answer", "role": "assistant",
+            "model": "fixture", "usage": {"input_tokens": 9, "cache_read_input_tokens": 4,
+            "cache_creation_input_tokens": 2, "output_tokens": 5}}})
+    ));
+    std::fs::write(&file, text).unwrap();
+    settle(&world, "settled");
+    until(&world, "question settled", || asking_state(&world)["current"].is_null().then_some(()));
+    let usage: Value = serde_json::from_slice(
+        &std::fs::read(
+            world.cache().join("afkconvoy/asking/reports").join(question).join("usage.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(usage["id"], question);
+    assert_eq!(usage["start"], start);
+    assert_eq!(
+        usage["tokens"]["fixture"],
+        json!({"input": 9, "cache_read": 4, "cache_write": 2, "output": 5, "reasoning": null})
+    );
+    let accounts = world.afk(&["accounts", "--all", "--now", &usage["end"].to_string()]).ok();
+    assert_eq!(accounts["asking_questions"]["count"], 1);
+    assert_eq!(accounts["asking_questions"]["totals"]["input"], 9);
+    assert_eq!(accounts["asking_questions"]["top"][0]["id"], question);
+}
