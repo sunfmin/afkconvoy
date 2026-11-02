@@ -76,9 +76,10 @@ check is `verify.sh`'s own, run without checking anything: the pins stay in
 `crates/core/Cargo.toml`, and how to install each is what the check says
 when it fails: `./verify.sh install`, which installs under the home
 directory each of the three that is not at its pin, reading the pins from
-the same place, and leaves alone the ones that are. It is not yet declared
-as the need's `install`: no released afkconvoy reads that key, and one that
-does not refuses the whole block.
+the same place, and leaves alone the ones that are. It is the need's
+`install`, so the host runs it where the check fails, then probes again.
+Its limit covers a cold build: 922 seconds measured on a loaded 12-core
+host, fixpoint's GHC fetch most of it (sunfmin/control#509).
 
 The gate's tests run `node` too: the dsh harness's scripts are JavaScript,
 and its tests run them with the `node` on the PATH, as a worker's dsh does.
@@ -94,6 +95,8 @@ checks:
   - name: flux-toolchain
     command: ./verify.sh --toolchain
     seconds: 60
+    install: ./verify.sh install
+    install_seconds: 5400           # 922s cold on a loaded 12-core host
   - name: node
     command: |
       node --version >/dev/null 2>&1 || {

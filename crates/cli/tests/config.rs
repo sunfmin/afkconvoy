@@ -75,6 +75,10 @@ fn this_repos_own_config_names_the_gate() {
     let config = world.afk(&["config", "--file", file]).ok();
     assert_eq!(config["gate_command"], "afkconvoy exclusive -- ./gate.sh");
     assert_eq!(config["cut"]["busy_after_seconds"], 18_000);
+    let flux = &config["gate_needs"][0];
+    assert_eq!(flux["name"], "flux-toolchain");
+    assert_eq!(flux["install"], "./verify.sh install");
+    assert_eq!(flux["install_seconds"], 5400);
 }
 
 #[test]
