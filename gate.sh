@@ -80,6 +80,48 @@ tests_tmpdir="$PWD/.afkconvoy-tmp/the-tests-of-the-gate-run-in-a-directory-as-de
 cargo nextest --version >/dev/null 2>&1 && nextest=yes || nextest=
 [ -n "$nextest" ] ||
     echo "gate: cargo-nextest is not installed (brew install cargo-nextest): the tests run one program at a time, with no limit on one test" >&2
+# The tests leave no process behind: one that outlives them, stopped or
+# running, holds the worktree it ran in, and settling waits on it
+# (sunfmin/control#508). Once the tests end, a process whose working directory
+# or executable is under target/ or the tests' TMPDIR is theirs: the gate's
+# own ancestors excepted, given ten seconds to finish ending, any still there
+# is named by pid and command line, killed, and fails the gate. Only the tests'
+# TMPDIR is looked in, not all of .afkconvoy-tmp: a worker's own harness keeps
+# its home there, beside the fast gate it runs.
+left_behind() {
+    ours=$$
+    ancestors=" $$ "
+    while [ "$ours" -gt 1 ] 2>/dev/null; do
+        ours=$(ps -o ppid= -p "$ours" | tr -d ' ')
+        [ -n "$ours" ] || break
+        ancestors="$ancestors$ours "
+    done
+    waited=0
+    while :; do
+        if [ -d /proc/self ]; then
+            pids=$(for p in /proc/[0-9]*; do
+                for f in cwd exe; do
+                    printf '%s %s\n' "${p#/proc/}" "$(readlink "$p/$f" 2>/dev/null)"
+                done
+            done)
+        else
+            pids=$(lsof -nPw -d cwd,txt -Fpn 2>/dev/null | awk '/^p/ { pid = substr($0, 2) } /^n/ { print pid, substr($0, 2) }')
+        fi
+        pids=$(printf '%s\n' "$pids" | awk -v target="$PWD/target/" -v tmp="$tests_tmpdir/" -v skip="$ancestors" '
+            { path = substr($0, length($1) + 2) }
+            (index(path, target) == 1 || index(path, tmp) == 1) && index(skip, " " $1 " ") == 0 { print $1 }' | sort -un)
+        [ -n "$pids" ] || return 0
+        [ "$waited" -lt 10 ] || break
+        sleep 1
+        waited=$((waited + 1))
+    done
+    echo "gate: the tests left these processes behind, in target/ or the tests' TMPDIR; each is killed, and the gate fails:" >&2
+    # shellcheck disable=SC2086
+    ps -o pid=,ppid=,stat=,etime=,command= -p "$(echo $pids | tr ' ' ,)" >&2 || true
+    # shellcheck disable=SC2086
+    kill -KILL $pids 2>/dev/null || true
+    return 1
+}
 # Runs the tests nextest's filter `$2` picks under its profile `$1`, with
 # the deep TMPDIR. Without nextest no test is told from another, and only the
 # whole gate runs its tests, all of them, with cargo test.
@@ -87,7 +129,9 @@ run_tests() {
     mkdir -p "$tests_tmpdir"
     printf '*\n' >"$PWD/.afkconvoy-tmp/.gitignore"
     if [ -z "$nextest" ]; then
-        TMPDIR="$tests_tmpdir" cargo test --workspace --quiet
+        TMPDIR="$tests_tmpdir" cargo test --workspace --quiet && tests_status=0 || tests_status=$?
+        left_behind || [ "$tests_status" -ne 0 ] || tests_status=1
+        [ "$tests_status" -eq 0 ] || exit "$tests_status"
         return
     fi
     test_log=$(mktemp -d "$PWD/.afkconvoy-tmp/nextest.XXXXXX")
@@ -98,6 +142,7 @@ run_tests() {
         echo "$?" >"$test_log/status"
     fi) 2>&1 | tee "$test_log/output"
     tests_status=$(cat "$test_log/status")
+    left_behind || [ "$tests_status" -ne 0 ] || tests_status=1
     if [ "$tests_status" -ne 0 ]; then
         if [ "$1" = fast ]; then
             check_fast_timeouts "$test_log/output"
