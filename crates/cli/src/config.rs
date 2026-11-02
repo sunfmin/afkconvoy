@@ -95,6 +95,15 @@ pub fn parse(markdown: &str) -> Result<Config> {
                 "{block}: each check needs a name, command and positive seconds"
             );
             anyhow::ensure!(
+                match (&check.install, check.install_seconds) {
+                    (None, None) => true,
+                    (Some(install), Some(seconds)) => !install.trim().is_empty() && seconds > 0,
+                    _ => false,
+                },
+                "{block}: check {} gives `install` and positive `install_seconds` together, or neither",
+                check.name
+            );
+            anyhow::ensure!(
                 names.insert(&check.name),
                 "{block}: duplicate check name {}",
                 check.name

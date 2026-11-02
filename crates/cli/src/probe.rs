@@ -9,7 +9,7 @@
 //! (`Private`): a running fleet instance asks again once it no longer stands
 //! (`public_tracker`), and a probe stands only while it does.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use afkconvoy_core::config::{Config, GateNeed};
 use afkconvoy_core::gate::outlived;
@@ -51,7 +51,14 @@ struct NeedsPassed {
 
 /// A check's output is private to its caller. Running instances report only
 /// the name and the command to fix it, never output in their tick log.
-fn gate_needs(repo: &Repo, config: &Config, now: u64, trusting: bool) -> Result<Option<String>> {
+/// An install that ran and passed is said in `installed`.
+fn gate_needs(
+    repo: &Repo,
+    config: &Config,
+    now: u64,
+    trusting: bool,
+    installed: &mut Vec<String>,
+) -> Result<Option<String>> {
     let note = repo.note(NEEDS_NOTE)?;
     if trusting {
         let passed = std::fs::read_to_string(&note)
@@ -63,12 +70,24 @@ fn gate_needs(repo: &Repo, config: &Config, now: u64, trusting: bool) -> Result<
     }
     let _ = std::fs::remove_file(&note);
     for check in &config.gate_needs {
-        if let Some((path, reason)) = run_need(repo, check, "gate-needs")? {
+        let (failed, install) = need(repo, check, GATE_NEEDS, now)?;
+        if failed.is_none()
+            && let Some(install) = install
+        {
+            installed.push(format!(
+                "gate need {} was installed on this host{}",
+                check.name,
+                install.said()
+            ));
+        }
+        if let Some(failed) = failed {
             let _ = std::fs::remove_file(repo.note(PASSED_NOTE)?);
             return Ok(Some(format!(
-                "gate need {} failed ({reason}); stderr: {}; fix it in {}: {}",
+                "gate need {} failed ({}); stderr: {}{}; fix it in {}: {}",
                 check.name,
-                path.display(),
+                failed.reason,
+                failed.stderr.display(),
+                failed.install.as_ref().map(Installed::said).unwrap_or_default(),
                 repo.dir.display(),
                 check.command
             )));
@@ -81,54 +100,203 @@ fn gate_needs(repo: &Repo, config: &Config, now: u64, trusting: bool) -> Result<
     Ok(None)
 }
 
-/// Run one need with stdout discarded and failure stderr kept privately.
-fn run_need(
+/// The kinds of need, each with a host-cache directory of its own.
+const GATE_NEEDS: &str = "gate-needs";
+const CUT_NEEDS: &str = "cut-needs";
+
+/// A need that failed on this host: why, the private file of its check's
+/// stderr, and the install that ran for it or that is not tried again yet.
+struct Failed {
+    reason: String,
+    stderr: PathBuf,
+    install: Option<Installed>,
+}
+
+/// What a check's last install did on this host, noted in the host cache
+/// beside its private stderr (`installed_of`): when it ran, how long it
+/// took, its status, and whether the check passed after it — of the very
+/// declaration it was run for. A failed one stands for an hour
+/// (`probe_stands`) of that declaration: within it no install of it runs
+/// again; a changed declaration installs at once.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct Installed {
+    pub at: u64,
+    pub seconds: u64,
+    /// The install's own status: `exit status: 0`, or what ended it.
+    pub status: String,
+    /// Whether the check passed when it ran again after the install.
+    pub passed: bool,
+    /// The user-only file of the install's last 20 stderr lines.
+    pub stderr: PathBuf,
+    /// Whether this was a failed install noted before, not one run now.
+    #[serde(skip)]
+    pub held: bool,
+    pub check: GateNeed,
+}
+
+impl Installed {
+    /// How a refusal, a warning or doctor says it: never its output.
+    pub(crate) fn said(&self) -> String {
+        let result = if self.passed { "the check then passed" } else { "the check still failed" };
+        let held = if self.held {
+            "; not tried again within the hour unless the declaration changes"
+        } else {
+            ""
+        };
+        format!(
+            "; install ran at {} for {}s ({}), {result}; install stderr: {}{held}",
+            self.at,
+            self.seconds,
+            self.status,
+            self.stderr.display()
+        )
+    }
+}
+
+/// The host-cache files of `check` of the checkout `repo`, of `kind`: its
+/// check's stderr, its install's stderr, and its install's note.
+fn need_files(repo: &Repo, check: &str, kind: &str) -> Result<(PathBuf, PathBuf, PathBuf)> {
+    use std::hash::{Hash, Hasher};
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    repo.common_dir()?.hash(&mut hash);
+    check.hash(&mut hash);
+    let key = format!("{:016x}", hash.finish());
+    let cache = crate::copies::cache()?;
+    let installs = cache.join(format!("{kind}-install"));
+    Ok((
+        cache.join(kind).join(format!("{key}.stderr")),
+        installs.join(format!("{key}.stderr")),
+        installs.join(format!("{key}.json")),
+    ))
+}
+
+/// The last install of `check` of `kind` noted on this host for `repo`.
+pub(crate) fn installed_of(repo: &Repo, check: &GateNeed, kind: &str) -> Option<Installed> {
+    let (_, _, note) = need_files(repo, &check.name, kind).ok()?;
+    let installed: Installed = serde_json::from_str(&std::fs::read_to_string(note).ok()?).ok()?;
+    (installed.check == *check).then_some(installed)
+}
+
+/// The last installs noted on this host for the needs `config` declares.
+pub(crate) fn installs(repo: &Repo, config: &Config) -> Vec<(&'static str, Installed)> {
+    let gate = config.gate_needs.iter().map(|check| (GATE_NEEDS, check));
+    let cut = config.cut_needs.iter().map(|check| (CUT_NEEDS, check));
+    gate.chain(cut)
+        .filter_map(|(kind, check)| Some((kind, installed_of(repo, check, kind)?)))
+        .collect()
+}
+
+/// One need on this host at `now`: its check; where it fails and declares
+/// an install, that install — in the host's exclusive queue, within its
+/// limit — and the check again. A failed install of the same declaration
+/// within the hour is not run again: the need fails naming it.
+fn need(
     repo: &Repo,
     check: &GateNeed,
     kind: &str,
-) -> Result<Option<(std::path::PathBuf, String)>> {
-    use std::hash::{Hash, Hasher};
+    now: u64,
+) -> Result<(Option<Failed>, Option<Installed>)> {
+    let (stderr, install_stderr, note) = need_files(repo, &check.name, kind)?;
+    let Some(reason) = run_private(repo, &check.command, check.seconds, &stderr)? else {
+        return Ok((None, None));
+    };
+    let (Some(install), Some(seconds)) = (&check.install, check.install_seconds) else {
+        return Ok((Some(Failed { reason, stderr, install: None }), None));
+    };
+    if let Some(mut failed) =
+        installed_of(repo, check, kind).filter(|noted| !noted.passed && probe_stands(noted.at, now))
+    {
+        failed.held = true;
+        return Ok((Some(Failed { reason, stderr, install: Some(failed) }), None));
+    }
+    let began = std::time::Instant::now();
+    let status = {
+        // An install is heavy: it waits its turn on the host as a gate does,
+        // unless this command already holds one.
+        let _permit = if crate::exclusive::held() {
+            None
+        } else {
+            Some(crate::exclusive::Permit::take(
+                repo,
+                &format!("install {kind} {}", check.name),
+                true,
+                false,
+            )?)
+        };
+        run_private(repo, install, seconds, &install_stderr)?
+    };
+    let again = run_private(repo, &check.command, check.seconds, &stderr)?;
+    let installed = Installed {
+        at: now,
+        seconds: began.elapsed().as_secs(),
+        status: status.unwrap_or_else(|| "exit status: 0".to_string()),
+        passed: again.is_none(),
+        stderr: install_stderr,
+        held: false,
+        check: check.clone(),
+    };
+    std::fs::write(&note, serde_json::to_string(&installed)?)
+        .with_context(|| format!("cannot write {}", note.display()))?;
+    let failed = again.map(|reason| Failed { reason, stderr, install: Some(installed.clone()) });
+    Ok((failed, Some(installed)))
+}
+
+/// Run `command` with `sh -e` in the checkout within `seconds`, its stdout
+/// discarded → `None` where it passed, removing `stderr`; else why it failed,
+/// its last 20 stderr lines kept in the user-only file `stderr`.
+fn run_private(repo: &Repo, command: &str, seconds: u64, stderr: &Path) -> Result<Option<String>> {
     use std::io::Write;
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-    let mut hash = std::collections::hash_map::DefaultHasher::new();
-    repo.common_dir()?.hash(&mut hash);
-    check.name.hash(&mut hash);
-    let dir = crate::copies::cache()?.join(kind);
-    std::fs::create_dir_all(&dir)?;
-    let path = dir.join(format!("{:016x}.stderr", hash.finish()));
-    let script = format!("exec 1>/dev/null\n{}", check.command);
-    let mut command = std::process::Command::new("sh");
-    command.args(["-e", "-c", &script]).current_dir(&repo.dir);
+    if let Some(dir) = stderr.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let script = format!("exec 1>/dev/null\n{command}");
+    let mut shell = std::process::Command::new("sh");
+    shell.args(["-e", "-c", &script]).current_dir(&repo.dir);
+    crate::exclusive::inherit(&mut shell, repo)?;
     let (output, timed_out) = crate::process::output_within_with_timeout(
-        &mut command,
-        std::time::Duration::from_secs(check.seconds),
+        &mut shell,
+        std::time::Duration::from_secs(seconds),
     )?;
     if !timed_out && output.status.success() {
-        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(stderr);
         return Ok(None);
     }
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let lines: Vec<_> = stderr.lines().collect();
+    let text = String::from_utf8_lossy(&output.stderr);
+    let lines: Vec<_> = text.lines().collect();
     let tail = lines[lines.len().saturating_sub(20)..].join("\n");
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create(true)
         .truncate(true)
         .mode(0o600)
-        .open(&path)?;
+        .open(stderr)?;
     file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
     file.write_all(tail.as_bytes())?;
-    let reason = if timed_out {
-        format!("timed out after {}s", check.seconds)
+    Ok(Some(if timed_out {
+        format!("timed out after {seconds}s")
     } else {
         output.status.to_string()
-    };
-    Ok(Some((path, reason)))
+    }))
 }
 
-pub(crate) fn check_cut_needs(repo: &Repo, config: &Config) -> Result<Option<String>> {
+/// The first cut need that fails on this host at `now`, by name, after any
+/// install it declares (`need`). `install` is false for a look that must not
+/// install — `plan`'s — which then says a check as it finds it.
+pub(crate) fn check_cut_needs(
+    repo: &Repo,
+    config: &Config,
+    now: u64,
+    install: bool,
+) -> Result<Option<String>> {
     for check in &config.cut_needs {
-        if run_need(repo, check, "cut-needs")?.is_some() {
+        let failed = if install {
+            need(repo, check, CUT_NEEDS, now)?.0.is_some()
+        } else {
+            let (stderr, _, _) = need_files(repo, &check.name, CUT_NEEDS)?;
+            run_private(repo, &check.command, check.seconds, &stderr)?.is_some()
+        };
+        if failed {
             return Ok(Some(check.name.clone()));
         }
     }
@@ -137,7 +305,7 @@ pub(crate) fn check_cut_needs(repo: &Repo, config: &Config) -> Result<Option<Str
 
 pub(crate) fn check_gate_needs(repo: &Repo, now: u64) -> Result<Option<String>> {
     let config = config::load(&config::file_of(repo))?;
-    gate_needs(repo, &config, now, true)
+    gate_needs(repo, &config, now, true, &mut vec![])
 }
 
 /// A check that found the checkout's tracker private, as the host that made
@@ -412,7 +580,8 @@ pub fn without_git(dir: &Path) -> Option<anyhow::Error> {
 pub fn startup(repo: &Repo, now: u64, launches: &Launches) -> Result<Vec<String>> {
     tools::check(repo, launches).see(See::Troubleshooting)?;
     let config = config::load(&config::file_of(repo)).see(See::Troubleshooting)?;
-    if let Some(why) = gate_needs(repo, &config, now, false)? {
+    let mut installed = vec![];
+    if let Some(why) = gate_needs(repo, &config, now, false, &mut installed)? {
         return Err(See::Troubleshooting.refusal(why));
     }
     // A bound repo's workers start in their roles, each on the harness its
@@ -421,7 +590,7 @@ pub fn startup(repo: &Repo, now: u64, launches: &Launches) -> Result<Vec<String>
         role::probe(repo, launches, bound, &config.labels()).see(See::Troubleshooting)?;
     }
     let branch = &config.base_branch;
-    let mut warnings = vec![];
+    let mut warnings = installed;
 
     if repo.remote().sha(&format!("refs/heads/{branch}"), Fresh::Process)?.is_none() {
         return Err(See::Troubleshooting.refusal(no_base_branch(branch)));

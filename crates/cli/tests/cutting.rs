@@ -903,3 +903,23 @@ fn cut_needs_leave_the_claim_for_a_host_that_can_cut_without_disclosing_output()
     assert!(claimed(&world));
     assert!(!record(&checkout(&world)).to_string().contains("secret-marker"));
 }
+
+#[test]
+fn a_cut_need_installs_before_the_cut_is_claimed() {
+    let world = cutting();
+    let permitted = world.root.join("cut-permitted");
+    let installs = world.root.join("cut-installs");
+    let config = format!(
+        "{CONFIG}\n{}\n```yaml cut-needs\nchecks:\n  - name: publish-access\n    command: test -f '{}'\n    seconds: 5\n    install: echo ran >> '{}'; touch '{}'\n    install_seconds: 10\n```\n",
+        cut_block(&says_published(&world)),
+        permitted.display(),
+        installs.display(),
+        permitted.display()
+    );
+    commit_config(&world, &config, "Declare a cut need with its install");
+    let tick = tick_as(&world, "alpha", 10_000);
+    assert!(claimed(&world), "{tick}");
+    assert_eq!(std::fs::read_to_string(&installs).unwrap(), "ran\n");
+    let doctor = world.afk(&["doctor", "--host", "h1", "--now", "10000"]).ok();
+    assert!(doctor.to_string().contains("publish-access was installed on this host"), "{doctor}");
+}
