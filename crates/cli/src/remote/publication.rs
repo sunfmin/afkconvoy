@@ -2,9 +2,12 @@
 //!
 //! `git push` omits an old==new ref, even with --atomic or a lease. Its
 //! advertisement-to-transaction gap can therefore land a stale source head.
-//! Send receive-pack's explicit verification command instead. Git still
-//! constructs the pack, and local git or existing SSH authenticates transport;
-//! no credential is read or handled here. All three refs must report success.
+//! Local and SSH remotes are sent receive-pack's explicit verification
+//! command instead; git still constructs the pack. A GitHub HTTPS origin is
+//! sent GitHub's `updateRefs`, which checks every ref's old value and applies
+//! all or none, after a plain `git push` has carried the objects to scratch
+//! refs the same call deletes. git's own credential helper and `gh`
+//! authenticate; no credential is read or handled here. All refs must take.
 use std::collections::BTreeMap;
 use std::io::{BufReader, Read, Write};
 use std::process::{Command, Stdio};
@@ -12,6 +15,8 @@ use std::process::{Command, Stdio};
 use anyhow::{Context, Result, bail, ensure};
 
 use crate::git::Repo;
+
+mod github;
 
 pub(crate) struct Update<'a> {
     pub name: &'a str,
@@ -42,26 +47,52 @@ fn send(writer: &mut impl Write, line: &str) -> Result<()> {
     Ok(())
 }
 
-/// Local remotes use receive-pack directly. SSH remotes retain their target;
-/// GitHub HTTPS origins use the same repo through existing Git SSH login.
+/// How a publication reaches origin's push URL.
+enum Route {
+    /// receive-pack, run locally or over SSH.
+    ReceivePack(Command),
+    /// A GitHub HTTPS origin: `git push` for the objects, `updateRefs` for
+    /// the refs. The repo is `owner/name`.
+    GitHub(String),
+}
+
+/// Local remotes use receive-pack directly. SSH remotes retain their target.
+/// GitHub HTTPS origins go through git's credential helper and `gh`.
 /// Unsupported transports are refused before commands are sent.
-fn transport(repo: &Repo) -> Result<Command> {
+fn route(repo: &Repo) -> Result<Route> {
     let urls = repo.git(&["remote", "get-url", "--push", "--all", "origin"])?;
     let urls: Vec<_> = urls.lines().collect();
     ensure!(
         urls.len() == 1,
-        "conditional publication requires exactly one origin push URL; configure one SSH push destination before running land"
+        "conditional publication requires exactly one origin push URL; configure one push destination before running land"
     );
     let url = urls[0];
+    if let Some(repo) = github_https(url) {
+        return Ok(Route::GitHub(repo));
+    }
+    transport(repo, url).map(Route::ReceivePack)
+}
+
+/// `owner/name` of a GitHub HTTPS URL, with or without `.git`.
+fn github_https(url: &str) -> Option<String> {
+    let path = url.strip_prefix("https://github.com/")?.trim_end_matches('/');
+    let path = path.strip_suffix(".git").unwrap_or(path);
+    let (owner, name) = path.split_once('/')?;
+    let fine = |part: &str| {
+        !part.is_empty()
+            && part.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_' | b'.'))
+    };
+    (fine(owner) && fine(name)).then(|| format!("{owner}/{name}"))
+}
+
+fn transport(repo: &Repo, url: &str) -> Result<Command> {
     if !url.contains("://") && !url.contains(':') || url.starts_with("file://") {
         let path = url.strip_prefix("file://").unwrap_or(url);
         let mut command = Command::new("git");
         command.args(["receive-pack", path]).current_dir(&repo.dir);
         return Ok(command);
     }
-    let (target, path, port) = if let Some(path) = url.strip_prefix("https://github.com/") {
-        ("git@github.com".to_string(), path.to_string(), None)
-    } else if let Some(rest) = url.strip_prefix("ssh://") {
+    let (target, path, port) = if let Some(rest) = url.strip_prefix("ssh://") {
         let (host, path) = rest.split_once('/').context("SSH origin has no repo path")?;
         let (host, port) = match host.rsplit_once(':') {
             Some((host, port)) => (host, Some(port.to_string())),
@@ -72,7 +103,7 @@ fn transport(repo: &Repo) -> Result<Command> {
         (host.to_string(), path.to_string(), None)
     } else {
         bail!(
-            "conditional publication requires a local or SSH Git remote; configure origin as an SSH URL and verify `ssh -T <git-host>` before running land again"
+            "conditional publication requires a local, SSH or GitHub HTTPS Git remote; configure origin as one before running land again"
         );
     };
     ensure!(!target.starts_with('-') && !path.is_empty(), "invalid Git SSH origin");
@@ -146,7 +177,10 @@ fn advertisement(reader: &mut impl Read) -> Result<(BTreeMap<String, String>, bo
 /// Startup checks authentication and atomic capability without sending any
 /// update command. This is safe alongside another publishing turn.
 pub(crate) fn check(repo: &Repo) -> Result<()> {
-    let mut command = transport(repo)?;
+    let mut command = match route(repo)? {
+        Route::ReceivePack(command) => command,
+        Route::GitHub(_) => return github::check(repo),
+    };
     command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit());
     let mut child = crate::process::spawn(&mut command)?;
     let exchange = (|| -> Result<()> {
@@ -176,8 +210,11 @@ pub(crate) fn check(repo: &Repo) -> Result<()> {
 }
 
 pub(crate) fn push(repo: &Repo, updates: &[Update<'_>]) -> Result<bool> {
+    let mut command = match route(repo)? {
+        Route::ReceivePack(command) => command,
+        Route::GitHub(name) => return github::publish(repo, &name, updates),
+    };
     let bytes = pack(repo, updates)?;
-    let mut command = transport(repo)?;
     command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit());
     let mut child = crate::process::spawn(&mut command)
         .context("conditional publication transport could not start")?;
