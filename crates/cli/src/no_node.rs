@@ -114,8 +114,11 @@ exit "$code"
         for signal in [libc::SIGINT, libc::SIGTERM] {
             signals.0.push(signal_hook::flag::register(signal, stopped.clone())?);
         }
+        // Seatbelt refuses setuid executables even under allow default. The
+        // system ps cannot spawn commands, so exempt only it from the profile;
+        // the command tree and its Node denial remain sandboxed.
         let profile = format!(
-            "(version 1)(allow default)(deny process-exec (with message \"{nonce}\") (regex #\"/node$\"))"
+            "(version 1)(allow default)(allow process-exec (literal \"/bin/ps\") (with no-sandbox))(deny process-exec (with message \"{nonce}\") (regex #\"/node$\"))"
         );
         let mut sandbox = Command::new("sandbox-exec");
         sandbox.args(["-p", &profile, "/bin/sh", "-c", WRAPPER, "no-node"]);
