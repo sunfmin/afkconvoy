@@ -611,14 +611,15 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
     for patrol in seen.patrols {
         set.patrols.push(patrol::row(patrol, me, seen.heartbeats, now, locked));
     }
-    set.cut = seen.cut.map(|cut| cut::Row {
-        waiting: issues
-            .iter()
-            .filter(|issue| cut::waits(&issue.labels))
-            .map(|issue| issue.number)
-            .collect(),
-        ..cut::row(cut, me, seen.heartbeats, now, locked)
-    });
+    if let Some(cut) = seen.cut {
+        let mut row = cut::row(cut, me, seen.heartbeats, now, locked);
+        for issue in &issues {
+            if cut::waits(&issue.labels) {
+                row.waiting.push(issue.number);
+            }
+        }
+        set.cut = Some(row);
+    }
     set.waiting_on_human = waiting(seen, &issues, &claims, &set.patrols, set.cut.as_ref());
     for issue in &issues {
         if config.bound.is_some() && !seen.flows.among(&issue.labels).is_empty() {
