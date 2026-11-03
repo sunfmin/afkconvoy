@@ -298,6 +298,11 @@ pub fn tick(
         };
         // Whatever a step raised, the rest of the tick is still owed.
         made.unwrap_or_else(|error| {
+            // A start waiting for its predecessor's terminal to close
+            // keeps its claim and fails nothing (sunfmin/control#559).
+            if error.is::<crate::orca::StillClosing>() {
+                return Outcome::Nothing;
+            }
             if error.is::<crate::paused::Held>() {
                 if let TickStep::Dispatch { issue } = step
                     && !fleet

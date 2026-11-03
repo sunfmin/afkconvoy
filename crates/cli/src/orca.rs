@@ -412,6 +412,24 @@ impl std::fmt::Display for IdleTimeout {
 }
 impl std::error::Error for IdleTimeout {}
 
+/// A worker start found the previous worker's terminal still there after
+/// Orca acknowledged closing it: no replacement was started. Orca may still
+/// be ending it, so a dispatch waits for that close, within a bound, before
+/// it counts as a failed start (sunfmin/control#559).
+#[derive(Debug)]
+pub(crate) struct StillClosing(pub PathBuf);
+impl std::fmt::Display for StillClosing {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "the previous worker in {} still has a terminal after close; \
+             no replacement was started",
+            self.0.display()
+        )
+    }
+}
+impl std::error::Error for StillClosing {}
+
 impl Asked {
     fn of(args: &[&str]) -> Result<Asked> {
         let what = args.iter().take(2).copied().collect::<Vec<_>>().join(" ");
@@ -1484,11 +1502,7 @@ impl Worktree {
             self.close_any()?
         };
         if closed && self.terminal()?.is_some() {
-            bail!(
-                "the previous worker in {} still has a terminal after close; \
-                 no replacement was started",
-                self.path.display()
-            );
+            return Err(StillClosing(self.path.clone()).into());
         }
         self.forget(NUDGE_FILE)?;
         self.forget(BACKGROUND_FILE)?;

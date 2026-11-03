@@ -39,7 +39,16 @@ struct Starting {
     /// belongs to this claim alone, and is reused only while it remains live.
     #[serde(default)]
     ready: Option<String>,
+    /// Since when a start has waited for the previous worker's terminal to
+    /// finish closing (`orca::StillClosing`): that wait is no failed start
+    /// until it passes `CLOSE_BOUND`.
+    #[serde(default)]
+    closing_since: Option<u64>,
 }
+
+/// How long, in seconds, a worker start waits for its predecessor's terminal
+/// to finish closing before the start counts as failed (sunfmin/control#559).
+pub(crate) const CLOSE_BOUND: u64 = 300;
 
 fn starting_file(fleet: &Fleet, number: u64) -> Result<PathBuf> {
     fleet.repo.note(&format!("convoy-dispatch-{number}.json"))
@@ -64,7 +73,12 @@ pub(crate) fn incomplete(fleet: &Fleet, number: u64) -> Result<bool> {
 
 fn keep_starting(fleet: &Fleet, number: u64, error: &str) -> Result<()> {
     let Some(claim) = fleet.scan.claim_of(number) else { return Ok(()) };
-    let kept = Starting { claim: claim.id.clone(), error: error.to_string(), ready: None };
+    let kept = Starting {
+        claim: claim.id.clone(),
+        error: error.to_string(),
+        ready: None,
+        closing_since: None,
+    };
     std::fs::write(starting_file(fleet, number)?, serde_json::to_vec(&kept)?)?;
     Ok(())
 }
@@ -75,6 +89,7 @@ fn keep_ready(fleet: &Fleet, number: u64, terminal: &str) -> Result<()> {
         claim: claim.id.clone(),
         error: String::new(),
         ready: Some(terminal.to_string()),
+        closing_since: None,
     };
     std::fs::write(starting_file(fleet, number)?, serde_json::to_vec(&kept)?)?;
     Ok(())
@@ -268,10 +283,15 @@ pub(crate) fn dispatch_continuing(
                 Ok(started)
             }
             Err(error) if error.is::<crate::paused::Held>() => Err(error),
+            Err(error) if error.is::<crate::orca::StillClosing>() => {
+                wait_for_close(fleet, me, number, previous, error)
+            }
             Err(error) => {
                 // Waiting to hand a ready worker its brief is no failed
                 // start, even if it subsequently disappears or refuses it.
-                start_failed(fleet, me, number, previous.filter(|p| p.ready.is_none()), error)
+                // Nor is waiting for the previous worker's terminal to close.
+                let previous = previous.filter(|p| p.ready.is_none() && p.closing_since.is_none());
+                start_failed(fleet, me, number, previous, error)
             }
         };
     };
@@ -333,6 +353,54 @@ fn start_failed(
         "worker start failed again; the claim was escalated"
     };
     Err(error.context(context))
+}
+
+/// A start held up only by the previous worker's terminal, still closing
+/// after the fleet closed it, waits for that close: it keeps the claim and
+/// since when it has waited, and stays `StillClosing`, which fails no tick.
+/// A later tick retries it. Still there past `CLOSE_BOUND`, it is a failed
+/// start again, and escalates saying how long it was waited for.
+fn wait_for_close(
+    fleet: &mut Fleet,
+    me: &Me,
+    number: u64,
+    previous: Option<Starting>,
+    error: anyhow::Error,
+) -> Result<Value> {
+    let Some(claim) =
+        fleet.scan.claim_of(number).filter(|claim| claim.is_held_by(&me.instance)).cloned()
+    else {
+        return Err(error);
+    };
+    let failed = format!("{error:#}");
+    let since = previous.and_then(|previous| previous.closing_since).unwrap_or(fleet.now);
+    let waited = fleet.now.saturating_sub(since);
+    if waited < CLOSE_BOUND {
+        let kept = Starting {
+            claim: claim.id.clone(),
+            error: failed,
+            ready: None,
+            closing_since: Some(since),
+        };
+        std::fs::write(starting_file(fleet, number)?, serde_json::to_vec(&kept)?)?;
+        return Err(error);
+    }
+    let why = crate::judge::Handed::fleet_fault(
+        afkconvoy_core::transition::FleetFault::WorkerStart,
+        format!(
+            "The worker start failed again before it could take its brief.\n\n\
+             The previous worker's terminal was still there after close, \
+             waited for {waited}s (the bound is {CLOSE_BOUND}s).\n\nFailed start: {failed}"
+        ),
+    );
+    let pr = closing_pr(&fleet.gh.open_prs()?, number).map(|pr| pr.number);
+    let worktree = Worktree::of_issue(&Source::of(&fleet.repo)?, number)?;
+    crate::judge::escalate_claim(fleet, &claim, &why, pr, worktree.as_ref())?;
+    forget_starting(fleet, number)?;
+    // No longer a wait: this start failed.
+    Err(anyhow!(
+        "{failed}; waited {waited}s for it to close; worker start failed again; the claim was escalated"
+    ))
 }
 
 /// What the brief of a worker that continues one ended mid-way says of it.
