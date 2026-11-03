@@ -357,12 +357,6 @@ impl Remote {
         self.try_push_bounded(push, None)
     }
 
-    /// As `try_push`, ending the push's process group at `limit`. Its remote
-    /// outcome is then unknown, and the written refs are still dropped.
-    pub fn try_push_within(&self, push: &Push, limit: Duration) -> Result<Ran> {
-        self.try_push_bounded(push, Some(limit))
-    }
-
     fn try_push_bounded(&self, push: &Push, limit: Option<Duration>) -> Result<Ran> {
         let refs: Vec<String> = push.refs().map(str::to_string).collect();
         ensure!(!refs.is_empty(), "a push names the refs it writes");
@@ -381,9 +375,36 @@ impl Remote {
         ran
     }
 
-    /// Runs `push`, which must succeed.
+    /// Runs `push` as `try_push`, ending its process group at `limit` when
+    /// one is given — its remote outcome is then unknown, and it is not tried
+    /// again — and
+    /// runs it again while the remote refuses it for a fault of its own
+    /// (`remote_fault`): up to `PUSH_ATTEMPTS` attempts, with a growing pause
+    /// between them (sunfmin/control#246, #542). Every push of a fleet ref
+    /// goes through this one retry. Before each retry `settled` reads what
+    /// the refused push left, and `true` ends the retries: another host's
+    /// push took the ref meanwhile, and the caller reads the outcome as a
+    /// lost race. → the last attempt, whose failure the caller reads.
+    pub fn try_push_retried(
+        &self,
+        push: &Push,
+        limit: Option<Duration>,
+        mut settled: impl FnMut() -> Result<bool>,
+    ) -> Result<Ran> {
+        let mut attempt = 0;
+        loop {
+            let ran = self.try_push_bounded(push, limit)?;
+            attempt += 1;
+            if ran.ok || !remote_fault(&ran.stderr) || attempt >= PUSH_ATTEMPTS || settled()? {
+                return Ok(ran);
+            }
+            std::thread::sleep(BETWEEN_PUSH_ATTEMPTS * (1 << attempt));
+        }
+    }
+
+    /// Runs `push`, which must succeed, tried again as `try_push_retried`.
     pub fn push(&self, push: &Push) -> Result<()> {
-        let ran = self.try_push(push)?;
+        let ran = self.try_push_retried(push, None, || Ok(false))?;
         if !ran.ok {
             bail!("git {} failed: {}", push.args().join(" "), ran.stderr.trim());
         }
@@ -474,6 +495,35 @@ fn connection_failure(said: &str) -> bool {
     .any(|mark| said.contains(mark))
 }
 
+/// A push the remote refused for a fault of its own, not of the push: it
+/// could not write the pack (`remote unpack failed`), or another push held
+/// the ref's lock at that moment (`lock_failure`). Nothing was written, so
+/// the push is safe to try again.
+pub(crate) fn remote_fault(stderr: &str) -> bool {
+    stderr.contains("remote unpack failed") || lock_failure(stderr)
+}
+
+/// A push the remote rejected because another push held the ref's lock:
+/// GitHub says `(failed)` or `cannot lock ref`, not a rejected fast-forward.
+fn lock_failure(stderr: &str) -> bool {
+    stderr.lines().any(|line| {
+        let line = line.trim();
+        (line.starts_with("! [remote rejected]") && line.ends_with("(failed)"))
+            || line.contains("cannot lock ref")
+            || line.contains("failed to lock")
+    })
+}
+
+/// How many times `try_push_retried` tries a push the remote refuses for a
+/// fault of its own.
+const PUSH_ATTEMPTS: u32 = 5;
+/// The first pause between push attempts, which doubles each attempt:
+/// 0.5s, 1s, 2s, 4s.
+#[cfg(not(test))]
+const BETWEEN_PUSH_ATTEMPTS: Duration = Duration::from_millis(250);
+#[cfg(test)]
+const BETWEEN_PUSH_ATTEMPTS: Duration = Duration::ZERO;
+
 fn ls_remote_limit() -> Duration {
     std::env::var("AFKCONVOY_LS_REMOTE_SECONDS")
         .ok()
@@ -484,9 +534,10 @@ fn ls_remote_limit() -> Duration {
 
 pub(crate) fn reads_help() -> String {
     format!(
-        "Every git call that reads the remote ends within a limit: an ls-remote within {} seconds and a fetch within {} minutes. At the limit its process group is ended. A read of the remote's refs that meets a connection-level failure — a TLS connect error or unexpected EOF, SSL_ERROR_SYSCALL, a connection reset or refusal, an unresolvable host, a timeout or that limit — is asked again five seconds later, up to three attempts in all. Authentication, a missing repository and every other failure end the read at once. When every attempt fails, the error says how many were made and gives the last failure's text. Pushes and publications are not retried.",
+        "Every git call that reads the remote ends within a limit: an ls-remote within {} seconds and a fetch within {} minutes. At the limit its process group is ended. A read of the remote's refs that meets a connection-level failure — a TLS connect error or unexpected EOF, SSL_ERROR_SYSCALL, a connection reset or refusal, an unresolvable host, a timeout or that limit — is asked again five seconds later, up to three attempts in all. Authentication, a missing repository and every other failure end the read at once. When every attempt fails, the error says how many were made and gives the last failure's text. A push the remote refuses for a fault of its own — another push held the ref's lock (`(failed)`, `cannot lock ref`), or it could not write the pack (`remote unpack failed`) — is tried again after a growing pause, up to {} attempts in all; every other refusal ends it at once. Publications are not retried.",
         crate::git::LS_REMOTE_LIMIT.as_secs(),
         crate::git::FETCH_LIMIT.as_secs() / 60,
+        PUSH_ATTEMPTS,
     )
 }
 
@@ -706,7 +757,7 @@ fn tags_of(listed: &[RemoteRecord]) -> Vec<(String, String)> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::collections::{BTreeMap, VecDeque};
     use std::path::PathBuf;
@@ -795,16 +846,29 @@ mod tests {
         assert_eq!(unread.len(), 1);
     }
 
-    /// A remote held in memory: its refs, and how many times it was listed.
+    /// A remote held in memory: its refs, and how many times it was listed
+    /// and pushed to.
     #[derive(Debug, Default)]
-    struct Fake {
+    pub(crate) struct Fake {
         refs: Mutex<BTreeMap<String, String>>,
         lists: Mutex<usize>,
         failures: Mutex<VecDeque<String>>,
+        /// The next pushes of a ref it refuses, in order.
+        refusals: Mutex<VecDeque<Refusal>>,
+        pushes: Mutex<usize>,
+    }
+
+    /// A push of `name` the remote refuses saying `stderr`; meanwhile
+    /// another host's push may have set `name` to `taken`.
+    #[derive(Debug)]
+    struct Refusal {
+        name: String,
+        stderr: String,
+        taken: Option<String>,
     }
 
     impl Fake {
-        fn with(refs: &[(&str, &str)]) -> Arc<Fake> {
+        pub(crate) fn with(refs: &[(&str, &str)]) -> Arc<Fake> {
             let fake = Fake::default();
             for (name, sha) in refs {
                 lock(&fake.refs).insert(name.to_string(), sha.to_string());
@@ -823,6 +887,32 @@ mod tests {
 
         fn lists(&self) -> usize {
             *lock(&self.lists)
+        }
+
+        /// The next push of `name` is refused, saying `stderr`.
+        pub(crate) fn refuses(&self, name: &str, stderr: &str) {
+            let refusal = Refusal { name: name.into(), stderr: stderr.into(), taken: None };
+            lock(&self.refusals).push_back(refusal);
+        }
+
+        /// The next push of `name` is refused, saying `stderr`, while another
+        /// host's push sets it to `sha`.
+        pub(crate) fn refuses_taken(&self, name: &str, stderr: &str, sha: &str) {
+            let taken = Some(sha.to_string());
+            lock(&self.refusals).push_back(Refusal {
+                name: name.into(),
+                stderr: stderr.into(),
+                taken,
+            });
+        }
+
+        pub(crate) fn sha(&self, name: &str) -> Option<String> {
+            lock(&self.refs).get(name).cloned()
+        }
+
+        /// How many pushes it was sent.
+        pub(crate) fn pushes(&self) -> usize {
+            *lock(&self.pushes)
         }
     }
 
@@ -846,7 +936,17 @@ mod tests {
         }
 
         fn push(&self, _: &Path, push: &Push) -> Result<Ran> {
+            *lock(&self.pushes) += 1;
             let mut refs = lock(&self.refs);
+            let mut refusals = lock(&self.refusals);
+            let first = refusals.iter().position(|r| push.refs().any(|name| name == r.name));
+            if let Some(refusal) = first.and_then(|at| refusals.remove(at)) {
+                if let Some(sha) = refusal.taken {
+                    refs.insert(refusal.name, sha);
+                }
+                return Ok(Ran { ok: false, stdout: String::new(), stderr: refusal.stderr });
+            }
+            drop(refusals);
             let refused = push.writes.iter().any(|write| {
                 let at = refs.get(&write.name);
                 match &write.lease {
@@ -890,6 +990,74 @@ mod tests {
     fn remote(fake: &Arc<Fake>) -> Remote {
         let wire: Arc<dyn Wire> = fake.clone();
         Remote::of(&Repo::on_wire(PathBuf::from("/nowhere"), wire))
+    }
+
+    /// What GitHub said refusing a push while another push held the ref's
+    /// lock, on 2026-11-03 (sunfmin/control#542).
+    pub(crate) const HELD: &str = "To https://github.com/o/r.git\n ! [remote rejected]   31515b8c -> refs/convoy/heartbeat/h (failed)\nerror: failed to push some refs";
+
+    #[test]
+    fn a_ref_lock_held_by_another_push_or_an_unwritten_pack_is_the_remotes_fault() {
+        assert!(remote_fault(HELD));
+        assert!(remote_fault(
+            "error: cannot lock ref 'refs/convoy/candidates/main': is at 1 but expected 2"
+        ));
+        let unpack = "remote: fatal: unable to rename temporary '*.pack' file\n\
+                      error: remote unpack failed: index-pack failed\n \
+                      ! [remote rejected]   d5531db -> refs/convoy/gate/47 (unpacker error)";
+        assert!(remote_fault(unpack));
+        for refused in [
+            " ! [remote rejected] HEAD -> refs/convoy/candidates/main (permission denied)",
+            " ! [remote rejected] d5531db -> refs/convoy/gate/47 (protected)",
+            " ! [rejected]        HEAD -> main (non-fast-forward)",
+            "fatal: unable to access 'https://github.com/o/r.git/': Could not resolve host",
+            "fatal: 'origin' does not appear to be a git repository",
+        ] {
+            assert!(!remote_fault(refused), "{refused}");
+        }
+    }
+
+    #[test]
+    fn a_push_refused_for_a_held_ref_lock_takes_on_a_later_attempt() {
+        let fake = Fake::with(&[]);
+        let name = "refs/convoy/heartbeat/h";
+        fake.refuses(name, HELD);
+        fake.refuses(name, HELD);
+        remote(&fake).push(&Push::set("b", name).force()).unwrap();
+        assert_eq!(fake.sha(name).as_deref(), Some("b"));
+        assert_eq!(fake.pushes(), 3);
+    }
+
+    #[test]
+    fn a_push_refused_otherwise_or_held_on_every_attempt_fails_with_what_the_remote_said() {
+        let fake = Fake::with(&[]);
+        let name = "refs/convoy/heartbeat/h";
+        fake.refuses(name, " ! [remote rejected] b -> refs/convoy/heartbeat/h (protected)");
+        let error = remote(&fake).push(&Push::set("b", name)).unwrap_err().to_string();
+        assert!(error.contains("(protected)"), "{error}");
+        assert_eq!(fake.pushes(), 1);
+
+        let fake = Fake::with(&[]);
+        for _ in 0..PUSH_ATTEMPTS {
+            fake.refuses(name, HELD);
+        }
+        let error = remote(&fake).push(&Push::set("b", name)).unwrap_err().to_string();
+        assert!(error.contains("(failed)"), "{error}");
+        assert_eq!(fake.pushes(), PUSH_ATTEMPTS as usize);
+        assert_eq!(fake.sha(name), None);
+    }
+
+    #[test]
+    fn a_settled_refusal_is_not_tried_again() {
+        let fake = Fake::with(&[]);
+        let name = "refs/convoy/claim/7";
+        fake.refuses_taken(name, HELD, "theirs");
+        let remote = remote(&fake);
+        let settled = || Ok(remote.sha(name, Fresh::Live)?.is_some());
+        let ran = remote.try_push_retried(&Push::set("mine", name), None, settled).unwrap();
+        assert!(!ran.ok);
+        assert_eq!(fake.pushes(), 1);
+        assert_eq!(fake.sha(name).as_deref(), Some("theirs"));
     }
 
     #[test]

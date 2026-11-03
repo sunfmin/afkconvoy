@@ -358,7 +358,8 @@ fn controlled_run(
             // is not believed from the one the record was left on.
             for layout in Layout::ALL {
                 let name = record_ref(layout, &tree, command);
-                let _ = repo.remote().try_push_within(&Push::delete(&name), record_push_limit());
+                let limit = Some(record_push_limit());
+                let _ = repo.remote().try_push_retried(&Push::delete(&name), limit, || Ok(false));
             }
             // A red run of this issue's tree is kept on its own ref until the
             // work account cites it. A base-branch certification names no issue.
@@ -366,9 +367,10 @@ fn controlled_run(
                 let subject = red_subject(&tree, command, ran.seconds, host, now, issue);
                 let red = red_ref(repo.layout(), issue, now, tree.key(), command.key());
                 if let Ok(sha) = repo.record_commit_on(tree.name(), &run.head, &subject) {
-                    let _ = repo.remote().try_push_within(
+                    let _ = repo.remote().try_push_retried(
                         &Push::set(&sha, &red).force().progress(),
-                        record_push_limit(),
+                        Some(record_push_limit()),
+                        || Ok(false),
                     );
                 }
             }
@@ -428,14 +430,6 @@ pub(crate) fn record_whole(
     push_record(repo, &sha, &refname)
 }
 
-/// A push GitHub rejected for a fault of its own, not of the push.
-fn remote_fault(stderr: &str) -> bool {
-    stderr.contains("remote unpack failed") || crate::candidates::lock_failure(stderr)
-}
-
-/// How many times a gate record's push is tried.
-const RECORD_ATTEMPTS: u32 = 5;
-
 /// How long one gate-record push may take before its process group is ended.
 /// The tests set this short; the production bound keeps a stalled transport
 /// from holding a candidate's worker lane.
@@ -451,27 +445,16 @@ fn record_push_limit() -> Duration {
 
 /// Pushes the record `sha` to `refname` → why it could not, `None` once it
 /// is there. A record's push is a force push of one commit, so trying it
-/// again is safe. A rejection that is GitHub's own fault — it could not
-/// write the pack (`remote unpack failed`), or another push held the ref's
-/// lock — is tried again; any other is not. On 2026-10-29 two candidates
-/// whose fast gate was green went red for the first, cancelling every
-/// candidate behind them. A push that reaches `record_push_limit` is also
-/// not retried: its remote outcome is unknown, so this run stays unrecorded.
+/// again is safe. A rejection that is GitHub's own fault is tried again
+/// (`Remote::try_push_retried`); any other is not. On 2026-10-29 two
+/// candidates whose fast gate was green went red for the first, cancelling
+/// every candidate behind them. A push that reaches `record_push_limit` is
+/// also not retried: its remote outcome is unknown, so this run stays
+/// unrecorded.
 fn push_record(repo: &Repo, sha: &str, refname: &str) -> Result<Option<String>> {
-    let mut attempt = 0;
-    loop {
-        let pushed = repo
-            .remote()
-            .try_push_within(&Push::set(sha, refname).force().progress(), record_push_limit())?;
-        if pushed.ok {
-            return Ok(None);
-        }
-        attempt += 1;
-        if !remote_fault(&pushed.stderr) || attempt >= RECORD_ATTEMPTS {
-            return Ok(Some(push_error(&pushed.stderr)));
-        }
-        std::thread::sleep(Duration::from_millis(250 << attempt));
-    }
+    let push = Push::set(sha, refname).force().progress();
+    let pushed = repo.remote().try_push_retried(&push, Some(record_push_limit()), || Ok(false))?;
+    Ok((!pushed.ok).then(|| push_error(&pushed.stderr)))
 }
 
 /// The last pack size Git's writing progress reported, with its unit.
@@ -725,17 +708,6 @@ pub fn one(repo: &Repo, config: &Config, which: Which) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_pack_github_could_not_write_is_its_fault_and_a_refused_push_is_not() {
-        let unpack = "remote: fatal: unable to rename temporary '*.pack' file\n\
-                      error: remote unpack failed: index-pack failed\n \
-                      ! [remote rejected]   d5531db -> refs/convoy/gate/47 (unpacker error)";
-        assert!(remote_fault(unpack));
-        assert!(remote_fault(" ! [remote rejected]   d5531db -> refs/convoy/gate/47 (failed)"));
-        assert!(!remote_fault("fatal: 'origin' does not appear to be a git repository"));
-        assert!(!remote_fault(" ! [remote rejected] d5531db -> refs/convoy/gate/47 (protected)"));
-    }
 
     #[test]
     fn a_timed_out_record_push_reports_gits_last_pack_progress() {
