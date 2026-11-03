@@ -199,6 +199,13 @@ fn prepare(
             &Default::default(),
             "",
         )?;
+        // Outside a role, the user directory is the kept one, not the host
+        // user's: the operator's guards are given it there.
+        crate::agent_guards::keep(
+            Path::new(&home),
+            harness,
+            &crate::agent_setup::guards_of_host()?,
+        )?;
         let command = harness.in_worktree(command, &worktree.path.display().to_string(), &home);
         (Line::new().launch(&command), PathBuf::from(home))
     };
@@ -232,6 +239,7 @@ pub(crate) fn watch_line(
                 harness,
                 true,
             )?;
+            crate::agent_guards::keep(&home, harness, &crate::agent_setup::guards_of_host()?)?;
             let (effort, _) = effort(harness)?;
             (home.display().to_string(), effort)
         }
