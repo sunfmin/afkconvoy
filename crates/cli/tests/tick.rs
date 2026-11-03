@@ -803,6 +803,56 @@ fn a_worktree_trust_gap_is_reported_once_not_as_a_failed_dispatch_every_tick() {
 }
 
 #[test]
+fn a_start_waits_for_its_predecessors_terminal_to_finish_closing() {
+    let world = backlog(&[3]);
+    // Orca acknowledges the close, and the worktree's shell is still there.
+    world.with_orca(|orca| orca["close_keeps_terminal"] = json!(true));
+    for at in ["1000", "1090", "1180"] {
+        let waiting = tick(&world, at);
+        assert_eq!(
+            waiting["errors"],
+            json!([]),
+            "a terminal still closing fails no tick: {waiting}"
+        );
+        assert_eq!(world.claims(), alpha(&[3]));
+        assert!(!world.comments(3).iter().any(|body| body.contains("convoy:escalation")));
+        assert!(!world.orca_calls().iter().any(|call| common::asked(call) == "terminal create"));
+    }
+    world.with_orca(|orca| orca["close_keeps_terminal"] = json!(false));
+    let started = tick(&world, "1270");
+    assert_eq!(started["errors"], json!([]), "{started}");
+    assert!(
+        world.orca_calls().iter().any(|call| common::asked(call) == "terminal create"),
+        "the replacement starts on the tick after the close"
+    );
+    assert_eq!(world.claims(), alpha(&[3]));
+    assert!(!world.comments(3).iter().any(|body| body.contains("convoy:escalation")));
+    let worker = world.open_terminals();
+    assert_eq!(worker.len(), 1, "{worker:?}");
+}
+
+#[test]
+fn a_predecessors_terminal_still_there_past_the_bound_escalates_saying_how_long() {
+    let world = backlog(&[3]);
+    world.with_orca(|orca| orca["close_keeps_terminal"] = json!(true));
+    for at in ["1000", "1150"] {
+        assert_eq!(tick(&world, at)["errors"], json!([]));
+        assert_eq!(world.claims(), alpha(&[3]));
+    }
+    let failed = tick(&world, "1300");
+    let error = failed["errors"][0]["error"].as_str().unwrap();
+    assert!(error.contains("waited 300s"), "{failed}");
+    assert_eq!(world.claims(), []);
+    assert!(world.labels(3).contains(&"ready-for-human".to_string()));
+    let comments = world.comments(3);
+    let escalation = comments.iter().find(|body| body.contains("convoy:escalation")).unwrap();
+    assert!(escalation.contains("worker start failed again"), "{escalation}");
+    assert!(escalation.contains("still has a terminal after close"), "{escalation}");
+    assert!(escalation.contains("waited for 300s"), "{escalation}");
+    assert!(!world.orca_calls().iter().any(|call| common::asked(call) == "terminal create"));
+}
+
+#[test]
 fn a_worker_start_that_fails_again_escalates_with_the_start_errors() {
     for knob in ["create_fails", "never_ready", "send_refused"] {
         let world = backlog(&[3]);
