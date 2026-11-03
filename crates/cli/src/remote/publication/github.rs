@@ -57,7 +57,7 @@ pub(super) fn publish(repo: &Repo, name: &str, updates: &[Update<'_>]) -> Result
         .iter()
         .filter(|u| !zero(u.new) && u.new != u.old)
         .enumerate()
-        .map(|(i, u)| (repo.layout().under(&format!("publish-{tag}-{i}")), u.new))
+        .map(|(i, u)| (super::scratch(repo.layout(), &tag, i), u.new))
         .collect();
     if !scratch.is_empty() {
         let mut args = vec!["push".to_string(), "--atomic".into(), "--porcelain".into()];

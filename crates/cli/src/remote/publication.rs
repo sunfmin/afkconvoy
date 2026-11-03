@@ -18,6 +18,21 @@ use crate::git::Repo;
 
 mod github;
 
+/// What starts the kept name of a scratch ref a publication carries its
+/// objects on (`<layout root>publish-<tag>-<i>`). The same publication
+/// deletes it seconds later: it is never a record of the fleet.
+const SCRATCH: &str = "publish-";
+
+/// The scratch ref the `i`th object of publication `tag` rides to.
+fn scratch(layout: afkconvoy_core::layout::Layout, tag: &str, i: usize) -> String {
+    layout.under(&format!("{SCRATCH}{tag}-{i}"))
+}
+
+/// Is `refname` a publication's scratch ref, not a record?
+pub(crate) fn is_scratch(layout: afkconvoy_core::layout::Layout, refname: &str) -> bool {
+    layout.kept(refname).is_some_and(|kept| kept.starts_with(SCRATCH))
+}
+
 pub(crate) struct Update<'a> {
     pub name: &'a str,
     /// Expected old object, or the object-format's zero ID to create a ref.
