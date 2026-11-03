@@ -4167,6 +4167,10 @@ pub fn manual() -> agent_help::Help {
         .constant("SLOW_GATE_PERCENT", afkconvoy_core::slow_gate::PERCENT)
         .constant("HARNESS_PROBE_MINUTES", harness_down::PROBE_SECONDS / 60)
         .constant("LOG_KEPT_HOURS", log::KEPT_FOR / 3600)
+        .constant(
+            "CODEX_GOAL_TOKENS",
+            afkconvoy_core::harness::Harness::Codex.goal_tokens().unwrap_or_default(),
+        )
         .constant("LOG_KEPT_LEAST", log::KEPT_LEAST)
         .constant("LOG_KEPT_MOST", log::KEPT_MOST)
         .constant("WAKE_ANSWER_SECONDS", wake::ANSWER_WITHIN.as_secs())

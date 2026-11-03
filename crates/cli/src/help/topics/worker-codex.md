@@ -20,6 +20,7 @@ cd <the role's copy> && export CODEX_HOME=<the fleet's own>
   [--model <your current Codex selection>]
   [--config 'model_reasoning_effort="<your current effort>"']
   [--config 'service_tier="<your current service tier>"']
+  --config 'goals.max_goal_token_budget={const:CODEX_GOAL_TOKENS}'
 ```
 
 `projects` and `--dangerously-bypass-hook-trust` answer on the line what Codex would ask at its terminal — whether it trusts the folder, and a review of its hooks — and have it load the role's own limits (`.codex/hooks.json`). The next two have it load its role's rules — the CLAUDE.md of the directory it starts in — and those of no directory above. Codex loads rules from no directory added to it, so `developer_instructions` says the other two to it, each as what it is and with its file: the repo's own rules — the worktree's AGENTS.md, or its CLAUDE.md where it holds none — and the team rules (the team's CLAUDE.md), as they stand when the worker starts. A repo and a team with none are told none.
@@ -27,6 +28,17 @@ cd <the role's copy> && export CODEX_HOME=<the fleet's own>
 The hook named asks `afkconvoy guard` before every tool call: one the guard refuses, or cannot be asked of, is not made. It is on the line and in no file, so no worker starts without it. The report is the hook orca installed to hear of a Codex session's state (~/.orca/agent-hooks/codex-hook.sh), which orca names in your own hooks and a worker loads none of: it is given ten seconds, and refuses no call, whatever it does; where orca installed none, nothing is told, and a worker's state is read off its terminal.
 
 Every Codex session has a fresh user directory under its worktree's `.afkconvoy-tmp`, so a `/model` choice saved by Codex is private to that session. The directory of a bound worker holds links to your login (auth.json), your skills (skills) and your rules (AGENTS.override.md, AGENTS.md), and no hook or configuration of yours, so no provider you defined in config.toml. Under a team or role that says `host_user: false` it holds your login alone. The shared cache directories harness/codex-host-user and harness/codex still serve listing, research and recovery probes; workers never load their config.toml, including model, effort or service tier left there by older workers. A login Codex keeps in a keyring is in no file, and is no worker's: the start refuses, and `doctor` says so. A bound worker's memories are off.
+
+## Its goal
+
+Every Codex worker, of every role, works under a Codex goal: its brief is typed at it as `/goal <objective>`, which sets the goal and starts its first turn. The objective is the brief pointer every harness is given — the brief's file, never a copy of the task — and one sentence more: mark this goal complete once the brief's outcome stands, the PR landed or the verdict comment posted. While the goal is active, Codex begins the next turn by itself each time its model ends one short of it, and its own goal prompt keeps the whole objective, with no smaller task taken for it. The goal ends in one of four ways:
+
+- the worker marks it complete, its outcome standing;
+- the fleet ends it: a worker whose verdict stands while Codex still continues its goal is typed `/goal clear` by the next tick, which lets the turn it is in finish and starts no other, and acts on the verdict once it stops. A worker Codex has not continued since its brief costs no GitHub read for this; a bound worker's declared stage closes its terminal, and its goal with it;
+- its model marks it `blocked`, after the same blocker on three goal turns in a row;
+- it reaches its budget, `goals.max_goal_token_budget` on the launch line: {const:CODEX_GOAL_TOKENS} tokens, uncached input and output, five times what a Codex worker of this fleet used in the week to 2026-11-03. Codex stops the turn and marks the goal `budget_limited`. It bounds a worker that waits — parked, queued, or on a shell of its own — while Codex continues it. Your own Codex configuration does not set it.
+
+A turn Codex begins on its goal is a turn like any other, and a sign of life: Codex begins it at once (11 ms after the last ended, measured on 2026-11-03). A worker whose goal Codex marked `blocked` or `budget_limited` is a stopped worker short of its task: worker health nudges it once, then hands it to a human, as any other. The goal is read from Codex's store in the session's directory (goals_1.sqlite, through `sqlite3`); where it cannot be read, the worker is judged as one with no goal.
 
 ## Model, effort and service tier
 
@@ -50,6 +62,7 @@ export CODEX_HOME=<this session's directory> && <worker launch command> [--model
   --config 'projects={"<the worktree>"={trust_level="trusted"}}'
   --config 'project_doc_fallback_filenames=["CLAUDE.md"]'
   --config features.memories=false --config skills.bundled.enabled=false
+  --config 'goals.max_goal_token_budget={const:CODEX_GOAL_TOKENS}'
 ```
 
 There is no role or team to add, no stage facts and no fleet guard hook: these workers start where their repo's own rules and skills load. Rule discovery keeps its normal roots, so the worktree's AGENTS.md, or its CLAUDE.md fallback, is read normally. The host user's skills and rules are linked as above. The fleet checks the command's flags before starting these Codex workers too.

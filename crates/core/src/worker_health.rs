@@ -703,4 +703,16 @@ mod tests {
             (Class::Failed, Scope::Worker, Action::Continue)
         );
     }
+
+    #[test]
+    fn a_goal_its_harness_stopped_is_a_worker_short_of_its_task_and_any_other_decides_nothing() {
+        for goal in [Goal::Blocked, Goal::BudgetLimited] {
+            let decided = decide(Evidence::Goal(goal)).unwrap().unwrap();
+            assert_eq!((decided.class, decided.action), (Class::Short, Action::Nudge), "{goal:?}");
+            assert_eq!(decided.evidence, [format!("its harness stopped its goal: {}", goal.key())]);
+        }
+        for goal in [Goal::Unset, Goal::Active, Goal::Paused, Goal::UsageLimited, Goal::Complete] {
+            assert_eq!(decide(Evidence::Goal(goal)), Ok(None), "{goal:?}");
+        }
+    }
 }
