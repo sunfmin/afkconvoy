@@ -94,7 +94,9 @@ fn trackers() -> Vec<(RepoName, PathBuf)> {
                 .and_then(|repo| crate::checkout_list::named_repo(&repo))
                 .ok(),
         };
-        if let Some(tracker) = tracker.filter(|tracker| trackers.iter().all(|(had, _)| had != tracker)) {
+        if let Some(tracker) =
+            tracker.filter(|tracker| trackers.iter().all(|(had, _)| had != tracker))
+        {
             trackers.push((tracker, entry.checkout));
         }
     }
@@ -174,7 +176,8 @@ mod tests {
         distilling.reported(&taken, 20);
         assert_eq!(distilling.started, Some(20));
         assert_eq!(distilling.until.as_deref(), Some("2026-11-02"));
-        distilling.reported(&[item(&distill::item("acme/control", "2026-10-01", "2026-10-02"))], 30);
+        distilling
+            .reported(&[item(&distill::item("acme/control", "2026-10-01", "2026-10-02"))], 30);
         assert_eq!(distilling.until.as_deref(), Some("2026-11-02"), "a span never moves back");
     }
 

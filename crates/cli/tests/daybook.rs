@@ -232,3 +232,87 @@ fn listing_lessons_needs_a_first_day_and_writes_nothing_of_an_entry() {
     assert_eq!(listed["lessons"], json!([]));
     assert!(discussions(&world).is_empty());
 }
+
+/// A day of `title` whose index holds a lesson for each of `lessons`, of
+/// `entries` entries in all, numbered from 1.
+fn a_day(world: &World, title: &str, lessons: &[&str], entries: usize) {
+    let url = |n: usize| format!("https://gh/discussions/0#c-{n}");
+    let mut body = "Intro.\n\n<!--convoy:lessons-->\n## Lessons\n\n".to_string();
+    for (n, lesson) in lessons.iter().enumerate() {
+        body.push_str(&format!("- [entry]({}): {lesson}\n", url(n + 1)));
+    }
+    let comments: Vec<Value> =
+        (1..=entries).map(|n| json!({"url": url(n), "body": format!("entry {n}")})).collect();
+    world.with_gh(|gh| {
+        gh["discussions"] = json!([{"id": "discussion-old", "number": 0, "title": title,
+            "category": "Daybook", "url": "https://gh/discussions/0", "comments": comments,
+            "body": body}]);
+    });
+}
+
+#[test]
+fn a_distillation_carries_each_lesson_of_its_span_once_and_writes_one_entry_mapping_them() {
+    let world = World::new();
+    with_category(&world);
+    a_day(&world, "2020-01-01", &["the gate needs jq", "orca forgets trust"], 4);
+    let file = world.root.join("distilled.json");
+    let distil = |carried: Value| {
+        std::fs::write(
+            &file,
+            json!({"since": "2020-01-01", "until": "2020-01-07", "carried": carried}).to_string(),
+        )
+        .unwrap();
+        world.afk(&[&["daybook", "--distilled", file.to_str().unwrap()][..], &NAMED].concat())
+    };
+    let one = "https://gh/discussions/0#c-1";
+    let two = "https://gh/discussions/0#c-2";
+    let ticket = json!({"entries": [one], "home": "ticket", "link": "https://gh/issues/9"});
+    let error = distil(json!([ticket])).error();
+    assert!(error.contains("carried nowhere") && error.contains("orca forgets trust"), "{error}");
+    let error = distil(json!([ticket, ticket, {"entries": [two], "home": "covered",
+        "link": "https://gh/x/GLOSSARY.md"}]))
+    .error();
+    assert!(error.contains("carried 2 times"), "{error}");
+    let lone = json!({"entries": ["https://gh/discussions/0#c-3"], "lesson": "twice",
+        "home": "ticket", "link": "https://gh/issues/10"});
+    let covered =
+        json!({"entries": [two], "home": "covered", "link": "https://gh/x/blob/main/GLOSSARY.md"});
+    let error = distil(json!([ticket, covered, lone])).error();
+    assert!(error.contains("two entries"), "{error}");
+    let error = distil(json!([ticket, covered, {"entries": [one], "home": "memory",
+        "link": "https://gh/y"}]))
+    .error();
+    assert!(error.contains("memory"), "{error}");
+    assert_eq!(discussions(&world).len(), 1, "a refused distillation writes nothing");
+
+    let pattern = json!({"entries": ["https://gh/discussions/0#c-3", "https://gh/discussions/0#c-4"],
+        "lesson": "the same fault, twice", "home": "draft", "link": "https://gh/dotfiles/pull/3"});
+    let done = distil(json!([ticket, covered, pattern])).ok();
+    assert_eq!((done["lessons"].clone(), done["carried"].clone()), (json!(2), json!(3)), "{done}");
+    let found = discussions(&world);
+    assert_eq!(found.len(), 2, "{found:?}");
+    let entry = bodies(&found[1]);
+    assert_eq!(entry.len(), 1, "one entry for the run: {entry:?}");
+    for said in [
+        "### Did\n\nDistilled the daybook of 2020-01-01 to 2020-01-07",
+        "- the gate needs jq ([entry](https://gh/discussions/0#c-1)) → ticket: https://gh/issues/9",
+        "- orca forgets trust ([entry](https://gh/discussions/0#c-2)) → already covered: https://gh/x/blob/main/GLOSSARY.md",
+        "→ draft PR, for the operator to read: https://gh/dotfiles/pull/3",
+    ] {
+        assert!(entry[0].contains(said), "{said}\n{}", entry[0]);
+    }
+}
+
+#[test]
+fn the_operator_asks_the_watch_for_a_distillation_outside_its_week() {
+    let world = World::new();
+    let asked = world.afk(&["daybook", "--distill"]).ok();
+    assert_eq!(asked["asked"], true, "{asked}");
+    let state: Value = serde_json::from_slice(
+        &std::fs::read(world.cache().join("afkconvoy/watch/state.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(state["distilling"]["asked"], asked["at"], "{state}");
+    let error = world.afk(&["daybook", "--distill", "--tracker", "acme/control"]).error();
+    assert!(error.contains("cannot be used with"), "{error}");
+}

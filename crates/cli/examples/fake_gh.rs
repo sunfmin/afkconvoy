@@ -1556,13 +1556,22 @@ fn daybook(st: &mut State) -> ! {
         let indexed = st.doc["discussions_indexed"].as_u64().unwrap_or(0) + 1;
         st.doc["discussions_indexed"] = json!(indexed);
         json!({"data": {"updateDiscussion": {"discussion": {"id": id}}}})
-    } else if query.contains("ConvoyDaybookLessons") {
+    } else if query.contains("ConvoyDaybookLessons") || query.contains("ConvoyDaybookSpan") {
         let category = field("category").unwrap();
+        let counted = query.contains("ConvoyDaybookSpan");
         let mut nodes: Vec<Value> = st
             .list("discussions")
             .iter()
             .filter(|d| d["category"].as_str().map(category_id) == Some(category.clone()))
-            .map(|d| json!({"number": d["number"], "title": d["title"], "body": d["body"]}))
+            .map(|d| {
+                let mut node =
+                    json!({"number": d["number"], "title": d["title"], "body": d["body"]});
+                if counted {
+                    let entries = d["comments"].as_array().map_or(0, Vec::len);
+                    node["comments"] = json!({"totalCount": entries});
+                }
+                node
+            })
             .collect();
         nodes.reverse();
         json!({"data": {"repository": {"discussions": {"nodes": nodes,

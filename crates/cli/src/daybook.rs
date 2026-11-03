@@ -413,9 +413,9 @@ fn carried(distillation: &Distillation, lessons: &[(String, Indexed)]) -> Result
         let Carried { entries, lesson, home, link } = carried;
         let at = at + 1;
         let web = |url: &str| {
-            url.strip_prefix("https://").or_else(|| url.strip_prefix("http://")).is_some_and(
-                |tail| !tail.is_empty() && !tail.chars().any(char::is_whitespace),
-            )
+            url.strip_prefix("https://")
+                .or_else(|| url.strip_prefix("http://"))
+                .is_some_and(|tail| !tail.is_empty() && !tail.chars().any(char::is_whitespace))
         };
         if !web(link) {
             bail!("carried {at}: its link must be an HTTP or HTTPS URL: {link:?}");

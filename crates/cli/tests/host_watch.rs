@@ -2467,3 +2467,44 @@ fn a_round_records_only_usage_between_delivery_and_report_and_unknown_without_us
     let second = usage(second["id"].as_str().unwrap());
     assert!(second["tokens"].is_null());
 }
+
+#[test]
+fn a_week_s_daybook_lessons_start_one_distillation_round_that_covers_its_span() {
+    let world = World::new();
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+    let yesterday = afkconvoy::daybook::day_at(now - 24 * 60 * 60);
+    let lesson = "https://gh/discussions/1#c-1";
+    world.with_gh(|gh| {
+        gh["discussion_categories"] = json!(["Daybook"]);
+        gh["discussions"] = json!([{"id": "discussion-1", "number": 1, "title": yesterday,
+            "category": "Daybook", "url": "https://gh/discussions/1",
+            "comments": [{"url": lesson, "body": "fixed the gate"}],
+            "body": format!("Intro.\n\n<!--convoy:lessons-->\n## Lessons\n\n- [entry]({lesson}): the gate needs jq\n")}]);
+    });
+    world.name_origin(&world.clone, "acme/dev");
+    world.list_checkout(&world.clone);
+    let dir = operator(&world);
+    run(&world, &dir);
+    let watch = until(&world, "the distillation", || running(&world));
+    let items = watch["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1, "{watch}");
+    let id = items[0]["id"].as_str().unwrap();
+    assert!(id.starts_with("daybook-distill:") && id.ends_with(&format!(":{yesterday}")), "{id}");
+    assert!(items[0]["reason"].as_str().unwrap().contains("1 lessons"), "{watch}");
+    let told = brief(&world, &starts(&world)[0]);
+    for instruction in [
+        "Distill the daybook's lessons into their lasting homes",
+        "a **draft** PR on dotfiles",
+        "Never merge it",
+        "afkconvoy daybook --distilled <file>",
+        "no memory, precedent or proposal list",
+    ] {
+        assert!(told.contains(instruction), "{instruction}\n{told}");
+    }
+    printed(&world, &watch, &["carried the gate lesson to a ticket"], Some(0));
+    until(&world, "the distillation ended", || ended(&world, "ended"));
+    assert_eq!(state(&world)["distilling"]["until"], yesterday.as_str());
+    let first = state(&world)["until"].as_u64().unwrap();
+    until(&world, "a later look", || state(&world)["until"].as_u64().filter(|at| *at > first));
+    assert_eq!(starts(&world).len(), 1, "a distillation waits out its week");
+}
