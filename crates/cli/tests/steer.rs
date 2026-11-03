@@ -362,6 +362,58 @@ fn both_rework_counts_are_taken_from_after_the_ruling() {
     assert!(has(&world, 7, "flow:feature"));
 }
 
+/// Runs `args` as the host's watch does: the fleet started it on a harness,
+/// and its environment names that harness and model beside its own marker.
+fn as_the_watch(world: &World, args: &[&str]) -> Value {
+    let out = world
+        .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
+        .args(args)
+        .env("AFKCONVOY_WATCH", "host")
+        .env("AFKCONVOY_WATCH_SESSION", "1793693613-47457-18754")
+        .env("AFKCONVOY_HARNESS", "claude-code")
+        .env("AFKCONVOY_MODEL", "opus")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));
+    serde_json::from_slice(&out.stdout).unwrap()
+}
+
+#[test]
+fn the_watch_rules_and_sends_as_the_operator_whatever_harness_it_runs_on() {
+    let world = bound(2);
+    world.issue(7, &["flow:feature"]);
+    stage(&world, 7, 1000, "build", "pass");
+    stage(&world, 7, 1100, "review", "reject");
+    stage(&world, 7, 1200, "build", "pass");
+    stage(&world, 7, 1300, "review", "reject");
+    assert_eq!(show(&world, 7)["position"]["is"], "escalating");
+
+    let ruling = world.root.join("ruling.md");
+    write(&world.root, "ruling.md", "The reviewer is right: handle the empty list.");
+    let ruled =
+        as_the_watch(&world, &["rule", "--issue", "7", "--text-file", ruling.to_str().unwrap()]);
+    assert_eq!((&ruled["ruled"], &ruled["stage"]), (&json!(true), &json!("build")), "{ruled}");
+    let record = records(&world, 7).pop().unwrap();
+    assert!(
+        record.starts_with("<!--convoy:stage stage=build verdict=ruling by=human-->\n"),
+        "{record}"
+    );
+    let read = show(&world, 7);
+    let last = read["records"].as_array().unwrap().last().unwrap();
+    assert_eq!((&last["by"], &last["harness"]), (&json!("human"), &Value::Null), "{last}");
+    assert_eq!(read["rework"], json!({"had": 0, "left": 1}));
+    assert_eq!(read["consecutive_rework"]["review"], json!({"had": 0, "left": 2}));
+
+    let sent =
+        as_the_watch(&world, &["send", "--issue", "7", "--stage", "review", "--text", "Built."]);
+    assert_eq!(sent["sent"], true, "{sent}");
+    let record = records(&world, 7).pop().unwrap();
+    assert!(
+        record.starts_with("<!--convoy:stage stage=review verdict=sent by=human-->\n"),
+        "{record}"
+    );
+}
+
 #[test]
 fn a_ruling_answers_a_reviewer_that_declared_escalation() {
     let world = bound(2);

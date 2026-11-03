@@ -793,6 +793,35 @@ fn silent_stage_observations_do_not_consume_the_consult_or_breaker() {
 }
 
 #[test]
+fn a_consult_rules_with_the_commits_and_harness_of_its_environment() {
+    let world = bound(FEATURE, 2);
+    asked(&world);
+    assert_eq!(did(&tick(&world, 1180)), ["dispatch 7 done"]);
+    let line = ["rule", "--issue", "7", "--text", "Use v2."];
+    let out = world
+        .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
+        .args(line)
+        .env("AFKCONVOY_STAGE", "build")
+        .env("AFKCONVOY_ROLE_COMMIT", "r1")
+        .env("AFKCONVOY_TEAM_COMMIT", "t1")
+        .env("AFKCONVOY_HARNESS", "claude-code")
+        .env("AFKCONVOY_CONSULT", "true")
+        .output()
+        .unwrap();
+    let ruled: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        (&ruled["declared"], &ruled["verdict"]),
+        (&json!(true), &json!("ruling")),
+        "{ruled}"
+    );
+    let last = world.comments(7).into_iter().rfind(|c| c.starts_with("<!--convoy:stage ")).unwrap();
+    assert!(
+        last.contains(" role_commit=r1 team_commit=t1 harness=claude-code-->"),
+        "a consult's, naming its harness: {last}"
+    );
+}
+
+#[test]
 fn a_verdict_its_stage_may_not_declare_goes_to_its_consult() {
     let world = bound(FEATURE, 2);
     world.issue(7, &["flow:feature"]);
