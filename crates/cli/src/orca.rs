@@ -61,7 +61,7 @@ const UNDER_FILE: &str = "convoy-started-under";
 const HARNESS_FILE: &str = "convoy-harness";
 /// The tracker of the fleet that started the worker here: the repo it
 /// names, or nothing where it is the checkout's own (`keep_tracker`).
-pub(crate) const TRACKER_FILE: &str = "convoy-tracker";
+pub(crate) const TRACKER_FILE: &str = "convoy-worker-tracker";
 /// What was taken down as the worker here turned hot (`evidence`).
 const EVIDENCE_DIR: &str = "convoy-hot";
 /// What the cut in a checkout is, and what it did so far (`cut::Record`).

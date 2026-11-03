@@ -1013,3 +1013,60 @@ fn a_roster_issue_of_a_bound_repo_is_opened_in_the_teams_repo_and_not_the_tracke
         tracker["issues"].as_array().unwrap().iter().map(|i| &i["number"]).collect();
     assert_eq!(numbers, [&json!(7)], "nothing is opened in the tracker");
 }
+
+/// sunfmin/control#553: a fleet whose checkout the list holds no entry of
+/// yet — as through its first tick, and the whole of a `run --foreground` —
+/// gives the worker it dispatches its tracker, so the worker's commands act
+/// on the tracker's issues and not on its repo's own of the same number.
+#[test]
+fn a_workers_command_goes_by_its_fleets_tracker_before_the_list_holds_its_checkout() {
+    let world = World::new();
+    world.set_gate("true");
+    world.name_origin(&world.clone, "acme/dev");
+    world.put_tracker(TRACKER);
+    tracker_issue(&world, 7, &["ready-for-agent", MINE]);
+    // The checkout's repo has an issue of the same number, which no worker's
+    // command may take for the fleet's.
+    world.issue(7, &["ready-for-agent"]);
+    let own = world.gh()["issues"].clone();
+
+    let run = [
+        "run",
+        "--tracker",
+        TRACKER,
+        "--foreground",
+        "--instance",
+        "alpha",
+        "--host",
+        "h1",
+        "--now",
+        "1000",
+        "--ticks",
+        "1",
+        "--second-ms",
+        "0",
+    ];
+    world.afk_lines(&run);
+    assert_eq!(world.checkout_list()["checkouts"], json!([]), "the list holds no entry");
+    let worktree = PathBuf::from(world.orca()["worktrees"][0]["path"].as_str().unwrap());
+    let branch = git(&worktree, &["symbolic-ref", "--short", "HEAD"]);
+    assert_eq!(branch, "tester/acme-tracker-7-tracked-7");
+
+    // The worker's commands: the tracker's issue is the one landed and closed.
+    commit(&worktree, "seven.txt", "7\n");
+    git(&worktree, &["push", "-q", "origin", "HEAD"]);
+    world.pr_closing(70, "acme/tracker#7", &branch);
+    let joined = world.afk_in(&worktree, &["land", "--issue", "7", "--now", "1050"]).ok();
+    assert_eq!(joined["outcome"], "merged", "{joined}");
+    assert_eq!(issue_of(&world.tracker(), 7)["state"], "closed");
+    assert_eq!(world.gh()["issues"], own, "the repo's own #7 is as it was");
+
+    // A worker's worktree whose tracker nothing says: its command is refused,
+    // never read as the repo's own.
+    let git_dir = PathBuf::from(git(&worktree, &["rev-parse", "--absolute-git-dir"]));
+    std::fs::remove_file(git_dir.join("convoy-worker-tracker")).unwrap();
+    let refused = world.afk_in(&worktree, &["land", "--issue", "7", "--now", "1060"]);
+    assert_ne!(refused.code, 0, "{}", refused.json);
+    let error = refused.json["error"].as_str().unwrap_or_default();
+    assert!(error.contains("cannot be read"), "{}", refused.json);
+}
