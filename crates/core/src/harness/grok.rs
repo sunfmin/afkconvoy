@@ -24,6 +24,10 @@ use crate::turn::{Marker, Note, Turn};
 pub(super) const NAME: &str = "Grok";
 pub(super) const KEY: &str = "grok";
 pub(super) const PROGRAM: &str = "grok";
+/// Where it reads its user's global instructions, under the user's home.
+pub(super) const INSTRUCTIONS: &str = ".grok/rules/AGENTS.md";
+/// The agent `npx skills` installs its user's skills for.
+pub(super) const SKILLS_AGENT: Option<&str> = Some("grok");
 /// Lets an unattended interactive worker run. Deny rules and hooks still apply.
 pub(super) const STOCK: &str = "grok --always-approve";
 

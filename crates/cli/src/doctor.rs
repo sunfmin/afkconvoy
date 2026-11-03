@@ -172,6 +172,7 @@ kinds! {
     AdmissionHeld: Warning, "admission has held back new workers";
     MemoryPressure: Warning, "the host has been under memory pressure";
     KitUnplaced: Warning, "has unplaced models in the host kit";
+    AgentSetupDrifted: Warning, "differs from the agent setup";
     WatchUnavailable: Critical, "no harness can start this host's watch";
     WatchBusy: Critical, "the resident watch is busy; its round remains undelivered";
     NotifyFailed: Warning, "human decision sending has failed repeatedly";
@@ -236,6 +237,7 @@ impl Kind {
                 | Kind::AdmissionHeld
                 | Kind::MemoryPressure
                 | Kind::KitUnplaced
+                | Kind::AgentSetupDrifted
                 | Kind::WatchUnavailable
                 | Kind::WatchBusy
                 | Kind::NotifyFailed
@@ -2625,6 +2627,7 @@ impl Look {
         findings.extend(crate::machine::findings(&others, host_runner::runs()));
         findings.extend(crate::machine::path_findings());
         findings.extend(crate::kit_research::findings());
+        findings.extend(crate::agent_setup::findings());
         findings.extend(crate::watch_notify::findings());
         Look { readings, host, findings, trackers: crate::tracker::Public::default() }
     }

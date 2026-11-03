@@ -77,6 +77,12 @@ pub struct Settings {
     /// that its records stay its own when the network renames it. A `run`
     /// that finds none keeps the name the host has then (`pin_host_name`).
     pub host_name: Option<String>,
+    /// `--agent-instructions`: the agent setup's instructions file, linked to
+    /// every held harness's global instructions (sunfmin/control#528).
+    pub agent_instructions: Option<PathBuf>,
+    /// `--agent-skills`: the agent setup's skill list, installed for every
+    /// held harness.
+    pub agent_skills: Option<PathBuf>,
     /// What another afkconvoy says beside them, kept as it is: an older one's
     /// `no_host_sleep` among them, which keeps that one from putting the
     /// host to sleep (docs/adr/0050).
@@ -114,6 +120,8 @@ pub struct Named {
     pub jev_key_command: Option<To<String>>,
     pub notify_command: Option<To<String>>,
     pub host_name: Option<To<String>>,
+    pub agent_instructions: Option<To<PathBuf>>,
+    pub agent_skills: Option<To<PathBuf>>,
 }
 
 /// What a `run` sets one setting to: a value of its own, or back to its
@@ -173,6 +181,17 @@ pub fn watch_dir_or_default(said: &str) -> Result<To<PathBuf>, String> {
             .ok()
             .filter(|dir| dir.is_dir())
             .ok_or_else(|| format!("`{said}` is no directory, nor `default`"))
+    })
+}
+
+/// `--agent-instructions` and `--agent-skills` as said: an existing file,
+/// kept by its whole path, or `default` for none.
+pub fn file_or_default(said: &str) -> Result<To<PathBuf>, String> {
+    To::parse(said, |said| {
+        std::fs::canonicalize(said)
+            .ok()
+            .filter(|file| file.is_file())
+            .ok_or_else(|| format!("`{said}` is no file, nor `default`"))
     })
 }
 
@@ -240,6 +259,8 @@ impl Settings {
         lay(&mut self.jev_key_command, named.jev_key_command.as_ref());
         lay(&mut self.notify_command, named.notify_command.as_ref());
         lay(&mut self.host_name, named.host_name.as_ref());
+        lay(&mut self.agent_instructions, named.agent_instructions.as_ref());
+        lay(&mut self.agent_skills, named.agent_skills.as_ref());
         self
     }
 
@@ -348,6 +369,8 @@ impl Settings {
             "jev_key_command": self.jev_key_command,
             "notify_command": self.notify_command,
             "host_name": self.host_name.clone().unwrap_or_else(system_host_name),
+            "agent_instructions": self.agent_instructions,
+            "agent_skills": self.agent_skills,
         });
         match in_force {
             Value::Object(in_force) => in_force,
@@ -455,6 +478,8 @@ pub const WATCH_EVERY_ENV: &str = "AFKCONVOY_WATCH_EVERY";
 pub const JEV_KEY_COMMAND_ENV: &str = "AFKCONVOY_JEV_KEY_COMMAND";
 pub const NOTIFY_COMMAND_ENV: &str = "AFKCONVOY_NOTIFY_COMMAND";
 pub const HOST_NAME_ENV: &str = "AFKCONVOY_HOST_NAME";
+pub const AGENT_INSTRUCTIONS_ENV: &str = "AFKCONVOY_AGENT_INSTRUCTIONS";
+pub const AGENT_SKILLS_ENV: &str = "AFKCONVOY_AGENT_SKILLS";
 
 /// A number of cores or GiB as the file keeps it — the number, whole or not
 /// — and as a setting holds it, in thousandths of it.

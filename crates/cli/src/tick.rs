@@ -159,6 +159,9 @@ pub fn tick(
     // nothing.
     let _ = crate::paused::probe(repo, me.instance.as_str(), &me.host, me.now);
     let _ = crate::kit::refresh(repo, me.instance.as_str(), &me.host, me.now);
+    // A harness held since the agent setup was last given gets it now
+    // (sunfmin/control#528); with none declared this reads the settings alone.
+    let _ = crate::kit::give_new_agent_setup(repo, me.instance.as_str(), &me.host, me.now);
     let (mut fleet, mut open) = Fleet::read(repo, me.now)?;
     // This is independent of the previous tick's log view: retry failed
     // closes, and cover a runner that restarted after the host woke.

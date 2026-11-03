@@ -72,6 +72,10 @@ pub(super) fn account_quota(output: &[String]) -> Option<String> {
 pub(super) const NAME: &str = "Codex";
 pub(super) const KEY: &str = "codex";
 pub(super) const PROGRAM: &str = "codex";
+/// Where it reads its user's global instructions, under the user's home.
+pub(super) const INSTRUCTIONS: &str = ".codex/AGENTS.md";
+/// The agent `npx skills` installs its user's skills for.
+pub(super) const SKILLS_AGENT: Option<&str> = Some("codex");
 /// Codex with the flag that lets it work with nobody at its terminal, and in
 /// no sandbox: a worker is limited by the guard (docs/adr/0012). A host that
 /// wants a sandbox says a command of its own.

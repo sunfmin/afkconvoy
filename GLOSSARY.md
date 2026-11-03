@@ -41,7 +41,7 @@ A fleet instance whose loop panicked or ended in an error — its tracker found 
 _Avoid_: crashed, dead (a heartbeat past the lease), down (a harness that refuses every prompt)
 
 **Host settings**:
-What a host says for every fleet instance on it — the limits past which a worker is hot, the shares admission holds back at, the bound on an exclusive command holding others up, the number of worker lanes and of fast lanes, the panel's port, the operator's directory a watch starts in and how often the host runner looks, the command that supplies a TypeSafe key for Jev's worker-health judgments, and an optional shell command that sends the human decisions a watch reports once per condition episode (`--notify-command`, none by default; `default` removes it) — kept beside the checkout list and changed by any `run` that names one, for every fleet instance on the host at once.
+What a host says for every fleet instance on it — the limits past which a worker is hot, the shares admission holds back at, the bound on an exclusive command holding others up, the number of worker lanes and of fast lanes, the panel's port, the operator's directory a watch starts in and how often the host runner looks, the command that supplies a TypeSafe key for Jev's worker-health judgments, and an optional shell command that sends the human decisions a watch reports once per condition episode (`--notify-command`, none by default; `default` removes it), and where the **agent setup** is declared (`--agent-instructions`, `--agent-skills`, none by default) — kept beside the checkout list and changed by any `run` that names one, for every fleet instance on the host at once.
 _Avoid_: global config, runner flags
 
 **Tick**:
@@ -141,6 +141,10 @@ _Avoid_: throttling, backpressure
 **Host user's skills and rules**:
 The skills and the rules the host's own user has for a harness, which a session they start by hand loads: a worker of a bound repo is given them beside its role's, unless its team file says `host_user: false`. A role may say it for itself, whatever the team says: `reviewer: { dir: ./roles/reviewer, host_user: false }` in `roles`; a role named by its directory alone takes the team's. Its role's skills win over them, and the brief, its role's rules, the team rules and the repo's own rules win over theirs. DSH alone may load those too when its role chooses the host user's DSH profile.
 _Avoid_: global rules, user config, personal skills
+
+**Agent setup**:
+The operator's global instructions and skills, the same for every harness the host kit holds, whatever harness a worker starts on. The operator declares it once, in files of their own — an instructions file and a skill list (`<source> <skill>...`, or `<source> *` for every skill a source ships), in sunfmin/dotfiles `claude/CLAUDE.md` and `skills.txt` — and the host settings name where the declaration is (`run --agent-instructions`, `--agent-skills`). The host kit owns where each harness reads them: the instructions file is linked at each held harness's global instructions location, and the skill list installed through `npx skills` for each one's agent into the shared `~/.agents/skills`, whose copies are read-only between syncs. Writing the host kit gives it to every held harness, a tick to a harness held since it was last given, and `doctor` names each that differs from the declaration. It is what a harness's **host user's skills and rules** then hold. With no declaration nothing is given.
+_Avoid_: dotfiles, global config, skills sync
 
 **DSH profile**:
 What a DSH worker loads of bundles, plugins, MCP servers, patches, themes and settings: the fleet's own (`dsh_profile: fleet`, the default), or the host user's `dsh-tui` profile (`dsh_profile: host-user`). The team chooses for every role; a role may choose its own, independently of `host_user`, and both keep the guard and the role's limits.
