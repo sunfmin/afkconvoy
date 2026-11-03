@@ -45,6 +45,7 @@ pub mod concurrency;
 pub mod config;
 pub mod copies;
 pub mod cut;
+pub mod daybook;
 mod delivery;
 pub mod dispatch;
 pub mod doctor;
@@ -222,7 +223,7 @@ const SKILL: &str = include_str!("../../../skills/afkconvoy/SKILL.md");
 ///
 /// Read `afkconvoy <command> --help` before first running it. Commands are grouped by who runs them:
 ///
-/// - **{const:OPERATOR}** — `config`, `check`, `plan` before `run`; `target` selects a task's destination; `delivery` for a Jira delivery; `tick` for one pass, `stop` to stop; `queue` for the local exclusive queue; `doctor --all --since <until of your last look>`, `checkouts`, `panel` to watch (`doctor` names each fix); `accounts` reads work accounts, `rewrite-accounts` converts old ones; `kit`, `cast`, `switch` for workers' harnesses and models; `patrol-now` runs a patrol; `tell` tells a worker something it must know; `takeover` takes another fleet instance's claims.
+/// - **{const:OPERATOR}** — `config`, `check`, `plan` before `run`; `target` selects a task's destination; `delivery` for a Jira delivery; `tick` for one pass, `stop` to stop; `queue` for the local exclusive queue; `doctor --all --since <until of your last look>`, `checkouts`, `panel` to watch (`doctor` names each fix); `accounts` reads work accounts, `rewrite-accounts` converts old ones; `kit`, `cast`, `switch` for workers' harnesses and models; `patrol-now` runs a patrol; `tell` tells a worker something it must know; `takeover` takes another fleet instance's claims; `daybook` records, after the fact, what an agent did outside any issue.
 /// - **{const:DESIGNER}** — `scaffold` to start one or a role of it from a skeleton, `draft` to draft its roster from the host kit, then, once `check` accepts it, `show` to review a workflow or to ask where an issue is in it, and `rehearse` to try one out.
 /// - **{const:HANDS_WORK}** — a human or their agent opening decided work. `flows` names the workflow, gives the issue-create line and makes labels. After opening issues, `wake` has the fleet take them up now.
 /// - **{const:SETS_UP}** — `skill` prints the skill file that sends their agent to `afkconvoy --help`.
@@ -886,6 +887,69 @@ enum Command {
     Wake {
         #[command(flatten)]
         at: At,
+    },
+    /// Append one after-the-fact entry to the daybook: what an agent did or decided outside any issue
+    ///
+    /// ## When to run it
+    ///
+    /// When an agent — an interactive session, the watch, the asking session or a worker — did or decided something no issue holds: a host fix or install, a ruling made without a ticket, a change made at the operator's word. Record it and carry on: the operator reads the daybook when they choose, and nobody waits on it. What belongs to an issue goes on the issue, not here.
+    ///
+    /// ## Who runs it
+    ///
+    /// The operator, or any agent acting on the host for them: the agent a human is talking to, the watch, the asking session, or a worker, in its own worktree. Each says what it did in its own entry; none reads the daybook to decide what to do next.
+    ///
+    /// ## What it reads and writes
+    ///
+    /// It reads the tracker's discussion categories and its latest discussions of `Daybook`, and this host's checkout list for the tracker.
+    ///
+    /// One comment on today's discussion of the tracker, in its discussion category `Daybook`: one discussion a day, titled with the host's local date, `YYYY-MM-DD`, created by the first entry of the day. Two entries that both find no discussion of the day both still go to one: the discussion of the day with the lowest number is the day's, and a run that created a second deletes its own.
+    ///
+    /// Every entry has one shape: the repo it is of and the kind of session that wrote it — `interactive`, `watch`, `asking session` or `worker`, told by its environment — then the headings `Did`, `Why`, `Undo` and `Links`, each holding what was said for it. A heading said of nothing is left out. The text given alone goes under `Did`.
+    ///
+    /// The repo is the one the checkout's remote names, or `--repo`. The tracker is the one this host's checkout list says for the checkout, its own repo where it says none, or `--tracker`. Run in no checkout, both flags are needed.
+    ///
+    /// It is not fleet state: nothing reads it to decide what a fleet does.
+    ///
+    /// ## What it answers
+    ///
+    /// {"url", "discussion", "day", "created"}
+    ///
+    /// - `url`: the entry's comment
+    /// - `discussion`: the day's discussion
+    /// - `day`: its title, the host's local date
+    /// - `created`: whether this run created it
+    ///
+    /// Errors, as {"error": …} with a non-zero exit, each before anything is written but the last: an entry that says nothing; no repo or tracker to name, run in no checkout; the tracker has no `Daybook` category — the error names the page that creates one, as GitHub creates no category through its API, and the line that turns its discussions on where they are off; GitHub refused to read or create the discussion, or to add the comment.
+    ///
+    /// ## What trips you up
+    ///
+    /// - The category is created by hand, once, in the tracker: https://github.com/<owner>/<tracker>/discussions/categories/new, named `Daybook`.
+    /// - An entry is written once: a second run writes a second entry. To correct one, edit its comment on GitHub.
+    #[command(next_help_heading = OPERATOR, verbatim_doc_comment)]
+    Daybook {
+        /// What was done, put under `Did`; or say each heading with its flag
+        #[arg(conflicts_with = "did")]
+        text: Option<String>,
+        /// What was done
+        #[arg(long)]
+        did: Option<String>,
+        /// Why it was done
+        #[arg(long)]
+        why: Option<String>,
+        /// How to undo it
+        #[arg(long)]
+        undo: Option<String>,
+        /// A link to what it touched: an issue, a PR, a commit; give it again for more
+        #[arg(long = "link", value_name = "URL")]
+        links: Vec<String>,
+        /// The repo the entry is of [default: the one the checkout's remote names]
+        #[arg(long, value_name = "OWNER/REPO", value_parser = tracker::repo_named)]
+        repo: Option<RepoName>,
+        /// The tracker whose daybook it is [default: the checkout's tracker on this host's checkout list]
+        #[arg(long, value_name = "OWNER/REPO", value_parser = tracker::repo_named)]
+        tracker: Option<RepoName>,
+        #[command(flatten)]
+        at: AtFlag,
     },
     /// Print the skill file that sends an agent of your own to `--help`: text, not JSON
     ///
@@ -3907,7 +3971,7 @@ fn kind(name: &str) -> Kind {
         "cast" | "target" | "delivery" | "gate" | "land" | "verdict" | "rule" | "send"
         | "intake" | "lock" | "over" | "cut" | "wake" | "rewrite-accounts" => worker_acts,
         "tick" => Kind { starts: true, ..Kind::ACTS },
-        "doctor" | "show" | "exclusive" => Kind::WORKERS,
+        "doctor" | "show" | "exclusive" | "daybook" => Kind::WORKERS,
         "plan" => Kind { starts: true, ..Kind::WORKERS },
         "run" => Kind { starts: true, ..Kind::PLAIN },
         "accounts" | "config" | "check" | "rehearse" | "recovery" | "scan" | "panel" => Kind::READS,
@@ -4741,6 +4805,10 @@ fn run(
         }
         Command::Flows { delivery, tracker, .. } => {
             flows::flows(&checkout?, delivery.as_deref(), tracker.as_ref())
+        }
+        Command::Daybook { text, did, why, undo, links, repo, tracker, .. } => {
+            let said = daybook::Said { did: did.or(text), why, undo, links };
+            daybook::daybook(checkout, daybook::Asked { said, repo, tracker })
         }
         Command::Skill => Ok(Value::String(SKILL.to_string())),
         Command::Draft { dir, team, yes } => draft::draft(dir, team, yes),

@@ -20,6 +20,7 @@ mod config;
 mod consult;
 mod continuation;
 mod cutting;
+mod daybook;
 mod declared;
 mod delivery;
 mod dispatch;

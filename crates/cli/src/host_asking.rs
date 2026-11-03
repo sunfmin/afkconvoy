@@ -388,7 +388,8 @@ fn launch(session: &mut Session, state: &State) -> Result<()> {
         None,
     )?;
     let line = launches.worker_line(session.harness, &line);
-    let line = format!("export {}=host; {line}", host_watch::WATCH_ENV);
+    let line =
+        format!("export {}=host {}=1; {line}", host_watch::WATCH_ENV, crate::daybook::ASKING_ENV);
     let line = host_watch::session(&line, &session.transcript.display().to_string(), &session.id);
     let question = state.current.as_ref().context("no question to deliver")?;
     write_brief(session, question, &state.pending)?;
