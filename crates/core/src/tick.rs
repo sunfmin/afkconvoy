@@ -114,6 +114,10 @@ pub enum Outcome {
     /// transferred or never issued: nothing was started, a claim it had won was released
     /// again, and no slot was taken.
     Gone,
+    /// `Dispatch` found the issue closed since the frontier was read: it
+    /// left the frontier meanwhile. Nothing was claimed or started, no slot
+    /// was taken, and nothing failed.
+    Closed,
     /// It failed. Whatever claim it was about is still held.
     Failed,
 }
@@ -497,7 +501,7 @@ where
         let outcome = carry_out(step);
         did.push((step, outcome));
         // A start that failed after its claim was won still holds the claim.
-        if !matches!(outcome, Outcome::Lost | Outcome::Blocked | Outcome::Gone) {
+        if !matches!(outcome, Outcome::Lost | Outcome::Blocked | Outcome::Gone | Outcome::Closed) {
             slots.take();
         }
     }
@@ -706,7 +710,7 @@ where
         let outcome = carry_out(*step);
         did.push((*step, outcome));
         // A start that failed after its claim was won still holds the claim.
-        if !matches!(outcome, Outcome::Lost | Outcome::Blocked | Outcome::Gone) {
+        if !matches!(outcome, Outcome::Lost | Outcome::Blocked | Outcome::Gone | Outcome::Closed) {
             slots.take();
         }
     }

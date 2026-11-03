@@ -971,6 +971,24 @@ fn a_tick_says_which_issue_it_skipped_for_a_blocker_read_after_its_rebuild() {
 }
 
 #[test]
+fn a_frontier_issue_closed_after_its_rebuild_is_skipped_and_fails_nothing() {
+    let world = backlog(&[3, 5]);
+    // the rebuild lists #3 open; it closed before its dispatch read it
+    world.close_issue(3);
+    world.with_gh(|gh| {
+        let row = gh["issues"].as_array_mut().unwrap().iter_mut().find(|i| i["number"] == 3);
+        row.unwrap()["open_at_rebuild"] = json!(true);
+    });
+    let ticked = tick(&world, "1000");
+    assert_eq!(did(&ticked), ["dispatch 3 closed", "dispatch 5 done", "heartbeat done"]);
+    assert_eq!(ticked["errors"], json!([]), "no failed step to raise a finding on");
+    assert_eq!(world.claims(), alpha(&[5]));
+    let (lines, _) = run(&world, &["--instance", "alpha", "--ticks", "1", "--now", "1000"]);
+    assert!(lines[0].contains("#3 closed meanwhile"), "{lines:?}");
+    assert!(!lines[0].contains("FAILED"), "{lines:?}");
+}
+
+#[test]
 fn run_goes_idle_after_three_empty_ticks() {
     let world = World::new();
     world.say_concurrency(&world.clone, 2);
