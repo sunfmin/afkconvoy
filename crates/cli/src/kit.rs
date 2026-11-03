@@ -364,7 +364,69 @@ pub fn write(now: u64) -> Result<Value> {
     let (kit, left_out) = compose(&current, &host, Writing::Whole);
     store(&file, &kit, now)?;
     eprint!("{}", report(&file.display().to_string(), &kit, &left_out));
-    Ok(json!({"path": file, "written": true, "kit": kit, "left_out": left_out}))
+    drop(_writing);
+    let harnesses: Vec<Harness> = kit.harnesses.iter().map(|held| held.harness).collect();
+    let agent_setup = give_agent_setup(&harnesses, crate::agent_setup::To::Every, now);
+    Ok(json!({"path": file, "written": true, "kit": kit, "left_out": left_out,
+        "agent_setup": agent_setup}))
+}
+
+/// Gives the agent setup to `harnesses` (`agent_setup::converge`) → what it
+/// did, null where nothing was to be done. What failed is said on stderr and
+/// in the answer, and fails no write of the host kit: `doctor` names each
+/// harness it left drifted.
+fn give_agent_setup(harnesses: &[Harness], to: crate::agent_setup::To, now: u64) -> Value {
+    match crate::agent_setup::converge(harnesses, to, now) {
+        Ok(None) => Value::Null,
+        Ok(Some(done)) => {
+            for failed in done["failed"].as_array().into_iter().flatten() {
+                eprintln!(
+                    "the agent setup was not given to {}: {}",
+                    failed["harness"].as_str().unwrap_or_default(),
+                    failed["why"].as_str().unwrap_or_default()
+                );
+            }
+            done
+        }
+        Err(error) => {
+            eprintln!("the agent setup was not given: {error:#}");
+            json!({"error": format!("{error:#}")})
+        }
+    }
+}
+
+/// Gives the agent setup to each harness the host kit holds that has not
+/// been given it as it is declared now: a tick's, after its refresh of the
+/// host kit, so a harness held since — by a refresh, a switch or a launch
+/// that found it — gets it with no step by the operator.
+/// What it did is a line of the run log of `repo`.
+pub fn give_new_agent_setup(
+    repo: &crate::git::Repo,
+    instance: &str,
+    host: &str,
+    now: u64,
+) -> Result<()> {
+    let kit = load()?;
+    let harnesses: Vec<Harness> = kit.harnesses.iter().map(|held| held.harness).collect();
+    let done = give_agent_setup(&harnesses, crate::agent_setup::To::New, now);
+    if done.is_null() {
+        return Ok(());
+    }
+    let failed = done.get("error").is_some()
+        || done["failed"].as_array().is_some_and(|failed| !failed.is_empty());
+    let entry = crate::log::Entry {
+        at: now,
+        instance: instance.to_string(),
+        host: host.to_string(),
+        what: crate::log::What::Command {
+            command: "agent_setup".into(),
+            on: None,
+            by: "fleet".into(),
+            outcome: format!("the agent setup was given: {done}"),
+            failed,
+        },
+    };
+    crate::log::Log::of(repo)?.append(&entry)
 }
 
 /// Why an operator-removed harness stays out of the host kit.
@@ -468,7 +530,18 @@ pub fn write_one(harness: Harness, now: u64) -> Result<Value> {
         store(&file, &current, now)?;
     }
     eprint!("{}", report(&file.display().to_string(), &current, &left_out));
-    Ok(json!({"path": file, "written": listed, "kit": current, "left_out": left_out}))
+    drop(_writing);
+    let agent_setup = give_agent_setup(&[harness], crate::agent_setup::To::New, now);
+    Ok(json!({"path": file, "written": listed, "kit": current, "left_out": left_out,
+        "agent_setup": agent_setup}))
+}
+
+/// Gives the agent setup to every harness the host kit holds: a `run` that
+/// changed what the host settings declare of it.
+pub fn give_every_agent_setup(now: u64) -> Value {
+    let Ok(kit) = load() else { return Value::Null };
+    let harnesses: Vec<Harness> = kit.harnesses.iter().map(|held| held.harness).collect();
+    give_agent_setup(&harnesses, crate::agent_setup::To::Every, now)
 }
 
 /// Runs a targeted refresh in a process detached from the switch's answer.

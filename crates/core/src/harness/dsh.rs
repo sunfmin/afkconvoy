@@ -13,6 +13,11 @@ use crate::turn::{Marker, Note, Turn};
 pub(super) const KEY: &str = "dsh";
 pub(super) const NAME: &str = "DeepSeek Harness";
 pub(super) const PROGRAM: &str = "dsh-tui";
+/// Where it reads its user's global instructions, under the user's home.
+pub(super) const INSTRUCTIONS: &str = ".dsh/AGENTS.md";
+/// `npx skills` names no agent for it: it reads the shared copies in
+/// `~/.agents/skills`, which an install for any other agent writes.
+pub(super) const SKILLS_AGENT: Option<&str> = None;
 pub(super) const STOCK: &str = "dsh-tui";
 pub(super) const TRUST: &str = "DSH_PERMISSION_MODE=danger-full-access";
 /// Its worktree trust is a variable, not flags: outside a role a launch

@@ -185,6 +185,7 @@ pub fn said(watch: &Watch, report: &Report) -> Said {
         did: Some(did),
         why: (!report.held_back.is_empty()).then(|| list(&report.held_back)),
         undo: None,
+        lesson: None,
         links,
     }
 }

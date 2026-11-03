@@ -22,6 +22,10 @@ use crate::turn::{Marker, Note, Turn};
 pub(super) const NAME: &str = "pi";
 pub(super) const KEY: &str = "pi";
 pub(super) const PROGRAM: &str = "pi";
+/// Where it reads its user's global instructions, under the user's home.
+pub(super) const INSTRUCTIONS: &str = ".pi/agent/AGENTS.md";
+/// The agent `npx skills` installs its user's skills for.
+pub(super) const SKILLS_AGENT: Option<&str> = Some("pi");
 /// pi asks nothing before a tool call: it takes no flag to work with nobody
 /// at its terminal.
 pub(super) const STOCK: &str = "pi";

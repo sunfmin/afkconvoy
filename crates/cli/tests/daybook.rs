@@ -156,3 +156,79 @@ fn an_entry_names_the_kind_of_session_that_wrote_it() {
     let error = world.afk(&[&["daybook"][..], &NAMED].concat()).error();
     assert!(error.contains("says nothing"), "{error}");
 }
+
+#[test]
+fn a_lesson_is_a_heading_of_its_entry_and_indexed_in_the_day_s_body() {
+    let world = World::new();
+    with_category(&world);
+    let plain = daybook(&world, &["installed jq"]);
+    assert_eq!(world.gh()["discussions_indexed"], Value::Null, "no lesson, no index");
+    let taught = daybook(
+        &world,
+        &["--did", "fixed the gate", "--lesson", "the gate on this host\nneeds jq"],
+    );
+    let day = taught["day"].as_str().unwrap().to_string();
+    let found = discussions(&world);
+    let bodies = bodies(&found[0]);
+    assert!(!bodies[0].contains("Lesson"), "{}", bodies[0]);
+    assert!(
+        bodies[1].ends_with(
+            "### Did\n\nfixed the gate\n\n### Lesson\n\nthe gate on this host needs jq\n"
+        ),
+        "{}",
+        bodies[1]
+    );
+    let body = found[0]["body"].as_str().unwrap();
+    assert!(
+        body.contains(&format!(
+            "- [entry]({}): the gate on this host needs jq",
+            taught["url"].as_str().unwrap()
+        )),
+        "{body}"
+    );
+    assert!(!body.contains(plain["url"].as_str().unwrap()), "{body}");
+
+    // An older day with a lesson of its own, outside and then inside the span.
+    world.with_gh(|gh| {
+        gh["discussions"].as_array_mut().unwrap().insert(
+            0,
+            json!({"id": "discussion-old", "number": 0, "title": "2020-01-01", "category": "Daybook",
+                "url": "https://gh/discussions/0", "comments": [],
+                "body": "Intro.\n\n<!--convoy:lessons-->\n## Lessons\n\n- [entry](https://gh/discussions/0#c-1): old\n"}),
+        );
+    });
+    world.gh_calls();
+    let listed = daybook(&world, &["--lessons", "--since", "2020-01-02"]);
+    assert_eq!(
+        listed["lessons"],
+        json!([{"day": day, "url": taught["url"], "lesson": "the gate on this host needs jq"}])
+    );
+    let read: Vec<String> = world.gh_calls().iter().map(|call| call.join(" ")).collect();
+    assert!(!read.iter().any(|call| call.contains("comments")), "no entry is fetched: {read:?}");
+    let listed = daybook(&world, &["--lessons", "--since", "2020-01-01", "--until", "2020-01-01"]);
+    assert_eq!(
+        listed["lessons"],
+        json!([{"day": "2020-01-01", "url": "https://gh/discussions/0#c-1", "lesson": "old"}])
+    );
+}
+
+#[test]
+fn listing_lessons_needs_a_first_day_and_writes_nothing_of_an_entry() {
+    let world = World::new();
+    with_category(&world);
+    let error = world.afk(&[&["daybook", "--lessons"][..], &NAMED].concat()).error();
+    assert!(error.contains("--since"), "{error}");
+    let error = world
+        .afk(&["daybook", "--lessons", "--since", "yesterday", "--tracker", "acme/control"])
+        .error();
+    assert!(error.contains("YYYY-MM-DD"), "{error}");
+    let error = world
+        .afk(&["daybook", "x", "--lessons", "--since", "2026-01-01", "--tracker", "acme/control"])
+        .error();
+    assert!(error.contains("cannot be used with"), "{error}");
+    let listed = world
+        .afk(&["daybook", "--lessons", "--since", "2026-01-01", "--tracker", "acme/control"])
+        .ok();
+    assert_eq!(listed["lessons"], json!([]));
+    assert!(discussions(&world).is_empty());
+}

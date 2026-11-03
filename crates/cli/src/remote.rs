@@ -285,6 +285,10 @@ impl Remote {
             .cloned()
             .collect();
         repo.read_record_subjects(&mut records)?;
+        // A record ref deleted since the listing is absent from all of it.
+        let mut listed = listed;
+        let every = every.trim_end_matches('*');
+        listed.retain(|r| !r.name.starts_with(every) || records.iter().any(|k| k.name == r.name));
         let patterns = patterns.iter().map(|pattern| pattern.to_string()).collect();
         let listing = Listing { base_ref, base, records, tags, heads, listed, patterns };
         Ok(Remote { opened: Some(Arc::new(listing)), ..remote })
@@ -438,8 +442,12 @@ impl Remote {
             }
             attempts += 1;
         };
+        // A publication's scratch ref is gone seconds after it is made, and
+        // holds no record: no listing carries it.
+        let layout = self.repo.layout();
         let records: Vec<RemoteRecord> = listed
             .into_iter()
+            .filter(|(name, _)| !publication::is_scratch(layout, name))
             .map(|(name, sha)| RemoteRecord { name, sha, subject: String::new() })
             .collect();
         lock(&shared.seen).remember(&records, patterns);
@@ -534,6 +542,13 @@ impl Seen {
         self.sha.clear();
         self.covered.clear();
         self.dirty.clear();
+    }
+
+    /// A fetch by name found the remote no longer has `name`: it is absent
+    /// until a read finds it again.
+    pub(crate) fn vanished(&mut self, name: &str) {
+        self.sha.insert(name.to_string(), None);
+        self.dirty.remove(name);
     }
 
     /// A write to the remote changed `refs`, each an exact name: the next
@@ -729,6 +744,55 @@ mod tests {
         assert!(!foreign_push(&repo.dir, &remote, &Push::delete(name).leased(won)).unwrap());
         assert_eq!(foreign_refs(&repo.dir, &remote, &[name]).unwrap()[0].1, successor);
         assert!(foreign_push(&repo.dir, &remote, &Push::delete(name).leased(&successor)).unwrap());
+    }
+
+    /// sunfmin/control#531: a record ref deleted between the listing and the
+    /// fetch reads as absent, and the rest of the state reads as usual. A
+    /// publication's scratch ref is never listed as a record.
+    #[test]
+    fn a_ref_deleted_after_the_listing_reads_as_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let run = |args: &[&str]| {
+            let ran = crate::git::run(dir.path(), args, &[]).unwrap();
+            assert!(ran.ok, "{}", ran.stderr);
+        };
+        run(&["init", "-q", "--bare", "remote.git"]);
+        for clone in ["writer", "reader"] {
+            run(&["init", "-q", clone]);
+            run(&["-C", clone, "remote", "add", "origin", "../remote.git"]);
+        }
+        let writer = Repo::at(&dir.path().join("writer")).unwrap();
+        let reader = Repo::at(&dir.path().join("reader")).unwrap();
+        let layout = reader.layout();
+        let (gone, kept) = (layout.under("test-gone"), layout.under("test-kept"));
+        let scratch = layout.under("publish-1-0");
+        let (a, b) = (writer.record_commit("gone").unwrap(), writer.record_commit("kept").unwrap());
+        let push = Push::set(&a, &gone).and_set(&b, &kept).and_set(&a, &scratch);
+        assert!(Remote::of(&writer).try_push(&push).unwrap().ok);
+
+        let every = layout.every("");
+        let mut records = Remote::of(&reader).refs(&[&every], Fresh::Live).unwrap();
+        let names: Vec<&str> = records.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, [gone.as_str(), kept.as_str()], "a scratch ref is no record");
+
+        assert!(Remote::of(&writer).try_push(&Push::delete(&gone)).unwrap().ok);
+        reader.read_record_subjects(&mut records).unwrap();
+        let read: Vec<(&str, &str)> =
+            records.iter().map(|r| (r.name.as_str(), r.subject.as_str())).collect();
+        assert_eq!(read, [(kept.as_str(), "kept")]);
+        let again = Remote::of(&reader).refs(&[&gone], Fresh::Process).unwrap();
+        assert!(again.is_empty(), "{again:?}");
+        let opened = Remote::open(&reader, "main").unwrap();
+        assert!(opened.listing().unwrap().sha(&gone).is_none());
+
+        // A fetch that fails for any other reason fails the read.
+        run(&["-C", "reader", "remote", "set-url", "origin", "../nowhere.git"]);
+        let other = Repo::at(&dir.path().join("reader")).unwrap();
+        let mut unread =
+            vec![RemoteRecord { name: kept.clone(), sha: "0".repeat(40), subject: String::new() }];
+        let error = other.read_record_subjects(&mut unread).unwrap_err();
+        assert!(!format!("{error:#}").contains("couldn't find remote ref"), "{error:#}");
+        assert_eq!(unread.len(), 1);
     }
 
     /// A remote held in memory: its refs, and how many times it was listed.

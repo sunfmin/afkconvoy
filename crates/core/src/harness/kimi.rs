@@ -20,6 +20,10 @@ use crate::turn::{Marker, Note, Turn};
 pub(super) const NAME: &str = "Kimi Code";
 pub(super) const KEY: &str = "kimi";
 pub(super) const PROGRAM: &str = "kimi";
+/// Where it reads its user's global instructions, under the user's home.
+pub(super) const INSTRUCTIONS: &str = ".kimi-code/AGENTS.md";
+/// The agent `npx skills` installs its user's skills for.
+pub(super) const SKILLS_AGENT: Option<&str> = Some("kimi-code-cli");
 /// Never Ask mode lets an unattended interactive worker run. Headless calls
 /// use `headless`, since Kimi rejects `--auto` together with `--prompt`.
 pub(super) const STOCK: &str = "kimi --auto";

@@ -1501,11 +1501,14 @@ fn daybook_race_waits() {
 
 /// `gh api graphql` of the daybook. State: `discussions_enabled` (true
 /// where unsaid), `discussion_categories` [name…], `discussions` [{id,
-/// number, title, category, url, comments: [{body, url}]}].
+/// number, title, body, category, url, comments: [{body, url}]}], each
+/// listing answering one page; `discussions_indexed` counts the bodies the
+/// lesson index rewrote.
 fn daybook(st: &mut State) -> ! {
     let fields: Vec<(String, String)> = st
         .opts("-f")
         .into_iter()
+        .chain(st.opts("-F"))
         .filter_map(|field| field.split_once('=').map(|(k, v)| (k.to_string(), v.to_string())))
         .collect();
     let field = |key: &str| fields.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone());
@@ -1535,6 +1538,35 @@ fn daybook(st: &mut State) -> ! {
             std::fs::write(dir.join(std::process::id().to_string()), "").unwrap();
         }
         json!({"data": {"repository": {"discussions": {"nodes": nodes}}}})
+    } else if query.contains("ConvoyDaybookRead") {
+        let number: u64 = field("number").unwrap().parse().unwrap();
+        let found = st.list("discussions").iter().find(|d| d["number"] == json!(number)).cloned();
+        let Some(found) = found else { st.finish("", 1, "gh: no such discussion\n") };
+        json!({"data": {"repository": {"discussion": {"body": found["body"],
+            "comments": {"nodes": found["comments"],
+                "pageInfo": {"hasNextPage": false, "endCursor": null}}}}}})
+    } else if query.contains("ConvoyDaybookIndex") {
+        let id = field("discussion").unwrap();
+        let body = field("body").unwrap();
+        let discussions = st.list("discussions");
+        let Some(found) = discussions.iter_mut().find(|d| d["id"] == json!(id)) else {
+            st.finish("", 1, "gh: Could not resolve to a node with the global id\n")
+        };
+        found["body"] = json!(body);
+        let indexed = st.doc["discussions_indexed"].as_u64().unwrap_or(0) + 1;
+        st.doc["discussions_indexed"] = json!(indexed);
+        json!({"data": {"updateDiscussion": {"discussion": {"id": id}}}})
+    } else if query.contains("ConvoyDaybookLessons") {
+        let category = field("category").unwrap();
+        let mut nodes: Vec<Value> = st
+            .list("discussions")
+            .iter()
+            .filter(|d| d["category"].as_str().map(category_id) == Some(category.clone()))
+            .map(|d| json!({"number": d["number"], "title": d["title"], "body": d["body"]}))
+            .collect();
+        nodes.reverse();
+        json!({"data": {"repository": {"discussions": {"nodes": nodes,
+            "pageInfo": {"hasNextPage": false, "endCursor": null}}}}})
     } else if query.contains("ConvoyDaybookOpen") {
         let category = field("category").unwrap();
         let name = category.trim_start_matches("category-").to_string();

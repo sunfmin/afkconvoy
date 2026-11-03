@@ -29,6 +29,7 @@ pub mod accounts;
 pub mod acting;
 pub mod admission;
 pub mod advance;
+pub mod agent_setup;
 mod asking_report;
 mod asking_terminal;
 pub mod blockers;
@@ -150,10 +151,10 @@ use fleet::Fleet;
 use git::Repo;
 use host_settings::{
     ADMIT_DISK_ENV, ADMIT_INSPECT_AFTER_ENV, ADMIT_LOAD_ENV, ADMIT_MEMORY_ENV,
-    EXCLUSIVE_SECONDS_ENV, HOST_NAME_ENV, HOT_CORES_ENV, HOT_MEMORY_ENV, HOT_WRITTEN_ENV,
-    JEV_KEY_COMMAND_ENV, NOTIFY_COMMAND_ENV, To, WATCH_DIR_ENV, WATCH_EVERY_ENV,
-    jev_key_command_or_default, notify_command_or_default, port_or_default, thousandths_or_default,
-    watch_dir_or_default, watch_every_or_default, whole_or_default,
+    AGENT_INSTRUCTIONS_ENV, AGENT_SKILLS_ENV, EXCLUSIVE_SECONDS_ENV, HOST_NAME_ENV, HOT_CORES_ENV,
+    HOT_MEMORY_ENV, HOT_WRITTEN_ENV, JEV_KEY_COMMAND_ENV, NOTIFY_COMMAND_ENV, To, WATCH_DIR_ENV,
+    WATCH_EVERY_ENV, jev_key_command_or_default, notify_command_or_default, port_or_default,
+    thousandths_or_default, watch_dir_or_default, watch_every_or_default, whole_or_default,
 };
 use launch::Launches;
 
@@ -433,6 +434,10 @@ enum Command {
     /// ## It stays current
     ///
     /// A tick — of `run`, or `afkconvoy tick` — writes the host kit again once its file was last written a day ago or more, before anything else: a newly listed model waits for the watch, and a model no longer listed is dropped. A harness that cannot be found or listed is kept, and a pause leaves it out, as above. An operator removal survives this refresh and every other relisting. A harness merely left out by a hand edit is read as absent, but only `kit --remove` records the removal that survives a refresh; the next relisting may add a hand-omitted installed harness back. The file's modification time is when it was last written — by `kit`, by `run` on a host without one, or by a tick — and `plan` and `doctor` answer it as `host_kit.refreshed`. Every fleet of the host shares the file and the lock beside it (kit.refresh): one of them writes it again, once a day, and the others read what it wrote. A refresh that changed the host kit is a line of the run log, `refresh_kit (fleet): the host kit was written again: added claude-code sonnet; dropped claude-code opus`; one that failed is one too, and is tried again an hour later. The pause is the host's running state, in its cache: this file is not changed. `plan`, `doctor` and the panel say which is paused, since when and why.
+    ///
+    /// ## The agent setup
+    ///
+    /// The operator's global instructions and skills, declared once in the operator's own files and named by two host settings, `run --agent-instructions <FILE>` and `run --agent-skills <FILE>` (`afkconvoy run --help`). The skill list holds one line per source, `<source> <skill>...`, or `<source> *` for every skill the source ships; blank and `#` lines say nothing. Writing the host kit gives every harness it holds the setup: the instructions file is linked at the harness's global instructions location (Claude Code `~/.claude/CLAUDE.md`, Codex `~/.codex/AGENTS.md`, pi `~/.pi/agent/AGENTS.md`, Kimi Code `~/.kimi-code/AGENTS.md`, Grok `~/.grok/rules/AGENTS.md`, DSH `~/.dsh/AGENTS.md`), with what stood there and was no link to it kept beside it as `<name>.before-agent-setup`; the list is installed through `npx skills add <source> -g -y -a <agent>...` for each harness's `npx skills` agent (DSH has none, and reads the shared copies), and a skill installed for one of those agents that the list does not name is removed. The copies, in the shared `~/.agents/skills`, are read-only between syncs: no harness and no shell command edits one in place; a sync opens them for its own writes and closes them again. A tick gives the setup to a harness held since it was last given — found by a refresh, a switch or a launch — with no step by the operator; one whose giving failed is tried again an hour later. A `run` that changes either setting gives it to every held harness again. What was given is recorded beside the host kit, in `agent-setup.json`. `doctor` names each held harness that differs from the declaration (`differs from the agent setup`), with `afkconvoy kit` as its fix. With neither setting said, nothing is given and nothing is reported.
     #[command(next_help_heading = OPERATOR, verbatim_doc_comment)]
     Kit {
         /// Refused: automatic casting is gone. An old kit `cast` key is ignored
@@ -905,7 +910,11 @@ enum Command {
     ///
     /// One comment on today's discussion of the tracker, in its discussion category `Daybook`: one discussion a day, titled with the host's local date, `YYYY-MM-DD`, created by the first entry of the day. Two entries that both find no discussion of the day both still go to one: the discussion of the day with the lowest number is the day's, and a run that created a second deletes its own.
     ///
-    /// Every entry has one shape: the repo it is of and the kind of session that wrote it — `interactive`, `watch`, `asking session` or `worker`, told by its environment — then the headings `Did`, `Why`, `Undo` and `Links`, each holding what was said for it. A heading said of nothing is left out. The text given alone goes under `Did`.
+    /// Every entry has one shape: the repo it is of and the kind of session that wrote it — `interactive`, `watch`, `asking session` or `worker`, told by its environment — then the headings `Did`, `Why`, `Undo`, `Lesson` and `Links`, each holding what was said for it. A heading said of nothing is left out. The text given alone goes under `Did`.
+    ///
+    /// A **lesson** (`--lesson`) is one sentence the agent, at the moment, thinks should outlast the day: "the gate on this host needs X", "this kind of edit breaks Y". Writing it does not interrupt the work: it is raw material for the weekly distillation, which carries each lesson to its lasting home — a check, a hook, a rule, a doc. An entry with a lesson also rebuilds the lesson index at the foot of the day's discussion body — each lesson of the day and its entry's link — from the day's entries, so `--lessons` lists a span's lessons from the days' bodies without fetching an entry.
+    ///
+    /// `--lessons --since <YYYY-MM-DD> [--until <YYYY-MM-DD>]` writes nothing: it lists the lessons of the days from `--since` to `--until`, both included (to today where `--until` is not given), from the days' indexes.
     ///
     /// The repo is the one the checkout's remote names, or `--repo`. The tracker is the one this host's checkout list says for the checkout, its own repo where it says none, or `--tracker`. Run in no checkout, both flags are needed.
     ///
@@ -920,12 +929,15 @@ enum Command {
     /// - `day`: its title, the host's local date
     /// - `created`: whether this run created it
     ///
+    /// With `--lessons`: {"lessons": [{"day", "url", "lesson"}], "since", "until"}, oldest day first.
+    ///
     /// Errors, as {"error": …} with a non-zero exit, each before anything is written but the last: an entry that says nothing; no repo or tracker to name, run in no checkout; the tracker has no `Daybook` category — the error names the page that creates one, as GitHub creates no category through its API, and the line that turns its discussions on where they are off; GitHub refused to read or create the discussion, or to add the comment.
     ///
     /// ## What trips you up
     ///
     /// - The category is created by hand, once, in the tracker: https://github.com/<owner>/<tracker>/discussions/categories/new, named `Daybook`.
-    /// - An entry is written once: a second run writes a second entry. To correct one, edit its comment on GitHub.
+    /// - An entry is written once: a second run writes a second entry. To correct one, edit its comment on GitHub; to correct its lesson in the index too, edit the index line in the day's discussion body, or write the day's next lesson, which rebuilds the index from the entries.
+    /// - Two lessons written at once can each rebuild an index the other's is missing from. Each run checks the index holds its own lesson and rebuilds it until it does, and the day's next lesson restores any other; an index that still lacks a run's lesson is an error naming the entry, which was written.
     #[command(next_help_heading = OPERATOR, verbatim_doc_comment)]
     Daybook {
         /// What was done, put under `Did`; or say each heading with its flag
@@ -940,9 +952,21 @@ enum Command {
         /// How to undo it
         #[arg(long)]
         undo: Option<String>,
+        /// One sentence that should outlast the day: raw material for the weekly distillation
+        #[arg(long, value_name = "SENTENCE")]
+        lesson: Option<String>,
         /// A link to what it touched: an issue, a PR, a commit; give it again for more
         #[arg(long = "link", value_name = "URL")]
         links: Vec<String>,
+        /// List the lessons of a span of days instead of writing an entry
+        #[arg(long, requires = "since", conflicts_with_all = ["text", "did", "why", "undo", "lesson", "links"])]
+        lessons: bool,
+        /// The first day of the span `--lessons` lists
+        #[arg(long, value_name = "YYYY-MM-DD", requires = "lessons", value_parser = daybook::day_named)]
+        since: Option<String>,
+        /// The last day of the span `--lessons` lists [default: none, to today]
+        #[arg(long, value_name = "YYYY-MM-DD", requires = "lessons", value_parser = daybook::day_named)]
+        until: Option<String>,
         /// The repo the entry is of [default: the one the checkout's remote names]
         #[arg(long, value_name = "OWNER/REPO", value_parser = tracker::repo_named)]
         repo: Option<RepoName>,
@@ -1484,7 +1508,7 @@ enum Command {
     ///
     /// The checkout's tracker, with its entry, read at each tick as its concurrency is: the repo its fleet reads and writes its issues in — the issues, their labels, comments, blockers, escalations and closing — while PRs, branches, the gate and their landing turns stay the checkout's own repo's. `--tracker me/issues` says it, and `--tracker default`, or the checkout's own repo, says none; a `run` that names none leaves it as it is. Until the checkout says one, its tracker is its own repo. A tracker another repo than the checkout's holds the issues of many repos: the fleet works the open issues there that carry its repo's repo label, `repo:<owner>/<repo>`, and the ready label — in a bound repo, a flow label; every issue it or a worker opens there carries the repo label, and `intake` and `lock` give it to one that lacks it; and a PR or a landing commit names its issue `me/issues#7`, never `#7`, which is the checkout's own repo's. `run` makes the repo label, and the ready, escalate and lock labels of the repo config, in the tracker where it lacks them. It refuses to change the tracker while the checkout's fleet holds a claim on an issue of the tracker it had, or a legacy line still carries a PR of one, naming them, and changes nothing: run it again once they are done. The issues of the tracker it had stay there. A tracker GitHub says is public is refused, and nothing is made in it or changed: whoever can comment on an issue there writes what the fleet reads as its state and what a worker reads as its task. So is the checkout's own repo, where it is public and the checkout says no tracker, or `default`: every start of its fleet is refused until it says a private one, `--tracker <owner>/<private repo>`. A `run` that starts the host runner — where none runs, or where it moves one of an older release (below) — says the tracker of a checkout on the list with its entry before it starts it, as that host runner starts every checkout on the list, as its entry has it, before it is handed this one: it asks GitHub and makes the labels before an older host runner is stopped, which changes nothing where it refuses, and keeps the tracker once that host runner has let the host go. So its checkout's fleet instance starts under the tracker this `run` names, never under the one its entry had, and a checkout of a public repo is taken at the first `run --tracker <owner>/<private repo>`, whichever host runner was there. `plan`, `doctor`, `checkouts` and the panel say the tracker.
     ///
-    /// The host settings, in the same file: what this host says for every fleet instance on it — the limits past which a worker is hot (`--hot-cores`, `--hot-memory`, `--hot-written`), the shares admission holds back at (`--admit-load`, `--admit-memory`, `--admit-disk`, `--admit-inspect-after`), the panel's port (`--panel`), the operator's directory a watch starts in and how often the host runner looks (`--watch-dir`, `--watch-every`; WATCH, below), and the command that prints the TypeSafe key Jev's worker-health judgments are asked with (`--jev-key-command`), and the shell command that sends human decisions (`--notify-command`; none by default). A `run` that names one — by its flag, or by the variable of its environment that stands for it, the flag winning: AFKCONVOY_HOT_CORES, AFKCONVOY_HOT_MEMORY, AFKCONVOY_HOT_WRITTEN, AFKCONVOY_ADMIT_LOAD, AFKCONVOY_ADMIT_MEMORY, AFKCONVOY_ADMIT_DISK, AFKCONVOY_ADMIT_INSPECT_AFTER, AFKCONVOY_WATCH_DIR, AFKCONVOY_WATCH_EVERY, AFKCONVOY_JEV_KEY_COMMAND, AFKCONVOY_NOTIFY_COMMAND — changes it for the host before it hands its checkout over. Every fleet instance on the host reads them as it goes — admission at each tick, the hot limits at each sample, the watch's before each look, the key command at each worker-health judgment — so a change holds for all of them at once, and none is started again for it; the host runner reads the panel's port as it starts. A `run` that names none changes none, and nothing else changes them: `tick`, `plan` and `doctor` read them as they are, and a host runner started again keeps them. `default` changes one back to its default (`--hot-cores default`). `afkconvoy doctor` says those in force, as `host.settings`.
+    /// The host settings, in the same file: what this host says for every fleet instance on it — the limits past which a worker is hot (`--hot-cores`, `--hot-memory`, `--hot-written`), the shares admission holds back at (`--admit-load`, `--admit-memory`, `--admit-disk`, `--admit-inspect-after`), the panel's port (`--panel`), the operator's directory a watch starts in and how often the host runner looks (`--watch-dir`, `--watch-every`; WATCH, below), and the command that prints the TypeSafe key Jev's worker-health judgments are asked with (`--jev-key-command`), and the shell command that sends human decisions (`--notify-command`; none by default), and the agent setup given to every harness the host kit holds: its instructions file and its skill list (`--agent-instructions`, `--agent-skills`; none by default; `afkconvoy kit --help`, The agent setup). A `run` that names one — by its flag, or by the variable of its environment that stands for it, the flag winning: AFKCONVOY_HOT_CORES, AFKCONVOY_HOT_MEMORY, AFKCONVOY_HOT_WRITTEN, AFKCONVOY_ADMIT_LOAD, AFKCONVOY_ADMIT_MEMORY, AFKCONVOY_ADMIT_DISK, AFKCONVOY_ADMIT_INSPECT_AFTER, AFKCONVOY_WATCH_DIR, AFKCONVOY_WATCH_EVERY, AFKCONVOY_JEV_KEY_COMMAND, AFKCONVOY_NOTIFY_COMMAND, AFKCONVOY_AGENT_INSTRUCTIONS, AFKCONVOY_AGENT_SKILLS — changes it for the host before it hands its checkout over. Every fleet instance on the host reads them as it goes — admission at each tick, the hot limits at each sample, the watch's before each look, the key command at each worker-health judgment — so a change holds for all of them at once, and none is started again for it; the host runner reads the panel's port as it starts. A `run` that names none changes none, and nothing else changes them: `tick`, `plan` and `doctor` read them as they are, and a host runner started again keeps them. `default` changes one back to its default (`--hot-cores default`). `afkconvoy doctor` says those in force, as `host.settings`.
     ///
     /// The host runner: one process of the host, holding a fleet instance for each checkout on the list, each ticking as a fleet instance always has. `run` asks it on its socket in the cache directory (host-runner.sock) — the one socket of the host: `stop`, `wake`, `panel --open`, `exclusive` and `doctor` ask it there too, each naming its checkout, and no fleet instance or repo has one of its own; one nobody listens on, which a host runner killed with no goodbye left, is removed by whoever finds it — and starts it where none answers: in a process group of its own, so the terminal that ran `run` can close, in /, with a fresh login shell's environment — the names your login shell (`$SHELL -lic`) exports, and none of those of the shell that ran `run`. A variable exported only in that shell, or one a session set for itself (Claude Code's, orca's), reaches neither the host runner nor any worker it starts: put it in your login shell's rc files. It keeps the cache directory and the config directory of the `run` that started it. Started again, it starts every checkout on the list, each with what its `run` named, under the host settings the file keeps; a checkout whose fleet instance cannot start then is broken (below), and stays on the list.
     ///
@@ -1744,8 +1768,18 @@ enum Command {
         #[arg(long, env = JEV_KEY_COMMAND_ENV, value_name = "COMMAND", value_parser = jev_key_command_or_default)]
         jev_key_command: Option<To<String>>,
         /// Shell command receiving each human decision as JSON on stdin; `default` disables sending.
-        #[arg(long, env = NOTIFY_COMMAND_ENV, value_name = "COMMAND", value_parser = notify_command_or_default)]
-        notify_command: Option<To<String>>,
+        #[arg(long, env = NOTIFY_COMMAND_ENV, value_name = "COMMAND", value_parser = boxed_notify_command)]
+        notify_command: Option<Box<To<String>>>,
+        /// The agent setup's instructions file, linked to the global instructions of every
+        /// harness the host kit holds (Claude Code's `~/.claude/CLAUDE.md`, Codex's
+        /// `~/.codex/AGENTS.md`, …): a host setting; `default` removes it [default: none]
+        #[arg(long, env = AGENT_INSTRUCTIONS_ENV, value_name = "FILE", value_parser = boxed_file)]
+        agent_instructions: Option<Box<To<PathBuf>>>,
+        /// The agent setup's skill list, one line per source, `<source> <skill>...` or
+        /// `<source> *`, installed through `npx skills` for every harness the host kit holds: a
+        /// host setting; `default` removes it [default: none]
+        #[arg(long, env = AGENT_SKILLS_ENV, value_name = "FILE", value_parser = boxed_file)]
+        agent_skills: Option<Box<To<PathBuf>>>,
         /// The name this host goes by in the records it owns — candidates, claims, slots, logs —
         /// above the name the system gives it, which a network may change: a host renamed
         /// takes its own records for another host's. A `run` that finds none keeps the
@@ -4306,6 +4340,17 @@ fn boxed_lanes(said: &str) -> Result<Box<To<u64>>, String> {
     host_settings::watch_every_or_default(said).map(Box::new)
 }
 
+/// `--agent-instructions` and `--agent-skills`, boxed: `Run` is the largest
+/// command, and clippy bounds it.
+fn boxed_file(said: &str) -> Result<Box<To<PathBuf>>, String> {
+    host_settings::file_or_default(said).map(Box::new)
+}
+
+/// `--notify-command`, boxed: `Run` is the largest command, and clippy bounds it.
+fn boxed_notify_command(said: &str) -> Result<Box<To<String>>, String> {
+    notify_command_or_default(said).map(Box::new)
+}
+
 /// `--host-name`, boxed: `Run` is the largest command, and clippy bounds it.
 fn boxed_host_name(said: &str) -> Result<Box<To<String>>, String> {
     host_settings::host_name_or_default(said).map(Box::new)
@@ -4397,6 +4442,8 @@ fn start_of(
         exclusive_seconds,
         jev_key_command,
         notify_command,
+        agent_instructions,
+        agent_skills,
         host_name,
         gate_lanes,
         slow_gate_lanes,
@@ -4431,8 +4478,10 @@ fn start_of(
         watch_dir,
         watch_every,
         jev_key_command,
-        notify_command,
+        notify_command: notify_command.map(|command| *command),
         host_name: host_name.map(|name| *name),
+        agent_instructions: agent_instructions.map(|file| *file),
+        agent_skills: agent_skills.map(|file| *file),
     };
     let ready_timeout = agent.ready_timeout;
     let panic_at = panic_at_tick;
@@ -4810,8 +4859,14 @@ fn run(
         Command::Flows { delivery, tracker, .. } => {
             flows::flows(&checkout?, delivery.as_deref(), tracker.as_ref())
         }
-        Command::Daybook { text, did, why, undo, links, repo, tracker, .. } => {
-            let said = daybook::Said { did: did.or(text), why, undo, links };
+        Command::Daybook { lessons: true, since, until, tracker, .. } => daybook::lessons(
+            checkout,
+            tracker,
+            since.as_deref().unwrap_or_default(),
+            until.as_deref(),
+        ),
+        Command::Daybook { text, did, why, undo, lesson, links, repo, tracker, .. } => {
+            let said = daybook::Said { did: did.or(text), why, undo, lesson, links };
             daybook::daybook(checkout, daybook::Asked { said, repo, tracker })
         }
         Command::Skill => Ok(Value::String(SKILL.to_string())),

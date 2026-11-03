@@ -1755,6 +1755,25 @@ case "$2" in
     echo "Usage: claude [options]"; echo "  --add-dir <directories...>"
     echo "  --model <model>"; echo "  --setting-sources <sources>"
     echo "  --settings <file-or-json>"; exit 0 ;;
+  "npx -y skills "*)
+    # The agent setup's `npx skills`: each line is kept in `npx-asked`. `ls`
+    # answers `npx-ls-<agent>.json`, or nothing installed. `add` writes its
+    # line into the copy `fake` (failing where the copy is read-only), and
+    # fails where `npx-fails` is there.
+    echo "$2" >> "$root/npx-asked"
+    case "$2" in
+      *" ls -g -a '"*)
+        agent=${2#*" -a '"}; agent=${agent%%"'"*}
+        if [ -f "$root/npx-ls-$agent.json" ]; then cat "$root/npx-ls-$agent.json"; else echo '[]'; fi ;;
+      *" add "*)
+        if [ -e "$root/npx-fails" ]; then echo "network down" >&2; exit 1; fi
+        mkdir -p "$HOME/.agents/skills/fake" && echo "$2" > "$HOME/.agents/skills/fake/SKILL.md" || exit 1
+        # One agent alone may be given a copy of its own in its directory.
+        case "$2" in *" -a 'claude-code' -s "*)
+          mkdir -p "$HOME/.claude/skills/fake" && echo "$2" > "$HOME/.claude/skills/fake/SKILL.md" || exit 1 ;;
+        esac ;;
+    esac
+    exit 0 ;;
   "type -- "*)
     word=${2#type -- \'}; word=${word%\'}
     if [ -f "$root/shell-types" ]; then

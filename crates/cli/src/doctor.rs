@@ -172,6 +172,7 @@ kinds! {
     AdmissionHeld: Warning, "admission has held back new workers";
     MemoryPressure: Warning, "the host has been under memory pressure";
     KitUnplaced: Warning, "has unplaced models in the host kit";
+    AgentSetupDrifted: Warning, "differs from the agent setup";
     WatchUnavailable: Critical, "no harness can start this host's watch";
     WatchBusy: Critical, "the resident watch is busy; its round remains undelivered";
     NotifyFailed: Warning, "human decision sending has failed repeatedly";
@@ -237,6 +238,7 @@ impl Kind {
                 | Kind::AdmissionHeld
                 | Kind::MemoryPressure
                 | Kind::KitUnplaced
+                | Kind::AgentSetupDrifted
                 | Kind::WatchUnavailable
                 | Kind::WatchBusy
                 | Kind::NotifyFailed
@@ -1232,13 +1234,14 @@ fn plan_findings(run: &Run, state: &State) -> Vec<Finding> {
             fix,
         ));
     }
-    if let Some(name) = set.cut.as_ref().and_then(|cut| cut.not_cutting_here.as_ref()) {
+    if let Some(failed) = set.cut.as_ref().and_then(|cut| cut.not_cutting_here.as_ref()) {
         found.push(finding(
             Kind::CutNeed,
-            json!(["cut-need", name]),
-            name.clone(),
-            "the cut is due and a host check failed".to_string(),
-            "check the repo's cut-needs declaration on this host".to_string(),
+            json!(["cut-need", failed.said()]),
+            failed.said(),
+            failed.evidence(),
+            "read its stderr file on this host, then check the repo's cut-needs declaration"
+                .to_string(),
         ));
     }
     if let Some(cut) = set.cut.as_ref().filter(|cut| cut.standing == cut::Standing::Failed)
@@ -2629,6 +2632,7 @@ impl Look {
         findings.extend(crate::machine::findings(&others, host_runner::runs()));
         findings.extend(crate::machine::path_findings());
         findings.extend(crate::kit_research::findings());
+        findings.extend(crate::agent_setup::findings());
         findings.extend(crate::watch_notify::findings());
         findings.extend(crate::watch_daybook::findings());
         Look { readings, host, findings, trackers: crate::tracker::Public::default() }
