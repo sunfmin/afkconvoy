@@ -221,7 +221,9 @@ fn a_slept_hosts_next_tick_stops_its_taken_worker_and_keeps_unpushed_work() {
         .expect("doctor names the retained local commit");
     assert!(finding["what"].as_str().unwrap().contains("1 commit the remote does not have"));
     assert!(finding["evidence"].as_str().unwrap().contains(path.to_str().unwrap()));
-    assert!(!finding["fix"].as_str().unwrap().contains("push"));
+    // The fix names no push; the checkout path it names may well say one.
+    let fix = finding["fix"].as_str().unwrap().replace(path.to_str().unwrap(), "");
+    assert!(!fix.contains("push"), "{fix}");
     assert_eq!(tick_as(&world, "alpha", "h1", 2950)["errors"], json!([]));
     assert_eq!(git(&path, &["rev-parse", "HEAD"]), head, "later ticks retain the work too");
 }

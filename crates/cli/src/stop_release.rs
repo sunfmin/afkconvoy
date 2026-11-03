@@ -158,7 +158,7 @@ fn released(
         if run.over {
             // What its worker declared names a claim that is gone.
             let over = afkconvoy_core::claims::over_ref(layout, &run.key);
-            let _ = checkout.remote().try_push(&Push::delete(&over));
+            let _ = checkout.remote().try_push_retried(&Push::delete(&over), None, || Ok(false));
         }
         let ended = source.as_ref().map_err(|e| anyhow::anyhow!("{e:#}")).and_then(|source| {
             let worktree = Worktree::named(source, &afkconvoy_core::patrol::checkout_name(patrol))?;
@@ -298,7 +298,7 @@ pub fn unput_all(checkout: &Repo, leases: &[(String, String)]) -> Result<Vec<Val
     let push = leases.iter().fold(Push::default().atomic(), |push, (refname, sha)| {
         push.and_delete(refname).leased(sha)
     });
-    let pushed = checkout.remote().try_push(&push)?;
+    let pushed = checkout.remote().try_push_retried(&push, None, || Ok(false))?;
     if pushed.ok {
         return Ok(vec![]);
     }

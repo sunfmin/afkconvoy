@@ -279,7 +279,7 @@ fn write(repo: &Repo, gh: &GitHub, issue: u64, target: Target, selecting: bool) 
     }
     let sha = repo.record_commit(&serde_json::to_string(&target)?)?;
     let name = refname(repo, &gh.tracker, issue);
-    let pushed = repo.remote().try_push(&Push::set(&sha, &name))?;
+    let pushed = repo.remote().try_push_retried(&Push::set(&sha, &name), None, || Ok(false))?;
     // Always discover even after success, covering simultaneous selection.
     if let Some(won) = existing(repo, gh, issue)? {
         ensure!(

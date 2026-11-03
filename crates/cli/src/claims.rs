@@ -254,7 +254,8 @@ fn push_heartbeat(repo: &Repo, scan: &mut Scan, me: &Me) -> Result<()> {
 pub fn drop_heartbeat(repo: &Repo, scan: &mut Scan, instance: &InstanceId) -> Result<bool> {
     let Some(beat) = scan.heartbeats.get(instance.as_str()) else { return Ok(true) };
     let refname = heartbeat_ref(repo.layout(), instance);
-    let pushed = repo.remote().try_push(&Push::delete(&refname).leased(&beat.sha))?;
+    let push = Push::delete(&refname).leased(&beat.sha);
+    let pushed = repo.remote().try_push_retried(&push, None, || Ok(false))?;
     if pushed.ok {
         scan.heartbeats.remove(instance.as_str());
     }
@@ -337,6 +338,15 @@ fn put(repo: &Repo, scan: &mut Scan, me: &Me, refname: &str, how: Take) -> Resul
     let subject = crate::target::stamp_claim(repo, &scan.tracker, refname, subject)?;
     let sha = repo.record_commit(&subject)?;
     let last_beat = scan.last_beat(me.instance.as_str());
+    // Mine if a refused attempt's earlier one took; else lost only if
+    // somebody else's claim is where mine would be.
+    let mine = |there: &Option<RemoteRecord>| there.as_ref().is_some_and(|now| now.sha == sha);
+    let moved = |there: &Option<RemoteRecord>| match (there, how.leased_to()) {
+        (None, None) => false,
+        (None, Some(_)) => true,
+        (Some(_), None) => true,
+        (Some(now), Some(expected)) => now.sha != expected,
+    };
     let mut pushed = None;
     for step in claim_steps(last_beat, me.now) {
         match step {
@@ -346,7 +356,13 @@ fn put(repo: &Repo, scan: &mut Scan, me: &Me, refname: &str, how: Take) -> Resul
                 if let Some(expected) = how.leased_to() {
                     push = push.leased(expected);
                 }
-                pushed = Some(repo.remote().try_push(&push)?);
+                // The remote is read again before each retry: a claim another
+                // host's push took meanwhile is a lost race, not tried again.
+                let settled = || {
+                    let there = repo.remote().records(&[refname], Fresh::Live)?.pop();
+                    Ok(mine(&there) || moved(&there))
+                };
+                pushed = Some(repo.remote().try_push_retried(&push, None, settled)?);
             }
         }
     }
@@ -354,16 +370,12 @@ fn put(repo: &Repo, scan: &mut Scan, me: &Me, refname: &str, how: Take) -> Resul
     if pushed.ok {
         return Ok(Put::Won { owner, sha, subject });
     }
-    // Lost only if somebody else's claim is where ours would be.
     let detail = pushed.stderr.trim().to_string();
     let there = repo.remote().records(&[refname], Fresh::Live)?.pop();
-    let moved = match (&there, how.leased_to()) {
-        (None, None) => false,
-        (None, Some(_)) => true,
-        (Some(_), None) => true,
-        (Some(now), Some(expected)) => now.sha != expected,
-    };
-    if !moved {
+    if mine(&there) {
+        return Ok(Put::Won { owner, sha, subject });
+    }
+    if !moved(&there) {
         bail!("the push of {refname} failed and this is not a lost race: {detail}");
     }
     Ok(Put::Lost { there, detail })
@@ -492,7 +504,8 @@ pub fn drop_run(repo: &Repo, scan: &mut Scan, claim: &RunClaim) -> Result<()> {
     unput(repo, &run_ref(repo.layout(), &claim.key), &claim.sha)?;
     if claim.over {
         // What is left of it names a claim that is gone, and declares nothing.
-        repo.remote().try_push(&Push::delete(&over_ref(repo.layout(), &claim.key)))?;
+        let push = Push::delete(&over_ref(repo.layout(), &claim.key));
+        repo.remote().try_push_retried(&push, None, || Ok(false))?;
     }
     scan.runs.retain(|run| run.key != claim.key);
     Ok(())
@@ -514,7 +527,8 @@ pub fn push_ask(repo: &Repo, scan: &mut Scan, name: &str, host: &str, now: u64) 
 /// human's, and stands. Already gone counts as deleted.
 pub fn drop_ask(repo: &Repo, scan: &mut Scan, name: &str, ask: &Ask) -> Result<()> {
     let refname = asked_ref(repo.layout(), name);
-    let pushed = repo.remote().try_push(&Push::delete(&refname).leased(&ask.sha))?;
+    let push = Push::delete(&refname).leased(&ask.sha);
+    let pushed = repo.remote().try_push_retried(&push, None, || Ok(false))?;
     if !pushed.ok
         && repo.remote().sha(&refname, Fresh::Process)?.as_deref() == Some(ask.sha.as_str())
     {
@@ -547,7 +561,8 @@ pub fn declare_over(repo: &Repo, key: &str) -> Result<Value> {
 /// — so a claim somebody took meanwhile is never deleted from under them.
 /// Already gone counts as released.
 fn unput(repo: &Repo, refname: &str, expected: &str) -> Result<()> {
-    let pushed = repo.remote().try_push(&Push::delete(refname).leased(expected))?;
+    let push = Push::delete(refname).leased(expected);
+    let pushed = repo.remote().try_push_retried(&push, None, || Ok(false))?;
     let now_at = if pushed.ok { None } else { repo.remote().sha(refname, Fresh::Process)? };
     match now_at {
         None => Ok(()),
@@ -581,5 +596,99 @@ pub fn release(repo: &Repo, scan: &mut Scan, me: &InstanceId, number: u64) -> Re
             let refname = claim_ref(repo.layout(), &scan.tracker, number);
             Ok(json!({"released": true, "issue": number, "ref": refname}))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use afkconvoy_core::claims::{InstanceId, Owner, heartbeat_ref, run_ref};
+    use afkconvoy_core::layout::Layout;
+    use afkconvoy_core::tracker::Tracker;
+
+    use super::{Me, Scan, beat, take_run};
+    use crate::git::Repo;
+    use crate::remote::tests::{Fake, HELD};
+
+    /// A checkout whose remote is `fake`: its record commits are real.
+    fn checkout(fake: &Arc<Fake>) -> (tempfile::TempDir, Repo) {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(crate::git::run(dir.path(), &["init", "-q"], &[]).unwrap().ok);
+        let repo = Repo::on_wire(dir.path().to_path_buf(), fake.clone());
+        (dir, repo)
+    }
+
+    fn me(instance: &str) -> Me {
+        Me { instance: InstanceId::parse(instance).unwrap(), host: "here".into(), now: 1_000 }
+    }
+
+    fn scan() -> Scan {
+        Scan::among(Layout::Hidden, Tracker::Own, vec![])
+    }
+
+    #[test]
+    fn a_heartbeat_refused_for_a_held_ref_lock_is_written_on_a_later_attempt() {
+        let fake = Fake::with(&[]);
+        let (_dir, repo) = checkout(&fake);
+        let me = me("a");
+        let name = heartbeat_ref(Layout::Hidden, &me.instance);
+        fake.refuses(&name, HELD);
+        let beaten = beat(&repo, &mut scan(), &me).unwrap();
+        assert_eq!(beaten["refreshed"], true);
+        assert!(fake.sha(&name).is_some());
+        assert_eq!(fake.pushes(), 2);
+    }
+
+    #[test]
+    fn a_heartbeat_refused_otherwise_fails_with_what_the_remote_said() {
+        let fake = Fake::with(&[]);
+        let (_dir, repo) = checkout(&fake);
+        let me = me("a");
+        let name = heartbeat_ref(Layout::Hidden, &me.instance);
+        fake.refuses(&name, " ! [remote rejected] x -> refs/convoy/heartbeat/a (protected)");
+        let error = beat(&repo, &mut scan(), &me).unwrap_err().to_string();
+        assert!(error.contains("(protected)"), "{error}");
+        assert_eq!(fake.pushes(), 1);
+    }
+
+    #[test]
+    fn a_claim_refused_for_a_held_ref_lock_is_won_on_a_later_attempt() {
+        let fake = Fake::with(&[]);
+        let (_dir, repo) = checkout(&fake);
+        let name = run_ref(Layout::Hidden, "patrol-x");
+        fake.refuses(&name, HELD);
+        let won = take_run(&repo, &mut scan(), &me("a"), "patrol-x").unwrap().unwrap();
+        assert_eq!(fake.sha(&name), Some(won.sha));
+    }
+
+    #[test]
+    fn a_held_ref_lock_that_was_another_hosts_win_is_a_lost_claim() {
+        let fake = Fake::with(&[]);
+        let (_dir, repo) = checkout(&fake);
+        let theirs = Owner { instance: "b".into(), host: "there".into(), ts: 999 };
+        let theirs = repo.record_commit(&theirs.write()).unwrap();
+        let name = run_ref(Layout::Hidden, "patrol-x");
+        fake.refuses_taken(&name, HELD, &theirs);
+        let mut scan = scan();
+        assert!(take_run(&repo, &mut scan, &me("a"), "patrol-x").unwrap().is_none());
+        assert_eq!(fake.sha(&name), Some(theirs.clone()));
+        let held = scan.runs.iter().find(|run| run.key == "patrol-x").unwrap();
+        assert_eq!(held.sha, theirs);
+        // The heartbeat, then the one claim push: a lost race is not tried again.
+        assert_eq!(fake.pushes(), 2);
+    }
+
+    #[test]
+    fn a_claim_held_on_every_attempt_fails_with_what_the_remote_said() {
+        let fake = Fake::with(&[]);
+        let (_dir, repo) = checkout(&fake);
+        let name = run_ref(Layout::Hidden, "patrol-x");
+        for _ in 0..5 {
+            fake.refuses(&name, HELD);
+        }
+        let error = take_run(&repo, &mut scan(), &me("a"), "patrol-x").unwrap_err().to_string();
+        assert!(error.contains("not a lost race") && error.contains("(failed)"), "{error}");
+        assert_eq!(fake.sha(&name), None);
     }
 }
