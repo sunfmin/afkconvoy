@@ -1312,3 +1312,74 @@ fn a_verdict_on_the_cut_escalates_where_no_cut_will_come() {
     let escalation = escalation.expect("an escalation comment");
     assert!(escalation.contains("the repo names no cut steps"), "{escalation}");
 }
+
+#[test]
+fn a_cut_whose_gate_goes_red_names_the_failing_test_and_keeps_that_run_s_output() {
+    let world = World::new();
+    tag(&world, "v0.1.0");
+    // A gate that, while `red` exists, fails as nextest says a test failed:
+    // the test by name, what it printed after it, and a last line that names
+    // no test.
+    let script = world.root.join("red-gate");
+    std::fs::write(
+        &script,
+        format!(
+            "if [ -f '{red}' ]; then\n\
+             echo '        PASS [   0.012s] (1/3) afkconvoy cutting::passes'\n\
+             echo '        FAIL [   0.208s] (2/3) afkconvoy cutting::a_named_test'\n\
+             echo '  stderr ───'\n\
+             echo \"    thread 'cutting::a_named_test' panicked at tests/cutting.rs:9:5:\"\n\
+             echo '    the widget was not cut'\n\
+             echo '     Summary [   0.300s] 3 tests run: 2 passed, 1 failed, 0 skipped'\n\
+             echo '        FAIL [   0.208s] (2/3) afkconvoy cutting::a_named_test'\n\
+             echo 'gate: the seconds each step took: fmt 1s build 2s' >&2\n\
+             exit 100\n\
+             fi\n",
+            red = world.root.join("red").display()
+        ),
+    )
+    .unwrap();
+    let config = CONFIG.replace("./gate.sh", &format!("sh '{}'", script.display()));
+    commit_config(
+        &world,
+        &format!("{config}\n{}", cut_block(&says_published(&world))),
+        "Turn cutting on (#7)",
+    );
+    assert_eq!(cut(&tick_as(&world, "alpha", 10_000)), ["cut done"]);
+    let checkout = checkout(&world);
+    std::fs::write(world.root.join("red"), "red").unwrap();
+    let failed = world.afk_in(&checkout, &["cut", "--host", "h1"]).ok();
+    assert_eq!(failed["failed"], "gate", "{failed}");
+    let output =
+        PathBuf::from(failed["gate_output"].as_str().unwrap_or_else(|| panic!("{failed}")));
+    let kept = std::fs::read_to_string(&output).unwrap();
+    assert!(kept.contains("panicked at tests/cutting.rs:9:5"), "{kept}");
+    let why = failed["why"].as_str().unwrap();
+    assert!(why.contains("failing: afkconvoy cutting::a_named_test"), "{why}");
+    assert!(!why.contains("its last line"), "{why}");
+
+    // The fleet ends it: its issue names the test, quotes what it printed,
+    // and names where the whole run is kept.
+    assert_eq!(cut(&tick_as(&world, "alpha", 10_100)), ["end_cut done"]);
+    let failed = failures(&world);
+    assert_eq!(failed.len(), 1, "{failed:?}");
+    let issues = world.gh()["issues"].as_array().unwrap().clone();
+    let issue = issues.iter().find(|issue| issue["number"] == failed[0].0).unwrap();
+    let body = issue["body"].as_str().unwrap();
+    assert!(body.contains("`afkconvoy cutting::a_named_test`"), "{body}");
+    assert!(body.contains("    the widget was not cut"), "{body}");
+    assert!(body.contains(&format!("`{}`", output.display())), "{body}");
+
+    // Gone on from the gate, its run writes another file: the red run's stays.
+    std::fs::remove_file(world.root.join("red")).unwrap();
+    let answer = world.afk_in(&checkout, &["cut", "--host", "h1", "--from", "gate"]).ok();
+    assert!(answer.get("failed").is_none(), "{answer}");
+    assert_eq!(std::fs::read_to_string(&output).unwrap(), kept, "the red run's output stays");
+    let dir = output.parent().unwrap();
+    let runs: Vec<_> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with("convoy-cut-gate-"))
+        .collect();
+    assert_eq!(runs.len(), 2, "each run keeps its own: {runs:?}");
+}

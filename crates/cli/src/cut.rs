@@ -5,15 +5,17 @@
 
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use afkconvoy_core::blocked::CutWait;
 use afkconvoy_core::config::Config;
 use afkconvoy_core::cut::{
-    self, CHECKOUT, CLAIM_KEY, Failure, MINOR_LABEL, Record, Row, Seen, Standing, Step, Tag, Took,
+    self, CHECKOUT, CLAIM_KEY, Failure, MINOR_LABEL, Record, RedGate, Row, Seen, Standing, Step,
+    Tag, Took,
 };
-use afkconvoy_core::gate::GateCommand;
+use afkconvoy_core::gate::{GateCommand, failing_tests, quoted};
 use afkconvoy_core::harness::Harness;
 use afkconvoy_core::line::Line;
 use afkconvoy_core::plan::Issue;
@@ -296,7 +298,7 @@ pub fn end(fleet: &mut Fleet, me: &Me, read: &Flows, row: &Row) -> Result<Outcom
     let version = record.version.clone();
     let failure = match &ending {
         Ending::Read(ending) => ending.failure(limit),
-        Ending::Gone(why) => Some(Failure { step: record.step(), why: why.clone() }),
+        Ending::Gone(why) => Some(Failure::at(record.step(), why.clone())),
     };
     match failure {
         None => {
@@ -482,7 +484,8 @@ pub fn run(
         )
     })?;
     let gh = GitHub::of(repo)?;
-    let mut cutting = Cutting { repo, config, steps: &steps, gh: &gh, host, checkout: &checkout };
+    let mut cutting =
+        Cutting { repo, config, steps: &steps, gh: &gh, host, checkout: &checkout, red: None };
     let first = from.unwrap_or_else(|| record.step());
     let taking = first.from();
     let names: Vec<_> = taking.iter().map(|step| step.word()).collect();
@@ -510,10 +513,16 @@ pub fn run(
         if let Err(error) = taken {
             let why = format!("{error:#}");
             eprintln!("[afkconvoy] cut: {} failed after {seconds}s: {why}", step.word());
-            record.failed = Some(Failure { step, why: why.clone() });
+            let red = cutting.red.take();
+            let output = red.as_ref().map(|red| red.output.clone());
+            record.failed = Some(Failure { step, why: why.clone(), red });
             checkout.record_cut(&record)?;
-            return Ok(json!({"version": record.version, "failed": step.word(), "why": why,
-                "said": record.line(), "log": checkout.cut_log()?}));
+            let mut answer = json!({"version": record.version, "failed": step.word(), "why": why,
+                "said": record.line(), "log": checkout.cut_log()?});
+            if let Some(output) = output {
+                answer["gate_output"] = json!(output);
+            }
+            return Ok(answer);
         }
         if record.superseded.is_some() {
             checkout.record_cut(&record)?;
@@ -565,6 +574,8 @@ struct Cutting<'a> {
     gh: &'a GitHub,
     host: &'a str,
     checkout: &'a Worktree,
+    /// What the gate step's red run named, for the failure it ends the cut with.
+    red: Option<RedGate>,
 }
 
 impl Cutting<'_> {
@@ -641,8 +652,10 @@ impl Cutting<'_> {
     /// landing turn, is no candidate on any chain and reserves no barrier,
     /// and its lane shares the repo as a candidate's does
     /// (`Permit::cut_gate`): turns land on the base branch while it runs,
-    /// whether it passes, fails or hangs.
-    fn gate(&self, record: &mut Record, now: u64) -> Result<()> {
+    /// whether it passes, fails or hangs. A run made now writes its whole
+    /// output to a file of its own in the checkout's git dir, which no later
+    /// run writes; a red one fails with what it named (`RedGate`).
+    fn gate(&mut self, record: &mut Record, now: u64) -> Result<()> {
         let commit = self.commit(record)?;
         // An earlier afkconvoy's record names the commit its turn landed:
         // the base branch brings it here.
@@ -656,7 +669,8 @@ impl Cutting<'_> {
         let limit = Duration::from_secs(self.config.gate_seconds());
         let heavy = crate::config::heavy_gate(command.text());
         let _lane = crate::exclusive::Permit::cut_gate(self.repo, command.text(), heavy)?;
-        match crate::gate::gated(self.repo, &command, self.host, now, limit, None)? {
+        let output = self.gate_output(now)?;
+        match crate::gate::gated(self.repo, &command, self.host, now, limit, None, Some(&output))? {
             Gated::Green { .. } => Ok(()),
             Gated::Red { ran, excerpt, termination } => {
                 let how = match termination {
@@ -664,10 +678,40 @@ impl Cutting<'_> {
                     None if ran.timed_out => "it reached the gate limit".to_string(),
                     None => format!("it exited {}", ran.exit_code),
                 };
-                let last = excerpt.iter().rev().find(|line| !line.trim().is_empty());
-                let said = last.map(|line| format!(", its last line `{}`", line.trim()));
-                bail!("the gate is red on {commit}: {how}{}", said.unwrap_or_default())
+                // The whole run, as it kept it; its excerpt where it kept none.
+                let lines: Vec<String> = match std::fs::read_to_string(&output) {
+                    Ok(text) => text.lines().map(str::to_string).collect(),
+                    Err(_) => excerpt,
+                };
+                let tests = failing_tests(&lines);
+                let named = match tests.as_slice() {
+                    [] => "; its output names no failing test".to_string(),
+                    tests => format!("; failing: {}", tests.join(", ")),
+                };
+                let output = output.display().to_string();
+                self.red = Some(RedGate { tests, quote: quoted(&lines), output: output.clone() });
+                bail!("the gate is red on {commit}: {how}{named}; its output is in {output}")
             }
+        }
+    }
+
+    /// A file of its own for the output of the gate run started at `now`:
+    /// in the checkout's git dir, beside the cut's log, named for when it
+    /// started — never one an earlier run wrote.
+    fn gate_output(&self, now: u64) -> Result<PathBuf> {
+        let log = self.checkout.cut_log()?;
+        let dir = log.parent().ok_or_else(|| anyhow!("{} has no directory", log.display()))?;
+        let mut n = 0;
+        loop {
+            let name = match n {
+                0 => format!("convoy-cut-gate-{now}.log"),
+                n => format!("convoy-cut-gate-{now}-{n}.log"),
+            };
+            let file = dir.join(name);
+            if !file.exists() {
+                return Ok(file);
+            }
+            n += 1;
         }
     }
 

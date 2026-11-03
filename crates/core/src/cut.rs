@@ -471,6 +471,29 @@ pub struct Took {
 pub struct Failure {
     pub step: Step,
     pub why: String,
+    /// Of a gate that ran red: what its run named and where it is kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub red: Option<RedGate>,
+}
+
+impl Failure {
+    /// The step `step` failed, for `why`, with no gate run to name.
+    pub fn at(step: Step, why: impl Into<String>) -> Failure {
+        Failure { step, why: why.into(), red: None }
+    }
+}
+
+/// What a cut's gate that ran red named: the tests its output names as
+/// failing (`gate::failing_tests`), what it printed from the first of them
+/// on (`gate::quoted`), and the file its whole output is kept in — a file
+/// of that run's own, which no later run of the gate writes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RedGate {
+    #[serde(default)]
+    pub tests: Vec<String>,
+    #[serde(default)]
+    pub quote: Vec<String>,
+    pub output: String,
 }
 
 /// What a cut is, and what it did so far: kept in its checkout as it goes,
@@ -602,15 +625,14 @@ impl Ending {
         match self {
             Ending::Cut | Ending::Superseded => None,
             Ending::Failed(failure) => Some(failure.clone()),
-            Ending::OutOfTime(step) => Some(Failure {
-                step: *step,
-                why: format!("its time ran out: a cut is given {} minutes", limit / 60),
-            }),
-            Ending::Gone(step) => Some(Failure {
-                step: *step,
-                why: "it was ended from outside: its terminal is gone, and it said nothing"
-                    .to_string(),
-            }),
+            Ending::OutOfTime(step) => Some(Failure::at(
+                *step,
+                format!("its time ran out: a cut is given {} minutes", limit / 60),
+            )),
+            Ending::Gone(step) => Some(Failure::at(
+                *step,
+                "it was ended from outside: its terminal is gone, and it said nothing",
+            )),
         }
     }
 }
@@ -689,6 +711,9 @@ pub fn failure_report(
         failure.why.trim()
     );
     said.push_str(&format!("What it was: {}.\n\n", record.line()));
+    if let Some(red) = &failure.red {
+        said.push_str(&red_gate(red));
+    }
     said.push_str(&format!(
         "Its checkout is kept, `{checkout}` on the host `{host}`, with what each step printed \
          in its git dir. The line that goes on from the step that failed, once what failed it \
@@ -704,6 +729,29 @@ pub fn failure_report(
             record.version
         ));
     }
+    said
+}
+
+/// What the report of a cut whose gate ran red says of that run: the tests
+/// that failed, what it printed from the first of them on, and where its
+/// whole output is kept.
+fn red_gate(red: &RedGate) -> String {
+    let mut said = match red.tests.as_slice() {
+        [] => "Its gate's output names no failing test. It ended:\n\n".to_string(),
+        tests => {
+            let named: Vec<String> = tests.iter().map(|test| format!("`{test}`")).collect();
+            format!(
+                "The tests its gate failed on: {}. Its output from the first of them on:\n\n",
+                named.join(", ")
+            )
+        }
+    };
+    said.push_str(&format!("````\n{}\n````\n\n", red.quote.join("\n")));
+    said.push_str(&format!(
+        "That run's whole output is kept in `{}`, a file of its own: a later \
+         `afkconvoy cut --from gate` writes its run to another, and leaves this one.\n\n",
+        red.output
+    ));
     said
 }
 
@@ -953,7 +1001,7 @@ mod tests {
         let done = Record { took: all, ..record() };
         assert!(done.done());
         assert_eq!(ending(Some(&done), 1000, true, 1001, limit), Some(Ending::Cut));
-        let failure = Failure { step: Step::Gate, why: "red".into() };
+        let failure = Failure::at(Step::Gate, "red");
         let failed = Record { failed: Some(failure.clone()), at: Some(Step::Gate), ..record() };
         assert_eq!(ending(Some(&failed), 1000, false, 1001, limit), Some(Ending::Failed(failure)));
         let landing = Record { at: Some(Step::Gate), ..record() };
@@ -1038,7 +1086,7 @@ mod tests {
         ];
         assert_eq!(failure_of(&issues, "ready-for-human"), Some(7));
         assert_eq!(failure_of(&issues, "fleet-lock"), None);
-        let failure = Failure { step: Step::Publish, why: "exited 1".into() };
+        let failure = Failure::at(Step::Publish, "exited 1");
         let said = failure_report(
             &record(),
             &failure,
@@ -1055,9 +1103,30 @@ mod tests {
         assert!(said.contains("No cut starts while this issue is open"), "{said}");
         // Its tag is pushed: closed, the version stays unpublished.
         assert!(said.contains("v0.5.17 stays tagged and is never published"), "{said}");
-        let failure = Failure { step: Step::Gate, why: "red".into() };
+        let failure = Failure::at(Step::Gate, "red");
         let said = failure_report(&record(), &failure, "h1", "/w/cut", "x");
         assert!(!said.contains("Its tag is pushed"), "{said}");
+        // A red gate's report names its failing tests, quotes the run and
+        // says where the whole of it is kept.
+        let red = RedGate {
+            tests: vec!["afkconvoy cutting::a".into(), "afkconvoy cutting::b".into()],
+            quote: vec!["  FAIL [ 0.1s] afkconvoy cutting::a".into(), "  boom".into()],
+            output: "/w/.git/convoy-cut-gate-1.log".into(),
+        };
+        let failure = Failure { red: Some(red), ..Failure::at(Step::Gate, "red") };
+        let said = failure_report(&record(), &failure, "h1", "/w/cut", "x");
+        assert!(
+            said.contains("failed on: `afkconvoy cutting::a`, `afkconvoy cutting::b`"),
+            "{said}"
+        );
+        assert!(said.contains("````\n  FAIL [ 0.1s] afkconvoy cutting::a\n  boom\n````"), "{said}");
+        assert!(said.contains("kept in `/w/.git/convoy-cut-gate-1.log`"), "{said}");
+        let failure = Failure {
+            red: Some(RedGate { tests: vec![], quote: vec!["x".into()], output: "o".into() }),
+            ..Failure::at(Step::Gate, "red")
+        };
+        let said = failure_report(&record(), &failure, "h1", "/w/cut", "x");
+        assert!(said.contains("names no failing test"), "{said}");
     }
 
     #[test]
