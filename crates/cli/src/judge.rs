@@ -4,7 +4,7 @@
 use std::time::UNIX_EPOCH;
 
 use afkconvoy_core::account::End;
-use afkconvoy_core::blocked::{Blocked, blocked_route};
+use afkconvoy_core::blocked::Blocked;
 use afkconvoy_core::board::Stage;
 use afkconvoy_core::claims::{Claim, releasable};
 use afkconvoy_core::harness::Harness;
@@ -38,7 +38,7 @@ use crate::exclusive;
 use crate::fleet::Fleet;
 use crate::git::Repo;
 use crate::orca::{Source, Worktree};
-use crate::park::{park_claim, standings};
+use crate::park::{park_claim, routed};
 use crate::remote::Fresh;
 use crate::team::keep;
 
@@ -595,7 +595,7 @@ pub(crate) fn silenced(
             Route::Stalled(silent) => Silenced::of(Silence::Stalled(silent), "nudge"),
             Route::Blocked => {
                 let named = found.verdict.map(|verdict| verdict.blocked_by).unwrap_or_default();
-                let command = match blocked_route(&standings(fleet, issue, &named)?) {
+                let command = match routed(fleet, issue, &named)? {
                     Blocked::Redispatch => "dispatch",
                     Blocked::Park(_) => "park",
                     Blocked::Escalate(_) => "tick",
@@ -821,7 +821,7 @@ pub fn judge(
         }
         Route::Blocked => {
             let named = verdict.map(|verdict| verdict.blocked_by).unwrap_or_default();
-            match blocked_route(&standings(fleet, issue, &named)?) {
+            match routed(fleet, issue, &named)? {
                 Blocked::Park(parkable) => {
                     park_claim(fleet, &claim, &parkable, Some(&worktree))?;
                     return Ok(Outcome::Done);

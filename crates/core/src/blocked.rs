@@ -5,7 +5,69 @@ use flux_rs::attrs::*;
 
 use crate::config::Config;
 use crate::plan::{LabelBar, label_bar};
+use crate::record::fleet_number;
 use crate::team::FlowLabels;
+
+/// The word a `blocked` verdict names the next cut of its repo by, in place of
+/// an issue's number or beside them (`blocked_by=cut`).
+pub const CUT: &str = "cut";
+
+/// What a `blocked` verdict waits on: the issues it names, and whether it
+/// waits on the next cut of its own repo — a version that is not installed
+/// yet (docs/adr/0056).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BlockedOn {
+    pub issues: Vec<u64>,
+    pub cut: bool,
+}
+
+impl BlockedOn {
+    /// Waiting on these issues, and on no cut.
+    pub fn issues(issues: Vec<u64>) -> BlockedOn {
+        BlockedOn { issues, cut: false }
+    }
+
+    /// What a `blocked_by=` value names: numbers — a hand may write `#3` — and
+    /// the word `cut`. Anything else in the list is dropped.
+    pub fn read(raw: Option<&str>) -> BlockedOn {
+        let mut on = BlockedOn::default();
+        for item in raw.unwrap_or_default().split(',').map(str::trim) {
+            if item == CUT {
+                on.cut = true;
+            } else if let Some(number) = fleet_number(item.strip_prefix('#').unwrap_or(item)) {
+                on.issues.push(number);
+            }
+        }
+        on
+    }
+
+    /// The value it is written as: the numbers, then `cut` when it waits on
+    /// the cut; empty when it names nothing.
+    pub fn word(&self) -> String {
+        let mut words: Vec<String> = self.issues.iter().map(u64::to_string).collect();
+        if self.cut {
+            words.push(CUT.to_string());
+        }
+        words.join(",")
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.issues.is_empty() && !self.cut
+    }
+}
+
+/// Whether a `blocked` verdict waits on the next cut of its repo, and whether
+/// one will come.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CutWait {
+    /// It does not name the cut.
+    No,
+    /// It does, and a cut will come: one is running, failed and waits for an
+    /// answer, or is due or will be once it is.
+    Coming,
+    /// It does, and no cut will come, for this reason.
+    Never(String),
+}
 
 /// How many issues the chain of open blockers behind a verdict's blockers may
 /// hold before the walk gives up: a dependency graph that deep is not read
@@ -214,24 +276,42 @@ where
     Ok(edges)
 }
 
+/// What holds a parked issue off the frontier first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Hold {
+    /// The edge to this open blocker.
+    Issue(u64),
+    /// The label that says it waits on the next cut (`cut::WAITING_LABEL`).
+    Cut,
+}
+
 /// The proof that a claim can be parked: every blocker its worker named is
-/// closed or waiting, and at least one is still open — so the edge written to
-/// it holds the issue off the frontier once the claim is released.
+/// closed or waiting, and at least one is still open or it waits on a cut
+/// that will come — so what is written for it holds the issue off the
+/// frontier once the claim is released.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Parkable {
-    first: u64,
+    first: Hold,
     rest: Vec<u64>,
 }
 
 impl Parkable {
     /// The open blockers to wait on, in the order the worker named them.
     pub fn blockers(&self) -> Vec<u64> {
-        let mut blockers = vec![self.first];
+        let mut blockers = match self.first {
+            Hold::Issue(first) => vec![first],
+            Hold::Cut => vec![],
+        };
         blockers.extend(self.rest.iter().copied());
         blockers
     }
 
-    pub(crate) fn first(&self) -> u64 {
+    /// Whether it waits on the next cut of its repo.
+    pub fn cut(&self) -> bool {
+        self.first == Hold::Cut
+    }
+
+    pub(crate) fn first(&self) -> Hold {
         self.first
     }
 
@@ -252,9 +332,14 @@ pub enum Blocked {
 }
 
 /// Routes a `blocked` verdict from the standing of each blocker it names, in
-/// the order named.
-pub fn blocked_route(standings: &[(u64, Standing)]) -> Blocked {
-    if standings.is_empty() {
+/// the order named, and from whether it waits on a cut and one will come.
+pub fn blocked_route(standings: &[(u64, Standing)], cut: &CutWait) -> Blocked {
+    if let CutWait::Never(reason) = cut {
+        return Blocked::Escalate(format!(
+            "The worker declared `blocked` on the next cut, and none will come — {reason}"
+        ));
+    }
+    if standings.is_empty() && *cut == CutWait::No {
         return Blocked::Escalate("The worker declared `blocked` and named no blocker".to_string());
     }
     let mut unmet: Vec<String> = Vec::new();
@@ -276,9 +361,14 @@ pub fn blocked_route(standings: &[(u64, Standing)]) -> Blocked {
             unmet.join("; ")
         ));
     }
+    if *cut == CutWait::Coming {
+        return Blocked::Park(Parkable { first: Hold::Cut, rest: waiting });
+    }
     let mut waiting = waiting.into_iter();
     match waiting.next() {
-        Some(first) => Blocked::Park(Parkable { first, rest: waiting.collect() }),
+        Some(first) => {
+            Blocked::Park(Parkable { first: Hold::Issue(first), rest: waiting.collect() })
+        }
         None => Blocked::Redispatch,
     }
 }
@@ -427,27 +517,60 @@ mod tests {
 
     #[test]
     fn a_blocked_verdict_is_routed_by_its_blockers() {
+        let no = CutWait::No;
         let unmet = Standing::Unmet("was closed as not planned".to_string());
         assert_eq!(
-            blocked_route(&[(41, Standing::Closed), (42, Standing::Closed)]),
+            blocked_route(&[(41, Standing::Closed), (42, Standing::Closed)], &no),
             Blocked::Redispatch
         );
-        let Blocked::Park(parkable) = blocked_route(&[
+        let waiting = [
             (41, Standing::Waiting),
             (42, Standing::Closed),
             (43, Standing::Waiting),
             (41, Standing::Waiting),
-        ]) else {
+        ];
+        let Blocked::Park(parkable) = blocked_route(&waiting, &no) else {
             panic!("every open blocker is waiting")
         };
         assert_eq!(parkable.blockers(), [41, 43], "the open ones, once each");
+        assert!(!parkable.cut());
         let Blocked::Escalate(reason) =
-            blocked_route(&[(41, Standing::Waiting), (42, unmet.clone()), (43, unmet)])
+            blocked_route(&[(41, Standing::Waiting), (42, unmet.clone()), (43, unmet)], &no)
         else {
             panic!("one unmet blocker escalates")
         };
         assert!(reason.ends_with("#42 was closed as not planned; #43 was closed as not planned"));
-        let Blocked::Escalate(reason) = blocked_route(&[]) else { panic!() };
+        let Blocked::Escalate(reason) = blocked_route(&[], &no) else { panic!() };
         assert!(reason.contains("named no blocker"));
+    }
+
+    #[test]
+    fn a_verdict_on_the_next_cut_parks_while_a_cut_will_come() {
+        let coming = CutWait::Coming;
+        let Blocked::Park(parkable) = blocked_route(&[], &coming) else { panic!() };
+        assert!(parkable.cut());
+        assert_eq!(parkable.blockers(), Vec::<u64>::new());
+        // closed blockers beside it clear nothing of the cut
+        let Blocked::Park(parkable) =
+            blocked_route(&[(41, Standing::Closed), (42, Standing::Waiting)], &coming)
+        else {
+            panic!()
+        };
+        assert!(parkable.cut());
+        assert_eq!(parkable.blockers(), [42]);
+        let never = CutWait::Never("the repo names no cut steps".to_string());
+        let Blocked::Escalate(reason) = blocked_route(&[], &never) else { panic!() };
+        assert!(reason.ends_with("none will come — the repo names no cut steps"), "{reason}");
+    }
+
+    #[test]
+    fn what_a_blocked_verdict_names_reads_back_from_its_word() {
+        let on = BlockedOn::read(Some("41, #42,cut,nonsense"));
+        assert_eq!(on, BlockedOn { issues: vec![41, 42], cut: true });
+        assert_eq!(on.word(), "41,42,cut");
+        assert_eq!(BlockedOn::read(Some(&on.word())), on);
+        assert_eq!(BlockedOn::read(Some("cut")).word(), "cut");
+        assert!(BlockedOn::read(None).is_empty());
+        assert_eq!(BlockedOn::default().word(), "");
     }
 }

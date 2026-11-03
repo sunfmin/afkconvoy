@@ -2,10 +2,11 @@
 //! the claim that waits on them.
 
 use afkconvoy_core::blocked::{
-    Blocked, BlockerRead, Named, Parkable, Standing, WalkError, blocked_route, standing, walk,
-    walk_from,
+    Blocked, BlockedOn, BlockerRead, CutWait, Named, Parkable, Standing, WalkError, blocked_route,
+    standing, walk, walk_from,
 };
 use afkconvoy_core::claims::Claim;
+use afkconvoy_core::cut::WAITING_LABEL;
 use afkconvoy_core::left::Left;
 use afkconvoy_core::plan::closing_pr;
 use afkconvoy_core::transition::{self, ParkStep};
@@ -61,6 +62,17 @@ pub fn standings(fleet: &Fleet, issue: u64, named: &[u64]) -> Result<Vec<(u64, S
     Ok(standings.collect())
 }
 
+/// What the `blocked` verdict on `issue`, waiting on `named`, comes to: from
+/// where each issue it names stands (`standings`), and — where it names the
+/// next cut — whether one will come (`cut::wait`).
+pub fn routed(fleet: &Fleet, issue: u64, named: &BlockedOn) -> Result<Blocked> {
+    let cut = match named.cut {
+        true => crate::cut::wait(fleet)?,
+        false => CutWait::No,
+    };
+    Ok(blocked_route(&standings(fleet, issue, &named.issues)?, &cut))
+}
+
 /// The `blocked` verdict a successful continuation will answer, read before
 /// starting its successor. Keeping its comment, rather than reading again
 /// after startup, never answers something the new worker just declared.
@@ -70,14 +82,14 @@ pub(crate) fn cleared_verdict(fleet: &Fleet, issue: u64) -> Result<Option<String
     let Some(verdict) = verdict.filter(|verdict| verdict.phase == Some(Phase::Blocked)) else {
         return Ok(None);
     };
-    match blocked_route(&standings(fleet, issue, &verdict.blocked_by)?) {
+    match routed(fleet, issue, &verdict.blocked_by)? {
         Blocked::Redispatch => Ok(comments.get(verdict.comment).map(|comment| comment.url.clone())),
         _ => Ok(None),
     }
 }
 
-/// Parks `claim`: a native blocked-by edge to every blocker in `parkable`
-/// GitHub does not record yet → release → remove the worktree, `worktree`
+/// Parks `claim`: the label that waits on the next cut where `parkable` does,
+/// and a native blocked-by edge to every blocker in it GitHub does not record yet → release → remove the worktree, `worktree`
 /// here, when it holds nothing the remote does not, or close the terminal of
 /// its worker in one kept for what only it holds, which the board names →
 /// what became of it.
@@ -100,7 +112,13 @@ pub fn park_claim(
                     fleet.gh.add_blocker(issue, fleet.gh.issue(blocker)?.id)?;
                 }
             }
-            ParkStep::Board => parked(fleet, claim, &parkable.blockers(), kept)?,
+            ParkStep::Cut => {
+                let labels = fleet.gh.issue(issue)?.labels;
+                if !labels.iter().any(|label| label == WAITING_LABEL) {
+                    fleet.gh.add_label(issue, WAITING_LABEL)?;
+                }
+            }
+            ParkStep::Board => parked(fleet, claim, parkable, kept)?,
             ParkStep::Release => {
                 delete(&fleet.repo, &mut fleet.scan, issue, &claim.sha)?;
             }
@@ -154,7 +172,7 @@ pub fn park(fleet: &mut Fleet, me: &Me, issue: u64) -> Result<Value> {
                 .ok_or_else(not_blocked)?
                 .blocked_by
         };
-    let parkable = match blocked_route(&standings(fleet, issue, &named)?) {
+    let parkable = match routed(fleet, issue, &named)? {
         Blocked::Park(parkable) => parkable,
         Blocked::Redispatch => {
             return Err(refused("every blocker it named is closed — dispatch it again instead"));
@@ -165,7 +183,10 @@ pub fn park(fleet: &mut Fleet, me: &Me, issue: u64) -> Result<Value> {
     };
     let worktree = worktree_of(fleet, issue)?;
     let left = park_claim(fleet, &claim, &parkable, worktree.as_ref())?;
-    let answer = json!({"issue": issue, "action": "parked", "blocked_by": parkable.blockers(),
+    let mut answer = json!({"issue": issue, "action": "parked", "blocked_by": parkable.blockers(),
         "released": true});
+    if parkable.cut() {
+        answer["cut"] = json!(true);
+    }
     Ok(with_left(answer, left.as_ref()))
 }

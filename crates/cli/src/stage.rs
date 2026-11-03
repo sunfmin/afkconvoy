@@ -4,6 +4,7 @@
 //! position it acts on and brings each `stage:` label to it. What a record is and what the records come to is the core's
 //! (`afkconvoy_core::stage_record`).
 
+use afkconvoy_core::blocked::BlockedOn;
 use afkconvoy_core::claims::Claim;
 use afkconvoy_core::harness::Harness;
 use afkconvoy_core::intake::{opened_by, taken_in};
@@ -35,7 +36,7 @@ pub struct Declaring {
     pub issue: u64,
     pub stage: String,
     pub declared: Declared,
-    pub blocked_by: Vec<u64>,
+    pub blocked_by: BlockedOn,
     /// What the stage produced.
     pub text: String,
     /// What a worker ran under; `None` of a human, who declares under nothing.
@@ -226,7 +227,7 @@ pub fn consult_send(
         stage: stage.to_string(),
         stated: Stated::Sent,
         by,
-        blocked_by: vec![],
+        blocked_by: BlockedOn::default(),
         text,
     };
     let standing = read.records.iter().any(|standing| standing.claim() == record.claim());

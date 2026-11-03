@@ -1461,7 +1461,7 @@ enum Command {
     ///   - `peer_running`: a live peer's run is still going
     ///   - `stale_run`: the run is claimed by a peer presumed dead: a tick deletes that claim
     ///
-    /// - `cut`: in a repo that turns cutting on (`afkconvoy cut --help`): {standing, newest_tag, initial, past, oldest_landing_age_seconds, busy_in_seconds, failure} — `newest_tag` the newest version tag on the remote (none: it has none), `initial` the declared first version, present only without a version tag, `past` how many commits the base branch holds past its newest tag (0 without one), `oldest_landing_age_seconds` how long its oldest landing has waited, `busy_in_seconds` how long until a busy cut may start (zero at the bound; both ages null without a landing past a tag), `failure` the open issue that says the last cut failed. standing says what a tick does about it:
+    /// - `cut`: in a repo that turns cutting on (`afkconvoy cut --help`): {standing, newest_tag, initial, past, oldest_landing_age_seconds, busy_in_seconds, failure, waiting} — `newest_tag` the newest version tag on the remote (none: it has none), `initial` the declared first version, present only without a version tag, `past` how many commits the base branch holds past its newest tag (0 without one), `oldest_landing_age_seconds` how long its oldest landing has waited, `busy_in_seconds` how long until a busy cut may start (zero at the bound; both ages null without a landing past a tag), `failure` the open issue that says the last cut failed, `waiting` the open issues that wait on the next cut (`afkconvoy verdict --help`), off the frontier until a cut has published and installed its version. standing says what a tick does about it:
     ///
     ///   - `due`: the base branch holds commits past `newest_tag`: the next idle tick starts a cut, or the next busy tick once `busy_in_seconds` is zero, whatever claims or frontier remain. An untagged remote with `initial` declared starts on an idle tick only
     ///   - `tagged`: the base branch holds nothing past `newest_tag`: nothing to cut
@@ -2409,7 +2409,7 @@ enum Command {
     ///
     /// - `pass`: the stage did its work: the issue goes where the workflow says
     /// - `reject`: the work of an earlier stage is turned down; the text says why. Only a stage whose workflow gives it a `reject` may declare it
-    /// - `blocked`: the issue waits on other issues: name them with `--blocked-by`. A stage that splits its issue declares it on the issues it opened and took in (`afkconvoy intake --help`), and runs again when they have all closed. So does a stage whose gate is red for a defect outside its issue, on the defect's issue: one it opened and took in, or the open one that already recorded it
+    /// - `blocked`: the issue waits on other issues: name them with `--blocked-by`. One that can go on only once the next version of this repo is installed — what it needs has landed but is not released — names `cut` there (`--blocked-by cut`) instead of polling for it: the fleet releases the claim and puts the label `convoy-waits-on-cut` on the issue, which keeps it off the frontier, so the fleet can go idle and cut. Once a cut has published and installed its version it takes that label off every issue carrying it, and each returns at the stage it left; a failed cut leaves them waiting. Where the repo names no cut steps, or nothing has landed past its newest version tag and no cut is running, no cut will come, and the issue escalates instead. A stage that splits its issue declares it on the issues it opened and took in (`afkconvoy intake --help`), and runs again when they have all closed. So does a stage whose gate is red for a defect outside its issue, on the defect's issue: one it opened and took in, or the open one that already recorded it
     /// - `already-satisfied`: the issue needs no change: it is already done
     /// - `escalate`: the stage cannot decide; the text says what has to be decided
     ///
@@ -2477,9 +2477,9 @@ enum Command {
         stage: String,
         #[command(flatten)]
         text: TextArgs,
-        /// The issues a `blocked` verdict waits on, as numbers separated by commas
-        #[arg(long, value_delimiter = ',')]
-        blocked_by: Vec<u64>,
+        /// What a `blocked` verdict waits on, separated by commas: issue numbers, and `cut` for the next cut of this repo — a version that is not installed yet
+        #[arg(long, value_delimiter = ',', value_parser = blocker)]
+        blocked_by: Vec<Blocker>,
         /// The commit of the role's repo a worker's stage ran under [a human names none]
         #[arg(long, env = ROLE_COMMIT_ENV, requires = "team_commit")]
         role_commit: Option<String>,
@@ -3024,6 +3024,8 @@ enum Command {
     /// 3. `gate` — gates that commit in the checkout: the whole gate, the fast gate and the slow gate, in a worker lane as any heavy command is (`afkconvoy exclusive --help`); a green run on record for its tree answers. It takes no landing turn, is no candidate and reserves no barrier: turns land on the base branch while it runs, whether it passes, fails or hangs.
     /// 4. `tag` — tags that commit `v<version>` (annotated), and pushes the tag. The PRs it holds are read again, up to that commit. A patch also checks landings up to the current base branch: where one landed while it ran and carries `{const:CUT_MINOR_LABEL}`, it stops at `tag` without tagging or publishing, and opens no failure issue. The next tick releases its claim and starts the minor cut, unless a fleet lock stands. An initial cut holds every PR the base branch's landings name, and keeps its declared version.
     /// 5. `publish` — with the tag checked out, runs the `publish` lines.
+    ///
+    /// The tick that finds a cut took every step takes the label `convoy-waits-on-cut` off every open issue carrying it: those whose stages declared `blocked` on the next cut (`afkconvoy verdict --help`) return to the frontier at the stage they left. A cut that failed, or a patch a minor landing overtook, takes it off nothing.
     ///
     /// The base branch never receives the version commit: it pushes its own branch and its version tag, and nothing to the base branch. The version's home is the tag; version files on the base branch stay as they are, and the next cut's `set` lines write its version on its own snapshot. The tag's parent is a base commit, so the landings past the tag are still those on the base branch past that parent.
     ///
@@ -4341,6 +4343,37 @@ fn declared(text: &str) -> Result<Declared, String> {
 }
 
 /// A stage or consult verdict. A ruling answers an escalation separately.
+/// One thing a `blocked` verdict waits on, as `--blocked-by` names it.
+#[derive(Debug, Clone, Copy)]
+enum Blocker {
+    Issue(u64),
+    Cut,
+}
+
+/// `--blocked-by`'s item: an issue's number — `#3` too — or `cut`.
+fn blocker(text: &str) -> Result<Blocker, String> {
+    use afkconvoy_core::blocked::CUT;
+    let text = text.trim();
+    if text == CUT {
+        return Ok(Blocker::Cut);
+    }
+    afkconvoy_core::record::fleet_number(text.strip_prefix('#').unwrap_or(text))
+        .map(Blocker::Issue)
+        .ok_or_else(|| format!("names neither an issue's number nor `{CUT}`"))
+}
+
+/// What `--blocked-by`'s items name together.
+fn blocked_on(items: &[Blocker]) -> afkconvoy_core::blocked::BlockedOn {
+    let mut on = afkconvoy_core::blocked::BlockedOn::default();
+    for item in items {
+        match item {
+            Blocker::Issue(number) => on.issues.push(*number),
+            Blocker::Cut => on.cut = true,
+        }
+    }
+    on
+}
+
 fn verdict(text: &str) -> Result<Declared, String> {
     let verdicts = || Declared::ALL.into_iter().filter(|declared| *declared != Declared::Ruling);
     verdicts().find(|declared| declared.word() == text).ok_or_else(|| {
@@ -5091,7 +5124,7 @@ fn run(
                 issue: issue.number(),
                 stage,
                 declared: verdict,
-                blocked_by,
+                blocked_by: blocked_on(&blocked_by),
                 text: text.read()?,
                 ran: ran(role_commit, team_commit, harness, model),
                 consult,
@@ -5115,7 +5148,7 @@ fn run(
                     issue,
                     stage,
                     declared: Declared::Ruling,
-                    blocked_by: vec![],
+                    blocked_by: Default::default(),
                     text: text.read()?,
                     ran: Some(ran),
                     consult: true,

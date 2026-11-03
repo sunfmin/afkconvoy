@@ -34,6 +34,21 @@ pub const BLOCK: &str = "```yaml cut";
 /// cut to raise the minor version, not the patch.
 pub const MINOR_LABEL: &str = "release:minor";
 
+/// The label on an issue whose stage waits on the next cut of its repo: it
+/// needs a version that is not installed yet (docs/adr/0056). The fleet puts
+/// it on as it parks the claim, which keeps the issue off the frontier, and
+/// takes it off every issue once a cut has published and installed its
+/// version — nothing else does.
+pub const WAITING_LABEL: &str = "convoy-waits-on-cut";
+
+/// Why an issue that waits on the next cut is off the frontier.
+pub const WAITS: &str = "waits on the next cut";
+
+/// Whether an issue carrying `labels` waits on the next cut.
+pub fn waits(labels: &[String]) -> bool {
+    labels.iter().any(|label| label == WAITING_LABEL)
+}
+
 /// The variable a repo's cut steps are given the version in, `0.5.17`.
 pub const VERSION_ENV: &str = "VERSION";
 
@@ -280,6 +295,9 @@ pub struct Row {
     pub busy_in_seconds: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub failure: Option<u64>,
+    /// The open issues that wait on the next cut (`WAITING_LABEL`), lowest
+    /// first: a cut that installs its version puts them back on the frontier.
+    pub waiting: Vec<u64>,
     /// The claim on a cut, while one stands.
     #[serde(skip)]
     pub claim: Option<RunClaim>,
@@ -358,6 +376,7 @@ pub fn row(
             .oldest_landing
             .map(|landed| landed.saturating_add(seen.busy_after_seconds).saturating_sub(now)),
         failure: seen.failure,
+        waiting: vec![],
         claim: seen.claim.clone(),
     }
 }

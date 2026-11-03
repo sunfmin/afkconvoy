@@ -76,7 +76,7 @@ impl Unheld {
             stage: stage.to_string(),
             stated,
             by: Author::Human,
-            blocked_by: vec![],
+            blocked_by: Default::default(),
             text,
         };
         self.gh.comment(self.number, &record.comment())

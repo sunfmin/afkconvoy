@@ -402,7 +402,7 @@ land: { by: boss, do: implement }
                 harness: Harness::ClaudeCode,
                 model: None,
             },
-            blocked_by: vec![],
+            blocked_by: Default::default(),
             text: "done".to_string(),
         }
     }

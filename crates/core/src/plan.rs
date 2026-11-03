@@ -611,7 +611,15 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
     for patrol in seen.patrols {
         set.patrols.push(patrol::row(patrol, me, seen.heartbeats, now, locked));
     }
-    set.cut = seen.cut.map(|cut| cut::row(cut, me, seen.heartbeats, now, locked));
+    if let Some(cut) = seen.cut {
+        let mut row = cut::row(cut, me, seen.heartbeats, now, locked);
+        for issue in &issues {
+            if cut::waits(&issue.labels) {
+                row.waiting.push(issue.number);
+            }
+        }
+        set.cut = Some(row);
+    }
     set.waiting_on_human = waiting(seen, &issues, &claims, &set.patrols, set.cut.as_ref());
     for issue in &issues {
         if config.bound.is_some() && !seen.flows.among(&issue.labels).is_empty() {
@@ -626,6 +634,10 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
             said.filter(|_| !matches!(bar, LabelBar::Epic(_))).unwrap_or_else(|| bar.reason())
         } else if claimed {
             "already claimed".to_string()
+        } else if cut::waits(&issue.labels) {
+            // Off the frontier until a cut installs a version: no worker
+            // waits for it, and the fleet can go idle and cut.
+            cut::WAITS.to_string()
         } else if config.bound.is_some() && !is_repair(&issue.labels) {
             match call(issue, seen.due, seen.handoffs) {
                 Call::Human(reason) => {
@@ -843,6 +855,66 @@ mod tests {
     }
 
     #[test]
+    fn an_issue_waiting_on_the_cut_leaves_the_fleet_idle_until_a_cut_installs_a_version() {
+        let waiting = [issue(8, &["ready-for-agent", cut::WAITING_LABEL])];
+        let tag = cut::Tag { version: cut::Version::parse("0.1.5").unwrap(), commit: "t".into() };
+        let due = cut::Seen {
+            on: true,
+            newest: Some(tag),
+            past: 3,
+            oldest_landing: Some(900),
+            busy_after_seconds: cut::BUSY_AFTER_SECONDS,
+            ..cut::Seen::default()
+        };
+        let seen = Observed {
+            unworked_blockers: &[],
+            handoffs: &[],
+            issues: &waiting,
+            prs: &[],
+            claims: &[],
+            heartbeats: &[],
+            closed: &[],
+            gone: &[],
+            kept: &[],
+            landed: &[],
+            declared: &[],
+            idle: &[],
+            due: &[],
+            flows: &FlowLabels::default(),
+            landing: &[],
+            begun: &[],
+            patrols: &[],
+            waiting: &[],
+            landings: &[],
+            slow_gate: &Reported::NONE,
+            tracker: &Tracker::Own,
+            cut: Some(&due),
+        };
+        let set = assemble(&seen, Some(&me()), 1000, &config(3));
+        assert!(set.frontier.is_empty(), "{:?}", set.frontier);
+        let reasons: Vec<(u64, &str)> =
+            set.excluded.iter().map(|e| (e.number, e.reason.as_str())).collect();
+        assert_eq!(reasons, [(8, cut::WAITS)]);
+        let row = set.cut.as_ref().unwrap();
+        assert_eq!((row.standing, &row.waiting[..]), (cut::Standing::Due, &[8][..]));
+        assert!(cut::starts(row, set.held(), set.frontier.len(), false), "idle: the cut starts");
+
+        // Its version installed, the cut took the label off: worked again.
+        let returned = [issue(8, READY)];
+        let tag = cut::Tag { version: cut::Version::parse("0.1.6").unwrap(), commit: "u".into() };
+        let cut = cut::Seen { newest: Some(tag), past: 0, oldest_landing: None, ..due.clone() };
+        let set = assemble(
+            &Observed { issues: &returned, cut: Some(&cut), ..seen },
+            Some(&me()),
+            1000,
+            &config(3),
+        );
+        let frontier: Vec<u64> = set.frontier.iter().map(|d| d.number).collect();
+        assert_eq!(frontier, [8]);
+        assert!(set.cut.unwrap().waiting.is_empty());
+    }
+
+    #[test]
     fn an_unclaimed_issue_whose_kept_pr_nothing_live_owns_is_on_the_frontier() {
         let issues = [issue(1, READY), issue(2, READY), issue(3, READY), issue(4, READY)];
         let seen = Observed {
@@ -1016,7 +1088,7 @@ mod tests {
                 harness: Harness::ClaudeCode,
                 model: None,
             },
-            blocked_by: vec![],
+            blocked_by: Default::default(),
             text: "stuck".to_string(),
         }];
         let issues = [
@@ -1096,7 +1168,7 @@ mod tests {
                 harness: Harness::ClaudeCode,
                 model: None,
             },
-            blocked_by: vec![],
+            blocked_by: Default::default(),
             text: "done".to_string(),
         };
         let planned = [record("plan", Declared::Pass, "c1")];

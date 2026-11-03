@@ -206,6 +206,7 @@ kinds! {
     PatrolFull: Warning, "have reached its `max_open`";
     CutFailed: Warning, "cuts no version: its last cut failed";
     CutNeed: Warning, "not cutting here";
+    CutWaiting: Info, "wait on the next cut";
     NeedInstallFailed: Warning, "install failed on this host";
     NeedInstalled: Info, "was installed on this host";
     WaitedLong: Warning, "has waited for a human for";
@@ -1243,6 +1244,20 @@ fn plan_findings(run: &Run, state: &State) -> Vec<Finding> {
             failed.evidence(),
             "read its stderr file on this host, then check the repo's cut-needs declaration"
                 .to_string(),
+        ));
+    }
+    if let Some(cut) = set.cut.as_ref().filter(|cut| !cut.waiting.is_empty()) {
+        found.push(finding(
+            Kind::CutWaiting,
+            json!(["cut-waiting"]),
+            format!("{} wait on the next cut", numbered(&cut.waiting)),
+            format!(
+                "their stages need a version not installed yet; the cut is {}, and once one has \
+                 published and installed its version they return to the frontier at the stage \
+                 they left",
+                cut.standing.word()
+            ),
+            "afkconvoy plan".to_string(),
         ));
     }
     if let Some(cut) = set.cut.as_ref().filter(|cut| cut.standing == cut::Standing::Failed)

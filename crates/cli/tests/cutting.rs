@@ -1164,3 +1164,90 @@ fn a_cut_need_that_passes_then_fails_claims_no_cut_and_doctor_names_its_stderr()
     assert_eq!(std::fs::read_to_string(stderr).unwrap().trim(), "private-late-failure");
     assert!(!format!("{tick}{doctor}{}", logged(&world).join(" ")).contains("private-late"));
 }
+
+/// The plan's frontier, by number.
+fn frontier(world: &World, now: u64) -> Vec<u64> {
+    let plan = planned(world, "alpha", now);
+    let rows = plan["frontier"].as_array().unwrap_or_else(|| panic!("{plan}"));
+    rows.iter().map(|row| row["number"].as_u64().unwrap()).collect()
+}
+
+/// `cutting`, with a gate its cut can pass: red only while `red` exists.
+fn cutting_green() -> World {
+    let world = World::new();
+    tag(&world, "v0.1.0");
+    let gate = format!("test ! -f '{}'", world.root.join("red").display());
+    let config = CONFIG.replace("./gate.sh", &gate);
+    commit_config(
+        &world,
+        &format!("{config}\n{}", cut_block(&says_published(&world))),
+        "Turn cutting on (#7)",
+    );
+    world
+}
+
+#[test]
+fn an_issue_waiting_on_the_cut_lets_the_fleet_go_idle_and_returns_once_the_cut_installs() {
+    let world = cutting_green();
+    world.issue(8, &["ready-for-agent"]);
+    let dispatched = tick_as(&world, "alpha", 10_000);
+    assert!(cut(&dispatched).is_empty(), "a claim held: no idle cut yet: {dispatched}");
+    assert_eq!(world.claims().len(), 1);
+
+    // Its worker needs the next version, not installed yet: it waits on the cut.
+    world.comment(8, "<!--convoy:verdict phase=blocked blocked_by=cut-->\nneeds the next version");
+    let parked = tick_as(&world, "alpha", 10_010);
+    assert_eq!(world.claims(), [] as [(u64, String); 0], "the claim is released");
+    assert_eq!(world.labels(8), ["ready-for-agent", "convoy-waits-on-cut"]);
+    assert_eq!(world.edges(8), [] as [u64; 0], "no issue is named");
+    // Nothing else held, the fleet is idle: the due cut starts.
+    assert_eq!(cut(&parked), ["cut done"], "{parked}");
+    assert!(logged(&world).iter().any(|line| line.contains("fleet idle")));
+    let plan = planned(&world, "alpha", 10_020);
+    assert_eq!(plan["cut"]["waiting"], json!([8]), "{plan}");
+    assert_eq!(plan["cut"]["standing"], "running", "{plan}");
+    assert!(frontier(&world, 10_020).is_empty(), "still waiting while the cut runs: {plan}");
+    let doctor = world.afk(&["doctor", "--now", "10020"]).ok().to_string();
+    assert!(doctor.contains("#8 wait on the next cut"), "{doctor}");
+
+    // Published and installed: the issue is on the frontier again.
+    let checkout = checkout(&world);
+    finish(&world, &checkout);
+    assert_eq!(cut(&tick_as(&world, "alpha", 10_100))[0], "end_cut done");
+    assert_eq!(world.labels(8), ["ready-for-agent"]);
+    assert_eq!(frontier(&world, 10_110), [8]);
+    let plan = planned(&world, "alpha", 10_110);
+    assert_eq!(plan["cut"]["waiting"], json!([]), "{plan}");
+    tick_as(&world, "alpha", 10_120);
+    assert_eq!(world.claims().len(), 1, "its worker is started again");
+}
+
+#[test]
+fn a_failed_cut_leaves_what_waits_on_it_waiting() {
+    let world = cutting_green();
+    world.issue(8, &["ready-for-agent", "convoy-waits-on-cut"]);
+    assert_eq!(cut(&tick_as(&world, "alpha", 10_000)), ["cut done"]);
+    let checkout = checkout(&world);
+    std::fs::write(world.root.join("red"), "red").unwrap();
+    let failed = world.afk_in(&checkout, &["cut", "--host", "h1"]).ok();
+    assert_eq!(failed["failed"], "gate", "{failed}");
+    assert_eq!(cut(&tick_as(&world, "alpha", 10_100)), ["end_cut done"]);
+    assert_eq!(failures(&world).len(), 1);
+    assert_eq!(world.labels(8), ["ready-for-agent", "convoy-waits-on-cut"]);
+    assert!(frontier(&world, 10_110).is_empty());
+    assert_eq!(world.claims(), [] as [(u64, String); 0]);
+}
+
+#[test]
+fn a_verdict_on_the_cut_escalates_where_no_cut_will_come() {
+    let world = World::new();
+    world.issue(7, &["ready-for-agent"]);
+    tick_as(&world, "alpha", 10_000);
+    world.comment(7, "<!--convoy:verdict phase=blocked blocked_by=cut-->\nneeds the next version");
+    tick_as(&world, "alpha", 10_010);
+    assert_eq!(world.claims(), [] as [(u64, String); 0]);
+    assert_eq!(world.labels(7), ["ready-for-human"]);
+    let escalation = world.comments(7).into_iter().find(|b| b.starts_with("<!--convoy:escalation"));
+    let escalation = escalation.expect("an escalation comment");
+    assert!(escalation.contains("the repo names no cut steps"), "{escalation}");
+}

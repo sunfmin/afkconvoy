@@ -1392,6 +1392,7 @@ mod tests {
             oldest_landing_age_seconds: None,
             busy_in_seconds: None,
             failure: None,
+            waiting: vec![],
             claim: None,
         })
     }

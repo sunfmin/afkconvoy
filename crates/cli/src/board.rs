@@ -3,6 +3,7 @@
 
 use std::path::PathBuf;
 
+use afkconvoy_core::blocked::Parkable;
 use afkconvoy_core::board::{Board, Stage, board_comment, render};
 use afkconvoy_core::claims::Claim;
 use afkconvoy_core::left::Kept;
@@ -73,6 +74,7 @@ pub fn last_word(
             stage,
             pr,
             blocked_by,
+            cut: false,
             waits_at: None,
             answer: None,
             kept: None,
@@ -81,9 +83,10 @@ pub fn last_word(
     Ok(())
 }
 
-/// The last word of a claim that was parked on `blocked_by`: `kept` is its
-/// worktree, when that is kept for what only it holds.
-pub fn parked(fleet: &Fleet, claim: &Claim, blocked_by: &[u64], kept: Option<Kept>) -> Result<()> {
+/// The last word of a claim that was parked as `parkable` says: `kept` is
+/// its worktree, when that is kept for what only it holds.
+pub fn parked(fleet: &Fleet, claim: &Claim, parkable: &Parkable, kept: Option<Kept>) -> Result<()> {
+    let blocked_by = &parkable.blockers();
     let (instance, stage) = (instance_of(claim), Stage::Parked);
     let answer = None;
     post(
@@ -95,6 +98,7 @@ pub fn parked(fleet: &Fleet, claim: &Claim, blocked_by: &[u64], kept: Option<Kep
             stage,
             pr: None,
             blocked_by,
+            cut: parkable.cut(),
             waits_at: None,
             answer,
             kept,
@@ -122,6 +126,7 @@ pub fn declared(
             stage,
             pr,
             blocked_by: &[],
+            cut: false,
             waits_at,
             answer: None,
             kept: None,
@@ -152,6 +157,7 @@ pub fn escalated(
             stage,
             pr,
             blocked_by: &[],
+            cut: false,
             waits_at: None,
             answer,
             kept,
@@ -178,6 +184,7 @@ pub fn show(fleet: &Fleet, me: &Me, issue: u64, stage: Stage, pr: Option<u64>) -
         stage,
         pr,
         blocked_by: &[],
+        cut: false,
         waits_at: None,
         answer: None,
         kept: None,
