@@ -852,6 +852,9 @@ afkconvoy::cli launch::an_operator_removal_survives_relisting_daily_refresh_and_
 afkconvoy::cli joining::a_running_landing_turn_is_left_alone_with_its_worker_idle
 # Measured 7.64s: three queued deliveries and doctor's recovery observation.
 afkconvoy::cli stopped::a_queued_issue_update_is_retried_without_retyping_and_doctor_names_its_comment
+# Measured 9.5s and 8.3s: ticks of a `run` that each poll a queued line for 1s.
+afkconvoy::cli stopped::an_update_queued_at_a_busy_worker_is_recorded_queued_and_told_once_taken
+afkconvoy::cli stopped::an_update_still_queued_past_the_note_bound_fails_its_tell
 # Resident asking scenarios start host processes and wait for watch looks and delivery.
 afkconvoy::cli asking::two_conditions_share_one_session_and_are_delivered_one_at_a_time
 afkconvoy::cli asking::reworded_reports_and_runner_restart_do_not_ask_an_episode_twice

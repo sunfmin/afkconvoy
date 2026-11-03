@@ -1645,6 +1645,93 @@ fn a_queued_issue_update_is_retried_without_retyping_and_doctor_names_its_commen
     );
 }
 
+/// One tick of a `run`, with a typed note given its production bound to
+/// reach the model → (the tick's line, its answer).
+fn tick_with_note_bound(world: &World, now: u64) -> (String, Value) {
+    let now = now.to_string();
+    let args = ["--host", "h1", "--instance", "alpha", "--second-ms", "0", "--ticks", "1"];
+    let out = world
+        .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
+        .args(["run", "--foreground", "--tracker", "default", "--now", &now])
+        .args(args)
+        .env("AFKCONVOY_NOTE_WAIT_SECONDS", "600")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{stdout}");
+    let line = stdout.lines().filter(|line| line.starts_with("tick ")).last().unwrap();
+    let answer = logs(world)
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter(|entry| entry["tick"]["answer"].is_object())
+        .last()
+        .map(|entry| entry["tick"]["answer"].clone())
+        .unwrap();
+    (line.to_string(), answer)
+}
+
+fn tell_step(ticked: &Value, url: &str) -> Value {
+    let did = ticked["did"].as_array().unwrap();
+    did.iter()
+        .find(|step| step["do"] == "tell" && step["comment"] == url)
+        .cloned()
+        .unwrap_or_else(|| panic!("{ticked}"))
+}
+
+#[test]
+fn an_update_queued_at_a_busy_worker_is_recorded_queued_and_told_once_taken() {
+    let world = fleet(1000);
+    report(&world, "working", 1000, 1080);
+    world.with_orca(|orca| orca["notes"] = json!("queued"));
+    let url = later_comment(&world, "Use v2", 1080);
+
+    let (line, first) = tick_with_note_bound(&world, 1090);
+    assert!(first["errors"].as_array().unwrap().is_empty(), "{first}");
+    let step = tell_step(&first, &url);
+    assert_eq!(step["outcome"], "queued", "{step}");
+    assert_eq!(step["since"], 1090, "{step}");
+    assert!(line.contains("queued at #7's worker") && !line.contains("FAILED"), "{line}");
+    let (_, second) = tick_with_note_bound(&world, 1180);
+    assert!(second["errors"].as_array().unwrap().is_empty(), "{second}");
+    assert_eq!(tell_step(&second, &url)["since"], 1090, "queued since its first tick");
+    assert_eq!(typed(&world).len(), 2, "the queued line is not typed again");
+
+    // The harness's tool ends and it gives its model the queued line.
+    let typed_line = typed(&world)[1].clone();
+    afkconvoy::session::record_note(&world.home(), &worktree(&world), &typed_line, true, 1200)
+        .unwrap();
+    let (line, told) = tick_with_note_bound(&world, 1270);
+    assert!(told["errors"].as_array().unwrap().is_empty(), "{told}");
+    assert_eq!(tell_step(&told, &url)["outcome"], "done");
+    assert!(line.contains(&format!("told #7: {url}")), "{line}");
+    assert_eq!(typed(&world).len(), 2);
+    let doctor = world.afk(&["doctor", "--host", "h1", "--now", "1271"]).json;
+    assert!(
+        !doctor["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|finding| finding["evidence"].as_str().unwrap_or("").contains(&url)),
+        "{doctor}"
+    );
+}
+
+#[test]
+fn an_update_still_queued_past_the_note_bound_fails_its_tell() {
+    let world = fleet(1000);
+    report(&world, "working", 1000, 1080);
+    world.with_orca(|orca| orca["notes"] = json!("queued"));
+    let url = later_comment(&world, "Use v2", 1080);
+    assert_eq!(tell_step(&tick_with_note_bound(&world, 1090).1, &url)["outcome"], "queued");
+    let (line, late) = tick_with_note_bound(&world, 1690);
+    let step = tell_step(&late, &url);
+    assert_eq!(step["outcome"], "failed", "{step}");
+    let error = step["error"].as_str().unwrap();
+    assert!(error.contains("queued since 1090 within 600s"), "{error}");
+    assert!(line.contains("FAILED tell #7"), "{line}");
+    assert_eq!(typed(&world).len(), 2, "no second line is typed");
+}
+
 /// Every claim ref on the remote.
 fn claim_refs(world: &World) -> Vec<String> {
     let listed = world.remote(&["for-each-ref", "--format=%(refname)", "refs/convoy/claim/"]);

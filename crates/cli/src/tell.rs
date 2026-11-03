@@ -48,6 +48,8 @@ pub fn tell(fleet: &Fleet, host: &str, issue: u64, text: &str) -> Result<Value> 
     match handed {
         Handed::Taken { seconds } => answer["seconds"] = json!(seconds),
         Handed::Already => answer["typed"] = json!(false),
+        // A note with no send receipt fails past its bound instead.
+        Handed::Queued => answer["queued"] = json!(true),
     }
     Ok(answer)
 }

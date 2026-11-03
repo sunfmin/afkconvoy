@@ -10,6 +10,8 @@ use serde_json::{Value, json};
 
 use crate::fleet::Fleet;
 use crate::gh::OpenIssues;
+use afkconvoy_core::harness::Harness;
+
 use crate::orca::{Handed, Worktree};
 
 const FILE: &str = "convoy-issue-updates.json";
@@ -30,6 +32,10 @@ struct Update {
     mark: String,
     text: String,
     receipt: String,
+    /// The tick that first found its line taken by the terminal but not yet
+    /// given to the model. It may stay queued for `note_wait_seconds`.
+    #[serde(default)]
+    queued_at: Option<u64>,
 }
 
 impl Seen {
@@ -101,11 +107,11 @@ pub fn reconcile(fleet: &Fleet, host: &str, issues: &OpenIssues) -> Vec<Value> {
                         body_change((!unknown_body).then_some(seen.body.as_str()), &body.body)
                     ),
                     receipt: format!("convoy-body-send-{started}-{}", seen.revision),
+                    queued_at: None,
                 });
                 seen.body.clone_from(&body.body);
             }
-            let harness =
-                worktree.recorded_harness()?.unwrap_or(afkconvoy_core::harness::Harness::DEFAULT);
+            let harness = worktree.recorded_harness()?.unwrap_or(Harness::DEFAULT);
             for comment in issues.comments(number) {
                 if comment.at.is_none_or(|at| at <= started)
                     || comment.body.contains("<!--convoy:")
@@ -123,6 +129,7 @@ pub fn reconcile(fleet: &Fleet, host: &str, issues: &OpenIssues) -> Vec<Value> {
                     mark: comment.url.clone(),
                     text: format!("New issue comment ({}): {}", comment.url, comment.body),
                     receipt: format!("convoy-comment-send-{started}-{}", comment.id),
+                    queued_at: None,
                 });
             }
             // Persist before delivery: a body that changes again while its
@@ -130,31 +137,37 @@ pub fn reconcile(fleet: &Fleet, host: &str, issues: &OpenIssues) -> Vec<Value> {
             seen.save(&worktree)?;
             let mut made = vec![];
             let pending = std::mem::take(&mut seen.pending);
-            for update in pending {
+            for mut update in pending {
                 let line = format!(
                     "{} [issue update: {}]",
                     crate::tell::one_line(&update.text),
                     update.mark
                 );
-                let told = worktree
-                    .hand_update(
-                        &terminal,
-                        &line,
-                        &update.mark,
-                        started,
-                        &worktree.note(&update.receipt)?,
-                    )
-                    .and_then(|handed| {
-                        worktree.record_told(fleet.now, &update.mark)?;
-                        Ok(handed)
-                    });
+                let told = worktree.hand_update(
+                    &terminal,
+                    &line,
+                    &update.mark,
+                    started,
+                    &worktree.note(&update.receipt)?,
+                );
+                let told = match told {
+                    Ok(Handed::Queued) => queued(&mut update, fleet.now, harness),
+                    Ok(handed) => worktree.record_told(fleet.now, &update.mark).map(|()| handed),
+                    Err(error) => Err(error),
+                };
                 let mut step = json!({"do": "tell", "issue": number, "comment": update.mark});
                 match told {
+                    Ok(Handed::Queued) => {
+                        step["outcome"] = json!("queued");
+                        step["since"] = json!(update.queued_at);
+                        seen.pending.push(update);
+                    }
                     Ok(handed) => {
                         step["outcome"] = json!("done");
-                        match handed {
-                            Handed::Taken { seconds } => step["seconds"] = json!(seconds),
-                            Handed::Already => step["typed"] = json!(false),
+                        if let Handed::Taken { seconds } = handed {
+                            step["seconds"] = json!(seconds);
+                        } else {
+                            step["typed"] = json!(false);
                         }
                         seen.told.insert(update.mark);
                     }
@@ -176,6 +189,23 @@ pub fn reconcile(fleet: &Fleet, host: &str, issues: &OpenIssues) -> Vec<Value> {
         }
     }
     steps
+}
+
+/// A line the terminal took waits in its harness's input until the step the
+/// harness is on ends. It stays queued, no failure, until the bound a typed
+/// note has to reach the model; past it, it fails each tick it is still not
+/// taken, and no second line is typed.
+fn queued(update: &mut Update, now: u64, harness: Harness) -> Result<Handed> {
+    let since = *update.queued_at.get_or_insert(now);
+    let bound = crate::orca::note_wait_seconds();
+    if now.saturating_sub(since) < bound {
+        return Ok(Handed::Queued);
+    }
+    anyhow::bail!(
+        "{} did not give its model the line queued since {since} within {bound}s: it is not \
+         delivered, and no second line was typed",
+        harness.name()
+    )
 }
 
 /// A replacement block drops the common beginning and end. Without a
