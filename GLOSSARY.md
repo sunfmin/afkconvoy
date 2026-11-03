@@ -77,11 +77,11 @@ The read-only pass at the top of every tick that derives the working set. Any fl
 _Avoid_: refresh (a heartbeat is refreshed), resync
 
 **Frontier**:
-The issues of the fleet's tracker a worker can be started on now — of a tracker that is another repo, those carrying the repo's repo label and no other: open, carrying a flow label, not an epic, unclaimed, with no open blocker, and at a stage a role performs or whose `escalate` a consult is to rule on — or landing, with an open PR to land. In an unbound repo: carrying the ready label, with no open linked PR but one of the fleet's own that a released claim kept, not landed — which its worker takes up. While a fleet lock stands: of these, the lock issues only.
+The issues of the fleet's tracker a worker can be started on now — of a tracker that is another repo, those carrying the repo's repo label and no other: open, carrying a flow label, not an epic, unclaimed, with no open blocker, not waiting on the next cut, and at a stage a role performs or whose `escalate` a consult is to rule on — or landing, with an open PR to land. In an unbound repo: carrying the ready label, with no open linked PR but one of the fleet's own that a released claim kept, not landed — which its worker takes up. While a fleet lock stands: of these, the lock issues only.
 _Avoid_: queue (the exclusive queue of a host's heavy commands), backlog (all the issues a repo has open)
 
 **Idle**:
-A fleet instance with nothing to do now: it holds no claim — on an issue, a patrol's run or a cut — its frontier is empty. An escalated issue waiting for a human leaves it idle, and so does a patrol not yet due.
+A fleet instance with nothing to do now: it holds no claim — on an issue, a patrol's run or a cut — its frontier is empty. An escalated issue waiting for a human leaves it idle, and so does a patrol not yet due, and an issue waiting on the next cut: it holds no claim and is off the frontier, so the cut it waits for can start (ADR-0056).
 _Avoid_: drained, done (what a step or a command did), finished (a PR its worker is through with)
 
 **Host sleep**:
@@ -280,7 +280,7 @@ A worker stopped by its harness's fixed message that its selected model is at ca
 _Avoid_: quota fault (an account's usage limit), task refusal (a harness refusing this issue)
 
 **Verdict**:
-What ends a stage, declared on the issue by whoever performed it: `pass`, `reject`, `blocked`, `already-satisfied`, or `escalate`. Opening a PR declares nothing.
+What ends a stage, declared on the issue by whoever performed it: `pass`, `reject`, `blocked`, `already-satisfied`, or `escalate`. Opening a PR declares nothing. A `blocked` verdict names the issues it waits on, or the next cut of its own repo (`blocked_by=cut`, `--blocked-by cut`), when the stage can go on only once a version not installed yet is: the claim is parked under the label `convoy-waits-on-cut` instead of polling for the version, and the issue returns at the stage it left once a cut has installed one (ADR-0056).
 _Avoid_: outcome (what a worker leaves on GitHub: its landed PR, or its verdict), result, needs-human
 
 **Silent worker**:
@@ -458,5 +458,5 @@ A change the fleet starts to restore a red target tip or finish retained work fr
 _Avoid_: manual repair
 
 **Cut**:
-The run that makes a new version of a repo from its base branch: it commits the version on a branch of its own from the base tip, gates it, tags that commit, and publishes and installs it. The base branch never receives that commit, and turns keep landing while a cut runs; the version's home is its tag. Landed work past the newest version tag starts one when the fleet goes idle or the oldest landing reaches the repo's age bound; an untagged repo's declared initial version starts one when idle. A repo may declare cut needs: host checks that must pass before a host claims a cut. A due cut whose check fails is reported by the tick, plan and doctor, leaving another host free to cut. Each cut belongs to one host; a failed cut holds later cuts back until answered, while a patch overtaken by a minor landing ends without tagging and gives way to the minor cut.
+The run that makes a new version of a repo from its base branch: it commits the version on a branch of its own from the base tip, gates it, tags that commit, and publishes and installs it. The base branch never receives that commit, and turns keep landing while a cut runs; the version's home is its tag. Landed work past the newest version tag starts one when the fleet goes idle or the oldest landing reaches the repo's age bound; an untagged repo's declared initial version starts one when idle. A repo may declare cut needs: host checks that must pass before a host claims a cut. A due cut whose check fails is reported by the tick, plan and doctor, leaving another host free to cut. Each cut belongs to one host; a failed cut holds later cuts back until answered, while a patch overtaken by a minor landing ends without tagging and gives way to the minor cut. A cut that took every step takes the label `convoy-waits-on-cut` off every open issue carrying it: those waiting on the next cut return to the frontier. A failed or overtaken cut takes it off nothing (ADR-0056).
 _Avoid_: release (a claim's last step, and `afkconvoy release`), publish (a heartbeat's), deploy
