@@ -147,6 +147,7 @@ pub fn codex_line(_world: &World, dir: &Path) -> String {
         Harness::Codex.with_model(Harness::Codex.stock(), &model)
     };
     let command = Harness::Codex.in_worktree(&command, &dir.display().to_string(), &home);
+    let command = Harness::Codex.with_goal_budget(&command);
     Harness::Codex.guarded(&command, "", "", &terminal_guard())
 }
 

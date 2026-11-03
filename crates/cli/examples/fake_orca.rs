@@ -539,9 +539,23 @@ fn terminal_send(st: &mut State) -> ! {
                 let harness = afkconvoy_core::harness::Harness::Codex;
                 let home = std::env::var("HOME").expect("the world's home");
                 let root = Path::new(&home).join(harness.session_place(role).under_home);
-                let prompt = json!({"type": "response_item", "payload": {
-                    "type": "message", "role": "user", "content": [
-                        {"type": "input_text", "text": sent["text"]}]}});
+                let text = sent["text"].as_str().unwrap_or("");
+                // A goal line is recorded as codex-cli 0.166.0 records one: the
+                // goal's setting said to the model, then the goal itself.
+                let prompt = match text.strip_prefix("/goal ") {
+                    Some(objective) => format!(
+                        "{}\n{}",
+                        json!({"type": "response_item", "payload": {
+                            "type": "message", "role": "user", "content": [{"type": "input_text",
+                            "text": format!("<codex_internal_context source=\"user_goal\">\nUser set the goal: {}\n</codex_internal_context>", json!(objective))}]}}),
+                        json!({"type": "event_msg", "payload": {"type": "thread_goal_updated",
+                            "goal": {"objective": objective, "status": "active"}}})
+                    ),
+                    None => json!({"type": "response_item", "payload": {
+                        "type": "message", "role": "user", "content": [
+                            {"type": "input_text", "text": text}]}})
+                    .to_string(),
+                };
                 for file in harness.session_files(cwd.to_str().unwrap(), false, stamp) {
                     let body = file.body.replace(&json!(cwd).to_string(), &json!(role).to_string());
                     std::fs::write(root.join(file.path), format!("{body}{prompt}\n")).unwrap();

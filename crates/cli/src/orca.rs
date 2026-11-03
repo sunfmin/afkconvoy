@@ -19,7 +19,6 @@ use afkconvoy_core::harness::{Harness, Keystroke};
 use afkconvoy_core::launch::{TrustGap, Waited};
 use afkconvoy_core::legacy::TRAIN_WORKTREE;
 use afkconvoy_core::line::niced;
-use afkconvoy_core::prompt::brief_pointer;
 use afkconvoy_core::stopped::Nudged;
 use afkconvoy_core::tools::{Found, add_checkout};
 use afkconvoy_core::worker::{WorkerState, is_worktree_named, short_branch, worker_state};
@@ -1760,7 +1759,7 @@ impl Worktree {
     }
 
     /// Types `key` at `terminal`, with no line of the operator's.
-    fn press_key(&self, terminal: &str, key: Keystroke) -> Result<()> {
+    pub(crate) fn press_key(&self, terminal: &str, key: Keystroke) -> Result<()> {
         let mut args = vec!["terminal", "send", "--terminal", terminal];
         if let Some(text) = key.text {
             args.extend(["--text", text]);
@@ -2036,11 +2035,16 @@ impl Worktree {
 
     /// Hands the worker in `terminal` the brief at `brief`.
     pub fn deliver(&self, terminal: &str, brief: &Path) -> Result<()> {
-        let line = brief_pointer(&brief.display().to_string());
+        // The harness its start recorded: how the brief is typed is its own.
+        let harness = match self.recorded_harness()? {
+            Some(harness) => harness,
+            None => self.harness()?.unwrap_or(Harness::DEFAULT),
+        };
+        let line = harness.brief_line(&brief.display().to_string());
         // A retry of the brief counts the turn the first send already started.
         let earliest = self.handed(None)?.unwrap_or_else(|| crate::clock().saturating_sub(2));
         crate::harness_down::tell(self, terminal, crate::clock(), || {
-            self.tell_unchecked(terminal, &line, BRIEF_SETTLE_SECONDS, None, earliest)
+            self.tell_unchecked(terminal, &line, BRIEF_SETTLE_SECONDS, Some(harness), earliest)
         })?;
         // What a watch starts on first; a record it cannot keep loses no
         // worker its brief.

@@ -594,6 +594,15 @@ fn terminal_rule(harness: Harness, output: &[String]) -> Option<Diagnosis> {
     decided(Evidence::Words { harness, lines: output })
 }
 
+/// A stopped worker whose harness stopped its goal — blocked by its model,
+/// or at its budget — is short of its task: its harness continues it no
+/// more, and it is nudged, then escalated, as any worker that stopped short.
+/// An active goal's worker that stopped is judged as any other.
+fn goal_rule(worktree: &Worktree) -> Option<Diagnosis> {
+    let (_, goal) = crate::goal::of(worktree)?;
+    decided(Evidence::Goal(goal))
+}
+
 /// Conservative structured/error classification. Plain terminal text goes to
 /// Jev, or the operator, unless the harness's own explicit words decide the
 /// fault.
@@ -1323,6 +1332,9 @@ fn decide(
     let mut diagnosis = if let Some((source, rule)) = rule {
         observed.source = source.into();
         rule
+    } else if let Some(goal) = goal_rule(worktree) {
+        observed.source = "goal rule".into();
+        goal
     } else {
         let (request, response, decided) = match crate::jev::judge(output) {
             crate::jev::Outcome::NoKey => {

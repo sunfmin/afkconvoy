@@ -537,6 +537,84 @@ pub(super) fn with_service_tier(line: &str, service_tier: Option<&str>) -> Strin
     with_preference(line, SERVICE_TIER, service_tier)
 }
 
+/// The command that sets a goal of a Codex session, and starts its first
+/// turn on it (codex-cli 0.166.0, sunfmin/control#544). While the goal is
+/// active Codex begins the next turn by itself each time its model ends one
+/// short of it.
+const GOAL: &str = "/goal ";
+/// The command that clears a session's goal. Typed mid-turn it lets that turn
+/// finish, and no turn follows it.
+const GOAL_CLEAR: &str = "/goal clear";
+/// The key of Codex's configuration that gives a goal set without a budget
+/// its token budget: uncached input and output tokens, counted from the
+/// goal's setting. Past it Codex stops the turn and marks the goal
+/// `budget_limited`, and begins no other.
+const GOAL_BUDGET: &str = "goals.max_goal_token_budget";
+/// A worker goal's budget: five times what a Codex worker used, uncached
+/// input and output, on this fleet's issues in the week to 2026-11-03
+/// (about 207,000). It bounds a worker that waits, its goal still active,
+/// being continued round at cost.
+pub(super) const GOAL_TOKENS: u64 = 1_000_000;
+/// Where Codex keeps a session's goal, under its user directory, and the
+/// question that reads its status: the session's latest goal, nothing when
+/// it has none or it was cleared.
+pub(super) const GOAL_STORE: super::GoalStore = super::GoalStore {
+    file: "goals_1.sqlite",
+    query: "select status from thread_goals order by updated_at_ms desc limit 1",
+};
+
+/// The line typed at a worker to hand it the brief at `brief`: set as its goal.
+pub(super) fn brief_line(brief: &str) -> String {
+    format!("{GOAL}{}", crate::prompt::goal_objective(brief))
+}
+
+/// `line` with a worker goal's budget.
+pub(super) fn with_goal_budget(line: &str) -> String {
+    Line::new()
+        .launch(line)
+        .fixed(" --config ")
+        .word(&format!("{GOAL_BUDGET}={GOAL_TOKENS}"))
+        .done()
+}
+
+pub(super) const GOAL_END: super::Keystroke =
+    super::Keystroke { text: Some(GOAL_CLEAR), enter: true };
+
+/// The status of a goal, as the store says it.
+pub(super) fn goal(answer: &str) -> Option<super::Goal> {
+    use super::Goal;
+    Some(match answer.trim() {
+        "" => Goal::Unset,
+        "active" => Goal::Active,
+        "paused" => Goal::Paused,
+        "blocked" => Goal::Blocked,
+        "usage_limited" => Goal::UsageLimited,
+        "budget_limited" => Goal::BudgetLimited,
+        "complete" => Goal::Complete,
+        _ => return None,
+    })
+}
+
+/// Whether Codex began a turn of the goal by itself: a turn its goal
+/// started after an earlier turn ended. The turn the goal's setting starts is
+/// the brief's own, not one Codex continued.
+pub(super) fn goal_continued(text: &str) -> bool {
+    let mut ended = false;
+    for value in json_lines(text) {
+        let payload = &value["payload"];
+        match payload["type"].as_str() {
+            Some("task_complete" | "turn_aborted") => ended = true,
+            Some("task_started")
+                if ended && payload["turn_attribution"]["turn_trigger"] == "goal" =>
+            {
+                return true;
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
 /// A watch's launch line: the worker's, with search, the model inside the
 /// command, and the effort after it.
 pub(super) fn session_watch(
@@ -816,6 +894,12 @@ pub(super) fn names_brief(text: &str, brief: &str) -> bool {
         {
             return false;
         }
+        // A brief handed as the goal is said in the goal's setting: its
+        // objective, exactly (`brief_line`).
+        if value["type"] == "event_msg" && payload["type"] == "thread_goal_updated" {
+            let objective = payload["goal"]["objective"].as_str();
+            return objective == Some(crate::prompt::goal_objective(brief).as_str());
+        }
         if let Some(matches) = session::brief_match(&value, brief) {
             return matches;
         }
@@ -901,7 +985,7 @@ pub(super) fn session_files(cwd: &str, open: bool, at: u64) -> Vec<SessionFile> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::harness::Harness;
+    use crate::harness::{Harness, Keystroke};
     use crate::line::quoted;
     use crate::role::{Facts, On, Told};
 
@@ -1261,5 +1345,132 @@ mod tests {
             Harness::Pi.session_watch("agent", "/wt", "/kept", Some("m"), Some("high")),
             Harness::Pi.watch("agent", "/wt", "/kept", Some("m"))
         );
+    }
+
+    /// A goal's session as codex-cli 0.166.0 recorded one on 2026-11-03,
+    /// cut to what is read: the goal set as the brief, its turn, and the
+    /// turns after.
+    fn goal_rollout(cwd: &str, objective: &str, after: &[serde_json::Value]) -> String {
+        let mut lines = vec![
+            serde_json::json!({"timestamp": "2026-11-03T03:50:56.700Z", "type": "session_meta",
+                "payload": {"cwd": cwd, "id": "t"}}),
+            serde_json::json!({"timestamp": "2026-11-03T03:50:56.740Z", "type": "response_item",
+                "payload": {"type": "message", "role": "user", "content": [{"type": "input_text",
+                "text": format!("<codex_internal_context source=\"user_goal\">\nUser set the goal: \"{objective}\"\n</codex_internal_context>")}]}}),
+            serde_json::json!({"timestamp": "2026-11-03T03:50:56.750Z", "type": "event_msg",
+                "payload": {"type": "thread_goal_updated", "goal": {"objective": objective,
+                "status": "active"}}}),
+            serde_json::json!({"timestamp": "2026-11-03T03:50:56.776Z", "type": "event_msg",
+                "payload": {"type": "task_started", "started_at": 1_793_677_856_u64,
+                "turn_attribution": {"turn_trigger": "goal"}}}),
+        ];
+        lines.extend(after.iter().cloned());
+        lines.iter().map(|line| format!("{line}\n")).collect()
+    }
+
+    fn ended(at: u64) -> serde_json::Value {
+        serde_json::json!({"timestamp": "2026-11-03T03:51:05.368Z", "type": "event_msg",
+            "payload": {"type": "task_complete", "completed_at": at}})
+    }
+
+    fn began(at: u64, trigger: &str) -> serde_json::Value {
+        serde_json::json!({"timestamp": "2026-11-03T03:51:05.379Z", "type": "event_msg",
+            "payload": {"type": "task_started", "started_at": at,
+            "turn_attribution": {"turn_trigger": trigger}}})
+    }
+
+    #[test]
+    fn a_codex_worker_is_handed_its_brief_as_its_goal_and_every_other_its_pointer() {
+        let brief = "/repo/.git/worktrees/w/convoy-worker-prompt.md";
+        let line = Harness::Codex.brief_line(brief);
+        let objective = crate::prompt::goal_objective(brief);
+        assert_eq!(line, format!("/goal {objective}"));
+        assert!(objective.starts_with(&crate::prompt::brief_pointer(brief)), "{objective}");
+        assert!(objective.contains("Mark this goal complete"), "{objective}");
+        for harness in
+            [Harness::ClaudeCode, Harness::Pi, Harness::Dsh, Harness::Kimi, Harness::Grok]
+        {
+            assert_eq!(harness.brief_line(brief), crate::prompt::brief_pointer(brief));
+            assert_eq!(harness.with_goal_budget("agent"), "agent");
+            assert_eq!(harness.goal_store(), None);
+            assert_eq!(harness.goal_end(), None);
+        }
+        assert_eq!(
+            Harness::Codex.with_goal_budget("codex --model m"),
+            "codex --model m --config 'goals.max_goal_token_budget=1000000'"
+        );
+        assert_eq!(Harness::Codex.goal_tokens(), Some(GOAL_TOKENS));
+        assert_eq!(
+            Harness::Codex.goal_end(),
+            Some(Keystroke { text: Some("/goal clear"), enter: true })
+        );
+    }
+
+    #[test]
+    fn a_codex_role_session_set_with_a_brief_as_its_goal_is_that_worker_s() {
+        let brief = "/repo/.git/worktrees/w/convoy-worker-prompt.md";
+        let other = "/repo/.git/worktrees/v/convoy-worker-prompt.md";
+        let role = "/cache/copies/acme/dev/hash-role+codex-";
+        let mine = goal_rollout(role, &crate::prompt::goal_objective(brief), &[]);
+        assert!(names_brief(&mine, brief));
+        assert!(!names_brief(&mine, other));
+        let turn = Harness::Codex.recorded_turn("/repo/w", &mine, Some(1_793_677_856), Some(brief));
+        assert_eq!(turn, Some(Turn::Open { since: 1_793_677_856 }));
+        assert_eq!(Harness::Codex.recorded_turn("/repo/w", &mine, None, Some(other)), None);
+    }
+
+    #[test]
+    fn a_turn_codex_begins_on_its_goal_after_one_ended_is_a_continuation_and_a_sign_of_life() {
+        let objective = crate::prompt::goal_objective("/b.md");
+        let first = goal_rollout("/wt", &objective, &[]);
+        assert!(!goal_continued(&first), "the goal's setting starts the brief's own turn");
+        let stopped = goal_rollout("/wt", &objective, &[ended(1_793_677_865)]);
+        assert!(!goal_continued(&stopped));
+        let nudged =
+            goal_rollout("/wt", &objective, &[ended(1_793_677_865), began(1_793_677_900, "user")]);
+        assert!(!goal_continued(&nudged), "a line typed at it is no continuation");
+        let continued =
+            goal_rollout("/wt", &objective, &[ended(1_793_677_865), began(1_793_677_865, "goal")]);
+        assert!(goal_continued(&continued));
+        // Measured: Codex began the next turn 11ms after the last ended. That
+        // turn is open: the worker is at work.
+        assert_eq!(
+            Harness::Codex.recorded_turn("/wt", &continued, None, None),
+            Some(Turn::Open { since: 1_793_677_865 })
+        );
+    }
+
+    #[test]
+    fn a_goal_is_read_as_codex_s_store_says_it() {
+        use crate::harness::Goal;
+        for (said, goal) in [
+            ("", Goal::Unset),
+            ("active\n", Goal::Active),
+            ("paused", Goal::Paused),
+            ("blocked\n", Goal::Blocked),
+            ("usage_limited", Goal::UsageLimited),
+            ("budget_limited\n", Goal::BudgetLimited),
+            ("complete", Goal::Complete),
+        ] {
+            assert_eq!(Harness::Codex.goal(said), Some(goal), "{said}");
+            if goal != Goal::Unset {
+                assert_eq!(goal.key(), said.trim());
+            }
+        }
+        assert_eq!(Harness::Codex.goal("Error: no such table"), None);
+        assert_eq!(Harness::ClaudeCode.goal("active"), None);
+        let stopped: Vec<Goal> = [
+            Goal::Unset,
+            Goal::Active,
+            Goal::Paused,
+            Goal::Blocked,
+            Goal::UsageLimited,
+            Goal::BudgetLimited,
+            Goal::Complete,
+        ]
+        .into_iter()
+        .filter(|goal| goal.stopped())
+        .collect();
+        assert_eq!(stopped, [Goal::Blocked, Goal::BudgetLimited]);
     }
 }
