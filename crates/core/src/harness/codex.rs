@@ -594,10 +594,10 @@ pub(super) fn goal_continued(text: &str) -> bool {
         let payload = &value["payload"];
         match payload["type"].as_str() {
             Some("task_complete" | "turn_aborted") => ended = true,
-            Some("task_started") if ended => {
-                if payload["turn_attribution"]["turn_trigger"] == "goal" {
-                    return true;
-                }
+            Some("task_started")
+                if ended && payload["turn_attribution"]["turn_trigger"] == "goal" =>
+            {
+                return true;
             }
             _ => {}
         }
