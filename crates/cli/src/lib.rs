@@ -47,6 +47,7 @@ pub mod config;
 pub mod copies;
 pub mod cut;
 pub mod daybook;
+pub mod distill;
 mod delivery;
 pub mod dispatch;
 pub mod doctor;
@@ -915,6 +916,10 @@ enum Command {
     ///
     /// `--lessons --since <YYYY-MM-DD> [--until <YYYY-MM-DD>]` writes nothing: it lists the lessons of the days from `--since` to `--until`, both included (to today where `--until` is not given), from the days' indexes.
     ///
+    /// The **distillation** is the host's watch's: at most once a week, when a span of days holds a lesson or two entries without one — enough for a fault to recur — a watch round reads the span's lessons and entries, decides each lesson's lasting home and proposes it there through that home's normal path: a repeated mistake first as a mechanism, a ticket to the repo that owns it; one project's decision or term, a ticket for its ADR or GLOSSARY; a cross-project one, a change to the control repo's; how to use a tool, a ticket for its own skill; the operator's global principles, a draft PR they read and no fleet merges. It keeps nothing of its own: the proposal is the record, and the entries are left to age out. `--distill` asks the watch for one at its next look without waiting out the week; it still runs only on a span that holds something, from the day after the last distillation's span to today.
+    ///
+    /// `--distilled <file>` is how the round records it: the JSON file says {"since", "until", "carried": [{"entries": [entry URL…], "lesson", "home", "link"}]}, `home` one of `ticket`, `doc` (a control ADR or GLOSSARY change), `draft` (a draft PR on the global principles) or `covered` (its home holds it already, `link` saying where). Each lesson of the days `since` to `until` is carried exactly once, by its entry's URL; its `lesson` may be left out. A pattern recurring across entries without a lesson names two entries at least and says its `lesson`. The file is checked against the span's lesson indexes before anything is written, then one entry is written whose `Did` maps each lesson to where it went.
+    ///
     /// The repo is the one the checkout's remote names, or `--repo`. The tracker is the one this host's checkout list says for the checkout, its own repo where it says none, or `--tracker`. Run in no checkout, both flags are needed.
     ///
     /// It is not fleet state: nothing reads it to decide what a fleet does.
@@ -930,7 +935,9 @@ enum Command {
     ///
     /// With `--lessons`: {"lessons": [{"day", "url", "lesson"}], "since", "until"}, oldest day first.
     ///
-    /// Errors, as {"error": …} with a non-zero exit, each before anything is written but the last: an entry that says nothing; no repo or tracker to name, run in no checkout; the tracker has no `Daybook` category — the error names the page that creates one, as GitHub creates no category through its API, and the line that turns its discussions on where they are off; GitHub refused to read or create the discussion, or to add the comment.
+    /// With `--distilled`: the entry's answer, and "since", "until", "lessons" (how many the span holds) and "carried" (how many lessons and patterns the file carried). With `--distill`: {"asked", "at"}, the epoch second the watch was asked at.
+    ///
+    /// Errors, as {"error": …} with a non-zero exit, each before anything is written but the last: an entry that says nothing; a distillation file that carries a lesson of its span nowhere or twice, or a pattern with no `lesson` or fewer than two entries; no repo or tracker to name, run in no checkout; the tracker has no `Daybook` category — the error names the page that creates one, as GitHub creates no category through its API, and the line that turns its discussions on where they are off; GitHub refused to read or create the discussion, or to add the comment.
     ///
     /// ## What trips you up
     ///
@@ -960,6 +967,12 @@ enum Command {
         /// List the lessons of a span of days instead of writing an entry
         #[arg(long, requires = "since", conflicts_with_all = ["text", "did", "why", "undo", "lesson", "links"])]
         lessons: bool,
+        /// Record a distillation said in this JSON file: check it carries each lesson of its span once, then write its one entry
+        #[arg(long, value_name = "FILE", conflicts_with_all = ["text", "did", "why", "undo", "lesson", "links", "lessons", "distill"])]
+        distilled: Option<PathBuf>,
+        /// Ask the host's watch to distill the daybook at its next look, without waiting out its week
+        #[arg(long, conflicts_with_all = ["text", "did", "why", "undo", "lesson", "links", "lessons", "repo", "tracker"])]
+        distill: bool,
         /// The first day of the span `--lessons` lists
         #[arg(long, value_name = "YYYY-MM-DD", requires = "lessons", value_parser = daybook::day_named)]
         since: Option<String>,
@@ -4854,6 +4867,10 @@ fn run(
         }
         Command::Flows { delivery, tracker, .. } => {
             flows::flows(&checkout?, delivery.as_deref(), tracker.as_ref())
+        }
+        Command::Daybook { distill: true, .. } => host_watch::ask_distillation(now),
+        Command::Daybook { distilled: Some(file), repo, tracker, .. } => {
+            daybook::distilled(checkout, repo, tracker, &file)
         }
         Command::Daybook { lessons: true, since, until, tracker, .. } => daybook::lessons(
             checkout,
