@@ -317,6 +317,10 @@ pub fn tick(
     let closers = std::mem::take(&mut fleet.closers);
     let after_locks = std::mem::take(&mut fleet.after_locks);
     let cut_said = std::mem::take(&mut fleet.cut_said);
+    // A start of a cut evaluated its needs again, last: the tick says that.
+    if let (Some(checked), Some(row)) = (fleet.cut_needs.take(), set.cut.as_mut()) {
+        row.not_cutting_here = checked;
+    }
     let (concurrency, bound) = (fleet.config.concurrency(), pass.bound);
     let issues = &open.issues.rows;
     let config = &fleet.config;
@@ -840,7 +844,7 @@ impl Ticked {
             "frontier_remaining": self.pass.frontier_remaining, "idle": self.idle(),
             "locks": self.set.locks});
         if let Some(reason) = self.set.cut.as_ref().and_then(|cut| cut.not_cutting_here.as_ref()) {
-            answer["not_cutting_here"] = json!(reason);
+            answer["not_cutting_here"] = json!(reason.said());
         }
         if self.pass.held_back(&self.set) {
             answer["held_back_by"] = json!(self.held_back_by());
@@ -1017,8 +1021,8 @@ impl Ticked {
                 .unwrap_or_default();
             parts.push(format!("opened an issue for the slow gate: {evidence}"));
         }
-        if let Some(name) = self.set.cut.as_ref().and_then(|cut| cut.not_cutting_here.as_ref()) {
-            parts.push(name.clone());
+        if let Some(failed) = self.set.cut.as_ref().and_then(|cut| cut.not_cutting_here.as_ref()) {
+            parts.push(failed.said());
         }
         parts.extend(self.cut_said.iter().filter_map(log::cut_said));
         for update in &self.updates {

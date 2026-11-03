@@ -260,9 +260,10 @@ impl Standing {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Row {
     pub standing: Standing,
-    /// A failed host check while this cut is due.
+    /// A failed host check while this cut is due: the one evaluation a
+    /// tick says and starts the cut by (sunfmin/control#532).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub not_cutting_here: Option<String>,
+    pub not_cutting_here: Option<NeedFailed>,
     /// The newest version tag, and how many commits the base branch holds
     /// past it.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -279,6 +280,43 @@ pub struct Row {
     /// The claim on a cut, while one stands.
     #[serde(skip)]
     pub claim: Option<RunClaim>,
+}
+
+/// A cut need that failed on this host: the check's name, why it failed,
+/// and the user-only host-cache file of its last stderr lines — named,
+/// never read, so its output stays on the host (docs/adr/0053). Plan and
+/// the tick say it as `said`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NeedFailed {
+    pub name: String,
+    pub reason: String,
+    pub stderr: String,
+    /// What an install that ran for it, or is not tried again yet, did.
+    pub install: Option<String>,
+}
+
+impl NeedFailed {
+    /// `not cutting here: <name> failed`.
+    pub fn said(&self) -> String {
+        format!("not cutting here: {} failed", self.name)
+    }
+
+    /// Its status, its stderr file and any install, as doctor says them.
+    pub fn evidence(&self) -> String {
+        format!(
+            "the cut is due and the host check {} failed ({}); stderr: {}{}",
+            self.name,
+            self.reason,
+            self.stderr,
+            self.install.as_deref().unwrap_or_default()
+        )
+    }
+}
+
+impl Serialize for NeedFailed {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.said())
+    }
 }
 
 /// How the cut `seen` stands for the fleet instance `me` at `now`, with

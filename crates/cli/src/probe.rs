@@ -12,6 +12,7 @@
 use std::path::{Path, PathBuf};
 
 use afkconvoy_core::config::{Config, GateNeed};
+use afkconvoy_core::cut::NeedFailed;
 use afkconvoy_core::gate::outlived;
 use afkconvoy_core::layout::{
     Answer, BaseCheck, GATE_KIND, Layout, PROBE_STANDS, answer, base_check, no_base_branch,
@@ -280,24 +281,32 @@ fn run_private(repo: &Repo, command: &str, seconds: u64, stderr: &Path) -> Resul
     }))
 }
 
-/// The first cut need that fails on this host at `now`, by name, after any
-/// install it declares (`need`). `install` is false for a look that must not
-/// install — `plan`'s — which then says a check as it finds it.
+/// The first cut need that fails on this host at `now`, after any install
+/// it declares (`need`), with its status and private stderr file. `install`
+/// is false for a look that must not install — `plan`'s — which then says a
+/// check as it finds it. A check that passes removes its stderr file, so a
+/// tick says only the evaluation it starts the cut by (sunfmin/control#532).
 pub(crate) fn check_cut_needs(
     repo: &Repo,
     config: &Config,
     now: u64,
     install: bool,
-) -> Result<Option<String>> {
+) -> Result<Option<NeedFailed>> {
     for check in &config.cut_needs {
         let failed = if install {
-            need(repo, check, CUT_NEEDS, now)?.0.is_some()
+            need(repo, check, CUT_NEEDS, now)?.0
         } else {
             let (stderr, _, _) = need_files(repo, &check.name, CUT_NEEDS)?;
-            run_private(repo, &check.command, check.seconds, &stderr)?.is_some()
+            run_private(repo, &check.command, check.seconds, &stderr)?
+                .map(|reason| Failed { reason, stderr, install: None })
         };
-        if failed {
-            return Ok(Some(check.name.clone()));
+        if let Some(failed) = failed {
+            return Ok(Some(NeedFailed {
+                name: check.name.clone(),
+                reason: failed.reason,
+                stderr: failed.stderr.display().to_string(),
+                install: failed.install.as_ref().map(Installed::said),
+            }));
         }
     }
     Ok(None)
